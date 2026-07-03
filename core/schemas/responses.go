@@ -48,6 +48,98 @@ func (r *BifrostResponsesRequest) GetRawRequestBody() []byte {
 	return r.RawRequestBody
 }
 
+// BifrostResponsesRetrieveRequest retrieves a stored response by ID (OpenAI GET /v1/responses/{id}).
+//
+// Multi-key note: when multiple API keys are configured for the same provider, pin
+// key selection (for example x-bf-api-key-id) on lifecycle calls so they hit the same
+// upstream account as the create that produced response_id.
+type BifrostResponsesRetrieveRequest struct {
+	Provider           ModelProvider `json:"provider"`
+	ResponseID         string        `json:"response_id"`
+	Include            []string      `json:"include,omitempty"`
+	StartingAfter      *int          `json:"starting_after,omitempty"`
+	IncludeObfuscation *bool         `json:"include_obfuscation,omitempty"`
+	RawRequestBody     []byte        `json:"-"`
+}
+
+// GetRawRequestBody implements raw body passthrough when enabled on context.
+func (r *BifrostResponsesRetrieveRequest) GetRawRequestBody() []byte {
+	if r == nil {
+		return nil
+	}
+	return r.RawRequestBody
+}
+
+// BifrostResponsesDeleteRequest deletes a stored response (OpenAI DELETE /v1/responses/{id}).
+// See BifrostResponsesRetrieveRequest for multi-key pinning guidance.
+type BifrostResponsesDeleteRequest struct {
+	Provider       ModelProvider `json:"provider"`
+	ResponseID     string        `json:"response_id"`
+	RawRequestBody []byte        `json:"-"`
+}
+
+// GetRawRequestBody implements raw body passthrough when enabled on context.
+func (r *BifrostResponsesDeleteRequest) GetRawRequestBody() []byte {
+	if r == nil {
+		return nil
+	}
+	return r.RawRequestBody
+}
+
+// BifrostResponsesCancelRequest cancels an in-flight stored response (OpenAI POST /v1/responses/{id}/cancel).
+// See BifrostResponsesRetrieveRequest for multi-key pinning guidance.
+type BifrostResponsesCancelRequest struct {
+	Provider       ModelProvider `json:"provider"`
+	ResponseID     string        `json:"response_id"`
+	RawRequestBody []byte        `json:"-"`
+}
+
+// GetRawRequestBody implements raw body passthrough when enabled on context.
+func (r *BifrostResponsesCancelRequest) GetRawRequestBody() []byte {
+	if r == nil {
+		return nil
+	}
+	return r.RawRequestBody
+}
+
+// BifrostResponsesInputItemsRequest lists input items for a response (OpenAI GET /v1/responses/{id}/input_items).
+// See BifrostResponsesRetrieveRequest for multi-key pinning guidance.
+type BifrostResponsesInputItemsRequest struct {
+	Provider       ModelProvider `json:"provider"`
+	ResponseID     string        `json:"response_id"`
+	After          string        `json:"after,omitempty"`
+	Include        []string      `json:"include,omitempty"`
+	Limit          *int          `json:"limit,omitempty"`
+	Order          string        `json:"order,omitempty"`
+	RawRequestBody []byte        `json:"-"`
+}
+
+// GetRawRequestBody implements raw body passthrough when enabled on context.
+func (r *BifrostResponsesInputItemsRequest) GetRawRequestBody() []byte {
+	if r == nil {
+		return nil
+	}
+	return r.RawRequestBody
+}
+
+// BifrostResponsesDeleteResponse is the wire shape for a successful delete of a stored response.
+type BifrostResponsesDeleteResponse struct {
+	ID          string                     `json:"id"`
+	Object      string                     `json:"object,omitempty"`
+	Deleted     bool                       `json:"deleted"`
+	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+}
+
+// BifrostResponsesInputItemsResponse is the list payload for response input items.
+type BifrostResponsesInputItemsResponse struct {
+	Object      string                     `json:"object"`
+	Data        []ResponsesMessage         `json:"data"`
+	HasMore     bool                       `json:"has_more"`
+	FirstID     string                     `json:"first_id,omitempty"`
+	LastID      string                     `json:"last_id,omitempty"`
+	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+}
+
 // BifrostCompactionRequest is the request for the context compaction endpoint (POST /v1/responses/compact).
 // It is a strict subset of BifrostResponsesRequest — tools, sampling params, and streaming are not supported.
 type BifrostCompactionRequest struct {

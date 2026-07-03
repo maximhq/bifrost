@@ -104,7 +104,7 @@ func (provider *MistralProvider) listModelsByKey(ctx *schemas.BifrostContext, ke
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		bifrostErr := ParseMistralError(resp)
+		bifrostErr := providerUtils.SetErrorLatency(ParseMistralError(resp), latency)
 		return nil, bifrostErr
 	}
 
@@ -316,7 +316,7 @@ func (provider *MistralProvider) Transcription(ctx *schemas.BifrostContext, key 
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, ParseMistralError(resp)
+		return nil, providerUtils.SetErrorLatency(ParseMistralError(resp), latency)
 	}
 
 	responseBody, err := providerUtils.CheckAndDecodeBody(resp)
@@ -424,26 +424,27 @@ func (provider *MistralProvider) TranscriptionStream(ctx *schemas.BifrostContext
 	startTime := time.Now()
 	// Make the request
 	err := provider.streamingClient.Do(req, resp)
+	latency := time.Since(startTime)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 		if errors.Is(err, context.Canceled) {
-			return nil, &schemas.BifrostError{
+			return nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
 				IsBifrostError: false,
 				Error: &schemas.ErrorField{
 					Type:    schemas.Ptr(schemas.RequestCancelled),
 					Message: schemas.ErrRequestCancelled,
 					Error:   err,
 				},
-			}
+			}, latency)
 		}
 		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err)
+			return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), latency)
 		}
 		// Request failed before the first response byte (server closed an idle/pooled connection,
 		// broken pipe, connection refused, DNS failure, etc.). Surface as a retriable upstream
 		// connection error (502) so executeRequestWithRetries honors max_retries, matching the
 		// non-streaming path - see https://github.com/maximhq/bifrost/issues/4496.
-		return nil, providerUtils.NewBifrostUpstreamConnectionError(schemas.ErrProviderDoRequest, err)
+		return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostUpstreamConnectionError(schemas.ErrProviderDoRequest, err), latency)
 	}
 
 	// Store provider response headers in context before status check so error responses also forward them
@@ -452,7 +453,7 @@ func (provider *MistralProvider) TranscriptionStream(ctx *schemas.BifrostContext
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
-		return nil, ParseMistralError(resp)
+		return nil, providerUtils.SetErrorLatency(ParseMistralError(resp), latency)
 	}
 
 	// Large payload streaming passthrough — pipe raw upstream SSE to client
@@ -667,7 +668,7 @@ func (provider *MistralProvider) OCR(ctx *schemas.BifrostContext, key schemas.Ke
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, ParseMistralError(resp)
+		return nil, providerUtils.SetErrorLatency(ParseMistralError(resp), latency)
 	}
 
 	responseBody, err := providerUtils.CheckAndDecodeBody(resp)

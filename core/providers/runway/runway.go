@@ -186,27 +186,27 @@ func (provider *RunwayProvider) HandleRunwayImageTask(ctx *schemas.BifrostContex
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, providerUtils.EnrichError(ctx, parseRunwayError(resp), jsonData, nil, sendBackRawRequest, sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, parseRunwayError(resp), jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
 	}
 
 	// Decode response body
 	body, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {
 		rawErrBody := append([]byte(nil), resp.Body()...)
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), jsonData, rawErrBody, sendBackRawRequest, sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), jsonData, rawErrBody, sendBackRawRequest, sendBackRawResponse, latency)
 	}
 
 	// Parse task creation response
 	var taskResp RunwayTaskCreationResponse
 	rawRequest, _, bifrostErr := providerUtils.HandleProviderResponse(body, &taskResp, jsonData, sendBackRawRequest, sendBackRawResponse)
 	if bifrostErr != nil {
-		return nil, bifrostErr
+		return nil, providerUtils.SetErrorLatency(bifrostErr, latency)
 	}
 
 	// Poll the task until it reaches a terminal state
 	taskDetails, rawResponse, bifrostErr := provider.pollRunwayTask(ctx, key, taskResp.ID, sendBackRawResponse)
 	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
 	}
 
 	// Convert to Bifrost response
@@ -276,25 +276,25 @@ func (provider *RunwayProvider) retrieveRunwayTask(ctx *schemas.BifrostContext, 
 		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
 	}
 
-	_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, nil, bifrostErr
 	}
 
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, nil, parseRunwayError(resp)
+		return nil, nil, providerUtils.SetErrorLatency(parseRunwayError(resp), latency)
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {
-		return nil, nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
+		return nil, nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), latency)
 	}
 
 	var taskDetails RunwayTaskDetailsResponse
 	_, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, &taskDetails, nil, false, sendBackRawResponse)
 	if bifrostErr != nil {
-		return nil, nil, bifrostErr
+		return nil, nil, providerUtils.SetErrorLatency(bifrostErr, latency)
 	}
 
 	return &taskDetails, rawResponse, nil
@@ -382,21 +382,21 @@ func (provider *RunwayProvider) VideoGeneration(ctx *schemas.BifrostContext, key
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, providerUtils.EnrichError(ctx, parseRunwayError(resp), jsonData, nil, sendBackRawRequest, sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, parseRunwayError(resp), jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
 	}
 
 	// Decode response body
 	body, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {
 		rawErrBody := append([]byte(nil), resp.Body()...)
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), jsonData, rawErrBody, sendBackRawRequest, sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), jsonData, rawErrBody, sendBackRawRequest, sendBackRawResponse, latency)
 	}
 
 	// Parse response
 	var taskResp RunwayTaskCreationResponse
 	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, &taskResp, jsonData, sendBackRawRequest, sendBackRawResponse)
 	if bifrostErr != nil {
-		return nil, bifrostErr
+		return nil, providerUtils.SetErrorLatency(bifrostErr, latency)
 	}
 
 	// Convert to Bifrost response
@@ -453,21 +453,21 @@ func (provider *RunwayProvider) VideoRetrieve(ctx *schemas.BifrostContext, key s
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, providerUtils.EnrichError(ctx, parseRunwayError(resp), nil, nil, sendBackRawRequest, sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, parseRunwayError(resp), nil, nil, sendBackRawRequest, sendBackRawResponse, latency)
 	}
 
 	// Decode response body
 	body, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {
 		rawErrBody := append([]byte(nil), resp.Body()...)
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), nil, rawErrBody, sendBackRawRequest, sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), nil, rawErrBody, sendBackRawRequest, sendBackRawResponse, latency)
 	}
 
 	// Parse response
 	var taskDetails RunwayTaskDetailsResponse
 	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, &taskDetails, nil, sendBackRawRequest, sendBackRawResponse)
 	if bifrostErr != nil {
-		return nil, bifrostErr
+		return nil, providerUtils.SetErrorLatency(bifrostErr, latency)
 	}
 
 	// Convert to Bifrost response
@@ -532,15 +532,15 @@ func (provider *RunwayProvider) VideoDownload(ctx *schemas.BifrostContext, key s
 		return nil, bifrostErr
 	}
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, providerUtils.NewBifrostOperationError(
+		return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError(
 			fmt.Sprintf("failed to download video: HTTP %d", resp.StatusCode()),
-			nil)
+			nil), latency)
 	}
 	// Get content and content type
 	body, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {
 		rawErrBody := append([]byte(nil), resp.Body()...)
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), nil, rawErrBody, sendBackRawRequest, sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), nil, rawErrBody, sendBackRawRequest, sendBackRawResponse, latency)
 	}
 	contentType := string(resp.Header.ContentType())
 	if contentType == "" {
@@ -598,7 +598,7 @@ func (provider *RunwayProvider) VideoDelete(ctx *schemas.BifrostContext, key sch
 
 	// Handle error response - Runway returns 204 No Content on success
 	if resp.StatusCode() != fasthttp.StatusNoContent {
-		return nil, providerUtils.EnrichError(ctx, parseRunwayError(resp), nil, nil, sendBackRawRequest, sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, parseRunwayError(resp), nil, nil, sendBackRawRequest, sendBackRawResponse, latency)
 	}
 
 	// Build response - Runway returns empty body on 204

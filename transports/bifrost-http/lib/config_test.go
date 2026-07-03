@@ -17511,6 +17511,90 @@ func TestResolveFrameworkPricingConfig(t *testing.T) {
 		require.Equal(t, newFileSyncSeconds, *normalizedModelCatalog.PricingSyncInterval)
 	})
 
+	t.Run("model_parameters_url from file overrides db when file changes", func(t *testing.T) {
+		// DB has a stale model_parameters_url from an earlier startup; config.json
+		// now points it elsewhere. File wins, mirroring pricing_url.
+		staleModelParamsURL := "https://stale.example.com/model-parameters.json"
+		newModelParamsURL := "https://new-file.example.com/model-parameters.json"
+		storedHash, err := configstore.GenerateFrameworkConfigHash(&fileURL, &staleModelParamsURL, &fileSyncSeconds)
+		require.NoError(t, err)
+		dbConfig := &tables.TableFrameworkConfig{
+			ID:                  11,
+			PricingURL:          &fileURL,
+			ModelParametersURL:  &staleModelParamsURL,
+			PricingSyncInterval: &fileSyncSeconds,
+			ConfigHash:          storedHash, // hash of OLD file values
+		}
+		fileConfig := &framework.FrameworkConfig{
+			Pricing: &modelcatalog.Config{
+				PricingURL:          &fileURL,           // unchanged
+				ModelParametersURL:  &newModelParamsURL, // changed
+				PricingSyncInterval: &fileSyncSeconds,   // unchanged
+			},
+		}
+
+		normalizedTable, normalizedModelCatalog, needsDBUpdate := ResolveFrameworkPricingConfig(dbConfig, fileConfig)
+		require.True(t, needsDBUpdate)
+		require.Equal(t, newModelParamsURL, *normalizedTable.ModelParametersURL)
+		require.Equal(t, newModelParamsURL, *normalizedModelCatalog.ModelParametersURL)
+	})
+
+	t.Run("model_parameters_url alone triggers hash and overrides db", func(t *testing.T) {
+		// config.json sets only model_parameters_url (no pricing_url). The file
+		// hash must still be computed so a changed model_parameters_url is detected.
+		staleModelParamsURL := "https://stale.example.com/model-parameters.json"
+		newModelParamsURL := "https://new-file.example.com/model-parameters.json"
+		storedHash, err := configstore.GenerateFrameworkConfigHash(nil, &staleModelParamsURL, nil)
+		require.NoError(t, err)
+		dbConfig := &tables.TableFrameworkConfig{
+			ID:                 12,
+			PricingURL:         &dbURL,
+			ModelParametersURL: &staleModelParamsURL,
+			ConfigHash:         storedHash, // hash of OLD file values
+		}
+		fileConfig := &framework.FrameworkConfig{
+			Pricing: &modelcatalog.Config{
+				ModelParametersURL: &newModelParamsURL,
+			},
+		}
+
+		normalizedTable, _, needsDBUpdate := ResolveFrameworkPricingConfig(dbConfig, fileConfig)
+		require.True(t, needsDBUpdate)
+		require.Equal(t, newModelParamsURL, *normalizedTable.ModelParametersURL)
+	})
+
+	t.Run("unresolved env model_parameters_url does not overwrite db when another field changes", func(t *testing.T) {
+		// model_parameters_url is an unresolved env.* literal while pricing_url
+		// changes in the same restart, so fileChanged is true. The stale literal
+		// must not be persisted over a valid DB value — skip guard preserves it.
+		rawModelParams := "env.BIFROST_TEST_MODEL_PARAMS_URL_NONEXISTENT_XYZ"
+		prev, existed := os.LookupEnv("BIFROST_TEST_MODEL_PARAMS_URL_NONEXISTENT_XYZ")
+		os.Unsetenv("BIFROST_TEST_MODEL_PARAMS_URL_NONEXISTENT_XYZ")
+		t.Cleanup(func() {
+			if existed {
+				os.Setenv("BIFROST_TEST_MODEL_PARAMS_URL_NONEXISTENT_XYZ", prev)
+			}
+		})
+		validDBModelParams := "https://db.example.com/model-parameters.json"
+		dbConfig := &tables.TableFrameworkConfig{
+			ID:                  13,
+			PricingURL:          &dbURL,
+			ModelParametersURL:  &validDBModelParams,
+			PricingSyncInterval: &dbSyncSeconds,
+			ConfigHash:          "stale-hash", // force fileChanged via the pricing_url diff
+		}
+		fileConfig := &framework.FrameworkConfig{
+			Pricing: &modelcatalog.Config{
+				PricingURL:         &fileURL, // changed vs DB
+				ModelParametersURL: &rawModelParams,
+			},
+		}
+
+		normalizedTable, normalizedModelCatalog, _ := ResolveFrameworkPricingConfig(dbConfig, fileConfig)
+		require.Equal(t, validDBModelParams, *normalizedTable.ModelParametersURL)
+		require.Equal(t, validDBModelParams, *normalizedModelCatalog.ModelParametersURL)
+	})
+
 	t.Run("fallback to file when db fields are missing", func(t *testing.T) {
 		dbConfig := &tables.TableFrameworkConfig{
 			ID:                  3,
