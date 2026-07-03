@@ -81,8 +81,12 @@ func TestSanitizeToolSchemaForAnthropic_NestedContainers(t *testing.T) {
 				schemas.KV("maxItems", int64(5)),
 				schemas.KV("items", schemas.NewOrderedMapFromPairs(schemas.KV("type", "string"))),
 			)),
-			// exclusiveMinimum/Maximum only ever appear in the raw nested tree,
-			// since ToolFunctionParameters has no top-level field for them.
+			// exclusiveMinimum/Maximum here are nested inside a property's raw
+			// schema node (an *OrderedMap), not the top-level typed struct
+			// fields covered by TestSanitizeToolSchemaForAnthropic_TopLevel —
+			// property-level schemas are never typed, only the top-level
+			// ToolFunctionParameters struct is, so the recursive node
+			// sanitizer must catch these independently of the top-level fields.
 			schemas.KV("score", schemas.NewOrderedMapFromPairs(
 				schemas.KV("type", "number"),
 				schemas.KV("exclusiveMinimum", 0.0),
@@ -166,10 +170,17 @@ func TestSanitizeToolSchemaForAnthropic_NestedContainers(t *testing.T) {
 	}
 }
 
-// TestSanitizeToolSchemaForAnthropic_DoesNotMutateCaller verifies the
-// function returns an independent copy: a caller passing a schema that
-// needs no changes must still get back a distinct struct, not an alias.
-func TestSanitizeToolSchemaForAnthropic_DoesNotMutateCaller(t *testing.T) {
+// TestSanitizeToolSchemaForAnthropic_ReturnsDistinctTopLevelCopy verifies the
+// top-level struct returned is a distinct copy, not an alias — so scalar
+// fields on the caller's original (e.g. Description) are never overwritten in
+// place. This does NOT cover nested OrderedMap trees (Properties, Items,
+// etc.): those are intentionally mutated in place, by design (see
+// SanitizeToolSchemaForAnthropic's doc comment) — callers must pass an owned
+// copy (e.g. via schemas.DeepCopyToolFunctionParameters) if they need the
+// original nested data preserved, which is what both chat.go and responses.go
+// do; that specific invariant is covered by
+// TestConvertResponsesFunctionToolToAnthropic_DeepCopiesBeforeSanitizing.
+func TestSanitizeToolSchemaForAnthropic_ReturnsDistinctTopLevelCopy(t *testing.T) {
 	desc := "unchanged"
 	params := &schemas.ToolFunctionParameters{Type: "string", Description: &desc}
 

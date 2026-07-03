@@ -6688,8 +6688,10 @@ func convertBifrostToolToAnthropic(model string, tool *schemas.ResponsesTool, pr
 	// Agent SDK) may send non-deterministic property orderings across turns,
 	// which breaks Anthropic's prefix-based prompt caching since tool
 	// definitions are part of the serialized request prefix.
-	// Normalized() returns a shallow copy with sorted key slices, so the
-	// caller-owned tool.ResponsesToolFunction.Parameters is never mutated.
+	// anthropicTool.InputSchema is already an owned copy at this point (from
+	// the DeepCopyToolFunctionParameters call above), so both Sanitize's
+	// in-place mutation and Normalized()'s shallow copy operate on it safely
+	// without touching the caller-owned tool.ResponsesToolFunction.Parameters.
 	if anthropicTool.InputSchema != nil {
 		if anthropicTool.Strict != nil && *anthropicTool.Strict {
 			anthropicTool.InputSchema = SanitizeToolSchemaForAnthropic(anthropicTool.InputSchema)
