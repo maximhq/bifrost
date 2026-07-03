@@ -51,6 +51,15 @@ func ToGeminiChatCompletionRequestWithImageURLSchemes(ctx *schemas.BifrostContex
 			}
 		}
 
+		// OpenAI-style web_search_options enables Google Search grounding.
+		// GoogleSearch and FunctionDeclarations cannot coexist in a Gemini
+		// request, so function tools are dropped (same policy as the
+		// Responses path).
+		if bifrostReq.Params.WebSearchOptions != nil {
+			geminiReq.Tools = []Tool{{GoogleSearch: &GoogleSearch{}}}
+			geminiReq.ToolConfig = nil
+		}
+
 		if bifrostReq.Params.ServiceTier != nil {
 			geminiReq.ServiceTier = mapBifrostServiceTierToGemini(*bifrostReq.Params.ServiceTier)
 		}
@@ -264,10 +273,15 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 			ContentBlocks: contentBlocks,
 		}
 
-		if len(toolCalls) > 0 || len(reasoningDetails) > 0 {
+		// Grounding metadata is only emitted here when there are content parts.
+		// Google Search grounding responses always include content, so this is fine;
+		// grounding metadata without content parts would be silently dropped.
+		annotations := convertGroundingMetadataToChatAnnotations(candidate.GroundingMetadata)
+		if len(toolCalls) > 0 || len(reasoningDetails) > 0 || len(annotations) > 0 {
 			message.ChatAssistantMessage = &schemas.ChatAssistantMessage{
 				ToolCalls:        toolCalls,
 				ReasoningDetails: reasoningDetails,
+				Annotations:      annotations,
 			}
 		}
 
@@ -307,8 +321,9 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 
 // GeminiStreamState tracks tool-call index across streaming chunks.
 type GeminiStreamState struct {
-	nextToolCallIndex int
-	hadToolCalls      bool // true if any tool calls were seen in this stream
+	nextToolCallIndex     int
+	hadToolCalls          bool // true if any tool calls were seen in this stream
+	hasEmittedAnnotations bool // true once grounding annotations have been sent, to avoid duplicates
 }
 
 // NewGeminiStreamState returns initialised stream state for one streaming response.
@@ -488,8 +503,18 @@ func (response *GenerateContentResponse) ToBifrostChatCompletionStream(state *Ge
 		}
 	}
 
+	// Attach url_citation annotations when this chunk carries grounding metadata
+	// (Google Search results arrive on the trailing chunks). Emitted at most
+	// once per stream in case Gemini repeats the metadata on several chunks.
+	if !state.hasEmittedAnnotations {
+		if annotations := convertGroundingMetadataToChatAnnotations(candidate.GroundingMetadata); len(annotations) > 0 {
+			delta.Annotations = annotations
+			state.hasEmittedAnnotations = true
+		}
+	}
+
 	// Check if delta has any content - if not and it's not the last chunk, skip it
-	hasDeltaContent := delta.Role != nil || delta.Content != nil || len(delta.ToolCalls) > 0 || len(delta.ReasoningDetails) > 0
+	hasDeltaContent := delta.Role != nil || delta.Content != nil || len(delta.ToolCalls) > 0 || len(delta.ReasoningDetails) > 0 || len(delta.Annotations) > 0
 	if !hasDeltaContent && !isLastChunk {
 		return nil, nil, false
 	}
@@ -591,4 +616,66 @@ func createErrorResponse(response *GenerateContentResponse, finishReason string,
 	}
 
 	return errorResp
+}
+
+// convertGroundingMetadataToChatAnnotations converts Gemini grounding metadata
+// (Google Search results) into OpenAI-style url_citation annotations.
+//
+// Unlike emitAnnotationsFromGroundingSupports in responses.go which picks only
+// index [0] per support, this function emits one annotation per (support, web
+// chunk) pair, iterating ALL GroundingChunkIndices of each support.
+//
+// Segment indices from Gemini are byte offsets; OpenAI expects character offsets.
+// This skew is a known pre-existing limitation shared with the Responses path and
+// is left unresolved here.
+//
+// Falls back to bare web sources (no segment indices) when no usable supports are
+// present.
+func convertGroundingMetadataToChatAnnotations(metadata *GroundingMetadata) []schemas.ChatAssistantMessageAnnotation {
+	if metadata == nil {
+		return nil
+	}
+
+	var annotations []schemas.ChatAssistantMessageAnnotation
+
+	for _, support := range metadata.GroundingSupports {
+		if support == nil || support.Segment == nil {
+			continue
+		}
+		for _, chunkIdx := range support.GroundingChunkIndices {
+			if chunkIdx < 0 || int(chunkIdx) >= len(metadata.GroundingChunks) {
+				continue
+			}
+			chunk := metadata.GroundingChunks[chunkIdx]
+			if chunk == nil || chunk.Web == nil || chunk.Web.URI == "" {
+				continue
+			}
+			annotations = append(annotations, schemas.ChatAssistantMessageAnnotation{
+				Type: "url_citation",
+				URLCitation: schemas.ChatAssistantMessageAnnotationCitation{
+					StartIndex: int(support.Segment.StartIndex),
+					EndIndex:   int(support.Segment.EndIndex),
+					Title:      chunk.Web.Title,
+					URL:        schemas.Ptr(chunk.Web.URI),
+				},
+			})
+		}
+	}
+
+	if len(annotations) == 0 {
+		for _, chunk := range metadata.GroundingChunks {
+			if chunk == nil || chunk.Web == nil || chunk.Web.URI == "" {
+				continue
+			}
+			annotations = append(annotations, schemas.ChatAssistantMessageAnnotation{
+				Type: "url_citation",
+				URLCitation: schemas.ChatAssistantMessageAnnotationCitation{
+					Title: chunk.Web.Title,
+					URL:   schemas.Ptr(chunk.Web.URI),
+				},
+			})
+		}
+	}
+
+	return annotations
 }

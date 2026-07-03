@@ -4413,3 +4413,335 @@ func TestImagenImageEditSizeRoundtrip(t *testing.T) {
 	require.NotNil(t, imagenReq.Parameters.AspectRatio, "AspectRatio must be derived from Size on edit path")
 	assert.Equal(t, "1:1", *imagenReq.Parameters.AspectRatio)
 }
+
+func TestWebSearchOptionsEnablesGoogleSearchTool(t *testing.T) {
+	userMessage := []schemas.ChatMessage{
+		{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("what's new?")}},
+	}
+
+	t.Run("web_search_options alone adds googleSearch", func(t *testing.T) {
+		req := &schemas.BifrostChatRequest{
+			Model: "gemini-2.5-flash",
+			Input: userMessage,
+			Params: &schemas.ChatParameters{
+				WebSearchOptions: &schemas.ChatWebSearchOptions{},
+			},
+		}
+		geminiReq, err := gemini.ToGeminiChatCompletionRequest(nil, req)
+		require.NoError(t, err)
+		require.NotNil(t, geminiReq)
+		require.Len(t, geminiReq.Tools, 1)
+		assert.NotNil(t, geminiReq.Tools[0].GoogleSearch)
+	})
+
+	t.Run("web_search_options replaces function tools", func(t *testing.T) {
+		req := &schemas.BifrostChatRequest{
+			Model: "gemini-2.5-flash",
+			Input: userMessage,
+			Params: &schemas.ChatParameters{
+				WebSearchOptions: &schemas.ChatWebSearchOptions{},
+				Tools: []schemas.ChatTool{
+					{
+						Type: schemas.ChatToolTypeFunction,
+						Function: &schemas.ChatToolFunction{
+							Name: "get_weather",
+						},
+					},
+				},
+			},
+		}
+		geminiReq, err := gemini.ToGeminiChatCompletionRequest(nil, req)
+		require.NoError(t, err)
+		require.NotNil(t, geminiReq)
+
+		var hasGoogleSearch, hasFunction bool
+		for _, tool := range geminiReq.Tools {
+			if tool.GoogleSearch != nil {
+				hasGoogleSearch = true
+			}
+			if len(tool.FunctionDeclarations) > 0 {
+				hasFunction = true
+			}
+		}
+		assert.True(t, hasGoogleSearch, "googleSearch tool missing")
+		assert.False(t, hasFunction, "function declarations should be dropped when googleSearch is used")
+		assert.Nil(t, geminiReq.ToolConfig, "ToolConfig should be cleared when function tools are dropped")
+	})
+
+	t.Run("no googleSearch without web_search_options", func(t *testing.T) {
+		req := &schemas.BifrostChatRequest{
+			Model: "gemini-2.5-flash",
+			Input: userMessage,
+			Params: &schemas.ChatParameters{
+				Temperature: schemas.Ptr(0.5),
+			},
+		}
+		geminiReq, err := gemini.ToGeminiChatCompletionRequest(nil, req)
+		require.NoError(t, err)
+		require.NotNil(t, geminiReq)
+		for _, tool := range geminiReq.Tools {
+			assert.Nil(t, tool.GoogleSearch)
+		}
+	})
+}
+
+func TestGroundingMetadataToChatAnnotations(t *testing.T) {
+	buildResponse := func(metadata *gemini.GroundingMetadata) *gemini.GenerateContentResponse {
+		return &gemini.GenerateContentResponse{
+			ResponseID:   "resp-1",
+			ModelVersion: "gemini-2.5-flash",
+			Candidates: []*gemini.Candidate{
+				{
+					Content: &gemini.Content{
+						Role:  "model",
+						Parts: []*gemini.Part{{Text: "Paris est la capitale de la France."}},
+					},
+					FinishReason:      gemini.FinishReasonStop,
+					GroundingMetadata: metadata,
+				},
+			},
+		}
+	}
+
+	t.Run("supports with web chunks produce indexed url_citations", func(t *testing.T) {
+		metadata := &gemini.GroundingMetadata{
+			GroundingChunks: []*gemini.GroundingChunk{
+				{Web: &gemini.GroundingChunkWeb{URI: "https://example.com/a", Title: "Source A"}},
+				{Web: &gemini.GroundingChunkWeb{URI: "https://example.com/b", Title: "Source B"}},
+			},
+			GroundingSupports: []*gemini.GroundingSupport{
+				{
+					Segment:               &gemini.Segment{StartIndex: 0, EndIndex: 20},
+					GroundingChunkIndices: []int32{0, 1},
+				},
+			},
+		}
+		resp := buildResponse(metadata).ToBifrostChatResponse()
+		require.Len(t, resp.Choices, 1)
+		msg := resp.Choices[0].ChatNonStreamResponseChoice.Message
+		require.NotNil(t, msg.ChatAssistantMessage)
+		annotations := msg.ChatAssistantMessage.Annotations
+		require.Len(t, annotations, 2)
+
+		assert.Equal(t, "url_citation", annotations[0].Type)
+		assert.Equal(t, 0, annotations[0].URLCitation.StartIndex)
+		assert.Equal(t, 20, annotations[0].URLCitation.EndIndex)
+		assert.Equal(t, "Source A", annotations[0].URLCitation.Title)
+		require.NotNil(t, annotations[0].URLCitation.URL)
+		assert.Equal(t, "https://example.com/a", *annotations[0].URLCitation.URL)
+
+		assert.Equal(t, "Source B", annotations[1].URLCitation.Title)
+	})
+
+	t.Run("web chunks without supports produce citations without indices", func(t *testing.T) {
+		metadata := &gemini.GroundingMetadata{
+			GroundingChunks: []*gemini.GroundingChunk{
+				{Web: &gemini.GroundingChunkWeb{URI: "https://example.com/c", Title: "Source C"}},
+			},
+		}
+		resp := buildResponse(metadata).ToBifrostChatResponse()
+		msg := resp.Choices[0].ChatNonStreamResponseChoice.Message
+		require.NotNil(t, msg.ChatAssistantMessage)
+		annotations := msg.ChatAssistantMessage.Annotations
+		require.Len(t, annotations, 1)
+		assert.Equal(t, "Source C", annotations[0].URLCitation.Title)
+		assert.Equal(t, 0, annotations[0].URLCitation.StartIndex)
+		assert.Equal(t, 0, annotations[0].URLCitation.EndIndex)
+		require.NotNil(t, annotations[0].URLCitation.URL, "URL must not be nil")
+		assert.NotEmpty(t, *annotations[0].URLCitation.URL, "URL must not be empty")
+	})
+
+	t.Run("web chunk with empty URI in fallback is skipped", func(t *testing.T) {
+		metadata := &gemini.GroundingMetadata{
+			GroundingChunks: []*gemini.GroundingChunk{
+				{Web: &gemini.GroundingChunkWeb{URI: "", Title: "No URI"}},
+				{Web: &gemini.GroundingChunkWeb{URI: "https://example.com/d", Title: "Source D"}},
+			},
+		}
+		resp := buildResponse(metadata).ToBifrostChatResponse()
+		msg := resp.Choices[0].ChatNonStreamResponseChoice.Message
+		require.NotNil(t, msg.ChatAssistantMessage)
+		annotations := msg.ChatAssistantMessage.Annotations
+		require.Len(t, annotations, 1, "empty-URI chunk must be skipped")
+		require.NotNil(t, annotations[0].URLCitation.URL)
+		assert.Equal(t, "https://example.com/d", *annotations[0].URLCitation.URL)
+	})
+
+	t.Run("web chunk with empty URI in supports loop is skipped", func(t *testing.T) {
+		metadata := &gemini.GroundingMetadata{
+			GroundingChunks: []*gemini.GroundingChunk{
+				{Web: &gemini.GroundingChunkWeb{URI: "", Title: "No URI"}},
+				{Web: &gemini.GroundingChunkWeb{URI: "https://example.com/e", Title: "Source E"}},
+			},
+			GroundingSupports: []*gemini.GroundingSupport{
+				{
+					Segment:               &gemini.Segment{StartIndex: 0, EndIndex: 10},
+					GroundingChunkIndices: []int32{0, 1},
+				},
+			},
+		}
+		resp := buildResponse(metadata).ToBifrostChatResponse()
+		msg := resp.Choices[0].ChatNonStreamResponseChoice.Message
+		require.NotNil(t, msg.ChatAssistantMessage)
+		annotations := msg.ChatAssistantMessage.Annotations
+		require.Len(t, annotations, 1, "empty-URI chunk must be skipped in supports loop")
+		require.NotNil(t, annotations[0].URLCitation.URL)
+		assert.Equal(t, "https://example.com/e", *annotations[0].URLCitation.URL)
+	})
+
+	t.Run("non-web chunks are ignored", func(t *testing.T) {
+		metadata := &gemini.GroundingMetadata{
+			GroundingChunks: []*gemini.GroundingChunk{
+				{RetrievedContext: &gemini.GroundingChunkRetrievedContext{URI: "gs://bucket/doc", Title: "Doc"}},
+			},
+			GroundingSupports: []*gemini.GroundingSupport{
+				{
+					Segment:               &gemini.Segment{StartIndex: 0, EndIndex: 5},
+					GroundingChunkIndices: []int32{0},
+				},
+			},
+		}
+		resp := buildResponse(metadata).ToBifrostChatResponse()
+		msg := resp.Choices[0].ChatNonStreamResponseChoice.Message
+		assert.Nil(t, msg.ChatAssistantMessage)
+	})
+
+	t.Run("no grounding no annotations", func(t *testing.T) {
+		resp := buildResponse(nil).ToBifrostChatResponse()
+		msg := resp.Choices[0].ChatNonStreamResponseChoice.Message
+		assert.Nil(t, msg.ChatAssistantMessage)
+	})
+}
+
+func TestGroundingMetadataToChatStreamAnnotations(t *testing.T) {
+	metadata := &gemini.GroundingMetadata{
+		GroundingChunks: []*gemini.GroundingChunk{
+			{Web: &gemini.GroundingChunkWeb{URI: "https://example.com/a", Title: "Source A"}},
+		},
+		GroundingSupports: []*gemini.GroundingSupport{
+			{
+				Segment:               &gemini.Segment{StartIndex: 0, EndIndex: 10},
+				GroundingChunkIndices: []int32{0},
+			},
+		},
+	}
+
+	t.Run("chunk carrying groundingMetadata emits delta annotations", func(t *testing.T) {
+		response := &gemini.GenerateContentResponse{
+			ResponseID:   "resp-1",
+			ModelVersion: "gemini-2.5-flash",
+			Candidates: []*gemini.Candidate{
+				{
+					Content: &gemini.Content{
+						Role:  "model",
+						Parts: []*gemini.Part{{Text: "Paris."}},
+					},
+					FinishReason:      gemini.FinishReasonStop,
+					GroundingMetadata: metadata,
+				},
+			},
+			UsageMetadata: &gemini.GenerateContentResponseUsageMetadata{TotalTokenCount: 10},
+		}
+
+		state := gemini.NewGeminiStreamState()
+		streamResp, bifrostErr, isLast := response.ToBifrostChatCompletionStream(state)
+		require.Nil(t, bifrostErr)
+		require.NotNil(t, streamResp)
+		assert.True(t, isLast)
+
+		require.Len(t, streamResp.Choices, 1)
+		delta := streamResp.Choices[0].ChatStreamResponseChoice.Delta
+		require.Len(t, delta.Annotations, 1)
+		assert.Equal(t, "url_citation", delta.Annotations[0].Type)
+		require.NotNil(t, delta.Annotations[0].URLCitation.URL)
+		assert.Equal(t, "https://example.com/a", *delta.Annotations[0].URLCitation.URL)
+	})
+
+	t.Run("chunk with annotations but no text is not filtered out", func(t *testing.T) {
+		response := &gemini.GenerateContentResponse{
+			ResponseID:   "resp-2",
+			ModelVersion: "gemini-2.5-flash",
+			Candidates: []*gemini.Candidate{
+				{
+					Content:           &gemini.Content{Role: "model", Parts: []*gemini.Part{}},
+					GroundingMetadata: metadata,
+				},
+			},
+		}
+
+		state := gemini.NewGeminiStreamState()
+		streamResp, bifrostErr, isLast := response.ToBifrostChatCompletionStream(state)
+		require.Nil(t, bifrostErr)
+		require.NotNil(t, streamResp, "chunk with annotations only must not be skipped")
+		assert.False(t, isLast)
+		delta := streamResp.Choices[0].ChatStreamResponseChoice.Delta
+		require.Len(t, delta.Annotations, 1)
+	})
+
+	t.Run("chunk without grounding has no annotations", func(t *testing.T) {
+		response := &gemini.GenerateContentResponse{
+			ResponseID:   "resp-3",
+			ModelVersion: "gemini-2.5-flash",
+			Candidates: []*gemini.Candidate{
+				{
+					Content: &gemini.Content{
+						Role:  "model",
+						Parts: []*gemini.Part{{Text: "Bonjour."}},
+					},
+				},
+			},
+		}
+
+		state := gemini.NewGeminiStreamState()
+		streamResp, bifrostErr, _ := response.ToBifrostChatCompletionStream(state)
+		require.Nil(t, bifrostErr)
+		require.NotNil(t, streamResp)
+		delta := streamResp.Choices[0].ChatStreamResponseChoice.Delta
+		assert.Empty(t, delta.Annotations)
+	})
+
+	t.Run("grounding metadata repeated on several chunks is emitted once", func(t *testing.T) {
+		firstResponse := &gemini.GenerateContentResponse{
+			ResponseID:   "resp-4a",
+			ModelVersion: "gemini-2.5-flash",
+			Candidates: []*gemini.Candidate{
+				{
+					Content: &gemini.Content{
+						Role:  "model",
+						Parts: []*gemini.Part{{Text: "Paris."}},
+					},
+					GroundingMetadata: metadata,
+				},
+			},
+		}
+		finishReason := gemini.FinishReasonStop
+		secondResponse := &gemini.GenerateContentResponse{
+			ResponseID:   "resp-4b",
+			ModelVersion: "gemini-2.5-flash",
+			Candidates: []*gemini.Candidate{
+				{
+					Content:           &gemini.Content{Role: "model", Parts: []*gemini.Part{}},
+					FinishReason:      finishReason,
+					GroundingMetadata: metadata,
+				},
+			},
+			UsageMetadata: &gemini.GenerateContentResponseUsageMetadata{TotalTokenCount: 10},
+		}
+
+		state := gemini.NewGeminiStreamState()
+
+		firstResp, bifrostErr, isLast := firstResponse.ToBifrostChatCompletionStream(state)
+		require.Nil(t, bifrostErr)
+		require.NotNil(t, firstResp)
+		assert.False(t, isLast)
+		firstDelta := firstResp.Choices[0].ChatStreamResponseChoice.Delta
+		assert.Len(t, firstDelta.Annotations, 1, "first chunk must carry the annotation")
+
+		secondResp, bifrostErr, isLast := secondResponse.ToBifrostChatCompletionStream(state)
+		require.Nil(t, bifrostErr)
+		require.NotNil(t, secondResp)
+		assert.True(t, isLast)
+		secondDelta := secondResp.Choices[0].ChatStreamResponseChoice.Delta
+		assert.Empty(t, secondDelta.Annotations, "second chunk must not repeat the annotation")
+	})
+}
