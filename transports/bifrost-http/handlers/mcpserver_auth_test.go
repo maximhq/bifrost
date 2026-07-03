@@ -98,7 +98,7 @@ func TestGetMCPServerForRequest_JWTPath(t *testing.T) {
 	key, priv := newTestSigningKey(t)
 
 	t.Run("oauth mode: valid vk JWT with active key is accepted", func(t *testing.T) {
-		activeVK := &configtables.TableVirtualKey{ID: "vk-row-1", Value: "sk-bf-active", IsActive: new(true)}
+		activeVK := &configtables.TableVirtualKey{ID: "vk-row-1", Value: *schemas.NewSecretVar("sk-bf-active"), IsActive: new(true)}
 		store := &mockOAuth2Store{
 			signingKey: key,
 			vksByID:    map[string]*configtables.TableVirtualKey{"vk-row-1": activeVK},
@@ -106,7 +106,7 @@ func TestGetMCPServerForRequest_JWTPath(t *testing.T) {
 		cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeOAuth, false)
 		h := newTestMCPHandler(cfg)
 		// Pre-seed the per-VK server so the accepted path does not build one.
-		h.vkMCPServers[activeVK.Value] = server.NewMCPServer("vk", "v0")
+		h.vkMCPServers[activeVK.Value.GetValue()] = server.NewMCPServer("vk", "v0")
 
 		raw := mintTestToken(t, priv, key.KID, func(c jwt.MapClaims) {
 			c["bf_mode"] = string(schemas.MCPAuthModeVK)
@@ -125,7 +125,7 @@ func TestGetMCPServerForRequest_JWTPath(t *testing.T) {
 	})
 
 	t.Run("vk JWT with inactive key is rejected", func(t *testing.T) {
-		inactiveVK := &configtables.TableVirtualKey{ID: "vk-row-1", Value: "sk-bf-x", IsActive: new(false)}
+		inactiveVK := &configtables.TableVirtualKey{ID: "vk-row-1", Value: *schemas.NewSecretVar("sk-bf-x"), IsActive: new(false)}
 		store := &mockOAuth2Store{
 			signingKey: key,
 			vksByID:    map[string]*configtables.TableVirtualKey{"vk-row-1": inactiveVK},
@@ -181,7 +181,7 @@ func TestGetMCPServerForRequest_JWTPath(t *testing.T) {
 	})
 
 	t.Run("user JWT is scoped to the user's representative virtual key", func(t *testing.T) {
-		activeVK := &configtables.TableVirtualKey{ID: "vk-row-1", Value: "sk-bf-user-rep", IsActive: new(true)}
+		activeVK := &configtables.TableVirtualKey{ID: "vk-row-1", Value: *schemas.NewSecretVar("sk-bf-user-rep"), IsActive: new(true)}
 		store := &mockOAuth2Store{
 			signingKey: key,
 			vksByID:    map[string]*configtables.TableVirtualKey{"vk-row-1": activeVK},
@@ -192,7 +192,7 @@ func TestGetMCPServerForRequest_JWTPath(t *testing.T) {
 		// scoped path does not build a real one.
 		h.identityResolver = &fakeResolver{userVKID: "vk-row-1"}
 		vkServer := server.NewMCPServer("vk", "v0")
-		h.vkMCPServers[activeVK.Value] = vkServer
+		h.vkMCPServers[activeVK.Value.GetValue()] = vkServer
 
 		raw := mintTestToken(t, priv, key.KID, func(c jwt.MapClaims) {
 			c["bf_mode"] = string(schemas.MCPAuthModeUser)
@@ -212,7 +212,7 @@ func TestGetMCPServerForRequest_JWTPath(t *testing.T) {
 	})
 
 	t.Run("user JWT is rejected when the user is no longer active", func(t *testing.T) {
-		activeVK := &configtables.TableVirtualKey{ID: "vk-row-1", Value: "sk-bf-user-rep", IsActive: new(true)}
+		activeVK := &configtables.TableVirtualKey{ID: "vk-row-1", Value: *schemas.NewSecretVar("sk-bf-user-rep"), IsActive: new(true)}
 		store := &mockOAuth2Store{
 			signingKey: key,
 			vksByID:    map[string]*configtables.TableVirtualKey{"vk-row-1": activeVK},
@@ -366,7 +366,7 @@ func TestGetMCPServerForRequest_PreAuthenticatedUserPath(t *testing.T) {
 	SetLogger(&mockLogger{})
 	key, _ := newTestSigningKey(t)
 
-	activeVK := &configtables.TableVirtualKey{ID: "vk-row-1", Value: "sk-bf-user-rep", IsActive: new(true)}
+	activeVK := &configtables.TableVirtualKey{ID: "vk-row-1", Value: *schemas.NewSecretVar("sk-bf-user-rep"), IsActive: new(true)}
 	newStore := func() *mockOAuth2Store {
 		return &mockOAuth2Store{
 			signingKey: key,
@@ -383,7 +383,7 @@ func TestGetMCPServerForRequest_PreAuthenticatedUserPath(t *testing.T) {
 			h := newTestMCPHandler(cfg)
 			h.identityResolver = &fakeResolver{userVKID: "vk-row-1"}
 			vkServer := server.NewMCPServer("vk", "v0")
-			h.vkMCPServers[activeVK.Value] = vkServer
+			h.vkMCPServers[activeVK.Value.GetValue()] = vkServer
 
 			ctx := &fasthttp.RequestCtx{}
 			ctx.SetUserValue(schemas.BifrostContextKeyUserID, "user-1")
@@ -417,7 +417,7 @@ func TestGetMCPServerForRequest_PreAuthenticatedUserPath(t *testing.T) {
 		cfg := newTestOAuth2Config(newStore(), configtables.MCPServerAuthModeBoth, true)
 		h := newTestMCPHandler(cfg)
 		h.identityResolver = &fakeResolver{userVKID: "vk-row-1"}
-		h.vkMCPServers[activeVK.Value] = server.NewMCPServer("vk", "v0")
+		h.vkMCPServers[activeVK.Value.GetValue()] = server.NewMCPServer("vk", "v0")
 
 		ctx := &fasthttp.RequestCtx{}
 		ctx.SetUserValue(schemas.BifrostContextKeyUserID, "user-1")
@@ -429,7 +429,7 @@ func TestGetMCPServerForRequest_PreAuthenticatedUserPath(t *testing.T) {
 	})
 
 	t.Run("inactive representative virtual key is rejected", func(t *testing.T) {
-		inactiveVK := &configtables.TableVirtualKey{ID: "vk-row-1", Value: "sk-bf-x", IsActive: new(false)}
+		inactiveVK := &configtables.TableVirtualKey{ID: "vk-row-1", Value: *schemas.NewSecretVar("sk-bf-x"), IsActive: new(false)}
 		store := &mockOAuth2Store{
 			signingKey: key,
 			vksByID:    map[string]*configtables.TableVirtualKey{"vk-row-1": inactiveVK},
@@ -482,14 +482,14 @@ func TestGetMCPServerForRequest_HeaderAndAnonPath(t *testing.T) {
 	key, _ := newTestSigningKey(t)
 
 	t.Run("headers mode: active header VK connects", func(t *testing.T) {
-		activeVK := &configtables.TableVirtualKey{ID: "vk-row-1", Value: "sk-bf-active", IsActive: new(true)}
+		activeVK := &configtables.TableVirtualKey{ID: "vk-row-1", Value: *schemas.NewSecretVar("sk-bf-active"), IsActive: new(true)}
 		store := &mockOAuth2Store{
 			signingKey: key,
 			vksByValue: map[string]*configtables.TableVirtualKey{"sk-bf-active": activeVK},
 		}
 		cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, true)
 		h := newTestMCPHandler(cfg)
-		h.vkMCPServers[activeVK.Value] = server.NewMCPServer("vk", "v0")
+		h.vkMCPServers[activeVK.Value.GetValue()] = server.NewMCPServer("vk", "v0")
 
 		ctx := &fasthttp.RequestCtx{}
 		ctx.Request.Header.Set(string(schemas.BifrostContextKeyVirtualKey), "sk-bf-active")
@@ -501,7 +501,7 @@ func TestGetMCPServerForRequest_HeaderAndAnonPath(t *testing.T) {
 	})
 
 	t.Run("inactive header VK is rejected at the shared chokepoint", func(t *testing.T) {
-		inactiveVK := &configtables.TableVirtualKey{ID: "vk-row-1", Value: "sk-bf-x", IsActive: new(false)}
+		inactiveVK := &configtables.TableVirtualKey{ID: "vk-row-1", Value: *schemas.NewSecretVar("sk-bf-x"), IsActive: new(false)}
 		store := &mockOAuth2Store{
 			signingKey: key,
 			vksByValue: map[string]*configtables.TableVirtualKey{"sk-bf-x": inactiveVK},

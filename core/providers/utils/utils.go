@@ -35,6 +35,22 @@ import (
 	"github.com/valyala/fasthttp/fasthttpproxy"
 )
 
+// ThoughtSignatureSeparator delimits a tool call's base ID from a provider reasoning
+// signature embedded in the call_id (e.g. Gemini thoughtSignatures), formatted as
+// "<baseID>_ts_<signature>".
+const ThoughtSignatureSeparator = "_ts_"
+
+// StripThoughtSignature returns the base tool-call ID without any embedded provider
+// reasoning signature. It is deterministic, so a tool call and its matching output strip
+// to the same ID. Providers that cannot use the signature (e.g. OpenAI, which caps call_id
+// at 64 chars) call this before sending the ID upstream.
+func StripThoughtSignature(callID string) string {
+	if base, _, found := strings.Cut(callID, ThoughtSignatureSeparator); found {
+		return base
+	}
+	return callID
+}
+
 // sortedAPI is a sonic encoder/decoder that sorts map keys during marshaling.
 // This ensures deterministic JSON output for map[string]interface{} values,
 // which is critical for LLM prompt caching (e.g., Anthropic cache keying).

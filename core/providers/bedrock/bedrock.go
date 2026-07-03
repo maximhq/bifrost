@@ -1246,6 +1246,80 @@ func normalizeCachedUsage(usage *schemas.BifrostLLMUsage) {
 	usage.PromptTokens += usage.PromptTokensDetails.CachedReadTokens + usage.PromptTokensDetails.CachedWriteTokens
 }
 
+func accumulateBedrockResponsesUsage(usage *schemas.ResponsesResponseUsage, billedUsage *schemas.BifrostLLMUsage, usageToProcess *BedrockTokenUsage) {
+	if usage == nil || usageToProcess == nil {
+		return
+	}
+	if usageToProcess.InputTokens > usage.InputTokens {
+		usage.InputTokens = usageToProcess.InputTokens
+		if billedUsage != nil {
+			billedUsage.PromptTokens = usageToProcess.InputTokens
+		}
+	}
+	if usageToProcess.OutputTokens > usage.OutputTokens {
+		usage.OutputTokens = usageToProcess.OutputTokens
+		if billedUsage != nil {
+			billedUsage.CompletionTokens = usageToProcess.OutputTokens
+		}
+	}
+	if usageToProcess.TotalTokens > usage.TotalTokens {
+		usage.TotalTokens = usageToProcess.TotalTokens
+		if billedUsage != nil {
+			billedUsage.TotalTokens = usageToProcess.TotalTokens
+		}
+	}
+	if usageToProcess.CacheReadInputTokens > 0 {
+		if usage.InputTokensDetails == nil {
+			usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{}
+		}
+		if billedUsage != nil && billedUsage.PromptTokensDetails == nil {
+			billedUsage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{}
+		}
+		if usageToProcess.CacheReadInputTokens > usage.InputTokensDetails.CachedReadTokens {
+			usage.InputTokensDetails.CachedReadTokens = usageToProcess.CacheReadInputTokens
+			if billedUsage != nil {
+				billedUsage.PromptTokensDetails.CachedReadTokens = usageToProcess.CacheReadInputTokens
+			}
+		}
+	}
+	if usageToProcess.CacheWriteInputTokens > 0 {
+		if usage.InputTokensDetails == nil {
+			usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{}
+		}
+		if billedUsage != nil && billedUsage.PromptTokensDetails == nil {
+			billedUsage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{}
+		}
+		if usageToProcess.CacheWriteInputTokens > usage.InputTokensDetails.CachedWriteTokens {
+			usage.InputTokensDetails.CachedWriteTokens = usageToProcess.CacheWriteInputTokens
+			if billedUsage != nil {
+				billedUsage.PromptTokensDetails.CachedWriteTokens = usageToProcess.CacheWriteInputTokens
+			}
+		}
+		if usageToProcess.CacheDetails != nil {
+			if usage.InputTokensDetails.CachedWriteTokenDetails == nil {
+				usage.InputTokensDetails.CachedWriteTokenDetails = &schemas.ChatCachedWriteTokenDetails{}
+			}
+			if billedUsage != nil && billedUsage.PromptTokensDetails.CachedWriteTokenDetails == nil {
+				billedUsage.PromptTokensDetails.CachedWriteTokenDetails = &schemas.ChatCachedWriteTokenDetails{}
+			}
+			for _, cacheDetail := range *usageToProcess.CacheDetails {
+				if cacheDetail.TTL == BedrockCacheWriteTTL5m {
+					usage.InputTokensDetails.CachedWriteTokenDetails.CachedWriteTokens5m = cacheDetail.InputTokens
+					if billedUsage != nil {
+						billedUsage.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens5m = cacheDetail.InputTokens
+					}
+				}
+				if cacheDetail.TTL == BedrockCacheWriteTTL1h {
+					usage.InputTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h = cacheDetail.InputTokens
+					if billedUsage != nil {
+						billedUsage.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h = cacheDetail.InputTokens
+					}
+				}
+			}
+		}
+	}
+}
+
 // ChatCompletionStream performs a streaming chat completion request to Bedrock's API.
 // OpenAI-family and Gemma 4 models route via the Bedrock Mantle OpenAI-compatible endpoint.
 // All other models (including Anthropic/Claude) use the Bedrock Converse streaming API.
@@ -1693,6 +1767,26 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 
 		// Process AWS Event Stream format
 		usage := &schemas.ResponsesResponseUsage{}
+		billedUsage := &schemas.BifrostLLMUsage{}
+		// Register the accumulating usage handle so a mid-stream cancel/timeout
+		// can bill for Bedrock Responses usage already reported by stream events
+		// before the stream was interrupted.
+		ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, billedUsage)
+
+		usageNormalized := false
+		normalizeUsage := func() {
+			if usageNormalized {
+				return
+			}
+			usageNormalized = true
+			normalizeCachedUsage(billedUsage)
+		}
+		defer func() {
+			if ctx.Err() != nil {
+				normalizeUsage()
+			}
+		}()
+
 		var streamTrace *BedrockConverseTrace
 		chunkIndex := 0
 
@@ -1803,45 +1897,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 				if streamEvent.Usage != nil {
 					// Accumulate usage information instead of overwriting
 					// In some cases usage comes in multiple events, so we need to take the maximum values
-					if streamEvent.Usage.InputTokens > usage.InputTokens {
-						usage.InputTokens = streamEvent.Usage.InputTokens
-					}
-					if streamEvent.Usage.OutputTokens > usage.OutputTokens {
-						usage.OutputTokens = streamEvent.Usage.OutputTokens
-					}
-					if streamEvent.Usage.TotalTokens > usage.TotalTokens {
-						usage.TotalTokens = streamEvent.Usage.TotalTokens
-					}
-					// Handle cached tokens if present
-					if streamEvent.Usage.CacheReadInputTokens > 0 {
-						if usage.InputTokensDetails == nil {
-							usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{}
-						}
-						if streamEvent.Usage.CacheReadInputTokens > usage.InputTokensDetails.CachedReadTokens {
-							usage.InputTokensDetails.CachedReadTokens = streamEvent.Usage.CacheReadInputTokens
-						}
-					}
-					if streamEvent.Usage.CacheWriteInputTokens > 0 {
-						if usage.InputTokensDetails == nil {
-							usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{}
-						}
-						if streamEvent.Usage.CacheWriteInputTokens > usage.InputTokensDetails.CachedWriteTokens {
-							usage.InputTokensDetails.CachedWriteTokens = streamEvent.Usage.CacheWriteInputTokens
-						}
-						if streamEvent.Usage.CacheDetails != nil {
-							if usage.InputTokensDetails.CachedWriteTokenDetails == nil {
-								usage.InputTokensDetails.CachedWriteTokenDetails = &schemas.ChatCachedWriteTokenDetails{}
-							}
-							for _, cacheDetail := range *streamEvent.Usage.CacheDetails {
-								if cacheDetail.TTL == BedrockCacheWriteTTL5m {
-									usage.InputTokensDetails.CachedWriteTokenDetails.CachedWriteTokens5m = cacheDetail.InputTokens
-								}
-								if cacheDetail.TTL == BedrockCacheWriteTTL1h {
-									usage.InputTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h = cacheDetail.InputTokens
-								}
-							}
-						}
-					}
+					accumulateBedrockResponsesUsage(usage, billedUsage, streamEvent.Usage)
 				}
 
 				// Handle structured output: intercept tool calls for the structured output tool

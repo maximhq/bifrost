@@ -162,7 +162,7 @@ func TestPostgresVirtualKeyBudgetConcurrentMutationsDoNotDeadlock(t *testing.T) 
 				if err := store.UpdateVirtualKey(ctx, &tables.TableVirtualKey{
 					ID:       vkID,
 					Name:     "PG VK Budget",
-					Value:    "pg-vk-budget-value",
+					Value:    *schemas.NewSecretVar("pg-vk-budget-value"),
 					IsActive: schemas.Ptr(true),
 				}, tx); err != nil {
 					return err
@@ -247,7 +247,7 @@ func seedProviderGraph(ctx context.Context, store *RDBConfigStore) error {
 	if err := store.CreateVirtualKey(ctx, &tables.TableVirtualKey{
 		ID:       "pg-vk",
 		Name:     "PG VK",
-		Value:    fmt.Sprintf("pg-vk-value-%d", time.Now().UnixNano()),
+		Value:    *schemas.NewSecretVar(fmt.Sprintf("pg-vk-value-%d", time.Now().UnixNano())),
 		IsActive: schemas.Ptr(true),
 	}); err != nil && !isUniqueRace(err) {
 		return err
@@ -271,7 +271,7 @@ func seedVirtualKeyBudget(ctx context.Context, t *testing.T, store *RDBConfigSto
 	require.NoError(t, store.CreateVirtualKey(ctx, &tables.TableVirtualKey{
 		ID:       vkID,
 		Name:     "PG VK Budget",
-		Value:    "pg-vk-budget-value",
+		Value:    *schemas.NewSecretVar("pg-vk-budget-value"),
 		IsActive: schemas.Ptr(true),
 	}))
 	require.NoError(t, store.CreateBudget(ctx, &tables.TableBudget{

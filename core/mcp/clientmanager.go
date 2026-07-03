@@ -982,6 +982,7 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 		AllowedExtraHeaders:   slices.Clone(updatedConfig.AllowedExtraHeaders),
 		IsPingAvailable:       updatedConfig.IsPingAvailable,
 		ToolSyncInterval:      updatedConfig.ToolSyncInterval,
+		ToolExecutionTimeout:  updatedConfig.ToolExecutionTimeout,
 		AllowOnAllVirtualKeys: updatedConfig.AllowOnAllVirtualKeys,
 		Disabled:              updatedConfig.Disabled,
 		TLSConfig:             updatedConfig.TLSConfig,
