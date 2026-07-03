@@ -2973,3 +2973,55 @@ func TestReleaseChannelMessage_ClearsPooledReferences(t *testing.T) {
 	default:
 	}
 }
+
+// Streaming variant: releaseChannelMessage must also drain and clear
+// ResponseStream, which is only allocated for stream request types.
+func TestReleaseChannelMessage_ClearsPooledReferences_Streaming(t *testing.T) {
+	b := &Bifrost{
+		channelMessagePool: sync.Pool{New: func() interface{} { return &ChannelMessage{} }},
+		responseChannelPool: sync.Pool{New: func() interface{} {
+			return make(chan *schemas.BifrostResponse, 1)
+		}},
+		errorChannelPool: sync.Pool{New: func() interface{} {
+			return make(chan schemas.BifrostError, 1)
+		}},
+		responseStreamPool: sync.Pool{New: func() interface{} {
+			return make(chan chan *schemas.BifrostStreamChunk, 1)
+		}},
+	}
+
+	req := schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionStreamRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Model: "test-model",
+			Input: []schemas.ChatMessage{{}},
+		},
+	}
+	msg := b.getChannelMessage(req)
+	msg.Context = schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	if msg.ResponseStream == nil {
+		t.Fatal("getChannelMessage should allocate ResponseStream for stream request types")
+	}
+
+	// Simulate an undelivered stream handoff sitting in the channel.
+	streamCh := msg.ResponseStream
+	streamCh <- make(chan *schemas.BifrostStreamChunk)
+
+	b.releaseChannelMessage(msg)
+
+	if msg.ChatRequest != nil || msg.RequestType != "" {
+		t.Error("releaseChannelMessage should zero the embedded BifrostRequest")
+	}
+	if msg.Context != nil {
+		t.Error("releaseChannelMessage should clear the Context reference")
+	}
+	if msg.ResponseStream != nil {
+		t.Error("releaseChannelMessage should clear the ResponseStream reference")
+	}
+	select {
+	case <-streamCh:
+		t.Error("pooled response stream channel should be drained before Put")
+	default:
+	}
+}
