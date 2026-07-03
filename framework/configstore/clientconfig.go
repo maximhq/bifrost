@@ -767,6 +767,14 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 		}
 		hash.Write(data)
 	}
+	// Hash BedrockMantleKeyConfig
+	if key.BedrockMantleKeyConfig != nil {
+		data, err := sonic.Marshal(key.BedrockMantleKeyConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
 	// Hash Aliases
 	if key.Aliases != nil {
 		data, err := sonic.Marshal(key.Aliases)
