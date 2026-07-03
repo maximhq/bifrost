@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/objectstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
@@ -84,6 +85,8 @@ func TestBuildClickHouseDSN(t *testing.T) {
 		require.NoError(t, err)
 		assert.True(t, strings.HasPrefix(dsn, "clickhouse://ch.local:9000/default?"), dsn)
 		assert.Contains(t, dsn, "final=1")
+		assert.Contains(t, dsn, "mutations_sync=1")
+		assert.Contains(t, dsn, "prefer_column_name_to_alias=1")
 		assert.Contains(t, dsn, "dial_timeout=10s")
 		assert.NotContains(t, dsn, "secure=")
 	})
@@ -228,6 +231,48 @@ func TestClickHouseIdempotentCreate(t *testing.T) {
 
 	// final=1 must collapse the duplicate inserts into a single logical row.
 	assert.Equal(t, int64(1), chCountRows(t, store.db, "logs", "ch-idem-1"))
+}
+
+func TestClickHouseCreateIfNotExistsKeepsExistingRow(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	ctx := context.Background()
+	ts := time.Now().UTC().Truncate(time.Millisecond)
+
+	require.NoError(t, store.CreateIfNotExists(ctx, chTestLog("ch-keep-1", ts)))
+	require.NoError(t, store.Update(ctx, "ch-keep-1", map[string]interface{}{
+		"status":     "success",
+		"has_object": true,
+	}))
+
+	// A retried insert of the initial "processing" entry must be a no-op:
+	// ReplacingMergeTree alone would keep the newest ver and resurrect the
+	// stale row, dropping status and has_object.
+	require.NoError(t, store.CreateIfNotExists(ctx, chTestLog("ch-keep-1", ts)))
+	found, err := store.FindByID(ctx, "ch-keep-1")
+	require.NoError(t, err)
+	assert.Equal(t, "success", found.Status)
+	assert.True(t, found.HasObject)
+
+	// Batch variant: existing id skipped, new id inserted.
+	require.NoError(t, store.BatchCreateIfNotExists(ctx, []*Log{
+		chTestLog("ch-keep-1", ts),
+		chTestLog("ch-keep-2", ts.Add(time.Millisecond)),
+	}))
+	found, err = store.FindByID(ctx, "ch-keep-1")
+	require.NoError(t, err)
+	assert.Equal(t, "success", found.Status)
+	assert.True(t, found.HasObject)
+	_, err = store.FindByID(ctx, "ch-keep-2")
+	require.NoError(t, err)
+
+	// MCP variant.
+	require.NoError(t, store.BatchCreateMCPToolLogsIfNotExists(ctx, []*MCPToolLog{chTestMCPToolLog("ch-keep-mcp-1", ts)}))
+	require.NoError(t, store.UpdateMCPToolLog(ctx, "ch-keep-mcp-1", map[string]interface{}{"status": "success", "has_object": true}))
+	require.NoError(t, store.BatchCreateMCPToolLogsIfNotExists(ctx, []*MCPToolLog{chTestMCPToolLog("ch-keep-mcp-1", ts)}))
+	foundMCP, err := store.FindMCPToolLog(ctx, "ch-keep-mcp-1")
+	require.NoError(t, err)
+	assert.Equal(t, "success", foundMCP.Status)
+	assert.True(t, foundMCP.HasObject)
 }
 
 func TestClickHouseBatchCreate(t *testing.T) {
@@ -435,8 +480,9 @@ func TestClickHouseDeleteLogsBatch(t *testing.T) {
 	require.NoError(t, store.CreateIfNotExists(ctx, chTestLog("ch-old", old)))
 	require.NoError(t, store.CreateIfNotExists(ctx, chTestLog("ch-fresh", fresh)))
 
-	_, err := store.DeleteLogsBatch(ctx, time.Now().UTC().Add(-24*time.Hour), 100)
+	deleted, err := store.DeleteLogsBatch(ctx, time.Now().UTC().Add(-24*time.Hour), 100)
 	require.NoError(t, err)
+	assert.Equal(t, int64(1), deleted, "cleaner pacing relies on an accurate deleted count")
 
 	_, err = store.FindByID(ctx, "ch-old")
 	assert.ErrorIs(t, err, ErrNotFound)
@@ -501,6 +547,88 @@ func TestClickHouseMCPToolLogs(t *testing.T) {
 	result, err := store.SearchMCPToolLogs(ctx, MCPToolLogSearchFilters{}, PaginationOptions{Limit: 10})
 	require.NoError(t, err)
 	assert.Len(t, result.Logs, 2)
+}
+
+// TestClickHouseHybridHasObjectSurvivesDuplicateCreate exercises the full
+// HybridLogStore-over-ClickHouse flow that hybrid mode depends on: create a
+// payload-bearing entry, let the async upload worker flip has_object, apply
+// the completion update, then retry the initial create. The completed status,
+// the has_object flag, and payload hydration must all survive the retry.
+func TestClickHouseHybridHasObjectSurvivesDuplicateCreate(t *testing.T) {
+	ch := trySetupClickHouseStore(t)
+	objStore := objectstore.NewInMemoryObjectStore()
+	hybrid := newHybridLogStore(ch, objStore, "test", hybridTestLogger{}, nil)
+	ctx := context.Background()
+	ts := time.Now().UTC().Truncate(time.Millisecond)
+
+	input := "hello from clickhouse hybrid"
+	mkEntry := func() *Log {
+		entry := chTestLog("ch-hybrid-1", ts)
+		entry.InputHistoryParsed = []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &input}},
+		}
+		return entry
+	}
+
+	require.NoError(t, hybrid.CreateIfNotExists(ctx, mkEntry()))
+
+	// The upload worker sets has_object asynchronously after the S3 put.
+	waitForUploads(t, func() bool {
+		log, err := ch.FindByID(ctx, "ch-hybrid-1")
+		return err == nil && log.HasObject
+	})
+
+	// Completion update from the logging plugin's write path.
+	require.NoError(t, hybrid.Update(ctx, "ch-hybrid-1", map[string]interface{}{"status": "success"}))
+
+	// Duplicate create retry must not resurrect the stale processing row.
+	require.NoError(t, hybrid.CreateIfNotExists(ctx, mkEntry()))
+
+	found, err := hybrid.FindByID(ctx, "ch-hybrid-1")
+	require.NoError(t, err)
+	assert.Equal(t, "success", found.Status)
+	assert.True(t, found.HasObject)
+	assert.NotEmpty(t, found.InputHistory, "payload should hydrate from the object store")
+	assert.Contains(t, found.ContentSummary, input)
+
+	require.NoError(t, hybrid.Close(ctx))
+}
+
+// TestClickHouseNodeUsageCursorDoesNotRewind guards the budget-usage gossip
+// cursor against the GORM ClickHouse driver's seconds-truncation of time.Time
+// args: a truncated cursor bound would rewind to the start of its second and
+// double-count every row already aggregated on the previous scan.
+func TestClickHouseNodeUsageCursorDoesNotRewind(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	ctx := context.Background()
+	// Sub-second offsets are the point of this test: rows land mid-second.
+	base := time.Now().UTC().Truncate(time.Second).Add(288 * time.Millisecond)
+
+	nodeID := "node-1"
+	budgetIDs := `["b1"]`
+	mk := func(id string, ts time.Time, cost float64) *Log {
+		l := chTestLog(id, ts)
+		l.Status = "success"
+		l.ClusterNodeID = &nodeID
+		l.BudgetIDs = &budgetIDs
+		l.Cost = &cost
+		return l
+	}
+	require.NoError(t, store.CreateIfNotExists(ctx, mk("ch-usage-1", base, 1.0)))
+	require.NoError(t, store.CreateIfNotExists(ctx, mk("ch-usage-2", base.Add(200*time.Millisecond), 2.0)))
+
+	first, err := store.GetNodeUsageAfter(ctx, nodeID, NodeUsageCursor{Timestamp: base.Add(-time.Hour)})
+	require.NoError(t, err)
+	assert.Equal(t, 2, first.RowCount)
+	assert.InDelta(t, 3.0, first.BudgetCosts["b1"], 1e-9)
+
+	// Re-scan from the advanced cursor: nothing new, so nothing may be
+	// re-aggregated - a rewound (seconds-truncated) cursor would return both
+	// rows again and double-count the budget spend.
+	second, err := store.GetNodeUsageAfter(ctx, nodeID, first.NextCursor)
+	require.NoError(t, err)
+	assert.Equal(t, 0, second.RowCount, "cursor must not rewind into already-counted rows")
+	assert.Empty(t, second.BudgetCosts)
 }
 
 func TestClickHouseAsyncJobs(t *testing.T) {
