@@ -33,8 +33,10 @@ type AnthropicResponsesStreamState struct {
 	WebSearchCaller      *AnthropicToolCaller   // Programmatic-tool-calling caller, if the search was spawned from code execution
 
 	// Web fetch tool accumulation
-	WebFetchToolID      *string // Tool ID of active web fetch
-	WebFetchOutputIndex *int    // Output index for this fetch
+	WebFetchToolID      *string                // Tool ID of active web fetch
+	WebFetchOutputIndex *int                   // Output index for this fetch
+	WebFetchURL         *string                // URL captured from the server_tool_use input
+	WebFetchResult      *AnthropicContentBlock // Result block when it arrives (content dropped, presence gates output_item.done)
 
 	// Advisor tool accumulation
 	AdvisorToolID      *string                // Tool ID of active advisor call
@@ -336,6 +338,8 @@ func AcquireAnthropicResponsesStreamState() *AnthropicResponsesStreamState {
 	state.WebSearchCaller = nil
 	state.WebFetchToolID = nil
 	state.WebFetchOutputIndex = nil
+	state.WebFetchURL = nil
+	state.WebFetchResult = nil
 	state.AdvisorToolID = nil
 	state.AdvisorOutputIndex = nil
 	state.AdvisorResult = nil
@@ -380,6 +384,8 @@ func (state *AnthropicResponsesStreamState) flush() {
 	state.WebSearchCaller = nil
 	state.WebFetchToolID = nil
 	state.WebFetchOutputIndex = nil
+	state.WebFetchURL = nil
+	state.WebFetchResult = nil
 	state.AdvisorToolID = nil
 	state.AdvisorOutputIndex = nil
 	state.AdvisorResult = nil
@@ -675,16 +681,29 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 				state.beginInputJSONBuffer(chunk.Index, anthropicInputJSONBufferWebFetch)
 				state.WebFetchToolID = chunk.ContentBlock.ID
 				state.WebFetchOutputIndex = schemas.Ptr(outputIndex)
+				state.WebFetchURL = nil
+				if u := providerUtils.GetJSONField(chunk.ContentBlock.Input, "url"); u.Exists() && u.Type == gjson.String {
+					state.WebFetchURL = schemas.Ptr(u.Str)
+				}
 
 				state.ItemIDs[outputIndex] = *chunk.ContentBlock.ID
 
+				toolMsg := &schemas.ResponsesToolMessage{
+					CallID: chunk.ContentBlock.ID,
+				}
+				if state.WebFetchURL != nil {
+					toolMsg.Action = &schemas.ResponsesToolMessageActionStruct{
+						ResponsesWebFetchToolCallAction: &schemas.ResponsesWebFetchToolCallAction{
+							Type: "fetch",
+							URL:  *state.WebFetchURL,
+						},
+					}
+				}
 				item := &schemas.ResponsesMessage{
-					ID:     chunk.ContentBlock.ID,
-					Type:   schemas.Ptr(schemas.ResponsesMessageTypeWebFetchCall),
-					Status: schemas.Ptr("in_progress"),
-					ResponsesToolMessage: &schemas.ResponsesToolMessage{
-						CallID: chunk.ContentBlock.ID,
-					},
+					ID:                   chunk.ContentBlock.ID,
+					Type:                 schemas.Ptr(schemas.ResponsesMessageTypeWebFetchCall),
+					Status:               schemas.Ptr("in_progress"),
+					ResponsesToolMessage: toolMsg,
 				}
 
 				var responses []*schemas.BifrostResponsesStreamResponse
@@ -726,6 +745,12 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 					if chunk.Index != nil {
 						delete(state.ContentIndexToBlockType, *chunk.Index)
 					}
+
+					// Remember that the result block arrived; its content is not
+					// represented in the Responses model (handled server-side), but its
+					// presence drives the web_fetch_call output_item.done at the result
+					// block's content_block_stop (mirrors web_search).
+					state.WebFetchResult = chunk.ContentBlock
 
 					return []*schemas.BifrostResponsesStreamResponse{{
 						Type:           schemas.ResponsesStreamResponseTypeWebFetchCallCompleted,
@@ -1484,6 +1509,49 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 				}, nil, false
 			}
 
+			// End of a web_fetch_tool_result block — emit the web_fetch_call done.
+			// The fetched content has no Responses representation (dropped, as in the
+			// non-streaming path); this emits a completed web_fetch_call carrying the
+			// request URL so the reverse converter can close the server_tool_use block
+			// at a consistent index (mirrors web_search minus the result block).
+			if state.WebFetchResult != nil && state.WebFetchToolID != nil {
+				toolMsg := &schemas.ResponsesToolMessage{CallID: state.WebFetchToolID}
+				if state.WebFetchURL != nil {
+					toolMsg.Action = &schemas.ResponsesToolMessageActionStruct{
+						ResponsesWebFetchToolCallAction: &schemas.ResponsesWebFetchToolCallAction{
+							Type: "fetch",
+							URL:  *state.WebFetchURL,
+						},
+					}
+				}
+				item := &schemas.ResponsesMessage{
+					ID:                   state.WebFetchToolID,
+					Type:                 schemas.Ptr(schemas.ResponsesMessageTypeWebFetchCall),
+					Status:               schemas.Ptr("completed"),
+					ResponsesToolMessage: toolMsg,
+				}
+				outputIdx := state.WebFetchOutputIndex
+
+				state.WebFetchToolID = nil
+				state.WebFetchOutputIndex = nil
+				state.WebFetchURL = nil
+				state.WebFetchResult = nil
+
+				if chunk.Index != nil {
+					delete(state.ContentIndexToBlockType, *chunk.Index)
+				}
+
+				return []*schemas.BifrostResponsesStreamResponse{
+					{
+						Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
+						SequenceNumber: sequenceNumber,
+						OutputIndex:    outputIdx,
+						ContentIndex:   chunk.Index,
+						Item:           item,
+					},
+				}, nil, false
+			}
+
 			// End of an advisor_tool_result block — emit the advisor_call done.
 			if state.AdvisorResult != nil && state.AdvisorToolID != nil {
 				advisor := &schemas.ResponsesAdvisorCall{}
@@ -2173,6 +2241,36 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 				Name:  schemas.Ptr(toolName),
 				Input: json.RawMessage("{}"),
 			}
+		} else if bifrostResp.Item != nil &&
+			bifrostResp.Item.Type != nil &&
+			*bifrostResp.Item.Type == schemas.ResponsesMessageTypeWebFetchCall {
+
+			// Web fetch call - emit content_block_start with server_tool_use. The
+			// request URL is delivered whole in content_block_start (no input_json_delta),
+			// matching native. The paired web_fetch_tool_result block is not synthesized
+			// (its content has no Responses representation); output_item.done just closes
+			// this server_tool_use block.
+			streamResp.Type = AnthropicStreamEventTypeContentBlockStart
+			streamResp.Index = blockIdx
+			contentBlock := &AnthropicContentBlock{
+				Type:  AnthropicContentBlockTypeServerToolUse,
+				ID:    bifrostResp.Item.ID,
+				Name:  schemas.Ptr(string(AnthropicToolNameWebFetch)),
+				Input: json.RawMessage("{}"),
+			}
+			if tm := bifrostResp.Item.ResponsesToolMessage; tm != nil && tm.Action != nil &&
+				tm.Action.ResponsesWebFetchToolCallAction != nil && tm.Action.ResponsesWebFetchToolCallAction.URL != "" {
+				if inputBytes, err := providerUtils.MarshalSorted(map[string]interface{}{"url": tm.Action.ResponsesWebFetchToolCallAction.URL}); err == nil {
+					contentBlock.Input = json.RawMessage(inputBytes)
+				}
+			}
+			if tm := bifrostResp.Item.ResponsesToolMessage; tm != nil && tm.Caller != nil {
+				contentBlock.Caller = &AnthropicToolCaller{
+					Type:   AnthropicToolCallerType(tm.Caller.Type),
+					ToolID: tm.Caller.ToolID,
+				}
+			}
+			streamResp.ContentBlock = contentBlock
 		} else {
 			// Text or other content blocks - emit content_block_start
 			streamResp.Type = AnthropicStreamEventTypeContentBlockStart
@@ -2535,6 +2633,24 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 			}
 
 			return events
+		} else if bifrostResp.Item != nil &&
+			bifrostResp.Item.Type != nil &&
+			*bifrostResp.Item.Type == schemas.ResponsesMessageTypeWebFetchCall {
+
+			// Web fetch call complete - close the server_tool_use block. No paired
+			// web_fetch_tool_result block is emitted (its content has no Responses
+			// representation), mirroring the non-streaming reverse path. The upstream
+			// result block still consumed a content-block index, so allocate (and
+			// discard) one here to keep the block-index counter in lockstep with
+			// upstream indices — otherwise later blocks (e.g. the assistant text) would
+			// be numbered one short and collide with the verbatim raw frames.
+			state := getOrCreateAnthropicToResponsesStreamState(ctx)
+			serverIdx := state.blockIndexFor(reverseStreamItemKey(bifrostResp))
+			_ = state.allocBlockIndex("")
+			return []*AnthropicStreamEvent{{
+				Type:  AnthropicStreamEventTypeContentBlockStop,
+				Index: serverIdx,
+			}}
 		} else if bifrostResp.Item != nil &&
 			bifrostResp.Item.Type != nil &&
 			*bifrostResp.Item.Type == schemas.ResponsesMessageTypeCodeInterpreterCall {

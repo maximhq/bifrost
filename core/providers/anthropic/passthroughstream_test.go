@@ -64,6 +64,24 @@ func ptWebSearch(i int, id string) []string {
 		fmt.Sprintf(`{"type":"content_block_stop","index":%d}`, i+1),
 	}
 }
+func ptWebFetch(i int, id string) []string {
+	return []string{
+		fmt.Sprintf(`{"type":"content_block_start","index":%d,"content_block":{"type":"server_tool_use","id":%q,"name":"web_fetch","input":{"url":"https://x.com"}}}`, i, id),
+		fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"input_json_delta","partial_json":""}}`, i),
+		fmt.Sprintf(`{"type":"content_block_stop","index":%d}`, i),
+		fmt.Sprintf(`{"type":"content_block_start","index":%d,"content_block":{"type":"web_fetch_tool_result","tool_use_id":%q,"content":{"type":"web_fetch_result","url":"https://x.com","content":{"type":"text","text":"hi"}}}}`, i+1, id),
+		fmt.Sprintf(`{"type":"content_block_stop","index":%d}`, i+1),
+	}
+}
+func ptCodeExec(i int, id string) []string {
+	return []string{
+		fmt.Sprintf(`{"type":"content_block_start","index":%d,"content_block":{"type":"server_tool_use","id":%q,"name":"bash_code_execution","input":{}}}`, i, id),
+		fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"input_json_delta","partial_json":"{\"command\":\"ls\"}"}}`, i),
+		fmt.Sprintf(`{"type":"content_block_stop","index":%d}`, i),
+		fmt.Sprintf(`{"type":"content_block_start","index":%d,"content_block":{"type":"bash_code_execution_tool_result","tool_use_id":%q,"content":{"type":"bash_code_execution_result","stdout":"out","stderr":"","return_code":0}}}`, i+1, id),
+		fmt.Sprintf(`{"type":"content_block_stop","index":%d}`, i+1),
+	}
+}
 func ptFuncTool(i int, id, name string) []string {
 	return []string{
 		fmt.Sprintf(`{"type":"content_block_start","index":%d,"content_block":{"type":"tool_use","id":%q,"name":%q,"input":{}}}`, i, id, name),
@@ -235,6 +253,9 @@ func TestAnthropicPassthrough_ServerToolIndexConsistency(t *testing.T) {
 		"advisor_first":          ptConcat([]string{ptMsgStart()}, ptAdvisor(0, "srv_A"), ptText(2), ptMsgEnd()),
 		"two_advisors":           ptConcat([]string{ptMsgStart()}, ptThinking(0), ptAdvisor(1, "srv_A"), ptAdvisor(3, "srv_B"), ptText(5), ptMsgEnd()),
 		"websearch":              ptConcat([]string{ptMsgStart()}, ptThinking(0), ptWebSearch(1, "srv_W"), ptText(3), ptMsgEnd()),
+		"web_fetch":              ptConcat([]string{ptMsgStart()}, ptThinking(0), ptWebFetch(1, "srv_F"), ptText(3), ptMsgEnd()),
+		"advisor_then_web_fetch": ptConcat([]string{ptMsgStart()}, ptAdvisor(0, "srv_A"), ptWebFetch(2, "srv_F"), ptText(4), ptMsgEnd()),
+		"code_execution":         ptConcat([]string{ptMsgStart()}, ptThinking(0), ptCodeExec(1, "srv_C"), ptText(3), ptMsgEnd()),
 		"func_then_advisor":      ptConcat([]string{ptMsgStart()}, ptFuncTool(0, "toolu_1", "Read"), ptAdvisor(1, "srv_A"), ptText(3), ptMsgEnd()),
 		"advisor_then_func":      ptConcat([]string{ptMsgStart()}, ptAdvisor(0, "srv_A"), ptFuncTool(2, "toolu_1", "Read"), ptText(3), ptMsgEnd()),
 		"advisor_then_websearch": ptConcat([]string{ptMsgStart()}, ptAdvisor(0, "srv_A"), ptWebSearch(2, "srv_W"), ptText(4), ptMsgEnd()),
@@ -284,7 +305,7 @@ func TestAnthropicPassthrough_ReproducesBugWithoutFix(t *testing.T) {
 // fix, the passthrough path too): blockIndexFor must always resolve to an index that
 // allocBlockIndex assigned, so the blockIndexMisses guard stays empty.
 func TestAdvisorStream_ReverseConverterNoBlockIndexMiss(t *testing.T) {
-	stream := ptConcat([]string{ptMsgStart()}, ptThinking(0), ptAdvisor(1, "srv_A"), ptWebSearch(3, "srv_W"), ptText(5), ptMsgEnd())
+	stream := ptConcat([]string{ptMsgStart()}, ptThinking(0), ptAdvisor(1, "srv_A"), ptWebSearch(3, "srv_W"), ptWebFetch(5, "srv_F"), ptText(7), ptMsgEnd())
 	ctx := schemas.NewBifrostContext(nil, time.Time{})
 	state := newAdvisorStreamState()
 	seq := 0
