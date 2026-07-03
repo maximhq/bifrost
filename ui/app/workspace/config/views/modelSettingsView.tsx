@@ -48,7 +48,14 @@ export default function ModelSettingsView() {
 			model_parameters_url: frameworkConfig?.model_parameters_url || "",
 			routing_chain_max_depth: clientConfig?.routing_chain_max_depth ?? DefaultCoreConfig.routing_chain_max_depth,
 		});
-	}, [frameworkConfig?.pricing_url, frameworkConfig?.pricing_sync_interval, frameworkConfig?.model_parameters_url, clientConfig?.routing_chain_max_depth, isDirty, reset]);
+	}, [
+		frameworkConfig?.pricing_url,
+		frameworkConfig?.pricing_sync_interval,
+		frameworkConfig?.model_parameters_url,
+		clientConfig?.routing_chain_max_depth,
+		isDirty,
+		reset,
+	]);
 
 	const hasChanges = useMemo(() => {
 		if (!bifrostConfig || !isDirty) return false;
@@ -90,7 +97,7 @@ export default function ModelSettingsView() {
 	const handleForceSync = async () => {
 		try {
 			await forcePricingSync().unwrap();
-			toast.success("Pricing sync triggered successfully.");
+			toast.success("Pricing synced successfully.");
 		} catch (error) {
 			toast.error(getErrorMessage(error));
 		}
@@ -120,7 +127,12 @@ export default function ModelSettingsView() {
 								validate: {
 									checkIfValidUrl: (value) => {
 										if (!value) return true;
-										return value.startsWith("http://") || value.startsWith("https://") || value.startsWith("file://") || "URL must start with http://, https://, or file://";
+										return (
+											value.startsWith("http://") ||
+											value.startsWith("https://") ||
+											value.startsWith("file://") ||
+											"URL must start with http://, https://, or file://"
+										);
 									},
 								},
 							})}
@@ -144,7 +156,12 @@ export default function ModelSettingsView() {
 								validate: {
 									checkIfValidUrl: (value) => {
 										if (!value) return true;
-										return value.startsWith("http://") || value.startsWith("https://") || value.startsWith("file://") || "URL must start with http://, https://, or file://";
+										return (
+											value.startsWith("http://") ||
+											value.startsWith("https://") ||
+											value.startsWith("file://") ||
+											"URL must start with http://, https://, or file://"
+										);
 									},
 								},
 							})}

@@ -575,7 +575,8 @@ func hasAnthropicOnlyResponsesToolFlags(t schemas.ResponsesTool) bool {
 	return t.DeferLoading != nil ||
 		len(t.AllowedCallers) > 0 ||
 		len(t.InputExamples) > 0 ||
-		t.EagerInputStreaming != nil
+		t.EagerInputStreaming != nil ||
+		(t.ResponsesToolCodeInterpreter != nil && t.ResponsesToolCodeInterpreter.Version != nil)
 }
 
 // isAnthropicOnlyResponsesToolType reports whether the tool type exists only
@@ -804,6 +805,11 @@ func (resp *OpenAIResponsesRequest) MarshalJSON() ([]byte, error) {
 				toolCopy.AllowedCallers = nil
 				toolCopy.InputExamples = nil
 				toolCopy.EagerInputStreaming = nil
+				if toolCopy.ResponsesToolCodeInterpreter != nil && toolCopy.ResponsesToolCodeInterpreter.Version != nil {
+					ciCopy := *toolCopy.ResponsesToolCodeInterpreter
+					ciCopy.Version = nil
+					toolCopy.ResponsesToolCodeInterpreter = &ciCopy
+				}
 				processedTools = append(processedTools, toolCopy)
 			}
 		} else {

@@ -121,7 +121,7 @@ func (a *Accumulator) processAccumulatedImageStreamingChunks(requestID string, b
 	defer func() {
 		if isFinalChunk {
 			// Cleanup BEFORE unlocking to prevent other goroutines from accessing chunks being returned to pool
-			a.cleanupStreamAccumulator(requestID)
+			a.cleanupStreamAccumulator(requestID, false) // natural completion — defer if gate is still busy
 		}
 		acc.mu.Unlock()
 	}()
@@ -240,6 +240,7 @@ func (a *Accumulator) processImageStreamingResponse(ctx *schemas.BifrostContext,
 			URL:               result.ImageGenerationStreamResponse.URL,
 			CreatedAt:         result.ImageGenerationStreamResponse.CreatedAt,
 			Size:              result.ImageGenerationStreamResponse.Size,
+			AspectRatio:       result.ImageGenerationStreamResponse.AspectRatio,
 			Quality:           result.ImageGenerationStreamResponse.Quality,
 			Background:        result.ImageGenerationStreamResponse.Background,
 			OutputFormat:      result.ImageGenerationStreamResponse.OutputFormat,

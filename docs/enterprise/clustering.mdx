@@ -388,7 +388,7 @@ Kubernetes discovery uses the K8s API to automatically discover pods based on la
 
 | Parameter | Required | Description | Example |
 |-----------|----------|-------------|---------|
-| `k8s_namespace` | No | Kubernetes namespace to search | `"default"`, `"production"` |
+| `k8s_namespace` | No | Kubernetes namespace to search (if empty we pick the "default" as the namespace). If you are using a custom namespace, make sure to provide it here. | `"production"` |
 | `k8s_label_selector` | Yes | Label selector for pod discovery | `"app=bifrost"`, `"app=bifrost,env=prod"` |
 
 ### Kubernetes Deployment Example

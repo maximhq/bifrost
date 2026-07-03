@@ -53,11 +53,11 @@ var ignoreSchemaProps = map[string]string{
 	"/properties/governance/properties/virtual_keys/items/properties/provider_configs": "gorm fk slice; user-submittable",
 	"/properties/governance/properties/virtual_keys/items/properties/mcp_configs":      "gorm fk slice; user-submittable",
 	"/properties/governance/properties/routing_rules/items/properties/targets":         "gorm fk slice; user-submittable",
-	// MCP headers map<string, EnvVar> — documented escape hatch is envFrom:
+	// MCP headers map<string, SecretVar> — documented escape hatch is envFrom:
 	// plus env.X references in values; no chart-native secretRef.
 	"/properties/mcp/properties/client_configs/items/properties/headers/additionalProperties": "documented envFrom pattern",
 	// Object-storage identity fields (bucket/region/endpoint/project_id) are
-	// EnvVar-typed for flexibility but are not inherently secret. Operators
+	// SecretVar-typed for flexibility but are not inherently secret. Operators
 	// can write `env.MY_VAR` in values and use envFrom to inject. Access
 	// keys, session tokens, and credentials DO have chart-native secret
 	// support via `storage.logsStore.objectStorage.existingSecret`.
@@ -74,6 +74,7 @@ var ignoreSchemaProps = map[string]string{
 	"/properties/large_payload_optimization": "enterprise-only; defined in bifrost-enterprise/lib/config.go",
 	"/properties/load_balancer_config":       "enterprise-only; defined in bifrost-enterprise/lib/config.go",
 	"/properties/scim_config":                "enterprise-only; defined in bifrost-enterprise/lib/config.go",
+	"/properties/circuit_breaker_config":     "enterprise-only; defined in bifrost-enterprise/lib/config.go",
 	// Enterprise governance extensions not yet in OSS structs.
 	"/properties/governance/properties/business_units":                          "enterprise-only; business unit governance",
 	"/properties/governance/properties/teams/items/properties/business_unit_id": "enterprise-only; team→business unit association",
@@ -118,15 +119,15 @@ var ignoreGoFieldNames = map[string]string{
 
 // opaqueLeafTypes are named Go types that have custom JSON marshalling and
 // should be treated as leaves. The walker does NOT recurse into their fields,
-// and they are collected for downstream checks (e.g., EnvVar → helm secret).
+// and they are collected for downstream checks (e.g., SecretVar → helm secret).
 var opaqueLeafTypes = map[string]string{
-	"github.com/maximhq/bifrost/core/schemas.EnvVar": "env-aware string; custom JSON",
+	"github.com/maximhq/bifrost/core/schemas.SecretVar": "env-aware string; custom JSON",
 }
 
-// envVarLocation records where an EnvVar-typed field appears in config.json
+// secretVarLocation records where an SecretVar-typed field appears in config.json
 // so a downstream pass can confirm the helm chart supports Secret-backed
 // injection (existingSecret / secretRef / env.BIFROST_*) for that path.
-type envVarLocation struct {
+type secretVarLocation struct {
 	schemaPath string
 	goPath     string
 }
@@ -148,15 +149,15 @@ type checker struct {
 	enumConsts map[string][]string
 	// visited type names to break cycles
 	visited map[string]bool
-	// envVarFields records where EnvVar types occur, for downstream checks
-	envVarFields []envVarLocation
+	// secretVarFields records where SecretVar types occur, for downstream checks
+	secretVarFields []secretVarLocation
 	findings     []Finding
 }
 
 func main() {
 	schemaFlag := flag.String("schema", "transports/config.schema.json", "path to config.schema.json")
 	pkgDir := flag.String("pkg-root", ".", "repo root used as packages.Load dir")
-	helmValuesFlag := flag.String("helm-values", "helm-charts/bifrost/values.schema.json", "path to helm values.schema.json (for EnvVar secret-support check)")
+	helmValuesFlag := flag.String("helm-values", "helm-charts/bifrost/values.schema.json", "path to helm values.schema.json (for SecretVar secret-support check)")
 	helmHelpersFlag := flag.String("helm-helpers", "helm-charts/bifrost/templates/_helpers.tpl", "path to helm _helpers.tpl (for env.BIFROST_* emission detection)")
 	flag.Parse()
 
@@ -255,12 +256,12 @@ func main() {
 		c.walkType(named, e.schemaPath, fmt.Sprintf("%s.%s", e.pkg, e.typeName))
 	}
 
-	// EnvVar → helm-chart secret-support pass. For each Go field typed as
-	// schemas.EnvVar, the helm chart must either (a) emit an env.BIFROST_*
+	// SecretVar → helm-chart secret-support pass. For each Go field typed as
+	// schemas.SecretVar, the helm chart must either (a) emit an env.BIFROST_*
 	// placeholder for that JSON path via _helpers.tpl, or (b) expose a
 	// secretRef/existingSecret knob in values.schema.json at the equivalent
 	// camelCase location. If neither, warn.
-	c.checkEnvVarHelmSupport(*helmValuesFlag, *helmHelpersFlag)
+	c.checkSecretVarHelmSupport(*helmValuesFlag, *helmHelpersFlag)
 
 	printReport(os.Stderr, c.findings)
 	errCount := c.countErrs()
@@ -291,7 +292,7 @@ func printReport(w interface{ Write([]byte) (int, error) }, findings []Finding) 
 		"missing-in-go":         "Missing in Go (schema has property, ConfigData doesn't) — WARNINGS",
 		"enum-drift":            "Enum drift (Go constants vs schema enum array)",
 		"enum-no-schema":        "Go enum types with no schema `enum` constraint — WARNINGS",
-		"envvar-no-secret":      "EnvVar fields lacking chart-native Secret support — WARNINGS",
+		"envvar-no-secret":      "SecretVar fields lacking chart-native Secret support — WARNINGS",
 		"schema-path-not-found": "Schema path not found for a walked Go type — ERRORS",
 		"entrypoint":            "Entrypoint problems — ERRORS",
 	}
@@ -395,7 +396,7 @@ func renderTable(w interface{ Write([]byte) (int, error) }, headers []string, ro
 	}
 }
 
-// checkEnvVarHelmSupport verifies that every Go field of type schemas.EnvVar
+// checkSecretVarHelmSupport verifies that every Go field of type schemas.SecretVar
 // has a way to be sourced from a Kubernetes secret via the helm chart. Proof
 // of support is any of:
 //
@@ -406,10 +407,10 @@ func renderTable(w interface{ Write([]byte) (int, error) }, headers []string, ro
 //
 // Neither heuristic is perfect — this is a structural review aid, not a
 // proof. Treat misses as warnings so they don't block CI on borderline cases.
-func (c *checker) checkEnvVarHelmSupport(valuesPath, helpersPath string) {
+func (c *checker) checkSecretVarHelmSupport(valuesPath, helpersPath string) {
 	helpersBytes, err := os.ReadFile(helpersPath)
 	if err != nil {
-		c.add(Finding{Category: "envvar-no-secret", Severity: "WARN", Detail: fmt.Sprintf("could not read helm helpers %s: %v — skipping EnvVar helm-support check", helpersPath, err)})
+		c.add(Finding{Category: "envvar-no-secret", Severity: "WARN", Detail: fmt.Sprintf("could not read helm helpers %s: %v — skipping SecretVar helm-support check", helpersPath, err)})
 		return
 	}
 	helpers := string(helpersBytes)
@@ -444,9 +445,9 @@ func (c *checker) checkEnvVarHelmSupport(valuesPath, helpersPath string) {
 		_ = json.Unmarshal(valuesBytes, &valuesSchema)
 	}
 
-	for _, loc := range c.envVarFields {
+	for _, loc := range c.secretVarFields {
 		// Heuristic 1: any env.BIFROST_* is present in helpers — broad acceptance.
-		// We can't easily map a specific EnvVar field to a specific env var
+		// We can't easily map a specific SecretVar field to a specific env var
 		// without per-field config, so we just check that the helpers file
 		// has AT LEAST ONE envBifrost mention that maps to this field's path.
 		// To make this stricter, we look for a helpers line mentioning either
@@ -698,10 +699,10 @@ func (c *checker) walkType(t types.Type, schemaPath, goPath string) {
 	named, _ := t.(*types.Named)
 	if named != nil {
 		key := named.Obj().Pkg().Path() + "." + named.Obj().Name()
-		// Treat opaque types (like schemas.EnvVar) as leaves.
+		// Treat opaque types (like schemas.SecretVar) as leaves.
 		if _, isOpaque := opaqueLeafTypes[key]; isOpaque {
-			if key == "github.com/maximhq/bifrost/core/schemas.EnvVar" {
-				c.envVarFields = append(c.envVarFields, envVarLocation{schemaPath, goPath})
+			if key == "github.com/maximhq/bifrost/core/schemas.SecretVar" {
+				c.secretVarFields = append(c.secretVarFields, secretVarLocation{schemaPath, goPath})
 			}
 			return
 		}
@@ -805,8 +806,8 @@ func (c *checker) walkField(t types.Type, schemaNode map[string]any, schemaPath,
 	if named, ok := t.(*types.Named); ok {
 		key := named.Obj().Pkg().Path() + "." + named.Obj().Name()
 		if _, isOpaque := opaqueLeafTypes[key]; isOpaque {
-			if key == "github.com/maximhq/bifrost/core/schemas.EnvVar" {
-				c.envVarFields = append(c.envVarFields, envVarLocation{schemaPath, goPath})
+			if key == "github.com/maximhq/bifrost/core/schemas.SecretVar" {
+				c.secretVarFields = append(c.secretVarFields, secretVarLocation{schemaPath, goPath})
 			}
 			return // do not recurse into opaque types
 		}

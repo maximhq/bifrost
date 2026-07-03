@@ -17,17 +17,17 @@ let activeTempToken: string | null = null;
 let suppressGlobal401 = false;
 
 export function setActiveTempToken(token: string | null): void {
-  activeTempToken = token;
+	activeTempToken = token;
 }
 
 export function getActiveTempToken(): string | null {
-  return activeTempToken;
+	return activeTempToken;
 }
 
 export function setSuppressGlobal401(value: boolean): void {
-  suppressGlobal401 = value;
+	suppressGlobal401 = value;
 }
 
 export function getSuppressGlobal401(): boolean {
-  return suppressGlobal401;
+	return suppressGlobal401;
 }

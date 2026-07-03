@@ -10,7 +10,6 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
-	"gorm.io/gorm"
 )
 
 // UsageUpdate contains data for VK-level usage tracking
@@ -307,126 +306,69 @@ func (t *UsageTracker) PerformStartupResets(ctx context.Context) error {
 	}
 
 	t.logger.Debug("performing startup reset check for expired rate limits and budgets")
-	now := time.Now()
-
-	var resetRateLimits []*configstoreTables.TableRateLimit
 	var errs []string
-	var vksWithRateLimits int
-	var vksWithoutRateLimits int
+	for _, err := range t.validateStartupResetDurations(ctx) {
+		errs = append(errs, err.Error())
+	}
 
 	// ==== RESET EXPIRED RATE LIMITS ====
-	// Check ALL virtual keys (both active and inactive) for expired rate limits.
-	// Reuse the already-loaded in-memory governance data instead of issuing a
-	// second full database load of every virtual key. The store is populated at
-	// startup (loadFromDatabase) before this runs, so re-querying all VKs from
-	// the DB here was redundant and, at large key counts, added seconds of
-	// startup latency for no additional information.
-	vkLoadStart := time.Now()
-	var allVKs []configstoreTables.TableVirtualKey
-	if govData := t.store.GetGovernanceData(ctx); govData != nil {
-		allVKs = make([]configstoreTables.TableVirtualKey, 0, len(govData.VirtualKeys))
-		for _, vk := range govData.VirtualKeys {
-			if vk != nil {
-				allVKs = append(allVKs, *vk)
-			}
-		}
+	// Reuse the shared in-memory reset path so startup, ticker, and request-time
+	// resets all apply the same LastDB baseline and reset-hook side effects.
+	rateLimitResetStart := time.Now()
+	resetRateLimits := t.store.ResetExpiredRateLimitsInMemory(ctx)
+	t.logger.Info("[startup-timing] PerformStartupResets in-memory reset of %d rate limits took %v", len(resetRateLimits), time.Since(rateLimitResetStart))
+	if err := t.store.ResetExpiredRateLimits(ctx, resetRateLimits); err != nil {
+		errs = append(errs, fmt.Sprintf("failed to reset expired rate limits: %s", err.Error()))
 	}
-	t.logger.Debug(fmt.Sprintf("startup reset: checking %d virtual keys (active + inactive) for expired rate limits", len(allVKs)))
-	t.logger.Info("[startup-timing] PerformStartupResets read %d keys from in-memory store in %v", len(allVKs), time.Since(vkLoadStart))
-
-	scanStart := time.Now()
-	for i := range allVKs {
-		vk := &allVKs[i] // Get pointer to VK for modifications
-		if vk.RateLimit == nil {
-			vksWithoutRateLimits++
-			continue
-		}
-
-		vksWithRateLimits++
-
-		// Operate on a detached copy so the persisted reset never mutates the
-		// live in-memory rate limit (which background workers may read).
-		rlCopy := *vk.RateLimit
-		rateLimit := &rlCopy
-		rateLimitUpdated := false
-
-		// Check token limits
-		if rateLimit.TokenResetDuration != nil {
-			if duration, err := configstoreTables.ParseDuration(*rateLimit.TokenResetDuration); err == nil {
-				timeSinceReset := now.Sub(rateLimit.TokenLastReset)
-				if timeSinceReset >= duration {
-					rateLimit.TokenCurrentUsage = 0
-					rateLimit.TokenLastReset = now
-					rateLimitUpdated = true
-				}
-			} else {
-				errs = append(errs, fmt.Sprintf("invalid token reset duration for VK %s: %s", vk.ID, *rateLimit.TokenResetDuration))
-			}
-		}
-
-		// Check request limits
-		if rateLimit.RequestResetDuration != nil {
-			if duration, err := configstoreTables.ParseDuration(*rateLimit.RequestResetDuration); err == nil {
-				timeSinceReset := now.Sub(rateLimit.RequestLastReset)
-				if timeSinceReset >= duration {
-					rateLimit.RequestCurrentUsage = 0
-					rateLimit.RequestLastReset = now
-					rateLimitUpdated = true
-				}
-			} else {
-				errs = append(errs, fmt.Sprintf("invalid request reset duration for VK %s: %s", vk.ID, *rateLimit.RequestResetDuration))
-			}
-		}
-
-		if rateLimitUpdated {
-			resetRateLimits = append(resetRateLimits, rateLimit)
-		}
-	}
-	t.logger.Info("[startup-timing] PerformStartupResets VK scan loop took %v (%d with rate limits, %d without, %d to reset)", time.Since(scanStart), vksWithRateLimits, vksWithoutRateLimits, len(resetRateLimits))
 
 	// DB reset is also handled by this function
+	budgetResetStart := time.Now()
 	resetBudgets := t.store.ResetExpiredBudgetsInMemory(ctx)
+	t.logger.Info("[startup-timing] PerformStartupResets in-memory reset of %d budgets took %v", len(resetBudgets), time.Since(budgetResetStart))
 	if err := t.store.ResetExpiredBudgets(ctx, resetBudgets); err != nil {
 		errs = append(errs, fmt.Sprintf("failed to reset expired budgets: %s", err.Error()))
 	}
-
-	// ==== PERSIST RESETS TO DATABASE ====
-	// Use selective updates to avoid overwriting config fields (max_limit, reset_duration)
-	dbWriteStart := time.Now()
-	if t.configStore != nil && len(resetRateLimits) > 0 {
-		if err := t.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
-			for _, rateLimit := range resetRateLimits {
-				// Build update map with only the fields that were reset
-				updates := make(map[string]interface{})
-				updates["token_current_usage"] = rateLimit.TokenCurrentUsage
-				updates["token_last_reset"] = rateLimit.TokenLastReset
-				updates["request_current_usage"] = rateLimit.RequestCurrentUsage
-				updates["request_last_reset"] = rateLimit.RequestLastReset
-
-				// Direct UPDATE only resets usage and last_reset fields
-				// This prevents overwriting max_limit or reset_duration that may have been changed during startup
-				result := tx.WithContext(ctx).
-					Session(&gorm.Session{SkipHooks: true}).
-					Model(&configstoreTables.TableRateLimit{}).
-					Where("id = ?", rateLimit.ID).
-					Updates(updates)
-
-				if result.Error != nil {
-					return fmt.Errorf("failed to reset rate limit %s: %w", rateLimit.ID, result.Error)
-				}
-			}
-			return nil
-		}); err != nil {
-			errs = append(errs, fmt.Sprintf("failed to persist rate limit resets: %s", err.Error()))
-		}
-	}
-	t.logger.Info("[startup-timing] PerformStartupResets DB persist of %d rate-limit resets took %v", len(resetRateLimits), time.Since(dbWriteStart))
 	if len(errs) > 0 {
 		t.logger.Error("startup reset encountered %d errors: %v", len(errs), errs)
 		return fmt.Errorf("startup reset completed with %d errors", len(errs))
 	}
 
 	return nil
+}
+
+func (t *UsageTracker) validateStartupResetDurations(ctx context.Context) []error {
+	data := t.store.GetGovernanceData(ctx)
+	if data == nil {
+		return nil
+	}
+
+	var errs []error
+	for _, budget := range data.Budgets {
+		if budget == nil || budget.ResetDuration == "" || budget.IsCalendarAligned {
+			continue
+		}
+		if _, err := configstoreTables.ParseDuration(budget.ResetDuration); err != nil {
+			errs = append(errs, fmt.Errorf("invalid budget reset duration for budget %s: %w", budget.ID, err))
+		}
+	}
+
+	for _, rateLimit := range data.RateLimits {
+		if rateLimit == nil || rateLimit.IsCalendarAligned {
+			continue
+		}
+		if rateLimit.TokenResetDuration != nil {
+			if _, err := configstoreTables.ParseDuration(*rateLimit.TokenResetDuration); err != nil {
+				errs = append(errs, fmt.Errorf("invalid token reset duration for rate limit %s: %w", rateLimit.ID, err))
+			}
+		}
+		if rateLimit.RequestResetDuration != nil {
+			if _, err := configstoreTables.ParseDuration(*rateLimit.RequestResetDuration); err != nil {
+				errs = append(errs, fmt.Errorf("invalid request reset duration for rate limit %s: %w", rateLimit.ID, err))
+			}
+		}
+	}
+
+	return errs
 }
 
 // Cleanup stops all background workers and flushes pending operations

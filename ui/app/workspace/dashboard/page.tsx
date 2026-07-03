@@ -432,7 +432,7 @@ export default function DashboardPage() {
 			<LogsFilterSidebar filters={filters} onFiltersChange={setFilters} />
 
 			{/* Main Content */}
-			<ScrollArea className="bg-card flex min-w-0 flex-1 flex-col gap-4 rounded-l-md">
+			<ScrollArea className="bg-card flex min-w-0 flex-1 flex-col gap-4 rounded-l-md" viewportClassName="no-table">
 				{/* Header */}
 				<div className="flex items-center justify-between p-4">
 					<div className="flex items-center gap-2">
@@ -497,35 +497,37 @@ export default function DashboardPage() {
 				<div className="p-4">
 					{/* Tabs */}
 					<Tabs value={activeTab} onValueChange={handleTabChange}>
-						<TabsList className="mb-2">
-							<TabsTrigger value="overview" data-testid="dashboard-tab-overview">
-								Overview
-							</TabsTrigger>
-							<TabsTrigger value="provider-usage" data-testid="dashboard-tab-provider-usage">
-								Provider Usage
-							</TabsTrigger>
-							<TabsTrigger value="rankings" data-testid="dashboard-tab-rankings">
-								Model Rankings
-							</TabsTrigger>
-							<TabsTrigger value="mcp" data-testid="dashboard-tab-mcp">
-								MCP usage
-							</TabsTrigger>
-							<TabsTrigger value="team-rankings" data-testid="dashboard-tab-team-rankings">
-								Team Rankings
-							</TabsTrigger>
-							<TabsTrigger value="user-rankings" data-testid="dashboard-tab-user-rankings">
-								User Rankings
-							</TabsTrigger>
-							<TabsTrigger value="virtual-key-rankings" data-testid="dashboard-tab-virtual-key-rankings">
-								Virtual Key Rankings
-							</TabsTrigger>
-							<TabsTrigger value="customer-rankings" data-testid="dashboard-tab-customer-rankings">
-								Customer Rankings
-							</TabsTrigger>
-							<TabsTrigger value="bu-rankings" data-testid="dashboard-tab-bu-rankings">
-								BU Rankings
-							</TabsTrigger>
-						</TabsList>
+						<div className="mb-2 max-w-full overflow-x-auto">
+							<TabsList className="w-max min-w-max">
+								<TabsTrigger className="shrink-0" value="overview" data-testid="dashboard-tab-overview">
+									Overview
+								</TabsTrigger>
+								<TabsTrigger className="shrink-0" value="provider-usage" data-testid="dashboard-tab-provider-usage">
+									Provider Usage
+								</TabsTrigger>
+								<TabsTrigger className="shrink-0" value="rankings" data-testid="dashboard-tab-rankings">
+									Model Rankings
+								</TabsTrigger>
+								<TabsTrigger className="shrink-0" value="mcp" data-testid="dashboard-tab-mcp">
+									MCP usage
+								</TabsTrigger>
+								<TabsTrigger className="shrink-0" value="team-rankings" data-testid="dashboard-tab-team-rankings">
+									Team Rankings
+								</TabsTrigger>
+								<TabsTrigger className="shrink-0" value="user-rankings" data-testid="dashboard-tab-user-rankings">
+									User Rankings
+								</TabsTrigger>
+								<TabsTrigger className="shrink-0" value="virtual-key-rankings" data-testid="dashboard-tab-virtual-key-rankings">
+									Virtual Key Rankings
+								</TabsTrigger>
+								<TabsTrigger className="shrink-0" value="customer-rankings" data-testid="dashboard-tab-customer-rankings">
+									Customer Rankings
+								</TabsTrigger>
+								<TabsTrigger className="shrink-0" value="bu-rankings" data-testid="dashboard-tab-bu-rankings">
+									BU Rankings
+								</TabsTrigger>
+							</TabsList>
+						</div>
 
 						{/* Overview Tab */}
 						<TabsContent value="overview" {...(pdfMode && { forceMount: true })}>

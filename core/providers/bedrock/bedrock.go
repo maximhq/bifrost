@@ -26,6 +26,7 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
+	openai "github.com/maximhq/bifrost/core/providers/openai"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
@@ -188,16 +189,74 @@ func isStreamTransportError(err error) bool {
 	return errors.As(err, &opErr) || errors.As(err, &dnsErr)
 }
 
-// retryableBedrockExceptions maps AWS Bedrock EventStream exception types to
-// their HTTP status code equivalents. These exceptions are transient and should
-// be retried — the retry gate in executeRequestWithRetries checks StatusCode
-// against transientServerStatusCodes (500, 502, 503, 504) for same-key retries
-// and perKeyFailureStatusCodes (429) for rotation-triggered retries.
+// retryableBedrockExceptions maps AWS Bedrock EventStream exception types (the
+// camelCase shape names AWS uses for ConverseStream / InvokeModelWithResponseStream
+// in-stream exception members) to a retryable HTTP status code. These exceptions
+// are transient and should be retried — the retry gate in executeRequestWithRetries
+// checks StatusCode against transientServerStatusCodes (500, 502, 503, 504) for
+// same-key retries and perKeyFailureStatusCodes (429) for rotation-triggered retries.
+//
+// Some AWS exceptions have a native status code the gate does not recognize
+// (modelStreamErrorException=424, modelTimeoutException=408); they are mapped to
+// the nearest gate-recognized transient code so the retry still fires. The client
+// still sees the original exception type — only the internal retry hint is mapped.
+//
+// modelNotReadyException is an HTTP-level error (not an in-stream member) but is
+// kept here because AWS auto-retries it; it is harmless when it never matches a
+// stream event. validationException / accessDeniedException / resourceNotFoundException
+// are intentionally absent — they are terminal request-bound errors.
 var retryableBedrockExceptions = map[string]int{
 	"throttlingException":         429,
 	"serviceUnavailableException": 503,
 	"modelNotReadyException":      503,
 	"internalServerException":     500,
+	"modelStreamErrorException":   503, // native 424; AWS guidance: "Retry your request"
+	"modelTimeoutException":       504, // native 408; processing timeout, transient
+}
+
+// newBedrockStreamException builds a BifrostError from an AWS EventStream
+// exception message (any :message-type other than "event"). It preserves the
+// upstream exception type — the payload's "__type" when present, else the
+// :exception-type header value (excType) — so downstream conversion
+// (ToBedrockError) forwards it instead of falling back to "InternalServerError".
+//
+// Retryable exceptions are emitted with IsBifrostError:false and the equivalent
+// HTTP status so the retry gate in executeRequestWithRetries handles them;
+// non-retryable ones are terminal (IsBifrostError:true). providerName is an
+// optional label prefix for the message.
+func newBedrockStreamException(providerName, excType string, payload []byte) *schemas.BifrostError {
+	errMsg := string(payload)
+	var bedrockErr BedrockError
+	if err := sonic.Unmarshal(payload, &bedrockErr); err == nil && bedrockErr.Message != "" {
+		errMsg = bedrockErr.Message
+	}
+
+	fwdType := bedrockErr.Type
+	if fwdType == "" {
+		fwdType = excType
+	}
+
+	prefix := "stream"
+	if providerName != "" {
+		prefix = providerName + " stream"
+	}
+
+	streamErr := &schemas.BifrostError{
+		IsBifrostError: false,
+		Error: &schemas.ErrorField{
+			Message: fmt.Sprintf("%s %s: %s", prefix, excType, errMsg),
+		},
+	}
+	if fwdType != "" {
+		streamErr.Type = &fwdType
+	}
+	if statusCode, ok := retryableBedrockExceptions[excType]; ok {
+		sc := statusCode
+		streamErr.StatusCode = &sc
+	} else {
+		streamErr.IsBifrostError = true
+	}
+	return streamErr
 }
 
 // completeRequest sends a request to Bedrock's API and handles the response.
@@ -543,9 +602,9 @@ func signAWSRequestFromKey(
 			cfg.ExternalID, cfg.RoleSessionName,
 			region, service)
 	}
-	// No config: pass zero EnvVar values so signAWSRequest uses the default chain.
+	// No config: pass zero SecretVar values so signAWSRequest uses the default chain.
 	return signAWSRequest(ctx, req,
-		schemas.EnvVar{}, schemas.EnvVar{},
+		schemas.SecretVar{}, schemas.SecretVar{},
 		nil, nil, nil, nil,
 		region, service)
 }
@@ -554,11 +613,11 @@ func signAWSRequestFromKey(
 func signAWSRequest(
 	ctx *schemas.BifrostContext,
 	req *http.Request,
-	accessKey, secretKey schemas.EnvVar,
-	sessionToken *schemas.EnvVar,
-	roleARN *schemas.EnvVar,
-	externalID *schemas.EnvVar,
-	sessionName *schemas.EnvVar,
+	accessKey, secretKey schemas.SecretVar,
+	sessionToken *schemas.SecretVar,
+	roleARN *schemas.SecretVar,
+	externalID *schemas.SecretVar,
+	sessionName *schemas.SecretVar,
 	region, service string,
 ) *schemas.BifrostError {
 	// Set required headers before signing (only if not already set)
@@ -687,6 +746,52 @@ func signAWSRequest(
 
 // listModelsByKey performs a list models request to Bedrock's API for a single key.
 // It retrieves all foundation models available in Amazon Bedrock for a specific key.
+// listMantleModels lists models from the Bedrock Mantle (OpenAI-compatible) /v1/models
+// endpoint, converted to a Bifrost response with the same allow/blacklist/alias gating as
+// the foundation-model path. The bare /v1/models path returns the full mantle catalog
+// (including the mantle-only gpt-5.x / gemma-4 models that ListFoundationModels omits).
+// The request is signed as it is sent (mantleSigV4Headers signs POST and can't be reused
+// for this GET). Best-effort: returns nil on any failure so the foundation-model list is
+// still returned.
+func (provider *BedrockProvider) listMantleModels(ctx *schemas.BifrostContext, key schemas.Key, region string, unfiltered bool) *schemas.BifrostListModelsResponse {
+	mURL := mantleURL(region, "", "models")
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, mURL, nil)
+	if err != nil {
+		provider.logger.Warn("failed to build mantle list-models request: %v", err)
+		return nil
+	}
+	providerUtils.SetExtraHeadersHTTP(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	if key.Value.GetValue() != "" {
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", key.Value.GetValue()))
+	} else if bifrostErr := signAWSRequestFromKey(ctx, req, key.BedrockKeyConfig, region, bedrockMantleSigningService); bifrostErr != nil {
+		provider.logger.Warn("failed to sign mantle list-models request: %v", bifrostErr.Error.Message)
+		return nil
+	}
+
+	resp, err := provider.client.Do(req)
+	if err != nil {
+		provider.logger.Warn("mantle list-models request failed: %v", err)
+		return nil
+	}
+	responseBody, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		provider.logger.Warn("failed to read mantle list-models response: %v", err)
+		return nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		provider.logger.Warn("mantle list-models returned status %d: %s", resp.StatusCode, string(responseBody))
+		return nil
+	}
+
+	mantleResponse := &openai.OpenAIListModelsResponse{}
+	if err := sonic.Unmarshal(responseBody, mantleResponse); err != nil {
+		provider.logger.Warn("failed to parse mantle list-models response: %v", err)
+		return nil
+	}
+	return mantleResponse.ToBifrostListModelsResponse(provider.GetProviderKey(), key.Models, key.BlacklistedModels, key.Aliases, unfiltered)
+}
+
 func (provider *BedrockProvider) listModelsByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	providerName := provider.GetProviderKey()
 	config := key.BedrockKeyConfig
@@ -813,6 +918,22 @@ func (provider *BedrockProvider) listModelsByKey(ctx *schemas.BifrostContext, ke
 	response := bedrockResponse.ToBifrostListModelsResponse(providerName, key.Models, key.BlacklistedModels, key.Aliases, request.Unfiltered)
 	if response == nil {
 		return nil, providerUtils.NewBifrostOperationError("failed to convert Bedrock model list response", nil)
+	}
+
+	// Merge in the mantle catalog: ListFoundationModels omits the mantle-only models
+	// (gpt-5.x, gemma-4, ...) served on the OpenAI-compatible endpoint. Same gating, dedup by id.
+	if mantleResponse := provider.listMantleModels(ctx, key, region, request.Unfiltered); mantleResponse != nil {
+		seen := make(map[string]struct{}, len(response.Data))
+		for _, m := range response.Data {
+			seen[m.ID] = struct{}{}
+		}
+		for _, m := range mantleResponse.Data {
+			if _, ok := seen[m.ID]; ok {
+				continue
+			}
+			seen[m.ID] = struct{}{}
+			response.Data = append(response.Data, m)
+		}
 	}
 
 	response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
@@ -956,7 +1077,7 @@ func (provider *BedrockProvider) TextCompletionStream(ctx *schemas.BifrostContex
 			} else if ctx.Err() == context.DeadlineExceeded {
 				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, jsonData)
 			}
-			close(responseChan)
+			providerUtils.CloseStream(ctx, responseChan)
 		}()
 		defer resp.Body.Close()
 
@@ -1016,27 +1137,8 @@ func (provider *BedrockProvider) TextCompletionStream(ctx *schemas.BifrostContex
 								excType = v
 							}
 						}
-						errMsg := string(message.Payload)
-						var bedrockErr BedrockError
-						if err := sonic.Unmarshal(message.Payload, &bedrockErr); err == nil && bedrockErr.Message != "" {
-							errMsg = bedrockErr.Message
-						}
-						// Retryable AWS exceptions must not set IsBifrostError:true — that would
-						// bypass the retry gate in executeRequestWithRetries. Instead emit
-						// IsBifrostError:false with the equivalent HTTP status code so the existing
-						// retry gate (transientServerStatusCodes / perKeyFailureStatusCodes) handles the retry.
-						if statusCode, ok := retryableBedrockExceptions[excType]; ok {
-							providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, &schemas.BifrostError{
-								IsBifrostError: false,
-								StatusCode:     &statusCode,
-								Error: &schemas.ErrorField{
-									Message: fmt.Sprintf("%s stream %s: %s", providerName, excType, errMsg),
-								},
-							}, responseChan, provider.logger, postHookSpanFinalizer)
-						} else {
-							err := fmt.Errorf("%s stream %s: %s", providerName, excType, errMsg)
-							providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, provider.logger, postHookSpanFinalizer)
-						}
+						streamErr := newBedrockStreamException(string(providerName), excType, message.Payload)
+						providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, streamErr, responseChan, provider.logger, postHookSpanFinalizer)
 						return
 					}
 				}
@@ -1076,7 +1178,7 @@ func (provider *BedrockProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 		return nil, err
 	}
 
-	if isMantleModel(request.Model) {
+	if isMantleModel(schemas.ResolveCanonicalModel(ctx, request.Model)) {
 		return provider.chatCompletionViaMantle(ctx, key, request)
 	}
 
@@ -1168,7 +1270,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 		return nil, err
 	}
 
-	if isMantleModel(request.Model) {
+	if isMantleModel(schemas.ResolveCanonicalModel(ctx, request.Model)) {
 		return provider.chatCompletionStreamViaMantle(ctx, postHookRunner, postHookSpanFinalizer, key, request)
 	}
 
@@ -1203,7 +1305,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 			} else if ctx.Err() == context.DeadlineExceeded {
 				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, jsonData)
 			}
-			close(responseChan)
+			providerUtils.CloseStream(ctx, responseChan)
 		}()
 		defer resp.Body.Close()
 
@@ -1305,23 +1407,8 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 								excType = v
 							}
 						}
-						errMsg := string(message.Payload)
-						err := fmt.Errorf("stream %s: %s", excType, errMsg)
-						// Retryable AWS exceptions must not set IsBifrostError:true — that would
-						// bypass the retry gate in executeRequestWithRetries. Instead emit
-						// IsBifrostError:false with the equivalent HTTP status code so the existing
-						// retry gate (transientServerStatusCodes / perKeyFailureStatusCodes) handles the retry.
-						if statusCode, ok := retryableBedrockExceptions[excType]; ok {
-							providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, &schemas.BifrostError{
-								IsBifrostError: false,
-								StatusCode:     &statusCode,
-								Error: &schemas.ErrorField{
-									Message: err.Error(),
-								},
-							}, responseChan, provider.logger, postHookSpanFinalizer)
-						} else {
-							providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, provider.logger, postHookSpanFinalizer)
-						}
+						streamErr := newBedrockStreamException("", excType, message.Payload)
+						providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, streamErr, responseChan, provider.logger, postHookSpanFinalizer)
 						return
 					}
 				}
@@ -1496,7 +1583,7 @@ func (provider *BedrockProvider) Responses(ctx *schemas.BifrostContext, key sche
 		return nil, err
 	}
 
-	if isMantleModel(request.Model) {
+	if isMantleModel(schemas.ResolveCanonicalModel(ctx, request.Model)) {
 		return provider.responsesViaMantle(ctx, key, request)
 	}
 
@@ -1568,7 +1655,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 		return nil, err
 	}
 
-	if isMantleModel(request.Model) {
+	if isMantleModel(schemas.ResolveCanonicalModel(ctx, request.Model)) {
 		return provider.responsesStreamViaMantle(ctx, postHookRunner, postHookSpanFinalizer, key, request)
 	}
 
@@ -1604,7 +1691,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 			} else if ctx.Err() == context.DeadlineExceeded {
 				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, jsonData)
 			}
-			close(responseChan)
+			providerUtils.CloseStream(ctx, responseChan)
 		}()
 		// Always release response on exit; bodyStream close should prevent indefinite blocking.
 		defer resp.Body.Close()
@@ -1708,23 +1795,8 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 								excType = v
 							}
 						}
-						errMsg := string(message.Payload)
-						err := fmt.Errorf("stream %s: %s", excType, errMsg)
-						// Retryable AWS exceptions must not set IsBifrostError:true — that would
-						// bypass the retry gate in executeRequestWithRetries. Instead emit
-						// IsBifrostError:false with the equivalent HTTP status code so the existing
-						// retry gate (transientServerStatusCodes / perKeyFailureStatusCodes) handles the retry.
-						if statusCode, ok := retryableBedrockExceptions[excType]; ok {
-							providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, &schemas.BifrostError{
-								IsBifrostError: false,
-								StatusCode:     &statusCode,
-								Error: &schemas.ErrorField{
-									Message: err.Error(),
-								},
-							}, responseChan, provider.logger, postHookSpanFinalizer)
-						} else {
-							providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, provider.logger, postHookSpanFinalizer)
-						}
+						streamErr := newBedrockStreamException("", excType, message.Payload)
+						providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, streamErr, responseChan, provider.logger, postHookSpanFinalizer)
 						return
 					}
 				}

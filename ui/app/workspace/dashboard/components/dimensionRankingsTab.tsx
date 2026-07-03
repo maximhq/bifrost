@@ -151,12 +151,7 @@ function TopDimensionChart({
 									width={100}
 								/>
 								<Tooltip content={<TopDimensionTooltip />} cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }} />
-								<Bar
-									dataKey="total_requests"
-									isAnimationActive={false}
-									barSize={24}
-									radius={[0, 4, 4, 0]}
-								>
+								<Bar dataKey="total_requests" isAnimationActive={false} barSize={24} radius={[0, 4, 4, 0]}>
 									{chartData.map((entry, idx) => (
 										<Cell key={entry.id} fill={getModelColor(idx)} />
 									))}

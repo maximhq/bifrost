@@ -25,7 +25,11 @@ export default function ModelLimitsView() {
 
 	const { data: providers } = useGetProvidersQuery();
 
-	const { data: modelConfigsData, error: modelConfigsError, isLoading: isModelConfigsLoading } = useGetModelConfigsQuery(
+	const {
+		data: modelConfigsData,
+		error: modelConfigsError,
+		isLoading: isModelConfigsLoading,
+	} = useGetModelConfigsQuery(
 		{
 			limit: PAGE_SIZE,
 			offset,

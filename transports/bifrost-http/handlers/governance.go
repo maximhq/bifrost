@@ -809,10 +809,6 @@ func applyVKGovernanceFromModelConfigs(vk *configstoreTables.TableVirtualKey, by
 		vk.Budgets = mc.Budgets
 		vk.RateLimit = mc.RateLimit
 		vk.RateLimitID = mc.RateLimitID
-	} else {
-		vk.Budgets = nil
-		vk.RateLimit = nil
-		vk.RateLimitID = nil
 	}
 	for i := range vk.ProviderConfigs {
 		pc := &vk.ProviderConfigs[i]
@@ -820,10 +816,6 @@ func applyVKGovernanceFromModelConfigs(vk *configstoreTables.TableVirtualKey, by
 			pc.Budgets = mc.Budgets
 			pc.RateLimit = mc.RateLimit
 			pc.RateLimitID = mc.RateLimitID
-		} else {
-			pc.Budgets = nil
-			pc.RateLimit = nil
-			pc.RateLimitID = nil
 		}
 	}
 }
@@ -4671,6 +4663,9 @@ func (h *GovernanceHandler) buildVKBudgetsWithUsage(ctx context.Context, vk *con
 		entry := quotaBudget{TableBudget: *b, Models: []quotaModelSpend{}}
 		if h.logManager != nil {
 			start := b.LastReset
+			if b.CreatedAt.After(start) {
+				start = b.CreatedAt
+			}
 			ranking, err := h.logManager.GetModelRankings(ctx, &logstore.SearchFilters{
 				VirtualKeyIDs: []string{vk.ID},
 				StartTime:     &start,

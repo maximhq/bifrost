@@ -28,9 +28,17 @@ func newRealtimeTurnContext(
 		// Realtime post-hook contexts must preserve plugin-private values written in
 		// pre-hooks (for example telemetry start timestamps), not just public keys.
 		for ctxKey, value := range baseCtx.GetUserValues() {
-			if value != nil {
-				ctx.SetValue(ctxKey, value)
+			if value == nil {
+				continue
 			}
+			// Never inherit a session/transport-level trace ID. Each realtime turn
+			// must mint its own trace in RunRealtimeTurnPreHooks so its log entry is
+			// delivered when the turn's trace is completed and flushed. Inheriting a
+			// trace whose lifecycle is owned elsewhere strands the entry forever.
+			if ctxKey == schemas.BifrostContextKeyTraceID {
+				continue
+			}
+			ctx.SetValue(ctxKey, value)
 		}
 	}
 

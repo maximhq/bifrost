@@ -140,8 +140,12 @@ tags:
     description: Log search and management endpoints
   - name: Cache
     description: Cache management endpoints
+  - name: Vault
+    description: Vault secret management endpoints
   - name: Skills
     description: Skills Repository management, marketplace, and download endpoints
+  - name: Audit Logs
+    description: CADF-compliant audit log search, export, and signature verification endpoints
 
 paths:
   # ==================== Unified Inference API ====================
@@ -914,11 +918,31 @@ paths:
   /api/users/{target_user_id}/access-profiles/virtual-keys/{vk_id}:
     $ref: './paths/management/accessprofiles.yaml#/users-access-profile-virtual-key-by-id'
 
+  # Audit Logs
+  /api/audit-logs:
+    $ref: './paths/management/auditlogs.yaml#/audit-logs'
+  /api/audit-logs/filterdata:
+    $ref: './paths/management/auditlogs.yaml#/audit-logs-filterdata'
+  /api/audit-logs/export:
+    $ref: './paths/management/auditlogs.yaml#/audit-logs-export'
+  /api/audit-logs/{id}:
+    $ref: './paths/management/auditlogs.yaml#/audit-logs-by-id'
+  /api/audit-logs/{id}/verify:
+    $ref: './paths/management/auditlogs.yaml#/audit-logs-verify'
+
   # MCP Tool Groups
   /api/mcp/tool-groups:
     $ref: './paths/management/mcptoolgroups.yaml#/mcp-tool-groups'
   /api/mcp/tool-groups/{id}:
     $ref: './paths/management/mcptoolgroups.yaml#/mcp-tool-groups-by-id'
+
+  # Circuit Breaker
+  /api/circuit-breaker/policies:
+    $ref: './paths/management/circuitbreaker.yaml#/circuit-breaker-policies'
+  /api/circuit-breaker/policies/{name}:
+    $ref: './paths/management/circuitbreaker.yaml#/circuit-breaker-policy-by-name'
+  /api/circuit-breaker/state:
+    $ref: './paths/management/circuitbreaker.yaml#/circuit-breaker-state'
 
   # Governance - Complexity Analyzer Config
   /api/governance/complexity-analyzer-config:
@@ -1039,6 +1063,10 @@ paths:
     $ref: './paths/management/cache.yaml#/clear-by-cache-id'
   /api/cache/clear-by-key/{cacheKey}:
     $ref: './paths/management/cache.yaml#/clear-by-cache-key'
+
+  # Vault
+  /api/vault/flush-cache:
+    $ref: './paths/management/vault.yaml#/flush-cache'
 
   # Infrastructure
   /ws:
@@ -1616,3 +1644,31 @@ components:
     # Cache
     ClearCacheResponse:
       $ref: './schemas/management/cache.yaml#/ClearCacheResponse'
+
+    # Audit Logs
+    AuditEventType:
+      $ref: './schemas/management/auditlogs.yaml#/AuditEventType'
+    AuditAction:
+      $ref: './schemas/management/auditlogs.yaml#/AuditAction'
+    AuditOutcome:
+      $ref: './schemas/management/auditlogs.yaml#/AuditOutcome'
+    AuditResourceType:
+      $ref: './schemas/management/auditlogs.yaml#/AuditResourceType'
+    AuditResource:
+      $ref: './schemas/management/auditlogs.yaml#/AuditResource'
+    AuditReason:
+      $ref: './schemas/management/auditlogs.yaml#/AuditReason'
+    AuditAttachment:
+      $ref: './schemas/management/auditlogs.yaml#/AuditAttachment'
+    AuditEvent:
+      $ref: './schemas/management/auditlogs.yaml#/AuditEvent'
+    AuditLogsResult:
+      $ref: './schemas/management/auditlogs.yaml#/AuditLogsResult'
+    AuditLogResponse:
+      $ref: './schemas/management/auditlogs.yaml#/AuditLogResponse'
+    AuditFilterKeyPair:
+      $ref: './schemas/management/auditlogs.yaml#/AuditFilterKeyPair'
+    AuditFilterDataResponse:
+      $ref: './schemas/management/auditlogs.yaml#/AuditFilterDataResponse'
+    AuditVerifyResult:
+      $ref: './schemas/management/auditlogs.yaml#/AuditVerifyResult'

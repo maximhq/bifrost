@@ -26,5 +26,11 @@
     "bifrost-migration-cli": "bin.js"
   },
   "type": "module",
-  "dependencies": {}
+  "main": "bin.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "bugs": {
+    "url": "https://github.com/maximhq/bifrost/issues"
+  }
 }
