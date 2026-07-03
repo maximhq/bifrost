@@ -229,6 +229,44 @@ func TestEnrichError_OverwritesWithProvidedResponse(t *testing.T) {
 	t.Log("✓ EnrichError sets RawRequest and RawResponse from provided bodies")
 }
 
+func TestEnrichError_SetsLatency(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostErr := &schemas.BifrostError{
+		IsBifrostError: false,
+		Error: &schemas.ErrorField{
+			Message: "provider failed",
+		},
+	}
+
+	enrichedErr := EnrichError(ctx, bifrostErr, nil, nil, false, false, 42*time.Millisecond)
+
+	if enrichedErr == nil {
+		t.Fatal("EnrichError() returned nil")
+	}
+	if enrichedErr.ExtraFields.Latency != 42 {
+		t.Fatalf("latency = %d, want 42", enrichedErr.ExtraFields.Latency)
+	}
+}
+
+func TestEnrichError_DoesNotSetLatencyWithoutExplicitValue(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostErr := &schemas.BifrostError{
+		IsBifrostError: false,
+		Error: &schemas.ErrorField{
+			Message: "provider failed",
+		},
+	}
+
+	enrichedErr := EnrichError(ctx, bifrostErr, nil, nil, false, false)
+
+	if enrichedErr == nil {
+		t.Fatal("EnrichError() returned nil")
+	}
+	if enrichedErr.ExtraFields.Latency != 0 {
+		t.Fatalf("latency = %d, want 0", bifrostErr.ExtraFields.Latency)
+	}
+}
+
 // TestEnrichError_RespectsFlags verifies that EnrichError respects
 // sendBackRawRequest and sendBackRawResponse flags
 func TestEnrichError_RespectsFlags(t *testing.T) {

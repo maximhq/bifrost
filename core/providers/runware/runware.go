@@ -386,14 +386,14 @@ func (provider *RunwareProvider) handleImageInference(ctx *schemas.BifrostContex
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, providerUtils.EnrichError(ctx, parseRunwareError(resp), body, nil, sendBackRawRequest, sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, parseRunwareError(resp), body, nil, sendBackRawRequest, sendBackRawResponse, latency)
 	}
 
 	// Decode response body
 	respBody, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {
 		rawErrBody := append([]byte(nil), resp.Body()...)
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), body, rawErrBody, sendBackRawRequest, sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), body, rawErrBody, sendBackRawRequest, sendBackRawResponse, latency)
 	}
 
 	// Parse response envelope
@@ -406,7 +406,7 @@ func (provider *RunwareProvider) handleImageInference(ctx *schemas.BifrostContex
 	// Convert to Bifrost response
 	bifrostResp, bifrostErr := ToBifrostImageGenerationResponse(&runwareResp)
 	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, body, respBody, sendBackRawRequest, sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, body, respBody, sendBackRawRequest, sendBackRawResponse, latency)
 	}
 
 	bifrostResp.Model = model
@@ -472,14 +472,14 @@ func (provider *RunwareProvider) sendTaskArray(ctx *schemas.BifrostContext, key 
 	lat, bErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
 	defer wait()
 	if bErr != nil {
-		return reqBody, nil, 0, bErr
+		return reqBody, nil, lat, bErr
 	}
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return reqBody, nil, 0, parseRunwareError(resp)
+		return reqBody, nil, lat, providerUtils.SetErrorLatency(parseRunwareError(resp), lat)
 	}
 	decoded, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {
-		return reqBody, nil, 0, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
+		return reqBody, nil, lat, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), lat)
 	}
 	// Copy out: the fasthttp response buffer is released when this function returns.
 	return reqBody, append([]byte(nil), decoded...), lat, nil
@@ -504,7 +504,7 @@ func (provider *RunwareProvider) VideoGeneration(ctx *schemas.BifrostContext, ke
 
 	reqBody, respBody, latency, bifrostErr := provider.sendTaskArray(ctx, key, jsonData)
 	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, reqBody, nil, sendBackRawRequest, sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, reqBody, nil, sendBackRawRequest, sendBackRawResponse, latency)
 	}
 
 	var videoResp RunwareResponse
@@ -515,7 +515,7 @@ func (provider *RunwareProvider) VideoGeneration(ctx *schemas.BifrostContext, ke
 
 	result, bifrostErr := firstVideoResult(&videoResp)
 	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, reqBody, respBody, sendBackRawRequest, sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, reqBody, respBody, sendBackRawRequest, sendBackRawResponse, latency)
 	}
 
 	bifrostResp := ToBifrostVideoGenerationResponse(result)
@@ -546,7 +546,7 @@ func (provider *RunwareProvider) VideoRetrieve(ctx *schemas.BifrostContext, key 
 
 	reqBody, respBody, latency, bifrostErr := provider.sendTaskArray(ctx, key, jsonData)
 	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, reqBody, nil, sendBackRawRequest, sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, reqBody, nil, sendBackRawRequest, sendBackRawResponse, latency)
 	}
 
 	var videoResp RunwareResponse
@@ -557,7 +557,7 @@ func (provider *RunwareProvider) VideoRetrieve(ctx *schemas.BifrostContext, key 
 
 	result, bifrostErr := firstVideoResult(&videoResp)
 	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, reqBody, respBody, sendBackRawRequest, sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, reqBody, respBody, sendBackRawRequest, sendBackRawResponse, latency)
 	}
 
 	bifrostResp := ToBifrostVideoGenerationResponse(result)
@@ -600,7 +600,7 @@ func (provider *RunwareProvider) VideoDownload(ctx *schemas.BifrostContext, key 
 		return nil, bifrostErr
 	}
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, providerUtils.NewBifrostOperationError(fmt.Sprintf("failed to download video: HTTP %d", resp.StatusCode()), nil)
+		return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError(fmt.Sprintf("failed to download video: HTTP %d", resp.StatusCode()), nil), latency)
 	}
 	body, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {
