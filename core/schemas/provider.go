@@ -58,7 +58,7 @@ type NetworkConfig struct {
 	RetryBackoffInitial            time.Duration     `json:"retry_backoff_initial"`                    // Initial backoff duration (stored as nanoseconds, JSON as milliseconds)
 	RetryBackoffMax                time.Duration     `json:"retry_backoff_max"`                        // Maximum backoff duration (stored as nanoseconds, JSON as milliseconds)
 	InsecureSkipVerify             bool              `json:"insecure_skip_verify,omitempty"`           // Disables TLS certificate verification for provider connections
-	CACertPEM                      *SecretVar           `json:"ca_cert_pem,omitempty"`                    // PEM-encoded CA certificate to trust for provider endpoint connections (supports env.*)
+	CACertPEM                      *SecretVar        `json:"ca_cert_pem,omitempty"`                    // PEM-encoded CA certificate to trust for provider endpoint connections (supports env.*)
 	StreamIdleTimeoutInSeconds     int               `json:"stream_idle_timeout_in_seconds,omitempty"` // Idle timeout per stream chunk (0 = use default 60s)
 	MaxConnsPerHost                int               `json:"max_conns_per_host,omitempty"`             // Max TCP connections per provider host (default: 5000)
 	EnforceHTTP2                   bool              `json:"enforce_http2,omitempty"`                  // Force HTTP/2 on provider connections (relevant for net/http-based providers like Bedrock)
@@ -82,7 +82,7 @@ func (nc *NetworkConfig) UnmarshalJSON(data []byte) error {
 		RetryBackoffInitial            json.RawMessage   `json:"retry_backoff_initial"` // string ("500ms") or int (milliseconds)
 		RetryBackoffMax                json.RawMessage   `json:"retry_backoff_max"`     // string ("5s") or int (milliseconds)
 		InsecureSkipVerify             bool              `json:"insecure_skip_verify,omitempty"`
-		CACertPEM                      *SecretVar           `json:"ca_cert_pem,omitempty"`
+		CACertPEM                      *SecretVar        `json:"ca_cert_pem,omitempty"`
 		StreamIdleTimeoutInSeconds     int               `json:"stream_idle_timeout_in_seconds,omitempty"`
 		MaxConnsPerHost                int               `json:"max_conns_per_host,omitempty"`
 		EnforceHTTP2                   bool              `json:"enforce_http2,omitempty"`
@@ -253,11 +253,11 @@ const (
 
 // ProxyConfig holds the configuration for proxy settings.
 type ProxyConfig struct {
-	Type      ProxyType `json:"type"`        // Type of proxy to use
-	URL       *SecretVar   `json:"url"`         // URL of the proxy server (supports env.*)
-	Username  *SecretVar   `json:"username"`    // Username for proxy authentication (supports env.*)
-	Password  *SecretVar   `json:"password"`    // Password for proxy authentication (supports env.*)
-	CACertPEM *SecretVar   `json:"ca_cert_pem"` // PEM-encoded CA certificate to trust for TLS connections through the proxy (supports env.*)
+	Type      ProxyType  `json:"type"`        // Type of proxy to use
+	URL       *SecretVar `json:"url"`         // URL of the proxy server (supports env.*)
+	Username  *SecretVar `json:"username"`    // Username for proxy authentication (supports env.*)
+	Password  *SecretVar `json:"password"`    // Password for proxy authentication (supports env.*)
+	CACertPEM *SecretVar `json:"ca_cert_pem"` // PEM-encoded CA certificate to trust for TLS connections through the proxy (supports env.*)
 }
 
 // MarshalForStorage serializes proxy settings for persistence (e.g. proxy_config_json).
@@ -315,16 +315,13 @@ func (pc *ProxyConfig) Redacted() *ProxyConfig {
 // A nil *AllowedRequests means "all operations allowed."
 // A non-nil value only allows fields set to true; omitted or false fields are disallowed.
 type AllowedRequests struct {
-	ListModels           bool `json:"list_models"`
-	TextCompletion       bool `json:"text_completion"`
-	TextCompletionStream bool `json:"text_completion_stream"`
-	ChatCompletion       bool `json:"chat_completion"`
-	ChatCompletionStream bool `json:"chat_completion_stream"`
-	Responses            bool `json:"responses"`
-	ResponsesStream      bool `json:"responses_stream"`
-	// ResponsesRetrieve/Delete/Cancel/InputItems gate Responses API lifecycle verbs
-	// separately from create (Responses). If none of the four are set, lifecycle
-	// follows `responses` (legacy). If any is set, each verb requires its own flag.
+	ListModels            bool `json:"list_models"`
+	TextCompletion        bool `json:"text_completion"`
+	TextCompletionStream  bool `json:"text_completion_stream"`
+	ChatCompletion        bool `json:"chat_completion"`
+	ChatCompletionStream  bool `json:"chat_completion_stream"`
+	Responses             bool `json:"responses"`
+	ResponsesStream       bool `json:"responses_stream"`
 	ResponsesRetrieve     bool `json:"responses_retrieve"`
 	ResponsesDelete       bool `json:"responses_delete"`
 	ResponsesCancel       bool `json:"responses_cancel"`
@@ -380,13 +377,6 @@ type AllowedRequests struct {
 	CachedContentDelete   bool `json:"cached_content_delete"`
 }
 
-// granularResponsesLifecycleUsed is true when any per-verb Responses lifecycle flag
-// is set. In that mode, each verb requires its own flag; unset verbs are denied even
-// if `responses` (create) is true.
-func (ar *AllowedRequests) granularResponsesLifecycleUsed() bool {
-	return ar.ResponsesRetrieve || ar.ResponsesDelete || ar.ResponsesCancel || ar.ResponsesInputItems
-}
-
 // IsOperationAllowed checks if a specific operation is allowed
 func (ar *AllowedRequests) IsOperationAllowed(operation RequestType) bool {
 	if ar == nil {
@@ -409,37 +399,13 @@ func (ar *AllowedRequests) IsOperationAllowed(operation RequestType) bool {
 	case ResponsesStreamRequest:
 		return ar.ResponsesStream
 	case ResponsesRetrieveRequest:
-		if ar.ResponsesRetrieve {
-			return true
-		}
-		if ar.granularResponsesLifecycleUsed() {
-			return false
-		}
-		return ar.Responses
+		return ar.ResponsesRetrieve
 	case ResponsesDeleteRequest:
-		if ar.ResponsesDelete {
-			return true
-		}
-		if ar.granularResponsesLifecycleUsed() {
-			return false
-		}
-		return ar.Responses
+		return ar.ResponsesDelete
 	case ResponsesCancelRequest:
-		if ar.ResponsesCancel {
-			return true
-		}
-		if ar.granularResponsesLifecycleUsed() {
-			return false
-		}
-		return ar.Responses
+		return ar.ResponsesCancel
 	case ResponsesInputItemsRequest:
-		if ar.ResponsesInputItems {
-			return true
-		}
-		if ar.granularResponsesLifecycleUsed() {
-			return false
-		}
-		return ar.Responses
+		return ar.ResponsesInputItems
 	case CountTokensRequest:
 		return ar.CountTokens
 	case CompactionRequest:

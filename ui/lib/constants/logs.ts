@@ -63,6 +63,10 @@ export const RequestTypes = [
 	"chat_completion_stream",
 	"responses",
 	"responses_stream",
+	"responses_retrieve",
+	"responses_delete",
+	"responses_cancel",
+	"responses_input_items",
 	"embedding",
 	"rerank",
 	"speech",
@@ -179,6 +183,10 @@ export const RequestTypeLabels = {
 	chat_completion_stream: "Chat Stream",
 	responses: "Responses",
 	responses_stream: "Responses Stream",
+	responses_retrieve: "Responses Retrieve",
+	responses_delete: "Responses Delete",
+	responses_cancel: "Responses Cancel",
+	responses_input_items: "Responses Input Items",
 
 	embedding: "Embedding",
 	rerank: "Rerank",
@@ -262,6 +270,10 @@ export const RequestTypeColors = {
 
 	responses: "bg-teal-100 text-teal-800",
 	responses_stream: "bg-violet-100 text-violet-800",
+	responses_retrieve: "bg-teal-100 text-teal-800",
+	responses_delete: "bg-teal-100 text-teal-800",
+	responses_cancel: "bg-teal-100 text-teal-800",
+	responses_input_items: "bg-teal-100 text-teal-800",
 
 	embedding: "bg-red-100 text-red-800",
 	rerank: "bg-fuchsia-100 text-fuchsia-800",
