@@ -408,16 +408,18 @@ func (r *BudgetResolver) isProviderAllowed(vk *configstoreTables.TableVirtualKey
 // checkRateLimitHierarchy checks provider-level rate limits first, then VK rate limits using flexible approach
 func (r *BudgetResolver) checkRateLimitHierarchy(ctx context.Context, vk *configstoreTables.TableVirtualKey, request *EvaluationRequest) *EvaluationResult {
 	if decision, err := r.store.CheckVirtualKeyRateLimit(ctx, vk, request, nil, nil); err != nil || isRateLimitViolation(decision) {
-		// Check provider-level first (matching check order), then VK-level
+		// Check provider-level first (matching check order), then VK-level.
+		// Resolve by ID from the canonical rate-limit map because embedded
+		// references can intentionally remain stale after request-time resets.
 		var rateLimitInfo *configstoreTables.TableRateLimit
 		for _, pc := range vk.ProviderConfigs {
-			if pc.Provider == string(request.Provider) && pc.RateLimit != nil {
-				rateLimitInfo = pc.RateLimit
+			if pc.Provider == string(request.Provider) && pc.RateLimitID != nil {
+				rateLimitInfo = r.store.LoadRateLimit(ctx, *pc.RateLimitID)
 				break
 			}
 		}
-		if rateLimitInfo == nil && vk.RateLimit != nil {
-			rateLimitInfo = vk.RateLimit
+		if rateLimitInfo == nil && vk.RateLimitID != nil {
+			rateLimitInfo = r.store.LoadRateLimit(ctx, *vk.RateLimitID)
 		}
 		return &EvaluationResult{
 			Decision:      decision,
@@ -478,7 +480,7 @@ func (r *BudgetResolver) isProviderRateLimitViolated(ctx context.Context, vk *co
 	}
 
 	// 2. Check VK-level provider config rate limit
-	if config.RateLimit == nil {
+	if config.RateLimitID == nil {
 		return false
 	}
 	decision, err := r.store.CheckVirtualKeyRateLimit(ctx, vk, request, nil, nil)
