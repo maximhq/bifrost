@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -1051,7 +1052,7 @@ func (h *GovernanceHandler) updateComplexityAnalyzerConfig(ctx *fasthttp.Request
 	decoder := json.NewDecoder(bytes.NewReader(ctx.PostBody()))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&payload); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid request format: %v", err))
+		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
 		return
 	}
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
@@ -1290,7 +1291,7 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 		vk = configstoreTables.TableVirtualKey{
 			ID:              uuid.NewString(),
 			Name:            req.Name,
-			Value:           governance.GenerateVirtualKey(),
+			Value:           *schemas.NewSecretVar(governance.GenerateVirtualKey()),
 			Description:     req.Description,
 			TeamID:          req.TeamID,
 			CustomerID:      req.CustomerID,
@@ -1903,9 +1904,9 @@ func (h *GovernanceHandler) rotateVirtualKeyByID(ctx context.Context, vkID strin
 	if err != nil {
 		return nil, err
 	}
-	oldValue := vk.Value
-	vk.Value = governance.GenerateVirtualKey()
-	if vk.Value == oldValue {
+	oldValue := vk.Value.GetValue()
+	vk.Value = *schemas.NewSecretVar(governance.GenerateVirtualKey())
+	if vk.Value.GetValue() == oldValue {
 		return nil, fmt.Errorf("generated virtual key matched existing value")
 	}
 	if err := h.configStore.UpdateVirtualKey(ctx, vk); err != nil {
@@ -3514,7 +3515,11 @@ func (h *GovernanceHandler) getProviderGovernance(ctx *fasthttp.RequestCtx) {
 
 // updateProviderGovernance handles PUT /api/governance/providers/{provider_name} - Update provider governance
 func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
-	providerName := ctx.UserValue("provider_name").(string)
+	providerName, err := url.PathUnescape(ctx.UserValue("provider_name").(string))
+	if err != nil {
+		SendError(ctx, 400, "Invalid provider name encoding")
+		return
+	}
 	var req UpdateProviderGovernanceRequest
 	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
 		SendError(ctx, 400, "Invalid JSON")
@@ -3756,7 +3761,11 @@ func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
 // deleteProviderGovernance handles DELETE /api/governance/providers/{provider_name} - removes
 // provider-level governance by deleting the all-models model config for that provider.
 func (h *GovernanceHandler) deleteProviderGovernance(ctx *fasthttp.RequestCtx) {
-	providerName := ctx.UserValue("provider_name").(string)
+	providerName, err := url.PathUnescape(ctx.UserValue("provider_name").(string))
+	if err != nil {
+		SendError(ctx, 400, "Invalid provider name encoding")
+		return
+	}
 	mc, err := h.configStore.GetModelConfig(ctx, configstoreTables.ModelConfigScopeGlobal, nil, configstoreTables.ModelConfigAllModels, &providerName)
 	if err != nil {
 		if err == configstore.ErrNotFound {

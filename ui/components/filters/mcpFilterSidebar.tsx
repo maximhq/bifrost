@@ -4,6 +4,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scrollArea";
 import { Skeleton } from "@/components/ui/skeleton";
+import { TruncatedLabel } from "@/components/ui/truncatedLabel";
 import { Statuses } from "@/lib/constants/logs";
 import { useGetMCPLogsFilterDataQuery } from "@/lib/store";
 import type { MCPToolLogFilters } from "@/lib/types/logs";
@@ -195,7 +196,7 @@ function CheckboxFilterItem({
 	return (
 		<label className="hover:bg-muted/50 flex cursor-pointer items-center gap-2.5 px-3 py-2 text-sm">
 			<Checkbox checked={checked} onCheckedChange={onCheckedChange} />
-			<span className={cn("truncate", labelClassName)}>{label}</span>
+			<TruncatedLabel className={labelClassName}>{label}</TruncatedLabel>
 		</label>
 	);
 }

@@ -41,32 +41,33 @@ type BifrostConfig struct {
 type ModelProvider string
 
 const (
-	OpenAI      ModelProvider = "openai"
-	Azure       ModelProvider = "azure"
-	Anthropic   ModelProvider = "anthropic"
-	Bedrock     ModelProvider = "bedrock"
-	Cohere      ModelProvider = "cohere"
-	Vertex      ModelProvider = "vertex"
-	Mistral     ModelProvider = "mistral"
-	Ollama      ModelProvider = "ollama"
-	OpencodeGo  ModelProvider = "opencode-go"
-	OpencodeZen ModelProvider = "opencode-zen"
-	Groq        ModelProvider = "groq"
-	SGL         ModelProvider = "sgl"
-	Parasail    ModelProvider = "parasail"
-	Perplexity  ModelProvider = "perplexity"
-	Cerebras    ModelProvider = "cerebras"
-	Gemini      ModelProvider = "gemini"
-	OpenRouter  ModelProvider = "openrouter"
-	Elevenlabs  ModelProvider = "elevenlabs"
-	HuggingFace ModelProvider = "huggingface"
-	Nebius      ModelProvider = "nebius"
-	XAI         ModelProvider = "xai"
-	Replicate   ModelProvider = "replicate"
-	VLLM        ModelProvider = "vllm"
-	Runway      ModelProvider = "runway"
-	Runware     ModelProvider = "runware"
-	Fireworks   ModelProvider = "fireworks"
+	OpenAI        ModelProvider = "openai"
+	Azure         ModelProvider = "azure"
+	Anthropic     ModelProvider = "anthropic"
+	Bedrock       ModelProvider = "bedrock"
+	BedrockMantle ModelProvider = "bedrock_mantle"
+	Cohere        ModelProvider = "cohere"
+	Vertex        ModelProvider = "vertex"
+	Mistral       ModelProvider = "mistral"
+	Ollama        ModelProvider = "ollama"
+	OpencodeGo    ModelProvider = "opencode-go"
+	OpencodeZen   ModelProvider = "opencode-zen"
+	Groq          ModelProvider = "groq"
+	SGL           ModelProvider = "sgl"
+	Parasail      ModelProvider = "parasail"
+	Perplexity    ModelProvider = "perplexity"
+	Cerebras      ModelProvider = "cerebras"
+	Gemini        ModelProvider = "gemini"
+	OpenRouter    ModelProvider = "openrouter"
+	Elevenlabs    ModelProvider = "elevenlabs"
+	HuggingFace   ModelProvider = "huggingface"
+	Nebius        ModelProvider = "nebius"
+	XAI           ModelProvider = "xai"
+	Replicate     ModelProvider = "replicate"
+	VLLM          ModelProvider = "vllm"
+	Runway        ModelProvider = "runway"
+	Runware       ModelProvider = "runware"
+	Fireworks     ModelProvider = "fireworks"
 )
 
 // SupportedBaseProviders is the list of base providers allowed for custom providers.
@@ -85,6 +86,7 @@ var StandardProviders = []ModelProvider{
 	Anthropic,
 	Azure,
 	Bedrock,
+	BedrockMantle,
 	Cerebras,
 	Cohere,
 	Gemini,
@@ -247,7 +249,7 @@ const (
 	BifrostContextKeyFallbackIndex                       BifrostContextKey = "bifrost-fallback-index"                 // int (to store the fallback index (set by bifrost - DO NOT SET THIS MANUALLY)) 0 for primary, 1 for first fallback, etc.
 	BifrostContextKeyResolvedAlias                       BifrostContextKey = "bifrost-resolved-alias"                 // *ResolvedAlias (set by bifrost after key-level alias resolution — providers read this for model_family routing and provider-specific overrides; nil/absent when no alias matched)
 	BifrostContextKeyStreamEndIndicator                  BifrostContextKey = "bifrost-stream-end-indicator"           // bool (set by bifrost - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyStreamGated                         BifrostContextKey = "bifrost-stream-gated"                  // bool (set by ctx.PauseStream/ResumeStream/EndStream when a plugin first engages the pause/resume gate; provider helpers use this as a fast-path check to skip Tracer.GateSend on streams that never engage the gate)
+	BifrostContextKeyStreamGated                         BifrostContextKey = "bifrost-stream-gated"                   // bool (set by ctx.PauseStream/ResumeStream/EndStream when a plugin first engages the pause/resume gate; provider helpers use this as a fast-path check to skip Tracer.GateSend on streams that never engage the gate)
 	BifrostContextKeyStreamIdleTimeout                   BifrostContextKey = "bifrost-stream-idle-timeout"            // time.Duration (per-chunk idle timeout for streaming)
 	BifrostContextKeySkipKeySelection                    BifrostContextKey = "bifrost-skip-key-selection"             // bool (will pass an empty key to the provider)
 	BifrostContextKeyExtraHeaders                        BifrostContextKey = "bifrost-extra-headers"                  // map[string][]string
@@ -373,11 +375,11 @@ const (
 
 // RoutingEngine constants
 const (
-	RoutingEngineGovernance      = "governance"
-	RoutingEngineRoutingRule     = "routing-rule"
-	RoutingEngineLoadbalancing   = "loadbalancing"
-	RoutingEngineModelCatalog    = "model-catalog"
-	RoutingEngineCircuitBreaker  = "circuit-breaker"
+	RoutingEngineGovernance     = "governance"
+	RoutingEngineRoutingRule    = "routing-rule"
+	RoutingEngineLoadbalancing  = "loadbalancing"
+	RoutingEngineModelCatalog   = "model-catalog"
+	RoutingEngineCircuitBreaker = "circuit-breaker"
 	// RoutingEngineCore represents the Bifrost core orchestrator's own
 	// routing decisions — primarily fallback transitions. Emitted when the
 	// primary attempt fails and core advances through the fallback chain so
@@ -1924,6 +1926,7 @@ type BifrostErrorExtraFields struct {
 	RawResponse               interface{}           `json:"raw_response,omitempty"`
 	ConvertedRequestType      RequestType           `json:"converted_request_type,omitempty"`
 	DroppedCompatPluginParams []string              `json:"dropped_compat_plugin_params,omitempty"`
+	Latency                   int64                 `json:"latency,omitempty"` // in milliseconds
 	KeyStatuses               []KeyStatus           `json:"key_statuses,omitempty"`
 	MCPAuthRequired           *MCPAuthRequiredError `json:"mcp_auth_required,omitempty"` // Set when a per-user MCP tool requires the caller to complete an inline auth flow (OAuth or headers)
 	// BilledUsage carries provider-reported token usage that was consumed even

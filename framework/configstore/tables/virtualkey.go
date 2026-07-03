@@ -209,7 +209,7 @@ type TableVirtualKey struct {
 	ID              string                          `gorm:"primaryKey;type:varchar(255)" json:"id"`
 	Name            string                          `gorm:"uniqueIndex:idx_virtual_key_name;type:varchar(255);not null" json:"name"`
 	Description     string                          `gorm:"type:text" json:"description,omitempty"`
-	Value           string                          `gorm:"uniqueIndex:idx_virtual_key_value;type:text;not null" json:"value"`
+	Value           schemas.SecretVar               `gorm:"uniqueIndex:idx_virtual_key_value;type:text;not null" json:"value"`
 	IsActive        *bool                           `gorm:"default:true" json:"is_active,omitempty"`                                     // Nil means true (DB default); false means inactive
 	ProviderConfigs []TableVirtualKeyProviderConfig `gorm:"foreignKey:VirtualKeyID;constraint:OnDelete:CASCADE" json:"provider_configs"` // Empty means no providers allowed (deny-by-default)
 	MCPConfigs      []TableVirtualKeyMCPConfig      `gorm:"foreignKey:VirtualKeyID;constraint:OnDelete:CASCADE" json:"mcp_configs"`
@@ -254,6 +254,28 @@ func (vk *TableVirtualKey) IsActiveValue() bool {
 	return *vk.IsActive
 }
 
+// VaultPathKey implements schemas.VaultPathKeyer so vault callbacks can compute the
+// vault base path for this model automatically.
+func (vk *TableVirtualKey) VaultPathKey() string { return vk.ID }
+
+// VaultStoreSelfManaged marks TableVirtualKey as storing its own vault secrets from
+// within BeforeSave, so the global vault callback skips it.
+func (vk *TableVirtualKey) VaultStoreSelfManaged() {}
+
+// MarshalJSON serializes TableVirtualKey with Value emitted as a resolved plain string,
+// never as a SecretVar object. This ensures all REST API responses return "bfvk-xxx"
+// rather than {"value":"bfvk-xxx","type":"plain_text"}.
+func (vk TableVirtualKey) MarshalJSON() ([]byte, error) {
+	type Alias TableVirtualKey
+	return json.Marshal(&struct {
+		Alias
+		Value string `json:"value"`
+	}{
+		Alias: Alias(vk),
+		Value: vk.Value.GetValue(),
+	})
+}
+
 // BeforeSave is a GORM hook that enforces mutual exclusion (team vs customer), computes
 // a SHA-256 hash of the plaintext value for indexed lookups, and encrypts the virtual key
 // value before writing to the database.
@@ -263,13 +285,23 @@ func (vk *TableVirtualKey) BeforeSave(tx *gorm.DB) error {
 		return fmt.Errorf("virtual key cannot belong to both team and customer")
 	}
 
-	// Hash must be computed before encryption (from plaintext value)
-	if vk.Value != "" {
-		vk.ValueHash = encrypt.HashSHA256(vk.Value)
-
+	// Hash must be computed before encryption (from plaintext value).
+	if vk.Value.IsSet() {
+		resolved := vk.Value.GetValue()
+		if resolved == "" {
+			return fmt.Errorf("virtual key %s: env/vault ref %q could not be resolved", vk.ID, vk.Value.GetRawRef())
+		}
+		vk.ValueHash = encrypt.HashSHA256(resolved)
 	}
-	if encrypt.IsEnabled() && vk.Value != "" {
-		if err := encryptString(&vk.Value); err != nil {
+	// Store plaintext SecretVar into vault and rewrite to vault ref before encrypting.
+	if schemas.VaultStoreWriteEnabled() {
+		base := schemas.VaultBasePath(vk.TableName(), vk.VaultPathKey())
+		if err := schemas.StoreOwnedVaultSecretVars(tx.Statement.Context, base, vk); err != nil {
+			return fmt.Errorf("failed to store virtual key secrets to vault: %w", err)
+		}
+	}
+	if encrypt.IsEnabled() && vk.Value.IsSet() {
+		if err := encryptSecretVar(&vk.Value); err != nil {
 			return fmt.Errorf("failed to encrypt virtual key value: %w", err)
 		}
 		vk.EncryptionStatus = EncryptionStatusEncrypted
@@ -285,7 +317,7 @@ func (vk *TableVirtualKey) BeforeSave(tx *gorm.DB) error {
 func (vk *TableVirtualKey) AfterFind(tx *gorm.DB) error {
 	switch vk.EncryptionStatus {
 	case EncryptionStatusEncrypted:
-		if err := decryptString(&vk.Value); err != nil {
+		if err := decryptSecretVar(&vk.Value); err != nil {
 			return fmt.Errorf("failed to decrypt virtual key value: %w", err)
 		}
 	}

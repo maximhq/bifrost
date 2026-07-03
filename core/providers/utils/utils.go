@@ -35,6 +35,22 @@ import (
 	"github.com/valyala/fasthttp/fasthttpproxy"
 )
 
+// ThoughtSignatureSeparator delimits a tool call's base ID from a provider reasoning
+// signature embedded in the call_id (e.g. Gemini thoughtSignatures), formatted as
+// "<baseID>_ts_<signature>".
+const ThoughtSignatureSeparator = "_ts_"
+
+// StripThoughtSignature returns the base tool-call ID without any embedded provider
+// reasoning signature. It is deterministic, so a tool call and its matching output strip
+// to the same ID. Providers that cannot use the signature (e.g. OpenAI, which caps call_id
+// at 64 chars) call this before sending the ID upstream.
+func StripThoughtSignature(callID string) string {
+	if base, _, found := strings.Cut(callID, ThoughtSignatureSeparator); found {
+		return base
+	}
+	return callID
+}
+
 // sortedAPI is a sonic encoder/decoder that sorts map keys during marshaling.
 // This ensures deterministic JSON output for map[string]interface{} values,
 // which is critical for LLM prompt caching (e.g., Anthropic cache keying).
@@ -110,6 +126,15 @@ var UnsupportedSpeechStreamModels = []string{"tts-1", "tts-1-hd"}
 // noop is a reusable no-op function returned by MakeRequestWithContext on the normal path.
 var noop = func() {}
 
+// SetErrorLatency stamps provider/request latency onto an error so downstream
+// logging and client-facing error details can show timing even without a response.
+func SetErrorLatency(bifrostErr *schemas.BifrostError, latency time.Duration) *schemas.BifrostError {
+	if bifrostErr != nil {
+		bifrostErr.ExtraFields.Latency = latency.Milliseconds()
+	}
+	return bifrostErr
+}
+
 // makeRequestWithDoFunc is the shared core behind MakeRequestWithContext and
 // MakeRequestWithContextFollowRedirects. It runs do() in a goroutine and handles
 // context cancellation, latency tracking, and error classification uniformly.
@@ -152,6 +177,7 @@ func makeRequestWithDoFunc(ctx context.Context, do func() error) (time.Duration,
 					Message: fmt.Sprintf("Request timed out by context: %v", ctx.Err()),
 					Error:   ctx.Err(),
 				},
+				ExtraFields: schemas.BifrostErrorExtraFields{Latency: latency.Milliseconds()},
 			}, func() { <-errChan }
 		}
 		statusCode := 499
@@ -164,6 +190,7 @@ func makeRequestWithDoFunc(ctx context.Context, do func() error) (time.Duration,
 				Message: fmt.Sprintf("Request cancelled by context: %v", ctx.Err()),
 				Error:   ctx.Err(),
 			},
+			ExtraFields: schemas.BifrostErrorExtraFields{Latency: latency.Milliseconds()},
 		}, func() { <-errChan }
 	case err := <-errChan:
 		// The do() call completed.
@@ -178,25 +205,26 @@ func makeRequestWithDoFunc(ctx context.Context, do func() error) (time.Duration,
 						Message: schemas.ErrRequestCancelled,
 						Error:   err,
 					},
+					ExtraFields: schemas.BifrostErrorExtraFields{Latency: latency.Milliseconds()},
 				}, noop
 			}
 			// Check for timeout errors first before checking net.OpError to avoid misclassification.
 			if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
-				return latency, NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), noop
+				return latency, SetErrorLatency(NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), latency), noop
 			}
 			// Check if error implements net.Error and has Timeout() == true.
 			var netErr net.Error
 			if errors.As(err, &netErr) && netErr.Timeout() {
-				return latency, NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), noop
+				return latency, SetErrorLatency(NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), latency), noop
 			}
 			// Check for DNS lookup and network errors after timeout checks.
 			var opErr *net.OpError
 			var dnsErr *net.DNSError
 			if errors.As(err, &opErr) || errors.As(err, &dnsErr) {
-				return latency, NewBifrostUpstreamConnectionError(schemas.ErrProviderNetworkError, err), noop
+				return latency, SetErrorLatency(NewBifrostUpstreamConnectionError(schemas.ErrProviderNetworkError, err), latency), noop
 			}
 			// The HTTP request itself failed (e.g., connection error, fasthttp timeout).
-			return latency, NewBifrostUpstreamConnectionError(schemas.ErrProviderDoRequest, err), noop
+			return latency, SetErrorLatency(NewBifrostUpstreamConnectionError(schemas.ErrProviderDoRequest, err), latency), noop
 		}
 		// HTTP request was successful from fasthttp's perspective (err is nil).
 		// The caller should check resp.StatusCode() for HTTP-level errors (4xx, 5xx).
@@ -210,13 +238,15 @@ func makeRequestWithDoFunc(ctx context.Context, do func() error) (time.Duration,
 // path it blocks until the background client.Do goroutine finishes, preventing a data race
 // between the still-running goroutine and the caller's release of req/resp.
 func MakeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *fasthttp.Request, resp *fasthttp.Response) (time.Duration, *schemas.BifrostError, func()) {
-	return makeRequestWithDoFunc(ctx, func() error { return client.Do(req, resp) })
+	latency, bifrostErr, wait := makeRequestWithDoFunc(ctx, func() error { return client.Do(req, resp) })
+	return latency, bifrostErr, wait
 }
 
 // MakeRequestWithContextFollowRedirects is like MakeRequestWithContext but follows up to
 // maxRedirects HTTP redirects automatically (equivalent to curl's -L flag).
 func MakeRequestWithContextFollowRedirects(ctx context.Context, client *fasthttp.Client, req *fasthttp.Request, resp *fasthttp.Response, maxRedirects int) (time.Duration, *schemas.BifrostError, func()) {
-	return makeRequestWithDoFunc(ctx, func() error { return client.DoRedirects(req, resp, maxRedirects) })
+	latency, bifrostErr, wait := makeRequestWithDoFunc(ctx, func() error { return client.DoRedirects(req, resp, maxRedirects) })
+	return latency, bifrostErr, wait
 }
 
 // Deprecated: ConfigureRetry is now handled internally by ConfigureDialer.
@@ -1428,9 +1458,14 @@ func EnrichError(
 	responseBody []byte,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
+	latency ...time.Duration,
 ) *schemas.BifrostError {
 	if bifrostErr == nil {
 		return bifrostErr
+	}
+
+	if len(latency) > 0 {
+		SetErrorLatency(bifrostErr, latency[0])
 	}
 
 	if ShouldSendBackRawRequest(ctx, sendBackRawRequest) && len(requestBody) > 0 {

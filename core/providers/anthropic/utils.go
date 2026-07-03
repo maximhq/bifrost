@@ -759,14 +759,25 @@ func IsFableFamily(model string) bool {
 	return strings.Contains(m, "fable") || strings.Contains(m, "mythos")
 }
 
+// IsSonnet5Plus returns true for Claude Sonnet 5 (and later Sonnet 5.x). Sonnet 5
+// is a drop-in for Sonnet 4.6 but adopts the Opus 4.7+ request surface: extended
+// thinking (budget_tokens) is removed and temperature/top_p/top_k are rejected
+// with a 400 — adaptive thinking is the only thinking-on mode. Matching "sonnet-5"
+// excludes "sonnet-4-5" and matches Bedrock/Vertex/date-suffixed forms.
+//
+// Source: https://platform.claude.com/docs/en/about-claude/models/whats-new-sonnet-5
+func IsSonnet5Plus(model string) bool {
+	return strings.Contains(strings.ToLower(model), "sonnet-5")
+}
+
 // IsAdaptiveOnlyThinkingModel returns true for models where budget_tokens
 // extended thinking is removed (adaptive is the only thinking-on mode) and
-// temperature/top_p/top_k are rejected with a 400. Covers Opus 4.7+ and the
-// Fable/Mythos family. Use this — not IsOpus47Plus — for the thinking and
+// temperature/top_p/top_k are rejected with a 400. Covers Opus 4.7+, Sonnet 5+,
+// and the Fable/Mythos family. Use this — not IsOpus47Plus — for the thinking and
 // sampling-parameter gates so Fable is handled correctly. (Fast mode is gated
 // on IsOpus47Plus instead, since Fable does not support speed:"fast".)
 func IsAdaptiveOnlyThinkingModel(model string) bool {
-	return IsOpus47Plus(model) || IsFableFamily(model)
+	return IsOpus47Plus(model) || IsSonnet5Plus(model) || IsFableFamily(model)
 }
 
 // SupportsNativeEffort returns true if the model supports Anthropic's native output_config.effort parameter.
@@ -783,7 +794,7 @@ func SupportsNativeEffort(model string) bool {
 // SupportsEffortParameter returns true if the model accepts the
 // output_config.effort parameter. Supported models: Claude Fable 5,
 // Claude Mythos 5, Claude Mythos Preview, Opus 4.8, Opus 4.7, Opus 4.6,
-// Sonnet 4.6, and Opus 4.5. All other models reject effort with a 400:
+// Sonnet 5, Sonnet 4.6, and Opus 4.5. All other models reject effort with a 400:
 //
 //	"This model does not support the effort parameter."
 //
@@ -795,7 +806,7 @@ func SupportsNativeEffort(model string) bool {
 // Source: https://platform.claude.com/docs/en/build-with-claude/effort
 func SupportsEffortParameter(model string) bool {
 	m := strings.ToLower(model)
-	if IsFableFamily(m) {
+	if IsFableFamily(m) || IsSonnet5Plus(m) {
 		return true
 	}
 	if strings.Contains(m, "haiku") {
@@ -874,13 +885,13 @@ func SupportsFastMode(model string) bool {
 }
 
 // SupportsAdaptiveThinking returns true if the model supports thinking.type: "adaptive".
-// Currently supported on Claude Opus 4.6, Claude Sonnet 4.6, Claude Opus 4.7+, and
-// the Claude Fable/Mythos family. On Opus 4.7+ and Fable/Mythos adaptive is the only
-// thinking-on mode; on Opus 4.6 and Sonnet 4.6 it coexists with the deprecated
-// budget_tokens-based extended thinking. On Fable/Mythos adaptive is always on and
-// thinking:{type:"disabled"} is rejected (see IsFableFamily).
+// Currently supported on Claude Opus 4.6, Claude Sonnet 4.6, Claude Sonnet 5+, Claude
+// Opus 4.7+, and the Claude Fable/Mythos family. On Opus 4.7+, Sonnet 5+, and
+// Fable/Mythos adaptive is the only thinking-on mode; on Opus 4.6 and Sonnet 4.6 it
+// coexists with the deprecated budget_tokens-based extended thinking. On Fable/Mythos
+// adaptive is always on and thinking:{type:"disabled"} is rejected (see IsFableFamily).
 func SupportsAdaptiveThinking(model string) bool {
-	if IsOpus47Plus(model) || IsFableFamily(model) {
+	if IsOpus47Plus(model) || IsSonnet5Plus(model) || IsFableFamily(model) {
 		return true
 	}
 	model = strings.ToLower(model)
@@ -891,7 +902,7 @@ func SupportsAdaptiveThinking(model string) bool {
 }
 
 // Computer-use tool generations.
-//   - "20251124" — Opus 4.8, Opus 4.7, Opus 4.6, Sonnet 4.6, Opus 4.5
+//   - "20251124" — Opus 4.8, Opus 4.7, Opus 4.6, Sonnet 5, Sonnet 4.6, Opus 4.5
 //   - "20250124" — everything else (Sonnet 4.5, Haiku 4.5, Opus 4.1, Sonnet 4, Opus 4, Sonnet 3.7)
 //
 // The bash tool is generation-invariant (always bash_20250124).
@@ -907,8 +918,8 @@ const (
 //   - Which `name` literal Anthropic's Pydantic validator demands for text_editor.
 func ComputerUseGeneration(model string) string {
 	m := strings.ToLower(model)
-	// Opus 4.7+ and the Fable/Mythos family use the new generation.
-	if IsOpus47Plus(m) || IsFableFamily(m) {
+	// Opus 4.7+, Sonnet 5+, and the Fable/Mythos family use the new generation.
+	if IsOpus47Plus(m) || IsSonnet5Plus(m) || IsFableFamily(m) {
 		return ComputerUseGen20251124
 	}
 	// Opus 4.6 / Sonnet 4.6 / Opus 4.5 also use the new generation.
@@ -933,11 +944,12 @@ func ComputerUseGeneration(model string) string {
 //
 // Models requiring new-gen text_editor:
 //   - Opus 4.7+ (matches IsOpus47Plus)
+//   - Sonnet 5+ (matches IsSonnet5Plus)
 //   - Opus 4.5 / 4.6
 //   - Sonnet 4.5 / 4.6 (sonnet-4-5 differs from ComputerUseGeneration which keeps it old-gen)
 func TextEditorGeneration(model string) string {
 	m := strings.ToLower(model)
-	if IsOpus47Plus(m) || IsFableFamily(m) {
+	if IsOpus47Plus(m) || IsSonnet5Plus(m) || IsFableFamily(m) {
 		return ComputerUseGen20251124
 	}
 	if strings.Contains(m, "opus") {
@@ -1015,18 +1027,6 @@ func setEffortOnOutputConfig(req *AnthropicMessageRequest, effort string) {
 		req.OutputConfig = &AnthropicOutputConfig{}
 	}
 	req.OutputConfig.Effort = &effort
-}
-
-// getRequestBodyForResponses serializes a BifrostResponsesRequest into the Anthropic wire format.
-// It delegates to BuildAnthropicResponsesRequestBody with the appropriate provider and streaming config.
-func getRequestBodyForResponses(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest, isStreaming bool, excludeFields []string, shouldSendBackRawRequest bool, shouldSendBackRawResponse bool) ([]byte, *schemas.BifrostError) {
-	return BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
-		Provider:                  schemas.Anthropic,
-		IsStreaming:               isStreaming,
-		ExcludeFields:             excludeFields,
-		ShouldSendBackRawRequest:  shouldSendBackRawRequest,
-		ShouldSendBackRawResponse: shouldSendBackRawResponse,
-	})
 }
 
 // AddMissingBetaHeadersToContext analyzes the Anthropic request and adds missing beta headers to the context.
@@ -2182,6 +2182,13 @@ func ConvertToAnthropicDocumentBlock(block schemas.ChatContentBlock) AnthropicCo
 	// Set title if provided
 	if file.Filename != nil {
 		documentBlock.Title = file.Filename
+	}
+
+	// Handle uploaded file references from OpenAI-compatible file blocks.
+	if file.FileID != nil && *file.FileID != "" {
+		documentBlock.Source.SourceObj.Type = "file"
+		documentBlock.Source.SourceObj.FileID = file.FileID
+		return documentBlock
 	}
 
 	// Handle file URL

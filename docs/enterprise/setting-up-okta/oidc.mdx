@@ -302,6 +302,7 @@ Map a claim value to a Bifrost role.
 
 Map a claim value to a Bifrost team. All matching rules apply.
 
+- Use a specific value (e.g. `engineering`) to map that exact claim value to a named Bifrost team
 - Use `*` as the value to sync the claim value directly as the team name
 - Use `${*}` to extract part of the string — e.g. `Bifrost Playground: ${*} Team` matches `Bifrost Playground: Alpha Team` and creates team **Alpha**
 
@@ -309,6 +310,7 @@ Map a claim value to a Bifrost team. All matching rules apply.
 
 Same wildcard support as team mappings.
 
+- Use a specific value (e.g. `platform`) to map that exact claim value to a named Bifrost business unit
 - Use `${*}` to extract a substring as the business unit name — e.g. `Bifrost Playground: ${*} BU` matches `Bifrost Playground: Alpha BU` and creates business unit **Alpha**
 - When a rule matches, the resolved business unit is assigned to all of that user's teams
 - Manually assigned teams are left unchanged

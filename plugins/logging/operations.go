@@ -16,6 +16,52 @@ import (
 
 const realtimeMissingTranscriptText = "[Audio transcription unavailable]"
 
+const (
+	logStatusProcessing = "processing"
+	logStatusSuccess    = "success"
+	logStatusError      = "error"
+	logStatusCancelled  = "cancelled"
+)
+
+func logStatusForError(err *schemas.BifrostError) string {
+	if isCancelledLogError(err) {
+		return logStatusCancelled
+	}
+	return logStatusError
+}
+
+func isCancelledLogError(err *schemas.BifrostError) bool {
+	if err == nil {
+		return false
+	}
+	if err.StatusCode != nil && *err.StatusCode == 499 {
+		return true
+	}
+	if err.Error == nil || err.Error.Type == nil {
+		return false
+	}
+	switch *err.Error.Type {
+	case schemas.RequestCancelled:
+		return true
+	case schemas.RequestTimedOut:
+		return isContextTimeoutLogError(err)
+	default:
+		return false
+	}
+}
+
+func isContextTimeoutLogError(err *schemas.BifrostError) bool {
+	if err == nil || err.Error == nil {
+		return false
+	}
+	message := strings.ToLower(strings.TrimSpace(err.Error.Message))
+	if message == "" || message == strings.ToLower(schemas.ErrProviderRequestTimedOut) {
+		return false
+	}
+	return strings.Contains(message, "by context") ||
+		strings.Contains(message, "context deadline exceeded")
+}
+
 // insertInitialLogEntry creates a new log entry in the database using GORM
 func (p *LoggerPlugin) insertInitialLogEntry(
 	ctx context.Context,
@@ -33,7 +79,7 @@ func (p *LoggerPlugin) insertInitialLogEntry(
 		Provider:      data.Provider,
 		Model:         data.Model,
 		FallbackIndex: fallbackIndex,
-		Status:        "processing",
+		Status:        logStatusProcessing,
 		Stream:        false,
 		CreatedAt:     timestamp,
 		// Set parsed fields for serialization
@@ -339,7 +385,8 @@ func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamRe
 
 	// Handle error case first
 	if streamResponse.Data.ErrorDetails != nil {
-		entry.Status = "error"
+		entry.Status = logStatusForError(streamResponse.Data.ErrorDetails)
+		entry.ErrorDetailsParsed = streamResponse.Data.ErrorDetails
 		// Serialize error details immediately to avoid use-after-free with pooled errors
 		if data, err := sonic.Marshal(streamResponse.Data.ErrorDetails); err == nil {
 			entry.ErrorDetails = string(data)
@@ -347,7 +394,7 @@ func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamRe
 		latF := float64(streamResponse.Data.Latency)
 		entry.Latency = &latF
 	} else {
-		entry.Status = "success"
+		entry.Status = logStatusSuccess
 		latF := float64(streamResponse.Data.Latency)
 		entry.Latency = &latF
 	}
@@ -1199,8 +1246,16 @@ func (p *LoggerPlugin) extractUniqueMCPKeyPairs(logs []logstore.MCPToolLog, extr
 	return result
 }
 
-// RecalculateCosts recomputes cost for log entries that are missing cost values
+// RecalculateCosts recomputes cost for all log entries that are missing cost values.
+// The limit controls batch size, not the total number of rows processed.
 func (p *LoggerPlugin) RecalculateCosts(ctx context.Context, filters logstore.SearchFilters, limit int) (*RecalculateCostResult, error) {
+	return p.RecalculateCostsWithProgress(ctx, filters, limit, nil)
+}
+
+// RecalculateCostsWithProgress recomputes cost for all log entries that are missing cost values
+// and invokes progress after each batch. The limit controls batch size, not the
+// total number of rows processed.
+func (p *LoggerPlugin) RecalculateCostsWithProgress(ctx context.Context, filters logstore.SearchFilters, limit int, progress func(RecalculateCostProgress)) (*RecalculateCostResult, error) {
 	if p.pricingManager == nil {
 		return nil, fmt.Errorf("pricing manager is not configured")
 	}
@@ -1221,32 +1276,71 @@ func (p *LoggerPlugin) RecalculateCosts(ctx context.Context, filters logstore.Se
 		Order:  "asc",
 	}
 
-	searchResult, err := p.store.SearchLogs(ctx, filters, pagination)
-	if err != nil {
-		return nil, fmt.Errorf("failed to search logs for cost recalculation: %w", err)
-	}
+	result := &RecalculateCostResult{}
+	seenInitialTotal := false
+	remainingOffset := 0
+	processed := 0
 
-	result := &RecalculateCostResult{
-		TotalMatched: searchResult.Stats.TotalRequests,
-	}
-
-	costUpdates := make(map[string]float64, len(searchResult.Logs))
-
-	for _, logEntry := range searchResult.Logs {
-		cost, calcErr := p.calculateCostForLog(&logEntry)
-		if calcErr != nil {
-			result.Skipped++
-			p.logger.Debug("skipping cost recalculation for log %s: %v", logEntry.ID, calcErr)
-			continue
+	for {
+		pagination.Offset = remainingOffset
+		searchResult, err := p.store.SearchLogs(ctx, filters, pagination)
+		if err != nil {
+			return nil, fmt.Errorf("failed to search logs for cost recalculation: %w", err)
 		}
-		costUpdates[logEntry.ID] = cost
-	}
-
-	if len(costUpdates) > 0 {
-		if err := p.store.BulkUpdateCost(ctx, costUpdates); err != nil {
-			return nil, fmt.Errorf("failed to bulk update costs: %w", err)
+		if !seenInitialTotal {
+			result.TotalMatched = searchResult.Stats.TotalRequests
+			seenInitialTotal = true
 		}
-		result.Updated = len(costUpdates)
+		if len(searchResult.Logs) == 0 {
+			break
+		}
+		processed += len(searchResult.Logs)
+
+		costUpdates := make(map[string]float64, len(searchResult.Logs))
+		stillMissingInBatch := 0
+
+		for _, logEntry := range searchResult.Logs {
+			cost, calcErr := p.calculateCostForLog(&logEntry)
+			if calcErr != nil {
+				result.Skipped++
+				stillMissingInBatch++
+				p.logger.Debug("skipping cost recalculation for log %s: %v", logEntry.ID, calcErr)
+				continue
+			}
+			if cost <= 0 {
+				if isKnownZeroCostLog(&logEntry) {
+					costUpdates[logEntry.ID] = cost
+				} else {
+					result.Skipped++
+					p.logger.Debug("skipping cost recalculation for log %s: resolved cost is zero", logEntry.ID)
+				}
+				// MissingCostOnly currently includes zero-cost rows, so advance past them
+				// whether they were skipped or updated to avoid recalculating forever.
+				stillMissingInBatch++
+				continue
+			}
+			costUpdates[logEntry.ID] = cost
+		}
+
+		if len(costUpdates) > 0 {
+			if err := p.store.BulkUpdateCost(ctx, costUpdates); err != nil {
+				return nil, fmt.Errorf("failed to bulk update costs: %w", err)
+			}
+			result.Updated += len(costUpdates)
+		}
+
+		remainingOffset += stillMissingInBatch
+		if progress != nil {
+			progress(RecalculateCostProgress{
+				TotalMatched: result.TotalMatched,
+				Processed:    processed,
+				Updated:      result.Updated,
+				Skipped:      result.Skipped,
+			})
+		}
+		if len(searchResult.Logs) < limit {
+			break
+		}
 	}
 
 	// Re-count how many logs still match the missing-cost filter after updates
@@ -1261,8 +1355,39 @@ func (p *LoggerPlugin) RecalculateCosts(ctx context.Context, filters logstore.Se
 	} else {
 		result.Remaining = remainingResult.Stats.TotalRequests
 	}
+	if progress != nil {
+		remaining := result.Remaining
+		progress(RecalculateCostProgress{
+			TotalMatched: result.TotalMatched,
+			Processed:    processed,
+			Updated:      result.Updated,
+			Skipped:      result.Skipped,
+			Remaining:    &remaining,
+			Done:         true,
+		})
+	}
 
 	return result, nil
+}
+
+func isKnownZeroCostLog(logEntry *logstore.Log) bool {
+	if logEntry == nil || logEntry.CacheDebugParsed == nil || !logEntry.CacheDebugParsed.CacheHit {
+		return false
+	}
+	return logEntry.CacheDebugParsed.HitType != nil && *logEntry.CacheDebugParsed.HitType == "direct"
+}
+
+func normalizeLogRequestType(object string) schemas.RequestType {
+	switch object {
+	case "chat.completion":
+		return schemas.ChatCompletionRequest
+	case "chat.completion.chunk":
+		return schemas.ChatCompletionStreamRequest
+	case "response":
+		return schemas.ResponsesRequest
+	default:
+		return schemas.RequestType(object)
+	}
 }
 
 func (p *LoggerPlugin) calculateCostForLog(logEntry *logstore.Log) (float64, error) {
@@ -1285,7 +1410,7 @@ func (p *LoggerPlugin) calculateCostForLog(logEntry *logstore.Log) (float64, err
 		return 0, fmt.Errorf("token usage not available for log %s", logEntry.ID)
 	}
 
-	requestType := schemas.RequestType(logEntry.Object)
+	requestType := normalizeLogRequestType(logEntry.Object)
 	if requestType == "" && (cacheDebug == nil || !cacheDebug.CacheHit) {
 		p.logger.Warn("skipping cost calculation for log %s: object type is empty (timestamp: %s)", logEntry.ID, logEntry.Timestamp)
 		return 0, fmt.Errorf("object type is empty for log %s", logEntry.ID)

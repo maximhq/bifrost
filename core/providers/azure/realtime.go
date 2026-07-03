@@ -252,7 +252,7 @@ func (provider *AzureProvider) CreateRealtimeClientSecret(
 	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, headers)
 
 	if resp.StatusCode() < fasthttp.StatusOK || resp.StatusCode() >= fasthttp.StatusMultipleChoices {
-		return nil, provider.parseRealtimeClientSecretError(ctx, resp)
+		return nil, providerUtils.SetErrorLatency(provider.parseRealtimeClientSecretError(ctx, resp), latency)
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
@@ -330,7 +330,6 @@ func newAzureRealtimeError(status int, errorType, message string, err error) *sc
 	}
 	return bifrostErr
 }
-
 
 func (provider *AzureProvider) parseRealtimeClientSecretError(ctx *schemas.BifrostContext, resp *fasthttp.Response) *schemas.BifrostError {
 	body, _ := providerUtils.CheckAndDecodeBody(resp)

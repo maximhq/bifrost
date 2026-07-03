@@ -25,6 +25,7 @@ import (
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -75,7 +76,7 @@ func resolveModelAndProvider(_ *fasthttp.RequestCtx, _ *lib.Config, model string
 func prepareRequest[T baseRequest](ctx *fasthttp.RequestCtx, config *lib.Config, knownFields map[string]bool) (*T, *requestBase, error) {
 	req := new(T)
 	if err := sonic.Unmarshal(ctx.PostBody(), req); err != nil {
-		return nil, nil, fmt.Errorf("invalid request format: %v", err)
+		return nil, nil, fmt.Errorf("Invalid request payload")
 	}
 	provider, modelName, err := resolveModelAndProvider(ctx, config, (*req).getModel())
 	if err != nil {
@@ -871,67 +872,82 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	// Add pricing data to the response
-	if len(resp.Data) > 0 && h.config.ModelCatalog != nil {
-		for i, modelEntry := range resp.Data {
-			provider, modelName := schemas.ParseModelString(modelEntry.ID, "")
-			pricingEntry := h.config.ModelCatalog.GetPricingEntryForModel(modelName, provider)
-			if pricingEntry == nil && modelEntry.Alias != nil {
-				// Retry with alias
-				pricingEntry = h.config.ModelCatalog.GetPricingEntryForModel(*modelEntry.Alias, provider)
-			}
-			if pricingEntry != nil {
-				if pricingEntry.BaseModel != "" && resp.Data[i].NormalizedName == nil {
-					resp.Data[i].NormalizedName = bifrost.Ptr(providerUtils.NormalizeBaseModelSlug(pricingEntry.BaseModel))
-				}
-				if len(pricingEntry.AdditionalAttributes) > 0 && resp.Data[i].AdditionalAttributes == nil {
-					resp.Data[i].AdditionalAttributes = pricingEntry.AdditionalAttributes
-				}
-				if pricingEntry.ContextLength != nil && resp.Data[i].ContextLength == nil {
-					resp.Data[i].ContextLength = pricingEntry.ContextLength
-				} else if pricingEntry.MaxInputTokens != nil && resp.Data[i].ContextLength == nil {
-					resp.Data[i].ContextLength = pricingEntry.MaxInputTokens // fallback to MaxInputTokens if ContextLength is not set
-				}
-
-				if pricingEntry.MaxInputTokens != nil && resp.Data[i].MaxInputTokens == nil {
-					resp.Data[i].MaxInputTokens = pricingEntry.MaxInputTokens
-				}
-				if pricingEntry.MaxOutputTokens != nil && resp.Data[i].MaxOutputTokens == nil {
-					resp.Data[i].MaxOutputTokens = pricingEntry.MaxOutputTokens
-				}
-				if pricingEntry.Architecture != nil && resp.Data[i].Architecture == nil {
-					resp.Data[i].Architecture = pricingEntry.Architecture
-				}
-				if modelEntry.Pricing == nil {
-					pricing := &schemas.Pricing{}
-					if pricingEntry.InputCostPerToken != nil {
-						pricing.Prompt = bifrost.Ptr(fmt.Sprintf("%.10f", *pricingEntry.InputCostPerToken))
-					}
-					if pricingEntry.OutputCostPerToken != nil {
-						pricing.Completion = bifrost.Ptr(fmt.Sprintf("%.10f", *pricingEntry.OutputCostPerToken))
-					}
-					if pricingEntry.InputCostPerImage != nil {
-						pricing.Image = bifrost.Ptr(fmt.Sprintf("%.10f", *pricingEntry.InputCostPerImage))
-					}
-					if pricingEntry.CacheReadInputTokenCost != nil {
-						pricing.InputCacheRead = bifrost.Ptr(fmt.Sprintf("%.10f", *pricingEntry.CacheReadInputTokenCost))
-					}
-					if pricingEntry.CacheCreationInputTokenCost != nil {
-						pricing.InputCacheWrite = bifrost.Ptr(fmt.Sprintf("%.10f", *pricingEntry.CacheCreationInputTokenCost))
-					}
-					if pricingEntry.SearchContextCostPerQuery != nil {
-						pricing.WebSearch = bifrost.Ptr(fmt.Sprintf("%.10f", *pricingEntry.SearchContextCostPerQuery))
-					}
-					resp.Data[i].Pricing = pricing
-				}
-			}
-		}
-	}
+	enrichAndFilterListModelsResponse(resp, h.config.ModelCatalog)
 	if resp != nil && resp.ExtraFields.ProviderResponseHeaders != nil {
 		forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
 	}
 	// Send successful response
 	SendJSON(ctx, resp)
+}
+
+func enrichAndFilterListModelsResponse(resp *schemas.BifrostListModelsResponse, catalog *modelcatalog.ModelCatalog) {
+	if resp == nil || len(resp.Data) == 0 {
+		return
+	}
+
+	if catalog == nil {
+		resp.FilterDeprecatedModels()
+		return
+	}
+
+	models := resp.Data[:0]
+	for _, modelEntry := range resp.Data {
+		provider, modelName := schemas.ParseModelString(modelEntry.ID, "")
+		pricingEntry := catalog.GetPricingEntryForModel(modelName, provider)
+		if pricingEntry == nil && modelEntry.Alias != nil {
+			pricingEntry = catalog.GetPricingEntryForModel(*modelEntry.Alias, provider)
+		}
+		if modelEntry.IsDeprecated || (pricingEntry != nil && pricingEntry.IsDeprecated) {
+			continue
+		}
+		if pricingEntry != nil {
+			modelEntry.IsDeprecated = false
+			if pricingEntry.BaseModel != "" && modelEntry.NormalizedName == nil {
+				modelEntry.NormalizedName = bifrost.Ptr(providerUtils.NormalizeBaseModelSlug(pricingEntry.BaseModel))
+			}
+			if len(pricingEntry.AdditionalAttributes) > 0 && modelEntry.AdditionalAttributes == nil {
+				modelEntry.AdditionalAttributes = pricingEntry.AdditionalAttributes
+			}
+			if pricingEntry.ContextLength != nil && modelEntry.ContextLength == nil {
+				modelEntry.ContextLength = pricingEntry.ContextLength
+			} else if pricingEntry.MaxInputTokens != nil && modelEntry.ContextLength == nil {
+				modelEntry.ContextLength = pricingEntry.MaxInputTokens
+			}
+			if pricingEntry.MaxInputTokens != nil && modelEntry.MaxInputTokens == nil {
+				modelEntry.MaxInputTokens = pricingEntry.MaxInputTokens
+			}
+			if pricingEntry.MaxOutputTokens != nil && modelEntry.MaxOutputTokens == nil {
+				modelEntry.MaxOutputTokens = pricingEntry.MaxOutputTokens
+			}
+			if pricingEntry.Architecture != nil && modelEntry.Architecture == nil {
+				modelEntry.Architecture = pricingEntry.Architecture
+			}
+			if modelEntry.Pricing == nil {
+				pricing := &schemas.Pricing{}
+				if pricingEntry.InputCostPerToken != nil {
+					pricing.Prompt = bifrost.Ptr(fmt.Sprintf("%.10f", *pricingEntry.InputCostPerToken))
+				}
+				if pricingEntry.OutputCostPerToken != nil {
+					pricing.Completion = bifrost.Ptr(fmt.Sprintf("%.10f", *pricingEntry.OutputCostPerToken))
+				}
+				if pricingEntry.InputCostPerImage != nil {
+					pricing.Image = bifrost.Ptr(fmt.Sprintf("%.10f", *pricingEntry.InputCostPerImage))
+				}
+				if pricingEntry.CacheReadInputTokenCost != nil {
+					pricing.InputCacheRead = bifrost.Ptr(fmt.Sprintf("%.10f", *pricingEntry.CacheReadInputTokenCost))
+				}
+				if pricingEntry.CacheCreationInputTokenCost != nil {
+					pricing.InputCacheWrite = bifrost.Ptr(fmt.Sprintf("%.10f", *pricingEntry.CacheCreationInputTokenCost))
+				}
+				if pricingEntry.SearchContextCostPerQuery != nil {
+					pricing.WebSearch = bifrost.Ptr(fmt.Sprintf("%.10f", *pricingEntry.SearchContextCostPerQuery))
+				}
+				modelEntry.Pricing = pricing
+			}
+		}
+		models = append(models, modelEntry)
+	}
+	resp.Data = models
 }
 
 // prepareTextCompletionRequest prepares a BifrostTextCompletionRequest from the HTTP request body
@@ -2563,7 +2579,7 @@ func (h *CompletionHandler) imageVariation(ctx *fasthttp.RequestCtx) {
 func (h *CompletionHandler) videoGeneration(ctx *fasthttp.RequestCtx) {
 	var req VideoGenerationRequest
 	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request format: %v", err))
+		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
 		return
 	}
 
@@ -2875,7 +2891,7 @@ func (h *CompletionHandler) videoRemix(ctx *fasthttp.RequestCtx) {
 	// Parse request body
 	var req VideoRemixRequest
 	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request format: %v", err))
+		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
 		return
 	}
 
@@ -2951,7 +2967,7 @@ func resolveBatchProvider(ctx *fasthttp.RequestCtx, config *lib.Config, model st
 func (h *CompletionHandler) batchCreate(ctx *fasthttp.RequestCtx) {
 	var req BatchCreateRequest
 	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request format: %v", err))
+		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
 		return
 	}
 
@@ -3647,7 +3663,7 @@ func (h *CompletionHandler) fileContent(ctx *fasthttp.RequestCtx) {
 func (h *CompletionHandler) containerCreate(ctx *fasthttp.RequestCtx) {
 	var req ContainerCreateRequest
 	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request format: %v", err))
+		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
 		return
 	}
 

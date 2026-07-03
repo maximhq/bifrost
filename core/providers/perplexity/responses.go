@@ -1,8 +1,18 @@
 package perplexity
 
 import (
+	"strings"
+
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+// isPerplexityResponsesSupported reports whether the model should use /v1/responses vs /chat/completions.
+// Denylist by design: /chat/completions serves only the Sonar family, so sonar-* variants go to chat and
+// every other model (base sonar + non-Sonar) goes to responses. This keeps newly-shipped non-Sonar models
+// working without a code change; they'd fail on chat, which doesn't serve them.
+func isPerplexityResponsesSupported(model string) bool {
+	return !strings.HasPrefix(strings.TrimPrefix(model, "perplexity/"), "sonar-")
+}
 
 // ToPerplexityResponsesRequest converts a BifrostResponsesRequest to PerplexityChatRequest
 func ToPerplexityResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *PerplexityChatRequest {

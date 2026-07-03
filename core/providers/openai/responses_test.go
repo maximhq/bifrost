@@ -2018,3 +2018,65 @@ func TestToOpenAIResponsesRequest_OpenRouterServerToolsPreserved(t *testing.T) {
 		}
 	})
 }
+
+// Reverse-direction guard for the Responses path: a Gemini thoughtSignature embedded in
+// call_id ("<baseID>_ts_<sig>") must be stripped to the base ID before reaching OpenAI,
+// which rejects input[].id over 64 chars. The call and its output strip identically so
+// they still pair, and the caller's input is left intact.
+func TestToOpenAIResponsesRequest_StripsThoughtSignatureFromCallID(t *testing.T) {
+	// "_ts_" is the separator used by the native Gemini converters to embed signatures.
+	embeddedID := "search_ts_" + strings.Repeat("A", 6000)
+
+	req := &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o",
+		Input: []schemas.ResponsesMessage{
+			{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID:    schemas.Ptr(embeddedID),
+					Name:      schemas.Ptr("search"),
+					Arguments: schemas.Ptr("{}"),
+				},
+			},
+			{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: schemas.Ptr(embeddedID),
+					Output: &schemas.ResponsesToolMessageOutputStruct{
+						ResponsesToolCallOutputStr: schemas.Ptr("result"),
+					},
+				},
+			},
+		},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	defer cancel()
+	result := ToOpenAIResponsesRequest(ctx, req)
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+
+	out := result.Input.OpenAIResponsesRequestInputArray
+	callID := *out[0].ResponsesToolMessage.CallID
+	outputCallID := *out[1].ResponsesToolMessage.CallID
+
+	if callID != "search" {
+		t.Errorf("function_call id: got %q, want %q", callID, "search")
+	}
+	if len(callID) > 64 {
+		t.Errorf("function_call id exceeds OpenAI's 64-char limit: %d chars", len(callID))
+	}
+	if outputCallID != callID {
+		t.Errorf("function_call_output id %q must match function_call id %q", outputCallID, callID)
+	}
+
+	// The caller's history must be untouched so a later Gemini turn can recover the signature.
+	if *req.Input[0].ResponsesToolMessage.CallID != embeddedID {
+		t.Error("original function_call call_id was mutated")
+	}
+	if *req.Input[1].ResponsesToolMessage.CallID != embeddedID {
+		t.Error("original function_call_output call_id was mutated")
+	}
+}

@@ -3324,6 +3324,22 @@ func parseTranscriptionMultipartRequest(ctx *fasthttp.RequestCtx, req interface{
 		transcriptionReq.Stream = &stream
 	}
 
+	// chunking_strategy is OpenAI-specific (required by diarization models). It is a
+	// Union["auto", server_vad object], so decode object-shaped values and pass
+	// plain strings (e.g. "auto") through verbatim via ExtraParams passthrough.
+	if csValues := form.Value["chunking_strategy"]; len(csValues) > 0 && csValues[0] != "" {
+		raw := csValues[0]
+		if transcriptionReq.ExtraParams == nil {
+			transcriptionReq.ExtraParams = map[string]interface{}{}
+		}
+		var obj map[string]interface{}
+		if err := json.Unmarshal([]byte(raw), &obj); err == nil {
+			transcriptionReq.ExtraParams["chunking_strategy"] = obj
+		} else {
+			transcriptionReq.ExtraParams["chunking_strategy"] = raw
+		}
+	}
+
 	return nil
 }
 
