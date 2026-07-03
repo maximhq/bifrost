@@ -2164,9 +2164,8 @@ func ProcessAndSendResponse(
 
 	streamResponse := BuildClientStreamChunk(ctx, processedResponse, processedError)
 
-	if !GateSendChunk(ctx, streamResponse, responseChan) {
-		return
-	}
+	// Complete the final-chunk span even if the client send fails, so a dropped connection can't strand it.
+	GateSendChunk(ctx, streamResponse, responseChan)
 
 	// Check if this is the final chunk and complete deferred span with post-processed data
 	if isFinalChunk := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator); isFinalChunk != nil {
@@ -2227,6 +2226,13 @@ func ProcessAndSendBifrostError(
 // path — e.g. a panic mid-stream — which would otherwise leak the plugin
 // pipeline back-reference held by the finalizer closure.
 //
+// It also completes any deferred LLM span still parked for this trace so a
+// goroutine that died before completing it cannot leak the span — and the
+// accumulated response it pins. The stream-end indicator sets the status: an
+// unended stream is marked failed, an ended one keeps its success status.
+// completeDeferredSpan is idempotent (nil-handle guard), so this is a noop when
+// the terminal path already cleared it.
+//
 // Panics inside the finalizer are recovered and logged so they never mask an
 // in-flight panic that triggered the defer.
 func EnsureStreamFinalizerCalled(ctx context.Context, finalizer func(context.Context)) {
@@ -2235,6 +2241,19 @@ func EnsureStreamFinalizerCalled(ctx context.Context, finalizer func(context.Con
 			getLogger().Debug("recovered panic in deferred stream finalizer: %v", r)
 		}
 	}()
+
+	// Complete any span the terminal path left parked. Unended = died mid-flight
+	// (mark failed); ended = delivery failed after success (keep the OK status).
+	if bfCtx, ok := ctx.(*schemas.BifrostContext); ok {
+		var streamErr *schemas.BifrostError
+		if ended, _ := bfCtx.Value(schemas.BifrostContextKeyStreamEndIndicator).(bool); !ended {
+			streamErr = &schemas.BifrostError{
+				Error: &schemas.ErrorField{Message: "stream ended before completion"},
+			}
+		}
+		completeDeferredSpan(bfCtx, nil, streamErr, finalizer)
+	}
+
 	if finalizer == nil {
 		return
 	}
