@@ -56,6 +56,16 @@ export function ApiStructureFormFragment({ provider }: Props) {
 				list_models: provider.custom_provider_config?.allowed_requests?.list_models ?? true,
 				ocr: provider.custom_provider_config?.allowed_requests?.ocr ?? true,
 				ocr_stream: provider.custom_provider_config?.allowed_requests?.ocr_stream ?? true,
+				batch_create: provider.custom_provider_config?.allowed_requests?.batch_create ?? true,
+				batch_list: provider.custom_provider_config?.allowed_requests?.batch_list ?? true,
+				batch_retrieve: provider.custom_provider_config?.allowed_requests?.batch_retrieve ?? true,
+				batch_cancel: provider.custom_provider_config?.allowed_requests?.batch_cancel ?? true,
+				batch_results: provider.custom_provider_config?.allowed_requests?.batch_results ?? true,
+				file_upload: provider.custom_provider_config?.allowed_requests?.file_upload ?? true,
+				file_list: provider.custom_provider_config?.allowed_requests?.file_list ?? true,
+				file_retrieve: provider.custom_provider_config?.allowed_requests?.file_retrieve ?? true,
+				file_delete: provider.custom_provider_config?.allowed_requests?.file_delete ?? true,
+				file_content: provider.custom_provider_config?.allowed_requests?.file_content ?? true,
 			},
 			request_path_overrides: provider.custom_provider_config?.request_path_overrides ?? undefined,
 		},
@@ -94,7 +104,9 @@ export function ApiStructureFormFragment({ provider }: Props) {
 	};
 
 	const isKeyLessDisabled = useMemo(
-		() => provider.custom_provider_config?.base_provider_type === "bedrock",
+		() =>
+			provider.custom_provider_config?.base_provider_type === "bedrock" ||
+			provider.custom_provider_config?.base_provider_type === "vertex",
 		[provider.custom_provider_config?.base_provider_type],
 	);
 
@@ -121,6 +133,7 @@ export function ApiStructureFormFragment({ provider }: Props) {
 										<SelectItem value="cohere">Cohere</SelectItem>
 										<SelectItem value="gemini">Gemini</SelectItem>
 										<SelectItem value="replicate">Replicate</SelectItem>
+										<SelectItem value="vertex">Vertex AI</SelectItem>
 									</SelectContent>
 								</Select>
 								<FormDescription>The underlying provider this custom provider will use</FormDescription>

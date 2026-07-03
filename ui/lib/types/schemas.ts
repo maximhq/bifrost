@@ -623,6 +623,16 @@ export const allowedRequestsSchema = z.object({
 	list_models: z.boolean(),
 	websocket_responses: z.boolean(),
 	realtime: z.boolean(),
+	batch_create: z.boolean().optional(),
+	batch_list: z.boolean().optional(),
+	batch_retrieve: z.boolean().optional(),
+	batch_cancel: z.boolean().optional(),
+	batch_results: z.boolean().optional(),
+	file_upload: z.boolean().optional(),
+	file_list: z.boolean().optional(),
+	file_retrieve: z.boolean().optional(),
+	file_delete: z.boolean().optional(),
+	file_content: z.boolean().optional(),
 });
 
 // Custom provider config schema
@@ -635,13 +645,13 @@ export const customProviderConfigSchema = z
 	})
 	.refine(
 		(data) => {
-			if (data.base_provider_type === "bedrock") {
+			if (data.base_provider_type === "bedrock" || data.base_provider_type === "vertex") {
 				return !data.is_key_less;
 			}
 			return true;
 		},
 		{
-			message: "Is keyless is not allowed for Bedrock",
+			message: "Is keyless is not allowed for Bedrock or Vertex",
 			path: ["is_key_less"],
 		},
 	);
@@ -656,13 +666,13 @@ export const formCustomProviderConfigSchema = z
 	})
 	.refine(
 		(data) => {
-			if (data.base_provider_type === "bedrock") {
+			if (data.base_provider_type === "bedrock" || data.base_provider_type === "vertex") {
 				return !data.is_key_less;
 			}
 			return true;
 		},
 		{
-			message: "Is keyless is not allowed for Bedrock",
+			message: "Is keyless is not allowed for Bedrock or Vertex",
 			path: ["is_key_less"],
 		},
 	);

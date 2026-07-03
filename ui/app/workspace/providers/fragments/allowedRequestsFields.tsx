@@ -85,6 +85,16 @@ const RequestTypes: Array<{ key: RequestType; label: string }> = [
 	{ key: "image_edit_stream", label: "Image Edit Stream" },
 	{ key: "image_variation", label: "Image Variation" },
 	{ key: "count_tokens", label: "Count Tokens" },
+	{ key: "batch_create", label: "Batch Create" },
+	{ key: "batch_list", label: "Batch List" },
+	{ key: "batch_retrieve", label: "Batch Retrieve" },
+	{ key: "batch_cancel", label: "Batch Cancel" },
+	{ key: "batch_results", label: "Batch Results" },
+	{ key: "file_upload", label: "File Upload" },
+	{ key: "file_list", label: "File List" },
+	{ key: "file_retrieve", label: "File Retrieve" },
+	{ key: "file_delete", label: "File Delete" },
+	{ key: "file_content", label: "File Content" },
 ];
 
 // Path overrides replace the default path verbatim; these request paths embed the

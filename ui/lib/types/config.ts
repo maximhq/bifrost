@@ -372,6 +372,16 @@ export interface AllowedRequests {
 	video_remix: boolean;
 	websocket_responses: boolean;
 	realtime: boolean;
+	batch_create?: boolean;
+	batch_list?: boolean;
+	batch_retrieve?: boolean;
+	batch_cancel?: boolean;
+	batch_results?: boolean;
+	file_upload?: boolean;
+	file_list?: boolean;
+	file_retrieve?: boolean;
+	file_delete?: boolean;
+	file_content?: boolean;
 }
 
 // CustomProviderConfig matching Go's schemas.CustomProviderConfig
