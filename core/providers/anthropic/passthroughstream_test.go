@@ -64,6 +64,19 @@ func ptWebSearch(i int, id string) []string {
 		fmt.Sprintf(`{"type":"content_block_stop","index":%d}`, i+1),
 	}
 }
+
+// ptWebSearchNoResults is a web_search whose result block carries no sources
+// (empty results / error case). Upstream still emits the web_search_tool_result
+// block, consuming an index — so the reverse converter must still advance its
+// block counter even though it emits no result content.
+func ptWebSearchNoResults(i int, id string) []string {
+	return []string{
+		fmt.Sprintf(`{"type":"content_block_start","index":%d,"content_block":{"type":"server_tool_use","id":%q,"name":"web_search","input":{"query":"cats"}}}`, i, id),
+		fmt.Sprintf(`{"type":"content_block_stop","index":%d}`, i),
+		fmt.Sprintf(`{"type":"content_block_start","index":%d,"content_block":{"type":"web_search_tool_result","tool_use_id":%q,"content":[]}}`, i+1, id),
+		fmt.Sprintf(`{"type":"content_block_stop","index":%d}`, i+1),
+	}
+}
 func ptWebFetch(i int, id string) []string {
 	return []string{
 		fmt.Sprintf(`{"type":"content_block_start","index":%d,"content_block":{"type":"server_tool_use","id":%q,"name":"web_fetch","input":{"url":"https://x.com"}}}`, i, id),
@@ -160,7 +173,7 @@ type ptFrame struct {
 // the transport passthrough decision picks raw vs converter for each response.
 // When applyFix is false it models the pre-fix transport (raw whenever present,
 // except ContentPartAdded) to prove the bug reproduces.
-func runAnthropicPassthrough(t *testing.T, raws []string, applyFix bool) []ptFrame {
+func runAnthropicPassthrough(t *testing.T, raws []string, applyFix bool) ([]ptFrame, *schemas.BifrostContext) {
 	t.Helper()
 	ctx := schemas.NewBifrostContext(nil, time.Time{})
 	state := newAdvisorStreamState()
@@ -209,7 +222,7 @@ func runAnthropicPassthrough(t *testing.T, raws []string, applyFix bool) []ptFra
 			}
 		}
 	}
-	return out
+	return out, ctx
 }
 
 // blockFramingProblems models a strict SSE consumer (Claude Code): every
@@ -253,8 +266,11 @@ func TestAnthropicPassthrough_ServerToolIndexConsistency(t *testing.T) {
 		"advisor_first":          ptConcat([]string{ptMsgStart()}, ptAdvisor(0, "srv_A"), ptText(2), ptMsgEnd()),
 		"two_advisors":           ptConcat([]string{ptMsgStart()}, ptThinking(0), ptAdvisor(1, "srv_A"), ptAdvisor(3, "srv_B"), ptText(5), ptMsgEnd()),
 		"websearch":              ptConcat([]string{ptMsgStart()}, ptThinking(0), ptWebSearch(1, "srv_W"), ptText(3), ptMsgEnd()),
+		"websearch_no_results":   ptConcat([]string{ptMsgStart()}, ptThinking(0), ptWebSearchNoResults(1, "srv_W"), ptText(3), ptMsgEnd()),
+		"two_websearch":          ptConcat([]string{ptMsgStart()}, ptWebSearch(0, "srv_W"), ptWebSearch(2, "srv_W2"), ptText(4), ptMsgEnd()),
 		"web_fetch":              ptConcat([]string{ptMsgStart()}, ptThinking(0), ptWebFetch(1, "srv_F"), ptText(3), ptMsgEnd()),
 		"advisor_then_web_fetch": ptConcat([]string{ptMsgStart()}, ptAdvisor(0, "srv_A"), ptWebFetch(2, "srv_F"), ptText(4), ptMsgEnd()),
+		"two_web_fetch":          ptConcat([]string{ptMsgStart()}, ptWebFetch(0, "srv_F"), ptWebFetch(2, "srv_F2"), ptText(4), ptMsgEnd()),
 		"code_execution":         ptConcat([]string{ptMsgStart()}, ptThinking(0), ptCodeExec(1, "srv_C"), ptText(3), ptMsgEnd()),
 		"func_then_advisor":      ptConcat([]string{ptMsgStart()}, ptFuncTool(0, "toolu_1", "Read"), ptAdvisor(1, "srv_A"), ptText(3), ptMsgEnd()),
 		"advisor_then_func":      ptConcat([]string{ptMsgStart()}, ptAdvisor(0, "srv_A"), ptFuncTool(2, "toolu_1", "Read"), ptText(3), ptMsgEnd()),
@@ -264,9 +280,16 @@ func TestAnthropicPassthrough_ServerToolIndexConsistency(t *testing.T) {
 	}
 	for name, raws := range scenarios {
 		t.Run(name, func(t *testing.T) {
-			fixed := blockFramingProblems(t, runAnthropicPassthrough(t, raws, true), true)
-			if len(fixed) > 0 {
+			frames, ctx := runAnthropicPassthrough(t, raws, true)
+			if fixed := blockFramingProblems(t, frames, true); len(fixed) > 0 {
 				t.Errorf("passthrough stream is inconsistent after fix: %v", fixed)
+			}
+			// The fix's mechanism: on the passthrough path every output_item.added is
+			// routed through the converter so allocBlockIndex always runs — so
+			// blockIndexFor must never miss (a miss = a stop/delta for a block whose
+			// start was never registered).
+			if misses := getOrCreateAnthropicToResponsesStreamState(ctx).blockIndexMisses; len(misses) > 0 {
+				t.Errorf("reverse converter recorded block-index misses on the passthrough path: %v", misses)
 			}
 		})
 	}
@@ -279,7 +302,8 @@ func TestAnthropicPassthrough_ServerToolIndexConsistency(t *testing.T) {
 func TestAnthropicPassthrough_ReproducesBugWithoutFix(t *testing.T) {
 	stream := ptConcat([]string{ptMsgStart()}, ptThinking(0), ptAdvisor(1, "srv_A"), ptText(3), ptMsgEnd())
 
-	buggy := blockFramingProblems(t, runAnthropicPassthrough(t, stream, false), false)
+	buggyFrames, _ := runAnthropicPassthrough(t, stream, false)
+	buggy := blockFramingProblems(t, buggyFrames, false)
 	if len(buggy) == 0 {
 		t.Fatal("expected the pre-fix passthrough to produce an inconsistent stream, but it was clean")
 	}
@@ -295,7 +319,8 @@ func TestAnthropicPassthrough_ReproducesBugWithoutFix(t *testing.T) {
 
 	// The same stream must be clean once the fix routes server-tool frames through
 	// the converter.
-	if fixed := blockFramingProblems(t, runAnthropicPassthrough(t, stream, true), false); len(fixed) > 0 {
+	fixedFrames, _ := runAnthropicPassthrough(t, stream, true)
+	if fixed := blockFramingProblems(t, fixedFrames, false); len(fixed) > 0 {
 		t.Errorf("fix did not resolve the inconsistency: %v", fixed)
 	}
 }

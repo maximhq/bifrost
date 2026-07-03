@@ -699,6 +699,14 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 						},
 					}
 				}
+				// Preserve the programmatic-tool-calling caller (set when this fetch was
+				// spawned from inside the code-execution sandbox), mirroring web_search.
+				if chunk.ContentBlock.Caller != nil {
+					toolMsg.Caller = &schemas.ResponsesToolCaller{
+						Type:   string(chunk.ContentBlock.Caller.Type),
+						ToolID: chunk.ContentBlock.Caller.ToolID,
+					}
+				}
 				item := &schemas.ResponsesMessage{
 					ID:                   chunk.ContentBlock.ID,
 					Type:                 schemas.Ptr(schemas.ResponsesMessageTypeWebFetchCall),
@@ -1368,6 +1376,14 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 					return nil, nil, false
 
 				case anthropicInputJSONBufferWebFetch:
+					// Fallback: recover the URL if Anthropic streamed it via
+					// input_json_delta instead of inlining it in content_block_start
+					// (mirrors the web_search query fallback above).
+					if state.WebFetchURL == nil && inputJSON != "" {
+						if u := providerUtils.GetJSONField([]byte(inputJSON), "url"); u.Exists() && u.Type == gjson.String {
+							state.WebFetchURL = schemas.Ptr(u.Str)
+						}
+					}
 					return nil, nil, false
 
 				case anthropicInputJSONBufferAdvisor:
@@ -2630,6 +2646,14 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 					&AnthropicStreamEvent{Type: AnthropicStreamEventTypeContentBlockStart, Index: resultIndex, ContentBlock: resultBlock},
 					&AnthropicStreamEvent{Type: AnthropicStreamEventTypeContentBlockStop, Index: resultIndex},
 				)
+			} else {
+				// A resultless or error web_search (no sources, max_uses_exceeded,
+				// web_search_tool_result_error, …) still consumed a content-block index
+				// upstream (the web_search_tool_result block), so allocate (and discard)
+				// one here to keep the counter in lockstep with upstream indices — else
+				// the following block collides with the verbatim raw frames on the
+				// passthrough path. Mirrors the web_fetch handling below.
+				_ = state.allocBlockIndex("")
 			}
 
 			return events
