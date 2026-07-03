@@ -68,6 +68,67 @@ func (s *Store) CalculateCostForUsage(usage *schemas.BifrostLLMUsage, provider s
 	)
 }
 
+// BatchCostDetails captures the rate inputs used to price a batch result row.
+type BatchCostDetails struct {
+	Cost                      float64
+	Priced                    bool
+	ProviderCostUsed          bool
+	InputCostPerTokenBatches  *float64
+	OutputCostPerTokenBatches *float64
+}
+
+// CalculateBatchCostDetailsForUsage computes batch result cost and returns the
+// explicit batch rates used so aggregate logs can explain historical pricing.
+// Unlike CalculateCostForUsage, it does not fall back to regular online request
+// rates: an absent batch-specific rate yields an unpriced result.
+func (s *Store) CalculateBatchCostDetailsForUsage(usage *schemas.BifrostLLMUsage, provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *LookupScopes) BatchCostDetails {
+	if usage == nil {
+		return BatchCostDetails{}
+	}
+	if usage.Cost != nil {
+		return BatchCostDetails{
+			Cost:             usage.Cost.TotalCost,
+			Priced:           true,
+			ProviderCostUsed: true,
+		}
+	}
+
+	var lookupScopes LookupScopes
+	if scopes != nil {
+		lookupScopes = *scopes
+	}
+	pricing := s.resolvePricing(schemas.RoutingInfo{Provider: provider, Model: model}, normalizeStreamRequestType(requestType), lookupScopes)
+	if pricing == nil {
+		return BatchCostDetails{}
+	}
+
+	switch normalizeStreamRequestType(requestType) {
+	case schemas.BatchResultsRequest, schemas.ChatCompletionRequest, schemas.TextCompletionRequest, schemas.ResponsesRequest, schemas.EmbeddingRequest:
+		if usage.PromptTokens > 0 && pricing.InputCostPerTokenBatches == nil {
+			return BatchCostDetails{}
+		}
+		if usage.CompletionTokens > 0 && pricing.OutputCostPerTokenBatches == nil {
+			return BatchCostDetails{}
+		}
+		return BatchCostDetails{
+			Cost:                      computeBatchTextCost(pricing, usage),
+			Priced:                    true,
+			InputCostPerTokenBatches:  cloneFloat64Pointer(pricing.InputCostPerTokenBatches),
+			OutputCostPerTokenBatches: cloneFloat64Pointer(pricing.OutputCostPerTokenBatches),
+		}
+	default:
+		return BatchCostDetails{}
+	}
+}
+
+func cloneFloat64Pointer(value *float64) *float64 {
+	if value == nil {
+		return nil
+	}
+	clone := *value
+	return &clone
+}
+
 // calculateCostWithCache handles cost calculation when semantic cache debug info is present.
 func (s *Store) calculateCostWithCache(result *schemas.BifrostResponse, cacheDebug *schemas.BifrostCacheDebug, scopes LookupScopes) float64 {
 	if cacheDebug.CacheHit {
@@ -193,6 +254,8 @@ func (s *Store) computeCostFromInput(input costInput, routingInfo schemas.Routin
 	switch requestType {
 	case schemas.ChatCompletionRequest, schemas.TextCompletionRequest, schemas.ResponsesRequest, schemas.RealtimeRequest, schemas.CompactionRequest:
 		return computeTextCost(pricing, input.usage, input.tier)
+	case schemas.BatchResultsRequest:
+		return computeBatchTextCost(pricing, input.usage)
 	case schemas.EmbeddingRequest:
 		return computeEmbeddingCost(pricing, input.usage, input.tier)
 	case schemas.RerankRequest:
@@ -497,6 +560,74 @@ func computeTextCost(pricing *configstoreTables.TableModelPricing, usage *schema
 	}
 
 	return tokenCost + searchCost
+}
+
+// computeBatchTextCost handles token usage returned by batch result retrieval.
+// Batch pricing must be explicit: if the model catalog does not have batch
+// rates, do not silently fall back to synchronous request rates.
+func computeBatchTextCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage) float64 {
+	if usage == nil {
+		return 0
+	}
+	if usage.PromptTokens > 0 && pricing.InputCostPerTokenBatches == nil {
+		return 0
+	}
+	if usage.CompletionTokens > 0 && pricing.OutputCostPerTokenBatches == nil {
+		return 0
+	}
+
+	inputCost := 0.0
+	if usage.PromptTokens > 0 {
+		promptTokens := usage.PromptTokens
+		cachedReadTokens := 0
+		cachedWriteTokens := 0
+		cachedWriteTokensAbove1hr := 0
+		if usage.PromptTokensDetails != nil {
+			cachedReadTokens = usage.PromptTokensDetails.CachedReadTokens
+			cachedWriteTokens = usage.PromptTokensDetails.CachedWriteTokens
+			if usage.PromptTokensDetails.CachedWriteTokenDetails != nil {
+				cachedWriteTokensAbove1hr = usage.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h
+			}
+		}
+		cachedReadTokens = min(max(cachedReadTokens, 0), promptTokens)
+		cachedWriteTokens = min(max(cachedWriteTokens, 0), promptTokens-cachedReadTokens)
+		cachedWriteTokensAbove1hr = min(max(cachedWriteTokensAbove1hr, 0), cachedWriteTokens)
+
+		batchInputRate := *pricing.InputCostPerTokenBatches
+		cacheReadRate := batchInputRate
+		cacheWriteRate := batchInputRate
+		cacheWriteAbove1hrRate := batchInputRate
+		// Catalog cache rates describe synchronous pricing. Batch discounts stack
+		// with prompt-cache multipliers, so scale each cache category by the same
+		// batch/input ratio instead of charging cached tokens as ordinary input.
+		if pricing.InputCostPerToken != nil && *pricing.InputCostPerToken > 0 {
+			batchRatio := batchInputRate / *pricing.InputCostPerToken
+			if pricing.CacheReadInputTokenCost != nil {
+				cacheReadRate = *pricing.CacheReadInputTokenCost * batchRatio
+			}
+			if pricing.CacheCreationInputTokenCost != nil {
+				cacheWriteRate = *pricing.CacheCreationInputTokenCost * batchRatio
+			}
+			if pricing.CacheCreationInputTokenCostAbove1hr != nil {
+				cacheWriteAbove1hrRate = *pricing.CacheCreationInputTokenCostAbove1hr * batchRatio
+			} else {
+				cacheWriteAbove1hrRate = cacheWriteRate
+			}
+		}
+
+		nonCachedPrompt := promptTokens - cachedReadTokens - cachedWriteTokens
+		inputCost = float64(nonCachedPrompt)*batchInputRate +
+			float64(cachedReadTokens)*cacheReadRate +
+			float64(cachedWriteTokens-cachedWriteTokensAbove1hr)*cacheWriteRate +
+			float64(cachedWriteTokensAbove1hr)*cacheWriteAbove1hrRate
+	}
+
+	outputCost := 0.0
+	if usage.CompletionTokens > 0 {
+		outputCost = float64(usage.CompletionTokens) * *pricing.OutputCostPerTokenBatches
+	}
+
+	return inputCost + outputCost
 }
 
 // computeEmbeddingCost handles embedding requests (input-only).

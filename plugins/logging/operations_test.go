@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/batchaccounting"
+	cstables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
@@ -26,6 +28,140 @@ func (testLogger) SetLevel(schemas.LogLevel)              {}
 func (testLogger) SetOutputType(schemas.LoggerOutputType) {}
 func (testLogger) LogHTTPRequest(schemas.LogLevel, string) schemas.LogEventBuilder {
 	return schemas.NoopLogEvent
+}
+
+// fakeBatchStore is an in-memory batchaccounting.SweepStore for logging tests.
+type fakeBatchStore struct {
+	jobs map[string]*cstables.TableBatchJob
+}
+
+func newFakeBatchStore() *fakeBatchStore {
+	return &fakeBatchStore{jobs: make(map[string]*cstables.TableBatchJob)}
+}
+
+func (s *fakeBatchStore) UpsertBatchJob(ctx context.Context, job *cstables.TableBatchJob) error {
+	if job.ID == "" {
+		job.ID = cstables.BatchJobID(job.Provider, job.BatchID)
+	}
+	existing, ok := s.jobs[job.ID]
+	if !ok {
+		copied := *job
+		if copied.AccountingStatus == "" {
+			copied.AccountingStatus = cstables.BatchJobAccountingStatusPending
+		}
+		s.jobs[job.ID] = &copied
+		return nil
+	}
+	if job.Model != "" {
+		existing.Model = job.Model
+	}
+	if job.ProviderStatus != "" {
+		existing.ProviderStatus = job.ProviderStatus
+	}
+	if job.InputFileID != "" {
+		existing.InputFileID = job.InputFileID
+	}
+	if job.OutputFileID != nil {
+		existing.OutputFileID = job.OutputFileID
+	}
+	if job.NextCheckAt != nil {
+		existing.NextCheckAt = job.NextCheckAt
+	}
+	if cstables.IsTerminalBatchProviderStatus(job.ProviderStatus) &&
+		job.ProviderStatus != string(schemas.BatchStatusCompleted) &&
+		job.ProviderStatus != string(schemas.BatchStatusEnded) {
+		existing.NextCheckAt = nil
+	}
+	return nil
+}
+
+func (s *fakeBatchStore) GetBatchJob(ctx context.Context, jobID string) (*cstables.TableBatchJob, error) {
+	job, ok := s.jobs[jobID]
+	if !ok {
+		return nil, errors.New("missing batch job")
+	}
+	copied := *job
+	return &copied, nil
+}
+
+func (s *fakeBatchStore) ListDueBatchJobs(ctx context.Context, provider string, now time.Time, limit int) ([]*cstables.TableBatchJob, error) {
+	var jobs []*cstables.TableBatchJob
+	for _, job := range s.jobs {
+		if provider != "" && job.Provider != provider {
+			continue
+		}
+		if job.NextCheckAt == nil || job.NextCheckAt.After(now) {
+			continue
+		}
+		if job.AccountingStatus == cstables.BatchJobAccountingStatusAccounted || job.AccountingStatus == cstables.BatchJobAccountingStatusUnpriceable {
+			continue
+		}
+		jobs = append(jobs, job)
+	}
+	return jobs, nil
+}
+
+func (s *fakeBatchStore) ClaimBatchJob(ctx context.Context, jobID, runnerID string, staleBefore time.Time) (bool, error) {
+	entry, ok := s.jobs[jobID]
+	if !ok {
+		return false, errors.New("missing batch job")
+	}
+	if entry.AccountingStatus == cstables.BatchJobAccountingStatusAccounted || entry.AccountingStatus == cstables.BatchJobAccountingStatusUnpriceable {
+		return false, nil
+	}
+	if entry.AccountingStatus == cstables.BatchJobAccountingStatusProcessing && entry.UpdatedAt.After(staleBefore) {
+		return false, nil
+	}
+	rid := runnerID
+	entry.AccountingStatus = cstables.BatchJobAccountingStatusProcessing
+	entry.RunnerID = &rid
+	entry.UpdatedAt = time.Now().UTC()
+	return true, nil
+}
+
+func (s *fakeBatchStore) markTerminal(id, status, reason string) error {
+	entry, ok := s.jobs[id]
+	if !ok {
+		return errors.New("missing batch job")
+	}
+	entry.AccountingStatus = status
+	entry.RunnerID = nil
+	if reason != "" {
+		entry.UnpriceableReason = &reason
+	}
+	return nil
+}
+
+func (s *fakeBatchStore) MarkBatchJobAggregateLogWritten(ctx context.Context, id, runnerID string) error {
+	entry, ok := s.jobs[id]
+	if !ok {
+		return errors.New("missing batch job")
+	}
+	now := time.Now().UTC()
+	entry.AggregateLogWrittenAt = &now
+	return nil
+}
+
+func (s *fakeBatchStore) MarkBatchJobGovernanceReported(ctx context.Context, id, runnerID string) error {
+	entry, ok := s.jobs[id]
+	if !ok {
+		return errors.New("missing batch job")
+	}
+	now := time.Now().UTC()
+	entry.GovernanceReportedAt = &now
+	return nil
+}
+
+func (s *fakeBatchStore) CompleteBatchJob(ctx context.Context, id, runnerID string) error {
+	return s.markTerminal(id, cstables.BatchJobAccountingStatusAccounted, "")
+}
+
+func (s *fakeBatchStore) MarkBatchJobUnpriceable(ctx context.Context, id, runnerID, reason string, err error) error {
+	return s.markTerminal(id, cstables.BatchJobAccountingStatusUnpriceable, reason)
+}
+
+func (s *fakeBatchStore) FailBatchJob(ctx context.Context, id, runnerID string, err error) error {
+	return s.markTerminal(id, cstables.BatchJobAccountingStatusError, "")
 }
 
 func newTestStore(t *testing.T) logstore.LogStore {
@@ -47,7 +183,7 @@ func newTestStore(t *testing.T) logstore.LogStore {
 func TestPostLLMHookNoPendingErrorPreservesMetadata(t *testing.T) {
 	store := newTestStore(t)
 	loggingHeaders := []string{"x-custom-log"}
-	plugin, err := Init(context.Background(), &Config{LoggingHeaders: &loggingHeaders}, testLogger{}, store, nil, nil)
+	plugin, err := Init(context.Background(), &Config{LoggingHeaders: &loggingHeaders}, testLogger{}, store, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -108,10 +244,35 @@ func TestPostLLMHookNoPendingErrorPreservesMetadata(t *testing.T) {
 	}
 }
 
+func TestEmitBatchAggregateLogRunsCallback(t *testing.T) {
+	store := newTestStore(t)
+	plugin := &LoggerPlugin{
+		ctx:   context.Background(),
+		store: store,
+	}
+	callbacks := 0
+	plugin.SetLogCallback(func(ctx context.Context, logEntry *logstore.Log) {
+		callbacks++
+	})
+
+	entry := &logstore.Log{
+		ID:        "batch-cost:openai:callback",
+		Timestamp: time.Now().UTC(),
+		Object:    string(schemas.BatchResultsRequest),
+		Provider:  string(schemas.OpenAI),
+		Model:     "gpt-4o-mini",
+		Status:    "success",
+	}
+	plugin.EmitBatchAggregateLog(context.Background(), entry)
+	if callbacks != 1 {
+		t.Fatalf("callback count after emit = %d, want 1", callbacks)
+	}
+}
+
 func TestPostLLMHookStreamingErrorPreservesHeaderMetadata(t *testing.T) {
 	store := newTestStore(t)
 	loggingHeaders := []string{"x-custom-log"}
-	plugin, err := Init(context.Background(), &Config{LoggingHeaders: &loggingHeaders}, testLogger{}, store, nil, nil)
+	plugin, err := Init(context.Background(), &Config{LoggingHeaders: &loggingHeaders}, testLogger{}, store, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -206,7 +367,7 @@ func TestPostLLMHookCancelledStreamLogsCost(t *testing.T) {
 	}
 	pricingManager := modelcatalog.NewTestCatalogWithDatasheet(ds)
 
-	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, pricingManager, nil)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, pricingManager, nil)
 	if err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -277,7 +438,7 @@ func TestPostLLMHookCancelledStreamLogsCost(t *testing.T) {
 
 func TestPostLLMHookContextTimeoutLogsCancelledStatus(t *testing.T) {
 	store := newTestStore(t)
-	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -330,7 +491,7 @@ func TestPostLLMHookContextTimeoutLogsCancelledStatus(t *testing.T) {
 
 func TestPostLLMHookProviderTimeoutRemainsErrorStatus(t *testing.T) {
 	store := newTestStore(t)
-	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -461,7 +622,7 @@ func newTestPricingManager(t *testing.T) *modelcatalog.ModelCatalog {
 // already-parsed token counters must be left untouched (not double-applied).
 func TestApplyErrorBillingFromBilledUsage_ComputesCostWhenTokensAlreadyParsed(t *testing.T) {
 	store := newTestStore(t)
-	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, newTestPricingManager(t), nil)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, newTestPricingManager(t), nil)
 	if err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -502,7 +663,7 @@ func TestApplyErrorBillingFromBilledUsage_ComputesCostWhenTokensAlreadyParsed(t 
 // backfilled from BilledUsage.
 func TestApplyErrorBillingFromBilledUsage_FillsTokensAndCostWhenUnparsed(t *testing.T) {
 	store := newTestStore(t)
-	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, newTestPricingManager(t), nil)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, newTestPricingManager(t), nil)
 	if err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -732,7 +893,7 @@ func TestBuildInitialLogEntryPreservesMetadata(t *testing.T) {
 // memory after PreMCPHook and persisted by the batch writer after PostMCPHook.
 func TestMCPHooksDeferDBWriteUntilPostHookBatch(t *testing.T) {
 	store := newTestStore(t)
-	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -808,7 +969,7 @@ func TestMCPHooksDeferDBWriteUntilPostHookBatch(t *testing.T) {
 // created without a pending pre-hook entry still carry DAC ownership fields.
 func TestPostMCPHookFallbackStampsGovernanceFields(t *testing.T) {
 	store := newTestStore(t)
-	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -853,7 +1014,7 @@ func TestPostMCPHookFallbackStampsGovernanceFields(t *testing.T) {
 // MCP logs are committed as terminal errors instead of being silently dropped.
 func TestCleanupStalePendingMCPLogsPersistsErrorFallback(t *testing.T) {
 	store := newTestStore(t)
-	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -912,7 +1073,7 @@ func TestCleanupStalePendingMCPLogsPersistsErrorFallback(t *testing.T) {
 // older than the TTL but whose LastActivity is recent must NOT be reaped.
 func TestActiveStreamSurvivesCleanup(t *testing.T) {
 	store := newTestStore(t)
-	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -947,7 +1108,7 @@ func TestActiveStreamSurvivesCleanup(t *testing.T) {
 // TTL (no chunk activity for the whole idle window) must be deleted.
 func TestIdlePendingEntryEvicted(t *testing.T) {
 	store := newTestStore(t)
-	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -981,7 +1142,7 @@ func TestIdlePendingEntryEvicted(t *testing.T) {
 // would silently skip and leave the pending row to expire as a fake TTL error.
 func TestPreMCPHookSkipsPrefixedCodemodeTool(t *testing.T) {
 	store := newTestStore(t)
-	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -1828,5 +1989,192 @@ func TestApplyNonStreamingOutputToEntryContentLoggingEnabled(t *testing.T) {
 
 	if entry.OutputMessageParsed == nil {
 		t.Error("expected OutputMessageParsed to be set when contentLoggingEnabled=true")
+	}
+}
+
+func TestRecordBatchJobLifecycle_CompletedSetsNextCheckAt(t *testing.T) {
+	store := newTestStore(t)
+	bs := newFakeBatchStore()
+	plugin := &LoggerPlugin{
+		ctx:        context.Background(),
+		store:      store,
+		batchStore: bs,
+		logger:     testLogger{},
+	}
+
+	tests := []struct {
+		name       string
+		status     string
+		wantNow    bool
+		wantMinute bool
+		wantNil    bool
+	}{
+		{name: "in_progress", status: string(schemas.BatchStatusInProgress), wantMinute: true},
+		{name: "validating", status: string(schemas.BatchStatusValidating), wantMinute: true},
+		{name: "finalizing", status: string(schemas.BatchStatusFinalizing), wantMinute: true},
+		{name: "completed", status: string(schemas.BatchStatusCompleted), wantNow: true},
+		{name: "failed", status: string(schemas.BatchStatusFailed), wantNil: true},
+		{name: "cancelled", status: string(schemas.BatchStatusCancelled), wantNil: true},
+		{name: "expired", status: string(schemas.BatchStatusExpired), wantNil: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			batchID := "batch-" + tt.name
+			entry := &logstore.Log{
+				Provider: string(schemas.OpenAI),
+				Model:    "gpt-4o-mini",
+			}
+			retrieveResp := &schemas.BifrostBatchRetrieveResponse{
+				ID:       batchID,
+				Endpoint: string(schemas.BatchEndpointChatCompletions),
+				Status:   schemas.BatchStatus(tt.status),
+			}
+			result := &schemas.BifrostResponse{
+				BatchRetrieveResponse: retrieveResp,
+			}
+			plugin.recordBatchJobLifecycle(entry, result)
+
+			job, err := bs.GetBatchJob(context.Background(), cstables.BatchJobID("openai", batchID))
+			if err != nil {
+				t.Fatalf("GetBatchJob() error = %v", err)
+			}
+			if job.BatchID != batchID {
+				t.Fatalf("expected batch_id %s, got %s", batchID, job.BatchID)
+			}
+			if job.ProviderStatus != tt.status {
+				t.Fatalf("expected status %s, got %s", tt.status, job.ProviderStatus)
+			}
+
+			switch {
+			case tt.wantNow:
+				if job.NextCheckAt == nil {
+					t.Fatal("expected NextCheckAt to be set")
+				}
+				if job.NextCheckAt.After(time.Now().UTC().Add(2 * time.Second)) {
+					t.Fatalf("expected NextCheckAt to be now, got %v", job.NextCheckAt)
+				}
+			case tt.wantMinute:
+				if job.NextCheckAt == nil {
+					t.Fatal("expected NextCheckAt to be set")
+				}
+				if job.NextCheckAt.Before(time.Now().UTC().Add(50*time.Second)) ||
+					job.NextCheckAt.After(time.Now().UTC().Add(70*time.Second)) {
+					t.Fatalf("expected NextCheckAt ~1min from now, got %v (now=%v)", job.NextCheckAt, time.Now().UTC())
+				}
+			case tt.wantNil:
+				if job.NextCheckAt != nil {
+					t.Fatalf("expected NextCheckAt to be nil, got %v", *job.NextCheckAt)
+				}
+			}
+		})
+	}
+}
+
+func TestRecordBatchJobLifecycle_CreatePersistsModel(t *testing.T) {
+	store := newTestStore(t)
+	bs := newFakeBatchStore()
+	plugin := &LoggerPlugin{
+		ctx:        context.Background(),
+		store:      store,
+		batchStore: bs,
+		logger:     testLogger{},
+	}
+
+	entry := &logstore.Log{
+		ID:       "req-create-batch",
+		Provider: string(schemas.OpenAI),
+		Model:    "gpt-4o",
+	}
+	createResp := &schemas.BifrostBatchCreateResponse{
+		ID:          "batch-create-123",
+		Status:      schemas.BatchStatusValidating,
+		InputFileID: "file-abc",
+	}
+	result := &schemas.BifrostResponse{
+		BatchCreateResponse: createResp,
+	}
+	plugin.recordBatchJobLifecycle(entry, result)
+
+	job, err := bs.GetBatchJob(context.Background(), cstables.BatchJobID("openai", "batch-create-123"))
+	if err != nil {
+		t.Fatalf("GetBatchJob() error = %v", err)
+	}
+	if job.Model != "gpt-4o" {
+		t.Fatalf("expected model %s, got %s", "gpt-4o", job.Model)
+	}
+	if job.InputFileID != "file-abc" {
+		t.Fatalf("expected input_file_id %s, got %s", "file-abc", job.InputFileID)
+	}
+	if job.AccountingStatus != cstables.BatchJobAccountingStatusPending {
+		t.Fatalf("expected accounting_status %s, got %s", cstables.BatchJobAccountingStatusPending, job.AccountingStatus)
+	}
+}
+
+func TestAccountBatchResults_NonResultsResponseIsNoop(t *testing.T) {
+	store := newTestStore(t)
+	bs := newFakeBatchStore()
+	plugin := &LoggerPlugin{
+		ctx:        context.Background(),
+		store:      store,
+		batchStore: bs,
+		logger:     testLogger{},
+	}
+
+	entry := &logstore.Log{
+		ID:       "req-no-results",
+		Provider: string(schemas.OpenAI),
+		Model:    "gpt-4o-mini",
+	}
+	nonResultsResult := &schemas.BifrostResponse{
+		ListModelsResponse: &schemas.BifrostListModelsResponse{},
+	}
+	// accountBatchResults with no BatchResultsResponse should be a no-op
+	plugin.accountBatchResults(entry, nonResultsResult, nil)
+
+	// Verify no batch_jobs rows were created
+	jobs, err := bs.ListDueBatchJobs(context.Background(), "openai", time.Now().UTC().Add(time.Hour), 100)
+	if err != nil {
+		t.Fatalf("ListDueBatchJobs() error = %v", err)
+	}
+	if len(jobs) > 0 {
+		t.Fatalf("expected no batch jobs from non-batch-response, got %d", len(jobs))
+	}
+}
+
+func TestAccountBatchResults_EmptyResultsMarksUnpriceable(t *testing.T) {
+	store := newTestStore(t)
+	bs := newFakeBatchStore()
+	plugin := &LoggerPlugin{
+		ctx:            context.Background(),
+		store:          store,
+		batchStore:     bs,
+		logger:         testLogger{},
+		pricingManager: newTestPricingManager(t),
+	}
+
+	entry := &logstore.Log{
+		ID:       "req-empty-batch-results",
+		Provider: string(schemas.OpenAI),
+		Model:    "gpt-4o-mini",
+	}
+	result := &schemas.BifrostResponse{
+		BatchResultsResponse: &schemas.BifrostBatchResultsResponse{
+			BatchID: "batch-empty-results",
+			Results: nil,
+		},
+	}
+
+	plugin.accountBatchResults(entry, result, nil)
+
+	job, err := bs.GetBatchJob(context.Background(), cstables.BatchJobID("openai", "batch-empty-results"))
+	if err != nil {
+		t.Fatalf("GetBatchJob() error = %v", err)
+	}
+	if job.AccountingStatus != cstables.BatchJobAccountingStatusUnpriceable {
+		t.Fatalf("expected accounting_status %s, got %s", cstables.BatchJobAccountingStatusUnpriceable, job.AccountingStatus)
+	}
+	if job.UnpriceableReason == nil || *job.UnpriceableReason != batchaccounting.UnpriceableReasonNoResults {
+		t.Fatalf("expected unpriceable_reason %s, got %#v", batchaccounting.UnpriceableReasonNoResults, job.UnpriceableReason)
 	}
 }
