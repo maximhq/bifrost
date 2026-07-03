@@ -373,6 +373,42 @@ func (h *HybridLogStore) BatchCreateIfNotExists(ctx context.Context, entries []*
 	return nil
 }
 
+func (h *HybridLogStore) UpsertBatchJob(ctx context.Context, job *BatchJob) error {
+	return h.inner.UpsertBatchJob(ctx, job)
+}
+
+func (h *HybridLogStore) FindBatchJobByID(ctx context.Context, jobID string) (*BatchJob, error) {
+	return h.inner.FindBatchJobByID(ctx, jobID)
+}
+
+func (h *HybridLogStore) FindDueBatchJobs(ctx context.Context, provider string, now time.Time, limit int) ([]*BatchJob, error) {
+	return h.inner.FindDueBatchJobs(ctx, provider, now, limit)
+}
+
+func (h *HybridLogStore) ClaimBatchJobAccounting(ctx context.Context, jobID string, claimedBy string, ttl time.Duration) (string, bool, error) {
+	return h.inner.ClaimBatchJobAccounting(ctx, jobID, claimedBy, ttl)
+}
+
+func (h *HybridLogStore) MarkBatchJobAggregateLogWritten(ctx context.Context, jobID string, claimToken string) error {
+	return h.inner.MarkBatchJobAggregateLogWritten(ctx, jobID, claimToken)
+}
+
+func (h *HybridLogStore) MarkBatchJobGovernanceReported(ctx context.Context, jobID string, claimToken string) error {
+	return h.inner.MarkBatchJobGovernanceReported(ctx, jobID, claimToken)
+}
+
+func (h *HybridLogStore) CompleteBatchJobAccounting(ctx context.Context, jobID string, claimToken string) error {
+	return h.inner.CompleteBatchJobAccounting(ctx, jobID, claimToken)
+}
+
+func (h *HybridLogStore) MarkBatchJobUnpriceable(ctx context.Context, jobID string, claimToken string, reason string, err error) error {
+	return h.inner.MarkBatchJobUnpriceable(ctx, jobID, claimToken, reason, err)
+}
+
+func (h *HybridLogStore) FailBatchJobAccounting(ctx context.Context, jobID string, claimToken string, err error) error {
+	return h.inner.FailBatchJobAccounting(ctx, jobID, claimToken, err)
+}
+
 // FindByID loads a log row from the DB and hydrates its payload fields from
 // object storage when HasObject is true. Object-store fetch failures are
 // logged but not returned, so the caller still receives the DB row.

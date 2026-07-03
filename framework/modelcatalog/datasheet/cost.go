@@ -68,6 +68,73 @@ func (s *Store) CalculateCostForUsage(usage *schemas.BifrostLLMUsage, provider s
 	)
 }
 
+// BatchCostDetails captures the rate inputs used to price a batch result row.
+type BatchCostDetails struct {
+	Cost                      float64
+	Priced                    bool
+	ProviderCostUsed          bool
+	InputCostPerTokenBatches  *float64
+	OutputCostPerTokenBatches *float64
+}
+
+// CalculateBatchCostForUsage computes cost for batch result usage and returns
+// false when a batch-specific rate is unavailable. Unlike CalculateCostForUsage,
+// this does not use regular online request rates as a fallback.
+func (s *Store) CalculateBatchCostForUsage(usage *schemas.BifrostLLMUsage, provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *LookupScopes) (float64, bool) {
+	details := s.CalculateBatchCostDetailsForUsage(usage, provider, model, requestType, scopes)
+	return details.Cost, details.Priced
+}
+
+// CalculateBatchCostDetailsForUsage computes batch result cost and returns the
+// explicit batch rates used so aggregate logs can explain historical pricing.
+func (s *Store) CalculateBatchCostDetailsForUsage(usage *schemas.BifrostLLMUsage, provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *LookupScopes) BatchCostDetails {
+	if usage == nil {
+		return BatchCostDetails{}
+	}
+	if usage.Cost != nil {
+		return BatchCostDetails{
+			Cost:             usage.Cost.TotalCost,
+			Priced:           true,
+			ProviderCostUsed: true,
+		}
+	}
+
+	var lookupScopes LookupScopes
+	if scopes != nil {
+		lookupScopes = *scopes
+	}
+	pricing := s.resolvePricing(schemas.RoutingInfo{Provider: provider, Model: model}, normalizeStreamRequestType(requestType), lookupScopes)
+	if pricing == nil {
+		return BatchCostDetails{}
+	}
+
+	switch normalizeStreamRequestType(requestType) {
+	case schemas.BatchResultsRequest:
+		if usage.PromptTokens > 0 && pricing.InputCostPerTokenBatches == nil {
+			return BatchCostDetails{}
+		}
+		if usage.CompletionTokens > 0 && pricing.OutputCostPerTokenBatches == nil {
+			return BatchCostDetails{}
+		}
+		return BatchCostDetails{
+			Cost:                      computeBatchTextCost(pricing, usage),
+			Priced:                    true,
+			InputCostPerTokenBatches:  cloneFloat64Pointer(pricing.InputCostPerTokenBatches),
+			OutputCostPerTokenBatches: cloneFloat64Pointer(pricing.OutputCostPerTokenBatches),
+		}
+	default:
+		return BatchCostDetails{}
+	}
+}
+
+func cloneFloat64Pointer(value *float64) *float64 {
+	if value == nil {
+		return nil
+	}
+	clone := *value
+	return &clone
+}
+
 // calculateCostWithCache handles cost calculation when semantic cache debug info is present.
 func (s *Store) calculateCostWithCache(result *schemas.BifrostResponse, cacheDebug *schemas.BifrostCacheDebug, scopes LookupScopes) float64 {
 	if cacheDebug.CacheHit {
@@ -193,6 +260,8 @@ func (s *Store) computeCostFromInput(input costInput, routingInfo schemas.Routin
 	switch requestType {
 	case schemas.ChatCompletionRequest, schemas.TextCompletionRequest, schemas.ResponsesRequest, schemas.RealtimeRequest, schemas.CompactionRequest:
 		return computeTextCost(pricing, input.usage, input.tier)
+	case schemas.BatchResultsRequest:
+		return computeBatchTextCost(pricing, input.usage)
 	case schemas.EmbeddingRequest:
 		return computeEmbeddingCost(pricing, input.usage, input.tier)
 	case schemas.RerankRequest:
@@ -497,6 +566,33 @@ func computeTextCost(pricing *configstoreTables.TableModelPricing, usage *schema
 	}
 
 	return tokenCost + searchCost
+}
+
+// computeBatchTextCost handles token usage returned by batch result retrieval.
+// Batch pricing must be explicit: if the model catalog does not have batch
+// rates, do not silently fall back to synchronous request rates.
+func computeBatchTextCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage) float64 {
+	if usage == nil {
+		return 0
+	}
+	if usage.PromptTokens > 0 && pricing.InputCostPerTokenBatches == nil {
+		return 0
+	}
+	if usage.CompletionTokens > 0 && pricing.OutputCostPerTokenBatches == nil {
+		return 0
+	}
+
+	inputCost := 0.0
+	if usage.PromptTokens > 0 {
+		inputCost = float64(usage.PromptTokens) * *pricing.InputCostPerTokenBatches
+	}
+
+	outputCost := 0.0
+	if usage.CompletionTokens > 0 {
+		outputCost = float64(usage.CompletionTokens) * *pricing.OutputCostPerTokenBatches
+	}
+
+	return inputCost + outputCost
 }
 
 // computeEmbeddingCost handles embedding requests (input-only).

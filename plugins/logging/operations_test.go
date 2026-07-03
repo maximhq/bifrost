@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/batchaccounting"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
@@ -105,6 +106,31 @@ func TestPostLLMHookNoPendingErrorPreservesMetadata(t *testing.T) {
 	}
 	if got := logEntry.MetadataParsed["isAsyncRequest"]; got != true {
 		t.Fatalf("expected async metadata true, got %#v", got)
+	}
+}
+
+func TestEmitBatchAggregateLogRunsCallback(t *testing.T) {
+	store := newTestStore(t)
+	plugin := &LoggerPlugin{
+		ctx:   context.Background(),
+		store: store,
+	}
+	callbacks := 0
+	plugin.SetLogCallback(func(ctx context.Context, logEntry *logstore.Log) {
+		callbacks++
+	})
+
+	entry := &logstore.Log{
+		ID:        "batch-cost:openai:callback",
+		Timestamp: time.Now().UTC(),
+		Object:    string(schemas.BatchResultsRequest),
+		Provider:  string(schemas.OpenAI),
+		Model:     "gpt-4o-mini",
+		Status:    "success",
+	}
+	plugin.EmitBatchAggregateLog(context.Background(), entry)
+	if callbacks != 1 {
+		t.Fatalf("callback count after emit = %d, want 1", callbacks)
 	}
 }
 
@@ -1828,5 +1854,184 @@ func TestApplyNonStreamingOutputToEntryContentLoggingEnabled(t *testing.T) {
 
 	if entry.OutputMessageParsed == nil {
 		t.Error("expected OutputMessageParsed to be set when contentLoggingEnabled=true")
+	}
+}
+
+func TestRecordBatchJobLifecycle_CompletedSetsNextCheckAt(t *testing.T) {
+	store := newTestStore(t)
+	plugin := &LoggerPlugin{
+		ctx:    context.Background(),
+		store:  store,
+		logger: testLogger{},
+	}
+
+	tests := []struct {
+		name       string
+		status     string
+		wantNow    bool
+		wantMinute bool
+		wantNil    bool
+	}{
+		{name: "in_progress", status: string(schemas.BatchStatusInProgress), wantMinute: true},
+		{name: "validating", status: string(schemas.BatchStatusValidating), wantMinute: true},
+		{name: "finalizing", status: string(schemas.BatchStatusFinalizing), wantMinute: true},
+		{name: "completed", status: string(schemas.BatchStatusCompleted), wantNow: true},
+		{name: "failed", status: string(schemas.BatchStatusFailed), wantNil: true},
+		{name: "cancelled", status: string(schemas.BatchStatusCancelled), wantNil: true},
+		{name: "expired", status: string(schemas.BatchStatusExpired), wantNil: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			batchID := "batch-" + tt.name
+			entry := &logstore.Log{
+				Provider: string(schemas.OpenAI),
+				Model:    "gpt-4o-mini",
+			}
+			retrieveResp := &schemas.BifrostBatchRetrieveResponse{
+				ID:       batchID,
+				Endpoint: string(schemas.BatchEndpointChatCompletions),
+				Status:   schemas.BatchStatus(tt.status),
+			}
+			result := &schemas.BifrostResponse{
+				BatchRetrieveResponse: retrieveResp,
+			}
+			plugin.recordBatchJobLifecycle(entry, result)
+
+			job, err := store.FindBatchJobByID(context.Background(), logstore.BatchJobID("openai", batchID))
+			if err != nil {
+				t.Fatalf("FindBatchJobByID() error = %v", err)
+			}
+			if job.BatchID != batchID {
+				t.Fatalf("expected batch_id %s, got %s", batchID, job.BatchID)
+			}
+			if job.ProviderStatus != tt.status {
+				t.Fatalf("expected status %s, got %s", tt.status, job.ProviderStatus)
+			}
+
+			switch {
+			case tt.wantNow:
+				if job.NextCheckAt == nil {
+					t.Fatal("expected NextCheckAt to be set")
+				}
+				if job.NextCheckAt.After(time.Now().UTC().Add(2 * time.Second)) {
+					t.Fatalf("expected NextCheckAt to be now, got %v", job.NextCheckAt)
+				}
+			case tt.wantMinute:
+				if job.NextCheckAt == nil {
+					t.Fatal("expected NextCheckAt to be set")
+				}
+				if job.NextCheckAt.Before(time.Now().UTC().Add(50*time.Second)) ||
+					job.NextCheckAt.After(time.Now().UTC().Add(70*time.Second)) {
+					t.Fatalf("expected NextCheckAt ~1min from now, got %v (now=%v)", job.NextCheckAt, time.Now().UTC())
+				}
+			case tt.wantNil:
+				if job.NextCheckAt != nil {
+					t.Fatalf("expected NextCheckAt to be nil, got %v", *job.NextCheckAt)
+				}
+			}
+		})
+	}
+}
+
+func TestRecordBatchJobLifecycle_CreatePersistsModel(t *testing.T) {
+	store := newTestStore(t)
+	plugin := &LoggerPlugin{
+		ctx:    context.Background(),
+		store:  store,
+		logger: testLogger{},
+	}
+
+	entry := &logstore.Log{
+		ID:       "req-create-batch",
+		Provider: string(schemas.OpenAI),
+		Model:    "gpt-4o",
+	}
+	createResp := &schemas.BifrostBatchCreateResponse{
+		ID:          "batch-create-123",
+		Status:      schemas.BatchStatusValidating,
+		InputFileID: "file-abc",
+	}
+	result := &schemas.BifrostResponse{
+		BatchCreateResponse: createResp,
+	}
+	plugin.recordBatchJobLifecycle(entry, result)
+
+	job, err := store.FindBatchJobByID(context.Background(), logstore.BatchJobID("openai", "batch-create-123"))
+	if err != nil {
+		t.Fatalf("FindBatchJobByID() error = %v", err)
+	}
+	if job.Model != "gpt-4o" {
+		t.Fatalf("expected model %s, got %s", "gpt-4o", job.Model)
+	}
+	if job.InputFileID != "file-abc" {
+		t.Fatalf("expected input_file_id %s, got %s", "file-abc", job.InputFileID)
+	}
+	if job.AccountingStatus != logstore.BatchJobAccountingStatusPending {
+		t.Fatalf("expected accounting_status %s, got %s", logstore.BatchJobAccountingStatusPending, job.AccountingStatus)
+	}
+}
+
+func TestAccountBatchResults_NonResultsResponseIsNoop(t *testing.T) {
+	store := newTestStore(t)
+	plugin := &LoggerPlugin{
+		ctx:    context.Background(),
+		store:  store,
+		logger: testLogger{},
+	}
+
+	entry := &logstore.Log{
+		ID:       "req-no-results",
+		Provider: string(schemas.OpenAI),
+		Model:    "gpt-4o-mini",
+	}
+	nonResultsResult := &schemas.BifrostResponse{
+		ListModelsResponse: &schemas.BifrostListModelsResponse{},
+	}
+	// accountBatchResults with no BatchResultsResponse should be a no-op
+	plugin.accountBatchResults(entry, nonResultsResult, nil, nil)
+
+	// Verify no batch_jobs rows were created
+	jobs, err := store.FindDueBatchJobs(context.Background(), "openai", time.Now().UTC().Add(time.Hour), 100)
+	if err != nil {
+		t.Fatalf("FindDueBatchJobs() error = %v", err)
+	}
+	if len(jobs) > 0 {
+		t.Fatalf("expected no batch jobs from non-batch-response, got %d", len(jobs))
+	}
+}
+
+func TestAccountBatchResults_EmptyResultsMarksUnpriceable(t *testing.T) {
+	store := newTestStore(t)
+	plugin := &LoggerPlugin{
+		ctx:            context.Background(),
+		store:          store,
+		logger:         testLogger{},
+		pricingManager: newTestPricingManager(t),
+	}
+
+	entry := &logstore.Log{
+		ID:       "req-empty-batch-results",
+		Provider: string(schemas.OpenAI),
+		Model:    "gpt-4o-mini",
+	}
+	result := &schemas.BifrostResponse{
+		BatchResultsResponse: &schemas.BifrostBatchResultsResponse{
+			BatchID: "batch-empty-results",
+			Results: nil,
+		},
+	}
+
+	plugin.accountBatchResults(entry, result, nil, nil)
+
+	job, err := store.FindBatchJobByID(context.Background(), logstore.BatchJobID("openai", "batch-empty-results"))
+	if err != nil {
+		t.Fatalf("FindBatchJobByID() error = %v", err)
+	}
+	if job.AccountingStatus != logstore.BatchJobAccountingStatusUnpriceable {
+		t.Fatalf("expected accounting_status %s, got %s", logstore.BatchJobAccountingStatusUnpriceable, job.AccountingStatus)
+	}
+	if job.UnpriceableReason == nil || *job.UnpriceableReason != batchaccounting.UnpriceableReasonNoResults {
+		t.Fatalf("expected unpriceable_reason %s, got %#v", batchaccounting.UnpriceableReasonNoResults, job.UnpriceableReason)
 	}
 }

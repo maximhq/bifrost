@@ -8,6 +8,8 @@ import (
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 )
 
+type BatchCostDetails = datasheet.BatchCostDetails
+
 // GetModelCapabilityEntryForModel returns capability metadata for a
 // (model, provider) pair. Prefers chat, then responses, then text-completion
 // entries; falls back to the lexicographically first available mode for
@@ -47,6 +49,18 @@ func (mc *ModelCatalog) CalculateCost(result *schemas.BifrostResponse, scopes *P
 // a failed/cancelled request (BifrostError.ExtraFields.BilledUsage).
 func (mc *ModelCatalog) CalculateCostForUsage(usage *schemas.BifrostLLMUsage, provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *PricingLookupScopes) float64 {
 	return mc.datasheet.CalculateCostForUsage(usage, provider, model, requestType, (*datasheet.LookupScopes)(scopes))
+}
+
+// CalculateBatchCostForUsage computes cost for a completed batch result row and
+// reports whether batch-specific pricing was available.
+func (mc *ModelCatalog) CalculateBatchCostForUsage(usage *schemas.BifrostLLMUsage, provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *PricingLookupScopes) (float64, bool) {
+	return mc.datasheet.CalculateBatchCostForUsage(usage, provider, model, requestType, (*datasheet.LookupScopes)(scopes))
+}
+
+// CalculateBatchCostDetailsForUsage computes batch cost and exposes the
+// explicit batch rates used for durable accounting metadata.
+func (mc *ModelCatalog) CalculateBatchCostDetailsForUsage(usage *schemas.BifrostLLMUsage, provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *PricingLookupScopes) BatchCostDetails {
+	return mc.datasheet.CalculateBatchCostDetailsForUsage(usage, provider, model, requestType, (*datasheet.LookupScopes)(scopes))
 }
 
 // UpsertModelPricingAttributes writes additional_attributes for every row

@@ -235,6 +235,7 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"logs_add_rerank_output_column"}, run: migrationAddRerankOutputColumn},
 	{IDs: []string{"logs_add_routing_engine_logs_column"}, run: migrationAddRoutingEngineLogsColumn},
 	{IDs: []string{"async_jobs_init"}, run: migrationCreateAsyncJobsTable},
+	{IDs: []string{"batch_jobs_init"}, run: migrationCreateBatchJobsTable},
 	{IDs: []string{"logs_add_metadata_column"}, run: migrationAddMetadataColumn},
 	{IDs: []string{"mcp_tool_logs_add_metadata_column"}, run: migrationAddMetadataColumnToMCPToolLogs},
 	{IDs: []string{"logs_add_histogram_composite_indexes"}, run: migrationAddHistogramCompositeIndexes},
@@ -1553,6 +1554,52 @@ func migrationCreateAsyncJobsTable(ctx context.Context, db *gorm.DB, logger sche
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while creating async_jobs table: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationCreateBatchJobsTable creates the batch lifecycle and accounting table.
+func migrationCreateBatchJobsTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "batch_jobs_init"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			dbMigrator := tx.Migrator()
+			if !dbMigrator.HasTable(&BatchJob{}) {
+				logger.Info("[logstore] %s: creating table BatchJob", migrationName)
+				if err := dbMigrator.CreateTable(&BatchJob{}); err != nil {
+					return err
+				}
+			}
+
+			for _, indexName := range []string{
+				"idx_batch_jobs_identity",
+				"idx_batch_jobs_sweeper",
+				"idx_batch_jobs_unpriceable_reason",
+				"idx_batch_jobs_created_at",
+			} {
+				if !dbMigrator.HasIndex(&BatchJob{}, indexName) {
+					logger.Info("[logstore] %s: creating index %s on BatchJob", migrationName, indexName)
+					if err := dbMigrator.CreateIndex(&BatchJob{}, indexName); err != nil {
+						return fmt.Errorf("failed to create index %s: %w", indexName, err)
+					}
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			logger.Info("[logstore] %s: dropping table BatchJob", migrationName)
+			return tx.Migrator().DropTable(&BatchJob{})
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while creating batch_jobs table: %s", err.Error())
 	}
 	return nil
 }

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/queryscope"
@@ -411,6 +412,263 @@ func (s *RDBLogStore) BatchCreateIfNotExists(ctx context.Context, entries []*Log
 		Columns:   []clause.Column{{Name: "id"}},
 		DoNothing: true,
 	}).Create(&entries).Error
+}
+
+func BatchJobID(provider, batchID string) string {
+	return fmt.Sprintf("batch-job:%s:%s", provider, batchID)
+}
+
+func (s *RDBLogStore) UpsertBatchJob(ctx context.Context, job *BatchJob) error {
+	if job == nil {
+		return fmt.Errorf("batch job is nil")
+	}
+	if job.Provider == "" || job.BatchID == "" {
+		return fmt.Errorf("batch job provider and batch_id are required")
+	}
+	now := time.Now().UTC()
+	if job.ID == "" {
+		job.ID = BatchJobID(job.Provider, job.BatchID)
+	}
+	if job.AccountingStatus == "" {
+		job.AccountingStatus = BatchJobAccountingStatusPending
+	}
+	if job.CreatedAt.IsZero() {
+		job.CreatedAt = now
+	}
+	job.UpdatedAt = now
+
+	db := s.db.WithContext(ctx)
+	if err := db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "id"}},
+		DoNothing: true,
+	}).Create(job).Error; err != nil {
+		return err
+	}
+
+	updates := map[string]interface{}{"updated_at": now}
+	if job.Model != "" {
+		updates["model"] = job.Model
+	}
+	if job.ProviderStatus != "" {
+		updates["provider_status"] = job.ProviderStatus
+	}
+	if job.InputFileID != "" {
+		updates["input_file_id"] = job.InputFileID
+	}
+	if job.OutputFileID != nil {
+		updates["output_file_id"] = job.OutputFileID
+	}
+	if job.ErrorFileID != nil {
+		updates["error_file_id"] = job.ErrorFileID
+	}
+	if job.ResultsURL != nil {
+		updates["results_url"] = job.ResultsURL
+	}
+	if job.NextCheckAt != nil {
+		updates["next_check_at"] = job.NextCheckAt
+	}
+	if job.PollAttempts > 0 {
+		updates["poll_attempts"] = job.PollAttempts
+	}
+	if IsTerminalBatchProviderStatus(job.ProviderStatus) && job.ProviderStatus != string(schemas.BatchStatusCompleted) {
+		updates["next_check_at"] = nil
+	}
+
+	return db.Model(&BatchJob{}).Where("id = ?", job.ID).Updates(updates).Error
+}
+
+func (s *RDBLogStore) FindBatchJobByID(ctx context.Context, jobID string) (*BatchJob, error) {
+	if jobID == "" {
+		return nil, fmt.Errorf("batch job id is required")
+	}
+	var job BatchJob
+	if err := s.db.WithContext(ctx).Where("id = ?", jobID).First(&job).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return &job, nil
+}
+
+func IsTerminalBatchProviderStatus(status string) bool {
+	switch schemas.BatchStatus(status) {
+	case schemas.BatchStatusCompleted, schemas.BatchStatusFailed, schemas.BatchStatusExpired, schemas.BatchStatusCancelled, schemas.BatchStatusEnded, schemas.BatchStatusDeleted:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *RDBLogStore) FindDueBatchJobs(ctx context.Context, provider string, now time.Time, limit int) ([]*BatchJob, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	query := s.db.WithContext(ctx).
+		Where("accounting_status NOT IN ?", []string{BatchJobAccountingStatusAccounted, BatchJobAccountingStatusUnpriceable}).
+		Where("next_check_at IS NOT NULL AND next_check_at <= ?", now).
+		Order("next_check_at ASC").
+		Limit(limit)
+	if provider != "" {
+		query = query.Where("provider = ?", provider)
+	}
+
+	var jobs []*BatchJob
+	if err := query.Find(&jobs).Error; err != nil {
+		return nil, err
+	}
+	return jobs, nil
+}
+
+// ClaimBatchJobAccounting claims an unaccounted batch job for one worker and
+// returns a claimant token that must be supplied when completing or failing the
+// accounting attempt.
+func (s *RDBLogStore) ClaimBatchJobAccounting(ctx context.Context, jobID string, claimedBy string, ttl time.Duration) (string, bool, error) {
+	if jobID == "" {
+		return "", false, fmt.Errorf("batch job id is required")
+	}
+	if ttl <= 0 {
+		ttl = 5 * time.Minute
+	}
+
+	now := time.Now().UTC()
+	claimExpiresAt := now.Add(ttl)
+	claimToken := uuid.NewString()
+	updates := map[string]interface{}{
+		"accounting_status": BatchJobAccountingStatusProcessing,
+		"claimed_by":        claimedBy,
+		"claim_token":       claimToken,
+		"claim_expires_at":  claimExpiresAt,
+		"last_error":        nil,
+		"updated_at":        now,
+	}
+
+	tx := s.db.WithContext(ctx).Model(&BatchJob{}).
+		Where("id = ?", jobID).
+		Where("accounting_status NOT IN ?", []string{BatchJobAccountingStatusAccounted, BatchJobAccountingStatusUnpriceable}).
+		Where("(accounting_status <> ? OR claim_expires_at IS NULL OR claim_expires_at <= ?)", BatchJobAccountingStatusProcessing, now).
+		Updates(updates)
+	if tx.Error != nil {
+		return "", false, tx.Error
+	}
+	if tx.RowsAffected == 0 {
+		return "", false, nil
+	}
+	return claimToken, true, nil
+}
+
+func (s *RDBLogStore) MarkBatchJobAggregateLogWritten(ctx context.Context, jobID string, claimToken string) error {
+	if jobID == "" || claimToken == "" {
+		return fmt.Errorf("batch job id and claim token are required")
+	}
+	now := time.Now().UTC()
+	tx := s.db.WithContext(ctx).Model(&BatchJob{}).
+		Where("id = ? AND claim_token = ?", jobID, claimToken).
+		Where("accounting_status = ?", BatchJobAccountingStatusProcessing).
+		Updates(map[string]interface{}{
+			"aggregate_log_written_at": now,
+			"last_error":               nil,
+			"updated_at":               now,
+		})
+	if tx.Error != nil {
+		return tx.Error
+	}
+	if tx.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *RDBLogStore) MarkBatchJobGovernanceReported(ctx context.Context, jobID string, claimToken string) error {
+	if jobID == "" || claimToken == "" {
+		return fmt.Errorf("batch job id and claim token are required")
+	}
+	now := time.Now().UTC()
+	tx := s.db.WithContext(ctx).Model(&BatchJob{}).
+		Where("id = ? AND claim_token = ?", jobID, claimToken).
+		Where("accounting_status = ?", BatchJobAccountingStatusProcessing).
+		Updates(map[string]interface{}{
+			"governance_reported_at": now,
+			"last_error":             nil,
+			"updated_at":             now,
+		})
+	if tx.Error != nil {
+		return tx.Error
+	}
+	if tx.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// CompleteBatchJobAccounting marks a claimed batch as accounted after the stable
+// aggregate log row has been created.
+func (s *RDBLogStore) CompleteBatchJobAccounting(ctx context.Context, jobID string, claimToken string) error {
+	if jobID == "" || claimToken == "" {
+		return fmt.Errorf("batch job id and claim token are required")
+	}
+	now := time.Now().UTC()
+	updates := map[string]interface{}{
+		"accounting_status":  BatchJobAccountingStatusAccounted,
+		"claim_token":        nil,
+		"claim_expires_at":   nil,
+		"unpriceable_reason": nil,
+		"last_error":         nil,
+		"updated_at":         now,
+	}
+	tx := s.db.WithContext(ctx).Model(&BatchJob{}).
+		Where("id = ? AND claim_token = ?", jobID, claimToken).
+		Where("accounting_status = ?", BatchJobAccountingStatusProcessing).
+		Updates(updates)
+	if tx.Error != nil {
+		return tx.Error
+	}
+	if tx.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *RDBLogStore) MarkBatchJobUnpriceable(ctx context.Context, jobID string, claimToken string, reason string, err error) error {
+	return s.finishBatchJobAccounting(ctx, jobID, claimToken, BatchJobAccountingStatusUnpriceable, reason, err)
+}
+
+// FailBatchJobAccounting releases a claim after an accounting failure so a
+// later /results call or reconciler pass can retry.
+func (s *RDBLogStore) FailBatchJobAccounting(ctx context.Context, jobID string, claimToken string, err error) error {
+	return s.finishBatchJobAccounting(ctx, jobID, claimToken, BatchJobAccountingStatusError, "", err)
+}
+
+func (s *RDBLogStore) finishBatchJobAccounting(ctx context.Context, jobID string, claimToken string, status string, reason string, err error) error {
+	if jobID == "" || claimToken == "" {
+		return fmt.Errorf("batch job id and claim token are required")
+	}
+	msg := ""
+	if err != nil {
+		msg = err.Error()
+	}
+	now := time.Now().UTC()
+	updates := map[string]interface{}{
+		"accounting_status": status,
+		"claim_token":       nil,
+		"claim_expires_at":  nil,
+		"last_error":        msg,
+		"updated_at":        now,
+	}
+	if reason != "" {
+		updates["unpriceable_reason"] = reason
+	}
+	tx := s.db.WithContext(ctx).Model(&BatchJob{}).
+		Where("id = ? AND claim_token = ?", jobID, claimToken).
+		Where("accounting_status = ?", BatchJobAccountingStatusProcessing).
+		Updates(updates)
+	if tx.Error != nil {
+		return tx.Error
+	}
+	if tx.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // Ping checks if the database is reachable.
