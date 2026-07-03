@@ -163,6 +163,16 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 	const baseFormat = form.watch("baseFormat") as BaseProvider;
 	const isKeyLessDisabled = baseFormat === "bedrock" || baseFormat === "vertex";
 
+	// Clear any stale is_key_less value left over from a previously-selected base
+	// format when switching to one that doesn't allow keyless (Bedrock/Vertex) -
+	// otherwise a true value set earlier can survive the switch and get submitted,
+	// causing a server-side validation error the hidden toggle gives no indication of.
+	useEffect(() => {
+		if (isKeyLessDisabled && form.getValues("is_key_less")) {
+			form.setValue("is_key_less", false, { shouldDirty: true, shouldValidate: true });
+		}
+	}, [isKeyLessDisabled, form]);
+
 	return (
 		<>
 			<SheetHeader className="flex shrink-0 flex-col items-start px-8 py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10">
