@@ -5980,6 +5980,24 @@ func executeRequestWithRetries[T any](
 		if businessUnitName, ok := ctx.Value(schemas.BifrostContextKeyGovernanceBusinessUnitName).(string); ok && businessUnitName != "" {
 			tracer.SetAttribute(handle, schemas.AttrBifrostBusinessUnitName, businessUnitName)
 		}
+		if teamIDs, ok := ctx.Value(schemas.BifrostContextKeyGovernanceTeamIDs).([]string); ok && len(teamIDs) > 0 {
+			tracer.SetAttribute(handle, schemas.AttrBifrostTeamIDs, teamIDs)
+		}
+		if teamNames, ok := ctx.Value(schemas.BifrostContextKeyGovernanceTeamNames).([]string); ok && len(teamNames) > 0 {
+			tracer.SetAttribute(handle, schemas.AttrBifrostTeamNames, teamNames)
+		}
+		if customerIDs, ok := ctx.Value(schemas.BifrostContextKeyGovernanceCustomerIDs).([]string); ok && len(customerIDs) > 0 {
+			tracer.SetAttribute(handle, schemas.AttrBifrostCustomerIDs, customerIDs)
+		}
+		if customerNames, ok := ctx.Value(schemas.BifrostContextKeyGovernanceCustomerNames).([]string); ok && len(customerNames) > 0 {
+			tracer.SetAttribute(handle, schemas.AttrBifrostCustomerNames, customerNames)
+		}
+		if businessUnitIDs, ok := ctx.Value(schemas.BifrostContextKeyGovernanceBusinessUnitIDs).([]string); ok && len(businessUnitIDs) > 0 {
+			tracer.SetAttribute(handle, schemas.AttrBifrostBusinessUnitIDs, businessUnitIDs)
+		}
+		if businessUnitNames, ok := ctx.Value(schemas.BifrostContextKeyGovernanceBusinessUnitNames).([]string); ok && len(businessUnitNames) > 0 {
+			tracer.SetAttribute(handle, schemas.AttrBifrostBusinessUnitNames, businessUnitNames)
+		}
 		if userID, ok := ctx.Value(schemas.BifrostContextKeyUserID).(string); ok && userID != "" {
 			tracer.SetAttribute(handle, schemas.AttrBifrostUserID, userID)
 		}
