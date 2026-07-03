@@ -887,13 +887,13 @@ func (provider *BedrockProvider) listModelsByKey(ctx *schemas.BifrostContext, ke
 	responseBody, err := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if err != nil {
-		return nil, &schemas.BifrostError{
+		return nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
 			IsBifrostError: true,
 			Error: &schemas.ErrorField{
 				Message: "error reading request",
 				Error:   err,
 			},
-		}
+		}, latency)
 	}
 
 	if resp.StatusCode != http.StatusOK {

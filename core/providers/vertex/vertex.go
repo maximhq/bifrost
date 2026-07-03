@@ -269,7 +269,7 @@ func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 			providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 			req.Header.Set("Authorization", "Bearer "+token.AccessToken)
 
-			_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+			latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
 			if bifrostErr != nil {
 				wait()
 				respBody := append([]byte(nil), resp.Body()...)
@@ -307,9 +307,9 @@ func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 
 				var errorResp VertexError
 				if err := sonic.Unmarshal(respBody, &errorResp); err != nil {
-					return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err), nil, respBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
+					return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err), nil, respBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 				}
-				return nil, providerUtils.EnrichError(ctx, providerUtils.NewProviderAPIError(errorResp.Error.Message, nil, statusCode, nil, nil), nil, respBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
+				return nil, providerUtils.EnrichError(ctx, providerUtils.NewProviderAPIError(errorResp.Error.Message, nil, statusCode, nil, nil), nil, respBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 			}
 
 			// Parse Vertex's publisher models response
@@ -2583,9 +2583,9 @@ func (provider *VertexProvider) VideoDownload(ctx *schemas.BifrostContext, key s
 		}
 		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
 		if resp.StatusCode() != fasthttp.StatusOK {
-			return nil, providerUtils.NewBifrostOperationError(
+			return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError(
 				fmt.Sprintf("failed to download video: HTTP %d", resp.StatusCode()),
-				nil)
+				nil), latency)
 		}
 		body, err := providerUtils.CheckAndDecodeBody(resp)
 		if err != nil {
@@ -4162,7 +4162,7 @@ func (provider *VertexProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
 			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
 		}
-		return nil, providerUtils.EnrichError(ctx, parseVertexError(resp), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, parseVertexError(resp), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	responseBody, isLargeResp, decodeErr := providerUtils.FinalizeResponseWithLargeDetection(ctx, resp, provider.logger)
