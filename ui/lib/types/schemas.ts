@@ -633,6 +633,14 @@ export const allowedRequestsSchema = z.object({
 	file_retrieve: z.boolean().optional(),
 	file_delete: z.boolean().optional(),
 	file_content: z.boolean().optional(),
+	batch_delete: z.boolean().optional(),
+	cached_content_create: z.boolean().optional(),
+	cached_content_list: z.boolean().optional(),
+	cached_content_retrieve: z.boolean().optional(),
+	cached_content_update: z.boolean().optional(),
+	cached_content_delete: z.boolean().optional(),
+	passthrough: z.boolean().optional(),
+	passthrough_stream: z.boolean().optional(),
 });
 
 // Custom provider config schema

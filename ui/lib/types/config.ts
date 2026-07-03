@@ -324,6 +324,14 @@ export type RequestType =
 	| "file_retrieve"
 	| "file_delete"
 	| "file_content"
+	| "batch_delete"
+	| "cached_content_create"
+	| "cached_content_list"
+	| "cached_content_retrieve"
+	| "cached_content_update"
+	| "cached_content_delete"
+	| "passthrough"
+	| "passthrough_stream"
 	| "mcp_tool_execution"
 	| "container_create"
 	| "container_list"
@@ -382,6 +390,14 @@ export interface AllowedRequests {
 	file_retrieve?: boolean;
 	file_delete?: boolean;
 	file_content?: boolean;
+	batch_delete?: boolean;
+	cached_content_create?: boolean;
+	cached_content_list?: boolean;
+	cached_content_retrieve?: boolean;
+	cached_content_update?: boolean;
+	cached_content_delete?: boolean;
+	passthrough?: boolean;
+	passthrough_stream?: boolean;
 }
 
 // CustomProviderConfig matching Go's schemas.CustomProviderConfig

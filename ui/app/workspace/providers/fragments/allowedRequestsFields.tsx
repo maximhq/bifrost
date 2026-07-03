@@ -95,6 +95,14 @@ const RequestTypes: Array<{ key: RequestType; label: string }> = [
 	{ key: "file_retrieve", label: "File Retrieve" },
 	{ key: "file_delete", label: "File Delete" },
 	{ key: "file_content", label: "File Content" },
+	{ key: "batch_delete", label: "Batch Delete" },
+	{ key: "cached_content_create", label: "Cached Content Create" },
+	{ key: "cached_content_list", label: "Cached Content List" },
+	{ key: "cached_content_retrieve", label: "Cached Content Retrieve" },
+	{ key: "cached_content_update", label: "Cached Content Update" },
+	{ key: "cached_content_delete", label: "Cached Content Delete" },
+	{ key: "passthrough", label: "Passthrough" },
+	{ key: "passthrough_stream", label: "Passthrough Stream" },
 ];
 
 // Path overrides replace the default path verbatim; these request paths embed the

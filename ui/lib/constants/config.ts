@@ -235,6 +235,14 @@ export const PROVIDER_SUPPORTED_REQUESTS: Record<BaseProvider, string[]> = {
 		"file_retrieve",
 		"file_delete",
 		"file_content",
+		"batch_delete",
+		"cached_content_create",
+		"cached_content_list",
+		"cached_content_retrieve",
+		"cached_content_update",
+		"cached_content_delete",
+		"passthrough",
+		"passthrough_stream",
 	],
 };
 
