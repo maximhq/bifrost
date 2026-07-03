@@ -3541,9 +3541,27 @@ func HandleOpenAIImageGenerationStreaming(
 	return responseChan, nil
 }
 
-// Rerank is not supported by the OpenAI provider.
+// Rerank performs a rerank request for custom OpenAI-compatible providers.
 func (provider *OpenAIProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostRerankRequest) (*schemas.BifrostRerankResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.RerankRequest, provider.GetProviderKey())
+	if provider.customProviderConfig == nil {
+		return nil, providerUtils.NewUnsupportedOperationError(schemas.RerankRequest, schemas.OpenAI)
+	}
+	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.RerankRequest); err != nil {
+		return nil, err
+	}
+
+	return HandleOpenAIRerankRequest(
+		ctx,
+		provider.client,
+		provider.buildRequestURL(ctx, "/v1/rerank", schemas.RerankRequest),
+		request,
+		key,
+		provider.networkConfig.ExtraHeaders,
+		provider.GetProviderKey(),
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		provider.logger,
+	)
 }
 
 // OCR is not supported by the Openai provider.

@@ -1,0 +1,189 @@
+package openai
+
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/maximhq/bifrost/core/schemas"
+)
+
+type testNoopLogger struct{}
+
+func (testNoopLogger) Debug(string, ...any)                   {}
+func (testNoopLogger) Info(string, ...any)                    {}
+func (testNoopLogger) Warn(string, ...any)                    {}
+func (testNoopLogger) Error(string, ...any)                   {}
+func (testNoopLogger) Fatal(string, ...any)                   {}
+func (testNoopLogger) SetLevel(schemas.LogLevel)              {}
+func (testNoopLogger) SetOutputType(schemas.LoggerOutputType) {}
+func (testNoopLogger) LogHTTPRequest(schemas.LogLevel, string) schemas.LogEventBuilder {
+	return schemas.NoopLogEvent
+}
+
+func TestCustomOpenAIProviderRerankUsesGenericEndpoint(t *testing.T) {
+	var upstreamCalled bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalled = true
+		if r.Method != http.MethodPost {
+			t.Fatalf("expected POST, got %s", r.Method)
+		}
+		if r.URL.Path != "/v1/rerank" {
+			t.Fatalf("expected /v1/rerank, got %s", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer test-key" {
+			t.Fatalf("expected bearer auth header, got %q", got)
+		}
+
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("failed to read request body: %v", err)
+		}
+		var payload struct {
+			Model           string                   `json:"model"`
+			Query           string                   `json:"query"`
+			Documents       []schemas.RerankDocument `json:"documents"`
+			TopN            *int                     `json:"top_n"`
+			MaxTokensPerDoc *int                     `json:"max_tokens_per_doc"`
+			ReturnDocuments *bool                    `json:"return_documents"`
+			Truncate        string                   `json:"truncate"`
+		}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatalf("failed to parse request body %s: %v", string(body), err)
+		}
+		if payload.Model != "zerank-2" {
+			t.Fatalf("expected model zerank-2, got %q", payload.Model)
+		}
+		if payload.Query != "What is Bifrost?" {
+			t.Fatalf("expected query to be forwarded, got %q", payload.Query)
+		}
+		if len(payload.Documents) != 2 || payload.Documents[0].Text != "Bifrost is an AI gateway." || payload.Documents[1].Text != "Paris is in France." {
+			t.Fatalf("expected documents to be forwarded as document objects, got %#v", payload.Documents)
+		}
+		if payload.TopN == nil || *payload.TopN != 2 {
+			t.Fatalf("expected top_n=2, got %#v", payload.TopN)
+		}
+		if payload.MaxTokensPerDoc == nil || *payload.MaxTokensPerDoc != 512 {
+			t.Fatalf("expected max_tokens_per_doc=512, got %#v", payload.MaxTokensPerDoc)
+		}
+		if payload.ReturnDocuments != nil {
+			t.Fatalf("return_documents is handled by Bifrost and should not be sent upstream")
+		}
+		if payload.Truncate != "END" {
+			t.Fatalf("expected passthrough extra param truncate=END, got %q", payload.Truncate)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Test-Header", "present")
+		_, _ = w.Write([]byte(`{
+			"id":"rr-1",
+			"results":[
+				{"index":0,"relevance_score":0.2},
+				{"index":1,"relevance_score":0.9}
+			],
+			"meta":{"tokens":{"input_tokens":11,"output_tokens":0}}
+		}`))
+	}))
+	defer server.Close()
+
+	provider := NewOpenAIProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL},
+		CustomProviderConfig: &schemas.CustomProviderConfig{
+			CustomProviderKey: "hawk",
+			BaseProviderType:  schemas.OpenAI,
+			AllowedRequests:   &schemas.AllowedRequests{Rerank: true},
+		},
+	}, testNoopLogger{})
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+
+	topN := 2
+	maxTokensPerDoc := 512
+	returnDocuments := true
+	response, bifrostErr := provider.Rerank(ctx, schemas.Key{Value: *schemas.NewSecretVar("test-key")}, &schemas.BifrostRerankRequest{
+		Model: "zerank-2",
+		Query: "What is Bifrost?",
+		Documents: []schemas.RerankDocument{
+			{Text: "Bifrost is an AI gateway."},
+			{Text: "Paris is in France."},
+		},
+		Params: &schemas.RerankParameters{
+			TopN:            &topN,
+			MaxTokensPerDoc: &maxTokensPerDoc,
+			ReturnDocuments: &returnDocuments,
+			ExtraParams: map[string]interface{}{
+				"truncate": "END",
+			},
+		},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("expected rerank to succeed, got %v", bifrostErr)
+	}
+	if !upstreamCalled {
+		t.Fatal("expected upstream rerank endpoint to be called")
+	}
+	if response == nil {
+		t.Fatal("expected rerank response")
+	}
+	if response.ID != "rr-1" {
+		t.Fatalf("expected response id rr-1, got %q", response.ID)
+	}
+	if response.Model != "zerank-2" {
+		t.Fatalf("expected response model zerank-2, got %q", response.Model)
+	}
+	if len(response.Results) != 2 {
+		t.Fatalf("expected two rerank results, got %#v", response.Results)
+	}
+	if response.Results[0].Index != 1 || response.Results[0].RelevanceScore != 0.9 {
+		t.Fatalf("expected results sorted by relevance, got %#v", response.Results)
+	}
+	if response.Results[0].Document == nil || response.Results[0].Document.Text != "Paris is in France." {
+		t.Fatalf("expected return_documents to backfill request document, got %#v", response.Results[0].Document)
+	}
+	if response.Usage == nil || response.Usage.PromptTokens != 11 || response.Usage.TotalTokens != 11 {
+		t.Fatalf("expected usage from rerank meta tokens, got %#v", response.Usage)
+	}
+	if response.ExtraFields.ProviderResponseHeaders["X-Test-Header"] != "present" {
+		t.Fatalf("expected provider response headers, got %#v", response.ExtraFields.ProviderResponseHeaders)
+	}
+}
+
+func TestOpenAIRerankUnsupportedForNativeProvider(t *testing.T) {
+	provider := NewOpenAIProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: "http://127.0.0.1:1"},
+	}, testNoopLogger{})
+	_, bifrostErr := provider.Rerank(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), schemas.Key{}, &schemas.BifrostRerankRequest{Model: "rerank"})
+	assertUnsupportedRerank(t, bifrostErr, schemas.OpenAI)
+}
+
+func TestCustomOpenAIRerankHonorsAllowedRequests(t *testing.T) {
+	provider := NewOpenAIProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: "http://127.0.0.1:1"},
+		CustomProviderConfig: &schemas.CustomProviderConfig{
+			CustomProviderKey: "hawk",
+			BaseProviderType:  schemas.OpenAI,
+			AllowedRequests:   &schemas.AllowedRequests{},
+		},
+	}, testNoopLogger{})
+	_, bifrostErr := provider.Rerank(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), schemas.Key{}, &schemas.BifrostRerankRequest{Model: "rerank"})
+	assertUnsupportedRerank(t, bifrostErr, schemas.ModelProvider("hawk"))
+}
+
+func assertUnsupportedRerank(t *testing.T, bifrostErr *schemas.BifrostError, provider schemas.ModelProvider) {
+	t.Helper()
+	if bifrostErr == nil {
+		t.Fatal("expected unsupported operation error")
+	}
+	if bifrostErr.Error == nil || bifrostErr.Error.Code == nil || *bifrostErr.Error.Code != "unsupported_operation" {
+		t.Fatalf("expected unsupported_operation code, got %#v", bifrostErr)
+	}
+	if bifrostErr.ExtraFields.Provider != provider {
+		t.Fatalf("expected provider %q, got %q", provider, bifrostErr.ExtraFields.Provider)
+	}
+	if bifrostErr.ExtraFields.RequestType != schemas.RerankRequest {
+		t.Fatalf("expected rerank request type, got %q", bifrostErr.ExtraFields.RequestType)
+	}
+}
