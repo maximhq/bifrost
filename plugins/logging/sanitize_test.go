@@ -1,8 +1,10 @@
 package logging
 
 import (
+	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/logstore"
@@ -19,13 +21,13 @@ func errorWithRawPayloads() *schemas.BifrostError {
 	}
 }
 
-// Regression test: logstore's SerializeFields re-serializes ErrorDetailsParsed
-// on write, overwriting ErrorDetails. If the parsed field holds the
-// unsanitized error, raw request/response payloads reach the store even when
-// content logging is disabled.
-func TestApplyErrorDetailsToEntry_SanitizedSurvivesSerializeFields(t *testing.T) {
+// Regression test: logstore's SerializeFields serializes ErrorDetailsParsed
+// into ErrorDetails on write. If the parsed field holds the unsanitized error,
+// raw request/response payloads reach the store even when content logging is
+// disabled.
+func TestSanitizedErrorDetailsSurviveSerializeFields(t *testing.T) {
 	entry := &logstore.Log{ID: "req-1"}
-	applyErrorDetailsToEntry(entry, errorWithRawPayloads(), false, false)
+	entry.ErrorDetailsParsed = sanitizeErrorForLogging(errorWithRawPayloads(), false, false)
 
 	if entry.ErrorDetailsParsed == nil {
 		t.Fatal("ErrorDetailsParsed should be set")
@@ -50,9 +52,9 @@ func TestApplyErrorDetailsToEntry_SanitizedSurvivesSerializeFields(t *testing.T)
 
 // When content logging and raw storage are both enabled, raw payloads are
 // intentionally preserved.
-func TestApplyErrorDetailsToEntry_RawPreservedWhenEnabled(t *testing.T) {
+func TestRawErrorDetailsPreservedWhenEnabled(t *testing.T) {
 	entry := &logstore.Log{ID: "req-2"}
-	applyErrorDetailsToEntry(entry, errorWithRawPayloads(), true, true)
+	entry.ErrorDetailsParsed = sanitizeErrorForLogging(errorWithRawPayloads(), true, true)
 
 	if entry.ErrorDetailsParsed == nil {
 		t.Fatal("ErrorDetailsParsed should be set")
@@ -68,22 +70,25 @@ func TestApplyErrorDetailsToEntry_RawPreservedWhenEnabled(t *testing.T) {
 	}
 }
 
-func TestApplyErrorDetailsToEntry_NilError(t *testing.T) {
+func TestSanitizeErrorForLoggingNilError(t *testing.T) {
 	entry := &logstore.Log{ID: "req-3"}
-	applyErrorDetailsToEntry(entry, nil, false, false)
+	entry.ErrorDetailsParsed = sanitizeErrorForLogging(nil, false, false)
 	if entry.ErrorDetailsParsed != nil {
 		t.Error("nil error should leave ErrorDetailsParsed nil")
+	}
+	if err := entry.SerializeFields(); err != nil {
+		t.Fatalf("SerializeFields() error: %v", err)
 	}
 	if entry.ErrorDetails != "" {
 		t.Error("nil error should leave ErrorDetails empty")
 	}
 }
 
-// MCPToolLog counterpart: same sanitization semantics, and ErrorDetails is
-// serialized immediately rather than deferred to the BeforeCreate hook.
-func TestApplyErrorDetailsToMCPEntry_SanitizedAndSerializedImmediately(t *testing.T) {
+// MCPToolLog counterpart: same sanitization semantics through its own
+// SerializeFields.
+func TestSanitizedMCPErrorDetailsSurviveSerializeFields(t *testing.T) {
 	entry := &logstore.MCPToolLog{ID: "mcp-1"}
-	applyErrorDetailsToMCPEntry(entry, errorWithRawPayloads(), false, false)
+	entry.ErrorDetailsParsed = sanitizeErrorForLogging(errorWithRawPayloads(), false, false)
 
 	if entry.ErrorDetailsParsed == nil {
 		t.Fatal("ErrorDetailsParsed should be set")
@@ -92,17 +97,53 @@ func TestApplyErrorDetailsToMCPEntry_SanitizedAndSerializedImmediately(t *testin
 		entry.ErrorDetailsParsed.ExtraFields.RawResponse != nil {
 		t.Error("ErrorDetailsParsed should not retain raw payloads when content logging is disabled")
 	}
-	if entry.ErrorDetails == "" {
-		t.Error("ErrorDetails should be serialized immediately, not deferred to BeforeCreate")
-	}
-	if strings.Contains(entry.ErrorDetails, "RAW_REQUEST_MARKER") {
-		t.Error("serialized ErrorDetails must not contain raw payloads when content logging is disabled")
-	}
-
 	if err := entry.SerializeFields(); err != nil {
 		t.Fatalf("SerializeFields() error: %v", err)
 	}
 	if strings.Contains(entry.ErrorDetails, "RAW_REQUEST_MARKER") {
-		t.Error("serialized ErrorDetails must not contain raw payloads after SerializeFields")
+		t.Error("serialized ErrorDetails must not contain raw payloads when content logging is disabled")
+	}
+	if !strings.Contains(entry.ErrorDetails, "provider rejected request") {
+		t.Error("serialized ErrorDetails should still contain the error message")
+	}
+}
+
+// Update-path regression: updateLogEntry must sanitize UpdateLogData.ErrorDetails
+// before SerializeFields copies it into the error_details column update.
+func TestUpdateLogEntrySanitizesErrorDetails(t *testing.T) {
+	store := newTestStore(t)
+	plugin := &LoggerPlugin{
+		store:  store,
+		logger: testLogger{},
+	}
+
+	requestID := "req-err-update"
+	initial := &InitialLogData{
+		Object:   "chat_completion",
+		Provider: "openai",
+		Model:    "gpt-4o-mini",
+	}
+	if err := plugin.insertInitialLogEntry(context.Background(), requestID, "", time.Now().UTC(), 0, nil, initial); err != nil {
+		t.Fatalf("insertInitialLogEntry() error = %v", err)
+	}
+
+	update := &UpdateLogData{
+		Status:       "error",
+		ErrorDetails: errorWithRawPayloads(),
+	}
+	if err := plugin.updateLogEntry(context.Background(), requestID, "", "", 10, "", "", "", "", 0, nil, "", update, false); err != nil {
+		t.Fatalf("updateLogEntry() error = %v", err)
+	}
+
+	logEntry, err := store.FindByID(context.Background(), requestID)
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if strings.Contains(logEntry.ErrorDetails, "RAW_REQUEST_MARKER") ||
+		strings.Contains(logEntry.ErrorDetails, "RAW_RESPONSE_MARKER") {
+		t.Errorf("stored error_details must not contain raw payloads when content logging is disabled, got %q", logEntry.ErrorDetails)
+	}
+	if !strings.Contains(logEntry.ErrorDetails, "provider rejected request") {
+		t.Errorf("stored error_details should still contain the error message, got %q", logEntry.ErrorDetails)
 	}
 }

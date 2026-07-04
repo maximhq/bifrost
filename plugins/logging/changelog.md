@@ -1,1 +1,2 @@
-[fix]: sanitize ErrorDetailsParsed so raw payloads honor disable_content_logging [@citrocat](https://github.com/citrocat)
+- fix: sanitize ErrorDetailsParsed so raw payloads honor disable_content_logging [@citrocat](https://github.com/citrocat)
+- fix: sanitize error details on the log update path and remove redundant immediate error serialization
