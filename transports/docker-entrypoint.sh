@@ -46,7 +46,7 @@ ensure_app_dir() {
         DATA_GID=$(stat -c '%g' "$APP_DIR" 2>/dev/null || echo "0")
         echo "Error: $APP_DIR is not writable by UID:GID $CURRENT_UID:$CURRENT_GID (owned by $DATA_UID:$DATA_GID)"
         echo "  Bifrost needs a writable APP_DIR for config.db and logs.db before startup."
-        echo "  On OpenShift/Kubernetes with a PVC, set securityContext.fsGroup (for example, 0)"
+        echo "  On OpenShift/Kubernetes with a PVC, set podSecurityContext.fsGroup (for example, 0)"
         echo "  or mount a volume writable by GID 0, matching the image's group-0 ownership."
         exit 1
     fi
