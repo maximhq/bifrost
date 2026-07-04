@@ -3056,6 +3056,21 @@ func TestTeam_DecodesEncodedTeamID(t *testing.T) {
 				t.Fatalf("GET returned team id %q, want %q", getResp.Team.ID, tc.teamID)
 			}
 
+			// PUT with the encoded path param must resolve and apply the update.
+			renamed := tc.name + "-renamed-" + string(rune('A'+i))
+			putCtx := newGovernanceTeamIDCtx(tc.encoded, `{"name":"`+renamed+`"}`)
+			handler.updateTeam(putCtx)
+			if putCtx.Response.StatusCode() != fasthttp.StatusOK {
+				t.Fatalf("PUT status got %d, want 200; body=%s", putCtx.Response.StatusCode(), putCtx.Response.Body())
+			}
+			updated, err := store.GetTeam(ctx, tc.teamID)
+			if err != nil {
+				t.Fatalf("re-fetch team %q after update: %v", tc.teamID, err)
+			}
+			if updated.Name != renamed {
+				t.Fatalf("PUT did not apply: name %q, want %q", updated.Name, renamed)
+			}
+
 			// DELETE with the same encoded path param must resolve and succeed.
 			delCtx := newGovernanceTeamIDCtx(tc.encoded, "")
 			handler.deleteTeam(delCtx)
@@ -3089,6 +3104,12 @@ func TestTeam_MalformedEncodingReturns400(t *testing.T) {
 	handler.getTeam(getCtx)
 	if getCtx.Response.StatusCode() != fasthttp.StatusBadRequest {
 		t.Fatalf("GET malformed encoding status got %d, want 400; body=%s", getCtx.Response.StatusCode(), getCtx.Response.Body())
+	}
+
+	putCtx := newGovernanceTeamIDCtx(malformedID, `{"name":"irrelevant"}`)
+	handler.updateTeam(putCtx)
+	if putCtx.Response.StatusCode() != fasthttp.StatusBadRequest {
+		t.Fatalf("PUT malformed encoding status got %d, want 400; body=%s", putCtx.Response.StatusCode(), putCtx.Response.Body())
 	}
 
 	delCtx := newGovernanceTeamIDCtx(malformedID, "")
