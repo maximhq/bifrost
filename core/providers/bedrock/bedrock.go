@@ -2005,6 +2005,27 @@ func (provider *BedrockProvider) completeTitanEmbeddingBatch(ctx *schemas.Bifros
 		workerCount = len(texts)
 	}
 
+	// Derive a cancellable context from the caller's so the first sub-request
+	// failure aborts the rest of the fan-out: in-flight HTTP calls are cancelled
+	// via their request context and not-yet-started jobs are skipped before they
+	// issue a call. Sub-requests receive batchCtx (not ctx) so the cancellation
+	// actually reaches provider.completeRequest.
+	batchCtx, cancelBatch := schemas.NewBifrostContextWithCancel(ctx)
+	defer cancelBatch()
+	var firstErrOnce sync.Once
+	var firstErr *schemas.BifrostError
+	var firstErrJSON []byte
+	recordFirstErr := func(jsonData []byte, bifrostError *schemas.BifrostError) {
+		if bifrostError == nil {
+			return
+		}
+		firstErrOnce.Do(func() {
+			firstErr = bifrostError
+			firstErrJSON = jsonData
+			cancelBatch()
+		})
+	}
+
 	jobs := make(chan int)
 	var wg sync.WaitGroup
 	wg.Add(workerCount)
@@ -2012,13 +2033,18 @@ func (provider *BedrockProvider) completeTitanEmbeddingBatch(ctx *schemas.Bifros
 		go func() {
 			defer wg.Done()
 			for i := range jobs {
+				// Skip remaining jobs fast once a sibling sub-request has failed.
+				if batchCtx.Err() != nil {
+					continue
+				}
+
 				text := texts[i]
 				singleRequest := *request
 				singleRequest.Input = &schemas.EmbeddingInput{Text: &text}
 				singleRequest.RawRequestBody = nil
 
 				jsonData, bifrostError := providerUtils.CheckContextAndGetRequestBody(
-					ctx,
+					batchCtx,
 					&singleRequest,
 					func() (providerUtils.RequestBodyWithExtraParams, error) {
 						return ToBedrockTitanEmbeddingRequest(&singleRequest)
@@ -2026,10 +2052,15 @@ func (provider *BedrockProvider) completeTitanEmbeddingBatch(ctx *schemas.Bifros
 				if bifrostError != nil {
 					results[i].jsonData = jsonData
 					results[i].err = bifrostError
+					recordFirstErr(jsonData, bifrostError)
 					continue
 				}
 
-				rawResponse, latency, headers, bifrostError := provider.completeRequest(ctx, jsonData, path, key, request.Model)
+				if batchCtx.Err() != nil {
+					continue
+				}
+
+				rawResponse, latency, headers, bifrostError := provider.completeRequest(batchCtx, jsonData, path, key, request.Model)
 				results[i] = titanEmbeddingBatchResult{
 					jsonData:                jsonData,
 					rawResponse:             rawResponse,
@@ -2038,12 +2069,15 @@ func (provider *BedrockProvider) completeTitanEmbeddingBatch(ctx *schemas.Bifros
 					err:                     bifrostError,
 				}
 				if bifrostError != nil {
+					recordFirstErr(jsonData, bifrostError)
 					continue
 				}
 
 				var titanResp BedrockTitanEmbeddingResponse
 				if err := sonic.Unmarshal(rawResponse, &titanResp); err != nil {
-					results[i].err = providerUtils.NewBifrostOperationError("error parsing Titan embedding response", err)
+					bifrostError := providerUtils.NewBifrostOperationError("error parsing Titan embedding response", err)
+					results[i].err = bifrostError
+					recordFirstErr(jsonData, bifrostError)
 					continue
 				}
 				results[i].response = &titanResp
@@ -2051,20 +2085,46 @@ func (provider *BedrockProvider) completeTitanEmbeddingBatch(ctx *schemas.Bifros
 		}()
 	}
 
+dispatch:
 	for i := range texts {
-		jobs <- i
+		select {
+		case jobs <- i:
+		case <-batchCtx.Done():
+			// A sub-request already failed; stop dispatching new jobs.
+			break dispatch
+		}
 	}
 	close(jobs)
 	wg.Wait()
 
 	latency := time.Since(start)
+
+	// Accumulate provider response headers across all sub-requests before
+	// scanning for errors, so an error at an early index does not discard
+	// headers returned by later (successful) sub-requests — tracing middleware
+	// relies on provider headers being present even on error paths.
 	var providerResponseHeaders map[string]string
 	for i := range results {
 		if results[i].providerResponseHeaders != nil {
 			providerResponseHeaders = results[i].providerResponseHeaders
 		}
-		if results[i].err != nil {
-			return nil, results[i].jsonData, nil, latency, providerResponseHeaders, results[i].err
+	}
+	if firstErr != nil {
+		return nil, firstErrJSON, nil, latency, providerResponseHeaders, firstErr
+	}
+
+	// If the batch context was cancelled without any sub-request recording an
+	// error (e.g. the caller's context was cancelled before dispatch, so every
+	// job was skipped), surface the cancellation instead of dereferencing the
+	// skipped, response-less results below.
+	if ctxErr := batchCtx.Err(); ctxErr != nil {
+		return nil, nil, nil, latency, providerResponseHeaders, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Type:    schemas.Ptr(schemas.RequestCancelled),
+				Message: schemas.ErrRequestCancelled,
+				Error:   ctxErr,
+			},
 		}
 	}
 
