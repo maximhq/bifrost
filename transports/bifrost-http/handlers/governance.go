@@ -2222,7 +2222,13 @@ func (h *GovernanceHandler) createTeam(ctx *fasthttp.RequestCtx) {
 
 // getTeam handles GET /api/governance/teams/{team_id} - Get a specific team
 func (h *GovernanceHandler) getTeam(ctx *fasthttp.RequestCtx) {
-	teamID := ctx.UserValue("team_id").(string)
+	// The router matches on the raw (percent-encoded) path, so SCIM/IdP-synced team
+	// IDs containing spaces or other URL-sensitive characters arrive still encoded.
+	teamID, err := url.PathUnescape(ctx.UserValue("team_id").(string))
+	if err != nil {
+		SendError(ctx, 400, "Invalid team ID encoding")
+		return
+	}
 	team, err := h.configStore.GetTeam(ctx, teamID)
 	if err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
@@ -2239,7 +2245,13 @@ func (h *GovernanceHandler) getTeam(ctx *fasthttp.RequestCtx) {
 
 // updateTeam handles PUT /api/governance/teams/{team_id} - Update a team
 func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
-	teamID := ctx.UserValue("team_id").(string)
+	// The router matches on the raw (percent-encoded) path, so SCIM/IdP-synced team
+	// IDs containing spaces or other URL-sensitive characters arrive still encoded.
+	teamID, err := url.PathUnescape(ctx.UserValue("team_id").(string))
+	if err != nil {
+		SendError(ctx, 400, "Invalid team ID encoding")
+		return
+	}
 
 	var req UpdateTeamRequest
 	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
@@ -2477,7 +2489,13 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 
 // deleteTeam handles DELETE /api/governance/teams/{team_id} - Delete a team
 func (h *GovernanceHandler) deleteTeam(ctx *fasthttp.RequestCtx) {
-	teamID := ctx.UserValue("team_id").(string)
+	// The router matches on the raw (percent-encoded) path, so SCIM/IdP-synced team
+	// IDs containing spaces or other URL-sensitive characters arrive still encoded.
+	teamID, err := url.PathUnescape(ctx.UserValue("team_id").(string))
+	if err != nil {
+		SendError(ctx, 400, "Invalid team ID encoding")
+		return
+	}
 	team, err := h.configStore.GetTeam(ctx, teamID)
 	if err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
