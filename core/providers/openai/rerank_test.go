@@ -151,6 +151,112 @@ func TestCustomOpenAIProviderRerankUsesGenericEndpoint(t *testing.T) {
 	}
 }
 
+func TestCustomOpenAIRerankPreservesUpstreamDocument(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"rr-doc",
+			"results":[
+				{"index":0,"relevance_score":0.1},
+				{"index":1,"relevance_score":0.8,"document":{"text":"upstream returned B"}}
+			]
+		}`))
+	}))
+	defer server.Close()
+
+	provider := NewOpenAIProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL},
+		CustomProviderConfig: &schemas.CustomProviderConfig{
+			CustomProviderKey: "hawk",
+			BaseProviderType:  schemas.OpenAI,
+			AllowedRequests:   &schemas.AllowedRequests{Rerank: true},
+		},
+	}, testNoopLogger{})
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	returnDocuments := true
+	response, bifrostErr := provider.Rerank(ctx, schemas.Key{Value: *schemas.NewSecretVar("test-key")}, &schemas.BifrostRerankRequest{
+		Model: "zerank-2",
+		Query: "What is Bifrost?",
+		Documents: []schemas.RerankDocument{
+			{Text: "request doc A"},
+			{Text: "request doc B"},
+		},
+		Params: &schemas.RerankParameters{
+			ReturnDocuments: &returnDocuments,
+		},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("expected rerank to succeed, got %v", bifrostErr)
+	}
+	if response == nil || len(response.Results) != 2 {
+		t.Fatalf("expected two rerank results, got %#v", response)
+	}
+	// Highest score first — index 1, whose document the upstream returned itself.
+	if response.Results[0].Index != 1 {
+		t.Fatalf("expected index 1 first, got %#v", response.Results)
+	}
+	if response.Results[0].Document == nil || response.Results[0].Document.Text != "upstream returned B" {
+		t.Fatalf("expected upstream-returned document to be preserved, got %#v", response.Results[0].Document)
+	}
+	// Index 0 had no upstream document — backfilled from the request.
+	if response.Results[1].Document == nil || response.Results[1].Document.Text != "request doc A" {
+		t.Fatalf("expected request document backfill for index 0, got %#v", response.Results[1].Document)
+	}
+}
+
+func TestCustomOpenAIRerankLargeResponseThresholdReturnsResults(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"rr-large",
+			"results":[
+				{"index":0,"relevance_score":0.3},
+				{"index":1,"relevance_score":0.7}
+			],
+			"meta":{"tokens":{"input_tokens":5,"output_tokens":0}}
+		}`))
+	}))
+	defer server.Close()
+
+	provider := NewOpenAIProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL},
+		CustomProviderConfig: &schemas.CustomProviderConfig{
+			CustomProviderKey: "hawk",
+			BaseProviderType:  schemas.OpenAI,
+			AllowedRequests:   &schemas.AllowedRequests{Rerank: true},
+		},
+	}, testNoopLogger{})
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	// A tiny threshold would route the structured JSON body onto the large-response
+	// streaming path; rerank must parse it in-process regardless and still return results.
+	ctx.SetValue(schemas.BifrostContextKeyLargeResponseThreshold, int64(1))
+
+	response, bifrostErr := provider.Rerank(ctx, schemas.Key{Value: *schemas.NewSecretVar("test-key")}, &schemas.BifrostRerankRequest{
+		Model: "zerank-2",
+		Query: "What is Bifrost?",
+		Documents: []schemas.RerankDocument{
+			{Text: "Bifrost is an AI gateway."},
+			{Text: "Paris is in France."},
+		},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("expected rerank to succeed, got %v", bifrostErr)
+	}
+	if response == nil {
+		t.Fatal("expected rerank response")
+	}
+	if len(response.Results) != 2 {
+		t.Fatalf("expected two rerank results despite large-response threshold, got %#v", response.Results)
+	}
+	if response.Results[0].Index != 1 || response.Results[0].RelevanceScore != 0.7 {
+		t.Fatalf("expected results sorted by relevance, got %#v", response.Results)
+	}
+	if response.Usage == nil || response.Usage.PromptTokens != 5 {
+		t.Fatalf("expected usage parsed from body, got %#v", response.Usage)
+	}
+}
+
 func TestOpenAIRerankUnsupportedForNativeProvider(t *testing.T) {
 	provider := NewOpenAIProvider(&schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{BaseURL: "http://127.0.0.1:1"},

@@ -94,6 +94,10 @@ func (response *openAIRerankResponse) toBifrostRerankResponse(documents []schema
 	})
 	if returnDocuments {
 		for i := range bifrostResponse.Results {
+			// Preserve any document the upstream already returned; only backfill from the request otherwise.
+			if bifrostResponse.Results[i].Document != nil {
+				continue
+			}
 			resultIndex := bifrostResponse.Results[i].Index
 			if resultIndex >= 0 && resultIndex < len(documents) {
 				bifrostResponse.Results[i].Document = schemas.Ptr(documents[resultIndex])
@@ -206,7 +210,10 @@ func HandleOpenAIRerankRequest(
 			fasthttp.ReleaseResponse(resp)
 		}
 	}()
-	activeClient := providerUtils.PrepareResponseStreaming(ctx, client, resp)
+	// Rerank JSON is always parsed in-process (no transport streaming). Skip
+	// PrepareResponseStreaming so large-response threshold mode never leaves the body
+	// on a stream-only path that finalizeOpenAIResponse would treat as unsupported here.
+	activeClient := client
 
 	providerUtils.SetExtraHeaders(ctx, req, extraHeaders, nil)
 	req.SetRequestURI(url)
@@ -242,17 +249,10 @@ func HandleOpenAIRerankRequest(
 		return nil, providerUtils.EnrichError(ctx, ParseOpenAIError(resp), jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
 	}
 
-	body, lpResult, finalErr := finalizeOpenAIResponse(ctx, resp, latency, providerName, logger)
+	body, _, finalErr := finalizeOpenAIResponse(ctx, resp, latency, providerName, logger)
 	respOwned = false
 	if finalErr != nil {
 		return nil, providerUtils.EnrichError(ctx, finalErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
-	}
-	if lpResult != nil {
-		return &schemas.BifrostRerankResponse{
-			Model:       request.Model,
-			Usage:       lpResult.Usage,
-			ExtraFields: schemas.BifrostResponseExtraFields{Latency: lpResult.Latency},
-		}, nil
 	}
 
 	response := &openAIRerankResponse{}
