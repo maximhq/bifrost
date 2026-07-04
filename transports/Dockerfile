@@ -93,7 +93,8 @@
   RUN mkdir -p "$APP_DIR/logs" && \
     adduser -D -s /bin/sh appuser && \
     chown -R appuser:appuser /app && \
-    { [ "$APP_DIR" = "/app" ] || [ "${APP_DIR#/app/}" != "$APP_DIR" ] || chown -R appuser:appuser "$APP_DIR"; } && \
+    chown -R appuser:0 "$APP_DIR" && \
+    chmod -R g=rwX "$APP_DIR" && \
     chmod +x /app/docker-entrypoint.sh
   USER appuser
 

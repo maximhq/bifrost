@@ -3,43 +3,39 @@ set -e
 
 APP_DIR=${APP_DIR:-/app/data}
 
-# Function to fix permissions on mounted volumes
-fix_permissions() {
-    # Ensure runtime APP_DIR overrides exist before ownership checks
+# Ensure APP_DIR exists when possible, but do not require CAP_CHOWN at startup.
+ensure_app_dir() {
     mkdir -p "$APP_DIR" 2>/dev/null || true
 
-    # Check if APP_DIR exists and fix ownership if needed
-    if [ -d "$APP_DIR" ]; then
-        # Get current user info
+    if [ ! -d "$APP_DIR" ]; then
+        return
+    fi
+
+    if [ ! -w "$APP_DIR" ]; then
         CURRENT_UID=$(id -u)
         CURRENT_GID=$(id -g)
-        
-        # Get directory ownership
         DATA_UID=$(stat -c '%u' "$APP_DIR" 2>/dev/null || echo "0")
         DATA_GID=$(stat -c '%g' "$APP_DIR" 2>/dev/null || echo "0")
-        
-        # If ownership doesn't match current user, try to fix it
-        if [ "$DATA_UID" != "$CURRENT_UID" ] || [ "$DATA_GID" != "$CURRENT_GID" ]; then
+
+        if [ "$CURRENT_UID" = "0" ]; then
             echo "Fixing permissions on $APP_DIR (was $DATA_UID:$DATA_GID, setting to $CURRENT_UID:$CURRENT_GID)"
-            
-            # Try to change ownership (will work if running as root or if user has permission)
-            if chown -R "$CURRENT_UID:$CURRENT_GID" "$APP_DIR" 2>/dev/null; then
+            if chown -R "$CURRENT_UID:$CURRENT_GID" "$APP_DIR" 2>/dev/null && chmod -R g=rwX "$APP_DIR" 2>/dev/null; then
                 echo "Successfully updated permissions on $APP_DIR"
             else
-                echo "Warning: Could not change ownership of $APP_DIR. You may need to run:"
-                echo "  docker run --user \$(id -u):\$(id -g) ..."
-                echo "  or ensure the host directory is owned by UID:GID $CURRENT_UID:$CURRENT_GID"
+                echo "Warning: Could not update permissions on $APP_DIR"
             fi
+        else
+            echo "Warning: $APP_DIR is not writable by UID:GID $CURRENT_UID:$CURRENT_GID"
+            echo "  Ensure the directory is owned by this UID or group-writable for a supplemental group such as 0"
         fi
-        
-        # Ensure logs subdirectory exists with correct permissions
-        mkdir -p "$APP_DIR/logs"
-        chmod 755 "$APP_DIR/logs" 2>/dev/null || true
     fi
+
+    mkdir -p "$APP_DIR/logs" 2>/dev/null || true
+    chmod g+rwX "$APP_DIR/logs" 2>/dev/null || true
 }
 
-# Fix permissions before starting the application
-fix_permissions
+# Prepare the app directory before starting the application
+ensure_app_dir
 
 # Parse command line arguments and set environment variables
 parse_args() {

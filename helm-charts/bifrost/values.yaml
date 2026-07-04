@@ -57,10 +57,7 @@ deploymentLabels: {}
 podAnnotations: {}
 podLabels: {}
 
-podSecurityContext:
-  fsGroup: 1000
-  runAsUser: 1000
-  runAsNonRoot: true
+podSecurityContext: {}
 
 securityContext:
   capabilities:
@@ -68,7 +65,6 @@ securityContext:
       - ALL
   readOnlyRootFilesystem: false
   runAsNonRoot: true
-  runAsUser: 1000
 
 service:
   type: ClusterIP
