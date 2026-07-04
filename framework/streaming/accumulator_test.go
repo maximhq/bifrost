@@ -660,6 +660,115 @@ func TestGetLastAudioAndTranscriptionChunksSafe(t *testing.T) {
 	}
 }
 
+func TestProcessStreamingResponsePreservesTerminalResponsesUsageWhenChunkIndexIsReused(t *testing.T) {
+	logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)
+	accumulator := NewAccumulator(nil, logger)
+
+	requestID := "test-responses-terminal-usage-reused-index"
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	ctx.SetValue(schemas.BifrostContextKeyAccumulatorID, requestID)
+
+	priorChunks := []*ResponsesStreamChunk{
+		{
+			ChunkIndex: 0,
+			Timestamp:  time.Now(),
+			StreamResponse: &schemas.BifrostResponsesStreamResponse{
+				Type: schemas.ResponsesStreamResponseTypeCreated,
+				Response: &schemas.BifrostResponsesResponse{
+					ID: bifrost.Ptr("resp_terminal_usage"),
+				},
+			},
+		},
+		{
+			ChunkIndex: 7,
+			Timestamp:  time.Now(),
+			StreamResponse: &schemas.BifrostResponsesStreamResponse{
+				Type:  schemas.ResponsesStreamResponseTypeOutputTextDelta,
+				Delta: bifrost.Ptr("partial"),
+			},
+		},
+		{
+			ChunkIndex: 7,
+			Timestamp:  time.Now(),
+			StreamResponse: &schemas.BifrostResponsesStreamResponse{
+				Type:  schemas.ResponsesStreamResponseTypeOutputTextDelta,
+				Delta: bifrost.Ptr("duplicate index ignored"),
+			},
+		},
+	}
+	for _, chunk := range priorChunks {
+		if err := accumulator.addResponsesStreamChunk(requestID, chunk, false); err != nil {
+			t.Fatalf("addResponsesStreamChunk() error = %v", err)
+		}
+	}
+
+	response := &schemas.BifrostResponse{
+		ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+			Type:           schemas.ResponsesStreamResponseTypeCompleted,
+			SequenceNumber: 0,
+			Response: &schemas.BifrostResponsesResponse{
+				ID: bifrost.Ptr("resp_terminal_usage"),
+				Usage: &schemas.ResponsesResponseUsage{
+					InputTokens:  31,
+					OutputTokens: 17,
+					TotalTokens:  48,
+				},
+			},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType:            schemas.ResponsesStreamRequest,
+				Provider:               schemas.OpenAI,
+				OriginalModelRequested: "gpt-4o-mini",
+				ChunkIndex:             0,
+			},
+		},
+	}
+
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+
+	processed, err := accumulator.ProcessStreamingResponse(ctx, response, nil)
+	if err != nil {
+		t.Fatalf("ProcessStreamingResponse() error = %v", err)
+	}
+	assertTokenUsage := func(t *testing.T, processed *ProcessedStreamResponse) {
+		t.Helper()
+		if processed == nil {
+			t.Fatal("expected processed response, got nil")
+		}
+		if processed.Data == nil || processed.Data.TokenUsage == nil {
+			t.Fatal("expected terminal response.completed usage to be accumulated")
+		}
+		if processed.Data.TokenUsage.PromptTokens != 31 {
+			t.Fatalf("expected prompt tokens 31, got %d", processed.Data.TokenUsage.PromptTokens)
+		}
+		if processed.Data.TokenUsage.CompletionTokens != 17 {
+			t.Fatalf("expected completion tokens 17, got %d", processed.Data.TokenUsage.CompletionTokens)
+		}
+		if processed.Data.TokenUsage.TotalTokens != 48 {
+			t.Fatalf("expected total tokens 48, got %d", processed.Data.TokenUsage.TotalTokens)
+		}
+	}
+	assertTokenUsage(t, processed)
+
+	processedAgain, err := accumulator.ProcessStreamingResponse(ctx, response, nil)
+	if err != nil {
+		t.Fatalf("second ProcessStreamingResponse() error = %v", err)
+	}
+	assertTokenUsage(t, processedAgain)
+
+	streamAccumulator := accumulator.getOrCreateStreamAccumulator(requestID)
+	streamAccumulator.mu.Lock()
+	defer streamAccumulator.mu.Unlock()
+	completedChunks := 0
+	for _, chunk := range streamAccumulator.ResponsesStreamChunks {
+		if chunk.StreamResponse != nil && chunk.StreamResponse.Type == schemas.ResponsesStreamResponseTypeCompleted {
+			completedChunks++
+		}
+	}
+	if completedChunks != 1 {
+		t.Fatalf("expected exactly one terminal response.completed chunk after duplicate processing, got %d", completedChunks)
+	}
+}
+
 func TestProcessStreamingResponseSupportsWebSocketResponsesRequest(t *testing.T) {
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)
 	accumulator := NewAccumulator(nil, logger)

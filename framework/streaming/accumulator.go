@@ -153,6 +153,7 @@ func (a *Accumulator) createStreamAccumulator(requestID string) *StreamAccumulat
 		MaxTranscriptionChunkIndex: -1,
 		MaxAudioChunkIndex:         -1,
 		TerminalErrorChunkIndex:    -1,
+		TerminalResponseChunkIndex: -1,
 		IsComplete:                 false,
 		mu:                         sync.Mutex{},
 		Timestamp:                  now,
@@ -192,6 +193,7 @@ func (a *Accumulator) getOrCreateStreamAccumulator(requestID string) *StreamAccu
 		MaxTranscriptionChunkIndex: -1,
 		MaxAudioChunkIndex:         -1,
 		TerminalErrorChunkIndex:    -1,
+		TerminalResponseChunkIndex: -1,
 		IsComplete:                 false,
 		mu:                         sync.Mutex{},
 		Timestamp:                  now,
@@ -321,6 +323,15 @@ func (a *Accumulator) addResponsesStreamChunk(requestID string, chunk *Responses
 	// Track first chunk timestamp for TTFT calculation
 	if accumulator.FirstChunkTimestamp.IsZero() {
 		accumulator.FirstChunkTimestamp = chunk.Timestamp
+	}
+	if isFinalChunk && chunk.StreamResponse != nil && chunk.ChunkIndex <= accumulator.MaxResponsesChunkIndex {
+		if accumulator.TerminalResponseChunkIndex >= 0 {
+			chunk.ChunkIndex = accumulator.TerminalResponseChunkIndex
+		} else {
+			accumulator.MaxResponsesChunkIndex++
+			chunk.ChunkIndex = accumulator.MaxResponsesChunkIndex
+			accumulator.TerminalResponseChunkIndex = chunk.ChunkIndex
+		}
 	}
 	if _, seen := accumulator.ResponsesChunksSeen[chunk.ChunkIndex]; !seen {
 		accumulator.ResponsesChunksSeen[chunk.ChunkIndex] = struct{}{}

@@ -140,6 +140,8 @@ type StreamAccumulator struct {
 
 	// TerminalErrorChunkIndex holds the reserved chunk index for the terminal error (-1 = unset); reused across plugin calls for correct dedup.
 	TerminalErrorChunkIndex int
+	// TerminalResponseChunkIndex holds the reserved index for a terminal response event when providers omit or reuse sequence numbers.
+	TerminalResponseChunkIndex int
 
 	// Passthrough streaming accumulation
 	PassthroughBody       []byte            // Accumulated body bytes from passthrough streaming chunks
