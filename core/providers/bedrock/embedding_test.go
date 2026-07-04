@@ -1,9 +1,14 @@
 package bedrock
 
 import (
+	"bytes"
 	"context"
+	"io"
+	"net/http"
+	"sync"
 	"testing"
 
+	"github.com/bytedance/sonic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
@@ -111,4 +116,117 @@ func TestToBedrockCohereEmbeddingRequestBodyOmitsModel(t *testing.T) {
 		"texts": ["hello"],
 		"embedding_types": ["float"]
 	}`, string(wireBody))
+}
+
+type titanEmbeddingCaptureTransport struct {
+	mu       sync.Mutex
+	requests []BedrockTitanEmbeddingRequest
+	paths    []string
+}
+
+func (t *titanEmbeddingCaptureTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	body, err := io.ReadAll(req.Body)
+	if err != nil {
+		return nil, err
+	}
+	var titanReq BedrockTitanEmbeddingRequest
+	if err := sonic.Unmarshal(body, &titanReq); err != nil {
+		return nil, err
+	}
+
+	t.mu.Lock()
+	t.requests = append(t.requests, titanReq)
+	t.paths = append(t.paths, req.URL.Path)
+	t.mu.Unlock()
+
+	embeddingValueByInput := map[string]float64{
+		"alpha":   3,
+		"bravo":   2,
+		"charlie": 1,
+	}
+	tokenCountByInput := map[string]int{
+		"alpha":   11,
+		"bravo":   13,
+		"charlie": 17,
+	}
+	respBody, err := sonic.Marshal(BedrockTitanEmbeddingResponse{
+		Embedding:           []float64{embeddingValueByInput[titanReq.InputText]},
+		InputTextTokenCount: tokenCountByInput[titanReq.InputText],
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"X-Test": []string{titanReq.InputText}},
+		Body:       io.NopCloser(bytes.NewReader(respBody)),
+	}, nil
+}
+
+func (t *titanEmbeddingCaptureTransport) captured() ([]BedrockTitanEmbeddingRequest, []string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	requests := append([]BedrockTitanEmbeddingRequest(nil), t.requests...)
+	paths := append([]string(nil), t.paths...)
+	return requests, paths
+}
+
+func TestBedrockTitanEmbeddingBatchFansOutAndAggregates(t *testing.T) {
+	transport := &titanEmbeddingCaptureTransport{}
+	provider := &BedrockProvider{
+		client: &http.Client{Transport: transport},
+	}
+	normalize := true
+	dimensions := 256
+	request := &schemas.BifrostEmbeddingRequest{
+		Model: "amazon.titan-embed-text-v2:0",
+		Input: &schemas.EmbeddingInput{Texts: []string{"alpha", "bravo", "charlie"}},
+		Params: &schemas.EmbeddingParameters{
+			Dimensions: &dimensions,
+			ExtraParams: map[string]interface{}{
+				"normalize": normalize,
+			},
+		},
+	}
+	key := schemas.Key{
+		Value: *schemas.NewSecretVar("bedrock-api-key"),
+		BedrockKeyConfig: &schemas.BedrockKeyConfig{
+			Region: schemas.NewSecretVar("us-west-2"),
+		},
+	}
+
+	response, bifrostErr := provider.Embedding(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), key, request)
+	require.Nil(t, bifrostErr)
+	require.NotNil(t, response)
+
+	require.Len(t, response.Data, 3)
+	assert.Equal(t, "list", response.Object)
+	assert.Equal(t, request.Model, response.Model)
+	assert.Equal(t, 41, response.Usage.PromptTokens)
+	assert.Equal(t, 41, response.Usage.TotalTokens)
+	assert.Equal(t, 0, response.Data[0].Index)
+	assert.Equal(t, []float64{3}, response.Data[0].Embedding.EmbeddingArray)
+	assert.Equal(t, 1, response.Data[1].Index)
+	assert.Equal(t, []float64{2}, response.Data[1].Embedding.EmbeddingArray)
+	assert.Equal(t, 2, response.Data[2].Index)
+	assert.Equal(t, []float64{1}, response.Data[2].Embedding.EmbeddingArray)
+
+	capturedRequests, paths := transport.captured()
+	require.Len(t, capturedRequests, 3)
+	assert.Len(t, paths, 3)
+	inputs := make(map[string]bool, len(capturedRequests))
+	for _, capturedRequest := range capturedRequests {
+		inputs[capturedRequest.InputText] = true
+		require.NotNil(t, capturedRequest.Dimensions)
+		assert.Equal(t, dimensions, *capturedRequest.Dimensions)
+		require.NotNil(t, capturedRequest.Normalize)
+		assert.Equal(t, normalize, *capturedRequest.Normalize)
+		assert.NotContains(t, capturedRequest.InputText, "\n")
+	}
+	assert.Equal(t, map[string]bool{"alpha": true, "bravo": true, "charlie": true}, inputs)
+	for _, path := range paths {
+		assert.Equal(t, "/model/amazon.titan-embed-text-v2:0/invoke", path)
+	}
 }

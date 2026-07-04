@@ -45,6 +45,8 @@ type BedrockProvider struct {
 	sendBackRawResponse   bool                          // Whether to include raw response in BifrostResponse
 }
 
+const maxTitanEmbeddingBatchConcurrency = 8
+
 // assumeRoleCredsCache caches *aws.CredentialsCache instances keyed by the
 // unique combination of role parameters so that STS AssumeRole is not called
 // on every request.
@@ -1984,6 +1986,106 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 	return responseChan, nil
 }
 
+type titanEmbeddingBatchResult struct {
+	response                *BedrockTitanEmbeddingResponse
+	jsonData                []byte
+	rawResponse             []byte
+	latency                 time.Duration
+	providerResponseHeaders map[string]string
+	err                     *schemas.BifrostError
+}
+
+func (provider *BedrockProvider) completeTitanEmbeddingBatch(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostEmbeddingRequest, path string) (*schemas.BifrostEmbeddingResponse, []byte, [][]byte, time.Duration, map[string]string, *schemas.BifrostError) {
+	texts := request.Input.Texts
+	results := make([]titanEmbeddingBatchResult, len(texts))
+	start := time.Now()
+
+	workerCount := maxTitanEmbeddingBatchConcurrency
+	if len(texts) < workerCount {
+		workerCount = len(texts)
+	}
+
+	jobs := make(chan int)
+	var wg sync.WaitGroup
+	wg.Add(workerCount)
+	for range workerCount {
+		go func() {
+			defer wg.Done()
+			for i := range jobs {
+				text := texts[i]
+				singleRequest := *request
+				singleRequest.Input = &schemas.EmbeddingInput{Text: &text}
+				singleRequest.RawRequestBody = nil
+
+				jsonData, bifrostError := providerUtils.CheckContextAndGetRequestBody(
+					ctx,
+					&singleRequest,
+					func() (providerUtils.RequestBodyWithExtraParams, error) {
+						return ToBedrockTitanEmbeddingRequest(&singleRequest)
+					})
+				if bifrostError != nil {
+					results[i].jsonData = jsonData
+					results[i].err = bifrostError
+					continue
+				}
+
+				rawResponse, latency, headers, bifrostError := provider.completeRequest(ctx, jsonData, path, key, request.Model)
+				results[i] = titanEmbeddingBatchResult{
+					jsonData:                jsonData,
+					rawResponse:             rawResponse,
+					latency:                 latency,
+					providerResponseHeaders: headers,
+					err:                     bifrostError,
+				}
+				if bifrostError != nil {
+					continue
+				}
+
+				var titanResp BedrockTitanEmbeddingResponse
+				if err := sonic.Unmarshal(rawResponse, &titanResp); err != nil {
+					results[i].err = providerUtils.NewBifrostOperationError("error parsing Titan embedding response", err)
+					continue
+				}
+				results[i].response = &titanResp
+			}
+		}()
+	}
+
+	for i := range texts {
+		jobs <- i
+	}
+	close(jobs)
+	wg.Wait()
+
+	latency := time.Since(start)
+	var providerResponseHeaders map[string]string
+	for i := range results {
+		if results[i].providerResponseHeaders != nil {
+			providerResponseHeaders = results[i].providerResponseHeaders
+		}
+		if results[i].err != nil {
+			return nil, results[i].jsonData, nil, latency, providerResponseHeaders, results[i].err
+		}
+	}
+
+	data := make([]schemas.EmbeddingData, len(results))
+	rawResponses := make([][]byte, len(results))
+	usage := &schemas.BifrostLLMUsage{}
+	for i := range results {
+		data[i] = results[i].response.toBifrostEmbeddingData(i)
+		rawResponses[i] = results[i].rawResponse
+		usage.PromptTokens += results[i].response.InputTextTokenCount
+		usage.TotalTokens += results[i].response.InputTextTokenCount
+	}
+
+	return &schemas.BifrostEmbeddingResponse{
+		Object: "list",
+		Model:  request.Model,
+		Data:   data,
+		Usage:  usage,
+	}, nil, rawResponses, latency, providerResponseHeaders, nil
+}
+
 // Embedding generates embeddings for the given input text(s) using Amazon Bedrock.
 // Supports Titan and Cohere embedding models. Returns a BifrostResponse containing the embedding(s) and any error that occurred.
 func (provider *BedrockProvider) Embedding(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
@@ -1999,25 +2101,30 @@ func (provider *BedrockProvider) Embedding(ctx *schemas.BifrostContext, key sche
 
 	// Convert request and execute based on model type
 	var rawResponse []byte
+	var rawResponses [][]byte
+	var bifrostResponse *schemas.BifrostEmbeddingResponse
 	var bifrostError *schemas.BifrostError
 	var latency time.Duration
 	var providerResponseHeaders map[string]string
 	var path string
 	var jsonData []byte
-
 	switch modelType {
 	case "titan":
-		jsonData, bifrostError = providerUtils.CheckContextAndGetRequestBody(
-			ctx,
-			request,
-			func() (providerUtils.RequestBodyWithExtraParams, error) {
-				return ToBedrockTitanEmbeddingRequest(request)
-			})
-		if bifrostError != nil {
-			return nil, bifrostError
-		}
 		path, _ = provider.getModelPathAndRegion(ctx, "invoke", request.Model, key)
-		rawResponse, latency, providerResponseHeaders, bifrostError = provider.completeRequest(ctx, jsonData, path, key, request.Model)
+		if request.Input != nil && len(request.Input.Texts) > 0 {
+			bifrostResponse, jsonData, rawResponses, latency, providerResponseHeaders, bifrostError = provider.completeTitanEmbeddingBatch(ctx, key, request, path)
+		} else {
+			jsonData, bifrostError = providerUtils.CheckContextAndGetRequestBody(
+				ctx,
+				request,
+				func() (providerUtils.RequestBodyWithExtraParams, error) {
+					return ToBedrockTitanEmbeddingRequest(request)
+				})
+			if bifrostError != nil {
+				return nil, bifrostError
+			}
+			rawResponse, latency, providerResponseHeaders, bifrostError = provider.completeRequest(ctx, jsonData, path, key, request.Model)
+		}
 
 	case "cohere":
 		jsonData, bifrostError = providerUtils.CheckContextAndGetRequestBody(
@@ -2043,15 +2150,16 @@ func (provider *BedrockProvider) Embedding(ctx *schemas.BifrostContext, key sche
 		return nil, providerUtils.EnrichError(ctx, bifrostError, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 	// Parse response based on model type
-	var bifrostResponse *schemas.BifrostEmbeddingResponse
 	switch modelType {
 	case "titan":
-		var titanResp BedrockTitanEmbeddingResponse
-		if err := sonic.Unmarshal(rawResponse, &titanResp); err != nil {
-			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("error parsing Titan embedding response", err), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+		if bifrostResponse == nil {
+			var titanResp BedrockTitanEmbeddingResponse
+			if err := sonic.Unmarshal(rawResponse, &titanResp); err != nil {
+				return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("error parsing Titan embedding response", err), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+			}
+			bifrostResponse = titanResp.ToBifrostEmbeddingResponse()
+			bifrostResponse.Model = request.Model
 		}
-		bifrostResponse = titanResp.ToBifrostEmbeddingResponse()
-		bifrostResponse.Model = request.Model
 
 	case "cohere":
 		var cohereResp BedrockCohereEmbeddingResponse
@@ -2093,9 +2201,22 @@ func (provider *BedrockProvider) Embedding(ctx *schemas.BifrostContext, key sche
 
 	// Set raw response if enabled
 	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
-		var rawResponseData interface{}
-		if err := sonic.Unmarshal(rawResponse, &rawResponseData); err == nil {
-			bifrostResponse.ExtraFields.RawResponse = rawResponseData
+		if len(rawResponses) > 0 {
+			rawResponseData := make([]interface{}, 0, len(rawResponses))
+			for _, raw := range rawResponses {
+				var item interface{}
+				if err := sonic.Unmarshal(raw, &item); err == nil {
+					rawResponseData = append(rawResponseData, item)
+				}
+			}
+			if len(rawResponseData) > 0 {
+				bifrostResponse.ExtraFields.RawResponse = rawResponseData
+			}
+		} else {
+			var rawResponseData interface{}
+			if err := sonic.Unmarshal(rawResponse, &rawResponseData); err == nil {
+				bifrostResponse.ExtraFields.RawResponse = rawResponseData
+			}
 		}
 	}
 
