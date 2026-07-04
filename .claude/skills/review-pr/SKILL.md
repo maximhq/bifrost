@@ -1,6 +1,6 @@
 ---
-name: review
-description: Reviews a PR or diff with multi-angle finders and adversarial verification, then reports a findings table, a merge/no-merge recommendation, required followups, and offers to create a follow-up PR. Use when the user types /review [PR# | branch | path].
+name: review-pr
+description: Reviews a PR or diff with multi-angle finders and adversarial verification, then reports a findings table, a merge/no-merge recommendation, required followups, and offers to create a follow-up PR. Use when the user types /review-pr [PR# | branch | path].
 ---
 
 # PR Review (bifrost custom)
