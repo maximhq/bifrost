@@ -20,7 +20,7 @@ import (
 //   - *string: The virtual key if found, nil otherwise
 func ParseVirtualKeyFromFastHTTPRequest(req *fasthttp.RequestCtx) *string {
 	vkHeader := string(req.Request.Header.Peek("x-bf-vk"))
-	if vkHeader != "" && strings.HasPrefix(strings.ToLower(vkHeader), VirtualKeyPrefix) {
+	if vkHeader != "" {
 		return bifrost.Ptr(vkHeader)
 	}
 	authHeader := string(req.Request.Header.Peek("Authorization"))
@@ -39,6 +39,10 @@ func ParseVirtualKeyFromFastHTTPRequest(req *fasthttp.RequestCtx) *string {
 	xGoogleAPIKey := string(req.Request.Header.Peek("x-goog-api-key"))
 	if xGoogleAPIKey != "" && strings.HasPrefix(strings.ToLower(xGoogleAPIKey), VirtualKeyPrefix) {
 		return bifrost.Ptr(xGoogleAPIKey)
+	}
+	azureAPIKey := string(req.Request.Header.Peek("api-key"))
+	if azureAPIKey != "" && strings.HasPrefix(strings.ToLower(azureAPIKey), VirtualKeyPrefix) {
+		return bifrost.Ptr(azureAPIKey)
 	}
 	return nil
 }
