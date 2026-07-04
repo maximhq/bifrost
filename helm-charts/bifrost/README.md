@@ -441,7 +441,7 @@ The default install sets `podSecurityContext.fsGroup: 1000`. OpenShift's
 `restricted-v2` SCC enforces `MustRunAs` against the namespace's allocated
 group range and rejects that value at admission:
 
-```
+```text
 fsGroup: Invalid value: []int64{1000}: 1000 is not an allowed group
 ```
 
