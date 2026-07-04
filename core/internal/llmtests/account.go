@@ -99,6 +99,7 @@ type TestScenarios struct {
 	FastMode                     bool // Fast mode for Opus 4.6 (beta: research preview)
 	EagerInputStreaming          bool // Fine-grained tool input streaming (Anthropic fine-grained-tool-streaming-2025-05-14)
 	ServerToolsViaOpenAIEndpoint bool // Anthropic server-tool shapes in tools[] via /v1/chat/completions (web_search / web_fetch / code_execution)
+	ResponsesLifecycle           bool // OpenAI GET/DELETE responses + input_items lifecycle (stored responses)
 }
 
 // ComprehensiveTestConfig extends TestConfig with additional scenarios
@@ -174,6 +175,7 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 		schemas.Elevenlabs,
 		schemas.Perplexity,
 		schemas.Cerebras,
+		schemas.DeepSeek,
 		schemas.Gemini,
 		schemas.OpenRouter,
 		schemas.HuggingFace,
@@ -452,6 +454,15 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 		return []schemas.Key{
 			{
 				Value:          *schemas.NewSecretVar("env.CEREBRAS_API_KEY"),
+				Models:         []string{"*"},
+				Weight:         1.0,
+				UseForBatchAPI: bifrost.Ptr(true),
+			},
+		}, nil
+	case schemas.DeepSeek:
+		return []schemas.Key{
+			{
+				Value:          *schemas.NewSecretVar("env.DEEPSEEK_API_KEY"),
 				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
@@ -785,6 +796,19 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 				BufferSize:  10,
 			},
 		}, nil
+	case schemas.DeepSeek:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 120,
+				MaxRetries:                     10,
+				RetryBackoffInitial:            5 * time.Second,
+				RetryBackoffMax:                3 * time.Minute,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
 	case schemas.VLLM:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
@@ -984,6 +1008,7 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			ContainerFileRetrieve:      true, // OpenAI supports container file API
 			ContainerFileContent:       true, // OpenAI supports container file API
 			ContainerFileDelete:        true, // OpenAI supports container file API
+			ResponsesLifecycle:         true, // OpenAI stored response retrieve/delete/input_items
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.Anthropic, Model: "claude-3-7-sonnet-20250219"},

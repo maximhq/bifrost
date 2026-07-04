@@ -58,7 +58,7 @@ type NetworkConfig struct {
 	RetryBackoffInitial            time.Duration     `json:"retry_backoff_initial"`                    // Initial backoff duration (stored as nanoseconds, JSON as milliseconds)
 	RetryBackoffMax                time.Duration     `json:"retry_backoff_max"`                        // Maximum backoff duration (stored as nanoseconds, JSON as milliseconds)
 	InsecureSkipVerify             bool              `json:"insecure_skip_verify,omitempty"`           // Disables TLS certificate verification for provider connections
-	CACertPEM                      *SecretVar           `json:"ca_cert_pem,omitempty"`                    // PEM-encoded CA certificate to trust for provider endpoint connections (supports env.*)
+	CACertPEM                      *SecretVar        `json:"ca_cert_pem,omitempty"`                    // PEM-encoded CA certificate to trust for provider endpoint connections (supports env.*)
 	StreamIdleTimeoutInSeconds     int               `json:"stream_idle_timeout_in_seconds,omitempty"` // Idle timeout per stream chunk (0 = use default 60s)
 	MaxConnsPerHost                int               `json:"max_conns_per_host,omitempty"`             // Max TCP connections per provider host (default: 5000)
 	EnforceHTTP2                   bool              `json:"enforce_http2,omitempty"`                  // Force HTTP/2 on provider connections (relevant for net/http-based providers like Bedrock)
@@ -82,7 +82,7 @@ func (nc *NetworkConfig) UnmarshalJSON(data []byte) error {
 		RetryBackoffInitial            json.RawMessage   `json:"retry_backoff_initial"` // string ("500ms") or int (milliseconds)
 		RetryBackoffMax                json.RawMessage   `json:"retry_backoff_max"`     // string ("5s") or int (milliseconds)
 		InsecureSkipVerify             bool              `json:"insecure_skip_verify,omitempty"`
-		CACertPEM                      *SecretVar           `json:"ca_cert_pem,omitempty"`
+		CACertPEM                      *SecretVar        `json:"ca_cert_pem,omitempty"`
 		StreamIdleTimeoutInSeconds     int               `json:"stream_idle_timeout_in_seconds,omitempty"`
 		MaxConnsPerHost                int               `json:"max_conns_per_host,omitempty"`
 		EnforceHTTP2                   bool              `json:"enforce_http2,omitempty"`
@@ -253,11 +253,11 @@ const (
 
 // ProxyConfig holds the configuration for proxy settings.
 type ProxyConfig struct {
-	Type      ProxyType `json:"type"`        // Type of proxy to use
-	URL       *SecretVar   `json:"url"`         // URL of the proxy server (supports env.*)
-	Username  *SecretVar   `json:"username"`    // Username for proxy authentication (supports env.*)
-	Password  *SecretVar   `json:"password"`    // Password for proxy authentication (supports env.*)
-	CACertPEM *SecretVar   `json:"ca_cert_pem"` // PEM-encoded CA certificate to trust for TLS connections through the proxy (supports env.*)
+	Type      ProxyType  `json:"type"`        // Type of proxy to use
+	URL       *SecretVar `json:"url"`         // URL of the proxy server (supports env.*)
+	Username  *SecretVar `json:"username"`    // Username for proxy authentication (supports env.*)
+	Password  *SecretVar `json:"password"`    // Password for proxy authentication (supports env.*)
+	CACertPEM *SecretVar `json:"ca_cert_pem"` // PEM-encoded CA certificate to trust for TLS connections through the proxy (supports env.*)
 }
 
 // MarshalForStorage serializes proxy settings for persistence (e.g. proxy_config_json).
@@ -322,6 +322,10 @@ type AllowedRequests struct {
 	ChatCompletionStream  bool `json:"chat_completion_stream"`
 	Responses             bool `json:"responses"`
 	ResponsesStream       bool `json:"responses_stream"`
+	ResponsesRetrieve     bool `json:"responses_retrieve"`
+	ResponsesDelete       bool `json:"responses_delete"`
+	ResponsesCancel       bool `json:"responses_cancel"`
+	ResponsesInputItems   bool `json:"responses_input_items"`
 	CountTokens           bool `json:"count_tokens"`
 	Compaction            bool `json:"compaction"`
 	Embedding             bool `json:"embedding"`
@@ -394,6 +398,14 @@ func (ar *AllowedRequests) IsOperationAllowed(operation RequestType) bool {
 		return ar.Responses
 	case ResponsesStreamRequest:
 		return ar.ResponsesStream
+	case ResponsesRetrieveRequest:
+		return ar.ResponsesRetrieve
+	case ResponsesDeleteRequest:
+		return ar.ResponsesDelete
+	case ResponsesCancelRequest:
+		return ar.ResponsesCancel
+	case ResponsesInputItemsRequest:
+		return ar.ResponsesInputItems
 	case CountTokensRequest:
 		return ar.CountTokens
 	case CompactionRequest:
@@ -704,6 +716,16 @@ type Provider interface {
 	Passthrough(ctx *BifrostContext, key Key, req *BifrostPassthroughRequest) (*BifrostPassthroughResponse, *BifrostError)
 	// PassthroughStream executes a streaming passthrough, forwarding raw response bytes as BifrostStreamChunks.
 	PassthroughStream(ctx *BifrostContext, postHookRunner PostHookRunner, postHookSpanFinalizer func(context.Context), key Key, req *BifrostPassthroughRequest) (chan *BifrostStreamChunk, *BifrostError)
+}
+
+// ResponsesLifecycleProvider is an optional interface for OpenAI-style Responses API
+// secondary verbs (retrieve, delete, cancel, list input items). Checked via type assertion
+// in core dispatch; providers that do not implement it return unsupported_operation.
+type ResponsesLifecycleProvider interface {
+	ResponsesRetrieve(ctx *BifrostContext, key Key, req *BifrostResponsesRetrieveRequest) (*BifrostResponsesResponse, *BifrostError)
+	ResponsesDelete(ctx *BifrostContext, key Key, req *BifrostResponsesDeleteRequest) (*BifrostResponsesDeleteResponse, *BifrostError)
+	ResponsesCancel(ctx *BifrostContext, key Key, req *BifrostResponsesCancelRequest) (*BifrostResponsesResponse, *BifrostError)
+	ResponsesInputItems(ctx *BifrostContext, key Key, req *BifrostResponsesInputItemsRequest) (*BifrostResponsesInputItemsResponse, *BifrostError)
 }
 
 // WebSocketCapableProvider is an optional interface that providers can implement
