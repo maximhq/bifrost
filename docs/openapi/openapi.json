@@ -61182,6 +61182,7 @@
           "perplexity",
           "replicate",
           "cerebras",
+          "deepseek",
           "gemini",
           "openrouter",
           "elevenlabs",
@@ -74131,6 +74132,14 @@
           "is_active": {
             "type": "boolean"
           },
+          "expires_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Expiry timestamp. Requests using this virtual key are rejected once it passes. Null or absent means the key never expires."
+          },
           "provider_configs": {
             "type": "array",
             "items": {
@@ -74584,6 +74593,11 @@
           "calendar_aligned": {
             "type": "boolean",
             "default": false
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Optional expiry timestamp. Must be in the future. Omit for a key that never expires."
           }
         }
       },
@@ -74691,6 +74705,10 @@
           "reset_budget_usage": {
             "type": "boolean",
             "description": "When true, resets usage for virtual-key and provider-config budget records reconciled by this update."
+          },
+          "expires_at": {
+            "type": "string",
+            "description": "RFC3339 timestamp to set a new expiry (must be in the future), empty string to clear an existing expiry, omitted to leave it unchanged."
           }
         }
       },

@@ -401,6 +401,9 @@
         "cerebras": {
           "$ref": "#/$defs/provider"
         },
+        "deepseek": {
+          "$ref": "#/$defs/provider"
+        },
         "vllm": {
           "$ref": "#/$defs/provider_with_vllm_config"
         },
@@ -767,6 +770,11 @@
                 "type": "boolean",
                 "description": "Whether the virtual key is active",
                 "default": true
+              },
+              "expires_at": {
+                "type": "string",
+                "format": "date-time",
+                "description": "Optional expiry timestamp (RFC3339). Once passed, requests using this virtual key are rejected. Omit for a key that never expires."
               },
               "calendar_aligned": {
                 "type": "boolean",
@@ -1868,6 +1876,7 @@
                         "openrouter",
                         "vertex",
                         "cerebras",
+                        "deepseek",
                         "vllm",
                         "parasail",
                         "perplexity",
@@ -5598,6 +5607,7 @@
             "parasail",
             "perplexity",
             "cerebras",
+            "deepseek",
             "gemini",
             "openrouter",
             "elevenlabs",
@@ -5643,6 +5653,22 @@
             },
             "responses_stream": {
               "type": "boolean"
+            },
+            "responses_retrieve": {
+              "type": "boolean",
+              "description": "GET stored response by id (OpenAI Responses lifecycle)"
+            },
+            "responses_delete": {
+              "type": "boolean",
+              "description": "DELETE stored response (OpenAI Responses lifecycle)"
+            },
+            "responses_cancel": {
+              "type": "boolean",
+              "description": "POST cancel in-flight stored response (OpenAI Responses lifecycle)"
+            },
+            "responses_input_items": {
+              "type": "boolean",
+              "description": "GET list input items for a stored response (OpenAI Responses lifecycle)"
             },
             "count_tokens": {
               "type": "boolean"

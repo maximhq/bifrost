@@ -74,6 +74,7 @@ export interface VirtualKey {
 	customer_id?: string;
 	rate_limit_id?: string;
 	is_active: boolean;
+	expires_at?: string | null; // ISO 8601 UTC timestamp; null or absent means never expires
 	calendar_aligned?: boolean;
 	created_at: string;
 	updated_at: string;
@@ -164,6 +165,7 @@ export interface CreateVirtualKeyRequest {
 	rate_limit?: CreateRateLimitRequest;
 	is_active?: boolean;
 	calendar_aligned?: boolean;
+	expires_at?: string; // RFC3339 UTC timestamp; omit for a key that never expires
 }
 
 export interface UpdateVirtualKeyRequest {
@@ -178,6 +180,7 @@ export interface UpdateVirtualKeyRequest {
 	is_active?: boolean;
 	calendar_aligned?: boolean;
 	reset_budget_usage?: boolean;
+	expires_at?: string; // RFC3339 UTC timestamp sets a new expiry, "" clears it, omit to leave unchanged
 }
 
 export interface BulkRotateVirtualKeysRequest {

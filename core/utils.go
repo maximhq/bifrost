@@ -86,6 +86,7 @@ var dynamicallyConfigurableProviders = []schemas.ModelProvider{
 	schemas.BedrockMantle,
 	schemas.Cerebras,
 	schemas.Cohere,
+	schemas.DeepSeek,
 	schemas.Elevenlabs,
 	schemas.Gemini,
 	schemas.Groq,
@@ -419,6 +420,16 @@ func isModellessVideoRequestType(reqType schemas.RequestType) bool {
 // isPassthroughRequestType returns true if the given request type is a passthrough request.
 func isPassthroughRequestType(reqType schemas.RequestType) bool {
 	return reqType == schemas.PassthroughRequest || reqType == schemas.PassthroughStreamRequest
+}
+
+// isResponsesLifecycleRequestType returns true for OpenAI Responses API lifecycle HTTP verbs.
+func isResponsesLifecycleRequestType(reqType schemas.RequestType) bool {
+	switch reqType {
+	case schemas.ResponsesRetrieveRequest, schemas.ResponsesDeleteRequest, schemas.ResponsesCancelRequest, schemas.ResponsesInputItemsRequest:
+		return true
+	default:
+		return false
+	}
 }
 
 // IsFinalChunk returns true if the given context is a final chunk.

@@ -200,6 +200,7 @@ bifrost:
   # Application settings
   appDir: /app/data
   port: 8080
+  # 0.0.0.0 binds IPv4 interfaces only; use "::" for dual-stack/IPv6-only clusters
   host: 0.0.0.0
   logLevel: info
   logStyle: json
