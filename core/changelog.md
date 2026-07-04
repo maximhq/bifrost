@@ -1,3 +1,4 @@
+- fix: emit reads-only `cached_tokens` in usage per the OpenAI spec so cache writes are not priced as cache reads (closes #4816) [@fus3r](https://github.com/fus3r)
 - fix: preserve Gemini file upload MIME types for GenAI file URI completions
 - fix: Gemini video reference fields map to instances [@vojthor](https://github.com/vojthor)
 - fix: accept object-valued tool-call arguments (e.g. tool_search_call) on the Responses API streaming path
