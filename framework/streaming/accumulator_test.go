@@ -769,6 +769,83 @@ func TestProcessStreamingResponsePreservesTerminalResponsesUsageWhenChunkIndexIs
 	}
 }
 
+// On a monotonic stream the terminal chunk arrives with a unique highest index, so
+// the first delivery is stored as-is — the reservation must still be seeded then,
+// or a second plugin delivering the same terminal chunk (logging + maxim both call
+// ProcessStreamingChunk with the final result) mints a fresh index and the chunk is
+// double-appended into the persisted raw log.
+func TestProcessStreamingResponseDedupesDuplicateTerminalChunkWithUniqueIndex(t *testing.T) {
+	logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)
+	accumulator := NewAccumulator(nil, logger)
+
+	requestID := "test-responses-terminal-monotonic-duplicate"
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	ctx.SetValue(schemas.BifrostContextKeyAccumulatorID, requestID)
+
+	for i := 0; i < 3; i++ {
+		chunk := &ResponsesStreamChunk{
+			ChunkIndex: i,
+			Timestamp:  time.Now(),
+			StreamResponse: &schemas.BifrostResponsesStreamResponse{
+				Type:  schemas.ResponsesStreamResponseTypeOutputTextDelta,
+				Delta: bifrost.Ptr("chunk"),
+			},
+		}
+		if err := accumulator.addResponsesStreamChunk(requestID, chunk, false); err != nil {
+			t.Fatalf("addResponsesStreamChunk() error = %v", err)
+		}
+	}
+
+	response := &schemas.BifrostResponse{
+		ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+			Type:           schemas.ResponsesStreamResponseTypeCompleted,
+			SequenceNumber: 3,
+			Response: &schemas.BifrostResponsesResponse{
+				ID: bifrost.Ptr("resp_monotonic_terminal"),
+				Usage: &schemas.ResponsesResponseUsage{
+					InputTokens:  11,
+					OutputTokens: 7,
+					TotalTokens:  18,
+				},
+			},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType:            schemas.ResponsesStreamRequest,
+				Provider:               schemas.OpenAI,
+				OriginalModelRequested: "gpt-4o-mini",
+				ChunkIndex:             3,
+			},
+		},
+	}
+
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+
+	for call := 1; call <= 2; call++ {
+		processed, err := accumulator.ProcessStreamingResponse(ctx, response, nil)
+		if err != nil {
+			t.Fatalf("ProcessStreamingResponse() call %d error = %v", call, err)
+		}
+		if processed == nil || processed.Data == nil || processed.Data.TokenUsage == nil || processed.Data.TokenUsage.TotalTokens != 18 {
+			t.Fatalf("call %d: expected terminal usage 18 total tokens, got %+v", call, processed)
+		}
+	}
+
+	streamAccumulator := accumulator.getOrCreateStreamAccumulator(requestID)
+	streamAccumulator.mu.Lock()
+	defer streamAccumulator.mu.Unlock()
+	completedChunks := 0
+	for _, chunk := range streamAccumulator.ResponsesStreamChunks {
+		if chunk.StreamResponse != nil && chunk.StreamResponse.Type == schemas.ResponsesStreamResponseTypeCompleted {
+			completedChunks++
+		}
+	}
+	if completedChunks != 1 {
+		t.Fatalf("expected exactly one terminal chunk after duplicate delivery of a unique-index final chunk, got %d", completedChunks)
+	}
+	if got := len(streamAccumulator.ResponsesStreamChunks); got != 4 {
+		t.Fatalf("expected 4 stored chunks (3 deltas + 1 terminal), got %d", got)
+	}
+}
+
 func TestProcessStreamingResponseSupportsWebSocketResponsesRequest(t *testing.T) {
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)
 	accumulator := NewAccumulator(nil, logger)
