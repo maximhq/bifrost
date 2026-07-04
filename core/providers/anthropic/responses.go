@@ -3540,7 +3540,10 @@ func (response *AnthropicMessageResponse) ToBifrostResponsesResponse(ctx *schema
 
 func bifrostResponsesOutputHasFunctionCall(output []schemas.ResponsesMessage) bool {
 	for _, msg := range output {
-		if msg.Type != nil && *msg.Type == schemas.ResponsesMessageTypeFunctionCall {
+		// Reasoning-only items can carry the function_call type but convert to
+		// thinking blocks, not tool_use — they must not force a tool_use stop reason.
+		if msg.Type != nil && *msg.Type == schemas.ResponsesMessageTypeFunctionCall &&
+			msg.ResponsesReasoning == nil && msg.ResponsesToolMessage != nil {
 			return true
 		}
 	}

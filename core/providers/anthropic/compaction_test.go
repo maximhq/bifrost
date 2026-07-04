@@ -521,6 +521,24 @@ func TestToAnthropicResponsesResponse_StopReasonFromBifrost(t *testing.T) {
 			expectedReason: AnthropicStopReasonEndTurn,
 		},
 		{
+			name:           "tool_use mapped from tool_calls without output items",
+			stopReason:     schemas.Ptr("tool_calls"),
+			expectedReason: AnthropicStopReasonToolUse,
+		},
+		{
+			name:       "reasoning-only function_call output does not infer tool_use",
+			stopReason: nil,
+			contentBlocks: []schemas.ResponsesMessage{
+				{
+					Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+					ResponsesReasoning: &schemas.ResponsesReasoning{
+						EncryptedContent: schemas.Ptr("opaque-reasoning-payload"),
+					},
+				},
+			},
+			expectedReason: AnthropicStopReasonEndTurn,
+		},
+		{
 			name:       "tool_use mapped from tool_calls with function call output",
 			stopReason: schemas.Ptr("tool_calls"),
 			contentBlocks: []schemas.ResponsesMessage{
