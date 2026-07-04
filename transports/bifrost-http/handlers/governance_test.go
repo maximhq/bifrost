@@ -2994,3 +2994,106 @@ func TestProviderGovernance_MalformedEncodingReturns400(t *testing.T) {
 		t.Fatalf("DELETE malformed encoding status got %d, want 400; body=%s", delCtx.Response.StatusCode(), delCtx.Response.Body())
 	}
 }
+
+// newGovernanceTeamIDCtx builds a request whose team_id path param carries the
+// raw (still percent-encoded) value, exactly as the fasthttp router delivers it
+// (it matches on URI().PathOriginal(), so no decoding happens before the handler).
+func newGovernanceTeamIDCtx(encodedTeamID, body string) *fasthttp.RequestCtx {
+	ctx := newTestRequestCtx(body)
+	ctx.SetUserValue("team_id", encodedTeamID)
+	return ctx
+}
+
+// TestTeam_DecodesEncodedTeamID is a regression test for #3106: SCIM/IdP-synced
+// team IDs containing spaces or other URL-sensitive characters are listable but
+// individual GET/DELETE returned "404 Team not found". The router delivers the
+// team_id path segment still percent-encoded, so the handler must url.PathUnescape
+// it before the config-store lookup (mirrors the provider_name handling).
+func TestTeam_DecodesEncodedTeamID(t *testing.T) {
+	SetLogger(&mockLogger{})
+	ctx := context.Background()
+	store := setupPricingOverrideHandlerStore(t)
+	handler := &GovernanceHandler{
+		configStore:       store,
+		governanceManager: pricingOverrideTestGovernanceManager{},
+	}
+
+	cases := []struct {
+		name    string
+		teamID  string // stored (decoded) ID
+		encoded string // what the router hands to the handler
+	}{
+		{"space", "SCIM Team Alpha", "SCIM%20Team%20Alpha"},
+		{"punctuation", "Team (prod): eu-west", "Team%20%28prod%29%3A%20eu-west"},
+		{"encoded-slash", "org/team/beta", "org%2Fteam%2Fbeta"},
+		{"plus", "team+gamma", "team%2Bgamma"},
+		{"unicode", "команда-δ", "%D0%BA%D0%BE%D0%BC%D0%B0%D0%BD%D0%B4%D0%B0-%CE%B4"},
+	}
+
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			team := &configstoreTables.TableTeam{
+				ID:   tc.teamID,
+				Name: tc.name + "-" + string(rune('A'+i)), // Name has a unique index
+			}
+			if err := store.CreateTeam(ctx, team); err != nil {
+				t.Fatalf("seed team %q: %v", tc.teamID, err)
+			}
+
+			// GET with the encoded path param must resolve the team.
+			getCtx := newGovernanceTeamIDCtx(tc.encoded, "")
+			handler.getTeam(getCtx)
+			if getCtx.Response.StatusCode() != fasthttp.StatusOK {
+				t.Fatalf("GET status got %d, want 200; body=%s", getCtx.Response.StatusCode(), getCtx.Response.Body())
+			}
+			var getResp struct {
+				Team configstoreTables.TableTeam `json:"team"`
+			}
+			if err := json.Unmarshal(getCtx.Response.Body(), &getResp); err != nil {
+				t.Fatalf("parse GET body: %v", err)
+			}
+			if getResp.Team.ID != tc.teamID {
+				t.Fatalf("GET returned team id %q, want %q", getResp.Team.ID, tc.teamID)
+			}
+
+			// DELETE with the same encoded path param must resolve and succeed.
+			delCtx := newGovernanceTeamIDCtx(tc.encoded, "")
+			handler.deleteTeam(delCtx)
+			if delCtx.Response.StatusCode() != fasthttp.StatusOK {
+				t.Fatalf("DELETE status got %d, want 200; body=%s", delCtx.Response.StatusCode(), delCtx.Response.Body())
+			}
+
+			// The team must actually be gone — a 200 could otherwise come from an
+			// idempotent ErrNotFound branch without deleting anything.
+			if _, err := store.GetTeam(ctx, tc.teamID); !errors.Is(err, configstore.ErrNotFound) {
+				t.Fatalf("expected team %q removed (ErrNotFound), got err: %v", tc.teamID, err)
+			}
+		})
+	}
+}
+
+// TestTeam_MalformedEncodingReturns400 locks in the fail-closed contract: a team_id
+// that is not valid percent-encoding (e.g. a stray "%2") must yield 400 rather than
+// being matched raw against stored IDs.
+func TestTeam_MalformedEncodingReturns400(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	handler := &GovernanceHandler{
+		configStore:       store,
+		governanceManager: pricingOverrideTestGovernanceManager{},
+	}
+
+	const malformedID = "Team%2"
+
+	getCtx := newGovernanceTeamIDCtx(malformedID, "")
+	handler.getTeam(getCtx)
+	if getCtx.Response.StatusCode() != fasthttp.StatusBadRequest {
+		t.Fatalf("GET malformed encoding status got %d, want 400; body=%s", getCtx.Response.StatusCode(), getCtx.Response.Body())
+	}
+
+	delCtx := newGovernanceTeamIDCtx(malformedID, "")
+	handler.deleteTeam(delCtx)
+	if delCtx.Response.StatusCode() != fasthttp.StatusBadRequest {
+		t.Fatalf("DELETE malformed encoding status got %d, want 400; body=%s", delCtx.Response.StatusCode(), delCtx.Response.Body())
+	}
+}
