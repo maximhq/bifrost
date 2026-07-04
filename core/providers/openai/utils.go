@@ -26,6 +26,7 @@ func ConvertOpenAIMessagesToBifrostMessages(messages []OpenAIMessage) []schemas.
 				Reasoning:   message.OpenAIChatAssistantMessage.Reasoning,
 				Annotations: message.OpenAIChatAssistantMessage.Annotations,
 				ToolCalls:   message.OpenAIChatAssistantMessage.ToolCalls,
+				Images:      message.OpenAIChatAssistantMessage.Images,
 			}
 		}
 	}
@@ -81,6 +82,7 @@ func ConvertBifrostMessagesToOpenAIMessages(messages []schemas.ChatMessage) []Op
 				Reasoning:   message.ChatAssistantMessage.Reasoning,
 				Annotations: message.ChatAssistantMessage.Annotations,
 				ToolCalls:   toolCalls,
+				Images:      message.ChatAssistantMessage.Images,
 			}
 		}
 	}
