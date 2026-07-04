@@ -2,36 +2,19 @@ package openai
 
 import (
 	"encoding/json"
-	"fmt"
-	"net/http"
 	"sort"
 
 	"github.com/bytedance/sonic"
-	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/valyala/fasthttp"
 )
 
-type openAIRerankRequest struct {
-	Model           string                   `json:"model"`
-	Query           string                   `json:"query"`
-	Documents       []schemas.RerankDocument `json:"documents"`
-	TopN            *int                     `json:"top_n,omitempty"`
-	MaxTokensPerDoc *int                     `json:"max_tokens_per_doc,omitempty"`
-	Priority        *int                     `json:"priority,omitempty"`
-	ExtraParams     map[string]interface{}   `json:"-"`
-}
-
-func (r *openAIRerankRequest) GetExtraParams() map[string]interface{} {
-	return r.ExtraParams
-}
-
-func toOpenAIRerankRequest(request *schemas.BifrostRerankRequest) *openAIRerankRequest {
+// ToOpenAIRerankRequest converts a Bifrost rerank request to OpenAI-compatible format
+func ToOpenAIRerankRequest(request *schemas.BifrostRerankRequest) *OpenAIRerankRequest {
 	if request == nil {
 		return nil
 	}
 
-	converted := &openAIRerankRequest{
+	converted := &OpenAIRerankRequest{
 		Model:     request.Model,
 		Query:     request.Query,
 		Documents: request.Documents,
@@ -45,31 +28,8 @@ func toOpenAIRerankRequest(request *schemas.BifrostRerankRequest) *openAIRerankR
 	return converted
 }
 
-type openAIRerankResponse struct {
-	ID      string                       `json:"id"`
-	Results []openAIRerankResponseResult `json:"results"`
-	Meta    *openAIRerankMeta            `json:"meta,omitempty"`
-	Usage   *schemas.BifrostLLMUsage     `json:"usage,omitempty"`
-}
-
-type openAIRerankResponseResult struct {
-	Index          int             `json:"index"`
-	RelevanceScore float64         `json:"relevance_score"`
-	Document       json.RawMessage `json:"document,omitempty"`
-}
-
-type openAIRerankMeta struct {
-	BilledUnits *openAIRerankTokenUsage `json:"billed_units,omitempty"`
-	Tokens      *openAIRerankTokenUsage `json:"tokens,omitempty"`
-}
-
-type openAIRerankTokenUsage struct {
-	InputTokens  *int64 `json:"input_tokens,omitempty"`
-	OutputTokens *int64 `json:"output_tokens,omitempty"`
-	SearchUnits  *int64 `json:"search_units,omitempty"`
-}
-
-func (response *openAIRerankResponse) toBifrostRerankResponse(documents []schemas.RerankDocument, returnDocuments bool) *schemas.BifrostRerankResponse {
+// ToBifrostRerankResponse converts an OpenAI-compatible rerank response to Bifrost format
+func (response *OpenAIRerankResponse) ToBifrostRerankResponse(documents []schemas.RerankDocument, returnDocuments bool) *schemas.BifrostRerankResponse {
 	if response == nil {
 		return nil
 	}
@@ -116,6 +76,8 @@ func (response *openAIRerankResponse) toBifrostRerankResponse(documents []schema
 	return bifrostResponse
 }
 
+// parseOpenAIRerankDocument parses a rerank document returned by the upstream,
+// accepting either a bare string or an object with text/id/metadata fields.
 func parseOpenAIRerankDocument(raw json.RawMessage) *schemas.RerankDocument {
 	if len(raw) == 0 {
 		return nil
@@ -164,7 +126,8 @@ func parseOpenAIRerankDocument(raw json.RawMessage) *schemas.RerankDocument {
 	return doc
 }
 
-func openAIRerankUsage(tokens *openAIRerankTokenUsage) *schemas.BifrostLLMUsage {
+// openAIRerankUsage maps rerank token/billing counts onto Bifrost usage.
+func openAIRerankUsage(tokens *OpenAIRerankTokenUsage) *schemas.BifrostLLMUsage {
 	if tokens == nil {
 		return nil
 	}
@@ -195,96 +158,4 @@ func openAIRerankUsage(tokens *openAIRerankTokenUsage) *schemas.BifrostLLMUsage 
 		CompletionTokens: completionTokens,
 		TotalTokens:      totalTokens,
 	}
-}
-
-// HandleOpenAIRerankRequest handles rerank requests for custom OpenAI-compatible APIs.
-func HandleOpenAIRerankRequest(
-	ctx *schemas.BifrostContext,
-	client *fasthttp.Client,
-	url string,
-	request *schemas.BifrostRerankRequest,
-	key schemas.Key,
-	extraHeaders map[string]string,
-	providerName schemas.ModelProvider,
-	sendBackRawRequest bool,
-	sendBackRawResponse bool,
-	logger schemas.Logger,
-) (*schemas.BifrostRerankResponse, *schemas.BifrostError) {
-	req := fasthttp.AcquireRequest()
-	resp := fasthttp.AcquireResponse()
-	defer fasthttp.ReleaseRequest(req)
-	respOwned := true
-	defer func() {
-		if respOwned {
-			fasthttp.ReleaseResponse(resp)
-		}
-	}()
-	// Rerank JSON is always parsed in-process (no transport streaming). Skip
-	// PrepareResponseStreaming so large-response threshold mode never leaves the body
-	// on a stream-only path that finalizeOpenAIResponse would treat as unsupported here.
-	activeClient := client
-
-	providerUtils.SetExtraHeaders(ctx, req, extraHeaders, nil)
-	req.SetRequestURI(url)
-	req.Header.SetMethod(http.MethodPost)
-	req.Header.SetContentType("application/json")
-	for k, v := range BearerAuthHeader(key) {
-		req.Header.Set(k, v)
-	}
-
-	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
-		ctx,
-		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return toOpenAIRerankRequest(request), nil
-		},
-	)
-	if bifrostErr != nil {
-		return nil, bifrostErr
-	}
-	// CheckContextAndGetRequestBody returns nil jsonData when large-payload passthrough
-	// staged the request body as a stream. Mirror the other OpenAI-compatible handlers and
-	// apply that stream instead of sending an empty body; the normal JSON path is unchanged.
-	if !providerUtils.ApplyLargePayloadRequestBodyWithModelNormalization(ctx, req, providerName) {
-		req.SetBody(jsonData)
-	}
-
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
-	defer wait()
-	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
-	}
-	providerResponseHeaders := providerUtils.ExtractProviderResponseHeaders(resp)
-	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
-
-	if resp.StatusCode() != fasthttp.StatusOK {
-		providerUtils.MaterializeStreamErrorBody(ctx, resp)
-		logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
-		return nil, providerUtils.EnrichError(ctx, ParseOpenAIError(resp), jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
-	}
-
-	body, _, finalErr := finalizeOpenAIResponse(ctx, resp, latency, providerName, logger)
-	respOwned = false
-	if finalErr != nil {
-		return nil, providerUtils.EnrichError(ctx, finalErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
-	}
-
-	response := &openAIRerankResponse{}
-	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, response, jsonData, sendBackRawRequest, sendBackRawResponse)
-	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, body, sendBackRawRequest, sendBackRawResponse, latency)
-	}
-
-	returnDocuments := request.Params != nil && request.Params.ReturnDocuments != nil && *request.Params.ReturnDocuments
-	bifrostResponse := response.toBifrostRerankResponse(request.Documents, returnDocuments)
-	bifrostResponse.Model = request.Model
-	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
-	bifrostResponse.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
-	if sendBackRawRequest {
-		bifrostResponse.ExtraFields.RawRequest = rawRequest
-	}
-	if sendBackRawResponse {
-		bifrostResponse.ExtraFields.RawResponse = rawResponse
-	}
-	return bifrostResponse, nil
 }
