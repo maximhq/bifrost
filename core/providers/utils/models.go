@@ -246,8 +246,10 @@ func (p *ListModelsPipeline) resolveModelID(modelID string) []aliasMatch {
 //  1. Resolve name — check alias VALUES for a match (uses MatchFns).
 //     If matched: resolvedName = alias KEY, aliasValue = provider ID.
 //     If not matched: resolvedName = original modelID, aliasValue = "".
-//  2. Allowlist check (only when allowlist is restricted, i.e. not wildcard):
-//     Skip if resolvedName is not in AllowedModels.
+//  2. Allowlist check (only for raw provider IDs under a restricted allowlist):
+//     Skip a raw candidate (aliasValue == "") if resolvedName is not in AllowedModels.
+//     Alias candidates (aliasValue != "") are always allowed — the allowlist filters
+//     the provider's own models, never the user's explicitly-configured aliases.
 //  3. Blacklist check (always):
 //     Skip if resolvedName is blacklisted. Blacklist takes precedence over everything.
 //  4. Return one FilterResult per passing candidate.
@@ -278,10 +280,13 @@ func (p *ListModelsPipeline) FilterModel(modelID string) []FilterResult {
 	for _, candidate := range candidates {
 		resolvedName := candidate.key
 
-		// Step 2: allowlist check.
-		// IsRestricted() is true for both an explicit list AND an empty list (deny-all).
-		// Only a wildcard allowlist marker bypasses this check (pass-through).
-		if !p.Unfiltered && p.AllowedModels.IsRestricted() {
+		// Step 2: allowlist check — applies only to raw provider model IDs.
+		// A configured alias (candidate.value != "") is always available and bypasses
+		// the allowlist: a restricted key allowlist filters the provider's own models,
+		// it must never hide the user's explicitly-configured aliases from the listing.
+		// IsRestricted() is true for both an explicit list AND an empty list (deny-all);
+		// only a wildcard allowlist marker bypasses this check (pass-through).
+		if !p.Unfiltered && candidate.value == "" && p.AllowedModels.IsRestricted() {
 			allowed := false
 			for _, entry := range p.AllowedModels {
 				if matches(resolvedName, entry, p.MatchFns) {
@@ -320,11 +325,11 @@ func (p *ListModelsPipeline) FilterModel(modelID string) []FilterResult {
 // returned by the provider's API response (or not matched during filtering).
 //
 // The `included` map tracks model IDs (lowercased) already added during the
-// filter pass, used to avoid duplicates.
+// filter pass; it is updated here so backfill never emits a duplicate entry.
 //
-// Two cases depending on whether the allowlist is restricted:
+// Two additive passes run:
 //
-// Case A — allowlist restricted (caller specified explicit model names):
+// Pass 1 — restricted allowlist (caller specified explicit model names):
 //
 //	Add each allowlist entry that is not yet in `included`, skip if blacklisted.
 //	If the entry has an alias mapping (aliases[entry] exists), set Alias to the
@@ -334,34 +339,30 @@ func (p *ListModelsPipeline) FilterModel(modelID string) []FilterResult {
 //	  "my-gpt4" not in included → add {ID:"openai/my-gpt4", Alias:"gpt-4-turbo"}
 //	  "gpt-3.5" not in included → add {ID:"openai/gpt-3.5"}
 //
-// Case B — allowlist wildcard (*) only:
+// Pass 2 — configured aliases (always):
 //
-//	We don't know all model names (no explicit list), so we only backfill entries
-//	that were explicitly configured via aliases and not yet matched from the API.
-//	Note: an empty allowlist is deny-all (IsRestricted()==true), not wildcard.
+//	Every configured alias not yet surfaced is added, regardless of the allowlist.
+//	Aliases are explicitly configured by the user, so a restricted allowlist (which
+//	only filters the provider's own models) must never drop them — this is what keeps
+//	aliases *added to* the listing rather than overwriting it.
 //
 //	Example: aliases={"my-gpt4":"gpt-4-turbo"}, "my-gpt4" not in included
 //	  → add {ID:"openai/my-gpt4", Alias:"gpt-4-turbo"}
 //
-// Blacklist always wins — nothing blacklisted is added in either case.
+// Blacklist always wins — nothing blacklisted is added in either pass.
+// Unfiltered listings skip backfill entirely (the raw API response is returned as-is).
 func (p *ListModelsPipeline) BackfillModels(included map[string]bool) []schemas.Model {
+	if p.Unfiltered {
+		return nil
+	}
+
 	var result []schemas.Model
 
-	if !p.Unfiltered && p.AllowedModels.IsRestricted() {
-		// Case A: backfill explicit allowlist entries not yet matched.
+	// Pass 1: backfill explicit allowlist entries not yet matched (restricted allowlist only).
+	if p.AllowedModels.IsRestricted() {
 		for _, entry := range p.AllowedModels {
-			if included[strings.ToLower(entry)] {
-				continue
-			}
-			// Blacklist check.
-			blacklisted := false
-			for _, bl := range p.BlacklistedModels {
-				if matches(entry, bl, p.MatchFns) {
-					blacklisted = true
-					break
-				}
-			}
-			if blacklisted {
+			key := strings.ToLower(entry)
+			if included[key] || p.isBlacklisted(entry) {
 				continue
 			}
 			m := schemas.Model{
@@ -376,34 +377,46 @@ func (p *ListModelsPipeline) BackfillModels(included map[string]bool) []schemas.
 				}
 			}
 			result = append(result, m)
+			included[key] = true
 		}
-		return result
 	}
 
-	// Case B: wildcard allowlist — backfill only explicitly configured aliases.
-	if !p.Unfiltered && len(p.Aliases) > 0 {
-		for aliasKey, alias := range p.Aliases {
-			if included[strings.ToLower(aliasKey)] {
-				continue
-			}
-			// Blacklist check.
-			blacklisted := false
-			for _, bl := range p.BlacklistedModels {
-				if matches(aliasKey, bl, p.MatchFns) {
-					blacklisted = true
-					break
-				}
-			}
-			if blacklisted {
-				continue
-			}
-			result = append(result, schemas.Model{
-				ID:    string(p.ProviderKey) + "/" + aliasKey,
-				Name:  schemas.Ptr(ToDisplayName(aliasKey)),
-				Alias: schemas.Ptr(alias.ModelID),
-			})
+	// Pass 2: always backfill configured aliases not yet surfaced. Sorted for
+	// deterministic ordering; blacklist still wins.
+	for _, aliasKey := range p.sortedAliasKeys() {
+		key := strings.ToLower(aliasKey)
+		if included[key] || p.isBlacklisted(aliasKey) {
+			continue
 		}
+		result = append(result, schemas.Model{
+			ID:    string(p.ProviderKey) + "/" + aliasKey,
+			Name:  schemas.Ptr(ToDisplayName(aliasKey)),
+			Alias: schemas.Ptr(p.Aliases[aliasKey].ModelID),
+		})
+		included[key] = true
 	}
 
 	return result
+}
+
+// isBlacklisted reports whether name matches any blacklist entry under the pipeline's MatchFns.
+func (p *ListModelsPipeline) isBlacklisted(name string) bool {
+	for _, bl := range p.BlacklistedModels {
+		if matches(name, bl, p.MatchFns) {
+			return true
+		}
+	}
+	return false
+}
+
+// sortedAliasKeys returns the alias keys sorted case-insensitively for deterministic output.
+func (p *ListModelsPipeline) sortedAliasKeys() []string {
+	keys := make([]string, 0, len(p.Aliases))
+	for k := range p.Aliases {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		return strings.ToLower(keys[i]) < strings.ToLower(keys[j])
+	})
+	return keys
 }
