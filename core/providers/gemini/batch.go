@@ -387,6 +387,9 @@ func geminiBatchOutput(resp *GeminiBatchJobResponse) (fileName string, inlined [
 // the compact result body shape shared by the inline and file-based batch result paths.
 func geminiGenerateContentToBatchResultBody(resp *GenerateContentResponse) map[string]interface{} {
 	body := make(map[string]interface{})
+	if resp == nil {
+		return body
+	}
 	if len(resp.Candidates) > 0 {
 		candidate := resp.Candidates[0]
 		if candidate.Content != nil && len(candidate.Content.Parts) > 0 {
