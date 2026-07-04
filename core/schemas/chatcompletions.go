@@ -1037,7 +1037,8 @@ func (cm *ChatMessage) UnmarshalJSON(data []byte) error {
 	// Only set if any field is populated
 	if assistantMsg.Refusal != nil || assistantMsg.Reasoning != nil ||
 		len(assistantMsg.ReasoningDetails) > 0 || len(assistantMsg.Annotations) > 0 ||
-		len(assistantMsg.ToolCalls) > 0 || assistantMsg.Audio != nil {
+		len(assistantMsg.ToolCalls) > 0 || assistantMsg.Audio != nil ||
+		len(assistantMsg.Images) > 0 {
 		cm.ChatAssistantMessage = &assistantMsg
 	}
 
@@ -1375,6 +1376,16 @@ type ChatAssistantMessage struct {
 	ReasoningDetails []ChatReasoningDetails           `json:"reasoning_details,omitempty"`
 	Annotations      []ChatAssistantMessageAnnotation `json:"annotations,omitempty"`
 	ToolCalls        []ChatAssistantMessageToolCall   `json:"tool_calls,omitempty"`
+	// Images carries generated images returned alongside (or instead of) text content,
+	// e.g. from OpenRouter image-generation models (Gemini "Nano Banana" / gemini-*-image).
+	Images []ChatMessageImage `json:"images,omitempty"`
+}
+
+// ChatMessageImage represents a single generated image entry in an assistant message's
+// "images" array (OpenAI-compatible image-generation output shape).
+type ChatMessageImage struct {
+	Type     string          `json:"type"`
+	ImageURL *ChatInputImage `json:"image_url,omitempty"`
 }
 
 // UnmarshalJSON implements custom unmarshalling for ChatAssistantMessage.
