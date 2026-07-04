@@ -66,6 +66,7 @@ type openAIRerankMeta struct {
 type openAIRerankTokenUsage struct {
 	InputTokens  *int64 `json:"input_tokens,omitempty"`
 	OutputTokens *int64 `json:"output_tokens,omitempty"`
+	SearchUnits  *int64 `json:"search_units,omitempty"`
 }
 
 func (response *openAIRerankResponse) toBifrostRerankResponse(documents []schemas.RerankDocument, returnDocuments bool) *schemas.BifrostRerankResponse {
@@ -178,13 +179,21 @@ func openAIRerankUsage(tokens *openAIRerankTokenUsage) *schemas.BifrostLLMUsage 
 		completionTokens = int(*tokens.OutputTokens)
 		hasUsage = true
 	}
+	totalTokens := promptTokens + completionTokens
+	if tokens.SearchUnits != nil {
+		// Cohere-shaped rerank upstreams bill via billed_units.search_units instead of
+		// token counts (input/output tokens are typically null for rerank). Surface the
+		// search-unit count in the usage total so search-unit-billed providers aren't dropped.
+		totalTokens += int(*tokens.SearchUnits)
+		hasUsage = true
+	}
 	if !hasUsage {
 		return nil
 	}
 	return &schemas.BifrostLLMUsage{
 		PromptTokens:     promptTokens,
 		CompletionTokens: completionTokens,
-		TotalTokens:      promptTokens + completionTokens,
+		TotalTokens:      totalTokens,
 	}
 }
 
@@ -233,7 +242,12 @@ func HandleOpenAIRerankRequest(
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	req.SetBody(jsonData)
+	// CheckContextAndGetRequestBody returns nil jsonData when large-payload passthrough
+	// staged the request body as a stream. Mirror the other OpenAI-compatible handlers and
+	// apply that stream instead of sending an empty body; the normal JSON path is unchanged.
+	if !providerUtils.ApplyLargePayloadRequestBodyWithModelNormalization(ctx, req, providerName) {
+		req.SetBody(jsonData)
+	}
 
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
 	defer wait()

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -291,5 +292,114 @@ func assertUnsupportedRerank(t *testing.T, bifrostErr *schemas.BifrostError, pro
 	}
 	if bifrostErr.ExtraFields.RequestType != schemas.RerankRequest {
 		t.Fatalf("expected rerank request type, got %q", bifrostErr.ExtraFields.RequestType)
+	}
+}
+
+func TestCustomOpenAIRerankMapsSearchUnits(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// Cohere-shaped rerank billing: token counts are null; usage lives in
+		// meta.billed_units.search_units.
+		_, _ = w.Write([]byte(`{
+			"id":"rr-su",
+			"results":[
+				{"index":0,"relevance_score":0.5},
+				{"index":1,"relevance_score":0.9}
+			],
+			"meta":{
+				"tokens":{"input_tokens":null,"output_tokens":null},
+				"billed_units":{"search_units":3}
+			}
+		}`))
+	}))
+	defer server.Close()
+
+	provider := NewOpenAIProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL},
+		CustomProviderConfig: &schemas.CustomProviderConfig{
+			CustomProviderKey: "hawk",
+			BaseProviderType:  schemas.OpenAI,
+			AllowedRequests:   &schemas.AllowedRequests{Rerank: true},
+		},
+	}, testNoopLogger{})
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	response, bifrostErr := provider.Rerank(ctx, schemas.Key{Value: *schemas.NewSecretVar("test-key")}, &schemas.BifrostRerankRequest{
+		Model: "zerank-2",
+		Query: "What is Bifrost?",
+		Documents: []schemas.RerankDocument{
+			{Text: "Bifrost is an AI gateway."},
+			{Text: "Paris is in France."},
+		},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("expected rerank to succeed, got %v", bifrostErr)
+	}
+	if response == nil {
+		t.Fatal("expected rerank response")
+	}
+	if response.Usage == nil {
+		t.Fatal("expected usage from billed_units.search_units, got nil")
+	}
+	if response.Usage.TotalTokens != 3 {
+		t.Fatalf("expected search_units surfaced as total tokens 3, got %#v", response.Usage)
+	}
+	if response.Usage.PromptTokens != 0 || response.Usage.CompletionTokens != 0 {
+		t.Fatalf("expected zero token counts for search-unit billing, got %#v", response.Usage)
+	}
+}
+
+func TestCustomOpenAIRerankLargePayloadStreamsBody(t *testing.T) {
+	streamedBody := `{"model":"zerank-2","query":"stream me","documents":[{"text":"a"},{"text":"b"}]}`
+	var receivedBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("failed to read request body: %v", err)
+		}
+		receivedBody = string(body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"rr-lp",
+			"results":[
+				{"index":0,"relevance_score":0.4},
+				{"index":1,"relevance_score":0.6}
+			]
+		}`))
+	}))
+	defer server.Close()
+
+	provider := NewOpenAIProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL},
+		CustomProviderConfig: &schemas.CustomProviderConfig{
+			CustomProviderKey: "hawk",
+			BaseProviderType:  schemas.OpenAI,
+			AllowedRequests:   &schemas.AllowedRequests{Rerank: true},
+		},
+	}, testNoopLogger{})
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	// Simulate the transport staging the request body as a stream (large-payload passthrough):
+	// CheckContextAndGetRequestBody then returns nil jsonData and the handler must stream the
+	// staged reader instead of sending an empty body.
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadMode, true)
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadReader, strings.NewReader(streamedBody))
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadContentLength, len(streamedBody))
+
+	response, bifrostErr := provider.Rerank(ctx, schemas.Key{Value: *schemas.NewSecretVar("test-key")}, &schemas.BifrostRerankRequest{
+		Model: "zerank-2",
+		Query: "stream me",
+		Documents: []schemas.RerankDocument{
+			{Text: "a"},
+			{Text: "b"},
+		},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("expected rerank to succeed, got %v", bifrostErr)
+	}
+	if receivedBody != streamedBody {
+		t.Fatalf("expected upstream to receive streamed passthrough body %q, got %q", streamedBody, receivedBody)
+	}
+	if response == nil || len(response.Results) != 2 {
+		t.Fatalf("expected two rerank results from passthrough response, got %#v", response)
 	}
 }
