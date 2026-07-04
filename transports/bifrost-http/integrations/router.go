@@ -61,7 +61,6 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream"
 	"github.com/bytedance/sonic"
-	"github.com/bytedance/sonic/decoder"
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/bedrock"
@@ -384,12 +383,14 @@ func parseJSONRequestBody(rawBody []byte, req interface{}) error {
 		return nil
 	}
 	if err := sonic.Unmarshal(rawBody, req); err != nil {
-		var mismatchErr *decoder.MismatchTypeError
-		if errors.As(err, &mismatchErr) {
-			return fmt.Errorf("%w (length %d): %w", errJSONSchemaMismatch, len(rawBody), err)
-		}
-		var typeErr *json.UnmarshalTypeError
-		if errors.As(err, &typeErr) {
+		// Many request types (and nested fields) implement custom UnmarshalJSON methods
+		// that return plain errors for structural mismatches (e.g. ChatMessageContent
+		// rejecting a "content" field that's neither a string nor an array), not just
+		// sonic/encoding-json's own type-mismatch error types. Rather than special-casing
+		// every such error, classify by re-validating the raw bytes: if they're
+		// syntactically valid JSON, the failure is a schema/shape mismatch regardless of
+		// which layer detected it; only otherwise-invalid JSON gets the syntax-error message.
+		if json.Valid(rawBody) {
 			return fmt.Errorf("%w (length %d): %w", errJSONSchemaMismatch, len(rawBody), err)
 		}
 		return fmt.Errorf("invalid JSON request body (length %d): %w", len(rawBody), err)
