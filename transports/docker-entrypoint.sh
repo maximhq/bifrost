@@ -29,26 +29,38 @@ ensure_app_dir() {
 
     CURRENT_UID=$(id -u)
     CURRENT_GID=$(id -g)
-    DATA_UID=$(stat -c '%u' "$APP_DIR" 2>/dev/null || echo "0")
-    DATA_GID=$(stat -c '%g' "$APP_DIR" 2>/dev/null || echo "0")
 
-    if [ "$CURRENT_UID" = "0" ] && [ "$DATA_UID:$DATA_GID" != "$CURRENT_UID:$CURRENT_GID" ]; then
-        echo "Fixing permissions on $APP_DIR (was $DATA_UID:$DATA_GID, setting to $CURRENT_UID:$CURRENT_GID)"
-        if chown -R "$CURRENT_UID:$CURRENT_GID" "$APP_DIR" 2>/dev/null && chmod -R g=rwX "$APP_DIR" 2>/dev/null; then
-            echo "Successfully updated permissions on $APP_DIR"
-        else
-            echo "Warning: Could not update permissions on $APP_DIR"
+    # Ownership repair only works as root (needs CAP_CHOWN). Stat the data dir
+    # here, inside the branch that actually uses the values.
+    if [ "$CURRENT_UID" = "0" ]; then
+        DATA_UID=$(stat -c '%u' "$APP_DIR" 2>/dev/null)
+        DATA_GID=$(stat -c '%g' "$APP_DIR" 2>/dev/null)
+        if [ "$DATA_UID:$DATA_GID" != "$CURRENT_UID:$CURRENT_GID" ]; then
+            echo "Fixing permissions on $APP_DIR (was $DATA_UID:$DATA_GID, setting to $CURRENT_UID:$CURRENT_GID)"
+            if chown -R "$CURRENT_UID:$CURRENT_GID" "$APP_DIR" 2>/dev/null && chmod -R g=rwX "$APP_DIR" 2>/dev/null; then
+                echo "Successfully updated permissions on $APP_DIR"
+            else
+                echo "Warning: Could not update permissions on $APP_DIR"
+            fi
         fi
     fi
 
     if ! app_dir_writable; then
-        DATA_UID=$(stat -c '%u' "$APP_DIR" 2>/dev/null || echo "0")
-        DATA_GID=$(stat -c '%g' "$APP_DIR" 2>/dev/null || echo "0")
-        echo "Error: $APP_DIR is not writable by UID:GID $CURRENT_UID:$CURRENT_GID (owned by $DATA_UID:$DATA_GID)"
-        echo "  Bifrost needs a writable APP_DIR for config.db and logs.db before startup."
-        echo "  On OpenShift/Kubernetes with a PVC, set podSecurityContext.fsGroup (for example, 0)"
-        echo "  or mount a volume writable by GID 0, matching the image's group-0 ownership."
-        exit 1
+        DATA_UID=$(stat -c '%u' "$APP_DIR" 2>/dev/null)
+        DATA_GID=$(stat -c '%g' "$APP_DIR" 2>/dev/null)
+        if [ "$BIFROST_SKIP_WRITE_CHECK" = "1" ]; then
+            echo "Warning: $APP_DIR is not writable by UID:GID $CURRENT_UID:$CURRENT_GID (owned by $DATA_UID:$DATA_GID)"
+            echo "  BIFROST_SKIP_WRITE_CHECK=1 set; continuing without a writable APP_DIR."
+            echo "  Only safe for read-only deployments backed by external stores (e.g. Postgres)."
+        else
+            echo "Error: $APP_DIR is not writable by UID:GID $CURRENT_UID:$CURRENT_GID (owned by $DATA_UID:$DATA_GID)"
+            echo "  Bifrost needs a writable APP_DIR for config.db and logs.db before startup."
+            echo "  On vanilla Kubernetes, set podSecurityContext.fsGroup (for example, 1000)."
+            echo "  On OpenShift (restricted-v2), leave fsGroup unset/null so the SCC assigns an in-range GID."
+            echo "  Or mount a volume writable by GID 0, matching the image's group-0 ownership."
+            echo "  Set BIFROST_SKIP_WRITE_CHECK=1 to bypass for read-only deployments with external stores."
+            exit 1
+        fi
     fi
 
     mkdir -p "$APP_DIR/logs" 2>/dev/null || true

@@ -426,13 +426,34 @@ echo ""
 echo -e "${CYAN}🔒 7/7 - Validating OpenShift-compatible Security Contexts...${NC}"
 echo "----------------------------------------------------------------"
 
-test_name="default Bifrost pod does not pin runAsUser 1000 (fsGroup allowed)"
+test_name="default Bifrost pod does not set runAsUser (SCC assigns UID)"
 if helm template bifrost ./helm-charts/bifrost \
   --set image.tag=v1.0.0 \
   > /tmp/helm-template-output.yaml 2>&1; then
-  if grep -Eq '^[[:space:]]+runAsUser:[[:space:]]*1000[[:space:]]*$' /tmp/helm-template-output.yaml; then
+  if grep -Eq '^[[:space:]]*runAsUser:' /tmp/helm-template-output.yaml; then
     report_result "$test_name" 1
-    echo -e "${YELLOW}  hard-coded runAsUser 1000 found in rendered output${NC}"
+    echo -e "${YELLOW}  runAsUser found in default render (must stay unset so OpenShift can assign a UID)${NC}"
+  else
+    report_result "$test_name" 0
+  fi
+else
+  report_result "$test_name" 1
+  echo -e "${YELLOW}  Error output:${NC}"
+  head -10 /tmp/helm-template-output.yaml | sed 's/^/    /'
+fi
+
+# Postgres mode renders a Deployment (not the sqlite StatefulSet); assert the
+# pinned-UID regression can't sneak in on that code path either.
+test_name="postgres-mode Bifrost pod does not set runAsUser (SCC assigns UID)"
+if helm template bifrost ./helm-charts/bifrost \
+  --set image.tag=v1.0.0 \
+  --set storage.mode=postgres \
+  --set postgresql.enabled=true \
+  --set postgresql.auth.password=testpass \
+  > /tmp/helm-template-output.yaml 2>&1; then
+  if grep -Eq '^[[:space:]]*runAsUser:' /tmp/helm-template-output.yaml; then
+    report_result "$test_name" 1
+    echo -e "${YELLOW}  runAsUser found in postgres render (must stay unset so OpenShift can assign a UID)${NC}"
   else
     report_result "$test_name" 0
   fi
