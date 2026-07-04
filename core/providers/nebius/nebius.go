@@ -323,12 +323,12 @@ func (provider *NebiusProvider) ImageGeneration(ctx *schemas.BifrostContext, key
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, providerUtils.EnrichError(ctx, parseNebiusImageError(resp), jsonData, nil, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+		return nil, providerUtils.EnrichError(ctx, parseNebiusImageError(resp), jsonData, nil, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse), latency)
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	response := &schemas.BifrostImageGenerationResponse{}

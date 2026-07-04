@@ -165,6 +165,7 @@ type CreateVirtualKeyRequest struct {
 	RateLimit       *CreateRateLimitRequest `json:"rate_limit,omitempty"`
 	IsActive        *bool                   `json:"is_active,omitempty"`
 	CalendarAligned bool                    `json:"calendar_aligned,omitempty"` // When true, all budgets reset at clean calendar boundaries
+	ExpiresAt       *time.Time              `json:"expires_at,omitempty"`       // Optional expiry; nil means never expires
 }
 
 // UpdateVirtualKeyRequest represents the request body for updating a virtual key
@@ -193,6 +194,7 @@ type UpdateVirtualKeyRequest struct {
 	IsActive         *bool                        `json:"is_active,omitempty"`
 	CalendarAligned  *bool                        `json:"calendar_aligned,omitempty"` // When true, all budgets reset at clean calendar boundaries
 	ResetBudgetUsage *bool                        `json:"reset_budget_usage,omitempty"`
+	ExpiresAt        *string                      `json:"expires_at,omitempty"` // RFC3339 timestamp sets a new expiry, "" clears it, omitted leaves it unchanged
 }
 
 var errVirtualKeyDualAssociation = errors.New("VirtualKey cannot be attached to both Team and Customer")
@@ -1271,6 +1273,14 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 			seenDurations[b.ResetDuration] = true
 		}
 	}
+	// Validate expires_at: must be in the future if provided
+	if req.ExpiresAt != nil {
+		now := time.Now().UTC()
+		if !req.ExpiresAt.After(now) {
+			SendError(ctx, 400, "expires_at must be a future timestamp")
+			return
+		}
+	}
 	// Set defaults: nil means "use DB default (true)"
 	isActive := req.IsActive
 	if isActive == nil {
@@ -1297,6 +1307,7 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 			CustomerID:      req.CustomerID,
 			IsActive:        isActive,
 			CalendarAligned: req.CalendarAligned,
+			ExpiresAt:       req.ExpiresAt,
 		}
 		if err := h.configStore.CreateVirtualKey(ctx, &vk, tx); err != nil {
 			return err
@@ -1495,6 +1506,20 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, "VirtualKey cannot be attached to both Team and Customer")
 		return
 	}
+	// Parse expires_at when provided: a timestamp must be in the future, "" clears the expiry.
+	var newExpiresAt *time.Time
+	if req.ExpiresAt != nil && *req.ExpiresAt != "" {
+		parsed, err := time.Parse(time.RFC3339, *req.ExpiresAt)
+		if err != nil {
+			SendError(ctx, 400, "expires_at must be an RFC3339 timestamp")
+			return
+		}
+		if !parsed.After(time.Now().UTC()) {
+			SendError(ctx, 400, "expires_at must be a future timestamp")
+			return
+		}
+		newExpiresAt = &parsed
+	}
 	vk, err := h.configStore.GetVirtualKey(ctx, vkID)
 	if err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
@@ -1550,6 +1575,9 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 		}
 		if req.IsActive != nil {
 			vk.IsActive = req.IsActive
+		}
+		if req.ExpiresAt != nil {
+			vk.ExpiresAt = newExpiresAt
 		}
 		if req.CalendarAligned != nil {
 			vk.CalendarAligned = *req.CalendarAligned
@@ -2194,7 +2222,13 @@ func (h *GovernanceHandler) createTeam(ctx *fasthttp.RequestCtx) {
 
 // getTeam handles GET /api/governance/teams/{team_id} - Get a specific team
 func (h *GovernanceHandler) getTeam(ctx *fasthttp.RequestCtx) {
-	teamID := ctx.UserValue("team_id").(string)
+	// The router matches on the raw (percent-encoded) path, so SCIM/IdP-synced team
+	// IDs containing spaces or other URL-sensitive characters arrive still encoded.
+	teamID, err := url.PathUnescape(ctx.UserValue("team_id").(string))
+	if err != nil {
+		SendError(ctx, 400, "Invalid team ID encoding")
+		return
+	}
 	team, err := h.configStore.GetTeam(ctx, teamID)
 	if err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
@@ -2211,7 +2245,13 @@ func (h *GovernanceHandler) getTeam(ctx *fasthttp.RequestCtx) {
 
 // updateTeam handles PUT /api/governance/teams/{team_id} - Update a team
 func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
-	teamID := ctx.UserValue("team_id").(string)
+	// The router matches on the raw (percent-encoded) path, so SCIM/IdP-synced team
+	// IDs containing spaces or other URL-sensitive characters arrive still encoded.
+	teamID, err := url.PathUnescape(ctx.UserValue("team_id").(string))
+	if err != nil {
+		SendError(ctx, 400, "Invalid team ID encoding")
+		return
+	}
 
 	var req UpdateTeamRequest
 	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
@@ -2449,7 +2489,13 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 
 // deleteTeam handles DELETE /api/governance/teams/{team_id} - Delete a team
 func (h *GovernanceHandler) deleteTeam(ctx *fasthttp.RequestCtx) {
-	teamID := ctx.UserValue("team_id").(string)
+	// The router matches on the raw (percent-encoded) path, so SCIM/IdP-synced team
+	// IDs containing spaces or other URL-sensitive characters arrive still encoded.
+	teamID, err := url.PathUnescape(ctx.UserValue("team_id").(string))
+	if err != nil {
+		SendError(ctx, 400, "Invalid team ID encoding")
+		return
+	}
 	team, err := h.configStore.GetTeam(ctx, teamID)
 	if err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
