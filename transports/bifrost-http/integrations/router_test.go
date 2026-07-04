@@ -492,6 +492,46 @@ func TestCreateHandler_DefaultJSONParserFailureClosesConnection(t *testing.T) {
 	assert.Contains(t, string(ctx.Response.Body()), "invalid JSON request body")
 }
 
+// TestCreateHandler_JSONSchemaMismatchDistinctFromSyntaxError verifies that a body which is
+// syntactically valid JSON but fails to decode into the target request type (e.g. a string
+// field given a number) is reported with a schema-mismatch message, distinct from the
+// "invalid JSON request body" message used for genuinely malformed JSON. Regression for
+// GenAI streamGenerateContent returning a misleading generic "Invalid JSON" 500/400 for any
+// decode failure regardless of cause.
+func TestCreateHandler_JSONSchemaMismatchDistinctFromSyntaxError(t *testing.T) {
+	handlerStore := &mockHandlerStore{}
+	route := RouteConfig{
+		Type:   RouteConfigTypeOpenAI,
+		Path:   "/v1/test",
+		Method: fasthttp.MethodPost,
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.ChatCompletionRequest
+		},
+		GetRequestTypeInstance: func(ctx context.Context) interface{} {
+			return &openai.OpenAIChatRequest{}
+		},
+		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
+			return nil, nil
+		},
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+			return err
+		},
+	}
+
+	router := NewGenericRouter(nil, handlerStore, nil, nil, nil)
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+	// Valid JSON, but "model" must decode into a string.
+	ctx.Request.SetBodyString(`{"model":123,"messages":[]}`)
+
+	router.createHandler(route)(ctx)
+
+	assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
+	body := string(ctx.Response.Body())
+	assert.Contains(t, body, "does not match the expected schema")
+	assert.NotContains(t, body, "invalid JSON request body")
+}
+
 func TestCreateHandler_ParseFailureClosesKeepAliveSocket(t *testing.T) {
 	route := RouteConfig{
 		Type:   RouteConfigTypeOpenAI,

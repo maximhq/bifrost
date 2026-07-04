@@ -50,6 +50,7 @@ package integrations
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -60,6 +61,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream"
 	"github.com/bytedance/sonic"
+	"github.com/bytedance/sonic/decoder"
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/bedrock"
@@ -372,11 +374,24 @@ type StreamErrorConverter func(ctx *schemas.BifrostContext, err *schemas.Bifrost
 // If it returns an error, the request processing stops.
 type RequestParser func(ctx *fasthttp.RequestCtx, req interface{}) error
 
+// errJSONSchemaMismatch marks a request body that was syntactically valid JSON
+// but failed to decode into the target request type (wrong field type, etc.),
+// as distinct from genuinely malformed JSON. Use errors.Is to check for it.
+var errJSONSchemaMismatch = errors.New("request body does not match the expected schema")
+
 func parseJSONRequestBody(rawBody []byte, req interface{}) error {
 	if len(rawBody) == 0 {
 		return nil
 	}
 	if err := sonic.Unmarshal(rawBody, req); err != nil {
+		var mismatchErr *decoder.MismatchTypeError
+		if errors.As(err, &mismatchErr) {
+			return fmt.Errorf("%w (length %d): %w", errJSONSchemaMismatch, len(rawBody), err)
+		}
+		var typeErr *json.UnmarshalTypeError
+		if errors.As(err, &typeErr) {
+			return fmt.Errorf("%w (length %d): %w", errJSONSchemaMismatch, len(rawBody), err)
+		}
 		return fmt.Errorf("invalid JSON request body (length %d): %w", len(rawBody), err)
 	}
 	return nil
@@ -724,7 +739,11 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 				if len(rawBody) > 0 {
 					if err := parseJSONRequestBody(rawBody, req); err != nil {
 						ctx.SetConnectionClose()
-						g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostErrorWithCode(err, "Invalid JSON", fasthttp.StatusBadRequest))
+						message := "Invalid JSON"
+						if errors.Is(err, errJSONSchemaMismatch) {
+							message = "request body is valid JSON but does not match the expected schema for this endpoint"
+						}
+						g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostErrorWithCode(err, message, fasthttp.StatusBadRequest))
 						return
 					}
 				}
