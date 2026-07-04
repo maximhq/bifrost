@@ -3,12 +3,28 @@ set -e
 
 APP_DIR=${APP_DIR:-/app/data}
 
+app_dir_writable() {
+    PROBE_DIR="$APP_DIR/.bifrost-write-test.$$"
+    if [ -e "$PROBE_DIR" ]; then
+        PROBE_DIR="$PROBE_DIR.$(date +%s)"
+    fi
+
+    if mkdir "$PROBE_DIR" 2>/dev/null; then
+        rmdir "$PROBE_DIR" 2>/dev/null || true
+        return 0
+    fi
+
+    return 1
+}
+
 # Ensure APP_DIR exists when possible, but do not require CAP_CHOWN at startup.
 ensure_app_dir() {
     mkdir -p "$APP_DIR" 2>/dev/null || true
 
     if [ ! -d "$APP_DIR" ]; then
-        return
+        echo "Error: Could not create APP_DIR at $APP_DIR"
+        echo "  Ensure the path exists or the parent directory is writable by the container user."
+        exit 1
     fi
 
     CURRENT_UID=$(id -u)
@@ -16,24 +32,22 @@ ensure_app_dir() {
     DATA_UID=$(stat -c '%u' "$APP_DIR" 2>/dev/null || echo "0")
     DATA_GID=$(stat -c '%g' "$APP_DIR" 2>/dev/null || echo "0")
 
-    if [ "$CURRENT_UID" = "0" ]; then
-        # Running as root, `test -w` always succeeds (the kernel bypasses DAC),
-        # so gate the repair on ownership instead: chown whenever the directory
-        # is not already owned by our UID.
-        if [ "$DATA_UID" != "$CURRENT_UID" ]; then
-            echo "Fixing permissions on $APP_DIR (was $DATA_UID:$DATA_GID, setting to $CURRENT_UID:$CURRENT_GID)"
-            if chown -R "$CURRENT_UID:$CURRENT_GID" "$APP_DIR" 2>/dev/null && chmod -R g=rwX "$APP_DIR" 2>/dev/null; then
-                echo "Successfully updated permissions on $APP_DIR"
-            else
-                echo "Warning: Could not update permissions on $APP_DIR"
-            fi
+    if [ "$CURRENT_UID" = "0" ] && [ "$DATA_UID:$DATA_GID" != "$CURRENT_UID:$CURRENT_GID" ]; then
+        echo "Fixing permissions on $APP_DIR (was $DATA_UID:$DATA_GID, setting to $CURRENT_UID:$CURRENT_GID)"
+        if chown -R "$CURRENT_UID:$CURRENT_GID" "$APP_DIR" 2>/dev/null && chmod -R g=rwX "$APP_DIR" 2>/dev/null; then
+            echo "Successfully updated permissions on $APP_DIR"
+        else
+            echo "Warning: Could not update permissions on $APP_DIR"
         fi
-    elif [ ! -w "$APP_DIR" ]; then
-        # Non-root without CAP_CHOWN cannot repair ownership. Fail fast with
-        # actionable guidance rather than crashing later while writing config.db.
+    fi
+
+    if ! app_dir_writable; then
+        DATA_UID=$(stat -c '%u' "$APP_DIR" 2>/dev/null || echo "0")
+        DATA_GID=$(stat -c '%g' "$APP_DIR" 2>/dev/null || echo "0")
         echo "Error: $APP_DIR is not writable by UID:GID $CURRENT_UID:$CURRENT_GID (owned by $DATA_UID:$DATA_GID)"
-        echo "  Ensure the directory is owned by this UID or group-writable for a supplemental group such as 0."
-        echo "  On Kubernetes, set podSecurityContext.fsGroup (e.g. 1000) so the volume is group-writable."
+        echo "  Bifrost needs a writable APP_DIR for config.db and logs.db before startup."
+        echo "  On OpenShift/Kubernetes with a PVC, set securityContext.fsGroup (for example, 0)"
+        echo "  or mount a volume writable by GID 0, matching the image's group-0 ownership."
         exit 1
     fi
 
