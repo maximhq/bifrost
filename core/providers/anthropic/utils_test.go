@@ -3714,3 +3714,42 @@ func TestResponsesStream_TerminalChunkCarriesServedModifiers(t *testing.T) {
 		t.Fatal("terminal billed chunk missing cache-creation tokens")
 	}
 }
+
+// TestConvertBifrostToolToAnthropic_DropsStrictWhenUnsupported is a regression test for
+// #3233: the Responses API tool-conversion path (convertBifrostToolToAnthropic) forwarded
+// tools[].strict unconditionally, unlike the chat-completions path (stripUnsupportedAnthropicFields,
+// gated on features.StructuredOutputs). Vertex has StructuredOutputs=false, so a strict tool
+// routed to Anthropic-on-Vertex via the Responses API produced Anthropic's
+// "tools.0.custom.strict: Extra inputs are not permitted" error.
+func TestConvertBifrostToolToAnthropic_DropsStrictWhenUnsupported(t *testing.T) {
+	tool := &schemas.ResponsesTool{
+		Type: schemas.ResponsesToolTypeFunction,
+		Name: schemas.Ptr("get_weather"),
+		ResponsesToolFunction: &schemas.ResponsesToolFunction{
+			Strict: schemas.Ptr(true),
+			Parameters: &schemas.ToolFunctionParameters{
+				Type: "object",
+			},
+		},
+	}
+
+	t.Run("Vertex (StructuredOutputs unsupported) drops strict", func(t *testing.T) {
+		got := convertBifrostToolToAnthropic("claude-opus-4-8", tool, schemas.Vertex, false)
+		if got == nil {
+			t.Fatal("expected a converted tool, got nil")
+		}
+		if got.Strict != nil {
+			t.Errorf("Strict = %v, want nil (Vertex does not support structured outputs)", *got.Strict)
+		}
+	})
+
+	t.Run("Anthropic (StructuredOutputs supported) keeps strict", func(t *testing.T) {
+		got := convertBifrostToolToAnthropic("claude-opus-4-8", tool, schemas.Anthropic, false)
+		if got == nil {
+			t.Fatal("expected a converted tool, got nil")
+		}
+		if got.Strict == nil || !*got.Strict {
+			t.Errorf("Strict = %v, want true (Anthropic supports structured outputs)", got.Strict)
+		}
+	})
+}
