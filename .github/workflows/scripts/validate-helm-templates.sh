@@ -426,13 +426,13 @@ echo ""
 echo -e "${CYAN}🔒 7/7 - Validating OpenShift-compatible Security Contexts...${NC}"
 echo "----------------------------------------------------------------"
 
-test_name="default Bifrost pod does not pin UID/GID 1000"
+test_name="default Bifrost pod does not pin runAsUser 1000 (fsGroup allowed)"
 if helm template bifrost ./helm-charts/bifrost \
   --set image.tag=v1.0.0 \
   > /tmp/helm-template-output.yaml 2>&1; then
-  if grep -Eq '^[[:space:]]+(runAsUser|fsGroup):[[:space:]]*1000[[:space:]]*$' /tmp/helm-template-output.yaml; then
+  if grep -Eq '^[[:space:]]+runAsUser:[[:space:]]*1000[[:space:]]*$' /tmp/helm-template-output.yaml; then
     report_result "$test_name" 1
-    echo -e "${YELLOW}  hard-coded UID/GID 1000 found in rendered output${NC}"
+    echo -e "${YELLOW}  hard-coded runAsUser 1000 found in rendered output${NC}"
   else
     report_result "$test_name" 0
   fi

@@ -57,7 +57,13 @@ deploymentLabels: {}
 podAnnotations: {}
 podLabels: {}
 
-podSecurityContext: {}
+# Pod-level security context. Defaults chown freshly provisioned PVCs (fsGroup)
+# and forbid running as root, which vanilla Kubernetes needs for restrictive
+# storage classes. On OpenShift (restricted-v2), set `podSecurityContext: {}` —
+# the image supports arbitrary UIDs with group 0, so no custom SCC is needed.
+podSecurityContext:
+  fsGroup: 1000
+  runAsNonRoot: true
 
 securityContext:
   capabilities:
