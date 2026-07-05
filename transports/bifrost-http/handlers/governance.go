@@ -106,6 +106,20 @@ func lookupScopeNameResolver(scope string) (ScopeNameResolver, bool) {
 	return fn, ok
 }
 
+// ExternalQuotaBudgetResolver returns budgets that govern a VK but whose usage is
+// tracked OUTSIDE the VK's own budget rows
+type ExternalQuotaBudgetResolver func(ctx context.Context, vk *configstoreTables.TableVirtualKey) (*ExternalQuotaBudgetResult, error)
+
+// ExternalQuotaBudgetResult is what an external resolver returns for a VK whose
+// authoritative usage lives outside its own budget rows.
+type ExternalQuotaBudgetResult struct {
+	// Budgets replaces the VK's own budget rows in the quota response.
+	Budgets []configstoreTables.TableBudget
+	// UsageUserID, when non-empty, scopes the per_model_usage query to this user id
+	// instead of the VK id.
+	UsageUserID string
+}
+
 type GovernanceHandler struct {
 	configStore       configstore.ConfigStore
 	governanceManager GovernanceManager
@@ -113,15 +127,22 @@ type GovernanceHandler struct {
 	// endpoint's model_usage breakdown. Optional: nil when the logging plugin is
 	// not enabled, in which case the breakdown is simply omitted.
 	logManager logging.LogManager
+	// externalQuotaBudgetResolver, when non-nil, supplies budgets that govern a VK
+	// but whose usage lives outside the VK's own budget rows (enterprise
+	// access-profile-managed VKs). Injected at construction; nil on OSS builds.
+	externalQuotaBudgetResolver ExternalQuotaBudgetResolver
 }
 
 // NewGovernanceHandler creates a new governance handler instance.
 // logManager is optional (may be nil); when supplied it powers the quota
 // endpoint's per-budget actual per-model usage breakdown.
+// externalQuotaBudgetResolver is optional (may be nil); when supplied the quota
+// endpoint uses it to resolve budgets/usage for VKs whose authoritative usage
+// is tracked outside their own budget rows.
 // Side effect: ensures the default virtual_key scope-name resolver is
 // registered against the supplied configStore, so resolveModelConfigScopeName
 // can render VK names for OSS-only builds without further wiring.
-func NewGovernanceHandler(manager GovernanceManager, configStore configstore.ConfigStore, logManager logging.LogManager) (*GovernanceHandler, error) {
+func NewGovernanceHandler(manager GovernanceManager, configStore configstore.ConfigStore, logManager logging.LogManager, externalQuotaBudgetResolver ExternalQuotaBudgetResolver) (*GovernanceHandler, error) {
 	if manager == nil {
 		return nil, fmt.Errorf("governance manager is required")
 	}
@@ -136,9 +157,10 @@ func NewGovernanceHandler(manager GovernanceManager, configStore configstore.Con
 		return vk.Name, true
 	})
 	return &GovernanceHandler{
-		governanceManager: manager,
-		configStore:       configStore,
-		logManager:        logManager,
+		governanceManager:           manager,
+		configStore:                 configStore,
+		logManager:                  logManager,
+		externalQuotaBudgetResolver: externalQuotaBudgetResolver,
 	}, nil
 }
 
@@ -4703,29 +4725,28 @@ type quotaBudget struct {
 	Models []quotaModelSpend `json:"per_model_usage"`
 }
 
-// buildVKBudgetsWithUsage wraps each hydrated VK budget with its per-model actual usage,
-// queried from request logs over that budget's current cycle [last_reset, now]. Per-budget
-// because a VK's budgets can have independent reset cycles (e.g. daily + monthly). When
-// logging is disabled (logManager == nil) the budgets are returned with an empty models list
-// — that is the only case where per_model_usage is empty. A log-store query failure instead
-// returns an error so the endpoint fails closed (500) rather than reporting empty usage that
-// callers cannot distinguish from "logging disabled". Callers must hydrate vk.Budgets (via
-// collectVKModelUsage) before calling this.
-func (h *GovernanceHandler) buildVKBudgetsWithUsage(ctx context.Context, vk *configstoreTables.TableVirtualKey, now time.Time) ([]quotaBudget, error) {
-	out := make([]quotaBudget, 0, len(vk.Budgets))
-	for i := range vk.Budgets {
-		b := &vk.Budgets[i]
+// buildBudgetsWithUsage wraps each budget with its per-model actual usage, queried from
+// request logs over that budget's current cycle
+func (h *GovernanceHandler) buildBudgetsWithUsage(ctx context.Context, vkID, usageUserID string, budgets []configstoreTables.TableBudget, now time.Time) ([]quotaBudget, error) {
+	out := make([]quotaBudget, 0, len(budgets))
+	for i := range budgets {
+		b := &budgets[i]
 		entry := quotaBudget{TableBudget: *b, Models: []quotaModelSpend{}}
 		if h.logManager != nil {
 			start := b.LastReset
 			if b.CreatedAt.After(start) {
 				start = b.CreatedAt
 			}
-			ranking, err := h.logManager.GetModelRankings(ctx, &logstore.SearchFilters{
-				VirtualKeyIDs: []string{vk.ID},
-				StartTime:     &start,
-				EndTime:       &now,
-			})
+			filters := &logstore.SearchFilters{
+				StartTime: &start,
+				EndTime:   &now,
+			}
+			if usageUserID != "" {
+				filters.UserIDs = []string{usageUserID}
+			} else {
+				filters.VirtualKeyIDs = []string{vkID}
+			}
+			ranking, err := h.logManager.GetModelRankings(ctx, filters)
 			if err != nil {
 				logger.Error("failed to load per-model usage for VK quota (budget %s): %v", b.ID, err)
 				return nil, err
@@ -4783,9 +4804,23 @@ func (h *GovernanceHandler) getVirtualKeyQuota(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	budgetRows := vk.Budgets
+	usageUserID := ""
+	if resolve := h.externalQuotaBudgetResolver; resolve != nil {
+		ext, err := resolve(ctx, vk)
+		if err != nil {
+			SendError(ctx, 500, "Failed to load access-profile usage")
+			return
+		}
+		if ext != nil {
+			budgetRows = ext.Budgets
+			usageUserID = ext.UsageUserID
+		}
+	}
+
 	// Each budget carries its actual per-model spend (from request logs) for the current
 	// cycle. Must run after collectVKModelUsage, which hydrates vk.Budgets.
-	budgets, err := h.buildVKBudgetsWithUsage(ctx, vk, time.Now())
+	budgets, err := h.buildBudgetsWithUsage(ctx, vk.ID, usageUserID, budgetRows, time.Now())
 	if err != nil {
 		SendError(ctx, 500, "Failed to load per-model usage")
 		return

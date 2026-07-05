@@ -1572,6 +1572,122 @@ func TestGetVirtualKeyQuota_HydratesBudgetsFromModelConfigs(t *testing.T) {
 	}
 }
 
+// TestGetVirtualKeyQuota_ExternalResolverReplacesWithAccessProfileBudgets verifies the
+// AP-managed-VK path: when a registered ExternalQuotaBudgetResolver returns budgets
+// (enterprise access-profile budgets, which carry the real usage), they REPLACE the VK's
+// own budget rows in the quota response. Those rows are reset to current_usage=0 at
+// adoption and never charged again, so reporting them would be a misleading $0 row.
+func TestGetVirtualKeyQuota_ExternalResolverReplacesWithAccessProfileBudgets(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	active := true
+	cycleStart := time.Date(2026, time.January, 2, 15, 4, 5, 0, time.UTC)
+	store := &mockQuotaConfigStore{
+		vk: &configstoreTables.TableVirtualKey{
+			ID:       "vk-1",
+			Name:     "AP Key",
+			IsActive: &active,
+		},
+		modelConfigs: []configstoreTables.TableModelConfig{
+			{
+				ID:        "mc-vk",
+				Scope:     configstoreTables.ModelConfigScopeVirtualKey,
+				ScopeID:   schemas.Ptr("vk-1"),
+				ModelName: configstoreTables.ModelConfigAllModels,
+				// VK mirror row: zero usage, reset at adoption — must NOT appear in the response.
+				Budgets: []configstoreTables.TableBudget{
+					{ID: "b-vk", MaxLimit: 100, CurrentUsage: 0, ResetDuration: "1d", LastReset: cycleStart},
+				},
+			},
+		},
+	}
+	// The AP user's inference is logged under user-1 (virtual_key_id is empty on SSO/AP
+	// log rows), so the per-model usage query must be scoped to the user, not the VK.
+	logMgr := &mockQuotaLogManager{
+		rankings: &logstore.ModelRankingResult{
+			Rankings: []logstore.ModelRankingWithTrend{
+				{ModelRankingEntry: logstore.ModelRankingEntry{Model: "claude-opus-4-7", Provider: "anthropic", TotalRequests: 2, TotalTokens: 900, TotalCost: 42}},
+			},
+		},
+	}
+	h := &GovernanceHandler{
+		configStore: store,
+		logManager:  logMgr,
+		externalQuotaBudgetResolver: func(_ context.Context, vk *configstoreTables.TableVirtualKey) (*ExternalQuotaBudgetResult, error) {
+			if vk.ID != "vk-1" {
+				return nil, nil
+			}
+			return &ExternalQuotaBudgetResult{
+				// The access-profile budget that holds the real ongoing usage.
+				Budgets: []configstoreTables.TableBudget{
+					{ID: "b-ap", MaxLimit: 500, CurrentUsage: 42, ResetDuration: "1d", LastReset: cycleStart},
+				},
+				UsageUserID: "user-1",
+			}, nil
+		},
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("x-bf-vk", "sk-bf-secret")
+
+	h.getVirtualKeyQuota(ctx)
+
+	if ctx.Response.StatusCode() != 200 {
+		t.Fatalf("expected status 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	var resp quotaResponse
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+	// Only the access-profile budget — the VK's own b-vk row is replaced, not appended.
+	if len(resp.Budgets) != 1 || resp.Budgets[0].ID != "b-ap" || resp.Budgets[0].CurrentUsage != 42 {
+		t.Fatalf("expected only the access-profile budget b-ap (usage 42), got %#v", resp.Budgets)
+	}
+	// Per-model spend on that budget comes from the user-scoped log query and reconciles
+	// with current_usage (both 42).
+	if len(resp.Budgets[0].Models) != 1 || resp.Budgets[0].Models[0].Model != "claude-opus-4-7" || resp.Budgets[0].Models[0].TotalCost != 42 {
+		t.Fatalf("expected per-model spend from user-scoped logs, got %#v", resp.Budgets[0].Models)
+	}
+	// The usage query must be scoped to the AP user, NOT the VK (whose logs are empty).
+	if len(logMgr.calls) != 1 {
+		t.Fatalf("expected GetModelRankings called once, got %d", len(logMgr.calls))
+	}
+	call := logMgr.calls[0]
+	if len(call.UserIDs) != 1 || call.UserIDs[0] != "user-1" {
+		t.Fatalf("expected usage query scoped to user-1, got UserIDs=%#v", call.UserIDs)
+	}
+	if len(call.VirtualKeyIDs) != 0 {
+		t.Fatalf("expected no VK scoping on the AP usage query, got %#v", call.VirtualKeyIDs)
+	}
+}
+
+// TestGetVirtualKeyQuota_ExternalResolverErrorFailsClosed verifies the endpoint returns
+// 500 (not a partial response) when the registered resolver errors — usage must not be
+// silently under-reported.
+func TestGetVirtualKeyQuota_ExternalResolverErrorFailsClosed(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	active := true
+	store := &mockQuotaConfigStore{
+		vk: &configstoreTables.TableVirtualKey{ID: "vk-1", Name: "AP Key", IsActive: &active},
+	}
+	h := &GovernanceHandler{
+		configStore: store,
+		externalQuotaBudgetResolver: func(_ context.Context, _ *configstoreTables.TableVirtualKey) (*ExternalQuotaBudgetResult, error) {
+			return nil, errors.New("boom")
+		},
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("x-bf-vk", "sk-bf-secret")
+
+	h.getVirtualKeyQuota(ctx)
+
+	if ctx.Response.StatusCode() != 500 {
+		t.Fatalf("expected status 500 on resolver error, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+}
+
 // TestGetVirtualKeyQuota_NoGovernanceReturnsEmpty verifies that a VK without any
 // VK-scoped model configs reports empty governance (not a stale direct-relationship
 // read) and still returns 200 with identity fields.
