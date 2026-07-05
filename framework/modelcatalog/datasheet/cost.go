@@ -1096,7 +1096,8 @@ func (s *Store) resolvePricing(routingInfo schemas.RoutingInfo, requestType sche
 //
 //   - Gemini: retries under the "vertex" provider, then falls back to chat mode for Responses requests.
 //   - Vertex: strips the "provider/model" prefix and retries, then falls back to chat mode for Responses requests.
-//   - Bedrock: prepends the "anthropic." namespace for Claude models, then falls back to chat mode for Responses requests.
+//   - Bedrock: prepends the vendor namespace ("anthropic.", "openai.", "google.", "xai.") inferred from the model family, then falls back to chat mode for Responses requests.
+//   - Bedrock Mantle: folded onto the "bedrock" provider up front (datasheet rows for all Bedrock variants are stored there), so it shares every Bedrock fallback.
 //   - All providers: for Responses/ResponsesStream requests, retries the lookup in chat mode.
 //   - All providers: for ImageEdit/ImageVariation requests, retries the lookup in image-generation mode.
 //
@@ -1115,6 +1116,13 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 	defer s.mu.RUnlock()
 
 	mode := normalizeRequestType(requestType)
+
+	// Datasheet rows for all Bedrock variants are stored under the "bedrock"
+	// provider (normalizeProvider folds bedrock_* onto "bedrock"), so
+	// bedrock_mantle lookups run entirely against "bedrock".
+	if provider == string(schemas.BedrockMantle) {
+		provider = string(schemas.Bedrock)
+	}
 
 	pricing, ok := s.pricingData[makeKey(model, provider, mode)]
 	if ok {
@@ -1161,10 +1169,24 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 	}
 
 	if provider == string(schemas.Bedrock) {
-		// If model is claude without "anthropic." prefix, try with "anthropic." prefix
-		if !strings.Contains(model, "anthropic.") && schemas.IsAnthropicModel(model) {
-			s.logger.Debug("primary lookup failed, trying with anthropic. prefix for the same model")
-			pricing, ok = s.pricingData[makeKey("anthropic."+model, provider, mode)]
+		// Bedrock model IDs carry a vendor namespace ("anthropic.claude-*",
+		// "openai.gpt-oss-*", "google.gemma-*", "xai.grok-*"). When the caller
+		// sends the bare model name, retry with the namespace inferred from
+		// the model family.
+		var vendorPrefix string
+		switch {
+		case !strings.Contains(model, "anthropic.") && schemas.IsAnthropicModel(model):
+			vendorPrefix = "anthropic."
+		case !strings.Contains(model, "openai.") && schemas.IsOpenAIModel(model):
+			vendorPrefix = "openai."
+		case !strings.Contains(model, "google.") && (schemas.IsGemmaModel(model) || schemas.IsGeminiModel(model)):
+			vendorPrefix = "google."
+		case !strings.Contains(model, "xai.") && schemas.IsGrokModel(model):
+			vendorPrefix = "xai."
+		}
+		if vendorPrefix != "" {
+			s.logger.Debug("primary lookup failed, trying with %s prefix for the same model", vendorPrefix)
+			pricing, ok = s.pricingData[makeKey(vendorPrefix+model, provider, mode)]
 			if ok {
 				return &pricing, true
 			}
@@ -1172,7 +1194,7 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 			// Lookup in chat if responses not found
 			if requestType == schemas.ResponsesRequest || requestType == schemas.ResponsesStreamRequest || requestType == schemas.WebSocketResponsesRequest || requestType == schemas.RealtimeRequest || requestType == schemas.CompactionRequest {
 				s.logger.Debug("secondary lookup failed, trying chat provider for the same model in chat completion")
-				pricing, ok = s.pricingData[makeKey("anthropic."+model, provider, normalizeRequestType(schemas.ChatCompletionRequest))]
+				pricing, ok = s.pricingData[makeKey(vendorPrefix+model, provider, normalizeRequestType(schemas.ChatCompletionRequest))]
 				if ok {
 					return &pricing, true
 				}
