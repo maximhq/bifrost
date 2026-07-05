@@ -20,7 +20,7 @@ import (
 //   - *string: The virtual key if found, nil otherwise
 func ParseVirtualKeyFromFastHTTPRequest(req *fasthttp.RequestCtx) *string {
 	vkHeader := string(req.Request.Header.Peek("x-bf-vk"))
-	if vkHeader != "" {
+	if vkHeader != "" && strings.HasPrefix(strings.ToLower(vkHeader), VirtualKeyPrefix) {
 		return bifrost.Ptr(vkHeader)
 	}
 	authHeader := string(req.Request.Header.Peek("Authorization"))

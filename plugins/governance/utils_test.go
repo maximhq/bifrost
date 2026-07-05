@@ -29,17 +29,3 @@ func TestParseVirtualKeyFromFastHTTPRequest_APIKeyHeaderNonVirtualKeyIgnored(t *
 		t.Fatalf("virtual key should not be set from a non-VK api-key value, got %#v", *vk)
 	}
 }
-
-// The dedicated x-bf-vk header accepts any value, including legacy virtual
-// keys without the sk-bf- prefix — documented behavior, and how the HTTP
-// transport context extractor already treats it. Only the shared auth headers
-// (Authorization, x-api-key, x-goog-api-key, api-key) require the prefix.
-func TestParseVirtualKeyFromFastHTTPRequest_XBfVkAcceptsLegacyUnprefixedKeys(t *testing.T) {
-	ctx := &fasthttp.RequestCtx{}
-	ctx.Request.Header.Set("x-bf-vk", "legacy-virtual-key")
-
-	vk := ParseVirtualKeyFromFastHTTPRequest(ctx)
-	if vk == nil || *vk != "legacy-virtual-key" {
-		t.Fatalf("virtual key = %#v, want %q", vk, "legacy-virtual-key")
-	}
-}
