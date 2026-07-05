@@ -456,6 +456,9 @@ func (a *Accumulator) processAccumulatedChatStreamingChunks(requestID string, re
 		if lastChunk.SemanticCacheDebug != nil {
 			data.CacheDebug = lastChunk.SemanticCacheDebug
 		}
+		if lastChunk.GuardrailDebug != nil {
+			data.GuardrailDebug = lastChunk.GuardrailDebug
+		}
 		if lastChunk.Cost != nil {
 			data.Cost = lastChunk.Cost
 		}
@@ -559,6 +562,7 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 				chunk.Cost = bifrost.Ptr(cost)
 			}
 			chunk.SemanticCacheDebug = result.GetExtraFields().CacheDebug
+			chunk.GuardrailDebug = result.GetExtraFields().GuardrailDebug
 		}
 	} else if result != nil && result.ChatResponse != nil {
 		// Extract delta and other information
@@ -585,6 +589,7 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 				chunk.Cost = bifrost.Ptr(cost)
 			}
 			chunk.SemanticCacheDebug = result.GetExtraFields().CacheDebug
+			chunk.GuardrailDebug = result.GetExtraFields().GuardrailDebug
 		}
 	}
 	if addErr := a.addChatStreamChunk(requestID, streamType, chunk, isFinalChunk); addErr != nil {

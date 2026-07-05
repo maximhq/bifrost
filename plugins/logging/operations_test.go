@@ -2117,3 +2117,24 @@ func TestApplyNonStreamingOutputToEntryContentLoggingEnabled(t *testing.T) {
 		t.Error("expected OutputMessageParsed to be set when contentLoggingEnabled=true")
 	}
 }
+
+// TestGuardrailDebugForLogReadsContextWithoutResponse verifies input blocks remain observable.
+func TestGuardrailDebugForLogReadsContextWithoutResponse(t *testing.T) {
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	requireCall := schemas.BifrostGuardrailJudgeCall{
+		JudgeProvider: schemas.OpenAI,
+		JudgeModel:    "gpt-test",
+		TotalTokens:   18,
+	}
+	if !schemas.AppendGuardrailJudgeCallOnContext(ctx, requireCall) {
+		t.Fatal("failed to append guardrail judge call")
+	}
+
+	debug := guardrailDebugForLog(ctx, nil)
+	if debug == nil || len(debug.JudgeCalls) != 1 {
+		t.Fatalf("guardrail debug = %#v; want one context judge call", debug)
+	}
+	if debug.JudgeCalls[0] != requireCall {
+		t.Fatalf("guardrail call = %#v; want %#v", debug.JudgeCalls[0], requireCall)
+	}
+}

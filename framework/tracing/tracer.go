@@ -654,6 +654,7 @@ func (t *Tracer) ProcessStreamingChunk(ctx *schemas.BifrostContext, traceID stri
 		accResult.TokenUsage = processedResp.Data.TokenUsage
 		accResult.Cost = processedResp.Data.Cost
 		accResult.CacheDebug = processedResp.Data.CacheDebug
+		accResult.GuardrailDebug = processedResp.Data.GuardrailDebug
 		accResult.ErrorDetails = processedResp.Data.ErrorDetails
 		accResult.AudioOutput = processedResp.Data.AudioOutput
 		accResult.TranscriptionOutput = processedResp.Data.TranscriptionOutput

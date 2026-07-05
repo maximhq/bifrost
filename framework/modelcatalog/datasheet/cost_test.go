@@ -1712,6 +1712,121 @@ func TestCalculateCost_SemanticCacheHitNoEmbeddingInfo(t *testing.T) {
 	assert.Equal(t, 0.0, cost)
 }
 
+// TestCalculateCostAddsGuardrailJudgeCost verifies judge cost is additive to the main request.
+func TestCalculateCostAddsGuardrailJudgeCost(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-4o", "openai", "chat"): {
+			Model: "gpt-4o", Provider: "openai", Mode: "chat",
+			InputCostPerToken: bifrost.Ptr(0.000001), OutputCostPerToken: bifrost.Ptr(0.000002),
+		},
+		makeKey("claude-judge", "anthropic", "chat"): {
+			Model: "claude-judge", Provider: "anthropic", Mode: "chat",
+			InputCostPerToken: bifrost.Ptr(0.000003), OutputCostPerToken: bifrost.Ptr(0.000004),
+		},
+	})
+	resp := makeChatResponse(schemas.OpenAI, "gpt-4o", &schemas.BifrostLLMUsage{
+		PromptTokens:     100,
+		CompletionTokens: 50,
+		TotalTokens:      150,
+	})
+	resp.GetExtraFields().GuardrailDebug = &schemas.BifrostGuardrailDebug{
+		JudgeCalls: []schemas.BifrostGuardrailJudgeCall{{
+			JudgeProvider:    schemas.Anthropic,
+			JudgeModel:       "claude-judge",
+			PromptTokens:     20,
+			CompletionTokens: 5,
+			TotalTokens:      25,
+		}},
+	}
+
+	// Main: 100*0.000001 + 50*0.000002 = 0.0002.
+	// Judge: 20*0.000003 + 5*0.000004 = 0.00008.
+	assert.InDelta(t, 0.00028, s.CalculateCost(resp, nil), 1e-12)
+}
+
+// TestCalculateCostDirectCacheHitStillBillsGuardrail verifies cache hits do not hide judge spend.
+func TestCalculateCostDirectCacheHitStillBillsGuardrail(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-4o-mini", "openai", "chat"): {
+			Model: "gpt-4o-mini", Provider: "openai", Mode: "chat",
+			InputCostPerToken: bifrost.Ptr(0.000001), OutputCostPerToken: bifrost.Ptr(0.000002),
+		},
+	})
+	hitType := "direct"
+	resp := makeChatResponse(schemas.OpenAI, "cached-model", nil)
+	resp.GetExtraFields().CacheDebug = &schemas.BifrostCacheDebug{CacheHit: true, HitType: &hitType}
+	resp.GetExtraFields().GuardrailDebug = &schemas.BifrostGuardrailDebug{
+		JudgeCalls: []schemas.BifrostGuardrailJudgeCall{{
+			JudgeProvider:    schemas.OpenAI,
+			JudgeModel:       "gpt-4o-mini",
+			PromptTokens:     10,
+			CompletionTokens: 5,
+			TotalTokens:      15,
+		}},
+	}
+
+	assert.InDelta(t, 0.00002, s.CalculateCost(resp, nil), 1e-12)
+}
+
+// TestCalculateGuardrailCostUsesJudgeProviderWithoutCallerSelectedKey verifies
+// judge pricing retains virtual-key attribution while excluding the caller's
+// selected provider key from scoped override matching.
+func TestCalculateGuardrailCostUsesJudgeProviderWithoutCallerSelectedKey(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("claude-judge", "anthropic", "chat"): {
+			Model:              "claude-judge",
+			Provider:           "anthropic",
+			Mode:               "chat",
+			InputCostPerToken:  bifrost.Ptr(1.0),
+			OutputCostPerToken: bifrost.Ptr(0.0),
+		},
+	})
+
+	virtualKeyID := "vk-caller"
+	callerSelectedKeyID := "openai-key"
+	judgeProviderID := "anthropic"
+	require.NoError(t, s.SetOverrides([]configstoreTables.TablePricingOverride{
+		{
+			ID:               "judge-vk-provider",
+			ScopeKind:        string(ScopeKindVirtualKeyProvider),
+			VirtualKeyID:     &virtualKeyID,
+			ProviderID:       &judgeProviderID,
+			MatchType:        string(MatchTypeExact),
+			Pattern:          "claude-judge",
+			RequestTypes:     []schemas.RequestType{schemas.ChatCompletionRequest},
+			PricingPatchJSON: `{"input_cost_per_token":3}`,
+		},
+		{
+			ID:               "caller-vk-provider-key",
+			ScopeKind:        string(ScopeKindVirtualKeyProviderKey),
+			VirtualKeyID:     &virtualKeyID,
+			ProviderID:       &judgeProviderID,
+			ProviderKeyID:    &callerSelectedKeyID,
+			MatchType:        string(MatchTypeExact),
+			Pattern:          "claude-judge",
+			RequestTypes:     []schemas.RequestType{schemas.ChatCompletionRequest},
+			PricingPatchJSON: `{"input_cost_per_token":99}`,
+		},
+	}))
+
+	cost := s.CalculateGuardrailCost(&schemas.BifrostGuardrailDebug{
+		JudgeCalls: []schemas.BifrostGuardrailJudgeCall{{
+			JudgeProvider: schemas.Anthropic,
+			JudgeModel:    "claude-judge",
+			PromptTokens:  10,
+			TotalTokens:   10,
+		}},
+	}, &LookupScopes{
+		VirtualKeyID:  virtualKeyID,
+		SelectedKeyID: callerSelectedKeyID,
+		Provider:      "openai",
+	})
+
+	// The virtual-key + Anthropic override applies (10 * 3). Reusing the
+	// caller's selected key would instead select the 99/token override.
+	assert.InDelta(t, 30.0, cost, 1e-12)
+}
+
 // =========================================================================
 // 11. CalculateCost integration — end-to-end
 // =========================================================================

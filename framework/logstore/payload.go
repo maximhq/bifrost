@@ -43,6 +43,7 @@ var payloadFields = []string{
 	"video_list_output",
 	"video_delete_output",
 	"cache_debug",
+	"guardrail_debug",
 	"token_usage",
 	"error_details",
 	"raw_request",
@@ -83,6 +84,7 @@ func ExtractPayload(l *Log) map[string]string {
 	m["video_list_output"] = l.VideoListOutput
 	m["video_delete_output"] = l.VideoDeleteOutput
 	m["cache_debug"] = l.CacheDebug
+	m["guardrail_debug"] = l.GuardrailDebug
 	m["token_usage"] = l.TokenUsage
 	m["error_details"] = l.ErrorDetails
 	m["raw_request"] = l.RawRequest
@@ -136,6 +138,7 @@ func ClearPayload(l *Log) {
 	l.VideoListOutput = ""
 	l.VideoDeleteOutput = ""
 	l.CacheDebug = ""
+	l.GuardrailDebug = ""
 	l.TokenUsage = ""
 	l.ErrorDetails = ""
 	l.RawRequest = ""
@@ -172,6 +175,7 @@ func ClearPayload(l *Log) {
 	l.VideoListOutputParsed = nil
 	l.VideoDeleteOutputParsed = nil
 	l.CacheDebugParsed = nil
+	l.GuardrailDebugParsed = nil
 	l.TokenUsageParsed = nil
 	l.ErrorDetailsParsed = nil
 }
@@ -264,6 +268,9 @@ func MergePayloadFromJSON(l *Log, data []byte) error {
 	}
 	if v, ok := m["cache_debug"]; ok && v != "" {
 		l.CacheDebug = v
+	}
+	if v, ok := m["guardrail_debug"]; ok && v != "" {
+		l.GuardrailDebug = v
 	}
 	if v, ok := m["token_usage"]; ok && v != "" {
 		l.TokenUsage = v
@@ -818,6 +825,9 @@ func clearPayloadField(l *Log, name string) {
 	case "cache_debug":
 		l.CacheDebug = ""
 		l.CacheDebugParsed = nil
+	case "guardrail_debug":
+		l.GuardrailDebug = ""
+		l.GuardrailDebugParsed = nil
 	case "token_usage":
 		l.TokenUsage = ""
 		l.TokenUsageParsed = nil

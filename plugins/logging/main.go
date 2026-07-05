@@ -244,6 +244,34 @@ func (p *LoggerPlugin) applyErrorBillingFromBilledUsage(ctx *schemas.BifrostCont
 	}
 }
 
+// guardrailDebugForLog returns the request's guardrail debug snapshot.
+func guardrailDebugForLog(ctx *schemas.BifrostContext, result *schemas.BifrostResponse) *schemas.BifrostGuardrailDebug {
+	if debug, ok := schemas.GuardrailDebugFromContext(ctx); ok {
+		return debug
+	}
+	if result == nil {
+		return nil
+	}
+	return result.GetExtraFields().GuardrailDebug.Clone()
+}
+
+// applyGuardrailCost adds guardrail judge cost when no response exists to carry it.
+func (p *LoggerPlugin) applyGuardrailCost(ctx *schemas.BifrostContext, entry *logstore.Log, debug *schemas.BifrostGuardrailDebug) {
+	if entry == nil || debug == nil || p.pricingManager == nil {
+		return
+	}
+	pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(entry.Provider))
+	cost := p.pricingManager.CalculateGuardrailCost(debug, pricingScopes)
+	if cost <= 0 {
+		return
+	}
+	if entry.Cost == nil {
+		entry.Cost = &cost
+		return
+	}
+	*entry.Cost += cost
+}
+
 func (p *LoggerPlugin) scheduleDeferredUsageUpdate(ctx *schemas.BifrostContext, requestID string, usageAlreadyPresent bool) {
 	if usageAlreadyPresent || ctx == nil {
 		return
@@ -1041,6 +1069,10 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	resolvedKeyAlias := bifrost.GetResponseRoutingInfo(result, bifrostErr).ResolvedKeyAlias
 	shouldStoreRaw, _ := ctx.Value(schemas.BifrostContextKeyShouldStoreRawInLogs).(bool)
 	contentLoggingEnabled := p.contentLoggingEnabled(ctx)
+	guardrailDebug := guardrailDebugForLog(ctx, result)
+	if result != nil && guardrailDebug != nil {
+		result.GetExtraFields().GuardrailDebug = guardrailDebug.Clone()
+	}
 
 	isFinalChunk := bifrost.IsFinalChunk(ctx)
 
@@ -1088,6 +1120,8 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			applyModelAlias(entry, originalModelRequested, resolvedModelUsed)
 			applyResolvedAliasInfo(entry, resolvedKeyAlias)
 			entry.ErrorDetailsParsed = sanitizeErrorForLogging(bifrostErr, contentLoggingEnabled, shouldStoreRaw)
+			entry.GuardrailDebugParsed = guardrailDebug
+			p.applyGuardrailCost(ctx, entry, guardrailDebug)
 			if nodeID, _ := p.clusterNodeID.Load().(string); nodeID != "" {
 				entry.ClusterNodeID = &nodeID
 			}
@@ -1151,6 +1185,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 
 	// Build the complete log entry with input (from PreLLMHook) + output (from PostLLMHook)
 	entry := buildCompleteLogEntryFromPending(pending)
+	entry.GuardrailDebugParsed = guardrailDebug
 	// Apply common output fields. For cache hits, prefer the cache-serve
 	// latency stamped by the semantic cache plugin over the original provider
 	// latency preserved in the cached response.
@@ -1255,6 +1290,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		// logs DB reflects what we were actually billed, mirroring the governance
 		// budget.
 		p.applyErrorBillingFromBilledUsage(ctx, entry, bifrostErr.ExtraFields.BilledUsage, requestType)
+		p.applyGuardrailCost(ctx, entry, guardrailDebug)
 		applyLargePayloadPreviewsToEntry(ctx, entry, contentLoggingEnabled)
 		p.storeOrEnqueueEntry(ctx, entry, p.makePostWriteCallback(nil))
 		p.scheduleDeferredUsageUpdate(ctx, requestID, entry.TokenUsageParsed != nil)
