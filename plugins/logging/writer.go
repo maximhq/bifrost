@@ -287,7 +287,7 @@ func (p *LoggerPlugin) enqueueLogEntry(entry *logstore.Log, callback func(entry 
 	}
 	defer func() {
 		if r := recover(); r != nil {
-			p.logger.Error("revcovered from a panic %v. dropping log request", r)
+			p.logger.Error("recovered from a panic %v. dropping log request", r)
 			// Channel was closed between the check and send; entry is dropped
 			p.droppedRequests.Add(1)
 		}
