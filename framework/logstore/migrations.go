@@ -284,6 +284,7 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"logs_add_user_agent_column"}, run: migrationAddUserAgentColumn},
 	{IDs: []string{"mcp_tool_logs_add_user_agent_column"}, run: migrationAddUserAgentColumnToMCPToolLogs},
 	{IDs: []string{"logs_recreate_matviews_with_app_column"}, run: migrationRecreateMatViewsWithAppColumn},
+	{IDs: []string{"mcp_tool_logs_add_endpoint_columns"}, run: migrationAddEndpointColumnsToMCPToolLogs},
 }
 
 // areThereAnyPendingMigrations returns true if there are any pending migrations to be applied.
@@ -2690,6 +2691,16 @@ var performanceIndexes = []performanceIndexDef{
 		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_business_unit_id ON mcp_tool_logs(business_unit_id)",
 	},
 	{
+		table: "mcp_tool_logs",
+		name:  "idx_mcp_logs_device_id",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_device_id ON mcp_tool_logs(device_id)",
+	},
+	{
+		table: "mcp_tool_logs",
+		name:  "idx_mcp_logs_source",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_source ON mcp_tool_logs(source)",
+	},
+	{
 		table: "logs",
 		name:  "idx_logs_cluster_node_id",
 		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_cluster_node_id ON logs(cluster_node_id, timestamp) WHERE cluster_node_id IS NOT NULL",
@@ -3630,6 +3641,47 @@ func migrationAddDACColumnsToMCPToolLogs(ctx context.Context, db *gorm.DB, logge
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while adding DAC columns to mcp_tool_logs: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddEndpointColumnsToMCPToolLogs adds the endpoint-agent context
+// columns (device_id, app_key, decision, source) to the mcp_tool_logs table so
+// tool calls observed on developer machines by the Bifrost Edge agent can be
+// stored alongside gateway-proxied calls.
+//
+// Indexes on device_id and source are built CONCURRENTLY by
+// ensurePerformanceIndexes (entries appended to performanceIndexes) so adding
+// them does not block writes on a populated table.
+func migrationAddEndpointColumnsToMCPToolLogs(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "mcp_tool_logs_add_endpoint_columns"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, col := range []string{"device_id", "app_key", "decision", "source"} {
+				if err := addColumnIfNotExists(tx, logger, &MCPToolLog{}, col); err != nil {
+					return fmt.Errorf("failed to add %s column to mcp_tool_logs: %w", col, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, col := range []string{"source", "decision", "app_key", "device_id"} {
+				if err := dropColumnIfExists(tx, logger, &MCPToolLog{}, col); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding endpoint columns to mcp_tool_logs: %w", err)
 	}
 	return nil
 }

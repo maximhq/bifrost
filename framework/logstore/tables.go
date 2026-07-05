@@ -1000,6 +1000,15 @@ type MCPToolLog struct {
 	HasObject      bool      `gorm:"default:false" json:"-"`                                                      // True when payload is stored in object storage
 	CreatedAt      time.Time `gorm:"index;not null" json:"created_at"`
 
+	// Endpoint-agent context. These are populated for tool calls observed on a
+	// developer machine by the Bifrost Edge agent (rather than proxied by the
+	// gateway). Source distinguishes the origin: empty/null for gateway-proxied
+	// calls, "endpoint" for agent-observed calls.
+	DeviceID *string `gorm:"type:varchar(255);index:idx_mcp_logs_device_id" json:"device_id,omitempty"`
+	AppKey   *string `gorm:"type:varchar(64)" json:"app_key,omitempty"` // Canonical policy key of the detected client app (schemas.AppKeyFromName), e.g. "claude-code"; a slug like App, not a secret or credential
+	Decision *string `gorm:"type:varchar(16)" json:"decision,omitempty"`
+	Source   *string `gorm:"type:varchar(16);index:idx_mcp_logs_source" json:"source,omitempty"`
+
 	// Virtual fields for JSON output - populated when needed
 	ArgumentsParsed    interface{}             `gorm:"-" json:"arguments,omitempty"`
 	ResultParsed       interface{}             `gorm:"-" json:"result,omitempty"`
