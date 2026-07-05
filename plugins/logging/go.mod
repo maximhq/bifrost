@@ -7,6 +7,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/maximhq/bifrost/core v1.6.2
 	github.com/maximhq/bifrost/framework v1.4.2
+	github.com/stretchr/testify v1.11.1
 )
 
 require (
@@ -114,7 +115,6 @@ require (
 	github.com/rs/zerolog v1.34.0 // indirect
 	github.com/spf13/cast v1.10.0 // indirect
 	github.com/spiffe/go-spiffe/v2 v2.6.0 // indirect
-	github.com/stretchr/testify v1.11.1 // indirect
 	github.com/tidwall/gjson v1.18.0 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect

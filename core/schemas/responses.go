@@ -1551,7 +1551,11 @@ func (output ResponsesToolMessageOutputStruct) MarshalJSON() ([]byte, error) {
 	if output.ResponsesComputerToolCallOutput != nil {
 		return MarshalSorted(output.ResponsesComputerToolCallOutput)
 	}
-	return nil, fmt.Errorf("responses tool message output struct is neither a string nor an array of responses message content blocks nor a computer tool call output data nor an image generation call output")
+	// All variants nil: a tool legitimately produced no output (e.g. an
+	// Anthropic tool_result with empty content). Serialize as an empty string
+	// rather than erroring, since an error here aborts marshaling of any
+	// enclosing structure (conversation histories, log rows).
+	return MarshalSorted("")
 }
 
 func (output *ResponsesToolMessageOutputStruct) UnmarshalJSON(data []byte) error {

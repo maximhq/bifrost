@@ -168,7 +168,7 @@ func TestGovernancePlugin_EvaluateGovernanceRequest_DirectKeySatisfiesMandatoryA
 	ctx.SetValue(schemas.BifrostContextKeyDirectKey, schemas.Key{
 		ID:    "header-provided",
 		Name:  "header-provided",
-		Value: schemas.EnvVar{Val: "sk-real-openai-key"},
+		Value: schemas.SecretVar{Val: "sk-real-openai-key"},
 	})
 
 	result, bifrostErr := plugin.EvaluateGovernanceRequest(ctx, &EvaluationRequest{
@@ -213,7 +213,7 @@ func TestHasDirectKeyAuth(t *testing.T) {
 	ctx.SetValue(schemas.BifrostContextKeyDirectKey, schemas.Key{
 		ID:    "header-provided",
 		Name:  "header-provided",
-		Value: schemas.EnvVar{Val: "sk-real-openai-key"},
+		Value: schemas.SecretVar{Val: "sk-real-openai-key"},
 	})
 
 	assert.True(t, hasDirectKeyAuth(ctx))
