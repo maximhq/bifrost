@@ -1872,15 +1872,27 @@ func (gs *LocalGovernanceStore) ResetBudget(ctx context.Context, budgetID string
 	if gs.LoadBudget(ctx, budgetID) == nil {
 		return nil, ErrBudgetNotFound
 	}
-	// LastReset=now restarts a rolling window; a calendar-aligned budget still
-	// resets at its next period boundary.
-	resetBudget, ok := gs.ResetBudgetAt(ctx, budgetID, time.Now())
-	if !ok {
-		// A concurrent reset already advanced LastReset; return the latest snapshot.
-		if budget := gs.LoadBudget(ctx, budgetID); budget != nil {
-			return budget, nil
+	// A manual reset must always zero usage. ResetBudgetAt only applies when the
+	// target is strictly after the stored LastReset, so advance past a future
+	// LastReset to force the reset rather than reporting a no-op as success.
+	var resetBudget *configstoreTables.TableBudget
+	for {
+		current := gs.LoadBudget(ctx, budgetID)
+		if current == nil {
+			return nil, ErrBudgetNotFound
 		}
-		return nil, ErrBudgetNotFound
+		if current.CurrentUsage == 0 {
+			return current, nil
+		}
+		target := time.Now()
+		if !current.LastReset.Before(target) {
+			target = current.LastReset.Add(time.Nanosecond)
+		}
+		rb, ok := gs.ResetBudgetAt(ctx, budgetID, target)
+		if ok {
+			resetBudget = rb
+			break
+		}
 	}
 	gs.LastDBUsagesBudgetsMu.Lock()
 	gs.LastDBUsagesBudgets[resetBudget.ID] = 0

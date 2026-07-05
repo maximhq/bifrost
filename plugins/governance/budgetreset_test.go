@@ -106,13 +106,12 @@ func TestGovernanceStore_ResetBudget_CalendarAligned(t *testing.T) {
 		"next calendar boundary must remain ahead of the manual reset timestamp")
 }
 
-// TestGovernanceStore_ResetBudget_Idempotent verifies a concurrent/duplicate reset returns the snapshot instead of erroring.
+// TestGovernanceStore_ResetBudget_Idempotent verifies a manual reset still zeroes
+// usage when the stored LastReset is in the future (e.g. clock skew).
 func TestGovernanceStore_ResetBudget_Idempotent(t *testing.T) {
 	logger := NewMockLogger()
 
 	budget := buildBudgetWithUsage("budget1", 100.0, 40.0, "1d")
-	// Simulate a snapshot whose LastReset is (marginally) in the future — e.g.
-	// another node just reset it — so ResetBudgetAt's CAS declines.
 	budget.LastReset = time.Now().Add(1 * time.Minute)
 
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
@@ -124,4 +123,5 @@ func TestGovernanceStore_ResetBudget_Idempotent(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, resetBudget)
 	assert.Equal(t, "budget1", resetBudget.ID)
+	assert.Equal(t, 0.0, resetBudget.CurrentUsage, "usage must be zeroed even when LastReset is in the future")
 }
