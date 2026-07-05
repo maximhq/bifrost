@@ -176,6 +176,13 @@ type ptFrame struct {
 func runAnthropicPassthrough(t *testing.T, raws []string, applyFix bool) ([]ptFrame, *schemas.BifrostContext) {
 	t.Helper()
 	ctx := schemas.NewBifrostContext(nil, time.Time{})
+	// This harness always models the passthrough path (raw frames interleaved), so
+	// mark the reverse converter accordingly — mirroring the transport, which calls
+	// SetResponsesStreamPassthrough when shouldUsePassthrough is true. This drives the
+	// server-tool result-block index bumps that keep converted frames in lockstep with
+	// the raw ones; the all-normalized path (TestAnthropicConverterOnly_*) leaves it
+	// unset so indices stay contiguous.
+	SetResponsesStreamPassthrough(ctx)
 	state := newAdvisorStreamState()
 	var out []ptFrame
 	seq := 0
@@ -365,5 +372,56 @@ func TestAnthropicConverterOnlyStream_WellFormed(t *testing.T) {
 	rs := getOrCreateAnthropicToResponsesStreamState(ctx)
 	if len(rs.blockIndexMisses) > 0 {
 		t.Errorf("reverse converter recorded block-index misses (stop/delta for unregistered blocks): %v", rs.blockIndexMisses)
+	}
+}
+
+// TestAnthropicConverterOnly_IndicesContiguous guards the all-normalized path
+// (OpenAI-via-Anthropic, curl — never Claude Code): with no interleaved raw frames,
+// SetResponsesStreamPassthrough is NOT called, so the converter must emit contiguous
+// content_block indices 0,1,2,… A gap (an index consumed for a dropped server-tool
+// result block but no block emitted) is what a strict Anthropic SDK client sees as a
+// missing block; native Anthropic never produces one. web_fetch and zero-result
+// web_search are the two cases that drop a result block — anti-vacuous: before the
+// passthrough gating they emit [0,1,3].
+func TestAnthropicConverterOnly_IndicesContiguous(t *testing.T) {
+	scenarios := map[string][]string{
+		"web_fetch":              ptConcat([]string{ptMsgStart()}, ptThinking(0), ptWebFetch(1, "srv_F"), ptText(3), ptMsgEnd()),
+		"websearch_no_results":   ptConcat([]string{ptMsgStart()}, ptThinking(0), ptWebSearchNoResults(1, "srv_W"), ptText(3), ptMsgEnd()),
+		"websearch_with_results": ptConcat([]string{ptMsgStart()}, ptThinking(0), ptWebSearch(1, "srv_W"), ptText(3), ptMsgEnd()),
+		"two_web_fetch":          ptConcat([]string{ptMsgStart()}, ptWebFetch(0, "srv_F"), ptWebFetch(2, "srv_F2"), ptText(4), ptMsgEnd()),
+		"web_fetch_then_search":  ptConcat([]string{ptMsgStart()}, ptWebFetch(0, "srv_F"), ptWebSearchNoResults(2, "srv_W"), ptText(4), ptMsgEnd()),
+	}
+	for name, raws := range scenarios {
+		t.Run(name, func(t *testing.T) {
+			// No SetResponsesStreamPassthrough: this is the all-normalized path.
+			ctx := schemas.NewBifrostContext(nil, time.Time{})
+			state := newAdvisorStreamState()
+			seq := 0
+			var starts []int
+			for _, raw := range raws {
+				var chunk AnthropicStreamEvent
+				if err := sonic.Unmarshal([]byte(raw), &chunk); err != nil {
+					t.Fatalf("unmarshal event: %v", err)
+				}
+				responses, bErr, _ := chunk.ToBifrostResponsesStream(ctx, seq, state)
+				if bErr != nil {
+					t.Fatalf("ToBifrostResponsesStream error: %v", bErr)
+				}
+				for _, r := range responses {
+					seq++
+					for _, e := range ToAnthropicResponsesStreamResponse(ctx, r) {
+						if e.Type == AnthropicStreamEventTypeContentBlockStart && e.Index != nil {
+							starts = append(starts, *e.Index)
+						}
+					}
+				}
+			}
+			for i, idx := range starts {
+				if idx != i {
+					t.Errorf("non-contiguous content_block_start indices %v (position %d is index %d, not %d); native Anthropic never skips an index", starts, i, idx, i)
+					break
+				}
+			}
+		})
 	}
 }

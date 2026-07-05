@@ -117,6 +117,7 @@ func createAnthropicMessagesRouteConfig(pathPrefix string, logger schemas.Logger
 				ResponsesStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesStreamResponse) (string, interface{}, error) {
 					soToolName, _ := ctx.Value(schemas.BifrostContextKeyStructuredOutputToolName).(string)
 					if soToolName == "" && shouldUsePassthrough(ctx, resp.ExtraFields.Provider, resp.ExtraFields.OriginalModelRequested, resp.ExtraFields.ResolvedModelUsed) {
+						anthropic.SetResponsesStreamPassthrough(ctx)
 						// Skip passthrough for ContentPartAdded: it's a synthetic bifrost event whose
 						// RawResponse carries the parent content_block_start already emitted by OutputItemAdded.
 						// Passing through here would produce a duplicate content_block_start that causes

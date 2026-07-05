@@ -178,6 +178,16 @@ type anthropicToResponsesStreamState struct {
 	// loudly instead of the stream silently mis-numbering blocks.
 	blockIndexMisses []string
 
+	// passthrough is true when this reverse conversion runs on the Claude Code
+	// passthrough path, where verbatim raw upstream frames are interleaved with the
+	// converter's own. Only then must the converter consume a content-block index for
+	// server-tool result blocks it drops (web_fetch, zero-result web_search) — to stay
+	// in lockstep with the upstream indices carried by the interleaved raw frames. On
+	// the all-normalized path (OpenAI-via-Anthropic, curl) every frame is converter-
+	// built, so consuming the index would skip a number — which native Anthropic never
+	// does. Set by the transport via SetResponsesStreamPassthrough.
+	passthrough bool
+
 	// codeExecToolNameByItem remembers each code_interpreter_call's Anthropic
 	// sub-tool name (captured at output_item.added) so the code block's input can be
 	// reconstructed and closed on code.done — emitted before the nested web_search
@@ -257,6 +267,15 @@ func getOrCreateAnthropicToResponsesStreamState(ctx *schemas.BifrostContext) *an
 	state := &anthropicToResponsesStreamState{}
 	ctx.SetValue(anthropicToResponsesStreamStateKey, state)
 	return state
+}
+
+// SetResponsesStreamPassthrough marks this request's Anthropic reverse stream
+// conversion as running on the Claude Code passthrough path (raw upstream frames
+// interleaved with converted ones). The transport calls it; the converter reads
+// state.passthrough to decide whether to consume server-tool result-block indices
+// it does not emit. See the passthrough field.
+func SetResponsesStreamPassthrough(ctx *schemas.BifrostContext) {
+	getOrCreateAnthropicToResponsesStreamState(ctx).passthrough = true
 }
 
 // AcquireAnthropicResponsesStreamState gets an Anthropic responses stream state from the pool.
@@ -2646,13 +2665,15 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 					&AnthropicStreamEvent{Type: AnthropicStreamEventTypeContentBlockStart, Index: resultIndex, ContentBlock: resultBlock},
 					&AnthropicStreamEvent{Type: AnthropicStreamEventTypeContentBlockStop, Index: resultIndex},
 				)
-			} else {
+			} else if state.passthrough {
 				// A resultless or error web_search (no sources, max_uses_exceeded,
 				// web_search_tool_result_error, …) still consumed a content-block index
 				// upstream (the web_search_tool_result block), so allocate (and discard)
 				// one here to keep the counter in lockstep with upstream indices — else
 				// the following block collides with the verbatim raw frames on the
-				// passthrough path. Mirrors the web_fetch handling below.
+				// passthrough path. Mirrors the web_fetch handling below. Passthrough
+				// only: on the all-normalized path there are no raw frames to align with,
+				// so skipping this keeps indices contiguous (matching native Anthropic).
 				_ = state.allocBlockIndex("")
 			}
 
@@ -2663,14 +2684,18 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 
 			// Web fetch call complete - close the server_tool_use block. No paired
 			// web_fetch_tool_result block is emitted (its content has no Responses
-			// representation), mirroring the non-streaming reverse path. The upstream
-			// result block still consumed a content-block index, so allocate (and
-			// discard) one here to keep the block-index counter in lockstep with
-			// upstream indices — otherwise later blocks (e.g. the assistant text) would
-			// be numbered one short and collide with the verbatim raw frames.
+			// representation), mirroring the non-streaming reverse path.
 			state := getOrCreateAnthropicToResponsesStreamState(ctx)
 			serverIdx := state.blockIndexFor(reverseStreamItemKey(bifrostResp))
-			_ = state.allocBlockIndex("")
+			// Passthrough only: the upstream result block still consumed a content-block
+			// index, so allocate (and discard) one here to keep the counter in lockstep
+			// with the interleaved raw frames — otherwise later blocks (e.g. the
+			// assistant text) collide with them. On the all-normalized path there are no
+			// raw frames to align with, so skipping this keeps indices contiguous
+			// (matching native Anthropic).
+			if state.passthrough {
+				_ = state.allocBlockIndex("")
+			}
 			return []*AnthropicStreamEvent{{
 				Type:  AnthropicStreamEventTypeContentBlockStop,
 				Index: serverIdx,
@@ -6289,28 +6314,14 @@ func convertAnthropicToolToBifrost(tool *AnthropicTool) *schemas.ResponsesTool {
 
 	// Handle special tool types first
 	if tool.Type != nil {
-		switch *tool.Type {
-		case AnthropicToolTypeComputer20250124, AnthropicToolTypeComputer20251124:
-			bifrostTool := &schemas.ResponsesTool{
-				Type: schemas.ResponsesToolTypeComputerUsePreview,
-			}
-			if tool.AnthropicToolComputerUse != nil {
-				bifrostTool.ResponsesToolComputerUsePreview = &schemas.ResponsesToolComputerUsePreview{
-					Environment: "browser", // Default environment
-				}
-				if tool.AnthropicToolComputerUse.DisplayWidthPx != nil {
-					bifrostTool.ResponsesToolComputerUsePreview.DisplayWidth = *tool.AnthropicToolComputerUse.DisplayWidthPx
-				}
-				if tool.AnthropicToolComputerUse.DisplayHeightPx != nil {
-					bifrostTool.ResponsesToolComputerUsePreview.DisplayHeight = *tool.AnthropicToolComputerUse.DisplayHeightPx
-				}
-				if tool.AnthropicToolComputerUse.EnableZoom != nil {
-					bifrostTool.ResponsesToolComputerUsePreview.EnableZoom = tool.AnthropicToolComputerUse.EnableZoom
-				}
-			}
-			return bifrostTool
-
-		case AnthropicToolTypeWebSearch20250305, AnthropicToolTypeWebSearch20260209:
+		// Version-dated server search tools ship new versions regularly; match them by
+		// prefix so a newer version (e.g. web_fetch_20260318) is recognized as a server
+		// tool instead of falling through to the client-function default at the end of
+		// this function. Mirrors applySharedServerToolFields and the chat path. Tools
+		// that must round-trip their exact version (code_execution, text_editor) stay in
+		// the exact switch below.
+		switch typeStr := string(*tool.Type); {
+		case strings.HasPrefix(typeStr, "web_search_"):
 			bifrostTool := &schemas.ResponsesTool{
 				Type: schemas.ResponsesToolTypeWebSearch,
 			}
@@ -6336,7 +6347,7 @@ func convertAnthropicToolToBifrost(tool *AnthropicTool) *schemas.ResponsesTool {
 
 			return bifrostTool
 
-		case AnthropicToolTypeWebFetch20250910, AnthropicToolTypeWebFetch20260209, AnthropicToolTypeWebFetch20260309:
+		case strings.HasPrefix(typeStr, "web_fetch_"):
 			bifrostTool := &schemas.ResponsesTool{
 				Type: schemas.ResponsesToolTypeWebFetch,
 			}
@@ -6350,6 +6361,28 @@ func convertAnthropicToolToBifrost(tool *AnthropicTool) *schemas.ResponsesTool {
 						AllowedDomains: tool.AnthropicToolWebFetch.AllowedDomains,
 						BlockedDomains: tool.AnthropicToolWebFetch.BlockedDomains,
 					}
+				}
+			}
+			return bifrostTool
+		}
+
+		switch *tool.Type {
+		case AnthropicToolTypeComputer20250124, AnthropicToolTypeComputer20251124:
+			bifrostTool := &schemas.ResponsesTool{
+				Type: schemas.ResponsesToolTypeComputerUsePreview,
+			}
+			if tool.AnthropicToolComputerUse != nil {
+				bifrostTool.ResponsesToolComputerUsePreview = &schemas.ResponsesToolComputerUsePreview{
+					Environment: "browser", // Default environment
+				}
+				if tool.AnthropicToolComputerUse.DisplayWidthPx != nil {
+					bifrostTool.ResponsesToolComputerUsePreview.DisplayWidth = *tool.AnthropicToolComputerUse.DisplayWidthPx
+				}
+				if tool.AnthropicToolComputerUse.DisplayHeightPx != nil {
+					bifrostTool.ResponsesToolComputerUsePreview.DisplayHeight = *tool.AnthropicToolComputerUse.DisplayHeightPx
+				}
+				if tool.AnthropicToolComputerUse.EnableZoom != nil {
+					bifrostTool.ResponsesToolComputerUsePreview.EnableZoom = tool.AnthropicToolComputerUse.EnableZoom
 				}
 			}
 			return bifrostTool
