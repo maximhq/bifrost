@@ -4587,6 +4587,7 @@ func convertAnthropicContentBlocksToResponsesMessagesGrouped(contentBlocks []Ant
 						}
 						bifrostMsg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks = toolMsgContentBlocks
 					}
+					ensureToolMessageOutputNonEmpty(bifrostMsg.ResponsesToolMessage.Output)
 
 					// Handle is_error from Anthropic
 					if block.IsError != nil && *block.IsError {
@@ -4948,6 +4949,7 @@ func convertAnthropicContentBlocksToResponsesMessages(ctx *schemas.BifrostContex
 						}
 						bifrostMsg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks = toolMsgContentBlocks
 					}
+					ensureToolMessageOutputNonEmpty(bifrostMsg.ResponsesToolMessage.Output)
 
 					// Handle is_error from Anthropic
 					if block.IsError != nil && *block.IsError {
@@ -5169,6 +5171,7 @@ func convertAnthropicContentBlocksToResponsesMessages(ctx *schemas.BifrostContex
 						bifrostMsg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks = toolMsgContentBlocks
 					}
 				}
+				ensureToolMessageOutputNonEmpty(bifrostMsg.ResponsesToolMessage.Output)
 				bifrostMessages = append(bifrostMessages, bifrostMsg)
 			}
 		default:
@@ -5195,6 +5198,22 @@ func convertAnthropicContentBlocksToResponsesMessages(ctx *schemas.BifrostContex
 	}
 
 	return bifrostMessages
+}
+
+// ensureToolMessageOutputNonEmpty backfills an empty-string output when a
+// tool result carried no convertible content (e.g. an Anthropic tool_result
+// with content: [] or only unsupported block types). An output struct with
+// all variants nil fails MarshalJSON in enclosing structures, so it must
+// never escape the converter.
+func ensureToolMessageOutputNonEmpty(output *schemas.ResponsesToolMessageOutputStruct) {
+	if output == nil {
+		return
+	}
+	if output.ResponsesToolCallOutputStr == nil &&
+		output.ResponsesFunctionToolCallOutputBlocks == nil &&
+		output.ResponsesComputerToolCallOutput == nil {
+		output.ResponsesToolCallOutputStr = schemas.Ptr("")
+	}
 }
 
 // Helper functions for converting individual Bifrost message types to Anthropic messages
