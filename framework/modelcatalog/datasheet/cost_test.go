@@ -1587,6 +1587,80 @@ func TestGetPricing_BedrockAddsAnthropicPrefix(t *testing.T) {
 	assert.Equal(t, 0.000003, derefF(p.InputCostPerToken))
 }
 
+func TestGetPricing_BedrockAddsOpenAIPrefix(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("openai.gpt-oss-120b", "bedrock", "chat"): chatPricing(0.00000015, 0.0000006),
+	})
+	p := s.resolvePricing(schemas.RoutingInfo{Provider: "bedrock", Model: "gpt-oss-120b"}, schemas.ChatCompletionRequest, LookupScopes{Provider: "bedrock"})
+	require.NotNil(t, p)
+	assert.Equal(t, 0.00000015, derefF(p.InputCostPerToken))
+}
+
+func TestGetPricing_BedrockAddsGooglePrefix(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("google.gemma-4-31b", "bedrock", "chat"): chatPricing(0.00000014, 0.0000004),
+	})
+	p := s.resolvePricing(schemas.RoutingInfo{Provider: "bedrock", Model: "gemma-4-31b"}, schemas.ChatCompletionRequest, LookupScopes{Provider: "bedrock"})
+	require.NotNil(t, p)
+	assert.Equal(t, 0.00000014, derefF(p.InputCostPerToken))
+}
+
+func TestGetPricing_BedrockAddsXAIPrefix(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("xai.grok-4.3", "bedrock", "chat"): chatPricing(0.00000125, 0.0000025),
+	})
+	p := s.resolvePricing(schemas.RoutingInfo{Provider: "bedrock", Model: "grok-4.3"}, schemas.ChatCompletionRequest, LookupScopes{Provider: "bedrock"})
+	require.NotNil(t, p)
+	assert.Equal(t, 0.00000125, derefF(p.InputCostPerToken))
+}
+
+func TestGetPricing_BedrockMantleFallsBackToBedrock(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("openai.gpt-oss-120b", "bedrock", "chat"): chatPricing(0.00000015, 0.0000006),
+	})
+	p := s.resolvePricing(schemas.RoutingInfo{Provider: "bedrock_mantle", Model: "openai.gpt-oss-120b"}, schemas.ChatCompletionRequest, LookupScopes{Provider: "bedrock_mantle"})
+	require.NotNil(t, p)
+	assert.Equal(t, 0.00000015, derefF(p.InputCostPerToken))
+}
+
+func TestGetPricing_BedrockMantleResponsesFallsBackToBedrockChat(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("openai.gpt-oss-120b", "bedrock", "chat"): chatPricing(0.00000015, 0.0000006),
+	})
+	// bedrock_mantle provider + responses request → try bedrock + responses → try bedrock + chat
+	p := s.resolvePricing(schemas.RoutingInfo{Provider: "bedrock_mantle", Model: "openai.gpt-oss-120b"}, schemas.ResponsesRequest, LookupScopes{Provider: "bedrock_mantle"})
+	require.NotNil(t, p)
+	assert.Equal(t, 0.00000015, derefF(p.InputCostPerToken))
+}
+
+func TestGetPricing_BedrockMantleAddsAnthropicPrefix(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("anthropic.claude-3-5-sonnet-20241022-v2:0", "bedrock", "chat"): chatPricing(0.000003, 0.000015),
+	})
+	p := s.resolvePricing(schemas.RoutingInfo{Provider: "bedrock_mantle", Model: "claude-3-5-sonnet-20241022-v2:0"}, schemas.ChatCompletionRequest, LookupScopes{Provider: "bedrock_mantle"})
+	require.NotNil(t, p)
+	assert.Equal(t, 0.000003, derefF(p.InputCostPerToken))
+}
+
+func TestGetPricing_BedrockMantleAddsOpenAIPrefix(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("openai.gpt-oss-120b", "bedrock", "chat"): chatPricing(0.00000015, 0.0000006),
+	})
+	// bedrock_mantle folds onto bedrock, then the openai. prefix retry fires
+	p := s.resolvePricing(schemas.RoutingInfo{Provider: "bedrock_mantle", Model: "gpt-oss-120b"}, schemas.ChatCompletionRequest, LookupScopes{Provider: "bedrock_mantle"})
+	require.NotNil(t, p)
+	assert.Equal(t, 0.00000015, derefF(p.InputCostPerToken))
+}
+
+func TestGetPricing_BedrockMantleResponsesAddsOpenAIPrefix(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("openai.gpt-5.5", "bedrock", "responses"): chatPricing(0.0000055, 0.000033),
+	})
+	p := s.resolvePricing(schemas.RoutingInfo{Provider: "bedrock_mantle", Model: "gpt-5.5"}, schemas.ResponsesRequest, LookupScopes{Provider: "bedrock_mantle"})
+	require.NotNil(t, p)
+	assert.Equal(t, 0.0000055, derefF(p.InputCostPerToken))
+}
+
 func TestGetPricing_ResponsesFallsBackToChat(t *testing.T) {
 	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gpt-4o", "openai", "chat"): chatPricing(0.000005, 0.000015),
