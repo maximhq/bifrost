@@ -1349,6 +1349,7 @@ type HistogramBucket struct {
 	Count     int64     `json:"count"`
 	Success   int64     `json:"success"`
 	Error     int64     `json:"error"`
+	Cancelled int64     `json:"cancelled"`
 }
 
 // HistogramResult represents the histogram query result
@@ -1388,9 +1389,10 @@ type CostHistogramResult struct {
 
 // ModelUsageStats represents usage statistics for a single model
 type ModelUsageStats struct {
-	Total   int64 `json:"total"`
-	Success int64 `json:"success"`
-	Error   int64 `json:"error"`
+	Total     int64 `json:"total"`
+	Success   int64 `json:"success"`
+	Error     int64 `json:"error"`
+	Cancelled int64 `json:"cancelled"`
 }
 
 // ModelHistogramBucket represents a single time bucket for model usage
