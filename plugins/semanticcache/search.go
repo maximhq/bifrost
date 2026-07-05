@@ -147,19 +147,11 @@ func (plugin *Plugin) generateEmbedding(ctx *schemas.BifrostContext, text string
 	defer embeddingCtx.Cancel()
 	embeddingCtx.SetValue(schemas.BifrostContextKeySkipPluginPipeline, true)
 	// The embedding request targets the plugin's own configured embedding
-	// provider/model, not the caller's. Because it skips the plugin pipeline,
-	// governance never re-resolves key routing for the embedding provider — so
-	// any key-selection state inherited from the caller's request context
-	// (governance key allow-list, pinned/direct keys) would be applied against
-	// the wrong provider and reject every embedding key ("no keys found for
-	// provider"). Clear it so key selection resolves against the embedding
-	// provider exactly like a fresh external /v1/embeddings request.
-	embeddingCtx.ClearValue(schemas.BifrostContextKeyGovernanceIncludeOnlyKeys)
-	embeddingCtx.ClearValue(schemas.BifrostContextKeyRoutingPinnedAPIKeyID)
-	embeddingCtx.ClearValue(schemas.BifrostContextKeyAPIKeyID)
-	embeddingCtx.ClearValue(schemas.BifrostContextKeyAPIKeyName)
-	embeddingCtx.ClearValue(schemas.BifrostContextKeyDirectKey)
-	embeddingCtx.ClearValue(schemas.BifrostContextKeySkipKeySelection)
+	// provider/model, not the caller's — and because it skips the plugin
+	// pipeline, routing state is never re-resolved for it. Shed the caller's
+	// key-routing and body-transport state so the request behaves like a
+	// fresh external /v1/embeddings call.
+	bifrost.ClearContextForInternalRequest(embeddingCtx)
 	if plugin.embeddingRequestExecutor == nil {
 		return nil, 0, fmt.Errorf("embedding request executor is not configured")
 	}
