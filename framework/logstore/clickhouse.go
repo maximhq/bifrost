@@ -127,6 +127,12 @@ func buildClickHouseDSN(config *ClickHouseConfig) (string, error) {
 	// delete would still see the rows. mutations_sync=1 makes the connection
 	// wait until the mutation is applied on the current replica.
 	q.Set("mutations_sync", "1")
+	// The shared analytics SQL aliases aggregates with column names
+	// (SUM(cost) AS cost) while filters reference the same names in WHERE.
+	// ClickHouse resolves identifiers in WHERE to SELECT aliases by default
+	// (error 184: aggregate function found in WHERE); this setting restores
+	// the standard-SQL column-first resolution Postgres/SQLite use.
+	q.Set("prefer_column_name_to_alias", "1")
 	q.Set("dial_timeout", dialTimeout.String())
 	// clickhouse-go: native TLS is requested via secure=true; the https scheme
 	// also requires secure=true; plain http must NOT set it.

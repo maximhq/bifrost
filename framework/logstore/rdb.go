@@ -474,9 +474,23 @@ func (s *RDBLogStore) GetNodeUsageAfter(ctx context.Context, nodeID string, curs
 		Where("cluster_node_id = ?", nodeID).
 		Where("status = ?", "success")
 	orderBy := "timestamp ASC, id ASC"
+	clickhouse := s.db.Dialector.Name() == "clickhouse"
 	if cursor.IncNumber != nil {
 		query = query.Where("inc_number > ?", *cursor.IncNumber)
 		orderBy = "inc_number ASC"
+	} else if clickhouse {
+		// The GORM ClickHouse driver truncates time.Time args to whole seconds
+		// (toDateTime('...')), which would rewind the cursor to the start of its
+		// second and re-aggregate rows already counted on the previous scan.
+		// Bind epoch millis instead; DateTime64(3) storage makes this exact.
+		// inc_number stays NULL on ClickHouse (no DB-assigned autoincrement), so
+		// this cursor form is the steady state, not just the first scan.
+		tsMs := cursor.Timestamp.UnixMilli()
+		if cursor.LogID != "" {
+			query = query.Where("timestamp > fromUnixTimestamp64Milli(?) OR (timestamp = fromUnixTimestamp64Milli(?) AND id > ?)", tsMs, tsMs, cursor.LogID)
+		} else {
+			query = query.Where("timestamp > fromUnixTimestamp64Milli(?)", tsMs)
+		}
 	} else if cursor.LogID != "" {
 		query = query.Where("timestamp > ? OR (timestamp = ? AND id > ?)", cursor.Timestamp, cursor.Timestamp, cursor.LogID)
 	} else {

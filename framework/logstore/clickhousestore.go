@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"sort"
 	"sync"
+	"time"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/schema"
@@ -150,35 +151,147 @@ func (s *ClickHouseLogStore) chReinsert(ctx context.Context, v interface{}) erro
 	return s.db.WithContext(ctx).Session(&gorm.Session{SkipHooks: true}).Create(v).Error
 }
 
-// --- Inserts (no ON CONFLICT; RMT dedup handles idempotency) ---
+// --- Inserts (existence check first; RMT dedup is last-write-wins) ---
 
-// CreateIfNotExists inserts a log entry. Duplicate ids collapse on merge (and
-// are hidden by `final = 1` reads), so a plain INSERT is idempotent.
+// ReplacingMergeTree keeps the row with the HIGHEST `ver`, so a duplicate
+// INSERT would *replace* the existing row instead of being a no-op like the
+// SQL stores' ON CONFLICT DO NOTHING. That inverts CreateIfNotExists
+// semantics: a retried "processing" insert arriving after the completion
+// update (and after the hybrid store's has_object flip) would resurrect the
+// stale row and silently drop status/cost/has_object. The methods below
+// therefore check existence under the RMW shard locks and insert only rows
+// whose id is not already present.
+
+// chFilterMissing returns the entries whose id is not present in table,
+// skipping nil entries and duplicate ids within the batch (first occurrence
+// wins, matching ON CONFLICT DO NOTHING). Must be called under the RMW locks
+// covering ids so a concurrent Update re-insert cannot interleave.
+//
+// When every entry carries a non-zero timestamp, the lookup is bounded to the
+// batch's [min, max] timestamp range so it prunes granules via the
+// (timestamp, id) primary key instead of scanning the id column. This is safe
+// because retried creates reuse the original entry (same timestamp), and the
+// tables' dedup key is (timestamp, id) anyway - a same-id row at a different
+// timestamp would be a distinct logical row regardless of this check.
+func chFilterMissing[T any](ctx context.Context, db *gorm.DB, table string, entries []*T, idOf func(*T) string, tsOf func(*T) time.Time) ([]*T, error) {
+	ids := make([]string, 0, len(entries))
+	var minTS, maxTS time.Time
+	boundable := true
+	for _, e := range entries {
+		if e == nil {
+			continue
+		}
+		ids = append(ids, idOf(e))
+		ts := tsOf(e)
+		if ts.IsZero() {
+			boundable = false
+			continue
+		}
+		if minTS.IsZero() || ts.Before(minTS) {
+			minTS = ts
+		}
+		if maxTS.IsZero() || ts.After(maxTS) {
+			maxTS = ts
+		}
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	q := db.WithContext(ctx).Table(table).Where("id IN ?", ids)
+	if boundable {
+		// Bind epoch millis, not time.Time: the GORM ClickHouse driver formats
+		// time args as toDateTime('...') at SECONDS precision, silently dropping
+		// the sub-second part - a BETWEEN on the raw values would miss every row
+		// whose DateTime64(3) timestamp has a non-zero millisecond component.
+		q = q.Where("timestamp BETWEEN fromUnixTimestamp64Milli(?) AND fromUnixTimestamp64Milli(?)", minTS.UnixMilli(), maxTS.UnixMilli())
+	}
+	var existing []string
+	if err := q.Pluck("id", &existing).Error; err != nil {
+		return nil, err
+	}
+	seen := make(map[string]struct{}, len(existing))
+	for _, id := range existing {
+		seen[id] = struct{}{}
+	}
+	missing := make([]*T, 0, len(entries))
+	for _, e := range entries {
+		if e == nil {
+			continue
+		}
+		id := idOf(e)
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		missing = append(missing, e)
+	}
+	return missing, nil
+}
+
+// CreateIfNotExists inserts a log entry only when no row with the same id
+// exists (see the semantics note above).
 func (s *ClickHouseLogStore) CreateIfNotExists(ctx context.Context, entry *Log) error {
 	if entry == nil {
 		return fmt.Errorf("log entry is nil")
+	}
+	defer s.lockRMW("logs", entry.ID)()
+	missing, err := chFilterMissing(ctx, s.db, "logs", []*Log{entry}, func(l *Log) string { return l.ID }, func(l *Log) time.Time { return l.Timestamp })
+	if err != nil {
+		return err
+	}
+	if len(missing) == 0 {
+		return nil
 	}
 	// Omit inc_number so ClickHouse's DEFAULT generateSnowflakeID() fires.
 	return s.db.WithContext(ctx).Omit("inc_number").Create(entry).Error
 }
 
-// BatchCreateIfNotExists inserts multiple log entries. See CreateIfNotExists.
+// BatchCreateIfNotExists inserts the log entries whose ids are not already
+// present. See CreateIfNotExists.
 func (s *ClickHouseLogStore) BatchCreateIfNotExists(ctx context.Context, entries []*Log) error {
 	if len(entries) == 0 {
 		return nil
 	}
+	ids := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if e != nil {
+			ids = append(ids, e.ID)
+		}
+	}
+	defer s.lockRMWBatch("logs", ids)()
+	missing, err := chFilterMissing(ctx, s.db, "logs", entries, func(l *Log) string { return l.ID }, func(l *Log) time.Time { return l.Timestamp })
+	if err != nil {
+		return err
+	}
+	if len(missing) == 0 {
+		return nil
+	}
 	// Omit inc_number so ClickHouse's DEFAULT generateSnowflakeID() fires.
-	return s.db.WithContext(ctx).Omit("inc_number").Create(&entries).Error
+	return s.db.WithContext(ctx).Omit("inc_number").Create(&missing).Error
 }
 
-// BatchCreateMCPToolLogsIfNotExists inserts multiple MCP tool log entries. See
-// CreateIfNotExists.
+// BatchCreateMCPToolLogsIfNotExists inserts the MCP tool log entries whose
+// ids are not already present. See CreateIfNotExists.
 func (s *ClickHouseLogStore) BatchCreateMCPToolLogsIfNotExists(ctx context.Context, entries []*MCPToolLog) error {
 	if len(entries) == 0 {
 		return nil
 	}
+	ids := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if e != nil {
+			ids = append(ids, e.ID)
+		}
+	}
+	defer s.lockRMWBatch("mcp_tool_logs", ids)()
+	missing, err := chFilterMissing(ctx, s.db, "mcp_tool_logs", entries, func(l *MCPToolLog) string { return l.ID }, func(l *MCPToolLog) time.Time { return l.Timestamp })
+	if err != nil {
+		return err
+	}
+	if len(missing) == 0 {
+		return nil
+	}
 	// Omit inc_number so ClickHouse's DEFAULT generateSnowflakeID() fires.
-	return s.db.WithContext(ctx).Omit("inc_number").Create(&entries).Error
+	return s.db.WithContext(ctx).Omit("inc_number").Create(&missing).Error
 }
 
 // --- Updates (read-modify-write + re-insert) ---
@@ -306,6 +419,84 @@ func (s *ClickHouseLogStore) UpdateMCPToolLog(ctx context.Context, id string, en
 		return fmt.Errorf("clickhouse: unsupported UpdateMCPToolLog entry type %T", entry)
 	}
 	return s.chReinsert(ctx, &existing)
+}
+
+// DeleteLogsBatch deletes logs older than cutoff in batches. Overridden
+// because the GORM ClickHouse driver rewrites DELETE into an ALTER TABLE
+// mutation whose driver result reports 0 rows affected - the inherited
+// implementation would always return 0 and the LogsCleaner would treat every
+// batch as empty and stop early. The ids are selected first, so their count
+// is the deleted count once the (mutations_sync=1) delete returns.
+func (s *ClickHouseLogStore) DeleteLogsBatch(ctx context.Context, cutoff time.Time, batchSize int) (int64, error) {
+	var ids []string
+	if err := s.db.WithContext(ctx).
+		Model(&Log{}).
+		Select("id").
+		Where("created_at < ?", cutoff).
+		Order("created_at ASC").
+		Limit(batchSize).
+		Pluck("id", &ids).Error; err != nil {
+		return 0, err
+	}
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	if err := s.db.WithContext(ctx).Where("id IN ?", ids).Delete(&Log{}).Error; err != nil {
+		return 0, err
+	}
+	return int64(len(ids)), nil
+}
+
+// DeleteExpiredAsyncJobs deletes async jobs whose expiry has passed.
+// Overridden for the same reason as DeleteLogsBatch: mutation deletes report
+// 0 rows affected, so ids are selected first and their count returned.
+func (s *ClickHouseLogStore) DeleteExpiredAsyncJobs(ctx context.Context) (int64, error) {
+	now := time.Now().UTC()
+	const batchLimit = 100
+	var total int64
+	for {
+		var ids []string
+		if err := s.db.WithContext(ctx).Model(&AsyncJob{}).Select("id").
+			Where("expires_at IS NOT NULL AND expires_at < ?", now).
+			Limit(batchLimit).Pluck("id", &ids).Error; err != nil {
+			return total, err
+		}
+		if len(ids) == 0 {
+			return total, nil
+		}
+		if err := s.db.WithContext(ctx).Where("id IN ?", ids).Delete(&AsyncJob{}).Error; err != nil {
+			return total, err
+		}
+		total += int64(len(ids))
+		if len(ids) < batchLimit {
+			return total, nil
+		}
+	}
+}
+
+// DeleteStaleAsyncJobs deletes processing jobs created before staleSince.
+// See DeleteExpiredAsyncJobs for why the count is derived from a prior select.
+func (s *ClickHouseLogStore) DeleteStaleAsyncJobs(ctx context.Context, staleSince time.Time) (int64, error) {
+	const batchLimit = 100
+	var total int64
+	for {
+		var ids []string
+		if err := s.db.WithContext(ctx).Model(&AsyncJob{}).Select("id").
+			Where("status = ? AND created_at < ?", "processing", staleSince).
+			Limit(batchLimit).Pluck("id", &ids).Error; err != nil {
+			return total, err
+		}
+		if len(ids) == 0 {
+			return total, nil
+		}
+		if err := s.db.WithContext(ctx).Where("id IN ?", ids).Delete(&AsyncJob{}).Error; err != nil {
+			return total, err
+		}
+		total += int64(len(ids))
+		if len(ids) < batchLimit {
+			return total, nil
+		}
+	}
 }
 
 // UpdateAsyncJob applies a column->value map to an async job row via
