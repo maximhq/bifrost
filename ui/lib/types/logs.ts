@@ -569,7 +569,7 @@ export interface LogEntry {
 	token_usage?: LLMUsage;
 	cache_debug?: CacheDebug;
 	cost?: number; // Cost in dollars (total cost of the request - includes cache lookup cost)
-	status: string; // "success" or "error"
+	status: string; // "success", "error", "processing", or "cancelled"
 	stop_reason?: string; // Why the model stopped: "stop", "length", "content_filter", "tool_calls", etc.
 	error_details?: BifrostError;
 	stream: boolean; // true if this was a streaming response
@@ -656,6 +656,7 @@ export interface HistogramBucket {
 	count: number;
 	success: number;
 	error: number;
+	cancelled: number;
 }
 
 export interface LogsHistogramResponse {
@@ -695,6 +696,7 @@ export interface ModelUsageStats {
 	total: number;
 	success: number;
 	error: number;
+	cancelled: number;
 }
 
 export interface ModelHistogramBucket {

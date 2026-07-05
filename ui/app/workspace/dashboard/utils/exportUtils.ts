@@ -24,8 +24,8 @@ import type {
 type CSVData = { headers: string[]; rows: unknown[][] };
 
 export function overviewVolumeToCSV(data: LogsHistogramResponse | null): CSVData {
-	const headers = ["Timestamp", "Total Requests", "Success", "Error"];
-	const rows = (data?.buckets ?? []).map((b) => [b.timestamp, b.count, b.success, b.error]);
+	const headers = ["Timestamp", "Total Requests", "Success", "Error", "Cancelled"];
+	const rows = (data?.buckets ?? []).map((b) => [b.timestamp, b.count, b.success, b.error, b.cancelled ?? 0]);
 	return { headers, rows };
 }
 
@@ -44,13 +44,13 @@ export function overviewCostToCSV(data: CostHistogramResponse | null): CSVData {
 
 export function overviewModelUsageToCSV(data: ModelHistogramResponse | null): CSVData {
 	const models = data?.models ?? [];
-	const modelHeaders = models.flatMap((m) => [`${m} Total`, `${m} Success`, `${m} Error`]);
+	const modelHeaders = models.flatMap((m) => [`${m} Total`, `${m} Success`, `${m} Error`, `${m} Cancelled`]);
 	const headers = ["Timestamp", ...modelHeaders];
 	const rows = (data?.buckets ?? []).map((b) => [
 		b.timestamp,
 		...models.flatMap((m) => {
 			const stats = b.by_model?.[m];
-			return [stats?.total ?? 0, stats?.success ?? 0, stats?.error ?? 0];
+			return [stats?.total ?? 0, stats?.success ?? 0, stats?.error ?? 0, stats?.cancelled ?? 0];
 		}),
 	]);
 	return { headers, rows };
