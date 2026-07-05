@@ -13,7 +13,7 @@ import (
 // prior image-generation turn (either accepting it as an inbound OpenAI-format request, or
 // forwarding it as history to an OpenAI-compatible upstream) would silently drop the images.
 func TestConvertMessages_PreservesAssistantImages(t *testing.T) {
-	image := schemas.ChatMessageImage{
+	image := schemas.ChatAssistantMessageImage{
 		Type: "image_url",
 		ImageURL: &schemas.ChatInputImage{
 			URL: "data:image/png;base64,AAAA",
@@ -25,7 +25,7 @@ func TestConvertMessages_PreservesAssistantImages(t *testing.T) {
 			{
 				Role: schemas.ChatMessageRoleAssistant,
 				OpenAIChatAssistantMessage: &OpenAIChatAssistantMessage{
-					Images: []schemas.ChatMessageImage{image},
+					Images: []schemas.ChatAssistantMessageImage{image},
 				},
 			},
 		}
@@ -48,7 +48,7 @@ func TestConvertMessages_PreservesAssistantImages(t *testing.T) {
 			{
 				Role: schemas.ChatMessageRoleAssistant,
 				ChatAssistantMessage: &schemas.ChatAssistantMessage{
-					Images: []schemas.ChatMessageImage{image},
+					Images: []schemas.ChatAssistantMessageImage{image},
 				},
 			},
 		}

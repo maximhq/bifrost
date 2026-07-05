@@ -40,7 +40,7 @@ type BifrostChatResponse struct {
 	Model             string                     `json:"model"`
 	Object            string                     `json:"object"` // "chat.completion" or "chat.completion.chunk"
 	ServiceTier       *BifrostServiceTier        `json:"service_tier,omitempty"`
-	Speed             *string                    `json:"speed,omitempty"` // "fast" | "standard" — speed actually served (Anthropic fast mode); drives fast-mode billing
+	Speed             *string                    `json:"speed,omitempty"`       // "fast" | "standard" — speed actually served (Anthropic fast mode); drives fast-mode billing
 	Diagnostics       *CacheDiagnostics          `json:"diagnostics,omitempty"` // Anthropic cache diagnostics (cache-diagnosis-2026-04-07); first prompt-cache prefix divergence point
 	SystemFingerprint string                     `json:"system_fingerprint"`
 	Usage             *BifrostLLMUsage           `json:"usage"`
@@ -1378,12 +1378,12 @@ type ChatAssistantMessage struct {
 	ToolCalls        []ChatAssistantMessageToolCall   `json:"tool_calls,omitempty"`
 	// Images carries generated images returned alongside (or instead of) text content,
 	// e.g. from OpenRouter image-generation models (Gemini "Nano Banana" / gemini-*-image).
-	Images []ChatMessageImage `json:"images,omitempty"`
+	Images []ChatAssistantMessageImage `json:"images,omitempty"`
 }
 
-// ChatMessageImage represents a single generated image entry in an assistant message's
+// ChatAssistantMessageImage represents a single generated image entry in an assistant message's
 // "images" array (OpenAI-compatible image-generation output shape).
-type ChatMessageImage struct {
+type ChatAssistantMessageImage struct {
 	Type     string          `json:"type"`
 	ImageURL *ChatInputImage `json:"image_url,omitempty"`
 }
