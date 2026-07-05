@@ -4587,7 +4587,6 @@ func convertAnthropicContentBlocksToResponsesMessagesGrouped(contentBlocks []Ant
 						}
 						bifrostMsg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks = toolMsgContentBlocks
 					}
-
 					// Handle is_error from Anthropic
 					if block.IsError != nil && *block.IsError {
 						bifrostMsg.Status = schemas.Ptr("incomplete")
@@ -4948,7 +4947,6 @@ func convertAnthropicContentBlocksToResponsesMessages(ctx *schemas.BifrostContex
 						}
 						bifrostMsg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks = toolMsgContentBlocks
 					}
-
 					// Handle is_error from Anthropic
 					if block.IsError != nil && *block.IsError {
 						bifrostMsg.Status = schemas.Ptr("incomplete")
