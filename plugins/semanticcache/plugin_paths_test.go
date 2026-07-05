@@ -565,9 +565,11 @@ func TestPreLLMHook_ConcurrentSameRequestID(t *testing.T) {
 
 // -----------------------------------------------------------------------------
 // Internal embedding request must not inherit the caller's key-routing state
-// (issue #4756). Otherwise governance/key-selection context resolved for the
-// caller's chat provider leaks into the embedding request and rejects every
-// embedding-provider key ("no keys found for provider").
+// (issue #4756) or body-transport state. Otherwise governance/key-selection
+// context resolved for the caller's chat provider leaks into the embedding
+// request and rejects every embedding-provider key ("no keys found for
+// provider"), and raw-body/large-payload passthrough state makes providers
+// build the embedding request from the caller's body instead of embeddingReq.
 // -----------------------------------------------------------------------------
 
 // vectorRequiringStore is an observableStore that reports RequiresVectors()=true,
@@ -599,6 +601,22 @@ func TestGenerateEmbedding_ClearsInheritedKeyRoutingState(t *testing.T) {
 	ctx.SetValue(schemas.BifrostContextKeyGovernanceIncludeOnlyKeys, []string{"chat-provider-key-id"})
 	ctx.SetValue(schemas.BifrostContextKeyRoutingPinnedAPIKeyID, "chat-provider-key-id")
 	ctx.SetValue(schemas.BifrostContextKeyAPIKeyID, "chat-provider-key-id")
+	ctx.SetValue(schemas.BifrostContextKeyAPIKeyName, "chat-provider-key-name")
+	ctx.SetValue(schemas.BifrostContextKeyDirectKey, schemas.Key{ID: "direct-key-id"})
+	ctx.SetValue(schemas.BifrostContextKeySkipKeySelection, true)
+	// Body-transport state from the caller's request. Inherited raw-body
+	// passthrough makes providers send the internal request's (absent) raw
+	// body instead of converting it; inherited large-payload mode streams the
+	// caller's original body to the embedding endpoint; inherited extra
+	// headers and URL path ride along to the embedding provider.
+	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+	ctx.SetValue(schemas.BifrostContextKeySendBackRawRequest, true)
+	ctx.SetValue(schemas.BifrostContextKeySendBackRawResponse, true)
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughOverridesPresent, true)
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadMode, true)
+	ctx.SetValue(schemas.BifrostContextKeyLargeResponseMode, true)
+	ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{"x-custom": {"v"}})
+	ctx.SetValue(schemas.BifrostContextKeyURLPath, "/v1/chat/completions")
 
 	emb, _, err := plugin.generateEmbedding(ctx, "some text")
 	if err != nil {
@@ -612,12 +630,24 @@ func TestGenerateEmbedding_ClearsInheritedKeyRoutingState(t *testing.T) {
 	}
 
 	// The internal embedding context must not carry the caller's key-routing
-	// state, so key selection resolves against the embedding provider's own
-	// keys instead of rejecting them all.
+	// or body-transport state, so key selection resolves against the embedding
+	// provider's own keys and providers build the request body from
+	// embeddingReq rather than the caller's raw/streamed body.
 	for _, key := range []schemas.BifrostContextKey{
 		schemas.BifrostContextKeyGovernanceIncludeOnlyKeys,
 		schemas.BifrostContextKeyRoutingPinnedAPIKeyID,
 		schemas.BifrostContextKeyAPIKeyID,
+		schemas.BifrostContextKeyAPIKeyName,
+		schemas.BifrostContextKeyDirectKey,
+		schemas.BifrostContextKeySkipKeySelection,
+		schemas.BifrostContextKeyUseRawRequestBody,
+		schemas.BifrostContextKeySendBackRawRequest,
+		schemas.BifrostContextKeySendBackRawResponse,
+		schemas.BifrostContextKeyPassthroughOverridesPresent,
+		schemas.BifrostContextKeyLargePayloadMode,
+		schemas.BifrostContextKeyLargeResponseMode,
+		schemas.BifrostContextKeyExtraHeaders,
+		schemas.BifrostContextKeyURLPath,
 	} {
 		if v := captured.Value(key); v != nil {
 			t.Fatalf("expected %q cleared on internal embedding context, got %v", key, v)

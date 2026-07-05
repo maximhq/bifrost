@@ -335,6 +335,49 @@ func clearCtxForFallback(ctx *schemas.BifrostContext) {
 	ctx.ClearValue(schemas.BifrostContextKeySupportsAssistantPrefill)
 }
 
+// ClearContextForInternalRequest clears context state that is specific to the
+// caller's original request, so a context derived from it can carry an
+// internal sub-request (e.g. a plugin generating an embedding for its own
+// use) that must behave like a fresh top-level request.
+//
+// Two categories are cleared:
+//
+//   - Key routing: key-selection state resolved for the caller's provider
+//     (governance key allow-list, pinned/direct keys, key-selection skip). An
+//     internal request typically targets a different provider, and when it
+//     skips the plugin pipeline this state is never re-resolved — inherited,
+//     it is applied against the wrong provider's key pool and rejects every
+//     key ("no keys found for provider").
+//   - Body transport: raw-body passthrough and large-payload/large-response
+//     streaming state, plus caller-forwarded extra headers and the caller's
+//     URL-path override. Inherited, these make providers send the caller's
+//     raw or streamed body instead of marshaling the internal request, route
+//     it to the caller's endpoint path instead of the internal request's own,
+//     and forward the caller's headers on a call the caller doesn't own.
+//
+// Deliberately not cleared: tracing/observability keys (the sub-request
+// should stay tied to the caller's trace) and
+// BifrostContextKeySkipPluginPipeline (whether the internal request runs the
+// plugin pipeline is the caller's decision).
+func ClearContextForInternalRequest(ctx *schemas.BifrostContext) {
+	// Key routing.
+	ctx.ClearValue(schemas.BifrostContextKeyGovernanceIncludeOnlyKeys)
+	ctx.ClearValue(schemas.BifrostContextKeyRoutingPinnedAPIKeyID)
+	ctx.ClearValue(schemas.BifrostContextKeyAPIKeyID)
+	ctx.ClearValue(schemas.BifrostContextKeyAPIKeyName)
+	ctx.ClearValue(schemas.BifrostContextKeyDirectKey)
+	ctx.ClearValue(schemas.BifrostContextKeySkipKeySelection)
+	// Body transport.
+	ctx.ClearValue(schemas.BifrostContextKeyUseRawRequestBody)
+	ctx.ClearValue(schemas.BifrostContextKeySendBackRawRequest)
+	ctx.ClearValue(schemas.BifrostContextKeySendBackRawResponse)
+	ctx.ClearValue(schemas.BifrostContextKeyPassthroughOverridesPresent)
+	ctx.ClearValue(schemas.BifrostContextKeyLargePayloadMode)
+	ctx.ClearValue(schemas.BifrostContextKeyLargeResponseMode)
+	ctx.ClearValue(schemas.BifrostContextKeyExtraHeaders)
+	ctx.ClearValue(schemas.BifrostContextKeyURLPath)
+}
+
 var supportedBaseProvidersSet = func() map[schemas.ModelProvider]struct{} {
 	m := make(map[schemas.ModelProvider]struct{}, len(schemas.SupportedBaseProviders))
 	for _, p := range schemas.SupportedBaseProviders {
