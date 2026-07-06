@@ -10,12 +10,16 @@ import (
 // ToBifrostChatRequest converts an OpenAI chat request to Bifrost format
 func (req *OpenAIChatRequest) ToBifrostChatRequest(ctx *schemas.BifrostContext) *schemas.BifrostChatRequest {
 	provider, model := schemas.ParseModelString(req.Model, "")
+	params := req.ChatParameters
+	if params.MaxCompletionTokens == nil && req.MaxTokens != nil {
+		params.MaxCompletionTokens = req.MaxTokens
+	}
 
 	return &schemas.BifrostChatRequest{
 		Provider:  provider,
 		Model:     model,
 		Input:     ConvertOpenAIMessagesToBifrostMessages(req.Messages),
-		Params:    &req.ChatParameters,
+		Params:    &params,
 		Fallbacks: schemas.ParseFallbacks(req.Fallbacks),
 	}
 }
