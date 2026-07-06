@@ -15,6 +15,10 @@ import (
 // it as a reasoning.encrypted detail, request conversion re-materializes the
 // block, and streaming surfaces the payload from content_block_start.
 
+// A non-streaming response mixing a redacted_thinking block with a visible
+// thinking block must yield two reasoning details in content order: a
+// reasoning.encrypted entry carrying the data payload, then the signed text
+// entry. The tool call must come through untouched.
 func TestToBifrostChatResponse_PreservesRedactedThinking(t *testing.T) {
 	response := &AnthropicMessageResponse{
 		ID:    "msg_1",
@@ -56,6 +60,9 @@ func TestToBifrostChatResponse_PreservesRedactedThinking(t *testing.T) {
 	}
 }
 
+// Redacted blocks with no data payload (absent or empty string) carry
+// nothing to replay, so response conversion must not produce reasoning
+// details for them.
 func TestToBifrostChatResponse_RedactedThinkingWithoutDataSkipped(t *testing.T) {
 	response := &AnthropicMessageResponse{
 		ID:    "msg_1",
@@ -79,6 +86,10 @@ func TestToBifrostChatResponse_RedactedThinkingWithoutDataSkipped(t *testing.T) 
 	}
 }
 
+// Request conversion must re-materialize a reasoning.encrypted detail as a
+// redacted_thinking block (data only, no thinking or signature fields),
+// placed before the visible thinking block and the tool_use block, so the
+// assistant turn is replayed exactly as the model produced it.
 func TestToAnthropicChatRequest_ReplaysRedactedThinking(t *testing.T) {
 	toolID := "toolu_1"
 	bifrostReq := &schemas.BifrostChatRequest{
@@ -181,6 +192,9 @@ func TestToAnthropicChatRequest_EncryptedDetailWithoutDataStaysThinking(t *testi
 	}
 }
 
+// A redacted_thinking content_block_start carries the complete payload (no
+// deltas follow), so it must emit one chunk with a reasoning.encrypted
+// detail. Starts with no payload, or for plain text blocks, stay silent.
 func TestToBifrostChatCompletionStream_RedactedThinkingStart(t *testing.T) {
 	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
 	defer cancel()

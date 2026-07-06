@@ -1268,72 +1268,78 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream(ctx *schemas.Bi
 		return nil, nil, true
 
 	case AnthropicStreamEventTypeContentBlockStart:
-		// Emit tool-call metadata when starting a tool_use content block
-		if chunk.Index != nil && chunk.ContentBlock != nil && chunk.ContentBlock.Type == AnthropicContentBlockTypeToolUse {
-			// Check if this is the structured output tool - if so, skip emitting tool call metadata
-			if structuredOutputToolName != "" && chunk.ContentBlock.Name != nil && *chunk.ContentBlock.Name == structuredOutputToolName {
-				// Skip emitting tool call for structured output - it will be emitted as content later
-				return nil, nil, false
-			}
+		if chunk.Index != nil && chunk.ContentBlock != nil {
+			switch chunk.ContentBlock.Type {
+			case AnthropicContentBlockTypeToolUse:
+				// Check if this is the structured output tool - if so, skip emitting tool call metadata
+				if structuredOutputToolName != "" && chunk.ContentBlock.Name != nil && *chunk.ContentBlock.Name == structuredOutputToolName {
+					// Skip emitting tool call for structured output - it will be emitted as content later
+					return nil, nil, false
+				}
 
-			// Assign the next sequential tool-call index
-			toolCallIdx := state.nextToolCallIndex
-			state.contentBlockToToolCallIdx[*chunk.Index] = toolCallIdx
-			state.nextToolCallIndex++
+				// Assign the next sequential tool-call index
+				toolCallIdx := state.nextToolCallIndex
+				state.contentBlockToToolCallIdx[*chunk.Index] = toolCallIdx
+				state.nextToolCallIndex++
 
-			// Create streaming response with tool call metadata
-			streamResponse := &schemas.BifrostChatResponse{
-				Object: "chat.completion.chunk",
-				Choices: []schemas.BifrostResponseChoice{
-					{
-						Index: 0,
-						ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
-							Delta: &schemas.ChatStreamResponseChoiceDelta{
-								ToolCalls: []schemas.ChatAssistantMessageToolCall{
-									{
-										Index: uint16(toolCallIdx),
-										Type:  schemas.Ptr(string(schemas.ChatToolTypeFunction)),
-										ID:    chunk.ContentBlock.ID,
-										Function: schemas.ChatAssistantMessageToolCallFunction{
-											Name:      chunk.ContentBlock.Name,
-											Arguments: "", // Empty arguments initially, will be filled by subsequent deltas
+				// Create streaming response with tool call metadata
+				streamResponse := &schemas.BifrostChatResponse{
+					Object: "chat.completion.chunk",
+					Choices: []schemas.BifrostResponseChoice{
+						{
+							Index: 0,
+							ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+								Delta: &schemas.ChatStreamResponseChoiceDelta{
+									ToolCalls: []schemas.ChatAssistantMessageToolCall{
+										{
+											Index: uint16(toolCallIdx),
+											Type:  schemas.Ptr(string(schemas.ChatToolTypeFunction)),
+											ID:    chunk.ContentBlock.ID,
+											Function: schemas.ChatAssistantMessageToolCallFunction{
+												Name:      chunk.ContentBlock.Name,
+												Arguments: "", // Empty arguments initially, will be filled by subsequent deltas
+											},
 										},
 									},
 								},
 							},
 						},
 					},
-				},
-			}
+				}
 
-			return streamResponse, nil, false
-		}
+				return streamResponse, nil, false
 
-		// Redacted thinking blocks arrive complete in content_block_start (no
-		// deltas follow). Surface the encrypted payload as a reasoning.encrypted
-		// detail so clients can replay it on the next turn; Anthropic rejects
-		// tool-use follow-ups whose latest assistant message dropped it.
-		if chunk.Index != nil && chunk.ContentBlock != nil && chunk.ContentBlock.Type == AnthropicContentBlockTypeRedactedThinking &&
-			chunk.ContentBlock.Data != nil && *chunk.ContentBlock.Data != "" {
-			return &schemas.BifrostChatResponse{
-				Object: "chat.completion.chunk",
-				Choices: []schemas.BifrostResponseChoice{
-					{
-						Index: 0,
-						ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
-							Delta: &schemas.ChatStreamResponseChoiceDelta{
-								ReasoningDetails: []schemas.ChatReasoningDetails{
-									{
-										Index: state.reasoningDetailIndex(*chunk.Index),
-										Type:  schemas.BifrostReasoningDetailsTypeEncrypted,
-										Data:  chunk.ContentBlock.Data,
+			case AnthropicContentBlockTypeRedactedThinking:
+				// Redacted thinking blocks arrive complete in content_block_start (no
+				// deltas follow). Surface the encrypted payload as a reasoning.encrypted
+				// detail so clients can replay it on the next turn; Anthropic rejects
+				// tool-use follow-ups whose latest assistant message dropped it.
+				if chunk.ContentBlock.Data == nil || *chunk.ContentBlock.Data == "" {
+					return nil, nil, false
+				}
+				return &schemas.BifrostChatResponse{
+					Object: "chat.completion.chunk",
+					Choices: []schemas.BifrostResponseChoice{
+						{
+							Index: 0,
+							ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+								Delta: &schemas.ChatStreamResponseChoiceDelta{
+									ReasoningDetails: []schemas.ChatReasoningDetails{
+										{
+											Index: state.reasoningDetailIndex(*chunk.Index),
+											Type:  schemas.BifrostReasoningDetailsTypeEncrypted,
+											Data:  chunk.ContentBlock.Data,
+										},
 									},
 								},
 							},
 						},
 					},
-				},
-			}, nil, false
+				}, nil, false
+
+			default:
+				return nil, nil, false
+			}
 		}
 
 		return nil, nil, false
