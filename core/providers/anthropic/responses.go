@@ -33,8 +33,10 @@ type AnthropicResponsesStreamState struct {
 	WebSearchCaller      *AnthropicToolCaller   // Programmatic-tool-calling caller, if the search was spawned from code execution
 
 	// Web fetch tool accumulation
-	WebFetchToolID      *string // Tool ID of active web fetch
-	WebFetchOutputIndex *int    // Output index for this fetch
+	WebFetchToolID      *string                // Tool ID of active web fetch
+	WebFetchOutputIndex *int                   // Output index for this fetch
+	WebFetchURL         *string                // URL captured from the server_tool_use input
+	WebFetchResult      *AnthropicContentBlock // Result block when it arrives (content dropped, presence gates output_item.done)
 
 	// Advisor tool accumulation
 	AdvisorToolID      *string                // Tool ID of active advisor call
@@ -172,6 +174,27 @@ type anthropicToResponsesStreamState struct {
 	nextBlockIndex   int
 	blockIndexByItem map[string]int
 
+	// blockIndexMisses records non-empty item keys for which blockIndexFor was
+	// asked for an index that allocBlockIndex never assigned — i.e. a
+	// content_block_stop/_delta referencing a block whose content_block_start was
+	// never registered at output_item.added. This must not happen: every
+	// output_item.added allocates its block index (~L2053), and the Anthropic
+	// passthrough path routes every output_item.added through this converter so the
+	// allocator always runs (see mustConvertInPassthrough in the transport). A miss
+	// therefore signals a stream-bookkeeping desync; it is recorded so tests fail
+	// loudly instead of the stream silently mis-numbering blocks.
+	blockIndexMisses []string
+
+	// passthrough is true when this reverse conversion runs on the Claude Code
+	// passthrough path, where verbatim raw upstream frames are interleaved with the
+	// converter's own. Only then must the converter consume a content-block index for
+	// server-tool result blocks it drops (web_fetch, zero-result web_search) — to stay
+	// in lockstep with the upstream indices carried by the interleaved raw frames. On
+	// the all-normalized path (OpenAI-via-Anthropic, curl) every frame is converter-
+	// built, so consuming the index would skip a number — which native Anthropic never
+	// does. Set by the transport via SetResponsesStreamPassthrough.
+	passthrough bool
+
 	// codeExecToolNameByItem remembers each code_interpreter_call's Anthropic
 	// sub-tool name (captured at output_item.added) so the code block's input can be
 	// reconstructed and closed on code.done — emitted before the nested web_search
@@ -203,13 +226,19 @@ func (s *anthropicToResponsesStreamState) allocBlockIndex(key string) *int {
 	return &idx
 }
 
-// blockIndexFor returns the index previously allocated for key, allocating a fresh
-// one if the block's start was never seen (defensive — keeps start/stop paired).
+// blockIndexFor returns the index previously allocated for key. A non-empty key
+// that was never registered by allocBlockIndex means a stop/delta references a
+// block whose start we never emitted — a bookkeeping desync — so it is recorded
+// in blockIndexMisses before falling back to a fresh allocation (defensive — keeps
+// start/stop paired rather than crashing the stream).
 func (s *anthropicToResponsesStreamState) blockIndexFor(key string) *int {
 	if key != "" && s.blockIndexByItem != nil {
 		if idx, ok := s.blockIndexByItem[key]; ok {
 			return &idx
 		}
+	}
+	if key != "" {
+		s.blockIndexMisses = append(s.blockIndexMisses, key)
 	}
 	return s.allocBlockIndex(key)
 }
@@ -245,6 +274,15 @@ func getOrCreateAnthropicToResponsesStreamState(ctx *schemas.BifrostContext) *an
 	state := &anthropicToResponsesStreamState{}
 	ctx.SetValue(anthropicToResponsesStreamStateKey, state)
 	return state
+}
+
+// SetResponsesStreamPassthrough marks this request's Anthropic reverse stream
+// conversion as running on the Claude Code passthrough path (raw upstream frames
+// interleaved with converted ones). The transport calls it; the converter reads
+// state.passthrough to decide whether to consume server-tool result-block indices
+// it does not emit. See the passthrough field.
+func SetResponsesStreamPassthrough(ctx *schemas.BifrostContext) {
+	getOrCreateAnthropicToResponsesStreamState(ctx).passthrough = true
 }
 
 // AcquireAnthropicResponsesStreamState gets an Anthropic responses stream state from the pool.
@@ -326,6 +364,8 @@ func AcquireAnthropicResponsesStreamState() *AnthropicResponsesStreamState {
 	state.WebSearchCaller = nil
 	state.WebFetchToolID = nil
 	state.WebFetchOutputIndex = nil
+	state.WebFetchURL = nil
+	state.WebFetchResult = nil
 	state.AdvisorToolID = nil
 	state.AdvisorOutputIndex = nil
 	state.AdvisorResult = nil
@@ -374,6 +414,8 @@ func (state *AnthropicResponsesStreamState) flush() {
 	state.WebSearchCaller = nil
 	state.WebFetchToolID = nil
 	state.WebFetchOutputIndex = nil
+	state.WebFetchURL = nil
+	state.WebFetchResult = nil
 	state.AdvisorToolID = nil
 	state.AdvisorOutputIndex = nil
 	state.AdvisorResult = nil
@@ -735,16 +777,37 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 				state.beginInputJSONBuffer(chunk.Index, anthropicInputJSONBufferWebFetch)
 				state.WebFetchToolID = chunk.ContentBlock.ID
 				state.WebFetchOutputIndex = schemas.Ptr(outputIndex)
+				state.WebFetchURL = nil
+				if u := providerUtils.GetJSONField(chunk.ContentBlock.Input, "url"); u.Exists() && u.Type == gjson.String {
+					state.WebFetchURL = schemas.Ptr(u.Str)
+				}
 
 				state.ItemIDs[outputIndex] = *chunk.ContentBlock.ID
 
+				toolMsg := &schemas.ResponsesToolMessage{
+					CallID: chunk.ContentBlock.ID,
+				}
+				if state.WebFetchURL != nil {
+					toolMsg.Action = &schemas.ResponsesToolMessageActionStruct{
+						ResponsesWebFetchToolCallAction: &schemas.ResponsesWebFetchToolCallAction{
+							Type: "fetch",
+							URL:  *state.WebFetchURL,
+						},
+					}
+				}
+				// Preserve the programmatic-tool-calling caller (set when this fetch was
+				// spawned from inside the code-execution sandbox), mirroring web_search.
+				if chunk.ContentBlock.Caller != nil {
+					toolMsg.Caller = &schemas.ResponsesToolCaller{
+						Type:   string(chunk.ContentBlock.Caller.Type),
+						ToolID: chunk.ContentBlock.Caller.ToolID,
+					}
+				}
 				item := &schemas.ResponsesMessage{
-					ID:     chunk.ContentBlock.ID,
-					Type:   schemas.Ptr(schemas.ResponsesMessageTypeWebFetchCall),
-					Status: schemas.Ptr("in_progress"),
-					ResponsesToolMessage: &schemas.ResponsesToolMessage{
-						CallID: chunk.ContentBlock.ID,
-					},
+					ID:                   chunk.ContentBlock.ID,
+					Type:                 schemas.Ptr(schemas.ResponsesMessageTypeWebFetchCall),
+					Status:               schemas.Ptr("in_progress"),
+					ResponsesToolMessage: toolMsg,
 				}
 
 				var responses []*schemas.BifrostResponsesStreamResponse
@@ -786,6 +849,12 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 					if chunk.Index != nil {
 						delete(state.ContentIndexToBlockType, *chunk.Index)
 					}
+
+					// Remember that the result block arrived; its content is not
+					// represented in the Responses model (handled server-side), but its
+					// presence drives the web_fetch_call output_item.done at the result
+					// block's content_block_stop (mirrors web_search).
+					state.WebFetchResult = chunk.ContentBlock
 
 					return []*schemas.BifrostResponsesStreamResponse{{
 						Type:           schemas.ResponsesStreamResponseTypeWebFetchCallCompleted,
@@ -1403,6 +1472,14 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 					return nil, nil, false
 
 				case anthropicInputJSONBufferWebFetch:
+					// Fallback: recover the URL if Anthropic streamed it via
+					// input_json_delta instead of inlining it in content_block_start
+					// (mirrors the web_search query fallback above).
+					if state.WebFetchURL == nil && inputJSON != "" {
+						if u := providerUtils.GetJSONField([]byte(inputJSON), "url"); u.Exists() && u.Type == gjson.String {
+							state.WebFetchURL = schemas.Ptr(u.Str)
+						}
+					}
 					return nil, nil, false
 
 				case anthropicInputJSONBufferAdvisor:
@@ -1538,6 +1615,49 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 				}
 
 				// Return output_item.done for the web_search_call (not the result block)
+				return []*schemas.BifrostResponsesStreamResponse{
+					{
+						Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
+						SequenceNumber: sequenceNumber,
+						OutputIndex:    outputIdx,
+						ContentIndex:   chunk.Index,
+						Item:           item,
+					},
+				}, nil, false
+			}
+
+			// End of a web_fetch_tool_result block — emit the web_fetch_call done.
+			// The fetched content has no Responses representation (dropped, as in the
+			// non-streaming path); this emits a completed web_fetch_call carrying the
+			// request URL so the reverse converter can close the server_tool_use block
+			// at a consistent index (mirrors web_search minus the result block).
+			if state.WebFetchResult != nil && state.WebFetchToolID != nil {
+				toolMsg := &schemas.ResponsesToolMessage{CallID: state.WebFetchToolID}
+				if state.WebFetchURL != nil {
+					toolMsg.Action = &schemas.ResponsesToolMessageActionStruct{
+						ResponsesWebFetchToolCallAction: &schemas.ResponsesWebFetchToolCallAction{
+							Type: "fetch",
+							URL:  *state.WebFetchURL,
+						},
+					}
+				}
+				item := &schemas.ResponsesMessage{
+					ID:                   state.WebFetchToolID,
+					Type:                 schemas.Ptr(schemas.ResponsesMessageTypeWebFetchCall),
+					Status:               schemas.Ptr("completed"),
+					ResponsesToolMessage: toolMsg,
+				}
+				outputIdx := state.WebFetchOutputIndex
+
+				state.WebFetchToolID = nil
+				state.WebFetchOutputIndex = nil
+				state.WebFetchURL = nil
+				state.WebFetchResult = nil
+
+				if chunk.Index != nil {
+					delete(state.ContentIndexToBlockType, *chunk.Index)
+				}
+
 				return []*schemas.BifrostResponsesStreamResponse{
 					{
 						Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
@@ -2288,6 +2408,36 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 				Name:  schemas.Ptr(toolName),
 				Input: json.RawMessage("{}"),
 			}
+		} else if bifrostResp.Item != nil &&
+			bifrostResp.Item.Type != nil &&
+			*bifrostResp.Item.Type == schemas.ResponsesMessageTypeWebFetchCall {
+
+			// Web fetch call - emit content_block_start with server_tool_use. The
+			// request URL is delivered whole in content_block_start (no input_json_delta),
+			// matching native. The paired web_fetch_tool_result block is not synthesized
+			// (its content has no Responses representation); output_item.done just closes
+			// this server_tool_use block.
+			streamResp.Type = AnthropicStreamEventTypeContentBlockStart
+			streamResp.Index = blockIdx
+			contentBlock := &AnthropicContentBlock{
+				Type:  AnthropicContentBlockTypeServerToolUse,
+				ID:    bifrostResp.Item.ID,
+				Name:  schemas.Ptr(string(AnthropicToolNameWebFetch)),
+				Input: json.RawMessage("{}"),
+			}
+			if tm := bifrostResp.Item.ResponsesToolMessage; tm != nil && tm.Action != nil &&
+				tm.Action.ResponsesWebFetchToolCallAction != nil && tm.Action.ResponsesWebFetchToolCallAction.URL != "" {
+				if inputBytes, err := providerUtils.MarshalSorted(map[string]interface{}{"url": tm.Action.ResponsesWebFetchToolCallAction.URL}); err == nil {
+					contentBlock.Input = json.RawMessage(inputBytes)
+				}
+			}
+			if tm := bifrostResp.Item.ResponsesToolMessage; tm != nil && tm.Caller != nil {
+				contentBlock.Caller = &AnthropicToolCaller{
+					Type:   AnthropicToolCallerType(tm.Caller.Type),
+					ToolID: tm.Caller.ToolID,
+				}
+			}
+			streamResp.ContentBlock = contentBlock
 		} else {
 			// Text or other content blocks - emit content_block_start
 			streamResp.Type = AnthropicStreamEventTypeContentBlockStart
@@ -2647,9 +2797,41 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 					&AnthropicStreamEvent{Type: AnthropicStreamEventTypeContentBlockStart, Index: resultIndex, ContentBlock: resultBlock},
 					&AnthropicStreamEvent{Type: AnthropicStreamEventTypeContentBlockStop, Index: resultIndex},
 				)
+			} else if state.passthrough {
+				// A resultless or error web_search (no sources, max_uses_exceeded,
+				// web_search_tool_result_error, …) still consumed a content-block index
+				// upstream (the web_search_tool_result block), so allocate (and discard)
+				// one here to keep the counter in lockstep with upstream indices — else
+				// the following block collides with the verbatim raw frames on the
+				// passthrough path. Mirrors the web_fetch handling below. Passthrough
+				// only: on the all-normalized path there are no raw frames to align with,
+				// so skipping this keeps indices contiguous (matching native Anthropic).
+				_ = state.allocBlockIndex("")
 			}
 
 			return events
+		} else if bifrostResp.Item != nil &&
+			bifrostResp.Item.Type != nil &&
+			*bifrostResp.Item.Type == schemas.ResponsesMessageTypeWebFetchCall {
+
+			// Web fetch call complete - close the server_tool_use block. No paired
+			// web_fetch_tool_result block is emitted (its content has no Responses
+			// representation), mirroring the non-streaming reverse path.
+			state := getOrCreateAnthropicToResponsesStreamState(ctx)
+			serverIdx := state.blockIndexFor(reverseStreamItemKey(bifrostResp))
+			// Passthrough only: the upstream result block still consumed a content-block
+			// index, so allocate (and discard) one here to keep the counter in lockstep
+			// with the interleaved raw frames — otherwise later blocks (e.g. the
+			// assistant text) collide with them. On the all-normalized path there are no
+			// raw frames to align with, so skipping this keeps indices contiguous
+			// (matching native Anthropic).
+			if state.passthrough {
+				_ = state.allocBlockIndex("")
+			}
+			return []*AnthropicStreamEvent{{
+				Type:  AnthropicStreamEventTypeContentBlockStop,
+				Index: serverIdx,
+			}}
 		} else if bifrostResp.Item != nil &&
 			bifrostResp.Item.Type != nil &&
 			*bifrostResp.Item.Type == schemas.ResponsesMessageTypeCodeInterpreterCall {
@@ -4746,7 +4928,6 @@ func convertAnthropicContentBlocksToResponsesMessagesGrouped(contentBlocks []Ant
 						}
 						bifrostMsg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks = toolMsgContentBlocks
 					}
-
 					// Handle is_error from Anthropic
 					if block.IsError != nil && *block.IsError {
 						bifrostMsg.Status = schemas.Ptr("incomplete")
@@ -5107,7 +5288,6 @@ func convertAnthropicContentBlocksToResponsesMessages(ctx *schemas.BifrostContex
 						}
 						bifrostMsg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks = toolMsgContentBlocks
 					}
-
 					// Handle is_error from Anthropic
 					if block.IsError != nil && *block.IsError {
 						bifrostMsg.Status = schemas.Ptr("incomplete")
@@ -6351,28 +6531,14 @@ func convertAnthropicToolToBifrost(tool *AnthropicTool) *schemas.ResponsesTool {
 
 	// Handle special tool types first
 	if tool.Type != nil {
-		switch *tool.Type {
-		case AnthropicToolTypeComputer20250124, AnthropicToolTypeComputer20251124:
-			bifrostTool := &schemas.ResponsesTool{
-				Type: schemas.ResponsesToolTypeComputerUsePreview,
-			}
-			if tool.AnthropicToolComputerUse != nil {
-				bifrostTool.ResponsesToolComputerUsePreview = &schemas.ResponsesToolComputerUsePreview{
-					Environment: "browser", // Default environment
-				}
-				if tool.AnthropicToolComputerUse.DisplayWidthPx != nil {
-					bifrostTool.ResponsesToolComputerUsePreview.DisplayWidth = *tool.AnthropicToolComputerUse.DisplayWidthPx
-				}
-				if tool.AnthropicToolComputerUse.DisplayHeightPx != nil {
-					bifrostTool.ResponsesToolComputerUsePreview.DisplayHeight = *tool.AnthropicToolComputerUse.DisplayHeightPx
-				}
-				if tool.AnthropicToolComputerUse.EnableZoom != nil {
-					bifrostTool.ResponsesToolComputerUsePreview.EnableZoom = tool.AnthropicToolComputerUse.EnableZoom
-				}
-			}
-			return bifrostTool
-
-		case AnthropicToolTypeWebSearch20250305, AnthropicToolTypeWebSearch20260209:
+		// Version-dated server search tools ship new versions regularly; match them by
+		// prefix so a newer version (e.g. web_fetch_20260318) is recognized as a server
+		// tool instead of falling through to the client-function default at the end of
+		// this function. Mirrors applySharedServerToolFields and the chat path. Tools
+		// that must round-trip their exact version (code_execution, text_editor) stay in
+		// the exact switch below.
+		switch typeStr := string(*tool.Type); {
+		case strings.HasPrefix(typeStr, "web_search_"):
 			bifrostTool := &schemas.ResponsesTool{
 				Type: schemas.ResponsesToolTypeWebSearch,
 			}
@@ -6398,7 +6564,7 @@ func convertAnthropicToolToBifrost(tool *AnthropicTool) *schemas.ResponsesTool {
 
 			return bifrostTool
 
-		case AnthropicToolTypeWebFetch20250910, AnthropicToolTypeWebFetch20260209, AnthropicToolTypeWebFetch20260309:
+		case strings.HasPrefix(typeStr, "web_fetch_"):
 			bifrostTool := &schemas.ResponsesTool{
 				Type: schemas.ResponsesToolTypeWebFetch,
 			}
@@ -6412,6 +6578,28 @@ func convertAnthropicToolToBifrost(tool *AnthropicTool) *schemas.ResponsesTool {
 						AllowedDomains: tool.AnthropicToolWebFetch.AllowedDomains,
 						BlockedDomains: tool.AnthropicToolWebFetch.BlockedDomains,
 					}
+				}
+			}
+			return bifrostTool
+		}
+
+		switch *tool.Type {
+		case AnthropicToolTypeComputer20250124, AnthropicToolTypeComputer20251124:
+			bifrostTool := &schemas.ResponsesTool{
+				Type: schemas.ResponsesToolTypeComputerUsePreview,
+			}
+			if tool.AnthropicToolComputerUse != nil {
+				bifrostTool.ResponsesToolComputerUsePreview = &schemas.ResponsesToolComputerUsePreview{
+					Environment: "browser", // Default environment
+				}
+				if tool.AnthropicToolComputerUse.DisplayWidthPx != nil {
+					bifrostTool.ResponsesToolComputerUsePreview.DisplayWidth = *tool.AnthropicToolComputerUse.DisplayWidthPx
+				}
+				if tool.AnthropicToolComputerUse.DisplayHeightPx != nil {
+					bifrostTool.ResponsesToolComputerUsePreview.DisplayHeight = *tool.AnthropicToolComputerUse.DisplayHeightPx
+				}
+				if tool.AnthropicToolComputerUse.EnableZoom != nil {
+					bifrostTool.ResponsesToolComputerUsePreview.EnableZoom = tool.AnthropicToolComputerUse.EnableZoom
 				}
 			}
 			return bifrostTool

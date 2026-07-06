@@ -319,7 +319,8 @@ func (p *LoggerPlugin) updateLogEntry(
 	}
 
 	if data.ErrorDetails != nil {
-		tempEntry.ErrorDetailsParsed = data.ErrorDetails
+		shouldStoreRaw, _ := ctx.Value(schemas.BifrostContextKeyShouldStoreRawInLogs).(bool)
+		tempEntry.ErrorDetailsParsed = sanitizeErrorForLogging(data.ErrorDetails, contentLoggingEnabled, shouldStoreRaw)
 		needsSerialization = true
 	}
 
@@ -386,11 +387,7 @@ func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamRe
 	// Handle error case first
 	if streamResponse.Data.ErrorDetails != nil {
 		entry.Status = logStatusForError(streamResponse.Data.ErrorDetails)
-		entry.ErrorDetailsParsed = streamResponse.Data.ErrorDetails
-		// Serialize error details immediately to avoid use-after-free with pooled errors
-		if data, err := sonic.Marshal(streamResponse.Data.ErrorDetails); err == nil {
-			entry.ErrorDetails = string(data)
-		}
+		entry.ErrorDetailsParsed = sanitizeErrorForLogging(streamResponse.Data.ErrorDetails, contentLoggingEnabled, shouldStoreRaw)
 		latF := float64(streamResponse.Data.Latency)
 		entry.Latency = &latF
 	} else {

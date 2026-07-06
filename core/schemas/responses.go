@@ -48,6 +48,98 @@ func (r *BifrostResponsesRequest) GetRawRequestBody() []byte {
 	return r.RawRequestBody
 }
 
+// BifrostResponsesRetrieveRequest retrieves a stored response by ID (OpenAI GET /v1/responses/{id}).
+//
+// Multi-key note: when multiple API keys are configured for the same provider, pin
+// key selection (for example x-bf-api-key-id) on lifecycle calls so they hit the same
+// upstream account as the create that produced response_id.
+type BifrostResponsesRetrieveRequest struct {
+	Provider           ModelProvider `json:"provider"`
+	ResponseID         string        `json:"response_id"`
+	Include            []string      `json:"include,omitempty"`
+	StartingAfter      *int          `json:"starting_after,omitempty"`
+	IncludeObfuscation *bool         `json:"include_obfuscation,omitempty"`
+	RawRequestBody     []byte        `json:"-"`
+}
+
+// GetRawRequestBody implements raw body passthrough when enabled on context.
+func (r *BifrostResponsesRetrieveRequest) GetRawRequestBody() []byte {
+	if r == nil {
+		return nil
+	}
+	return r.RawRequestBody
+}
+
+// BifrostResponsesDeleteRequest deletes a stored response (OpenAI DELETE /v1/responses/{id}).
+// See BifrostResponsesRetrieveRequest for multi-key pinning guidance.
+type BifrostResponsesDeleteRequest struct {
+	Provider       ModelProvider `json:"provider"`
+	ResponseID     string        `json:"response_id"`
+	RawRequestBody []byte        `json:"-"`
+}
+
+// GetRawRequestBody implements raw body passthrough when enabled on context.
+func (r *BifrostResponsesDeleteRequest) GetRawRequestBody() []byte {
+	if r == nil {
+		return nil
+	}
+	return r.RawRequestBody
+}
+
+// BifrostResponsesCancelRequest cancels an in-flight stored response (OpenAI POST /v1/responses/{id}/cancel).
+// See BifrostResponsesRetrieveRequest for multi-key pinning guidance.
+type BifrostResponsesCancelRequest struct {
+	Provider       ModelProvider `json:"provider"`
+	ResponseID     string        `json:"response_id"`
+	RawRequestBody []byte        `json:"-"`
+}
+
+// GetRawRequestBody implements raw body passthrough when enabled on context.
+func (r *BifrostResponsesCancelRequest) GetRawRequestBody() []byte {
+	if r == nil {
+		return nil
+	}
+	return r.RawRequestBody
+}
+
+// BifrostResponsesInputItemsRequest lists input items for a response (OpenAI GET /v1/responses/{id}/input_items).
+// See BifrostResponsesRetrieveRequest for multi-key pinning guidance.
+type BifrostResponsesInputItemsRequest struct {
+	Provider       ModelProvider `json:"provider"`
+	ResponseID     string        `json:"response_id"`
+	After          string        `json:"after,omitempty"`
+	Include        []string      `json:"include,omitempty"`
+	Limit          *int          `json:"limit,omitempty"`
+	Order          string        `json:"order,omitempty"`
+	RawRequestBody []byte        `json:"-"`
+}
+
+// GetRawRequestBody implements raw body passthrough when enabled on context.
+func (r *BifrostResponsesInputItemsRequest) GetRawRequestBody() []byte {
+	if r == nil {
+		return nil
+	}
+	return r.RawRequestBody
+}
+
+// BifrostResponsesDeleteResponse is the wire shape for a successful delete of a stored response.
+type BifrostResponsesDeleteResponse struct {
+	ID          string                     `json:"id"`
+	Object      string                     `json:"object,omitempty"`
+	Deleted     bool                       `json:"deleted"`
+	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+}
+
+// BifrostResponsesInputItemsResponse is the list payload for response input items.
+type BifrostResponsesInputItemsResponse struct {
+	Object      string                     `json:"object"`
+	Data        []ResponsesMessage         `json:"data"`
+	HasMore     bool                       `json:"has_more"`
+	FirstID     string                     `json:"first_id,omitempty"`
+	LastID      string                     `json:"last_id,omitempty"`
+	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+}
+
 // BifrostCompactionRequest is the request for the context compaction endpoint (POST /v1/responses/compact).
 // It is a strict subset of BifrostResponsesRequest — tools, sampling params, and streaming are not supported.
 type BifrostCompactionRequest struct {
@@ -890,7 +982,9 @@ func (d *ResponsesResponseInputTokens) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// MarshalJSON emits cached_tokens (read+write) alongside the individual fields for OpenAI spec compatibility.
+// MarshalJSON emits cached_tokens (reads only, per the OpenAI spec and mirroring UnmarshalJSON above) alongside the individual fields.
+// Cache writes are reported separately via cached_write_tokens and are excluded from cached_tokens so that
+// OpenAI-spec consumers do not price cache writes as cache reads.
 func (d ResponsesResponseInputTokens) MarshalJSON() ([]byte, error) {
 	type raw struct {
 		TextTokens              int                          `json:"text_tokens,omitempty"`
@@ -908,7 +1002,7 @@ func (d ResponsesResponseInputTokens) MarshalJSON() ([]byte, error) {
 		CachedReadTokens:        d.CachedReadTokens,
 		CachedWriteTokens:       d.CachedWriteTokens,
 		CachedWriteTokenDetails: d.CachedWriteTokenDetails,
-		CachedTokens:            d.CachedReadTokens + d.CachedWriteTokens,
+		CachedTokens:            d.CachedReadTokens,
 	})
 }
 
@@ -1483,7 +1577,11 @@ func (output ResponsesToolMessageOutputStruct) MarshalJSON() ([]byte, error) {
 	if output.ResponsesComputerToolCallOutput != nil {
 		return MarshalSorted(output.ResponsesComputerToolCallOutput)
 	}
-	return nil, fmt.Errorf("responses tool message output struct is neither a string nor an array of responses message content blocks nor a computer tool call output data nor an image generation call output")
+	// All variants nil: a tool legitimately produced no output (e.g. an
+	// Anthropic tool_result with empty content). Serialize as an empty string
+	// rather than erroring, since an error here aborts marshaling of any
+	// enclosing structure (conversation histories, log rows).
+	return MarshalSorted("")
 }
 
 func (output *ResponsesToolMessageOutputStruct) UnmarshalJSON(data []byte) error {

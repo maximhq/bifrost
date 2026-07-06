@@ -3,6 +3,7 @@ package vectorstore
 import (
 	"context"
 	"fmt"
+	"net"
 	"strings"
 	"sync"
 
@@ -456,13 +457,7 @@ func newPineconeStore(ctx context.Context, config *PineconeConfig, logger schema
 	// Prepare the host URL
 	// For local connections (Pinecone Local), prefix with http:// to disable TLS
 	// See: https://docs.pinecone.io/guides/operations/local-development
-	host := config.IndexHost.GetValue()
-	if !strings.HasPrefix(host, "http://") && !strings.HasPrefix(host, "https://") {
-		// Check if this looks like a local connection
-		if strings.HasPrefix(host, "localhost") || strings.HasPrefix(host, "127.0.0.1") {
-			host = "http://" + host
-		}
-	}
+	host := hostWithLocalScheme(config.IndexHost.GetValue())
 	// Create index connection
 	idxConn, err := client.Index(pinecone.NewIndexConnParams{
 		Host: host,
@@ -485,13 +480,26 @@ func newPineconeStore(ctx context.Context, config *PineconeConfig, logger schema
 }
 
 // getHostWithScheme returns the host with the appropriate scheme.
-// For local connections (localhost/127.0.0.1), it adds http:// to disable TLS.
+// For local connections (localhost / loopback IPs), it adds http:// to disable TLS.
 func (s *PineconeStore) getHostWithScheme() string {
-	host := s.config.IndexHost.GetValue()
-	if !strings.HasPrefix(host, "http://") && !strings.HasPrefix(host, "https://") {
-		if strings.HasPrefix(host, "localhost") || strings.HasPrefix(host, "127.0.0.1") {
-			return "http://" + host
-		}
+	return hostWithLocalScheme(s.config.IndexHost.GetValue())
+}
+
+// hostWithLocalScheme prefixes scheme-less loopback hosts (localhost, 127.0.0.1,
+// [::1], with or without port) with http:// so Pinecone Local connections skip TLS.
+// See: https://docs.pinecone.io/guides/operations/local-development
+func hostWithLocalScheme(host string) string {
+	if strings.HasPrefix(host, "http://") || strings.HasPrefix(host, "https://") {
+		return host
+	}
+	bare := host
+	if h, _, err := net.SplitHostPort(bare); err == nil {
+		bare = h
+	}
+	bare = strings.Trim(bare, "[]")
+	ip := net.ParseIP(bare)
+	if bare == "localhost" || (ip != nil && ip.IsLoopback()) {
+		return "http://" + host
 	}
 	return host
 }

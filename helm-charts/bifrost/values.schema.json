@@ -868,6 +868,7 @@
                         "openrouter",
                         "vertex",
                         "cerebras",
+                        "deepseek",
                         "parasail",
                         "perplexity",
                         "sgl",

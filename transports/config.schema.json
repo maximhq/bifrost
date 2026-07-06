@@ -401,6 +401,9 @@
         "cerebras": {
           "$ref": "#/$defs/provider"
         },
+        "deepseek": {
+          "$ref": "#/$defs/provider"
+        },
         "vllm": {
           "$ref": "#/$defs/provider_with_vllm_config"
         },
@@ -767,6 +770,11 @@
                 "type": "boolean",
                 "description": "Whether the virtual key is active",
                 "default": true
+              },
+              "expires_at": {
+                "type": "string",
+                "format": "date-time",
+                "description": "Optional expiry timestamp (RFC3339). Once passed, requests using this virtual key are rejected. Omit for a key that never expires."
               },
               "calendar_aligned": {
                 "type": "boolean",
@@ -1252,7 +1260,7 @@
         },
         "type": {
           "type": "string",
-          "enum": ["sqlite", "postgres"],
+          "enum": ["sqlite", "postgres", "clickhouse"],
           "description": "Logs store type"
         },
         "config": {
@@ -1378,6 +1386,61 @@
                     "required": ["password_command"]
                   }
                 ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "../type": {
+                    "const": "clickhouse"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "host": {
+                    "type": "string",
+                    "description": "ClickHouse host"
+                  },
+                  "port": {
+                    "type": "string",
+                    "description": "ClickHouse port. Defaults by protocol: native 9000 (9440 TLS), http 8123 (8443 TLS)"
+                  },
+                  "database": {
+                    "type": "string",
+                    "description": "ClickHouse database name (default: default)"
+                  },
+                  "username": {
+                    "type": "string",
+                    "description": "ClickHouse username"
+                  },
+                  "password": {
+                    "type": "string",
+                    "description": "ClickHouse password"
+                  },
+                  "protocol": {
+                    "type": "string",
+                    "enum": ["native", "http"],
+                    "description": "ClickHouse wire protocol (default: native)"
+                  },
+                  "secure": {
+                    "type": "boolean",
+                    "description": "Enable TLS (native: secure=true; http: switches to https)",
+                    "default": false
+                  },
+                  "dial_timeout": {
+                    "type": "integer",
+                    "description": "Connection dial timeout in milliseconds (default: 10000)",
+                    "minimum": 1,
+                    "default": 10000
+                  },
+                  "cluster": {
+                    "type": "string",
+                    "description": "Optional cluster name; when set, DDL runs ON CLUSTER with replicated table engines"
+                  }
+                },
+                "required": ["host"],
                 "additionalProperties": false
               }
             }
@@ -1868,6 +1931,7 @@
                         "openrouter",
                         "vertex",
                         "cerebras",
+                        "deepseek",
                         "vllm",
                         "parasail",
                         "perplexity",
@@ -5598,6 +5662,7 @@
             "parasail",
             "perplexity",
             "cerebras",
+            "deepseek",
             "gemini",
             "openrouter",
             "elevenlabs",
@@ -5643,6 +5708,22 @@
             },
             "responses_stream": {
               "type": "boolean"
+            },
+            "responses_retrieve": {
+              "type": "boolean",
+              "description": "GET stored response by id (OpenAI Responses lifecycle)"
+            },
+            "responses_delete": {
+              "type": "boolean",
+              "description": "DELETE stored response (OpenAI Responses lifecycle)"
+            },
+            "responses_cancel": {
+              "type": "boolean",
+              "description": "POST cancel in-flight stored response (OpenAI Responses lifecycle)"
+            },
+            "responses_input_items": {
+              "type": "boolean",
+              "description": "GET list input items for a stored response (OpenAI Responses lifecycle)"
             },
             "count_tokens": {
               "type": "boolean"

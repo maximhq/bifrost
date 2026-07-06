@@ -145,7 +145,7 @@ export const governanceApi = baseApi.injectEndpoints({
 		}),
 
 		getTeam: builder.query<{ team: Team }, string>({
-			query: (teamId) => `/governance/teams/${teamId}`,
+			query: (teamId) => `/governance/teams/${encodeURIComponent(teamId)}`,
 			providesTags: (result, error, teamId) => [{ type: "Teams", id: teamId }],
 		}),
 
@@ -180,7 +180,7 @@ export const governanceApi = baseApi.injectEndpoints({
 
 		updateTeam: builder.mutation<{ message: string; team: Team }, { teamId: string; data: UpdateTeamRequest }>({
 			query: ({ teamId, data }) => ({
-				url: `/governance/teams/${teamId}`,
+				url: `/governance/teams/${encodeURIComponent(teamId)}`,
 				method: "PUT",
 				body: data,
 			}),
@@ -213,7 +213,7 @@ export const governanceApi = baseApi.injectEndpoints({
 
 		deleteTeam: builder.mutation<{ message: string }, string>({
 			query: (teamId) => ({
-				url: `/governance/teams/${teamId}`,
+				url: `/governance/teams/${encodeURIComponent(teamId)}`,
 				method: "DELETE",
 			}),
 			async onQueryStarted(teamId, { dispatch, getState, queryFulfilled }) {

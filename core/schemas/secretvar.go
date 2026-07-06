@@ -39,13 +39,15 @@ func inferSecretType(ref string) SecretType {
 	return SecretTypePlainText
 }
 
-// NewSecretVar creates a new SecretVar from a string.
-func NewSecretVar(value string) *SecretVar {
+// parseSecretRef classifies value and returns a *SecretVar with SecretType and ref
+// populated but Val unresolved — no vault HTTP calls, no env lookups.
+// For JSON-encoded SecretVars the raw "value" field is preserved in Val unchanged.
+// Adding a new secret type only requires updating this function.
+func parseSecretRef(value string) *SecretVar {
 	val := value
 	if unquoted, err := strconv.Unquote(value); err == nil {
 		val = unquoted
 	}
-	// If it's a valid JSON object following the SecretVar schema, unmarshal it
 	if sonic.Valid([]byte(value)) {
 		valueNode, _ := sonic.Get([]byte(val), "value")
 		if valueNode.Exists() {
@@ -76,55 +78,49 @@ func NewSecretVar(value string) *SecretVar {
 					}
 					e.ref = ref
 					e.SecretType = SecretTypeEnv
-					if envValue, ok := os.LookupEnv(strings.TrimPrefix(ref, "env.")); ok {
-						e.Val = envValue
-					} else {
-						e.Val = ""
-					}
-					return e
 				} else if strings.HasPrefix(raw.Val, "env.") && raw.Val == raw.EnvVar {
 					// Legacy format: value == env_var == "env.XXX"
 					e.ref = raw.EnvVar
 					e.SecretType = SecretTypeEnv
-					e.Val = ""
-					if envValue, ok := os.LookupEnv(strings.TrimPrefix(raw.EnvVar, "env.")); ok {
-						e.Val = envValue
-					}
-					return e
-				}
-				// Resolve references
-				if e.SecretType == SecretTypeVault {
-					e.Val = ""
-					if vaultValue, ok := LookupVault(e.ref); ok {
-						e.Val = vaultValue
-					}
-				}
-				if e.SecretType == SecretTypeEnv {
-					if envValue, ok := os.LookupEnv(e.EnvKey()); ok {
-						e.Val = envValue
-					} else {
-						e.Val = ""
-					}
 				}
 				return e
 			}
 		}
 	}
 	if strings.HasPrefix(val, "vault.") {
-		e := &SecretVar{ref: val, SecretType: SecretTypeVault}
-		if vaultValue, ok := LookupVault(val); ok {
-			e.Val = vaultValue
-		}
-		return e
+		return &SecretVar{ref: val, SecretType: SecretTypeVault}
 	}
-	if envKey, ok := strings.CutPrefix(val, "env."); ok {
-		e := &SecretVar{ref: val, SecretType: SecretTypeEnv}
-		if envValue, ok := os.LookupEnv(envKey); ok {
-			e.Val = envValue
-		}
-		return e
+	if strings.HasPrefix(val, "env.") {
+		return &SecretVar{ref: val, SecretType: SecretTypeEnv}
 	}
 	return &SecretVar{Val: val}
+}
+
+// IsSecretRef reports whether value is a secret reference (env.* or vault.* prefix,
+// or a JSON-encoded SecretVar with an env/vault type) without resolving it.
+// Use this instead of NewSecretVar(...).IsFromSecret() when resolution side-effects
+// (vault HTTP calls, env lookups) must be avoided.
+func IsSecretRef(value string) bool {
+	return parseSecretRef(value).IsFromSecret()
+}
+
+// NewSecretVar creates a new SecretVar from a string.
+func NewSecretVar(value string) *SecretVar {
+	e := parseSecretRef(value)
+	switch e.SecretType {
+	case SecretTypeVault:
+		e.Val = ""
+		if vaultValue, ok := LookupVault(e.ref); ok {
+			e.Val = vaultValue
+		}
+	case SecretTypeEnv:
+		if envValue, ok := os.LookupEnv(e.EnvKey()); ok {
+			e.Val = envValue
+		} else {
+			e.Val = ""
+		}
+	}
+	return e
 }
 
 // GetRawRef returns the full secret reference string including prefix

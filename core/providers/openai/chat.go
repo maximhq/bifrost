@@ -63,9 +63,9 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 	case schemas.OpenAI, schemas.Azure:
 		openaiReq.normalizeReasoningEffort(capModel)
 		return openaiReq
-	case schemas.Cerebras:
+	case schemas.Cerebras, schemas.DeepSeek:
 		openaiReq.filterOpenAISpecificParameters(capModel)
-		openaiReq.applyCerebrasCompatibility()
+		openaiReq.stripReasoningDetails()
 		return openaiReq
 	case schemas.XAI:
 		openaiReq.filterOpenAISpecificParameters(capModel)
@@ -190,8 +190,9 @@ func (req *OpenAIChatRequest) applyMistralCompatibility() {
 	}
 }
 
-// applyCerebrasCompatibility applies Cerebras-specific transformations to the request.
-func (req *OpenAIChatRequest) applyCerebrasCompatibility() {
+// stripReasoningDetails for providers that throw error for reasoning_details in assistant messages
+// e.g. Cerebras, DeepSeek
+func (req *OpenAIChatRequest) stripReasoningDetails() {
 	for i := range req.Messages {
 		assistantMessage := req.Messages[i].OpenAIChatAssistantMessage
 		if assistantMessage == nil {

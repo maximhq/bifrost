@@ -3399,7 +3399,53 @@ func TestGenerateKeyHash(t *testing.T) {
 		t.Error("Expected different hash for keys with different BedrockKeyConfig region")
 	}
 
-	t.Log("✓ Key hash generation works correctly for all fields including Azure, Vertex, and Bedrock configs")
+	// BedrockMantleKeyConfig should produce different hash
+	key9 := schemas.Key{
+		ID:     "key-1",
+		Name:   "test-key",
+		Value:  *schemas.NewSecretVar("sk-123"),
+		Models: []string{"gpt-4", "gpt-3.5-turbo"},
+		Weight: 1.5,
+		BedrockMantleKeyConfig: &schemas.BedrockMantleKeyConfig{
+			AccessKey: *schemas.NewSecretVar("AKIAIOSFODNN7EXAMPLE"),
+			SecretKey: *schemas.NewSecretVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
+			Region:    schemas.NewSecretVar(region),
+		},
+	}
+
+	hash9, err := configstore.GenerateKeyHash(key9)
+	if err != nil {
+		t.Fatalf("Failed to generate hash: %v", err)
+	}
+
+	if hash1 == hash9 {
+		t.Error("Expected different hash for keys with BedrockMantleKeyConfig")
+	}
+
+	// Different BedrockMantleKeyConfig should produce different hash
+	key9b := schemas.Key{
+		ID:     "key-1",
+		Name:   "test-key",
+		Value:  *schemas.NewSecretVar("sk-123"),
+		Models: []string{"gpt-4", "gpt-3.5-turbo"},
+		Weight: 1.5,
+		BedrockMantleKeyConfig: &schemas.BedrockMantleKeyConfig{
+			AccessKey: *schemas.NewSecretVar("AKIAIOSFODNN7EXAMPLE"),
+			SecretKey: *schemas.NewSecretVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
+			Region:    schemas.NewSecretVar(differentRegion), // Different region
+		},
+	}
+
+	hash9b, err := configstore.GenerateKeyHash(key9b)
+	if err != nil {
+		t.Fatalf("Failed to generate hash: %v", err)
+	}
+
+	if hash9 == hash9b {
+		t.Error("Expected different hash for keys with different BedrockMantleKeyConfig region")
+	}
+
+	t.Log("✓ Key hash generation works correctly for all fields including Azure, Vertex, Bedrock, and Bedrock Mantle configs")
 }
 
 // TestProviderHashComparison_MatchingHash tests that DB config is kept when hashes match
@@ -7315,6 +7361,39 @@ func TestGenerateVirtualKeyHash(t *testing.T) {
 
 	if hash1 == hash5 {
 		t.Error("Expected different hash for virtual keys with different IsActive")
+	}
+
+	// Setting ExpiresAt should produce a different hash; nil ExpiresAt keeps the original hash
+	expiry := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
+	vkExpiring := tables.TableVirtualKey{
+		ID:          "vk-1",
+		Name:        "test-vk",
+		Description: "Test virtual key",
+		Value:       *schemas.NewSecretVar("vk_abc123"),
+		IsActive:    schemas.Ptr(true),
+		TeamID:      &teamID,
+		ExpiresAt:   &expiry,
+	}
+
+	hashExpiring, err := configstore.GenerateVirtualKeyHash(vkExpiring)
+	if err != nil {
+		t.Fatalf("Failed to generate hash: %v", err)
+	}
+
+	if hash1 == hashExpiring {
+		t.Error("Expected different hash for virtual keys with ExpiresAt set")
+	}
+
+	// Different expiry timestamps should produce different hashes
+	laterExpiry := expiry.Add(time.Hour)
+	vkExpiring.ExpiresAt = &laterExpiry
+	hashLaterExpiry, err := configstore.GenerateVirtualKeyHash(vkExpiring)
+	if err != nil {
+		t.Fatalf("Failed to generate hash: %v", err)
+	}
+
+	if hashExpiring == hashLaterExpiry {
+		t.Error("Expected different hash for virtual keys with different ExpiresAt")
 	}
 
 	// Different TeamID should produce different hash
@@ -17509,6 +17588,90 @@ func TestResolveFrameworkPricingConfig(t *testing.T) {
 		require.Equal(t, newFileURL, *normalizedModelCatalog.PricingURL)
 		require.Equal(t, defaultModelParamsURL, *normalizedModelCatalog.ModelParametersURL)
 		require.Equal(t, newFileSyncSeconds, *normalizedModelCatalog.PricingSyncInterval)
+	})
+
+	t.Run("model_parameters_url from file overrides db when file changes", func(t *testing.T) {
+		// DB has a stale model_parameters_url from an earlier startup; config.json
+		// now points it elsewhere. File wins, mirroring pricing_url.
+		staleModelParamsURL := "https://stale.example.com/model-parameters.json"
+		newModelParamsURL := "https://new-file.example.com/model-parameters.json"
+		storedHash, err := configstore.GenerateFrameworkConfigHash(&fileURL, &staleModelParamsURL, &fileSyncSeconds)
+		require.NoError(t, err)
+		dbConfig := &tables.TableFrameworkConfig{
+			ID:                  11,
+			PricingURL:          &fileURL,
+			ModelParametersURL:  &staleModelParamsURL,
+			PricingSyncInterval: &fileSyncSeconds,
+			ConfigHash:          storedHash, // hash of OLD file values
+		}
+		fileConfig := &framework.FrameworkConfig{
+			Pricing: &modelcatalog.Config{
+				PricingURL:          &fileURL,           // unchanged
+				ModelParametersURL:  &newModelParamsURL, // changed
+				PricingSyncInterval: &fileSyncSeconds,   // unchanged
+			},
+		}
+
+		normalizedTable, normalizedModelCatalog, needsDBUpdate := ResolveFrameworkPricingConfig(dbConfig, fileConfig)
+		require.True(t, needsDBUpdate)
+		require.Equal(t, newModelParamsURL, *normalizedTable.ModelParametersURL)
+		require.Equal(t, newModelParamsURL, *normalizedModelCatalog.ModelParametersURL)
+	})
+
+	t.Run("model_parameters_url alone triggers hash and overrides db", func(t *testing.T) {
+		// config.json sets only model_parameters_url (no pricing_url). The file
+		// hash must still be computed so a changed model_parameters_url is detected.
+		staleModelParamsURL := "https://stale.example.com/model-parameters.json"
+		newModelParamsURL := "https://new-file.example.com/model-parameters.json"
+		storedHash, err := configstore.GenerateFrameworkConfigHash(nil, &staleModelParamsURL, nil)
+		require.NoError(t, err)
+		dbConfig := &tables.TableFrameworkConfig{
+			ID:                 12,
+			PricingURL:         &dbURL,
+			ModelParametersURL: &staleModelParamsURL,
+			ConfigHash:         storedHash, // hash of OLD file values
+		}
+		fileConfig := &framework.FrameworkConfig{
+			Pricing: &modelcatalog.Config{
+				ModelParametersURL: &newModelParamsURL,
+			},
+		}
+
+		normalizedTable, _, needsDBUpdate := ResolveFrameworkPricingConfig(dbConfig, fileConfig)
+		require.True(t, needsDBUpdate)
+		require.Equal(t, newModelParamsURL, *normalizedTable.ModelParametersURL)
+	})
+
+	t.Run("unresolved env model_parameters_url does not overwrite db when another field changes", func(t *testing.T) {
+		// model_parameters_url is an unresolved env.* literal while pricing_url
+		// changes in the same restart, so fileChanged is true. The stale literal
+		// must not be persisted over a valid DB value — skip guard preserves it.
+		rawModelParams := "env.BIFROST_TEST_MODEL_PARAMS_URL_NONEXISTENT_XYZ"
+		prev, existed := os.LookupEnv("BIFROST_TEST_MODEL_PARAMS_URL_NONEXISTENT_XYZ")
+		os.Unsetenv("BIFROST_TEST_MODEL_PARAMS_URL_NONEXISTENT_XYZ")
+		t.Cleanup(func() {
+			if existed {
+				os.Setenv("BIFROST_TEST_MODEL_PARAMS_URL_NONEXISTENT_XYZ", prev)
+			}
+		})
+		validDBModelParams := "https://db.example.com/model-parameters.json"
+		dbConfig := &tables.TableFrameworkConfig{
+			ID:                  13,
+			PricingURL:          &dbURL,
+			ModelParametersURL:  &validDBModelParams,
+			PricingSyncInterval: &dbSyncSeconds,
+			ConfigHash:          "stale-hash", // force fileChanged via the pricing_url diff
+		}
+		fileConfig := &framework.FrameworkConfig{
+			Pricing: &modelcatalog.Config{
+				PricingURL:         &fileURL, // changed vs DB
+				ModelParametersURL: &rawModelParams,
+			},
+		}
+
+		normalizedTable, normalizedModelCatalog, _ := ResolveFrameworkPricingConfig(dbConfig, fileConfig)
+		require.Equal(t, validDBModelParams, *normalizedTable.ModelParametersURL)
+		require.Equal(t, validDBModelParams, *normalizedModelCatalog.ModelParametersURL)
 	})
 
 	t.Run("fallback to file when db fields are missing", func(t *testing.T) {

@@ -1683,6 +1683,11 @@ func IsTitanModel(model string) bool {
 	return strings.Contains(model, "titan")
 }
 
+// IsGrokModel checks if the model is an xAI Grok model.
+func IsGrokModel(model string) bool {
+	return strings.Contains(model, "grok")
+}
+
 // List of grok reasoning models
 var grokReasoningModels = []string{
 	"grok-3",
