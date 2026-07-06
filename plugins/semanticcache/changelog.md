@@ -1,0 +1,3 @@
+- fix: resolve internal embedding keys like external requests (#4903, closes #4756) (thanks [@nnNyx](https://github.com/nnNyx)!)
+- fix: clear body-transport state for internal embedding requests via `ClearContextForInternalRequest` (#4918)
+- chore: upgraded core to v1.6.3 and framework to v1.4.3
