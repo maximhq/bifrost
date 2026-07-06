@@ -231,26 +231,32 @@ func TestResponsesMessageToolCallArguments(t *testing.T) {
 	// Real tool_search_call frames captured from api.openai.com by replaying
 	// Codex's request (which enables the `tool_search` tool). These are the exact
 	// frames that triggered the production "Mismatch type string with value
-	// object" failure.
+	// object" failure. tool_search items are preserved verbatim (see
+	// rawToolSearch), so the item must decode without error and re-encode
+	// byte-identically, object-form arguments included.
 	t.Run("real tool_search_call frames from openai", func(t *testing.T) {
-		frames := map[string]string{
-			"in_progress (empty object)":   `{"type":"response.output_item.added","output_index":1,"sequence_number":4,"item":{"id":"tsc_01429bcd111d3db1016a3abc8e12948191a9efb0edcbd7f68a","type":"tool_search_call","status":"in_progress","arguments":{},"call_id":"call_OYgDGFxcFL8POxRYssDHUsaM","execution":"client"}}`,
-			"completed (populated object)": `{"type":"response.output_item.done","output_index":1,"sequence_number":5,"item":{"id":"tsc_01429bcd111d3db1016a3abc8e12948191a9efb0edcbd7f68a","type":"tool_search_call","status":"completed","arguments":{"query":"observability_repro sentry grafana websocket responses","limit":10},"call_id":"call_OYgDGFxcFL8POxRYssDHUsaM","execution":"client"}}`,
+		items := map[string]string{
+			"in_progress (empty object)":   `{"id":"tsc_01429bcd111d3db1016a3abc8e12948191a9efb0edcbd7f68a","type":"tool_search_call","status":"in_progress","arguments":{},"call_id":"call_OYgDGFxcFL8POxRYssDHUsaM","execution":"client"}`,
+			"completed (populated object)": `{"id":"tsc_01429bcd111d3db1016a3abc8e12948191a9efb0edcbd7f68a","type":"tool_search_call","status":"completed","arguments":{"query":"observability_repro sentry grafana websocket responses","limit":10},"call_id":"call_OYgDGFxcFL8POxRYssDHUsaM","execution":"client"}`,
 		}
-		want := map[string]string{
-			"in_progress (empty object)":   `{}`,
-			"completed (populated object)": `{"query":"observability_repro sentry grafana websocket responses","limit":10}`,
+		events := map[string]string{
+			"in_progress (empty object)":   `{"type":"response.output_item.added","output_index":1,"sequence_number":4,"item":` + items["in_progress (empty object)"] + `}`,
+			"completed (populated object)": `{"type":"response.output_item.done","output_index":1,"sequence_number":5,"item":` + items["completed (populated object)"] + `}`,
 		}
-		for name, raw := range frames {
+		for name, raw := range events {
 			var resp BifrostResponsesStreamResponse
 			if err := Unmarshal([]byte(raw), &resp); err != nil {
 				t.Fatalf("[%s] unmarshal tool_search_call frame: %v", name, err)
 			}
-			if resp.Item == nil || resp.Item.ResponsesToolMessage == nil || resp.Item.Arguments == nil {
-				t.Fatalf("[%s] expected tool_search_call arguments to be set, got %#v", name, resp.Item)
+			if resp.Item == nil || resp.Item.Type == nil || *resp.Item.Type != ResponsesMessageTypeToolSearchCall {
+				t.Fatalf("[%s] expected tool_search_call item, got %#v", name, resp.Item)
 			}
-			if *resp.Item.Arguments != want[name] {
-				t.Fatalf("[%s] expected arguments %q, got %q", name, want[name], *resp.Item.Arguments)
+			encoded, err := MarshalSorted(resp.Item)
+			if err != nil {
+				t.Fatalf("[%s] marshal preserved tool_search_call item: %v", name, err)
+			}
+			if string(encoded) != items[name] {
+				t.Fatalf("[%s] expected item to round-trip verbatim\nwant: %s\ngot:  %s", name, items[name], encoded)
 			}
 		}
 	})
