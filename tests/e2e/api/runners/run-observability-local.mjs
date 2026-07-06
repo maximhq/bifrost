@@ -237,7 +237,18 @@ async function assertOtelReceived() {
     "gen_ai.usage.input_tokens",
     "gen_ai.usage.output_tokens",
     "gen_ai.usage.total_tokens",
+    // These metadata attributes survive content stripping and were previously unasserted:
+    // the response model, the finish-reasons attribute, and the "stop" finish reason value the
+    // mock upstream returns.
+    "gen_ai.response.model",
+    "gen_ai.response.finish_reasons",
+    "stop",
   ]);
+  // The plugin runs with disable_content_logging: true, so the input/output message content
+  // ("hello world") must NOT reach the collector. This asserts the privacy guarantee holds
+  // end-to-end (the mock upstream's chat text is "hello world" with a space; the model name
+  // "hello-world" is hyphenated, so this cannot false-negative on the model bytes).
+  assertBufferContainsNone("OTEL trace export", entry.body, ["hello world"]);
 }
 
 async function assertOtelMetricsReceived() {
@@ -263,6 +274,14 @@ function assertBufferContainsAll(name, body, values) {
   for (const value of values) {
     if (!body.includes(Buffer.from(value))) {
       throw new Error(`${name} is missing ${JSON.stringify(value)}`);
+    }
+  }
+}
+
+function assertBufferContainsNone(name, body, values) {
+  for (const value of values) {
+    if (body.includes(Buffer.from(value))) {
+      throw new Error(`${name} unexpectedly contains ${JSON.stringify(value)} (content logging should be disabled)`);
     }
   }
 }
