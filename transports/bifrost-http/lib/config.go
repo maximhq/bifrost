@@ -1785,6 +1785,7 @@ func applyMCPGlobalSettingsToClientConfig(ctx context.Context, config *Config, m
 	mcpCfg.ToolManagerConfig.DisableAutoToolInject = config.ClientConfig.MCPDisableAutoToolInject
 
 	// ToolSyncInterval lives only in MCPConfig (not a ClientConfig field), so reconcile separately.
+	// ClientConfig.MCPToolSyncInterval holds whole minutes (see TableClientConfig).
 	changed := false
 	if mcpCfg.ToolSyncInterval == 0 {
 		if config.ClientConfig.MCPToolSyncInterval != 0 {
@@ -1792,15 +1793,15 @@ func applyMCPGlobalSettingsToClientConfig(ctx context.Context, config *Config, m
 			changed = true
 		}
 	} else if mcpCfg.ToolSyncInterval > 0 {
-		if mcpCfg.ToolSyncInterval%time.Second != 0 {
+		if mcpCfg.ToolSyncInterval%time.Minute != 0 {
 			logger.Warn(
-				"ignoring mcp.tool_sync_interval %q: must be a whole number of seconds",
+				"not mirroring mcp.tool_sync_interval %q to client config: must be a whole number of minutes",
 				mcpCfg.ToolSyncInterval.String(),
 			)
 		} else {
-			syncSeconds := int(mcpCfg.ToolSyncInterval / time.Second)
-			if config.ClientConfig.MCPToolSyncInterval != syncSeconds {
-				config.ClientConfig.MCPToolSyncInterval = syncSeconds
+			syncMinutes := int(mcpCfg.ToolSyncInterval / time.Minute)
+			if config.ClientConfig.MCPToolSyncInterval != syncMinutes {
+				config.ClientConfig.MCPToolSyncInterval = syncMinutes
 				changed = true
 			}
 		}

@@ -131,9 +131,8 @@ func toolExecutionTimeoutDurationToStoredSeconds(timeout time.Duration) int {
 }
 
 func toolSyncIntervalDurationToStoredSeconds(interval time.Duration) (int, error) {
-	if interval < 0 {
-		return 0, fmt.Errorf("tool_sync_interval must be non-negative, got %q", interval.String())
-	}
+	// Negative intervals are preserved: a negative value disables tool sync
+	// for the client (see mcp.ResolveToolSyncInterval).
 	if interval%time.Second != 0 {
 		return 0, fmt.Errorf("tool_sync_interval must be a whole number of seconds, got %q", interval.String())
 	}
@@ -1590,6 +1589,8 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 	return &schemas.MCPConfig{
 		ClientConfigs:     clientConfigs,
 		ToolManagerConfig: &toolManagerConfig,
+		// MCPToolSyncInterval is stored in whole minutes (see TableClientConfig).
+		ToolSyncInterval: time.Duration(clientConfig.MCPToolSyncInterval) * time.Minute,
 	}, nil
 }
 

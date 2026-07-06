@@ -208,6 +208,22 @@ func (c *MCPConfig) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// MarshalJSON emits tool_sync_interval as a duration string so it round-trips
+// correctly and matches the per-client field's wire format — default
+// time.Duration marshaling emits nanoseconds.
+func (c MCPConfig) MarshalJSON() ([]byte, error) {
+	type alias MCPConfig
+	type shadow struct {
+		ToolSyncInterval string `json:"tool_sync_interval,omitempty"`
+		*alias
+	}
+	s := shadow{alias: (*alias)(&c)}
+	if c.ToolSyncInterval != 0 {
+		s.ToolSyncInterval = c.ToolSyncInterval.String()
+	}
+	return json.Marshal(s)
+}
+
 type MCPToolManagerConfig struct {
 	// ToolExecutionTimeout accepts a Go duration string (e.g. "30s", "2m") or a
 	// bare integer treated as seconds (e.g. 30 → 30s). This intentionally differs
@@ -278,19 +294,19 @@ const (
 
 // MCPClientConfig defines tool filtering for an MCP client.
 type MCPClientConfig struct {
-	ID                  string            `json:"client_id"`                       // Client ID
-	Name                string            `json:"name"`                            // Client name
-	IsCodeModeClient    bool              `json:"is_code_mode_client"`             // Whether the client is a code mode client
-	ConnectionType      MCPConnectionType `json:"connection_type"`                 // How to connect (HTTP, STDIO, SSE, or InProcess)
-	ConnectionString    *SecretVar           `json:"connection_string,omitempty"`     // HTTP or SSE URL (required for HTTP or SSE connections)
-	StdioConfig         *MCPStdioConfig   `json:"stdio_config,omitempty"`          // STDIO configuration (required for STDIO connections)
-	TLSConfig           *MCPTLSConfig     `json:"tls_config,omitempty"`            // TLS configuration for HTTP/SSE connections
-	AuthType            MCPAuthType       `json:"auth_type"`                       // Authentication type (none, headers, or oauth)
-	OauthConfigID       *string           `json:"oauth_config_id,omitempty"`       // OAuth config ID (references oauth_configs table)
-	OauthClientID       *SecretVar           `json:"oauth_client_id,omitempty"`       // Redacted OAuth client ID (populated on GET, not stored here)
-	OauthClientSecret   *SecretVar           `json:"oauth_client_secret,omitempty"`   // Redacted OAuth client secret (populated on GET, not stored here)
-	State               string            `json:"state,omitempty"`                 // Connection state (connected, disconnected, error)
-	Headers             map[string]SecretVar `json:"headers,omitempty"`               // Headers to send with the request (for headers auth type)
+	ID                string               `json:"client_id"`                     // Client ID
+	Name              string               `json:"name"`                          // Client name
+	IsCodeModeClient  bool                 `json:"is_code_mode_client"`           // Whether the client is a code mode client
+	ConnectionType    MCPConnectionType    `json:"connection_type"`               // How to connect (HTTP, STDIO, SSE, or InProcess)
+	ConnectionString  *SecretVar           `json:"connection_string,omitempty"`   // HTTP or SSE URL (required for HTTP or SSE connections)
+	StdioConfig       *MCPStdioConfig      `json:"stdio_config,omitempty"`        // STDIO configuration (required for STDIO connections)
+	TLSConfig         *MCPTLSConfig        `json:"tls_config,omitempty"`          // TLS configuration for HTTP/SSE connections
+	AuthType          MCPAuthType          `json:"auth_type"`                     // Authentication type (none, headers, or oauth)
+	OauthConfigID     *string              `json:"oauth_config_id,omitempty"`     // OAuth config ID (references oauth_configs table)
+	OauthClientID     *SecretVar           `json:"oauth_client_id,omitempty"`     // Redacted OAuth client ID (populated on GET, not stored here)
+	OauthClientSecret *SecretVar           `json:"oauth_client_secret,omitempty"` // Redacted OAuth client secret (populated on GET, not stored here)
+	State             string               `json:"state,omitempty"`               // Connection state (connected, disconnected, error)
+	Headers           map[string]SecretVar `json:"headers,omitempty"`             // Headers to send with the request (for headers auth type)
 	// PerUserHeaderKeys lists the header *names* each caller must supply for
 	// MCPAuthTypePerUserHeaders clients. Admin-declared schema only — the
 	// values live per-user in the mcp_per_user_header_credentials table and
@@ -314,13 +330,13 @@ type MCPClientConfig struct {
 	// - nil/omitted => treated as [] (no tools)
 	// - ["tool1", "tool2"] => auto-execute only the specified tools
 	// Note: If a tool is in ToolsToAutoExecute but not in ToolsToExecute, it will be skipped.
-	IsPingAvailable       *bool              `json:"is_ping_available,omitempty"`       // Whether the MCP server supports ping for health checks (nil/true = ping; false = listTools). Defaults to true.
-	ToolSyncInterval      time.Duration      `json:"tool_sync_interval,omitempty"`      // Per-client override for tool sync interval (0 = use global, negative = disabled)
-	ToolExecutionTimeout  time.Duration      `json:"tool_execution_timeout,omitempty"`  // Per-client override for tool execution timeout (0 = use global from tool_manager_config)
-	ToolPricing           map[string]float64 `json:"tool_pricing,omitempty"`            // Tool pricing for each tool (cost per execution)
-	Disabled              bool               `json:"disabled"`                     // Whether the client is intentionally disabled (stops connection and workers)
-	ConfigHash            string             `json:"-"`                            // Config hash for reconciliation (not serialized)
-	AllowOnAllVirtualKeys bool               `json:"allow_on_all_virtual_keys"`    // Whether to allow the MCP client to run on all virtual keys
+	IsPingAvailable       *bool              `json:"is_ping_available,omitempty"`      // Whether the MCP server supports ping for health checks (nil/true = ping; false = listTools). Defaults to true.
+	ToolSyncInterval      time.Duration      `json:"tool_sync_interval,omitempty"`     // Per-client override for tool sync interval (0 = use global, negative = disabled)
+	ToolExecutionTimeout  time.Duration      `json:"tool_execution_timeout,omitempty"` // Per-client override for tool execution timeout (0 = use global from tool_manager_config)
+	ToolPricing           map[string]float64 `json:"tool_pricing,omitempty"`           // Tool pricing for each tool (cost per execution)
+	Disabled              bool               `json:"disabled"`                         // Whether the client is intentionally disabled (stops connection and workers)
+	ConfigHash            string             `json:"-"`                                // Config hash for reconciliation (not serialized)
+	AllowOnAllVirtualKeys bool               `json:"allow_on_all_virtual_keys"`        // Whether to allow the MCP client to run on all virtual keys
 
 	// Discovered tools for per-user OAuth clients (persisted so they survive restart)
 	DiscoveredTools           map[string]ChatTool `json:"-"` // Discovered tool schemas keyed by prefixed name
@@ -421,16 +437,23 @@ func parseToolExecutionTimeoutField(raw json.RawMessage) (time.Duration, error) 
 	return time.Duration(n) * time.Second, nil
 }
 
-// MarshalJSON emits tool_execution_timeout as a duration string so it round-trips
-// correctly — default time.Duration marshaling emits nanoseconds, but UnmarshalJSON
-// treats bare integers as seconds.
+// MarshalJSON emits tool_sync_interval and tool_execution_timeout as duration
+// strings so both round-trip correctly and share one wire format — default
+// time.Duration marshaling emits nanoseconds, but UnmarshalJSON treats bare
+// integers as nanoseconds for tool_sync_interval and as seconds for
+// tool_execution_timeout. A negative tool_sync_interval (sync disabled) is
+// emitted as a negative duration string.
 func (c MCPClientConfig) MarshalJSON() ([]byte, error) {
 	type alias MCPClientConfig
 	type shadow struct {
+		ToolSyncInterval     string `json:"tool_sync_interval,omitempty"`
 		ToolExecutionTimeout string `json:"tool_execution_timeout,omitempty"`
 		*alias
 	}
 	s := shadow{alias: (*alias)(&c)}
+	if c.ToolSyncInterval != 0 {
+		s.ToolSyncInterval = c.ToolSyncInterval.String()
+	}
 	if c.ToolExecutionTimeout > 0 {
 		s.ToolExecutionTimeout = c.ToolExecutionTimeout.String()
 	}
@@ -521,7 +544,7 @@ type MCPStdioConfig struct {
 // MCPTLSConfig holds TLS options for HTTP and SSE MCP connections.
 // InsecureSkipVerify takes priority over CACertPEM when both are set.
 type MCPTLSConfig struct {
-	InsecureSkipVerify bool    `json:"insecure_skip_verify,omitempty"` // Disable TLS certificate verification (development only)
+	InsecureSkipVerify bool       `json:"insecure_skip_verify,omitempty"` // Disable TLS certificate verification (development only)
 	CACertPEM          *SecretVar `json:"ca_cert_pem,omitempty"`          // PEM-encoded CA certificate to trust (supports env.*)
 }
 

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"sort"
 	"strconv"
@@ -566,6 +567,36 @@ type MCPVKConfigRequest struct {
 	ToolsToExecute schemas.WhiteList `json:"tools_to_execute"`
 }
 
+// Request values are minutes (tool_sync_interval) and seconds
+// (tool_execution_timeout); these bounds keep the conversion to time.Duration
+// from overflowing int64 nanoseconds.
+const (
+	maxToolSyncIntervalMinutes     = int64(math.MaxInt64 / int64(time.Minute))
+	maxToolExecutionTimeoutSeconds = int64(math.MaxInt64 / int64(time.Second))
+)
+
+// validateToolSyncIntervalMinutes rejects request values whose
+// minutes→duration conversion would overflow. Negative values are valid
+// (negative = sync disabled).
+func validateToolSyncIntervalMinutes(minutes int) error {
+	if int64(minutes) > maxToolSyncIntervalMinutes || int64(minutes) < -maxToolSyncIntervalMinutes {
+		return fmt.Errorf("tool_sync_interval must be between %d and %d minutes", -maxToolSyncIntervalMinutes, maxToolSyncIntervalMinutes)
+	}
+	return nil
+}
+
+// validateToolExecutionTimeoutSeconds rejects negative request values and
+// values whose seconds→duration conversion would overflow.
+func validateToolExecutionTimeoutSeconds(seconds int) error {
+	if seconds < 0 {
+		return errors.New("tool_execution_timeout must be >= 0")
+	}
+	if int64(seconds) > maxToolExecutionTimeoutSeconds {
+		return fmt.Errorf("tool_execution_timeout must be <= %d seconds", maxToolExecutionTimeoutSeconds)
+	}
+	return nil
+}
+
 // MCPClientUpdateRequest is the body for PUT /api/mcp/client/{id}.
 // All fields are optional — omitting a field retains its existing value (PATCH semantics).
 // Immutable fields (connection_type, auth_type, connection_string, stdio_config) are not
@@ -630,6 +661,16 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid allowed_extra_headers: %v", err))
 		return
 	}
+	if err := validateToolSyncIntervalMinutes(req.ToolSyncInterval); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+	if err := validateToolExecutionTimeoutSeconds(req.ToolExecutionTimeout); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+	// 0 = use the global timeout from tool_manager_config, resolved at execution time.
+	toolExecutionTimeout := time.Duration(req.ToolExecutionTimeout) * time.Second
 
 	// Handle per-user headers: admin declares the required key names (schema)
 	// AND supplies a sample set of values inline so the server can verify
@@ -695,6 +736,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			IsCodeModeClient:      req.IsCodeModeClient,
 			IsPingAvailable:       &isPingAvailable,
 			ToolSyncInterval:      toolSyncInterval,
+			ToolExecutionTimeout:  toolExecutionTimeout,
 			ConnectionType:        schemas.MCPConnectionType(req.ConnectionType),
 			ConnectionString:      req.ConnectionString,
 			StdioConfig:           req.StdioConfig,
@@ -796,6 +838,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			IsCodeModeClient:      req.IsCodeModeClient,
 			IsPingAvailable:       &isPingAvailable,
 			ToolSyncInterval:      toolSyncInterval,
+			ToolExecutionTimeout:  toolExecutionTimeout,
 			ConnectionType:        schemas.MCPConnectionType(req.ConnectionType),
 			ConnectionString:      req.ConnectionString,
 			StdioConfig:           req.StdioConfig,
@@ -889,6 +932,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			IsCodeModeClient:      req.IsCodeModeClient,
 			IsPingAvailable:       req.IsPingAvailable,
 			ToolSyncInterval:      toolSyncInterval,
+			ToolExecutionTimeout:  toolExecutionTimeout,
 			ConnectionType:        schemas.MCPConnectionType(req.ConnectionType),
 			ConnectionString:      req.ConnectionString,
 			StdioConfig:           req.StdioConfig,
@@ -963,6 +1007,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		OauthConfigID:         req.OauthConfigID,
 		IsPingAvailable:       req.IsPingAvailable,
 		ToolSyncInterval:      toolSyncInterval,
+		ToolExecutionTimeout:  toolExecutionTimeout,
 		ToolPricing:           req.ToolPricing,
 		AllowOnAllVirtualKeys: req.AllowOnAllVirtualKeys,
 	}
@@ -1095,12 +1140,16 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 	// boundary below; the in-memory duration is the source of truth here.
 	resolvedToolSyncInterval := existingConfig.ToolSyncInterval
 	if req.ToolSyncInterval != nil {
+		if err := validateToolSyncIntervalMinutes(*req.ToolSyncInterval); err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+			return
+		}
 		resolvedToolSyncInterval = time.Duration(*req.ToolSyncInterval) * time.Minute
 	}
 	resolvedToolExecutionTimeout := existingConfig.ToolExecutionTimeout
 	if req.ToolExecutionTimeout != nil {
-		if *req.ToolExecutionTimeout < 0 {
-			SendError(ctx, fasthttp.StatusBadRequest, "tool_execution_timeout must be >= 0")
+		if err := validateToolExecutionTimeoutSeconds(*req.ToolExecutionTimeout); err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 			return
 		}
 		resolvedToolExecutionTimeout = time.Duration(*req.ToolExecutionTimeout) * time.Second
@@ -1795,6 +1844,7 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 				ConnectionType:            string(mcpClientConfig.ConnectionType),
 				ConnectionString:          mcpClientConfig.ConnectionString,
 				StdioConfig:               mcpClientConfig.StdioConfig,
+				TLSConfig:                 mcpClientConfig.TLSConfig,
 				AuthType:                  string(mcpClientConfig.AuthType),
 				OauthConfigID:             mcpClientConfig.OauthConfigID,
 				ToolsToExecute:            mcpClientConfig.ToolsToExecute,
@@ -1804,6 +1854,7 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 				IsPingAvailable:           mcpClientConfig.IsPingAvailable,
 				ToolPricing:               mcpClientConfig.ToolPricing,
 				ToolSyncInterval:          int(mcpClientConfig.ToolSyncInterval / time.Second),
+				ToolExecutionTimeout:      int(mcpClientConfig.ToolExecutionTimeout / time.Second),
 				AllowOnAllVirtualKeys:     mcpClientConfig.AllowOnAllVirtualKeys,
 				DiscoveredTools:           mcpClientConfig.DiscoveredTools,
 				DiscoveredToolNameMapping: mcpClientConfig.DiscoveredToolNameMapping,
@@ -1870,6 +1921,7 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 			ConnectionType:            string(mcpClientConfig.ConnectionType),
 			ConnectionString:          mcpClientConfig.ConnectionString,
 			StdioConfig:               mcpClientConfig.StdioConfig,
+			TLSConfig:                 mcpClientConfig.TLSConfig,
 			AuthType:                  string(mcpClientConfig.AuthType),
 			OauthConfigID:             mcpClientConfig.OauthConfigID,
 			ToolsToExecute:            mcpClientConfig.ToolsToExecute,
@@ -1879,6 +1931,7 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 			IsPingAvailable:           mcpClientConfig.IsPingAvailable,
 			ToolPricing:               mcpClientConfig.ToolPricing,
 			ToolSyncInterval:          int(mcpClientConfig.ToolSyncInterval / time.Second),
+			ToolExecutionTimeout:      int(mcpClientConfig.ToolExecutionTimeout / time.Second),
 			AllowOnAllVirtualKeys:     mcpClientConfig.AllowOnAllVirtualKeys,
 			DiscoveredTools:           mcpClientConfig.DiscoveredTools,
 			DiscoveredToolNameMapping: mcpClientConfig.DiscoveredToolNameMapping,

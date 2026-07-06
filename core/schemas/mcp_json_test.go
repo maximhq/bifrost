@@ -129,3 +129,80 @@ func TestMCPClientConfigUnmarshalToolExecutionTimeoutNegativeString(t *testing.T
 	}
 }
 
+func TestMCPClientConfigMarshalEmitsDurationStrings(t *testing.T) {
+	cfg := MCPClientConfig{
+		Name:                 "demo",
+		ConnectionType:       "http",
+		ToolSyncInterval:     10 * time.Minute,
+		ToolExecutionTimeout: 45 * time.Second,
+	}
+	data, err := sonic.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("unexpected marshal error: %v", err)
+	}
+	s := string(data)
+	if !strings.Contains(s, `"tool_sync_interval":"10m0s"`) {
+		t.Fatalf("expected tool_sync_interval as duration string, got: %s", s)
+	}
+	if !strings.Contains(s, `"tool_execution_timeout":"45s"`) {
+		t.Fatalf("expected tool_execution_timeout as duration string, got: %s", s)
+	}
+}
+
+func TestMCPClientConfigMarshalOmitsZeroDurations(t *testing.T) {
+	cfg := MCPClientConfig{Name: "demo", ConnectionType: "http"}
+	data, err := sonic.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("unexpected marshal error: %v", err)
+	}
+	s := string(data)
+	if strings.Contains(s, "tool_sync_interval") {
+		t.Fatalf("expected tool_sync_interval omitted when zero, got: %s", s)
+	}
+	if strings.Contains(s, "tool_execution_timeout") {
+		t.Fatalf("expected tool_execution_timeout omitted when zero, got: %s", s)
+	}
+}
+
+func TestMCPClientConfigDurationFieldsRoundTrip(t *testing.T) {
+	for _, syncInterval := range []time.Duration{10 * time.Minute, 30 * time.Second, -time.Minute} {
+		cfg := MCPClientConfig{
+			Name:                 "demo",
+			ConnectionType:       "http",
+			ToolSyncInterval:     syncInterval,
+			ToolExecutionTimeout: 90 * time.Second,
+		}
+		data, err := sonic.Marshal(cfg)
+		if err != nil {
+			t.Fatalf("unexpected marshal error: %v", err)
+		}
+		var decoded MCPClientConfig
+		if err := sonic.Unmarshal(data, &decoded); err != nil {
+			t.Fatalf("unexpected unmarshal error: %v", err)
+		}
+		if decoded.ToolSyncInterval != syncInterval {
+			t.Fatalf("tool_sync_interval did not round-trip: sent %v, got %v", syncInterval, decoded.ToolSyncInterval)
+		}
+		if decoded.ToolExecutionTimeout != 90*time.Second {
+			t.Fatalf("tool_execution_timeout did not round-trip: got %v", decoded.ToolExecutionTimeout)
+		}
+	}
+}
+
+func TestMCPConfigMarshalToolSyncIntervalRoundTrip(t *testing.T) {
+	cfg := MCPConfig{ToolSyncInterval: 10 * time.Minute}
+	data, err := sonic.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("unexpected marshal error: %v", err)
+	}
+	if !strings.Contains(string(data), `"tool_sync_interval":"10m0s"`) {
+		t.Fatalf("expected tool_sync_interval as duration string, got: %s", string(data))
+	}
+	var decoded MCPConfig
+	if err := sonic.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unexpected unmarshal error: %v", err)
+	}
+	if decoded.ToolSyncInterval != 10*time.Minute {
+		t.Fatalf("tool_sync_interval did not round-trip: got %v", decoded.ToolSyncInterval)
+	}
+}

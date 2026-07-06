@@ -67,7 +67,7 @@ export interface MCPClientConfig {
 	per_user_header_keys?: string[];
 	is_ping_available?: boolean;
 	tool_pricing?: Record<string, number>;
-	tool_sync_interval?: number; // Per-client override in minutes (0 = use global, -1 = disabled)
+	tool_sync_interval?: string | number; // Per-client override; API returns a Go duration string e.g. "10m0s" (legacy responses: nanoseconds number), negative = sync disabled, omitted = use global
 	tool_execution_timeout?: string | number; // Per-client tool execution timeout; API returns string e.g. "30s", UI sends integer seconds (0 = use global)
 	allowed_extra_headers?: string[]; // Allowlist of x-bf-eh-* headers forwarded to this MCP server. ["*"] = allow all.
 	allow_on_all_virtual_keys?: boolean; // When true, available to all VKs with all tools allowed by default; explicit VK config overrides this
