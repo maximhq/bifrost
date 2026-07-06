@@ -44,11 +44,23 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	// Canonical model for capability gating only; wire model is untouched.
 	capModel := schemas.ResolveCanonicalModel(ctx, bifrostReq.Model)
 
+	// Normalize any namespace-tagged tool_search bridge call/output pairs
+	// (Bifrost's own caller-facing convention, produced when a prior turn's
+	// response was collapsed for an Anthropic backend -- see the egress
+	// collapse in AnthropicMessageResponse.ToBifrostResponsesResponse) back
+	// into the neutral tool_search_tool_call hub item before the loop below.
+	// Without this, a bridge pair replayed straight through to OpenAI is
+	// indistinguishable from a real function call and carries an
+	// Anthropic-native call ID, which a real OpenAI-compatible backend
+	// rejects ("Expected an ID that begins with 'fc'") -- found live. No-op
+	// unless a bridge item is present.
+	input := schemas.ExpandToolSearchBridgeItems(bifrostReq.Input)
+
 	var messages []schemas.ResponsesMessage
 	// OpenAI models (except for gpt-oss) do not support reasoning content blocks, so we need to convert them to summaries, if there are any
 	// OpenAI also doesn't support compaction content blocks, so we need to convert them to text blocks
-	messages = make([]schemas.ResponsesMessage, 0, len(bifrostReq.Input))
-	for _, message := range bifrostReq.Input {
+	messages = make([]schemas.ResponsesMessage, 0, len(input))
+	for _, message := range input {
 		// Anthropic-origin tool_search_tool_call history items (a completed
 		// tool_search_tool_bm25/_regex round trip) are not valid on OpenAI's
 		// wire -- convert to OpenAI's own native tool_search_call +

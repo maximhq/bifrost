@@ -3814,7 +3814,10 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 			// caller) into the two native tool_search declarations Anthropic
 			// expects, before the per-tool egress switch below. No-op (same
 			// slice returned) unless the reserved bridge namespace is present.
-			toolsForAnthropic, _ := schemas.ExpandToolSearchBridgeDeclaration(bifrostReq.Params.Tools)
+			toolsForAnthropic, bridgeActive := schemas.ExpandToolSearchBridgeDeclaration(bifrostReq.Params.Tools)
+			if bridgeActive && ctx != nil {
+				ctx.SetValue(schemas.BifrostContextKeyToolSearchBridgeActive, true)
+			}
 			anthropicTools, mcpServers := convertBifrostToolsToAnthropic(capModel, toolsForAnthropic, bifrostReq.Provider)
 			if len(anthropicTools) > 0 {
 				if anthropicReq.Tools == nil {
@@ -4029,6 +4032,24 @@ func (response *AnthropicMessageResponse) ToBifrostResponsesResponse(ctx *schema
 			}
 			bifrostResp.Output = outputMessages
 		}
+	}
+
+	// If the caller declared tool_search via Bifrost's own namespace bridge
+	// (see schemas.ExpandToolSearchBridgeDeclaration, set on ingest above),
+	// collapse any completed tool_search_tool_call item back into the
+	// caller-facing function_call/function_call_output pair tagged with the
+	// reserved bridge namespace, instead of leaking the internal neutral hub
+	// type onto the wire.
+	if bridgeActive, ok := ctx.Value(schemas.BifrostContextKeyToolSearchBridgeActive).(bool); ok && bridgeActive && len(bifrostResp.Output) > 0 {
+		collapsed := make([]schemas.ResponsesMessage, 0, len(bifrostResp.Output))
+		for _, msg := range bifrostResp.Output {
+			if pair := schemas.CollapseToolSearchItemToNamespacePair(msg); pair != nil {
+				collapsed = append(collapsed, pair...)
+				continue
+			}
+			collapsed = append(collapsed, msg)
+		}
+		bifrostResp.Output = collapsed
 	}
 
 	bifrostResp.Model = response.Model

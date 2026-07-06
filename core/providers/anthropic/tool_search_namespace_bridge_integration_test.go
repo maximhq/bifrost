@@ -1,6 +1,7 @@
 package anthropic
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -201,5 +202,160 @@ func TestToolSearchNamespaceBridge_ProviderSwitchNoAnthropicLeakage(t *testing.T
 	if bifrostReq.Params.Tools[1].Name == nil || !schemas.IsToolSearchBridgeNamespace(bifrostReq.Params.Tools[1].Name) {
 		t.Fatalf("bridge namespace declaration must still be present, untouched, for a subsequent OpenAI-backend dispatch: %+v",
 			bifrostReq.Params.Tools[1])
+	}
+}
+
+// TestToolSearchNamespaceBridge_ResponseEgress is the full round trip: a
+// caller declares tool_search via the namespace bridge (ingest sets
+// schemas.BifrostContextKeyToolSearchBridgeActive on the context), Anthropic
+// completes a real tool_search_tool_bm25 call, and the response converted
+// back via ToBifrostResponsesResponse must show the caller the
+// namespace-disguised function_call/function_call_output pair -- not the
+// internal neutral tool_search_tool_call hub type -- so a strict
+// OpenAI-Responses-spec client (which has no concept of
+// "tool_search_tool_call") can parse it.
+func TestToolSearchNamespaceBridge_ResponseEgress(t *testing.T) {
+	bifrostReq := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-opus-4-8",
+		Params: &schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{
+				{
+					Type: schemas.ResponsesToolTypeNamespace,
+					Name: schemas.Ptr(schemas.ToolSearchBridgeNamespaceID),
+					ResponsesToolNamespace: &schemas.ResponsesToolNamespace{
+						Tools: []schemas.ResponsesTool{
+							{Type: schemas.ResponsesToolTypeFunction, Name: schemas.Ptr(schemas.ToolSearchBridgeFuncBM25)},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(nil, time.Time{})
+	if _, err := ToAnthropicResponsesRequest(ctx, bifrostReq); err != nil {
+		t.Fatalf("ToAnthropicResponsesRequest: %v", err)
+	}
+
+	anthropicResp := &AnthropicMessageResponse{
+		ID:    "msg_1",
+		Model: "claude-opus-4-8",
+		Content: []AnthropicContentBlock{
+			{
+				Type: AnthropicContentBlockTypeServerToolUse,
+				ID:   schemas.Ptr("srvtoolu_bm25_1"),
+				Name: schemas.Ptr("tool_search_tool_bm25"),
+				Input: json.RawMessage(`{"query":"weather lookup"}`),
+			},
+			{
+				Type:      AnthropicContentBlockTypeToolSearchToolResult,
+				ToolUseID: schemas.Ptr("srvtoolu_bm25_1"),
+				Content: &AnthropicContent{
+					ContentObj: &AnthropicContentBlock{
+						Type: AnthropicContentBlockTypeToolSearchToolSearchResult,
+						ToolReferences: []AnthropicContentBlock{
+							{ToolName: schemas.Ptr("get_weather")},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	bifrostResp := anthropicResp.ToBifrostResponsesResponse(ctx)
+	if bifrostResp == nil {
+		t.Fatal("ToBifrostResponsesResponse returned nil")
+	}
+
+	var sawFunctionCall, sawFunctionCallOutput, sawRawHubLeak bool
+	for _, msg := range bifrostResp.Output {
+		if msg.Type == nil {
+			continue
+		}
+		switch *msg.Type {
+		case schemas.ResponsesMessageTypeAnthropicToolSearchCall:
+			sawRawHubLeak = true
+		case schemas.ResponsesMessageTypeFunctionCall:
+			if msg.ResponsesToolMessage == nil || !schemas.IsToolSearchBridgeNamespace(msg.ResponsesToolMessage.Namespace) {
+				t.Errorf("expected function_call tagged with the bridge namespace, got %+v", msg.ResponsesToolMessage)
+			}
+			if msg.ResponsesToolMessage.Name == nil || *msg.ResponsesToolMessage.Name != schemas.ToolSearchBridgeFuncBM25 {
+				t.Errorf("expected the bridge function name tool_search_bm25, got %+v", msg.ResponsesToolMessage.Name)
+			}
+			sawFunctionCall = true
+		case schemas.ResponsesMessageTypeFunctionCallOutput:
+			if msg.ResponsesToolMessage == nil || !schemas.IsToolSearchBridgeNamespace(msg.ResponsesToolMessage.Namespace) {
+				t.Errorf("expected function_call_output tagged with the bridge namespace, got %+v", msg.ResponsesToolMessage)
+			}
+			sawFunctionCallOutput = true
+		}
+	}
+
+	if sawRawHubLeak {
+		t.Error("internal tool_search_tool_call hub type must not reach the caller when the bridge is active")
+	}
+	if !sawFunctionCall {
+		t.Errorf("expected a namespace-tagged function_call item in the response, got %+v", bifrostResp.Output)
+	}
+	if !sawFunctionCallOutput {
+		t.Errorf("expected a namespace-tagged function_call_output item in the response, got %+v", bifrostResp.Output)
+	}
+}
+
+// TestToolSearchNamespaceBridge_ResponseEgress_InactiveWhenNotDeclared
+// verifies the collapse only fires when the caller actually used the bridge
+// namespace on ingest -- a caller declaring tool_search natively (not via the
+// bridge) must keep seeing the raw neutral hub type unchanged.
+func TestToolSearchNamespaceBridge_ResponseEgress_InactiveWhenNotDeclared(t *testing.T) {
+	bifrostReq := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-opus-4-8",
+		Params: &schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{
+				{Type: schemas.ResponsesToolTypeToolSearch, Name: schemas.Ptr("tool_search_tool_bm25")},
+			},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(nil, time.Time{})
+	if _, err := ToAnthropicResponsesRequest(ctx, bifrostReq); err != nil {
+		t.Fatalf("ToAnthropicResponsesRequest: %v", err)
+	}
+
+	anthropicResp := &AnthropicMessageResponse{
+		ID:    "msg_1",
+		Model: "claude-opus-4-8",
+		Content: []AnthropicContentBlock{
+			{
+				Type: AnthropicContentBlockTypeServerToolUse,
+				ID:   schemas.Ptr("srvtoolu_bm25_1"),
+				Name: schemas.Ptr("tool_search_tool_bm25"),
+				Input: json.RawMessage(`{"query":"weather lookup"}`),
+			},
+			{
+				Type:      AnthropicContentBlockTypeToolSearchToolResult,
+				ToolUseID: schemas.Ptr("srvtoolu_bm25_1"),
+				Content: &AnthropicContent{
+					ContentObj: &AnthropicContentBlock{
+						Type: AnthropicContentBlockTypeToolSearchToolSearchResult,
+						ToolReferences: []AnthropicContentBlock{
+							{ToolName: schemas.Ptr("get_weather")},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	bifrostResp := anthropicResp.ToBifrostResponsesResponse(ctx)
+	var sawRawHub bool
+	for _, msg := range bifrostResp.Output {
+		if msg.Type != nil && *msg.Type == schemas.ResponsesMessageTypeAnthropicToolSearchCall {
+			sawRawHub = true
+		}
+	}
+	if !sawRawHub {
+		t.Errorf("expected the raw neutral tool_search_tool_call item when the bridge wasn't declared, got %+v", bifrostResp.Output)
 	}
 }
