@@ -55,6 +55,7 @@ func (noopPluginsLoader) GetLoadedPluginNames() []string { return nil }
 func (noopPluginsLoader) NormalizePluginConfig(_ string, _ map[string]any) (map[string]any, error) {
 	return nil, nil
 }
+
 func (noopPluginsLoader) ExpandPluginConfigForAPI(_ string, _ map[string]any) (map[string]any, error) {
 	return nil, nil
 }
@@ -127,7 +128,7 @@ func TestRestoreRedacted_OTELProfilesHeaders(t *testing.T) {
 	}
 
 	// An intentional env.* reference (e.g. credential rotation) must pass through.
-	// NewEnvVar parses the "env." prefix as FromEnv=true, which IsRedacted reports as
+	// NewSecretVar parses the "env." prefix as FromEnv=true, which IsRedacted reports as
 	// redacted; the IsFromEnv guard must let it through rather than restoring the stored value.
 	rotated := mkConfig("env.NEW_TOKEN", "env.NEW_VERSION")
 	got3 := restoreRedactedFromExisting(rotated, existing)

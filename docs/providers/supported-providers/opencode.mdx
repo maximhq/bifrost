@@ -112,7 +112,7 @@ For OpenCode Zen:
 case schemas.OpencodeZen:
     return []schemas.Key{{
         Name:   "zen-key-1",
-        Value:  *schemas.NewEnvVar("env.OPENCODE_API_KEY"),
+        Value:  *schemas.NewSecretVar("env.OPENCODE_API_KEY"),
         Models: []string{"*"},
         Weight: 1.0,
     }}, nil
@@ -124,7 +124,7 @@ For OpenCode Go:
 case schemas.OpencodeGo:
     return []schemas.Key{{
         Name:   "go-key-1",
-        Value:  *schemas.NewEnvVar("env.OPENCODE_API_KEY"),
+        Value:  *schemas.NewSecretVar("env.OPENCODE_API_KEY"),
         Models: []string{"*"},
         Weight: 1.0,
     }}, nil
