@@ -3465,6 +3465,7 @@ func TestThinkingBudgetValidation_Chat(t *testing.T) {
 		wantDisabled bool   // budget=0: expect IncludeThoughts=false
 		wantDynamic  bool   // budget=-1: expect ThinkingBudget=-1
 		wantBudget   *int32 // expected ThinkingBudget value when no error
+		wantNoConfig bool
 	}{
 		// gemini-2.5-pro: valid range [128, 32768]
 		{
@@ -3551,10 +3552,16 @@ func TestThinkingBudgetValidation_Chat(t *testing.T) {
 
 		// Special values — exempt from range checks on any model.
 		{
-			name:         "budget_zero_disables_thinking",
-			model:        "gemini-2.5-pro",
+			name:         "flash_budget_zero_disables_thinking",
+			model:        "gemini-2.5-flash",
 			budget:       0,
 			wantDisabled: true,
+		},
+		{
+			name:         "pro_budget_zero_omits_thinking_config",
+			model:        "gemini-2.5-pro",
+			budget:       0,
+			wantNoConfig: true,
 		},
 		{
 			name:        "budget_minus_one_dynamic",
@@ -3585,6 +3592,10 @@ func TestThinkingBudgetValidation_Chat(t *testing.T) {
 
 			require.NoError(t, err)
 			require.NotNil(t, result)
+			if tt.wantNoConfig {
+				assert.Nil(t, result.GenerationConfig.ThinkingConfig)
+				return
+			}
 			require.NotNil(t, result.GenerationConfig.ThinkingConfig, "ThinkingConfig should be set")
 
 			tc := result.GenerationConfig.ThinkingConfig
@@ -3615,6 +3626,7 @@ func TestThinkingBudgetValidation_Responses(t *testing.T) {
 		wantDisabled bool
 		wantDynamic  bool
 		wantBudget   *int32
+		wantNoConfig bool
 	}{
 		// gemini-2.5-pro
 		{
@@ -3658,6 +3670,12 @@ func TestThinkingBudgetValidation_Responses(t *testing.T) {
 			wantDisabled: true,
 		},
 		{
+			name:         "pro_budget_zero_omits_thinking_config",
+			model:        "gemini-2.5-pro",
+			budget:       0,
+			wantNoConfig: true,
+		},
+		{
 			name:        "budget_minus_one_dynamic",
 			model:       "gemini-2.5-pro",
 			budget:      -1,
@@ -3685,6 +3703,10 @@ func TestThinkingBudgetValidation_Responses(t *testing.T) {
 
 			require.NoError(t, err)
 			require.NotNil(t, result)
+			if tt.wantNoConfig {
+				assert.Nil(t, result.GenerationConfig.ThinkingConfig)
+				return
+			}
 			require.NotNil(t, result.GenerationConfig.ThinkingConfig, "ThinkingConfig should be set")
 
 			tc := result.GenerationConfig.ThinkingConfig
@@ -3702,6 +3724,25 @@ func TestThinkingBudgetValidation_Responses(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestThinkingBudgetZeroUnsupportedForProResponses(t *testing.T) {
+	effortNone := "none"
+
+	req := &schemas.BifrostResponsesRequest{
+		Model: "gemini-2.5-pro",
+		Params: &schemas.ResponsesParameters{
+			Reasoning: &schemas.ResponsesParametersReasoning{
+				Effort: &effortNone,
+			},
+		},
+	}
+
+	result, err := gemini.ToGeminiResponsesRequest(nil, req)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Nil(t, result.GenerationConfig.ThinkingConfig)
 }
 
 // TestThinkingBudgetEffortUsesModelRange verifies that effort-based budget
