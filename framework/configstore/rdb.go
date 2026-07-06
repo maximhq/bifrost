@@ -3299,6 +3299,9 @@ func (s *RDBConfigStore) GetVirtualKeyByValue(ctx context.Context, value string)
 	// Use hash-based lookup if hash column is populated, fall back to plaintext for backward compat
 	if err := query.Where("value_hash = ?", valueHash).First(&virtualKey).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
+			if schemas.IsSecretRef(value) {
+				return nil, ErrNotFound
+			}
 			// Fallback: try plaintext lookup for rows not yet migrated
 			if err := query.Where("value = ?", value).First(&virtualKey).Error; err != nil {
 				if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -3326,6 +3329,9 @@ func (s *RDBConfigStore) GetVirtualKeyQuotaByValue(ctx context.Context, value st
 		Preload("ProviderConfigs.RateLimit")
 	if err := baseQuery.Session(&gorm.Session{}).Where("value_hash = ?", valueHash).First(&virtualKey).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
+			if schemas.IsSecretRef(value) {
+				return nil, ErrNotFound
+			}
 			// Fallback: try plaintext lookup for rows not yet migrated
 			if err := baseQuery.Session(&gorm.Session{}).Where("value = ?", value).First(&virtualKey).Error; err != nil {
 				if errors.Is(err, gorm.ErrRecordNotFound) {

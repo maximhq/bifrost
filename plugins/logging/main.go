@@ -110,7 +110,13 @@ func applyLargePayloadPreviewsToEntry(ctx *schemas.BifrostContext, entry *logsto
 
 // sanitizeErrorForLogging returns a shallow copy of err with ExtraFields.RawRequest and
 // RawResponse cleared when raw-byte persistence is disabled, preventing raw bytes from
-// leaking into entry.ErrorDetails via JSON serialization.
+// leaking into the store via JSON serialization.
+//
+// Every assignment to ErrorDetailsParsed (Log and MCPToolLog alike) must go through this
+// function: logstore's SerializeFields, which runs on every write path (BeforeCreate hook,
+// hybrid store, rdb batch writes), serializes ErrorDetailsParsed into the error_details
+// column and overwrites anything a caller put in ErrorDetails. Callers set only the
+// sanitized ErrorDetailsParsed and leave the string serialization to SerializeFields.
 func sanitizeErrorForLogging(err *schemas.BifrostError, contentLoggingEnabled, shouldStoreRaw bool) *schemas.BifrostError {
 	if err == nil {
 		return nil
@@ -921,10 +927,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			}
 			applyModelAlias(entry, originalModelRequested, resolvedModelUsed)
 			applyResolvedAliasInfo(entry, resolvedKeyAlias)
-			if data, err := sonic.Marshal(sanitizeErrorForLogging(bifrostErr, contentLoggingEnabled, shouldStoreRaw)); err == nil {
-				entry.ErrorDetails = string(data)
-			}
-			entry.ErrorDetailsParsed = bifrostErr
+			entry.ErrorDetailsParsed = sanitizeErrorForLogging(bifrostErr, contentLoggingEnabled, shouldStoreRaw)
 			if nodeID, _ := p.clusterNodeID.Load().(string); nodeID != "" {
 				entry.ClusterNodeID = &nodeID
 			}
@@ -1058,13 +1061,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			tracer.CleanupStreamAccumulator(traceID)
 		}
 
-		// Serialize error details immediately since bifrostErr may be released
-		// back to the pool before the async batch writer processes this entry.
-		// Also set ErrorDetailsParsed for UI callback (JSON serialization uses this field).
-		if data, err := sonic.Marshal(sanitizeErrorForLogging(bifrostErr, contentLoggingEnabled, shouldStoreRaw)); err == nil {
-			entry.ErrorDetails = string(data)
-		}
-		entry.ErrorDetailsParsed = bifrostErr
+		entry.ErrorDetailsParsed = sanitizeErrorForLogging(bifrostErr, contentLoggingEnabled, shouldStoreRaw)
 		if shouldStoreRaw && contentLoggingEnabled {
 			if bifrostErr.ExtraFields.RawRequest != nil {
 				rawReqBytes, err := sonic.Marshal(bifrostErr.ExtraFields.RawRequest)
@@ -1105,10 +1102,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			entry.Status = logStatusForError(bifrostErr)
 			entry.Stream = true
 			applyModelAlias(entry, originalModelRequested, resolvedModelUsed)
-			if data, err := sonic.Marshal(sanitizeErrorForLogging(bifrostErr, contentLoggingEnabled, shouldStoreRaw)); err == nil {
-				entry.ErrorDetails = string(data)
-			}
-			entry.ErrorDetailsParsed = bifrostErr
+			entry.ErrorDetailsParsed = sanitizeErrorForLogging(bifrostErr, contentLoggingEnabled, shouldStoreRaw)
 			// Backfill raw request/response on streaming-error path so cancellation/timeout
 			// log entries still carry raw payloads when content logging + raw storage are
 			// enabled. Mirrors the non-streaming Path A pattern at line 872. Prefer the
@@ -1151,7 +1145,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			entry.Stream = true
 			p.applyStreamingOutputToEntry(entry, streamResponse, shouldStoreRaw, contentLoggingEnabled)
 		}
-		if entry.ErrorDetails != "" || entry.ErrorDetailsParsed != nil {
+		if entry.ErrorDetailsParsed != nil {
 			entry.Status = logStatusForError(entry.ErrorDetailsParsed)
 		}
 		// Backfill passthrough status_code from response (streaming path)
@@ -1187,13 +1181,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	if bifrostErr != nil {
 		entry.Status = logStatusForError(bifrostErr)
 		applyModelAlias(entry, originalModelRequested, resolvedModelUsed)
-		// Serialize error details immediately since bifrostErr may be released
-		// back to the pool before the async batch writer processes this entry.
-		// Also set ErrorDetailsParsed for UI callback (JSON serialization uses this field).
-		if data, err := sonic.Marshal(sanitizeErrorForLogging(bifrostErr, contentLoggingEnabled, shouldStoreRaw)); err == nil {
-			entry.ErrorDetails = string(data)
-		}
-		entry.ErrorDetailsParsed = bifrostErr
+		entry.ErrorDetailsParsed = sanitizeErrorForLogging(bifrostErr, contentLoggingEnabled, shouldStoreRaw)
 		// Realtime turns that fail mid-stream still need their input transcript
 		// surfaced — backfill from bifrostErr.ExtraFields.RawRequest if present.
 		if requestType == schemas.RealtimeRequest {
@@ -1597,7 +1585,8 @@ func (p *LoggerPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.Bi
 
 	if bifrostErr != nil {
 		entry.Status = "error"
-		entry.ErrorDetailsParsed = bifrostErr
+		shouldStoreRaw, _ := ctx.Value(schemas.BifrostContextKeyShouldStoreRawInLogs).(bool)
+		entry.ErrorDetailsParsed = sanitizeErrorForLogging(bifrostErr, p.contentLoggingEnabled(ctx), shouldStoreRaw)
 	} else if resp != nil {
 		entry.Status = "success"
 		if p.contentLoggingEnabled(ctx) {

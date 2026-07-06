@@ -419,17 +419,20 @@ func TestApplyStreamingOutputToEntryPreservesAccumulatorCancelledStatus(t *testi
 	if entry.Status != "cancelled" {
 		t.Fatalf("expected initial cancelled status, got %q", entry.Status)
 	}
-	if entry.ErrorDetails == "" {
-		t.Fatalf("expected serialized error details to be set")
-	}
 	if entry.ErrorDetailsParsed == nil {
 		t.Fatalf("expected parsed error details to be set")
+	}
+	if err := entry.SerializeFields(); err != nil {
+		t.Fatalf("SerializeFields() error: %v", err)
+	}
+	if entry.ErrorDetails == "" {
+		t.Fatalf("expected serialized error details after SerializeFields")
 	}
 
 	// Match the downstream Path B re-derivation in PostLLMHook. If
 	// ErrorDetailsParsed is missing, this collapses accumulator-originated
 	// cancellations back to "error".
-	if entry.ErrorDetails != "" || entry.ErrorDetailsParsed != nil {
+	if entry.ErrorDetailsParsed != nil {
 		entry.Status = logStatusForError(entry.ErrorDetailsParsed)
 	}
 	if entry.Status != "cancelled" {

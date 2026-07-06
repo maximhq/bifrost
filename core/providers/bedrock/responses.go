@@ -1773,12 +1773,20 @@ func ToBedrockConverseStreamResponse(bifrostResp *schemas.BifrostResponsesStream
 	case schemas.ResponsesStreamResponseTypeOutputTextDone,
 		schemas.ResponsesStreamResponseTypeContentPartDone,
 		schemas.ResponsesStreamResponseTypeReasoningSummaryTextDone:
-		// Content block done - Bedrock doesn't have explicit done events, so we skip them
+		// Content block done - the contentBlockStop is emitted on OutputItemDone,
+		// matching the invoke path
 		return nil, nil
 
 	case schemas.ResponsesStreamResponseTypeOutputItemDone:
-		// Item done - Bedrock doesn't have explicit done events, so we skip them
-		return nil, nil
+		// Item done - emit contentBlockStop. Bedrock terminates every content block
+		// with a contentBlockStop event carrying the block's index; consumers that
+		// assemble the message on block boundaries never finalize a block without it.
+		contentBlockIndex := 0
+		if bifrostResp.ContentIndex != nil {
+			contentBlockIndex = *bifrostResp.ContentIndex
+		}
+		event.ContentBlockIndex = &contentBlockIndex
+		event.ContentBlockStop = true
 
 	case schemas.ResponsesStreamResponseTypeCompleted:
 		// Message stop - always set stopReason
@@ -1865,6 +1873,17 @@ func (event *BedrockStreamEvent) ToEncodedEvents() []BedrockEncodedEvent {
 				ContentBlockIndex *int                      `json:"contentBlockIndex"`
 			}{
 				Delta:             event.Delta,
+				ContentBlockIndex: event.ContentBlockIndex,
+			},
+		})
+	}
+
+	if event.ContentBlockStop {
+		events = append(events, BedrockEncodedEvent{
+			EventType: "contentBlockStop",
+			Payload: struct {
+				ContentBlockIndex *int `json:"contentBlockIndex"`
+			}{
 				ContentBlockIndex: event.ContentBlockIndex,
 			},
 		})

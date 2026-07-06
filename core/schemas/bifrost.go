@@ -2,6 +2,7 @@
 package schemas
 
 import (
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -116,6 +117,12 @@ var StandardProviders = []ModelProvider{
 
 // RequestType represents the type of request being made to a provider.
 type RequestType string
+
+// Value implements driver.Valuer so database drivers that append typed
+// column values (e.g. clickhouse-go batch inserts) can serialize the type.
+func (r RequestType) Value() (driver.Value, error) {
+	return string(r), nil
+}
 
 const (
 	ListModelsRequest            RequestType = "list_models"
