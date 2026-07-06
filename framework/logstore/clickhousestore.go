@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/maximhq/bifrost/core/schemas"
 	"gorm.io/gorm"
 	"gorm.io/gorm/schema"
 )
@@ -149,6 +151,172 @@ func chApplyStructUpdate(ctx context.Context, st *schema.Schema, dest, src refle
 // `final = 1` reads).
 func (s *ClickHouseLogStore) chReinsert(ctx context.Context, v interface{}) error {
 	return s.db.WithContext(ctx).Session(&gorm.Session{SkipHooks: true}).Create(v).Error
+}
+
+// UpsertBatchJob applies the SQL store's non-zero lifecycle merge using a
+// ReplacingMergeTree read-modify-reinsert cycle.
+func (s *ClickHouseLogStore) UpsertBatchJob(ctx context.Context, job *BatchJob) error {
+	if err := validateBatchJobIdentity(job); err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	if job.AccountingStatus == "" {
+		job.AccountingStatus = BatchJobAccountingStatusPending
+	}
+	if job.CreatedAt.IsZero() {
+		job.CreatedAt = now
+	}
+	job.UpdatedAt = now
+
+	defer s.lockRMW("batch_jobs", job.ID)()
+	var existing BatchJob
+	err := s.db.WithContext(ctx).Where("id = ?", job.ID).First(&existing).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return s.db.WithContext(ctx).Create(job).Error
+	}
+	if err != nil {
+		return err
+	}
+	if job.Model != "" {
+		existing.Model = job.Model
+	}
+	if job.Endpoint != "" {
+		existing.Endpoint = job.Endpoint
+	}
+	if job.ProviderStatus != "" {
+		existing.ProviderStatus = job.ProviderStatus
+	}
+	if job.InputFileID != "" {
+		existing.InputFileID = job.InputFileID
+	}
+	if job.OutputFileID != nil {
+		existing.OutputFileID = job.OutputFileID
+	}
+	if job.ErrorFileID != nil {
+		existing.ErrorFileID = job.ErrorFileID
+	}
+	if job.ResultsURL != nil {
+		existing.ResultsURL = job.ResultsURL
+	}
+	if job.NextCheckAt != nil {
+		existing.NextCheckAt = job.NextCheckAt
+	}
+	if job.PollAttempts > 0 {
+		existing.PollAttempts = job.PollAttempts
+	}
+	if IsTerminalBatchProviderStatus(job.ProviderStatus) &&
+		job.ProviderStatus != string(schemas.BatchStatusCompleted) &&
+		job.ProviderStatus != string(schemas.BatchStatusEnded) {
+		existing.NextCheckAt = nil
+	}
+	existing.UpdatedAt = now
+	return s.chReinsert(ctx, &existing)
+}
+
+func (s *ClickHouseLogStore) ClaimBatchJobAccounting(ctx context.Context, jobID string, claimedBy string, ttl time.Duration) (string, bool, error) {
+	if jobID == "" {
+		return "", false, fmt.Errorf("batch job id is required")
+	}
+	if ttl <= 0 {
+		ttl = 5 * time.Minute
+	}
+	defer s.lockRMW("batch_jobs", jobID)()
+	var job BatchJob
+	if err := s.db.WithContext(ctx).Where("id = ?", jobID).First(&job).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	now := time.Now().UTC()
+	if job.AccountingStatus == BatchJobAccountingStatusAccounted || job.AccountingStatus == BatchJobAccountingStatusUnpriceable {
+		return "", false, nil
+	}
+	if job.AccountingStatus == BatchJobAccountingStatusProcessing && job.ClaimExpiresAt != nil && job.ClaimExpiresAt.After(now) {
+		return "", false, nil
+	}
+	token := uuid.NewString()
+	job.AccountingStatus = BatchJobAccountingStatusProcessing
+	job.ClaimedBy = &claimedBy
+	job.ClaimToken = &token
+	expires := now.Add(ttl)
+	job.ClaimExpiresAt = &expires
+	job.LastError = nil
+	job.UpdatedAt = now
+	if err := s.chReinsert(ctx, &job); err != nil {
+		return "", false, err
+	}
+	return token, true, nil
+}
+
+func (s *ClickHouseLogStore) updateClaimedBatchJob(ctx context.Context, jobID, claimToken string, update func(*BatchJob, time.Time)) error {
+	if jobID == "" || claimToken == "" {
+		return fmt.Errorf("batch job id and claim token are required")
+	}
+	defer s.lockRMW("batch_jobs", jobID)()
+	var job BatchJob
+	if err := s.db.WithContext(ctx).Where("id = ?", jobID).First(&job).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrNotFound
+		}
+		return err
+	}
+	if job.AccountingStatus != BatchJobAccountingStatusProcessing || job.ClaimToken == nil || *job.ClaimToken != claimToken {
+		return ErrNotFound
+	}
+	now := time.Now().UTC()
+	update(&job, now)
+	job.UpdatedAt = now
+	return s.chReinsert(ctx, &job)
+}
+
+func (s *ClickHouseLogStore) MarkBatchJobAggregateLogWritten(ctx context.Context, jobID string, claimToken string) error {
+	return s.updateClaimedBatchJob(ctx, jobID, claimToken, func(job *BatchJob, now time.Time) {
+		job.AggregateLogWrittenAt = &now
+		job.LastError = nil
+	})
+}
+
+func (s *ClickHouseLogStore) MarkBatchJobGovernanceReported(ctx context.Context, jobID string, claimToken string) error {
+	return s.updateClaimedBatchJob(ctx, jobID, claimToken, func(job *BatchJob, now time.Time) {
+		job.GovernanceReportedAt = &now
+		job.LastError = nil
+	})
+}
+
+func (s *ClickHouseLogStore) CompleteBatchJobAccounting(ctx context.Context, jobID string, claimToken string) error {
+	return s.updateClaimedBatchJob(ctx, jobID, claimToken, func(job *BatchJob, _ time.Time) {
+		job.AccountingStatus = BatchJobAccountingStatusAccounted
+		job.ClaimToken = nil
+		job.ClaimExpiresAt = nil
+		job.UnpriceableReason = nil
+		job.LastError = nil
+	})
+}
+
+func (s *ClickHouseLogStore) finishBatchJobAccounting(ctx context.Context, jobID, claimToken, status, reason string, reportedErr error) error {
+	return s.updateClaimedBatchJob(ctx, jobID, claimToken, func(job *BatchJob, _ time.Time) {
+		job.AccountingStatus = status
+		job.ClaimToken = nil
+		job.ClaimExpiresAt = nil
+		if reason != "" {
+			job.UnpriceableReason = &reason
+		}
+		if reportedErr != nil {
+			message := reportedErr.Error()
+			job.LastError = &message
+		} else {
+			job.LastError = nil
+		}
+	})
+}
+
+func (s *ClickHouseLogStore) MarkBatchJobUnpriceable(ctx context.Context, jobID string, claimToken string, reason string, err error) error {
+	return s.finishBatchJobAccounting(ctx, jobID, claimToken, BatchJobAccountingStatusUnpriceable, reason, err)
+}
+
+func (s *ClickHouseLogStore) FailBatchJobAccounting(ctx context.Context, jobID string, claimToken string, err error) error {
+	return s.finishBatchJobAccounting(ctx, jobID, claimToken, BatchJobAccountingStatusError, "", err)
 }
 
 // --- Inserts (existence check first; RMT dedup is last-write-wins) ---

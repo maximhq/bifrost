@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/batchaccounting"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/stretchr/testify/assert"
@@ -18,6 +19,26 @@ import (
 type accountingFixture struct {
 	store   GovernanceStore
 	tracker *UsageTracker
+}
+
+func TestReportBatchUsage_IdempotentPerAggregateAndTarget(t *testing.T) {
+	f := newAccountingFixture(t)
+	plugin := &GovernancePlugin{store: f.store, tracker: f.tracker}
+	report := batchaccounting.BatchUsageReport{
+		RequestID:    "batch-cost:openai:batch-1",
+		Provider:     schemas.OpenAI,
+		Model:        "gpt-4o-mini",
+		Cost:         12.5,
+		TokensUsed:   123,
+		BudgetIDs:    []string{"budget1"},
+		RateLimitIDs: []string{"rl1"},
+	}
+
+	require.NoError(t, plugin.ReportBatchUsage(context.Background(), report))
+	require.NoError(t, plugin.ReportBatchUsage(context.Background(), report))
+	assert.Equal(t, 12.5, f.cost())
+	assert.Equal(t, int64(123), f.tokens())
+	assert.Equal(t, int64(1), f.requests())
 }
 
 func newAccountingFixture(t *testing.T) *accountingFixture {

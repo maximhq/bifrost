@@ -1989,7 +1989,7 @@ func TestAccountBatchResults_NonResultsResponseIsNoop(t *testing.T) {
 		ListModelsResponse: &schemas.BifrostListModelsResponse{},
 	}
 	// accountBatchResults with no BatchResultsResponse should be a no-op
-	plugin.accountBatchResults(entry, nonResultsResult, nil, nil)
+	plugin.accountBatchResults(entry, nonResultsResult, nil)
 
 	// Verify no batch_jobs rows were created
 	jobs, err := store.FindDueBatchJobs(context.Background(), "openai", time.Now().UTC().Add(time.Hour), 100)
@@ -2022,7 +2022,7 @@ func TestAccountBatchResults_EmptyResultsMarksUnpriceable(t *testing.T) {
 		},
 	}
 
-	plugin.accountBatchResults(entry, result, nil, nil)
+	plugin.accountBatchResults(entry, result, nil)
 
 	job, err := store.FindBatchJobByID(context.Background(), logstore.BatchJobID("openai", "batch-empty-results"))
 	if err != nil {

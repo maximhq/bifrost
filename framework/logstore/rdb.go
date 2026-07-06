@@ -418,17 +418,26 @@ func BatchJobID(provider, batchID string) string {
 	return fmt.Sprintf("batch-job:%s:%s", provider, batchID)
 }
 
-func (s *RDBLogStore) UpsertBatchJob(ctx context.Context, job *BatchJob) error {
+func validateBatchJobIdentity(job *BatchJob) error {
 	if job == nil {
 		return fmt.Errorf("batch job is nil")
 	}
 	if job.Provider == "" || job.BatchID == "" {
 		return fmt.Errorf("batch job provider and batch_id are required")
 	}
-	now := time.Now().UTC()
-	if job.ID == "" {
-		job.ID = BatchJobID(job.Provider, job.BatchID)
+	canonicalID := BatchJobID(job.Provider, job.BatchID)
+	if job.ID != "" && job.ID != canonicalID {
+		return fmt.Errorf("batch job id %q does not match canonical id %q", job.ID, canonicalID)
 	}
+	job.ID = canonicalID
+	return nil
+}
+
+func (s *RDBLogStore) UpsertBatchJob(ctx context.Context, job *BatchJob) error {
+	if err := validateBatchJobIdentity(job); err != nil {
+		return err
+	}
+	now := time.Now().UTC()
 	if job.AccountingStatus == "" {
 		job.AccountingStatus = BatchJobAccountingStatusPending
 	}
@@ -448,6 +457,9 @@ func (s *RDBLogStore) UpsertBatchJob(ctx context.Context, job *BatchJob) error {
 	updates := map[string]interface{}{"updated_at": now}
 	if job.Model != "" {
 		updates["model"] = job.Model
+	}
+	if job.Endpoint != "" {
+		updates["endpoint"] = job.Endpoint
 	}
 	if job.ProviderStatus != "" {
 		updates["provider_status"] = job.ProviderStatus
@@ -470,7 +482,9 @@ func (s *RDBLogStore) UpsertBatchJob(ctx context.Context, job *BatchJob) error {
 	if job.PollAttempts > 0 {
 		updates["poll_attempts"] = job.PollAttempts
 	}
-	if IsTerminalBatchProviderStatus(job.ProviderStatus) && job.ProviderStatus != string(schemas.BatchStatusCompleted) {
+	if IsTerminalBatchProviderStatus(job.ProviderStatus) &&
+		job.ProviderStatus != string(schemas.BatchStatusCompleted) &&
+		job.ProviderStatus != string(schemas.BatchStatusEnded) {
 		updates["next_check_at"] = nil
 	}
 
@@ -557,7 +571,10 @@ func (s *RDBLogStore) ClaimBatchJobAccounting(ctx context.Context, jobID string,
 	return claimToken, true, nil
 }
 
-func (s *RDBLogStore) MarkBatchJobAggregateLogWritten(ctx context.Context, jobID string, claimToken string) error {
+// markBatchJobTimestamp sets a single lifecycle timestamp column on a claimed,
+// still-processing batch job and clears any prior error. Shared by the per-stage
+// Mark* transitions; column is always a hardcoded literal at the call site.
+func (s *RDBLogStore) markBatchJobTimestamp(ctx context.Context, jobID, claimToken, column string) error {
 	if jobID == "" || claimToken == "" {
 		return fmt.Errorf("batch job id and claim token are required")
 	}
@@ -566,9 +583,9 @@ func (s *RDBLogStore) MarkBatchJobAggregateLogWritten(ctx context.Context, jobID
 		Where("id = ? AND claim_token = ?", jobID, claimToken).
 		Where("accounting_status = ?", BatchJobAccountingStatusProcessing).
 		Updates(map[string]interface{}{
-			"aggregate_log_written_at": now,
-			"last_error":               nil,
-			"updated_at":               now,
+			column:       now,
+			"last_error": nil,
+			"updated_at": now,
 		})
 	if tx.Error != nil {
 		return tx.Error
@@ -579,26 +596,12 @@ func (s *RDBLogStore) MarkBatchJobAggregateLogWritten(ctx context.Context, jobID
 	return nil
 }
 
+func (s *RDBLogStore) MarkBatchJobAggregateLogWritten(ctx context.Context, jobID string, claimToken string) error {
+	return s.markBatchJobTimestamp(ctx, jobID, claimToken, "aggregate_log_written_at")
+}
+
 func (s *RDBLogStore) MarkBatchJobGovernanceReported(ctx context.Context, jobID string, claimToken string) error {
-	if jobID == "" || claimToken == "" {
-		return fmt.Errorf("batch job id and claim token are required")
-	}
-	now := time.Now().UTC()
-	tx := s.db.WithContext(ctx).Model(&BatchJob{}).
-		Where("id = ? AND claim_token = ?", jobID, claimToken).
-		Where("accounting_status = ?", BatchJobAccountingStatusProcessing).
-		Updates(map[string]interface{}{
-			"governance_reported_at": now,
-			"last_error":             nil,
-			"updated_at":             now,
-		})
-	if tx.Error != nil {
-		return tx.Error
-	}
-	if tx.RowsAffected == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return s.markBatchJobTimestamp(ctx, jobID, claimToken, "governance_reported_at")
 }
 
 // CompleteBatchJobAccounting marks a claimed batch as accounted after the stable
@@ -643,16 +646,16 @@ func (s *RDBLogStore) finishBatchJobAccounting(ctx context.Context, jobID string
 	if jobID == "" || claimToken == "" {
 		return fmt.Errorf("batch job id and claim token are required")
 	}
-	msg := ""
+	var lastError any
 	if err != nil {
-		msg = err.Error()
+		lastError = err.Error()
 	}
 	now := time.Now().UTC()
 	updates := map[string]interface{}{
 		"accounting_status": status,
 		"claim_token":       nil,
 		"claim_expires_at":  nil,
-		"last_error":        msg,
+		"last_error":        lastError,
 		"updated_at":        now,
 	}
 	if reason != "" {

@@ -43,6 +43,21 @@ func TestBatchJobAccountingClaimTokenGuardsCompletion(t *testing.T) {
 	assert.True(t, errors.Is(err, ErrNotFound))
 }
 
+func TestUpsertBatchJobRejectsNonCanonicalID(t *testing.T) {
+	ctx := context.Background()
+	store, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: filepath.Join(t.TempDir(), "batch-canonical-id.db")}, hybridTestLogger{})
+	require.NoError(t, err)
+
+	job := &BatchJob{
+		ID:       "arbitrary-id",
+		Provider: "openai",
+		BatchID:  "batch_canonical",
+	}
+	err = store.UpsertBatchJob(ctx, job)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "does not match canonical id")
+}
+
 func TestBatchJobAccountingPhaseMarkersUseClaimToken(t *testing.T) {
 	ctx := context.Background()
 	store, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: filepath.Join(t.TempDir(), "batch-phases.db")}, hybridTestLogger{})
@@ -71,6 +86,28 @@ func TestBatchJobAccountingPhaseMarkersUseClaimToken(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, persisted.AggregateLogWrittenAt)
 	require.NotNil(t, persisted.GovernanceReportedAt)
+}
+
+func TestMarkBatchJobUnpriceableWithoutErrorClearsLastError(t *testing.T) {
+	ctx := context.Background()
+	store, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: filepath.Join(t.TempDir(), "batch-unpriceable.db")}, hybridTestLogger{})
+	require.NoError(t, err)
+
+	job := &BatchJob{
+		Provider:         "openai",
+		BatchID:          "batch_unpriceable",
+		AccountingStatus: BatchJobAccountingStatusPending,
+	}
+	require.NoError(t, store.UpsertBatchJob(ctx, job))
+
+	token, claimed, err := store.ClaimBatchJobAccounting(ctx, job.ID, "node-a", time.Minute)
+	require.NoError(t, err)
+	require.True(t, claimed)
+	require.NoError(t, store.MarkBatchJobUnpriceable(ctx, job.ID, token, "no_usage", nil))
+
+	persisted, err := store.FindBatchJobByID(ctx, job.ID)
+	require.NoError(t, err)
+	assert.Nil(t, persisted.LastError)
 }
 
 func TestUpsertBatchJob_CompletedPreservesNextCheckAt(t *testing.T) {
@@ -129,7 +166,7 @@ func TestUpsertBatchJob_ClearsNextCheckAt_OnlyForNonCompletedTerminal(t *testing
 		{name: "failed", status: string(schemas.BatchStatusFailed), wantNil: true},
 		{name: "expired", status: string(schemas.BatchStatusExpired), wantNil: true},
 		{name: "cancelled", status: string(schemas.BatchStatusCancelled), wantNil: true},
-		{name: "ended", status: string(schemas.BatchStatusEnded), wantNil: true},
+		{name: "ended", status: string(schemas.BatchStatusEnded), wantNil: false},
 		{name: "deleted", status: string(schemas.BatchStatusDeleted), wantNil: true},
 		{name: "completed", status: string(schemas.BatchStatusCompleted), wantNil: false},
 		{name: "in_progress", status: string(schemas.BatchStatusInProgress), wantNil: false},

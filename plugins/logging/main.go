@@ -205,8 +205,8 @@ func (p *LoggerPlugin) applyErrorBillingFromBilledUsage(ctx *schemas.BifrostCont
 	}
 }
 
-func (p *LoggerPlugin) accountBatchResults(entry *logstore.Log, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError, pricingScopes *modelcatalog.PricingLookupScopes) {
-	if bifrostErr != nil || result == nil || result.BatchResultsResponse == nil || entry == nil || p.pricingManager == nil {
+func (p *LoggerPlugin) accountBatchResults(entry *logstore.Log, result *schemas.BifrostResponse, pricingScopes *modelcatalog.PricingLookupScopes) {
+	if result == nil || result.BatchResultsResponse == nil || entry == nil || p.pricingManager == nil {
 		return
 	}
 	batchResp := result.BatchResultsResponse
@@ -226,8 +226,10 @@ func (p *LoggerPlugin) accountBatchResults(entry *logstore.Log, result *schemas.
 		Provider:      schemas.ModelProvider(entry.Provider),
 		BatchID:       batchResp.BatchID,
 		FallbackModel: entry.Model,
+		Endpoint:      batchResp.Endpoint,
 		Results:       batchResp.Results,
-		BatchJob:      batchJobFromEntry(entry, batchResp.BatchID, entry.Model, string(schemas.BatchStatusCompleted)),
+		ParseErrors:   batchResp.ExtraFields.ParseErrors,
+		BatchJob:      batchJobFromEntry(entry, batchResp.BatchID, entry.Model, string(batchResp.Endpoint), string(schemas.BatchStatusCompleted)),
 		BaseLog:       entry,
 		Emitter:       p,
 		UsageReporter: usageReporter,
@@ -257,7 +259,7 @@ func (p *LoggerPlugin) recordBatchJobLifecycle(entry *logstore.Log, result *sche
 	switch {
 	case result.BatchCreateResponse != nil:
 		resp := result.BatchCreateResponse
-		job = batchJobFromEntry(entry, resp.ID, entry.Model, string(resp.Status))
+		job = batchJobFromEntry(entry, resp.ID, entry.Model, resp.Endpoint, string(resp.Status))
 		job.InputFileID = resp.InputFileID
 		job.OutputFileID = resp.OutputFileID
 		job.ErrorFileID = resp.ErrorFileID
@@ -265,7 +267,7 @@ func (p *LoggerPlugin) recordBatchJobLifecycle(entry *logstore.Log, result *sche
 		addBatchRequestCountsToLog(entry, resp.RequestCounts)
 	case result.BatchRetrieveResponse != nil:
 		resp := result.BatchRetrieveResponse
-		job = batchJobFromEntry(entry, resp.ID, entry.Model, string(resp.Status))
+		job = batchJobFromEntry(entry, resp.ID, entry.Model, resp.Endpoint, string(resp.Status))
 		job.InputFileID = resp.InputFileID
 		job.OutputFileID = resp.OutputFileID
 		job.ErrorFileID = resp.ErrorFileID
@@ -281,7 +283,8 @@ func (p *LoggerPlugin) recordBatchJobLifecycle(entry *logstore.Log, result *sche
 	if !logstore.IsTerminalBatchProviderStatus(job.ProviderStatus) {
 		next := now.Add(time.Minute)
 		job.NextCheckAt = &next
-	} else if job.ProviderStatus == string(schemas.BatchStatusCompleted) {
+	} else if job.ProviderStatus == string(schemas.BatchStatusCompleted) ||
+		job.ProviderStatus == string(schemas.BatchStatusEnded) {
 		job.NextCheckAt = &now
 	}
 	if err := p.store.UpsertBatchJob(p.ctx, job); err != nil {
@@ -290,7 +293,7 @@ func (p *LoggerPlugin) recordBatchJobLifecycle(entry *logstore.Log, result *sche
 }
 
 func addBatchRequestCountsToLog(entry *logstore.Log, counts schemas.BatchRequestCounts) {
-	if entry == nil || batchaccounting.IsZeroBatchRequestCounts(counts) {
+	if entry == nil || counts.IsZero() {
 		return
 	}
 	if entry.MetadataParsed == nil {
@@ -299,11 +302,12 @@ func addBatchRequestCountsToLog(entry *logstore.Log, counts schemas.BatchRequest
 	entry.MetadataParsed["request_counts"] = counts
 }
 
-func batchJobFromEntry(entry *logstore.Log, batchID string, model string, status string) *logstore.BatchJob {
+func batchJobFromEntry(entry *logstore.Log, batchID string, model string, endpoint string, status string) *logstore.BatchJob {
 	job := &logstore.BatchJob{
 		Provider:         entry.Provider,
 		BatchID:          batchID,
 		Model:            model,
+		Endpoint:         endpoint,
 		ProviderStatus:   status,
 		AccountingStatus: logstore.BatchJobAccountingStatusPending,
 		SelectedKeyID:    entry.SelectedKeyID,
@@ -670,7 +674,6 @@ func (p *LoggerPlugin) StartBatchAccountingSweeper(fetcher batchaccounting.Batch
 	sweeper := batchaccounting.NewSweeper(p.store, p.pricingManager, fetcher, p, usageReporter, batchaccounting.SweeperConfig{
 		Interval:  interval,
 		ClaimedBy: claimedBy,
-		Provider:  schemas.OpenAI,
 		KVStore:   kvStore,
 		Logger:    p.logger,
 	})
@@ -1390,7 +1393,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			requestType == schemas.BatchResultsRequest &&
 			result != nil &&
 			result.BatchResultsResponse != nil {
-			p.accountBatchResults(entry, result, bifrostErr, pricingScopes)
+			p.accountBatchResults(entry, result, pricingScopes)
 		}
 	}
 

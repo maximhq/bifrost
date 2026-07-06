@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/batchaccounting"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/plugins/logging"
@@ -79,7 +80,9 @@ func (s *BifrostHTTPServer) WireBatchAccountingSweeper() {
 		return
 	}
 	if governancePlugin, govErr := lib.FindPluginAs[governance.BaseGovernancePlugin](s.Config, s.getGovernancePluginName()); govErr == nil && governancePlugin != nil {
-		loggerPlugin.SetBatchUsageReporter(governancePlugin)
+		if usageReporter, ok := governancePlugin.(batchaccounting.UsageReporter); ok {
+			loggerPlugin.SetBatchUsageReporter(usageReporter)
+		}
 	}
 	loggerPlugin.StartBatchAccountingSweeper(&bifrostBatchResultFetcher{client: s.Client}, time.Minute, s.Config.KVStore)
 }

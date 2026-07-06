@@ -59,7 +59,6 @@ type BaseGovernancePlugin interface {
 	PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.BifrostMCPResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostMCPResponse, *schemas.BifrostError, error)
 	Cleanup() error
 	GetGovernanceStore() GovernanceStore
-	ReportBatchUsage(ctx context.Context, usage batchaccounting.BatchUsageReport) error
 }
 
 // GovernancePlugin implements the main governance plugin with hierarchical budget system
@@ -1354,19 +1353,19 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	}
 	// If effectiveVK is empty, it will be passed as empty string to postHookWorker
 	// The tracker will handle empty virtual keys gracefully by only updating provider-level and model-level usage
-	if requestedModel != "" {
-		// Collect the affected budget and rate-limit IDs synchronously (fast in-memory
-		// lookups) and attach them to the context. The logging plugin reads these keys
-		// when building the log entry, enabling ghost-node usage reconciliation to
-		// attribute cost/tokens to the correct governance entities.
-		budgetIDs, rateLimitIDs := p.store.CollectApplicableGovernanceIDs(ctx, effectiveVK, userID, provider, requestedModel)
-		if len(budgetIDs) > 0 {
-			ctx.SetValue(schemas.BifrostContextKeyGovernanceBudgetIDs, budgetIDs)
-		}
-		if len(rateLimitIDs) > 0 {
-			ctx.SetValue(schemas.BifrostContextKeyGovernanceRateLimitIDs, rateLimitIDs)
-		}
+	// Collect the affected budget and rate-limit IDs synchronously (fast in-memory
+	// lookups) and attach them to the context. Batch-create requests commonly omit
+	// a top-level model because each input-file row carries its own model; the
+	// store still returns provider/VK hierarchy IDs when requestedModel is empty.
+	budgetIDs, rateLimitIDs := p.store.CollectApplicableGovernanceIDs(ctx, effectiveVK, userID, provider, requestedModel)
+	if len(budgetIDs) > 0 {
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceBudgetIDs, budgetIDs)
+	}
+	if len(rateLimitIDs) > 0 {
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceRateLimitIDs, rateLimitIDs)
+	}
 
+	if requestedModel != "" {
 		// Attempt number distinguishes physical provider calls within one
 		// logical request so each token-consuming attempt bills exactly once.
 		// Set by core on every retry iteration.
@@ -1740,7 +1739,12 @@ func (p *GovernancePlugin) ReportBatchUsage(ctx context.Context, usage batchacco
 
 	if usage.Cost > 0 {
 		for _, budgetID := range usage.BudgetIDs {
+			billingKey := fmt.Sprintf("%s:budget:%s", usage.RequestID, budgetID)
+			if usage.RequestID != "" && !p.tracker.tryClaimBatchBilling(billingKey) {
+				continue
+			}
 			if err := p.store.BumpBudgetUsage(ctx, budgetID, usage.Cost); err != nil {
+				p.tracker.releaseBatchBilling(billingKey)
 				errs = append(errs, err)
 			}
 		}
@@ -1748,7 +1752,12 @@ func (p *GovernancePlugin) ReportBatchUsage(ctx context.Context, usage batchacco
 
 	requestDelta := int64(1)
 	for _, rateLimitID := range usage.RateLimitIDs {
+		billingKey := fmt.Sprintf("%s:rate-limit:%s", usage.RequestID, rateLimitID)
+		if usage.RequestID != "" && !p.tracker.tryClaimBatchBilling(billingKey) {
+			continue
+		}
 		if err := p.store.BumpRateLimitUsageBy(ctx, rateLimitID, usage.TokensUsed, requestDelta); err != nil {
+			p.tracker.releaseBatchBilling(billingKey)
 			errs = append(errs, err)
 		}
 	}

@@ -51,12 +51,6 @@ func (mc *ModelCatalog) CalculateCostForUsage(usage *schemas.BifrostLLMUsage, pr
 	return mc.datasheet.CalculateCostForUsage(usage, provider, model, requestType, (*datasheet.LookupScopes)(scopes))
 }
 
-// CalculateBatchCostForUsage computes cost for a completed batch result row and
-// reports whether batch-specific pricing was available.
-func (mc *ModelCatalog) CalculateBatchCostForUsage(usage *schemas.BifrostLLMUsage, provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *PricingLookupScopes) (float64, bool) {
-	return mc.datasheet.CalculateBatchCostForUsage(usage, provider, model, requestType, (*datasheet.LookupScopes)(scopes))
-}
-
 // CalculateBatchCostDetailsForUsage computes batch cost and exposes the
 // explicit batch rates used for durable accounting metadata.
 func (mc *ModelCatalog) CalculateBatchCostDetailsForUsage(usage *schemas.BifrostLLMUsage, provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *PricingLookupScopes) BatchCostDetails {

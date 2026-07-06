@@ -287,9 +287,10 @@ const (
 // reconcilers can share the same cluster-safe claim.
 type BatchJob struct {
 	ID                    string     `gorm:"primaryKey;type:varchar(512)" json:"id"`
-	Provider              string     `gorm:"type:varchar(255);index:idx_batch_jobs_identity,priority:1;index:idx_batch_jobs_sweeper,priority:1;not null" json:"provider"`
-	BatchID               string     `gorm:"type:varchar(255);index:idx_batch_jobs_identity,priority:2;not null" json:"batch_id"`
+	Provider              string     `gorm:"type:varchar(255);uniqueIndex:idx_batch_jobs_identity,priority:1;index:idx_batch_jobs_sweeper,priority:1;not null" json:"provider"`
+	BatchID               string     `gorm:"type:varchar(255);uniqueIndex:idx_batch_jobs_identity,priority:2;not null" json:"batch_id"`
 	Model                 string     `gorm:"type:varchar(255)" json:"model,omitempty"`
+	Endpoint              string     `gorm:"type:varchar(255)" json:"endpoint,omitempty"`
 	ProviderStatus        string     `gorm:"type:varchar(50)" json:"provider_status,omitempty"`
 	InputFileID           string     `gorm:"type:varchar(255)" json:"input_file_id,omitempty"`
 	OutputFileID          *string    `gorm:"type:varchar(255)" json:"output_file_id,omitempty"`
@@ -301,7 +302,7 @@ type BatchJob struct {
 	ClaimedBy             *string    `gorm:"type:varchar(255)" json:"claimed_by,omitempty"`
 	ClaimToken            *string    `gorm:"type:varchar(255)" json:"claim_token,omitempty"`
 	ClaimExpiresAt        *time.Time `json:"claim_expires_at,omitempty"`
-	UnpriceableReason     *string    `gorm:"type:varchar(255);index" json:"unpriceable_reason,omitempty"`
+	UnpriceableReason     *string    `gorm:"type:varchar(255)" json:"unpriceable_reason,omitempty"`
 	LastError             *string    `gorm:"type:text" json:"last_error,omitempty"`
 	AggregateLogWrittenAt *time.Time `json:"aggregate_log_written_at,omitempty"`
 	GovernanceReportedAt  *time.Time `json:"governance_reported_at,omitempty"`
@@ -311,7 +312,7 @@ type BatchJob struct {
 	BudgetIDs     *string `gorm:"type:text" json:"-"`
 	RateLimitIDs  *string `gorm:"type:text" json:"-"`
 
-	CreatedAt time.Time `gorm:"index;not null" json:"created_at"`
+	CreatedAt time.Time `gorm:"not null" json:"created_at"`
 	UpdatedAt time.Time `gorm:"not null" json:"updated_at"`
 }
 

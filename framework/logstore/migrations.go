@@ -1578,8 +1578,6 @@ func migrationCreateBatchJobsTable(ctx context.Context, db *gorm.DB, logger sche
 			for _, indexName := range []string{
 				"idx_batch_jobs_identity",
 				"idx_batch_jobs_sweeper",
-				"idx_batch_jobs_unpriceable_reason",
-				"idx_batch_jobs_created_at",
 			} {
 				if !dbMigrator.HasIndex(&BatchJob{}, indexName) {
 					logger.Info("[logstore] %s: creating index %s on BatchJob", migrationName, indexName)

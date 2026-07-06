@@ -19,6 +19,7 @@ const (
 	UnpriceableReasonMissingModel        = "missing_model"
 	UnpriceableReasonMissingBatchPricing = "missing_batch_pricing"
 	UnpriceableReasonMaxPollAttempts     = "max_poll_attempts"
+	UnpriceableReasonResultParseErrors   = "result_parse_errors"
 )
 
 type Store interface {
@@ -52,10 +53,6 @@ type BatchUsageReport struct {
 }
 
 type PricingManager interface {
-	CalculateBatchCostForUsage(usage *schemas.BifrostLLMUsage, provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *modelcatalog.PricingLookupScopes) (float64, bool)
-}
-
-type batchCostDetailProvider interface {
 	CalculateBatchCostDetailsForUsage(usage *schemas.BifrostLLMUsage, provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *modelcatalog.PricingLookupScopes) modelcatalog.BatchCostDetails
 }
 
@@ -63,7 +60,9 @@ type Request struct {
 	Provider      schemas.ModelProvider
 	BatchID       string
 	FallbackModel string
+	Endpoint      schemas.BatchEndpoint
 	Results       []schemas.BatchResultItem
+	ParseErrors   []schemas.BatchError
 	RequestCounts *schemas.BatchRequestCounts
 	BatchJob      *logstore.BatchJob
 	BaseLog       *logstore.Log
@@ -131,8 +130,12 @@ func AccountBatchResults(ctx context.Context, store Store, pricing PricingManage
 			Provider:         string(req.Provider),
 			BatchID:          req.BatchID,
 			Model:            req.FallbackModel,
+			Endpoint:         string(req.Endpoint),
 			AccountingStatus: logstore.BatchJobAccountingStatusPending,
 		}
+	}
+	if job.Endpoint == "" && req.Endpoint != "" {
+		job.Endpoint = string(req.Endpoint)
 	}
 	if job.ID == "" {
 		job.ID = logstore.BatchJobID(string(req.Provider), req.BatchID)
@@ -163,7 +166,18 @@ func AccountBatchResults(ctx context.Context, store Store, pricing PricingManage
 	if req.FallbackModel == "" {
 		req.FallbackModel = job.Model
 	}
+	if req.Endpoint == "" {
+		req.Endpoint = schemas.BatchEndpoint(job.Endpoint)
+	}
 	req.Scopes = pricingScopesForBatchJob(req.Scopes, req.Provider, job)
+	if len(req.ParseErrors) > 0 {
+		summary.UnpriceableReason = UnpriceableReasonResultParseErrors
+		parseErr := fmt.Errorf("batch result contained %d malformed row(s)", len(req.ParseErrors))
+		if err := store.MarkBatchJobUnpriceable(ctx, job.ID, claimToken, UnpriceableReasonResultParseErrors, parseErr); err != nil {
+			return nil, err
+		}
+		return summary, nil
+	}
 
 	computed, err := summarizeResults(pricing, req)
 	if err != nil {
@@ -229,6 +243,9 @@ func mergeBatchJobHints(dst *logstore.BatchJob, src *logstore.BatchJob) {
 	if dst.Model == "" {
 		dst.Model = src.Model
 	}
+	if dst.Endpoint == "" {
+		dst.Endpoint = src.Endpoint
+	}
 	dst.AggregateLogWrittenAt = src.AggregateLogWrittenAt
 	dst.GovernanceReportedAt = src.GovernanceReportedAt
 	if dst.SelectedKeyID == "" {
@@ -274,9 +291,8 @@ func batchUsageReportFromLog(provider schemas.ModelProvider, entry *logstore.Log
 		Model:        entry.Model,
 		TokensUsed:   int64(entry.TotalTokens),
 		BudgetIDs:    stringSliceFromParsedOrJSON(entry.BudgetIDsParsed, entry.BudgetIDs),
-		RateLimitIDs: entry.RateLimitIDsParsed,
+		RateLimitIDs: stringSliceFromParsedOrJSON(entry.RateLimitIDsParsed, entry.RateLimitIDs),
 	}
-	report.RateLimitIDs = stringSliceFromParsedOrJSON(entry.RateLimitIDsParsed, entry.RateLimitIDs)
 	if entry.Cost != nil {
 		report.Cost = *entry.Cost
 	}
@@ -318,7 +334,7 @@ func summarizeResults(pricing PricingManager, req Request) (*Summary, error) {
 	failedCount := 0
 
 	for _, item := range req.Results {
-		if item.Error != nil {
+		if item.Failed() {
 			failedCount++
 			continue
 		}
@@ -339,7 +355,7 @@ func summarizeResults(pricing PricingManager, req Request) (*Summary, error) {
 			continue
 		}
 
-		costDetails := calculateBatchCostDetails(pricing, extracted.usage, req.Provider, extracted.model, schemas.BatchResultsRequest, req.Scopes)
+		costDetails := pricing.CalculateBatchCostDetailsForUsage(extracted.usage, req.Provider, extracted.model, batchRequestType(req.Endpoint), req.Scopes)
 		if !costDetails.Priced {
 			missingPricingSeen = true
 			unpricedCount++
@@ -350,7 +366,9 @@ func summarizeResults(pricing PricingManager, req Request) (*Summary, error) {
 		breakdown := breakdowns[extracted.model]
 		breakdown.Model = extracted.model
 		breakdown.RequestCount++
-		addUsage(&breakdown.Usage, extracted.usage)
+		if merged := schemas.MergeBifrostLLMUsage(&breakdown.Usage, extracted.usage); merged != nil {
+			breakdown.Usage = *merged
+		}
 		breakdown.Cost += costDetails.Cost
 		if breakdown.InputCostPerTokenBatches == nil && costDetails.InputCostPerTokenBatches != nil {
 			breakdown.InputCostPerTokenBatches = costDetails.InputCostPerTokenBatches
@@ -364,7 +382,9 @@ func summarizeResults(pricing PricingManager, req Request) (*Summary, error) {
 		}
 		breakdowns[extracted.model] = breakdown
 
-		addUsage(&totalUsage, extracted.usage)
+		if merged := schemas.MergeBifrostLLMUsage(&totalUsage, extracted.usage); merged != nil {
+			totalUsage = *merged
+		}
 		totalCost += costDetails.Cost
 		pricedCount++
 	}
@@ -393,48 +413,18 @@ func summarizeResults(pricing PricingManager, req Request) (*Summary, error) {
 	}, nil
 }
 
-func calculateBatchCostDetails(pricing PricingManager, usage *schemas.BifrostLLMUsage, provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *modelcatalog.PricingLookupScopes) modelcatalog.BatchCostDetails {
-	if detailProvider, ok := pricing.(batchCostDetailProvider); ok {
-		return detailProvider.CalculateBatchCostDetailsForUsage(usage, provider, model, requestType, scopes)
-	}
-	cost, priced := pricing.CalculateBatchCostForUsage(usage, provider, model, requestType, scopes)
-	return modelcatalog.BatchCostDetails{
-		Cost:             cost,
-		Priced:           priced,
-		ProviderCostUsed: usage != nil && usage.Cost != nil,
-	}
-}
-
-func extractUsage(provider schemas.ModelProvider, fallbackModel string, item schemas.BatchResultItem) (extractedUsage, error) {
-	switch provider {
-	case schemas.OpenAI:
-		if item.Response == nil || item.Response.StatusCode >= 400 || item.Response.Body == nil {
-			return extractedUsage{}, nil
-		}
-		usageValue, ok := item.Response.Body["usage"]
-		if !ok || usageValue == nil {
-			return extractedUsage{}, nil
-		}
-		usage, err := usageFromValue(usageValue)
-		if err != nil {
-			return extractedUsage{}, err
-		}
-		if usage.TotalTokens == 0 {
-			usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
-		}
-		if usage.TotalTokens == 0 {
-			return extractedUsage{}, nil
-		}
-		model, _ := item.Response.Body["model"].(string)
-		if model == "" {
-			model = fallbackModel
-		}
-		if model == "" {
-			return extractedUsage{usage: usage, hasUsage: true, missingModel: true}, nil
-		}
-		return extractedUsage{model: model, usage: usage, hasUsage: true}, nil
+func batchRequestType(endpoint schemas.BatchEndpoint) schemas.RequestType {
+	switch endpoint {
+	case schemas.BatchEndpointEmbeddings:
+		return schemas.EmbeddingRequest
+	case schemas.BatchEndpointCompletions:
+		return schemas.TextCompletionRequest
+	case schemas.BatchEndpointResponses:
+		return schemas.ResponsesRequest
+	case schemas.BatchEndpointChatCompletions, schemas.BatchEndpointMessages:
+		return schemas.ChatCompletionRequest
 	default:
-		return "", false
+		return schemas.BatchResultsRequest
 	}
 }
 
@@ -460,25 +450,189 @@ func extractUsage(provider schemas.ModelProvider, fallbackModel string, item sch
 	return extractor(fallbackModel, item)
 }
 
+func extractResponseBodyUsage(fallbackModel string, item schemas.BatchResultItem) (extractedUsage, error) {
+	if item.Response == nil || item.Response.StatusCode >= 400 || item.Response.Body == nil {
+		return extractedUsage{}, nil
+	}
+	usageValue, ok := item.Response.Body["usage"]
+	if !ok || usageValue == nil {
+		return extractedUsage{}, nil
+	}
+	usage, err := usageFromValue(usageValue)
+	if err != nil {
+		return extractedUsage{}, err
+	}
+	if usage.TotalTokens == 0 {
+		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+	}
+	if usage.TotalTokens == 0 {
+		return extractedUsage{}, nil
+	}
+	model, _ := item.Response.Body["model"].(string)
+	if model == "" {
+		model = fallbackModel
+	}
+	if model == "" {
+		return extractedUsage{usage: usage, hasUsage: true, missingModel: true}, nil
+	}
+	return extractedUsage{model: model, usage: usage, hasUsage: true}, nil
+}
+
+func extractAnthropicUsage(fallbackModel string, item schemas.BatchResultItem) (extractedUsage, error) {
+	if item.Result == nil || item.Result.Type != "succeeded" || item.Result.Message == nil {
+		return extractedUsage{}, nil
+	}
+	usageValue, ok := item.Result.Message["usage"]
+	if !ok || usageValue == nil {
+		return extractedUsage{}, nil
+	}
+	usage, err := anthropicUsageFromValue(usageValue)
+	if err != nil {
+		return extractedUsage{}, err
+	}
+	if usage.TotalTokens == 0 {
+		return extractedUsage{}, nil
+	}
+	model, _ := item.Result.Message["model"].(string)
+	if model == "" {
+		model = fallbackModel
+	}
+	if model == "" {
+		return extractedUsage{usage: usage, hasUsage: true, missingModel: true}, nil
+	}
+	return extractedUsage{model: model, usage: usage, hasUsage: true}, nil
+}
+
+func anthropicUsageFromValue(value interface{}) (*schemas.BifrostLLMUsage, error) {
+	bytes, err := sonic.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	var usage struct {
+		InputTokens              int `json:"input_tokens"`
+		CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+		CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+		CacheCreation            struct {
+			Ephemeral5mInputTokens int `json:"ephemeral_5m_input_tokens"`
+			Ephemeral1hInputTokens int `json:"ephemeral_1h_input_tokens"`
+		} `json:"cache_creation"`
+		OutputTokens int `json:"output_tokens"`
+	}
+	if err := sonic.Unmarshal(bytes, &usage); err != nil {
+		return nil, err
+	}
+	promptTokens := usage.InputTokens + usage.CacheCreationInputTokens + usage.CacheReadInputTokens
+	totalTokens := promptTokens + usage.OutputTokens
+	if totalTokens == 0 {
+		return &schemas.BifrostLLMUsage{}, nil
+	}
+	out := &schemas.BifrostLLMUsage{
+		PromptTokens:     promptTokens,
+		CompletionTokens: usage.OutputTokens,
+		TotalTokens:      totalTokens,
+	}
+	if usage.CacheCreationInputTokens > 0 || usage.CacheReadInputTokens > 0 {
+		out.PromptTokensDetails = &schemas.ChatPromptTokensDetails{
+			CachedReadTokens:  usage.CacheReadInputTokens,
+			CachedWriteTokens: usage.CacheCreationInputTokens,
+		}
+		if usage.CacheCreation.Ephemeral5mInputTokens > 0 || usage.CacheCreation.Ephemeral1hInputTokens > 0 {
+			out.PromptTokensDetails.CachedWriteTokenDetails = &schemas.ChatCachedWriteTokenDetails{
+				CachedWriteTokens5m: usage.CacheCreation.Ephemeral5mInputTokens,
+				CachedWriteTokens1h: usage.CacheCreation.Ephemeral1hInputTokens,
+			}
+		}
+	}
+	return out, nil
+}
+
 func usageFromValue(value interface{}) (*schemas.BifrostLLMUsage, error) {
 	bytes, err := sonic.Marshal(value)
 	if err != nil {
 		return nil, err
 	}
-	var usage schemas.BifrostLLMUsage
+	var usage struct {
+		PromptTokens     int `json:"prompt_tokens"`
+		CompletionTokens int `json:"completion_tokens"`
+		TotalTokens      int `json:"total_tokens"`
+
+		InputTokensSnake  int `json:"input_tokens"`
+		OutputTokensSnake int `json:"output_tokens"`
+
+		InputTokensCamel  int `json:"inputTokens"`
+		OutputTokensCamel int `json:"outputTokens"`
+		TotalTokensCamel  int `json:"totalTokens"`
+
+		CacheCreationInputTokens  int `json:"cache_creation_input_tokens"`
+		CacheReadInputTokens      int `json:"cache_read_input_tokens"`
+		CacheReadInputTokensCamel int `json:"cacheReadInputTokens"`
+		CacheWriteInputTokens     int `json:"cacheWriteInputTokens"`
+		CacheCreation             struct {
+			Ephemeral5mInputTokens int `json:"ephemeral_5m_input_tokens"`
+			Ephemeral1hInputTokens int `json:"ephemeral_1h_input_tokens"`
+		} `json:"cache_creation"`
+		CacheDetails []struct {
+			InputTokens int    `json:"inputTokens"`
+			TTL         string `json:"ttl"`
+		} `json:"cacheDetails"`
+		Cost *schemas.BifrostCost `json:"cost,omitempty"`
+	}
 	if err := sonic.Unmarshal(bytes, &usage); err != nil {
 		return nil, err
 	}
-	return &usage, nil
+	cacheWriteTokens := usage.CacheCreationInputTokens + usage.CacheWriteInputTokens
+	cacheWrite5m := usage.CacheCreation.Ephemeral5mInputTokens
+	cacheWrite1h := usage.CacheCreation.Ephemeral1hInputTokens
+	cacheDetailsWriteTokens := 0
+	for _, detail := range usage.CacheDetails {
+		cacheDetailsWriteTokens += detail.InputTokens
+		switch detail.TTL {
+		case "5m":
+			cacheWrite5m += detail.InputTokens
+		case "1h":
+			cacheWrite1h += detail.InputTokens
+		}
+	}
+	if cacheWriteTokens == 0 {
+		cacheWriteTokens = cacheDetailsWriteTokens
+	}
+	cacheReadTokens := usage.CacheReadInputTokens + usage.CacheReadInputTokensCamel
+
+	promptTokens := firstNonZero(usage.PromptTokens, usage.InputTokensSnake, usage.InputTokensCamel) + cacheReadTokens + cacheWriteTokens
+	completionTokens := firstNonZero(usage.CompletionTokens, usage.OutputTokensSnake, usage.OutputTokensCamel)
+	computedTotal := promptTokens + completionTokens
+	totalTokens := firstNonZero(usage.TotalTokens, usage.TotalTokensCamel)
+	if totalTokens == 0 || totalTokens < computedTotal {
+		totalTokens = computedTotal
+	}
+	out := &schemas.BifrostLLMUsage{
+		PromptTokens:     promptTokens,
+		CompletionTokens: completionTokens,
+		TotalTokens:      totalTokens,
+		Cost:             usage.Cost,
+	}
+	if cacheReadTokens > 0 || cacheWriteTokens > 0 {
+		out.PromptTokensDetails = &schemas.ChatPromptTokensDetails{
+			CachedReadTokens:  cacheReadTokens,
+			CachedWriteTokens: cacheWriteTokens,
+		}
+		if cacheWrite5m > 0 || cacheWrite1h > 0 {
+			out.PromptTokensDetails.CachedWriteTokenDetails = &schemas.ChatCachedWriteTokenDetails{
+				CachedWriteTokens5m: cacheWrite5m,
+				CachedWriteTokens1h: cacheWrite1h,
+			}
+		}
+	}
+	return out, nil
 }
 
-func addUsage(dst *schemas.BifrostLLMUsage, src *schemas.BifrostLLMUsage) {
-	if src == nil {
-		return
+func firstNonZero(values ...int) int {
+	for _, value := range values {
+		if value != 0 {
+			return value
+		}
 	}
-	dst.PromptTokens += src.PromptTokens
-	dst.CompletionTokens += src.CompletionTokens
-	dst.TotalTokens += src.TotalTokens
+	return 0
 }
 
 func buildAggregateLog(req Request, summary *Summary, now time.Time) *logstore.Log {
@@ -505,7 +659,7 @@ func buildAggregateLog(req Request, summary *Summary, now time.Time) *logstore.L
 		"unpriced_reasons": summary.UnpricedReasons,
 	}
 	requestCounts := requestCountsForAggregateLog(req)
-	if !IsZeroBatchRequestCounts(requestCounts) {
+	if !requestCounts.IsZero() {
 		metadata["request_counts"] = requestCounts
 	}
 
@@ -535,45 +689,10 @@ func buildAggregateLog(req Request, summary *Summary, now time.Time) *logstore.L
 }
 
 func requestCountsForAggregateLog(req Request) schemas.BatchRequestCounts {
-	if req.RequestCounts != nil && !IsZeroBatchRequestCounts(*req.RequestCounts) {
+	if req.RequestCounts != nil && !req.RequestCounts.IsZero() {
 		return *req.RequestCounts
 	}
-	return requestCountsFromResults(req.Results)
-}
-
-func requestCountsFromResults(results []schemas.BatchResultItem) schemas.BatchRequestCounts {
-	counts := schemas.BatchRequestCounts{Total: len(results)}
-	for _, item := range results {
-		if batchResultItemFailed(item) {
-			counts.Failed++
-			continue
-		}
-		counts.Completed++
-	}
-	return counts
-}
-
-func batchResultItemFailed(item schemas.BatchResultItem) bool {
-	if item.Error != nil {
-		return true
-	}
-	if item.Response != nil && item.Response.StatusCode >= 400 {
-		return true
-	}
-	if item.Result != nil && item.Result.Type != "" && item.Result.Type != "succeeded" {
-		return true
-	}
-	return false
-}
-
-func IsZeroBatchRequestCounts(counts schemas.BatchRequestCounts) bool {
-	return counts.Total == 0 &&
-		counts.Completed == 0 &&
-		counts.Failed == 0 &&
-		counts.Succeeded == 0 &&
-		counts.Expired == 0 &&
-		counts.Canceled == 0 &&
-		counts.Pending == 0
+	return schemas.BatchRequestCountsFromResults(req.Results)
 }
 
 func applyLogAttribution(entry *logstore.Log, source *logstore.Log) {
