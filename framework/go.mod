@@ -24,6 +24,8 @@ require (
 	gorm.io/gorm v1.31.1
 )
 
+require github.com/ClickHouse/ch-go v0.65.0 // indirect
+
 require (
 	cel.dev/expr v0.25.1 // indirect
 	cloud.google.com/go v0.123.0 // indirect
@@ -35,7 +37,6 @@ require (
 	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.13.1 // indirect
 	github.com/Azure/azure-sdk-for-go/sdk/internal v1.11.2 // indirect
 	github.com/AzureAD/microsoft-authentication-library-for-go v1.6.0 // indirect
-	github.com/ClickHouse/ch-go v0.61.5 // indirect
 	github.com/ClickHouse/clickhouse-go/v2 v2.30.0 // indirect
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/detectors/gcp v1.31.0 // indirect
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/metric v0.55.0 // indirect
@@ -74,14 +75,14 @@ require (
 	github.com/google/s2a-go v0.1.9 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.16 // indirect
 	github.com/googleapis/gax-go/v2 v2.22.0 // indirect
-	github.com/hashicorp/go-version v1.6.0 // indirect
+	github.com/hashicorp/go-version v1.7.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/kylelemons/godebug v1.1.0 // indirect
 	github.com/oapi-codegen/runtime v1.1.1 // indirect
 	github.com/paulmach/orb v0.11.1 // indirect
-	github.com/pierrec/lz4/v4 v4.1.21 // indirect
+	github.com/pierrec/lz4/v4 v4.1.22 // indirect
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c // indirect
 	github.com/planetscale/vtprotobuf v0.6.1-0.20240319094008-0393e58bdf10 // indirect
 	github.com/segmentio/asm v1.2.0 // indirect
