@@ -1383,6 +1383,12 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 		if resolverProvider, ok := callbacks.(LogRedactionMappingResolverProvider); ok {
 			loggingHandler.SetLogRedactionMappingResolver(resolverProvider.GetLogRedactionMappingResolver())
 		}
+		// Wire the sidekiq runner so cost recalculation runs as a durable background
+		// job. Registering the handler here (before RecoverIncomplete) lets a job
+		// interrupted by a restart resume on boot.
+		if s.SidekiqRunner != nil && s.Config != nil && s.Config.ConfigStore != nil {
+			loggingHandler.SetSidekiqBackend(s.SidekiqRunner, s.Config.ConfigStore)
+		}
 		govLogManager = loggerPlugin.GetPluginLogManager()
 	}
 	var governanceHandler *handlers.GovernanceHandler

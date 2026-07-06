@@ -16,6 +16,7 @@ import {
 	ProviderLatencyHistogramResponse,
 	ProviderTokenHistogramResponse,
 	RankingDimension,
+	RecalcJobStatus,
 	RecalculateCostResponse,
 	TokenHistogramResponse,
 } from "@/lib/types/logs";
@@ -23,7 +24,7 @@ import { baseApi } from "./baseApi";
 import { RoutingRule } from "@/lib/types/routingRules";
 
 // Helper function to build filter params
-function buildFilterParams(filters: LogFilters): Record<string, string | number> {
+export function buildFilterParams(filters: LogFilters): Record<string, string | number> {
 	const params: Record<string, string | number> = {};
 
 	if (filters.parent_request_id) {
@@ -364,6 +365,15 @@ export const logsApi = baseApi.injectEndpoints({
 			invalidatesTags: ["Logs"],
 		}),
 
+		// Status of a background cost-recalculation job. Intended to be polled with a
+		// pollingInterval while a job is active; omit id to get the latest in-flight job.
+		getRecalculateCostStatus: builder.query<RecalcJobStatus, { id?: string } | void>({
+			query: (arg) => ({
+				url: "/logs/recalculate-cost/status",
+				params: arg?.id ? { id: arg.id } : {},
+			}),
+		}),
+
 		// Get a single log entry by ID (includes raw_request and raw_response)
 		getLogById: builder.query<LogEntry, string>({
 			query: (id) => `/logs/${encodeURIComponent(id)}`,
@@ -405,6 +415,7 @@ export const {
 	useLazyGetAvailableFilterDataQuery,
 	useDeleteLogsMutation,
 	useRecalculateLogCostsMutation,
+	useGetRecalculateCostStatusQuery,
 	useLazyGetLogByIdQuery,
 	useGetLogByIdQuery,
 } = logsApi;

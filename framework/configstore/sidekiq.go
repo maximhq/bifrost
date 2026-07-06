@@ -191,6 +191,24 @@ func (s *RDBConfigStore) ListClaimableSidekiqJobs(ctx context.Context, staleBefo
 	return jobs, nil
 }
 
+// GetInFlightSidekiqJobByKind returns the most recently created job of the given
+// kind that is still pending or running, or nil when none is in flight. Callers
+// use it to avoid enqueuing a duplicate while one of the same kind is active.
+func (s *RDBConfigStore) GetInFlightSidekiqJobByKind(ctx context.Context, kind string) (*tables.TableSidekiqJob, error) {
+	var job tables.TableSidekiqJob
+	err := s.DB().WithContext(ctx).
+		Where("kind = ? AND status IN ?", kind, []string{tables.SidekiqStatusPending, tables.SidekiqStatusRunning}).
+		Order("created_at DESC").
+		First(&job).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &job, nil
+}
+
 // MarkStaleSidekiqJobsFailed flips any running job whose heartbeat (updated_at) is
 // older than staleBefore to failed. This is the safety net for a goroutine or node
 // that died without marking its job: the job stops looking "running" and becomes

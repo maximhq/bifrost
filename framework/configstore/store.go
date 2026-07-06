@@ -672,6 +672,7 @@ type ConfigStore interface {
 	CompleteSidekiqJob(ctx context.Context, id, ownerID, metadata string) error
 	FailSidekiqJob(ctx context.Context, id, ownerID, metadata, lastErr string) error
 	ListClaimableSidekiqJobs(ctx context.Context, staleBefore time.Time) ([]tables.TableSidekiqJob, error)
+	GetInFlightSidekiqJobByKind(ctx context.Context, kind string) (*tables.TableSidekiqJob, error)
 	MarkStaleSidekiqJobsFailed(ctx context.Context, staleBefore time.Time) (int64, error)
 
 	// DB returns the underlying database connection.
