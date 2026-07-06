@@ -161,3 +161,44 @@ func TestToolSearchNamespaceBridge_AnthropicOriginReplay_UnknownToolDegradesName
 		t.Error("unknown tool must not fabricate parameters")
 	}
 }
+
+// TestToolSearchNamespaceBridge_AnthropicOriginReplay_InProgressOmitsOutput
+// guards against fabricating a completed, empty-result tool_search_output
+// for a search that is still running on the Anthropic side (no Output yet).
+// Replaying it to OpenAI must emit only the call half -- inventing a
+// completed output here would hide the real result once it arrives,
+// corrupting conversation state on a backend switch mid-search. Found by an
+// automated codex review pass.
+func TestToolSearchNamespaceBridge_AnthropicOriginReplay_InProgressOmitsOutput(t *testing.T) {
+	bifrostReq := &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-5.4-mini",
+		Input: []schemas.ResponsesMessage{
+			{
+				Type:   schemas.Ptr(schemas.ResponsesMessageTypeAnthropicToolSearchCall),
+				Status: schemas.Ptr("in_progress"),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID:    schemas.Ptr("srvtoolu_3"),
+					Name:      schemas.Ptr("tool_search_tool_bm25"),
+					Arguments: schemas.Ptr(`{"query":"weather lookup"}`),
+					// No Output -- the search hasn't completed yet.
+				},
+			},
+		},
+		Params: &schemas.ResponsesParameters{Tools: nil},
+	}
+
+	openAIReq := ToOpenAIResponsesRequest(nil, bifrostReq)
+	wire, err := openAIReq.MarshalJSON()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	raw := string(wire)
+
+	if strings.Contains(raw, "tool_search_output") {
+		t.Fatalf("must not fabricate a tool_search_output for an unfinished search, got: %s", raw)
+	}
+	if got := gjson.Get(raw, "input.0.type").String(); got != "tool_search_call" {
+		t.Fatalf("expected only the tool_search_call half, got input[0].type=%q; raw=%s", got, raw)
+	}
+}

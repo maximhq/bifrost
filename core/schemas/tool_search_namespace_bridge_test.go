@@ -298,6 +298,31 @@ func TestExpandToolSearchBridgeItems_GenuineNamespaceUnaffected(t *testing.T) {
 	}
 }
 
+// TestExpandToolSearchBridgeItems_OrphanedOutputPreserved guards against
+// silently dropping a discovered-tool result: if a caller's history has been
+// trimmed/paginated to only the function_call_output half of a bridge pair
+// (no matching call in this slice), it must be preserved unchanged rather
+// than vanishing. Found by an automated codex review pass.
+func TestExpandToolSearchBridgeItems_OrphanedOutputPreserved(t *testing.T) {
+	messages := []ResponsesMessage{
+		{Type: Ptr(ResponsesMessageTypeFunctionCallOutput), ResponsesToolMessage: &ResponsesToolMessage{
+			CallID: Ptr("call_orphan"), Namespace: Ptr(ToolSearchBridgeNamespaceID),
+			Output: &ResponsesToolMessageOutputStruct{ResponsesToolCallOutputStr: Ptr(`["get_weather"]`)},
+		}},
+	}
+	out := ExpandToolSearchBridgeItems(messages)
+	if len(out) != 1 {
+		t.Fatalf("orphaned output must be preserved, not dropped, got %d items: %+v", len(out), out)
+	}
+	if out[0].Type == nil || *out[0].Type != ResponsesMessageTypeFunctionCallOutput {
+		t.Errorf("expected the orphaned output to survive as function_call_output, got %v", out[0].Type)
+	}
+	if out[0].ResponsesToolMessage.Output == nil || out[0].ResponsesToolMessage.Output.ResponsesToolCallOutputStr == nil ||
+		*out[0].ResponsesToolMessage.Output.ResponsesToolCallOutputStr != `["get_weather"]` {
+		t.Errorf("discovered-tool result lost from orphaned output: %+v", out[0].ResponsesToolMessage.Output)
+	}
+}
+
 func TestCollapseToolSearchItemToNamespacePair(t *testing.T) {
 	msg := ResponsesMessage{
 		ID:     Ptr("srvtoolu_1"),
@@ -330,6 +355,34 @@ func TestCollapseToolSearchItemToNamespacePair(t *testing.T) {
 	}
 	if output.ResponsesToolMessage.CallID == nil || *output.ResponsesToolMessage.CallID != "srvtoolu_1" {
 		t.Errorf("output call_id must match the call, got %v", output.ResponsesToolMessage.CallID)
+	}
+}
+
+// TestCollapseToolSearchItemToNamespacePair_InProgressStaysInProgress guards
+// against presenting an unfinished Anthropic tool_search call as completed:
+// the collapsed function_call's Status must mirror the source item's actual
+// completion state (no Output yet == still in_progress), not be hardcoded to
+// "completed". Found by an automated codex review pass.
+func TestCollapseToolSearchItemToNamespacePair_InProgressStaysInProgress(t *testing.T) {
+	msg := ResponsesMessage{
+		ID:     Ptr("srvtoolu_2"),
+		Type:   Ptr(ResponsesMessageTypeAnthropicToolSearchCall),
+		Status: Ptr("in_progress"),
+		ResponsesToolMessage: &ResponsesToolMessage{
+			CallID:    Ptr("srvtoolu_2"),
+			Name:      Ptr(anthropicToolSearchNameBM25),
+			Arguments: Ptr(`{"query":"weather"}`),
+			// No Output -- the search hasn't completed yet.
+		},
+	}
+
+	pair := CollapseToolSearchItemToNamespacePair(msg)
+	if len(pair) != 1 {
+		t.Fatalf("expected a single-element slice (call only, no output) for an unfinished search, got %d items: %+v", len(pair), pair)
+	}
+	call := pair[0]
+	if call.Status == nil || *call.Status != "in_progress" {
+		t.Errorf("unfinished search must collapse to status in_progress, not fabricate completed, got %v", call.Status)
 	}
 }
 

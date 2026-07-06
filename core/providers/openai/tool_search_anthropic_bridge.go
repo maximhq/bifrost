@@ -46,8 +46,16 @@ func convertAnthropicToolSearchCallToOpenAINative(msg schemas.ResponsesMessage, 
 		return []schemas.ResponsesMessage{msg}
 	}
 
+	// The source call hasn't completed yet (no Output) -- emit only the call
+	// half. Fabricating a "completed, empty result" tool_search_output here
+	// would hide the real result once it actually arrives, corrupting
+	// conversation state on a backend switch mid-search.
+	if msg.ResponsesToolMessage.Output == nil {
+		return []schemas.ResponsesMessage{callItem}
+	}
+
 	var discoveredNames []string
-	if msg.ResponsesToolMessage.Output != nil && msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr != nil {
+	if msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr != nil {
 		_ = sonic.Unmarshal([]byte(*msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr), &discoveredNames)
 	}
 

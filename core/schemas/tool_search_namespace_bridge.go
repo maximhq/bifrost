@@ -238,7 +238,10 @@ func isToolSearchBridgeFunctionCallOutput(msg *ResponsesMessage) bool {
 // If a function_call's matching function_call_output has not arrived yet
 // (call still in flight), the call is expanded on its own with
 // Status "in_progress" and no Output — mirroring the Anthropic ingest
-// behavior for an unpaired server_tool_use.
+// behavior for an unpaired server_tool_use. Conversely, an output item with
+// no matching call in this slice (e.g. a caller trimmed/paginated history to
+// only the tail of a pair) is passed through unchanged rather than silently
+// dropped — losing the discovered-tool result would otherwise be invisible.
 func ExpandToolSearchBridgeItems(messages []ResponsesMessage) []ResponsesMessage {
 	hasBridgeItem := false
 	for i := range messages {
@@ -251,11 +254,17 @@ func ExpandToolSearchBridgeItems(messages []ResponsesMessage) []ResponsesMessage
 		return messages
 	}
 
-	// Index outputs by call_id for O(1) pairing lookup.
+	// Index outputs by call_id for O(1) pairing lookup, and track which
+	// call_ids have a matching call present so an orphaned output (no call
+	// in this slice) is never silently dropped.
 	outputByCallID := make(map[string]*ResponsesMessage)
+	callIDsWithCall := make(map[string]bool)
 	for i := range messages {
 		if isToolSearchBridgeFunctionCallOutput(&messages[i]) && messages[i].ResponsesToolMessage.CallID != nil {
 			outputByCallID[*messages[i].ResponsesToolMessage.CallID] = &messages[i]
+		}
+		if isToolSearchBridgeFunctionCall(&messages[i]) && messages[i].ResponsesToolMessage.CallID != nil {
+			callIDsWithCall[*messages[i].ResponsesToolMessage.CallID] = true
 		}
 	}
 
@@ -266,9 +275,18 @@ func ExpandToolSearchBridgeItems(messages []ResponsesMessage) []ResponsesMessage
 		case isToolSearchBridgeFunctionCall(&msg):
 			out = append(out, mergeToolSearchBridgeCall(msg, outputByCallID))
 		case isToolSearchBridgeFunctionCallOutput(&msg):
-			// Dropped: folded into the merged call item above. Skip emitting
-			// it a second time as a standalone item.
-			continue
+			var callID string
+			if msg.ResponsesToolMessage.CallID != nil {
+				callID = *msg.ResponsesToolMessage.CallID
+			}
+			if callIDsWithCall[callID] {
+				// Folded into the merged call item above. Skip emitting it a
+				// second time as a standalone item.
+				continue
+			}
+			// No matching call in this slice -- preserve as-is rather than
+			// dropping the discovered-tool result.
+			out = append(out, msg)
 		default:
 			out = append(out, msg)
 		}
@@ -327,10 +345,19 @@ func CollapseToolSearchItemToNamespacePair(msg ResponsesMessage) []ResponsesMess
 	}
 	bridgeFuncName := bridgeFuncForAnthropicToolSearchName(anthropicName)
 
+	// Status must reflect the source item's actual completion state -- an
+	// in-progress Anthropic tool_search_tool_call (no Output yet) must not
+	// be presented to the caller as "completed"; that would hide a
+	// still-running search from a client polling/replaying history.
+	callStatus := "in_progress"
+	if msg.ResponsesToolMessage.Output != nil {
+		callStatus = "completed"
+	}
+
 	call := ResponsesMessage{
 		Type:   Ptr(ResponsesMessageTypeFunctionCall),
 		ID:     msg.ID,
-		Status: Ptr("completed"),
+		Status: Ptr(callStatus),
 		ResponsesToolMessage: &ResponsesToolMessage{
 			CallID:    msg.ResponsesToolMessage.CallID,
 			Name:      Ptr(bridgeFuncName),
