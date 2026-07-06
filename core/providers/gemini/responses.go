@@ -112,9 +112,20 @@ func ToGeminiResponsesRequestWithImageURLSchemes(ctx *schemas.BifrostContext, bi
 				return nil, err
 			}
 
-			// Convert tool choice if present
+			// Convert tool choice if present, but only when function declarations exist.
+			// Gemini rejects functionCallingConfig without function_declarations
+			// (e.g. a web-search-only request has GoogleSearch but no declarations).
 			if bifrostReq.Params.ToolChoice != nil {
-				geminiReq.ToolConfig = convertResponsesToolChoiceToGemini(bifrostReq.Params.ToolChoice)
+				hasFunctionDeclarations := false
+				for _, tool := range geminiReq.Tools {
+					if len(tool.FunctionDeclarations) > 0 {
+						hasFunctionDeclarations = true
+						break
+					}
+				}
+				if hasFunctionDeclarations {
+					geminiReq.ToolConfig = convertResponsesToolChoiceToGemini(bifrostReq.Params.ToolChoice)
+				}
 			}
 		}
 
