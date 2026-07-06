@@ -22,6 +22,10 @@ import (
 // hourly buckets grouped by provider, model, status, object_type, and key IDs.
 // Includes exact percentiles (p90/p95/p99) computed per hour so they can be
 // re-aggregated via weighted averages across wider time ranges.
+// canonical_model_name is a dimension despite being effectively functionally
+// dependent on model: a bucket only splits transiently when a model's rows mix
+// empty and populated canonical values (e.g. an alias gains model_name), and
+// readers must re-aggregate per model via SUM / MAX(NULLIF(...)).
 const mvLogsHourlyDDL = `
 CREATE MATERIALIZED VIEW IF NOT EXISTS mv_logs_hourly AS
 SELECT
