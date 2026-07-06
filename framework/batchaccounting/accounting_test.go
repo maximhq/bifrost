@@ -183,13 +183,6 @@ func (s *fakeAccountingStore) FailBatchJobAccounting(ctx context.Context, id str
 
 type fakeBatchPricing struct{}
 
-func (fakeBatchPricing) CalculateCostForUsage(usage *schemas.BifrostLLMUsage, provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *modelcatalog.PricingLookupScopes) float64 {
-	if usage == nil || provider != schemas.OpenAI || requestType != schemas.BatchResultsRequest {
-		return 0
-	}
-	return cost
-}
-
 func (fakeBatchPricing) CalculateBatchCostForUsage(usage *schemas.BifrostLLMUsage, provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *modelcatalog.PricingLookupScopes) (float64, bool) {
 	details := (fakeBatchPricing{}).CalculateBatchCostDetailsForUsage(usage, provider, model, requestType, scopes)
 	return details.Cost, details.Priced
@@ -209,6 +202,8 @@ func (fakeBatchPricing) CalculateBatchCostDetailsForUsage(usage *schemas.Bifrost
 		inputRate = 0.000005
 		outputRate = 0.000010
 	case "gpt-4o":
+	case "claude-3-5-haiku":
+	case "amazon.nova-lite-v1:0":
 	default:
 		return modelcatalog.BatchCostDetails{}
 	}
@@ -381,6 +376,88 @@ func TestAccountBatchResults_ZeroProviderCostIsStillPriced(t *testing.T) {
 	assert.Equal(t, 0.0, summary.Cost)
 }
 
+func TestAccountBatchResults_AnthropicAggregatesUsage(t *testing.T) {
+	store := newFakeAccountingStore()
+
+	summary, err := AccountBatchResults(context.Background(), store, fakeBatchPricing{}, Request{
+		Provider: schemas.Anthropic,
+		BatchID:  "anthropic_batch",
+		Results: []schemas.BatchResultItem{
+			anthropicResult("claude-3-5-haiku", 10, 2, 3, 5),
+			anthropicResult("claude-3-5-haiku", 7, 0, 0, 4),
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, summary)
+	assert.True(t, summary.Accounted)
+	assert.Equal(t, 22, summary.Usage.PromptTokens)
+	assert.Equal(t, 9, summary.Usage.CompletionTokens)
+	assert.Equal(t, 31, summary.Usage.TotalTokens)
+	assert.InDelta(t, 0.00040, summary.Cost, 1e-12)
+}
+
+func TestAccountBatchResults_BedrockAggregatesUsageFromResponseBody(t *testing.T) {
+	store := newFakeAccountingStore()
+
+	summary, err := AccountBatchResults(context.Background(), store, fakeBatchPricing{}, Request{
+		Provider:      schemas.Bedrock,
+		BatchID:       "bedrock_batch",
+		FallbackModel: "amazon.nova-lite-v1:0",
+		Results: []schemas.BatchResultItem{
+			bedrockResult("", 12, 6),
+			bedrockResult("amazon.nova-lite-v1:0", 8, 2),
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, summary)
+	assert.True(t, summary.Accounted)
+	assert.Equal(t, 20, summary.Usage.PromptTokens)
+	assert.Equal(t, 8, summary.Usage.CompletionTokens)
+	assert.Equal(t, 28, summary.Usage.TotalTokens)
+	assert.InDelta(t, 0.00036, summary.Cost, 1e-12)
+}
+
+func TestAccountBatchResults_BedrockIncludesCacheDetailsInPromptUsage(t *testing.T) {
+	store := newFakeAccountingStore()
+
+	summary, err := AccountBatchResults(context.Background(), store, fakeBatchPricing{}, Request{
+		Provider:      schemas.Bedrock,
+		BatchID:       "bedrock_cache_batch",
+		FallbackModel: "amazon.nova-lite-v1:0",
+		Results: []schemas.BatchResultItem{
+			{
+				CustomID: "custom-id",
+				Response: &schemas.BatchResultResponse{
+					StatusCode: 200,
+					Body: map[string]interface{}{
+						"usage": map[string]interface{}{
+							"inputTokens":  12,
+							"outputTokens": 6,
+							"totalTokens":  18,
+							"cacheDetails": []map[string]interface{}{
+								{"inputTokens": 4, "ttl": "5m"},
+								{"inputTokens": 3, "ttl": "1h"},
+							},
+						},
+					},
+				},
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, summary)
+	assert.True(t, summary.Accounted)
+	assert.Equal(t, 19, summary.Usage.PromptTokens)
+	assert.Equal(t, 6, summary.Usage.CompletionTokens)
+	assert.Equal(t, 25, summary.Usage.TotalTokens)
+	require.NotNil(t, summary.Usage.PromptTokensDetails)
+	assert.Equal(t, 7, summary.Usage.PromptTokensDetails.CachedWriteTokens)
+	require.NotNil(t, summary.Usage.PromptTokensDetails.CachedWriteTokenDetails)
+	assert.Equal(t, 4, summary.Usage.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens5m)
+	assert.Equal(t, 3, summary.Usage.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h)
+	assert.InDelta(t, 0.00031, summary.Cost, 1e-12)
+}
+
 func TestAccountBatchResults_UsesAggregateWriterAndUsageReporter(t *testing.T) {
 	store := newFakeAccountingStore()
 	writer := &fakeAggregateLogWriter{}
@@ -542,6 +619,44 @@ func TestSweeper_AccountsCompletedOpenAIJob(t *testing.T) {
 	assert.Len(t, store.logs, 1)
 }
 
+func TestSweeper_AccountsCompletedAnthropicJob(t *testing.T) {
+	store := newFakeAccountingStore()
+	now := time.Now().UTC().Add(-time.Minute)
+	job := &logstore.BatchJob{
+		ID:               logstore.BatchJobID(string(schemas.Anthropic), "anthropic_sweep"),
+		Provider:         string(schemas.Anthropic),
+		BatchID:          "anthropic_sweep",
+		Model:            "claude-3-5-haiku",
+		AccountingStatus: logstore.BatchJobAccountingStatusPending,
+		NextCheckAt:      &now,
+	}
+	require.NoError(t, store.UpsertBatchJob(context.Background(), job))
+
+	fetcher := &fakeBatchResultFetcher{
+		retrieveResp: &schemas.BifrostBatchRetrieveResponse{
+			ID:     "anthropic_sweep",
+			Status: schemas.BatchStatusCompleted,
+		},
+		resultsResp: &schemas.BifrostBatchResultsResponse{
+			BatchID: "anthropic_sweep",
+			Results: []schemas.BatchResultItem{
+				anthropicResult("claude-3-5-haiku", 10, 0, 0, 5),
+			},
+		},
+	}
+	sweeper := NewSweeper(store, fakeBatchPricing{}, fetcher, nil, nil, SweeperConfig{
+		Limit: 10,
+	})
+
+	sweeper.SweepOnce(context.Background())
+
+	assert.Equal(t, 1, fetcher.retrieveCalls)
+	assert.Equal(t, 1, fetcher.resultsCalls)
+	accounted := store.jobs[logstore.BatchJobID(string(schemas.Anthropic), "anthropic_sweep")]
+	require.NotNil(t, accounted)
+	assert.Equal(t, logstore.BatchJobAccountingStatusAccounted, accounted.AccountingStatus)
+}
+
 func TestSweeper_SkipsProviderPollWhenKVLeaseIsHeld(t *testing.T) {
 	store := newFakeAccountingStore()
 	now := time.Now().UTC().Add(-time.Minute)
@@ -618,6 +733,45 @@ func openAIResult(status int, model string, promptTokens int, completionTokens i
 					"total_tokens":      promptTokens + completionTokens,
 				},
 			},
+		},
+	}
+}
+
+func anthropicResult(model string, inputTokens int, cacheReadTokens int, cacheWriteTokens int, outputTokens int) schemas.BatchResultItem {
+	return schemas.BatchResultItem{
+		CustomID: "custom-id",
+		Result: &schemas.BatchResultData{
+			Type: "succeeded",
+			Message: map[string]interface{}{
+				"model": model,
+				"usage": map[string]interface{}{
+					"input_tokens":                inputTokens,
+					"cache_read_input_tokens":     cacheReadTokens,
+					"cache_creation_input_tokens": cacheWriteTokens,
+					"output_tokens":               outputTokens,
+					"cache_creation":              map[string]interface{}{"ephemeral_5m_input_tokens": cacheWriteTokens},
+				},
+			},
+		},
+	}
+}
+
+func bedrockResult(model string, promptTokens int, completionTokens int) schemas.BatchResultItem {
+	body := map[string]interface{}{
+		"usage": map[string]interface{}{
+			"inputTokens":  promptTokens,
+			"outputTokens": completionTokens,
+			"totalTokens":  promptTokens + completionTokens,
+		},
+	}
+	if model != "" {
+		body["model"] = model
+	}
+	return schemas.BatchResultItem{
+		CustomID: "custom-id",
+		Response: &schemas.BatchResultResponse{
+			StatusCode: 200,
+			Body:       body,
 		},
 	}
 }

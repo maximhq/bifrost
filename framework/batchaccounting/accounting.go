@@ -407,32 +407,10 @@ func calculateBatchCostDetails(pricing PricingManager, usage *schemas.BifrostLLM
 
 func extractUsage(provider schemas.ModelProvider, fallbackModel string, item schemas.BatchResultItem) (extractedUsage, error) {
 	switch provider {
-	case schemas.OpenAI:
-		if item.Response == nil || item.Response.StatusCode >= 400 || item.Response.Body == nil {
-			return extractedUsage{}, nil
-		}
-		usageValue, ok := item.Response.Body["usage"]
-		if !ok || usageValue == nil {
-			return extractedUsage{}, nil
-		}
-		usage, err := usageFromValue(usageValue)
-		if err != nil {
-			return extractedUsage{}, err
-		}
-		if usage.TotalTokens == 0 {
-			usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
-		}
-		if usage.TotalTokens == 0 {
-			return extractedUsage{}, nil
-		}
-		model, _ := item.Response.Body["model"].(string)
-		if model == "" {
-			model = fallbackModel
-		}
-		if model == "" {
-			return extractedUsage{usage: usage, hasUsage: true, missingModel: true}, nil
-		}
-		return extractedUsage{model: model, usage: usage, hasUsage: true}, nil
+	case schemas.OpenAI, schemas.Bedrock:
+		return extractResponseBodyUsage(fallbackModel, item)
+	case schemas.Anthropic:
+		return extractAnthropicUsage(fallbackModel, item)
 	default:
 		return "", false
 	}
@@ -460,16 +438,189 @@ func extractUsage(provider schemas.ModelProvider, fallbackModel string, item sch
 	return extractor(fallbackModel, item)
 }
 
+func extractResponseBodyUsage(fallbackModel string, item schemas.BatchResultItem) (extractedUsage, error) {
+	if item.Response == nil || item.Response.StatusCode >= 400 || item.Response.Body == nil {
+		return extractedUsage{}, nil
+	}
+	usageValue, ok := item.Response.Body["usage"]
+	if !ok || usageValue == nil {
+		return extractedUsage{}, nil
+	}
+	usage, err := usageFromValue(usageValue)
+	if err != nil {
+		return extractedUsage{}, err
+	}
+	if usage.TotalTokens == 0 {
+		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+	}
+	if usage.TotalTokens == 0 {
+		return extractedUsage{}, nil
+	}
+	model, _ := item.Response.Body["model"].(string)
+	if model == "" {
+		model = fallbackModel
+	}
+	if model == "" {
+		return extractedUsage{usage: usage, hasUsage: true, missingModel: true}, nil
+	}
+	return extractedUsage{model: model, usage: usage, hasUsage: true}, nil
+}
+
+func extractAnthropicUsage(fallbackModel string, item schemas.BatchResultItem) (extractedUsage, error) {
+	if item.Result == nil || item.Result.Type != "succeeded" || item.Result.Message == nil {
+		return extractedUsage{}, nil
+	}
+	usageValue, ok := item.Result.Message["usage"]
+	if !ok || usageValue == nil {
+		return extractedUsage{}, nil
+	}
+	usage, err := anthropicUsageFromValue(usageValue)
+	if err != nil {
+		return extractedUsage{}, err
+	}
+	if usage.TotalTokens == 0 {
+		return extractedUsage{}, nil
+	}
+	model, _ := item.Result.Message["model"].(string)
+	if model == "" {
+		model = fallbackModel
+	}
+	if model == "" {
+		return extractedUsage{usage: usage, hasUsage: true, missingModel: true}, nil
+	}
+	return extractedUsage{model: model, usage: usage, hasUsage: true}, nil
+}
+
+func anthropicUsageFromValue(value interface{}) (*schemas.BifrostLLMUsage, error) {
+	bytes, err := sonic.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	var usage struct {
+		InputTokens              int `json:"input_tokens"`
+		CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+		CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+		CacheCreation            struct {
+			Ephemeral5mInputTokens int `json:"ephemeral_5m_input_tokens"`
+			Ephemeral1hInputTokens int `json:"ephemeral_1h_input_tokens"`
+		} `json:"cache_creation"`
+		OutputTokens int `json:"output_tokens"`
+	}
+	if err := sonic.Unmarshal(bytes, &usage); err != nil {
+		return nil, err
+	}
+	promptTokens := usage.InputTokens + usage.CacheCreationInputTokens + usage.CacheReadInputTokens
+	totalTokens := promptTokens + usage.OutputTokens
+	if totalTokens == 0 {
+		return &schemas.BifrostLLMUsage{}, nil
+	}
+	out := &schemas.BifrostLLMUsage{
+		PromptTokens:     promptTokens,
+		CompletionTokens: usage.OutputTokens,
+		TotalTokens:      totalTokens,
+	}
+	if usage.CacheCreationInputTokens > 0 || usage.CacheReadInputTokens > 0 {
+		out.PromptTokensDetails = &schemas.ChatPromptTokensDetails{
+			CachedReadTokens:  usage.CacheReadInputTokens,
+			CachedWriteTokens: usage.CacheCreationInputTokens,
+		}
+		if usage.CacheCreation.Ephemeral5mInputTokens > 0 || usage.CacheCreation.Ephemeral1hInputTokens > 0 {
+			out.PromptTokensDetails.CachedWriteTokenDetails = &schemas.ChatCachedWriteTokenDetails{
+				CachedWriteTokens5m: usage.CacheCreation.Ephemeral5mInputTokens,
+				CachedWriteTokens1h: usage.CacheCreation.Ephemeral1hInputTokens,
+			}
+		}
+	}
+	return out, nil
+}
+
 func usageFromValue(value interface{}) (*schemas.BifrostLLMUsage, error) {
 	bytes, err := sonic.Marshal(value)
 	if err != nil {
 		return nil, err
 	}
-	var usage schemas.BifrostLLMUsage
+	var usage struct {
+		PromptTokens     int `json:"prompt_tokens"`
+		CompletionTokens int `json:"completion_tokens"`
+		TotalTokens      int `json:"total_tokens"`
+
+		InputTokensSnake  int `json:"input_tokens"`
+		OutputTokensSnake int `json:"output_tokens"`
+
+		InputTokensCamel  int `json:"inputTokens"`
+		OutputTokensCamel int `json:"outputTokens"`
+		TotalTokensCamel  int `json:"totalTokens"`
+
+		CacheCreationInputTokens  int `json:"cache_creation_input_tokens"`
+		CacheReadInputTokens      int `json:"cache_read_input_tokens"`
+		CacheReadInputTokensCamel int `json:"cacheReadInputTokens"`
+		CacheWriteInputTokens     int `json:"cacheWriteInputTokens"`
+		CacheCreation             struct {
+			Ephemeral5mInputTokens int `json:"ephemeral_5m_input_tokens"`
+			Ephemeral1hInputTokens int `json:"ephemeral_1h_input_tokens"`
+		} `json:"cache_creation"`
+		CacheDetails []struct {
+			InputTokens int    `json:"inputTokens"`
+			TTL         string `json:"ttl"`
+		} `json:"cacheDetails"`
+		Cost *schemas.BifrostCost `json:"cost,omitempty"`
+	}
 	if err := sonic.Unmarshal(bytes, &usage); err != nil {
 		return nil, err
 	}
-	return &usage, nil
+	cacheWriteTokens := usage.CacheCreationInputTokens + usage.CacheWriteInputTokens
+	cacheWrite5m := usage.CacheCreation.Ephemeral5mInputTokens
+	cacheWrite1h := usage.CacheCreation.Ephemeral1hInputTokens
+	cacheDetailsWriteTokens := 0
+	for _, detail := range usage.CacheDetails {
+		cacheDetailsWriteTokens += detail.InputTokens
+		switch detail.TTL {
+		case "5m":
+			cacheWrite5m += detail.InputTokens
+		case "1h":
+			cacheWrite1h += detail.InputTokens
+		}
+	}
+	if cacheWriteTokens == 0 {
+		cacheWriteTokens = cacheDetailsWriteTokens
+	}
+	cacheReadTokens := usage.CacheReadInputTokens + usage.CacheReadInputTokensCamel
+
+	promptTokens := firstNonZero(usage.PromptTokens, usage.InputTokensSnake, usage.InputTokensCamel) + cacheReadTokens + cacheWriteTokens
+	completionTokens := firstNonZero(usage.CompletionTokens, usage.OutputTokensSnake, usage.OutputTokensCamel)
+	computedTotal := promptTokens + completionTokens
+	totalTokens := firstNonZero(usage.TotalTokens, usage.TotalTokensCamel)
+	if totalTokens == 0 || totalTokens < computedTotal {
+		totalTokens = computedTotal
+	}
+	out := &schemas.BifrostLLMUsage{
+		PromptTokens:     promptTokens,
+		CompletionTokens: completionTokens,
+		TotalTokens:      totalTokens,
+		Cost:             usage.Cost,
+	}
+	if cacheReadTokens > 0 || cacheWriteTokens > 0 {
+		out.PromptTokensDetails = &schemas.ChatPromptTokensDetails{
+			CachedReadTokens:  cacheReadTokens,
+			CachedWriteTokens: cacheWriteTokens,
+		}
+		if cacheWrite5m > 0 || cacheWrite1h > 0 {
+			out.PromptTokensDetails.CachedWriteTokenDetails = &schemas.ChatCachedWriteTokenDetails{
+				CachedWriteTokens5m: cacheWrite5m,
+				CachedWriteTokens1h: cacheWrite1h,
+			}
+		}
+	}
+	return out, nil
+}
+
+func firstNonZero(values ...int) int {
+	for _, value := range values {
+		if value != 0 {
+			return value
+		}
+	}
+	return 0
 }
 
 func addUsage(dst *schemas.BifrostLLMUsage, src *schemas.BifrostLLMUsage) {
@@ -479,6 +630,23 @@ func addUsage(dst *schemas.BifrostLLMUsage, src *schemas.BifrostLLMUsage) {
 	dst.PromptTokens += src.PromptTokens
 	dst.CompletionTokens += src.CompletionTokens
 	dst.TotalTokens += src.TotalTokens
+	if src.PromptTokensDetails != nil {
+		if dst.PromptTokensDetails == nil {
+			dst.PromptTokensDetails = &schemas.ChatPromptTokensDetails{}
+		}
+		dst.PromptTokensDetails.TextTokens += src.PromptTokensDetails.TextTokens
+		dst.PromptTokensDetails.AudioTokens += src.PromptTokensDetails.AudioTokens
+		dst.PromptTokensDetails.ImageTokens += src.PromptTokensDetails.ImageTokens
+		dst.PromptTokensDetails.CachedReadTokens += src.PromptTokensDetails.CachedReadTokens
+		dst.PromptTokensDetails.CachedWriteTokens += src.PromptTokensDetails.CachedWriteTokens
+		if src.PromptTokensDetails.CachedWriteTokenDetails != nil {
+			if dst.PromptTokensDetails.CachedWriteTokenDetails == nil {
+				dst.PromptTokensDetails.CachedWriteTokenDetails = &schemas.ChatCachedWriteTokenDetails{}
+			}
+			dst.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens5m += src.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens5m
+			dst.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h += src.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h
+		}
+	}
 }
 
 func buildAggregateLog(req Request, summary *Summary, now time.Time) *logstore.Log {

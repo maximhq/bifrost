@@ -659,7 +659,6 @@ func (p *LoggerPlugin) StartBatchAccountingSweeper(fetcher batchaccounting.Batch
 	sweeper := batchaccounting.NewSweeper(p.store, p.pricingManager, fetcher, p, usageReporter, batchaccounting.SweeperConfig{
 		Interval:  interval,
 		ClaimedBy: claimedBy,
-		Provider:  schemas.OpenAI,
 		KVStore:   kvStore,
 		Logger:    p.logger,
 	})

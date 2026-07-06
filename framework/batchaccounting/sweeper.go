@@ -56,9 +56,6 @@ func NewSweeper(store SweepStore, pricing PricingManager, fetcher BatchResultFet
 	if config.Limit <= 0 {
 		config.Limit = defaultSweepLimit
 	}
-	if config.Provider == "" {
-		config.Provider = schemas.OpenAI
-	}
 	if config.ClaimedBy == "" {
 		config.ClaimedBy = "batch-sweeper"
 	}
@@ -107,7 +104,7 @@ func (s *Sweeper) SweepOnce(ctx context.Context) {
 }
 
 func (s *Sweeper) sweepJob(ctx context.Context, job *logstore.BatchJob, now time.Time) {
-	if job == nil || schemas.ModelProvider(job.Provider) != schemas.OpenAI {
+	if job == nil || !IsProviderSupported(schemas.ModelProvider(job.Provider)) {
 		return
 	}
 	locked, err := s.acquireProviderPollLease(job)
