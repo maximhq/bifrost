@@ -18,6 +18,7 @@ type TableModelPricing struct {
 	MaxInputTokens  *int                  `gorm:"default:null" json:"max_input_tokens,omitempty"`
 	MaxOutputTokens *int                  `gorm:"default:null" json:"max_output_tokens,omitempty"`
 	Architecture    *schemas.Architecture `gorm:"type:text;serializer:json;default:null" json:"architecture,omitempty"`
+	IsDeprecated    bool                  `gorm:"default:false;column:is_deprecated" json:"is_deprecated"`
 
 	// Costs - Text
 	InputCostPerToken          *float64 `gorm:"default:null" json:"input_cost_per_token,omitempty"`

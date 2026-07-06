@@ -108,6 +108,7 @@ export const CHART_HEADER_CONTROLS_CLASS = "flex items-center justify-end gap-2"
 export const CHART_COLORS = {
 	success: "#10b981", // emerald-500
 	error: "#ef4444", // red-500
+	cancelled: "#a1a1aa", // zinc-400
 	promptTokens: "#3b82f6", // blue-500
 	completionTokens: "#10b981", // emerald-500
 	totalTokens: "#8b5cf6", // violet-500

@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/gemini"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
@@ -57,38 +56,6 @@ func resolveVertexRegion(ctx *schemas.BifrostContext, key schemas.Key) string {
 		return key.VertexKeyConfig.Region.GetValue()
 	}
 	return ""
-}
-
-// getRequestBodyForAnthropicResponses serializes a BifrostResponsesRequest into the Anthropic wire format for Vertex AI.
-// Compared to the native Anthropic path, it strips model/region fields, remaps tool versions, injects beta headers
-// into the request body (rather than HTTP headers), and pins the Anthropic API version to DefaultVertexAnthropicVersion.
-func getRequestBodyForAnthropicResponses(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest, deployment string, isStreaming bool, isCountTokens bool, betaHeaderOverrides map[string]bool, providerExtraHeaders map[string]string, shouldSendBackRawRequest bool, shouldSendBackRawResponse bool) ([]byte, *schemas.BifrostError) {
-	jsonBody, buildErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, request, anthropic.AnthropicRequestBuildConfig{
-		Provider:                  schemas.Vertex,
-		Deployment:                deployment,
-		DeleteModelField:          true,
-		DeleteRegionField:         true,
-		IsStreaming:               isStreaming,
-		IsCountTokens:             isCountTokens,
-		AddAnthropicVersion:       true,
-		AnthropicVersion:          DefaultVertexAnthropicVersion,
-		StripCacheControlScope:    true,
-		RemapToolVersions:         true,
-		InjectBetaHeadersIntoBody: true,
-		BetaHeaderOverrides:       betaHeaderOverrides,
-		ProviderExtraHeaders:      providerExtraHeaders,
-		ValidateTools:             true,
-		ShouldSendBackRawRequest:  shouldSendBackRawRequest,
-		ShouldSendBackRawResponse: shouldSendBackRawResponse,
-	})
-	if buildErr != nil {
-		return nil, buildErr
-	}
-	stripped, err := anthropic.StripUnsupportedFieldsFromRawBody(jsonBody, schemas.Vertex, schemas.ResolveCanonicalModel(ctx, deployment))
-	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError(err.Error(), nil)
-	}
-	return stripped, nil
 }
 
 // isVertexMultiRegionEndpoint reports whether the Vertex location uses Google's

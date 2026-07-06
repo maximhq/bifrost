@@ -391,6 +391,62 @@ func TestMissingThoughtSignatureUsesBypassSentinel(t *testing.T) {
 	assert.NotContains(t, string(encoded), `"thoughtSignature":"c2tpcF90aG91Z2h0X3NpZ25hdHVyZV92YWxpZGF0b3I="`)
 }
 
+func TestGeminiChatCompletionRejectsGCSImageURL(t *testing.T) {
+	_, err := gemini.ToGeminiChatCompletionRequest(nil, &schemas.BifrostChatRequest{
+		Model: "gemini-3-flash-preview",
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{
+					ContentBlocks: []schemas.ChatContentBlock{
+						{
+							Type: schemas.ChatContentBlockTypeText,
+							Text: schemas.Ptr("Describe this image."),
+						},
+						{
+							Type: schemas.ChatContentBlockTypeImage,
+							ImageURLStruct: &schemas.ChatInputImage{
+								URL: "gs://my-bucket/xxx.png",
+							},
+						},
+					},
+				},
+			},
+		},
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `URL scheme "gs" is not allowed`)
+}
+
+func TestGeminiResponsesRejectsGCSImageURL(t *testing.T) {
+	_, err := gemini.ToGeminiResponsesRequest(nil, &schemas.BifrostResponsesRequest{
+		Model: "gemini-3-flash-preview",
+		Input: []schemas.ResponsesMessage{
+			{
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{
+						{
+							Type: schemas.ResponsesInputMessageContentBlockTypeText,
+							Text: schemas.Ptr("Describe this image."),
+						},
+						{
+							Type: schemas.ResponsesInputMessageContentBlockTypeImage,
+							ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{
+								ImageURL: schemas.Ptr("gs://my-bucket/xxx.png"),
+							},
+						},
+					},
+				},
+			},
+		},
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `URL scheme "gs" is not allowed`)
+}
+
 func TestEmbeddedThoughtSignatureDoesNotUseBypassSentinel(t *testing.T) {
 	thoughtSig := base64.RawURLEncoding.EncodeToString([]byte{0x01, 0x02, 0x03})
 	callID := "call_1_ts_" + thoughtSig
@@ -3409,6 +3465,7 @@ func TestThinkingBudgetValidation_Chat(t *testing.T) {
 		wantDisabled bool   // budget=0: expect IncludeThoughts=false
 		wantDynamic  bool   // budget=-1: expect ThinkingBudget=-1
 		wantBudget   *int32 // expected ThinkingBudget value when no error
+		wantNoConfig bool
 	}{
 		// gemini-2.5-pro: valid range [128, 32768]
 		{
@@ -3495,10 +3552,16 @@ func TestThinkingBudgetValidation_Chat(t *testing.T) {
 
 		// Special values — exempt from range checks on any model.
 		{
-			name:         "budget_zero_disables_thinking",
-			model:        "gemini-2.5-pro",
+			name:         "flash_budget_zero_disables_thinking",
+			model:        "gemini-2.5-flash",
 			budget:       0,
 			wantDisabled: true,
+		},
+		{
+			name:         "pro_budget_zero_omits_thinking_config",
+			model:        "gemini-2.5-pro",
+			budget:       0,
+			wantNoConfig: true,
 		},
 		{
 			name:        "budget_minus_one_dynamic",
@@ -3529,6 +3592,10 @@ func TestThinkingBudgetValidation_Chat(t *testing.T) {
 
 			require.NoError(t, err)
 			require.NotNil(t, result)
+			if tt.wantNoConfig {
+				assert.Nil(t, result.GenerationConfig.ThinkingConfig)
+				return
+			}
 			require.NotNil(t, result.GenerationConfig.ThinkingConfig, "ThinkingConfig should be set")
 
 			tc := result.GenerationConfig.ThinkingConfig
@@ -3559,6 +3626,7 @@ func TestThinkingBudgetValidation_Responses(t *testing.T) {
 		wantDisabled bool
 		wantDynamic  bool
 		wantBudget   *int32
+		wantNoConfig bool
 	}{
 		// gemini-2.5-pro
 		{
@@ -3602,6 +3670,12 @@ func TestThinkingBudgetValidation_Responses(t *testing.T) {
 			wantDisabled: true,
 		},
 		{
+			name:         "pro_budget_zero_omits_thinking_config",
+			model:        "gemini-2.5-pro",
+			budget:       0,
+			wantNoConfig: true,
+		},
+		{
 			name:        "budget_minus_one_dynamic",
 			model:       "gemini-2.5-pro",
 			budget:      -1,
@@ -3629,6 +3703,10 @@ func TestThinkingBudgetValidation_Responses(t *testing.T) {
 
 			require.NoError(t, err)
 			require.NotNil(t, result)
+			if tt.wantNoConfig {
+				assert.Nil(t, result.GenerationConfig.ThinkingConfig)
+				return
+			}
 			require.NotNil(t, result.GenerationConfig.ThinkingConfig, "ThinkingConfig should be set")
 
 			tc := result.GenerationConfig.ThinkingConfig
@@ -3646,6 +3724,25 @@ func TestThinkingBudgetValidation_Responses(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestThinkingBudgetZeroUnsupportedForProResponses(t *testing.T) {
+	effortNone := "none"
+
+	req := &schemas.BifrostResponsesRequest{
+		Model: "gemini-2.5-pro",
+		Params: &schemas.ResponsesParameters{
+			Reasoning: &schemas.ResponsesParametersReasoning{
+				Effort: &effortNone,
+			},
+		},
+	}
+
+	result, err := gemini.ToGeminiResponsesRequest(nil, req)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Nil(t, result.GenerationConfig.ThinkingConfig)
 }
 
 // TestThinkingBudgetEffortUsesModelRange verifies that effort-based budget

@@ -1,0 +1,87 @@
+## ✨ Features
+
+- **DeepSeek Provider** - Added DeepSeek as a first-class provider with dedicated request handling and thinking-mode gating
+- **AWS Bedrock Mantle Provider** - Added `bedrock_mantle` as a first-class provider with SigV4 key config, native-Anthropic and OpenAI-compatible routing, DB migration, and UI support
+- **OAuth 2.1 Gateway Auth for MCP** - Added a full OAuth2 authorization server for `/mcp`: discovery endpoints, dynamic client registration, authorize/token with PKCE and refresh token rotation, consent page, JWT Bearer authentication, session listing/revocation with sweep worker, OAuth Grants UI, and `mcp_server_auth_mode` config
+- **Virtual Key Expiry** - Added an expiry field to virtual keys with governance enforcement
+- **ClickHouse Log Store (Beta)** - Added ClickHouse support for the log store, including a hybrid store mode. This feature is in beta and may have some corner cases.
+- **IPv6 Support** - Added IPv6 support to the HTTP transport
+- **Per-MCP-Server Tool Timeout** - Added per-MCP-server tool execution timeout configuration (thanks [@Purvi09](https://github.com/Purvi09)!)
+- **OpenAI Responses Lifecycle APIs** - Added missing OpenAI Responses lifecycle methods with explicit per-verb governance flags (thanks [@17jmumford](https://github.com/17jmumford)!)
+- **MCP Clients Filtering & Pagination** - Added connection_type, auth_type, state, virtual_key, and server/client_id filters with pagination and a faceted filter sidebar on the MCP clients page
+- **Deprecated Model Marking** - Models are now marked `is_deprecated` in pricing and catalog APIs instead of being filtered out of responses
+- **Log Attribution Columns** - Added user, team, customer, and business-unit name columns to the logs list with multi-value attribution cells
+- **Latency on Errors** - Error responses now carry latency information
+- **Env-Store Virtual Key Values** - Virtual key values now use `schemas.SecretVar`, enabling env-store references
+- **Connector Multi-Attribution** - Connectors can now attach multiple teams, customers, and business units
+- **Supplemental External Budgets** - Added support for externally resolved supplemental budgets not tracked against a virtual key
+- **Cost Recalculation Progress** - Cost recalculation now streams progress via SSE with batch processing
+- **Vendor-Prefix Pricing Fallback** - Extended Bedrock vendor-prefix pricing fallback to OpenAI, Google, and xAI models
+- **Complexity Router Improvements** - Added stemming alongside exact keyword match and a no-signal fallback to the complexity analyzer
+- **MCP VK Header** - Added `x-goog-api-key` as a supported virtual-key header on the MCP auth path
+
+## 🐞 Fixed
+
+- **Anthropic Redacted Thinking** - Round-trip `redacted_thinking` blocks on chat completions so tool-use turns with extended thinking replay correctly (thanks [@fus3r](https://github.com/fus3r)!)
+- **Bedrock Streaming Block Boundaries** - Emit `contentBlockStop` events on the Bedrock ConverseStream egress (thanks [@fus3r](https://github.com/fus3r)!)
+- **Cache Token Accounting** - Report `cached_tokens` as reads only per the OpenAI spec so cache writes are not billed as reads (thanks [@fus3r](https://github.com/fus3r)!)
+- **Streaming Retries & Fallbacks** - Clear the per-attempt stream close claim so streaming retries and fallbacks work after SSE-embedded provider errors (thanks [@fus3r](https://github.com/fus3r)!)
+- **Governance Team IDs** - Decode URL-encoded team IDs in fetch, update, and delete endpoints (thanks [@nnNyx](https://github.com/nnNyx)!)
+- **Semantic Cache Keys** - Resolve semantic cache internal embedding keys like external requests (thanks [@nnNyx](https://github.com/nnNyx)!)
+- **Gemini Batch Responses** - Surface Gemini batch inline responses from the response field instead of dest (thanks [@nnNyx](https://github.com/nnNyx)!)
+- **Governance Rate-Limit CPU** - Skip O(N) reference refresh on request-time rate-limit and budget reset
+- **Tier Cost Calculation** - Evaluate tier costs via input tokens instead of total tokens
+- **Cancelled Requests** - Fixed stats and log state for cancelled requests
+- **Billing on Failed Streams** - Fixed billing on failed Responses stream requests for Anthropic and Bedrock, and cost for image generation and edit streaming
+- **Custom Provider Budgets** - Custom providers with spaces in their names can now set budgets
+- **Model Parameters URL** - Honor `model_parameters_url` changes in config.json like `pricing_url` (thanks [@jeremym-tanium](https://github.com/jeremym-tanium)!)
+- **Bedrock Truncation Signal** - Signal Bedrock `max_output_tokens` truncation on the Responses API (thanks [@jeremym-tanium](https://github.com/jeremym-tanium)!)
+- **MCP Reconnect** - Fixed MCP clients registering as connected with an empty tool set when ListTools fails during startup (thanks [@HackToHell](https://github.com/HackToHell)!)
+- **MCP Tool Ordering** - Deterministic MCP tool ordering for prompt cache stability
+- **Vertex gs:// Images** - Pass through `gs://` image URLs on Vertex Gemini (thanks [@G-XD](https://github.com/G-XD)!)
+- **Hybrid Log Token Usage** - Rebuild token usage from denormalized columns in the hybrid log list (thanks [@G-XD](https://github.com/G-XD)!)
+- **Anthropic Files** - Preserve file ID document sources (thanks [@mmacvicar](https://github.com/mmacvicar)!) and forward file IDs and content type on the Anthropic files integration
+- **Gemini Upload MIME Type** - Preserve file upload MIME types (thanks [@mmacvicar](https://github.com/mmacvicar)!)
+- **Content Logging Bypass** - Sanitize `ErrorDetailsParsed` so raw payloads honor `disable_content_logging` (thanks [@citrocat](https://github.com/citrocat)!), plus error-detail sanitization on the log update path
+- **Trace Store Memory Leak** - Sweep orphaned deferred spans in trace store TTL cleanup (thanks [@citrocat](https://github.com/citrocat)!) and complete deferred LLM spans on streaming goroutine exit
+- **Claude Code Passthrough Streaming** - Consistent content_block indices for server tools (thanks [@surki](https://github.com/surki)!)
+- **Codex Tool Search Round-Trip** - Preserve codex `tool_search_call` and `tool_search_output` input items on the Responses API (thanks [@raghu-nandan-bs](https://github.com/raghu-nandan-bs)!)
+- **Gemini Fixes** - Guard tool call config, fix the 2.5-pro thinking budget value, OpenAI-through signature compatibility, and video reference field mapping (thanks [@vojthor](https://github.com/vojthor)!)
+- **DeepSeek Thinking** - Convert thinking to disabled when tool choice is required
+- **OpenAI Integration** - Propagate `max_tokens` from the OpenAI integration and pass `chunking_strategy` through as an extra param
+- **Bedrock Error Types** - Fixed error type setting in all integrations for Bedrock
+- **Perplexity Responses** - Fixed Perplexity Responses API compatibility
+- **Secret Detection** - Set `SecretTypePlainText` for plain-text JSON and non-prefixed secret values, and check whether virtual key values are secrets
+- **Empty Tool Results** - Fixed empty tool call result insertion failures
+- **Error Redaction** - Redact decoder details from invalid request payload errors
+- **Vertex Idle Timeout** - Fixed idle timeout wiring in the Vertex path
+- **Web Fetch** - Assorted web fetch fixes
+- **MCP Token Refresh** - Skip background token refresh for disabled or unconfigured MCP clients and exclude terminal-status OAuth configs from the refresh query
+- **SSO Login Loop** - Fixed an endless login loop on SSO
+- **UI Fixes** - Governance form calendar-aligned toggle gating, dashboard array query params, MCP sessions table scrolling with sticky header, audit logs layout, and model catalog key aliases displayed as model names
+
+## 🐙 Closed GitHub Issues
+
+- [#2347](https://github.com/maximhq/bifrost/issues/2347) - MCP tool ordering is non-deterministic, breaking prefix-based prompt caching
+- [#3106](https://github.com/maximhq/bifrost/issues/3106) - Governance team delete/fetch fails for SCIM-synced team IDs containing spaces or URL-sensitive characters
+- [#3121](https://github.com/maximhq/bifrost/issues/3121) - OpenAI responses.retrieve() not supported
+- [#3139](https://github.com/maximhq/bifrost/issues/3139) - Bifrost adds non-standard reasoning/reasoning_details fields to chat completions when using a custom provider for deepseek v4 models
+- [#3357](https://github.com/maximhq/bifrost/issues/3357) - Bifrost billing discrepancy for cancelled requests
+- [#3951](https://github.com/maximhq/bifrost/issues/3951) - Gemini batch: inline responses (dest.inlinedResponses) are silently dropped, leaving output_file_id null
+- [#4262](https://github.com/maximhq/bifrost/issues/4262) - Bedrock ConverseStream egress never emits contentBlockStop (breaks strands streaming)
+- [#4314](https://github.com/maximhq/bifrost/issues/4314) - MCP client registered as connected with empty tool set when ListTools fails during connect/reconnect
+- [#4402](https://github.com/maximhq/bifrost/issues/4402) - Vertex provider drops image blocks whose URL uses `gs://` scheme
+- [#4446](https://github.com/maximhq/bifrost/issues/4446) - Add per MCP server level tool timeout configuration
+- [#4679](https://github.com/maximhq/bifrost/issues/4679) - Bedrock Responses API does not signal max_output_tokens truncation
+- [#4689](https://github.com/maximhq/bifrost/issues/4689) - Custom providers cannot set budget
+- [#4720](https://github.com/maximhq/bifrost/issues/4720) - chunking_strategy is dropped for OpenAI-compatible transcription requests
+- [#4721](https://github.com/maximhq/bifrost/issues/4721) - Logs table Tokens column shows N/A when hybrid object storage is enabled
+- [#4756](https://github.com/maximhq/bifrost/issues/4756) - semantic_cache internal embedding path bypasses plugin pipeline, causing "no keys found" while direct /v1/embeddings works
+- [#4777](https://github.com/maximhq/bifrost/issues/4777) - Image generation stream: completed chunk returns empty output_tokens_details, causing under-billing
+- [#4788](https://github.com/maximhq/bifrost/issues/4788) - DeepSeek Anthropic-compatible provider causes "stream closed" error in v1.6.0 (regression from v1.5.16)
+- [#4816](https://github.com/maximhq/bifrost/issues/4816) - /v1 chat completions folds cache-write tokens into prompt_tokens_details.cached_tokens
+- [#4851](https://github.com/maximhq/bifrost/issues/4851) - v1.6.2 governance rate-limit reset causes high CPU in BumpRateLimitUsage/updateRateLimitReferences
+- [#4863](https://github.com/maximhq/bifrost/issues/4863) - model_parameters_url in config.json is ignored after the DB value is set
+- [#4868](https://github.com/maximhq/bifrost/issues/4868) - Memory leak: orphaned deferred spans in TraceStore are never TTL-swept
+- [#4872](https://github.com/maximhq/bifrost/issues/4872) - Raw request/response payloads bypass disable_content_logging via ErrorDetailsParsed
+- [#4942](https://github.com/maximhq/bifrost/issues/4942) - redacted_thinking blocks are dropped on chat completions, breaking tool-use replay with extended thinking

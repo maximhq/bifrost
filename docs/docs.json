@@ -133,9 +133,11 @@
                   "providers/supported-providers/anthropic",
                   "providers/supported-providers/azure",
                   "providers/supported-providers/bedrock",
+                  "providers/supported-providers/bedrock-mantle",
                   "providers/supported-providers/cerebras",
                   "providers/supported-providers/cohere",
                   "providers/supported-providers/databricks",
+                  "providers/supported-providers/deepseek",
                   "providers/supported-providers/elevenlabs",
                   "providers/supported-providers/fireworks",
                   "providers/supported-providers/gemini",
@@ -192,6 +194,7 @@
               "mcp/agent-mode",
               "mcp/code-mode",
               "mcp/gateway",
+              "mcp/gateway-auth",
               "mcp/tool-hosting",
               "mcp/filtering"
             ]
@@ -620,6 +623,7 @@
               "deployment-guides/how-to/install-make",
               "deployment-guides/how-to/multinode",
               "deployment-guides/how-to/nginx-reverse-proxy",
+              "deployment-guides/how-to/security-best-practices",
               "deployment-guides/how-to/airgapped",
               "deployment-guides/docker-tuning"
             ]
@@ -971,6 +975,7 @@
             "item": "Helm",
             "icon": "box",
             "pages": [
+              "changelogs/helm-v2.1.26",
               "changelogs/helm-v2.1.25",
               "changelogs/helm-v2.1.24",
               "changelogs/helm-v2.1.23",

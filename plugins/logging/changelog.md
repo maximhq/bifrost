@@ -1,0 +1,7 @@
+- feat: latency info on errors (#4867)
+- feat: stream cost recalculation progress via SSE with batch processing (#4778)
+- fix: sanitize `ErrorDetailsParsed` so raw payloads honor `disable_content_logging` (#4873, closes #4872) (thanks [@citrocat](https://github.com/citrocat)!)
+- fix: sanitize error details on the log update path and remove redundant immediate error serialization (#4913)
+- fix: cancelled state in logs (#4831, closes #3357)
+- fix: empty tool call result insertion failures (#4925)
+- chore: upgraded core to v1.6.3 and framework to v1.4.3

@@ -117,7 +117,7 @@ export default function SessionsTable({
 	};
 
 	return (
-		<div className="space-y-4">
+		<div className="flex grow flex-col overflow-auto">
 			<AlertDialog open={pendingDelete !== null} onOpenChange={(open) => !open && setPendingDelete(null)}>
 				<AlertDialogContent>
 					<AlertDialogHeader>
@@ -148,7 +148,7 @@ export default function SessionsTable({
 				</AlertDialogContent>
 			</AlertDialog>
 
-			<div className="flex items-center justify-between gap-4">
+			<div className="mb-4 flex items-center justify-between gap-4">
 				<div>
 					<h2 className="text-lg font-semibold tracking-tight">MCP Auth Sessions</h2>
 					<p className="text-muted-foreground text-sm">
@@ -157,134 +157,147 @@ export default function SessionsTable({
 				</div>
 			</div>
 
-			<SessionsFilterBar
-				search={search}
-				onSearchChange={onSearchChange}
-				kindFilter={kindFilter}
-				onKindFilterChange={onKindFilterChange}
-				statusFilter={statusFilter}
-				onStatusFilterChange={onStatusFilterChange}
-				authModeFilter={authModeFilter}
-				onAuthModeFilterChange={onAuthModeFilterChange}
-				hasActiveFilters={hasActiveFilters}
-				onClearFilters={onClearFilters}
-			/>
-
-			<div className={`overflow-auto rounded-sm border ${isFetching ? "opacity-70 transition-opacity" : ""}`}>
-				<Table>
-					<TableHeader>
-						<TableRow>
-							<TableHead>MCP server</TableHead>
-							<TableHead>
-								<HeaderWithTooltip
-									label="Type"
-									tooltip="OAuth: per-user OAuth credential — either a stored token from a completed sign-in, or a pending sign-in flow. Headers: per-user header values (API keys / signed tokens) — either stored or pending submission."
-								/>
-							</TableHead>
-							<TableHead>
-								<HeaderWithTooltip
-									label="Bound to"
-									tooltip="The identity this credential is keyed to: an end user (via SSO), a virtual key (shared by anyone using that VK), or a client-issued session ID (asserted via the x-bf-mcp-session-id header)."
-								/>
-							</TableHead>
-							<TableHead>
-								<HeaderWithTooltip
-									label="Status"
-									tooltip="Active: credential valid and usable. Pending: OAuth flow in progress, user must complete sign-in. Needs re-auth: upstream credential expired or revoked at the provider; user must reconnect. Needs update: the admin changed the required header keys; user must resubmit. Orphaned: the user lost access to this MCP (e.g. an access profile change); credential is preserved and will become Active automatically if access is restored."
-								/>
-							</TableHead>
-							<TableHead>
-								<HeaderWithTooltip
-									label="Access token expiry"
-									tooltip="When the current access token expires. Bifrost auto-refreshes using the refresh token on the next request, so an active row past its expiry will silently mint a new token at use time. Header rows do not have an upstream expiry; their values stay valid until revoked or the schema changes."
-								/>
-							</TableHead>
-							<TableHead>Created</TableHead>
-							<TableHead className={`bg-muted sticky right-0 z-10 w-[56px] text-right ${PIN_SHADOW_RIGHT}`}></TableHead>
-						</TableRow>
-					</TableHeader>
-					<TableBody>
-						{sessions.length === 0 ? (
-							<TableRow>
-								<TableCell colSpan={7} className="h-24 text-center">
-									{hasActiveFilters ? (
-										<div className="text-muted-foreground text-sm">No sessions match these filters.</div>
-									) : (
-										<span className="text-muted-foreground text-sm">
-											No sessions yet. Sessions appear here when an inference request or MCP gateway call triggers per-user authentication
-											(OAuth or header submission).
-										</span>
-									)}
-								</TableCell>
-							</TableRow>
-						) : (
-							sessions.map((row) => (
-								<TableRow key={`${row.kind}-${row.id}`} className="group">
-									<TableCell className="font-medium">{row.mcp_client?.name || row.mcp_client?.client_id || "-"}</TableCell>
-									<TableCell>
-										<TypeBadge authKind={row.auth_kind} />
-									</TableCell>
-									<TableCell>
-										<BindingCell row={row} />
-									</TableCell>
-									<TableCell>
-										<StatusBadge status={row.status} />
-									</TableCell>
-									<TableCell className="text-muted-foreground text-sm">
-										<div className="flex flex-col">
-											<span>{formatAccessExpiry(row)}</span>
-											{row.last_refreshed_at && <span className="text-xs">refreshed {formatRelativePast(row.last_refreshed_at)}</span>}
-										</div>
-									</TableCell>
-									<TableCell className="text-muted-foreground text-sm">{formatRelativePast(row.created_at)}</TableCell>
-									<TableCell
-										className={`group-hover:bg-muted dark:bg-card dark:group-hover:bg-muted sticky right-0 z-10 bg-white text-right ${PIN_SHADOW_RIGHT}`}
-									>
-										<RowActions
-											row={row}
-											reauthing={reauthing}
-											revoking={revoking}
-											isPendingRow={pendingActionRowId === row.id}
-											onReauth={() => handleReauth(row)}
-											onRevoke={() => setPendingDelete(row)}
-										/>
-									</TableCell>
-								</TableRow>
-							))
-						)}
-					</TableBody>
-				</Table>
+			<div className="mb-4">
+				<SessionsFilterBar
+					search={search}
+					onSearchChange={onSearchChange}
+					kindFilter={kindFilter}
+					onKindFilterChange={onKindFilterChange}
+					statusFilter={statusFilter}
+					onStatusFilterChange={onStatusFilterChange}
+					authModeFilter={authModeFilter}
+					onAuthModeFilterChange={onAuthModeFilterChange}
+					hasActiveFilters={hasActiveFilters}
+					onClearFilters={onClearFilters}
+				/>
 			</div>
 
-			{totalCount > 0 && (
-				<div className="flex shrink-0 items-center justify-between px-2 text-xs">
-					<p className="text-muted-foreground">
-						Showing {offset + 1}-{Math.min(offset + limit, totalCount)} of {totalCount}
-					</p>
-					<div className="flex gap-2">
-						<Button
-							variant="outline"
-							size="sm"
-							disabled={offset === 0}
-							onClick={() => onOffsetChange(Math.max(0, offset - limit))}
-							data-testid="mcp-sessions-pagination-prev-btn"
-						>
-							<ChevronLeft className="mr-1 h-4 w-4" />
-							Previous
-						</Button>
-						<Button
-							variant="outline"
-							size="sm"
-							disabled={offset + limit >= totalCount}
-							onClick={() => onOffsetChange(offset + limit)}
-							data-testid="mcp-sessions-pagination-next-btn"
-						>
-							Next
-							<ChevronRight className="ml-1 h-4 w-4" />
-						</Button>
-					</div>
+			<div className="flex grow flex-col overflow-auto">
+				<div className={`mb-2 grow overflow-auto rounded-sm border ${isFetching ? "opacity-70 transition-opacity" : ""}`}>
+					<Table>
+						<TableHeader className="bg-muted sticky top-0 z-20">
+							<TableRow>
+								<TableHead>MCP server</TableHead>
+								<TableHead>
+									<HeaderWithTooltip
+										label="Type"
+										tooltip="OAuth: per-user OAuth credential — either a stored token from a completed sign-in, or a pending sign-in flow. Headers: per-user header values (API keys / signed tokens) — either stored or pending submission."
+									/>
+								</TableHead>
+								<TableHead>
+									<HeaderWithTooltip
+										label="Bound to"
+										tooltip="The identity this credential is keyed to: an end user (via SSO), a virtual key (shared by anyone using that VK), or a client-issued session ID (asserted via the x-bf-mcp-session-id header)."
+									/>
+								</TableHead>
+								<TableHead>
+									<HeaderWithTooltip
+										label="Status"
+										tooltip="Active: credential valid and usable. Pending: OAuth flow in progress, user must complete sign-in. Needs re-auth: upstream credential expired or revoked at the provider; user must reconnect. Needs update: the admin changed the required header keys; user must resubmit. Orphaned: the user lost access to this MCP (e.g. an access profile change); credential is preserved and will become Active automatically if access is restored."
+									/>
+								</TableHead>
+								<TableHead>
+									<HeaderWithTooltip
+										label="Access token expiry"
+										tooltip="When the current access token expires. Bifrost auto-refreshes using the refresh token on the next request, so an active row past its expiry will silently mint a new token at use time. Header rows do not have an upstream expiry; their values stay valid until revoked or the schema changes."
+									/>
+								</TableHead>
+								<TableHead>Created</TableHead>
+								<TableHead className={`bg-muted sticky right-0 z-10 w-[56px] text-right ${PIN_SHADOW_RIGHT}`}></TableHead>
+							</TableRow>
+						</TableHeader>
+						<TableBody>
+							{sessions.length === 0 ? (
+								<TableRow>
+									<TableCell colSpan={7} className="h-24 text-center">
+										{hasActiveFilters ? (
+											<div className="text-muted-foreground text-sm">No sessions match these filters.</div>
+										) : (
+											<span className="text-muted-foreground text-sm">
+												No sessions yet. Sessions appear here when an inference request or MCP gateway call triggers per-user authentication
+												(OAuth or header submission).
+											</span>
+										)}
+									</TableCell>
+								</TableRow>
+							) : (
+								sessions.map((row) => (
+									<TableRow key={`${row.kind}-${row.id}`} className="group">
+										<TableCell className="font-medium">{row.mcp_client?.name || row.mcp_client?.client_id || "-"}</TableCell>
+										<TableCell>
+											<TypeBadge authKind={row.auth_kind} />
+										</TableCell>
+										<TableCell>
+											<BindingCell row={row} />
+										</TableCell>
+										<TableCell>
+											<StatusBadge status={row.status} />
+										</TableCell>
+										<TableCell className="text-muted-foreground text-sm">
+											<div className="flex flex-col">
+												<span>{formatAccessExpiry(row)}</span>
+												{row.last_refreshed_at && <span className="text-xs">refreshed {formatRelativePast(row.last_refreshed_at)}</span>}
+											</div>
+										</TableCell>
+										<TableCell className="text-muted-foreground text-sm">{formatRelativePast(row.created_at)}</TableCell>
+										<TableCell
+											className={`group-hover:bg-muted dark:bg-card dark:group-hover:bg-muted sticky right-0 z-10 bg-white text-right ${PIN_SHADOW_RIGHT}`}
+										>
+											<RowActions
+												row={row}
+												reauthing={reauthing}
+												revoking={revoking}
+												isPendingRow={pendingActionRowId === row.id}
+												onReauth={() => handleReauth(row)}
+												onRevoke={() => setPendingDelete(row)}
+											/>
+										</TableCell>
+									</TableRow>
+								))
+							)}
+						</TableBody>
+					</Table>
 				</div>
-			)}
+
+				{totalCount > 0 && (
+					<div className="flex shrink-0 items-center justify-between text-xs" data-testid="pagination">
+						<div className="text-muted-foreground flex items-center gap-2">
+							{(offset + 1).toLocaleString()}-{Math.min(offset + limit, totalCount).toLocaleString()} of {totalCount.toLocaleString()}{" "}
+							entries
+						</div>
+
+						<div className="flex items-center gap-2">
+							<Button
+								variant="ghost"
+								size="sm"
+								onClick={() => onOffsetChange(Math.max(0, offset - limit))}
+								disabled={offset === 0}
+								data-testid="mcp-sessions-pagination-prev-btn"
+								aria-label="Previous page"
+							>
+								<ChevronLeft className="size-3" />
+							</Button>
+
+							<div className="flex items-center gap-1">
+								<span>Page</span>
+								<span>{Math.floor(offset / limit) + 1}</span>
+								<span>of {Math.ceil(totalCount / limit)}</span>
+							</div>
+
+							<Button
+								variant="ghost"
+								size="sm"
+								onClick={() => onOffsetChange(offset + limit)}
+								disabled={offset + limit >= totalCount}
+								data-testid="mcp-sessions-pagination-next-btn"
+								aria-label="Next page"
+							>
+								<ChevronRight className="size-3" />
+							</Button>
+						</div>
+					</div>
+				)}
+			</div>
 		</div>
 	);
 }

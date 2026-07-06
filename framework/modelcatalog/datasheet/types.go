@@ -45,6 +45,7 @@ type Entry struct {
 	MaxInputTokens  *int                  `json:"max_input_tokens,omitempty"`
 	MaxOutputTokens *int                  `json:"max_output_tokens,omitempty"`
 	Architecture    *schemas.Architecture `json:"architecture,omitempty"`
+	IsDeprecated    bool                  `json:"is_deprecated,omitempty"`
 
 	// AdditionalAttributes carries editorial metadata stored on the pricing
 	// row (e.g. description). Populated from the DB read path only; the
@@ -294,7 +295,7 @@ type customPricingData struct {
 }
 
 // modelParametersParseResult is the parsed result type used by
-// buildSupportedOutputsIndex (consumed by params.go's applyModelParameters).
+// extractSupportedParams (consumed by params.go's applyModelParameters).
 type modelParametersParseResult struct {
 	Mode               *string  `json:"mode,omitempty"`
 	SupportedEndpoints []string `json:"supported_endpoints,omitempty"`
@@ -307,6 +308,7 @@ type modelParametersParseResult struct {
 	SupportsToolChoice              *bool `json:"supports_tool_choice,omitempty"`
 	SupportsReasoning               *bool `json:"supports_reasoning,omitempty"`
 	SupportsResponseSchema          *bool `json:"supports_response_schema,omitempty"`
+	SupportsReasoningWithToolCalls  *bool `json:"supports_reasoning_with_tool_calls,omitempty"`
 	SupportsServiceTier             *bool `json:"supports_service_tier,omitempty"`
 	SupportsPromptCaching           *bool `json:"supports_prompt_caching,omitempty"`
 	SupportsWebSearch               *bool `json:"supports_web_search,omitempty"`
@@ -476,6 +478,9 @@ func extractSupportedParams(parsed *modelParametersParseResult) []string {
 	if parsed.SupportsReasoning != nil && *parsed.SupportsReasoning {
 		addParam("reasoning")
 	}
+	if parsed.SupportsReasoningWithToolCalls == nil || *parsed.SupportsReasoningWithToolCalls {
+		addParam("reasoning_with_tool_calls")
+	}
 	if parsed.SupportsResponseSchema != nil && *parsed.SupportsResponseSchema {
 		addParam("response_format")
 		addParam("text")
@@ -548,6 +553,7 @@ func convertEntryToTablePricing(modelKey string, entry Entry) configstoreTables.
 		MaxInputTokens:  entry.MaxInputTokens,
 		MaxOutputTokens: entry.MaxOutputTokens,
 		Architecture:    entry.Architecture,
+		IsDeprecated:    entry.IsDeprecated,
 
 		InputCostPerToken:                         entry.InputCostPerToken,
 		OutputCostPerToken:                        entry.OutputCostPerToken,
@@ -705,6 +711,7 @@ func convertTablePricingToEntry(pricing *configstoreTables.TableModelPricing) *E
 		MaxInputTokens:       pricing.MaxInputTokens,
 		MaxOutputTokens:      pricing.MaxOutputTokens,
 		Architecture:         pricing.Architecture,
+		IsDeprecated:         pricing.IsDeprecated,
 		AdditionalAttributes: pricing.AdditionalAttributes,
 		Options:              options,
 	}
