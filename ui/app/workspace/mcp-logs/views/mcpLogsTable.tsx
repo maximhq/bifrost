@@ -132,7 +132,7 @@ export function MCPLogsDataTable({
 			<div className="flex h-full grow flex-col gap-2">
 				<div className="grow overflow-y-auto rounded-sm border">
 					<Table containerClassName="h-full">
-						<thead className={cn("sticky top-0 z-10 bg-[#f9f9f9] dark:bg-[#27272a] px-2 [&_tr]:border-b")}>
+						<thead className={cn("sticky top-0 z-10 bg-muted px-2 [&_tr]:border-b")}>
 							{table.getHeaderGroups().map((headerGroup) => (
 								<tr
 									key={headerGroup.id}
@@ -144,7 +144,7 @@ export function MCPLogsDataTable({
 											header={header}
 											isConfigurable={!fixedColumnIds.has(header.column.id)}
 											pinStyle={buildPinStyle(header.column, pinOffsets)}
-											pinnedHeaderClassName="bg-[#f9f9f9] dark:bg-[#27272a]"
+											pinnedHeaderClassName="bg-muted"
 											className={cn(
 												header.column.id === lastLeftPinId && PIN_SHADOW_LEFT,
 												header.column.id === firstRightPinId && PIN_SHADOW_RIGHT,
@@ -192,7 +192,7 @@ export function MCPLogsDataTable({
 														pinned && "bg-card",
 														cell.column.id === lastLeftPinId && PIN_SHADOW_LEFT,
 														cell.column.id === firstRightPinId && PIN_SHADOW_RIGHT,
-														"group-hover/table-row:bg-[#f7f7f7] dark:group-hover/table-row:bg-[#232327]",
+														"group-hover/table-row:bg-muted/50",
 													)}
 												>
 													{flexRender(cell.column.columnDef.cell, cell.getContext())}
@@ -212,7 +212,7 @@ export function MCPLogsDataTable({
 					</Table>
 				</div>
 				{/* Pagination Footer */}
-				<div className="flex items-center justify-between text-xs" data-testid="pagination">
+				<div className="flex shrink-0 items-center justify-between text-xs" data-testid="pagination">
 					<div className="text-muted-foreground flex items-center gap-2">
 						{startItemDisplay.toLocaleString()}-{endItemDisplay.toLocaleString()} of {totalItems.toLocaleString()} entries
 					</div>

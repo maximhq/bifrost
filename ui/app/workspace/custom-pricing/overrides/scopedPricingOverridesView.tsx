@@ -14,6 +14,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { PIN_SHADOW_RIGHT } from "@/components/table/columnPinning";
+import { TablePagination } from "@/components/table/tablePagination";
 import { useDebouncedValue } from "@/hooks/useDebounce";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { getProviderLabel } from "@/lib/constants/logs";
@@ -27,7 +28,7 @@ import {
 import { useGetAllKeysQuery } from "@/lib/store/apis/providersApi";
 import { PricingOverride, PricingOverrideScopeKind } from "@/lib/types/governance";
 import { useLocation } from "@tanstack/react-router";
-import { ChevronLeft, ChevronRight, Edit, MoreHorizontal, Plus, Search, Trash2 } from "lucide-react";
+import { Edit, MoreHorizontal, Plus, Search, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import PricingOverrideSheet from "./pricingOverrideSheet";
@@ -296,7 +297,7 @@ export default function ScopedPricingOverridesView() {
 	}
 
 	return (
-		<div className="flex flex-col overflow-y-auto">
+		<div className="flex min-h-0 grow flex-col overflow-y-auto">
 			<div className="mb-4 flex items-center justify-between gap-4">
 				<div>
 					<h2 className="text-lg font-semibold tracking-tight">Pricing Overrides</h2>
@@ -306,7 +307,7 @@ export default function ScopedPricingOverridesView() {
 				</div>
 				<Button data-testid="pricing-override-create-btn" onClick={openCreateDrawer} className="gap-2">
 					<Plus className="h-4 w-4" />
-					<span className="hidden sm:inline">New Override</span>
+					<span className="hidden sm:inline">Add Override</span>
 				</Button>
 			</div>
 
@@ -323,23 +324,21 @@ export default function ScopedPricingOverridesView() {
 				/>
 			</div>
 
-			<div className="mb-2 overflow-hidden rounded-sm border">
+			<div className="mb-2 min-h-0 grow overflow-hidden rounded-sm border">
 				{isLoading ? (
 					<div className="p-4 text-sm">Loading overrides...</div>
 				) : error ? (
 					<div className="p-4 text-sm text-red-500">Failed to load pricing overrides. Please try refreshing the page.</div>
 				) : (
 					<Table containerClassName="h-full overflow-auto">
-						<TableHeader className="bg-muted sticky top-0 z-10">
-							<TableRow className="bg-muted/50">
-								<TableHead className="font-semibold">Name</TableHead>
-								<TableHead className="font-semibold">Scope</TableHead>
-								<TableHead className="font-semibold">Provider</TableHead>
-								<TableHead className="font-semibold">Key</TableHead>
-								<TableHead className="font-semibold">Model</TableHead>
-								<TableHead className={`bg-muted sticky right-0 z-30 w-[50px] text-right font-semibold ${PIN_SHADOW_RIGHT}`}>
-									Actions
-								</TableHead>
+						<TableHeader className="bg-muted sticky top-0 z-20">
+							<TableRow>
+								<TableHead>Name</TableHead>
+								<TableHead>Scope</TableHead>
+								<TableHead>Provider</TableHead>
+								<TableHead>Key</TableHead>
+								<TableHead>Model</TableHead>
+								<TableHead className={`bg-muted sticky right-0 z-10 w-[50px] text-right ${PIN_SHADOW_RIGHT}`}><span className="sr-only">Actions</span></TableHead>
 							</TableRow>
 						</TableHeader>
 						<TableBody>
@@ -371,7 +370,7 @@ export default function ScopedPricingOverridesView() {
 										<TableCell>{keyLabel(row, providerKeyLabelMap)}</TableCell>
 										<TableCell>{row.pattern}</TableCell>
 										<TableCell
-											className={`group-hover:bg-muted dark:bg-card dark:group-hover:bg-muted sticky right-0 z-20 bg-white text-right ${PIN_SHADOW_RIGHT}`}
+											className={`bg-card group-hover:bg-muted sticky right-0 z-10 text-right ${PIN_SHADOW_RIGHT}`}
 											onClick={(e) => e.stopPropagation()}
 										>
 											<div className="flex items-center justify-center">
@@ -387,44 +386,14 @@ export default function ScopedPricingOverridesView() {
 			</div>
 
 			{/* Pagination */}
-			{totalCount > 0 && (
-				<div className="flex shrink-0 items-center justify-between text-xs" data-testid="pagination">
-					<div className="text-muted-foreground flex items-center gap-2">
-						{(offset + 1).toLocaleString()}-{Math.min(offset + PAGE_SIZE, totalCount).toLocaleString()} of {totalCount.toLocaleString()}{" "}
-						entries
-					</div>
-
-					<div className="flex items-center gap-2">
-						<Button
-							variant="ghost"
-							size="sm"
-							onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
-							disabled={offset === 0}
-							data-testid="pricing-overrides-pagination-prev-btn"
-							aria-label="Previous page"
-						>
-							<ChevronLeft className="size-3" />
-						</Button>
-
-						<div className="flex items-center gap-1">
-							<span>Page</span>
-							<span>{Math.floor(offset / PAGE_SIZE) + 1}</span>
-							<span>of {Math.ceil(totalCount / PAGE_SIZE)}</span>
-						</div>
-
-						<Button
-							variant="ghost"
-							size="sm"
-							onClick={() => setOffset(offset + PAGE_SIZE)}
-							disabled={offset + PAGE_SIZE >= totalCount}
-							data-testid="pricing-overrides-pagination-next-btn"
-							aria-label="Next page"
-						>
-							<ChevronRight className="size-3" />
-						</Button>
-					</div>
-				</div>
-			)}
+			<TablePagination
+				offset={offset}
+				limit={PAGE_SIZE}
+				totalCount={totalCount}
+				onOffsetChange={setOffset}
+				prevTestId="pricing-overrides-pagination-prev-btn"
+				nextTestId="pricing-overrides-pagination-next-btn"
+			/>
 
 			<PricingOverrideSheet
 				open={isDrawerOpen}

@@ -1,4 +1,5 @@
 import { PIN_SHADOW_RIGHT } from "@/components/table/columnPinning";
+import { TablePagination } from "@/components/table/tablePagination";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -23,7 +24,7 @@ import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/utils/governance";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Link } from "@tanstack/react-router";
-import { ChevronLeft, ChevronRight, Edit, MoreHorizontal, Plus, ScrollText, Search, Trash2 } from "lucide-react";
+import { Edit, MoreHorizontal, Plus, ScrollText, Search, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import TeamSheet from "./teamSheet";
@@ -113,7 +114,7 @@ function TeamActionsMenu({
 					</AlertDialogHeader>
 					<AlertDialogFooter>
 						<AlertDialogCancel>Cancel</AlertDialogCancel>
-						<AlertDialogAction onClick={() => onDelete(team.id)} disabled={isDeleting} className="bg-red-600 hover:bg-red-700">
+						<AlertDialogAction onClick={() => onDelete(team.id)} disabled={isDeleting} className="bg-destructive hover:bg-destructive/90">
 							{isDeleting ? "Deleting..." : "Delete"}
 						</AlertDialogAction>
 					</AlertDialogFooter>
@@ -253,7 +254,7 @@ export default function TeamsTable({
 
 					<div className="mb-2 grow overflow-auto rounded-sm border" data-testid="teams-table">
 						<Table className="min-w-[1100px]" containerClassName="h-full">
-							<TableHeader className="bg-background sticky top-0">
+							<TableHeader className="bg-muted sticky top-0 z-20">
 								<TableRow>
 									<TableHead>Name</TableHead>
 									<TableHead>Customer</TableHead>
@@ -455,7 +456,7 @@ export default function TeamsTable({
 													)}
 												</TableCell>
 												<TableCell
-													className={`group-hover:bg-muted dark:bg-card dark:group-hover:bg-muted sticky right-0 z-10 bg-white text-right ${PIN_SHADOW_RIGHT}`}
+													className={`bg-card group-hover:bg-muted sticky right-0 z-10 text-right ${PIN_SHADOW_RIGHT}`}
 												>
 													<TeamActionsMenu
 														team={team}
@@ -475,44 +476,14 @@ export default function TeamsTable({
 					</div>
 
 					{/* Pagination */}
-					{totalCount > 0 && (
-						<div className="flex shrink-0 items-center justify-between text-xs" data-testid="pagination">
-							<div className="text-muted-foreground flex items-center gap-2">
-								{(offset + 1).toLocaleString()}-{Math.min(offset + limit, totalCount).toLocaleString()} of {totalCount.toLocaleString()}{" "}
-								entries
-							</div>
-
-							<div className="flex items-center gap-2">
-								<Button
-									variant="ghost"
-									size="sm"
-									onClick={() => onOffsetChange(Math.max(0, offset - limit))}
-									disabled={offset === 0}
-									data-testid="teams-pagination-prev-btn"
-									aria-label="Previous page"
-								>
-									<ChevronLeft className="size-3" />
-								</Button>
-
-								<div className="flex items-center gap-1">
-									<span>Page</span>
-									<span>{Math.floor(offset / limit) + 1}</span>
-									<span>of {Math.ceil(totalCount / limit)}</span>
-								</div>
-
-								<Button
-									variant="ghost"
-									size="sm"
-									onClick={() => onOffsetChange(offset + limit)}
-									disabled={offset + limit >= totalCount}
-									data-testid="teams-pagination-next-btn"
-									aria-label="Next page"
-								>
-									<ChevronRight className="size-3" />
-								</Button>
-							</div>
-						</div>
-					)}
+					<TablePagination
+						offset={offset}
+						limit={limit}
+						totalCount={totalCount}
+						onOffsetChange={onOffsetChange}
+						prevTestId="teams-pagination-prev-btn"
+						nextTestId="teams-pagination-next-btn"
+					/>
 				</div>
 			</TooltipProvider>
 		</>

@@ -1,5 +1,6 @@
 import ClientForm from "@/app/workspace/mcp-registry/views/mcpClientForm";
 import { PIN_SHADOW_RIGHT } from "@/components/table/columnPinning";
+import { TablePagination } from "@/components/table/tablePagination";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -22,7 +23,7 @@ import { getErrorMessage, useDeleteMCPClientMutation, useReconnectMCPClientMutat
 import { MCPClient } from "@/lib/types/mcp";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Link } from "@tanstack/react-router";
-import { Box, ChevronLeft, ChevronRight, Loader2, MoreHorizontal, PencilIcon, Plus, RefreshCcw, Search, Trash2, X } from "lucide-react";
+import { Box, Loader2, MoreHorizontal, PencilIcon, Plus, RefreshCcw, Search, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import MCPClientSheet from "./mcpClientSheet";
 import { MCPServersEmptyState } from "./mcpServersEmptyState";
@@ -357,11 +358,11 @@ export default function MCPClientsTable({
 						onClick={handleCreate}
 						disabled={!hasCreateMCPClientAccess}
 						data-testid="create-mcp-client-btn"
-						aria-label="New MCP Server"
+						aria-label="Add MCP Server"
 						className="h-8 gap-2"
 					>
 						<Plus />
-						<span className="hidden sm:inline">New MCP Server</span>
+						<span className="hidden sm:inline">Add MCP Server</span>
 					</Button>
 				</div>
 			</div>
@@ -396,19 +397,19 @@ export default function MCPClientsTable({
 			<div className="flex grow flex-col overflow-auto">
 				<div className="mb-2 grow overflow-auto rounded-sm border">
 					<Table data-testid="mcp-clients-table" className="w-full min-w-[1516px] table-fixed">
-						<TableHeader className="sticky top-0">
-							<TableRow className="bg-muted/50">
-								<TableHead className="w-[260px] font-semibold">Name</TableHead>
-								<TableHead className="w-[150px] font-semibold">Connection Type</TableHead>
-								<TableHead className="w-[150px] font-semibold">Auth Type</TableHead>
-								<TableHead className="w-[140px] font-semibold">Auth Scope</TableHead>
-								<TableHead className="w-[120px] font-semibold">Code Mode</TableHead>
-								<TableHead className="w-[120px] font-semibold">VK Access</TableHead>
-								<TableHead className="w-[130px] font-semibold">Enabled Tools</TableHead>
-								<TableHead className="w-[160px] font-semibold">Auto-execute Tools</TableHead>
-								<TableHead className="w-[140px] font-semibold">State</TableHead>
-								<TableHead className="w-[90px] font-semibold">Status</TableHead>
-								<TableHead className={`bg-muted/50 sticky right-0 z-10 w-14 text-right ${PIN_SHADOW_RIGHT}`}></TableHead>
+						<TableHeader className="bg-muted sticky top-0 z-20">
+							<TableRow>
+								<TableHead className="w-[260px]">Name</TableHead>
+								<TableHead className="w-[150px]">Connection Type</TableHead>
+								<TableHead className="w-[150px]">Auth Type</TableHead>
+								<TableHead className="w-[140px]">Auth Scope</TableHead>
+								<TableHead className="w-[120px]">Code Mode</TableHead>
+								<TableHead className="w-[120px]">VK Access</TableHead>
+								<TableHead className="w-[130px]">Enabled Tools</TableHead>
+								<TableHead className="w-[160px]">Auto-execute Tools</TableHead>
+								<TableHead className="w-[140px]">State</TableHead>
+								<TableHead className="w-[90px]">Status</TableHead>
+								<TableHead className={`bg-muted sticky right-0 z-10 w-14 text-right ${PIN_SHADOW_RIGHT}`}></TableHead>
 							</TableRow>
 						</TableHeader>
 						<TableBody>
@@ -530,7 +531,7 @@ export default function MCPClientsTable({
 												/>
 											</TableCell>
 											<TableCell
-												className={`bg-card group-hover:bg-muted/50 sticky right-0 z-10 text-right ${PIN_SHADOW_RIGHT}`}
+												className={`bg-card group-hover:bg-muted sticky right-0 z-10 text-right ${PIN_SHADOW_RIGHT}`}
 												onClick={(e) => e.stopPropagation()}
 											>
 												<MCPClientActionsMenu
@@ -553,44 +554,14 @@ export default function MCPClientsTable({
 				</div>
 
 				{/* Pagination */}
-				{totalCount > 0 && (
-					<div className="flex shrink-0 items-center justify-between text-xs" data-testid="pagination">
-						<div className="text-muted-foreground flex items-center gap-2">
-							{(offset + 1).toLocaleString()}-{Math.min(offset + limit, totalCount).toLocaleString()} of {totalCount.toLocaleString()}{" "}
-							entries
-						</div>
-
-						<div className="flex items-center gap-2">
-							<Button
-								variant="ghost"
-								size="sm"
-								onClick={() => onOffsetChange(Math.max(0, offset - limit))}
-								disabled={offset === 0}
-								data-testid="mcp-clients-pagination-prev-btn"
-								aria-label="Previous page"
-							>
-								<ChevronLeft className="size-3" />
-							</Button>
-
-							<div className="flex items-center gap-1">
-								<span>Page</span>
-								<span>{Math.floor(offset / limit) + 1}</span>
-								<span>of {Math.ceil(totalCount / limit)}</span>
-							</div>
-
-							<Button
-								variant="ghost"
-								size="sm"
-								onClick={() => onOffsetChange(offset + limit)}
-								disabled={offset + limit >= totalCount}
-								data-testid="mcp-clients-pagination-next-btn"
-								aria-label="Next page"
-							>
-								<ChevronRight className="size-3" />
-							</Button>
-						</div>
-					</div>
-				)}
+				<TablePagination
+					offset={offset}
+					limit={limit}
+					totalCount={totalCount}
+					onOffsetChange={onOffsetChange}
+					prevTestId="mcp-clients-pagination-prev-btn"
+					nextTestId="mcp-clients-pagination-next-btn"
+				/>
 			</div>
 
 			{formOpen && <ClientForm open={formOpen} onClose={() => setFormOpen(false)} onSaved={handleSaved} />}

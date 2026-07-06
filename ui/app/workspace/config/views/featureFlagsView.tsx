@@ -41,10 +41,10 @@ export default function FeatureFlagsView() {
 			{!isLoading && !isError && (
 				<div className="overflow-auto rounded-sm border">
 					<Table data-testid="feature-flags-table">
-						<TableHeader>
-							<TableRow className="bg-muted/50">
-								<TableHead className="font-semibold">Flag</TableHead>
-								<TableHead className="w-px text-right font-semibold">Enabled</TableHead>
+						<TableHeader className="bg-muted sticky top-0 z-20">
+							<TableRow>
+								<TableHead>Flag</TableHead>
+								<TableHead className="w-px text-right">Enabled</TableHead>
 							</TableRow>
 						</TableHeader>
 						<TableBody>

@@ -1,4 +1,5 @@
 import FullPageLoader from "@/components/fullPageLoader";
+import { TablePagination } from "@/components/table/tablePagination";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -11,7 +12,7 @@ import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
 import { ModelDetails, useGetModelDetailsQuery, useGetProvidersQuery } from "@/lib/store";
 import { KnownProvider } from "@/lib/types/config";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { ChevronLeft, ChevronRight, Edit, Search } from "lucide-react";
+import { Edit, Search } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import AttributeSheet from "./attributeSheet";
 
@@ -209,41 +210,15 @@ export default function AttributesTab({ hasAccess }: AttributesTabProps) {
 					</Table>
 				</div>
 
-				{totalCount > 0 && (
-					<div className="flex shrink-0 items-center justify-between text-xs" data-testid="model-catalog-pagination">
-						<div className="text-muted-foreground">
-							{(offset + 1).toLocaleString()}–{Math.min(offset + PAGE_SIZE, totalCount).toLocaleString()} of {totalCount.toLocaleString()}{" "}
-							entries
-						</div>
-						<div className="flex items-center gap-2">
-							<Button
-								variant="ghost"
-								size="sm"
-								onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
-								disabled={offset === 0}
-								data-testid="model-catalog-pagination-prev-btn"
-								aria-label="Previous page"
-							>
-								<ChevronLeft className="size-3" />
-							</Button>
-							<div className="flex items-center gap-1">
-								<span>Page</span>
-								<span>{Math.floor(offset / PAGE_SIZE) + 1}</span>
-								<span>of {Math.ceil(totalCount / PAGE_SIZE)}</span>
-							</div>
-							<Button
-								variant="ghost"
-								size="sm"
-								onClick={() => setOffset(offset + PAGE_SIZE)}
-								disabled={offset + PAGE_SIZE >= totalCount}
-								data-testid="model-catalog-pagination-next-btn"
-								aria-label="Next page"
-							>
-								<ChevronRight className="size-3" />
-							</Button>
-						</div>
-					</div>
-				)}
+				<TablePagination
+					offset={offset}
+					limit={PAGE_SIZE}
+					totalCount={totalCount}
+					onOffsetChange={setOffset}
+					testId="model-catalog-pagination"
+					prevTestId="model-catalog-pagination-prev-btn"
+					nextTestId="model-catalog-pagination-next-btn"
+				/>
 			</div>
 		</>
 	);

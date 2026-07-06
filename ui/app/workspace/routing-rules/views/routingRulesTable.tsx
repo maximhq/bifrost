@@ -20,6 +20,7 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { PIN_SHADOW_RIGHT } from "@/components/table/columnPinning";
+import { TablePagination } from "@/components/table/tablePagination";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { getProviderLabel } from "@/lib/constants/logs";
 import { getErrorMessage } from "@/lib/store";
@@ -27,7 +28,7 @@ import { useDeleteRoutingRuleMutation, useUpdateRoutingRuleMutation } from "@/li
 import { RoutingRule, RoutingTarget } from "@/lib/types/routingRules";
 import { getScopeLabel } from "@/lib/utils/labels";
 import { getPriorityBadgeClass, truncateCELExpression } from "@/lib/utils/routingRules";
-import { ChevronLeft, ChevronRight, Edit, MoreHorizontal, Search, Trash2 } from "lucide-react";
+import { Edit, MoreHorizontal, Search, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 
@@ -143,7 +144,7 @@ export function RoutingRulesTable({
 		return (
 			<div className="rounded-sm border">
 				<Table>
-					<TableHeader>
+					<TableHeader className="bg-muted sticky top-0 z-20">
 						<TableRow>
 							<TableHead>Name</TableHead>
 							<TableHead>Targets</TableHead>
@@ -151,7 +152,7 @@ export function RoutingRulesTable({
 							<TableHead className="text-right">Priority</TableHead>
 							<TableHead>Expression</TableHead>
 							<TableHead>Enabled</TableHead>
-							<TableHead className="text-right">Actions</TableHead>
+							<TableHead className="text-right"><span className="sr-only">Actions</span></TableHead>
 						</TableRow>
 					</TableHeader>
 					<TableBody>
@@ -188,19 +189,17 @@ export function RoutingRulesTable({
 				</div>
 			</div>
 
-			<div className="mb-2 overflow-hidden rounded-sm border">
+			<div className="mb-2 min-h-0 grow overflow-hidden rounded-sm border">
 				<Table containerClassName="h-full overflow-auto">
-					<TableHeader className="bg-muted sticky top-0 z-10">
-						<TableRow className="bg-muted/50">
-							<TableHead className="font-semibold">Name</TableHead>
-							<TableHead className="font-semibold">Targets</TableHead>
-							<TableHead className="font-semibold">Scope</TableHead>
-							<TableHead className="text-right font-semibold">Priority</TableHead>
-							<TableHead className="font-semibold">Expression</TableHead>
-							<TableHead className="font-semibold">Status</TableHead>
-							<TableHead className={`bg-muted sticky right-0 z-30 w-[50px] text-right font-semibold ${PIN_SHADOW_RIGHT}`}>
-								Actions
-							</TableHead>
+					<TableHeader className="bg-muted sticky top-0 z-20">
+						<TableRow>
+							<TableHead>Name</TableHead>
+							<TableHead>Targets</TableHead>
+							<TableHead>Scope</TableHead>
+							<TableHead className="text-right">Priority</TableHead>
+							<TableHead>Expression</TableHead>
+							<TableHead>Status</TableHead>
+							<TableHead className={`bg-muted sticky right-0 z-10 w-[50px] text-right ${PIN_SHADOW_RIGHT}`}><span className="sr-only">Actions</span></TableHead>
 						</TableRow>
 					</TableHeader>
 					<TableBody>
@@ -265,7 +264,7 @@ export function RoutingRulesTable({
 										/>
 									</TableCell>
 									<TableCell
-										className={`group-hover:bg-muted dark:bg-card dark:group-hover:bg-muted sticky right-0 z-20 bg-white text-right ${PIN_SHADOW_RIGHT}`}
+										className={`bg-card group-hover:bg-muted sticky right-0 z-10 text-right ${PIN_SHADOW_RIGHT}`}
 										onClick={(e) => e.stopPropagation()}
 									>
 										<div className="flex items-center justify-center">
@@ -286,43 +285,14 @@ export function RoutingRulesTable({
 			</div>
 
 			{/* Pagination */}
-			{totalCount > 0 && (
-				<div className="flex shrink-0 items-center justify-between text-xs" data-testid="pagination">
-					<div className="text-muted-foreground flex items-center gap-2">
-						{(offset + 1).toLocaleString()}-{Math.min(offset + limit, totalCount).toLocaleString()} of {totalCount.toLocaleString()} entries
-					</div>
-
-					<div className="flex items-center gap-2">
-						<Button
-							variant="ghost"
-							size="sm"
-							onClick={() => onOffsetChange(Math.max(0, offset - limit))}
-							disabled={offset === 0}
-							data-testid="routing-rules-pagination-prev-btn"
-							aria-label="Previous page"
-						>
-							<ChevronLeft className="size-3" />
-						</Button>
-
-						<div className="flex items-center gap-1">
-							<span>Page</span>
-							<span>{Math.floor(offset / limit) + 1}</span>
-							<span>of {Math.ceil(totalCount / limit)}</span>
-						</div>
-
-						<Button
-							variant="ghost"
-							size="sm"
-							onClick={() => onOffsetChange(offset + limit)}
-							disabled={offset + limit >= totalCount}
-							data-testid="routing-rules-pagination-next-btn"
-							aria-label="Next page"
-						>
-							<ChevronRight className="size-3" />
-						</Button>
-					</div>
-				</div>
-			)}
+			<TablePagination
+				offset={offset}
+				limit={limit}
+				totalCount={totalCount}
+				onOffsetChange={onOffsetChange}
+				prevTestId="routing-rules-pagination-prev-btn"
+				nextTestId="routing-rules-pagination-next-btn"
+			/>
 
 			<AlertDialog open={!!deleteRuleId} onOpenChange={(open) => !open && setDeleteRuleId(null)}>
 				<AlertDialogContent>

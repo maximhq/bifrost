@@ -186,7 +186,7 @@ export default function ModelProviderKeysTableView({ provider, className, header
 							<col className="w-[12%]" />
 							<col className="w-[12%]" />
 						</colgroup>
-						<TableHeader className="w-full">
+						<TableHeader className="bg-muted sticky top-0 z-20 w-full">
 							<TableRow>
 								<TableHead>{isVLLM ? "Model" : isOllamaOrSGL ? "Server" : "API Key"}</TableHead>
 								<TableHead>Weight</TableHead>
@@ -208,7 +208,7 @@ export default function ModelProviderKeysTableView({ provider, className, header
 									<TableRow
 										key={key.id}
 										data-testid={`key-row-${key.name}`}
-										className="text-sm transition-colors hover:bg-white"
+										className="text-sm transition-colors hover:bg-card"
 										onClick={() => {}}
 									>
 										<TableCell className="overflow-hidden">
