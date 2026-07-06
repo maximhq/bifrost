@@ -399,6 +399,9 @@ export interface ModelProviderConfig {
 	openai_config?: OpenAIConfig;
 	status?: "unknown" | "success" | "list_models_failed";
 	description?: string;
+	// Periodic background refresh of the live list-models cache, in seconds.
+	// Unset/0 keeps the default reactive-only refresh (on provider/key add-update).
+	list_models_refresh_interval_sec?: number;
 }
 
 // ProviderResponse matching Go's ProviderResponse
@@ -425,6 +428,7 @@ export interface AddProviderRequest {
 	store_raw_request_response?: boolean;
 	custom_provider_config?: CustomProviderConfig;
 	openai_config?: OpenAIConfig;
+	list_models_refresh_interval_sec?: number;
 }
 
 // UpdateProviderRequest matching Go's UpdateProviderRequest
@@ -437,6 +441,7 @@ export interface UpdateProviderRequest {
 	store_raw_request_response?: boolean;
 	custom_provider_config?: CustomProviderConfig;
 	openai_config?: OpenAIConfig;
+	list_models_refresh_interval_sec?: number;
 }
 
 export interface CreateProviderKeyRequest extends ModelProviderKey {}

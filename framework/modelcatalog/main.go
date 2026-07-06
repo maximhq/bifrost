@@ -43,6 +43,17 @@ type ModelCatalog struct {
 	shouldSyncGate func(ctx context.Context) bool
 	afterSyncHook  func(ctx context.Context)
 
+	// Periodic per-provider live list-models refresh (opt-in; see live_refresh.go).
+	// liveRefreshMu guards liveRefreshHook only — liveTickers has its own lock.
+	// Runs on its own ticker (liveRefreshTickerPeriod), independent of the
+	// pricing/MCP-library syncTicker below — accepted intervals go down to
+	// minListModelsRefreshIntervalSec (30s), far below the 5-minute pricing
+	// ticker, so it cannot piggyback on that one and actually fire on schedule.
+	liveRefreshMu     sync.RWMutex
+	liveRefreshHook   func(ctx context.Context, provider schemas.ModelProvider)
+	liveTickers       *liveRefreshTickerMap
+	liveRefreshTicker *time.Ticker
+
 	// Background sync orchestration. The ticker, distributed lock, and gossip
 	// hook live at this level — datasheet.Store has no internal scheduler.
 	syncTicker *time.Ticker
@@ -89,9 +100,10 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 			ModelParametersURL: modelParametersURL,
 			SyncInterval:       syncInterval,
 		}),
-		live:    live.New(logger),
-		keyconf: keyconfig.New(logger),
-		done:    make(chan struct{}),
+		live:        live.New(logger),
+		keyconf:     keyconfig.New(logger),
+		liveTickers: newLiveRefreshTickerMap(),
+		done:        make(chan struct{}),
 	}
 	mc.syncCtx, mc.syncCancel = context.WithCancel(ctx)
 
@@ -252,6 +264,7 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 	}
 
 	mc.startSyncWorker(mc.syncCtx)
+	mc.startLiveRefreshWorker(mc.syncCtx)
 	initSucceeded = true
 	return mc, nil
 }
@@ -391,6 +404,9 @@ func (mc *ModelCatalog) Cleanup() error {
 	}
 	if mc.syncTicker != nil {
 		mc.syncTicker.Stop()
+	}
+	if mc.liveRefreshTicker != nil {
+		mc.liveRefreshTicker.Stop()
 	}
 	close(mc.done)
 	mc.wg.Wait()
@@ -608,10 +624,11 @@ func (mc *ModelCatalog) knownProviders() []schemas.ModelProvider {
 // start background workers or hit external services.
 func NewTestCatalog(baseModelIndex map[string]string) *ModelCatalog {
 	return &ModelCatalog{
-		datasheet: datasheet.NewTestStore(baseModelIndex),
-		live:      live.New(nil),
-		keyconf:   keyconfig.New(nil),
-		done:      make(chan struct{}),
+		datasheet:   datasheet.NewTestStore(baseModelIndex),
+		live:        live.New(nil),
+		keyconf:     keyconfig.New(nil),
+		liveTickers: newLiveRefreshTickerMap(),
+		done:        make(chan struct{}),
 	}
 }
 
@@ -621,9 +638,10 @@ func NewTestCatalog(baseModelIndex map[string]string) *ModelCatalog {
 // exercise real pricing/cost computation without reaching the network.
 func NewTestCatalogWithDatasheet(ds *datasheet.Store) *ModelCatalog {
 	return &ModelCatalog{
-		datasheet: ds,
-		live:      live.New(nil),
-		keyconf:   keyconfig.New(nil),
-		done:      make(chan struct{}),
+		datasheet:   ds,
+		live:        live.New(nil),
+		keyconf:     keyconfig.New(nil),
+		liveTickers: newLiveRefreshTickerMap(),
+		done:        make(chan struct{}),
 	}
 }

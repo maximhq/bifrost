@@ -14,5 +14,6 @@ export const buildProviderUpdatePayload = (provider: ModelProvider, updates: Par
 		store_raw_request_response: updates.store_raw_request_response ?? provider.store_raw_request_response,
 		custom_provider_config: updates.custom_provider_config ?? provider.custom_provider_config,
 		openai_config: updates.openai_config ?? provider.openai_config,
+		list_models_refresh_interval_sec: updates.list_models_refresh_interval_sec ?? provider.list_models_refresh_interval_sec,
 	};
 };

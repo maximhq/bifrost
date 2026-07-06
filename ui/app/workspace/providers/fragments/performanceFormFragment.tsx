@@ -30,6 +30,7 @@ export function PerformanceFormFragment({ provider }: PerformanceFormFragmentPro
 				concurrency: provider.concurrency_and_buffer_size?.concurrency ?? DefaultPerformanceConfig.concurrency,
 				buffer_size: provider.concurrency_and_buffer_size?.buffer_size ?? DefaultPerformanceConfig.buffer_size,
 			},
+			list_models_refresh_interval_sec: provider.list_models_refresh_interval_sec ?? 0,
 		},
 	});
 
@@ -44,8 +45,9 @@ export function PerformanceFormFragment({ provider }: PerformanceFormFragmentPro
 				concurrency: provider.concurrency_and_buffer_size?.concurrency ?? DefaultPerformanceConfig.concurrency,
 				buffer_size: provider.concurrency_and_buffer_size?.buffer_size ?? DefaultPerformanceConfig.buffer_size,
 			},
+			list_models_refresh_interval_sec: provider.list_models_refresh_interval_sec ?? 0,
 		});
-	}, [form, provider.name, provider.concurrency_and_buffer_size]);
+	}, [form, provider.name, provider.concurrency_and_buffer_size, provider.list_models_refresh_interval_sec]);
 
 	const onSubmit = (data: PerformanceFormSchema) => {
 		// Create updated provider configuration (raw request/response are in Debugging tab)
@@ -54,6 +56,7 @@ export function PerformanceFormFragment({ provider }: PerformanceFormFragmentPro
 				concurrency: data.concurrency_and_buffer_size.concurrency,
 				buffer_size: data.concurrency_and_buffer_size.buffer_size,
 			},
+			list_models_refresh_interval_sec: data.list_models_refresh_interval_sec,
 		});
 		updateProvider(updatedProvider)
 			.unwrap()
@@ -140,6 +143,46 @@ export function PerformanceFormFragment({ provider }: PerformanceFormFragmentPro
 								)}
 							/>
 						</div>
+					</div>
+
+					{/* Periodic Model List Refresh */}
+					<div className="flex-1">
+						<FormField
+							control={form.control}
+							name="list_models_refresh_interval_sec"
+							render={({ field }) => (
+								<FormItem>
+									<FormLabel>Model List Refresh Interval (seconds)</FormLabel>
+									<FormControl>
+										<Input
+											type="number"
+											placeholder="0"
+											{...field}
+											value={field.value === undefined || Number.isNaN(field.value) ? "" : field.value}
+											disabled={!hasUpdateProviderAccess}
+											onChange={(e) => {
+												const value = e.target.value;
+												if (value === "") {
+													field.onChange(0);
+													return;
+												}
+												const parsed = Number.parseInt(value);
+												if (!Number.isNaN(parsed)) {
+													field.onChange(parsed);
+												}
+												form.trigger("list_models_refresh_interval_sec");
+											}}
+										/>
+									</FormControl>
+									<p className="text-muted-foreground text-xs">
+										Periodically re-fetch this provider&apos;s model list in the background (e.g. to pick up models
+										added/removed on a local Ollama instance). 0 disables periodic refresh — the model list still
+										refreshes reactively when the provider or its keys are added/updated. Minimum 30 seconds when enabled.
+									</p>
+									<FormMessage />
+								</FormItem>
+							)}
+						/>
 					</div>
 				</div>
 

@@ -4,6 +4,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -85,6 +86,11 @@ type ProviderResponse struct {
 	Status                   string                           `json:"status,omitempty"`                 // Operational status (e.g., list_models_failed)
 	Description              string                           `json:"description,omitempty"`            // Error/status description
 	ConfigHash               string                           `json:"config_hash,omitempty"`            // Hash of config.json version, used for change detection
+
+	// ListModelsRefreshIntervalSec, when set and > 0, enables periodic
+	// background refresh of this provider's live list-models cache. nil
+	// (or omitted) means reactive-only refresh (on provider/key add-update).
+	ListModelsRefreshIntervalSec *int64 `json:"list_models_refresh_interval_sec,omitempty"`
 }
 
 // ListProvidersResponse represents the response for listing all providers
@@ -100,26 +106,35 @@ type ErrorResponse struct {
 }
 
 type providerCreatePayload struct {
-	Provider                 schemas.ModelProvider             `json:"provider"`
-	NetworkConfig            *schemas.NetworkConfig            `json:"network_config,omitempty"`
-	ConcurrencyAndBufferSize *schemas.ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size,omitempty"`
-	ProxyConfig              *schemas.ProxyConfig              `json:"proxy_config,omitempty"`
-	SendBackRawRequest       *bool                             `json:"send_back_raw_request,omitempty"`
-	SendBackRawResponse      *bool                             `json:"send_back_raw_response,omitempty"`
-	StoreRawRequestResponse  *bool                             `json:"store_raw_request_response,omitempty"`
-	CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`
-	OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"` // OpenAI-specific configuration
+	Provider                     schemas.ModelProvider             `json:"provider"`
+	NetworkConfig                *schemas.NetworkConfig            `json:"network_config,omitempty"`
+	ConcurrencyAndBufferSize     *schemas.ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size,omitempty"`
+	ProxyConfig                  *schemas.ProxyConfig              `json:"proxy_config,omitempty"`
+	SendBackRawRequest           *bool                             `json:"send_back_raw_request,omitempty"`
+	SendBackRawResponse          *bool                             `json:"send_back_raw_response,omitempty"`
+	StoreRawRequestResponse      *bool                             `json:"store_raw_request_response,omitempty"`
+	CustomProviderConfig         *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`
+	OpenAIConfig                 *schemas.OpenAIConfig             `json:"openai_config,omitempty"` // OpenAI-specific configuration
+	ListModelsRefreshIntervalSec *int64                            `json:"list_models_refresh_interval_sec,omitempty"`
 }
 
 type providerUpdatePayload struct {
-	NetworkConfig            schemas.NetworkConfig            `json:"network_config"`
-	ConcurrencyAndBufferSize schemas.ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size"`
-	ProxyConfig              *schemas.ProxyConfig             `json:"proxy_config,omitempty"`
-	SendBackRawRequest       *bool                            `json:"send_back_raw_request,omitempty"`
-	SendBackRawResponse      *bool                            `json:"send_back_raw_response,omitempty"`
-	StoreRawRequestResponse  *bool                            `json:"store_raw_request_response,omitempty"`
-	CustomProviderConfig     *schemas.CustomProviderConfig    `json:"custom_provider_config,omitempty"`
-	OpenAIConfig             *schemas.OpenAIConfig            `json:"openai_config,omitempty"` // OpenAI-specific configuration
+	NetworkConfig                schemas.NetworkConfig            `json:"network_config"`
+	ConcurrencyAndBufferSize     schemas.ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size"`
+	ProxyConfig                  *schemas.ProxyConfig             `json:"proxy_config,omitempty"`
+	SendBackRawRequest           *bool                            `json:"send_back_raw_request,omitempty"`
+	SendBackRawResponse          *bool                            `json:"send_back_raw_response,omitempty"`
+	StoreRawRequestResponse      *bool                            `json:"store_raw_request_response,omitempty"`
+	CustomProviderConfig         *schemas.CustomProviderConfig    `json:"custom_provider_config,omitempty"`
+	OpenAIConfig                 *schemas.OpenAIConfig            `json:"openai_config,omitempty"` // OpenAI-specific configuration
+	ListModelsRefreshIntervalSec *int64                           `json:"list_models_refresh_interval_sec,omitempty"`
+}
+
+func validateListModelsRefreshInterval(v *int64) error {
+	if v != nil && *v > 0 && *v < configstore.MinListModelsRefreshIntervalSec {
+		return fmt.Errorf("list_models_refresh_interval_sec must be 0 (disabled) or >= %d seconds", configstore.MinListModelsRefreshIntervalSec)
+	}
+	return nil
 }
 
 // RegisterRoutes registers all provider management routes
@@ -302,16 +317,22 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	if err := validateListModelsRefreshInterval(payload.ListModelsRefreshIntervalSec); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+
 	// Construct ProviderConfig from individual fields
 	config := configstore.ProviderConfig{
-		NetworkConfig:            payload.NetworkConfig,
-		ProxyConfig:              payload.ProxyConfig,
-		ConcurrencyAndBufferSize: payload.ConcurrencyAndBufferSize,
-		SendBackRawRequest:       payload.SendBackRawRequest != nil && *payload.SendBackRawRequest,
-		SendBackRawResponse:      payload.SendBackRawResponse != nil && *payload.SendBackRawResponse,
-		StoreRawRequestResponse:  payload.StoreRawRequestResponse != nil && *payload.StoreRawRequestResponse,
-		CustomProviderConfig:     payload.CustomProviderConfig,
-		OpenAIConfig:             payload.OpenAIConfig,
+		NetworkConfig:                payload.NetworkConfig,
+		ProxyConfig:                  payload.ProxyConfig,
+		ConcurrencyAndBufferSize:     payload.ConcurrencyAndBufferSize,
+		SendBackRawRequest:           payload.SendBackRawRequest != nil && *payload.SendBackRawRequest,
+		SendBackRawResponse:          payload.SendBackRawResponse != nil && *payload.SendBackRawResponse,
+		StoreRawRequestResponse:      payload.StoreRawRequestResponse != nil && *payload.StoreRawRequestResponse,
+		CustomProviderConfig:         payload.CustomProviderConfig,
+		OpenAIConfig:                 payload.OpenAIConfig,
+		ListModelsRefreshIntervalSec: payload.ListModelsRefreshIntervalSec,
 	}
 	// Validate custom provider configuration before persisting
 	if err := lib.ValidateCustomProvider(config, payload.Provider); err != nil {
@@ -347,15 +368,16 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 		logger.Warn("Failed to get redacted config for provider %s: %v", payload.Provider, err)
 		// Fall back to the raw config (no keys)
 		response := h.getProviderResponseFromConfig(payload.Provider, configstore.ProviderConfig{
-			NetworkConfig:            config.NetworkConfig,
-			ConcurrencyAndBufferSize: config.ConcurrencyAndBufferSize,
-			ProxyConfig:              config.ProxyConfig,
-			SendBackRawRequest:       config.SendBackRawRequest,
-			SendBackRawResponse:      config.SendBackRawResponse,
-			StoreRawRequestResponse:  config.StoreRawRequestResponse,
-			CustomProviderConfig:     config.CustomProviderConfig,
-			Status:                   config.Status,
-			Description:              config.Description,
+			NetworkConfig:                config.NetworkConfig,
+			ConcurrencyAndBufferSize:     config.ConcurrencyAndBufferSize,
+			ProxyConfig:                  config.ProxyConfig,
+			SendBackRawRequest:           config.SendBackRawRequest,
+			SendBackRawResponse:          config.SendBackRawResponse,
+			StoreRawRequestResponse:      config.StoreRawRequestResponse,
+			CustomProviderConfig:         config.CustomProviderConfig,
+			Status:                       config.Status,
+			Description:                  config.Description,
+			ListModelsRefreshIntervalSec: config.ListModelsRefreshIntervalSec,
 		}, ProviderStatusActive)
 		SendJSON(ctx, response)
 		return
@@ -388,6 +410,14 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
 		return
 	}
+
+	// A bare *int64 can't distinguish "field omitted" from "field sent as
+	// JSON null" — both unmarshal to nil. This endpoint treats omission as
+	// "preserve the stored value" (see below), so an explicit null needs its
+	// own signal to let callers actually clear an existing schedule.
+	var rawFields map[string]json.RawMessage
+	_ = json.Unmarshal(ctx.PostBody(), &rawFields) // best-effort; body already validated above
+	listModelsRefreshIntervalExplicitNull := string(rawFields["list_models_refresh_interval_sec"]) == "null"
 
 	// Reject `keys` in the request body. This endpoint manages provider-level
 	// configuration only; keys are managed via the dedicated /keys endpoints
@@ -431,17 +461,23 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		oldRedactedConfig = &configstore.ProviderConfig{}
 	}
 
+	if err := validateListModelsRefreshInterval(payload.ListModelsRefreshIntervalSec); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+
 	// Construct ProviderConfig from individual fields (keys are managed separately via /keys endpoints)
 	config := configstore.ProviderConfig{
-		Keys:                     oldConfigRaw.Keys,
-		NetworkConfig:            oldConfigRaw.NetworkConfig,
-		ConcurrencyAndBufferSize: oldConfigRaw.ConcurrencyAndBufferSize,
-		ProxyConfig:              oldConfigRaw.ProxyConfig,
-		CustomProviderConfig:     oldConfigRaw.CustomProviderConfig,
-		OpenAIConfig:             oldConfigRaw.OpenAIConfig,
-		StoreRawRequestResponse:  oldConfigRaw.StoreRawRequestResponse,
-		Status:                   oldConfigRaw.Status,
-		Description:              oldConfigRaw.Description,
+		Keys:                         oldConfigRaw.Keys,
+		NetworkConfig:                oldConfigRaw.NetworkConfig,
+		ConcurrencyAndBufferSize:     oldConfigRaw.ConcurrencyAndBufferSize,
+		ProxyConfig:                  oldConfigRaw.ProxyConfig,
+		CustomProviderConfig:         oldConfigRaw.CustomProviderConfig,
+		OpenAIConfig:                 oldConfigRaw.OpenAIConfig,
+		StoreRawRequestResponse:      oldConfigRaw.StoreRawRequestResponse,
+		Status:                       oldConfigRaw.Status,
+		Description:                  oldConfigRaw.Description,
+		ListModelsRefreshIntervalSec: oldConfigRaw.ListModelsRefreshIntervalSec,
 	}
 
 	if payload.ConcurrencyAndBufferSize.Concurrency == 0 {
@@ -507,6 +543,18 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	config.ProxyConfig = payload.ProxyConfig
 	config.CustomProviderConfig = payload.CustomProviderConfig
 	config.OpenAIConfig = payload.OpenAIConfig
+	// Unlike CustomProviderConfig/OpenAIConfig (which this endpoint's "send the
+	// complete config" contract expects every caller to echo back), this is a
+	// newly-added opt-in field: older/unaware callers won't send it, and an
+	// unrelated PUT should not silently clear an existing periodic refresh
+	// schedule. Preserve the stored value (already the initial value of
+	// config.ListModelsRefreshIntervalSec, set from oldConfigRaw above) when
+	// the payload omits the field entirely; an explicit JSON null clears it.
+	if payload.ListModelsRefreshIntervalSec != nil {
+		config.ListModelsRefreshIntervalSec = payload.ListModelsRefreshIntervalSec
+	} else if listModelsRefreshIntervalExplicitNull {
+		config.ListModelsRefreshIntervalSec = nil
+	}
 	if payload.SendBackRawRequest != nil {
 		config.SendBackRawRequest = *payload.SendBackRawRequest
 	}
@@ -565,15 +613,16 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		logger.Warn("Failed to get redacted config for provider %s: %v", provider, err)
 		// Fall back to sanitized config (no keys)
 		response := h.getProviderResponseFromConfig(provider, configstore.ProviderConfig{
-			NetworkConfig:            config.NetworkConfig,
-			ConcurrencyAndBufferSize: config.ConcurrencyAndBufferSize,
-			ProxyConfig:              config.ProxyConfig,
-			SendBackRawRequest:       config.SendBackRawRequest,
-			SendBackRawResponse:      config.SendBackRawResponse,
-			StoreRawRequestResponse:  config.StoreRawRequestResponse,
-			CustomProviderConfig:     config.CustomProviderConfig,
-			Status:                   config.Status,
-			Description:              config.Description,
+			NetworkConfig:                config.NetworkConfig,
+			ConcurrencyAndBufferSize:     config.ConcurrencyAndBufferSize,
+			ProxyConfig:                  config.ProxyConfig,
+			SendBackRawRequest:           config.SendBackRawRequest,
+			SendBackRawResponse:          config.SendBackRawResponse,
+			StoreRawRequestResponse:      config.StoreRawRequestResponse,
+			CustomProviderConfig:         config.CustomProviderConfig,
+			Status:                       config.Status,
+			Description:                  config.Description,
+			ListModelsRefreshIntervalSec: config.ListModelsRefreshIntervalSec,
 		}, ProviderStatusActive)
 		SendJSON(ctx, response)
 		return
@@ -1212,19 +1261,20 @@ func (h *ProviderHandler) getProviderResponseFromConfig(provider schemas.ModelPr
 	}
 
 	return ProviderResponse{
-		Name:                     provider,
-		NetworkConfig:            *config.NetworkConfig,
-		ConcurrencyAndBufferSize: *config.ConcurrencyAndBufferSize,
-		ProxyConfig:              config.ProxyConfig,
-		SendBackRawRequest:       config.SendBackRawRequest,
-		SendBackRawResponse:      config.SendBackRawResponse,
-		StoreRawRequestResponse:  config.StoreRawRequestResponse,
-		CustomProviderConfig:     config.CustomProviderConfig,
-		OpenAIConfig:             config.OpenAIConfig,
-		ProviderStatus:           status,
-		Status:                   config.Status,
-		Description:              config.Description,
-		ConfigHash:               config.ConfigHash,
+		Name:                         provider,
+		NetworkConfig:                *config.NetworkConfig,
+		ConcurrencyAndBufferSize:     *config.ConcurrencyAndBufferSize,
+		ProxyConfig:                  config.ProxyConfig,
+		SendBackRawRequest:           config.SendBackRawRequest,
+		SendBackRawResponse:          config.SendBackRawResponse,
+		StoreRawRequestResponse:      config.StoreRawRequestResponse,
+		CustomProviderConfig:         config.CustomProviderConfig,
+		OpenAIConfig:                 config.OpenAIConfig,
+		ProviderStatus:               status,
+		Status:                       config.Status,
+		Description:                  config.Description,
+		ConfigHash:                   config.ConfigHash,
+		ListModelsRefreshIntervalSec: config.ListModelsRefreshIntervalSec,
 	}
 }
 

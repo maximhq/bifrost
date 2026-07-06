@@ -108,6 +108,38 @@ export class ProvidersPage extends BasePage {
   }
 
   /**
+   * Add a new key to the currently selected Ollama (or SGLang) provider.
+   * Keyless providers show a "Server URL" field (data-testid key-input-ollama-url)
+   * instead of the generic "API Key" field used by addKey().
+   */
+  async addOllamaKey(config: { name: string; url: string }): Promise<void> {
+    await this.dismissToasts()
+
+    await this.addKeyBtn.click()
+    await expect(this.keyForm).toBeVisible()
+
+    await this.page.getByLabel('Name').fill(config.name)
+    await this.page.getByTestId('key-input-ollama-url').fill(config.url)
+
+    await this.keySaveBtn.click()
+    await this.waitForSuccessToast()
+
+    await expect(this.keyForm).not.toBeVisible({ timeout: 5000 })
+    await waitForNetworkIdle(this.page)
+  }
+
+  /**
+   * Set the periodic live list-models refresh interval (Performance tab) and save.
+   * Pass 0 to disable periodic refresh.
+   */
+  async setListModelsRefreshInterval(seconds: number): Promise<void> {
+    await this.selectConfigTab('performance')
+    const input = this.page.getByLabel('Model List Refresh Interval (seconds)')
+    await this.fillNumberInput(input, String(seconds))
+    await this.savePerformanceConfig()
+  }
+
+  /**
    * Add a new key to the currently selected provider
    */
   async addKey(config: ProviderKeyConfig): Promise<void> {

@@ -59,6 +59,12 @@ type TableProvider struct {
 	Status      string `gorm:"type:varchar(50);default:'unknown'" json:"status"`
 	Description string `gorm:"type:text" json:"description,omitempty"`
 
+	// ListModelsRefreshIntervalSec, when set and > 0, enables a periodic
+	// background refresh of this provider's live list-models cache (in
+	// addition to the existing reactive refresh on provider/key add/update).
+	// nil or <= 0 preserves the pre-existing reactive-only behavior.
+	ListModelsRefreshIntervalSec *int64 `json:"list_models_refresh_interval_sec,omitempty"`
+
 	EncryptionStatus string `gorm:"type:varchar(20);default:'plain_text'" json:"-"`
 }
 
@@ -182,4 +188,3 @@ func (p *TableProvider) AfterFind(tx *gorm.DB) error {
 
 	return nil
 }
-
