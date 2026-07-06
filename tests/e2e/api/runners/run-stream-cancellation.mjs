@@ -19,7 +19,7 @@ const args = Object.fromEntries(
       acc.push([key, next && !next.startsWith("--") ? next : "true"]);
     }
     return acc;
-  }, [])
+  }, []),
 );
 
 const baseUrl = args["base-url"] || process.env.BASE_URL || "http://localhost:8080";
@@ -36,7 +36,8 @@ const nonStreamAbortMs = Number(args["nonstream-abort-ms"] || 300);
 const skipCostCheck = args["no-cost-check"] === "true";
 const logsDbUrlArg = args["logs-db-url"] || process.env.BIFROST_LOGS_DB_URL || "";
 const configPathArg = args["config"] || process.env.BIFROST_CONFIG_PATH || "config.json";
-const pricingUrl = args["pricing-url"] || process.env.BIFROST_PRICING_URL || "https://getbifrost.ai/datasheet";
+const pricingUrl =
+  args["pricing-url"] || process.env.BIFROST_PRICING_URL || "https://getbifrost.ai/datasheet";
 // Providers that emit usage in the FIRST stream event → a cancel-after-first-byte
 // deterministically has billable usage, so cost MUST be > 0. Only native Anthropic
 // qualifies: its message_start event carries input_tokens + cache tokens immediately
@@ -66,11 +67,17 @@ function resolveLogsDbUrl() {
     }
     if (ls.type === "postgres") {
       const c = ls.config || {};
-      const host = c.host || "localhost", port = c.port || "5432", user = c.user || "bifrost";
-      const pass = c.password || "", db = c.db_name || "bifrost", ssl = c.ssl_mode || "disable";
+      const host = c.host || "localhost",
+        port = c.port || "5432",
+        user = c.user || "bifrost";
+      const pass = c.password || "",
+        db = c.db_name || "bifrost",
+        ssl = c.ssl_mode || "disable";
       return `postgresql://${user}:${encodeURIComponent(pass)}@${host}:${port}/${db}?sslmode=${ssl}`;
     }
-  } catch (_) { /* no config / unreadable → skip */ }
+  } catch (_) {
+    /* no config / unreadable → skip */
+  }
   return "";
 }
 
@@ -79,35 +86,57 @@ async function connectLogsDb(url) {
     const pg = require("pg");
     const client = new pg.Client({ connectionString: url });
     await client.connect();
-    return { query: async (sql, p) => (await client.query(sql, p)).rows, close: () => client.end().catch(() => {}) };
+    return {
+      query: async (sql, p) => (await client.query(sql, p)).rows,
+      close: () => client.end().catch(() => {}),
+    };
   }
   const Database = require("better-sqlite3");
   const sdb = new Database(url.replace(/^sqlite:\/\//i, ""), { readonly: true });
-  return { query: async (sql, p) => sdb.prepare(sql.replace(/\$\d+/g, "?")).all(...p), close: () => { try { sdb.close(); } catch (_) {} } };
+  return {
+    query: async (sql, p) => sdb.prepare(sql.replace(/\$\d+/g, "?")).all(...p),
+    close: () => {
+      try {
+        sdb.close();
+      } catch (_) {}
+    },
+  };
 }
 
 async function pollLogRow(db, id) {
-  const sql = "SELECT cost, prompt_tokens, completion_tokens, total_tokens, cached_read_tokens, token_usage, model, provider, status FROM logs WHERE id = $1";
+  const sql =
+    "SELECT cost, prompt_tokens, completion_tokens, total_tokens, cached_read_tokens, token_usage, model, provider, status FROM logs WHERE id = $1";
   let last = null;
   for (const ms of [300, 700, 1200, 2000]) {
     await new Promise((r) => setTimeout(r, ms));
     const rows = await db.query(sql, [id]);
-    if (rows && rows.length) { last = rows[0]; if (last.cost != null && Number(last.cost) > 0) return last; }
+    if (rows && rows.length) {
+      last = rows[0];
+      if (last.cost != null && Number(last.cost) > 0) return last;
+    }
   }
   return last;
 }
 
-
 function expectedCost(entry, row) {
-  const input = entry.input_cost_per_token || 0, output = entry.output_cost_per_token || 0;
-  const cr = entry.cache_read_input_token_cost || 0, cw = entry.cache_creation_input_token_cost || 0;
-  const prompt = Number(row.prompt_tokens || 0), completion = Number(row.completion_tokens || 0);
-  let cachedRead = Number(row.cached_read_tokens || 0), cachedWrite = 0;
+  const input = entry.input_cost_per_token || 0,
+    output = entry.output_cost_per_token || 0;
+  const cr = entry.cache_read_input_token_cost || 0,
+    cw = entry.cache_creation_input_token_cost || 0;
+  const prompt = Number(row.prompt_tokens || 0),
+    completion = Number(row.completion_tokens || 0);
+  let cachedRead = Number(row.cached_read_tokens || 0),
+    cachedWrite = 0;
   if (row.token_usage) {
     try {
       const d = JSON.parse(row.token_usage)?.prompt_tokens_details;
-      if (d) { if (cachedRead === 0 && d.cached_read_tokens) cachedRead = Number(d.cached_read_tokens); if (d.cached_write_tokens) cachedWrite = Number(d.cached_write_tokens); }
-    } catch (_) { /* ignore */ }
+      if (d) {
+        if (cachedRead === 0 && d.cached_read_tokens) cachedRead = Number(d.cached_read_tokens);
+        if (d.cached_write_tokens) cachedWrite = Number(d.cached_write_tokens);
+      }
+    } catch (_) {
+      /* ignore */
+    }
   }
   cachedRead = Math.min(cachedRead, prompt);
   cachedWrite = Math.min(cachedWrite, Math.max(0, prompt - cachedRead));
@@ -115,12 +144,12 @@ function expectedCost(entry, row) {
   return nonCached * input + cachedRead * cr + cachedWrite * cw + completion * output;
 }
 
-// A streaming cancel logs status=cancelled (dedicated state since #4831; status=error
-// on older builds); a non-streaming cancel may instead finish server-side and log
-// success — accept any of these for non-stream.
+// A streaming cancel is logged status=cancelled (dedicated status since #4930;
+// older builds logged error); a non-streaming cancel may finish server-side
+// and log success - accept any terminal cancel outcome per kind.
 function statusIsCancelOutcome(status, nonStream) {
-  if (nonStream) return status === "error" || status === "success" || status === "cancelled";
-  return status === "error" || status === "cancelled";
+  if (nonStream) return status === "cancelled" || status === "error" || status === "success";
+  return status === "cancelled" || status === "error";
 }
 
 // Compare the logged cost against the datasheet-recomputed cost. Returns
@@ -129,13 +158,26 @@ function statusIsCancelOutcome(status, nonStream) {
 function costAccuracyVerdict(sheet, row, cost, tokens, kind) {
   const entry = resolvePricingEntry(sheet, row.model, row.provider);
   if (entry && tokens <= 128000) {
-    const exp = expectedCost(entry, row), tol = Math.max(1e-9, 1e-4 * exp);
+    const exp = expectedCost(entry, row),
+      tol = Math.max(1e-9, 1e-4 * exp);
     if (Math.abs(cost - exp) > tol) {
-      return { verdict: "FAIL", detail: `${kind} inaccurate logged=$${cost} expected=$${exp}`, fail: true };
+      return {
+        verdict: "FAIL",
+        detail: `${kind} inaccurate logged=$${cost} expected=$${exp}`,
+        fail: true,
+      };
     }
-    return { verdict: "PASS", detail: `${kind} cost=$${cost} accurate (expected=$${exp})`, fail: false };
+    return {
+      verdict: "PASS",
+      detail: `${kind} cost=$${cost} accurate (expected=$${exp})`,
+      fail: false,
+    };
   }
-  return { verdict: "PASS", detail: `${kind} cost=$${cost} (accuracy skipped: no datasheet entry / tiered)`, fail: false };
+  return {
+    verdict: "PASS",
+    detail: `${kind} cost=$${cost} (accuracy skipped: no datasheet entry / tiered)`,
+    fail: false,
+  };
 }
 
 const streamCases = [
@@ -214,12 +256,16 @@ const nonStreamCases = streamCases.map((c) => ({
   body: { ...c.body, stream: false, max_tokens: Math.max(Number(c.body.max_tokens) || 0, 1024) },
 }));
 
-const cases = [...streamCases, ...nonStreamCases]
-  .filter((c) => !providerFilter || c.provider === providerFilter);
+const cases = [...streamCases, ...nonStreamCases].filter(
+  (c) => !providerFilter || c.provider === providerFilter,
+);
 
 const resolveVariables = (value) => {
   if (typeof value === "string") {
-    return value.replaceAll("{{azureDeployment}}", process.env.AZURE_DEPLOYMENT || process.env.BIFROST_AZURE_DEPLOYMENT || "gpt-4o-mini");
+    return value.replaceAll(
+      "{{azureDeployment}}",
+      process.env.AZURE_DEPLOYMENT || process.env.BIFROST_AZURE_DEPLOYMENT || "gpt-4o-mini",
+    );
   }
   if (Array.isArray(value)) return value.map(resolveVariables);
   if (value && typeof value === "object") {
@@ -315,7 +361,13 @@ async function runCase(testCase) {
       };
     }
     if (!response.body) {
-      return { ...testCase, ok: false, status: response.status, contentType, error: "response body is not readable" };
+      return {
+        ...testCase,
+        ok: false,
+        status: response.status,
+        contentType,
+        error: "response body is not readable",
+      };
     }
 
     const reader = response.body.getReader();
@@ -380,55 +432,89 @@ if (skipCostCheck) {
 } else {
   const logsUrl = resolveLogsDbUrl();
   if (!logsUrl) {
-    console.error("[stream-cancel] no logs DB configured (set BIFROST_LOGS_DB_URL or a config.json logs_store); skipping cost verification");
+    console.error(
+      "[stream-cancel] no logs DB configured (set BIFROST_LOGS_DB_URL or a config.json logs_store); skipping cost verification",
+    );
   } else {
     let db = null;
-    try { db = await connectLogsDb(logsUrl); }
-    catch (e) { console.error(`[stream-cancel] could not connect to logs DB: ${e.message}; skipping cost verification`); }
+    try {
+      db = await connectLogsDb(logsUrl);
+    } catch (e) {
+      console.error(
+        `[stream-cancel] could not connect to logs DB: ${e.message}; skipping cost verification`,
+      );
+    }
     if (db) {
       let sheet = null;
-      try { const resp = await fetch(pricingUrl); sheet = resp.ok ? await resp.json() : null; }
-      catch (_) { sheet = null; }
-      if (!sheet) console.error(`[stream-cancel] pricing datasheet (${pricingUrl}) unavailable; cost-accuracy checks skipped`);
+      try {
+        const resp = await fetch(pricingUrl);
+        sheet = resp.ok ? await resp.json() : null;
+      } catch (_) {
+        sheet = null;
+      }
+      if (!sheet)
+        console.error(
+          `[stream-cancel] pricing datasheet (${pricingUrl}) unavailable; cost-accuracy checks skipped`,
+        );
       for (const r of results) {
         const kind = r.nonStream ? "non-stream" : "stream";
-        if (r.racedToCompletion) { r.costCheck = "SKIP"; r.costDetail = "request completed before abort could fire"; console.error(`[stream-cancel] cost ${r.provider} (${kind}): SKIP — ${r.costDetail}`); continue; }
-        if (!r.aborted || !r.requestId) { r.costCheck = "SKIP"; continue; }
+        if (r.racedToCompletion) {
+          r.costCheck = "SKIP";
+          r.costDetail = "request completed before abort could fire";
+          console.error(`[stream-cancel] cost ${r.provider} (${kind}): SKIP — ${r.costDetail}`);
+          continue;
+        }
+        if (!r.aborted || !r.requestId) {
+          r.costCheck = "SKIP";
+          continue;
+        }
         const row = await pollLogRow(db, r.requestId);
         if (!row) {
-          r.costCheck = "FAIL"; r.costDetail = `no log row for ${r.requestId}`; costFailures++;
+          r.costCheck = "FAIL";
+          r.costDetail = `no log row for ${r.requestId}`;
+          costFailures++;
         } else if (!statusIsCancelOutcome(row.status, r.nonStream)) {
           // A streaming cancel logs status=cancelled (#4831; error on older builds).
           // A non-streaming cancel may instead finish the upstream call server-side and
           // log success — either way it must be billed, so we accept all of these for
           // non-stream and key the cost rules off the provider, not the status.
-          r.costCheck = "FAIL"; r.costDetail = `status=${row.status}, unexpected for ${kind} cancel`; costFailures++;
+          r.costCheck = "FAIL";
+          r.costDetail = `status=${row.status}, unexpected for ${kind} cancel`;
+          costFailures++;
         } else {
-          const cost = Number(row.cost || 0), tokens = Number(row.total_tokens || 0);
+          const cost = Number(row.cost || 0),
+            tokens = Number(row.total_tokens || 0);
           // Strict cost-presence only where usage is deterministically available at the
           // moment of cancel: native Anthropic streaming (input tokens in message_start).
           // Non-streaming cancel billing is provider/timing-dependent (the upstream call
           // may or may not have completed), so we report it but don't hard-require it.
           if (!r.nonStream && EARLY_USAGE_PROVIDERS.has(r.provider)) {
             if (!(cost > 0 && tokens > 0)) {
-              r.costCheck = "FAIL"; r.costDetail = `cancelled ${r.provider} ${kind} logged no cost (cost=$${cost} tokens=${tokens})`; costFailures++;
+              r.costCheck = "FAIL";
+              r.costDetail = `cancelled ${r.provider} ${kind} logged no cost (cost=$${cost} tokens=${tokens})`;
+              costFailures++;
             } else {
               const v = costAccuracyVerdict(sheet, row, cost, tokens, kind);
               if (v.fail) costFailures++;
-              r.costDetail = v.detail; r.costCheck = v.verdict;
+              r.costDetail = v.detail;
+              r.costCheck = v.verdict;
             }
           } else {
             // Presence not required. If a cost WAS recorded, still verify its accuracy.
             if (cost > 0 && tokens > 0) {
               const v = costAccuracyVerdict(sheet, row, cost, tokens, kind);
               if (v.fail) costFailures++;
-              r.costDetail = v.detail; r.costCheck = v.verdict;
+              r.costDetail = v.detail;
+              r.costCheck = v.verdict;
             } else {
-              r.costCheck = "PASS"; r.costDetail = `status=${row.status} cost=$${cost} (cost-presence not required for ${r.provider} ${kind})`;
+              r.costCheck = "PASS";
+              r.costDetail = `status=${row.status} cost=$${cost} (cost-presence not required for ${r.provider} ${kind})`;
             }
           }
         }
-        console.error(`[stream-cancel] cost ${r.provider} (${kind}): ${r.costCheck}${r.costDetail ? " — " + r.costDetail : ""}`);
+        console.error(
+          `[stream-cancel] cost ${r.provider} (${kind}): ${r.costCheck}${r.costDetail ? " — " + r.costDetail : ""}`,
+        );
       }
       await db.close();
     }
@@ -439,8 +525,12 @@ report.costFailures = costFailures;
 writeFileSync(out, `${JSON.stringify(report, null, 2)}\n`);
 
 if (report.failed > 0 || costFailures > 0) {
-  console.error(`[stream-cancel] ${report.failed}/${report.total} stream case(s) failed, ${costFailures} cost check(s) failed; report: ${out}`);
+  console.error(
+    `[stream-cancel] ${report.failed}/${report.total} stream case(s) failed, ${costFailures} cost check(s) failed; report: ${out}`,
+  );
   process.exit(1);
 }
 
-console.error(`[stream-cancel] all ${report.total} case(s) passed (incl. cost checks); report: ${out}`);
+console.error(
+  `[stream-cancel] all ${report.total} case(s) passed (incl. cost checks); report: ${out}`,
+);
