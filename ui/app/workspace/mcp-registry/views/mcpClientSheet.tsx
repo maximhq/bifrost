@@ -51,20 +51,9 @@ interface MCPClientSheetProps {
 	hasNext?: boolean;
 }
 
-/** API sends tool_sync_interval as nanoseconds (Go time.Duration). Normalize to minutes for form/store. */
-function toolSyncIntervalToMinutes(v: number | undefined | null): number {
-	if (v === undefined || v === null) return 0;
-	const n = Number(v);
-	if (Number.isNaN(n)) return 0;
-	if (Math.abs(n) >= 1e9) return Math.round(n / 6e10);
-	return n;
-}
-
-/** API sends tool_execution_timeout as a Go duration string e.g. "30s". Normalize to whole seconds for form. */
-function toolExecutionTimeoutToSeconds(v: string | number | undefined | null): number {
-	if (v === undefined || v === null || v === "") return 0;
-	if (typeof v === "number") return v;
-	// Parse Go duration string: "30s", "1m30s", "2h", etc.
+/** Parse a Go duration string ("30s", "1m30s", "2h", "-1m0s") to seconds. */
+function goDurationToSeconds(v: string): number {
+	const sign = v.trim().startsWith("-") ? -1 : 1;
 	let total = 0;
 	const re = /(\d+(?:\.\d+)?)(ns|us|µs|ms|s|m|h)/g;
 	let match;
@@ -79,7 +68,28 @@ function toolExecutionTimeoutToSeconds(v: string | number | undefined | null): n
 			case "h": total += n * 3600; break;
 		}
 	}
-	return Math.ceil(total);
+	return sign * total;
+}
+
+/**
+ * API sends tool_sync_interval as a Go duration string e.g. "10m0s" (legacy
+ * responses: nanoseconds number; optimistic cache patches: minutes number).
+ * Normalize to whole minutes for the form. Negative = sync disabled.
+ */
+function toolSyncIntervalToMinutes(v: string | number | undefined | null): number {
+	if (v === undefined || v === null || v === "") return 0;
+	if (typeof v === "string") return Math.round(goDurationToSeconds(v) / 60);
+	const n = Number(v);
+	if (Number.isNaN(n)) return 0;
+	if (Math.abs(n) >= 1e9) return Math.round(n / 6e10);
+	return n;
+}
+
+/** API sends tool_execution_timeout as a Go duration string e.g. "30s". Normalize to whole seconds for form. */
+function toolExecutionTimeoutToSeconds(v: string | number | undefined | null): number {
+	if (v === undefined || v === null || v === "") return 0;
+	if (typeof v === "number") return v;
+	return Math.ceil(goDurationToSeconds(v));
 }
 
 export default function MCPClientSheet({
@@ -97,6 +107,7 @@ export default function MCPClientSheet({
 
 	const { data: bifrostConfig } = useGetCoreConfigQuery({ fromDB: true });
 	const globalToolSyncInterval = bifrostConfig?.client_config?.mcp_tool_sync_interval ?? 10;
+	const globalToolExecutionTimeout = bifrostConfig?.client_config?.mcp_tool_execution_timeout ?? 30;
 	const { toast } = useToast();
 	const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set());
 
@@ -213,7 +224,7 @@ export default function MCPClientSheet({
 			tools_to_auto_execute: mcpClient.config.tools_to_auto_execute || [],
 			tool_pricing: mcpClient.config.tool_pricing || {},
 			tool_sync_interval: toolSyncIntervalToMinutes(mcpClient.config.tool_sync_interval),
-				tool_execution_timeout: toolExecutionTimeoutToSeconds(mcpClient.config.tool_execution_timeout),
+			tool_execution_timeout: toolExecutionTimeoutToSeconds(mcpClient.config.tool_execution_timeout),
 			allowed_extra_headers: mcpClient.config.allowed_extra_headers || [],
 			oauth_config: supportsOAuthCredentialUpdate
 				? { client_id: mcpClient.config.oauth_client_id, client_secret: mcpClient.config.oauth_client_secret }
@@ -242,7 +253,7 @@ export default function MCPClientSheet({
 			tools_to_auto_execute: mcpClient.config.tools_to_auto_execute || [],
 			tool_pricing: mcpClient.config.tool_pricing || {},
 			tool_sync_interval: toolSyncIntervalToMinutes(mcpClient.config.tool_sync_interval),
-				tool_execution_timeout: toolExecutionTimeoutToSeconds(mcpClient.config.tool_execution_timeout),
+			tool_execution_timeout: toolExecutionTimeoutToSeconds(mcpClient.config.tool_execution_timeout),
 			allowed_extra_headers: mcpClient.config.allowed_extra_headers || [],
 			oauth_config: supportsOAuthCredentialUpdate
 				? { client_id: mcpClient.config.oauth_client_id, client_secret: mcpClient.config.oauth_client_secret }
@@ -824,7 +835,7 @@ export default function MCPClientSheet({
 														<Input
 															type="number"
 															className={`w-24 ${isUsingGlobal ? "text-muted-foreground" : ""}`}
-															placeholder="0"
+															placeholder={String(globalToolExecutionTimeout)}
 															value={field.value === 0 || field.value === undefined ? "" : String(field.value)}
 															onChange={(e) => {
 																if (e.target.value === "") {

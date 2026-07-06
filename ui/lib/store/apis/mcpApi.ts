@@ -173,7 +173,11 @@ export const mcpApi = baseApi.injectEndpoints({
 										draft.clients[index].config.tools_to_auto_execute = data.tools_to_auto_execute;
 									if (data.is_ping_available !== undefined) draft.clients[index].config.is_ping_available = data.is_ping_available;
 									if (data.tool_pricing !== undefined) draft.clients[index].config.tool_pricing = data.tool_pricing;
+									// Request units (minutes / seconds) diverge from response formats
+									// (duration strings); the sheet's normalizers accept both.
 									if (data.tool_sync_interval !== undefined) draft.clients[index].config.tool_sync_interval = data.tool_sync_interval;
+									if (data.tool_execution_timeout !== undefined)
+										draft.clients[index].config.tool_execution_timeout = data.tool_execution_timeout;
 									if (data.disabled !== undefined) {
 										draft.clients[index].config.disabled = data.disabled;
 										if (data.disabled) {
