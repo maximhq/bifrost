@@ -4,7 +4,6 @@ package handlers
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -135,6 +134,20 @@ func validateListModelsRefreshInterval(v *int64) error {
 		return fmt.Errorf("list_models_refresh_interval_sec must be 0 (disabled) or >= %d seconds", configstore.MinListModelsRefreshIntervalSec)
 	}
 	return nil
+}
+
+// resolveListModelsRefreshInterval implements PUT /providers/{name}'s update
+// semantics for this field, which a bare *int64 payload can't express on its
+// own: field omitted (payload nil, not explicitNull) preserves the stored
+// value; field sent as JSON null clears it; field sent with a value uses it.
+func resolveListModelsRefreshInterval(old, payload *int64, explicitNull bool) *int64 {
+	if payload != nil {
+		return payload
+	}
+	if explicitNull {
+		return nil
+	}
+	return old
 }
 
 // RegisterRoutes registers all provider management routes
@@ -415,8 +428,8 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	// JSON null" — both unmarshal to nil. This endpoint treats omission as
 	// "preserve the stored value" (see below), so an explicit null needs its
 	// own signal to let callers actually clear an existing schedule.
-	var rawFields map[string]json.RawMessage
-	_ = json.Unmarshal(ctx.PostBody(), &rawFields) // best-effort; body already validated above
+	var rawFields map[string]sonic.NoCopyRawMessage
+	_ = sonic.Unmarshal(ctx.PostBody(), &rawFields) // best-effort; body already validated above
 	listModelsRefreshIntervalExplicitNull := string(rawFields["list_models_refresh_interval_sec"]) == "null"
 
 	// Reject `keys` in the request body. This endpoint manages provider-level
@@ -543,18 +556,11 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	config.ProxyConfig = payload.ProxyConfig
 	config.CustomProviderConfig = payload.CustomProviderConfig
 	config.OpenAIConfig = payload.OpenAIConfig
-	// Unlike CustomProviderConfig/OpenAIConfig (which this endpoint's "send the
-	// complete config" contract expects every caller to echo back), this is a
-	// newly-added opt-in field: older/unaware callers won't send it, and an
-	// unrelated PUT should not silently clear an existing periodic refresh
-	// schedule. Preserve the stored value (already the initial value of
-	// config.ListModelsRefreshIntervalSec, set from oldConfigRaw above) when
-	// the payload omits the field entirely; an explicit JSON null clears it.
-	if payload.ListModelsRefreshIntervalSec != nil {
-		config.ListModelsRefreshIntervalSec = payload.ListModelsRefreshIntervalSec
-	} else if listModelsRefreshIntervalExplicitNull {
-		config.ListModelsRefreshIntervalSec = nil
-	}
+	config.ListModelsRefreshIntervalSec = resolveListModelsRefreshInterval(
+		oldConfigRaw.ListModelsRefreshIntervalSec,
+		payload.ListModelsRefreshIntervalSec,
+		listModelsRefreshIntervalExplicitNull,
+	)
 	if payload.SendBackRawRequest != nil {
 		config.SendBackRawRequest = *payload.SendBackRawRequest
 	}

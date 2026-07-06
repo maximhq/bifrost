@@ -160,20 +160,28 @@ func TestRunLiveRefreshTick_InvokesHookForDueProviders(t *testing.T) {
 
 	var mu sync.Mutex
 	var calledFor []schemas.ModelProvider
-	done := make(chan struct{})
 	mc.SetLiveRefreshHook(func(_ context.Context, provider schemas.ModelProvider) {
 		mu.Lock()
 		calledFor = append(calledFor, provider)
 		mu.Unlock()
-		close(done)
 	})
 
 	mc.runLiveRefreshTick(context.Background())
 
+	// Wait for mc.wg (not just the hook returning) so the goroutine's own
+	// deferred markFetchDone has definitely run before we assert on it below
+	// — the hook firing and markFetchDone running are two separate steps in
+	// the same goroutine, and the hook returning doesn't imply the deferred
+	// call has completed yet.
+	done := make(chan struct{})
+	go func() {
+		mc.wg.Wait()
+		close(done)
+	}()
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for live refresh hook to fire")
+		t.Fatal("timed out waiting for live refresh hook to finish")
 	}
 
 	mu.Lock()

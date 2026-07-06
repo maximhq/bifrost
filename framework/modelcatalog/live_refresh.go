@@ -156,7 +156,10 @@ func (mc *ModelCatalog) runLiveRefreshTick(ctx context.Context) {
 		mc.wg.Add(1)
 		go func(p schemas.ModelProvider) {
 			defer mc.wg.Done()
-			defer mc.liveTickers.markFetchDone(p, time.Now())
+			// A plain `defer markFetchDone(p, time.Now())` would evaluate
+			// time.Now() now, at goroutine start, not at completion — wrap in
+			// a closure so it reflects when the fetch actually finished.
+			defer func() { mc.liveTickers.markFetchDone(p, time.Now()) }()
 			hook(ctx, p)
 		}(provider)
 	}

@@ -1415,3 +1415,37 @@ func TestUpdateProvider_RejectsBelowFloorRefreshInterval(t *testing.T) {
 		t.Fatalf("expected error to mention list_models_refresh_interval_sec, got: %s", ctx.Response.Body())
 	}
 }
+
+// TestResolveListModelsRefreshInterval locks in updateProvider's three-way
+// PUT semantics for this field, which a bare *int64 can't express on its
+// own: omitted (nil, not explicitNull) preserves the old value; explicit
+// JSON null clears it; an explicit value always wins.
+func TestResolveListModelsRefreshInterval(t *testing.T) {
+	old := ptrInt64ForTest(60)
+	newVal := ptrInt64ForTest(120)
+
+	cases := []struct {
+		name        string
+		old         *int64
+		payload     *int64
+		explicitNil bool
+		want        *int64
+	}{
+		{"omitted preserves old value", old, nil, false, old},
+		{"omitted with no prior value stays nil", nil, nil, false, nil},
+		{"explicit null clears even when old was set", old, nil, true, nil},
+		{"explicit value overrides old value", old, newVal, false, newVal},
+		{"explicit value wins even if explicitNull is also (incorrectly) set", old, newVal, true, newVal},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := resolveListModelsRefreshInterval(tc.old, tc.payload, tc.explicitNil)
+			if (got == nil) != (tc.want == nil) {
+				t.Fatalf("expected nil=%v, got nil=%v (value=%v)", tc.want == nil, got == nil, got)
+			}
+			if got != nil && tc.want != nil && *got != *tc.want {
+				t.Fatalf("expected %d, got %d", *tc.want, *got)
+			}
+		})
+	}
+}

@@ -163,6 +163,10 @@ export function PerformanceFormFragment({ provider }: PerformanceFormFragmentPro
 											onChange={(e) => {
 												const value = e.target.value;
 												if (value === "") {
+													// Deliberately 0, not undefined: buildProviderUpdatePayload falls
+													// back to the provider's existing value when this field is
+													// undefined, so clearing the input must resolve to 0 for
+													// "disable periodic refresh" to actually take effect on submit.
 													field.onChange(0);
 													return;
 												}

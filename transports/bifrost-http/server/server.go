@@ -727,15 +727,20 @@ func (s *BifrostHTTPServer) OnKeyAdded(ctx context.Context, provider schemas.Mod
 	// Skip the fetch for a disabled key — core rejects list-models calls
 	// scoped to a disabled key's ID, so it would just fail and fall back
 	// onto the (usually empty, for custom providers) static datasheet.
-	if !keyEnabled(key) {
-		return nil
+	if keyEnabled(key) {
+		// Guard against the periodic ticker starting a concurrent
+		// provider-wide refresh while this single-key fetch is in flight —
+		// same overlap RefreshLiveModelsForProvider guards against itself.
+		s.Config.ModelCatalog.MarkLiveRefreshInFlight(provider)
+		s.FetchAndStoreLiveForKey(ctx, provider, keyID)
+		s.Config.ModelCatalog.NoteLiveRefreshCompleted(provider)
+	} else {
+		// For keyless providers keyID is the shared "" sentinel: if this is
+		// the provider's first key and it's added disabled, drop whatever
+		// entry the zero-key keyless fetch (RefreshLiveModelsForProvider) may
+		// have already populated there so it doesn't linger indefinitely.
+		s.Config.ModelCatalog.InvalidateLive(provider, keyID)
 	}
-	// Guard against the periodic ticker starting a concurrent provider-wide
-	// refresh while this single-key fetch is in flight — same overlap
-	// RefreshLiveModelsForProvider guards against itself.
-	s.Config.ModelCatalog.MarkLiveRefreshInFlight(provider)
-	s.FetchAndStoreLiveForKey(ctx, provider, keyID)
-	s.Config.ModelCatalog.NoteLiveRefreshCompleted(provider)
 	return nil
 }
 
