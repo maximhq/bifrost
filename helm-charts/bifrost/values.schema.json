@@ -547,6 +547,37 @@
             "mcpExternalClientUrl": {
               "type": "string",
               "description": "Public base URL Bifrost uses as the redirect_uri when acting as an OAuth client to upstream MCP servers. Maps to client.mcp_external_client_url."
+            },
+            "mcpServerAuthMode": {
+              "type": "string",
+              "enum": ["headers", "both", "oauth"],
+              "description": "How /mcp authenticates inbound MCP clients. 'headers' (default): VK/api-key/session headers only, discovery disabled. 'both': accepts header credentials and Bifrost-issued JWTs, discovery enabled. 'oauth': Bifrost JWTs only. Maps to client.mcp_server_auth_mode."
+            },
+            "oauth2ServerConfig": {
+              "type": "object",
+              "description": "OAuth2 authorization server settings for /mcp. Only relevant when mcpServerAuthMode is 'both' or 'oauth'. Maps to client.oauth2_server_config.",
+              "properties": {
+                "issuerUrl": {
+                  "type": "string",
+                  "description": "Stable public URL advertised as the OAuth2 AS issuer in discovery documents and JWT iss claim. Required for multi-host deployments. Supports env var syntax: \"env.MY_VAR\"."
+                },
+                "authCodeTtl": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 900,
+                  "description": "Lifetime of the single-use authorization code in seconds (default: 300, max: 900)."
+                },
+                "accessTokenTtl": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "Lifetime of the issued JWT Bearer token in seconds (default: 600)."
+                },
+                "disableVkIdentity": {
+                  "type": "boolean",
+                  "description": "When true, the OAuth consent flow no longer offers or accepts virtual-key identity. Honored only when an identity provider is configured. Only valid when mcpServerAuthMode is 'oauth'."
+                }
+              },
+              "additionalProperties": false
             }
           },
           "additionalProperties": false
@@ -868,6 +899,7 @@
                         "openrouter",
                         "vertex",
                         "cerebras",
+                        "deepseek",
                         "parasail",
                         "perplexity",
                         "sgl",
@@ -1657,6 +1689,11 @@
                   },
                   "is_active": {
                     "type": "boolean"
+                  },
+                  "expires_at": {
+                    "type": "string",
+                    "format": "date-time",
+                    "description": "Optional expiry timestamp (RFC3339). Once passed, requests using this virtual key are rejected. Omit for a key that never expires."
                   },
                   "team_id": {
                     "type": "string"
@@ -3499,7 +3536,7 @@
             },
             "type": {
               "type": "string",
-              "enum": ["", "sqlite", "postgres"]
+              "enum": ["", "sqlite", "postgres", "clickhouse"]
             },
             "maxIdleConns": {
               "type": "integer",
@@ -3513,6 +3550,52 @@
               "type": "string",
               "description": "How often to refresh materialized views. Go duration string (e.g. '30s', '5m', '1h'). Minimum 5s.",
               "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$"
+            },
+            "clickhouse": {
+              "type": "object",
+              "description": "ClickHouse connection settings (only applies when type is clickhouse)",
+              "properties": {
+                "host": {
+                  "type": "string",
+                  "description": "ClickHouse host"
+                },
+                "port": {
+                  "type": ["string", "integer"],
+                  "description": "ClickHouse port. Defaults by protocol: native 9000 (9440 TLS), http 8123 (8443 TLS)"
+                },
+                "database": {
+                  "type": "string",
+                  "description": "ClickHouse database name (default: default)"
+                },
+                "username": {
+                  "type": "string",
+                  "description": "ClickHouse username"
+                },
+                "password": {
+                  "type": "string",
+                  "description": "ClickHouse password (can use env. prefix)"
+                },
+                "protocol": {
+                  "type": "string",
+                  "enum": ["native", "http"],
+                  "description": "ClickHouse wire protocol (default: native)"
+                },
+                "secure": {
+                  "type": "boolean",
+                  "description": "Enable TLS (native: secure=true; http: switches to https)"
+                },
+                "dialTimeout": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "Connection dial timeout in milliseconds (default: 10000)"
+                },
+                "cluster": {
+                  "type": "string",
+                  "description": "Optional cluster name; when set, DDL runs ON CLUSTER with replicated table engines"
+                }
+              },
+              "required": ["host"],
+              "additionalProperties": false
             },
             "writer": {
               "type": "object",
@@ -4660,6 +4743,41 @@
           "required": ["region"],
           "additionalProperties": false
         },
+        "bedrock_mantle_key_config": {
+          "type": "object",
+          "properties": {
+            "access_key": {
+              "type": "string",
+              "description": "AWS access key for SigV4 (can use env. prefix)"
+            },
+            "secret_key": {
+              "type": "string",
+              "description": "AWS secret key for SigV4 (can use env. prefix)"
+            },
+            "session_token": {
+              "type": "string",
+              "description": "AWS session token for temporary credentials (can use env. prefix)"
+            },
+            "region": {
+              "type": "string",
+              "description": "AWS region used to build the bedrock-mantle endpoint host"
+            },
+            "role_arn": {
+              "type": "string",
+              "description": "AWS IAM role ARN for AssumeRole (can use env. prefix)"
+            },
+            "external_id": {
+              "type": "string",
+              "description": "External ID for AssumeRole (can use env. prefix)"
+            },
+            "session_name": {
+              "type": "string",
+              "description": "Role session name for AssumeRole (can use env. prefix)"
+            }
+          },
+          "required": ["region"],
+          "additionalProperties": false
+        },
         "vllm_key_config": {
           "type": "object",
           "properties": {
@@ -4763,6 +4881,9 @@
                 "required": ["bedrock_key_config"]
               },
               {
+                "required": ["bedrock_mantle_key_config"]
+              },
+              {
                 "required": ["vllm_key_config"]
               }
             ]
@@ -4777,6 +4898,9 @@
               },
               {
                 "required": ["bedrock_key_config"]
+              },
+              {
+                "required": ["bedrock_mantle_key_config"]
               },
               {
                 "required": ["vllm_key_config"]
@@ -4795,6 +4919,9 @@
                 "required": ["bedrock_key_config"]
               },
               {
+                "required": ["bedrock_mantle_key_config"]
+              },
+              {
                 "required": ["vllm_key_config"]
               }
             ]
@@ -4809,6 +4936,28 @@
               },
               {
                 "required": ["vertex_key_config"]
+              },
+              {
+                "required": ["bedrock_mantle_key_config"]
+              },
+              {
+                "required": ["vllm_key_config"]
+              }
+            ]
+          }
+        },
+        {
+          "required": ["bedrock_mantle_key_config"],
+          "not": {
+            "anyOf": [
+              {
+                "required": ["azure_key_config"]
+              },
+              {
+                "required": ["vertex_key_config"]
+              },
+              {
+                "required": ["bedrock_key_config"]
               },
               {
                 "required": ["vllm_key_config"]
@@ -4828,6 +4977,9 @@
               },
               {
                 "required": ["bedrock_key_config"]
+              },
+              {
+                "required": ["bedrock_mantle_key_config"]
               }
             ]
           }
@@ -5074,6 +5226,10 @@
         "toolSyncInterval": {
           "type": "string",
           "description": "Per-client override for tool sync interval"
+        },
+        "toolExecutionTimeout": {
+          "type": ["string", "integer"],
+          "description": "Per-client override for tool execution timeout. Go duration string (e.g. '30s', '2m') or a bare integer treated as seconds. Overrides the global mcp.toolManagerConfig.toolExecutionTimeout for this server only. Omit or set to 0 to use the global default."
         },
         "isPingAvailable": {
           "type": "boolean",
