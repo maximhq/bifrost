@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/framework/logstore"
+	cstables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 )
 
@@ -19,13 +19,13 @@ const (
 )
 
 type SweepStore interface {
-	Store
-	FindDueBatchJobs(ctx context.Context, provider string, now time.Time, limit int) ([]*logstore.BatchJob, error)
+	BatchJobStore
+	ListDueBatchJobs(ctx context.Context, provider string, now time.Time, limit int) ([]*cstables.TableBatchJob, error)
 }
 
 type BatchResultFetcher interface {
-	RetrieveBatch(ctx context.Context, job *logstore.BatchJob) (*schemas.BifrostBatchRetrieveResponse, error)
-	FetchBatchResults(ctx context.Context, job *logstore.BatchJob) (*schemas.BifrostBatchResultsResponse, error)
+	RetrieveBatch(ctx context.Context, job *cstables.TableBatchJob) (*schemas.BifrostBatchRetrieveResponse, error)
+	FetchBatchResults(ctx context.Context, job *cstables.TableBatchJob) (*schemas.BifrostBatchResultsResponse, error)
 }
 
 type SweeperConfig struct {
@@ -41,6 +41,7 @@ type SweeperConfig struct {
 
 type Sweeper struct {
 	store         SweepStore
+	logStore      AggregateLogStore
 	pricing       PricingManager
 	fetcher       BatchResultFetcher
 	emitter       AggregateLogEmitter
@@ -48,7 +49,7 @@ type Sweeper struct {
 	config        SweeperConfig
 }
 
-func NewSweeper(store SweepStore, pricing PricingManager, fetcher BatchResultFetcher, emitter AggregateLogEmitter, usageReporter UsageReporter, config SweeperConfig) *Sweeper {
+func NewSweeper(store SweepStore, logStore AggregateLogStore, pricing PricingManager, fetcher BatchResultFetcher, emitter AggregateLogEmitter, usageReporter UsageReporter, config SweeperConfig) *Sweeper {
 	if config.Interval <= 0 {
 		config.Interval = defaultSweepInterval
 	}
@@ -63,6 +64,7 @@ func NewSweeper(store SweepStore, pricing PricingManager, fetcher BatchResultFet
 	}
 	return &Sweeper{
 		store:         store,
+		logStore:      logStore,
 		pricing:       pricing,
 		fetcher:       fetcher,
 		emitter:       emitter,
@@ -88,11 +90,11 @@ func (s *Sweeper) Run(ctx context.Context) {
 }
 
 func (s *Sweeper) SweepOnce(ctx context.Context) {
-	if s == nil || s.store == nil || s.pricing == nil || s.fetcher == nil {
+	if s == nil || s.store == nil || s.logStore == nil || s.pricing == nil || s.fetcher == nil {
 		return
 	}
 	now := time.Now().UTC()
-	jobs, err := s.store.FindDueBatchJobs(ctx, string(s.config.Provider), now, s.config.Limit)
+	jobs, err := s.store.ListDueBatchJobs(ctx, string(s.config.Provider), now, s.config.Limit)
 	if err != nil {
 		s.warn("batch accounting sweeper failed to find due jobs: %v", err)
 		return
@@ -102,7 +104,7 @@ func (s *Sweeper) SweepOnce(ctx context.Context) {
 	}
 }
 
-func (s *Sweeper) sweepJob(ctx context.Context, job *logstore.BatchJob, now time.Time) {
+func (s *Sweeper) sweepJob(ctx context.Context, job *cstables.TableBatchJob, now time.Time) {
 	if job == nil || !IsProviderSupported(schemas.ModelProvider(job.Provider)) {
 		return
 	}
@@ -153,7 +155,7 @@ func (s *Sweeper) sweepJob(ctx context.Context, job *logstore.BatchJob, now time
 	if results.Endpoint != "" {
 		endpoint = results.Endpoint
 	}
-	if _, err := AccountBatchResults(ctx, s.store, s.pricing, Request{
+	if _, err := AccountBatchResults(ctx, s.store, s.logStore, s.pricing, Request{
 		Provider:      schemas.ModelProvider(latest.Provider),
 		BatchID:       latest.BatchID,
 		FallbackModel: latest.Model,
@@ -172,7 +174,7 @@ func (s *Sweeper) sweepJob(ctx context.Context, job *logstore.BatchJob, now time
 	}
 }
 
-func (s *Sweeper) reschedule(ctx context.Context, job *logstore.BatchJob, now time.Time) {
+func (s *Sweeper) reschedule(ctx context.Context, job *cstables.TableBatchJob, now time.Time) {
 	job.PollAttempts++
 	if job.PollAttempts >= maxPollAttempts {
 		s.markTerminalAsUnpriceable(ctx, job, UnpriceableReasonMaxPollAttempts)
@@ -186,24 +188,25 @@ func (s *Sweeper) reschedule(ctx context.Context, job *logstore.BatchJob, now ti
 	}
 }
 
-func (s *Sweeper) markTerminalAsUnpriceable(ctx context.Context, job *logstore.BatchJob, reason string) {
-	token, claimed, err := s.store.ClaimBatchJobAccounting(ctx, job.ID, s.config.ClaimedBy, defaultClaimTTL)
+func (s *Sweeper) markTerminalAsUnpriceable(ctx context.Context, job *cstables.TableBatchJob, reason string) {
+	runnerID := s.config.ClaimedBy
+	claimed, err := s.store.ClaimBatchJob(ctx, job.ID, runnerID, time.Now().UTC().Add(-defaultClaimTTL))
 	if err != nil || !claimed {
 		if err != nil {
 			s.warn("batch accounting sweeper failed to claim for unpriceable provider=%s batch_id=%s job_id=%s reason=%s: %v", job.Provider, job.BatchID, job.ID, reason, err)
 		}
 		return
 	}
-	if err := s.store.MarkBatchJobUnpriceable(ctx, job.ID, token, reason, nil); err != nil {
+	if err := s.store.MarkBatchJobUnpriceable(ctx, job.ID, runnerID, reason, nil); err != nil {
 		s.warn("batch accounting sweeper failed to mark unpriceable batch provider=%s batch_id=%s job_id=%s reason=%s: %v", job.Provider, job.BatchID, job.ID, reason, err)
 	}
 }
 
-func (s *Sweeper) markTerminalWithoutResults(ctx context.Context, job *logstore.BatchJob) {
+func (s *Sweeper) markTerminalWithoutResults(ctx context.Context, job *cstables.TableBatchJob) {
 	s.markTerminalAsUnpriceable(ctx, job, "terminal_without_results")
 }
 
-func batchJobFromRetrieve(existing *logstore.BatchJob, retrieved *schemas.BifrostBatchRetrieveResponse, now time.Time) *logstore.BatchJob {
+func batchJobFromRetrieve(existing *cstables.TableBatchJob, retrieved *schemas.BifrostBatchRetrieveResponse, now time.Time) *cstables.TableBatchJob {
 	job := *existing
 	job.BatchID = retrieved.ID
 	job.ProviderStatus = string(retrieved.Status)
@@ -226,7 +229,7 @@ func isTerminalStatus(status schemas.BatchStatus) bool {
 	}
 }
 
-func (s *Sweeper) acquireProviderPollLease(job *logstore.BatchJob) (bool, error) {
+func (s *Sweeper) acquireProviderPollLease(job *cstables.TableBatchJob) (bool, error) {
 	if s.config.KVStore == nil {
 		return true, nil
 	}
@@ -238,7 +241,7 @@ func (s *Sweeper) acquireProviderPollLease(job *logstore.BatchJob) (bool, error)
 	return s.config.KVStore.SetNXWithTTL(key, value, s.config.KVLeaseTTL)
 }
 
-func (s *Sweeper) deletePollLease(job *logstore.BatchJob) {
+func (s *Sweeper) deletePollLease(job *cstables.TableBatchJob) {
 	if s.config.KVStore == nil {
 		return
 	}
@@ -248,7 +251,7 @@ func (s *Sweeper) deletePollLease(job *logstore.BatchJob) {
 	}
 }
 
-func (s *Sweeper) nextCheckAt(job *logstore.BatchJob, now time.Time) time.Time {
+func (s *Sweeper) nextCheckAt(job *cstables.TableBatchJob, now time.Time) time.Time {
 	delay := s.config.Interval
 	switch {
 	case job.PollAttempts >= 30:

@@ -3038,9 +3038,16 @@ func (h *CompletionHandler) batchCreate(ctx *fasthttp.RequestCtx) {
 		logger.Warn("Failed to extract extra params: %v", err)
 	}
 
+	// Model is optional at the batch level per OpenAI spec — it lives inside
+	// each JSONL request body. When absent, lift it from the first inline request
+	// so the sweeper has a fallback model for pricing lookups.
 	var model *string
 	if modelName != "" {
 		model = schemas.Ptr(modelName)
+	} else if len(req.Requests) > 0 && req.Requests[0].Body != nil {
+		if m, ok := req.Requests[0].Body["model"].(string); ok && m != "" {
+			model = schemas.Ptr(m)
+		}
 	}
 
 	// Build Bifrost batch create request

@@ -9,7 +9,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/batchaccounting"
-	"github.com/maximhq/bifrost/framework/logstore"
+	cstables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
@@ -19,7 +19,7 @@ type bifrostBatchResultFetcher struct {
 	client *bifrost.Bifrost
 }
 
-func (f *bifrostBatchResultFetcher) RetrieveBatch(ctx context.Context, job *logstore.BatchJob) (*schemas.BifrostBatchRetrieveResponse, error) {
+func (f *bifrostBatchResultFetcher) RetrieveBatch(ctx context.Context, job *cstables.TableBatchJob) (*schemas.BifrostBatchRetrieveResponse, error) {
 	if f == nil || f.client == nil {
 		return nil, fmt.Errorf("bifrost client is nil")
 	}
@@ -37,7 +37,7 @@ func (f *bifrostBatchResultFetcher) RetrieveBatch(ctx context.Context, job *logs
 	return resp, nil
 }
 
-func (f *bifrostBatchResultFetcher) FetchBatchResults(ctx context.Context, job *logstore.BatchJob) (*schemas.BifrostBatchResultsResponse, error) {
+func (f *bifrostBatchResultFetcher) FetchBatchResults(ctx context.Context, job *cstables.TableBatchJob) (*schemas.BifrostBatchResultsResponse, error) {
 	if f == nil || f.client == nil {
 		return nil, fmt.Errorf("bifrost client is nil")
 	}

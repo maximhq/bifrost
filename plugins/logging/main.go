@@ -206,7 +206,7 @@ func (p *LoggerPlugin) applyErrorBillingFromBilledUsage(ctx *schemas.BifrostCont
 }
 
 func (p *LoggerPlugin) accountBatchResults(entry *logstore.Log, result *schemas.BifrostResponse, pricingScopes *modelcatalog.PricingLookupScopes) {
-	if result == nil || result.BatchResultsResponse == nil || entry == nil || p.pricingManager == nil {
+	if result == nil || result.BatchResultsResponse == nil || entry == nil || p.pricingManager == nil || p.batchStore == nil {
 		return
 	}
 	batchResp := result.BatchResultsResponse
@@ -222,7 +222,7 @@ func (p *LoggerPlugin) accountBatchResults(entry *logstore.Log, result *schemas.
 	usageReporter := p.batchUsageReporter
 	p.mu.Unlock()
 
-	summary, err := batchaccounting.AccountBatchResults(p.ctx, p.store, p.pricingManager, batchaccounting.Request{
+	summary, err := batchaccounting.AccountBatchResults(p.ctx, p.batchStore, p.store, p.pricingManager, batchaccounting.Request{
 		Provider:      schemas.ModelProvider(entry.Provider),
 		BatchID:       batchResp.BatchID,
 		FallbackModel: entry.Model,
@@ -250,11 +250,11 @@ func (p *LoggerPlugin) EmitBatchAggregateLog(ctx context.Context, entry *logstor
 }
 
 func (p *LoggerPlugin) recordBatchJobLifecycle(entry *logstore.Log, result *schemas.BifrostResponse) {
-	if entry == nil || result == nil {
+	if entry == nil || result == nil || p.batchStore == nil {
 		return
 	}
 
-	var job *logstore.BatchJob
+	var job *tables.TableBatchJob
 	now := time.Now().UTC()
 	switch {
 	case result.BatchCreateResponse != nil:
@@ -280,14 +280,14 @@ func (p *LoggerPlugin) recordBatchJobLifecycle(entry *logstore.Log, result *sche
 	if job.BatchID == "" {
 		return
 	}
-	if !logstore.IsTerminalBatchProviderStatus(job.ProviderStatus) {
+	if !tables.IsTerminalBatchProviderStatus(job.ProviderStatus) {
 		next := now.Add(time.Minute)
 		job.NextCheckAt = &next
 	} else if job.ProviderStatus == string(schemas.BatchStatusCompleted) ||
 		job.ProviderStatus == string(schemas.BatchStatusEnded) {
 		job.NextCheckAt = &now
 	}
-	if err := p.store.UpsertBatchJob(p.ctx, job); err != nil {
+	if err := p.batchStore.UpsertBatchJob(p.ctx, job); err != nil {
 		p.logger.Warn("failed to record batch job lifecycle for provider=%s batch_id=%s: %v", job.Provider, job.BatchID, err)
 	}
 }
@@ -302,21 +302,21 @@ func addBatchRequestCountsToLog(entry *logstore.Log, counts schemas.BatchRequest
 	entry.MetadataParsed["request_counts"] = counts
 }
 
-func batchJobFromEntry(entry *logstore.Log, batchID string, model string, endpoint string, status string) *logstore.BatchJob {
-	job := &logstore.BatchJob{
+func batchJobFromEntry(entry *logstore.Log, batchID string, model string, endpoint string, status string) *tables.TableBatchJob {
+	job := &tables.TableBatchJob{
 		Provider:         entry.Provider,
 		BatchID:          batchID,
 		Model:            model,
 		Endpoint:         endpoint,
 		ProviderStatus:   status,
-		AccountingStatus: logstore.BatchJobAccountingStatusPending,
+		AccountingStatus: tables.BatchJobAccountingStatusPending,
 		SelectedKeyID:    entry.SelectedKeyID,
 		VirtualKeyID:     entry.VirtualKeyID,
 		BudgetIDs:        stringSlicePtr(entry.BudgetIDsParsed),
 		RateLimitIDs:     stringSlicePtr(entry.RateLimitIDsParsed),
 	}
 	if job.ID == "" && job.Provider != "" && job.BatchID != "" {
-		job.ID = logstore.BatchJobID(job.Provider, job.BatchID)
+		job.ID = tables.BatchJobID(job.Provider, job.BatchID)
 	}
 	return job
 }
@@ -491,6 +491,7 @@ func validateWriterConfig(config logstore.WriterConfig) error {
 type LoggerPlugin struct {
 	ctx                    context.Context
 	store                  logstore.LogStore
+	batchStore             batchaccounting.SweepStore // configstore-backed mutable batch coordination state (nil disables batch accounting)
 	disableContentLogging  *bool
 	loggingHeaders         *[]string // Pointer to live config slice for headers to capture in metadata
 	pricingManager         *modelcatalog.ModelCatalog
@@ -522,8 +523,10 @@ type LoggerPlugin struct {
 	recoveredBatch         []*writeQueueEntry    // batchWriter parks its in-memory batch here before exiting; safe to read after batchWriterDone closes (happens-before)
 }
 
-// Init creates new logger plugin with given log store
-func Init(ctx context.Context, config *Config, logger schemas.Logger, logsStore logstore.LogStore, pricingManager *modelcatalog.ModelCatalog, mcpCatalog *mcpcatalog.MCPCatalog) (*LoggerPlugin, error) {
+// Init creates new logger plugin with given log store. batchStore is the
+// configstore-backed coordination store for delayed batch accounting; it may be
+// nil, which disables batch accounting.
+func Init(ctx context.Context, config *Config, logger schemas.Logger, logsStore logstore.LogStore, batchStore batchaccounting.SweepStore, pricingManager *modelcatalog.ModelCatalog, mcpCatalog *mcpcatalog.MCPCatalog) (*LoggerPlugin, error) {
 	if config == nil {
 		return nil, fmt.Errorf("config is required")
 	}
@@ -553,6 +556,7 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger, logsStore 
 	plugin := &LoggerPlugin{
 		ctx:                   ctx,
 		store:                 logsStore,
+		batchStore:            batchStore,
 		pricingManager:        pricingManager,
 		mcpCatalog:            mcpCatalog,
 		disableContentLogging: config.DisableContentLogging,
@@ -650,9 +654,9 @@ func (p *LoggerPlugin) SetBatchUsageReporter(reporter batchaccounting.UsageRepor
 }
 
 func (p *LoggerPlugin) StartBatchAccountingSweeper(fetcher batchaccounting.BatchResultFetcher, interval time.Duration, kvStore schemas.KVStore) context.CancelFunc {
-	if fetcher == nil || p.store == nil || p.pricingManager == nil {
+	if fetcher == nil || p.store == nil || p.batchStore == nil || p.pricingManager == nil {
 		if p.logger != nil {
-			p.logger.Warn("batch accounting sweeper not started: missing fetcher, store, or pricing manager")
+			p.logger.Warn("batch accounting sweeper not started: missing fetcher, store, batch store, or pricing manager")
 		}
 		return func() {}
 	}
@@ -671,7 +675,7 @@ func (p *LoggerPlugin) StartBatchAccountingSweeper(fetcher batchaccounting.Batch
 	if nodeID, _ := p.clusterNodeID.Load().(string); nodeID != "" {
 		claimedBy = "batch-sweeper:" + nodeID
 	}
-	sweeper := batchaccounting.NewSweeper(p.store, p.pricingManager, fetcher, p, usageReporter, batchaccounting.SweeperConfig{
+	sweeper := batchaccounting.NewSweeper(p.batchStore, p.store, p.pricingManager, fetcher, p, usageReporter, batchaccounting.SweeperConfig{
 		Interval:  interval,
 		ClaimedBy: claimedBy,
 		KVStore:   kvStore,

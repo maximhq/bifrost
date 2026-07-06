@@ -274,52 +274,6 @@ type Log struct {
 	RoutingRule *tables.TableRoutingRule `gorm:"-" json:"routing_rule,omitempty"` // redacted
 }
 
-const (
-	BatchJobAccountingStatusPending     = "pending"
-	BatchJobAccountingStatusProcessing  = "processing"
-	BatchJobAccountingStatusAccounted   = "accounted"
-	BatchJobAccountingStatusUnpriceable = "unpriceable"
-	BatchJobAccountingStatusError       = "error"
-)
-
-// BatchJob records the provider batch lifecycle and delayed accounting state.
-// The stable ID is provider + batch ID so user-triggered /results and future
-// reconcilers can share the same cluster-safe claim.
-type BatchJob struct {
-	ID                    string     `gorm:"primaryKey;type:varchar(512)" json:"id"`
-	Provider              string     `gorm:"type:varchar(255);uniqueIndex:idx_batch_jobs_identity,priority:1;index:idx_batch_jobs_sweeper,priority:1;not null" json:"provider"`
-	BatchID               string     `gorm:"type:varchar(255);uniqueIndex:idx_batch_jobs_identity,priority:2;not null" json:"batch_id"`
-	Model                 string     `gorm:"type:varchar(255)" json:"model,omitempty"`
-	Endpoint              string     `gorm:"type:varchar(255)" json:"endpoint,omitempty"`
-	ProviderStatus        string     `gorm:"type:varchar(50)" json:"provider_status,omitempty"`
-	InputFileID           string     `gorm:"type:varchar(255)" json:"input_file_id,omitempty"`
-	OutputFileID          *string    `gorm:"type:varchar(255)" json:"output_file_id,omitempty"`
-	ErrorFileID           *string    `gorm:"type:varchar(255)" json:"error_file_id,omitempty"`
-	ResultsURL            *string    `gorm:"type:text" json:"results_url,omitempty"`
-	NextCheckAt           *time.Time `gorm:"index:idx_batch_jobs_sweeper,priority:3" json:"next_check_at,omitempty"`
-	PollAttempts          int        `gorm:"default:0" json:"poll_attempts"`
-	AccountingStatus      string     `gorm:"type:varchar(50);index:idx_batch_jobs_sweeper,priority:2;not null" json:"accounting_status"`
-	ClaimedBy             *string    `gorm:"type:varchar(255)" json:"claimed_by,omitempty"`
-	ClaimToken            *string    `gorm:"type:varchar(255)" json:"claim_token,omitempty"`
-	ClaimExpiresAt        *time.Time `json:"claim_expires_at,omitempty"`
-	UnpriceableReason     *string    `gorm:"type:varchar(255)" json:"unpriceable_reason,omitempty"`
-	LastError             *string    `gorm:"type:text" json:"last_error,omitempty"`
-	AggregateLogWrittenAt *time.Time `json:"aggregate_log_written_at,omitempty"`
-	GovernanceReportedAt  *time.Time `json:"governance_reported_at,omitempty"`
-
-	SelectedKeyID string  `gorm:"type:varchar(255)" json:"selected_key_id,omitempty"`
-	VirtualKeyID  *string `gorm:"type:varchar(255)" json:"virtual_key_id,omitempty"`
-	BudgetIDs     *string `gorm:"type:text" json:"-"`
-	RateLimitIDs  *string `gorm:"type:text" json:"-"`
-
-	CreatedAt time.Time `gorm:"not null" json:"created_at"`
-	UpdatedAt time.Time `gorm:"not null" json:"updated_at"`
-}
-
-func (BatchJob) TableName() string {
-	return "batch_jobs"
-}
-
 // NewLogEntryFromMap creates a new Log from a map[string]interface{}
 func NewLogEntryFromMap(entry map[string]interface{}) *Log {
 	var log Log

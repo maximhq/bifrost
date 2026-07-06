@@ -267,28 +267,12 @@ func migrationClickHouseAsyncJobsTable(ctx context.Context, db *gorm.DB, cluster
 	return clickhouseReconcileColumns(ctx, db, &AsyncJob{}, "async_jobs", cluster, logger)
 }
 
-// migrationClickHouseBatchJobsTable creates the durable batch lifecycle queue.
-// Batch jobs are mutable, so ReplacingMergeTree plus ClickHouseLogStore's
-// read-modify-reinsert overrides provide the same logical behavior as SQL rows.
-func migrationClickHouseBatchJobsTable(ctx context.Context, db *gorm.DB, cluster string, _ int, logger schemas.Logger) error {
-	logger.Info("[logstore] clickhouse: creating table batch_jobs")
-	if err := clickhouseCreateTable(ctx, db, &BatchJob{}, chTableOpts{
-		table:   "batch_jobs",
-		orderBy: "id",
-		ttl:     "toDateTime(created_at) + INTERVAL 30 DAY",
-	}, cluster); err != nil {
-		return fmt.Errorf("clickhouse: create batch_jobs table: %w", err)
-	}
-	return clickhouseReconcileColumns(ctx, db, &BatchJob{}, "batch_jobs", cluster, logger)
-}
-
 // clickhouseMigrationSteps lists the per-table migrations in execution order,
 // mirroring logstoreMigrationSteps for the SQL stores.
 var clickhouseMigrationSteps = []clickhouseMigrationStep{
 	migrationClickHouseLogsTable,
 	migrationClickHouseMCPToolLogsTable,
 	migrationClickHouseAsyncJobsTable,
-	migrationClickHouseBatchJobsTable,
 }
 
 // triggerClickHouseMigrations runs all registered ClickHouse table migrations

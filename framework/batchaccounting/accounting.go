@@ -7,6 +7,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
+	cstables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 )
@@ -22,16 +23,26 @@ const (
 	UnpriceableReasonResultParseErrors   = "result_parse_errors"
 )
 
-type Store interface {
+// BatchJobStore is the mutable coordination-state store for delayed batch
+// accounting. It is satisfied by configstore.ConfigStore (the batch lifecycle is
+// a state machine, which belongs in the relational config store rather than the
+// append-only log store). Ownership is fenced on a runner id.
+type BatchJobStore interface {
+	UpsertBatchJob(ctx context.Context, job *cstables.TableBatchJob) error
+	GetBatchJob(ctx context.Context, jobID string) (*cstables.TableBatchJob, error)
+	ClaimBatchJob(ctx context.Context, jobID, runnerID string, staleBefore time.Time) (bool, error)
+	MarkBatchJobAggregateLogWritten(ctx context.Context, jobID, runnerID string) error
+	MarkBatchJobGovernanceReported(ctx context.Context, jobID, runnerID string) error
+	CompleteBatchJob(ctx context.Context, jobID, runnerID string) error
+	MarkBatchJobUnpriceable(ctx context.Context, jobID, runnerID, reason string, err error) error
+	FailBatchJob(ctx context.Context, jobID, runnerID string, err error) error
+}
+
+// AggregateLogStore writes the append-only aggregate batch cost record. It is
+// satisfied by logstore.LogStore — the cost record lives in the log store next to
+// every other request cost row.
+type AggregateLogStore interface {
 	CreateIfNotExists(ctx context.Context, entry *logstore.Log) error
-	UpsertBatchJob(ctx context.Context, job *logstore.BatchJob) error
-	FindBatchJobByID(ctx context.Context, jobID string) (*logstore.BatchJob, error)
-	ClaimBatchJobAccounting(ctx context.Context, jobID string, claimedBy string, ttl time.Duration) (string, bool, error)
-	MarkBatchJobAggregateLogWritten(ctx context.Context, jobID string, claimToken string) error
-	MarkBatchJobGovernanceReported(ctx context.Context, jobID string, claimToken string) error
-	CompleteBatchJobAccounting(ctx context.Context, jobID string, claimToken string) error
-	MarkBatchJobUnpriceable(ctx context.Context, jobID string, claimToken string, reason string, err error) error
-	FailBatchJobAccounting(ctx context.Context, jobID string, claimToken string, err error) error
 }
 
 type AggregateLogEmitter interface {
@@ -64,7 +75,7 @@ type Request struct {
 	Results       []schemas.BatchResultItem
 	ParseErrors   []schemas.BatchError
 	RequestCounts *schemas.BatchRequestCounts
-	BatchJob      *logstore.BatchJob
+	BatchJob      *cstables.TableBatchJob
 	BaseLog       *logstore.Log
 	Emitter       AggregateLogEmitter
 	UsageReporter UsageReporter
@@ -108,9 +119,15 @@ type extractedUsage struct {
 	missingModel bool
 }
 
-func AccountBatchResults(ctx context.Context, store Store, pricing PricingManager, req Request) (*Summary, error) {
-	if store == nil {
-		return nil, fmt.Errorf("batch accounting store is nil")
+// AccountBatchResults settles a completed batch: it advances the coordination
+// state in stateStore (configstore) and writes the append-only aggregate cost row
+// via logStore (logstore). Ownership is fenced on req.ClaimedBy (the runner id).
+func AccountBatchResults(ctx context.Context, stateStore BatchJobStore, logStore AggregateLogStore, pricing PricingManager, req Request) (*Summary, error) {
+	if stateStore == nil {
+		return nil, fmt.Errorf("batch accounting state store is nil")
+	}
+	if logStore == nil {
+		return nil, fmt.Errorf("batch accounting log store is nil")
 	}
 	if pricing == nil {
 		return nil, fmt.Errorf("batch accounting pricing manager is nil")
@@ -126,21 +143,21 @@ func AccountBatchResults(ctx context.Context, store Store, pricing PricingManage
 
 	job := req.BatchJob
 	if job == nil {
-		job = &logstore.BatchJob{
+		job = &cstables.TableBatchJob{
 			Provider:         string(req.Provider),
 			BatchID:          req.BatchID,
 			Model:            req.FallbackModel,
 			Endpoint:         string(req.Endpoint),
-			AccountingStatus: logstore.BatchJobAccountingStatusPending,
+			AccountingStatus: cstables.BatchJobAccountingStatusPending,
 		}
 	}
 	if job.Endpoint == "" && req.Endpoint != "" {
 		job.Endpoint = string(req.Endpoint)
 	}
 	if job.ID == "" {
-		job.ID = logstore.BatchJobID(string(req.Provider), req.BatchID)
+		job.ID = cstables.BatchJobID(string(req.Provider), req.BatchID)
 	}
-	if err := store.UpsertBatchJob(ctx, job); err != nil {
+	if err := stateStore.UpsertBatchJob(ctx, job); err != nil {
 		return nil, err
 	}
 
@@ -151,7 +168,8 @@ func AccountBatchResults(ctx context.Context, store Store, pricing PricingManage
 		BatchID:  req.BatchID,
 	}
 
-	claimToken, claimed, err := store.ClaimBatchJobAccounting(ctx, job.ID, req.ClaimedBy, defaultClaimTTL)
+	runnerID := req.ClaimedBy
+	claimed, err := stateStore.ClaimBatchJob(ctx, job.ID, runnerID, now.Add(-defaultClaimTTL))
 	if err != nil {
 		return nil, err
 	}
@@ -159,7 +177,7 @@ func AccountBatchResults(ctx context.Context, store Store, pricing PricingManage
 	if !claimed {
 		return summary, nil
 	}
-	if persisted, err := store.FindBatchJobByID(ctx, job.ID); err == nil && persisted != nil {
+	if persisted, err := stateStore.GetBatchJob(ctx, job.ID); err == nil && persisted != nil {
 		mergeBatchJobHints(job, persisted)
 	}
 	req.BatchJob = job
@@ -173,7 +191,7 @@ func AccountBatchResults(ctx context.Context, store Store, pricing PricingManage
 	if len(req.ParseErrors) > 0 {
 		summary.UnpriceableReason = UnpriceableReasonResultParseErrors
 		parseErr := fmt.Errorf("batch result contained %d malformed row(s)", len(req.ParseErrors))
-		if err := store.MarkBatchJobUnpriceable(ctx, job.ID, claimToken, UnpriceableReasonResultParseErrors, parseErr); err != nil {
+		if err := stateStore.MarkBatchJobUnpriceable(ctx, job.ID, runnerID, UnpriceableReasonResultParseErrors, parseErr); err != nil {
 			return nil, err
 		}
 		return summary, nil
@@ -181,7 +199,7 @@ func AccountBatchResults(ctx context.Context, store Store, pricing PricingManage
 
 	computed, err := summarizeResults(pricing, req)
 	if err != nil {
-		_ = store.FailBatchJobAccounting(ctx, job.ID, claimToken, err)
+		_ = stateStore.FailBatchJob(ctx, job.ID, runnerID, err)
 		return nil, err
 	}
 	if computed == nil || computed.PricedCount == 0 {
@@ -190,7 +208,7 @@ func AccountBatchResults(ctx context.Context, store Store, pricing PricingManage
 			reason = computed.UnpriceableReason
 		}
 		summary.UnpriceableReason = reason
-		if err := store.MarkBatchJobUnpriceable(ctx, job.ID, claimToken, reason, nil); err != nil {
+		if err := stateStore.MarkBatchJobUnpriceable(ctx, job.ID, runnerID, reason, nil); err != nil {
 			return nil, err
 		}
 		return summary, nil
@@ -206,12 +224,12 @@ func AccountBatchResults(ctx context.Context, store Store, pricing PricingManage
 
 	entry := buildAggregateLog(req, summary, now)
 	if job.AggregateLogWrittenAt == nil {
-		if err := store.CreateIfNotExists(ctx, entry); err != nil {
-			_ = store.FailBatchJobAccounting(ctx, job.ID, claimToken, err)
+		if err := logStore.CreateIfNotExists(ctx, entry); err != nil {
+			_ = stateStore.FailBatchJob(ctx, job.ID, runnerID, err)
 			return nil, err
 		}
-		if err := store.MarkBatchJobAggregateLogWritten(ctx, job.ID, claimToken); err != nil {
-			_ = store.FailBatchJobAccounting(ctx, job.ID, claimToken, err)
+		if err := stateStore.MarkBatchJobAggregateLogWritten(ctx, job.ID, runnerID); err != nil {
+			_ = stateStore.FailBatchJob(ctx, job.ID, runnerID, err)
 			return nil, err
 		}
 		if req.Emitter != nil {
@@ -220,23 +238,23 @@ func AccountBatchResults(ctx context.Context, store Store, pricing PricingManage
 	}
 	if req.UsageReporter != nil && job.GovernanceReportedAt == nil {
 		if err := req.UsageReporter.ReportBatchUsage(ctx, batchUsageReportFromLog(req.Provider, entry)); err != nil {
-			_ = store.FailBatchJobAccounting(ctx, job.ID, claimToken, err)
+			_ = stateStore.FailBatchJob(ctx, job.ID, runnerID, err)
 			return nil, err
 		}
-		if err := store.MarkBatchJobGovernanceReported(ctx, job.ID, claimToken); err != nil {
-			_ = store.FailBatchJobAccounting(ctx, job.ID, claimToken, err)
+		if err := stateStore.MarkBatchJobGovernanceReported(ctx, job.ID, runnerID); err != nil {
+			_ = stateStore.FailBatchJob(ctx, job.ID, runnerID, err)
 			return nil, err
 		}
 	}
-	if err := store.CompleteBatchJobAccounting(ctx, job.ID, claimToken); err != nil {
-		_ = store.FailBatchJobAccounting(ctx, job.ID, claimToken, err)
+	if err := stateStore.CompleteBatchJob(ctx, job.ID, runnerID); err != nil {
+		_ = stateStore.FailBatchJob(ctx, job.ID, runnerID, err)
 		return nil, err
 	}
 	summary.Accounted = true
 	return summary, nil
 }
 
-func mergeBatchJobHints(dst *logstore.BatchJob, src *logstore.BatchJob) {
+func mergeBatchJobHints(dst *cstables.TableBatchJob, src *cstables.TableBatchJob) {
 	if dst == nil || src == nil {
 		return
 	}
@@ -262,7 +280,7 @@ func mergeBatchJobHints(dst *logstore.BatchJob, src *logstore.BatchJob) {
 	}
 }
 
-func pricingScopesForBatchJob(scopes *modelcatalog.PricingLookupScopes, provider schemas.ModelProvider, job *logstore.BatchJob) *modelcatalog.PricingLookupScopes {
+func pricingScopesForBatchJob(scopes *modelcatalog.PricingLookupScopes, provider schemas.ModelProvider, job *cstables.TableBatchJob) *modelcatalog.PricingLookupScopes {
 	if scopes == nil {
 		scopes = &modelcatalog.PricingLookupScopes{}
 	} else {
@@ -728,7 +746,7 @@ func applyLogAttribution(entry *logstore.Log, source *logstore.Log) {
 	entry.AliasModelFamily = source.AliasModelFamily
 }
 
-func applyBatchJobAttribution(entry *logstore.Log, job *logstore.BatchJob) {
+func applyBatchJobAttribution(entry *logstore.Log, job *cstables.TableBatchJob) {
 	entry.SelectedKeyID = job.SelectedKeyID
 	entry.VirtualKeyID = job.VirtualKeyID
 	entry.BudgetIDs = job.BudgetIDs
