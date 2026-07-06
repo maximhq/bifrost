@@ -7114,10 +7114,11 @@ func convertContentBlockToAnthropic(block schemas.ResponsesMessageContentBlock) 
 			}
 		}
 	case schemas.ResponsesInputMessageContentBlockTypeFile:
-		if block.ResponsesInputMessageContentBlockFile != nil {
+		if block.ResponsesInputMessageContentBlockFile != nil || block.FileID != nil {
 			// Direct conversion without intermediate ChatContentBlock
 			anthropicBlock := ConvertResponsesFileBlockToAnthropic(
 				block.ResponsesInputMessageContentBlockFile,
+				block.FileID,
 				block.CacheControl,
 				block.Citations,
 			)
@@ -7212,6 +7213,11 @@ func (block AnthropicContentBlock) toBifrostResponsesDocumentBlock() schemas.Res
 		if src.Data != nil {
 			resultBlock.ResponsesInputMessageContentBlockFile.FileType = schemas.Ptr("text/plain")
 			resultBlock.ResponsesInputMessageContentBlockFile.FileData = src.Data
+		}
+	case "file":
+		// File ID reference (requires files-api-2025-04-14 beta header)
+		if src.FileID != nil {
+			resultBlock.FileID = src.FileID
 		}
 	}
 

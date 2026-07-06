@@ -4,7 +4,6 @@ package handlers
 
 import (
 	"context"
-
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -3308,10 +3307,12 @@ func (h *CompletionHandler) fileUpload(ctx *fasthttp.RequestCtx) {
 	// when omitted, the provider mints an upload session URL instead of receiving bytes)
 	var fileData []byte
 	var filename string
+	var filePartContentType string
 	fileHeaders := form.File["file"]
 	if len(fileHeaders) > 0 {
 		fileHeader := fileHeaders[0]
 		filename = fileHeader.Filename
+		filePartContentType = strings.TrimSpace(fileHeader.Header.Get("Content-Type"))
 
 		// Open and read the file
 		file, err := fileHeader.Open()
@@ -3337,6 +3338,8 @@ func (h *CompletionHandler) fileUpload(ctx *fasthttp.RequestCtx) {
 	var contentType *string
 	if len(form.Value["content_type"]) > 0 && form.Value["content_type"][0] != "" {
 		contentType = &form.Value["content_type"][0]
+	} else if filePartContentType != "" {
+		contentType = &filePartContentType
 	}
 
 	// GCS storage location for Vertex uploads: sent as individual multipart fields,
