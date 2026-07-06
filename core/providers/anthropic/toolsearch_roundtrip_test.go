@@ -1,6 +1,7 @@
 package anthropic
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -121,7 +122,7 @@ func TestToolSearch_NonStreamingIngestAndEgressRoundTrip(t *testing.T) {
 						names = append(names, *ref.ToolName)
 					}
 				}
-				if !containsStr(names, "get_weather") || !containsStr(names, "get_forecast") {
+				if !slices.Contains(names, "get_weather") || !slices.Contains(names, "get_forecast") {
 					t.Errorf("reconstructed tool_references = %v, want both discovered tool names", names)
 				}
 				sawResult = true
@@ -213,13 +214,4 @@ func TestToolSearch_CallerPreservedIngestAndEgress(t *testing.T) {
 	if !sawCallerOnResult {
 		t.Error("reconstructed tool_search_tool_result block is missing caller")
 	}
-}
-
-func containsStr(list []string, want string) bool {
-	for _, v := range list {
-		if v == want {
-			return true
-		}
-	}
-	return false
 }

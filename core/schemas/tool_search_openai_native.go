@@ -1,6 +1,10 @@
 package schemas
 
-import "encoding/json"
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+)
 
 // This file provides constructors for building OpenAI/Codex's native
 // tool_search_call / tool_search_output items programmatically, for
@@ -33,6 +37,15 @@ type openAIToolSearchCallWire struct {
 func NewOpenAIToolSearchCallItem(callID string, argumentsJSON string) (ResponsesMessage, error) {
 	if argumentsJSON == "" {
 		argumentsJSON = "{}"
+	}
+	// arguments must be a JSON object on the wire (see the file doc comment) --
+	// validate here so malformed/non-object input (e.g. forwarded verbatim
+	// from an upstream provider) surfaces as a clear error at construction
+	// time instead of silently reaching an OpenAI-compatible backend as
+	// invalid raw JSON.
+	trimmed := bytes.TrimSpace([]byte(argumentsJSON))
+	if len(trimmed) == 0 || trimmed[0] != '{' || !json.Valid(trimmed) {
+		return ResponsesMessage{}, fmt.Errorf("tool_search_call arguments must be a JSON object, got: %s", argumentsJSON)
 	}
 	wire := openAIToolSearchCallWire{
 		Type:      ResponsesMessageTypeToolSearchCall,
@@ -89,7 +102,7 @@ func NewOpenAIToolSearchOutputItem(callID string, discovered []OpenAIToolSearchD
 	tools := make([]openAIToolSearchFunctionDefWire, 0, len(discovered))
 	for _, d := range discovered {
 		tools = append(tools, openAIToolSearchFunctionDefWire{
-			Type:         "function",
+			Type:         string(ResponsesToolTypeFunction),
 			Name:         d.Name,
 			Description:  d.Description,
 			Parameters:   d.Parameters,
