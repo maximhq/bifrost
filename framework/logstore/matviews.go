@@ -38,6 +38,7 @@ SELECT
     COALESCE(customer_id, '') AS customer_id,
     COALESCE(business_unit_id, '') AS business_unit_id,
     COALESCE(alias, '') AS alias,
+    COALESCE(canonical_model_name, '') AS canonical_model_name,
     COUNT(*) AS count,
     SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success_count,
     SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS error_count,
@@ -53,7 +54,7 @@ SELECT
     COALESCE(SUM(cost), 0) AS total_cost
 FROM logs
 WHERE status IN ('success', 'error', 'cancelled')
-GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13
+GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14
 `
 
 // mvLogsHourlyUniqueIdx is required for REFRESH MATERIALIZED VIEW CONCURRENTLY.
@@ -61,7 +62,7 @@ GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13
 // during startup ensure / repair paths.
 const mvLogsHourlyUniqueIdx = `
 CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS mv_logs_hourly_uniq
-ON mv_logs_hourly (hour, provider, model, status, object_type, selected_key_id, virtual_key_id, routing_rule_id, user_id, team_id, customer_id, business_unit_id, alias)
+ON mv_logs_hourly (hour, provider, model, status, object_type, selected_key_id, virtual_key_id, routing_rule_id, user_id, team_id, customer_id, business_unit_id, alias, canonical_model_name)
 `
 
 // mvLogsHourlyRequiredColumns is the canonical column set used by
@@ -81,6 +82,7 @@ var mvLogsHourlyRequiredColumns = []string{
 	"customer_id",
 	"business_unit_id",
 	"alias",
+	"canonical_model_name",
 	"cancelled_count",
 }
 
@@ -1626,19 +1628,21 @@ func (s *RDBLogStore) getDimensionLatencyHistogramFromMatView(ctx context.Contex
 // comparison to the previous period of equal duration from mv_logs_hourly.
 func (s *RDBLogStore) getModelRankingsFromMatView(ctx context.Context, filters SearchFilters) (*ModelRankingResult, error) {
 	var results []struct {
-		Model        string  `gorm:"column:model"`
-		Provider     string  `gorm:"column:provider"`
-		Total        int64   `gorm:"column:total"`
-		SuccessCount int64   `gorm:"column:success_count"`
-		AvgLatency   float64 `gorm:"column:avg_lat"`
-		TotalTokens  int64   `gorm:"column:total_tkns"`
-		TotalCost    float64 `gorm:"column:total_cost"`
+		Model         string         `gorm:"column:model"`
+		CanonicalName sql.NullString `gorm:"column:canonical_name"`
+		Provider      string         `gorm:"column:provider"`
+		Total         int64          `gorm:"column:total"`
+		SuccessCount  int64          `gorm:"column:success_count"`
+		AvgLatency    float64        `gorm:"column:avg_lat"`
+		TotalTokens   int64          `gorm:"column:total_tkns"`
+		TotalCost     float64        `gorm:"column:total_cost"`
 	}
 	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, filters)
 	q = q.Where("model IS NOT NULL AND model != ''")
 	if err := q.Select(`
 		model, provider,
+		MAX(NULLIF(canonical_model_name, '')) AS canonical_name,
 		SUM(count) AS total,
 		SUM(success_count) AS success_count,
 		CASE WHEN SUM(count) > 0 THEN SUM(avg_latency * count) / SUM(count) ELSE 0 END AS avg_lat,
@@ -1713,6 +1717,9 @@ func (s *RDBLogStore) getModelRankingsFromMatView(ctx context.Context, filters S
 			TotalTokens:   r.TotalTokens,
 			TotalCost:     r.TotalCost,
 			AvgLatency:    r.AvgLatency,
+		}
+		if r.CanonicalName.Valid {
+			entry.CanonicalModelName = &r.CanonicalName.String
 		}
 		mrt := ModelRankingWithTrend{ModelRankingEntry: entry}
 		if idx, ok := prevMap[rankingKey{r.Model, r.Provider}]; ok {

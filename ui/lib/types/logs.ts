@@ -1169,6 +1169,7 @@ export interface ModelRankingTrend {
 
 export interface ModelRankingEntry {
 	model: string;
+	canonical_model_name?: string;
 	provider: string;
 	total_requests: number;
 	success_count: number;

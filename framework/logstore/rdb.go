@@ -1866,6 +1866,9 @@ func (s *RDBLogStore) GetModelRankings(ctx context.Context, filters SearchFilter
 		COALESCE(SUM(cost), 0) as total_cost,
 		AVG(latency) as avg_latency
 	`
+	// Only the current-period query scans canonical_name; keeping it out of the
+	// shared clause spares the previous-period query a discarded aggregate.
+	currentSelectClause := "MAX(NULLIF(canonical_model_name, '')) as canonical_name," + selectClause
 
 	// Query current period
 	currentQuery := s.ScopedDB(ctx).Model(&Log{})
@@ -1875,6 +1878,7 @@ func (s *RDBLogStore) GetModelRankings(ctx context.Context, filters SearchFilter
 
 	var currentResults []struct {
 		Model         string          `gorm:"column:model"`
+		CanonicalName sql.NullString  `gorm:"column:canonical_name"`
 		Provider      string          `gorm:"column:provider"`
 		TotalRequests int64           `gorm:"column:total_requests"`
 		SuccessCount  int64           `gorm:"column:success_count"`
@@ -1884,7 +1888,7 @@ func (s *RDBLogStore) GetModelRankings(ctx context.Context, filters SearchFilter
 	}
 
 	if err := currentQuery.
-		Select(selectClause).
+		Select(currentSelectClause).
 		Group("model, provider").
 		Order("total_requests DESC").
 		Limit(defaultMaxRankingsLimit).
@@ -1966,6 +1970,9 @@ func (s *RDBLogStore) GetModelRankings(ctx context.Context, filters SearchFilter
 			TotalTokens:   r.TotalTokens.Int64,
 			TotalCost:     r.TotalCost.Float64,
 			AvgLatency:    r.AvgLatency.Float64,
+		}
+		if r.CanonicalName.Valid {
+			entry.CanonicalModelName = &r.CanonicalName.String
 		}
 		if r.TotalRequests > 0 {
 			entry.SuccessRate = float64(r.SuccessCount) / float64(r.TotalRequests) * 100
