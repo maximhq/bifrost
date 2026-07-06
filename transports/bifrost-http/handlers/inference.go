@@ -872,7 +872,7 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	enrichAndFilterListModelsResponse(resp, h.config.ModelCatalog)
+	enrichListModelsResponse(resp, h.config.ModelCatalog)
 	if resp != nil && resp.ExtraFields.ProviderResponseHeaders != nil {
 		forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
 	}
@@ -880,28 +880,24 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, resp)
 }
 
-func enrichAndFilterListModelsResponse(resp *schemas.BifrostListModelsResponse, catalog *modelcatalog.ModelCatalog) {
+func enrichListModelsResponse(resp *schemas.BifrostListModelsResponse, catalog *modelcatalog.ModelCatalog) {
 	if resp == nil || len(resp.Data) == 0 {
 		return
 	}
 
 	if catalog == nil {
-		resp.FilterDeprecatedModels()
 		return
 	}
 
-	models := resp.Data[:0]
-	for _, modelEntry := range resp.Data {
+	for i := range resp.Data {
+		modelEntry := resp.Data[i]
 		provider, modelName := schemas.ParseModelString(modelEntry.ID, "")
 		pricingEntry := catalog.GetPricingEntryForModel(modelName, provider)
 		if pricingEntry == nil && modelEntry.Alias != nil {
 			pricingEntry = catalog.GetPricingEntryForModel(*modelEntry.Alias, provider)
 		}
-		if modelEntry.IsDeprecated || (pricingEntry != nil && pricingEntry.IsDeprecated) {
-			continue
-		}
 		if pricingEntry != nil {
-			modelEntry.IsDeprecated = false
+			modelEntry.IsDeprecated = modelEntry.IsDeprecated || pricingEntry.IsDeprecated
 			if pricingEntry.BaseModel != "" && modelEntry.NormalizedName == nil {
 				modelEntry.NormalizedName = bifrost.Ptr(providerUtils.NormalizeBaseModelSlug(pricingEntry.BaseModel))
 			}
@@ -945,9 +941,8 @@ func enrichAndFilterListModelsResponse(resp *schemas.BifrostListModelsResponse, 
 				modelEntry.Pricing = pricing
 			}
 		}
-		models = append(models, modelEntry)
+		resp.Data[i] = modelEntry
 	}
-	resp.Data = models
 }
 
 // prepareTextCompletionRequest prepares a BifrostTextCompletionRequest from the HTTP request body

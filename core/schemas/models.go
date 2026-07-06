@@ -82,20 +82,6 @@ type BifrostListModelsResponse struct {
 	HasMore *bool   `json:"-"`
 }
 
-func (response *BifrostListModelsResponse) FilterDeprecatedModels() {
-	if response == nil || len(response.Data) == 0 {
-		return
-	}
-	models := response.Data[:0]
-	for _, model := range response.Data {
-		if model.IsDeprecated {
-			continue
-		}
-		models = append(models, model)
-	}
-	response.Data = models
-}
-
 // ApplyPagination applies offset-based pagination to a BifrostListModelsResponse.
 // Uses opaque tokens with LastID validation to ensure cursor integrity.
 // Returns the paginated response with properly set NextPageToken.

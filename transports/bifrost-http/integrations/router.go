@@ -953,7 +953,7 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Bifrost response is nil after post-request callback"))
 			return
 		}
-		g.filterDeprecatedListModelsResponse(listModelsResponse)
+		g.markDeprecatedListModelsResponse(listModelsResponse)
 
 		response, err = config.ListModelsResponseConverter(bifrostCtx, listModelsResponse)
 		bifrostExtraFields = listModelsResponse.ExtraFields
@@ -1782,30 +1782,30 @@ func (g *GenericRouter) handleAsyncJobResponse(ctx *fasthttp.RequestCtx, bifrost
 	}
 }
 
-func (g *GenericRouter) filterDeprecatedListModelsResponse(resp *schemas.BifrostListModelsResponse) {
+// markDeprecatedListModelsResponse annotates deprecated models with the
+// IsDeprecated flag using catalog pricing data, without removing them from the
+// response. Clients decide how to surface deprecated entries (e.g. the UI keeps
+// them visible but non-selectable).
+func (g *GenericRouter) markDeprecatedListModelsResponse(resp *schemas.BifrostListModelsResponse) {
 	if resp == nil || len(resp.Data) == 0 {
 		return
 	}
 	catalogProvider, ok := g.handlerStore.(modelCatalogProvider)
 	if !ok || catalogProvider.GetModelCatalog() == nil {
-		resp.FilterDeprecatedModels()
 		return
 	}
 	catalog := catalogProvider.GetModelCatalog()
-	models := resp.Data[:0]
-	for _, model := range resp.Data {
+	for i := range resp.Data {
+		model := resp.Data[i]
 		provider, modelName := schemas.ParseModelString(model.ID, "")
 		pricingEntry := catalog.GetPricingEntryForModel(modelName, provider)
 		if pricingEntry == nil && model.Alias != nil {
 			pricingEntry = catalog.GetPricingEntryForModel(*model.Alias, provider)
 		}
-		if model.IsDeprecated || (pricingEntry != nil && pricingEntry.IsDeprecated) {
-			continue
+		if pricingEntry != nil && pricingEntry.IsDeprecated {
+			resp.Data[i].IsDeprecated = true
 		}
-		model.IsDeprecated = false
-		models = append(models, model)
 	}
-	resp.Data = models
 }
 
 // handleBatchRequest handles batch API requests (create, list, retrieve, cancel, results)
