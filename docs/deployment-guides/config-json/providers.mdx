@@ -67,6 +67,29 @@ Concurrency and buffering per provider:
 | `concurrency_and_buffer_size.concurrency` | integer | Max concurrent requests to this provider |
 | `concurrency_and_buffer_size.buffer_size` | integer | Request queue depth |
 
+**Periodic model list refresh:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `list_models_refresh_interval_sec` | integer | Background refresh interval (seconds) for this provider's live model list. `0` or omitted disables periodic refresh (default) — the list still refreshes reactively whenever the provider or its keys are added/updated. Minimum `30` when enabled. |
+
+```json
+{
+  "providers": {
+    "ollama": {
+      "keys": [
+        { "name": "ollama-local", "value": "", "models": ["*"], "weight": 1.0, "ollama_key_config": { "url": "http://localhost:11434" } }
+      ],
+      "list_models_refresh_interval_sec": 60
+    }
+  }
+}
+```
+
+<Note>
+Useful for self-hosted providers like Ollama or vLLM where models can be pulled/removed on the backend directly - Bifrost picks up the change on the next refresh instead of requiring the provider to be resaved. Disabled keys are skipped by the periodic refresh, so a key you've turned off is never polled.
+</Note>
+
 ---
 
 <Tabs>
