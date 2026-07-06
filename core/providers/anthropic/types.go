@@ -200,7 +200,7 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		WebSearchNova: true, // nova_grounding — Responses path only
 		CodeExecNova:  true, // nova_code_interpreter — Responses path only
 		ComputerUse:   true, Bash: true, Memory: true, TextEditor: true, ToolSearch: true,
-		ContainerBasic: true,
+		ContainerBasic:         true,
 		StructuredOutputs:      true, // documented on Bedrock per A overview matrix
 		Compaction:             true, // compact-2026-01-12 per B-header
 		ContextEditing:         true, // context-management-2025-06-27 per B-header (bundles memory)
@@ -394,8 +394,8 @@ type AnthropicMessageRequest struct {
 	ServiceTier       *string                `json:"service_tier,omitempty"`  // "auto" or "standard_only"
 	InferenceGeo      *string                `json:"inference_geo,omitempty"` // the geographic region for inference processing. If not specified, the workspace's default_inference_geo is used.
 	ContextManagement *ContextManagement     `json:"context_management,omitempty"`
-	Container         *AnthropicContainer    `json:"container,omitempty"` // string id OR object with skills[]; skills require skills-2025-10-02 beta
-	Diagnostics       *AnthropicDiagnostics  `json:"diagnostics,omitempty"`   // cache diagnostics opt-in; requires cache-diagnosis-2026-04-07 beta (Anthropic API only)
+	Container         *AnthropicContainer    `json:"container,omitempty"`   // string id OR object with skills[]; skills require skills-2025-10-02 beta
+	Diagnostics       *AnthropicDiagnostics  `json:"diagnostics,omitempty"` // cache diagnostics opt-in; requires cache-diagnosis-2026-04-07 beta (Anthropic API only)
 
 	// Extra params for advanced use cases
 	ExtraParams map[string]interface{} `json:"-"`
@@ -939,12 +939,12 @@ const (
 
 	// code_execution inner result-content discriminators (the "content" object on
 	// a *_code_execution_tool_result block; ContentObj.Type carries these).
-	AnthropicContentBlockTypeCodeExecutionResult                AnthropicContentBlockType = "code_execution_result"                  // legacy Python (code_execution)
-	AnthropicContentBlockTypeEncryptedCodeExecutionResult       AnthropicContentBlockType = "encrypted_code_execution_result"        // code_execution with encrypted stdout
-	AnthropicContentBlockTypeBashCodeExecutionResult            AnthropicContentBlockType = "bash_code_execution_result"             // bash_code_execution
-	AnthropicContentBlockTypeTextEditorCodeExecutionResult      AnthropicContentBlockType = "text_editor_code_execution_result"      // text_editor_code_execution
-	AnthropicContentBlockTypeCodeExecutionToolResultError       AnthropicContentBlockType = "code_execution_tool_result_error"       // legacy Python error
-	AnthropicContentBlockTypeBashCodeExecutionToolResultError   AnthropicContentBlockType = "bash_code_execution_tool_result_error"  // bash error
+	AnthropicContentBlockTypeCodeExecutionResult                AnthropicContentBlockType = "code_execution_result"                 // legacy Python (code_execution)
+	AnthropicContentBlockTypeEncryptedCodeExecutionResult       AnthropicContentBlockType = "encrypted_code_execution_result"       // code_execution with encrypted stdout
+	AnthropicContentBlockTypeBashCodeExecutionResult            AnthropicContentBlockType = "bash_code_execution_result"            // bash_code_execution
+	AnthropicContentBlockTypeTextEditorCodeExecutionResult      AnthropicContentBlockType = "text_editor_code_execution_result"     // text_editor_code_execution
+	AnthropicContentBlockTypeCodeExecutionToolResultError       AnthropicContentBlockType = "code_execution_tool_result_error"      // legacy Python error
+	AnthropicContentBlockTypeBashCodeExecutionToolResultError   AnthropicContentBlockType = "bash_code_execution_tool_result_error" // bash error
 	AnthropicContentBlockTypeTextEditorCodeExecutionResultError AnthropicContentBlockType = "text_editor_code_execution_tool_result_error"
 	// code_execution file-output blocks (inside a result's "content" array; carry file_id).
 	AnthropicContentBlockTypeCodeExecutionOutput     AnthropicContentBlockType = "code_execution_output"      // legacy Python output file
@@ -1256,6 +1256,7 @@ const (
 	AnthropicToolTypeWebFetch20250910 AnthropicToolType = "web_fetch_20250910"
 	AnthropicToolTypeWebFetch20260209 AnthropicToolType = "web_fetch_20260209" // Dynamic filtering
 	AnthropicToolTypeWebFetch20260309 AnthropicToolType = "web_fetch_20260309"
+	AnthropicToolTypeWebFetch20260318 AnthropicToolType = "web_fetch_20260318"
 
 	// Memory (client-side)
 	AnthropicToolTypeMemory20250818 AnthropicToolType = "memory_20250818"
@@ -1289,9 +1290,9 @@ const (
 	AnthropicToolNameBashCodeExecution       AnthropicToolName = "bash_code_execution"
 	AnthropicToolNameTextEditorCodeExecution AnthropicToolName = "text_editor_code_execution"
 	AnthropicToolNameMemory                  AnthropicToolName = "memory"
-	AnthropicToolNameToolSearchBM25   AnthropicToolName = "tool_search_tool_bm25"
-	AnthropicToolNameToolSearchRegex  AnthropicToolName = "tool_search_tool_regex"
-	AnthropicToolNameAdvisor          AnthropicToolName = "advisor"
+	AnthropicToolNameToolSearchBM25          AnthropicToolName = "tool_search_tool_bm25"
+	AnthropicToolNameToolSearchRegex         AnthropicToolName = "tool_search_tool_regex"
+	AnthropicToolNameAdvisor                 AnthropicToolName = "advisor"
 )
 
 type AnthropicToolComputerUse struct {
@@ -1317,12 +1318,13 @@ type AnthropicToolWebSearch struct {
 }
 
 type AnthropicToolWebFetch struct {
-	MaxUses          *int                `json:"max_uses,omitempty"`
-	AllowedDomains   []string            `json:"allowed_domains,omitempty"`
-	BlockedDomains   []string            `json:"blocked_domains,omitempty"`
-	MaxContentTokens *int                `json:"max_content_tokens,omitempty"`
-	Citations        *AnthropicCitations `json:"citations,omitempty"` // {enabled: bool} — toggles citation emission on fetched documents
-	UseCache         *bool               `json:"use_cache,omitempty"` // web_fetch_20260309+ only — enables server-side page cache
+	MaxUses           *int                `json:"max_uses,omitempty"`
+	AllowedDomains    []string            `json:"allowed_domains,omitempty"`
+	BlockedDomains    []string            `json:"blocked_domains,omitempty"`
+	MaxContentTokens  *int                `json:"max_content_tokens,omitempty"`
+	Citations         *AnthropicCitations `json:"citations,omitempty"`          // {enabled: bool} — toggles citation emission on fetched documents
+	UseCache          *bool               `json:"use_cache,omitempty"`          // web_fetch_20260309+ only — enables server-side page cache
+	ResponseInclusion *string             `json:"response_inclusion,omitempty"` // web_fetch_20260318+ only — "full" | "excluded"
 }
 
 // AnthropicToolTextEditor holds fields specific to the text_editor tool

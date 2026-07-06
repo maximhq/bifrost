@@ -97,6 +97,40 @@ func TestBuildResponsesMessageRoutesParallelToolArgs(t *testing.T) {
 	}
 }
 
+func TestDeepCopyResponsesStreamResponseCopiesToolCaller(t *testing.T) {
+	original := &schemas.BifrostResponsesStreamResponse{
+		Type: schemas.ResponsesStreamResponseTypeOutputItemDone,
+		Item: &schemas.ResponsesMessage{
+			ID:   schemas.Ptr("srvtoolu_fetch"),
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeWebFetchCall),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID: schemas.Ptr("srvtoolu_fetch"),
+				Caller: &schemas.ResponsesToolCaller{
+					Type:   "code_execution_20260120",
+					ToolID: schemas.Ptr("srvtoolu_code"),
+				},
+			},
+		},
+	}
+
+	copied := deepCopyResponsesStreamResponse(original)
+	if copied == nil || copied.Item == nil || copied.Item.ResponsesToolMessage == nil || copied.Item.ResponsesToolMessage.Caller == nil {
+		t.Fatalf("expected caller to be copied, got %#v", copied)
+	}
+	if copied.Item.ResponsesToolMessage.Caller == original.Item.ResponsesToolMessage.Caller {
+		t.Fatal("caller pointer was aliased")
+	}
+	if got := copied.Item.ResponsesToolMessage.Caller.Type; got != "code_execution_20260120" {
+		t.Fatalf("caller type = %q", got)
+	}
+	if copied.Item.ResponsesToolMessage.Caller.ToolID == nil || *copied.Item.ResponsesToolMessage.Caller.ToolID != "srvtoolu_code" {
+		t.Fatalf("caller tool id not preserved: %#v", copied.Item.ResponsesToolMessage.Caller)
+	}
+	if copied.Item.ResponsesToolMessage.Caller.ToolID == original.Item.ResponsesToolMessage.Caller.ToolID {
+		t.Fatal("caller tool id pointer was aliased")
+	}
+}
+
 // TestBuildResponsesMessageAccumulatesReasoningSummary verifies reasoning
 // summary deltas (no content index) concatenate into a single summary entry.
 func TestBuildResponsesMessageAccumulatesReasoningSummary(t *testing.T) {

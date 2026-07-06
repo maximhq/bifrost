@@ -1341,6 +1341,8 @@ func doesWebSearchOrFetchAutoInjectCodeExecution(toolType string) bool {
 		return true
 	case string(AnthropicToolTypeWebFetch20260309):
 		return true
+	case string(AnthropicToolTypeWebFetch20260318):
+		return true
 	case string(AnthropicToolTypeWebFetch20250910):
 		return false
 	case string(AnthropicToolTypeWebFetch20260209):

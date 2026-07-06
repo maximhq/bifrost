@@ -178,10 +178,10 @@ func runAnthropicPassthrough(t *testing.T, raws []string, applyFix bool) ([]ptFr
 	ctx := schemas.NewBifrostContext(nil, time.Time{})
 	// This harness always models the passthrough path (raw frames interleaved), so
 	// mark the reverse converter accordingly — mirroring the transport, which calls
-	// SetResponsesStreamPassthrough when shouldUsePassthrough is true. This drives the
-	// server-tool result-block index bumps that keep converted frames in lockstep with
-	// the raw ones; the all-normalized path (TestAnthropicConverterOnly_*) leaves it
-	// unset so indices stay contiguous.
+	// SetResponsesStreamPassthrough when shouldUsePassthrough is true. This drives
+	// the server-tool result-block index bumps that keep converted frames in
+	// lockstep with the raw ones; the all-normalized path (TestAnthropicConverterOnly_*)
+	// leaves it unset so indices stay contiguous.
 	SetResponsesStreamPassthrough(ctx)
 	state := newAdvisorStreamState()
 	var out []ptFrame
@@ -378,11 +378,11 @@ func TestAnthropicConverterOnlyStream_WellFormed(t *testing.T) {
 // TestAnthropicConverterOnly_IndicesContiguous guards the all-normalized path
 // (OpenAI-via-Anthropic, curl — never Claude Code): with no interleaved raw frames,
 // SetResponsesStreamPassthrough is NOT called, so the converter must emit contiguous
-// content_block indices 0,1,2,… A gap (an index consumed for a dropped server-tool
+// content_block indices 0,1,2,… A gap (an index consumed for a hidden server-tool
 // result block but no block emitted) is what a strict Anthropic SDK client sees as a
-// missing block; native Anthropic never produces one. web_fetch and zero-result
-// web_search are the two cases that drop a result block — anti-vacuous: before the
-// passthrough gating they emit [0,1,3].
+// missing block; native Anthropic never produces one. Zero-result web_search is the
+// case that still collapses a result block — anti-vacuous: before the passthrough
+// gating it emitted [0,1,3].
 func TestAnthropicConverterOnly_IndicesContiguous(t *testing.T) {
 	scenarios := map[string][]string{
 		"web_fetch":              ptConcat([]string{ptMsgStart()}, ptThinking(0), ptWebFetch(1, "srv_F"), ptText(3), ptMsgEnd()),
@@ -423,5 +423,175 @@ func TestAnthropicConverterOnly_IndicesContiguous(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestAnthropicWebFetchResultRoundTrip(t *testing.T) {
+	toolID := "srvtoolu_fetch"
+	result := &AnthropicContentBlock{
+		Type:      AnthropicContentBlockTypeWebFetchToolResult,
+		ToolUseID: &toolID,
+		Content: &AnthropicContent{ContentObj: &AnthropicContentBlock{
+			Type:        "web_fetch_result",
+			URL:         schemas.Ptr("https://example.com/article"),
+			RetrievedAt: schemas.Ptr("2026-07-06T09:00:28Z"),
+			Content: &AnthropicContent{ContentObj: &AnthropicContentBlock{
+				Type:  AnthropicContentBlockTypeDocument,
+				Title: schemas.Ptr("Example Article"),
+				Source: &AnthropicBlockSource{SourceObj: &AnthropicSource{
+					Type:      "text",
+					MediaType: schemas.Ptr("text/plain"),
+					Data:      schemas.Ptr("Full text content"),
+				}},
+				Citations: &AnthropicCitations{Config: &schemas.Citations{Enabled: schemas.Ptr(true)}},
+			}},
+		}},
+	}
+
+	carry := convertAnthropicWebFetchResultToBifrost(result)
+	if carry == nil || carry.Document == nil || carry.Document.Source == nil {
+		t.Fatalf("expected typed web_fetch result payload, got %#v", carry)
+	}
+	if got := *carry.Document.Source.Data; got != "Full text content" {
+		t.Fatalf("unexpected carried document data: %q", got)
+	}
+
+	msg := &schemas.ResponsesMessage{
+		ID:     &toolID,
+		Type:   schemas.Ptr(schemas.ResponsesMessageTypeWebFetchCall),
+		Status: schemas.Ptr("completed"),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			CallID: &toolID,
+			Action: &schemas.ResponsesToolMessageActionStruct{
+				ResponsesWebFetchToolCallAction: &schemas.ResponsesWebFetchToolCallAction{
+					Type: "fetch",
+					URL:  "https://example.com/article",
+				},
+			},
+			ResponsesWebFetchCall: carry,
+		},
+	}
+
+	blocks := convertBifrostWebFetchCallToAnthropicBlocks(msg)
+	if len(blocks) != 2 {
+		t.Fatalf("expected server_tool_use + web_fetch_tool_result, got %d blocks: %#v", len(blocks), blocks)
+	}
+	if blocks[1].Type != AnthropicContentBlockTypeWebFetchToolResult {
+		t.Fatalf("expected web_fetch_tool_result, got %q", blocks[1].Type)
+	}
+	inner := getAnthropicContentObject(blocks[1].Content)
+	if inner == nil || inner.URL == nil || *inner.URL != "https://example.com/article" {
+		t.Fatalf("expected rebuilt fetch result URL, got %#v", inner)
+	}
+	doc := getAnthropicContentObject(inner.Content)
+	if doc == nil || doc.Source == nil || doc.Source.SourceObj == nil || doc.Source.SourceObj.Data == nil {
+		t.Fatalf("expected rebuilt document source, got %#v", doc)
+	}
+	if got := *doc.Source.SourceObj.Data; got != "Full text content" {
+		t.Fatalf("unexpected rebuilt document data: %q", got)
+	}
+}
+
+func TestAnthropicWebFetchTextResultRoundTrip(t *testing.T) {
+	toolID := "srvtoolu_fetch_text"
+	result := &AnthropicContentBlock{
+		Type:      AnthropicContentBlockTypeWebFetchToolResult,
+		ToolUseID: &toolID,
+		Content: &AnthropicContent{ContentObj: &AnthropicContentBlock{
+			Type: "web_fetch_result",
+			URL:  schemas.Ptr("https://example.com/plain"),
+			Content: &AnthropicContent{ContentObj: &AnthropicContentBlock{
+				Type: AnthropicContentBlockTypeText,
+				Text: schemas.Ptr("plain fetched text"),
+			}},
+		}},
+	}
+
+	carry := convertAnthropicWebFetchResultToBifrost(result)
+	if carry == nil || carry.Document == nil || carry.Document.Text == nil {
+		t.Fatalf("expected typed text web_fetch result payload, got %#v", carry)
+	}
+	if got := *carry.Document.Text; got != "plain fetched text" {
+		t.Fatalf("unexpected carried text: %q", got)
+	}
+
+	msg := &schemas.ResponsesMessage{
+		ID:     &toolID,
+		Type:   schemas.Ptr(schemas.ResponsesMessageTypeWebFetchCall),
+		Status: schemas.Ptr("completed"),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			CallID:                &toolID,
+			ResponsesWebFetchCall: carry,
+		},
+	}
+
+	blocks := convertBifrostWebFetchCallToAnthropicBlocks(msg)
+	if len(blocks) != 2 {
+		t.Fatalf("expected server_tool_use + web_fetch_tool_result, got %d blocks: %#v", len(blocks), blocks)
+	}
+	inner := getAnthropicContentObject(blocks[1].Content)
+	if inner == nil || inner.Content == nil {
+		t.Fatalf("expected rebuilt fetch result content, got %#v", inner)
+	}
+	textBlock := getAnthropicContentObject(inner.Content)
+	if textBlock == nil || textBlock.Text == nil || *textBlock.Text != "plain fetched text" {
+		t.Fatalf("expected rebuilt text content, got %#v", textBlock)
+	}
+}
+
+func TestAnthropicWebFetchPassthroughNoResultConsumesHiddenIndex(t *testing.T) {
+	ctx := schemas.NewBifrostContext(nil, time.Time{})
+	SetResponsesStreamPassthrough(ctx)
+
+	toolID := "srvtoolu_fetch_missing_result"
+	textID := "msg_after_fetch"
+	addFetch := &schemas.BifrostResponsesStreamResponse{
+		Type:        schemas.ResponsesStreamResponseTypeOutputItemAdded,
+		OutputIndex: schemas.Ptr(0),
+		Item: &schemas.ResponsesMessage{
+			ID:     &toolID,
+			Type:   schemas.Ptr(schemas.ResponsesMessageTypeWebFetchCall),
+			Status: schemas.Ptr("in_progress"),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID: &toolID,
+				Action: &schemas.ResponsesToolMessageActionStruct{
+					ResponsesWebFetchToolCallAction: &schemas.ResponsesWebFetchToolCallAction{
+						Type: "fetch",
+						URL:  "https://example.com",
+					},
+				},
+			},
+		},
+	}
+	doneFetch := &schemas.BifrostResponsesStreamResponse{
+		Type:        schemas.ResponsesStreamResponseTypeOutputItemDone,
+		OutputIndex: schemas.Ptr(0),
+		Item: &schemas.ResponsesMessage{
+			ID:     &toolID,
+			Type:   schemas.Ptr(schemas.ResponsesMessageTypeWebFetchCall),
+			Status: schemas.Ptr("completed"),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID: &toolID,
+			},
+		},
+	}
+	addText := &schemas.BifrostResponsesStreamResponse{
+		Type:        schemas.ResponsesStreamResponseTypeOutputItemAdded,
+		OutputIndex: schemas.Ptr(1),
+		Item: &schemas.ResponsesMessage{
+			ID:      &textID,
+			Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("after")},
+		},
+	}
+
+	_ = ToAnthropicResponsesStreamResponse(ctx, addFetch)
+	_ = ToAnthropicResponsesStreamResponse(ctx, doneFetch)
+	events := ToAnthropicResponsesStreamResponse(ctx, addText)
+	if len(events) == 0 || events[0].Index == nil {
+		t.Fatalf("expected text start event with index, got %#v", events)
+	}
+	if got := *events[0].Index; got != 2 {
+		t.Fatalf("expected hidden web_fetch result index to be consumed before next block; got index %d", got)
 	}
 }
