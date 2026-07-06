@@ -735,6 +735,17 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 			// First add reasoning details
 			if msg.ChatAssistantMessage != nil && msg.ChatAssistantMessage.ReasoningDetails != nil {
 				for _, reasoningDetail := range msg.ChatAssistantMessage.ReasoningDetails {
+					// reasoning.encrypted details carrying data hold an anthropic
+					// redacted_thinking payload; replay the block as-is so the API
+					// can decrypt it. Encrypted details without data (e.g. gemini
+					// thought signatures) keep the thinking-block mapping below.
+					if reasoningDetail.Type == schemas.BifrostReasoningDetailsTypeEncrypted && reasoningDetail.Data != nil && *reasoningDetail.Data != "" {
+						content = append(content, AnthropicContentBlock{
+							Type: AnthropicContentBlockTypeRedactedThinking,
+							Data: reasoningDetail.Data,
+						})
+						continue
+					}
 					content = append(content, AnthropicContentBlock{
 						Type:      AnthropicContentBlockTypeThinking,
 						Signature: reasoningDetail.Signature,
@@ -924,6 +935,19 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 				})
 				if c.Thinking != nil {
 					reasoningText += *c.Thinking + "\n"
+				}
+			case AnthropicContentBlockTypeRedactedThinking:
+				// Redacted thinking is an opaque encrypted payload. Preserve it as a
+				// reasoning.encrypted detail: Anthropic requires thinking and
+				// redacted_thinking blocks to be replayed unmodified on the next
+				// turn during tool use, and rejects the request when they are
+				// dropped from the latest assistant message.
+				if c.Data != nil && *c.Data != "" {
+					reasoningDetails = append(reasoningDetails, schemas.ChatReasoningDetails{
+						Index: len(reasoningDetails),
+						Type:  schemas.BifrostReasoningDetailsTypeEncrypted,
+						Data:  c.Data,
+					})
 				}
 			}
 		}
@@ -1172,6 +1196,14 @@ type AnthropicStreamState struct {
 	// with an empty accumulated arguments string. We track this so content_block_stop
 	// can flush a synthetic "{}" delta when no real arguments arrived.
 	sawArgsDelta map[int]bool
+	// reasoningDetailIdxByBlock maps an anthropic content_block index to a
+	// stable reasoning_details index. Thinking and redacted_thinking blocks
+	// share one sequence, so mixed reasoning streams keep distinct detail
+	// entries; the accumulator and replaying clients group reasoning deltas
+	// by that index, and entries merged across blocks lose their type and
+	// payload on replay.
+	reasoningDetailIdxByBlock map[int]int
+	nextReasoningDetailIdx    int
 }
 
 // NewAnthropicStreamState returns an initialised stream state for one streaming response.
@@ -1179,7 +1211,23 @@ func NewAnthropicStreamState() *AnthropicStreamState {
 	return &AnthropicStreamState{
 		contentBlockToToolCallIdx: make(map[int]int),
 		sawArgsDelta:              make(map[int]bool),
+		reasoningDetailIdxByBlock: make(map[int]int),
 	}
+}
+
+// reasoningDetailIndex returns the stable reasoning_details index for an
+// anthropic content block, allocating the next one on first use.
+func (state *AnthropicStreamState) reasoningDetailIndex(blockIndex int) int {
+	if state.reasoningDetailIdxByBlock == nil {
+		state.reasoningDetailIdxByBlock = make(map[int]int)
+	}
+	if idx, ok := state.reasoningDetailIdxByBlock[blockIndex]; ok {
+		return idx
+	}
+	idx := state.nextReasoningDetailIdx
+	state.reasoningDetailIdxByBlock[blockIndex] = idx
+	state.nextReasoningDetailIdx++
+	return idx
 }
 
 // ToBifrostChatCompletionStream converts an Anthropic stream event to a Bifrost Chat Completion Stream response
@@ -1262,6 +1310,33 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream(ctx *schemas.Bi
 			}
 
 			return streamResponse, nil, false
+		}
+
+		// Redacted thinking blocks arrive complete in content_block_start (no
+		// deltas follow). Surface the encrypted payload as a reasoning.encrypted
+		// detail so clients can replay it on the next turn; Anthropic rejects
+		// tool-use follow-ups whose latest assistant message dropped it.
+		if chunk.Index != nil && chunk.ContentBlock != nil && chunk.ContentBlock.Type == AnthropicContentBlockTypeRedactedThinking &&
+			chunk.ContentBlock.Data != nil && *chunk.ContentBlock.Data != "" {
+			return &schemas.BifrostChatResponse{
+				Object: "chat.completion.chunk",
+				Choices: []schemas.BifrostResponseChoice{
+					{
+						Index: 0,
+						ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+							Delta: &schemas.ChatStreamResponseChoiceDelta{
+								ReasoningDetails: []schemas.ChatReasoningDetails{
+									{
+										Index: state.reasoningDetailIndex(*chunk.Index),
+										Type:  schemas.BifrostReasoningDetailsTypeEncrypted,
+										Data:  chunk.ContentBlock.Data,
+									},
+								},
+							},
+						},
+					},
+				},
+			}, nil, false
 		}
 
 		return nil, nil, false
@@ -1349,7 +1424,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream(ctx *schemas.Bi
 										Reasoning: schemas.Ptr(thinkingText),
 										ReasoningDetails: []schemas.ChatReasoningDetails{
 											{
-												Index: 0,
+												Index: state.reasoningDetailIndex(*chunk.Index),
 												Type:  schemas.BifrostReasoningDetailsTypeText,
 												Text:  schemas.Ptr(thinkingText),
 											},
@@ -1375,7 +1450,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream(ctx *schemas.Bi
 									Delta: &schemas.ChatStreamResponseChoiceDelta{
 										ReasoningDetails: []schemas.ChatReasoningDetails{
 											{
-												Index:     0,
+												Index:     state.reasoningDetailIndex(*chunk.Index),
 												Type:      schemas.BifrostReasoningDetailsTypeText,
 												Signature: chunk.Delta.Signature,
 											},
