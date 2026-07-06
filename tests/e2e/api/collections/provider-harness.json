@@ -513,6 +513,11 @@
                   "  var deltas = (body.match(/contentBlockDelta/g) || []).length;",
                   "  pm.expect(deltas, 'expected >= 2 contentBlockDelta frames, got ' + deltas).to.be.at.least(2);",
                   "  pm.expect(body, 'expected a messageStop event terminating the stream').to.include('messageStop');",
+                  "});",
+                  "pm.test('Bedrock converse-stream closes content blocks (contentBlockStop before messageStop) - #4923', function () {",
+                  "  var b2 = pm.response.text() || '';",
+                  "  pm.expect(b2, 'expected a contentBlockStop event closing each content block').to.include('contentBlockStop');",
+                  "  pm.expect(b2.indexOf('contentBlockStop'), 'contentBlockStop must precede the terminal messageStop').to.be.below(b2.lastIndexOf('messageStop'));",
                   "});"
                 ]
               }
@@ -9323,6 +9328,10 @@
                       "  var starts = (raw.match(/event: content_block_start/g) || []).length;",
                       "  var stops = (raw.match(/event: content_block_stop/g) || []).length;",
                       "  pm.expect(stops, 'content_block_start/stop unbalanced ' + starts + '/' + stops).to.equal(starts);",
+                      "  var cbIdx = [], mCb, reCb = /\"content_block_start\"[^}]*?\"index\"\\s*:\\s*(\\d+)/g;",
+                      "  while ((mCb = reCb.exec(raw)) !== null) { cbIdx.push(Number(mCb[1])); }",
+                      "  var cbSorted = cbIdx.slice().sort(function (a, b) { return a - b; });",
+                      "  for (var ci = 0; ci < cbSorted.length; ci++) { pm.expect(cbSorted[ci], 'content_block_start indices not contiguous from 0: ' + JSON.stringify(cbIdx)).to.equal(ci); }",
                       "});"
                     ]
                   }
@@ -36372,6 +36381,395 @@
               }
             }
           ]
+        }
+      ]
+    },
+    {
+      "name": "17. Provider Egress Streaming/Truncation Guards (#4923 / #4932 / #4680)",
+      "item": [
+        {
+          "name": "Bedrock converse-stream (forced tool) closes the tool_use block - #4923",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code >= 400) { return; }",
+                  "pm.test('Bedrock forced-tool converse-stream closes content blocks - #4923', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'expected a toolUse block in the forced-tool stream').to.include('toolUse');",
+                  "  pm.expect(body, 'expected a contentBlockStop event closing each content block').to.include('contentBlockStop');",
+                  "  pm.expect(body, 'expected a messageStop event terminating the stream').to.include('messageStop');",
+                  "  pm.expect(body.indexOf('contentBlockStop'), 'contentBlockStop must precede the terminal messageStop').to.be.below(body.lastIndexOf('messageStop'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"messages\": [{\"role\": \"user\", \"content\": [{\"text\": \"What is the weather in San Francisco right now? Use the get_weather tool.\"}]}], \"inferenceConfig\": {\"maxTokens\": 512}, \"toolConfig\": {\"tools\": [{\"toolSpec\": {\"name\": \"get_weather\", \"description\": \"Get the current weather for a city\", \"inputSchema\": {\"json\": {\"type\": \"object\", \"properties\": {\"city\": {\"type\": \"string\"}}, \"required\": [\"city\"]}}}}], \"toolChoice\": {\"any\": {}}}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/{{bedrockModel}}/converse-stream",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "{{bedrockModel}}",
+                "converse-stream"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Anthropic normalized web_fetch streaming has contiguous content_block indices - #4932",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code >= 400) { return; }",
+                  "// If newman forwards the custom User-Agent, Bifrost takes the Claude Code passthrough",
+                  "// path; if it strips it, this still validates the all-normalized path. Either way the",
+                  "// content_block_start indices must be contiguous from 0 (#4890 / #4932).",
+                  "pm.test('Anthropic normalized web_fetch stream: content_block indices contiguous from 0 - #4932', function () {",
+                  "  var raw = pm.response.text() || '';",
+                  "  pm.expect(raw, 'stream did not end with message_stop').to.include('message_stop');",
+                  "  pm.expect(raw.indexOf('Content block not found'), 'stream reported a missing content block').to.equal(-1);",
+                  "  var idxs = [], m, re = /\"content_block_start\"[^}]*?\"index\"\\s*:\\s*(\\d+)/g;",
+                  "  while ((m = re.exec(raw)) !== null) { idxs.push(Number(m[1])); }",
+                  "  pm.expect(idxs.length, 'no content_block_start events found in stream').to.be.above(0);",
+                  "  var srt = idxs.slice().sort(function (a, b) { return a - b; });",
+                  "  for (var i = 0; i < srt.length; i++) { pm.expect(srt[i], 'content_block_start indices not contiguous from 0: ' + JSON.stringify(idxs)).to.equal(i); }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"claude-opus-4-7\", \"max_tokens\": 1024, \"messages\": [{\"role\": \"user\", \"content\": \"Fetch https://example.com and give me a one-sentence summary.\"}], \"tools\": [{\"type\": \"web_fetch_20250910\", \"name\": \"web_fetch\", \"max_uses\": 2}], \"stream\": true}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Bedrock Responses max_output_tokens truncation signals incomplete (non-streaming) - #4680",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code >= 400) { return; }",
+                  "pm.test('Bedrock Responses truncation -> status=incomplete, reason=max_output_tokens - #4680', function () {",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.status, 'expected status=incomplete on a truncated response').to.equal('incomplete');",
+                  "  pm.expect(j.incomplete_details && j.incomplete_details.reason, 'expected incomplete_details.reason=max_output_tokens').to.equal('max_output_tokens');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"bedrock/us.amazon.nova-lite-v1:0\", \"input\": \"Write a detailed 500-word essay about the history and design philosophy of the Unix operating system.\", \"max_output_tokens\": 16}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Bedrock Responses max_output_tokens truncation emits response.incomplete (streaming) - #4680",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code >= 400) { return; }",
+                  "pm.test('Bedrock Responses streaming truncation emits response.incomplete (not response.completed) - #4680', function () {",
+                  "  var raw = pm.response.text() || '';",
+                  "  pm.expect(raw, 'expected a response.incomplete terminal event').to.include('response.incomplete');",
+                  "  pm.expect(raw, 'expected the incomplete reason max_output_tokens').to.include('max_output_tokens');",
+                  "  pm.expect(raw.indexOf('response.completed'), 'a truncated stream must not emit response.completed').to.equal(-1);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"bedrock/us.amazon.nova-lite-v1:0\", \"input\": \"Write a detailed 500-word essay about the history and design philosophy of the Unix operating system.\", \"max_output_tokens\": 16, \"stream\": true}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "18. Claude Code Passthrough - server-tool streaming index contiguity (#4890)",
+      "item": [
+        {
+          "name": "Claude Code passthrough: web_search streaming has contiguous content_block indices - #4890",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code >= 400) { return; }",
+                  "// If newman forwards the custom User-Agent, Bifrost takes the Claude Code passthrough",
+                  "// path; if it strips it, this still validates the all-normalized path. Either way the",
+                  "// content_block_start indices must be contiguous from 0 (#4890 / #4932).",
+                  "pm.test('Claude Code passthrough web_search stream: content_block indices contiguous from 0 - #4890', function () {",
+                  "  var raw = pm.response.text() || '';",
+                  "  pm.expect(raw, 'stream did not end with message_stop').to.include('message_stop');",
+                  "  pm.expect(raw.indexOf('Content block not found'), 'stream reported a missing content block').to.equal(-1);",
+                  "  var idxs = [], m, re = /\"content_block_start\"[^}]*?\"index\"\\s*:\\s*(\\d+)/g;",
+                  "  while ((m = re.exec(raw)) !== null) { idxs.push(Number(m[1])); }",
+                  "  pm.expect(idxs.length, 'no content_block_start events found in stream').to.be.above(0);",
+                  "  var srt = idxs.slice().sort(function (a, b) { return a - b; });",
+                  "  for (var i = 0; i < srt.length; i++) { pm.expect(srt[i], 'content_block_start indices not contiguous from 0: ' + JSON.stringify(idxs)).to.equal(i); }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/1.0"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"claude-opus-4-7\", \"max_tokens\": 1024, \"messages\": [{\"role\": \"user\", \"content\": \"What's the weather in New York City right now?\"}], \"tools\": [{\"type\": \"web_search_20250305\", \"name\": \"web_search\", \"max_uses\": 3}], \"stream\": true}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Claude Code passthrough: zero-result web_search keeps indices in lockstep - #4890 (f2c)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code >= 400) { return; }",
+                  "// If newman forwards the custom User-Agent, Bifrost takes the Claude Code passthrough",
+                  "// path; if it strips it, this still validates the all-normalized path. Either way the",
+                  "// content_block_start indices must be contiguous from 0 (#4890 / #4932).",
+                  "pm.test('Claude Code passthrough zero-result web_search: content_block indices still contiguous - #4890', function () {",
+                  "  var raw = pm.response.text() || '';",
+                  "  pm.expect(raw, 'stream did not end with message_stop').to.include('message_stop');",
+                  "  pm.expect(raw.indexOf('Content block not found'), 'stream reported a missing content block').to.equal(-1);",
+                  "  var idxs = [], m, re = /\"content_block_start\"[^}]*?\"index\"\\s*:\\s*(\\d+)/g;",
+                  "  while ((m = re.exec(raw)) !== null) { idxs.push(Number(m[1])); }",
+                  "  pm.expect(idxs.length, 'no content_block_start events found in stream').to.be.above(0);",
+                  "  var srt = idxs.slice().sort(function (a, b) { return a - b; });",
+                  "  for (var i = 0; i < srt.length; i++) { pm.expect(srt[i], 'content_block_start indices not contiguous from 0: ' + JSON.stringify(idxs)).to.equal(i); }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/1.0"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"claude-opus-4-7\", \"max_tokens\": 1024, \"messages\": [{\"role\": \"user\", \"content\": \"Search the web for the exact phrase \\\"zxqw9v7k3mfp2qh8 nonexistent gibberish token 4823\\\" and tell me exactly what search results come back.\"}], \"tools\": [{\"type\": \"web_search_20250305\", \"name\": \"web_search\", \"max_uses\": 3}], \"stream\": true}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Claude Code passthrough: web_fetch streaming has contiguous content_block indices - #4890 (5464)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code >= 400) { return; }",
+                  "// If newman forwards the custom User-Agent, Bifrost takes the Claude Code passthrough",
+                  "// path; if it strips it, this still validates the all-normalized path. Either way the",
+                  "// content_block_start indices must be contiguous from 0 (#4890 / #4932).",
+                  "pm.test('Claude Code passthrough web_fetch stream: content_block indices contiguous from 0 - #4890', function () {",
+                  "  var raw = pm.response.text() || '';",
+                  "  pm.expect(raw, 'stream did not end with message_stop').to.include('message_stop');",
+                  "  pm.expect(raw.indexOf('Content block not found'), 'stream reported a missing content block').to.equal(-1);",
+                  "  var idxs = [], m, re = /\"content_block_start\"[^}]*?\"index\"\\s*:\\s*(\\d+)/g;",
+                  "  while ((m = re.exec(raw)) !== null) { idxs.push(Number(m[1])); }",
+                  "  pm.expect(idxs.length, 'no content_block_start events found in stream').to.be.above(0);",
+                  "  var srt = idxs.slice().sort(function (a, b) { return a - b; });",
+                  "  for (var i = 0; i < srt.length; i++) { pm.expect(srt[i], 'content_block_start indices not contiguous from 0: ' + JSON.stringify(idxs)).to.equal(i); }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/1.0"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"claude-opus-4-7\", \"max_tokens\": 1024, \"messages\": [{\"role\": \"user\", \"content\": \"Fetch https://example.com and summarize it in one sentence.\"}], \"tools\": [{\"type\": \"web_fetch_20250910\", \"name\": \"web_fetch\", \"max_uses\": 2}], \"stream\": true}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
         }
       ]
     }
