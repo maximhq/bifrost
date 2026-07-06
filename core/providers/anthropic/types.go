@@ -1739,9 +1739,10 @@ type AnthropicStreamError struct {
 
 // AnthropicFileUploadRequest represents a request to upload a file.
 type AnthropicFileUploadRequest struct {
-	File     []byte `json:"-"`        // Raw file content (not serialized)
-	Filename string `json:"filename"` // Original filename
-	Purpose  string `json:"purpose"`  // Purpose of the file (e.g., "batch")
+	File        []byte  `json:"-"`                      // Raw file content (not serialized)
+	Filename    string  `json:"filename"`               // Original filename
+	Purpose     string  `json:"purpose"`                // Purpose of the file (e.g., "batch")
+	ContentType *string `json:"content_type,omitempty"` // MIME type of the file
 }
 
 // AnthropicFileRetrieveRequest represents a request to retrieve a file.

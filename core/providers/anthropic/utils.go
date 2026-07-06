@@ -1204,6 +1204,26 @@ func AddMissingBetaHeadersToContext(ctx *schemas.BifrostContext, req *AnthropicM
 			}
 		}
 	}
+	// Check for file_id references (document/image blocks with a "file"
+	// source), which require the Files API beta header.
+	hasFileSource := false
+	for _, message := range req.Messages {
+		if hasFileSource {
+			break
+		}
+		if message.Content.ContentBlocks == nil {
+			continue
+		}
+		for _, block := range message.Content.ContentBlocks {
+			if block.Source != nil && block.Source.SourceObj != nil && block.Source.SourceObj.Type == "file" {
+				if !hasProvider || features.FilesAPI {
+					headers = appendUniqueHeader(headers, AnthropicFilesAPIBetaHeader)
+				}
+				hasFileSource = true
+				break
+			}
+		}
+	}
 	if len(headers) == 0 {
 		return nil
 	}
@@ -2253,7 +2273,7 @@ func ConvertToAnthropicDocumentBlock(block schemas.ChatContentBlock) AnthropicCo
 }
 
 // ConvertResponsesFileBlockToAnthropic converts a Responses file block directly to Anthropic document format
-func ConvertResponsesFileBlockToAnthropic(fileBlock *schemas.ResponsesInputMessageContentBlockFile, cacheControl *schemas.CacheControl, citations *schemas.Citations) AnthropicContentBlock {
+func ConvertResponsesFileBlockToAnthropic(fileBlock *schemas.ResponsesInputMessageContentBlockFile, fileID *string, cacheControl *schemas.CacheControl, citations *schemas.Citations) AnthropicContentBlock {
 	documentBlock := AnthropicContentBlock{
 		Type:         AnthropicContentBlockTypeDocument,
 		CacheControl: cacheControl,
@@ -2264,13 +2284,20 @@ func ConvertResponsesFileBlockToAnthropic(fileBlock *schemas.ResponsesInputMessa
 		documentBlock.Citations = &AnthropicCitations{Config: citations}
 	}
 
-	if fileBlock == nil {
+	// Set title if provided
+	if fileBlock != nil && fileBlock.Filename != nil {
+		documentBlock.Title = fileBlock.Filename
+	}
+
+	// Handle file_id reference
+	if fileID != nil && *fileID != "" {
+		documentBlock.Source.SourceObj.Type = "file"
+		documentBlock.Source.SourceObj.FileID = fileID
 		return documentBlock
 	}
 
-	// Set title if provided
-	if fileBlock.Filename != nil {
-		documentBlock.Title = fileBlock.Filename
+	if fileBlock == nil {
+		return documentBlock
 	}
 
 	// Handle file_data (base64 encoded data or plain text)

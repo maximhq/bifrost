@@ -9,6 +9,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"net/url"
 	"strings"
 	"sync"
@@ -2169,7 +2170,27 @@ func (provider *AnthropicProvider) FileUpload(ctx *schemas.BifrostContext, key s
 	if filename == "" {
 		filename = "file"
 	}
-	part, err := writer.CreateFormFile("file", filename)
+	contentType := ""
+	if request.ContentType != nil {
+		contentType = strings.TrimSpace(*request.ContentType)
+	}
+	if request.ContentType != nil {
+		ct := strings.TrimSpace(*request.ContentType)
+		if strings.ContainsAny(ct, "\r\n") {
+			return nil, providerUtils.NewBifrostOperationError("invalid content type: %s", fmt.Errorf("contains CR or LF characters"))
+		}
+		contentType = ct
+	}
+	var part io.Writer
+	var err error
+	if contentType != "" {
+		header := make(textproto.MIMEHeader)
+		header.Set("Content-Disposition", multipart.FileContentDisposition("file", filename))
+		header.Set("Content-Type", contentType)
+		part, err = writer.CreatePart(header)
+	} else {
+		part, err = writer.CreateFormFile("file", filename)
+	}
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError("failed to create form file", err)
 	}
