@@ -274,7 +274,7 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 		<Sheet open={open} onOpenChange={onOpenChange}>
 			<SheetContent className="max-w-[900px] p-0 pt-4 sm:max-w-2xl" data-testid="customer-dialog-content">
 				<SheetHeader className="flex flex-col items-start px-0 py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10 px-8">
-					<SheetTitle className="flex items-center gap-2">{isEditing ? "Edit Customer" : "Create Customer"}</SheetTitle>
+					<SheetTitle className="flex items-center gap-2">{isEditing ? "Edit Customer" : "Add Customer"}</SheetTitle>
 					<SheetDescription>
 						{isEditing
 							? "Update the customer information and settings."
@@ -386,7 +386,7 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 								<TooltipTrigger asChild>
 									<span>
 										<Button type="submit" disabled={isSubmitDisabled}>
-											{loading ? "Saving..." : isEditing ? "Update Customer" : "Create Customer"}
+											{loading ? "Saving..." : isEditing ? "Update Customer" : "Add Customer"}
 										</Button>
 									</span>
 								</TooltipTrigger>

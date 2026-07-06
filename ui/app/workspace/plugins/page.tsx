@@ -110,7 +110,7 @@ export default function PluginsPage() {
 									}}
 								>
 									<PlusIcon className="h-4 w-4" />
-									<div className="text-xs">Install New Plugin</div>
+									<div className="text-xs">Add Plugin</div>
 								</Button>
 								{customPlugins && customPlugins.length > 0 && (
 									<Button
