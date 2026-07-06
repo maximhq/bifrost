@@ -21,7 +21,7 @@ export default function PromptsView() {
 
 	if (foldersError || promptsError) {
 		return (
-			<div className="no-padding-parent no-border-parent p-4">
+			<div className="w-full">
 				<Alert variant="destructive">
 					<AlertCircle className="h-4 w-4" />
 					<AlertDescription>Failed to load prompt repository</AlertDescription>
@@ -32,7 +32,7 @@ export default function PromptsView() {
 
 	if (folders.length === 0 && prompts.length === 0) {
 		return (
-			<div className="no-padding-parent no-border-parent flex h-[calc(100dvh_-_18px)] w-full items-center">
+			<div className="w-full">
 				<PromptSheets />
 				<PromptsEmptyState />
 			</div>
@@ -40,7 +40,7 @@ export default function PromptsView() {
 	}
 
 	return (
-		<div className="no-padding-parent no-border-parent bg-background h-[calc(100dvh_-_16px)] w-full">
+		<div className="no-padding-parent bg-background h-[calc(100dvh_-_16px)] w-full">
 			<DeleteFolderDialog />
 			<DeletePromptDialog />
 			<PromptSheets />

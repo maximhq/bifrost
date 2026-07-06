@@ -1,5 +1,6 @@
 import { createFileRoute, Outlet, useChildMatches } from "@tanstack/react-router";
 import { NoPermissionView } from "@/components/noPermissionView";
+import { WorkspacePageShell } from "@/components/workspacePageShell";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import GovernancePage from "./page";
 
@@ -25,7 +26,7 @@ function RouteComponent() {
 	if (!hasAnyGovernanceAccess) {
 		return <NoPermissionView entity="governance" />;
 	}
-	return childMatches.length === 0 ? <GovernancePage /> : <Outlet />;
+	return <WorkspacePageShell>{childMatches.length === 0 ? <GovernancePage /> : <Outlet />}</WorkspacePageShell>;
 }
 
 export const Route = createFileRoute("/workspace/governance")({

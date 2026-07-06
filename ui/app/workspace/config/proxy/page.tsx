@@ -16,9 +16,5 @@ export default function ProxyPage() {
 		return null;
 	}
 
-	return (
-		<div className="mx-auto flex w-full max-w-7xl">
-			<ProxyView />
-		</div>
-	);
+	return <ProxyView />;
 }

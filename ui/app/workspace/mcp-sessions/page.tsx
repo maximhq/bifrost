@@ -1,4 +1,5 @@
 import FullPageLoader from "@/components/fullPageLoader";
+import { WorkspacePageShell } from "@/components/workspacePageShell";
 import { useDebouncedValue } from "@/hooks/useDebounce";
 import { getErrorMessage, useGetMCPSessionsQuery } from "@/lib/store";
 import { AuthMode, MCPSessionKind, MCPSessionStatus } from "@/lib/types/mcpSessions";
@@ -53,7 +54,7 @@ export default function MCPSessionsPage() {
 
 	if (isError) {
 		return (
-			<div className="mx-auto w-full max-w-7xl">
+			<div className="mx-auto w-full">
 				<div className="border-destructive bg-destructive/10 text-destructive rounded-lg border p-6 text-sm">
 					Failed to load MCP sessions: {getErrorMessage(error)}
 				</div>
@@ -77,7 +78,7 @@ export default function MCPSessionsPage() {
 	const handleClearFilters = () => setUrlState({ q: null, kind: null, status: null, auth_mode: null, mcp_client_id: null, identity: null, offset: 0 });
 
 	return (
-		<div className="mx-auto flex h-[calc(100dvh-50px)] w-full max-w-7xl flex-col">
+		<WorkspacePageShell>
 			<SessionsTable
 				sessions={data?.sessions ?? []}
 				totalCount={totalCount}
@@ -96,6 +97,6 @@ export default function MCPSessionsPage() {
 				limit={PAGE_SIZE}
 				onOffsetChange={handleOffsetChange}
 			/>
-		</div>
+		</WorkspacePageShell>
 	);
 }

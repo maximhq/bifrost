@@ -263,7 +263,7 @@ export default function CachingView() {
 	const isLoading = configLoading || pluginsLoading;
 
 	return (
-		<div className="mx-auto w-full max-w-4xl space-y-6">
+		<div className="mx-auto w-full space-y-6">
 			<div>
 				<h2 className="text-lg font-semibold tracking-tight">Local Cache</h2>
 				<p className="text-muted-foreground text-sm">
@@ -664,7 +664,7 @@ export default function CachingView() {
 								</div>
 							</div>
 
-							<div className="flex justify-end pt-2">
+							<div className="bg-card sticky bottom-0 z-10 flex flex-wrap items-center justify-end gap-2 border-t py-4">
 								<Button
 									data-testid="caching-save-button"
 									onClick={handleSave}

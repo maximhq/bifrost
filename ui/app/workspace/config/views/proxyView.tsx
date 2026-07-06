@@ -56,7 +56,7 @@ export default function ProxyView() {
 	const isTypeUnsupported = watchedType === "socks5" || watchedType === "tcp";
 
 	return (
-		<div className="mx-auto w-full max-w-4xl space-y-4">
+		<div className="mx-auto w-full space-y-4">
 			<Form {...form}>
 				<form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
 					<div>
@@ -350,7 +350,7 @@ export default function ProxyView() {
 							)}
 						</div>
 					</fieldset>
-					<div className="flex justify-end pt-2">
+					<div className="bg-card sticky bottom-0 z-10 flex flex-wrap items-center justify-end gap-2 border-t py-4">
 						<Tooltip>
 							<TooltipTrigger asChild>
 								<span tabIndex={!hasSettingsUpdateAccess ? 0 : undefined}>

@@ -87,7 +87,7 @@ export default function PricingConfigView() {
 	};
 
 	return (
-		<div className="mx-auto w-full max-w-7xl space-y-4" data-testid="pricing-config-view">
+		<div className="mx-auto w-full space-y-4" data-testid="pricing-config-view">
 			<form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
 				<div>
 					<h2 className="text-lg font-semibold tracking-tight">Pricing Configuration</h2>
@@ -181,7 +181,7 @@ export default function PricingConfigView() {
 						</div>
 					</div>
 				</div>
-				<div className="flex justify-end gap-2 pt-2">
+				<div className="bg-card sticky bottom-0 z-10 flex flex-wrap items-center justify-end gap-2 border-t py-4">
 					<Button
 						variant="outline"
 						type="button"

@@ -1,6 +1,7 @@
 import { createFileRoute, Outlet, useChildMatches, useLocation } from "@tanstack/react-router";
 import FullPageLoader from "@/components/fullPageLoader";
 import { NoPermissionView } from "@/components/noPermissionView";
+import { WorkspacePageShell } from "@/components/workspacePageShell";
 import { useGetCoreConfigQuery } from "@/lib/store";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import ConfigPage from "./page";
@@ -24,7 +25,7 @@ function RouteComponent() {
 		return <FullPageLoader />;
 	}
 
-	return childMatches.length === 0 ? <ConfigPage /> : <Outlet />;
+	return <WorkspacePageShell>{childMatches.length === 0 ? <ConfigPage /> : <Outlet />}</WorkspacePageShell>;
 }
 
 export const Route = createFileRoute("/workspace/config")({

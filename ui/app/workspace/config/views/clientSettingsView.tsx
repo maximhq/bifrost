@@ -285,7 +285,7 @@ export default function ClientSettingsView() {
 	}, []);
 
 	return (
-		<div className="mx-auto w-full max-w-4xl space-y-6">
+		<div className="mx-auto w-full space-y-6">
 			<div>
 				<h2 className="text-lg font-semibold tracking-tight">Client Settings</h2>
 				<p className="text-muted-foreground text-sm">Configure client behavior and request handling.</p>
@@ -568,7 +568,7 @@ export default function ClientSettingsView() {
 				controlsDisabled={isLoading || !hasSettingsUpdateAccess}
 			/>
 
-			<div className="flex justify-end pt-2">
+			<div className="bg-card sticky bottom-0 z-10 flex flex-wrap items-center justify-end gap-2 border-t py-4">
 				{hasSecurityHeaderError ? (
 					<Tooltip>
 						<TooltipTrigger asChild>

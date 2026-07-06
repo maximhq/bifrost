@@ -1,3 +1,4 @@
+import { WorkspacePageShell } from "@/components/workspacePageShell";
 import { useDebouncedValue } from "@/hooks/useDebounce";
 import { getErrorMessage, useGetOAuth2GrantsQuery, useRevokeOAuth2GrantMutation } from "@/lib/store";
 import type { OAuth2GrantRow } from "@/lib/store/apis/oauth2SessionsApi";
@@ -70,7 +71,7 @@ export default function OAuthGrantsPage() {
 	};
 
 	return (
-		<div className="mx-auto flex h-[calc(100dvh-50px)] w-full max-w-7xl flex-col">
+		<WorkspacePageShell>
 			<RevokeGrantDialog
 				open={pendingDelete !== null}
 				onOpenChange={(open) => !open && setPendingDelete(null)}
@@ -120,6 +121,6 @@ export default function OAuthGrantsPage() {
 					onRevoke={setPendingDelete}
 				/>
 			)}
-		</div>
+		</WorkspacePageShell>
 	);
 }

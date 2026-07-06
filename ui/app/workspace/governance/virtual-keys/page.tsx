@@ -139,29 +139,27 @@ export default function GovernanceVirtualKeysPage() {
 	};
 
 	return (
-		<div className="no-padding-parent mx-auto flex h-[calc(100dvh-1rem)] min-h-0 w-full flex-col overflow-hidden p-4">
-			<VirtualKeysTable
-				virtualKeys={virtualKeysData?.virtual_keys || []}
-				totalCount={virtualKeysData?.total_count || 0}
-				teams={teamsData?.teams || []}
-				customers={customersData?.customers || []}
-				search={urlState.search}
-				debouncedSearch={debouncedSearch}
-				onSearchChange={handleSearchChange}
-				customerFilter={urlState.customer_id}
-				onCustomerFilterChange={handleCustomerFilterChange}
-				teamFilter={urlState.team_id}
-				onTeamFilterChange={handleTeamFilterChange}
-				offset={urlState.offset}
-				limit={PAGE_SIZE}
-				onOffsetChange={handleOffsetChange}
-				sortBy={urlState.sort_by}
-				order={urlState.order}
-				onSortChange={handleSortChange}
-				selectedVkId={urlState.selected_vk}
-				onSelectedVkChange={handleSelectedVkChange}
-				isFetching={isFetching}
-			/>
-		</div>
+		<VirtualKeysTable
+			virtualKeys={virtualKeysData?.virtual_keys || []}
+			totalCount={virtualKeysData?.total_count || 0}
+			teams={teamsData?.teams || []}
+			customers={customersData?.customers || []}
+			search={urlState.search}
+			debouncedSearch={debouncedSearch}
+			onSearchChange={handleSearchChange}
+			customerFilter={urlState.customer_id}
+			onCustomerFilterChange={handleCustomerFilterChange}
+			teamFilter={urlState.team_id}
+			onTeamFilterChange={handleTeamFilterChange}
+			offset={urlState.offset}
+			limit={PAGE_SIZE}
+			onOffsetChange={handleOffsetChange}
+			sortBy={urlState.sort_by}
+			order={urlState.order}
+			onSortChange={handleSortChange}
+			selectedVkId={urlState.selected_vk}
+			onSelectedVkChange={handleSelectedVkChange}
+			isFetching={isFetching}
+		/>
 	);
 }
