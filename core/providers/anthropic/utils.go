@@ -1356,6 +1356,10 @@ func doesWebSearchOrFetchAutoInjectCodeExecution(toolType string) bool {
 // with an empty "signature" field. An empty signature means the block came
 // from a non-Anthropic upstream (OpenAI never emits signatures; Anthropic
 // always does), so it is unsafe to replay to Anthropic.
+//
+// The predicate must stay scoped to "thinking" blocks: "redacted_thinking"
+// blocks carry only an encrypted "data" payload (no thinking or signature
+// fields) and must be replayed to Anthropic untouched.
 func StripEmptyThinkingBlocks(jsonBody []byte) ([]byte, error) {
 	messagesResult := providerUtils.GetJSONField(jsonBody, "messages")
 	if !messagesResult.Exists() || !messagesResult.IsArray() {

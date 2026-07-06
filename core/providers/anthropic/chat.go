@@ -1218,9 +1218,6 @@ func NewAnthropicStreamState() *AnthropicStreamState {
 // reasoningDetailIndex returns the stable reasoning_details index for an
 // anthropic content block, allocating the next one on first use.
 func (state *AnthropicStreamState) reasoningDetailIndex(blockIndex int) int {
-	if state.reasoningDetailIdxByBlock == nil {
-		state.reasoningDetailIdxByBlock = make(map[int]int)
-	}
 	if idx, ok := state.reasoningDetailIdxByBlock[blockIndex]; ok {
 		return idx
 	}
