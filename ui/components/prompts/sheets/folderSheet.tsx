@@ -82,7 +82,7 @@ export function FolderSheet({ open, onOpenChange, folder, onSaved }: FolderSheet
 			>
 				<form onSubmit={handleSubmit(onSubmit)}>
 					<SheetHeader className="flex flex-col items-start">
-						<SheetTitle>{isEditing ? "Edit Folder" : "Create Folder"}</SheetTitle>
+						<SheetTitle>{isEditing ? "Edit Folder" : "Add Folder"}</SheetTitle>
 						<SheetDescription>
 							{isEditing ? "Update the folder name and description." : "Create a new folder to organize your prompts."}
 						</SheetDescription>
@@ -121,7 +121,7 @@ export function FolderSheet({ open, onOpenChange, folder, onSaved }: FolderSheet
 							Cancel
 						</Button>
 						<Button type="submit" data-testid="folder-submit" disabled={isLoading}>
-							{isLoading ? "Saving..." : isEditing ? "Update" : "Create"}
+							{isLoading ? "Saving..." : isEditing ? "Update" : "Add"}
 						</Button>
 					</SheetFooter>
 				</form>

@@ -79,7 +79,7 @@ export function PromptSheet({ open, onOpenChange, prompt, folderId, onSaved }: P
 			>
 				<form onSubmit={handleSubmit(onSubmit)} className="flex grow flex-col">
 					<SheetHeader className="flex flex-col items-start px-8 pt-8">
-						<SheetTitle>{isEditing ? "Rename Prompt" : "Create Prompt"}</SheetTitle>
+						<SheetTitle>{isEditing ? "Rename Prompt" : "Add Prompt"}</SheetTitle>
 						<SheetDescription>
 							{isEditing ? "Update the prompt name." : folderId ? "Create a new prompt in this folder." : "Create a new prompt."}
 						</SheetDescription>
@@ -108,7 +108,7 @@ export function PromptSheet({ open, onOpenChange, prompt, folderId, onSaved }: P
 								Cancel
 							</Button>
 							<Button type="submit" data-testid="prompt-submit" disabled={isLoading}>
-								{isLoading ? "Saving..." : isEditing ? "Update" : "Create"}
+								{isLoading ? "Saving..." : isEditing ? "Update" : "Add"}
 							</Button>
 						</SheetFooter>
 					</div>

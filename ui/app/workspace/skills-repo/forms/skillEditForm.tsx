@@ -467,7 +467,7 @@ export function SkillEditView({
 						<PopoverAnchor asChild>
 							<Button size="sm" data-testid="skill-create-save-btn" onClick={() => openVersionPopover(true)} disabled={isSaving}>
 								{isSaving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
-								{isSaving ? "Creating..." : "Create Skill"}
+								{isSaving ? "Adding..." : "Add Skill"}
 							</Button>
 						</PopoverAnchor>
 						<PopoverContent align="end" className="w-max">
@@ -769,7 +769,7 @@ function VersionPopoverBody({
 	return (
 		<>
 			<div className="mb-3 flex flex-col gap-0.5">
-				<p className="text-sm font-medium">{isCreate ? "Create skill" : "Save new version"}</p>
+				<p className="text-sm font-medium">{isCreate ? "Add skill" : "Save new version"}</p>
 				<p className="text-muted-foreground text-xs">
 					{isCreate ? "Set the initial version for this skill." : "Choose a new version number for these changes."}
 				</p>
@@ -814,7 +814,7 @@ function VersionPopoverBody({
 					Cancel
 				</Button>
 				<Button size="sm" data-testid="skill-version-confirm-btn" disabled={!canSave} onClick={submit}>
-					{isCreate ? "Create" : serve ? "Save & Serve" : "Save"}
+					{isCreate ? "Add" : serve ? "Save & Serve" : "Save"}
 				</Button>
 			</div>
 		</>

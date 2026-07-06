@@ -196,7 +196,7 @@ export function PromptSidebar() {
 									variant="outline"
 									className="h-8 w-8 shrink-0 bg-transparent"
 									data-testid="sidebar-create-menu"
-									aria-label="Create prompt or folder"
+									aria-label="Add prompt or folder"
 								>
 									<PlusIcon className="h-3.5 w-3.5" />
 								</Button>

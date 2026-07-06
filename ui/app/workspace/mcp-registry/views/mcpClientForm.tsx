@@ -305,7 +305,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 		<Sheet open={open} onOpenChange={(open) => !open && !oauthFlow && onClose()}>
 			<SheetContent className="flex w-full flex-col overflow-x-hidden px-0">
 				<SheetHeader className="flex flex-col items-start px-7 pt-8">
-					<SheetTitle>New MCP Server</SheetTitle>
+					<SheetTitle>Add MCP Server</SheetTitle>
 					<SheetDescription>Configure and connect to a new Model Context Protocol server.</SheetDescription>
 				</SheetHeader>
 

@@ -272,7 +272,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 		<Sheet open={open} onOpenChange={onOpenChange}>
 			<SheetContent className="flex w-full min-w-1/2 flex-col gap-4 overflow-x-hidden p-0 pt-4">
 				<SheetHeader className="flex flex-col items-start px-8 py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10">
-					<SheetTitle>{isEditing ? "Edit Routing Rule" : "Create New Routing Rule"}</SheetTitle>
+					<SheetTitle>{isEditing ? "Edit Routing Rule" : "Add Routing Rule"}</SheetTitle>
 					<SheetDescription>
 						{isEditing ? "Update the routing rule configuration" : "Create a new CEL-based routing rule for intelligent request routing"}
 					</SheetDescription>

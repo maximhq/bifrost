@@ -151,7 +151,7 @@ export default function AddNewPluginSheet({ open, onClose, onCreate, plugin }: A
 		<Sheet open={open} onOpenChange={handleClose}>
 			<SheetContent className="flex w-full flex-col overflow-x-hidden pt-4">
 				<SheetHeader className="flex flex-col items-start px-8 py-4" headerClassName="mb-0 sticky top-0 bg-card z-10">
-					<SheetTitle>{isEditMode ? "Update Plugin" : "Install New Plugin"}</SheetTitle>
+					<SheetTitle>{isEditMode ? "Update Plugin" : "Add Plugin"}</SheetTitle>
 					<SheetDescription>
 						{isEditMode
 							? "Update the plugin configuration. Note: Plugin name and path cannot be changed."
@@ -170,7 +170,7 @@ export default function AddNewPluginSheet({ open, onClose, onCreate, plugin }: A
 								Cancel
 							</Button>
 							<Button type="submit" disabled={isLoading || !form.formState.isValid || disableAction} isLoading={isLoading}>
-								{isEditMode ? "Update Plugin" : "Install Plugin"}
+								{isEditMode ? "Update Plugin" : "Add Plugin"}
 							</Button>
 						</div>
 					</form>

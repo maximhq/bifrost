@@ -879,7 +879,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 				onEscapeKeyDown={() => handleClose()}
 			>
 				<SheetHeader className="flex flex-col items-start px-0 py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10 px-8">
-					<SheetTitle className="flex items-center gap-2">{isEditing ? virtualKey?.name : "Create Virtual Key"}</SheetTitle>
+					<SheetTitle className="flex items-center gap-2">{isEditing ? virtualKey?.name : "Add Virtual Key"}</SheetTitle>
 					<SheetDescription>
 						{isEditing
 							? "Update the virtual key configuration and permissions."
@@ -2043,7 +2043,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 											<TooltipTrigger asChild>
 												<span className="inline-block">
 													<Button type="submit" disabled={isLoading || !form.formState.isDirty || !canSubmit} data-testid="vk-save-btn">
-														{isLoading ? "Saving..." : isEditing ? "Update" : "Create"}
+														{isLoading ? "Saving..." : isEditing ? "Update" : "Add"}
 													</Button>
 												</span>
 											</TooltipTrigger>

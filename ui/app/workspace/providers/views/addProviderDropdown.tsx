@@ -47,7 +47,7 @@ export function AddProviderDropdown({
 					disabled={disabled}
 				>
 					<PlusIcon className="h-4 w-4" />
-					{variant === "empty" ? <span>Add provider</span> : <div className="text-xs">Add New Provider</div>}
+					{variant === "empty" ? <span>Add Provider</span> : <div className="text-xs">Add Provider</div>}
 				</Button>
 			</DropdownMenuTrigger>
 			<DropdownMenuContent
@@ -62,7 +62,7 @@ export function AddProviderDropdown({
 					</DropdownMenuItem>
 				))}
 				{hasKnown && <DropdownMenuSeparator />}
-				{/* Add New Provider > Custom provider... — used by E2E (add-provider-option-custom) */}
+				{/* Add Provider > Custom provider... — used by E2E (add-provider-option-custom) */}
 				<DropdownMenuItem data-testid="add-provider-option-custom" onSelect={onAddCustomProvider}>
 					<Settings2Icon className="h-4 w-4" />
 					<span>Custom provider...</span>
