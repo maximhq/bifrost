@@ -577,6 +577,7 @@ func TestDoesWebSearchOrFetchAutoInjectCodeExecution(t *testing.T) {
 		{string(AnthropicToolTypeWebFetch20250910), false},
 		{string(AnthropicToolTypeWebFetch20260209), true},
 		{string(AnthropicToolTypeWebFetch20260309), true},
+		{string(AnthropicToolTypeWebFetch20260318), true},
 		{"web_search_unknown", true},
 		{"web_fetch_unknown", true},
 		{"unknown_type", true},

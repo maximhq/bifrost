@@ -150,13 +150,6 @@ func (mc *ModelCatalog) GetDistinctBaseModelNames() []string {
 	return mc.datasheet.DistinctBaseModelNames()
 }
 
-// GetDistinctActiveBaseModelNames returns unique base model names backed by
-// non-deprecated pricing rows only. API handlers use this to avoid exposing
-// deprecated catalog entries.
-func (mc *ModelCatalog) GetDistinctActiveBaseModelNames() []string {
-	return mc.datasheet.DistinctActiveBaseModelNames()
-}
-
 // GetProvidersForModel returns every provider that can serve the model.
 // Composes across stores and applies the cross-provider special cases
 // (openrouter / vertex / groq-gpt / bedrock-claude) preserved verbatim from

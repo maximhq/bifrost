@@ -46,6 +46,40 @@ func TestParseBedrockHTTPError_TypeFromHeader(t *testing.T) {
 	assert.Contains(t, bifrostErr.Error.Message, "reached the end of its life")
 }
 
+// TestParseBedrockHTTPError_PopulatesNestedErrorType verifies the AWS exception
+// type is surfaced on the nested error object (error.type), not only at the
+// top level. OpenAI-shaped consumers read error.type/error.code, so a
+// Bedrock passthrough error must carry the type there — matching every other
+// provider. This is the customer-reported gap: "only error.message, no type".
+func TestParseBedrockHTTPError_PopulatesNestedErrorType(t *testing.T) {
+	headers := http.Header{}
+	headers.Set("X-Amzn-Errortype", "ValidationException")
+	body := []byte(`{"message":"Invocation of model ID anthropic.claude-v2 with on-demand throughput isn't supported."}`)
+
+	bifrostErr := parseBedrockHTTPError(http.StatusBadRequest, headers, body)
+
+	require.NotNil(t, bifrostErr)
+	require.NotNil(t, bifrostErr.Type)
+	assert.Equal(t, "ValidationException", *bifrostErr.Type, "top-level type must still be set")
+	require.NotNil(t, bifrostErr.Error)
+	require.NotNil(t, bifrostErr.Error.Type, "nested error.type must be populated for OpenAI-shaped consumers")
+	assert.Equal(t, "ValidationException", *bifrostErr.Error.Type)
+}
+
+// TestParseBedrockHTTPError_NestedTypeFromBodyType verifies the nested
+// error.type is also populated when the type comes from the body "__type"
+// rather than the header.
+func TestParseBedrockHTTPError_NestedTypeFromBodyType(t *testing.T) {
+	body := []byte(`{"__type":"ThrottlingException","message":"rate exceeded"}`)
+
+	bifrostErr := parseBedrockHTTPError(http.StatusTooManyRequests, http.Header{}, body)
+
+	require.NotNil(t, bifrostErr)
+	require.NotNil(t, bifrostErr.Error)
+	require.NotNil(t, bifrostErr.Error.Type)
+	assert.Equal(t, "ThrottlingException", *bifrostErr.Error.Type)
+}
+
 // TestParseBedrockHTTPError_HeaderTypeQualifierStripped ensures the trailing
 // ":<url>" / "#<shape>" qualifier AWS sometimes appends to X-Amzn-Errortype is
 // removed.

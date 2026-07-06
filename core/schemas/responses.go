@@ -1380,6 +1380,9 @@ type ResponsesToolMessage struct {
 	// Anthropic tool_search-specific (tool_search_call): carries the discovered tool references
 	*ResponsesToolSearchCall
 
+	// Anthropic web-fetch-specific (web_fetch_call): carries the web_fetch_tool_result payload
+	*ResponsesWebFetchCall
+
 	// Anthropic code-execution-specific (code_interpreter_call): carries the
 	// server_tool_use input + *_code_execution_tool_result payload that the
 	// neutral ResponsesCodeInterpreterToolCall cannot represent.
@@ -1402,6 +1405,34 @@ type ResponsesAdvisorCall struct {
 // tool_references); the model then emits a normal tool_use to call one of them.
 type ResponsesToolSearchCall struct {
 	ToolReferences []string `json:"tool_references,omitempty"` // names of discovered (deferred) tools
+}
+
+// ResponsesWebFetchCall carries the Anthropic web_fetch_tool_result payload
+// alongside a web_fetch_call. Anthropic-only; the request URL lives on
+// ResponsesWebFetchToolCallAction.
+type ResponsesWebFetchCall struct {
+	ResultType  string                     `json:"web_fetch_result_type,omitempty"` // "web_fetch_result" | "web_fetch_tool_result_error"
+	URL         *string                    `json:"web_fetch_result_url,omitempty"`
+	RetrievedAt *string                    `json:"web_fetch_retrieved_at,omitempty"`
+	Document    *ResponsesWebFetchDocument `json:"web_fetch_document,omitempty"`
+	ErrorCode   *string                    `json:"web_fetch_error_code,omitempty"`
+}
+
+type ResponsesWebFetchDocument struct {
+	Type      string                   `json:"type,omitempty"` // "document"
+	Text      *string                  `json:"text,omitempty"`
+	Title     *string                  `json:"title,omitempty"`
+	Source    *ResponsesWebFetchSource `json:"source,omitempty"`
+	Citations *Citations               `json:"citations,omitempty"`
+	Context   *string                  `json:"context,omitempty"`
+}
+
+type ResponsesWebFetchSource struct {
+	Type      string  `json:"type,omitempty"` // "text" | "base64" | "url" | "file"
+	MediaType *string `json:"media_type,omitempty"`
+	Data      *string `json:"data,omitempty"`
+	URL       *string `json:"url,omitempty"`
+	FileID    *string `json:"file_id,omitempty"`
 }
 
 // ResponsesToolCaller is the neutral form of Anthropic's "caller" union on
@@ -2910,9 +2941,11 @@ type ResponsesToolToolSearch struct {
 
 // ResponsesToolWebFetch represents a web fetch tool
 type ResponsesToolWebFetch struct {
-	MaxUses          *int                           `json:"max_uses,omitempty"`
-	Filters          *ResponsesToolWebSearchFilters `json:"filters,omitempty"`
-	MaxContentTokens *int                           `json:"max_content_tokens,omitempty"`
+	MaxUses           *int                           `json:"max_uses,omitempty"`
+	Filters           *ResponsesToolWebSearchFilters `json:"filters,omitempty"`
+	MaxContentTokens  *int                           `json:"max_content_tokens,omitempty"`
+	UseCache          *bool                          `json:"use_cache,omitempty"`
+	ResponseInclusion *string                        `json:"response_inclusion,omitempty"` // "full" | "excluded" (web_fetch_20260318+)
 }
 
 // ResponsesToolAdvisorCaching toggles advisor-side prompt caching.

@@ -1,3 +1,4 @@
+- fix: round-trip Anthropic `redacted_thinking` blocks on chat completions so tool-use turns with redacted reasoning can be replayed (closes #4942) [@fus3r](https://github.com/fus3r)
 - fix: emit `contentBlockStop` events on the Bedrock ConverseStream egress so consumers that assemble messages on block boundaries get complete content (closes #4262) [@fus3r](https://github.com/fus3r)
 - fix: set the raw-storage log flag on standalone MCP tool executions so logging hooks see an explicit value
 - fix: clear the per-attempt stream close claim so streaming retries and fallbacks are not dead on arrival after an SSE-embedded provider error (closes #4788) [@fus3r](https://github.com/fus3r)
