@@ -5,6 +5,10 @@ description: "Enterprise v1.5.2 changelog - 2026-07-01"
 
 <Update label="Bifrost Enterprise" description="v1.5.2">
 
+<Warning>
+v1.5.2 has a [know CPU spike issue](https://github.com/maximhq/bifrost/issues/4851) for large number of budgets/teams/customers. The fix is part of v1.5.3
+</Warning>
+
 ## Changelog
 
 Release on `transports/v1.6.2`. Fixes a governance reset-consistency gap where request-time budget/rate-limit bumps could skip ghost-node cleanup, corrects OIDC cookie token selection for Generic OIDC providers like AD FS, and picks up OSS support for the Claude Sonnet 5 model family.
