@@ -112,9 +112,20 @@ func ToGeminiResponsesRequestWithImageURLSchemes(ctx *schemas.BifrostContext, bi
 				return nil, err
 			}
 
-			// Convert tool choice if present
+			// Convert tool choice if present, but only when function declarations exist.
+			// Gemini rejects functionCallingConfig without function_declarations
+			// (e.g. a web-search-only request has GoogleSearch but no declarations).
 			if bifrostReq.Params.ToolChoice != nil {
-				geminiReq.ToolConfig = convertResponsesToolChoiceToGemini(bifrostReq.Params.ToolChoice)
+				hasFunctionDeclarations := false
+				for _, tool := range geminiReq.Tools {
+					if len(tool.FunctionDeclarations) > 0 {
+						hasFunctionDeclarations = true
+						break
+					}
+				}
+				if hasFunctionDeclarations {
+					geminiReq.ToolConfig = convertResponsesToolChoiceToGemini(bifrostReq.Params.ToolChoice)
+				}
 			}
 		}
 
@@ -2855,16 +2866,14 @@ func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(param
 
 		// Handle "none" effort explicitly (only if max_tokens not present)
 		if !hasMaxTokens && hasEffort && *params.Reasoning.Effort == "none" {
-			config.ThinkingConfig.IncludeThoughts = false
-			config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(0))
+			setThinkingBudgetZeroIfSupported(&config, capModel)
 		} else if hasMaxTokens {
 			// User provided max_tokens - use thinkingBudget (all Gemini models support this)
 			// If both max_tokens and effort are present, we ignore effort and use ONLY max_tokens
 			budget := *params.Reasoning.MaxTokens
 			switch budget {
 			case 0:
-				config.ThinkingConfig.IncludeThoughts = false
-				config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(0))
+				setThinkingBudgetZeroIfSupported(&config, capModel)
 			case DynamicReasoningBudget: // Special case: -1 means dynamic budget
 				config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(DynamicReasoningBudget))
 			default:
