@@ -1131,6 +1131,7 @@ export interface MCPHistogramBucket {
 	count: number;
 	success: number;
 	error: number;
+	cancelled?: number;
 }
 
 export interface MCPHistogramResponse {
