@@ -1,42 +1,66 @@
 ---
-title: "v1.5.2"
-description: "Enterprise v1.5.2 changelog - 2026-07-01"
+title: "v1.5.3"
+description: "Enterprise v1.5.3 changelog - 2026-07-06"
 ---
 
-<Update label="Bifrost Enterprise" description="v1.5.2">
-
-<Warning>
-v1.5.2 has a [known CPU spike issue](https://github.com/maximhq/bifrost/issues/4851) for large number of budgets/teams/customers. The fix is part of v1.5.3
-</Warning>
+<Update label="Bifrost Enterprise" description="v1.5.3">
 
 ## Changelog
 
-Release on `transports/v1.6.2`. Fixes a governance reset-consistency gap where request-time budget/rate-limit bumps could skip ghost-node cleanup, corrects OIDC cookie token selection for Generic OIDC providers like AD FS, and picks up OSS support for the Claude Sonnet 5 model family.
+Release on `transports/v1.6.3`. Introduces OAuth 2.1 gateway auth for `/mcp`, vault-sourced virtual keys with automatic secret rotation, extended audit log filtering, DAC-scoped OAuth2 session management, IdP JWT validation on the MCP path, and new DeepSeek and AWS Bedrock Mantle providers. Includes a large number of bug fixes across governance, streaming, billing, MCP, and provider integrations.
 
 ## ✨ Features
 
-_No enterprise-only features in this release._
+- **Audit Log Advanced Filtering** - Audit logs now support advanced filtering via dedicated search/select APIs backed by materialized views, with an updated UI table layout.
+- **DAC-Scoped OAuth2 Session Management** - OAuth2 sessions scoped to dynamic access control can now be listed, retrieved, and revoked. A new `EnterpriseOAuth2IdentityResolver` binds virtual keys to users via the governance store cache.
+- **IdP JWT Validation on `/mcp`** - Incoming IdP-issued JWTs on `/mcp` are validated and stamped with user identity. Bifrost-issued MCP tokens that fail IdP validation pass through. User-mode OAuth2 grants are revoked on user delete, and user liveness is enforced on MCP request and refresh paths.
+- **Vault-Sourced Virtual Keys** - Virtual key values now use `SecretVar`, enabling resolution from HashiCorp Vault. Vault-sourced keys reload on cache flush, automatic vault secret rotation is propagated and broadcast to the in-memory virtual key map, and the vault cache TTL was raised from 1 hour to 24 hours.
+- **New Secret Var Format** - Guardrails and SCIM configuration now accept the new `{type, ref}` secret var format alongside the deprecated `{from_env, env_var}` form.
+- **Bedrock Guardrails Provider-Side Redaction** - Bedrock guardrails now support provider-side redaction of flagged content.
+- **Async Access Profile Propagation** - Access profile propagation now runs as an async background job with progress tracking instead of blocking the request.
+- **SCIM Attributes Summary Card** - The post-setup dashboard now shows a summary card of configured SCIM attributes.
 
-## 🌎 Open Source Features
+## 🚀 From OSS `transports/v1.6.3`
 
-- **Claude Sonnet 5 Support** - Added compatibility for the Claude Sonnet 5 model family in the Anthropic provider, including adaptive-only thinking and sampling-parameter gating, the effort parameter, adaptive thinking, computer-use and text-editor tool generations, dynamic web search filtering, and default max output tokens. [Docs](https://docs.getbifrost.ai/providers/supported-providers/anthropic)
+- DeepSeek added as a first-class provider with dedicated request handling and thinking-mode gating.
+- `bedrock_mantle` added as a first-class provider with SigV4 key configuration, native-Anthropic and OpenAI-compatible routing, DB migration, and UI support.
+- Full OAuth 2.1 authorization server for `/mcp`: discovery endpoints, dynamic client registration, authorize/token with PKCE and refresh token rotation, consent page, JWT Bearer authentication, session listing/revocation with a sweep worker, an OAuth Grants UI, and the `mcp_server_auth_mode` config field.
+- Virtual keys now carry an expiry field enforced by governance at request time.
+- ClickHouse log store added in beta, including a hybrid store mode.
+- IPv6 support added to the HTTP transport.
+- Per-MCP-server tool execution timeout configuration added.
+- OpenAI Responses lifecycle methods (retrieve, delete, cancel, list input items) added with per-verb governance flags.
+- MCP clients paginated query now supports filtering by `connection_type`, `auth_type`, `state`, `virtual_key`, and server/client ID, with a faceted filter sidebar.
+- Models are now marked `is_deprecated` in pricing and catalog APIs instead of being filtered out.
+- Logs list now shows user, team, customer, and business-unit name columns with multi-value attribution cells.
+- Error responses now carry latency information.
+- Connectors can now attach multiple teams, customers, and business units.
+- Support added for externally resolved supplemental budgets not tracked against a virtual key.
+- Cost recalculation now streams progress via SSE and processes in batches.
+- Vendor-prefix pricing fallback extended to OpenAI, Google, and xAI models.
+- Complexity analyzer now uses stemming alongside exact keyword match and falls back sensibly when no signal is present.
+- `x-goog-api-key` added as a supported virtual-key header on the MCP auth path.
 
 ## 🐞 Fixed
 
-- **Ghost Cleanup on Targeted Governance Resets** - `GlobalGovernanceStore` now registers reset hooks directly on `LocalGovernanceStore` so that request-time (targeted) budget and rate-limit resets trigger ghost-node cleanup, not just the periodic full-scan reset. Previously a request-time reset could advance `LastReset` without cleaning up stale ghost-node usage entries for that budget or rate limit.
-- **Generic OIDC Cookie Token Selection** - `ChooseAuthCookieToken` now prefers the ID token for `SCIMProviderGeneric` alongside Google, Okta, Entra, and Auth0. AD FS and similar IdPs stamp access tokens with a different issuer than the OIDC discovery issuer, so the ID token is the only one whose `iss` reliably matches; Keycloak and unrecognised providers continue to fall back to the access token.
-- **Bedrock Error Type Extraction** - Fixed error type extraction for Bedrock provider responses.
-- **Gemini/Imagen Aspect Ratio** - Added first-class `aspect_ratio` support for Gemini and Imagen image generation and edit requests; an explicit aspect ratio now takes precedence over any size-derived value and is backfilled into generation responses and stream events.
-- **Plan Cache Migration** - Fixed a regression where the config-hash recompute migration failed on upgrade from a pre-1.6 schema, causing `undefined column` errors on PostgreSQL and SQLite.
-- **Custom Provider Key Form (Bedrock)** - Fixed the custom provider API key form for Bedrock.
-
-## 🐙 Closed OSS Issues
-
-- [#4797](https://github.com/maximhq/bifrost/issues/4797) - Configstore migration order: `refresh_config_hash_after_mcp_external_server_url_removal` (#139) selected `dump_errors_in_console_logs` before `add_dump_errors_in_console_logs_column` (#160) added it
+- **Governance Reset Baselines** - Reset timestamps are now synced with usage baselines in governance.
+- **Bedrock Region From ARN** - Bedrock region is derived from the model ARN when not explicitly configured.
+- **Cached Token Billing** - `cached_tokens` now reports reads only per the OpenAI spec, so cache writes are not billed as reads.
+- **Streaming Retries After SSE Errors** - Streaming retries and fallbacks work correctly after SSE-embedded provider errors.
+- **Tier Cost Evaluation** - Tier costs are evaluated via input tokens instead of total tokens.
+- **Failed Stream Billing** - Billing fixed on failed Responses stream requests for Anthropic and Bedrock, and for image generation and edit streaming.
+- **Redacted Thinking Round-Trip** - `redacted_thinking` blocks round-trip on chat completions so tool-use turns with extended thinking replay correctly.
+- **Bedrock ConverseStream Egress** - Bedrock ConverseStream egress now emits `contentBlockStop` events.
+- **MCP Empty Tool Set Registration** - MCP clients no longer register as connected with an empty tool set when `ListTools` fails during startup.
+- **Deterministic MCP Tool Ordering** - MCP tool ordering is now deterministic for prompt cache stability.
+- **Trace Store Memory Leak** - Orphaned deferred spans are swept in trace store TTL cleanup, fixing a memory leak.
+- **Content Logging Bypass** - Raw request/response payloads no longer bypass `disable_content_logging` via `ErrorDetailsParsed`.
+- **URL-Encoded Team IDs** - URL-encoded team IDs are decoded in fetch, update, and delete governance endpoints.
+- **Semantic Cache Embedding Keys** - Semantic cache internal embedding keys now resolve like external requests.
 
 ## 📀 Base OSS version
 
-`transports/v1.6.2`
+`transports/v1.6.3`
 
 ## 🔌 If you are compiling plugin against this release - use following deps
 
@@ -71,13 +95,13 @@ require (
 	github.com/hashicorp/memberlist v0.5.4
 	github.com/hashicorp/vault/api v1.23.0
 	github.com/klauspost/compress v1.18.6
-	github.com/maximhq/bifrost/core v1.6.2
-	github.com/maximhq/bifrost/framework v1.4.2
-	github.com/maximhq/bifrost/plugins/governance v1.6.2
-	github.com/maximhq/bifrost/plugins/logging v1.5.25
-	github.com/maximhq/bifrost/plugins/prompts v1.0.25
-	github.com/maximhq/bifrost/plugins/semanticcache v1.5.25
-	github.com/maximhq/bifrost/transports v1.6.2
+	github.com/maximhq/bifrost/core v1.6.3
+	github.com/maximhq/bifrost/framework v1.4.3
+	github.com/maximhq/bifrost/plugins/governance v1.6.3
+	github.com/maximhq/bifrost/plugins/logging v1.5.26
+	github.com/maximhq/bifrost/plugins/prompts v1.0.26
+	github.com/maximhq/bifrost/plugins/semanticcache v1.5.26
+	github.com/maximhq/bifrost/transports v1.6.3
 	github.com/nakabonne/tstorage v0.3.6
 	github.com/segmentio/kafka-go v0.4.47
 	github.com/stretchr/testify v1.11.1
@@ -113,6 +137,8 @@ require (
 	github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c // indirect
 	github.com/AzureAD/microsoft-authentication-library-for-go v1.6.0 // indirect
 	github.com/BobuSumisu/aho-corasick v1.0.3 // indirect
+	github.com/ClickHouse/ch-go v0.61.5 // indirect
+	github.com/ClickHouse/clickhouse-go/v2 v2.30.0 // indirect
 	github.com/DataDog/datadog-agent/comp/core/tagger/origindetection v0.71.0 // indirect
 	github.com/DataDog/datadog-agent/pkg/obfuscate v0.71.0 // indirect
 	github.com/DataDog/datadog-agent/pkg/opentelemetry-mapping-go/otlp/attributes v0.71.0 // indirect
@@ -159,6 +185,7 @@ require (
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
+	github.com/blevesearch/go-porterstemmer v1.0.3 // indirect
 	github.com/bodgit/plumbing v1.3.0 // indirect
 	github.com/bodgit/sevenzip v1.6.0 // indirect
 	github.com/bodgit/windows v1.0.1 // indirect
@@ -201,6 +228,8 @@ require (
 	github.com/fsnotify/fsnotify v1.8.0 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.0 // indirect
 	github.com/gitleaks/go-gitdiff v0.9.1 // indirect
+	github.com/go-faster/city v1.0.1 // indirect
+	github.com/go-faster/errors v0.7.1 // indirect
 	github.com/go-git/gcfg v1.5.1-0.20230307220236-3a3c6141e376 // indirect
 	github.com/go-git/go-billy/v5 v5.9.0 // indirect
 	github.com/go-git/go-git/v5 v5.19.1 // indirect
@@ -284,12 +313,12 @@ require (
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-runewidth v0.0.15 // indirect
 	github.com/mattn/go-sqlite3 v1.14.32 // indirect
-	github.com/maximhq/bifrost/plugins/compat v0.1.24 // indirect
-	github.com/maximhq/bifrost/plugins/maxim v1.6.25 // indirect
-	github.com/maximhq/bifrost/plugins/mocker v1.5.25 // indirect
-	github.com/maximhq/bifrost/plugins/modelcatalogresolver v1.0.6 // indirect
-	github.com/maximhq/bifrost/plugins/otel v1.3.2 // indirect
-	github.com/maximhq/bifrost/plugins/telemetry v1.5.25 // indirect
+	github.com/maximhq/bifrost/plugins/compat v0.1.25 // indirect
+	github.com/maximhq/bifrost/plugins/maxim v1.6.26 // indirect
+	github.com/maximhq/bifrost/plugins/mocker v1.5.26 // indirect
+	github.com/maximhq/bifrost/plugins/modelcatalogresolver v1.0.7 // indirect
+	github.com/maximhq/bifrost/plugins/otel v1.3.3 // indirect
+	github.com/maximhq/bifrost/plugins/telemetry v1.5.26 // indirect
 	github.com/maximhq/maxim-go v0.2.1 // indirect
 	github.com/mholt/archives v0.1.2 // indirect
 	github.com/miekg/dns v1.1.68 // indirect
@@ -319,6 +348,7 @@ require (
 	github.com/opencontainers/go-digest v1.0.0 // indirect
 	github.com/opencontainers/image-spec v1.1.1 // indirect
 	github.com/outcaste-io/ristretto v0.2.3 // indirect
+	github.com/paulmach/orb v0.11.1 // indirect
 	github.com/pelletier/go-toml/v2 v2.2.3 // indirect
 	github.com/philhofer/fwd v1.2.0 // indirect
 	github.com/pierrec/lz4/v4 v4.1.21 // indirect
@@ -361,6 +391,7 @@ require (
 	github.com/savsgio/gotils v0.0.0-20250408102913-196191ec6287 // indirect
 	github.com/sean-/seed v0.0.0-20170313163322-e2103e2c3529 // indirect
 	github.com/secure-systems-lab/go-securesystemslib v0.9.0 // indirect
+	github.com/segmentio/asm v1.2.0 // indirect
 	github.com/sergi/go-diff v1.4.0 // indirect
 	github.com/shirou/gopsutil/v4 v4.26.3 // indirect
 	github.com/shopspring/decimal v1.4.0 // indirect
@@ -449,6 +480,7 @@ require (
 	gopkg.in/ini.v1 v1.67.0 // indirect
 	gopkg.in/warnings.v0 v0.1.2 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
+	gorm.io/driver/clickhouse v0.7.0 // indirect
 	gorm.io/driver/postgres v1.6.0 // indirect
 	k8s.io/klog/v2 v2.130.1 // indirect
 	k8s.io/kube-openapi v0.0.0-20250710124328-f3f2b991d03b // indirect
