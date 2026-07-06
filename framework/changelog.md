@@ -1,0 +1,3 @@
+- feat: added user-agent tracking columns, materialized views, and migrations to the log store
+- feat: added endpoint-agent columns (device_id, app_key, decision, source) to mcp_tool_logs for Edge agent log ingestion
+- chore: upgraded core to v1.7.0
