@@ -116,7 +116,7 @@ Refer to the API documentation for [Provider Keys Management](https://docs.getbi
 case schemas.Runway:
     return []schemas.Key{{
         Name:   "runway-key-1",
-        Value:  *schemas.NewEnvVar("env.RUNWAY_API_KEY"),
+        Value:  *schemas.NewSecretVar("env.RUNWAY_API_KEY"),
         Models: []string{"*"},
         Weight: 1.0,
     }}, nil
