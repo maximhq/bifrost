@@ -23,16 +23,20 @@ func TestProviderBudgetExceeded(t *testing.T) {
 			},
 			ProviderConfigs: []ProviderConfigRequest{
 				{
-					Provider: "openai",
-					Weight:   1.0,
+					Provider:      "openai",
+					Weight:        float64Ptr(1.0),
+					AllowedModels: []string{"*"},
+					KeyIDs:        []string{"*"},
 					Budget: &BudgetRequest{
 						MaxLimit:      0.01, // Specific OpenAI budget
 						ResetDuration: "1h",
 					},
 				},
 				{
-					Provider: "anthropic",
-					Weight:   1.0,
+					Provider:      "anthropic",
+					Weight:        float64Ptr(1.0),
+					AllowedModels: []string{"*"},
+					KeyIDs:        []string{"*"},
 					Budget: &BudgetRequest{
 						MaxLimit:      0.01, // Specific Anthropic budget
 						ResetDuration: "1h",

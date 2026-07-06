@@ -221,8 +221,6 @@ func convertToInferenceProviderMappings(resp *HuggingFaceInferenceProviderMappin
 }
 
 func (provider *HuggingFaceProvider) getModelInferenceProviderMapping(ctx context.Context, huggingfaceModelName string) (map[inferenceProvider]HuggingFaceInferenceProviderMapping, *schemas.BifrostError) {
-	providerName := provider.GetProviderKey()
-
 	// Check cache first
 	if cached, ok := provider.modelProviderMappingCache.Load(huggingfaceModelName); ok {
 		if mappings, ok := cached.(map[inferenceProvider]HuggingFaceInferenceProviderMapping); ok {
@@ -259,12 +257,12 @@ func (provider *HuggingFaceProvider) getModelInferenceProviderMapping(ctx contex
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
 	}
 
 	var mappingResp HuggingFaceInferenceProviderMappingResponse
 	if err := sonic.Unmarshal(body, &mappingResp); err != nil {
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
 	}
 
 	mappings := convertToInferenceProviderMappings(&mappingResp)

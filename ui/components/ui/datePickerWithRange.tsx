@@ -1,12 +1,13 @@
-"use client";
-
 import { cn } from "@/lib/utils";
+import { getSupportedTimezones } from "@/lib/timezones";
+import { TZDate, tz, tzName } from "@date-fns/tz";
 import { format } from "date-fns";
-import { Calendar as CalendarIcon } from "lucide-react";
+import { Calendar as CalendarIcon, Globe } from "lucide-react";
 import React, { useEffect, useMemo } from "react";
 import { DateRange } from "react-day-picker";
 import { Button } from "./button";
 import { Calendar } from "./calendar";
+import { ComboboxSelect } from "./combobox";
 import { Label } from "./label";
 import { Popover, PopoverContent, PopoverTrigger } from "./popover";
 import { TimePicker, TimeValue } from "./timePicker";
@@ -15,6 +16,23 @@ export type TimeRange = {
 	from: TimeValue;
 	to: TimeValue;
 };
+
+/**
+ * Builds the searchable timezone option list. Each label pairs the IANA id
+ * with its short abbreviation in the given zone (e.g. "America/New_York (EST)").
+ */
+function buildTimezoneOptions(referenceDate: Date): { label: string; value: string }[] {
+	const zones = getSupportedTimezones();
+	return zones.map((zone) => {
+		let abbr = "";
+		try {
+			abbr = tzName(zone, referenceDate, "short");
+		} catch {
+			// Some runtimes may not resolve an abbreviation; fall back to id only.
+		}
+		return { value: zone, label: abbr ? `${zone} (${abbr})` : zone };
+	});
+}
 
 interface DatePickerWithRangeProps extends React.HTMLAttributes<HTMLDivElement> {
 	buttonClassName?: string;
@@ -41,17 +59,39 @@ interface DateTimePickerWithRangeProps extends DatePickerWithRangeProps {
 	onOpenChange?: (open: boolean) => void;
 	/** Optional data-testid for the trigger button (e.g. for E2E tests) */
 	triggerTestId?: string;
+	/** Enables the timezone display + selection UI. When false/undefined, dates are handled in browser-local time (unchanged). */
+	showTimezone?: boolean;
+	/** Controlled active IANA timezone (e.g. "America/New_York"). Only used when showTimezone is true. */
+	timezone?: string;
+	/** Fired when the user picks a new timezone from the dropdown. */
+	onTimezoneChange?: (timezone: string) => void;
 }
 
 export function DateTimePickerWithRange(props: DateTimePickerWithRangeProps) {
 	const { className, buttonClassName, triggerLabel, onTrigger, dateTime } = props;
+	const activeTimezone = props.showTimezone ? props.timezone : undefined;
+
+	/** Extract wall-clock hours/minutes from a Date, interpreting in the active timezone when set. */
+	const extractTime = (d: Date | undefined, fallback: TimeValue): TimeValue => {
+		if (!d) return fallback;
+		if (activeTimezone) {
+			// Read wall-clock in the target zone
+			const zoned = new TZDate(d.getTime(), activeTimezone);
+			return { hour: zoned.getHours(), minute: zoned.getMinutes() };
+		}
+		return { hour: d.getHours(), minute: d.getMinutes() };
+	};
+
 	const [date, setDate] = React.useState<DateRange | undefined>(dateTime);
 	const [timeValue, setTimeValue] = React.useState<TimeRange>({
-		from: dateTime?.from ? { hour: dateTime.from.getHours(), minute: dateTime.from.getMinutes() } : { hour: 0, minute: 0 },
-		to: dateTime?.to ? { hour: dateTime.to.getHours(), minute: dateTime.to.getMinutes() } : { hour: 23, minute: 59 },
+		from: extractTime(dateTime?.from, { hour: 0, minute: 0 }),
+		to: extractTime(dateTime?.to, { hour: 23, minute: 59 }),
 	});
 	const [isOpen, setIsOpen] = React.useState<boolean>(false);
 	const [predefinedPeriod, setPredefinedPeriod] = React.useState<string | undefined>(props.predefinedPeriod);
+
+	const timezoneOptions = useMemo(() => (props.showTimezone ? buildTimezoneOptions(new Date()) : []), [props.showTimezone, activeTimezone]);
+
 	const disabledDateRange = useMemo(() => {
 		if (!props.disabledBefore && !props.disabledAfter) return undefined;
 		let range: any = {};
@@ -73,32 +113,50 @@ export function DateTimePickerWithRange(props: DateTimePickerWithRangeProps) {
 		return `${hour}:${minute} ${period}`;
 	};
 
+	/**
+	 * Combine a calendar date and a wall-clock time into an absolute Date.
+	 * When `activeTimezone` is set, the wall-clock is interpreted in that zone
+	 * (via TZDate) so the returned epoch reflects the correct absolute instant.
+	 */
 	const getDateTime = (date: Date | undefined, time: TimeValue | undefined | null): Date | undefined => {
 		if (!date || !time) return undefined;
 
-		// Create a date object from the selected calendar date (which is at midnight local time)
-		const localDate = new Date(date);
+		if (activeTimezone) {
+			// Interpret wall-clock in the target timezone → correct absolute instant.
+			const zoned = new TZDate(date.getTime(), activeTimezone);
+			return new TZDate(zoned.getFullYear(), zoned.getMonth(), zoned.getDate(), time.hour, time.minute, 0, 0, activeTimezone);
+		}
 
-		// Manually set the time in the local timezone. This is more robust than using `new Date(y,m,d,h,m)`.
-		localDate.setHours(time.hour, time.minute, 0, 0);
-
-		// new Date(year, month, day, hour, minute) can be problematic.
-		// A more robust way is to get the epoch time for the date at midnight,
-		// then add the hours and minutes in milliseconds.
+		// Local-time path (unchanged legacy behavior).
 		const dateAtMidnight = new Date(date.getFullYear(), date.getMonth(), date.getDate());
 		const epochTime = dateAtMidnight.getTime() + time.hour * 60 * 60 * 1000 + time.minute * 60 * 1000;
-
-		// Create a new Date object from the calculated epoch time.
 		return new Date(epochTime);
 	};
+
+	/** Format a date for the trigger button, respecting the active timezone. */
+	const formatDate = (d: Date, fmt: string): string => {
+		if (activeTimezone) return format(d, fmt, { in: tz(activeTimezone) });
+		return format(d, fmt);
+	};
+
+	/** Short timezone abbreviation for the trigger button label. */
+	const tzAbbreviation = useMemo(() => {
+		if (!activeTimezone) return "";
+		try {
+			return tzName(activeTimezone, new Date(), "short");
+		} catch {
+			return "";
+		}
+	}, [activeTimezone]);
 
 	useEffect(() => {
 		setDate(dateTime);
 		setTimeValue({
-			from: dateTime?.from ? { hour: dateTime.from.getHours(), minute: dateTime.from.getMinutes() } : { hour: 0, minute: 0 },
-			to: dateTime?.to ? { hour: dateTime.to.getHours(), minute: dateTime.to.getMinutes() } : { hour: 23, minute: 59 },
+			from: extractTime(dateTime?.from, { hour: 0, minute: 0 }),
+			to: extractTime(dateTime?.to, { hour: 23, minute: 59 }),
 		});
-	}, [dateTime]);
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [dateTime, activeTimezone]);
 
 	useEffect(() => {
 		setPredefinedPeriod(props.predefinedPeriod);
@@ -119,8 +177,6 @@ export function DateTimePickerWithRange(props: DateTimePickerWithRangeProps) {
 						variant="outline"
 						data-testid={props.triggerTestId}
 						className={cn(
-							!predefinedPeriod && "w-[360px]",
-							predefinedPeriod && "w-[140px]",
 							"justify-start text-left font-normal",
 							!date && "text-content-disabled",
 							buttonClassName,
@@ -129,17 +185,20 @@ export function DateTimePickerWithRange(props: DateTimePickerWithRangeProps) {
 					>
 						<CalendarIcon className="h-4 w-4" strokeWidth={1.5} />
 						{predefinedPeriod ? (
+							// Relative periods are durations (last hour, last 7 days) and are
+							// timezone-independent, so we intentionally omit the timezone badge here.
 							<span>{props.preDefinedPeriods?.find((p) => p.value === predefinedPeriod)?.label}</span>
 						) : (
 							<>
 								{dateTime?.from ? (
 									dateTime.to ? (
 										<>
-											{format(dateTime.from, "LLL dd, y")} {printTimeValue(timeValue?.from)} - {format(dateTime.to, "LLL dd, y")}{" "}
+											{formatDate(dateTime.from, "LLL dd, y")} {printTimeValue(timeValue?.from)} - {formatDate(dateTime.to, "LLL dd, y")}{" "}
 											{printTimeValue(timeValue?.to)}
+											{props.showTimezone && tzAbbreviation ? ` · ${tzAbbreviation}` : ""}
 										</>
 									) : (
-										format(dateTime.from, "LLL dd, y")
+										formatDate(dateTime.from, "LLL dd, y")
 									)
 								) : (
 									<span>Pick a date</span>
@@ -189,16 +248,14 @@ export function DateTimePickerWithRange(props: DateTimePickerWithRangeProps) {
 										className=""
 										value={timeValue?.from}
 										onChange={(v) => {
-											if (!date || !date.from) return;
-											if (v) setTimeValue({ from: v, to: timeValue.to });
-											const from = new Date(date.from);
-											if (v) from.setHours(v.hour, v.minute);
-											setDate({ from: from, to: date.to });
-											if (from.toISOString() !== props.dateTime?.from?.toISOString()) {
+											if (!date || !date.from || !v) return;
+											setTimeValue({ from: v, to: timeValue.to });
+											const nextFrom = getDateTime(date.from, v);
+											if (nextFrom?.toISOString() !== props.dateTime?.from?.toISOString()) {
 												// Checking if range is valid
 												props.onDateTimeUpdate &&
 													props.onDateTimeUpdate({
-														from: getDateTime(from, v),
+														from: nextFrom,
 														to: getDateTime(date.to, timeValue?.to),
 													});
 											}
@@ -212,16 +269,14 @@ export function DateTimePickerWithRange(props: DateTimePickerWithRangeProps) {
 										className=""
 										value={timeValue?.to}
 										onChange={(v) => {
-											if (!date || !date.to) return;
-											if (v) setTimeValue({ ...timeValue, to: v });
-											const to = new Date(date.to);
-											if (v) to.setHours(v.hour, v.minute);
-											setDate({ from: date.from, to: to });
-											if (to.toISOString() !== props.dateTime?.to?.toISOString()) {
+											if (!date || !date.to || !v) return;
+											setTimeValue({ ...timeValue, to: v });
+											const nextTo = getDateTime(date.to, v);
+											if (nextTo?.toISOString() !== props.dateTime?.to?.toISOString()) {
 												props.onDateTimeUpdate &&
 													props.onDateTimeUpdate({
 														from: getDateTime(date.from, timeValue?.from),
-														to: getDateTime(to, v),
+														to: nextTo,
 													});
 											}
 										}}
@@ -249,6 +304,52 @@ export function DateTimePickerWithRange(props: DateTimePickerWithRangeProps) {
 							</div>
 						)}
 					</div>
+					{props.showTimezone && (
+						<div className="flex items-center gap-2 border-t px-3 py-2">
+							<Globe className="text-muted-foreground size-4 shrink-0" />
+							<Label className="text-muted-foreground shrink-0 text-xs">Timezone</Label>
+							<div className="ml-auto w-[260px]">
+								<ComboboxSelect
+									options={timezoneOptions}
+									value={activeTimezone ?? null}
+									onValueChange={(v) => {
+										if (!v) return;
+										props.onTimezoneChange?.(v);
+										// Wall-clock stays fixed: re-emit the same calendar day + time
+										// interpreted in the newly selected zone so the query shifts.
+										if (date?.from && date?.to) {
+											const fromInActiveTimezone = activeTimezone ? new TZDate(date.from.getTime(), activeTimezone) : date.from;
+											const toInActiveTimezone = activeTimezone ? new TZDate(date.to.getTime(), activeTimezone) : date.to;
+											const from = new TZDate(
+												fromInActiveTimezone.getFullYear(),
+												fromInActiveTimezone.getMonth(),
+												fromInActiveTimezone.getDate(),
+												timeValue.from.hour,
+												timeValue.from.minute,
+												0,
+												0,
+												v,
+											);
+											const to = new TZDate(
+												toInActiveTimezone.getFullYear(),
+												toInActiveTimezone.getMonth(),
+												toInActiveTimezone.getDate(),
+												timeValue.to.hour,
+												timeValue.to.minute,
+												0,
+												0,
+												v,
+											);
+											props.onDateTimeUpdate?.({ from, to });
+										}
+									}}
+									hideClear
+									placeholder="Select timezone"
+									data-testid="datepicker-timezone-select"
+								/>
+							</div>
+						</div>
+					)}
 					{triggerLabel && onTrigger && (
 						<div className="mt-1 mb-2 flex w-full px-3">
 							<Button

@@ -10,11 +10,14 @@ import (
 
 // OpenAIBatchRequest represents the request body for creating a batch.
 type OpenAIBatchRequest struct {
-	InputFileID        string                    `json:"input_file_id"`
-	Endpoint           string                    `json:"endpoint"`
-	CompletionWindow   string                    `json:"completion_window"`
-	Metadata           map[string]string         `json:"metadata,omitempty"`
+	InputFileID        *string                    `json:"input_file_id,omitempty"`
+	Endpoint           string                     `json:"endpoint"`
+	CompletionWindow   string                     `json:"completion_window"`
+	Metadata           map[string]string          `json:"metadata,omitempty"`
 	OutputExpiresAfter *schemas.BatchExpiresAfter `json:"output_expires_after,omitempty"`
+
+	InputBlob    *string                    `json:"input_blob,omitempty"` // azure blob storage
+	OutputFolder *schemas.BatchOutputFolder `json:"output_folder,omitempty"`
 }
 
 // OpenAIBatchResponse represents an OpenAI batch response.
@@ -39,6 +42,11 @@ type OpenAIBatchResponse struct {
 	CancelledAt      *int64                    `json:"cancelled_at,omitempty"`
 	RequestCounts    *OpenAIBatchRequestCounts `json:"request_counts,omitempty"`
 	Metadata         map[string]string         `json:"metadata,omitempty"`
+
+	// Azure Blob Storage URLs (returned by Azure when using blob storage input/output)
+	InputBlob  *string `json:"input_blob,omitempty"`
+	OutputBlob *string `json:"output_blob,omitempty"`
+	ErrorBlob  *string `json:"error_blob,omitempty"`
 }
 
 // OpenAIBatchRequestCounts represents the request counts for a batch.
@@ -82,7 +90,7 @@ func ToBifrostBatchStatus(status string) schemas.BatchStatus {
 }
 
 // ToBifrostBatchCreateResponse converts OpenAI batch response to Bifrost batch response.
-func (r *OpenAIBatchResponse) ToBifrostBatchCreateResponse(providerName schemas.ModelProvider, latency time.Duration, sendBackRawRequest bool, sendBackRawResponse bool, rawRequest interface{}, rawResponse interface{}) *schemas.BifrostBatchCreateResponse {
+func (r *OpenAIBatchResponse) ToBifrostBatchCreateResponse(latency time.Duration, sendBackRawRequest bool, sendBackRawResponse bool, rawRequest interface{}, rawResponse interface{}) *schemas.BifrostBatchCreateResponse {
 	resp := &schemas.BifrostBatchCreateResponse{
 		ID:               r.ID,
 		Object:           r.Object,
@@ -94,10 +102,11 @@ func (r *OpenAIBatchResponse) ToBifrostBatchCreateResponse(providerName schemas.
 		CreatedAt:        r.CreatedAt,
 		OutputFileID:     r.OutputFileID,
 		ErrorFileID:      r.ErrorFileID,
+		InputBlob:        r.InputBlob,
+		OutputBlob:       r.OutputBlob,
+		ErrorBlob:        r.ErrorBlob,
 		ExtraFields: schemas.BifrostResponseExtraFields{
-			RequestType: schemas.BatchCreateRequest,
-			Provider:    providerName,
-			Latency:     latency.Milliseconds(),
+			Latency: latency.Milliseconds(),
 		},
 	}
 
@@ -125,7 +134,7 @@ func (r *OpenAIBatchResponse) ToBifrostBatchCreateResponse(providerName schemas.
 }
 
 // ToBifrostBatchRetrieveResponse converts OpenAI batch response to Bifrost batch retrieve response.
-func (r *OpenAIBatchResponse) ToBifrostBatchRetrieveResponse(providerName schemas.ModelProvider, latency time.Duration, sendBackRawRequest bool, sendBackRawResponse bool, rawRequest interface{}, rawResponse interface{}) *schemas.BifrostBatchRetrieveResponse {
+func (r *OpenAIBatchResponse) ToBifrostBatchRetrieveResponse(latency time.Duration, sendBackRawRequest bool, sendBackRawResponse bool, rawRequest interface{}, rawResponse interface{}) *schemas.BifrostBatchRetrieveResponse {
 	resp := &schemas.BifrostBatchRetrieveResponse{
 		ID:               r.ID,
 		Object:           r.Object,
@@ -145,10 +154,11 @@ func (r *OpenAIBatchResponse) ToBifrostBatchRetrieveResponse(providerName schema
 		OutputFileID:     r.OutputFileID,
 		ErrorFileID:      r.ErrorFileID,
 		Errors:           r.Errors,
+		InputBlob:        r.InputBlob,
+		OutputBlob:       r.OutputBlob,
+		ErrorBlob:        r.ErrorBlob,
 		ExtraFields: schemas.BifrostResponseExtraFields{
-			RequestType: schemas.BatchRetrieveRequest,
-			Provider:    providerName,
-			Latency:     latency.Milliseconds(),
+			Latency: latency.Milliseconds(),
 		},
 	}
 
@@ -173,36 +183,4 @@ func (r *OpenAIBatchResponse) ToBifrostBatchRetrieveResponse(providerName schema
 	}
 
 	return resp
-}
-
-// splitJSONL splits JSONL content into individual lines.
-func splitJSONL(data []byte) [][]byte {
-	var lines [][]byte
-	start := 0
-	for i, b := range data {
-		if b == '\n' {
-			if i > start {
-				end := i
-				// Strip trailing \r if present (handle CRLF)
-				if end > start && data[end-1] == '\r' {
-					end--
-				}
-				if end > start {
-					lines = append(lines, data[start:end])
-				}
-			}
-			start = i + 1
-		}
-	}
-	if start < len(data) {
-		end := len(data)
-		// Strip trailing \r if present
-		if end > start && data[end-1] == '\r' {
-			end--
-		}
-		if end > start {
-			lines = append(lines, data[start:end])
-		}
-	}
-	return lines
 }

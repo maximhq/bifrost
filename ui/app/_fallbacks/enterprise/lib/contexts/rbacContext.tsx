@@ -1,5 +1,3 @@
-"use client";
-
 import { createContext, useContext } from "react";
 
 // RBAC Resource Names (must match backend definitions)
@@ -13,10 +11,13 @@ export enum RbacResource {
 	Users = "Users",
 	Logs = "Logs",
 	Observability = "Observability",
+	Dashboard = "Dashboard",
 	VirtualKeys = "VirtualKeys",
 	ModelProvider = "ModelProvider",
 	Plugins = "Plugins",
 	MCPGateway = "MCPGateway",
+	MCPToolGroups = "MCPToolGroups",
+	MCPLogs = "MCPLogs",
 	AdaptiveRouter = "AdaptiveRouter",
 	AuditLogs = "AuditLogs",
 	Customers = "Customers",
@@ -27,6 +28,13 @@ export enum RbacResource {
 	PIIRedactor = "PIIRedactor",
 	PromptRepository = "PromptRepository",
 	PromptDeploymentStrategy = "PromptDeploymentStrategy",
+	SkillsRepository = "SkillsRepository",
+	AccessProfiles = "AccessProfiles",
+	APIKeys = "APIKeys",
+	Inference = "Inference",
+	Metrics = "Metrics",
+	FeatureFlags = "FeatureFlags",
+	CircuitBreaker = "CircuitBreaker",
 }
 
 // RBAC Operation Names (must match backend definitions)
@@ -65,7 +73,7 @@ export function RbacProvider({ children }: { children: React.ReactNode }) {
 }
 
 // Hook that always returns true (no restrictions in OSS)
-export function useRbac(resource: RbacResource, operation: RbacOperation): boolean {
+export function useRbac(_resource: RbacResource, _operation: RbacOperation): boolean {
 	return true;
 }
 

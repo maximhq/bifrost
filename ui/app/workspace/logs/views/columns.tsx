@@ -1,36 +1,127 @@
-"use client";
-
+import { formatCost, formatLatency } from "@/app/workspace/dashboard/utils/chartUtils";
+import { formatCompactNumber } from "@/lib/utils/numbers";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
-import { ProviderName, RequestTypeColors, RequestTypeLabels, Status, StatusBarColors } from "@/lib/constants/logs";
-import { LogEntry, ResponsesMessageContentBlock } from "@/lib/types/logs";
+import { getProviderLabel, ProviderName, RequestTypeColors, RequestTypeLabels, Status, StatusBarColors } from "@/lib/constants/logs";
+import { ChatMessageContent, LogEntry, ResponsesMessageContentBlock } from "@/lib/types/logs";
+import { cn } from "@/lib/utils";
 import { ColumnDef } from "@tanstack/react-table";
-import { ArrowUpDown, Trash2 } from "lucide-react";
-import moment from "moment";
+import { format, formatDistanceToNow } from "date-fns";
+import { ArrowUpDown, MoreHorizontal, Trash2 } from "lucide-react";
+import { useState } from "react";
 
-function getMessage(log?: LogEntry) {
+function LogActionsMenu({ log, onDelete }: { log: LogEntry; onDelete: (log: LogEntry) => void }) {
+	const [isOpen, setIsOpen] = useState(false);
+
+	return (
+		<DropdownMenu open={isOpen} onOpenChange={setIsOpen}>
+			<DropdownMenuTrigger asChild onClick={(event) => event.stopPropagation()}>
+				<Button variant="ghost" size="icon" data-testid="log-actions-btn" aria-label="Log actions" className="h-7 w-7">
+					<MoreHorizontal className="h-4 w-4" />
+				</Button>
+			</DropdownMenuTrigger>
+			<DropdownMenuContent align="end">
+				<DropdownMenuItem
+					variant="destructive"
+					className="cursor-pointer"
+					data-testid="log-delete-btn"
+					onSelect={(e) => {
+						e.preventDefault();
+						onDelete(log);
+						setIsOpen(false);
+					}}
+				>
+					<Trash2 className="h-4 w-4" />
+					Delete
+				</DropdownMenuItem>
+			</DropdownMenuContent>
+		</DropdownMenu>
+	);
+}
+
+function getAssistantToolCallSummary(log?: LogEntry): string {
+	const toolCalls = log?.output_message?.tool_calls || [];
+	return toolCalls
+		.map((toolCall) => {
+			const name = toolCall?.function?.name;
+			if (!name) {
+				return "";
+			}
+			const argumentsText = toolCall?.function?.arguments?.trim();
+			return argumentsText ? `${name}(${argumentsText})` : name;
+		})
+		.filter(Boolean)
+		.join("\n");
+}
+
+function getMessageFromContent(content?: ChatMessageContent): string {
+	if (content == undefined) {
+		return "";
+	}
+	if (typeof content === "string") {
+		return content;
+	}
+	let lastTextContentBlock = "";
+	for (const block of content) {
+		if ((block.type === "text" || block.type === "input_text" || block.type === "output_text") && block.text) {
+			lastTextContentBlock = block.text;
+		}
+	}
+	return lastTextContentBlock;
+}
+
+export function getRealtimeTurnMessages(log?: LogEntry): {
+	tool?: string;
+	user?: string;
+	assistant?: string;
+	assistantToolCall?: string;
+} {
+	const toolMessages = log?.input_history?.filter((message) => message.role === "tool") || [];
+	const userMessages = log?.input_history?.filter((message) => message.role === "user") || [];
+	return {
+		tool:
+			toolMessages
+				.map((m) => getMessageFromContent(m.content))
+				.filter(Boolean)
+				.join("\n") || "",
+		user:
+			userMessages
+				.map((m) => getMessageFromContent(m.content))
+				.filter(Boolean)
+				.join("\n") || "",
+		assistant: log?.output_message ? getMessageFromContent(log.output_message.content) : "",
+		assistantToolCall: getAssistantToolCallSummary(log),
+	};
+}
+
+export function getMessage(log?: LogEntry) {
 	if (log?.object === "list_models") {
 		return "N/A";
 	}
+	if (log?.object === "realtime.turn") {
+		const messages = getRealtimeTurnMessages(log);
+		const parts = [
+			messages.tool ? `Tool Result: ${messages.tool}` : "",
+			messages.user ? `User: ${messages.user}` : "",
+			messages.assistantToolCall ? `Assistant Tool Call: ${messages.assistantToolCall}` : "",
+			messages.assistant ? `Assistant: ${messages.assistant}` : "",
+		].filter(Boolean);
+		if (parts.length > 0) {
+			return parts.join("\n");
+		}
+		return "";
+	}
 	if (log?.input_history && log.input_history.length > 0) {
-		let userMessageContent = log.input_history[log.input_history.length - 1].content;
-		if (userMessageContent == undefined) {
-			return "";
-		}
-		if (typeof userMessageContent === "string") {
-			return userMessageContent;
-		}
-		let lastTextContentBlock = "";
-		for (const block of userMessageContent) {
-			if (block.type === "text" && block.text) {
-				lastTextContentBlock = block.text;
-			}
-		}
-		return lastTextContentBlock;
+		const lastInput = log.input_history[log.input_history.length - 1];
+		return getMessageFromContent(lastInput?.content);
 	} else if (log?.responses_input_history && log.responses_input_history.length > 0) {
 		let lastMessage = log.responses_input_history[log.responses_input_history.length - 1];
-		let lastMessageContent = lastMessage.content;
+		let lastMessageContent = lastMessage?.content;
+		if (!lastMessage) {
+			return "";
+		}
 		if (typeof lastMessageContent === "string") {
 			return lastMessageContent;
 		}
@@ -52,6 +143,8 @@ function getMessage(log?: LogEntry) {
 			}
 		}
 		return lastTextContentBlock ?? "";
+	} else if (log?.output_message) {
+		return getMessageFromContent(log.output_message.content);
 	} else if (log?.speech_input) {
 		return log.speech_input.input;
 	} else if (log?.transcription_input) {
@@ -63,169 +156,285 @@ function getMessage(log?: LogEntry) {
 	if (obj === "image_edit" || obj === "image_edit_stream" || obj === "image_variation") {
 		return "Image file";
 	}
+	if (log?.content_summary) {
+		return log.content_summary;
+	}
 	return "";
 }
 
-export const createColumns = (onDelete: (log: LogEntry) => void, hasDeleteAccess = true, metadataKeys: string[] = []): ColumnDef<LogEntry>[] => {
+export function LogMessageCell({ log, contentClassName = "max-w-full" }: { log: LogEntry; contentClassName?: string }) {
+	const input = getMessage(log);
+	const isLargePayload = log.is_large_payload_request || log.is_large_payload_response;
+	const realtimeMessages = log.object === "realtime.turn" ? getRealtimeTurnMessages(log) : null;
+
+	return (
+		<div className="flex items-center gap-1.5">
+			{isLargePayload && (
+				<span
+					className="shrink-0 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/50 dark:text-amber-400"
+					title="Large payload - streamed directly to provider"
+				>
+					LP
+				</span>
+			)}
+			{realtimeMessages &&
+			(realtimeMessages.tool || realtimeMessages.user || realtimeMessages.assistantToolCall || realtimeMessages.assistant) ? (
+				<div className={cn(contentClassName, "font-mono text-sm font-normal leading-5")}>
+					{realtimeMessages.tool ? <div className="truncate">Tool Result: {realtimeMessages.tool}</div> : null}
+					{realtimeMessages.user ? <div className="truncate">User: {realtimeMessages.user}</div> : null}
+					{realtimeMessages.assistantToolCall ? (
+						<div className="truncate">Assistant Tool Call: {realtimeMessages.assistantToolCall}</div>
+					) : null}
+					{realtimeMessages.assistant ? <div className="truncate">Assistant: {realtimeMessages.assistant}</div> : null}
+				</div>
+			) : (
+				<div className={cn(contentClassName, "truncate font-mono text-[12px] font-normal")}>
+					{input ||
+						(isLargePayload
+							? `Large payload ${log.is_large_payload_request && log.is_large_payload_response ? "request & response" : log.is_large_payload_request ? "request" : "response"}`
+							: "-")}
+				</div>
+			)}
+		</div>
+	);
+}
+
+export const createColumns = (
+	onDelete: (log: LogEntry) => void,
+	hasDeleteAccess = true,
+	metadataKeys: string[] = [],
+): ColumnDef<LogEntry>[] => {
 	const baseColumns: ColumnDef<LogEntry>[] = [
-	{
-		accessorKey: "status",
-		header: "",
-		size: 8,
-		maxSize: 8,
-		cell: ({ row }) => {
-			const status = row.original.status as Status;
-			return <div className={`h-full min-h-[24px] w-1 rounded-sm ${StatusBarColors[status]}`} />;
+		{
+			accessorKey: "status",
+			header: "",
+			size: 8,
+			maxSize: 8,
+			cell: ({ row }) => {
+				const status = row.original.status as Status;
+				return <div className={`h-full min-h-[24px] w-1 rounded-sm ${StatusBarColors[status]}`} />;
+			},
 		},
-	},
-	{
-		accessorKey: "timestamp",
-		header: ({ column }) => (
-			<Button variant="ghost" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
-				Time
-				<ArrowUpDown className="ml-2 h-4 w-4" />
-			</Button>
-		),
-		cell: ({ row }) => {
-			const timestamp = row.original.timestamp;
-			return <div className="text-xs">{moment(timestamp).format("YYYY-MM-DD hh:mm:ss A (Z)")}</div>;
-		},
-	},
-	{
-		id: "request_type",
-		header: "Type",
-		cell: ({ row }) => {
-			return (
-				<Badge variant="outline" className={`${RequestTypeColors[row.original.object as keyof typeof RequestTypeColors]} text-xs`}>
-					{RequestTypeLabels[row.original.object as keyof typeof RequestTypeLabels]}
-				</Badge>
-			);
-		},
-	},
-	{
-		accessorKey: "input",
-		header: "Message",
-		cell: ({ row }) => {
-			const input = getMessage(row.original);
-			const isLargePayload = row.original.is_large_payload_request || row.original.is_large_payload_response;
-			return (
-				<div className="flex items-center gap-1.5">
-					{isLargePayload && (
-						<span className="shrink-0 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/50 dark:text-amber-400" title="Large payload - streamed directly to provider">
-							LP
-						</span>
-					)}
-					<div className="max-w-[400px] truncate font-mono text-sm font-normal" title={input || "-"}>
-						{input || (isLargePayload
-						? `Large payload ${row.original.is_large_payload_request && row.original.is_large_payload_response ? "request & response" : row.original.is_large_payload_request ? "request" : "response"}`
-						: "-")}
+		{
+			accessorKey: "timestamp",
+			header: ({ column }) => (
+				<Button variant="ghost" data-testid="logs-time-sort-btn" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
+					Time
+					<ArrowUpDown className="ml-2 h-4 w-4" />
+				</Button>
+			),
+			size: 130,
+			cell: ({ row }) => {
+				const timestamp = row.original.timestamp;
+				const date = timestamp ? new Date(timestamp) : null;
+				const isValid = date && date.toString() !== "Invalid Date";
+				if (!isValid) {
+					return <div className="truncate text-xs">N/A</div>;
+				}
+				return (
+					<div className="flex flex-col leading-tight">
+						<span className="font-mono text-xs tabular-nums">{format(date, "MMM dd  HH:mm:ss")}</span>
+						<span className="text-muted-foreground text-[10.5px] tabular-nums">{formatDistanceToNow(date, { addSuffix: true })}</span>
 					</div>
-				</div>
-			);
+				);
+			},
 		},
-	},
-	{
-		accessorKey: "provider",
-		header: "Provider",
-		cell: ({ row }) => {
-			const provider = row.original.provider as ProviderName;
-			return (
-				<Badge variant="secondary" className={`font-mono text-xs uppercase`}>
-					<RenderProviderIcon provider={provider as ProviderIconType} size="sm" />
-					{provider}
-				</Badge>
-			);
+		{
+			id: "request_type",
+			header: "Type",
+			size: 150,
+			cell: ({ row }) => {
+				return (
+					<Badge
+						variant="outline"
+						className={cn(
+							"font-mono text-[11px] py-0.5 px-1.5 uppercase",
+							RequestTypeColors[row.original.object as keyof typeof RequestTypeColors],
+						)}
+					>
+						{RequestTypeLabels[row.original.object as keyof typeof RequestTypeLabels]}
+					</Badge>
+				);
+			},
 		},
-	},
-	{
-		accessorKey: "model",
-		header: "Model",
-		cell: ({ row }) => <div className="max-w-[120px] truncate font-mono text-xs font-normal">{row.original.model || "N/A"}</div>,
-	},
-	{
-		accessorKey: "latency",
-		header: ({ column }) => (
-			<Button variant="ghost" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
-				Latency
-				<ArrowUpDown className="ml-2 h-4 w-4" />
-			</Button>
-		),
-		cell: ({ row }) => {
-			const latency = row.original.latency;
-			return (
-				<div className="pl-4 font-mono text-sm">{latency === undefined || latency === null ? "N/A" : `${latency.toLocaleString()}ms`}</div>
-			);
+		{
+			accessorKey: "input",
+			header: "Message",
+			size: 350,
+			cell: ({ row }) => <LogMessageCell log={row.original} />,
 		},
-	},
-	{
-		accessorKey: "tokens",
-		header: ({ column }) => (
-			<Button variant="ghost" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
-				Tokens
-				<ArrowUpDown className="ml-2 h-4 w-4" />
-			</Button>
-		),
-		cell: ({ row }) => {
-			const tokenUsage = row.original.token_usage;
-			if (!tokenUsage) {
-				return <div className="pl-4 font-mono text-sm">N/A</div>;
-			}
-
-			return (
-				<div className="pl-4 text-sm">
-					<div className="font-mono">
-						{tokenUsage.total_tokens.toLocaleString()}{" "}
-						{tokenUsage.completion_tokens != null && tokenUsage.prompt_tokens != null
-							? `(${tokenUsage.prompt_tokens.toLocaleString()}+${tokenUsage.completion_tokens.toLocaleString()})`
-							: ""}
+		{
+			accessorKey: "model",
+			header: "Model",
+			size: 190,
+			cell: ({ row }) => {
+				const provider = row.original.provider as ProviderName | undefined;
+				const model = row.original.model;
+				return (
+					<div className="flex min-w-0 items-center gap-2">
+						{provider ? <RenderProviderIcon provider={provider as ProviderIconType} size="xs" /> : null}
+						<div className="flex min-w-0 flex-col leading-tight">
+							<span className="truncate font-mono text-[12px]">{model || "N/A"}</span>
+							<span className="text-muted-foreground truncate text-[10.5px]">{provider ? getProviderLabel(provider) : "N/A"}</span>
+						</div>
 					</div>
-				</div>
-			);
+				);
+			},
 		},
-	},
-	{
-		accessorKey: "cost",
-		header: ({ column }) => (
-			<Button variant="ghost" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
-				Cost
-				<ArrowUpDown className="ml-2 h-4 w-4" />
-			</Button>
-		),
-		cell: ({ row }) => {
-			if (!row.original.cost) {
-				return <div className="pl-4 font-mono text-xs">N/A</div>;
-			}
-
-			return (
-				<div className="pl-4 text-xs">
-					<div className="font-mono">{row.original.cost?.toFixed(4)}</div>
-				</div>
-			);
+		{
+			accessorKey: "latency",
+			header: ({ column }) => (
+				<Button variant="ghost" data-testid="logs-latency-sort-btn" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
+					Latency
+					<ArrowUpDown className="ml-2 h-4 w-4" />
+				</Button>
+			),
+			size: 170,
+			cell: ({ row }) => {
+				const latency = row.original.latency;
+				if (latency === undefined || latency === null) {
+					return <div className="pl-4 font-mono text-xs">N/A</div>;
+				}
+				const tone = latency >= 5000 ? "bg-red-500" : latency >= 2000 ? "bg-amber-500" : "bg-emerald-500";
+				const pct = Math.min(100, (latency / 5000) * 100);
+				return (
+					<div className="flex items-center gap-2 pl-4">
+						<span className="font-mono text-[12px] tabular-nums">{formatLatency(latency)}</span>
+						<div className="relative h-1.5 w-[56px] overflow-hidden rounded-sm bg-zinc-200 dark:bg-zinc-700">
+							<div className={cn("absolute inset-y-0 left-0 rounded-sm opacity-85", tone)} style={{ width: `${pct}%` }} />
+						</div>
+					</div>
+				);
+			},
 		},
-	},
+		{
+			accessorKey: "tokens",
+			header: ({ column }) => (
+				<Button variant="ghost" data-testid="logs-tokens-sort-btn" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
+					Tokens
+					<ArrowUpDown className="ml-2 h-4 w-4" />
+				</Button>
+			),
+			size: 190,
+			cell: ({ row }) => {
+				const tokenUsage = row.original.token_usage;
+				if (!tokenUsage) {
+					return <div className="pl-4 font-mono text-xs">N/A</div>;
+				}
+				const prompt = tokenUsage.prompt_tokens ?? 0;
+				const completion = tokenUsage.completion_tokens ?? 0;
+				const total = tokenUsage.total_tokens ?? 0;
+				const hasSplit = tokenUsage.completion_tokens != null && tokenUsage.prompt_tokens != null;
+				const splitBase = prompt + completion || 1;
+				const inPct = (prompt / splitBase) * 100;
+				return (
+					<div className="flex flex-col items-start gap-0.5 pl-4 leading-tight">
+						<div className="flex items-center gap-2">
+							<span className="font-mono text-[12px] tabular-nums">{formatCompactNumber(total)}</span>
+							{hasSplit && (
+								<div className="flex h-1.5 w-[64px] overflow-hidden rounded-sm">
+									<div className="bg-blue-400" style={{ width: `${inPct}%` }} />
+									<div className="flex-1 bg-violet-400" />
+								</div>
+							)}
+						</div>
+						{hasSplit && (
+							<div className="text-muted-foreground font-mono text-[10.5px] tabular-nums">
+								<span className="text-blue-500">{formatCompactNumber(prompt)}</span>
+								<span> / </span>
+								<span className="text-violet-500">{formatCompactNumber(completion)}</span>
+							</div>
+						)}
+					</div>
+				);
+			},
+		},
+		{
+			accessorKey: "cost",
+			header: ({ column }) => (
+				<Button variant="ghost" data-testid="logs-cost-sort-btn" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
+					Cost
+					<ArrowUpDown className="ml-2 h-4 w-4" />
+				</Button>
+			),
+			size: 120,
+			cell: ({ row }) => {
+				if (row.original.cost == null) {
+					return <div className="pl-4 font-mono text-[12px]">N/A</div>;
+				}
+				return <div className="pl-4 font-mono text-sm tabular-nums">{formatCost(row.original.cost)}</div>;
+			},
+		},
 	];
 
-	// Generate dynamic metadata columns
+	const attributionCell = (value?: string | null) => <div className="max-w-[180px] truncate font-mono text-xs">{value || "-"}</div>;
+
+	const attributionColumns: ColumnDef<LogEntry>[] = [
+		{
+			id: "virtual_key",
+			header: "Virtual Key",
+			size: 170,
+			cell: ({ row }) => attributionCell(row.original.virtual_key?.name ?? row.original.virtual_key_id),
+		},
+		{
+			id: "routing_rule",
+			header: "Routing Rule",
+			size: 170,
+			cell: ({ row }) => attributionCell(row.original.routing_rule?.name ?? row.original.routing_rule_id),
+		},
+		{
+			id: "team",
+			header: "Team",
+			size: 150,
+			cell: ({ row }) => attributionCell(row.original.team_name ?? row.original.team_id),
+		},
+		{
+			id: "customer",
+			header: "Customer",
+			size: 150,
+			cell: ({ row }) => attributionCell(row.original.customer_name ?? row.original.customer_id),
+		},
+		{
+			id: "user",
+			header: "User",
+			size: 150,
+			cell: ({ row }) => attributionCell(row.original.user_name ?? row.original.user_id),
+		},
+		{
+			id: "business_unit",
+			header: "Business Unit",
+			size: 150,
+			cell: ({ row }) => attributionCell(row.original.business_unit_name ?? row.original.business_unit_id),
+		},
+	];
+
 	const metadataColumns: ColumnDef<LogEntry>[] = metadataKeys.map((key) => ({
 		id: `metadata_${key}`,
 		header: key.charAt(0).toUpperCase() + key.slice(1),
+		size: 126,
 		cell: ({ row }) => {
 			const value = row.original.metadata?.[key];
 			return <div className="max-w-[150px] truncate font-mono text-xs">{value ?? "-"}</div>;
 		},
 	}));
 
-	const actionsColumn: ColumnDef<LogEntry> = {
-		id: "actions",
-		cell: ({ row }) => {
-			const log = row.original;
-			return (
-				<Button variant="outline" size="icon" aria-label="Delete log" className="text-destructive hover:bg-destructive/10 hover:text-destructive border-destructive/30" onClick={() => onDelete(log)} disabled={!hasDeleteAccess}>
-					<Trash2 />
-				</Button>
-			);
-		},
-	};
+	const actionsColumn: ColumnDef<LogEntry>[] = hasDeleteAccess
+		? [
+				{
+					id: "actions",
+					header: "",
+					size: 56,
+					cell: ({ row }) => {
+						const log = row.original;
+						return (
+							<div className="flex justify-center">
+								<LogActionsMenu log={log} onDelete={onDelete} />
+							</div>
+						);
+					},
+				},
+			]
+		: [];
 
-	return [...baseColumns, ...metadataColumns, actionsColumn];
+	return [...baseColumns, ...attributionColumns, ...metadataColumns, ...actionsColumn];
 };

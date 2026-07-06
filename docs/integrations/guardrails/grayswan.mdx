@@ -1,7 +1,7 @@
 ---
 title: "GraySwan Cygnal"
 description: "Integrate GraySwan Cygnal Monitor with Bifrost for AI safety monitoring with natural language rule definitions, violation scoring, and advanced threat detection."
-icon: "shield-check"
+icon: "/media/grayswan-logo-nav.svg"
 ---
 
 Bifrost integrates with **GraySwan Cygnal Monitor** to provide AI safety monitoring with natural language rule definitions and advanced threat detection capabilities. This page covers the configuration and capabilities of the GraySwan Cygnal guardrail provider.
@@ -28,6 +28,39 @@ Bifrost integrates with **GraySwan Cygnal Monitor** to provide AI safety monitor
 | `policy_ids` | array | No | - | Multiple policy IDs for aggregated rule evaluation |
 | `rules` | object | No | - | Custom natural language rules as key-value pairs |
 
+## Request Header Metadata
+
+For each GraySwan monitor call, Bifrost includes sanitized incoming request headers in GraySwan `metadata.headers`. This gives GraySwan request context for correlation and policy analysis, such as `x-request-id`, `x-correlation-id`, `traceparent`, `x-tenant-id`, `x-org-id`, `content-type`, and `content-length`.
+
+Credential-bearing headers are excluded. Bifrost does not send `authorization`, `proxy-authorization`, `x-api-key`, `api-key`, `x-goog-api-key`, `x-bf-vk`, `x-bf-api-key`, `x-bf-api-key-id`, `cookie`, `set-cookie`, or `grayswan-api-key` in GraySwan metadata.
+
+This is metadata only: these values are added to the JSON body sent to GraySwan, not forwarded as outbound HTTP headers, and they cannot override the configured GraySwan API key.
+
+```json
+{
+  "metadata": {
+    "headers": {
+      "x-request-id": "req-123",
+      "traceparent": "00-...",
+      "x-tenant-id": "tenant-123",
+      "content-type": "application/json"
+    }
+  }
+}
+```
+
+## Streaming Output and Tool Calls
+
+For text-only streaming responses, Bifrost forwards output to the client normally and does not call Cygnal.
+
+If Bifrost detects a supported tool call, it stops forwarding further chunks to the client, accumulates the remaining chunks until the model response is complete, and sends the full accumulated response and earlier conversation to Cygnal in one request. If Cygnal allows the response, Bifrost sends the held chunks to the client. If Cygnal blocks it, the tool call and later content are not sent.
+
+Any text sent before Bifrost detects the tool call remains visible to the client. Bifrost recognizes Chat Completions tool calls and Responses API function-call and custom tool-call events.
+
+<Note>
+  If the same rule also uses another output guardrail profile, Bifrost waits for that profile to check the completed response. GraySwan's text-only behavior only skips the GraySwan call; it does not bypass the other profile. See [Streaming Output Guardrails](/enterprise/guardrails#streaming-output-guardrails) for the shared behavior.
+</Note>
+
 ## Custom Rules Example
 
 ![GraySwan custom rules](/media/guardrails/gray-swan-custom-rule.png)
@@ -52,19 +85,4 @@ Rules are defined as key-value pairs where the key is the rule name and the valu
 - Content mutation monitoring
 - Detailed violation descriptions with rule attribution
 
-## Provider Capabilities Comparison
-
-| Capability | AWS Bedrock | Azure Content Safety | GraySwan | Patronus AI |
-|------------|-------------|---------------------|----------|-------------|
-| PII Detection | Yes | No | No | Yes |
-| Content Filtering | Yes | Yes | Yes | Yes |
-| Prompt Injection | Yes | Yes | Yes | Yes |
-| Hallucination Detection | No | No | No | Yes |
-| Toxicity Screening | Yes | Yes | Yes | Yes |
-| Custom Policies | Yes | Yes | Yes | Yes |
-| Custom Natural Language Rules | No | No | Yes | No |
-| Image Support | Yes | No | No | No |
-| IPI Detection | No | Yes | Yes | No |
-| Mutation Detection | No | No | Yes | No |
-
-For information on configuring guardrail rules and profiles, see [Guardrails](/enterprise/guardrails).
+For provider comparison and information on configuring guardrail rules and profiles, see [Guardrails](/enterprise/guardrails).

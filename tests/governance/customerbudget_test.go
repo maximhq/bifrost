@@ -197,10 +197,10 @@ func TestCustomerBudgetExceededWithMultipleTeams(t *testing.T) {
 			Body: CreateTeamRequest{
 				Name:       "test-team-" + generateRandomID(),
 				CustomerID: &customerID,
-				Budget: &BudgetRequest{
+				Budgets: []BudgetRequest{{
 					MaxLimit:      1.0, // High team budget so customer is the limiting factor
 					ResetDuration: "1h",
-				},
+				}},
 			},
 		})
 

@@ -152,6 +152,16 @@ func HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext, req *schemas.HTTP
 }
 
 
+// PreRequestHook is called once per top-level request (NOT per fallback attempt).
+// This is the routing phase — use it for provider/model/fallback decisions.
+// Mutations to req.Provider/req.Model/req.Fallbacks commit and propagate to every attempt.
+// Errors are non-blocking (logged + skipped).
+func PreRequestHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) error {
+	ctx.Log(schemas.LogLevelInfo, "PreRequestHook called")
+	// Plugins that don't participate in routing should just return nil
+	return nil
+}
+
 // PreLLMHook is called before the request is sent to the provider
 // This is where you can modify requests or short-circuit the flow
 func PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
@@ -175,6 +185,10 @@ func Cleanup() error {
 	return nil
 }
 ```
+
+<Note>
+This skeleton only shows the LLM and HTTP transport hooks. Plugins that need to intercept the **MCP gateway** (per-tool-call governance, transport-setup mutation) can also export `PreMCPHook` / `PostMCPHook` / `PreMCPConnectionHook` / `PostMCPConnectionHook` — see [MCP plugin hooks overview](#mcp-plugin-hooks-overview-sup-v1-5-x-sup) below.
+</Note>
   </Tab>
   <Tab title="v1.4.x">
 ```go
@@ -263,6 +277,13 @@ func HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext, req *schemas.HTTP
 	// return modifiedChunk, nil
 }
 
+
+// PreRequestHook is called once per top-level request (routing phase)
+// Mutations to req.Provider/req.Model/req.Fallbacks commit across fallbacks
+func PreRequestHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) error {
+	fmt.Println("PreRequestHook called")
+	return nil
+}
 
 // PreLLMHook is called before the request is sent to the provider
 // This is where you can modify requests or short-circuit the flow
@@ -375,7 +396,7 @@ Returns a unique identifier for your plugin. This name appears in logs and statu
 
 #### `ctx.Log(level, msg)` <sup>v1.5.x+</sup>
 
-Emits a structured log entry scoped to the current plugin. Use this instead of `fmt.Println` for production logging — entries are collected per-request and can be retrieved programmatically.
+Emits a structured log entry scoped to the current plugin. Use this instead of `fmt.Println` for production logging - entries are collected per-request and can be retrieved programmatically.
 
 ```go
 ctx.Log(schemas.LogLevelInfo, "processing request")
@@ -393,10 +414,10 @@ ctx.Log(schemas.LogLevelError, "failed to parse response body")
 | `schemas.LogLevelError` | `"error"` |
 
 Key points:
-- **Thread-safe** — safe to call from concurrent goroutines
-- **Scoped** — each entry is automatically tagged with your plugin's name
-- **Timestamped** — entries include Unix millisecond timestamps
-- **No-op when unscoped** — safe to call in any context; silently ignored outside plugin hooks
+- **Thread-safe** - safe to call from concurrent goroutines
+- **Scoped** - each entry is automatically tagged with your plugin's name
+- **Timestamped** - entries include Unix millisecond timestamps
+- **No-op when unscoped** - safe to call in any context; silently ignored outside plugin hooks
 - Logs are retrievable via `ctx.GetPluginLogs()` (read copy) or `ctx.DrainPluginLogs()` (transfer ownership)
 
 <Tabs>
@@ -543,6 +564,58 @@ This function is **only called** when using `bifrost-http`. It's **not invoked**
   </Tab>
 </Tabs>
 
+#### `PreRequestHook(...)` <sup>v1.6.x+</sup>
+
+Called **once per top-level request**, before any provider call and before `PreLLMHook`. This is the **routing phase**: it's where plugins decide which provider, model, and fallbacks the request should be sent to.
+
+Use this for:
+- **Routing decisions**: governance rules, virtual-key load balancing, geo/tier routing
+- **Provider resolution**: filling in `req.Provider` for unprefixed model names (the built-in `model-catalog-resolver` does this as the last routing layer)
+- **Fallback chain construction**: populating `req.Fallbacks` based on policy
+
+**Why a separate hook from `PreLLMHook`:**
+
+| Aspect | `PreRequestHook` | `PreLLMHook` |
+|---|---|---|
+| Runs | Once per request | Once per provider attempt (re-runs on each fallback) |
+| Provider/Model mutations | **Commit and propagate** to every attempt | No-op for `Provider`/`Model` (overwritten by core) |
+| Use for | Routing decisions | Request transforms, caching, validation |
+| Short-circuit | No | Yes (can return a synthetic response) |
+| Error semantics | Non-blocking (logged, pipeline continues) | Non-blocking (logged, pipeline continues) |
+
+**Routing Example:**
+
+```go
+func PreRequestHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) error {
+	provider, model, _ := req.GetRequestFields()
+
+	// Route premium-tier requests to a faster provider
+	if tier := ctx.Value(schemas.BifrostContextKey("x-tier")); tier == "premium" && provider == "openai" {
+		req.SetProvider(schemas.Anthropic)
+		req.SetModel("claude-3-5-sonnet")
+		// Emit a routing-engine log entry so users can see why this decision was made
+		ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelInfo,
+			fmt.Sprintf("Routed %s to anthropic/claude-3-5-sonnet (tier=premium)", model))
+		schemas.AppendToContextList(ctx, schemas.BifrostContextKeyRoutingEnginesUsed,
+			schemas.RoutingEngineRoutingRule)
+	}
+	return nil
+}
+```
+
+**Two helpers worth knowing when writing routing logic:**
+
+- `ctx.AppendRoutingEngineLog(engine, level, message)` — emits a structured log entry visible in observability tools. Use it to explain *why* a routing decision was made.
+- `schemas.AppendToContextList(ctx, schemas.BifrostContextKeyRoutingEnginesUsed, engineName)` — records which routing engine(s) participated. Surfaces in telemetry as `routing.engines_used`.
+
+<Info>
+**Plugin order matters for routing.** Built-in routing plugins run in this order within `PreRequestHook`: governance routing rules → governance VK load balancing → enterprise load balancer → model-catalog-resolver (final fallback). Custom plugins can slot in via `placement` + `order` — see [Plugin Sequencing](./sequencing).
+</Info>
+
+<Info>
+**Errors are non-blocking.** Returning a non-nil error from `PreRequestHook` logs a warning but does NOT fail the request — the pipeline continues with the next plugin. The core validates `req.Provider` after all `PreRequestHook` plugins have run; an unresolved provider returns a 400 to the caller.
+</Info>
+
 #### `PreLLMHook(...)`
 
 Called before each provider request. Use this to:
@@ -589,6 +662,158 @@ func PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bif
 	return resp, bifrostErr, nil
 }
 ```
+
+#### MCP plugin hooks overview <sup>v1.5.x+</sup>
+
+Plugins can also intercept traffic going through the **MCP gateway** (Bifrost's Model Context Protocol surface) by exporting any of four optional symbols. These are separate from the LLM hooks above — the LLM hooks fire for `/v1/chat/completions` / `/v1/responses` style traffic; the MCP hooks fire for ping / list_tools / execute_tool / connect operations on configured MCP clients.
+
+The MCP surface splits into two lifecycle stages with two hook pairs each:
+
+| Stage | Hook pair | Request type | Fires |
+|---|---|---|---|
+| **Connect** (transport setup) | `PreMCPConnectionHook` / `PostMCPConnectionHook` | `*BifrostMCPConnectRequest` | Once per MCP client when its transport is being established |
+| **Envelope** (per-call) | `PreMCPHook` / `PostMCPHook` | `*BifrostMCPRequest` | Per ping / list_tools / execute_tool call after Connect has succeeded |
+
+Connect carries transport-level inputs (URL, headers, stdio args) that don't apply post-connection, so it's handled separately by a typed interface. A plugin can implement both pairs, just the envelope pair, or just the Connect pair — export whichever symbols you need. The `.so` loader treats every MCP hook as optional.
+
+<Note>
+Connect short-circuits use `*MCPConnectionShortCircuit` (typed Connect response). Envelope short-circuits use `*MCPPluginShortCircuit` (generic envelope wrapper). They look similar but are not interchangeable — Connect doesn't go through the envelope path.
+</Note>
+
+#### `PreMCPConnectionHook(ctx, req)` <sup>v1.5.x+</sup>
+
+Runs when a configured MCP client's transport is being brought up. Use this to:
+- Inject transport-level headers (HTTP/SSE clients)
+- Mutate `StdioCommand` / `StdioArgs` for stdio transports
+- Refuse a connection (short-circuit with an error) based on client name / auth type
+
+Key points:
+- **Mutable fields** (changes are honored by Bifrost): `ConnectionString`, `Headers`, `StdioCommand`, `StdioArgs`
+- **Observe-only fields** (mutations are ignored): `ClientName`, `ConnectionType`, `AuthType` — changing them mid-flight would break the rest of the connect codepath
+- `Headers` mutations are silently dropped on `STDIO` and `InProcess` transports — check `req.ConnectionType` before injecting
+- Return `(req, nil, nil)` to continue with the (possibly mutated) request
+- Return `(req, &MCPConnectionShortCircuit{Error: ...}, nil)` to refuse the connection
+- Return `(req, &MCPConnectionShortCircuit{Response: ...}, nil)` to synthesize a successful handshake (rare — mostly for testing)
+
+```go
+func PreMCPConnectionHook(ctx *schemas.BifrostContext, req *schemas.BifrostMCPConnectRequest) (*schemas.BifrostMCPConnectRequest, *schemas.MCPConnectionShortCircuit, error) {
+    ctx.Log(schemas.LogLevelInfo, fmt.Sprintf("Connecting MCP client: %s (type=%s, auth=%s)", req.ClientName, req.ConnectionType, req.AuthType))
+
+    // Refuse blocklisted clients with a clear 403.
+    if isBlocked(req.ClientName) {
+        return req, &schemas.MCPConnectionShortCircuit{
+            Error: &schemas.BifrostError{
+                StatusCode: schemas.Ptr(403),
+                Error: &schemas.ErrorField{
+                    Message: fmt.Sprintf("client %q is not permitted", req.ClientName),
+                },
+            },
+        }, nil
+    }
+
+    // Inject an audit header — only meaningful for HTTP/SSE; stdio/inprocess ignore Headers.
+    if req.ConnectionType == schemas.MCPConnectionTypeHTTP || req.ConnectionType == schemas.MCPConnectionTypeSSE {
+        if req.Headers == nil {
+            req.Headers = make(map[string]string)
+        }
+        req.Headers["X-My-Audit"] = "bifrost-connect:" + req.ClientName
+    }
+
+    return req, nil, nil
+}
+```
+
+#### `PostMCPConnectionHook(ctx, resp, bifrostErr)` <sup>v1.5.x+</sup>
+
+Runs after the upstream initialize handshake. Use this to:
+- Read `ServerInfo`, `ProtocolVersion`, and `ServerCapabilities` from the negotiated handshake
+- Gate downstream behavior on advertised capabilities (e.g. warn if a server doesn't advertise `Tools`)
+- Transform handshake errors before they surface to the caller
+
+Key points:
+- On handshake failure, `resp` is `nil` and `bifrostErr` is populated
+- Mutating `resp` is allowed but rarely useful — the handshake result is already cached by the connect pipeline
+- Return the values unchanged to pass through; return a modified `bifrostErr` to transform errors
+
+```go
+func PostMCPConnectionHook(ctx *schemas.BifrostContext, resp *schemas.BifrostMCPConnectResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostMCPConnectResponse, *schemas.BifrostError, error) {
+    if bifrostErr != nil {
+        // bifrostErr.Error is a *ErrorField — can be nil for some failure
+        // shapes (e.g. network-level handshake errors). Guard before deref.
+        if bifrostErr.Error != nil {
+            ctx.Log(schemas.LogLevelError, fmt.Sprintf("MCP handshake failed: %s", bifrostErr.Error.Message))
+        }
+        return resp, bifrostErr, nil
+    }
+    if resp != nil && resp.ServerInfo != nil {
+        ctx.Log(schemas.LogLevelInfo, fmt.Sprintf("connected to %s v%s (protocol %s)", resp.ServerInfo.Name, resp.ServerInfo.Version, resp.ProtocolVersion))
+    }
+    if resp != nil && resp.ServerCapabilities != nil && !resp.ServerCapabilities.Tools {
+        ctx.Log(schemas.LogLevelWarn, fmt.Sprintf("server %q does not advertise Tools capability", resp.ExtraFields.ClientName))
+    }
+    return resp, bifrostErr, nil
+}
+```
+
+#### `PreMCPHook(ctx, req)` <sup>v1.5.x+</sup>
+
+Runs before each MCP envelope request (ping / list_tools / execute_tool). Use this to:
+- Apply per-tool allowlists or governance
+- Cache tool-list responses (short-circuit ListTools with a cached value)
+- Add request metadata to context for downstream PostMCPHook
+
+Key points:
+- The envelope is request-type-discriminated via `req.RequestType` — **always early-out for non-tool-execute envelopes** unless you specifically want to observe ping/list_tools. The `req.RequestType.IsExecuteTool()` helper exists for exactly this guard
+- For tool-execute requests, use `req.GetToolName()` to read the tool name regardless of which deprecated sub-request shape is populated (chat-tool-call vs responses-tool-call vs the future unified execute-tool)
+- Return `(req, &MCPPluginShortCircuit{Error: ...}, nil)` to block the call
+- Return `(req, &MCPPluginShortCircuit{Response: ...}, nil)` to short-circuit with a synthetic result
+
+```go
+func PreMCPHook(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest) (*schemas.BifrostMCPRequest, *schemas.MCPPluginShortCircuit, error) {
+    // Only gate execute-tool envelopes; let ping/list_tools through.
+    if !req.RequestType.IsExecuteTool() {
+        return req, nil, nil
+    }
+
+    toolName := req.GetToolName()
+    if isBlocked(toolName) {
+        return req, &schemas.MCPPluginShortCircuit{
+            Error: &schemas.BifrostError{
+                StatusCode: schemas.Ptr(403),
+                Error: &schemas.ErrorField{
+                    Message: fmt.Sprintf("tool %q is not allowed", toolName),
+                },
+            },
+        }, nil
+    }
+    return req, nil, nil
+}
+```
+
+#### `PostMCPHook(ctx, resp, bifrostErr)` <sup>v1.5.x+</sup>
+
+Runs after each MCP envelope request completes (successfully or with error). Use this to:
+- Record tool-call latency or usage metrics
+- Transform error responses
+- Update audit trails set by `PreMCPHook` via context
+
+Key points:
+- Like Post LLM hook, runs in **reverse order** of pre-hooks across the plugin chain
+- The originating request type is available on the response via `resp.ExtraFields.MCPRequestType` (and on errors via `bifrostErr.ExtraFields.MCPRequestType`), so the same `IsExecuteTool()` early-out pattern works here too
+- Latency in milliseconds is on `resp.ExtraFields.Latency`
+
+```go
+func PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.BifrostMCPResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostMCPResponse, *schemas.BifrostError, error) {
+    if resp != nil && resp.ExtraFields.MCPRequestType.IsExecuteTool() {
+        ctx.Log(schemas.LogLevelInfo, fmt.Sprintf("tool %s completed in %dms", resp.ExtraFields.ToolName, resp.ExtraFields.Latency))
+    }
+    return resp, bifrostErr, nil
+}
+```
+
+<Tip>
+The full working example covering all four MCP hooks (envelope + Connect) lives at [`examples/plugins/mcp-only`](https://github.com/maximhq/bifrost/tree/main/examples/plugins/mcp-only). Use it as a starting point rather than retyping the boilerplate.
+</Tip>
 
 #### `Cleanup() error`
 
@@ -900,7 +1125,7 @@ bifrost-http: go1.26.1
   dep  github.com/valyala/fasthttp      v1.55.0   # <-- MISMATCH!
 ```
 
-Notice that even though the Go version matches (`go1.26.1`), the **package versions** are different — this causes the error.
+Notice that even though the Go version matches (`go1.26.1`), the **package versions** are different - this causes the error.
 
 **Step 2: Update your plugin dependencies**
 
@@ -935,7 +1160,7 @@ $ go version -m my-plugin.so | grep bifrost
 
 **Error**: `plugin: symbol Init not found`
 
-**Solution**: Ensure all required functions are exported (start with capital letter) and have the correct signature.
+**Solution**: Ensure all required functions are exported (start with capital letter) and have the correct signature. The loader treats every hook as optional except `GetName` and `Cleanup` — including the MCP hook quartet (`PreMCPHook`, `PostMCPHook`, `PreMCPConnectionHook`, `PostMCPConnectionHook`). A typo in a hook name silently disables that hook rather than failing the load.
 
 ## Source Code Reference
 
@@ -1138,7 +1363,9 @@ plugin was built with a different version of package github.com/maximhq/bifrost/
 
 ```json
 {
-  "log_level": "debug",
+  "client": {
+    "enable_logging": true
+  },
   "plugins": [
     {
       "enabled": true,
@@ -1150,11 +1377,13 @@ plugin was built with a different version of package github.com/maximhq/bifrost/
 }
 ```
 
+For verbose plugin-loader logs, set `BIFROST_LOG_LEVEL=debug` in the environment.
+
 **Check plugin symbols:**
 
 ```bash
 # List symbols exported by plugin
-go tool nm my-plugin.so | grep -E 'Init|GetName|PreLLMHook'
+go tool nm my-plugin.so | grep -E 'Init|GetName|PreLLMHook|PreMCPHook|PreMCPConnectionHook|PostMCPHook|PostMCPConnectionHook'
 ```
 
 **Verify Go version:**

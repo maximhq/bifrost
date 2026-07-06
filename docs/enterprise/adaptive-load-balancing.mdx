@@ -147,7 +147,7 @@ flowchart LR
 
 5. **Smart Key Selection**: Uses weighted random selection with jitter (5% band) and 25% exploration probability to probe potentially recovered routes, rather than always picking the best route.
 
-6. **Performance Thresholds**: Specific triggers drive state transitions —&gt; 2% error rate triggers Degraded, &gt;5% error rate or TPM hit triggers Failed, &lt;2% error with 50%+ expected traffic triggers Healthy.
+6. **Performance Thresholds**: Specific triggers drive state transitions -&gt; 2% error rate triggers Degraded, &gt;5% error rate or TPM hit triggers Failed, &lt;2% error with 50%+ expected traffic triggers Healthy.
 
 <Tip>
 The system is designed to be self-healing: it penalizes failing routes quickly, but also enables fast recovery (90% penalty reduction in 30 seconds) once issues are fixed.

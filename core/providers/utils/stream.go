@@ -1,6 +1,8 @@
 package utils
 
 import (
+	"context"
+
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -20,7 +22,12 @@ import (
 //
 // If the source channel is closed immediately (empty stream), it returns a
 // nil channel with nil error. drainDone is already closed.
+//
+// The ctx argument cancels the background forwarding goroutine if the consumer
+// abandons the returned wrapped channel. On ctx.Done the goroutine drains the
+// source stream so the upstream provider's blocked send can exit cleanly.
 func CheckFirstStreamChunkForError(
+	ctx context.Context,
 	stream chan *schemas.BifrostStreamChunk,
 ) (chan *schemas.BifrostStreamChunk, <-chan struct{}, *schemas.BifrostError) {
 	firstChunk, ok := <-stream
@@ -53,7 +60,15 @@ func CheckFirstStreamChunkForError(
 		defer close(done)
 		defer close(wrapped)
 		for chunk := range stream {
-			wrapped <- chunk
+			select {
+			case wrapped <- chunk:
+			case <-ctx.Done():
+				// Consumer abandoned the wrapped channel. Drain the source so the
+				// provider's blocked send unblocks and its goroutine can exit.
+				for range stream {
+				}
+				return
+			}
 		}
 	}()
 	return wrapped, done, nil

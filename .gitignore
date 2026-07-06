@@ -1,6 +1,7 @@
 .env
 .vscode
 .DS_Store
+.tool-versions
 *_creds*
 **/venv/
 **/__pycache__/**
@@ -45,6 +46,7 @@ transports/schema/config.schema.json
 *.db
 *.db-shm
 *.db-wal
+transports/bifrost-http/v1.5.x
 
 # Test reports
 test-reports
@@ -97,6 +99,7 @@ dist/
 # IDE
 .idea/
 .vscode/
+.zed/
 
 # OS
 .DS_Store
@@ -119,3 +122,68 @@ terraform.tfstate.backup
 
 # Bifrost benchmarking
 bifrost-benchmarking
+
+# Tests
+:memory:
+
+# Generated test TLS certs (created by tests/docker-compose.yml redis-certs-init)
+tests/redis-certs/
+
+# dependencies
+ui/node_modules
+ui/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# testing
+ui/coverage
+
+# next.js
+ui/.next/
+ui/out/
+
+# production
+/build
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# env files (can opt-in for committing if needed)
+.env*
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+# auto-generated TanStack Router route tree
+ui/app/routeTree.gen.ts
+
+.tanstack
+.next
+
+.infisical
+
+# e2e test artifacts
+examples/mcps/auth-demo-server/auth-demo-server
+examples/mcps/oauth-demo-server/oauth-demo-server
+
+# binaries
+tests/cmd/e2eseed/e2eseed
+tests/cmd/seedvks/seedvks
+
+# routing harness ledgers (local run journals, never committed)
+tests/e2e/api/routing/ledger-*

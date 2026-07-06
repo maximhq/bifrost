@@ -184,7 +184,7 @@ func TestToOpenAIResponsesRequest_ReasoningOnlyMessageSkip(t *testing.T) {
 				Input: []schemas.ResponsesMessage{tt.message},
 			}
 
-			result := ToOpenAIResponsesRequest(bifrostReq)
+			result := ToOpenAIResponsesRequest(nil, bifrostReq)
 
 			if result == nil {
 				t.Fatal("ToOpenAIResponsesRequest returned nil")
@@ -221,6 +221,251 @@ func TestToOpenAIResponsesRequest_ReasoningOnlyMessageSkip(t *testing.T) {
 				} else if *msg.ResponsesReasoning.EncryptedContent != *tt.expectedEncryptedContent {
 					t.Errorf("Expected EncryptedContent=%q, got %q", *tt.expectedEncryptedContent, *msg.ResponsesReasoning.EncryptedContent)
 				}
+			}
+		})
+	}
+}
+
+// TestToOpenAIResponsesRequest_ReasoningStringContent guards the Codex/GPT-5.5
+// replay path: a reasoning item can arrive with content as a string (notably an
+// empty "" round-tripped through the response path). OpenAI types reasoning.content
+// as an array of reasoning_text blocks and rejects a string with
+// "expected an array ... got a string", so the outbound conversion must drop the
+// empty string and promote a non-empty one to a reasoning_text block.
+func TestToOpenAIResponsesRequest_ReasoningStringContent(t *testing.T) {
+	t.Run("empty string content is dropped", func(t *testing.T) {
+		bifrostReq := &schemas.BifrostResponsesRequest{
+			Model: "gpt-5.5",
+			Input: []schemas.ResponsesMessage{{
+				Type:               schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+				ResponsesReasoning: &schemas.ResponsesReasoning{EncryptedContent: schemas.Ptr("enc1")},
+				Content:            &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("")},
+			}},
+		}
+
+		result := ToOpenAIResponsesRequest(nil, bifrostReq)
+		original := bifrostReq.Input[0].Content
+		if original == nil || original.ContentStr == nil || *original.ContentStr != "" {
+			t.Fatalf("expected input reasoning content string to remain unchanged, got %#v", original)
+		}
+		if len(original.ContentBlocks) != 0 {
+			t.Fatalf("expected input reasoning content blocks to remain empty, got %#v", original.ContentBlocks)
+		}
+		if result == nil || len(result.Input.OpenAIResponsesRequestInputArray) != 1 {
+			t.Fatalf("expected one converted message, got %#v", result)
+		}
+		if c := result.Input.OpenAIResponsesRequestInputArray[0].Content; c != nil {
+			t.Errorf("expected reasoning Content to be dropped, got %#v", c)
+		}
+
+		// End-to-end: the marshalled request must not carry content:"" on the reasoning item.
+		out, err := json.Marshal(result)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if strings.Contains(string(out), `"content":""`) {
+			t.Errorf("reasoning item serialized with empty-string content: %s", string(out))
+		}
+	})
+
+	t.Run("non-empty string content becomes a reasoning_text block", func(t *testing.T) {
+		bifrostReq := &schemas.BifrostResponsesRequest{
+			Model: "gpt-5.5",
+			Input: []schemas.ResponsesMessage{{
+				Type:               schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+				ResponsesReasoning: &schemas.ResponsesReasoning{EncryptedContent: schemas.Ptr("enc1")},
+				Content:            &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("thinking")},
+			}},
+		}
+
+		result := ToOpenAIResponsesRequest(nil, bifrostReq)
+		original := bifrostReq.Input[0].Content
+		if original == nil || original.ContentStr == nil || *original.ContentStr != "thinking" {
+			t.Fatalf("expected input reasoning content string to remain unchanged, got %#v", original)
+		}
+		if len(original.ContentBlocks) != 0 {
+			t.Fatalf("expected input reasoning content blocks to remain empty, got %#v", original.ContentBlocks)
+		}
+		if result == nil || len(result.Input.OpenAIResponsesRequestInputArray) != 1 {
+			t.Fatalf("expected one converted message, got %#v", result)
+		}
+		c := result.Input.OpenAIResponsesRequestInputArray[0].Content
+		if c == nil || c.ContentStr != nil || len(c.ContentBlocks) != 1 {
+			t.Fatalf("expected a single content block, got %#v", c)
+		}
+		block := c.ContentBlocks[0]
+		if block.Type != schemas.ResponsesOutputMessageContentTypeReasoning ||
+			block.Text == nil || *block.Text != "thinking" {
+			t.Errorf("expected reasoning_text block with text %q, got %#v", "thinking", block)
+		}
+	})
+}
+
+func TestToOpenAIResponsesRequest_NormalizesReasoningEffort(t *testing.T) {
+	// Register the custom "deepseek" provider so ParseModelString strips its prefix.
+	schemas.RegisterKnownProvider(schemas.ModelProvider("deepseek"))
+	defer schemas.UnregisterKnownProvider(schemas.ModelProvider("deepseek"))
+	// GLM-5.2 (Z.ai) is also a custom OpenAI-compatible provider.
+	schemas.RegisterKnownProvider(schemas.ModelProvider("zai"))
+	defer schemas.UnregisterKnownProvider(schemas.ModelProvider("zai"))
+
+	tests := []struct {
+		name     string
+		provider schemas.ModelProvider
+		model    string
+		effort   string
+		expected string
+	}{
+		{
+			name:     "preserves xhigh for gpt-5.4",
+			model:    "gpt-5.4",
+			effort:   "xhigh",
+			expected: "xhigh",
+		},
+		{
+			name:     "preserves xhigh for gpt-5.2",
+			model:    "gpt-5.2",
+			effort:   "xhigh",
+			expected: "xhigh",
+		},
+		{
+			name:     "preserves xhigh for gpt-5.2 pro",
+			model:    "gpt-5.2-pro",
+			effort:   "xhigh",
+			expected: "xhigh",
+		},
+		{
+			name:     "preserves xhigh for gpt-5.2 codex",
+			model:    "gpt-5.2-codex",
+			effort:   "xhigh",
+			expected: "xhigh",
+		},
+		{
+			name:     "preserves xhigh for gpt-5.3 codex",
+			model:    "gpt-5.3-codex",
+			effort:   "xhigh",
+			expected: "xhigh",
+		},
+		{
+			name:     "preserves xhigh for gpt-5.4 mini",
+			model:    "gpt-5.4-mini",
+			effort:   "xhigh",
+			expected: "xhigh",
+		},
+		{
+			name:     "preserves xhigh for gpt-5.5",
+			model:    "gpt-5.5",
+			effort:   "xhigh",
+			expected: "xhigh",
+		},
+		{
+			name:     "maps xhigh to high for gpt-5",
+			model:    "gpt-5",
+			effort:   "xhigh",
+			expected: "high",
+		},
+		{
+			name:     "maps xhigh to high for gpt-5.1",
+			model:    "gpt-5.1",
+			effort:   "xhigh",
+			expected: "high",
+		},
+		{
+			name:     "maps xhigh to high for gpt-5-pro",
+			model:    "gpt-5-pro",
+			effort:   "xhigh",
+			expected: "high",
+		},
+		{
+			name:     "maps minimal to low",
+			model:    "gpt-5.4",
+			effort:   "minimal",
+			expected: "low",
+		},
+		{
+			name:     "maps max to xhigh for xhigh-capable model",
+			model:    "gpt-5.4",
+			effort:   "max",
+			expected: "xhigh",
+		},
+		{
+			name:     "maps max to high for model without xhigh",
+			model:    "gpt-5.1",
+			effort:   "max",
+			expected: "high",
+		},
+		{
+			// DeepSeek V4 is routed via a custom OpenAI-compatible provider, so the
+			// OpenAI-only reasoning-stripping doesn't apply and "max" passes through.
+			name:     "preserves max for deepseek-v4-pro",
+			provider: schemas.ModelProvider("deepseek"),
+			model:    "deepseek-v4-pro",
+			effort:   "max",
+			expected: "max",
+		},
+		{
+			name:     "preserves max for deepseek-v4-flash",
+			provider: schemas.ModelProvider("deepseek"),
+			model:    "deepseek-v4-flash",
+			effort:   "max",
+			expected: "max",
+		},
+		{
+			name:     "preserves max for provider-prefixed deepseek-v4",
+			provider: schemas.ModelProvider("deepseek"),
+			model:    "deepseek/deepseek-v4-pro",
+			effort:   "max",
+			expected: "max",
+		},
+		{
+			// GLM-5.2 (Z.ai) natively supports "max" reasoning effort.
+			name:     "preserves max for glm-5.2",
+			provider: schemas.ModelProvider("zai"),
+			model:    "glm-5.2",
+			effort:   "max",
+			expected: "max",
+		},
+		{
+			name:     "preserves max for provider-prefixed glm-5.2",
+			provider: schemas.ModelProvider("zai"),
+			model:    "zai/glm-5.2",
+			effort:   "max",
+			expected: "max",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			provider := tt.provider
+			if provider == "" {
+				provider = schemas.OpenAI
+			}
+			req := ToOpenAIResponsesRequest(nil, &schemas.BifrostResponsesRequest{
+				Provider: provider,
+				Model:    tt.model,
+				Input: []schemas.ResponsesMessage{{
+					Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+				}},
+				Params: &schemas.ResponsesParameters{
+					Reasoning: &schemas.ResponsesParametersReasoning{
+						Effort:    schemas.Ptr(tt.effort),
+						MaxTokens: schemas.Ptr(1024),
+					},
+				},
+			})
+
+			if req == nil {
+				t.Fatal("expected OpenAI responses request")
+			}
+			if req.Reasoning == nil || req.Reasoning.Effort == nil {
+				t.Fatal("expected reasoning effort to be set")
+			}
+			if got := *req.Reasoning.Effort; got != tt.expected {
+				t.Fatalf("expected reasoning effort %q, got %q", tt.expected, got)
+			}
+			if req.Reasoning.MaxTokens != nil {
+				t.Fatalf("expected reasoning max_tokens to be cleared, got %d", *req.Reasoning.MaxTokens)
 			}
 		})
 	}
@@ -316,7 +561,7 @@ func TestToOpenAIResponsesRequest_GPTOSS_SummaryToContentBlocks(t *testing.T) {
 				Input: []schemas.ResponsesMessage{tt.message},
 			}
 
-			result := ToOpenAIResponsesRequest(bifrostReq)
+			result := ToOpenAIResponsesRequest(nil, bifrostReq)
 
 			if result == nil {
 				t.Fatal("ToOpenAIResponsesRequest returned nil")
@@ -1444,14 +1689,14 @@ func TestToOpenAIResponsesRequest_ToolNormalization(t *testing.T) {
 					},
 				},
 				{
-					Type: schemas.ResponsesToolTypeWebSearch,
+					Type:                   schemas.ResponsesToolTypeWebSearch,
 					ResponsesToolWebSearch: &schemas.ResponsesToolWebSearch{},
 				},
 			},
 		},
 	}
 
-	result := ToOpenAIResponsesRequest(bifrostReq)
+	result := ToOpenAIResponsesRequest(nil, bifrostReq)
 	if result == nil {
 		t.Fatal("expected non-nil result")
 	}
@@ -1523,7 +1768,7 @@ func TestToOpenAIResponsesRequest_PreservesExplicitEmptyToolParameters(t *testin
 		},
 	}
 
-	result := ToOpenAIResponsesRequest(bifrostReq)
+	result := ToOpenAIResponsesRequest(nil, bifrostReq)
 	if result == nil {
 		t.Fatal("expected non-nil result")
 	}
@@ -1539,6 +1784,141 @@ func TestToOpenAIResponsesRequest_PreservesExplicitEmptyToolParameters(t *testin
 	}
 	if string(marshaled) != `{}` {
 		t.Fatalf("expected parameters to remain {}, got %s", marshaled)
+	}
+}
+
+func TestResponsesTool_MarshalUnmarshal_ToolSearchTool(t *testing.T) {
+	jsonData := `{"type":"tool_search","execution":"client","description":"Search tools","parameters":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"],"additionalProperties":false}}`
+
+	t.Run("tool search tool - marshal", func(t *testing.T) {
+		tool := schemas.ResponsesTool{
+			Type:        schemas.ResponsesToolTypeToolSearch,
+			Description: schemas.Ptr("Search tools"),
+			ResponsesToolToolSearch: &schemas.ResponsesToolToolSearch{
+				Execution: schemas.Ptr("client"),
+				Parameters: &schemas.ToolFunctionParameters{
+					Type: "object",
+					Properties: schemas.NewOrderedMapFromPairs(
+						schemas.KV("query", schemas.NewOrderedMapFromPairs(
+							schemas.KV("type", "string"),
+						)),
+					),
+					Required: []string{"query"},
+					AdditionalProperties: &schemas.AdditionalPropertiesStruct{
+						AdditionalPropertiesBool: schemas.Ptr(false),
+					},
+				},
+			},
+		}
+
+		data, err := json.Marshal(tool)
+		if err != nil {
+			t.Fatalf("failed to marshal: %v", err)
+		}
+
+		var expected, actual map[string]interface{}
+		if err := json.Unmarshal([]byte(jsonData), &expected); err != nil {
+			t.Fatalf("failed to unmarshal expected JSON: %v", err)
+		}
+		if err := json.Unmarshal(data, &actual); err != nil {
+			t.Fatalf("failed to unmarshal actual JSON: %v", err)
+		}
+
+		if !mapsEqual(expected, actual) {
+			t.Errorf("marshaled JSON mismatch\nexpected: %s\nactual:   %s", jsonData, string(data))
+		}
+	})
+
+	t.Run("tool search tool - unmarshal", func(t *testing.T) {
+		var tool schemas.ResponsesTool
+		if err := json.Unmarshal([]byte(jsonData), &tool); err != nil {
+			t.Fatalf("failed to unmarshal: %v", err)
+		}
+
+		if tool.Type != schemas.ResponsesToolTypeToolSearch {
+			t.Errorf("type mismatch: expected %s, got %s", schemas.ResponsesToolTypeToolSearch, tool.Type)
+		}
+		if tool.ResponsesToolToolSearch == nil {
+			t.Fatal("expected ResponsesToolToolSearch to be populated")
+		}
+		if tool.ResponsesToolToolSearch.Execution == nil || *tool.ResponsesToolToolSearch.Execution != "client" {
+			t.Fatal("expected execution=client to be preserved")
+		}
+		if tool.ResponsesToolToolSearch.Parameters == nil {
+			t.Fatal("expected parameters to be preserved")
+		}
+	})
+}
+
+func TestToOpenAIResponsesRequest_PreservesNamespaceAndWebSearchFields(t *testing.T) {
+	externalWebAccess := true
+	bifrostReq := &schemas.BifrostResponsesRequest{
+		Model: "gpt-5.4",
+		Input: []schemas.ResponsesMessage{{
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+		}},
+		Params: &schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{
+				{
+					Type: schemas.ResponsesToolTypeWebSearch,
+					ResponsesToolWebSearch: &schemas.ResponsesToolWebSearch{
+						ExternalWebAccess:  &externalWebAccess,
+						SearchContentTypes: []string{"text", "image"},
+					},
+				},
+				{
+					Type:        schemas.ResponsesToolTypeNamespace,
+					Name:        schemas.Ptr("mcp__node_repl__"),
+					Description: schemas.Ptr("node repl tools"),
+					ResponsesToolNamespace: &schemas.ResponsesToolNamespace{
+						Tools: []schemas.ResponsesTool{{
+							Type:        schemas.ResponsesToolTypeFunction,
+							Name:        schemas.Ptr("js"),
+							Description: schemas.Ptr("run js"),
+							ResponsesToolFunction: &schemas.ResponsesToolFunction{
+								Parameters: &schemas.ToolFunctionParameters{
+									Type: "object",
+									Properties: schemas.NewOrderedMapFromPairs(
+										schemas.KV("code", schemas.NewOrderedMapFromPairs(
+											schemas.KV("type", "string"),
+										)),
+									),
+									Required: []string{"code"},
+								},
+							},
+						}},
+					},
+				},
+			},
+		},
+	}
+
+	result := ToOpenAIResponsesRequest(nil, bifrostReq)
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if len(result.Tools) != 2 {
+		t.Fatalf("expected 2 tools to survive conversion, got %d", len(result.Tools))
+	}
+
+	webSearch := result.Tools[0].ResponsesToolWebSearch
+	if webSearch == nil {
+		t.Fatal("expected web_search tool to be preserved")
+	}
+	if webSearch.ExternalWebAccess == nil || !*webSearch.ExternalWebAccess {
+		t.Fatal("expected external_web_access=true to be preserved")
+	}
+	if len(webSearch.SearchContentTypes) != 2 || webSearch.SearchContentTypes[0] != "text" || webSearch.SearchContentTypes[1] != "image" {
+		t.Fatalf("expected search_content_types to be preserved, got %+v", webSearch.SearchContentTypes)
+	}
+
+	namespace := result.Tools[1]
+	if namespace.Type != schemas.ResponsesToolTypeNamespace {
+		t.Fatalf("expected namespace tool to survive conversion, got %s", namespace.Type)
+	}
+	if namespace.ResponsesToolNamespace == nil || len(namespace.ResponsesToolNamespace.Tools) != 1 {
+		t.Fatal("expected namespace child tools to be preserved")
 	}
 }
 
@@ -1595,4 +1975,46 @@ func valuesEqual(v1, v2 interface{}) bool {
 		// For primitives, use direct comparison
 		return v1 == v2
 	}
+}
+
+func TestToOpenAIResponsesRequest_OpenRouterServerToolsPreserved(t *testing.T) {
+	makeReq := func(provider schemas.ModelProvider, toolType schemas.ResponsesToolType) *schemas.BifrostResponsesRequest {
+		return &schemas.BifrostResponsesRequest{
+			Provider: provider,
+			Model:    "anthropic/claude-haiku-4.5",
+			Input: []schemas.ResponsesMessage{
+				{
+					Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+				},
+			},
+			Params: &schemas.ResponsesParameters{
+				Tools: []schemas.ResponsesTool{{Type: toolType}},
+			},
+		}
+	}
+
+	// Any tool under the "openrouter:" namespace must survive for the OpenRouter
+	// provider (web_search, web_fetch, and any future server tool).
+	for _, toolType := range []schemas.ResponsesToolType{"openrouter:web_search", "openrouter:web_fetch"} {
+		t.Run("openrouter keeps "+string(toolType), func(t *testing.T) {
+			result := ToOpenAIResponsesRequest(nil, makeReq(schemas.OpenRouter, toolType))
+			if result == nil {
+				t.Fatal("ToOpenAIResponsesRequest returned nil")
+			}
+			if len(result.Tools) != 1 || result.Tools[0].Type != toolType {
+				t.Fatalf("expected %s to be preserved for OpenRouter, got %+v", toolType, result.Tools)
+			}
+		})
+	}
+
+	t.Run("openai strips openrouter: namespace tools", func(t *testing.T) {
+		result := ToOpenAIResponsesRequest(nil, makeReq(schemas.OpenAI, "openrouter:web_search"))
+		if result == nil {
+			t.Fatal("ToOpenAIResponsesRequest returned nil")
+		}
+		if len(result.Tools) != 0 {
+			t.Fatalf("expected openrouter: tools to be stripped for OpenAI, got %+v", result.Tools)
+		}
+	})
 }

@@ -18,9 +18,7 @@ function escapeCell(value: unknown): string {
  * Each row is an array of cell values (string | number | boolean | null | undefined).
  */
 export function buildCSV(headers: string[], rows: unknown[][]): string {
-	return [headers, ...rows]
-		.map((row) => row.map(escapeCell).join(","))
-		.join("\n");
+	return [headers, ...rows].map((row) => row.map(escapeCell).join(",")).join("\n");
 }
 
 /**

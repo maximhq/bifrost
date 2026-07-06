@@ -636,13 +636,82 @@ async-image-variation-job:
             schema:
               $ref: '../../schemas/inference/common.yaml#/BifrostError'
 
-# --- Shared parameters ---
-
     security:
     - BearerAuth: []
     - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
+async-rerank:
+  post:
+    operationId: createAsyncRerank
+    summary: Create async rerank
+    description: |
+      Submits a rerank request for asynchronous execution. Returns a job ID immediately
+      with HTTP 202. Poll the corresponding GET endpoint with the job ID to retrieve the result.
+    tags:
+    - Async Jobs
+    parameters:
+    - $ref: '#/components/parameters/AsyncResultTTL'
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/inference/rerank.yaml#/RerankRequest'
+    responses:
+      '202':
+        description: Job accepted for processing
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/async.yaml#/AsyncJobResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+async-rerank-job:
+  get:
+    operationId: getAsyncRerankJob
+    summary: Get async rerank job
+    description: |
+      Retrieves the status and result of an async rerank job.
+      Returns HTTP 202 if the job is still pending or processing, HTTP 200 if completed or failed.
+    tags:
+    - Async Jobs
+    parameters:
+    - $ref: '#/components/parameters/AsyncJobId'
+    responses:
+      '200':
+        description: Job completed (successfully or with failure)
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/async.yaml#/AsyncJobResponse'
+      '202':
+        description: Job is still pending or processing
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/async.yaml#/AsyncJobResponse'
+      '404':
+        description: Job not found or expired
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+
+# --- Shared parameters ---
+
 components:
   parameters:
     AsyncJobId:

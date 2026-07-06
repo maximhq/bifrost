@@ -748,6 +748,8 @@ func TestResponsesTool_MarshalJSON_RoundTrip(t *testing.T) {
 		`{"type":"function","name":"get_weather","description":"Get weather","strict":true}`,
 		`{"type":"function","name":"search_db","description":"Search database","cache_control":{"type":"ephemeral"},"strict":false}`,
 		`{"type":"file_search","vector_store_ids":["vs_1"],"max_num_results":10}`,
+		// Anthropic advisor server tool: model/max_uses/max_tokens/caching must survive the JSON boundary.
+		`{"type":"advisor","name":"advisor","model":"claude-opus-4-8","max_uses":3,"max_tokens":2048,"caching":{"type":"ephemeral","ttl":"5m"}}`,
 	}
 
 	for _, input := range inputs {
@@ -779,6 +781,204 @@ func TestResponsesTool_MarshalJSON_RoundTrip(t *testing.T) {
 			assert.Equal(t, original, roundTripped, "content should match original input")
 		})
 	}
+}
+
+// TestResponsesTool_RoundTrip_AnthropicFields ensures the Anthropic-native tool
+// flags promoted onto ResponsesTool (defer_loading, allowed_callers,
+// input_examples, eager_input_streaming) survive a full Marshal→Unmarshal→
+// Marshal cycle. Before MarshalJSON/UnmarshalJSON were taught to handle these
+// keys, all four were silently dropped at the JSON boundary.
+func TestResponsesTool_RoundTrip_AnthropicFields(t *testing.T) {
+	original := ResponsesTool{
+		Type:                ResponsesToolTypeFunction,
+		Name:                Ptr("lookup"),
+		Description:         Ptr("lookup something"),
+		DeferLoading:        Ptr(true),
+		AllowedCallers:      []string{"direct", "agent"},
+		EagerInputStreaming: Ptr(false),
+		InputExamples: []ChatToolInputExample{
+			{Input: json.RawMessage(`{"q":"hello"}`), Description: Ptr("basic")},
+			{Input: json.RawMessage(`{"q":"world"}`)},
+		},
+		ResponsesToolFunction: &ResponsesToolFunction{
+			Parameters: &ToolFunctionParameters{},
+		},
+	}
+
+	data, err := Marshal(original)
+	require.NoError(t, err)
+
+	// All four keys must appear in the wire bytes.
+	for _, key := range []string{`"defer_loading"`, `"allowed_callers"`, `"input_examples"`, `"eager_input_streaming"`} {
+		assert.Contains(t, string(data), key,
+			"%s must be emitted by MarshalJSON — otherwise it is silently dropped", key)
+	}
+
+	var decoded ResponsesTool
+	require.NoError(t, Unmarshal(data, &decoded))
+
+	require.NotNil(t, decoded.DeferLoading)
+	assert.True(t, *decoded.DeferLoading)
+	assert.Equal(t, []string{"direct", "agent"}, decoded.AllowedCallers)
+	require.NotNil(t, decoded.EagerInputStreaming)
+	assert.False(t, *decoded.EagerInputStreaming)
+	require.Len(t, decoded.InputExamples, 2)
+	assert.JSONEq(t, `{"q":"hello"}`, string(decoded.InputExamples[0].Input))
+	require.NotNil(t, decoded.InputExamples[0].Description)
+	assert.Equal(t, "basic", *decoded.InputExamples[0].Description)
+	assert.JSONEq(t, `{"q":"world"}`, string(decoded.InputExamples[1].Input))
+
+	// Second-round marshal must be byte-stable.
+	data2, err := Marshal(decoded)
+	require.NoError(t, err)
+	assert.Equal(t, string(data), string(data2), "round-trip must be stable")
+}
+
+// TestChatTool_MarshalJSON_EnforcesUnion verifies that the custom codec
+// canonicalizes mixed-state ChatTools on the wire, regardless of what the
+// caller populated in memory. Exactly one variant's fields survive marshal —
+// matching Type — so downstream provider converters can't misinterpret or
+// forward stray fields from a different shape.
+func TestChatTool_MarshalJSON_EnforcesUnion(t *testing.T) {
+	t.Run("function_type_clears_custom_and_server_tool_fields", func(t *testing.T) {
+		tool := ChatTool{
+			Type:     ChatToolTypeFunction,
+			Function: &ChatToolFunction{Name: "get_weather"},
+			// Mixed state: server-tool + custom fields also populated.
+			Custom:         &ChatToolCustom{},
+			Name:           "leaked_name",
+			MaxUses:        Ptr(5),
+			DisplayWidthPx: Ptr(1280),
+			MCPServerName:  "leaked_server",
+		}
+		data, err := Marshal(tool)
+		require.NoError(t, err)
+		raw := string(data)
+
+		assert.Contains(t, raw, `"type":"function"`)
+		assert.Contains(t, raw, `"get_weather"`)
+		for _, leak := range []string{`"custom"`, `"leaked_name"`, `"max_uses"`, `"display_width_px"`, `"mcp_server_name"`} {
+			assert.NotContains(t, raw, leak, "function-type wire must not carry %s", leak)
+		}
+	})
+
+	t.Run("custom_type_clears_function_and_server_tool_fields", func(t *testing.T) {
+		tool := ChatTool{
+			Type:   ChatToolTypeCustom,
+			Custom: &ChatToolCustom{Format: &ChatToolCustomFormat{Type: "text"}},
+			Name:   "my_custom",
+			// Leaks
+			Function: &ChatToolFunction{Name: "should_be_stripped"},
+			MaxUses:  Ptr(5),
+		}
+		data, err := Marshal(tool)
+		require.NoError(t, err)
+		raw := string(data)
+
+		assert.Contains(t, raw, `"type":"custom"`)
+		assert.Contains(t, raw, `"my_custom"`) // custom tool retains top-level Name
+		assert.Contains(t, raw, `"format"`)    // custom's format field
+		assert.NotContains(t, raw, `"function"`)
+		assert.NotContains(t, raw, `"should_be_stripped"`)
+		assert.NotContains(t, raw, `"max_uses"`)
+	})
+
+	t.Run("server_tool_type_clears_function_and_custom", func(t *testing.T) {
+		tool := ChatTool{
+			Type:           "web_search_20260209",
+			Name:           "web_search",
+			MaxUses:        Ptr(5),
+			AllowedCallers: []string{"direct"},
+			// Leaks
+			Function: &ChatToolFunction{Name: "should_be_stripped"},
+			Custom:   &ChatToolCustom{},
+		}
+		data, err := Marshal(tool)
+		require.NoError(t, err)
+		raw := string(data)
+
+		assert.Contains(t, raw, `"type":"web_search_20260209"`)
+		assert.Contains(t, raw, `"web_search"`)
+		assert.Contains(t, raw, `"max_uses":5`)
+		assert.Contains(t, raw, `"allowed_callers":["direct"]`)
+		assert.NotContains(t, raw, `"function"`)
+		assert.NotContains(t, raw, `"custom"`)
+		assert.NotContains(t, raw, `"should_be_stripped"`)
+	})
+}
+
+// TestChatTool_UnmarshalJSON_NormalizesMixedInput verifies that tolerant
+// decode of a mixed-shape payload produces a canonical single-variant struct
+// so downstream provider conversion code doesn't have to defend against
+// the untrusted shape.
+func TestChatTool_UnmarshalJSON_NormalizesMixedInput(t *testing.T) {
+	t.Run("function_type_mixed_with_server_fields_normalizes", func(t *testing.T) {
+		// Caller sends a function tool but also includes server-tool metadata.
+		raw := []byte(`{
+			"type":"function",
+			"function":{"name":"get_weather"},
+			"name":"stray_server_name",
+			"max_uses":5,
+			"display_width_px":1280
+		}`)
+		var tool ChatTool
+		require.NoError(t, Unmarshal(raw, &tool))
+
+		assert.Equal(t, ChatToolTypeFunction, tool.Type)
+		require.NotNil(t, tool.Function)
+		assert.Equal(t, "get_weather", tool.Function.Name)
+		assert.Empty(t, tool.Name, "function-type must nil top-level Name (lives in Function.Name)")
+		assert.Nil(t, tool.MaxUses)
+		assert.Nil(t, tool.DisplayWidthPx)
+	})
+
+	t.Run("server_tool_type_mixed_with_function_normalizes", func(t *testing.T) {
+		// Caller sends a server-tool but also includes function.
+		raw := []byte(`{
+			"type":"web_search_20260209",
+			"name":"web_search",
+			"max_uses":5,
+			"function":{"name":"stray"}
+		}`)
+		var tool ChatTool
+		require.NoError(t, Unmarshal(raw, &tool))
+
+		assert.Equal(t, ChatToolType("web_search_20260209"), tool.Type)
+		assert.Equal(t, "web_search", tool.Name)
+		require.NotNil(t, tool.MaxUses)
+		assert.Equal(t, 5, *tool.MaxUses)
+		assert.Nil(t, tool.Function, "server-tool must nil Function")
+		assert.Nil(t, tool.Custom, "server-tool must nil Custom")
+	})
+}
+
+// TestChatTool_RoundTrip_SurvivesMixedInput verifies that a mixed-input
+// payload, once canonicalized by Unmarshal and re-emitted by Marshal, drops
+// the stray fields and produces a deterministic single-variant wire format.
+func TestChatTool_RoundTrip_SurvivesMixedInput(t *testing.T) {
+	raw := []byte(`{
+		"type":"web_search_20260209",
+		"name":"web_search",
+		"max_uses":5,
+		"function":{"name":"stray"},
+		"custom":{"format":{"type":"text"}}
+	}`)
+	var tool ChatTool
+	require.NoError(t, Unmarshal(raw, &tool))
+
+	out, err := Marshal(tool)
+	require.NoError(t, err)
+	outStr := string(out)
+	assert.NotContains(t, outStr, `"function"`)
+	assert.NotContains(t, outStr, `"custom"`)
+	assert.Contains(t, outStr, `"web_search_20260209"`)
+
+	// Second pass must be byte-stable (critical for prompt caching keys).
+	var tool2 ChatTool
+	require.NoError(t, Unmarshal(out, &tool2))
+	out2, err := Marshal(tool2)
+	require.NoError(t, err)
+	assert.Equal(t, string(out), string(out2), "round-trip must be stable")
 }
 
 func TestToolFunctionParameters_ExplicitEmptyObjectPreserved(t *testing.T) {
@@ -915,7 +1115,7 @@ func TestNetworkConfig_TLSFieldsRoundTrip(t *testing.T) {
 		DefaultRequestTimeoutInSeconds: 60,
 		MaxRetries:                     3,
 		InsecureSkipVerify:             true,
-		CACertPEM:                      "-----BEGIN CERTIFICATE-----\nMIIB...\n-----END CERTIFICATE-----",
+		CACertPEM:                      NewSecretVar("-----BEGIN CERTIFICATE-----\nMIIB...\n-----END CERTIFICATE-----"),
 	}
 
 	data, err := json.Marshal(nc)
@@ -926,7 +1126,7 @@ func TestNetworkConfig_TLSFieldsRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, nc.InsecureSkipVerify, decoded.InsecureSkipVerify, "insecure_skip_verify should round-trip")
-	assert.Equal(t, nc.CACertPEM, decoded.CACertPEM, "ca_cert_pem should round-trip")
+	assert.Equal(t, nc.CACertPEM.GetValue(), decoded.CACertPEM.GetValue(), "ca_cert_pem should round-trip")
 	assert.Contains(t, string(data), `"insecure_skip_verify":true`)
 	assert.Contains(t, string(data), `"ca_cert_pem"`)
 }
@@ -935,7 +1135,7 @@ func TestNetworkConfig_TLSFieldsRoundTrip(t *testing.T) {
 // round-trips correctly through JSON marshaling.
 func TestNetworkConfig_StreamIdleTimeoutRoundTrip(t *testing.T) {
 	nc := NetworkConfig{
-		DefaultRequestTimeoutInSeconds: 30,
+		DefaultRequestTimeoutInSeconds: 300,
 		StreamIdleTimeoutInSeconds:     120,
 	}
 
@@ -1016,6 +1216,8 @@ func TestResponsesTool_UnmarshalJSON_NormalizesVersionedToolTypes(t *testing.T) 
 		wantWebFetch   bool
 		wantComputer   bool
 		wantCodeInterp bool
+		wantAdvisor    bool
+		wantModel      string
 	}{
 		// web_search variants
 		{name: "web_search canonical", input: `{"type":"web_search"}`, wantType: ResponsesToolTypeWebSearch, wantWebSearch: true},
@@ -1042,6 +1244,10 @@ func TestResponsesTool_UnmarshalJSON_NormalizesVersionedToolTypes(t *testing.T) 
 		{name: "code_execution_20250522", input: `{"type":"code_execution_20250522"}`, wantType: ResponsesToolTypeCodeInterpreter, wantCodeInterp: true},
 		{name: "code_execution_20250825", input: `{"type":"code_execution_20250825"}`, wantType: ResponsesToolTypeCodeInterpreter, wantCodeInterp: true},
 
+		// advisor variants → advisor
+		{name: "advisor canonical", input: `{"type":"advisor","name":"advisor","model":"claude-opus-4-8"}`, wantType: ResponsesToolTypeAdvisor, wantAdvisor: true, wantModel: "claude-opus-4-8"},
+		{name: "advisor_20260301", input: `{"type":"advisor_20260301","name":"advisor","model":"claude-opus-4-8"}`, wantType: ResponsesToolTypeAdvisor, wantAdvisor: true, wantModel: "claude-opus-4-8"},
+
 		// unrecognized types pass through unchanged
 		{name: "function unchanged", input: `{"type":"function","name":"foo","strict":true}`, wantType: ResponsesToolTypeFunction},
 		{name: "custom unchanged", input: `{"type":"custom","name":"bar"}`, wantType: ResponsesToolTypeCustom},
@@ -1066,6 +1272,276 @@ func TestResponsesTool_UnmarshalJSON_NormalizesVersionedToolTypes(t *testing.T) 
 			if tt.wantCodeInterp {
 				assert.NotNil(t, tool.ResponsesToolCodeInterpreter, "ResponsesToolCodeInterpreter should be populated")
 			}
+			if tt.wantAdvisor {
+				require.NotNil(t, tool.ResponsesToolAdvisor, "ResponsesToolAdvisor should be populated")
+				assert.Equal(t, tt.wantModel, tool.ResponsesToolAdvisor.Model)
+			}
 		})
 	}
+}
+
+// TestChatTool_ServerToolNameRoundTrip is a diagnostic probe for the Bedrock
+// managed-tool harness failures (`tools.0.<type>.name: Field required`). It feeds
+// the exact request shapes the harness sends for Anthropic server tools through the
+// real Unmarshal -> MarshalSorted round-trip and asserts the top-level `name`
+// survives. If this fails, the name is dropped at the schemas layer (sonic /
+// ChatTool.UnmarshalJSON / normalizeShape) and the fix belongs here for all providers.
+func TestChatTool_ServerToolNameRoundTrip(t *testing.T) {
+	cases := []struct {
+		name     string
+		input    string
+		wantType ChatToolType
+		wantName string
+	}{
+		{"bash", `{"type":"bash_20250124","name":"bash"}`, "bash_20250124", "bash"},
+		{"computer", `{"type":"computer_20251124","name":"computer","display_width_px":1280,"display_height_px":800}`, "computer_20251124", "computer"},
+		{"text_editor", `{"type":"text_editor_20250728","name":"str_replace_based_edit_tool"}`, "text_editor_20250728", "str_replace_based_edit_tool"},
+		{"memory", `{"type":"memory_20250818","name":"memory"}`, "memory_20250818", "memory"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var tool ChatTool
+			require.NoError(t, Unmarshal([]byte(tc.input), &tool))
+			assert.Equal(t, tc.wantType, tool.Type, "type should survive unmarshal")
+			assert.Equal(t, tc.wantName, tool.Name, "name should survive unmarshal")
+
+			out, err := MarshalSorted(tool)
+			require.NoError(t, err)
+			assert.Contains(t, string(out), `"name":"`+tc.wantName+`"`, "marshaled tool must carry name; got %s", string(out))
+		})
+	}
+}
+
+// TestDeepCopyChatTool_PreservesServerToolFields locks in the fix for the Bedrock
+// managed-tool harness 400s (`tools.0.<type>.name: Field required`). The compat
+// plugin clones requests via DeepCopyChatTool during its PreHook; the copier used
+// to drop the top-level Name and every Anthropic server-tool variant field, so a
+// {type:"bash_20250124", name:"bash"} tool reached Bedrock with no name. This
+// asserts all server-tool fields survive the copy and that the copy is independent
+// of the original (mutating the copy must not affect the source).
+func TestDeepCopyChatTool_PreservesServerToolFields(t *testing.T) {
+	original := ChatTool{
+		Type:                "computer_20251124",
+		Name:                "computer",
+		DeferLoading:        Ptr(true),
+		AllowedCallers:      []string{"direct", "code_execution_20250825"},
+		EagerInputStreaming: Ptr(true),
+		InputExamples: []ChatToolInputExample{
+			{Input: json.RawMessage(`{"action":"screenshot"}`), Description: Ptr("take a screenshot")},
+		},
+		MaxUses:          Ptr(5),
+		AllowedDomains:   []string{"example.com"},
+		BlockedDomains:   []string{"evil.com"},
+		UserLocation:     &ChatToolUserLocation{Type: Ptr("approximate"), City: Ptr("SF"), Region: Ptr("CA"), Country: Ptr("US"), Timezone: Ptr("America/Los_Angeles")},
+		MaxContentTokens: Ptr(1000),
+		Citations:        &ChatToolCitationsConfig{Enabled: Ptr(true)},
+		UseCache:         Ptr(true),
+		DisplayWidthPx:   Ptr(1280),
+		DisplayHeightPx:  Ptr(800),
+		DisplayNumber:    Ptr(1),
+		EnableZoom:       Ptr(true),
+		MaxCharacters:    Ptr(2000),
+		MCPServerName:    "my-server",
+		DefaultConfig:    &ChatMCPToolsetConfig{Enabled: Ptr(true), DeferLoading: Ptr(false)},
+		Configs:          map[string]*ChatMCPToolsetConfig{"tool_a": {Enabled: Ptr(false)}},
+	}
+
+	c := DeepCopyChatTool(original)
+
+	// Every server-tool field must survive the copy.
+	assert.Equal(t, ChatToolType("computer_20251124"), c.Type)
+	assert.Equal(t, "computer", c.Name)
+	require.NotNil(t, c.DeferLoading)
+	assert.True(t, *c.DeferLoading)
+	assert.Equal(t, []string{"direct", "code_execution_20250825"}, c.AllowedCallers)
+	require.NotNil(t, c.EagerInputStreaming)
+	require.Len(t, c.InputExamples, 1)
+	assert.JSONEq(t, `{"action":"screenshot"}`, string(c.InputExamples[0].Input))
+	require.NotNil(t, c.MaxUses)
+	assert.Equal(t, 5, *c.MaxUses)
+	assert.Equal(t, []string{"example.com"}, c.AllowedDomains)
+	assert.Equal(t, []string{"evil.com"}, c.BlockedDomains)
+	require.NotNil(t, c.UserLocation)
+	require.NotNil(t, c.UserLocation.City)
+	assert.Equal(t, "SF", *c.UserLocation.City)
+	require.NotNil(t, c.Citations)
+	require.NotNil(t, c.Citations.Enabled)
+	require.NotNil(t, c.MaxContentTokens)
+	require.NotNil(t, c.UseCache)
+	require.NotNil(t, c.DisplayWidthPx)
+	assert.Equal(t, 1280, *c.DisplayWidthPx)
+	require.NotNil(t, c.DisplayHeightPx)
+	require.NotNil(t, c.DisplayNumber)
+	require.NotNil(t, c.EnableZoom)
+	require.NotNil(t, c.MaxCharacters)
+	assert.Equal(t, "my-server", c.MCPServerName)
+	require.NotNil(t, c.DefaultConfig)
+	require.NotNil(t, c.DefaultConfig.Enabled)
+	require.NotNil(t, c.Configs["tool_a"])
+	require.NotNil(t, c.Configs["tool_a"].Enabled)
+
+	// The copy must be independent: mutating it must not touch the original.
+	*c.DisplayWidthPx = 9999
+	c.AllowedDomains[0] = "mutated.com"
+	*c.UserLocation.City = "NYC"
+	c.Configs["tool_a"] = nil
+	assert.Equal(t, 1280, *original.DisplayWidthPx, "original DisplayWidthPx must be unchanged")
+	assert.Equal(t, "example.com", original.AllowedDomains[0], "original AllowedDomains must be unchanged")
+	assert.Equal(t, "SF", *original.UserLocation.City, "original UserLocation.City must be unchanged")
+	assert.NotNil(t, original.Configs["tool_a"], "original Configs entry must be unchanged")
+}
+
+// TestSonic_ChatTool_AnnotationsNeverSerialized verifies that MCPToolAnnotations
+// (json:"-") are never included in the JSON payload sent to providers.
+func TestSonic_ChatTool_AnnotationsNeverSerialized(t *testing.T) {
+	readOnly := true
+	destructive := false
+
+	tool := ChatTool{
+		Type: ChatToolTypeFunction,
+		Function: &ChatToolFunction{
+			Name:        "read_file",
+			Description: Ptr("Reads a file from the filesystem"),
+			Parameters: &ToolFunctionParameters{
+				Type:       "object",
+				Properties: NewOrderedMapFromPairs(KV("path", map[string]interface{}{"type": "string"})),
+				Required:   []string{"path"},
+			},
+		},
+		Annotations: &MCPToolAnnotations{
+			Title:           "File Reader",
+			ReadOnlyHint:    &readOnly,
+			DestructiveHint: &destructive,
+			IdempotentHint:  Ptr(true),
+		},
+	}
+
+	output, err := Marshal(tool)
+	require.NoError(t, err)
+
+	s := string(output)
+
+	// Annotations must be absent — json:"-" must suppress the entire field
+	assert.NotContains(t, s, "annotations", "annotations field must not appear in provider payload")
+	assert.NotContains(t, s, "readOnlyHint", "readOnlyHint must not appear in provider payload")
+	assert.NotContains(t, s, "destructiveHint", "destructiveHint must not appear in provider payload")
+	assert.NotContains(t, s, "idempotentHint", "idempotentHint must not appear in provider payload")
+	assert.NotContains(t, s, "File Reader", "annotation title must not appear in provider payload")
+
+	// The function definition itself must still be present
+	assert.Contains(t, s, "read_file", "function name must be in payload")
+	assert.Contains(t, s, "path", "parameter must be in payload")
+}
+
+// TestSonic_ChatTool_DeepCopy_AnnotationsPreserved verifies that DeepCopyChatTool
+// correctly copies Annotations so they survive any clone-based flows.
+func TestSonic_ChatTool_DeepCopy_AnnotationsPreserved(t *testing.T) {
+	readOnly := true
+	idempotent := false
+
+	original := ChatTool{
+		Type: ChatToolTypeFunction,
+		Function: &ChatToolFunction{
+			Name: "query_db",
+		},
+		Annotations: &MCPToolAnnotations{
+			Title:          "DB Query",
+			ReadOnlyHint:   &readOnly,
+			IdempotentHint: &idempotent,
+		},
+	}
+
+	copied := DeepCopyChatTool(original)
+
+	require.NotNil(t, copied.Annotations)
+	assert.Equal(t, "DB Query", copied.Annotations.Title)
+	assert.Equal(t, true, *copied.Annotations.ReadOnlyHint)
+	assert.Equal(t, false, *copied.Annotations.IdempotentHint)
+	assert.Nil(t, copied.Annotations.DestructiveHint)
+	assert.Nil(t, copied.Annotations.OpenWorldHint)
+
+	// Verify it's a true deep copy — mutations don't bleed back
+	*original.Annotations.ReadOnlyHint = false
+	assert.True(t, *copied.Annotations.ReadOnlyHint, "copy must not share pointer with original")
+}
+
+// TestSonic_ChatTool_DeepCopy_NilAnnotationsStaysNil verifies that a tool
+// without annotations deep-copies cleanly with Annotations remaining nil.
+func TestSonic_ChatTool_DeepCopy_NilAnnotationsStaysNil(t *testing.T) {
+	original := ChatTool{
+		Type:     ChatToolTypeFunction,
+		Function: &ChatToolFunction{Name: "plain_tool"},
+	}
+
+	copied := DeepCopyChatTool(original)
+
+	assert.Nil(t, copied.Annotations, "Annotations should stay nil when original has none")
+}
+
+func TestSonic_ChatTool_DeepCopy_PreservesFullParameterSchema(t *testing.T) {
+	ref := "#/$defs/Preferences"
+	minItems := int64(1)
+	nullable := true
+	original := ChatTool{
+		Type: ChatToolTypeFunction,
+		Function: &ChatToolFunction{
+			Name: "suggest_time",
+			Parameters: &ToolFunctionParameters{
+				Type: "object",
+				Properties: NewOrderedMapFromPairs(
+					KV("preferences", NewOrderedMapFromPairs(KV("$ref", ref))),
+				),
+				Required: []string{"preferences"},
+				Defs: NewOrderedMapFromPairs(
+					KV("Preferences", NewOrderedMapFromPairs(
+						KV("type", "object"),
+						KV("properties", NewOrderedMapFromPairs(
+							KV("startHour", NewOrderedMapFromPairs(KV("type", "string"))),
+						)),
+					)),
+				),
+				Ref:      &ref,
+				Items:    NewOrderedMapFromPairs(KV("type", "string")),
+				MinItems: &minItems,
+				AnyOf: []OrderedMap{
+					*NewOrderedMapFromPairs(KV("type", "string")),
+				},
+				Nullable: &nullable,
+			},
+		},
+	}
+
+	copied := DeepCopyChatTool(original)
+
+	require.NotNil(t, copied.Function)
+	require.NotNil(t, copied.Function.Parameters)
+	data, err := Marshal(copied.Function.Parameters)
+	require.NoError(t, err)
+	s := string(data)
+	assert.Contains(t, s, `"$defs"`)
+	assert.Contains(t, s, `"Preferences"`)
+	assert.Contains(t, s, `"$ref":"#/$defs/Preferences"`)
+	assert.Contains(t, s, `"items"`)
+	assert.Contains(t, s, `"anyOf"`)
+	assert.Contains(t, s, `"nullable":true`)
+
+	copied.Function.Parameters.Defs.Set("Mutated", map[string]any{"type": "object"})
+	_, exists := original.Function.Parameters.Defs.Get("Mutated")
+	assert.False(t, exists, "copy must not share $defs map with original")
+}
+
+func TestSonic_ToolFunctionParameters_DeepCopy_KeyOrderIndependent(t *testing.T) {
+	var original ToolFunctionParameters
+	require.NoError(t, Unmarshal([]byte(`{"$defs":{"Preferences":{"type":"object"}},"type":"object","properties":{"preferences":{"$ref":"#/$defs/Preferences"}}}`), &original))
+	require.NotEmpty(t, original.keyOrder.keys)
+
+	copied := DeepCopyToolFunctionParameters(&original)
+	require.NotNil(t, copied)
+	require.Equal(t, original.keyOrder.keys, copied.keyOrder.keys)
+
+	original.keyOrder.keys[0] = "mutated"
+
+	assert.NotEqual(t, original.keyOrder.keys[0], copied.keyOrder.keys[0], "copy must not share JSONKeyOrder.keys backing array")
+	assert.Equal(t, "$defs", copied.keyOrder.keys[0])
 }

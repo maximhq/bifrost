@@ -103,9 +103,9 @@ bifrost/
 │   ├── mocker/                    # Mock responses for testing
 │   ├── jsonparser/                # JSON extraction utilities
 │   ├── maxim/                     # Maxim observability
-│   └── litellmcompat/             # LiteLLM SDK compatibility (HTTP transport)
+│   └── compat/                    # LiteLLM SDK compatibility (HTTP transport)
 │
-├── ui/                            # Next.js web interface
+├── ui/                            # React + vite web interface
 │   ├── app/workspace/             # Feature pages (20+ workspace sections)
 │   ├── components/                # Shared React components
 │   └── lib/                       # Constants, utilities, types
@@ -245,6 +245,13 @@ ctx.WithValue(key, value)    // Chainable variant
 
 **Gotcha**: `BlockRestrictedWrites()` silently drops writes to reserved keys. This prevents plugins from accidentally overwriting internal state.
 
+**Hard rule — never store stream-sized data in `BifrostContext`.** Context holds small handles only: IDs, durations, booleans, interface pointers. Any per-request state that scales with stream content (chunk buffers, accumulated payloads, replay queues, large per-request slices/maps) must live in a top-level manager keyed by `RequestID`, not in `ctx`. Reference implementations:
+
+- `framework/streaming.Accumulator` — owns a `sync.Map` of per-stream `StreamAccumulator` entries keyed by `RequestID`. Only `BifrostContextKeyAccumulatorID` (the ID string) is stored on the context; the chunk buffers live in the manager. The pause/resume gate (`gate.go`) extends the same per-stream entry with a state machine — again, **no buffer in ctx**.
+- The `Tracer` interface (in ctx as a small pointer) is the access path for plugins/providers to reach managers without putting bulky data on the context itself.
+
+When in doubt: if your new ctx key would hold a slice/map that grows with request content, route the storage through a manager and keep only the ID in ctx.
+
 ---
 
 ## Core Patterns
@@ -288,10 +295,18 @@ func NewProvider(config schemas.ProviderConfig) (*Provider, error) {
         MaxConnsPerHost:     config.NetworkConfig.MaxConnsPerHost, // configurable, default 5000
         MaxIdleConnDuration: 30 * time.Second,
     }
-    return &Provider{client: client, ...}, nil
+    // After ConfigureProxy/ConfigureDialer/ConfigureTLS, build a sibling client
+    // for streaming. BuildStreamingClient zeros ReadTimeout/WriteTimeout/MaxConnDuration
+    // so streams aren't killed by fasthttp's whole-response deadline; per-chunk idle
+    // is enforced at the app layer via NewIdleTimeoutReader.
+    streamingClient := providerUtils.BuildStreamingClient(client)
+    return &Provider{client: client, streamingClient: streamingClient, ...}, nil
 }
 ```
-**Note:** Bedrock uses `net/http` (not fasthttp) with HTTP/2 support. Its `http.Transport` is configured with `ForceAttemptHTTP2: true` and `MaxConnsPerHost` from `NetworkConfig` to allow multiple HTTP/2 connections when the server's per-connection stream limit (100 for AWS Bedrock) is reached.
+
+**Streaming vs unary client:** Every provider holds two clients — `client` for unary requests (`ReadTimeout=30s` bounds the whole response) and `streamingClient` for SSE / EventStream / chunked paths (`ReadTimeout=0`; the per-chunk `NewIdleTimeoutReader` is the only governor). Pass `provider.streamingClient` to every `Handle*Streaming` / `Handle*StreamRequest` helper and to direct `Do` calls inside `*Stream` methods. For new providers, apply the same pattern — missing the switch means streams get killed at 30s.
+
+**Note:** Bedrock uses `net/http` (not fasthttp) with HTTP/2 support. Its `http.Transport` is configured with `ForceAttemptHTTP2: true` and `MaxConnsPerHost` from `NetworkConfig` to allow multiple HTTP/2 connections when the server's per-connection stream limit (100 for AWS Bedrock) is reached. Use `providerUtils.BuildStreamingHTTPClient(client)` to derive the streaming variant — it shares the base `Transport` (safe for concurrent reuse) but clears `Client.Timeout`.
 
 ### The Provider Interface
 
@@ -509,6 +524,21 @@ In `tests/e2e/core/`, **never marshal API payloads to a `Record`/`Map`/plain-obj
 
 ## Testing
 
+### Always prefer `make test-core` over raw `go test` for provider-level tests
+
+The `make test-core` target is the canonical harness for provider tests — it wires up env vars from `.env` (provider API keys), invokes the per-provider `{provider}_test.go` entrypoint in `core/providers/<provider>/`, and routes through the shared `core/internal/llmtests/` scenario suite that validates end-to-end behavior (including streaming).
+
+Running bare `go test ./core/providers/<provider>/...` only executes unit tests and skips the llmtests scenarios — so it won't catch regressions in streaming, tool-calling, or provider-specific response shapes.
+
+```bash
+make test-core PROVIDER=anthropic TESTCASE=TestChatCompletionStream   # exact test
+make test-core PROVIDER=openai PATTERN=Stream                          # substring match
+make test-core PROVIDER=bedrock                                        # all scenarios for one provider
+make test-core DEBUG=1 PROVIDER=gemini TESTCASE=TestResponsesStream    # attach Delve on :2345
+```
+
+`PATTERN` and `TESTCASE` are mutually exclusive. Provider name must match a directory under `core/providers/` (e.g. `anthropic`, `openai`, `bedrock`, `vertex`, `azure`, `gemini`, `cohere`, `mistral`, `groq`, etc.).
+
 ### LLM Tests (`core/internal/llmtests/`)
 
 Scenario-based tests that run against **live provider APIs** with dual-API testing (Chat Completions + Responses API):
@@ -641,10 +671,267 @@ Systematically address unresolved PR review comments. Uses GraphQL to get unreso
 ## Code Style
 
 - **Go**: `gofmt`/`goimports`. No custom linter config.
-- **TypeScript/React**: Prettier. Next.js App Router.
+- **TypeScript/React**: Oxfmt. TanStack Router.
 - **JSON tags**: `snake_case` matching provider API conventions.
 - **Error strings**: Lowercase, no trailing punctuation (Go convention).
 - **Provider types**: Prefixed with provider name in PascalCase (`AnthropicChatRequest`, `GeminiEmbeddingResponse`).
 - **Converter functions**: Pure — no side effects, no logging, no HTTP.
 - **Pool names**: Descriptive string passed to `pool.New()` (e.g., `"channel-message"`, `"response-stream"`).
 - **Context keys**: Use `BifrostContextKey` type. Custom plugins should define their own key types to avoid collisions.
+- **Go filenames**: No underscores. The only permitted underscore is the `_test.go` suffix. Examples: `pluginpipeline.go`, `pluginpipeline_test.go` — never `plugin_pipeline.go` or `plugin_pipeline_race_test.go`. Concatenate words (lowercase, no separators) for multi-word filenames.
+
+# Frontend Code Guidelines & Patterns
+
+This document defines the standards, structure, and best practices for writing frontend code in this project.
+
+---
+
+## Tech Stack
+
+- **React** (with Vite)
+- **TypeScript**
+- **@tanstack/react-router** (type-safe routing)
+- **Tailwind CSS v4**
+- **Radix UI** (primitives)
+- **Local UI component library** (`ui/components/ui/`) built on Radix primitives
+
+---
+
+## Folder Structure
+
+```text
+
+/ui
+├── app                # Routes & pages
+├── components        # Shared components
+│   └── ui            # Core design system components
+├── hooks             # Custom React hooks
+├── lib               # Utilities, helpers, shared logic
+└── app/enterprise    # Enterprise-specific code (via symlink)
+
+```
+
+### Rules
+
+- All frontend code must live inside `/ui`
+- Routes and pages → `ui/app`
+- Shared/reusable components → `ui/components`
+- Core UI primitives → `ui/components/ui`
+- Utilities and libraries → `ui/lib`
+- Custom hooks → `ui/hooks`
+
+---
+
+## Libraries & Usage
+
+### Core Libraries
+
+- `react` → UI library
+- `typescript` → Type safety
+- `tailwindcss` → Styling
+- `@tanstack/react-router` → Routing
+
+### UI & Visualization
+
+- `@radix-ui/react-*` → UI primitives
+- `ui/components/ui/*` → Project's Radix-based component system
+- `recharts` → Charts
+- `monaco-editor` → Code editor
+
+### Utilities
+
+- `date-fns` → Date/time formatting
+- `nuqs` → Query param state management
+
+### Tooling
+
+- `Oxfmt` → Code formatting
+- `vitest` → Testing
+
+---
+
+## Routing Convention
+
+For every new route:
+
+```text
+
+ui/app/<route-name>/
+├── layout.tsx   # Route definition using createFileRoute
+├── page.tsx     # Page content
+└── views/       # Optional: route-specific components
+
+```
+
+### Rules
+
+- Folder name must match route name
+- Always use `createFileRoute` in `layout.tsx`
+- `page.tsx` should only handle composition (not heavy logic)
+- Route-specific components go inside `views/`
+
+---
+
+## Component Guidelines
+
+### Reusability First
+
+- Always check if similar components/functions already exist
+- Prefer extending or refactoring existing code over duplication
+- Only create new components if reuse is not feasible
+
+---
+
+### Component Placement
+
+- Shared → `ui/components`
+- Route-specific → `views/` inside route folder
+
+---
+
+### JSX & Rendering
+
+- Avoid deeply nested conditional rendering
+- Break complex UI into smaller components
+- Keep components readable and maintainable
+
+---
+
+### Lists & Keys
+
+- Always use **stable, unique keys**
+- Never use array index as key (unless unavoidable)
+
+---
+
+## React Best Practices
+
+- Avoid unnecessary or unstable dependencies in hooks
+- Prevent infinite loops in `useEffect`
+- Keep dependency arrays accurate and minimal
+- Prefer derived state over duplicated state
+
+---
+
+## State Management
+
+### Priority Order
+
+1. Query Params (`nuqs`) → for persistent/shareable state
+2. Local State → for UI-only state
+3. Redux → only when truly necessary
+
+---
+
+### Query Params (`nuqs`)
+
+- Use for state that should persist across refresh/navigation
+- Use proper parsers like `parseAsString` or `parseAsInteger`
+- Do NOT mix query param state with local/redux state
+- Follow a single consistent pattern across the codebase
+
+---
+
+### Redux
+
+- Use only when global/shared state is required
+- Avoid unnecessary slices
+- Prefer simpler alternatives when possible
+
+---
+
+### RTK Query (`@reduxjs/toolkit/query`)
+
+- Use for API calls and caching
+- Use **granular tags** for cache invalidation
+- Avoid invalidating entire datasets unnecessarily
+- Implement **optimistic updates** where applicable
+
+---
+
+## Forms
+
+We use:
+
+- `react-hook-form`
+- `zod v4` (for schema validation)
+
+### Rules
+
+- Always define a Zod schema
+- Include meaningful validation messages
+- Prefer **inline field errors** (not toast notifications)
+- Use `refine` / `superRefine` for complex validation
+- Store schemas in: `ui/lib/types/schemas.ts`
+
+---
+
+## Tables
+
+- Use `@tanstack/react-table` **only for large/complex datasets**
+- For simple tables → build custom lightweight components
+- Prioritize performance over abstraction
+
+---
+
+## ⚡ Performance Guidelines
+
+- Lazy load heavy or rarely-used libraries
+- Avoid unnecessary re-renders
+- Split large components into smaller ones
+- Keep bundle size minimal
+
+---
+
+## Dependency Rules
+
+- Do NOT add new dependencies unless absolutely necessary
+- Always pin exact versions (no `^` or `~`)
+- Prefer existing libraries in the codebase
+
+---
+
+## TypeScript Guidelines
+
+- Avoid using `any` unless absolutely unavoidable
+- Prefer strict typing and inference
+- Define reusable types in shared locations
+
+---
+
+## Code Quality & Formatting
+
+After writing code:
+
+```bash
+cd ui && npm run format
+````
+
+Then verify build:
+
+```bash
+cd ui && npm run build
+```
+
+* Code must pass formatting and build checks
+* Follow consistent naming and structure conventions
+
+---
+
+## Anti-Patterns to Avoid
+
+* Duplicate components without considering reuse
+* Mixing multiple state management approaches unnecessarily
+* Overusing Redux
+* Using unstable hook dependencies
+* Adding heavy libraries for simple use cases
+* Poorly structured or deeply nested JSX
+
+---
+
+## Summary
+
+* Prioritize **reusability, performance, and consistency**
+* Follow **strict folder structure and routing conventions**
+* Use **the right tool for the right problem**
+* Keep code **simple, predictable, and maintainable**

@@ -291,58 +291,6 @@ print(result.output)
 
 ---
 
-## Using Direct Keys
-
-Pass API keys directly to bypass Bifrost's key management. This requires the **Allow Direct API keys** option to be enabled in Bifrost configuration.
-
-> **Learn more:** See [Key Management](../features/keys-management#direct-key-bypass) for enabling direct API key usage.
-
-<Tabs group="pydanticai-sdk">
-<Tab title="Python">
-
-```python {8,15,26}
-from httpx import AsyncClient
-from pydantic_ai import Agent
-from pydantic_ai.models.openai import OpenAIChatModel
-from pydantic_ai.models.anthropic import AnthropicModel
-from pydantic_ai.providers.openai import OpenAIProvider
-from pydantic_ai.providers.anthropic import AnthropicProvider
-
-base_url = "http://localhost:8080/pydanticai"
-
-# Using OpenAI key directly
-openai_client = AsyncClient(
-    headers={"Authorization": "Bearer sk-your-openai-key"}
-)
-openai_provider = OpenAIProvider(
-    base_url=f"{base_url}/v1",
-    http_client=openai_client
-)
-openai_model = OpenAIChatModel("gpt-4o-mini", provider=openai_provider)
-openai_agent = Agent(openai_model)
-
-# Using Anthropic key directly
-# Note: Anthropic SDK adds /v1 internally, so we don't append it here
-anthropic_client = AsyncClient(
-    headers={"x-api-key": "sk-ant-your-anthropic-key"}
-)
-anthropic_provider = AnthropicProvider(
-    base_url=base_url,
-    http_client=anthropic_client
-)
-anthropic_model = AnthropicModel("claude-3-haiku-20240307", provider=anthropic_provider)
-anthropic_agent = Agent(anthropic_model)
-
-# Both work through Bifrost with your own keys
-openai_result = openai_agent.run_sync("Hello GPT!")
-anthropic_result = anthropic_agent.run_sync("Hello Claude!")
-```
-
-</Tab>
-</Tabs>
-
----
-
 ## Multi-turn Conversations
 
 Maintain conversation history across multiple turns:

@@ -1,0 +1,338 @@
+---
+title: "SSO using OIDC"
+description: "Configure Keycloak as your identity provider for Bifrost Enterprise using OpenID Connect."
+---
+
+## Prerequisites
+
+- A running Keycloak server (self-hosted or cloud) with admin access to a realm
+- Bifrost Enterprise deployed and accessible
+- Your Bifrost callback URL: `https://<your-bifrost-domain>/login`
+
+---
+
+## Step 1: Create an OIDC Client
+
+<Steps>
+
+<Step title="Open the Clients list">
+
+In the Keycloak Admin Console, select your realm from the top-left dropdown.
+
+Go to **Clients** in the left nav and click **Create client**.
+
+<Frame caption="The Clients list — click Create client to start.">
+  <img src="/media/user-provisioning/keycloak/keycloak-create-client.png" alt="Keycloak Admin Console Clients list with Create client button highlighted" />
+</Frame>
+
+</Step>
+
+<Step title="Fill in General settings">
+
+Set the following fields:
+
+- **Client type**: OpenID Connect
+- **Client ID**: `bifrost-oidc` (or any identifier you prefer)
+- **Name**: `Bifrost`
+
+Click **Next**.
+
+<Frame caption="General settings — set Client type to OpenID Connect and provide a Client ID.">
+  <img src="/media/user-provisioning/keycloak/keycloak-client-creation.png" alt="Keycloak Create client General settings form with Client type OpenID Connect, Client ID bifrost-oidc, and Name Bifrost" />
+</Frame>
+
+</Step>
+
+<Step title="Configure Capability config">
+
+On the **Capability config** step, enable:
+
+- **Client authentication** — makes this a confidential client and generates a client secret
+- **Standard flow** — enables Authorization Code login
+- **Service accounts roles** — required for Bifrost to call the Keycloak Admin REST API for background user sync
+
+Leave all other toggles at their defaults. Click **Next**.
+
+</Step>
+
+<Step title="Configure Login settings">
+
+Set your redirect URIs:
+
+- **Root URL**: `https://<your-bifrost-domain>`
+- **Valid redirect URIs**: `https://<your-bifrost-domain>/login`
+
+Optionally, to use Discover Claims during setup, also add:
+
+```
+https://<your-bifrost-domain>/workspace/scim/oauth-discover-callback
+```
+
+Click **Save**.
+
+<Frame caption="Login settings — add your Bifrost login URL and optionally the Discover Claims callback URI.">
+  <img src="/media/user-provisioning/keycloak/keycloak-login-settings.png" alt="Keycloak Login settings form with Root URL, Valid redirect URIs showing the Bifrost login and oauth-discover-callback URLs" />
+</Frame>
+
+</Step>
+
+<Step title="Grant Admin REST API permissions to the service account">
+
+The client is now saved. Open it and go to the **Service accounts roles** tab.
+
+Click **Assign role**, filter by `realm-management`, and assign:
+
+| Role | Required |
+| --- | --- |
+| `view-users` | Required — lets Bifrost list and import users |
+| `view-realm` | Recommended — enables group and role listing |
+| `query-groups` | Optional — needed for group-based import filters |
+
+These permissions power the **Sync Users from Keycloak** import flow in [Optional Next Steps](#optional-next-steps).
+
+</Step>
+
+</Steps>
+
+---
+
+## Step 2: Copy Your Client Secret
+
+<Steps>
+
+<Step title="Open the Credentials tab">
+
+Open the **bifrost-oidc** client and go to the **Credentials** tab.
+
+Copy the **Client Secret** — you will need it in [Step 5](#step-5-configure-bifrost).
+
+<Frame caption="Credentials tab — copy the Client Secret.">
+  <img src="/media/user-provisioning/keycloak/keycloak-client-config.png" alt="Keycloak Credentials tab showing Client Authenticator set to Client Id and Secret with the Client Secret field" />
+</Frame>
+
+</Step>
+
+</Steps>
+
+---
+
+## Step 3: Configure Claim Mappers
+
+Keycloak does not include realm roles or full group paths in tokens by default. Add two mappers to the client's dedicated scope.
+
+<Steps>
+
+<Step title="Open the dedicated scope">
+
+In the **bifrost-oidc** client, go to the **Client scopes** tab.
+
+Click on the **bifrost-oidc-dedicated** scope.
+
+<Frame caption="Client scopes tab — open the dedicated scope to add mappers.">
+  <img src="/media/user-provisioning/keycloak/keycloak-client-scopes.png" alt="Keycloak Client scopes tab with bifrost-oidc-dedicated scope highlighted" />
+</Frame>
+
+</Step>
+
+<Step title="Add the Group Membership mapper">
+
+Click **Add mapper** → **By configuration**.
+
+<Frame caption="Configure a new mapper — select Group Membership from the list.">
+  <img src="/media/user-provisioning/keycloak/keycloak-configure-new-mapper.png" alt="Keycloak Configure a new mapper dialog showing mapper type list with Group Membership visible" />
+</Frame>
+
+Select **Group Membership** and configure it:
+
+| Field | Value |
+| --- | --- |
+| **Name** | `Groups` |
+| **Token Claim Name** | `groups` |
+| **Full group path** | **On** |
+| **Add to ID token** | **On** |
+| **Add to access token** | **On** |
+| **Add to userinfo** | **On** |
+
+Click **Save**.
+
+<Frame caption="Group Membership mapper — Full group path must be On so Bifrost receives paths like /Engineering instead of just Engineering.">
+  <img src="/media/user-provisioning/keycloak/keycloak-groups-mapping.png" alt="Group Membership mapper form with Name Groups, Token Claim Name groups, Full group path On, and all Add to token toggles On" />
+</Frame>
+
+<Note>
+  Keep **Full group path** enabled. Keycloak sends groups as paths (e.g. `/Engineering`, `/Platform`). Bifrost's `/${*}` wildcard in team mappings extracts the name after the slash automatically — see [Step 5](#step-5-configure-bifrost).
+</Note>
+
+</Step>
+
+<Step title="Add the User Realm Role mapper">
+
+Click **Add mapper** → **By configuration** again.
+
+Select **User Realm Role** from the list.
+
+<Frame caption="Select User Realm Role from the mapper list to expose realm roles in the JWT.">
+  <img src="/media/user-provisioning/keycloak/keycloak-realm-role-mapping.png" alt="Keycloak Configure a new mapper dialog with User Realm Role option highlighted" />
+</Frame>
+
+Configure it:
+
+| Field | Value |
+| --- | --- |
+| **Name** | `realm_roles` |
+| **Token Claim Name** | `realm_access.roles` |
+| **Claim JSON Type** | String |
+| **Multivalued** | **On** |
+| **Add to ID token** | **On** |
+| **Add to access token** | **On** |
+
+Click **Save**.
+
+<Frame caption="User Realm Role mapper — Token Claim Name realm_access.roles matches the dotted path Bifrost uses for role lookup.">
+  <img src="/media/user-provisioning/keycloak/keycloak-realm-role-config.png" alt="User Realm Role mapper form with Name realm_roles, Token Claim Name realm_access.roles, Multivalued On, and Add to ID and access token enabled" />
+</Frame>
+
+</Step>
+
+</Steps>
+
+---
+
+## Step 4: Assign Users
+
+In Keycloak, users need to be assigned to the realm roles and groups you plan to map in Bifrost.
+
+- Go to **Users** → select a user → **Role mapping** tab → assign the relevant realm roles (e.g. `realm-admin`, `bifrost-viewer`)
+- Go to **Users** → select a user → **Groups** tab → join the relevant groups (e.g. `/Engineering`, `/Platform`)
+
+---
+
+## Step 5: Configure Bifrost
+
+<Steps>
+
+<Step title="Open User Provisioning and choose Keycloak">
+
+In your Bifrost dashboard, go to **Governance** → **User Provisioning**.
+
+Select **Keycloak** as the identity provider and click **Next**.
+
+<Frame caption="Select Keycloak from the list of identity providers.">
+  <img src="/media/user-provisioning/keycloak/bifrost-user-provisioning.png" alt="Bifrost Choose Provider screen with Keycloak card selected" />
+</Frame>
+
+</Step>
+
+<Step title="Fill in the provider configuration">
+
+Enter the details from the previous steps:
+
+- **Server URL**: your Keycloak base URL — no `/realms/...` suffix (e.g. `https://keycloak.company.com`)
+- **Realm**: your realm name (e.g. `Bifrost`)
+- **Client ID**: the client ID you set in Step 1 (e.g. `bifrost-oidc`)
+- **Client Secret**: copied from [Step 2](#step-2-copy-your-client-secret)
+- **Audience**: optional — leave blank to default to the Client ID
+- **Team IDs Field (Optional)**: leave as `groups` to match the mapper you created in Step 3
+
+Click **Verify & Next** to confirm the connection.
+
+<Frame caption="Provider Configuration — enter your Keycloak Server URL, Realm, Client ID, and Client Secret.">
+  <img src="/media/user-provisioning/keycloak/bifrost-keycloak-provider-config.png" alt="Bifrost Provider Configuration form for Keycloak with Server URL, Realm, Client ID, Client Secret, and Team IDs Field filled in" />
+</Frame>
+
+</Step>
+
+<Step title="Discover claims">
+
+On the Attribute Mapping screen, click **Discover Claims**.
+
+Bifrost opens a sign-in popup with your Keycloak realm — no session is created.
+
+Once you authenticate, it returns the exact claims your Keycloak tenant is sending in the JWT. Confirm that `groups` and `realm_access.roles` appear before building your mappings.
+
+<Frame caption="Discover Claims shows the live JWT from Keycloak — confirm groups (full paths) and realm_access.roles are present.">
+  <img src="/media/user-provisioning/keycloak/bifrost-keycloak-discover-claims.png" alt="Bifrost Discover Claims screen showing claims including email, groups with /Engineering and /Platform paths, and realm_access with roles array" />
+</Frame>
+
+</Step>
+
+<Step title="Set up attribute mappings">
+
+Use the sections below the claim list to map Keycloak claim values to Bifrost roles, teams, and business units.
+
+**Attribute-to-Role Mappings**
+
+Map a claim value to a Bifrost role.
+
+- All matching rules are evaluated — if multiple rules match, the role with the highest permissions is assigned
+- If no rule matches, the user is not assigned a role and login is denied
+
+Example: map `realm_access.roles` → `realm-admin` → **Admin**, and `realm_access.roles` → `bifrost-viewer` → **Viewer**.
+
+**Attribute-to-Team Mappings**
+
+Map a claim value to a Bifrost team. All matching rules apply. Three value formats work:
+
+- **Exact value** — e.g. `/Engineering` maps that specific group to a fixed team name
+- **`*`** — syncs the claim value directly as the team name
+- **`/${*}`** — extracts the group name from Keycloak's full group path — e.g. `/${*}` matches `/Engineering` and creates team **Engineering**, and matches `/Platform` and creates team **Platform**
+
+**Attribute-to-Business Unit Mappings**
+
+Same wildcard support as team mappings. Three value formats work:
+
+- **Exact value** — maps a specific claim value to a fixed business unit name
+- **`*`** — syncs the claim value directly as the business unit name
+- **`/${*}`** — extracts the group name from Keycloak's full group path, same as team mappings (e.g. `/${*}` on `/Engineering` → business unit **Engineering**)
+- When a rule matches, the resolved business unit is assigned to all of that user's teams
+- Manually assigned teams are left unchanged
+
+<Frame caption="Attribute Mapping — role rules use realm_access.roles, team rules use groups with /${*} to extract the team name from Keycloak's full group path.">
+  <img src="/media/user-provisioning/keycloak/bifrost-keycloak-attribute-mapping.png" alt="Bifrost Attribute Mapping screen showing realm_access.roles mapped to Admin and Viewer roles, and groups mapped with /${*} wildcard to extract team names" />
+</Frame>
+
+Click **Next** when done.
+
+</Step>
+
+<Step title="Review and enable">
+
+Review your configuration on the final screen and click **Enable**.
+
+<Warning>
+  Restart your Bifrost server after enabling for the changes to take effect.
+</Warning>
+
+</Step>
+
+</Steps>
+
+---
+
+## Optional Next Steps
+
+**Import users from Keycloak** — once SSO is configured, you can bulk-import users from Keycloak into Bifrost without waiting for each user to log in. Go to **Governance** → **Users** → **Sync Users from Keycloak** and filter by group or realm role to preview and import matching users.
+
+<Frame caption="Sync Users from Keycloak — filter by group membership or realm role to select which users to import into Bifrost.">
+  <img src="/media/user-provisioning/keycloak/bifrost-sync-users.png" alt="Sync Users from IdP dialog showing Filter by Groups with Engineering, Operations, and Platform checkboxes, and Filter by Roles section" />
+</Frame>
+
+Imported users appear in **Governance** → **Users** with their role and team assignments applied immediately.
+
+<Frame caption="Users page after syncing — users are marked Managed by Keycloak and receive their roles and teams from the attribute mappings.">
+  <img src="/media/user-provisioning/keycloak/bifrost-users-page.png" alt="Bifrost Users page showing a user with Admin role and Engineering and Platform teams, marked Managed by Keycloak" />
+</Frame>
+
+---
+
+## Troubleshooting
+
+**`serverUrl must not include /realms/{realm}`** — the Server URL field takes the base Keycloak URL only. Set the realm separately in the Realm field. Example: `https://keycloak.company.com` + Realm `Bifrost` — not `https://keycloak.company.com/realms/Bifrost`.
+
+**Users are redirected back to login** — confirm the client's **Valid redirect URIs** exactly match your Bifrost login URL (trailing slash matters). Verify the client is **Enabled** in Keycloak.
+
+**Roles not appearing in the token** — check that the **User Realm Role** mapper adds to both ID and access tokens. Use **Evaluate** on the client scope in Keycloak to preview the token a specific user would receive.
+
+**Groups not appearing in the token** — verify the **Group Membership** mapper has **Full group path** enabled and is added to ID token, access token, and userinfo.
+
+**`jwks keys not found`** — confirm the Server URL is reachable from Bifrost. The JWKS endpoint is `{serverUrl}/realms/{realm}/protocol/openid-connect/certs`.

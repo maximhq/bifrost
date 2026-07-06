@@ -1,0 +1,40 @@
+compact:
+  post:
+    operationId: createCompaction
+    summary: Compact context
+    description: |
+      Compresses a conversation into an opaque encrypted compaction item using the
+      OpenAI-compatible context compaction API.
+
+      The response `output` array contains the original user messages plus a final item
+      with `type: "response.compaction"` and an `encrypted_content` field. Pass the
+      full `output` array as `input` to future Responses API requests to continue the
+      conversation without retransmitting the full history.
+
+      **Supported providers:** OpenAI, Azure OpenAI, xAI. Requests to unsupported
+      providers return a 400 error.
+
+    tags:
+    - Compaction
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/inference/compaction.yaml#/CompactionRequest'
+    responses:
+      '200':
+        description: Successful compaction response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/compaction.yaml#/CompactionResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []

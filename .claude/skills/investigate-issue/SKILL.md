@@ -81,7 +81,7 @@ Use the issue's labels and body content to map to codebase areas. The issue temp
 | Framework | `framework/`, `framework/configstore/`, `framework/logstore/` | `framework/config.go`, `framework/list.go` |
 | Transports (HTTP) | `transports/bifrost-http/` | `transports/bifrost-http/` |
 | Plugins | `plugins/` (governance, jsonparser, litellmcompat, etc.) | Plugin-specific `go.mod` files |
-| UI (Next.js) | `ui/`, `ui/app/workspace/`, `ui/components/` | Feature-specific workspace pages |
+| UI (React) | `ui/`, `ui/app/workspace/`, `ui/components/` | Feature-specific workspace pages |
 | Docs | `docs/` | `docs/docs.json`, feature-specific `.mdx` files |
 
 If the issue body mentions specific providers (e.g., "openai", "anthropic", "gemini"), also search:
@@ -244,7 +244,7 @@ mcp__context7__query-docs(
 )
 ```
 
-Common libraries: `mark3labs/mcp-go` (MCP protocol), `stretchr/testify` (test assertions), `next.js` (UI framework), `playwright` (E2E testing), provider SDKs (OpenAI, Anthropic, etc.)
+Common libraries: `mark3labs/mcp-go` (MCP protocol), `stretchr/testify` (test assertions), `react` (UI framework), `playwright` (E2E testing), provider SDKs (OpenAI, Anthropic, etc.)
 
 **Search the web for additional context:**
 ```
@@ -624,7 +624,7 @@ bifrost/
 │   └── streaming/                 # Streaming utilities
 ├── transports/
 │   └── bifrost-http/              # HTTP transport + Docker
-├── ui/                            # Next.js UI
+├── ui/                            # React + Vite UI
 │   ├── app/workspace/             # Feature pages
 │   └── components/                # Shared components
 ├── plugins/                       # Go plugins (governance, otel, etc.)

@@ -1,12 +1,10 @@
-"use client";
-
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { CodeEditor } from "@/components/ui/codeEditor";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { getExampleBaseUrl } from "@/lib/utils/port";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
+import { getExampleBaseUrl } from "@/lib/utils/port";
 import { AlertTriangle, Copy } from "lucide-react";
 import { useMemo, useState } from "react";
 
@@ -72,11 +70,10 @@ function CodeBlock({ code, language, onLanguageChange, showLanguageSelect = fals
 }
 
 interface EmptyStateProps {
-	isSocketConnected: boolean;
 	error: string | null;
 }
 
-export function EmptyState({ isSocketConnected, error }: EmptyStateProps) {
+export function EmptyState({ error }: EmptyStateProps) {
 	const [language, setLanguage] = useState<Language>("python");
 
 	// Generate examples dynamically using the port utility
@@ -241,7 +238,7 @@ const result = await chain.invoke({ input: "What is LangChain?" });`,
 	}, []);
 
 	const isUnexpectedError = error && error.includes("An unexpected error occurred");
-	
+
 	return (
 		<div className="dark:bg-card flex w-full flex-col items-center justify-center space-y-8 bg-white">
 			{error && (
@@ -253,22 +250,11 @@ const result = await chain.invoke({ input: "What is LangChain?" });`,
 				</Alert>
 			)}
 
-			<div className="w-full space-y-6">
+			<div className="w-full space-y-6 p-4">
 				<div className="flex flex-row items-center gap-2">
 					<div>
 						<h3 className="text-lg font-semibold">Integrate under 60 seconds</h3>
 						<p className="text-muted-foreground text-sm">Send your first request to get started</p>
-					</div>
-					<div className="ml-auto">
-						{isSocketConnected && (
-							<div className="inline-flex items-center rounded-full border border-green-200 bg-green-50 px-3 py-1 text-xs font-medium text-green-700 sm:px-4 sm:text-sm">
-								<span className="relative mr-2 flex h-2 w-2 sm:mr-3">
-									<span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-green-500 opacity-75"></span>
-									<span className="relative inline-flex h-2 w-2 rounded-full bg-green-600"></span>
-								</span>
-								<span>Listening for logs...</span>
-							</div>
-						)}
 					</div>
 				</div>
 

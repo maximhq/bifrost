@@ -7,7 +7,7 @@ import { RoutingRulesView } from "./views/routingRulesView";
 
 export default function RoutingRulesPage() {
 	return (
-		<div className="mx-auto w-full max-w-7xl">
+		<div className="no-padding-parent mx-auto flex h-[calc(100dvh-1rem)] min-h-0 w-full flex-col overflow-hidden p-4">
 			<RoutingRulesView />
 		</div>
 	);

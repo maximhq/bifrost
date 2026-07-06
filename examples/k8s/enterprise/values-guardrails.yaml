@@ -1,0 +1,234 @@
+# Enterprise overlay: guardrails documentation sample.
+# Shows:
+# - Multiple rules (input/output/both)
+# - Multiple provider types (bedrock/azure/grayswan/regex)
+# - Multiple auth modes (iam_role, keys, api_key, default_credential, entra_id)
+# - Rule-to-provider wiring via provider_config_ids
+bifrost:
+  guardrails:
+    # Guardrail rules:
+    # - cel_expression drives runtime matching
+    # - query is optional UI metadata from rule builder exports
+    rules:
+      - id: 1001
+        name: "regex-pre-filter-input"
+        description: "Fast local regex checks before external guardrail calls"
+        enabled: true
+        cel_expression: "headers[\"test\"] == \"test\""
+        query:
+          combinator: "and"
+          rules:
+            - field: "headers"
+              operator: "="
+              value: "test:test"
+              valueSource: "value"
+        apply_to: "input"
+        sampling_rate: 100
+        timeout: 1200
+        provider_config_ids: [2007]
+      - id: 1002
+        name: "input-managed-guardrails"
+        description: "Input moderation via Azure + Bedrock + GraySwan"
+        enabled: true
+        cel_expression: "headers[\"test\"] == \"test\""
+        query:
+          combinator: "and"
+          rules:
+            - field: "headers"
+              operator: "="
+              value: "test:test"
+              valueSource: "value"
+        apply_to: "input"
+        sampling_rate: 100
+        timeout: 1500
+        provider_config_ids: [2001, 2003, 2005]
+      - id: 1003
+        name: "output-managed-guardrails"
+        description: "Output moderation with alternative auth modes"
+        enabled: true
+        cel_expression: "headers[\"test\"] == \"test\""
+        query:
+          combinator: "and"
+          rules:
+            - field: "headers"
+              operator: "="
+              value: "test:test"
+              valueSource: "value"
+        apply_to: "output"
+        sampling_rate: 90
+        timeout: 1800
+        provider_config_ids: [2002, 2006, 2008, 2009, 2010]
+      - id: 1004
+        name: "both-phases-safety-net"
+        description: "Runs across input and output with mixed providers"
+        enabled: true
+        cel_expression: "headers[\"test\"] == \"test\""
+        query:
+          combinator: "and"
+          rules:
+            - field: "headers"
+              operator: "="
+              value: "test:test"
+              valueSource: "value"
+        apply_to: "both"
+        sampling_rate: 60
+        timeout: 2200
+        provider_config_ids: [2002, 2005, 2007, 2010]
+    # Guardrail provider configurations referenced by rule provider_config_ids.
+    providers:
+      - id: 2001
+        provider_name: "bedrock"
+        policy_name: "bedrock-iam-role"
+        enabled: true
+        timeout: 1000
+        config:
+          auth_type: "iam_role"
+          region: "us-east-1"
+          guardrail_arn: "arn:aws:bedrock:us-east-1:123456789012:guardrail/gr-abc123"
+          guardrail_version: "1"
+      - id: 2002
+        provider_name: "azure"
+        policy_name: "azure-default-credential"
+        enabled: true
+        timeout: 1500
+        config:
+          auth_type: "default_credential"
+          endpoint: "https://example-guardrails.cognitiveservices.azure.com/"
+          scopes:
+            - "https://cognitiveservices.azure.com/.default"
+          analyze_enabled: true
+          analyze_severity_threshold: "high"
+          jailbreak_shield_enabled: true
+          indirect_attack_shield_enabled: true
+          copyright_enabled: false
+          text_blocklist_enabled: false
+      - id: 2003
+        provider_name: "azure"
+        policy_name: "azure-api-key"
+        enabled: true
+        timeout: 1200
+        config:
+          auth_type: "api_key"
+          endpoint: "https://example-guardrails.cognitiveservices.azure.com/"
+          api_key: "${AZURE_CONTENT_SAFETY_KEY}"
+          analyze_enabled: true
+          analyze_severity_threshold: "medium"
+          jailbreak_shield_enabled: true
+          indirect_attack_shield_enabled: false
+          copyright_enabled: false
+          text_blocklist_enabled: true
+          blocklist_names:
+            - "pii-blocklist"
+            - "internal-secrets"
+      - id: 2004
+        provider_name: "azure"
+        policy_name: "azure-entra-id"
+        enabled: false
+        timeout: 1200
+        config:
+          auth_type: "entra_id"
+          endpoint: "https://example-guardrails.cognitiveservices.azure.com/"
+          tenant_id: "${AZURE_TENANT_ID}"
+          client_id: "${AZURE_CLIENT_ID}"
+          client_secret: "${AZURE_CLIENT_SECRET}"
+          scopes:
+            - "https://cognitiveservices.azure.com/.default"
+          analyze_enabled: true
+          analyze_severity_threshold: "low"
+          jailbreak_shield_enabled: false
+          indirect_attack_shield_enabled: true
+          copyright_enabled: false
+          text_blocklist_enabled: false
+      - id: 2005
+        provider_name: "grayswan"
+        policy_name: "grayswan-hybrid-policy"
+        enabled: true
+        timeout: 1400
+        config:
+          api_key: "${GRAYSWAN_API_KEY}"
+          base_url: "https://api.grayswan.ai"
+          violation_threshold: 0.65
+          reasoning_mode: "hybrid"
+          policy_id: "policy-123"
+          policy_ids:
+            - "policy-123"
+            - "policy-456"
+          rules:
+            jailbreak: "block"
+            pii: "block"
+      - id: 2006
+        provider_name: "bedrock"
+        policy_name: "bedrock-access-keys-assume-role"
+        enabled: true
+        timeout: 1000
+        config:
+          auth_type: "keys"
+          access_key: "${AWS_ACCESS_KEY_ID}"
+          secret_key: "${AWS_SECRET_ACCESS_KEY}"
+          session_token: "${AWS_SESSION_TOKEN}"
+          role_arn: "arn:aws:iam::123456789012:role/bifrost-guardrail-role"
+          external_id: "bifrost-guardrails-external-id"
+          session_name: "bifrost-guardrails-session"
+          region: "us-west-2"
+          guardrail_arn: "arn:aws:bedrock:us-west-2:123456789012:guardrail/gr-def456"
+          guardrail_version: "2"
+      - id: 2007
+        provider_name: "regex"
+        policy_name: "regex-inline-redaction"
+        enabled: true
+        timeout: 300
+        config:
+          patterns:
+            - pattern: "(?i)\\bssn\\b"
+              description: "SSN keyword"
+              flags: "i"
+            - pattern: "\\b(?:\\d[ -]?){13,16}\\b"
+              description: "Potential payment card number"
+            - pattern: "(?s)-----BEGIN (?:RSA|EC|OPENSSH) PRIVATE KEY-----.*?-----END (?:RSA|EC|OPENSSH) PRIVATE KEY-----"
+              description: "Private key material"
+              flags: "s"
+      - id: 2008
+        provider_name: "bedrock"
+        policy_name: "bedrock-access-keys-assume-role-alt"
+        enabled: true
+        timeout: 1100
+        config:
+          auth_type: "keys"
+          access_key: "${AWS_ACCESS_KEY_ID_ALT}"
+          secret_key: "${AWS_SECRET_ACCESS_KEY_ALT}"
+          session_token: "${AWS_SESSION_TOKEN_ALT}"
+          role_arn: "arn:aws:iam::123456789012:role/bifrost-guardrail-role-alt"
+          external_id: "bifrost-guardrails-external-id-alt"
+          session_name: "bifrost-guardrails-session-alt"
+          region: "us-east-2"
+          guardrail_arn: "arn:aws:bedrock:us-east-2:123456789012:guardrail/gr-ghi789"
+          guardrail_version: "1"
+      - id: 2009
+        provider_name: "bedrock"
+        policy_name: "bedrock-api-key-guardrail"
+        enabled: true
+        timeout: 1000
+        config:
+          auth_type: "api_key"
+          bedrock_api_key: "${BEDROCK_API_KEY}"
+          region: "us-west-2"
+          guardrail_arn: "gr-jkl012"
+          guardrail_version: "1"
+      - id: 2010
+        provider_name: "azure"
+        policy_name: "azure-api-key-all-true-high"
+        enabled: true
+        timeout: 1300
+        config:
+          auth_type: "api_key"
+          endpoint: "https://example-guardrails.cognitiveservices.azure.com/"
+          api_key: "${AZURE_CONTENT_SAFETY_KEY_ALT}"
+          analyze_enabled: true
+          analyze_severity_threshold: "high"
+          jailbreak_shield_enabled: true
+          indirect_attack_shield_enabled: true
+          copyright_enabled: true
+          text_blocklist_enabled: true
+          blocklist_names:
+            - "pii-blocklist"
+            - "internal-secrets"

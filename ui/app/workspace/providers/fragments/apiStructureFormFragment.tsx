@@ -1,5 +1,3 @@
-"use client";
-
 import { Button } from "@/components/ui/button";
 import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -16,6 +14,7 @@ import { useEffect, useMemo } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { z } from "zod";
+import { buildProviderUpdatePayload } from "../views/utils";
 import { AllowedRequestsFields } from "./allowedRequestsFields";
 
 // Type for form data
@@ -51,6 +50,8 @@ export function ApiStructureFormFragment({ provider }: Props) {
 				transcription_stream: provider.custom_provider_config?.allowed_requests?.transcription_stream ?? true,
 				count_tokens: provider.custom_provider_config?.allowed_requests?.count_tokens ?? true,
 				list_models: provider.custom_provider_config?.allowed_requests?.list_models ?? true,
+				ocr: provider.custom_provider_config?.allowed_requests?.ocr ?? true,
+				ocr_stream: provider.custom_provider_config?.allowed_requests?.ocr_stream ?? true,
 			},
 			request_path_overrides: provider.custom_provider_config?.request_path_overrides ?? undefined,
 		},
@@ -66,15 +67,16 @@ export function ApiStructureFormFragment({ provider }: Props) {
 
 	const onSubmit = (data: FormCustomProviderConfig) => {
 		// Create updated provider configuration
-		updateProvider({
-			...provider,
-			custom_provider_config: {
-				base_provider_type: data.base_provider_type as unknown as BaseProvider,
-				is_key_less: data.is_key_less ?? false,
-				allowed_requests: data.allowed_requests,
-				request_path_overrides: cleanPathOverrides(data.request_path_overrides),
-			},
-		})
+		updateProvider(
+			buildProviderUpdatePayload(provider, {
+				custom_provider_config: {
+					base_provider_type: data.base_provider_type as unknown as BaseProvider,
+					is_key_less: data.is_key_less ?? false,
+					allowed_requests: data.allowed_requests,
+					request_path_overrides: cleanPathOverrides(data.request_path_overrides),
+				},
+			}),
+		)
 			.unwrap()
 			.then(() => {
 				toast.success("Provider configuration updated successfully");
@@ -94,7 +96,7 @@ export function ApiStructureFormFragment({ provider }: Props) {
 
 	return (
 		<Form {...form}>
-			<form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6 px-6">
+			<form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6 px-6 pb-6">
 				<div className="flex flex-col gap-4">
 					<FormField
 						control={form.control}
@@ -135,7 +137,13 @@ export function ApiStructureFormFragment({ provider }: Props) {
 											</label>
 											<p className="text-muted-foreground text-sm">Whether the custom provider requires a key</p>
 										</div>
-										<Switch id="drop-excess-requests" size="md" checked={field.value} onCheckedChange={field.onChange} disabled={!hasUpdateProviderAccess} />
+										<Switch
+											id="drop-excess-requests"
+											size="md"
+											checked={field.value}
+											onCheckedChange={field.onChange}
+											disabled={!hasUpdateProviderAccess}
+										/>
 									</div>
 								</FormItem>
 							)}
@@ -144,17 +152,21 @@ export function ApiStructureFormFragment({ provider }: Props) {
 				</div>
 
 				{/* Allowed Requests Configuration */}
-				<AllowedRequestsFields control={form.control} providerType={form.watch("base_provider_type") as BaseProvider} disabled={!hasUpdateProviderAccess} />
+				<AllowedRequestsFields
+					control={form.control}
+					providerType={form.watch("base_provider_type") as BaseProvider}
+					disabled={!hasUpdateProviderAccess}
+				/>
 
 				{/* Form Actions */}
-				<div className="flex justify-end space-x-2 py-2">
+				<div className="flex justify-end gap-2 py-2">
 					<Button type="button" variant="outline" onClick={() => form.reset()} disabled={!hasUpdateProviderAccess}>
 						Reset
 					</Button>
 					<TooltipProvider>
 						<Tooltip>
 							<TooltipTrigger asChild>
-								<Button type="submit" disabled={!form.formState.isDirty || !form.formState.isValid || !hasUpdateProviderAccess} isLoading={isUpdatingProvider}>
+								<Button type="submit" disabled={!form.formState.isDirty || !hasUpdateProviderAccess} isLoading={isUpdatingProvider}>
 									Save API Structure Configuration
 								</Button>
 							</TooltipTrigger>

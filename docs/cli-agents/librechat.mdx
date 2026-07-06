@@ -79,7 +79,7 @@ When Bifrost has [virtual key authentication](/features/governance/virtual-keys)
 apiKey: "bf-your-virtual-key-here"
 ```
 
-This lets you enforce usage limits, budgets, and access control per user or team. For team deployments, create a separate virtual key for each team or environment — each key can have its own rate limits, budgets, and provider access rules configured in the Bifrost dashboard.
+This lets you enforce usage limits, budgets, and access control per user or team. For team deployments, create a separate virtual key for each team or environment - each key can have its own rate limits, budgets, and provider access rules configured in the Bifrost dashboard.
 
 ## Model Selection
 
@@ -117,14 +117,14 @@ Bifrost supports the following providers with the `provider/model-name` format:
 `openai`, `azure`, `gemini`, `vertex`, `bedrock`, `mistral`, `groq`, `cerebras`, `cohere`, `perplexity`, `xai`, `ollama`, `openrouter`, `huggingface`, `nebius`, `parasail`, `replicate`, `vllm`, `sgl`
 
 <Note>
-LibreChat connects to Bifrost via a single OpenAI-compatible endpoint. Bifrost handles routing to the correct provider based on the model name — no per-provider configuration needed in LibreChat.
+LibreChat connects to Bifrost via a single OpenAI-compatible endpoint. Bifrost handles routing to the correct provider based on the model name - no per-provider configuration needed in LibreChat.
 </Note>
 
 ## Observability
 
-All LibreChat traffic through Bifrost is logged. Monitor it at `http://localhost:8080/logs` — filter by provider, model, or search through conversation content to track usage across your team.
+All LibreChat traffic through Bifrost is logged. Monitor it at `http://localhost:8080/logs` - filter by provider, model, or search through conversation content to track usage across your team.
 
 ## Next Steps
 
-- [Provider Configuration](/quickstart/gateway/provider-configuration) — Configure AI providers in Bifrost
-- [Virtual Keys](/features/governance/virtual-keys) — Set up usage limits and access control
+- [Provider Configuration](/quickstart/gateway/provider-configuration) - Configure AI providers in Bifrost
+- [Virtual Keys](/features/governance/virtual-keys) - Set up usage limits and access control

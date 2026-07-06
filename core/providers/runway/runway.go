@@ -3,6 +3,7 @@
 package runway
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
@@ -41,7 +42,7 @@ func NewRunwayProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 
 	// Configure proxy if provided
 	client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
-	client = providerUtils.ConfigureDialer(client)
+	client = providerUtils.ConfigureDialer(client, config.NetworkConfig.AllowPrivateNetwork)
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 
 	// Set default BaseURL if not provided
@@ -75,7 +76,7 @@ func (provider *RunwayProvider) TextCompletion(ctx *schemas.BifrostContext, key 
 }
 
 // TextCompletionStream is not supported by the Runway provider.
-func (provider *RunwayProvider) TextCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+func (provider *RunwayProvider) TextCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.TextCompletionStreamRequest, provider.GetProviderKey())
 }
 
@@ -85,7 +86,7 @@ func (provider *RunwayProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 }
 
 // ChatCompletionStream is not supported by the Runway provider.
-func (provider *RunwayProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+func (provider *RunwayProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ChatCompletionStreamRequest, provider.GetProviderKey())
 }
 
@@ -95,7 +96,7 @@ func (provider *RunwayProvider) Responses(ctx *schemas.BifrostContext, key schem
 }
 
 // ResponsesStream is not supported by the Runway provider.
-func (provider *RunwayProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+func (provider *RunwayProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ResponsesStreamRequest, provider.GetProviderKey())
 }
 
@@ -110,7 +111,7 @@ func (provider *RunwayProvider) Speech(ctx *schemas.BifrostContext, key schemas.
 }
 
 // SpeechStream is not supported by the Runway provider.
-func (provider *RunwayProvider) SpeechStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostSpeechRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+func (provider *RunwayProvider) SpeechStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostSpeechRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.SpeechStreamRequest, provider.GetProviderKey())
 }
 
@@ -120,7 +121,7 @@ func (provider *RunwayProvider) Transcription(ctx *schemas.BifrostContext, key s
 }
 
 // TranscriptionStream is not supported by the Runway provider.
-func (provider *RunwayProvider) TranscriptionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+func (provider *RunwayProvider) TranscriptionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.TranscriptionStreamRequest, provider.GetProviderKey())
 }
 
@@ -129,23 +130,200 @@ func (provider *RunwayProvider) Rerank(ctx *schemas.BifrostContext, key schemas.
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.RerankRequest, provider.GetProviderKey())
 }
 
-// ImageGeneration is not supported by the Runway provider.
-func (provider *RunwayProvider) ImageGeneration(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageGenerationRequest, provider.GetProviderKey())
+// OCR is not supported by the Runway provider.
+func (provider *RunwayProvider) OCR(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostOCRRequest) (*schemas.BifrostOCRResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.OCRRequest, provider.GetProviderKey())
+}
+
+// ImageGeneration performs a text-to-image generation request to Runway's API.
+// Runway image generation is task-based: a task is created and then polled until it
+// reaches a terminal state, after which the generated image URLs are returned.
+func (provider *RunwayProvider) ImageGeneration(ctx *schemas.BifrostContext, key schemas.Key, bifrostReq *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+	// Convert Bifrost request to Runway format
+	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		bifrostReq,
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			return ToRunwayImageGenerationRequest(bifrostReq)
+		})
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	return provider.HandleRunwayImageTask(ctx, key, bifrostReq.Model, jsonData)
+}
+
+// HandleRunwayImageTask posts a prebuilt text_to_image body, polls the task to completion,
+// and builds the Bifrost image response. Shared by ImageGeneration and ImageEdit since both
+// use the same /v1/text_to_image endpoint and response shape.
+func (provider *RunwayProvider) HandleRunwayImageTask(ctx *schemas.BifrostContext, key schemas.Key, model string, jsonData []byte) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
+
+	// Create HTTP request
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+
+	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/v1/text_to_image"))
+	req.Header.SetMethod(http.MethodPost)
+	req.Header.SetContentType("application/json")
+	req.Header.Set("X-Runway-Version", "2024-11-06")
+	if key.Value.GetValue() != "" {
+		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
+	}
+
+	req.SetBody(jsonData)
+
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	defer wait()
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Handle error response
+	if resp.StatusCode() != fasthttp.StatusOK {
+		return nil, providerUtils.EnrichError(ctx, parseRunwayError(resp), jsonData, nil, sendBackRawRequest, sendBackRawResponse)
+	}
+
+	// Decode response body
+	body, err := providerUtils.CheckAndDecodeBody(resp)
+	if err != nil {
+		rawErrBody := append([]byte(nil), resp.Body()...)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), jsonData, rawErrBody, sendBackRawRequest, sendBackRawResponse)
+	}
+
+	// Parse task creation response
+	var taskResp RunwayTaskCreationResponse
+	rawRequest, _, bifrostErr := providerUtils.HandleProviderResponse(body, &taskResp, jsonData, sendBackRawRequest, sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Poll the task until it reaches a terminal state
+	taskDetails, rawResponse, bifrostErr := provider.pollRunwayTask(ctx, key, taskResp.ID, sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse)
+	}
+
+	// Convert to Bifrost response
+	bifrostResp, bifrostErr := ToBifrostImageGenerationResponse(taskDetails)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	bifrostResp.Model = model
+	bifrostResp.ExtraFields.Latency = latency.Milliseconds()
+
+	if sendBackRawRequest {
+		bifrostResp.ExtraFields.RawRequest = rawRequest
+	}
+	if sendBackRawResponse {
+		bifrostResp.ExtraFields.RawResponse = rawResponse
+	}
+
+	return bifrostResp, nil
+}
+
+// runwayImagePollingInterval is the interval between Runway task status polls for image generation.
+const runwayImagePollingInterval = 2 * time.Second
+
+// pollRunwayTask polls a Runway task until it reaches a terminal state or the context times out.
+func (provider *RunwayProvider) pollRunwayTask(ctx *schemas.BifrostContext, key schemas.Key, taskID string, sendBackRawResponse bool) (*RunwayTaskDetailsResponse, interface{}, *schemas.BifrostError) {
+	pollCtx, cancel := schemas.NewBifrostContextWithTimeout(ctx, time.Duration(provider.networkConfig.DefaultRequestTimeoutInSeconds)*time.Second)
+	defer cancel()
+
+	ticker := time.NewTicker(runwayImagePollingInterval)
+	defer ticker.Stop()
+
+	for {
+		taskDetails, rawResponse, bifrostErr := provider.retrieveRunwayTask(pollCtx, key, taskID, sendBackRawResponse)
+		if bifrostErr != nil {
+			return nil, nil, bifrostErr
+		}
+
+		switch taskDetails.Status {
+		case RunwayTaskStatusSucceeded:
+			return taskDetails, rawResponse, nil
+		case RunwayTaskStatusFailed, RunwayTaskStatusCancelled:
+			return nil, nil, providerUtils.NewBifrostOperationError(fmt.Sprintf("runway task %s", taskDetails.Status), nil)
+		}
+
+		select {
+		case <-pollCtx.Done():
+			return nil, nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, fmt.Errorf("runway task polling timed out"))
+		case <-ticker.C:
+		}
+	}
+}
+
+// retrieveRunwayTask fetches the current state of a Runway task.
+func (provider *RunwayProvider) retrieveRunwayTask(ctx *schemas.BifrostContext, key schemas.Key, taskID string, sendBackRawResponse bool) (*RunwayTaskDetailsResponse, interface{}, *schemas.BifrostError) {
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+
+	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/v1/tasks/"+taskID))
+	req.Header.SetMethod(http.MethodGet)
+	req.Header.Set("X-Runway-Version", "2024-11-06")
+	if key.Value.GetValue() != "" {
+		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
+	}
+
+	_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	defer wait()
+	if bifrostErr != nil {
+		return nil, nil, bifrostErr
+	}
+
+	if resp.StatusCode() != fasthttp.StatusOK {
+		return nil, nil, parseRunwayError(resp)
+	}
+
+	body, err := providerUtils.CheckAndDecodeBody(resp)
+	if err != nil {
+		return nil, nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
+	}
+
+	var taskDetails RunwayTaskDetailsResponse
+	_, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, &taskDetails, nil, false, sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, nil, bifrostErr
+	}
+
+	return &taskDetails, rawResponse, nil
 }
 
 // ImageGenerationStream is not supported by the Runway provider.
-func (provider *RunwayProvider) ImageGenerationStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+func (provider *RunwayProvider) ImageGenerationStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageGenerationStreamRequest, provider.GetProviderKey())
 }
 
-// ImageEdit is not supported by the Runway provider.
-func (provider *RunwayProvider) ImageEdit(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageEditRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageEditRequest, provider.GetProviderKey())
+// ImageEdit performs an image edit request to Runway's API. Runway has no dedicated edit
+// endpoint, so the input images are passed as reference images to /v1/text_to_image.
+func (provider *RunwayProvider) ImageEdit(ctx *schemas.BifrostContext, key schemas.Key, bifrostReq *schemas.BifrostImageEditRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+	// Convert Bifrost request to Runway format
+	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		bifrostReq,
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			return ToRunwayImageEditRequest(bifrostReq)
+		})
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	return provider.HandleRunwayImageTask(ctx, key, bifrostReq.Model, jsonData)
 }
 
 // ImageEditStream is not supported by the Runway provider.
-func (provider *RunwayProvider) ImageEditStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostImageEditRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+func (provider *RunwayProvider) ImageEditStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostImageEditRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageEditStreamRequest, provider.GetProviderKey())
 }
 
@@ -165,8 +343,7 @@ func (provider *RunwayProvider) VideoGeneration(ctx *schemas.BifrostContext, key
 		bifrostReq,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
 			return ToRunwayVideoGenerationRequest(bifrostReq)
-		},
-		provider.GetProviderKey())
+		})
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -205,17 +382,14 @@ func (provider *RunwayProvider) VideoGeneration(ctx *schemas.BifrostContext, key
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, providerUtils.EnrichError(ctx, parseRunwayError(resp, &providerUtils.RequestMetadata{
-			Provider:    providerName,
-			Model:       model,
-			RequestType: schemas.VideoGenerationRequest,
-		}), jsonData, nil, sendBackRawRequest, sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, parseRunwayError(resp), jsonData, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
 	// Decode response body
 	body, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
+		rawErrBody := append([]byte(nil), resp.Body()...)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), jsonData, rawErrBody, sendBackRawRequest, sendBackRawResponse)
 	}
 
 	// Parse response
@@ -232,10 +406,7 @@ func (provider *RunwayProvider) VideoGeneration(ctx *schemas.BifrostContext, key
 		Object: "video",
 		Status: schemas.VideoStatusQueued,
 		ExtraFields: schemas.BifrostResponseExtraFields{
-			Latency:        latency.Milliseconds(),
-			Provider:       providerName,
-			ModelRequested: model,
-			RequestType:    schemas.VideoGenerationRequest,
+			Latency: latency.Milliseconds(),
 		},
 	}
 
@@ -282,16 +453,14 @@ func (provider *RunwayProvider) VideoRetrieve(ctx *schemas.BifrostContext, key s
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, providerUtils.EnrichError(ctx, parseRunwayError(resp, &providerUtils.RequestMetadata{
-			Provider:    providerName,
-			RequestType: schemas.VideoRetrieveRequest,
-		}), nil, nil, sendBackRawRequest, sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, parseRunwayError(resp), nil, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
 	// Decode response body
 	body, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
+		rawErrBody := append([]byte(nil), resp.Body()...)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), nil, rawErrBody, sendBackRawRequest, sendBackRawResponse)
 	}
 
 	// Parse response
@@ -309,8 +478,6 @@ func (provider *RunwayProvider) VideoRetrieve(ctx *schemas.BifrostContext, key s
 
 	bifrostResp.ID = providerUtils.AddVideoIDProviderSuffix(bifrostResp.ID, providerName)
 	bifrostResp.ExtraFields.Latency = latency.Milliseconds()
-	bifrostResp.ExtraFields.Provider = providerName
-	bifrostResp.ExtraFields.RequestType = schemas.VideoRetrieveRequest
 
 	if sendBackRawRequest {
 		bifrostResp.ExtraFields.RawRequest = rawRequest
@@ -324,7 +491,6 @@ func (provider *RunwayProvider) VideoRetrieve(ctx *schemas.BifrostContext, key s
 
 // VideoDownload retrieves a video from Runway's API.
 func (provider *RunwayProvider) VideoDownload(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoDownloadRequest) (*schemas.BifrostVideoDownloadResponse, *schemas.BifrostError) {
-	providerName := provider.GetProviderKey()
 	// Retrieve task status to get the video URL
 	bifrostVideoRetrieveRequest := &schemas.BifrostVideoRetrieveRequest{
 		Provider: request.Provider,
@@ -338,20 +504,21 @@ func (provider *RunwayProvider) VideoDownload(ctx *schemas.BifrostContext, key s
 	if taskDetails.Status != schemas.VideoStatusCompleted {
 		return nil, providerUtils.NewBifrostOperationError(
 			fmt.Sprintf("video not ready, current status: %s", taskDetails.Status),
-			nil,
-			providerName,
-		)
+			nil)
 	}
 	if len(taskDetails.Videos) == 0 {
-		return nil, providerUtils.NewBifrostOperationError("video URL not available", nil, providerName)
+		return nil, providerUtils.NewBifrostOperationError("video URL not available", nil)
 	}
 	var videoUrl string
 	if taskDetails.Videos[0].URL != nil {
 		videoUrl = *taskDetails.Videos[0].URL
 	}
 	if videoUrl == "" {
-		return nil, providerUtils.NewBifrostOperationError("invalid video output type", nil, providerName)
+		return nil, providerUtils.NewBifrostOperationError("invalid video output type", nil)
 	}
+	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
+
 	// Download video from Runway's URL
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -367,14 +534,13 @@ func (provider *RunwayProvider) VideoDownload(ctx *schemas.BifrostContext, key s
 	if resp.StatusCode() != fasthttp.StatusOK {
 		return nil, providerUtils.NewBifrostOperationError(
 			fmt.Sprintf("failed to download video: HTTP %d", resp.StatusCode()),
-			nil,
-			providerName,
-		)
+			nil)
 	}
 	// Get content and content type
 	body, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
+		rawErrBody := append([]byte(nil), resp.Body()...)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), nil, rawErrBody, sendBackRawRequest, sendBackRawResponse)
 	}
 	contentType := string(resp.Header.ContentType())
 	if contentType == "" {
@@ -389,8 +555,6 @@ func (provider *RunwayProvider) VideoDownload(ctx *schemas.BifrostContext, key s
 	}
 
 	bifrostResp.ExtraFields.Latency = latency.Milliseconds()
-	bifrostResp.ExtraFields.Provider = providerName
-	bifrostResp.ExtraFields.RequestType = schemas.VideoDownloadRequest
 
 	return bifrostResp, nil
 }
@@ -402,7 +566,7 @@ func (provider *RunwayProvider) VideoDelete(ctx *schemas.BifrostContext, key sch
 	providerName := provider.GetProviderKey()
 
 	if request.ID == "" {
-		return nil, providerUtils.NewBifrostOperationError("task_id is required", nil, providerName)
+		return nil, providerUtils.NewBifrostOperationError("task_id is required", nil)
 	}
 
 	taskID := providerUtils.StripVideoIDProviderSuffix(request.ID, providerName)
@@ -434,10 +598,7 @@ func (provider *RunwayProvider) VideoDelete(ctx *schemas.BifrostContext, key sch
 
 	// Handle error response - Runway returns 204 No Content on success
 	if resp.StatusCode() != fasthttp.StatusNoContent {
-		return nil, providerUtils.EnrichError(ctx, parseRunwayError(resp, &providerUtils.RequestMetadata{
-			Provider:    providerName,
-			RequestType: schemas.VideoDeleteRequest,
-		}), nil, nil, sendBackRawRequest, sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, parseRunwayError(resp), nil, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
 	// Build response - Runway returns empty body on 204
@@ -448,8 +609,6 @@ func (provider *RunwayProvider) VideoDelete(ctx *schemas.BifrostContext, key sch
 	}
 
 	response.ExtraFields.Latency = latency.Milliseconds()
-	response.ExtraFields.Provider = providerName
-	response.ExtraFields.RequestType = schemas.VideoDeleteRequest
 
 	return response, nil
 }
@@ -524,6 +683,11 @@ func (provider *RunwayProvider) CountTokens(_ *schemas.BifrostContext, _ schemas
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.CountTokensRequest, provider.GetProviderKey())
 }
 
+// Compaction is not supported by the Runway provider.
+func (provider *RunwayProvider) Compaction(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostCompactionRequest) (*schemas.BifrostCompactionResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.CompactionRequest, provider.GetProviderKey())
+}
+
 // ContainerCreate is not supported by the Runway provider.
 func (provider *RunwayProvider) ContainerCreate(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostContainerCreateRequest) (*schemas.BifrostContainerCreateResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ContainerCreateRequest, provider.GetProviderKey())
@@ -574,6 +738,6 @@ func (provider *RunwayProvider) Passthrough(_ *schemas.BifrostContext, _ schemas
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughRequest, provider.GetProviderKey())
 }
 
-func (provider *RunwayProvider) PassthroughStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ schemas.Key, _ *schemas.BifrostPassthroughRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+func (provider *RunwayProvider) PassthroughStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ func(context.Context), _ schemas.Key, _ *schemas.BifrostPassthroughRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughStreamRequest, provider.GetProviderKey())
 }

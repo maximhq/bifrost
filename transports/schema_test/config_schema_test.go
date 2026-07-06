@@ -3,11 +3,14 @@ package schema_test
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
@@ -106,7 +109,7 @@ func TestSchemaLogsStorePortType(t *testing.T) {
 			t.Fatal("could not find logs_store postgres port type in schema")
 		}
 		if portType != "string" {
-			t.Errorf("logs_store.config.port type = %q, want %q (Go code uses *schemas.EnvVar)", portType, "string")
+			t.Errorf("logs_store.config.port type = %q, want %q (Go code uses *schemas.SecretVar)", portType, "string")
 		}
 	})
 
@@ -116,7 +119,7 @@ func TestSchemaLogsStorePortType(t *testing.T) {
 			t.Fatal("could not find config_store postgres port type in schema")
 		}
 		if portType != "string" {
-			t.Errorf("config_store.config.port type = %q, want %q (Go code uses *schemas.EnvVar)", portType, "string")
+			t.Errorf("config_store.config.port type = %q, want %q (Go code uses *schemas.SecretVar)", portType, "string")
 		}
 	})
 
@@ -130,6 +133,196 @@ func TestSchemaLogsStorePortType(t *testing.T) {
 			t.Errorf("port type mismatch: logs_store=%q, config_store=%q", logsPortType, configPortType)
 		}
 	})
+}
+
+func TestSchemaPostgresPasswordCommand(t *testing.T) {
+	compiled := compileSchema(t)
+
+	config := `{
+		"config_store": {
+			"enabled": true,
+			"type": "postgres",
+			"config": {
+				"host": "db.example.com",
+				"port": "5432",
+				"user": "bifrost",
+				"password_command": {
+					"command": "aws",
+					"args": ["rds", "generate-db-auth-token"],
+					"timeout": "10s"
+				},
+				"db_name": "bifrost",
+				"ssl_mode": "require",
+				"conn_max_lifetime": "10m"
+			}
+		},
+		"logs_store": {
+			"enabled": true,
+			"type": "postgres",
+			"config": {
+				"host": "db.example.com",
+				"port": "5432",
+				"user": "bifrost",
+				"password_command": {
+					"command": "aws",
+					"args": ["rds", "generate-db-auth-token"],
+					"timeout": "10s"
+				},
+				"db_name": "bifrost",
+				"ssl_mode": "require",
+				"conn_max_lifetime": "10m"
+			}
+		}
+	}`
+
+	if err := validateConfig(t, compiled, config); err != nil {
+		t.Fatalf("postgres password_command config should be valid, got: %v", err)
+	}
+}
+
+func TestSchemaPostgresPasswordCommandValidation(t *testing.T) {
+	compiled := compileSchema(t)
+
+	tests := []struct {
+		name   string
+		config string
+	}{
+		{
+			name: "config_store rejects password and password_command together",
+			config: postgresStoreConfig("config_store", `"password": "secret",
+				"password_command": {"command": "aws"}`),
+		},
+		{
+			name: "logs_store rejects password and password_command together",
+			config: postgresStoreConfig("logs_store", `"password": "secret",
+				"password_command": {"command": "aws"}`),
+		},
+		{
+			name:   "config_store rejects empty password command",
+			config: postgresStoreConfig("config_store", `"password_command": {"command": ""}`),
+		},
+		{
+			name:   "config_store rejects inline args in password command",
+			config: postgresStoreConfig("config_store", `"password_command": {"command": "aws rds"}`),
+		},
+		{
+			name:   "config_store rejects zero password command timeout",
+			config: postgresStoreConfig("config_store", `"password_command": {"command": "aws", "timeout": "0s"}`),
+		},
+		{
+			name:   "logs_store rejects zero password command timeout",
+			config: postgresStoreConfig("logs_store", `"password_command": {"command": "aws", "timeout": "0s"}`),
+		},
+		{
+			name: "config_store rejects zero conn max lifetime",
+			config: postgresStoreConfig("config_store", `"password_command": {"command": "aws"},
+				"conn_max_lifetime": "0s"`),
+		},
+		{
+			name: "logs_store rejects zero conn max lifetime",
+			config: postgresStoreConfig("logs_store", `"password_command": {"command": "aws"},
+				"conn_max_lifetime": "0s"`),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := validateConfig(t, compiled, tt.config); err == nil {
+				t.Fatal("config should be invalid")
+			}
+		})
+	}
+}
+
+func TestSchemaLogsStoreWriterConfig(t *testing.T) {
+	compiled := compileSchema(t)
+
+	validConfig := `{
+		"logs_store": {
+			"enabled": true,
+			"type": "sqlite",
+			"config": {
+				"path": "/tmp/logs.db"
+			},
+			"writer": {
+				"max_batch_size": 500,
+				"batch_interval": "2s",
+				"max_batch_bytes": 1048576,
+				"write_queue_capacity": 2000,
+				"deferred_usage_concurrency": 3
+			}
+		}
+	}`
+	if err := validateConfig(t, compiled, validConfig); err != nil {
+		t.Fatalf("logs_store.writer config should be valid, got: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		writer string
+	}{
+		{
+			name:   "rejects zero max batch size",
+			writer: `"max_batch_size": 0`,
+		},
+		{
+			name:   "rejects zero batch interval",
+			writer: `"batch_interval": "0s"`,
+		},
+		{
+			name:   "rejects zero max batch bytes",
+			writer: `"max_batch_bytes": 0`,
+		},
+		{
+			name:   "rejects zero write queue capacity",
+			writer: `"write_queue_capacity": 0`,
+		},
+		{
+			name:   "rejects zero deferred usage concurrency",
+			writer: `"deferred_usage_concurrency": 0`,
+		},
+		{
+			name:   "rejects unknown writer field",
+			writer: `"unknown": 1`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := fmt.Sprintf(`{
+				"logs_store": {
+					"enabled": true,
+					"type": "sqlite",
+					"config": {
+						"path": "/tmp/logs.db"
+					},
+					"writer": {
+						%s
+					}
+				}
+			}`, tt.writer)
+			if err := validateConfig(t, compiled, config); err == nil {
+				t.Fatal("config should be invalid")
+			}
+		})
+	}
+}
+
+func postgresStoreConfig(storeName string, passwordFields string) string {
+	return fmt.Sprintf(`{
+		"%s": {
+			"enabled": true,
+			"type": "postgres",
+			"config": {
+				"host": "db.example.com",
+				"port": "5432",
+				"user": "bifrost",
+				%s,
+				"db_name": "bifrost",
+				"ssl_mode": "require"
+			}
+		}
+	}`, storeName, passwordFields)
 }
 
 // compileSchema loads and compiles the config.schema.json for validation tests.
@@ -165,21 +358,78 @@ func validateConfig(t *testing.T, schema *jsonschema.Schema, configJSON string) 
 	return schema.Validate(v)
 }
 
-func TestSchemaVertexKeyDeployments(t *testing.T) {
-	schemaPath := getSchemaPath(t)
-	data, err := os.ReadFile(schemaPath)
-	if err != nil {
-		t.Fatalf("failed to read schema: %v", err)
-	}
-	var schema map[string]interface{}
-	if err := json.Unmarshal(data, &schema); err != nil {
-		t.Fatalf("failed to parse schema: %v", err)
+func TestSchemaSCIMConfigValidation(t *testing.T) {
+	compiled := compileSchema(t)
+
+	tests := []struct {
+		name      string
+		config    string
+		wantError bool
+	}{
+		{
+			name:   "disabled okta with empty config is valid",
+			config: `{"scim_config":{"enabled":false,"provider":"okta","config":{}}}`,
+		},
+		{
+			name:   "disabled entra with empty config is valid",
+			config: `{"scim_config":{"enabled":false,"provider":"entra","config":{}}}`,
+		},
+		{
+			name:   "disabled keycloak with empty config is valid",
+			config: `{"scim_config":{"enabled":false,"provider":"keycloak","config":{}}}`,
+		},
+		{
+			name:      "enabled okta with empty config is invalid",
+			config:    `{"scim_config":{"enabled":true,"provider":"okta","config":{}}}`,
+			wantError: true,
+		},
+		{
+			name:      "enabled entra with empty config is invalid",
+			config:    `{"scim_config":{"enabled":true,"provider":"entra","config":{}}}`,
+			wantError: true,
+		},
+		{
+			name:      "enabled keycloak with empty config is invalid",
+			config:    `{"scim_config":{"enabled":true,"provider":"keycloak","config":{}}}`,
+			wantError: true,
+		},
+		{
+			name: "enabled keycloak with required config is valid",
+			config: `{
+				"scim_config": {
+					"enabled": true,
+					"provider": "keycloak",
+					"config": {
+						"serverUrl": "https://keycloak.company.com",
+						"realm": "bifrost-prod",
+						"clientId": "bifrost",
+						"clientSecret": "env.KEYCLOAK_CLIENT_SECRET"
+					}
+				}
+			}`,
+		},
 	}
 
-	t.Run("vertex_key $def includes deployments field", func(t *testing.T) {
-		_, found := navigateJSON(schema, "$defs", "vertex_key", "allOf", 1, "properties", "vertex_key_config", "properties", "deployments")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateConfig(t, compiled, tt.config)
+			if tt.wantError && err == nil {
+				t.Fatal("expected validation error")
+			}
+			if !tt.wantError && err != nil {
+				t.Fatalf("expected config to validate, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestSchemaKeyAliases(t *testing.T) {
+	schema := loadSchema(t)
+
+	t.Run("base_key $def includes aliases field", func(t *testing.T) {
+		_, found := navigateJSON(schema, "$defs", "base_key", "properties", "aliases")
 		if !found {
-			t.Error("$defs/vertex_key is missing 'deployments' property — vertex provider uses getModelDeployment() on every request")
+			t.Error("$defs/base_key is missing 'aliases' property — aliases replaced per-provider deployments maps")
 		}
 	})
 
@@ -190,30 +440,60 @@ func TestSchemaVertexKeyDeployments(t *testing.T) {
 		}
 	})
 
-	t.Run("vertex config with deployments validates successfully", func(t *testing.T) {
+	t.Run("vertex_key_config does not include deployments field", func(t *testing.T) {
+		_, found := navigateJSON(schema, "$defs", "vertex_key", "allOf", 1, "properties", "vertex_key_config", "properties", "deployments")
+		if found {
+			t.Error("$defs/vertex_key still has 'deployments' in vertex_key_config — deployments were moved to top-level key aliases")
+		}
+	})
+
+	t.Run("key with aliases validates successfully", func(t *testing.T) {
 		compiled := compileSchema(t)
 		config := `{
 			"providers": {
 				"vertex": {
 					"keys": [{
-						"key_id": "test",
 						"name": "test",
 						"value": "",
 						"weight": 1,
 						"models": ["gemini-2.0-flash"],
+						"aliases": {"gemini-2.0-flash": "gemini-2.0-flash-001"},
 						"vertex_key_config": {
 							"project_id": "my-project",
 							"region": "us-central1",
 							"auth_credentials": "",
-							"project_number": "123456",
-							"deployments": {"gemini-2.0-flash": "gemini-2.0-flash-001"}
+							"project_number": "123456"
 						}
 					}]
 				}
 			}
 		}`
 		if err := validateConfig(t, compiled, config); err != nil {
-			t.Errorf("vertex config with deployments should be valid, got: %v", err)
+			t.Errorf("key with aliases should be valid, got: %v", err)
+		}
+	})
+
+	t.Run("azure key with aliases validates successfully", func(t *testing.T) {
+		compiled := compileSchema(t)
+		config := `{
+			"providers": {
+				"azure": {
+					"keys": [{
+						"name": "test",
+						"value": "my-api-key",
+						"weight": 1,
+						"models": ["gpt-4o"],
+						"aliases": {"gpt-4o": "gpt-4o-deployment"},
+						"azure_key_config": {
+							"endpoint": "https://my-resource.openai.azure.com",
+							"api_version": "2024-02-01"
+						}
+					}]
+				}
+			}
+		}`
+		if err := validateConfig(t, compiled, config); err != nil {
+			t.Errorf("azure key with aliases should be valid, got: %v", err)
 		}
 	})
 }
@@ -272,6 +552,8 @@ func TestSchemaClientMCPFields(t *testing.T) {
 		"mcp_tool_execution_timeout",
 		"mcp_code_mode_binding_level",
 		"mcp_tool_sync_interval",
+		"mcp_disable_auto_tool_inject",
+		"mcp_enable_temp_token_auth",
 	}
 	for _, field := range fields {
 		t.Run("client has "+field, func(t *testing.T) {
@@ -290,7 +572,9 @@ func TestSchemaClientMCPFields(t *testing.T) {
 				"mcp_agent_depth": 5,
 				"mcp_tool_execution_timeout": 60,
 				"mcp_code_mode_binding_level": "server",
-				"mcp_tool_sync_interval": 10
+				"mcp_tool_sync_interval": 10,
+				"mcp_disable_auto_tool_inject": false,
+				"mcp_enable_temp_token_auth": true
 			}
 		}`
 		if err := validateConfig(t, compiled, config); err != nil {
@@ -429,6 +713,18 @@ func TestSchemaMCPToolManagerCodeMode(t *testing.T) {
 		}`
 		if err := validateConfig(t, compiled, config); err != nil {
 			t.Errorf("tool_manager_config with code_mode_binding_level should be valid, got: %v", err)
+		}
+		var root struct {
+			MCP schemas.MCPConfig `json:"mcp"`
+		}
+		if err := json.Unmarshal([]byte(config), &root); err != nil {
+			t.Errorf("failed to unmarshal mcp config: %v", err)
+		}
+		if root.MCP.ToolManagerConfig == nil {
+			t.Fatal("tool_manager_config missing after unmarshal")
+		}
+		if root.MCP.ToolManagerConfig.ToolExecutionTimeout.D() != 30*time.Second {
+			t.Errorf("tool_execution_timeout should be 30 seconds, got: %v", root.MCP.ToolManagerConfig.ToolExecutionTimeout.D())
 		}
 	})
 }

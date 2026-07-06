@@ -152,11 +152,16 @@ func (a *Accumulator) createStreamAccumulator(requestID string) *StreamAccumulat
 		MaxResponsesChunkIndex:     -1,
 		MaxTranscriptionChunkIndex: -1,
 		MaxAudioChunkIndex:         -1,
+		TerminalErrorChunkIndex:    -1,
 		IsComplete:                 false,
 		mu:                         sync.Mutex{},
 		Timestamp:                  now,
 		StartTimestamp:             now, // Set default StartTimestamp for proper TTFT/latency calculation
+		gateState:                  StreamStateActive,
+		gatePausedAt:               -1,
+		parent:                     a,
 	}
+	sc.gateCond = sync.NewCond(&sc.mu)
 	a.streamAccumulators.Store(requestID, sc)
 	return sc
 }
@@ -186,23 +191,39 @@ func (a *Accumulator) getOrCreateStreamAccumulator(requestID string) *StreamAccu
 		MaxResponsesChunkIndex:     -1,
 		MaxTranscriptionChunkIndex: -1,
 		MaxAudioChunkIndex:         -1,
+		TerminalErrorChunkIndex:    -1,
 		IsComplete:                 false,
 		mu:                         sync.Mutex{},
 		Timestamp:                  now,
 		StartTimestamp:             now,
+		gateState:                  StreamStateActive,
+		gatePausedAt:               -1,
+		parent:                     a,
 	}
+	newAcc.gateCond = sync.NewCond(&newAcc.mu)
 
 	// LoadOrStore atomically: if key exists, return existing; else store new
 	actual, _ := a.streamAccumulators.LoadOrStore(requestID, newAcc)
 	return actual.(*StreamAccumulator)
 }
 
-// AddStreamChunk adds a chunk to the stream accumulator
-func (a *Accumulator) addChatStreamChunk(requestID string, chunk *ChatStreamChunk, isFinalChunk bool) error {
+// addChatStreamChunk adds a chat or text-completion chunk to the stream accumulator.
+// Both stream kinds share ChatStreamChunks, so the stream type is retained separately
+// to build the correct response shape for on-demand snapshots.
+func (a *Accumulator) addChatStreamChunk(requestID string, streamType StreamType, chunk *ChatStreamChunk, isFinalChunk bool) error {
+	if streamType != StreamTypeChat && streamType != StreamTypeText {
+		return fmt.Errorf("invalid chat stream type %q", streamType)
+	}
+
 	accumulator := a.getOrCreateStreamAccumulator(requestID)
 	// Lock the accumulator
 	accumulator.mu.Lock()
 	defer accumulator.mu.Unlock()
+	if accumulator.chatStreamType == "" {
+		accumulator.chatStreamType = streamType
+	} else if accumulator.chatStreamType != streamType {
+		return fmt.Errorf("inconsistent chat stream type for request %s: got %q after %q", requestID, streamType, accumulator.chatStreamType)
+	}
 	if accumulator.StartTimestamp.IsZero() {
 		accumulator.StartTimestamp = chunk.Timestamp
 	}
@@ -354,45 +375,84 @@ func (a *Accumulator) addImageStreamChunk(requestID string, chunk *ImageStreamCh
 // cleanupStreamAccumulator removes the stream accumulator for a request.
 // IMPORTANT: Caller must hold accumulator.mu lock before calling this function
 // to prevent races when returning chunks to pools.
-func (a *Accumulator) cleanupStreamAccumulator(requestID string) {
-	if accumulator, exists := a.streamAccumulators.Load(requestID); exists {
-		acc := accumulator.(*StreamAccumulator)
-
-		// Return all chunks to the pool before deleting
-		for _, chunk := range acc.ChatStreamChunks {
-			a.putChatStreamChunk(chunk)
-		}
-		for _, chunk := range acc.ResponsesStreamChunks {
-			a.putResponsesStreamChunk(chunk)
-		}
-		for _, chunk := range acc.AudioStreamChunks {
-			a.putAudioStreamChunk(chunk)
-		}
-		for _, chunk := range acc.TranscriptionStreamChunks {
-			a.putTranscriptionStreamChunk(chunk)
-		}
-		for _, chunk := range acc.ImageStreamChunks {
-			a.putImageStreamChunk(chunk)
-		}
-		a.streamAccumulators.Delete(requestID)
+//
+// forceEndGate=true is for orphan/TTL cleanup paths where the flusher may be
+// stuck in cond.Wait and must be woken by force-ending. forceEndGate=false is
+// for natural-completion cleanup (refcount-driven from plugins): if the gate
+// is still busy (flusher running OR Paused), teardown is deferred — the
+// gatePendingCleanup flag is set, and the flusher's exit defer re-runs this
+// cleanup once it's safe.
+func (a *Accumulator) cleanupStreamAccumulator(requestID string, forceEndGate bool) {
+	accumulator, exists := a.streamAccumulators.Load(requestID)
+	if !exists {
+		return
 	}
-}
+	acc := accumulator.(*StreamAccumulator)
 
+	// Defer teardown if the gate is still working and the caller didn't ask
+	// for a forcible reap. The flusher's exit will pick this up.
+	if !forceEndGate && (acc.gateFlusherOn || acc.gateState == StreamStatePaused) {
+		acc.gatePendingCleanup = true
+		return
+	}
+
+	// Orphan path: force the gate to terminate so any blocked flusher wakes
+	// up and exits. Drops buffered chunks — acceptable because the consumer
+	// of an orphaned stream is gone by definition.
+	if forceEndGate && acc.gateState != StreamStateEnded {
+		acc.gateState = StreamStateEnded
+		// Force-end is drop-only: clear any staged terminal-error delivery so
+		// a flusher woken by the broadcast below cannot reach the
+		// sendOrCancel(errChunk) path on an abandoned consumer channel.
+		acc.gatePendingTerminal = false
+		acc.gateEndError = nil
+		if acc.gateCond != nil {
+			acc.gateCond.Broadcast()
+		}
+		acc.gateReplayBuf = nil
+		acc.gateReplayBufBytes = 0
+	}
+
+	// Return all chunks to the pool before deleting
+	for _, chunk := range acc.ChatStreamChunks {
+		a.putChatStreamChunk(chunk)
+	}
+	for _, chunk := range acc.ResponsesStreamChunks {
+		a.putResponsesStreamChunk(chunk)
+	}
+	for _, chunk := range acc.AudioStreamChunks {
+		a.putAudioStreamChunk(chunk)
+	}
+	for _, chunk := range acc.TranscriptionStreamChunks {
+		a.putTranscriptionStreamChunk(chunk)
+	}
+	for _, chunk := range acc.ImageStreamChunks {
+		a.putImageStreamChunk(chunk)
+	}
+	a.streamAccumulators.Delete(requestID)
+}
 
 // ProcessStreamingResponse processes a streaming response
 // It handles chat, audio, and responses streaming responses
 func (a *Accumulator) ProcessStreamingResponse(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*ProcessedStreamResponse, error) {
-	// Check if this is a streaming response
-	if result == nil {
-		return nil, fmt.Errorf("result is nil")
+	// Check if at least one of result or error is provided
+	if result == nil && bifrostErr == nil {
+		return nil, fmt.Errorf("result and error are nil")
 	}
-	extraFields := result.GetExtraFields()
-	requestType := extraFields.RequestType
+
+	var requestType schemas.RequestType
+	if result != nil {
+		requestType = result.GetExtraFields().RequestType
+	} else if bifrostErr != nil {
+		requestType = bifrostErr.ExtraFields.RequestType
+	}
+
 	isAudioStreaming := requestType == schemas.SpeechStreamRequest || requestType == schemas.TranscriptionStreamRequest
 	isChatStreaming := requestType == schemas.ChatCompletionStreamRequest || requestType == schemas.TextCompletionStreamRequest
-	isResponsesStreaming := requestType == schemas.ResponsesStreamRequest
+	isResponsesStreaming := requestType == schemas.ResponsesStreamRequest || requestType == schemas.WebSocketResponsesRequest
 	// Edit images/ Image variation requests will be added here
 	isImageStreaming := requestType == schemas.ImageGenerationStreamRequest || requestType == schemas.ImageEditStreamRequest
+	isPassthroughStreaming := requestType == schemas.PassthroughStreamRequest
 
 	if isChatStreaming {
 		// Handle text-based streaming with ordered accumulation
@@ -411,36 +471,20 @@ func (a *Accumulator) ProcessStreamingResponse(ctx *schemas.BifrostContext, resu
 	} else if isImageStreaming {
 		// Handle image streaming
 		return a.processImageStreamingResponse(ctx, result, bifrostErr)
+	} else if isPassthroughStreaming {
+		// Handle passthrough streaming with raw body accumulation
+		return a.processPassthroughStreamingResponse(ctx, result, bifrostErr)
 	}
 	return nil, fmt.Errorf("request type missing/invalid for accumulator: %s", requestType)
 }
 
 // Cleanup cleans up the accumulator
 func (a *Accumulator) Cleanup() {
-	// Clean up all stream accumulators
 	a.streamAccumulators.Range(func(key, value interface{}) bool {
 		accumulator := value.(*StreamAccumulator)
-
-		// Lock before accessing chunk slices
 		accumulator.mu.Lock()
-		for _, chunk := range accumulator.ChatStreamChunks {
-			a.putChatStreamChunk(chunk)
-		}
-		for _, chunk := range accumulator.ResponsesStreamChunks {
-			a.putResponsesStreamChunk(chunk)
-		}
-		for _, chunk := range accumulator.TranscriptionStreamChunks {
-			a.putTranscriptionStreamChunk(chunk)
-		}
-		for _, chunk := range accumulator.AudioStreamChunks {
-			a.putAudioStreamChunk(chunk)
-		}
-		for _, chunk := range accumulator.ImageStreamChunks {
-			a.putImageStreamChunk(chunk)
-		}
+		a.cleanupStreamAccumulator(key.(string), true)
 		accumulator.mu.Unlock()
-
-		a.streamAccumulators.Delete(key)
 		return true
 	})
 	a.cleanupOnce.Do(func() {
@@ -480,10 +524,33 @@ func (a *Accumulator) CleanupStreamAccumulator(requestID string) error {
 		if newCount <= 0 {
 			accumulator.mu.Lock()
 			defer accumulator.mu.Unlock()
-			a.cleanupStreamAccumulator(requestID)
+			a.cleanupStreamAccumulator(requestID, false) // natural completion — defer if gate is still busy
 		}
 	}
 	return nil
+}
+
+// ForceCleanupStreamAccumulator reaps a stream accumulator regardless of its
+// reference counter. It is the guaranteed end-of-stream backstop: callers invoke
+// it from the stream's terminal lifecycle hook (the provider goroutine's
+// finalizer), at which point the stream has stopped delivering chunks and the
+// per-plugin refcount handshake may be incomplete (e.g. a client abort that
+// never produced a terminal chunk, or multiple plugins that each Create but not
+// all Cleanup). Force-reaping here mirrors the TTL sweep (cleanupOldAccumulators),
+// which already deletes with forceEndGate=true. Idempotent and safe to call after
+// CleanupStreamAccumulator has already freed the entry.
+func (a *Accumulator) ForceCleanupStreamAccumulator(requestID string) {
+	acc, exists := a.streamAccumulators.Load(requestID)
+	if !exists {
+		return
+	}
+	accumulator, ok := acc.(*StreamAccumulator)
+	if !ok {
+		return
+	}
+	accumulator.mu.Lock()
+	defer accumulator.mu.Unlock()
+	a.cleanupStreamAccumulator(requestID, true) // stream is over — force-end the gate and reap
 }
 
 // cleanupOldAccumulators removes old accumulators
@@ -494,7 +561,7 @@ func (a *Accumulator) cleanupOldAccumulators() {
 		accumulator.mu.Lock()
 		defer accumulator.mu.Unlock()
 		if accumulator.Timestamp.Before(time.Now().Add(-a.ttl)) {
-			a.cleanupStreamAccumulator(key.(string))
+			a.cleanupStreamAccumulator(key.(string), true) // orphan TTL reap — force-end gate
 		}
 		count++
 		return true

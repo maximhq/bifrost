@@ -57,7 +57,7 @@ func (baseAccount *BaseAccount) GetConfiguredProviders() ([]schemas.ModelProvide
 func (baseAccount *BaseAccount) GetKeysForProvider(ctx context.Context, providerKey schemas.ModelProvider) ([]schemas.Key, error) {
 	return []schemas.Key{
 		{
-			Value:  *schemas.NewEnvVar("env.OPENAI_API_KEY"),
+			Value:  *schemas.NewSecretVar("env.OPENAI_API_KEY"),
 			Models: []string{"gpt-4o-mini", "gpt-4-turbo"},
 			Weight: 1.0,
 		},
@@ -84,6 +84,10 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelPr
 //   - MAXIM_LOGGER_ID: Your Maxim logger repository ID
 //   - OPENAI_API_KEY: Your OpenAI API key for the test request
 func TestMaximLoggerPlugin(t *testing.T) {
+	if os.Getenv("MAXIM_API_KEY") == "" {
+		t.Skip("MAXIM_API_KEY not set, skipping integration test")
+	}
+
 	ctx := context.Background()
 	// Initialize the Maxim plugin
 	plugin, err := getPlugin()

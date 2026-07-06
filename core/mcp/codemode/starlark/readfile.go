@@ -21,21 +21,23 @@ func (s *StarlarkCodeMode) createReadToolFileTool() schemas.ChatTool {
 	var fileNameDescription, toolDescription string
 
 	if bindingLevel == schemas.CodeModeBindingLevelServer {
-		fileNameDescription = "The virtual filename from listToolFiles in format: servers/<serverName>.pyi (e.g., 'calculator.pyi')"
+		fileNameDescription = "The virtual filename from listToolFiles in format: servers/<serverName>.pyi (e.g., 'servers/calculator.pyi')"
 		toolDescription = "Reads a virtual .pyi stub file for a specific MCP server, returning compact Python function signatures " +
 			"for all tools available on that server. The fileName should be in format servers/<serverName>.pyi as listed by listToolFiles. " +
 			"The function performs case-insensitive matching and removes the .pyi extension. " +
+			"This is the authoritative source for the exact callable tool names and parameters to use in executeToolCode. " +
 			"Each tool can be accessed in code via: serverName.tool_name(param=value). " +
 			"If the compact signature is not enough to understand a tool, use getToolDocs for detailed documentation. " +
 			"Workflow: listToolFiles -> readToolFile -> (optional) getToolDocs -> executeToolCode. " +
 			"IMPORTANT: If the response header shows 'Total lines: X (this is the complete file)', " +
 			"do NOT call this tool again with startLine/endLine - you already have the complete file."
 	} else {
-		fileNameDescription = "The virtual filename from listToolFiles in format: servers/<serverName>/<toolName>.pyi (e.g., 'calculator/add.pyi')"
+		fileNameDescription = "The virtual filename from listToolFiles in format: servers/<serverName>/<toolName>.pyi (e.g., 'servers/calculator/add.pyi')"
 		toolDescription = "Reads a virtual .pyi stub file for a specific tool, returning its compact Python function signature. " +
 			"The fileName should be in format servers/<serverName>/<toolName>.pyi as listed by listToolFiles. " +
 			"The function performs case-insensitive matching and removes the .pyi extension. " +
-			"The tool can be accessed in code via: serverName.tool_name(param=value). " +
+			"This is the authoritative source for the exact callable tool name and arguments to use in executeToolCode. " +
+			"The tool can be accessed in code via: serverName.tool_name(param=value) using the def name shown in the file. " +
 			"If the compact signature is not enough to understand the tool, use getToolDocs for detailed documentation. " +
 			"Workflow: listToolFiles -> readToolFile -> (optional) getToolDocs -> executeToolCode. " +
 			"IMPORTANT: If the response header shows 'Total lines: X (this is the complete file)', " +
@@ -126,13 +128,9 @@ func (s *StarlarkCodeMode) handleReadToolFile(ctx context.Context, toolCall sche
 			if isToolLevel {
 				// Tool-level: filter to specific tool
 				var foundTool *schemas.ChatTool
-				toolNameLower := strings.ToLower(toolName)
 				for i, tool := range tools {
 					if tool.Function != nil {
-						// Strip client prefix and replace - with _ for comparison
-						unprefixedToolName := stripClientPrefix(tool.Function.Name, clientName)
-						unprefixedToolName = strings.ReplaceAll(unprefixedToolName, "-", "_")
-						if strings.ToLower(unprefixedToolName) == toolNameLower {
+						if matchesToolReference(toolName, clientName, tool.Function.Name) {
 							foundTool = &tools[i]
 							break
 						}
@@ -143,15 +141,12 @@ func (s *StarlarkCodeMode) handleReadToolFile(ctx context.Context, toolCall sche
 					availableTools := make([]string, 0)
 					for _, tool := range tools {
 						if tool.Function != nil {
-							// Strip client prefix and replace - with _ for display
-							unprefixedToolName := stripClientPrefix(tool.Function.Name, clientName)
-							unprefixedToolName = strings.ReplaceAll(unprefixedToolName, "-", "_")
-							availableTools = append(availableTools, unprefixedToolName)
+							availableTools = append(availableTools, getCanonicalToolName(clientName, tool.Function.Name))
 						}
 					}
 					errorMsg := fmt.Sprintf("Tool '%s' not found in server '%s'. Available tools in this server are:\n", toolName, clientName)
 					for _, t := range availableTools {
-						errorMsg += fmt.Sprintf("  - %s/%s.pyi\n", clientName, t)
+						errorMsg += fmt.Sprintf("  - servers/%s/%s.pyi\n", clientName, t)
 					}
 					return createToolResponseMessage(toolCall, errorMsg), nil
 				}
@@ -171,17 +166,14 @@ func (s *StarlarkCodeMode) handleReadToolFile(ctx context.Context, toolCall sche
 
 		for name := range availableToolsPerClient {
 			if bindingLevel == schemas.CodeModeBindingLevelServer {
-				availableFiles = append(availableFiles, fmt.Sprintf("%s.pyi", name))
+				availableFiles = append(availableFiles, fmt.Sprintf("servers/%s.pyi", name))
 			} else {
 				client := s.clientManager.GetClientByName(name)
 				if client != nil && client.ExecutionConfig.IsCodeModeClient {
 					if tools, ok := availableToolsPerClient[name]; ok {
 						for _, tool := range tools {
 							if tool.Function != nil {
-								// Strip client prefix and replace - with _ for display
-								unprefixedToolName := stripClientPrefix(tool.Function.Name, name)
-								unprefixedToolName = strings.ReplaceAll(unprefixedToolName, "-", "_")
-								availableFiles = append(availableFiles, fmt.Sprintf("%s/%s.pyi", name, unprefixedToolName))
+								availableFiles = append(availableFiles, fmt.Sprintf("servers/%s/%s.pyi", name, getCanonicalToolName(name, tool.Function.Name)))
 							}
 						}
 					}
@@ -295,12 +287,14 @@ func generateCompactSignatures(clientName string, tools []schemas.ChatTool, isTo
 
 	// Minimal header
 	if isToolLevel && len(tools) == 1 && tools[0].Function != nil {
-		toolName := parseToolName(stripClientPrefix(tools[0].Function.Name, clientName))
+		toolName := getCanonicalToolName(clientName, tools[0].Function.Name)
 		sb.WriteString(fmt.Sprintf("# %s.%s tool\n", clientName, toolName))
 	} else {
 		sb.WriteString(fmt.Sprintf("# %s server tools\n", clientName))
 	}
 	sb.WriteString(fmt.Sprintf("# Usage: %s.tool_name(param=value)\n", clientName))
+	sb.WriteString("# The def names below are the exact callable names to use in executeToolCode.\n")
+	sb.WriteString("# Read this file before executeToolCode to confirm parameters and return shape.\n")
 	sb.WriteString(fmt.Sprintf("# For detailed docs: use getToolDocs(server=\"%s\", tool=\"tool_name\")\n", clientName))
 	sb.WriteString("# Note: Descriptions may be truncated. Use getToolDocs for full details.\n\n")
 
@@ -309,10 +303,7 @@ func generateCompactSignatures(clientName string, tools []schemas.ChatTool, isTo
 			continue
 		}
 
-		// Strip client prefix and replace - with _ for code mode compatibility
-		unprefixedToolName := stripClientPrefix(tool.Function.Name, clientName)
-		unprefixedToolName = strings.ReplaceAll(unprefixedToolName, "-", "_")
-		toolName := parseToolName(unprefixedToolName)
+		toolName := getCanonicalToolName(clientName, tool.Function.Name)
 
 		// Format inline parameters in Python style
 		params := formatPythonParams(tool.Function.Parameters)

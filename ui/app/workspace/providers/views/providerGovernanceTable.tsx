@@ -1,5 +1,3 @@
-"use client";
-
 import { Badge } from "@/components/ui/badge";
 import { CardHeader, CardTitle } from "@/components/ui/card";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -165,7 +163,7 @@ export default function ProviderGovernanceTable({ provider, className }: Props) 
 	const providerGovernance = providerGovernanceData?.providers?.find((p) => p.provider === provider.name);
 
 	// Check if any governance is configured
-	const hasGovernance = providerGovernance?.budget || providerGovernance?.rate_limit;
+	const hasGovernance = (providerGovernance?.budgets?.length ?? 0) > 0 || providerGovernance?.rate_limit;
 
 	if (isLoading) {
 		return (
@@ -187,10 +185,9 @@ export default function ProviderGovernanceTable({ provider, className }: Props) 
 		return null;
 	}
 
-	const budget = providerGovernance?.budget;
+	const budgets = providerGovernance?.budgets ?? [];
 	const rateLimit = providerGovernance?.rate_limit;
 
-	const isBudgetExhausted = !!(budget?.max_limit && budget.max_limit > 0 && budget.current_usage >= budget.max_limit);
 	const isTokenExhausted = !!(
 		rateLimit?.token_max_limit &&
 		rateLimit.token_max_limit > 0 &&
@@ -211,17 +208,18 @@ export default function ProviderGovernanceTable({ provider, className }: Props) 
 			</CardHeader>
 
 			<div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-				{/* Budget Card */}
-				{budget && (
+				{/* Budget Cards — one per budget window */}
+				{budgets.map((budget) => (
 					<MetricCard
-						title="Budget"
+						key={budget.id}
+						title={`Budget (${formatResetDuration(budget.reset_duration)})`}
 						value={budget.current_usage}
 						max={budget.max_limit}
 						unit="$"
 						resetDuration={budget.reset_duration}
-						isExhausted={isBudgetExhausted}
+						isExhausted={budget.max_limit > 0 && budget.current_usage >= budget.max_limit}
 					/>
-				)}
+				))}
 
 				{/* Token Rate Limit Card */}
 				{rateLimit?.token_max_limit && (

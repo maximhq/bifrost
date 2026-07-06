@@ -282,5 +282,5 @@ for file in "${CLEANED_CHANGELOG_FILES[@]}"; do
 done
 git config user.name "github-actions[bot]"
 git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-git commit -m "Adds changelog for $VERSION --skip-pipeline"
+git commit -m "Adds changelog for $VERSION --skip-ci"
 git push origin "$CURRENT_BRANCH"

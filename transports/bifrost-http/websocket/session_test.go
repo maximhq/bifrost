@@ -1,136 +1,156 @@
 package websocket
 
 import (
-	"net/http"
-	"net/http/httptest"
-	"strings"
 	"testing"
 
 	ws "github.com/fasthttp/websocket"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
-func dialTestWS(t *testing.T, server *httptest.Server) *ws.Conn {
-	t.Helper()
-	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
-	conn, _, err := ws.DefaultDialer.Dial(wsURL, nil)
-	require.NoError(t, err)
-	return conn
-}
+func TestSessionManagerCreateAndGet(t *testing.T) {
+	manager := NewSessionManager(2)
+	conn := newTestConn()
 
-func startEchoServer(t *testing.T) *httptest.Server {
-	t.Helper()
-	upgrader := ws.Upgrader{
-		CheckOrigin: func(r *http.Request) bool { return true },
+	session, err := manager.Create(conn)
+	if err != nil {
+		t.Fatalf("Create() unexpected error: %v", err)
 	}
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, err := upgrader.Upgrade(w, r, nil)
-		if err != nil {
-			return
-		}
-		defer conn.Close()
-		for {
-			mt, msg, err := conn.ReadMessage()
-			if err != nil {
-				break
-			}
-			conn.WriteMessage(mt, msg)
-		}
-	}))
+	if session == nil {
+		t.Fatal("Create() returned nil session")
+	}
+	if got := manager.Get(conn); got != session {
+		t.Fatal("Get() did not return the created session")
+	}
+	if got := manager.Count(); got != 1 {
+		t.Fatalf("Count() = %d, want 1", got)
+	}
 }
 
-func TestSessionManager_CreateAndGet(t *testing.T) {
-	server := startEchoServer(t)
-	defer server.Close()
+func TestSessionManagerConnectionLimit(t *testing.T) {
+	manager := NewSessionManager(1)
 
-	sm := NewSessionManager(10)
-
-	conn := dialTestWS(t, server)
-	defer conn.Close()
-
-	session, err := sm.Create(conn)
-	require.NoError(t, err)
-	require.NotNil(t, session)
-
-	got := sm.Get(conn)
-	assert.Equal(t, session, got)
-	assert.Equal(t, 1, sm.Count())
+	if _, err := manager.Create(newTestConn()); err != nil {
+		t.Fatalf("first Create() unexpected error: %v", err)
+	}
+	if _, err := manager.Create(newTestConn()); err != ErrConnectionLimitReached {
+		t.Fatalf("second Create() error = %v, want %v", err, ErrConnectionLimitReached)
+	}
 }
 
-func TestSessionManager_ConnectionLimit(t *testing.T) {
-	server := startEchoServer(t)
-	defer server.Close()
+func TestSessionManagerRemove(t *testing.T) {
+	manager := NewSessionManager(2)
+	conn := newTestConn()
 
-	sm := NewSessionManager(2)
+	session, err := manager.Create(conn)
+	if err != nil {
+		t.Fatalf("Create() unexpected error: %v", err)
+	}
 
-	conn1 := dialTestWS(t, server)
-	defer conn1.Close()
-	conn2 := dialTestWS(t, server)
-	defer conn2.Close()
-	conn3 := dialTestWS(t, server)
-	defer conn3.Close()
+	manager.Remove(conn)
 
-	_, err := sm.Create(conn1)
-	require.NoError(t, err)
-	_, err = sm.Create(conn2)
-	require.NoError(t, err)
-
-	// Third should fail
-	_, err = sm.Create(conn3)
-	assert.ErrorIs(t, err, ErrConnectionLimitReached)
-	assert.Equal(t, 2, sm.Count())
+	if got := manager.Get(conn); got != nil {
+		t.Fatal("Get() should return nil after Remove()")
+	}
+	if got := manager.Count(); got != 0 {
+		t.Fatalf("Count() = %d, want 0", got)
+	}
+	if !session.closed {
+		t.Fatal("expected removed session to be closed")
+	}
 }
 
-func TestSessionManager_Remove(t *testing.T) {
-	server := startEchoServer(t)
-	defer server.Close()
+func TestSessionLastResponseID(t *testing.T) {
+	session := NewSession(newTestConn())
+	session.SetLastResponseID("resp-123")
 
-	sm := NewSessionManager(10)
-
-	conn := dialTestWS(t, server)
-	defer conn.Close()
-
-	_, err := sm.Create(conn)
-	require.NoError(t, err)
-	assert.Equal(t, 1, sm.Count())
-
-	sm.Remove(conn)
-	assert.Equal(t, 0, sm.Count())
-	assert.Nil(t, sm.Get(conn))
+	if got := session.LastResponseID(); got != "resp-123" {
+		t.Fatalf("LastResponseID() = %q, want %q", got, "resp-123")
+	}
 }
 
-func TestSession_LastResponseID(t *testing.T) {
-	server := startEchoServer(t)
-	defer server.Close()
+func TestSessionManagerCloseAll(t *testing.T) {
+	manager := NewSessionManager(4)
+	connA := newTestConn()
+	connB := newTestConn()
 
-	conn := dialTestWS(t, server)
-	defer conn.Close()
+	sessionA, err := manager.Create(connA)
+	if err != nil {
+		t.Fatalf("Create(connA) unexpected error: %v", err)
+	}
+	sessionB, err := manager.Create(connB)
+	if err != nil {
+		t.Fatalf("Create(connB) unexpected error: %v", err)
+	}
 
-	session := NewSession(conn)
-	assert.Equal(t, "", session.LastResponseID())
+	manager.CloseAll()
 
-	session.SetLastResponseID("resp_123")
-	assert.Equal(t, "resp_123", session.LastResponseID())
+	if got := manager.Count(); got != 0 {
+		t.Fatalf("Count() = %d, want 0", got)
+	}
+	if !sessionA.closed || !sessionB.closed {
+		t.Fatal("expected all sessions to be closed")
+	}
 }
 
-func TestSessionManager_CloseAll(t *testing.T) {
-	server := startEchoServer(t)
-	defer server.Close()
+func TestSessionRealtimeState(t *testing.T) {
+	session := NewSession(newTestConn())
+	if session.ID() == "" {
+		t.Fatal("expected session ID to be populated")
+	}
 
-	sm := NewSessionManager(10)
+	session.SetProviderSessionID("provider-session-1")
+	if got := session.ProviderSessionID(); got != "provider-session-1" {
+		t.Fatalf("ProviderSessionID() = %q, want %q", got, "provider-session-1")
+	}
 
-	conn1 := dialTestWS(t, server)
-	defer conn1.Close()
-	conn2 := dialTestWS(t, server)
-	defer conn2.Close()
+	session.AppendRealtimeOutputText("hello")
+	session.AppendRealtimeOutputText(" world")
+	if got := session.ConsumeRealtimeOutputText(); got != "hello world" {
+		t.Fatalf("ConsumeRealtimeOutputText() = %q, want %q", got, "hello world")
+	}
+	if got := session.ConsumeRealtimeOutputText(); got != "" {
+		t.Fatalf("ConsumeRealtimeOutputText() after clear = %q, want empty string", got)
+	}
 
-	_, err := sm.Create(conn1)
-	assert.NoError(t, err)
-	_, err = sm.Create(conn2)
-	assert.NoError(t, err)
-	assert.Equal(t, 2, sm.Count())
+	session.AddRealtimeInput("hello", `{"type":"conversation.item.create","item":{"role":"user"}}`)
+	session.AddRealtimeToolOutput("tool result", `{"type":"conversation.item.create","item":{"type":"function_call_output"}}`)
+	turnInputs := session.ConsumeRealtimeTurnInputs()
+	if len(turnInputs) != 2 {
+		t.Fatalf("len(ConsumeRealtimeTurnInputs()) = %d, want 2", len(turnInputs))
+	}
+	if turnInputs[0].Role != "user" || turnInputs[0].Summary != "hello" {
+		t.Fatalf("turnInputs[0] = %+v, want user hello", turnInputs[0])
+	}
+	if turnInputs[1].Role != "tool" || turnInputs[1].Summary != "tool result" {
+		t.Fatalf("turnInputs[1] = %+v, want tool result", turnInputs[1])
+	}
+	if got := session.ConsumeRealtimeTurnInputs(); len(got) != 0 {
+		t.Fatalf("len(ConsumeRealtimeTurnInputs()) after clear = %d, want 0", len(got))
+	}
+}
 
-	sm.CloseAll()
-	assert.Equal(t, 0, sm.Count())
+func TestSessionRecordRealtimeInputUpdatesPendingItemAndIgnoresConsumedLateUpdate(t *testing.T) {
+	session := NewSession(newTestConn())
+
+	session.RecordRealtimeInput("item_1", "[Audio transcription unavailable]", `{"type":"conversation.item.done","item":{"id":"item_1"}}`)
+	session.RecordRealtimeInput("item_1", "Hello.", `{"type":"conversation.item.input_audio_transcription.completed","item_id":"item_1","transcript":"Hello."}`)
+
+	turnInputs := session.ConsumeRealtimeTurnInputs()
+	if len(turnInputs) != 1 {
+		t.Fatalf("len(ConsumeRealtimeTurnInputs()) = %d, want 1", len(turnInputs))
+	}
+	if turnInputs[0].ItemID != "item_1" {
+		t.Fatalf("turnInputs[0].ItemID = %q, want %q", turnInputs[0].ItemID, "item_1")
+	}
+	if turnInputs[0].Summary != "Hello." {
+		t.Fatalf("turnInputs[0].Summary = %q, want %q", turnInputs[0].Summary, "Hello.")
+	}
+
+	session.RecordRealtimeInput("item_1", "Hello.", `{"type":"conversation.item.input_audio_transcription.completed","item_id":"item_1","transcript":"Hello."}`)
+	if got := session.ConsumeRealtimeTurnInputs(); len(got) != 0 {
+		t.Fatalf("len(ConsumeRealtimeTurnInputs()) after late consumed update = %d, want 0", len(got))
+	}
+}
+
+func newTestConn() *ws.Conn {
+	return &ws.Conn{}
 }

@@ -2,34 +2,39 @@ package tables
 
 import (
 	"encoding/json"
+	"strings"
 	"time"
 
-	bifrost "github.com/maximhq/bifrost/core"
 	"gorm.io/gorm"
 )
 
 // TableTeam represents a team entity with budget, rate limit and customer association
 type TableTeam struct {
 	ID          string  `gorm:"primaryKey;type:varchar(255)" json:"id"`
-	Name        string  `gorm:"type:varchar(255);not null" json:"name"`
+	Name        string  `gorm:"type:varchar(255);not null;uniqueIndex" json:"name"`
 	CustomerID  *string `gorm:"type:varchar(255);index" json:"customer_id,omitempty"` // A team can belong to a customer
-	BudgetID    *string `gorm:"type:varchar(255);index" json:"budget_id,omitempty"`
 	RateLimitID *string `gorm:"type:varchar(255);index" json:"rate_limit_id,omitempty"`
+	SourceID    *string `gorm:"type:varchar(255);uniqueIndex" json:"source_id,omitempty"`
 
 	// Relationships
 	Customer    *TableCustomer    `gorm:"foreignKey:CustomerID" json:"customer,omitempty"`
-	Budget      *TableBudget      `gorm:"foreignKey:BudgetID" json:"budget,omitempty"`
+	Budgets     []TableBudget     `gorm:"foreignKey:TeamID;constraint:OnDelete:CASCADE" json:"budgets,omitempty"` // Multiple budgets with different reset intervals
 	RateLimit   *TableRateLimit   `gorm:"foreignKey:RateLimitID" json:"rate_limit,omitempty"`
-	VirtualKeys []TableVirtualKey `gorm:"foreignKey:TeamID" json:"virtual_keys"`
+	VirtualKeys []TableVirtualKey `gorm:"foreignKey:TeamID" json:"virtual_keys,omitempty"`
 
-	Profile       *string                `gorm:"type:text" json:"-"`
-	ParsedProfile map[string]interface{} `gorm:"-" json:"profile"`
+	// Computed (not a DB column) — populated via correlated subquery in query layer, hence no migration
+	VirtualKeyCount int64 `gorm:"->;-:migration" json:"virtual_key_count"`
 
-	Config       *string                `gorm:"type:text" json:"-"`
-	ParsedConfig map[string]interface{} `gorm:"-" json:"config"`
+	Profile       *string        `gorm:"type:text" json:"-"`
+	ParsedProfile map[string]any `gorm:"-" json:"profile"`
 
-	Claims       *string                `gorm:"type:text" json:"-"`
-	ParsedClaims map[string]interface{} `gorm:"-" json:"claims"`
+	Config       *string        `gorm:"type:text" json:"-"`
+	ParsedConfig map[string]any `gorm:"-" json:"config"`
+
+	Claims       *string        `gorm:"type:text" json:"-"`
+	ParsedClaims map[string]any `gorm:"-" json:"claims"`
+
+	CalendarAligned bool `gorm:"default:false" json:"calendar_aligned"`
 
 	// Config hash is used to detect the changes synced from config.json file
 	// Every time we sync the config.json file, we will update the config hash
@@ -44,12 +49,20 @@ func (TableTeam) TableName() string { return "governance_teams" }
 
 // BeforeSave hook for TableTeam to serialize JSON fields
 func (t *TableTeam) BeforeSave(tx *gorm.DB) error {
+	if t.SourceID != nil {
+		v := strings.TrimSpace(*t.SourceID)
+		if v == "" {
+			t.SourceID = nil
+		} else {
+			*t.SourceID = v
+		}
+	}
 	if t.ParsedProfile != nil {
 		data, err := json.Marshal(t.ParsedProfile)
 		if err != nil {
 			return err
 		}
-		t.Profile = bifrost.Ptr(string(data))
+		t.Profile = new(string(data))
 	} else {
 		t.Profile = nil
 	}
@@ -58,7 +71,7 @@ func (t *TableTeam) BeforeSave(tx *gorm.DB) error {
 		if err != nil {
 			return err
 		}
-		t.Config = bifrost.Ptr(string(data))
+		t.Config = new(string(data))
 	} else {
 		t.Config = nil
 	}
@@ -67,14 +80,17 @@ func (t *TableTeam) BeforeSave(tx *gorm.DB) error {
 		if err != nil {
 			return err
 		}
-		t.Claims = bifrost.Ptr(string(data))
+		t.Claims = new(string(data))
 	} else {
 		t.Claims = nil
 	}
 	return nil
 }
 
-// AfterFind hook for TableTeam to deserialize JSON fields
+// AfterFind hook for TableTeam to deserialize JSON fields and propagate
+// calendar_aligned down to owned budgets / rate_limit. The reset path reads
+// the stamped value off the budget / rate_limit; the governance store's
+// Update*InMemory paths re-stamp on every team update.
 func (t *TableTeam) AfterFind(tx *gorm.DB) error {
 	if t.Profile != nil {
 		if err := json.Unmarshal([]byte(*t.Profile), &t.ParsedProfile); err != nil {
@@ -90,6 +106,12 @@ func (t *TableTeam) AfterFind(tx *gorm.DB) error {
 		if err := json.Unmarshal([]byte(*t.Claims), &t.ParsedClaims); err != nil {
 			return err
 		}
+	}
+	for i := range t.Budgets {
+		t.Budgets[i].IsCalendarAligned = t.CalendarAligned
+	}
+	if t.RateLimit != nil {
+		t.RateLimit.IsCalendarAligned = t.CalendarAligned
 	}
 	return nil
 }

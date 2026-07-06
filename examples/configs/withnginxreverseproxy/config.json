@@ -1,0 +1,33 @@
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "encryption_key": "env.BIFROST_ENCRYPTION_KEY",
+  "config_store": {
+    "enabled": false
+  },
+  "logs_store": {
+    "enabled": false
+  },
+  "client": {
+    "drop_excess_requests": false,
+    "enable_logging": true,
+    "allowed_origins": [
+      "*"
+    ],
+    "max_request_body_size_mb": 100
+  },
+  "providers": {
+    "openai": {
+      "keys": [
+        {
+          "name": "openai-primary",
+          "value": "env.OPENAI_API_KEY",
+          "models": [
+            "gpt-4o-mini",
+            "gpt-4o"
+          ],
+          "weight": 1
+        }
+      ]
+    }
+  }
+}

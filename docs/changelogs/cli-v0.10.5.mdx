@@ -1,0 +1,25 @@
+---
+title: "v0.10.5"
+description: "v0.10.5 changelog - 2026-05-31"
+---
+
+<Update label="Bifrost CLI" description="v0.10.5">
+# Bifrost CLI Changelog
+
+## v0.10.5
+
+- feat: adds an interactive tab command popup invoked by the `Ctrl+B` prefix — lists every open tab plus a trailing "New tab" action row, supports arrow keys / `h`/`j`/`k`/`l` navigation, `Enter` to switch or open a tab, number keys (`1`–`9`) for direct jumps, and `Esc`/`Ctrl+B` to resume
+- feat: adds `Ctrl+G` as a tmux-safe alternate prefix key, giving users a one-press tab selector inside tmux sessions that already consume `Ctrl+B`
+- feat: adds a Home-screen Ctrl+C quit confirmation — when no tabs are open, the first `Ctrl+C` shows a centered "Quit Bifrost?" prompt and the second press exits, preventing accidental termination
+- feat: adds an interactive summary screen with arrow-key navigation across actionable rows (launch, base URL, virtual key, worktree, harness, model, dashboard, docs, issues, repo, quit) plus inline editing of base URL and virtual key without leaving the summary
+- feat: masks the virtual key input with `*` characters in the chooser to avoid leaking credentials on shared screens
+- feat: adds a Home-styled mandatory update prompt — when a new Bifrost CLI version is available, a centered confirmation popup is shown before the chooser opens, and declining keeps the user on Home instead of blocking startup
+- feat: keeps the CLI running after a harness session ends — the tab manager now loops back to the chooser instead of exiting, so closing the last tab returns to Home rather than terminating Bifrost
+- improvement: model chooser `Esc` now clears the active filter, manual-entry selection, and any error message on first press before exiting the phase, matching common picker behavior
+- improvement: model chooser treats manual model names (typed into the filter) as a distinct selectable row, with arrow-key wrap-around between the filtered list and the manual entry
+- improvement: hides the Bifrost logo when re-entering the harness/model/worktree phases from the summary, giving editing flows more vertical space
+- fix: tab command-mode key handling now correctly distinguishes `Enter` (activate the selected row) from `Esc`/prefix (resume the active tab), and recognises both `Ctrl+B` and `Ctrl+G` as the dismiss key
+- fix: arrow-key escape sequences are now mapped to the existing `h`/`j`/`k`/`l` navigation in the command overlay, so users can navigate the tab popup with cursor keys
+
+</Update>
+

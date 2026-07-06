@@ -1,0 +1,243 @@
+---
+title: "SSO using OIDC"
+description: "Configure any standard OpenID Connect provider as your identity provider for Bifrost Enterprise."
+---
+
+This guide applies to any identity provider that implements the OpenID Connect (OIDC) standard — including PingIdentity, ForgeRock, OneLogin, JumpCloud, CyberArk Identity, and others not covered by a dedicated Bifrost guide.
+
+## Prerequisites
+
+- An OIDC-capable identity provider with admin access
+- Bifrost Enterprise deployed and accessible
+- Your Bifrost callback URL: `https://<your-bifrost-domain>/login`
+- The ability to create a **confidential** (client secret) OAuth 2.0 application in your IdP
+- Bifrost [roles](../rbac) created for the roles you plan to map
+
+---
+
+## Step 1: Create an OIDC application in your IdP
+
+<Steps>
+
+<Step title="Register a new application">
+
+In your identity provider's admin console, create a new application. Look for options like **Create App Integration**, **Add Application**, **New Application**, or **Register Client**.
+
+Choose a type that matches the **Authorization Code** flow with a server-side callback — typically **Web Application** or **Regular Web Application** with a **Confidential** client. Avoid **SPA** or **Native** types.
+
+</Step>
+
+<Step title="Configure redirect URIs">
+
+Set the following URIs in your IdP:
+
+| Field | Value |
+| --- | --- |
+| **Redirect / Callback URI** | `https://<your-bifrost-domain>/login` |
+| **Discovery callback URI** | `https://<your-bifrost-domain>/workspace/scim/oauth-discover-callback` |
+| **Logout / Sign-out URI** | `https://<your-bifrost-domain>` (optional) |
+
+Save the application.
+
+</Step>
+
+</Steps>
+
+---
+
+## Step 2: Configure token claims
+
+<Steps>
+
+<Step title="Ensure the required scopes are requested">
+
+Your application must request the following OAuth scopes:
+
+- `openid` — required for OIDC
+- `profile` — provides `name`, `given_name`, `family_name`
+- `email` — provides the user's email address
+- `offline_access` — provides a refresh token for session maintenance (if supported)
+
+</Step>
+
+<Step title="Include group or role claims">
+
+For role and team mapping to work, your IdP must include group memberships or role values in the ID token.
+
+| Provider type | How to add group/role claims |
+| --- | --- |
+| **Okta / Auth0** | Add a groups claim in the app settings or via an Action |
+| **Keycloak / Zitadel** | Enable project/realm role claims in token settings |
+| **LDAP-backed IdPs** | Map LDAP group attributes to OIDC claims |
+| **Generic OIDC** | Use your provider's claim mapping or transformation rules |
+
+Any claim present in the ID token is available for mapping in Bifrost.
+
+</Step>
+
+</Steps>
+
+---
+
+## Step 3: Copy your credentials
+
+<Steps>
+
+<Step title="Note the Issuer URL, Client ID, and Client Secret">
+
+From your application settings, copy:
+
+| Value | Where to find |
+| --- | --- |
+| **Issuer URL** | Also called OIDC Issuer or Authorization Server URL. Must match the `iss` claim in the JWT. |
+| **Client ID** | Application ID or Client ID |
+| **Client Secret** | Application secret (confidential clients only) |
+
+The issuer URL typically looks like `https://auth.company.com` or `https://auth.company.com/realms/my-realm`. Bifrost uses it to discover endpoints via `<issuer>/.well-known/openid-configuration`.
+
+</Step>
+
+</Steps>
+
+---
+
+## Step 4: Assign users
+
+<Steps>
+
+<Step title="Grant users access to the application">
+
+In your IdP, assign the users or groups that should be able to log in to Bifrost:
+
+- **Explicit assignment** — add users directly to the application
+- **Group-based access** — assign a group; all members get access
+- **Policy-based** — configure an access policy
+
+Only users explicitly granted access can authenticate via Bifrost.
+
+</Step>
+
+</Steps>
+
+---
+
+## Step 5: Configure Bifrost
+
+<Steps>
+
+<Step title="Open User Provisioning and choose Generic OIDC">
+
+In your Bifrost dashboard, go to **Governance** → **User Provisioning**.
+
+Select **Generic OIDC Provider** and click **Next**.
+
+<Frame caption="Select Generic OIDC Provider from the list of identity providers.">
+  <img src="/media/user-provisioning/generic-oidc/bifrost-provider-selection.png" alt="Bifrost Choose Provider screen with Generic OIDC Provider selected" />
+</Frame>
+
+</Step>
+
+<Step title="Fill in the provider configuration">
+
+Enter the credentials you copied in Step 3:
+
+| Field | Value |
+| --- | --- |
+| **Issuer URL** | Your IdP's OIDC issuer URL (no trailing slash) |
+| **Client ID** | Application Client ID |
+| **Client Secret** | Application Client Secret |
+| **Audience** | Optional — the expected `aud` claim. Defaults to Client ID. |
+
+Click **Discover endpoints** to auto-fill the authorize, token, and userinfo endpoints from your issuer's discovery document. Then click **Verify & Next**.
+
+<Frame caption="Provider Configuration — enter your OIDC issuer URL and client credentials, then Discover endpoints to validate.">
+  <img src="/media/user-provisioning/generic-oidc/bifrost-provider-config.png" alt="Bifrost Provider Configuration form showing Issuer URL, discovered endpoints, Client ID, Client Secret, and optional Audience fields" />
+</Frame>
+
+</Step>
+
+<Step title="Discover claims">
+
+On the Attribute Mapping screen, click **Discover Claims** to fetch live claims from your IdP.
+
+Bifrost opens a sign-in popup — no session is created. Once you authenticate, it returns the exact claims your IdP is sending in the JWT. Use this to confirm which attributes — groups, roles, department, or custom claims — are present before building your mappings.
+
+<Frame caption="Discover Claims — shows all claims the IdP is returning in the JWT so you can reference exact names when building mappings.">
+  <img src="/media/user-provisioning/generic-oidc/bifrost-discover-claims.png" alt="Bifrost Discover Claims screen listing all claims returned by the generic OIDC provider" />
+</Frame>
+
+<Note>
+  If **Discover Claims** fails, confirm your IdP is configured to allow the `openid`, `profile`, and `email` scopes and that the discovery callback URI is registered.
+</Note>
+
+</Step>
+
+<Step title="Set up attribute mappings">
+
+Use the sections below the claim list to map IdP claim values to Bifrost roles, teams, and business units.
+
+**Attribute-to-Role Mappings**
+
+Map a claim value to a Bifrost role. All matching rules are evaluated — if multiple rules match, the role with the highest permissions is assigned. If no rule matches, login is denied.
+
+**Attribute-to-Team Mappings**
+
+Map a claim value to a Bifrost team. All matching rules apply.
+
+- Use a specific value (e.g. `engineering`) to map that exact claim value to a named team
+- Use `*` to sync the claim value directly as the team name
+- Use `${*}` to extract part of the string — e.g. `/${*}` matches `/Engineering` and creates team **Engineering**
+
+**Attribute-to-Business Unit Mappings**
+
+Same wildcard support as team mappings. When a rule matches, the resolved business unit is assigned to all of that user's teams.
+
+<Frame caption="Attribute Mapping — configure role, team, and business unit rules based on the claims your IdP sends.">
+  <img src="/media/user-provisioning/generic-oidc/bifrost-attribute-setup.png" alt="Bifrost Attribute Mapping screen showing role and team mapping rules configured for the generic OIDC provider" />
+</Frame>
+
+<Note>
+  Setting a value to `*` maps the claim value directly as the entity name. Value comparisons are case-insensitive.
+</Note>
+
+Click **Next** when done.
+
+</Step>
+
+<Step title="Review and enable">
+
+Review your full configuration — connection details, attribute mappings, and SCIM status — then click **Save & Enable**.
+
+<Frame caption="Review & Enable — confirm your connection and mappings before activating the provider.">
+  <img src="/media/user-provisioning/generic-oidc/bifrost-review-enable.png" alt="Bifrost Review and Enable screen showing Generic OIDC Provider connection details and configured attribute mappings" />
+</Frame>
+
+<Warning>
+  Restart your Bifrost server after enabling for the changes to take effect.
+</Warning>
+
+</Step>
+
+</Steps>
+
+---
+
+## How background sync works
+
+Bifrost refreshes active OIDC sessions every **15 minutes**. If a session cannot be refreshed, Bifrost checks with your IdP whether the user is still active; if the IdP reports the user as inactive, Bifrost decommissions that user locally.
+
+For providers that support it, see [SCIM with Generic OIDC](./scim) to enable real-time user and group provisioning.
+
+---
+
+## Troubleshooting
+
+**User is not redirected to the IdP** — verify the provider is enabled in Bifrost and the server was restarted after saving. Confirm the Issuer URL has no trailing slash and is reachable from your Bifrost server.
+
+**JWKS validation fails** — Bifrost fetches `<issuer>/.well-known/openid-configuration` to discover the JWKS endpoint. Ensure this URL is reachable from your Bifrost host.
+
+**Audience mismatch** — set the **Audience** field in Bifrost to match the `aud` claim in the JWT. Leave blank to default to the Client ID.
+
+**Claims are present in Discover Claims but role mapping is not working** — confirm the claim name matches exactly what the IdP sends (case-sensitive, including namespacing). Dotted paths (e.g. `realm_access.roles`) are supported.
+
+**Login fails after successful IdP authentication** — check that the redirect URI in your IdP exactly matches `https://<your-bifrost-domain>/login`. Trailing slashes and path differences are not allowed.

@@ -59,6 +59,31 @@ def _create_base64_image(width: int = 64, height: int = 64) -> str:
     return base64.b64encode(img_bytes).decode('utf-8')
 
 BASE64_IMAGE = _create_base64_image(64, 64)
+BASE64_IMAGE_LARGE = _create_base64_image(512, 512)
+
+
+def _create_titan_mask_image(width: int = 512, height: int = 512) -> str:
+    """Create a base64-encoded grayscale PNG mask for Titan inpainting/outpainting.
+    Titan requires mask pixel values to be exactly 0 (preserve) or 255 (edit area)."""
+    from PIL import Image, ImageDraw
+    import io
+    import base64
+
+    # Grayscale image, all black (preserve) by default
+    mask = Image.new('L', (width, height), 0)
+
+    # White rectangle in center marks the area to edit
+    draw = ImageDraw.Draw(mask)
+    cx, cy = width // 2, height // 2
+    w, h = width // 3, height // 3
+    draw.rectangle([cx - w // 2, cy - h // 2, cx + w // 2, cy + h // 2], fill=255)
+
+    buffer = io.BytesIO()
+    mask.save(buffer, format='PNG')
+    return base64.b64encode(buffer.getvalue()).decode('utf-8')
+
+
+BASE64_TITAN_MASK_IMAGE = _create_titan_mask_image(512, 512)
 
 # Common Test Data
 SIMPLE_CHAT_MESSAGES = [{"role": "user", "content": "Hello! How are you today?"}]
@@ -2510,6 +2535,168 @@ def skip_if_no_bedrock_s3():
         pytest.skip("Bedrock S3 tests require AWS_S3_BUCKET environment variable")
 
 
+def get_vertex_gcs_config() -> Dict[str, Optional[str]]:
+    """
+    Get Vertex AI batch GCS configuration from environment variables.
+
+    Vertex batch prediction reads inputs from / writes outputs to Google Cloud Storage,
+    so a bucket must be provided to exercise the batch API end-to-end.
+
+    Returns:
+        Dictionary with GCS configuration:
+        - bucket: GCS bucket name (from VERTEX_GCS_BUCKET)
+        - prefix: Output object prefix (from VERTEX_GCS_PREFIX or a default)
+    """
+    return {
+        "bucket": os.environ.get("VERTEX_GCS_BUCKET"),
+        "prefix": os.environ.get("VERTEX_GCS_PREFIX", "bifrost-batch-tests/"),
+    }
+
+
+def is_vertex_gcs_configured() -> bool:
+    """
+    Check if Vertex AI batch GCS configuration is available.
+
+    Returns:
+        True if VERTEX_GCS_BUCKET is set, False otherwise
+    """
+    config = get_vertex_gcs_config()
+    return config["bucket"] is not None and len(config["bucket"]) > 0
+
+
+def get_vertex_batch_dest_uri() -> str:
+    """
+    Build the GCS output destination URI (gs:// prefix) for a Vertex batch job.
+
+    Returns:
+        GCS URI string (e.g., gs://bucket/bifrost-batch-tests/output)
+
+    Raises:
+        ValueError if VERTEX_GCS_BUCKET is not configured
+    """
+    config = get_vertex_gcs_config()
+    if not config["bucket"]:
+        raise ValueError(
+            "VERTEX_GCS_BUCKET environment variable is required for Vertex batch API"
+        )
+    prefix = (config["prefix"] or "").strip("/")
+    base = f"gs://{config['bucket']}"
+    if prefix:
+        base = f"{base}/{prefix}"
+    return f"{base}/output"
+
+
+def skip_if_no_vertex_gcs():
+    """
+    Pytest skip helper for tests requiring Vertex GCS configuration.
+    Call skip_if_no_vertex_gcs() at the start of a test.
+    """
+    import pytest
+
+    if not is_vertex_gcs_configured():
+        pytest.skip("Vertex batch tests require VERTEX_GCS_BUCKET environment variable")
+
+
+def get_vertex_project() -> Optional[str]:
+    """Vertex project id for native batch prediction (from VERTEX_PROJECT_ID)."""
+    return os.environ.get("VERTEX_PROJECT_ID")
+
+
+def get_vertex_location() -> str:
+    """Vertex regional location for native batch prediction (from GOOGLE_LOCATION)."""
+    return os.environ.get("GOOGLE_LOCATION", "us-central1")
+
+
+def get_bifrost_base_url() -> str:
+    """Base URL of the Bifrost gateway (from BIFROST_BASE_URL)."""
+    return os.environ.get("BIFROST_BASE_URL", "http://localhost:8080")
+
+
+def skip_if_no_vertex_native_batch():
+    """
+    Pytest skip helper for native Vertex batch tests (aiplatform JobServiceClient).
+    Requires both a project id and a GCS bucket.
+    """
+    import pytest
+
+    if not get_vertex_project():
+        pytest.skip("Vertex native batch tests require VERTEX_PROJECT_ID environment variable")
+    if not is_vertex_gcs_configured():
+        pytest.skip("Vertex native batch tests require VERTEX_GCS_BUCKET environment variable")
+
+
+def get_vertex_google_credentials(scopes: Optional[List[str]] = None):
+    """
+    Build google-auth credentials for direct GCS/Vertex calls in tests.
+
+    The Vertex service-account key is provided to Bifrost via VERTEX_CREDENTIALS, which
+    may hold either the service-account JSON *content* or a path to a JSON file. ADC
+    (GOOGLE_APPLICATION_CREDENTIALS) only accepts a file path, so when the content is
+    inlined we must construct credentials explicitly instead of relying on ADC.
+
+    Returns None if no usable credentials are found (caller falls back to ADC).
+    """
+    import json
+
+    from google.oauth2 import service_account
+
+    raw = os.environ.get("VERTEX_CREDENTIALS") or os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+    if not raw:
+        return None
+    raw = raw.strip()
+
+    if os.path.isfile(raw):
+        creds = service_account.Credentials.from_service_account_file(raw)
+    else:
+        try:
+            info = json.loads(raw)
+        except (ValueError, TypeError):
+            return None
+        creds = service_account.Credentials.from_service_account_info(info)
+
+    if scopes:
+        creds = creds.with_scopes(scopes)
+    return creds
+
+
+def stage_vertex_batch_input(content: str, filename: str | None = None) -> str:
+    """
+    Upload JSONL batch input to GCS and return its gs:// URI.
+
+    Vertex batch prediction reads inputs from Cloud Storage, so the input file must
+    exist in GCS before creating the job (the native API has no inline mode).
+
+    Args:
+        content: Newline-delimited JSON batch input
+        filename: Optional object filename (auto-generated if not provided)
+
+    Returns:
+        gs:// URI of the uploaded input object
+    """
+    import time
+
+    from google.cloud import storage
+
+    cfg = get_vertex_gcs_config()
+    if not cfg["bucket"]:
+        raise ValueError("VERTEX_GCS_BUCKET environment variable is required for Vertex batch API")
+
+    if filename is None:
+        filename = f"batch-input-{int(time.time())}.jsonl"
+    prefix = (cfg["prefix"] or "").strip("/")
+    blob_name = f"{prefix}/input/{filename}" if prefix else f"input/{filename}"
+
+    # Build credentials from VERTEX_CREDENTIALS (JSON content or path); fall back to ADC.
+    creds = get_vertex_google_credentials(
+        scopes=["https://www.googleapis.com/auth/cloud-platform"]
+    )
+    client = storage.Client(project=get_vertex_project(), credentials=creds)
+    bucket = client.bucket(cfg["bucket"])
+    blob = bucket.blob(blob_name)
+    blob.upload_from_string(content, content_type="application/jsonl")
+    return f"gs://{cfg['bucket']}/{blob_name}"
+
+
 def get_content_string_with_summary(response: Any) -> tuple[str, bool]:
     """
     Extract content from response, handling both OpenAI API responses and LangChain AIMessage objects.
@@ -3317,13 +3504,15 @@ def run_ws_responses_test(
         content = ""
         error = None
 
-        start_time = time.monotonic()
+        deadline = time.monotonic() + timeout
         while True:
-            if time.monotonic() - start_time > timeout:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
                 raise TimeoutError(
                     f"WebSocket stream did not reach terminal event within {timeout}s"
                 )
 
+            conn.settimeout(remaining)
             result = conn.recv()
             data = json.loads(result)
             events.append(data)
@@ -3354,3 +3543,215 @@ def run_ws_responses_test(
         }
     finally:
         conn.close()
+
+
+def get_realtime_test_model(provider: str) -> str:
+    """Get a Realtime test model for the given provider."""
+    env_var = f"{provider.upper()}_REALTIME_MODEL"
+    if provider == "openai":
+        return os.getenv(env_var, "gpt-realtime")
+    return os.getenv(env_var, "")
+
+
+def run_ws_realtime_test(
+    ws_url,
+    api_key,
+    timeout=30,
+    extra_headers=None,
+):
+    """Connect to a Realtime websocket endpoint and drive a text-only round trip."""
+    import time
+    import websocket as ws_client
+
+    headers = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    if extra_headers:
+        headers.update(extra_headers)
+
+    header_list = [f"{k}: {v}" for k, v in headers.items()]
+    conn = ws_client.create_connection(ws_url, header=header_list, timeout=timeout)
+
+    try:
+        events = []
+        got_session_created = False
+        got_session_updated = False
+        got_text_delta = False
+        got_response_done = False
+        content = ""
+        error = None
+
+        deadline = time.monotonic() + timeout
+
+        def recv_event():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"Realtime websocket did not reach terminal state within {timeout}s"
+                )
+            conn.settimeout(remaining)
+            raw = conn.recv()
+            data = json.loads(raw)
+            events.append(data)
+            return data
+
+        while not got_session_created and error is None:
+            data = recv_event()
+            event_type = data.get("type", "")
+            if event_type == "session.created":
+                got_session_created = True
+            elif event_type == "error":
+                error = data
+
+        if got_session_created and error is None:
+            conn.send(
+                json.dumps(
+                    {
+                        "type": "session.update",
+                        "session": {
+                            "type": "realtime",
+                            "output_modalities": ["text"],
+                        },
+                    }
+                )
+            )
+
+            while True:
+                data = recv_event()
+                event_type = data.get("type", "")
+                if event_type == "session.updated":
+                    got_session_updated = True
+                    break
+                if event_type == "error":
+                    error = data
+                    break
+
+        if got_session_updated and error is None:
+            conn.send(
+                json.dumps(
+                    {
+                        "type": "conversation.item.create",
+                        "item": {
+                            "type": "message",
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "input_text",
+                                    "text": "Say hello in exactly two words.",
+                                }
+                            ],
+                        },
+                    }
+                )
+            )
+            conn.send(json.dumps({"type": "response.create"}))
+
+            while True:
+                data = recv_event()
+                event_type = data.get("type", "")
+
+                if event_type == "response.output_text.delta":
+                    delta = data.get("delta", "")
+                    if isinstance(delta, dict):
+                        content += delta.get("text", "")
+                    elif isinstance(delta, str):
+                        content += delta
+                    got_text_delta = True
+                elif event_type == "response.done":
+                    response_status = data.get("response", {}).get("status")
+                    if response_status == "completed":
+                        got_response_done = True
+                    else:
+                        error = data
+                    break
+                elif event_type == "error":
+                    error = data
+                    break
+
+        return {
+            "events": events,
+            "event_count": len(events),
+            "got_session_created": got_session_created,
+            "got_session_updated": got_session_updated,
+            "got_text_delta": got_text_delta,
+            "got_response_done": got_response_done,
+            "content": content,
+            "error": error,
+        }
+    finally:
+        conn.close()
+
+
+def run_realtime_client_secret_request(
+    url,
+    api_key,
+    request_body,
+    extra_headers=None,
+    timeout=30,
+):
+    """POST a realtime client-secret/session request and return status + body."""
+    import requests
+
+    headers = {
+        "Content-Type": "application/json",
+    }
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    if extra_headers:
+        headers.update(extra_headers)
+
+    response = requests.post(url, headers=headers, json=request_body, timeout=timeout)
+
+    try:
+        body = response.json()
+    except ValueError:
+        body = {"raw_body": response.text}
+
+    return {
+        "status_code": response.status_code,
+        "body": body,
+        "headers": dict(response.headers),
+    }
+
+
+def run_openai_base_url_client_secret_request(
+    base_url,
+    api_key,
+    request_body,
+    timeout=30,
+    default_headers=None,
+):
+    """Exercise the OpenAI client constructor base_url using the SDK's public request surface."""
+    import httpx
+    from openai import OpenAI
+
+    merged_headers = {}
+    if default_headers:
+        merged_headers.update(default_headers)
+
+    client = OpenAI(
+        api_key=api_key,
+        base_url=base_url,
+        timeout=timeout,
+        default_headers=merged_headers,
+    )
+
+    try:
+        response = client.post(
+            "v1/realtime/client_secrets",
+            cast_to=httpx.Response,
+            body=request_body,
+        )
+
+        try:
+            body = response.json()
+        except ValueError:
+            body = {"raw_body": response.text}
+
+        return {
+            "status_code": response.status_code,
+            "body": body,
+            "headers": dict(response.headers),
+        }
+    finally:
+        client.close()

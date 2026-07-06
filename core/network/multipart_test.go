@@ -2,6 +2,8 @@ package network
 
 import (
 	"bytes"
+	"io"
+	"mime"
 	"mime/multipart"
 	"strings"
 	"testing"
@@ -34,6 +36,34 @@ func buildMultipartBody(t *testing.T, fields map[string]string, files map[string
 		t.Fatalf("writer.Close: %v", err)
 	}
 	return buf.Bytes(), writer.FormDataContentType()
+}
+
+func partOrderFromMultipartBody(t *testing.T, contentType string, body []byte) []string {
+	t.Helper()
+	_, params, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		t.Fatalf("ParseMediaType(%q): %v", contentType, err)
+	}
+	boundary := params["boundary"]
+	if boundary == "" {
+		t.Fatalf("no boundary in content-type %q", contentType)
+	}
+
+	reader := multipart.NewReader(bytes.NewReader(body), boundary)
+	var order []string
+	for {
+		part, err := reader.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("NextPart(): %v", err)
+		}
+		order = append(order, part.FormName())
+		_, _ = io.Copy(io.Discard, part)
+		_ = part.Close()
+	}
+	return order
 }
 
 func TestParseMultipartFormFields(t *testing.T) {
@@ -131,6 +161,37 @@ func TestReconstructMultipartBody(t *testing.T) {
 		}
 		if parsed["temperature"] != "0.7" {
 			t.Errorf("temperature = %v, want 0.7", parsed["temperature"])
+		}
+	})
+
+	t.Run("preserves file parts while updating text fields", func(t *testing.T) {
+		body, ct := buildMultipartBody(t,
+			map[string]string{"prompt": "hi"},
+			map[string][]byte{"file": []byte("audio-bytes")},
+		)
+		payload := map[string]any{"model": "whisper-1", "prompt": "updated"}
+		newBody, newCT, err := ReconstructMultipartBody(ct, body, payload)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		order := partOrderFromMultipartBody(t, newCT, newBody)
+		if len(order) != 3 {
+			t.Fatalf("unexpected part count %d: %v", len(order), order)
+		}
+		if order[0] != "prompt" || order[1] != "file" || order[2] != "model" {
+			t.Fatalf("unexpected multipart order %v, want [prompt file model]", order)
+		}
+
+		parsed, err := ParseMultipartFormFields(newCT, newBody)
+		if err != nil {
+			t.Fatalf("failed to parse reconstructed body: %v", err)
+		}
+		if parsed["prompt"] != "updated" {
+			t.Fatalf("prompt = %v, want updated", parsed["prompt"])
+		}
+		if parsed["model"] != "whisper-1" {
+			t.Fatalf("model = %v, want whisper-1", parsed["model"])
 		}
 	})
 

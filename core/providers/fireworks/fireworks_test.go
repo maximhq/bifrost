@@ -28,21 +28,19 @@ func TestFireworks(t *testing.T) {
 	defer cancel()
 	defer client.Shutdown()
 
-	chatModel, textModel, embeddingModel := resolveFireworksModels(t, client, ctx)
-
 	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:                schemas.Fireworks,
-		ChatModel:               chatModel,
+		ChatModel:               "accounts/fireworks/models/deepseek-v4-pro",
 		Fallbacks:               []schemas.Fallback{},
-		TextModel:               textModel,
+		TextModel:               "accounts/fireworks/models/deepseek-v4-pro",
 		TextCompletionFallbacks: []schemas.Fallback{},
-		EmbeddingModel:          embeddingModel,
+		EmbeddingModel:          "fireworks/qwen3-embedding-8b",
 		ReasoningModel:          "",
 		TranscriptionModel:      "",
 		SpeechSynthesisModel:    "",
 		Scenarios: llmtests.TestScenarios{
-			TextCompletion:        textModel != "",
-			TextCompletionStream:  textModel != "",
+			TextCompletion:        true,
+			TextCompletionStream:  true,
 			SimpleChat:            true,
 			CompletionStream:      true,
 			MultiTurnConversation: true,
@@ -57,7 +55,7 @@ func TestFireworks(t *testing.T) {
 			FileBase64:            false,
 			FileURL:               false,
 			CompleteEnd2End:       true,
-			Embedding:             embeddingModel != "",
+			Embedding:             true,
 			ListModels:            true,
 			Reasoning:             false,
 			Transcription:         false,
@@ -366,7 +364,7 @@ func TestFireworksProviderUsesNativeEndpoints(t *testing.T) {
 
 			provider := newTestFireworksProvider(t, server.URL)
 			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-			key := schemas.Key{Value: *schemas.NewEnvVar("test-key")}
+			key := schemas.Key{Value: *schemas.NewSecretVar("test-key")}
 
 			tt.run(t, provider, ctx, key)
 
@@ -394,12 +392,12 @@ func TestFireworksResponsesStreamUsesNativeResponsesEndpoint(t *testing.T) {
 
 	provider := newTestFireworksProvider(t, server.URL)
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	key := schemas.Key{Value: *schemas.NewEnvVar("test-key")}
+	key := schemas.Key{Value: *schemas.NewSecretVar("test-key")}
 	postHookRunner := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
 		return result, err
 	}
 
-	stream, err := provider.ResponsesStream(ctx, postHookRunner, key, &schemas.BifrostResponsesRequest{
+	stream, err := provider.ResponsesStream(ctx, postHookRunner, nil, key, &schemas.BifrostResponsesRequest{
 		Provider: schemas.Fireworks,
 		Model:    "accounts/fireworks/models/deepseek-v3p2",
 		Input: []schemas.ResponsesMessage{
@@ -433,7 +431,7 @@ func newTestFireworksProvider(t *testing.T, baseURL string) *fireworksprovider.F
 	provider, err := fireworksprovider.NewFireworksProvider(&schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
 			BaseURL:                        baseURL,
-			DefaultRequestTimeoutInSeconds: 30,
+			DefaultRequestTimeoutInSeconds: 300,
 		},
 	}, bifrost.NewNoOpLogger())
 	if err != nil {

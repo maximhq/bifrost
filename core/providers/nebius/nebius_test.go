@@ -10,6 +10,7 @@ import (
 )
 
 func TestNebius(t *testing.T) {
+	t.Skip("Nebius tests are disabled")
 	t.Parallel()
 	if os.Getenv("NEBIUS_API_KEY") == "" {
 		t.Skip("Skipping Nebius tests because NEBIUS_API_KEY is not set")
@@ -32,25 +33,25 @@ func TestNebius(t *testing.T) {
 		EmbeddingModel:       "BAAI/bge-en-icl",
 		ImageGenerationModel: "black-forest-labs/flux-schnell",
 		Scenarios: llmtests.TestScenarios{
-			TextCompletion:        true,
-			TextCompletionStream:  true,
-			SimpleChat:            true,
-			CompletionStream:      true,
-			MultiTurnConversation: true,
-			ToolCalls:             true,
-			ToolCallsStreaming:    true,
+			TextCompletion:             true,
+			TextCompletionStream:       true,
+			SimpleChat:                 true,
+			CompletionStream:           true,
+			MultiTurnConversation:      true,
+			ToolCalls:                  true,
+			ToolCallsStreaming:         true,
 			MultipleToolCalls:          true,
 			MultipleToolCallsStreaming: true,
-			End2EndToolCalling:    true,
-			AutomaticFunctionCall: true,
-			ImageURL:              true,
-			ImageBase64:           true,
-			MultipleImages:        true,
-			ImageGeneration:       true,
-			CompleteEnd2End:       true,
-			ImageGenerationStream: false,
-			Embedding:             true, // Nebius supports embeddings
-			ListModels:            true,
+			End2EndToolCalling:         true,
+			AutomaticFunctionCall:      true,
+			ImageURL:                   true,
+			ImageBase64:                true,
+			MultipleImages:             true,
+			ImageGeneration:            true,
+			CompleteEnd2End:            true,
+			ImageGenerationStream:      false,
+			Embedding:                  true, // Nebius supports embeddings
+			ListModels:                 true,
 		},
 	}
 

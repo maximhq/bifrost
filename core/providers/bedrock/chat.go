@@ -3,6 +3,7 @@ package bedrock
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -23,8 +24,17 @@ func ToBedrockChatCompletionRequest(ctx *schemas.BifrostContext, bifrostReq *sch
 		ModelID: bifrostReq.Model,
 	}
 
+	input := bifrostReq.Input
+	if schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) && ctx.Value(schemas.BifrostContextKeySupportsAssistantPrefill) == false {
+		trimmed := len(input)
+		for trimmed > 0 && input[trimmed-1].Role == schemas.ChatMessageRoleAssistant {
+			trimmed--
+		}
+		input = input[:trimmed]
+	}
+
 	// Convert messages and system messages
-	messages, systemMessages, err := convertMessages(bifrostReq.Input)
+	messages, systemMessages, err := convertMessages(ctx, input)
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert messages: %w", err)
 	}
@@ -33,13 +43,34 @@ func ToBedrockChatCompletionRequest(ctx *schemas.BifrostContext, bifrostReq *sch
 		bedrockReq.System = systemMessages
 	}
 
+	// Trim trailing whitespace from the last assistant message text blocks
+	// (only for Anthropic models which use text-based prefill)
+	lastMsgIndex := len(bedrockReq.Messages) - 1
+	if schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) && lastMsgIndex >= 0 && bedrockReq.Messages[lastMsgIndex].Role == BedrockMessageRoleAssistant {
+		blocks := bedrockReq.Messages[lastMsgIndex].Content
+		for j := len(blocks) - 1; j >= 0; j-- {
+			if blocks[j].Text != nil {
+				bedrockReq.Messages[lastMsgIndex].Content[j].Text = schemas.Ptr(strings.TrimRight(*blocks[j].Text, " \n\r\t"))
+				break
+			}
+		}
+	}
+
 	// Convert parameters and configurations
 	if err := convertChatParameters(ctx, bifrostReq, bedrockReq); err != nil {
 		return nil, fmt.Errorf("failed to convert chat parameters: %w", err)
 	}
 
 	// Ensure tool config is present when needed
-	ensureChatToolConfigForConversation(bifrostReq, bedrockReq)
+	ensureChatToolConfigForConversation(ctx, bifrostReq, bedrockReq)
+
+	// capModel is the canonical model used for capability gating (resolves aliases).
+	capModel := schemas.ResolveCanonicalModel(ctx, bifrostReq.Model)
+	if !schemas.BedrockModelSupportsCachePoints(capModel) {
+		stripCachePointsFromBedrockRequest(bedrockReq)
+	} else if !schemas.BedrockModelSupportsExtendedCacheTTL(capModel) {
+		downgradeExtendedCacheTTLInBedrockRequest(bedrockReq)
+	}
 
 	return bedrockReq, nil
 }
@@ -56,6 +87,7 @@ func (response *BedrockConverseResponse) ToBifrostChatResponse(ctx context.Conte
 	var toolCalls []schemas.ChatAssistantMessageToolCall
 	var reasoningDetails []schemas.ChatReasoningDetails
 	var reasoningText string
+	var usedStructuredOutputTool bool
 
 	if response.Output.Message != nil {
 		for _, contentBlock := range response.Output.Message.Content {
@@ -75,6 +107,7 @@ func (response *BedrockConverseResponse) ToBifrostChatResponse(ctx context.Conte
 					if contentBlock.ToolUse.Input != nil {
 						jsonStr := string(contentBlock.ToolUse.Input)
 						contentStr = &jsonStr
+						usedStructuredOutputTool = true
 					}
 					continue // Skip adding to toolCalls
 				}
@@ -88,7 +121,7 @@ func (response *BedrockConverseResponse) ToBifrostChatResponse(ctx context.Conte
 				}
 
 				toolUseID := contentBlock.ToolUse.ToolUseID
-				toolUseName := contentBlock.ToolUse.Name
+				toolUseName := bedrockRestoreToolName(ctx, contentBlock.ToolUse.Name)
 
 				toolCalls = append(toolCalls, schemas.ChatAssistantMessageToolCall{
 					Index: uint16(len(toolCalls)),
@@ -210,7 +243,14 @@ func (response *BedrockConverseResponse) ToBifrostChatResponse(ctx context.Conte
 					ChatAssistantMessage: assistantMessage,
 				},
 			},
-			FinishReason: schemas.Ptr(convertBedrockStopReason(response.StopReason)),
+			FinishReason: func() *string {
+				mapped := convertBedrockStopReason(response.StopReason)
+				if usedStructuredOutputTool && len(toolCalls) == 0 &&
+					mapped == string(schemas.BifrostFinishReasonToolCalls) {
+					mapped = string(schemas.BifrostFinishReasonStop)
+				}
+				return &mapped
+			}(),
 		},
 	}
 	var usage *schemas.BifrostLLMUsage
@@ -234,26 +274,37 @@ func (response *BedrockConverseResponse) ToBifrostChatResponse(ctx context.Conte
 				usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{}
 			}
 			usage.PromptTokensDetails.CachedWriteTokens = response.Usage.CacheWriteInputTokens
+			if response.Usage.CacheDetails != nil {
+				if usage.PromptTokensDetails.CachedWriteTokenDetails == nil {
+					usage.PromptTokensDetails.CachedWriteTokenDetails = &schemas.ChatCachedWriteTokenDetails{}
+				}
+				for _, cacheDetail := range *response.Usage.CacheDetails {
+					if cacheDetail.TTL == BedrockCacheWriteTTL5m {
+						usage.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens5m = cacheDetail.InputTokens
+					}
+					if cacheDetail.TTL == BedrockCacheWriteTTL1h {
+						usage.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h = cacheDetail.InputTokens
+					}
+				}
+			}
 			usage.PromptTokens = usage.PromptTokens + response.Usage.CacheWriteInputTokens
 		}
 	}
 
 	// Create the final Bifrost response
 	bifrostResponse := &schemas.BifrostChatResponse{
-		ID:      uuid.New().String(),
-		Model:   model,
-		Object:  "chat.completion",
-		Choices: choices,
-		Usage:   usage,
-		Created: int(time.Now().Unix()),
-		ExtraFields: schemas.BifrostResponseExtraFields{
-			RequestType: schemas.ChatCompletionRequest,
-			Provider:    schemas.Bedrock,
-		},
+		ID:          uuid.New().String(),
+		Model:       model,
+		Object:      "chat.completion",
+		Choices:     choices,
+		Usage:       usage,
+		Created:     int(time.Now().Unix()),
+		ExtraFields: schemas.BifrostResponseExtraFields{},
 	}
 
 	if response.ServiceTier != nil && response.ServiceTier.Type != "" {
-		bifrostResponse.ServiceTier = &response.ServiceTier.Type
+		tier := mapBedrockServiceTierToBifrost(response.ServiceTier.Type)
+		bifrostResponse.ServiceTier = &tier
 	}
 
 	return bifrostResponse, nil
@@ -263,6 +314,7 @@ func (response *BedrockConverseResponse) ToBifrostChatResponse(ctx context.Conte
 type BedrockStreamState struct {
 	nextToolCallIndex         int
 	contentBlockToToolCallIdx map[int]int
+	ctx                       context.Context
 }
 
 // NewBedrockStreamState returns initialised stream state for one streaming response.
@@ -270,6 +322,13 @@ func NewBedrockStreamState() *BedrockStreamState {
 	return &BedrockStreamState{
 		contentBlockToToolCallIdx: make(map[int]int),
 	}
+}
+
+// NewBedrockStreamStateWithContext returns stream state that can restore aliased tool names.
+func NewBedrockStreamStateWithContext(ctx context.Context) *BedrockStreamState {
+	state := NewBedrockStreamState()
+	state.ctx = ctx
+	return state
 }
 
 func (chunk *BedrockStreamEvent) ToBifrostChatCompletionStream(state *BedrockStreamState) (*schemas.BifrostChatResponse, *schemas.BifrostError, bool) {
@@ -314,7 +373,7 @@ func (chunk *BedrockStreamEvent) ToBifrostChatCompletionStream(state *BedrockStr
 		toolCall.Index = uint16(toolCallIdx)
 		toolCall.ID = schemas.Ptr(toolUseStart.ToolUseID)
 		toolCall.Type = schemas.Ptr("function")
-		toolCall.Function.Name = schemas.Ptr(toolUseStart.Name)
+		toolCall.Function.Name = schemas.Ptr(bedrockRestoreToolName(state.ctx, toolUseStart.Name))
 		toolCall.Function.Arguments = "" // Start with empty arguments
 
 		streamResponse := &schemas.BifrostChatResponse{

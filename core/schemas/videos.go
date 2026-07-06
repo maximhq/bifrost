@@ -156,6 +156,9 @@ func (r *BifrostVideoGenerationResponse) BackfillParams(req *BifrostRequest) {
 	if seconds != nil {
 		r.Seconds = seconds
 	}
+	if r.Model == "" && req.VideoGenerationRequest != nil {
+		r.Model = req.VideoGenerationRequest.Model
+	}
 }
 
 // --- Video Remix ---

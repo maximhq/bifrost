@@ -16,8 +16,6 @@ Virtual Keys are the primary governance entity in Bifrost. Users and application
 
 <Note>Old virtual keys(without `sk-bf-*` prefix) are only supported by `x-bf-vk` header.</Note>
 
-<Info>You can also use `Authorization`, `x-api-key` and `x-goog-api-key` headers to pass direct keys to the provider. Read more about it in [Direct Key Bypass](../keys-management#direct-key-bypass).</Info>
-
 **Key Features:**
 - **Access Control** - Model and provider filtering
 - **Cost Management** - Independent budgets (checked along with team/customer budgets if attached)
@@ -169,7 +167,8 @@ curl -X DELETE http://localhost:8080/api/governance/virtual-keys/{vk_id}
           {
             "provider": "openai",
             "weight": 0.5,
-            "allowed_models": ["gpt-4o-mini"]
+            "allowed_models": ["gpt-4o-mini"],
+            "key_ids": ["openai-primary"]
           },
           {
             "provider": "anthropic",
@@ -178,11 +177,7 @@ curl -X DELETE http://localhost:8080/api/governance/virtual-keys/{vk_id}
           }
         ],
         "team_id": "team-eng-001",
-        "budget_id": "budget-eng-vk",
-        "rate_limit_id": "rate-limit-eng-vk",
-        "keys": [
-          {"key_id": "8c52039e-38c6-48b2-8016-0bd884b7befb"}
-        ]
+        "rate_limit_id": "rate-limit-eng-vk"
       },
       {
         "id": "vk-002",
@@ -202,16 +197,13 @@ curl -X DELETE http://localhost:8080/api/governance/virtual-keys/{vk_id}
             "allowed_models": ["claude-3-opus-20240229"]
           }
         ],
-        "customer_id": "customer-acme-corp",
-        "budget_id": "budget-exec-vk",
-        "keys": [
-          {"key_id": "8c52039e-38c6-48b2-8016-0bd884b7befb"}
-        ]
+        "customer_id": "customer-acme-corp"
       }
     ],
     "budgets": [
       {
         "id": "budget-eng-vk",
+        "virtual_key_id": "vk-001",
         "max_limit": 100.00,
         "reset_duration": "1M",
         "current_usage": 0.0,
@@ -219,6 +211,7 @@ curl -X DELETE http://localhost:8080/api/governance/virtual-keys/{vk_id}
       },
       {
         "id": "budget-exec-vk",
+        "virtual_key_id": "vk-002",
         "max_limit": 500.00,
         "reset_duration": "1M",
         "current_usage": 0.0,
@@ -568,6 +561,24 @@ curl -X POST http://localhost:8080/v1/chat/completions \
   -H "Authorization: Bearer <VIRTUAL_KEY>" \
   -H "Content-Type: application/json" \
   -d '{"model": "gpt-4o-mini", "messages": [...]}'
+```
+
+### Listing models with a virtual key
+
+When you call `GET /v1/models` with a virtual key, Bifrost **only lists (and only queries) providers that are allowed by that virtual key**. This avoids unnecessary “provider not allowed” errors in logs and keeps error-rate metrics meaningful.
+
+```bash
+# Lists models across providers allowed by the virtual key
+curl -sS "http://localhost:8080/v1/models" \
+  -H "x-bf-vk: <VIRTUAL_KEY>"
+```
+
+If you specify a provider explicitly via `?provider=...`, that provider must still be allowed by the virtual key or the request will be rejected:
+
+```bash
+# If "anthropic" is not configured/allowed on this virtual key, this returns 403
+curl -sS "http://localhost:8080/v1/models?provider=anthropic" \
+  -H "x-bf-vk: <VIRTUAL_KEY>"
 ```
 
 **When `disable_auth_on_inference: false` (auth enabled):**

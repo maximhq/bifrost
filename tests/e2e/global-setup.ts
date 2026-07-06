@@ -315,8 +315,80 @@ async function runMCPSetup(): Promise<void> {
     console.log('✓ STDIO server already built')
   }
 
+  // Build and start auth-demo-server on port 3002
+  try {
+    const authServerBinaryName = isWindows ? 'auth-demo-server.exe' : 'auth-demo-server'
+    const authServerDir = join(REPO_ROOT, 'examples', 'mcps', 'auth-demo-server')
+    const authServerBinary = join(authServerDir, authServerBinaryName)
+    const authServerExec = isWindows ? authServerBinaryName : './auth-demo-server'
+
+    if (!existsSync(authServerBinary)) {
+      console.log('Building auth-demo-server...')
+      runCommand(goCommand, ['build', '-o', authServerBinaryName, 'main.go'], {
+        cwd: authServerDir,
+        env: { ...process.env, CGO_ENABLED: '0' },
+      })
+    } else {
+      console.log('✓ auth-demo-server binary already exists')
+    }
+
+    console.log('Starting auth-demo-server on port 3002...')
+    const authServer = spawn(authServerExec, [], {
+      cwd: authServerDir,
+      detached: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    authServer.stdout?.on('data', (data) => console.log(`[Auth Server] ${data.toString().trim()}`))
+    authServer.stderr?.on('data', (data) => console.error(`[Auth Server Error] ${data.toString().trim()}`))
+    if (authServer.pid) {
+      authServer.unref()
+      MCP_SERVERS.push(authServer)
+      await setTimeout(1000)
+      console.log('✓ auth-demo-server started on http://localhost:3002/')
+    }
+  } catch (err) {
+    console.warn(`⚠️  Failed to start auth-demo-server (header auth tests may skip): ${(err as Error).message}`)
+  }
+
+  // Build and start oauth-demo-server on port 3003
+  try {
+    const oauthServerBinaryName = isWindows ? 'oauth-demo-server.exe' : 'oauth-demo-server'
+    const oauthServerDir = join(REPO_ROOT, 'examples', 'mcps', 'oauth-demo-server')
+    const oauthServerBinary = join(oauthServerDir, oauthServerBinaryName)
+    const oauthServerExec = isWindows ? oauthServerBinaryName : './oauth-demo-server'
+
+    if (!existsSync(oauthServerBinary)) {
+      console.log('Building oauth-demo-server...')
+      runCommand(goCommand, ['build', '-o', oauthServerBinaryName, 'main.go'], {
+        cwd: oauthServerDir,
+        env: { ...process.env, CGO_ENABLED: '0' },
+      })
+    } else {
+      console.log('✓ oauth-demo-server binary already exists')
+    }
+
+    console.log('Starting oauth-demo-server on port 3003...')
+    const oauthServer = spawn(oauthServerExec, [], {
+      cwd: oauthServerDir,
+      detached: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    oauthServer.stdout?.on('data', (data) => console.log(`[OAuth Server] ${data.toString().trim()}`))
+    oauthServer.stderr?.on('data', (data) => console.error(`[OAuth Server Error] ${data.toString().trim()}`))
+    if (oauthServer.pid) {
+      oauthServer.unref()
+      MCP_SERVERS.push(oauthServer)
+      await setTimeout(1000)
+      console.log('✓ oauth-demo-server started on http://localhost:3003/')
+    }
+  } catch (err) {
+    console.warn(`⚠️  Failed to start oauth-demo-server (OAuth tests may fail): ${(err as Error).message}`)
+  }
+
   console.log('✓ MCP servers ready')
   console.log('  - HTTP/SSE server: http://localhost:3001/')
+  console.log('  - Auth demo server: http://localhost:3002/')
+  console.log('  - OAuth demo server: http://localhost:3003/')
   console.log('  - STDIO server: test-tools-server/dist/index.js')
 }
 

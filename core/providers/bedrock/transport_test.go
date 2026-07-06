@@ -71,22 +71,27 @@ func newTestProviderWithServer(t *testing.T, ts *httptest.Server) *BedrockProvid
 	targetURL, err := url.Parse(ts.URL)
 	require.NoError(t, err)
 
-	provider.client = &http.Client{
-		Transport: &redirectTransport{
-			target:    targetURL,
-			transport: ts.Client().Transport,
-		},
-		Timeout: 5 * time.Second,
+	redirect := &redirectTransport{
+		target:    targetURL,
+		transport: ts.Client().Transport,
 	}
+	provider.client = &http.Client{
+		Transport: redirect,
+		Timeout:   5 * time.Second,
+	}
+	// Streaming paths use streamingClient (no Timeout); redirect it to the
+	// test server too, otherwise Bedrock streaming tests would hit the real
+	// AWS endpoint.
+	provider.streamingClient = &http.Client{Transport: redirect}
 	return provider
 }
 
 // testBedrockKey returns a minimal Key with a bearer value so makeStreamingRequest
 // skips IAM signing and proceeds to the HTTP call.
 func testBedrockKey() schemas.Key {
-	region := schemas.NewEnvVar("us-east-1")
+	region := schemas.NewSecretVar("us-east-1")
 	return schemas.Key{
-		Value: *schemas.NewEnvVar("test-api-key"),
+		Value: *schemas.NewSecretVar("test-api-key"),
 		BedrockKeyConfig: &schemas.BedrockKeyConfig{
 			Region: region,
 		},
@@ -138,7 +143,7 @@ func TestMakeStreamingRequest_StaleConnection_IsRetryable(t *testing.T) {
 	ctx := testBedrockCtx()
 	key := testBedrockKey()
 
-	_, _, bifrostErr := provider.makeStreamingRequest(ctx, []byte(`{}`), key, "anthropic.claude-sonnet-4-5", "converse-stream")
+	_, bifrostErr := provider.makeStreamingRequest(ctx, []byte(`{}`), key, "anthropic.claude-sonnet-4-5", "converse-stream")
 
 	require.NotNil(t, bifrostErr, "expected error when server closes connection")
 	assert.False(t, bifrostErr.IsBifrostError,
@@ -177,7 +182,7 @@ func TestChatCompletionStream_StaleConnection_ChunkIsRetryable(t *testing.T) {
 	ctx := testBedrockCtx()
 	key := testBedrockKey()
 
-	streamChan, bifrostErr := provider.ChatCompletionStream(ctx, noopPostHookRunner, key, testChatRequest())
+	streamChan, bifrostErr := provider.ChatCompletionStream(ctx, noopPostHookRunner, nil, key, testChatRequest())
 
 	if bifrostErr != nil {
 		// Error surfaced synchronously (e.g. connection refused before HTTP 200).
@@ -242,7 +247,7 @@ func TestChatCompletionStream_NetOpError_ChunkIsRetryable(t *testing.T) {
 	ctx := testBedrockCtx()
 	key := testBedrockKey()
 
-	streamChan, bifrostErr := provider.ChatCompletionStream(ctx, noopPostHookRunner, key, testChatRequest())
+	streamChan, bifrostErr := provider.ChatCompletionStream(ctx, noopPostHookRunner, nil, key, testChatRequest())
 	if bifrostErr != nil {
 		assert.False(t, bifrostErr.IsBifrostError,
 			"pre-stream network error must be IsBifrostError:false")
@@ -326,7 +331,7 @@ func TestChatCompletionStream_RetryableException_ChunkIsRetryable(t *testing.T) 
 			ctx := testBedrockCtx()
 			key := testBedrockKey()
 
-			streamChan, bifrostErr := provider.ChatCompletionStream(ctx, noopPostHookRunner, key, testChatRequest())
+			streamChan, bifrostErr := provider.ChatCompletionStream(ctx, noopPostHookRunner, nil, key, testChatRequest())
 			require.Nil(t, bifrostErr, "expected EventStream exception to surface as a stream chunk")
 
 			require.NotNil(t, streamChan)
@@ -345,7 +350,7 @@ func TestChatCompletionStream_RetryableException_ChunkIsRetryable(t *testing.T) 
 			assert.False(t, errChunk.BifrostError.IsBifrostError,
 				"%s must be IsBifrostError:false so retry gate can retry it", tc.excType)
 			require.NotNil(t, errChunk.BifrostError.StatusCode,
-				"%s must carry a StatusCode for the retryableStatusCodes gate", tc.excType)
+				"%s must carry a StatusCode for the retry gate", tc.excType)
 			assert.Equal(t, tc.expectedStatus, *errChunk.BifrostError.StatusCode,
 				"%s must map to HTTP %d", tc.excType, tc.expectedStatus)
 		})
@@ -373,7 +378,7 @@ func TestChatCompletionStream_NonRetryableException_IsTerminal(t *testing.T) {
 	ctx := testBedrockCtx()
 	key := testBedrockKey()
 
-	streamChan, bifrostErr := provider.ChatCompletionStream(ctx, noopPostHookRunner, key, testChatRequest())
+	streamChan, bifrostErr := provider.ChatCompletionStream(ctx, noopPostHookRunner, nil, key, testChatRequest())
 	require.Nil(t, bifrostErr, "expected EventStream exception to surface as a stream chunk")
 
 	require.NotNil(t, streamChan)
@@ -440,7 +445,7 @@ func assertRetryableExceptionChunk(t *testing.T, streamChan chan *schemas.Bifros
 	assert.False(t, errChunk.BifrostError.IsBifrostError,
 		"%s must be IsBifrostError:false so retry gate can retry it", excType)
 	require.NotNil(t, errChunk.BifrostError.StatusCode,
-		"%s must carry a StatusCode for the retryableStatusCodes gate", excType)
+		"%s must carry a StatusCode for the retry gate", excType)
 	assert.Equal(t, expectedStatus, *errChunk.BifrostError.StatusCode,
 		"%s must map to HTTP %d", excType, expectedStatus)
 }
@@ -476,7 +481,7 @@ func TestTextCompletionStream_RetryableException_ChunkIsRetryable(t *testing.T) 
 			defer ts.Close()
 
 			provider := newTestProviderWithServer(t, ts)
-			streamChan, bifrostErr := provider.TextCompletionStream(testBedrockCtx(), noopPostHookRunner, testBedrockKey(), testTextCompletionRequest())
+			streamChan, bifrostErr := provider.TextCompletionStream(testBedrockCtx(), noopPostHookRunner, nil, testBedrockKey(), testTextCompletionRequest())
 			assertRetryableExceptionChunk(t, streamChan, bifrostErr, tc.excType, tc.expectedStatus)
 		})
 	}
@@ -512,7 +517,7 @@ func TestResponsesStream_RetryableException_ChunkIsRetryable(t *testing.T) {
 			defer ts.Close()
 
 			provider := newTestProviderWithServer(t, ts)
-			streamChan, bifrostErr := provider.ResponsesStream(testBedrockCtx(), noopPostHookRunner, testBedrockKey(), testResponsesRequest())
+			streamChan, bifrostErr := provider.ResponsesStream(testBedrockCtx(), noopPostHookRunner, nil, testBedrockKey(), testResponsesRequest())
 			assertRetryableExceptionChunk(t, streamChan, bifrostErr, tc.excType, tc.expectedStatus)
 		})
 	}
@@ -542,14 +547,14 @@ func generateTestCACert(t *testing.T) string {
 func TestBedrockTransportHTTP2Config(t *testing.T) {
 	config := &schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
-			DefaultRequestTimeoutInSeconds: 30,
+			DefaultRequestTimeoutInSeconds: 300,
 			MaxConnsPerHost:                5000,
 			EnforceHTTP2:                   true,
 		},
 	}
 	config.CheckAndSetDefaults()
 
-	provider, err := NewBedrockProvider(config, nil)
+	provider, err := NewBedrockProvider(config, noopLogger{})
 	require.NoError(t, err)
 	require.NotNil(t, provider)
 
@@ -565,13 +570,13 @@ func TestBedrockTransportHTTP2Config(t *testing.T) {
 func TestBedrockTransportCustomMaxConns(t *testing.T) {
 	config := &schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
-			DefaultRequestTimeoutInSeconds: 30,
+			DefaultRequestTimeoutInSeconds: 300,
 			MaxConnsPerHost:                50,
 		},
 	}
 	config.CheckAndSetDefaults()
 
-	provider, err := NewBedrockProvider(config, nil)
+	provider, err := NewBedrockProvider(config, noopLogger{})
 	require.NoError(t, err)
 
 	transport, ok := provider.client.Transport.(*http.Transport)
@@ -585,7 +590,7 @@ func TestBedrockTransportCustomMaxConns(t *testing.T) {
 func TestBedrockTransportDefaultMaxConns(t *testing.T) {
 	config := &schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
-			DefaultRequestTimeoutInSeconds: 30,
+			DefaultRequestTimeoutInSeconds: 300,
 			// MaxConnsPerHost left as 0 — should default to 5000
 		},
 	}
@@ -593,7 +598,7 @@ func TestBedrockTransportDefaultMaxConns(t *testing.T) {
 
 	assert.Equal(t, schemas.DefaultMaxConnsPerHost, config.NetworkConfig.MaxConnsPerHost)
 
-	provider, err := NewBedrockProvider(config, nil)
+	provider, err := NewBedrockProvider(config, noopLogger{})
 	require.NoError(t, err)
 
 	transport, ok := provider.client.Transport.(*http.Transport)
@@ -607,14 +612,14 @@ func TestBedrockTransportDefaultMaxConns(t *testing.T) {
 func TestBedrockTransportTLSInsecureSkipVerify(t *testing.T) {
 	config := &schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
-			DefaultRequestTimeoutInSeconds: 30,
+			DefaultRequestTimeoutInSeconds: 300,
 			InsecureSkipVerify:             true,
 			EnforceHTTP2:                   true,
 		},
 	}
 	config.CheckAndSetDefaults()
 
-	provider, err := NewBedrockProvider(config, nil)
+	provider, err := NewBedrockProvider(config, noopLogger{})
 	require.NoError(t, err)
 
 	transport, ok := provider.client.Transport.(*http.Transport)
@@ -631,14 +636,14 @@ func TestBedrockTransportTLSCACert(t *testing.T) {
 
 	config := &schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
-			DefaultRequestTimeoutInSeconds: 30,
-			CACertPEM:                      testCACert,
+			DefaultRequestTimeoutInSeconds: 300,
+			CACertPEM:                      schemas.NewSecretVar(testCACert),
 			EnforceHTTP2:                   true,
 		},
 	}
 	config.CheckAndSetDefaults()
 
-	provider, err := NewBedrockProvider(config, nil)
+	provider, err := NewBedrockProvider(config, noopLogger{})
 	require.NoError(t, err)
 
 	transport, ok := provider.client.Transport.(*http.Transport)
@@ -652,13 +657,13 @@ func TestBedrockTransportTLSCACert(t *testing.T) {
 func TestBedrockTransportDefaultTLS(t *testing.T) {
 	config := &schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
-			DefaultRequestTimeoutInSeconds: 30,
+			DefaultRequestTimeoutInSeconds: 300,
 			// No TLS settings — should use system defaults
 		},
 	}
 	config.CheckAndSetDefaults()
 
-	provider, err := NewBedrockProvider(config, nil)
+	provider, err := NewBedrockProvider(config, noopLogger{})
 	require.NoError(t, err)
 
 	transport, ok := provider.client.Transport.(*http.Transport)
@@ -672,13 +677,13 @@ func TestBedrockTransportDefaultTLS(t *testing.T) {
 func TestBedrockTransportEnforceHTTP2(t *testing.T) {
 	config := &schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
-			DefaultRequestTimeoutInSeconds: 30,
+			DefaultRequestTimeoutInSeconds: 300,
 			EnforceHTTP2:                   true,
 		},
 	}
 	config.CheckAndSetDefaults()
 
-	provider, err := NewBedrockProvider(config, nil)
+	provider, err := NewBedrockProvider(config, noopLogger{})
 	require.NoError(t, err)
 
 	transport, ok := provider.client.Transport.(*http.Transport)
@@ -691,13 +696,13 @@ func TestBedrockTransportEnforceHTTP2(t *testing.T) {
 func TestBedrockTransportEnforceHTTP2Disabled(t *testing.T) {
 	config := &schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
-			DefaultRequestTimeoutInSeconds: 30,
+			DefaultRequestTimeoutInSeconds: 300,
 			EnforceHTTP2:                   false,
 		},
 	}
 	config.CheckAndSetDefaults()
 
-	provider, err := NewBedrockProvider(config, nil)
+	provider, err := NewBedrockProvider(config, noopLogger{})
 	require.NoError(t, err)
 
 	transport, ok := provider.client.Transport.(*http.Transport)

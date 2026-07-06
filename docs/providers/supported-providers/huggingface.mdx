@@ -43,6 +43,65 @@ The Hugging Face provider supports routing to 20+ inference backends. Below is t
 
 <Info>All Chat-supported models automatically support Responses(`v1/responses`) as well via Bifrost's internal conversion logic.</Info>
 
+## Setup & Configuration
+
+Configure Hugging Face as a provider.
+
+<Tabs>
+<Tab title="Web UI">
+
+![Hugging Face provider dashboard](../../media/provider-dashboard-huggingface.png)
+
+1. Navigate to **Models** > **Model Providers**. Look for **Hugging Face** under **Configured Providers**. If it is missing, click on **Add New Provider** and select **Hugging Face**.
+2. Click **Add Key** or edit an existing key.
+3. Set a name for your key.
+4. Paste your API key directly or use an environment variable (for example, `env.HUGGINGFACE_API_KEY`).
+5. Set **Allowed Models** to **All Models** (default) or the specific model allowlist you want this key to serve.
+6. Save the provider configuration.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "huggingface": {
+      "keys": [
+        {
+          "name": "huggingface-key-1",
+          "value": "env.HUGGINGFACE_API_KEY",
+          "models": [
+            "*"
+          ],
+          "weight": 1.0
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="API">
+Refer to the API documentation for [Provider Keys Management](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider).
+</Tab>
+<Tab title="Go SDK">
+
+```go
+case schemas.HuggingFace:
+    return []schemas.Key{{
+        Name:   "huggingface-key-1",
+        Value:  *schemas.NewEnvVar("env.HUGGINGFACE_API_KEY"),
+        Models: []string{"*"},
+        Weight: 1.0,
+    }}, nil
+```
+
+</Tab>
+</Tabs>
+
+Requests use the model format `huggingface/<inference_provider>/<model_id>` so Bifrost can route each call to the correct Hugging Face inference backend.
+
 ## Model Aliases & Identification
 
 Unlike standard providers where model IDs are direct strings (e.g., `gpt-4`), Hugging Face models in Bifrost are identified by a composite key to route requests to the correct inference backend.
@@ -161,7 +220,7 @@ type HuggingFaceTranscriptionRequest struct {
 **Key Points**:
 - `Inputs`: Used when JSON body is sent with raw bytes (most providers except `hf-inference` and `fal-ai`).
 - `AudioURL`: Used exclusively for `fal-ai`, must be a base64-encoded Data URI with MP3 format.
-- **Note**: For `hf-inference`, the entire request body is raw audio bytes—no JSON structure is used at all.
+- **Note**: For `hf-inference`, the entire request body is raw audio bytes-no JSON structure is used at all.
 
 ## Image Generation
 

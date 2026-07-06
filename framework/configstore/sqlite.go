@@ -35,14 +35,27 @@ func newSqliteConfigStore(ctx context.Context, config *SQLiteConfig, logger sche
 		return nil, err
 	}
 	logger.Debug("db opened for configstore")
-	s := &RDBConfigStore{db: db, logger: logger}
+	// Install the global vault store/remove callbacks so plaintext SecretVar
+	// fields are rewritten to vault refs before persistence and owned vault
+	// secrets are cleaned up on delete.
+	RegisterVaultCallbacks(db)
+	s := &RDBConfigStore{logger: logger}
+	s.db.Store(db)
+	// SQLite has no server-side prepared-plan cache, and opening a second
+	// handle on the same file would contend for the single-writer lock —
+	// so both hooks operate on the existing *gorm.DB.
+	s.migrateOnFreshFn = func(ctx context.Context, fn func(context.Context, *gorm.DB) error) error {
+		return fn(ctx, s.DB())
+	}
+	s.refreshPoolFn = func(ctx context.Context) error { return nil }
+
 	logger.Debug("running migration to remove duplicate keys")
 	// Run migration to remove duplicate keys before AutoMigrate
 	if err := s.removeDuplicateKeysAndNullKeys(ctx); err != nil {
 		return nil, fmt.Errorf("failed to remove duplicate keys: %w", err)
 	}
 	// Run migrations
-	if err := triggerMigrations(ctx, db); err != nil {
+	if err := triggerMigrations(ctx, db, logger); err != nil {
 		return nil, err
 	}
 	// Encrypt any plaintext rows if encryption is enabled

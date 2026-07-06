@@ -1,0 +1,132 @@
+---
+title: "v1.5.5"
+description: "v1.5.5 changelog - 2026-05-26"
+---
+<Tabs>
+  <Tab title="NPX">
+    ```bash
+    npx -y @maximhq/bifrost --transport-version v1.5.5
+    ```
+  </Tab>
+  <Tab title="Docker">
+    ```bash
+    docker pull maximhq/bifrost:v1.5.5
+    docker run -p 8080:8080 maximhq/bifrost:v1.5.5
+    ```
+  </Tab>
+</Tabs>
+
+<Update label="Bifrost(HTTP)" description="1.5.5">
+## ✨ Features
+
+- **Azure v1 API Migration** — Migrated Azure provider to the v1 API: removed the `api-version` query parameter and the `/openai/deployments/{model}/...` URL pattern in favor of `/openai/v1/{operation}`; the `api_version` field has been dropped from `AzureKeyConfig` (#3661, #3756)
+- **EnvVar Support for OTEL & Prometheus Configs** — `CollectorURL`, `MetricsEndpoint`, headers, push gateway URL, and basic auth credentials can now be sourced from environment variables (e.g., `env.OTEL_COLLECTOR_URL`); added a new `ConfigMarshallerPlugin` interface that lets plugins control storage/redaction round-trips (#3651)
+- **OTel Extra Header Forwarding** — `x-bf-eh-*` extra headers forwarded to upstream providers are now also emitted on the request span under `gen_ai.request.extra_header.*` for end-to-end tracing (#3730)
+- **OTel Semantic Conventions** — Aligned OTel attribute keys with the OpenTelemetry GenAI spec (canonical `gen_ai.*` and new `bifrost.*` attributes); legacy attributes are retained in parallel to avoid breaking existing dashboards (#3732)
+- **VK Quota with Provider Configs** — `GetVirtualKeyQuotaByValue` and the `getVirtualKeyQuota` HTTP response now include `provider_configs` with their budgets and rate limits (#3721)
+- **MCP Temp Token Non-Auth Toggle** — Added `mcp_enable_temp_token_auth` client config flag to gate short-lived MCP token minting for non-authenticated users (#3720)
+- **Responses Stream in JSON Parser** — `jsonparser` plugin now handles OpenAI Responses API streaming (`ResponsesStreamRequest`) in addition to chat completions (#3749)
+- **Session API Rework** — Logout now calls both the password-based session logout and OAuth logout endpoints and resets all RTK Query cache state (#3698)
+
+## 🐞 Fixed
+
+- **Streaming Latency for Observability** — Deferred root span termination to the trace completer callback for streaming requests so request latency is no longer inflated by header-flush time (#3762)
+- **Stream Cancellation Race** — Set `BifrostContextKeyConnectionClosed` before closing the stream and short-circuit `idleTimeoutReader.Read` when the connection is already closed to avoid panics and hangs on cancellation (#3733)
+- **Bedrock Cache Points** — Strip cache points from Bedrock requests for models that do not support prompt caching (e.g., GLM, Llama) to avoid Converse API errors (#3754)
+- **Bedrock Empty Text Blocks** — Skip empty/nil text blocks during Bedrock response conversion to avoid invalid messages (#3747)
+- **Bedrock Reasoning + Tools** — Preserve reasoning content blocks on assistant turns that also contain tool calls in the Bedrock chat converter (#3690)
+- **Bedrock Search Content & Video** — Restored search content and video parts that were being dropped from Bedrock-native passthrough requests (#3729)
+- **Structured Output Stop Reason** — Fixed an incorrect `tool_calls` finish reason when structured output is combined with extended-thinking tools (#3685)
+- **Gemini Tool Schema Passthrough** — Forward full tool parameter schemas via `parametersJsonSchema` instead of the lossy `parameters` form; corrected tool response role to `user`; resolved structured output + tools conflict (#3761)
+- **Anthropic Stop Reason & Tool Versions** — Normalized stop reason mapping (`end_turn` to `stop`, `tool_use` to `tool_calls`, `max_tokens` to `length`) and upgraded `text_editor_20250124`/`str_replace_editor` to `text_editor_20250728` for computer-use tools (#3761)
+- **Azure Endpoint Redaction** — Fixed a panic when `AzureKeyConfig.Endpoint` is a literal value rather than an env reference (#3761)
+- **Auth Middleware Path Match** — Match temp-token auth middleware whitelist against the request path only, not the full URI with query parameters (#3737)
+- **Governance Blocked Models UI** — Restored the missing Blocked Models create/edit UI in the VK provider config sheet (#3750)
+- **Logging Plugin Cleanup Drain** — Fixed a shutdown race where `batchWriter` could drop in-flight log entries; `Cleanup` now drains both the recovered batch and remaining queue within a 30-second budget (#3717)
+- **Model Rankings Empty Entries** — Excluded entries with empty `model` values from model rankings matview queries so blank rows no longer surface in the UI (#3758)
+- **User Filter Duplicates** — Recreated `mv_filter_users` matview to require non-empty `user_name`, eliminating duplicate filter dropdown entries (#3764)
+- **User Filter Display Name** — Use `user_name` instead of `user_id` as the display label for users in logging filters (#3691)
+- **Large Numeric ID Precision** — Preserve large numeric IDs in URL search params by skipping JSON parsing for plain strings (#3692)
+
+## 🔧 Refactors & Chores
+
+- **Error Propagation for GetAvailable\* APIs** — `GetAvailable*` methods on `LoggerPlugin`/`LogManager` now return wrapped errors instead of silently logging and returning empty slices (#3759)
+- **Governance Blocklist Matching** — Use `slices.Contains` for VK blocked-model matching for clearer code with identical semantics (#3727)
+- **Exported `ResolvePeriod`** — Renamed `resolvePeriod` to `ResolvePeriod` so external packages can reuse the period parsing (#3763)
+
+## 📚 Docs
+
+- **OTEL Env Var Documentation** — Documented `env.VAR_NAME` support for `collector_url`, `metrics_endpoint`, and headers in OTEL/Prometheus plugin docs
+- **OTEL OSS Features & Examples** — Added OTEL documentation to the OSS features list with usage examples (#3731)
+- **Anthropic Auth Recommendation** — Recommend `ANTHROPIC_AUTH_TOKEN` over `ANTHROPIC_CUSTOM_HEADERS` for Claude Code authentication (#3686)
+
+</Update>
+<Update label="Core" description="1.5.13">
+- feat: migrate Azure provider to the v1 API and remove `api_version` from `AzureKeyConfig` (#3661, #3756)
+- feat: add `ConfigMarshallerPlugin` interface so plugins can control config storage and redaction round-trips (#3651)
+- feat: forward `x-bf-eh-*` extra headers as `gen_ai.request.extra_header.*` span attributes (#3730)
+- feat: align OTel attribute keys with the GenAI semantic conventions spec; emit both legacy and canonical attributes (#3732)
+- fix: strip cache points from Bedrock requests for models that do not support prompt caching (#3754)
+- fix: skip empty/nil text blocks during Bedrock response conversion (#3747)
+- fix: preserve reasoning blocks alongside tool calls in the Bedrock chat converter (#3690)
+- fix: restore search content and video parts dropped from Bedrock passthrough requests (#3729)
+- fix: correct `tool_calls` finish reason when structured output is combined with extended-thinking tools (#3685)
+- fix: set `BifrostContextKeyConnectionClosed` before closing stream and short-circuit `idleTimeoutReader.Read` on closed connections (#3733)
+- fix: Gemini tool schema passthrough via `parametersJsonSchema`, correct tool response role to `user`, resolve structured output + tools conflict (#3761)
+- fix: normalize Anthropic stop reason mapping and upgrade computer-use tool versions to `text_editor_20250728` (#3761)
+- fix: Azure config redaction panic when `Endpoint` is a literal value (#3761)
+- chore: fix Bedrock transport tests (#3735)
+
+</Update>
+<Update label="Framework" description="1.3.13">
+- feat: include `ProviderConfigs` with budgets and rate limits in virtual key quota query and response (#3721)
+- feat: add `mcp_enable_temp_token_auth` client config flag to gate MCP temp token minting for non-auth users (#3720)
+- fix: recreate `mv_filter_users` matview to exclude rows with empty `user_name` (#3764)
+- fix: exclude empty model entries from model rankings matview queries (#3758)
+- chore: add migration test column blocks for new v1.5.4 governance/configstore columns (#3761)
+
+</Update>
+<Update label="compat" description="0.1.12">
+- chore: upgraded core to v1.5.13 and framework to v1.3.13
+
+</Update>
+<Update label="governance" description="1.5.13">
+- fix: restore VK blocked models create/edit UI in the provider config sheet (#3750)
+- refactor: use `slices.Contains` for VK blocked-model matching (#3727)
+
+</Update>
+<Update label="jsonparser" description="1.5.13">
+- feat: handle OpenAI Responses API streaming (`ResponsesStreamRequest`) in addition to chat completions (#3749)
+- chore: added `Params` with `json_object` format to the Responses stream end-to-end test (#3761)
+
+</Update>
+<Update label="logging" description="1.5.13">
+- fix: drain pending log entries on `Cleanup` to avoid dropping in-flight batches at shutdown; bounded 30s drain budget (#3717)
+- refactor: `GetAvailable*` methods now return wrapped errors instead of silently logging and returning empty slices (#3759)
+
+</Update>
+<Update label="maxim" description="1.6.13">
+- chore: upgraded core to v1.5.13 and framework to v1.3.13
+
+</Update>
+<Update label="mocker" description="1.5.13">
+- chore: upgraded core to v1.5.13 and framework to v1.3.13
+
+</Update>
+<Update label="otel" description="1.2.13">
+- feat: add `EnvVar` support for `CollectorURL`, `MetricsEndpoint`, and headers; implements `ConfigMarshallerPlugin` for storage/redaction round-trips (#3651)
+- refactor: align OTel attribute keys with the OpenTelemetry GenAI semantic conventions spec; legacy `gen_ai.*` emissions retained in parallel (#3732)
+
+</Update>
+<Update label="prompts" description="1.0.13">
+- chore: upgraded core to v1.5.13 and framework to v1.3.13
+
+</Update>
+<Update label="semanticcache" description="1.5.13">
+- chore: upgraded core to v1.5.13 and framework to v1.3.13
+
+</Update>
+<Update label="telemetry" description="1.5.13">
+- feat: add `EnvVar` support for `PushGatewayURL` and `BasicAuth` (username/password); implements `ConfigMarshallerPlugin` (#3651)
+
+</Update>

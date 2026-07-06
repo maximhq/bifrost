@@ -20,7 +20,7 @@ export interface PdfSection {
 }
 
 export interface PdfBranding {
-	/** Path to logo image (relative to public dir, e.g. "/bifrost-logo.png") */
+	/** Path to logo image (relative to public dir, e.g. "/bifrost-logo.webp") */
 	logoSrc: string;
 	/** Text shown next to the logo */
 	text?: string;
@@ -61,23 +61,10 @@ async function loadImage(src: string): Promise<{ dataUrl: string; width: number;
 	});
 }
 
-export async function generatePdf(
-	sections: PdfSection[],
-	filename: string,
-	options: PdfOptions = {},
-): Promise<void> {
-	const {
-		scale = 1.5,
-		quality = 0.92,
-		margin = 10,
-		orientation = "portrait",
-		branding,
-	} = options;
+export async function generatePdf(sections: PdfSection[], filename: string, options: PdfOptions = {}): Promise<void> {
+	const { scale = 1.5, quality = 0.92, margin = 10, orientation = "portrait", branding } = options;
 
-	const [{ default: html2canvas }, { jsPDF }] = await Promise.all([
-		import("html2canvas-pro"),
-		import("jspdf"),
-	]);
+	const [{ default: html2canvas }, { jsPDF }] = await Promise.all([import("html2canvas-pro"), import("jspdf")]);
 
 	// Pre-load branding logo if configured
 	let logoData: { dataUrl: string; width: number; height: number } | null = null;
@@ -138,11 +125,7 @@ export async function generatePdf(
 			sliceCanvas.height = Math.round(sourceH);
 			const ctx = sliceCanvas.getContext("2d");
 			if (ctx) {
-				ctx.drawImage(
-					canvas,
-					0, sourceY, canvas.width, sourceH,
-					0, 0, canvas.width, Math.round(sourceH),
-				);
+				ctx.drawImage(canvas, 0, sourceY, canvas.width, sourceH, 0, 0, canvas.width, Math.round(sourceH));
 				const sliceImg = sliceCanvas.toDataURL("image/jpeg", quality);
 				pdf.addImage(sliceImg, "JPEG", margin, cursorY, contentWidth, sliceHeight);
 			}
@@ -185,14 +168,7 @@ export async function generatePdf(
 			}
 
 			if (logoData) {
-				pdf.addImage(
-					logoData.dataUrl,
-					"PNG",
-					x + textW + gap,
-					y,
-					logoW,
-					logoH,
-				);
+				pdf.addImage(logoData.dataUrl, "PNG", x + textW + gap, y, logoW, logoH);
 			}
 		}
 	}

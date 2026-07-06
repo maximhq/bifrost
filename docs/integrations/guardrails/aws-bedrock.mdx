@@ -18,6 +18,10 @@ Bifrost integrates with **Amazon Bedrock Guardrails** to provide enterprise-grad
 - **Prompt Attack Detection**: Identify injection and jailbreak attempts
 - **Image Content Support**: Analyze images in addition to text (PNG, JPEG)
 
+<Note>
+  **Streaming output:** When this profile is used in an `output` or `both` rule, Bifrost accumulates the stream until the model response is complete, then checks the full response. It does not check individual stream chunks. See [Streaming Output Guardrails](/enterprise/guardrails#streaming-output-guardrails) for details.
+</Note>
+
 ## Configuration Fields
 
 | Field | Type | Required | Default | Description |
@@ -86,19 +90,4 @@ Bedrock guardrails return detailed usage metrics for cost tracking and monitorin
 - Medical information (health records, insurance)
 - Device identifiers (IP addresses, MAC addresses)
 
-## Provider Capabilities Comparison
-
-| Capability | AWS Bedrock | Azure Content Safety | GraySwan | Patronus AI |
-|------------|-------------|---------------------|----------|-------------|
-| PII Detection | Yes | No | No | Yes |
-| Content Filtering | Yes | Yes | Yes | Yes |
-| Prompt Injection | Yes | Yes | Yes | Yes |
-| Hallucination Detection | No | No | No | Yes |
-| Toxicity Screening | Yes | Yes | Yes | Yes |
-| Custom Policies | Yes | Yes | Yes | Yes |
-| Custom Natural Language Rules | No | No | Yes | No |
-| Image Support | Yes | No | No | No |
-| IPI Detection | No | Yes | Yes | No |
-| Mutation Detection | No | No | Yes | No |
-
-For information on configuring guardrail rules and profiles, see [Guardrails](/enterprise/guardrails).
+For provider comparison and information on configuring guardrail rules and profiles, see [Guardrails](/enterprise/guardrails).
