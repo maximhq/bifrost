@@ -42,14 +42,14 @@ export function MCPLibraryServersTable({
 	};
 
 	return (
-		<div className="mb-2 overflow-y-auto rounded-md border" data-testid="mcp-library-table-view">
+		<div className="mb-2 min-h-0 grow overflow-y-auto rounded-sm border" data-testid="mcp-library-table-view">
 			<Table containerClassName="overflow-x-clip">
-				<TableHeader className="bg-muted sticky top-0 z-10">
+				<TableHeader className="bg-muted sticky top-0 z-20">
 					<TableRow>
 						<TableHead className="w-16">Icon</TableHead>
 						<TableHead>Server</TableHead>
 						<TableHead className="hidden w-10 lg:table-cell">Details</TableHead>
-						<TableHead className="w-32 text-right">Actions</TableHead>
+						<TableHead className="w-32 text-right"><span className="sr-only">Actions</span></TableHead>
 					</TableRow>
 				</TableHeader>
 				<TableBody>
@@ -189,14 +189,14 @@ export function MCPLibraryServersTable({
 /** Skeleton placeholder mirroring the table layout while the library catalog loads. */
 export function MCPLibraryServersTableSkeleton({ rows = 8 }: { rows?: number }) {
 	return (
-		<div className="mb-2 overflow-y-auto rounded-md border" data-testid="mcp-library-table-skeleton">
+		<div className="mb-2 min-h-0 grow overflow-y-auto rounded-sm border" data-testid="mcp-library-table-skeleton">
 			<Table containerClassName="overflow-x-clip">
-				<TableHeader className="bg-muted sticky top-0 z-10">
+				<TableHeader className="bg-muted sticky top-0 z-20">
 					<TableRow>
 						<TableHead className="w-16">Icon</TableHead>
 						<TableHead>Server</TableHead>
 						<TableHead className="hidden w-10 lg:table-cell">Details</TableHead>
-						<TableHead className="w-32 text-right">Actions</TableHead>
+						<TableHead className="w-32 text-right"><span className="sr-only">Actions</span></TableHead>
 					</TableRow>
 				</TableHeader>
 				<TableBody>

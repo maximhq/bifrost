@@ -99,7 +99,7 @@ export default function ModelCatalogTable({
 						<col className="w-[16%]" />
 						<col className="w-[14%]" />
 					</colgroup>
-					<TableHeader>
+					<TableHeader className="bg-muted sticky top-0 z-20">
 						<TableRow>
 							<TableHead>Provider</TableHead>
 							<TableHead>

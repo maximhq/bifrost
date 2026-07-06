@@ -2,6 +2,7 @@
 
 import FullPageLoader from "@/components/fullPageLoader";
 import { PIN_SHADOW_RIGHT } from "@/components/table/columnPinning";
+import { TablePagination } from "@/components/table/tablePagination";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -31,16 +32,14 @@ import { AllSkillsVersionBump, SkillListItem } from "@/lib/types/skills";
 import { cn } from "@/lib/utils";
 import { getApiBaseUrl } from "@/lib/utils/port";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
+import { EmptyStateView } from "@/components/emptyStateView";
 import {
 	ArrowDown,
 	ArrowUp,
 	ArrowUpDown,
-	ArrowUpRight,
 	BookOpenText,
 	Check,
 	ChevronDown,
-	ChevronLeft,
-	ChevronRight,
 	Clipboard,
 	Download,
 	FileText,
@@ -373,35 +372,22 @@ export function SkillsListView({
 	// True empty state: no skills at all (not just filtered to zero)
 	if (total === 0 && !search && !debouncedSearch && !isFetching) {
 		return (
-			<div className="flex h-full w-full flex-col items-center justify-center gap-4 text-center" data-testid="skills-repo-empty-state">
-				<div className="text-muted-foreground">
-					<BookOpenText className="h-24 w-24" strokeWidth={1} />
-				</div>
-				<div className="flex flex-col gap-1">
-					<h1 className="text-muted-foreground text-xl font-medium">Create, version, and share Agent Skills from Bifrost</h1>
-					<div className="text-muted-foreground mx-auto mt-2 max-w-xl text-sm font-normal">
-						Manage SKILL.md instructions and supporting files in one place, publish immutable versions, and expose them as installable
-						plugins for Claude Code, Codex, and other skill-aware clients.
-					</div>
-					<div className="mx-auto mt-6 flex flex-row flex-wrap items-center justify-center gap-2">
-						<Button
-							variant="outline"
-							aria-label="Read more about skills (opens in new tab)"
-							data-testid="skills-button-read-more"
-							onClick={() => {
-								window.open(`${SKILLS_REPOSITORY_DOCS_URL}?utm_source=bfd`, "_blank", "noopener,noreferrer");
-							}}
-						>
-							Read more <ArrowUpRight className="text-muted-foreground h-3 w-3" />
+			<EmptyStateView
+				icon={BookOpenText}
+				testId="skills-repo-empty-state"
+				title="Create, version, and share Agent Skills from Bifrost"
+				description="Manage SKILL.md instructions and supporting files in one place, publish immutable versions, and expose them as installable plugins for Claude Code, Codex, and other skill-aware clients."
+				readmeLink={SKILLS_REPOSITORY_DOCS_URL}
+				readMoreAriaLabel="Read more about skills (opens in new tab)"
+				readMoreTestId="skills-button-read-more"
+				actions={
+					hasCreateAccess && (
+						<Button aria-label="Add your first skill" data-testid="skill-create-btn" onClick={onCreateNew}>
+							Add Skill
 						</Button>
-						{hasCreateAccess && (
-							<Button aria-label="Create your first skill" data-testid="skill-create-btn" onClick={onCreateNew}>
-								Create Skill
-							</Button>
-						)}
-					</div>
-				</div>
-			</div>
+					)
+				}
+			/>
 		);
 	}
 
@@ -572,7 +558,7 @@ export function SkillsListView({
 										{!search && hasCreateAccess && (
 											<Button variant="outline" size="sm" onClick={onCreateNew} className="mt-2">
 												<Plus className="h-3.5 w-3.5" />
-												Create your first skill
+												Add your first skill
 											</Button>
 										)}
 									</div>
@@ -618,7 +604,7 @@ export function SkillsListView({
 										</TableCell>
 										<TableCell className="text-muted-foreground text-sm">{formatDateShort(skill.updated_at)}</TableCell>
 										<TableCell
-											className={`group-hover:bg-muted dark:bg-card dark:group-hover:bg-muted sticky right-0 z-20 bg-white text-right ${PIN_SHADOW_RIGHT}`}
+											className={`bg-card group-hover:bg-muted sticky right-0 z-10 text-right ${PIN_SHADOW_RIGHT}`}
 											onClick={(e) => e.stopPropagation()}
 										>
 											<SkillActionsMenu
@@ -639,40 +625,14 @@ export function SkillsListView({
 			</div>
 
 			{/* Pagination */}
-			{total > 0 && (
-				<div className="flex shrink-0 items-center justify-between text-xs">
-					<div className="text-muted-foreground flex items-center gap-2">
-						{(offset + 1).toLocaleString()}-{Math.min(offset + PAGE_SIZE, total).toLocaleString()} of {total.toLocaleString()} entries
-					</div>
-					<div className="flex items-center gap-2">
-						<Button
-							variant="ghost"
-							size="sm"
-							data-testid="skill-pagination-prev"
-							onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
-							disabled={offset === 0 || isFetching}
-							aria-label="Previous page"
-						>
-							<ChevronLeft className="size-3" />
-						</Button>
-						<div className="flex items-center gap-1">
-							<span>Page</span>
-							<span>{Math.floor(offset / PAGE_SIZE) + 1}</span>
-							<span>of {Math.ceil(total / PAGE_SIZE)}</span>
-						</div>
-						<Button
-							variant="ghost"
-							size="sm"
-							data-testid="skill-pagination-next"
-							onClick={() => setOffset(offset + PAGE_SIZE)}
-							disabled={offset + PAGE_SIZE >= total || isFetching}
-							aria-label="Next page"
-						>
-							<ChevronRight className="size-3" />
-						</Button>
-					</div>
-				</div>
-			)}
+			<TablePagination
+				offset={offset}
+				limit={PAGE_SIZE}
+				totalCount={total}
+				onOffsetChange={setOffset}
+				prevTestId="skill-pagination-prev"
+				nextTestId="skill-pagination-next"
+			/>
 		</div>
 	);
 }

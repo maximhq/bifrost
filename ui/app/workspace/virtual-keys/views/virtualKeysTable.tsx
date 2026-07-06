@@ -1,6 +1,7 @@
 import { BudgetDisplay } from "@/components/budgetDisplay";
 import { RateLimitDisplay } from "@/components/rateLimitDisplay";
 import { PIN_SHADOW_RIGHT } from "@/components/table/columnPinning";
+import { TablePagination } from "@/components/table/tablePagination";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -41,8 +42,6 @@ import {
 	ArrowDown,
 	ArrowUp,
 	ArrowUpDown,
-	ChevronLeft,
-	ChevronRight,
 	Copy,
 	Download,
 	Edit,
@@ -833,7 +832,7 @@ export default function VirtualKeysTable({
 								<TableHead className="w-[120px]">
 									<SortableHeader column="status" label="Status" />
 								</TableHead>
-								<TableHead className={`bg-muted sticky right-0 z-30 w-[56px] text-right ${PIN_SHADOW_RIGHT}`}></TableHead>
+								<TableHead className={`bg-muted sticky right-0 z-10 w-[56px] text-right ${PIN_SHADOW_RIGHT}`}></TableHead>
 							</TableRow>
 						</TableHeader>
 						<TableBody>
@@ -911,7 +910,7 @@ export default function VirtualKeysTable({
 												)}
 											</TableCell>
 											<TableCell
-												className={`group-hover:bg-muted dark:bg-card dark:group-hover:bg-muted sticky right-0 z-20 bg-white text-right ${PIN_SHADOW_RIGHT}`}
+												className={`bg-card group-hover:bg-muted sticky right-0 z-10 text-right ${PIN_SHADOW_RIGHT}`}
 												onClick={(e) => e.stopPropagation()}
 											>
 												<VKActionsMenu
@@ -932,44 +931,14 @@ export default function VirtualKeysTable({
 				</div>
 
 				{/* Pagination */}
-				{totalCount > 0 && (
-					<div className="flex shrink-0 items-center justify-between text-xs" data-testid="pagination">
-						<div className="text-muted-foreground flex items-center gap-2">
-							{(offset + 1).toLocaleString()}-{Math.min(offset + limit, totalCount).toLocaleString()} of {totalCount.toLocaleString()}{" "}
-							entries
-						</div>
-
-						<div className="flex items-center gap-2">
-							<Button
-								variant="ghost"
-								size="sm"
-								onClick={() => onOffsetChange(Math.max(0, offset - limit))}
-								disabled={offset === 0}
-								data-testid="vk-pagination-prev-btn"
-								aria-label="Previous page"
-							>
-								<ChevronLeft className="size-3" />
-							</Button>
-
-							<div className="flex items-center gap-1">
-								<span>Page</span>
-								<span>{Math.floor(offset / limit) + 1}</span>
-								<span>of {Math.ceil(totalCount / limit)}</span>
-							</div>
-
-							<Button
-								variant="ghost"
-								size="sm"
-								onClick={() => onOffsetChange(offset + limit)}
-								disabled={offset + limit >= totalCount}
-								data-testid="vk-pagination-next-btn"
-								aria-label="Next page"
-							>
-								<ChevronRight className="size-3" />
-							</Button>
-						</div>
-					</div>
-				)}
+				<TablePagination
+					offset={offset}
+					limit={limit}
+					totalCount={totalCount}
+					onOffsetChange={onOffsetChange}
+					prevTestId="vk-pagination-prev-btn"
+					nextTestId="vk-pagination-next-btn"
+				/>
 			</div>
 		</>
 	);

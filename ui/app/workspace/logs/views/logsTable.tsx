@@ -147,7 +147,7 @@ export function LogsDataTable({
 		<div className="flex h-full flex-col gap-2">
 			<div ref={tableContainerRef} className="min-h-0 flex-1 overflow-hidden rounded-sm border">
 				<Table containerClassName="h-full overflow-auto">
-					<thead className={cn("[&_tr]:border-b px-2 sticky top-0 z-10 bg-[#f9f9f9] dark:bg-[#27272a]")}>
+					<thead className={cn("[&_tr]:border-b px-2 sticky top-0 z-10 bg-muted")}>
 						{table.getHeaderGroups().map((headerGroup) => (
 							<tr
 								key={headerGroup.id}
@@ -159,7 +159,7 @@ export function LogsDataTable({
 										header={header}
 										isConfigurable={!fixedColumnIds.has(header.column.id)}
 										pinStyle={buildPinStyle(header.column, pinOffsets)}
-										pinnedHeaderClassName="bg-[#f9f9f9] dark:bg-[#27272a]"
+										pinnedHeaderClassName="bg-muted"
 										className={cn(
 											header.column.id === lastLeftPinId && PIN_SHADOW_LEFT,
 											header.column.id === firstRightPinId && PIN_SHADOW_RIGHT,
@@ -223,7 +223,7 @@ export function LogsDataTable({
 													pinned && "bg-card",
 													cell.column.id === lastLeftPinId && PIN_SHADOW_LEFT,
 													cell.column.id === firstRightPinId && PIN_SHADOW_RIGHT,
-													"group-hover/table-row:bg-[#f7f7f7] dark:group-hover/table-row:bg-[#232327]",
+													"group-hover/table-row:bg-muted/50",
 												)}
 											>
 												{flexRender(cell.column.columnDef.cell, cell.getContext())}
