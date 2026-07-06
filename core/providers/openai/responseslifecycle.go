@@ -87,14 +87,12 @@ func (provider *OpenAIProvider) executeResponsesLifecycleUnary(
 
 	req.SetRequestURI(fullURL)
 	req.Header.SetMethod(method)
-	if method == http.MethodPost || len(body) > 0 {
-		req.Header.SetContentType("application/json")
-		if len(body) > 0 {
-			req.SetBody(body)
-		} else if method == http.MethodPost {
-			effectiveBody = []byte("{}")
-			req.SetBody(effectiveBody)
-		}
+	req.Header.SetContentType("application/json")
+	if len(body) > 0 {
+		req.SetBody(body)
+	} else if method == http.MethodPost {
+		effectiveBody = []byte("{}")
+		req.SetBody(effectiveBody)
 	}
 
 	if key.Value.GetValue() != "" {
