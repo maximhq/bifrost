@@ -109,11 +109,17 @@ func bridgeFuncForAnthropicToolSearchName(anthropicName string) string {
 }
 
 // ExpandToolSearchBridgeDeclaration turns the caller-facing namespace
-// declaration for the tool_search bridge into the two neutral tool_search
-// declarations (bm25 + regex) that the rest of the pipeline (Anthropic
-// declaration egress at responses.go:7069-7079) already knows how to render
-// onto a backend. Returns the tools unchanged (same slice) and false when no
-// bridge namespace entry is present.
+// declaration for the tool_search bridge into the neutral tool_search
+// declaration(s) that the rest of the pipeline (Anthropic declaration egress
+// at responses.go:7069-7079) already knows how to render onto a backend.
+// Only expands the sub-tools actually present under the namespace's
+// grouped Tools[] — a caller that re-declares a previously-collapsed
+// bm25-only namespace (see CollapseToolSearchDeclarationsToBridgeNamespace)
+// must not have the request silently widened to include regex too.
+// Returns the tools unchanged (same slice) and false when no bridge
+// namespace entry is present, or when the namespace has no recognized
+// sub-tools (falls back to bm25 only, matching the existing Anthropic
+// egress default for an unrecognized/absent algorithm hint).
 func ExpandToolSearchBridgeDeclaration(tools []ResponsesTool) ([]ResponsesTool, bool) {
 	idx := -1
 	for i := range tools {
@@ -126,12 +132,36 @@ func ExpandToolSearchBridgeDeclaration(tools []ResponsesTool) ([]ResponsesTool, 
 		return tools, false
 	}
 
-	out := make([]ResponsesTool, 0, len(tools)+1)
+	var sawBM25, sawRegex bool
+	if ns := tools[idx].ResponsesToolNamespace; ns != nil {
+		for _, sub := range ns.Tools {
+			if sub.Name == nil {
+				continue
+			}
+			if bridgeFuncIsRegex(*sub.Name) {
+				sawRegex = true
+			} else {
+				sawBM25 = true
+			}
+		}
+	}
+	if !sawBM25 && !sawRegex {
+		// No recognized sub-tools declared under the namespace — default to
+		// bm25, matching the existing Anthropic egress default.
+		sawBM25 = true
+	}
+
+	expanded := make([]ResponsesTool, 0, 2)
+	if sawBM25 {
+		expanded = append(expanded, ResponsesTool{Type: ResponsesToolTypeToolSearch, Name: Ptr(anthropicToolSearchNameBM25)})
+	}
+	if sawRegex {
+		expanded = append(expanded, ResponsesTool{Type: ResponsesToolTypeToolSearch, Name: Ptr(anthropicToolSearchNameRegex)})
+	}
+
+	out := make([]ResponsesTool, 0, len(tools)+len(expanded))
 	out = append(out, tools[:idx]...)
-	out = append(out,
-		ResponsesTool{Type: ResponsesToolTypeToolSearch, Name: Ptr(anthropicToolSearchNameBM25)},
-		ResponsesTool{Type: ResponsesToolTypeToolSearch, Name: Ptr(anthropicToolSearchNameRegex)},
-	)
+	out = append(out, expanded...)
 	out = append(out, tools[idx+1:]...)
 	return out, true
 }

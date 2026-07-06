@@ -46,6 +46,34 @@ func TestExpandToolSearchBridgeDeclaration(t *testing.T) {
 	}
 }
 
+// TestExpandToolSearchBridgeDeclaration_OnlyBM25Declared guards against
+// silently widening a request's tool surface: a caller that only declares
+// the bm25 sub-tool under the bridge namespace (e.g. because it's replaying
+// a previously-collapsed bm25-only namespace, see
+// CollapseToolSearchDeclarationsToBridgeNamespace_OnlyBM25Seen) must expand
+// to bm25 only -- Anthropic must never receive an uninvited regex
+// declaration.
+func TestExpandToolSearchBridgeDeclaration_OnlyBM25Declared(t *testing.T) {
+	tools := []ResponsesTool{
+		{Type: ResponsesToolTypeNamespace, Name: Ptr(ToolSearchBridgeNamespaceID), ResponsesToolNamespace: &ResponsesToolNamespace{
+			Tools: []ResponsesTool{
+				{Type: ResponsesToolTypeFunction, Name: Ptr(ToolSearchBridgeFuncBM25)},
+			},
+		}},
+	}
+
+	out, expanded := ExpandToolSearchBridgeDeclaration(tools)
+	if !expanded {
+		t.Fatal("expected bridge namespace to be detected and expanded")
+	}
+	if len(out) != 1 {
+		t.Fatalf("expected exactly 1 expanded tool_search entry (bm25 only), got %d: %+v", len(out), out)
+	}
+	if out[0].Type != ResponsesToolTypeToolSearch || out[0].Name == nil || *out[0].Name != anthropicToolSearchNameBM25 {
+		t.Errorf("expected a single bm25 tool_search entry, got %+v", out[0])
+	}
+}
+
 func TestExpandToolSearchBridgeDeclaration_NoBridgePresent(t *testing.T) {
 	tools := []ResponsesTool{
 		{Type: ResponsesToolTypeFunction, Name: Ptr("get_weather")},
