@@ -310,7 +310,7 @@ export default function ComplexityRouterPage() {
 
 	if (error && !data) {
 		return (
-			<div className="mx-auto w-full max-w-7xl space-y-4 px-14 pt-8">
+			<div className="mx-auto w-full space-y-4">
 				<p className="text-destructive font-mono text-sm">{getErrorMessage(error)}</p>
 				<Button data-testid="complexity-router-fetch-retry-button" type="button" variant="outline" size="sm" onClick={() => refetch()}>
 					Retry
@@ -321,7 +321,7 @@ export default function ComplexityRouterPage() {
 
 	if (!data) {
 		return (
-			<div className="mx-auto w-full max-w-7xl space-y-4 px-14 pt-8">
+			<div className="mx-auto w-full space-y-4">
 				<p className="text-muted-foreground font-mono text-sm">No complexity router configuration is available.</p>
 				<Button data-testid="complexity-router-fetch-retry-button" type="button" variant="outline" size="sm" onClick={() => refetch()}>
 					Retry
@@ -335,13 +335,13 @@ export default function ComplexityRouterPage() {
 	const hasErrors = Boolean(boundaryErrors || keywordErrors);
 
 	return (
-		<ScrollArea className="no-padding-parent h-[calc(100vh_-_16px)] w-full px-14 pt-4">
-			<form className="mx-auto w-full max-w-7xl space-y-8" onSubmit={handleSubmit(onValid)} noValidate>
+		<ScrollArea className="no-padding-parent h-[calc(100dvh-1rem)] w-full p-4">
+			<form className="mx-auto w-full space-y-8" onSubmit={handleSubmit(onValid)} noValidate>
 				{/* ── Page header ── */}
-				<div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-					<div className="space-y-1.5">
-						<h1 className="text-2xl font-semibold tracking-tight">Complexity Router</h1>
-						<p className="text-muted-foreground max-w-2xl text-sm leading-relaxed">
+				<div className="flex items-center justify-between gap-4">
+					<div>
+						<h1 className="text-foreground text-lg font-semibold">Complexity Router</h1>
+						<p className="text-muted-foreground text-sm">
 							Tune how incoming requests are classified into four tiers. Thresholds and keyword lists feed the{" "}
 							<code className="bg-muted rounded-sm px-1 py-0.5 font-mono text-xs">complexity_tier</code> field that routing rules can
 							target.
@@ -521,7 +521,7 @@ export default function ComplexityRouterPage() {
 				)}
 
 				{/* ── Action footer ── */}
-				<div className="bg-card sticky bottom-0 flex flex-wrap items-center justify-end gap-2.5 border-t py-4 z-10">
+				<div className="bg-card sticky bottom-0 z-10 flex flex-wrap items-center justify-end gap-2 border-t py-4">
 					<Button
 						data-testid="complexity-router-restore-defaults-button"
 						type="button"

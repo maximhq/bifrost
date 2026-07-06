@@ -1,5 +1,10 @@
 import MCPView from "../config/views/mcpView";
+import { WorkspacePageShell } from "@/components/workspacePageShell";
 
 export default function MCPSettingsPage() {
-	return <MCPView />;
+	return (
+		<WorkspacePageShell>
+			<MCPView />
+		</WorkspacePageShell>
+	);
 }

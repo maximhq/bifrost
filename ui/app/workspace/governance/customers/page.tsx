@@ -89,20 +89,18 @@ export default function GovernanceCustomersPage() {
 	}
 
 	return (
-		<div className="no-padding-parent mx-auto flex h-[calc(100dvh-1rem)] w-full flex-col p-4">
-			<CustomersTable
-				customers={customersData?.customers || []}
-				totalCount={customersData?.total_count || 0}
-				teams={teamsData?.teams || []}
-				virtualKeys={virtualKeysData?.virtual_keys || []}
-				search={urlState.search}
-				debouncedSearch={debouncedSearch}
-				onSearchChange={(val) => setUrlState({ search: val || null, offset: 0 })}
-				offset={urlState.offset}
-				limit={PAGE_SIZE}
-				onOffsetChange={(newOffset) => setUrlState({ offset: newOffset })}
-				isFetching={isFetching}
-			/>
-		</div>
+		<CustomersTable
+			customers={customersData?.customers || []}
+			totalCount={customersData?.total_count || 0}
+			teams={teamsData?.teams || []}
+			virtualKeys={virtualKeysData?.virtual_keys || []}
+			search={urlState.search}
+			debouncedSearch={debouncedSearch}
+			onSearchChange={(val) => setUrlState({ search: val || null, offset: 0 })}
+			offset={urlState.offset}
+			limit={PAGE_SIZE}
+			onOffsetChange={(newOffset) => setUrlState({ offset: newOffset })}
+			isFetching={isFetching}
+		/>
 	);
 }

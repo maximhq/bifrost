@@ -59,7 +59,7 @@ export default function ObservabilityView() {
 	}, [bifrostConfig, localConfig, updateCoreConfig]);
 
 	return (
-		<div className="mx-auto w-full max-w-4xl space-y-4">
+		<div className="mx-auto w-full space-y-4">
 			<div className="flex items-center justify-between"></div>
 
 			<Alert variant="destructive">
@@ -91,7 +91,7 @@ export default function ObservabilityView() {
 					{needsRestart && <RestartWarning />}
 				</div>
 			</div>
-			<div className="flex justify-end pt-2">
+			<div className="bg-card sticky bottom-0 z-10 flex flex-wrap items-center justify-end gap-2 border-t py-4">
 				<Button onClick={handleSave} disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess}>
 					{isLoading ? "Saving..." : "Save Changes"}
 				</Button>

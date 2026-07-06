@@ -1,9 +1,10 @@
 import ModelSettingsView from "@/app/workspace/config/views/modelSettingsView";
+import { WorkspacePageShell } from "@/components/workspacePageShell";
 
 export default function CustomPricingPage() {
 	return (
-		<div className="mx-auto w-full max-w-7xl">
+		<WorkspacePageShell>
 			<ModelSettingsView />
-		</div>
+		</WorkspacePageShell>
 	);
 }

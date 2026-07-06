@@ -211,7 +211,7 @@ export default function SecurityView() {
 	}, [bifrostConfig, localConfig, authConfig, showPasswordSection, updateCoreConfig]);
 
 	return (
-		<div className="mx-auto h-[calc(100vh-50px)] w-full max-w-4xl space-y-4 overflow-y-auto">
+		<div className="mx-auto w-full space-y-4">
 			<div>
 				<h2 className="text-lg font-semibold tracking-tight">Security Settings</h2>
 				<p className="text-muted-foreground text-sm">Configure security and access control settings.</p>
@@ -423,7 +423,7 @@ export default function SecurityView() {
 					</div>
 				</div>
 			</div>
-			<div className="bg-card sticky bottom-0 flex justify-end pt-2">
+			<div className="bg-card sticky bottom-0 z-10 flex flex-wrap items-center justify-end gap-2 border-t py-4">
 				<Button onClick={handleSave} disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess}>
 					{isLoading ? "Saving..." : "Save Changes"}
 				</Button>

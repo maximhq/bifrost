@@ -9,9 +9,5 @@ export default function AccessProfilesPage() {
 		return <NoPermissionView entity="access-profiles" />;
 	}
 
-	return (
-		<div className="no-padding-parent mx-auto flex h-[calc(100dvh-1rem)] w-full flex-col p-4">
-			<AccessProfilesIndexView />
-		</div>
-	);
+	return <AccessProfilesIndexView />;
 }

@@ -104,7 +104,7 @@ export default function ModelSettingsView() {
 	};
 
 	return (
-		<div className="mx-auto w-full max-w-7xl space-y-4" data-testid="model-settings-view">
+		<div className="mx-auto w-full space-y-4" data-testid="model-settings-view">
 			<form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
 				<div>
 					<h2 className="text-lg font-semibold tracking-tight">Model Settings</h2>
@@ -215,7 +215,7 @@ export default function ModelSettingsView() {
 					{errors.routing_chain_max_depth && <p className="text-destructive text-sm">{errors.routing_chain_max_depth.message}</p>}
 				</div>
 
-				<div className="flex justify-end gap-2 pt-2">
+				<div className="bg-card sticky bottom-0 z-10 flex flex-wrap items-center justify-end gap-2 border-t py-4">
 					<Button
 						variant="outline"
 						type="button"
