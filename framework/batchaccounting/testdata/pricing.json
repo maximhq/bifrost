@@ -1,0 +1,40 @@
+{
+  "claude-sonnet-5": {
+    "input_cost_per_token": 3e-06,
+    "input_cost_per_token_batches": 1.5e-05,
+    "output_cost_per_token": 1.5e-05,
+    "output_cost_per_token_batches": 7.5e-06,
+    "provider": "anthropic",
+    "mode": "chat"
+  },
+  "gemini-2.5-flash": {
+    "input_cost_per_token": 3e-07,
+    "input_cost_per_token_batches": 1.5e-07,
+    "output_cost_per_token": 2.5e-06,
+    "output_cost_per_token_batches": 1.25e-06,
+    "provider": "gemini",
+    "mode": "chat"
+  },
+  "anthropic.claude-sonnet-4-6": {
+    "input_cost_per_token": 3e-06,
+    "input_cost_per_token_batches": 1.5e-05,
+    "output_cost_per_token": 1.5e-05,
+    "output_cost_per_token_batches": 7.5e-06,
+    "provider": "bedrock",
+    "mode": "chat"
+  },
+  "global.anthropic.claude-sonnet-4-6": {
+    "input_cost_per_token": 3e-06,
+    "input_cost_per_token_batches": 1.5e-05,
+    "output_cost_per_token": 1.5e-05,
+    "output_cost_per_token_batches": 7.5e-06,
+    "provider": "bedrock",
+    "mode": "chat"
+  },
+  "claude-haiku-4-5": {
+    "input_cost_per_token": 8e-07,
+    "output_cost_per_token": 4e-06,
+    "provider": "anthropic",
+    "mode": "chat"
+  }
+}

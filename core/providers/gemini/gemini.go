@@ -2542,7 +2542,6 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 				geminiRequests[i] = GeminiBatchRequestItem{
 					Request: geminiReq,
 				}
-				// Set metadata with custom_id
 				if bifrostItem.CustomID != "" {
 					geminiRequests[i].Metadata = &GeminiBatchMetadata{
 						Key: bifrostItem.CustomID,
@@ -3346,8 +3345,9 @@ func (provider *GeminiProvider) batchResultsByKey(ctx *schemas.BifrostContext, k
 	}
 
 	batchResultsResp := &schemas.BifrostBatchResultsResponse{
-		BatchID: request.BatchID,
-		Results: results,
+		BatchID:  request.BatchID,
+		Endpoint: schemas.BatchEndpointChatCompletions,
+		Results:  results,
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Latency: latency.Milliseconds(),
 		},

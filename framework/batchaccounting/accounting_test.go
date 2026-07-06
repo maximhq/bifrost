@@ -199,6 +199,7 @@ func (fakeBatchPricing) CalculateBatchCostDetailsForUsage(usage *schemas.Bifrost
 	case "gpt-4o":
 	case "claude-3-5-haiku":
 	case "amazon.nova-lite-v1:0":
+	case "gemini-2.0-flash":
 	default:
 		return modelcatalog.BatchCostDetails{}
 	}
@@ -462,6 +463,27 @@ func TestAccountBatchResults_BedrockIncludesCacheDetailsInPromptUsage(t *testing
 	assert.InDelta(t, 0.00031, summary.Cost, 1e-12)
 }
 
+func TestAccountBatchResults_GeminiAggregatesUsageFromResponseBody(t *testing.T) {
+	store := newFakeAccountingStore()
+
+	summary, err := AccountBatchResults(context.Background(), store, fakeBatchPricing{}, Request{
+		Provider:      schemas.Gemini,
+		BatchID:       "gemini_batch",
+		FallbackModel: "gemini-2.0-flash",
+		Results: []schemas.BatchResultItem{
+			geminiResult(11, 3),
+			geminiResult(7, 2),
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, summary)
+	assert.True(t, summary.Accounted)
+	assert.Equal(t, 18, summary.Usage.PromptTokens)
+	assert.Equal(t, 5, summary.Usage.CompletionTokens)
+	assert.Equal(t, 23, summary.Usage.TotalTokens)
+	assert.InDelta(t, 0.00028, summary.Cost, 1e-12)
+}
+
 func TestAccountBatchResults_UsesAggregateWriterAndUsageReporter(t *testing.T) {
 	store := newFakeAccountingStore()
 	writer := &fakeAggregateLogWriter{}
@@ -665,6 +687,44 @@ func TestSweeper_AccountsCompletedAnthropicJob(t *testing.T) {
 	assert.Equal(t, logstore.BatchJobAccountingStatusAccounted, accounted.AccountingStatus)
 }
 
+func TestSweeper_AccountsCompletedGeminiJob(t *testing.T) {
+	store := newFakeAccountingStore()
+	now := time.Now().UTC().Add(-time.Minute)
+	job := &logstore.BatchJob{
+		ID:               logstore.BatchJobID(string(schemas.Gemini), "gemini_sweep"),
+		Provider:         string(schemas.Gemini),
+		BatchID:          "gemini_sweep",
+		Model:            "gemini-2.0-flash",
+		AccountingStatus: logstore.BatchJobAccountingStatusPending,
+		NextCheckAt:      &now,
+	}
+	require.NoError(t, store.UpsertBatchJob(context.Background(), job))
+
+	fetcher := &fakeBatchResultFetcher{
+		retrieveResp: &schemas.BifrostBatchRetrieveResponse{
+			ID:     "gemini_sweep",
+			Status: schemas.BatchStatusCompleted,
+		},
+		resultsResp: &schemas.BifrostBatchResultsResponse{
+			BatchID: "gemini_sweep",
+			Results: []schemas.BatchResultItem{
+				geminiResult(10, 5),
+			},
+		},
+	}
+	sweeper := NewSweeper(store, fakeBatchPricing{}, fetcher, nil, nil, SweeperConfig{
+		Limit: 10,
+	})
+
+	sweeper.SweepOnce(context.Background())
+
+	assert.Equal(t, 1, fetcher.retrieveCalls)
+	assert.Equal(t, 1, fetcher.resultsCalls)
+	accounted := store.jobs[logstore.BatchJobID(string(schemas.Gemini), "gemini_sweep")]
+	require.NotNil(t, accounted)
+	assert.Equal(t, logstore.BatchJobAccountingStatusAccounted, accounted.AccountingStatus)
+}
+
 func TestSweeper_SkipsProviderPollWhenKVLeaseIsHeld(t *testing.T) {
 	store := newFakeAccountingStore()
 	now := time.Now().UTC().Add(-time.Minute)
@@ -810,6 +870,22 @@ func bedrockResult(model string, promptTokens int, completionTokens int) schemas
 		Response: &schemas.BatchResultResponse{
 			StatusCode: 200,
 			Body:       body,
+		},
+	}
+}
+
+func geminiResult(promptTokens int, completionTokens int) schemas.BatchResultItem {
+	return schemas.BatchResultItem{
+		CustomID: "custom-id",
+		Response: &schemas.BatchResultResponse{
+			StatusCode: 200,
+			Body: map[string]interface{}{
+				"usage": map[string]interface{}{
+					"prompt_tokens":     promptTokens,
+					"completion_tokens": completionTokens,
+					"total_tokens":      promptTokens + completionTokens,
+				},
+			},
 		},
 	}
 }
