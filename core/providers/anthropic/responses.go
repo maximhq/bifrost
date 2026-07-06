@@ -1801,13 +1801,11 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 					outputIndexForCall, hasOutputIndex := state.ToolSearchOutputIndices[toolUseID]
 
 					var toolNames []string
-					if result != nil && result.ToolReferences != nil {
-						for _, ref := range result.ToolReferences {
-							if ref.ToolName != nil {
-								toolNames = append(toolNames, *ref.ToolName)
-							} else if ref.Name != nil {
-								toolNames = append(toolNames, *ref.Name)
-							}
+					for _, ref := range toolSearchResultReferences(result) {
+						if ref.ToolName != nil {
+							toolNames = append(toolNames, *ref.ToolName)
+						} else if ref.Name != nil {
+							toolNames = append(toolNames, *ref.Name)
 						}
 					}
 					if toolNames == nil {
@@ -3810,7 +3808,14 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 
 		// Convert tools
 		if bifrostReq.Params.Tools != nil {
-			anthropicTools, mcpServers := convertBifrostToolsToAnthropic(capModel, bifrostReq.Params.Tools, bifrostReq.Provider)
+			// Resolve Bifrost's own caller-facing tool_search bridge (a
+			// "namespace" tool declaration reserved for surfacing Anthropic's
+			// bm25/regex algorithm choice to an OpenAI-Responses-shaped
+			// caller) into the two native tool_search declarations Anthropic
+			// expects, before the per-tool egress switch below. No-op (same
+			// slice returned) unless the reserved bridge namespace is present.
+			toolsForAnthropic, _ := schemas.ExpandToolSearchBridgeDeclaration(bifrostReq.Params.Tools)
+			anthropicTools, mcpServers := convertBifrostToolsToAnthropic(capModel, toolsForAnthropic, bifrostReq.Provider)
 			if len(anthropicTools) > 0 {
 				if anthropicReq.Tools == nil {
 					anthropicReq.Tools = anthropicTools
@@ -3833,7 +3838,13 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 	}
 
 	if bifrostReq.Input != nil {
-		anthropicMessages, systemContent := ConvertBifrostMessagesToAnthropicMessages(ctx, bifrostReq.Input, true, bifrostReq.Provider, capModel)
+		// Merge any namespace-tagged tool_search bridge call/output pairs
+		// (Bifrost's own caller-facing convention) back into the neutral
+		// tool_search_tool_call item the egress switch below already knows
+		// how to render onto Anthropic's server_tool_use + tool_search_tool_result
+		// shape. No-op unless the reserved bridge namespace is present.
+		inputForAnthropic := schemas.ExpandToolSearchBridgeItems(bifrostReq.Input)
+		anthropicMessages, systemContent := ConvertBifrostMessagesToAnthropicMessages(ctx, inputForAnthropic, true, bifrostReq.Provider, capModel)
 
 		// Set system message if present
 		if systemContent != nil {
@@ -5696,7 +5707,7 @@ func convertAnthropicContentBlocksToResponsesMessages(ctx *schemas.BifrostContex
 						continue
 					}
 					var toolNames []string
-					for _, ref := range block.ToolReferences {
+					for _, ref := range toolSearchResultReferences(&block) {
 						if ref.ToolName != nil {
 							toolNames = append(toolNames, *ref.ToolName)
 						} else if ref.Name != nil {
@@ -6592,13 +6603,49 @@ func convertBifrostToolSearchCallToAnthropicBlocks(msg *schemas.ResponsesMessage
 		})
 	}
 	resultBlock := AnthropicContentBlock{
-		Type:           AnthropicContentBlockTypeToolSearchToolResult,
-		ToolUseID:      toolUseID,
-		Caller:         caller,
-		ToolReferences: toolReferences,
+		Type:      AnthropicContentBlockTypeToolSearchToolResult,
+		ToolUseID: toolUseID,
+		Caller:    caller,
+		Content:   buildToolSearchResultContent(toolReferences),
 	}
 
 	return []AnthropicContentBlock{serverToolUseBlock, resultBlock}
+}
+
+// toolSearchResultReferences extracts the discovered tool_references from a
+// tool_search_tool_result block, handling Anthropic's nesting: unlike every
+// other *_tool_result block type, tool_search_tool_result carries its result
+// fields one level deeper, under content.tool_references (content.type ==
+// "tool_search_tool_search_result"), not directly on the block. Checks
+// Content.ContentObj first (the egress/construction shape), then
+// Content.ContentBlocks[0] (the post-unmarshal shape, since AnthropicContent's
+// UnmarshalJSON decodes a bare JSON object into a one-element ContentBlocks
+// slice rather than ContentObj). Returns nil if block or its content is nil,
+// or if the search matched nothing (Anthropic returns an empty array, not a
+// missing field, for a genuine no-match result).
+func toolSearchResultReferences(block *AnthropicContentBlock) []AnthropicContentBlock {
+	if block == nil || block.Content == nil {
+		return nil
+	}
+	if inner := block.Content.ContentObj; inner != nil {
+		return inner.ToolReferences
+	}
+	if len(block.Content.ContentBlocks) > 0 {
+		return block.Content.ContentBlocks[0].ToolReferences
+	}
+	return nil
+}
+
+// buildToolSearchResultContent wraps discovered tool references in the
+// content.tool_search_tool_search_result nesting Anthropic's wire format
+// requires for tool_search_tool_result (see toolSearchResultReferences).
+func buildToolSearchResultContent(toolReferences []AnthropicContentBlock) *AnthropicContent {
+	return &AnthropicContent{
+		ContentObj: &AnthropicContentBlock{
+			Type:           AnthropicContentBlockTypeToolSearchToolSearchResult,
+			ToolReferences: toolReferences,
+		},
+	}
 }
 
 // isAnthropicCodeExecutionToolName reports whether name is one of the code

@@ -755,10 +755,13 @@ func TestOpenAIResponsesRequestInput_MarshalJSON_FunctionCallOutputPreservesNonT
 }
 
 // TestOpenAIResponsesRequest_MarshalJSON_StripsAnthropicToolFlags ensures the
-// Responses serializer drops the four Anthropic-native tool flags
-// (defer_loading, allowed_callers, input_examples, eager_input_streaming)
-// along with CacheControl before forwarding to OpenAI — mirroring the Chat
-// path's behavior so Anthropic-flavored tools cannot 400 OpenAI via Responses.
+// Responses serializer drops the Anthropic-only tool flags (allowed_callers,
+// input_examples, eager_input_streaming) along with CacheControl before
+// forwarding to OpenAI — mirroring the Chat path's behavior so Anthropic-flavored
+// tools cannot 400 OpenAI via Responses. defer_loading is preserved: it is also
+// a genuine, non-beta OpenAI/Codex tool_search feature, not Anthropic-only —
+// stripping it unconditionally previously broke every OpenAI-bound tool_search
+// request ("requires at least one deferred tool"), found live.
 func TestOpenAIResponsesRequest_MarshalJSON_StripsAnthropicToolFlags(t *testing.T) {
 	req := &OpenAIResponsesRequest{
 		Model: "gpt-4o",
@@ -804,10 +807,14 @@ func TestOpenAIResponsesRequest_MarshalJSON_StripsAnthropicToolFlags(t *testing.
 	raw := string(jsonBytes)
 
 	// None of the Anthropic-only tool keys must survive on the wire.
-	for _, key := range []string{`"cache_control"`, `"defer_loading"`, `"allowed_callers"`, `"input_examples"`, `"eager_input_streaming"`, `"code_execution_version"`} {
+	for _, key := range []string{`"cache_control"`, `"allowed_callers"`, `"input_examples"`, `"eager_input_streaming"`, `"code_execution_version"`} {
 		if strings.Contains(raw, key) {
 			t.Errorf("OpenAI Responses serializer must strip %s; raw=%s", key, raw)
 		}
+	}
+	// defer_loading is shared with OpenAI's own tool_search feature and must survive.
+	if !strings.Contains(raw, `"defer_loading":true`) {
+		t.Errorf("OpenAI Responses serializer must preserve defer_loading (shared OpenAI feature); raw=%s", raw)
 	}
 	// Function tool identity should be preserved.
 	if !strings.Contains(raw, `"name":"lookup"`) {

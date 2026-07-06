@@ -49,6 +49,20 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	// OpenAI also doesn't support compaction content blocks, so we need to convert them to text blocks
 	messages = make([]schemas.ResponsesMessage, 0, len(bifrostReq.Input))
 	for _, message := range bifrostReq.Input {
+		// Anthropic-origin tool_search_tool_call history items (a completed
+		// tool_search_tool_bm25/_regex round trip) are not valid on OpenAI's
+		// wire -- convert to OpenAI's own native tool_search_call +
+		// tool_search_output pair before this item ever reaches the rest of
+		// the loop below. See convertAnthropicToolSearchCallToOpenAINative.
+		if message.Type != nil && *message.Type == schemas.ResponsesMessageTypeAnthropicToolSearchCall {
+			var requestTools []schemas.ResponsesTool
+			if bifrostReq.Params != nil {
+				requestTools = bifrostReq.Params.Tools
+			}
+			messages = append(messages, convertAnthropicToolSearchCallToOpenAINative(message, requestTools)...)
+			continue
+		}
+
 		// First, check if message has compaction content blocks and convert them to text
 		if message.Content != nil && len(message.Content.ContentBlocks) > 0 {
 			hasCompaction := false
@@ -360,6 +374,7 @@ func (resp *OpenAIResponsesRequest) filterUnsupportedTools() {
 
 	// Filter tools to only include supported types
 	filteredTools := make([]schemas.ResponsesTool, 0, len(resp.Tools))
+	seenToolSearch := false
 	for _, tool := range resp.Tools {
 		// OpenRouter exposes server-side tools under the "openrouter:" namespace
 		// (web_search, web_fetch, datetime, image_generation, apply_patch, subagent, ...).
@@ -418,6 +433,26 @@ func (resp *OpenAIResponsesRequest) filterUnsupportedTools() {
 				}
 
 				newTool.ResponsesToolWebSearch = newWebSearch
+				filteredTools = append(filteredTools, newTool)
+			} else if tool.Type == schemas.ResponsesToolTypeToolSearch {
+				// OpenAI's real tool_search declaration is a single, unnamed,
+				// algorithm-agnostic tool ({"type":"tool_search",...}) --
+				// unlike Anthropic, which has two distinctly-named sub-tools
+				// (tool_search_tool_bm25/_regex, carried in the neutral
+				// Name field). Forwarding Name verbatim produces
+				// {"type":"tool_search","name":"tool_search_tool_bm25"},
+				// which a real OpenAI-compatible backend rejects outright
+				// ("Unknown parameter: 'tools[N].name'") -- confirmed live.
+				// Collapse: strip Name, and since bm25+regex both collapse
+				// to the same generic declaration, keep only the first
+				// occurrence so a caller declaring both doesn't produce two
+				// duplicate {"type":"tool_search"} entries.
+				if seenToolSearch {
+					continue
+				}
+				seenToolSearch = true
+				newTool := tool
+				newTool.Name = nil
 				filteredTools = append(filteredTools, newTool)
 			} else {
 				filteredTools = append(filteredTools, tool)

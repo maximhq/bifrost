@@ -22,7 +22,7 @@ const rawToolSearchNonStreamingResponse = `{
   "role": "assistant",
   "content": [
     { "type": "server_tool_use", "id": "srvtoolu_ns1", "name": "tool_search_tool_bm25", "input": {"query": "weather"} },
-    { "type": "tool_search_tool_result", "tool_use_id": "srvtoolu_ns1", "tool_references": [{"type": "tool_reference", "tool_name": "get_weather"}, {"type": "tool_reference", "tool_name": "get_forecast"}] },
+    { "type": "tool_search_tool_result", "tool_use_id": "srvtoolu_ns1", "content": {"type": "tool_search_tool_search_result", "tool_references": [{"type": "tool_reference", "tool_name": "get_weather"}, {"type": "tool_reference", "tool_name": "get_forecast"}]} },
     { "type": "text", "text": "I found the get_weather tool." }
   ],
   "stop_reason": "end_turn",
@@ -116,7 +116,7 @@ func TestToolSearch_NonStreamingIngestAndEgressRoundTrip(t *testing.T) {
 					t.Errorf("reconstructed tool_search_tool_result tool_use_id = %v, want srvtoolu_ns1", block.ToolUseID)
 				}
 				var names []string
-				for _, ref := range block.ToolReferences {
+				for _, ref := range toolSearchResultReferences(&block) {
 					if ref.ToolName != nil {
 						names = append(names, *ref.ToolName)
 					}
@@ -148,7 +148,7 @@ const rawToolSearchWithCallerResponse = `{
   "role": "assistant",
   "content": [
     { "type": "server_tool_use", "id": "srvtoolu_caller1", "name": "tool_search_tool_bm25", "input": {"query": "weather"}, "caller": {"type": "code_execution_20250825", "tool_id": "srvtoolu_codeexec1"} },
-    { "type": "tool_search_tool_result", "tool_use_id": "srvtoolu_caller1", "tool_references": [{"type": "tool_reference", "tool_name": "get_weather"}] }
+    { "type": "tool_search_tool_result", "tool_use_id": "srvtoolu_caller1", "content": {"type": "tool_search_tool_search_result", "tool_references": [{"type": "tool_reference", "tool_name": "get_weather"}]} }
   ],
   "stop_reason": "end_turn",
   "usage": { "input_tokens": 20, "output_tokens": 10 }
