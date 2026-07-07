@@ -359,6 +359,16 @@ func extractTextFromItemContent(content json.RawMessage) string {
 
 // ToProviderRealtimeEvent converts a canonical Bifrost realtime event into
 // Gemini Live's native BidiGenerateContent client-message JSON.
+//
+// Known limitation (flagged in review, deliberately deferred): Gemini requires
+// its `setup` message to be the connection's first frame — if a client sends
+// conversation.item.create/input_audio_buffer.append/response.create before any
+// session.update, this function has no way to inject a synthesized setup first,
+// since translation is a pure per-event function with no connection-level state
+// (the RealtimeProvider interface doesn't pass one in, and adding it would touch
+// the shared contract used by OpenAI/Azure/ElevenLabs too). A compliant client —
+// including Google's own SDKs — always configures the session before sending
+// content, matching how every other realtime provider here is used in practice.
 func (provider *GeminiProvider) ToProviderRealtimeEvent(bifrostEvent *schemas.BifrostRealtimeEvent) (json.RawMessage, error) {
 	switch bifrostEvent.Type {
 
@@ -373,7 +383,20 @@ func (provider *GeminiProvider) ToProviderRealtimeEvent(bifrostEvent *schemas.Bi
 					setup.SystemInstruction = instr
 				}
 			}
-			setup.Tools = bifrostEvent.Session.Tools
+			// Session.Tools carries the client's canonical (OpenAI-shaped) tool array
+			// as raw JSON — Gemini expects tools: [{functionDeclarations: [...]}], a
+			// different wire shape, so it must go through the same converter the
+			// non-realtime chat/responses paths use rather than being forwarded verbatim.
+			if len(bifrostEvent.Session.Tools) > 0 {
+				var chatTools []schemas.ChatTool
+				if err := json.Unmarshal(bifrostEvent.Session.Tools, &chatTools); err == nil {
+					if geminiTools, err := convertBifrostToolsToGemini(chatTools); err == nil && len(geminiTools) > 0 {
+						if toolsJSON, err := providerUtils.MarshalSorted(geminiTools); err == nil {
+							setup.Tools = toolsJSON
+						}
+					}
+				}
+			}
 		}
 		// Current Gemini Live models only support AUDIO output (TEXT responseModalities
 		// is rejected at setup time, confirmed against the live endpoint) — always request

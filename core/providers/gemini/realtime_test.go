@@ -270,6 +270,45 @@ func TestToProviderRealtimeEvent_SessionUpdate(t *testing.T) {
 	}
 }
 
+// Regression test (found in CodeRabbit PR review): Session.Tools carries the
+// client's canonical OpenAI-shaped tool array as raw JSON. An earlier
+// implementation forwarded it to Gemini verbatim, but Gemini expects
+// tools: [{functionDeclarations: [...]}] — a completely different shape — so
+// realtime tool-calling would have silently failed to register any tools.
+func TestToProviderRealtimeEvent_SessionUpdateConvertsTools(t *testing.T) {
+	t.Parallel()
+	provider := &GeminiProvider{}
+
+	toolsJSON := json.RawMessage(`[{"type":"function","function":{"name":"get_weather","description":"Get the weather","parameters":{"type":"object","properties":{"city":{"type":"string"}}}}}]`)
+	event := &schemas.BifrostRealtimeEvent{
+		Type:    schemas.RTEventSessionUpdate,
+		Session: &schemas.RealtimeSession{Model: "gemini-3.1-flash-live-preview", Tools: toolsJSON},
+	}
+	raw, err := provider.ToProviderRealtimeEvent(event)
+	if err != nil {
+		t.Fatalf("ToProviderRealtimeEvent() error = %v", err)
+	}
+
+	var msg geminiSetupMessage
+	if err := json.Unmarshal(raw, &msg); err != nil {
+		t.Fatalf("failed to unmarshal setup message: %v", err)
+	}
+	if msg.Setup == nil || len(msg.Setup.Tools) == 0 {
+		t.Fatal("Setup.Tools is empty, want converted Gemini tool declarations")
+	}
+
+	var geminiTools []Tool
+	if err := json.Unmarshal(msg.Setup.Tools, &geminiTools); err != nil {
+		t.Fatalf("Setup.Tools is not valid Gemini tool JSON: %v", err)
+	}
+	if len(geminiTools) != 1 || len(geminiTools[0].FunctionDeclarations) != 1 {
+		t.Fatalf("geminiTools = %+v, want exactly 1 tool with 1 functionDeclaration", geminiTools)
+	}
+	if geminiTools[0].FunctionDeclarations[0].Name != "get_weather" {
+		t.Fatalf("FunctionDeclarations[0].Name = %q, want %q", geminiTools[0].FunctionDeclarations[0].Name, "get_weather")
+	}
+}
+
 func TestToProviderRealtimeEvent_ResponseCreate(t *testing.T) {
 	t.Parallel()
 	provider := &GeminiProvider{}

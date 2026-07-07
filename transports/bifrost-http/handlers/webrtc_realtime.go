@@ -814,6 +814,28 @@ func (r *webrtcRealtimeRelay) forwardRTCP(sender *webrtc.RTPSender, target *webr
 	}
 }
 
+// finalizeTurnAndClose finalizes any in-progress turn hooks (recording the given
+// error) and closes the relay with that same error event. Shared by every
+// handleDownstreamMessage failure path that must both finalize and terminate the
+// connection, so the finalize→close sequence stays in one place.
+func (r *webrtcRealtimeRelay) finalizeTurnAndClose(status int, code, msg string) {
+	if finalizeErr := finalizeRealtimeTurnHooksOnTransportError(
+		r.client,
+		r.bifrostCtx,
+		r.session,
+		r.providerKey,
+		r.model,
+		r.key,
+		status,
+		code,
+		msg,
+	); finalizeErr != nil {
+		r.closeWithErrorEvent(newRealtimeTurnErrorEventPayload(finalizeErr))
+		return
+	}
+	r.closeWithErrorEvent(newRealtimeTurnErrorEventPayload(newRealtimeWireBifrostError(status, code, msg)))
+}
+
 func (r *webrtcRealtimeRelay) handleDownstreamMessage(msg webrtc.DataChannelMessage) {
 	event, err := schemas.ParseRealtimeEvent(msg.Data)
 	if err != nil {
@@ -845,21 +867,7 @@ func (r *webrtcRealtimeRelay) handleDownstreamMessage(msg webrtc.DataChannelMess
 	providerEvent, err := r.provider.ToProviderRealtimeEvent(event)
 	if err != nil {
 		if startsTurn {
-			if finalizeErr := finalizeRealtimeTurnHooksOnTransportError(
-				r.client,
-				r.bifrostCtx,
-				r.session,
-				r.providerKey,
-				r.model,
-				r.key,
-				400,
-				"invalid_request_error",
-				err.Error(),
-			); finalizeErr != nil {
-				r.closeWithErrorEvent(newRealtimeTurnErrorEventPayload(finalizeErr))
-				return
-			}
-			r.closeWithErrorEvent(newRealtimeTurnErrorEventPayload(newRealtimeWireBifrostError(400, "invalid_request_error", err.Error())))
+			r.finalizeTurnAndClose(400, "invalid_request_error", err.Error())
 			return
 		}
 		logger.Warn("failed to translate browser realtime event: %v", err)
@@ -876,21 +884,7 @@ func (r *webrtcRealtimeRelay) handleDownstreamMessage(msg webrtc.DataChannelMess
 	// full rationale — no provider triggers this today).
 	if len(providerEvent) == 0 {
 		if startsTurn {
-			if finalizeErr := finalizeRealtimeTurnHooksOnTransportError(
-				r.client,
-				r.bifrostCtx,
-				r.session,
-				r.providerKey,
-				r.model,
-				r.key,
-				400,
-				"invalid_request_error",
-				"provider dropped a turn-starting event",
-			); finalizeErr != nil {
-				r.closeWithErrorEvent(newRealtimeTurnErrorEventPayload(finalizeErr))
-				return
-			}
-			r.closeWithErrorEvent(newRealtimeTurnErrorEventPayload(newRealtimeWireBifrostError(400, "invalid_request_error", "provider dropped a turn-starting event")))
+			r.finalizeTurnAndClose(400, "invalid_request_error", "provider dropped a turn-starting event")
 		}
 		return
 	}
