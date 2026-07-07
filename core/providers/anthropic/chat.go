@@ -1042,6 +1042,11 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 			}
 		}
 		bifrostResponse.Usage.TotalTokens = bifrostResponse.Usage.PromptTokens + bifrostResponse.Usage.CompletionTokens
+		if response.Usage.OutputTokensDetails != nil && response.Usage.OutputTokensDetails.ThinkingTokens > 0 {
+			bifrostResponse.Usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{
+				ReasoningTokens: response.Usage.OutputTokensDetails.ThinkingTokens,
+			}
+		}
 		// Forward service tier from usage to response
 		if response.Usage.ServiceTier != nil {
 			mapped := MapAnthropicServiceTierToBifrost(*response.Usage.ServiceTier)
@@ -1084,6 +1089,12 @@ func ToAnthropicChatResponse(bifrostResp *schemas.BifrostChatResponse) *Anthropi
 		anthropicResp.Usage = &AnthropicUsage{
 			InputTokens:  bifrostResp.Usage.PromptTokens,
 			OutputTokens: bifrostResp.Usage.CompletionTokens,
+		}
+
+		if bifrostResp.Usage.CompletionTokensDetails != nil && bifrostResp.Usage.CompletionTokensDetails.ReasoningTokens > 0 {
+			anthropicResp.Usage.OutputTokensDetails = &AnthropicOutputTokensDetails{
+				ThinkingTokens: bifrostResp.Usage.CompletionTokensDetails.ReasoningTokens,
+			}
 		}
 
 		// Cache read/write are now segregated via PromptTokensDetails. We map CachedReadTokens ->
@@ -1653,6 +1664,11 @@ func ToAnthropicChatStreamResponse(bifrostResp *schemas.BifrostChatResponse) str
 		streamResp.Usage = &AnthropicUsage{
 			InputTokens:  bifrostResp.Usage.PromptTokens,
 			OutputTokens: bifrostResp.Usage.CompletionTokens,
+		}
+		if bifrostResp.Usage.CompletionTokensDetails != nil && bifrostResp.Usage.CompletionTokensDetails.ReasoningTokens > 0 {
+			streamResp.Usage.OutputTokensDetails = &AnthropicOutputTokensDetails{
+				ThinkingTokens: bifrostResp.Usage.CompletionTokensDetails.ReasoningTokens,
+			}
 		}
 	}
 
