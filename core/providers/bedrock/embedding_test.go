@@ -116,6 +116,7 @@ func TestToBedrockCohereEmbeddingRequestBodyOmitsModel(t *testing.T) {
 func TestCustomProviderExtraParamsForwardedAutomatically(t *testing.T) {
 	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
 	ctx.SetValue(schemas.BifrostContextKeyIsCustomProvider, true)
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 
 	text := "hello"
 	req := &schemas.BifrostEmbeddingRequest{

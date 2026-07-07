@@ -436,6 +436,7 @@ func TestBuildAnthropicResponsesRequestBody_TypedPath(t *testing.T) {
 	t.Run("custom_provider_forwards_extra_params_automatically", func(t *testing.T) {
 		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
 		ctx.SetValue(schemas.BifrostContextKeyIsCustomProvider, true)
+		ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 
 		request := &schemas.BifrostResponsesRequest{
 			Provider: schemas.ModelProvider("custom-anthropic"),

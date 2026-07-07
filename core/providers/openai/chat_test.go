@@ -81,11 +81,11 @@ func TestToOpenAIChatRequest_ToolNormalization(t *testing.T) {
 }
 
 // TestCustomProviderExtraParamsForwardedAutomatically verifies that custom
-// OpenAI-compatible providers preserve provider-specific extra params without
-// requiring BifrostContextKeyPassthroughExtraParams.
+// OpenAI-compatible providers preserve provider-specific extra params.
 func TestCustomProviderExtraParamsForwardedAutomatically(t *testing.T) {
 	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
 	ctx.SetValue(schemas.BifrostContextKeyIsCustomProvider, true)
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 
 	req := &schemas.BifrostChatRequest{
 		Provider: schemas.ModelProvider("custom-openai"),

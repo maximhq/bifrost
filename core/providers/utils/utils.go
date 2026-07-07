@@ -1272,8 +1272,7 @@ func CheckContextAndGetRequestBody(ctx context.Context, request RequestBodyGette
 // should be preserved in the outbound request.
 func ShouldPassthroughExtraParams(ctx context.Context) bool {
 	passthroughExtraParams, _ := ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams).(bool)
-	isCustomProvider, _ := ctx.Value(schemas.BifrostContextKeyIsCustomProvider).(bool)
-	return passthroughExtraParams || isCustomProvider
+	return passthroughExtraParams
 }
 
 // SetExtraHeadersHTTP sets additional headers from NetworkConfig to the standard HTTP request.

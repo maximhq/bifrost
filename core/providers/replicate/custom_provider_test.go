@@ -12,6 +12,7 @@ import (
 func TestCustomProviderTopLevelExtraParamsForwardedAutomatically(t *testing.T) {
 	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
 	ctx.SetValue(schemas.BifrostContextKeyIsCustomProvider, true)
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 
 	req := &schemas.BifrostVideoGenerationRequest{
 		Provider: schemas.ModelProvider("custom-replicate"),
