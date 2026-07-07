@@ -203,6 +203,21 @@ type RealtimeProvider interface {
 	ShouldAccumulateRealtimeOutput(eventType RealtimeEventType) bool
 }
 
+// RealtimeBinaryAudioProvider is an optional interface for providers whose
+// Realtime protocol sends/receives client audio as raw binary WebSocket frames
+// rather than base64-encoded JSON (e.g. Deepgram's "Media" message), unlike
+// OpenAI/Azure/ElevenLabs which wrap client audio in an
+// input_audio_buffer.append JSON text event. Checked via type assertion:
+// provider.(RealtimeBinaryAudioProvider). Served over a dedicated route
+// (/v1/realtime/audio) so the base /v1/realtime relay's behavior for existing
+// text-only providers is unaffected.
+type RealtimeBinaryAudioProvider interface {
+	// SupportsRealtimeBinaryAudioInput reports whether the provider accepts
+	// raw binary WebSocket frames from the client as audio input, forwarded
+	// upstream verbatim with no JSON translation.
+	SupportsRealtimeBinaryAudioInput() bool
+}
+
 // RealtimeLegacyWebRTCProvider is an optional interface for providers that
 // support the beta WebRTC handshake (e.g., OpenAI's /v1/realtime).
 // Only checked for legacy integration routes via type assertion.

@@ -362,6 +362,29 @@ func (h *WSRealtimeHandler) relayClientToRealtimeProvider(
 			return err
 		}
 		if messageType != ws.TextMessage {
+			// Providers whose Realtime protocol sends client audio as raw binary
+			// frames (e.g. Deepgram's Media message) opt in via
+			// RealtimeBinaryAudioProvider; forward verbatim, no translation.
+			// Every other provider (OpenAI/Azure/ElevenLabs) doesn't implement
+			// this interface, so this preserves the exact prior reject behavior.
+			if binaryProvider, ok := provider.(schemas.RealtimeBinaryAudioProvider); ok && binaryProvider.SupportsRealtimeBinaryAudioInput() {
+				if err := upstream.WriteMessage(ws.BinaryMessage, message); err != nil {
+					finalizeRealtimeTurnHooksWithError(
+						h.client,
+						bifrostCtx,
+						session,
+						providerKey,
+						model,
+						&key,
+						schemas.RTEventError,
+						nil,
+						newRealtimeWireBifrostError(502, "server_error", "failed to write realtime audio frame upstream"),
+					)
+					clientConn.writeRealtimeError(newRealtimeWireBifrostError(502, "server_error", "failed to write realtime audio frame upstream"))
+					return err
+				}
+				continue
+			}
 			clientConn.writeRealtimeError(newRealtimeWireBifrostError(400, "invalid_request_error", "realtime websocket only accepts text messages"))
 			return nil
 		}

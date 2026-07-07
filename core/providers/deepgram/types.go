@@ -38,8 +38,8 @@ type DeepgramTranscriptionResults struct {
 }
 
 type DeepgramTranscriptionChannel struct {
-	Alternatives []DeepgramTranscriptionAlternative `json:"alternatives,omitempty"`
-	DetectedLanguage *string `json:"detected_language,omitempty"`
+	Alternatives     []DeepgramTranscriptionAlternative `json:"alternatives,omitempty"`
+	DetectedLanguage *string                            `json:"detected_language,omitempty"`
 }
 
 type DeepgramTranscriptionAlternative struct {
@@ -50,12 +50,12 @@ type DeepgramTranscriptionAlternative struct {
 }
 
 type DeepgramTranscriptionWord struct {
-	Word           string   `json:"word"`
-	Start          float64  `json:"start"`
-	End            float64  `json:"end"`
-	Confidence     float64  `json:"confidence,omitempty"`
-	PunctuatedWord *string  `json:"punctuated_word,omitempty"`
-	Speaker        *int     `json:"speaker,omitempty"`
+	Word           string  `json:"word"`
+	Start          float64 `json:"start"`
+	End            float64 `json:"end"`
+	Confidence     float64 `json:"confidence,omitempty"`
+	PunctuatedWord *string `json:"punctuated_word,omitempty"`
+	Speaker        *int    `json:"speaker,omitempty"`
 }
 
 // DeepgramErrorResponse mirrors Deepgram's REST error body shape

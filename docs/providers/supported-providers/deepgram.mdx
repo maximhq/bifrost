@@ -17,7 +17,7 @@ Deepgram is a specialized audio provider for speech-to-text transcription and te
 |-----------|---------------|-----------|----------|
 | Speech (TTS) | ✅ | ✅ | `/v1/speak` |
 | Transcriptions (STT) | ✅ | - | `/v1/listen` |
-| Voice Agent (Realtime) | - | Planned | `/v1/agent/converse` |
+| Voice Agent (Realtime) | - | ✅ | `wss://agent.deepgram.com/v1/agent/converse` via `/v1/realtime` (control messages) + `/v1/realtime/audio` (client audio) |
 | List Models | ❌ | - | - |
 | Chat Completions | ❌ | ❌ | - |
 | Responses API | ❌ | ❌ | - |
@@ -28,7 +28,16 @@ Deepgram is a specialized audio provider for speech-to-text transcription and te
 <Note>
 **Unsupported Operations** (❌): Deepgram is an audio-focused provider — Chat Completions, Responses API, Text Completions, Embeddings, and List Models return `UnsupportedOperationError`.
 
-**Realtime Voice Agent**: Deepgram's Voice Agent WebSocket API (`wss://api.deepgram.com/v1/agent/converse`) is planned via Bifrost's canonical `/v1/realtime` route and `RealtimeProvider` interface — the same mechanism used for OpenAI Realtime and ElevenLabs Conversational AI. Not yet implemented.
+**Realtime Voice Agent**: Deepgram's Voice Agent WebSocket API is served from a *different host*
+(`agent.deepgram.com`) than REST Listen/Speak (`api.deepgram.com`) — Bifrost handles this
+automatically. Control/config messages (`Settings`, `UpdateListen/Think/Speak/Prompt`,
+`InjectUserMessage/AgentMessage`, `FunctionCallResponse`) go over the canonical `/v1/realtime`
+route, same as OpenAI Realtime and ElevenLabs Conversational AI. Client **audio** input is
+different: Deepgram sends/expects raw binary WebSocket frames (not JSON-wrapped base64 like
+OpenAI/ElevenLabs), so it's served over a dedicated route, `/v1/realtime/audio`, which accepts
+binary frames and forwards them upstream verbatim. Verified live against the real API: connection,
+auth, and the `Settings`/`Welcome`/`SettingsApplied`/`UpdatePrompt`/`PromptUpdated` message shapes.
+Not yet exercised end-to-end with real audio (requires a live mic/audio source).
 
 **Async callback mode not supported**: Deepgram's `callback`/`callback_method` query params (webhook-delivered async results) are explicitly stripped and never forwarded — Bifrost's handler pipeline is synchronous request/response only.
 </Note>
