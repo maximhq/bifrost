@@ -1,2 +1,0 @@
-- feat: added user-agent tracking to LLM and MCP logs
-- chore: upgraded core to v1.7.0 and framework to v1.5.0
