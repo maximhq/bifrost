@@ -710,6 +710,7 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
+              "changelogs/v2.0.0-prerelease1",
               "changelogs/v1.6.3",
               "changelogs/v1.6.2",
               {
