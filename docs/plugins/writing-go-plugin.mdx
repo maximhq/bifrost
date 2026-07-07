@@ -1028,6 +1028,32 @@ func PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*sche
 }
 ```
 
+### Redacting Secrets in Stored Config <sup>v1.6.x+</sup>
+
+If your plugin's config contains secrets (API keys, service-account JSON, tokens), implement the `ConfigMarshallerPlugin` interface so Bifrost can normalize what it writes to the database and redact what it returns from the management API:
+
+```go
+// MarshalConfigForStorage normalizes config before it is persisted.
+func (p *MyPlugin) MarshalConfigForStorage(raw map[string]any) (map[string]any, error) { /* ... */ }
+
+// RedactConfig masks secrets before config is returned by the API.
+func (p *MyPlugin) RedactConfig(raw map[string]any) (map[string]any, error) { /* ... */ }
+```
+
+The `.so` loader does **not** look up these methods as symbols. Instead, register the marshaller from an `init()` so Bifrost picks it up when it opens your shared object:
+
+```go
+var _ schemas.ConfigMarshallerPlugin = (*MyPlugin)(nil)
+
+func init() {
+	schemas.RegisterConfigMarshaller(PluginName, &MyPlugin{})
+}
+```
+
+<Note>
+Both methods must be **stateless** — they operate only on the `raw` map passed in, so the zero-value `&MyPlugin{}` registered here is sufficient. This is what lets Bifrost redact/normalize a plugin's stored config **even when the plugin is disabled**: Bifrost opens the `.so` (running its `init()`) during startup verification regardless of whether the plugin is enabled.
+</Note>
+
 ### Error Handling with Fallbacks
 
 Control whether Bifrost should try fallback providers:
