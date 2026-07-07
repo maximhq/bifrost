@@ -119,6 +119,11 @@ func IsAllDigitsASCII(s string) bool {
 	return true
 }
 
+// IsAzureModelRouterFamily reports whether the model is an Azure model-router deployment.
+func IsAzureModelRouterFamily(model string) bool {
+	return strings.Contains(strings.ToLower(model), "model-router")
+}
+
 // ParseFallbacks parses a slice of strings into a slice of Fallback structs
 func ParseFallbacks(fallbacks []string) []Fallback {
 	if len(fallbacks) == 0 {

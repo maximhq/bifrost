@@ -509,6 +509,14 @@ func (provider *AzureProvider) Responses(ctx *schemas.BifrostContext, key schema
 		return nil, providerUtils.NewConfigurationError("endpoint not set")
 	}
 
+	if schemas.IsAzureModelRouterFamily(request.Model) {
+		chatResponse, bifrostErr := provider.ChatCompletion(ctx, key, request.ToChatRequest())
+		if bifrostErr != nil {
+			return nil, bifrostErr
+		}
+		return chatResponse.ToBifrostResponsesResponse(), nil
+	}
+
 	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
 		// Anthropic-family models use the native Anthropic Messages endpoint via the shared handler.
 		authHeader, bifrostErr := provider.getAzureAuthHeaders(ctx, key, true)
@@ -565,6 +573,11 @@ func (provider *AzureProvider) ResponsesStream(ctx *schemas.BifrostContext, post
 	endpoint := resolveAzureEndpoint(ctx, key)
 	if endpoint == "" {
 		return nil, providerUtils.NewConfigurationError("endpoint not set")
+	}
+
+	if schemas.IsAzureModelRouterFamily(request.Model) {
+		ctx.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
+		return provider.ChatCompletionStream(ctx, postHookRunner, postHookSpanFinalizer, key, request.ToChatRequest())
 	}
 	var url string
 	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
@@ -692,7 +705,6 @@ func (provider *AzureProvider) Speech(ctx *schemas.BifrostContext, key schemas.K
 		nil,
 		provider.logger,
 	)
-
 	if err != nil {
 		return nil, err
 	}
@@ -1034,7 +1046,6 @@ func (provider *AzureProvider) Transcription(ctx *schemas.BifrostContext, key sc
 		nil,
 		provider.logger,
 	)
-
 	if err != nil {
 		return nil, err
 	}
@@ -1051,7 +1062,8 @@ func (provider *AzureProvider) TranscriptionStream(ctx *schemas.BifrostContext, 
 // It formats the request, sends it to Azure, and processes the response.
 // Returns a BifrostResponse containing the bifrost response or an error if the request fails.
 func (provider *AzureProvider) ImageGeneration(ctx *schemas.BifrostContext, key schemas.Key,
-	request *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+	request *schemas.BifrostImageGenerationRequest,
+) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
 	endpoint := resolveAzureEndpoint(ctx, key)
 	if endpoint == "" {
 		return nil, providerUtils.NewConfigurationError("endpoint not set")
@@ -1123,7 +1135,6 @@ func (provider *AzureProvider) ImageGenerationStream(
 		provider.logger,
 		postHookSpanFinalizer,
 	)
-
 }
 
 // ImageEdit performs an image edit request to Azure's API.
@@ -1192,7 +1203,6 @@ func (provider *AzureProvider) ImageEditStream(ctx *schemas.BifrostContext, post
 		provider.logger,
 		postHookSpanFinalizer,
 	)
-
 }
 
 // ImageVariation is not supported by the Azure provider.
