@@ -823,7 +823,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			GetRequestTypeInstance: func(ctx context.Context) interface{} {
 				return &schemas.BifrostResponsesRetrieveRequest{}
 			},
-			PreCallback:     extractResponsesLifecycleFromPath(handlerStore),
+			PreCallback: extractResponsesLifecycleFromPath(handlerStore),
 			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 				if rr, ok := req.(*schemas.BifrostResponsesRetrieveRequest); ok {
 					return &schemas.BifrostRequest{
@@ -856,7 +856,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			GetRequestTypeInstance: func(ctx context.Context) interface{} {
 				return &schemas.BifrostResponsesDeleteRequest{}
 			},
-			PreCallback:     extractResponsesLifecycleFromPath(handlerStore),
+			PreCallback: extractResponsesLifecycleFromPath(handlerStore),
 			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 				if dr, ok := req.(*schemas.BifrostResponsesDeleteRequest); ok {
 					return &schemas.BifrostRequest{
@@ -888,7 +888,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			GetRequestTypeInstance: func(ctx context.Context) interface{} {
 				return &schemas.BifrostResponsesCancelRequest{}
 			},
-			PreCallback:     extractResponsesLifecycleFromPath(handlerStore),
+			PreCallback: extractResponsesLifecycleFromPath(handlerStore),
 			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 				if cr, ok := req.(*schemas.BifrostResponsesCancelRequest); ok {
 					return &schemas.BifrostRequest{
@@ -921,7 +921,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			GetRequestTypeInstance: func(ctx context.Context) interface{} {
 				return &schemas.BifrostResponsesInputItemsRequest{}
 			},
-			PreCallback:     extractResponsesLifecycleFromPath(handlerStore),
+			PreCallback: extractResponsesLifecycleFromPath(handlerStore),
 			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 				if ir, ok := req.(*schemas.BifrostResponsesInputItemsRequest); ok {
 					return &schemas.BifrostRequest{
@@ -2565,6 +2565,12 @@ func parseOpenAIFileUploadMultipartRequest(ctx *fasthttp.RequestCtx, req interfa
 
 	uploadReq.File = fileData
 	uploadReq.Filename = fileHeader.Filename
+
+	if contentTypeValues := form.Value["content_type"]; len(contentTypeValues) > 0 && contentTypeValues[0] != "" {
+		uploadReq.ContentType = &contentTypeValues[0]
+	} else if partContentType := strings.TrimSpace(fileHeader.Header.Get("Content-Type")); partContentType != "" {
+		uploadReq.ContentType = &partContentType
+	}
 
 	// Extract provider from extra_body (form field)
 	if providerValues := form.Value["provider"]; len(providerValues) > 0 && providerValues[0] != "" {

@@ -55,6 +55,11 @@ LogEntry:
       type: string
     raw_response:
       type: string
+    redaction_mapping:
+      type: object
+      additionalProperties:
+        type: string
+      description: Placeholder-to-original-value mapping for reversible redactions. Present only on log detail responses when the caller has `Logs:Reveal`.
     created_at:
       type: string
       format: date-time
