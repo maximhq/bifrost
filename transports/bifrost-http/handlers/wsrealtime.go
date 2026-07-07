@@ -442,6 +442,14 @@ func (h *WSRealtimeHandler) relayClientToRealtimeProvider(
 			// later turn on this connection would then be rejected as "already has an
 			// active response in progress" until the socket disconnects. Finalize with
 			// an error instead of leaking the slot.
+			//
+			// This writes the error and keeps the connection open (continue below),
+			// matching the existing convention for the `err != nil` branch above in this
+			// same function — the WS relay path tolerates a bad turn-starting event and
+			// lets the client retry, whereas webrtc_realtime.go's equivalent branch closes
+			// the whole relay. That's a pre-existing per-transport difference (present in
+			// the ToProviderRealtimeEvent-error branch too, unrelated to this guard), not
+			// something to "fix" into consistency here.
 			if startsTurn {
 				if finalizeErr := finalizeRealtimeTurnHooksWithError(
 					h.client,

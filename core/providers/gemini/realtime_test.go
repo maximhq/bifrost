@@ -1,7 +1,10 @@
 package gemini
 
 import (
+	"bytes"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -41,6 +44,37 @@ func TestToBifrostRealtimeEvent_AudioDeltaOnly(t *testing.T) {
 	}
 	if event.Delta.Transcript != "" {
 		t.Fatalf("Delta.Transcript = %q, want empty (no transcription in this fixture)", event.Delta.Transcript)
+	}
+}
+
+// Regression test (found in Greptile PR review): a single modelTurn can carry
+// more than one audio inlineData part — the BidiGenerateContent protobuf schema
+// allows it. An earlier implementation kept only the first part and silently
+// dropped the rest; parts must be decoded and concatenated instead.
+func TestToBifrostRealtimeEvent_MultipleAudioPartsConcatenated(t *testing.T) {
+	t.Parallel()
+	provider := &GeminiProvider{}
+
+	chunk1 := []byte{0x01, 0x02, 0x03}
+	chunk2 := []byte{0x04, 0x05, 0x06}
+	raw := json.RawMessage(fmt.Sprintf(
+		`{"serverContent":{"modelTurn":{"parts":[{"inlineData":{"mimeType":"audio/pcm;rate=24000","data":%q}},{"inlineData":{"mimeType":"audio/pcm;rate=24000","data":%q}}]}}}`,
+		base64.StdEncoding.EncodeToString(chunk1), base64.StdEncoding.EncodeToString(chunk2),
+	))
+	event, err := provider.ToBifrostRealtimeEvent(raw)
+	if err != nil {
+		t.Fatalf("ToBifrostRealtimeEvent() error = %v", err)
+	}
+	if event.Delta == nil {
+		t.Fatal("Delta = nil, want combined audio from both parts")
+	}
+	got, err := base64.StdEncoding.DecodeString(event.Delta.Audio)
+	if err != nil {
+		t.Fatalf("Delta.Audio is not valid base64: %v", err)
+	}
+	want := append(append([]byte{}, chunk1...), chunk2...)
+	if !bytes.Equal(got, want) {
+		t.Fatalf("decoded audio = %v, want %v (both parts concatenated, not just the first)", got, want)
 	}
 }
 

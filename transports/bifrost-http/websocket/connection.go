@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -15,6 +16,22 @@ import (
 	ws "github.com/fasthttp/websocket"
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+// redactURLForLog strips query params (and any userinfo) before a dial URL is
+// placed into an error message. Most realtime providers authenticate via
+// request headers, but Gemini Live's protocol requires the API key on the
+// URL's `key` query parameter — without this, that key would leak in plain
+// text into any error surfaced to the client or written to server logs.
+func redactURLForLog(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "<invalid-url>"
+	}
+	u.User = nil
+	u.RawQuery = ""
+	u.Fragment = ""
+	return u.String()
+}
 
 // UpstreamConn wraps a WebSocket connection to an upstream provider.
 // Thread-safe for concurrent read/write via separate mutexes.
@@ -256,7 +273,7 @@ func isConnectionDead(err error) bool {
 func DialUpstream(url string, headers http.Header, provider schemas.ModelProvider, keyID string) (*UpstreamConn, error) {
 	wsConn, resp, err := Dial(url, headers)
 	if err != nil {
-		return nil, fmt.Errorf("failed to dial upstream websocket %s: %w", url, wrapHandshakeError(resp, err))
+		return nil, fmt.Errorf("failed to dial upstream websocket %s: %w", redactURLForLog(url), wrapHandshakeError(resp, err))
 	}
 	return newUpstreamConn(wsConn, provider, keyID, url), nil
 }

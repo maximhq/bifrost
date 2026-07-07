@@ -234,18 +234,26 @@ func (provider *GeminiProvider) ToBifrostRealtimeEvent(providerEvent json.RawMes
 		// turn-output accumulation.
 		delta := &schemas.RealtimeDelta{}
 		var text strings.Builder
-		var audio string
+		var audioBytes []byte
 		if sc.ModelTurn != nil {
 			for _, part := range sc.ModelTurn.Parts {
 				if part.Text != "" {
 					text.WriteString(part.Text)
 				}
-				if part.InlineData != nil && strings.HasPrefix(part.InlineData.MimeType, "audio/") && audio == "" {
-					audio = part.InlineData.Data
+				// A single modelTurn can carry more than one audio part (the
+				// BidiGenerateContent protobuf allows it) — decode and concatenate the
+				// raw PCM from every audio part rather than keeping only the first, or
+				// any part beyond the first is silently lost with no error or log.
+				if part.InlineData != nil && strings.HasPrefix(part.InlineData.MimeType, "audio/") {
+					if decoded, err := base64.StdEncoding.DecodeString(part.InlineData.Data); err == nil {
+						audioBytes = append(audioBytes, decoded...)
+					}
 				}
 			}
 		}
-		if audio != "" {
+		audio := ""
+		if len(audioBytes) > 0 {
+			audio = base64.StdEncoding.EncodeToString(audioBytes)
 			delta.Audio = audio
 		}
 		if text.Len() > 0 {

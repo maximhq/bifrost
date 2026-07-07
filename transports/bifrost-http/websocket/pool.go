@@ -184,7 +184,7 @@ func (p *Pool) Close() {
 func (p *Pool) dial(key PoolKey, headers http.Header) (*UpstreamConn, error) {
 	wsConn, resp, err := Dial(key.Endpoint, headers)
 	if err != nil {
-		return nil, fmt.Errorf("failed to dial upstream websocket %s: %w", key.Endpoint, wrapHandshakeError(resp, err))
+		return nil, fmt.Errorf("failed to dial upstream websocket %s: %w", redactURLForLog(key.Endpoint), wrapHandshakeError(resp, err))
 	}
 	return newUpstreamConn(wsConn, key.Provider, key.KeyID, key.Endpoint), nil
 }
