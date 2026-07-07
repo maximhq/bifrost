@@ -127,6 +127,12 @@ type ServerCallbacks interface {
 	EnableMCPClient(ctx context.Context, id string) error
 }
 
+// LogRedactionMappingResolverProvider is implemented by servers that can attach reveal data to log-detail responses.
+type LogRedactionMappingResolverProvider interface {
+	// GetLogRedactionMappingResolver returns the resolver used by the logging handler.
+	GetLogRedactionMappingResolver() handlers.LogRedactionMappingResolver
+}
+
 // BifrostHTTPServer represents a HTTP server instance.
 type BifrostHTTPServer struct {
 	Ctx    *schemas.BifrostContext
@@ -1370,6 +1376,9 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	var govLogManager logging.LogManager
 	if loggerPlugin != nil {
 		loggingHandler = handlers.NewLoggingHandler(loggerPlugin.GetPluginLogManager(), s, s.Config)
+		if resolverProvider, ok := callbacks.(LogRedactionMappingResolverProvider); ok {
+			loggingHandler.SetLogRedactionMappingResolver(resolverProvider.GetLogRedactionMappingResolver())
+		}
 		govLogManager = loggerPlugin.GetPluginLogManager()
 	}
 	var governanceHandler *handlers.GovernanceHandler

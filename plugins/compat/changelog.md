@@ -1,3 +1,0 @@
-- feat: drop reasoning when tools are present but `reasoning_with_tool_calls` is unsupported (#4630)
-- fix: convert thinking to disabled when tool choice is required for DeepSeek (#4861)
-- chore: upgraded core to v1.6.3 and framework to v1.4.3

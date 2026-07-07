@@ -1,8 +1,0 @@
-- feat: added expiry enforcement for virtual keys (#4887)
-- feat: complexity analyzer stemming support alongside exact keyword match and a no-signal fallback (#4708, #4791)
-- feat: added `virtualKeysByID` secondary index with cached signing key and VK lookups on the `/mcp` JWT auth path (#4783)
-- feat: virtual key values use `schemas.SecretVar` to support the env store (#4817)
-- fix: skip O(N) reference refresh on request-time rate-limit and budget reset (#4883, closes #4851)
-- fix: skip model check for Responses lifecycle APIs (#4920)
-- fix: empty tool call result insertion failures (#4925)
-- chore: upgraded core to v1.6.3 and framework to v1.4.3
