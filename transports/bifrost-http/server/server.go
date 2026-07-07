@@ -24,6 +24,7 @@ import (
 	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/logstore"
 	dynamicPlugins "github.com/maximhq/bifrost/framework/plugins"
+	"github.com/maximhq/bifrost/framework/sidekiq"
 	"github.com/maximhq/bifrost/framework/temptoken"
 	"github.com/maximhq/bifrost/framework/tracing"
 	"github.com/maximhq/bifrost/plugins/governance"
@@ -178,6 +179,9 @@ type BifrostHTTPServer struct {
 	// access-profile-managed VKs). Optional; wired at server init when available,
 	// otherwise left nil so the quota endpoint reads the VK's own budget rows.
 	ExternalQuotaBudgetResolver handlers.ExternalQuotaBudgetResolver
+
+	SidekiqRunner     *sidekiq.Runner
+	SidekiqReaperStop func()
 
 	wsPool *bfws.Pool
 }
@@ -1625,7 +1629,6 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	s.Ctx, s.cancel = schemas.NewBifrostContextWithCancel(ctx)
 	handlers.SetVersion(s.Version)
 	configDir := GetDefaultConfigDir(s.AppDir)
-
 	// Ensure app directory exists
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
 		return fmt.Errorf("failed to create app directory %s: %v", configDir, err)
@@ -1819,6 +1822,11 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		semanticCachePlugin.SetEmbeddingRequestExecutor(s.Client.EmbeddingRequest)
 	}
 
+	// Initialize Sidekiq runner for background jobs
+	if s.Config != nil && s.Config.ConfigStore != nil {
+		s.SidekiqRunner = sidekiq.New(s.Config.ConfigStore, logger, 4)
+	}
+
 	// Register routes
 	err = s.RegisterAPIRoutes(s.Ctx, s, apiMiddlewares...)
 	if err != nil {
@@ -1889,6 +1897,17 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	})
 	// Register UI handler
 	s.RegisterUIRoutes()
+
+	// Start Sidekiq reaper to clean up stale jobs
+	if s.SidekiqRunner != nil {
+		s.SidekiqReaperStop = s.SidekiqRunner.StartReaper(sidekiq.ReaperInterval, sidekiq.StaleAfter)
+		go func() {
+			if err := s.SidekiqRunner.RecoverIncomplete(ctx); err != nil {
+				logger.Error("sidekiq: failed to recover incomplete provisioning jobs: %v", err)
+			}
+		}()
+	}
+
 	// Checking if config has server config and use it to set read buffer size
 	logger.Debug("server read buffer size: %d", s.Config.ServerConfig.ReadBufferSize)
 	// Create fasthttp server instance
@@ -1975,6 +1994,14 @@ func (s *BifrostHTTPServer) Start() error {
 				logger.Info("stopping oauth2 sweep worker...")
 				s.OAuth2SweepWorker.stop()
 				s.OAuth2SweepWorker = nil
+			}
+			if s.SidekiqReaperStop != nil {
+				logger.Info("stopping sidekiq reaper...")
+				s.SidekiqReaperStop()
+			}
+			if s.SidekiqRunner != nil {
+				logger.Info("stopping sidekiq runner...")
+				s.SidekiqRunner.Shutdown()
 			}
 			if s.devPprofHandler != nil {
 				logger.Info("stopping dev pprof handler...")

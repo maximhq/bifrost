@@ -1553,6 +1553,39 @@ func (m *MockConfigStore) DeleteRoutingRule(ctx context.Context, id string, tx .
 	return nil
 }
 
+// Sidekiq
+func (m *MockConfigStore) CreateSidekiqJob(ctx context.Context, job *tables.TableSidekiqJob) error {
+	return nil
+}
+
+func (m *MockConfigStore) GetSidekiqJob(ctx context.Context, id string) (*tables.TableSidekiqJob, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) MarkSidekiqJobRunning(ctx context.Context, id string) error {
+	return nil
+}
+
+func (m *MockConfigStore) CompleteSidekiqJob(ctx context.Context, id, metadata string) error {
+	return nil
+}
+
+func (m *MockConfigStore) UpdateSidekiqJobProgress(ctx context.Context, id, metadata string) error {
+	return nil
+}
+
+func (m *MockConfigStore) FailSidekiqJob(ctx context.Context, id, metadata, lastErr string) error {
+	return nil
+}
+
+func (m *MockConfigStore) ListIncompleteSidekiqJobs(ctx context.Context) ([]tables.TableSidekiqJob, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) MarkStaleSidekiqJobsFailed(ctx context.Context, staleBefore time.Time) (int64, error) {
+	return 0, nil
+}
+
 func TestMergeGovernanceConfig_SyncsComplexityAnalyzerConfig(t *testing.T) {
 	initTestLogger()
 
