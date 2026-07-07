@@ -127,6 +127,12 @@ type ServerCallbacks interface {
 	EnableMCPClient(ctx context.Context, id string) error
 }
 
+// LogRedactionMappingResolverProvider is implemented by servers that can attach reveal data to log-detail responses.
+type LogRedactionMappingResolverProvider interface {
+	// GetLogRedactionMappingResolver returns the resolver used by the logging handler.
+	GetLogRedactionMappingResolver() handlers.LogRedactionMappingResolver
+}
+
 // BifrostHTTPServer represents a HTTP server instance.
 type BifrostHTTPServer struct {
 	Ctx    *schemas.BifrostContext
@@ -167,6 +173,11 @@ type BifrostHTTPServer struct {
 	// is available, otherwise left nil (user-mode requests fall back to the
 	// global server).
 	OAuth2IdentityResolver handlers.OAuth2IdentityResolver
+	// ExternalQuotaBudgetResolver supplies budgets/usage for VKs whose
+	// authoritative usage is tracked outside their own budget rows (enterprise
+	// access-profile-managed VKs). Optional; wired at server init when available,
+	// otherwise left nil so the quota endpoint reads the VK's own budget rows.
+	ExternalQuotaBudgetResolver handlers.ExternalQuotaBudgetResolver
 
 	wsPool *bfws.Pool
 }
@@ -1365,6 +1376,9 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	var govLogManager logging.LogManager
 	if loggerPlugin != nil {
 		loggingHandler = handlers.NewLoggingHandler(loggerPlugin.GetPluginLogManager(), s, s.Config)
+		if resolverProvider, ok := callbacks.(LogRedactionMappingResolverProvider); ok {
+			loggingHandler.SetLogRedactionMappingResolver(resolverProvider.GetLogRedactionMappingResolver())
+		}
 		govLogManager = loggerPlugin.GetPluginLogManager()
 	}
 	var governanceHandler *handlers.GovernanceHandler
@@ -1374,7 +1388,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	}
 	governancePlugin, _ := lib.FindPluginAs[schemas.LLMPlugin](s.Config, governancePluginName)
 	if governancePlugin != nil {
-		governanceHandler, err = handlers.NewGovernanceHandler(callbacks, s.Config.ConfigStore, govLogManager)
+		governanceHandler, err = handlers.NewGovernanceHandler(callbacks, s.Config.ConfigStore, govLogManager, s.ExternalQuotaBudgetResolver)
 		if err != nil {
 			return fmt.Errorf("failed to initialize governance handler: %v", err)
 		}
@@ -1906,7 +1920,7 @@ func (s *BifrostHTTPServer) Start() error {
 		return fmt.Errorf("failed to create listener on %s: %v", serverAddr, err)
 	}
 	go func() {
-		logger.Info("successfully started bifrost, serving UI on http://%s:%s", s.Host, s.Port)
+		logger.Info("successfully started bifrost, serving UI on http://%s", serverAddr)
 		if err := s.Server.Serve(ln); err != nil {
 			errChan <- err
 		}

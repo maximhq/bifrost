@@ -18,13 +18,13 @@ import (
 // framework's TraceStore implementation.
 // It also embeds a streaming.Accumulator for centralized streaming chunk accumulation.
 type Tracer struct {
-	store              *TraceStore
-	accumulator        *streaming.Accumulator
-	pricingManager     *modelcatalog.ModelCatalog
-	logger             schemas.Logger
-	obsPlugins         atomic.Pointer[[]schemas.ObservabilityPlugin]
-	cachedHdrPatterns  atomic.Pointer[[]string]
-	flushWG            sync.WaitGroup
+	store             *TraceStore
+	accumulator       *streaming.Accumulator
+	pricingManager    *modelcatalog.ModelCatalog
+	logger            schemas.Logger
+	obsPlugins        atomic.Pointer[[]schemas.ObservabilityPlugin]
+	cachedHdrPatterns atomic.Pointer[[]string]
+	flushWG           sync.WaitGroup
 }
 
 // NewTracer creates a new Tracer wrapping the given TraceStore.
@@ -108,6 +108,18 @@ func (t *Tracer) SetTraceRequestHeaders(traceID string, headers map[string]strin
 // directly off the completed trace.
 func (t *Tracer) SetTraceAttribute(traceID string, key string, value any) {
 	t.store.SetTraceAttribute(traceID, key, value)
+}
+
+// SetTraceRedactionReplacements stores connector-facing raw-to-placeholder replacements on a trace.
+func (t *Tracer) SetTraceRedactionReplacements(traceID string, replacements map[string]string) {
+	if t == nil || t.store == nil || strings.TrimSpace(traceID) == "" || len(replacements) == 0 {
+		return
+	}
+	trace := t.store.GetTrace(strings.TrimSpace(traceID))
+	if trace == nil {
+		return
+	}
+	trace.SetRedactionReplacements(replacements)
 }
 
 // CreateTrace creates a new trace with optional parent ID and returns the trace ID.
@@ -678,6 +690,8 @@ func (t *Tracer) CompleteAndFlushTrace(traceID string) {
 		// otherwise an unrecovered panic in this detached goroutine leaks the
 		// trace object and takes down the whole process.
 		defer t.ReleaseTrace(completedTrace)
+
+		completedTrace.ApplyRedactionReplacements()
 
 		var obsPlugins []schemas.ObservabilityPlugin
 		if loaded := t.obsPlugins.Load(); loaded != nil {

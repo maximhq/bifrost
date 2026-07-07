@@ -145,8 +145,8 @@ type GovernanceStore interface {
 	UpdateScopedModelBudgetUsageInMemory(ctx context.Context, scope, scopeID, model string, provider schemas.ModelProvider, cost float64) error
 	UpdateScopedModelRateLimitUsageInMemory(ctx context.Context, scope, scopeID, model string, provider schemas.ModelProvider, tokensUsed int64, shouldUpdateTokens bool, shouldUpdateRequests bool) error
 	// In-memory reset checks (return items that need DB sync)
-	ResetExpiredRateLimitsInMemory(ctx context.Context, rateLimitIDs ...string) []*configstoreTables.TableRateLimit
-	ResetExpiredBudgetsInMemory(ctx context.Context, budgetIDs ...string) []*configstoreTables.TableBudget
+	ResetExpiredRateLimitsInMemory(ctx context.Context, refreshReferences bool, rateLimitIDs ...string) []*configstoreTables.TableRateLimit
+	ResetExpiredBudgetsInMemory(ctx context.Context, refreshReferences bool, budgetIDs ...string) []*configstoreTables.TableBudget
 	// DB sync for expired items
 	ResetExpiredRateLimits(ctx context.Context, resetRateLimits []*configstoreTables.TableRateLimit) error
 	ResetExpiredBudgets(ctx context.Context, resetBudgets []*configstoreTables.TableBudget) error
@@ -423,7 +423,7 @@ func (gs *LocalGovernanceStore) BumpBudgetUsage(ctx context.Context, budgetID st
 			return nil
 		}
 		if gs.budgetResetTarget(old, time.Now()) != nil {
-			gs.ResetExpiredBudgetsInMemory(ctx, budgetID)
+			gs.ResetExpiredBudgetsInMemory(ctx, false, budgetID)
 			continue
 		}
 		clone := *old
@@ -451,7 +451,7 @@ func (gs *LocalGovernanceStore) BumpRateLimitUsage(ctx context.Context, rateLimi
 			return nil
 		}
 		if tokenNewLastReset, requestNewLastReset := gs.rateLimitResetTargets(old, time.Now()); tokenNewLastReset != nil || requestNewLastReset != nil {
-			gs.ResetExpiredRateLimitsInMemory(ctx, rateLimitID)
+			gs.ResetExpiredRateLimitsInMemory(ctx, false, rateLimitID)
 			continue
 		}
 		clone := *old
@@ -1804,7 +1804,7 @@ func (gs *LocalGovernanceStore) budgetResetTarget(budget *configstoreTables.Tabl
 }
 
 // resetExpiredBudgetFromSnapshot applies the local side effects for an expired budget snapshot.
-func (gs *LocalGovernanceStore) resetExpiredBudgetFromSnapshot(ctx context.Context, budget *configstoreTables.TableBudget, now time.Time) *configstoreTables.TableBudget {
+func (gs *LocalGovernanceStore) resetExpiredBudgetFromSnapshot(ctx context.Context, budget *configstoreTables.TableBudget, now time.Time, refreshReferences bool) *configstoreTables.TableBudget {
 	newLastReset := gs.budgetResetTarget(budget, now)
 	if newLastReset == nil {
 		return nil
@@ -1817,14 +1817,19 @@ func (gs *LocalGovernanceStore) resetExpiredBudgetFromSnapshot(ctx context.Conte
 	gs.LastDBUsagesBudgetsMu.Lock()
 	gs.LastDBUsagesBudgets[resetBudget.ID] = 0
 	gs.LastDBUsagesBudgetsMu.Unlock()
-	gs.updateBudgetReferences(ctx, resetBudget)
+	if refreshReferences {
+		gs.updateBudgetReferences(ctx, resetBudget)
+	}
 	gs.logger.Debug(fmt.Sprintf("Reset budget %s (was %.2f, reset to 0)", resetBudget.ID, oldUsage))
 	return resetBudget
 }
 
 // ResetExpiredBudgetsInMemory checks and resets budgets that have exceeded their reset duration.
 // With no budgetIDs it scans every budget; with IDs it only checks those budgets.
-func (gs *LocalGovernanceStore) ResetExpiredBudgetsInMemory(ctx context.Context, budgetIDs ...string) []*configstoreTables.TableBudget {
+// refreshReferences controls whether embedded owner references (VK, team, customer) are updated
+// after reset. Background/ticker callers pass true; request-time callers pass false to avoid
+// an O(N) scan of all owners on the hot path.
+func (gs *LocalGovernanceStore) ResetExpiredBudgetsInMemory(ctx context.Context, refreshReferences bool, budgetIDs ...string) []*configstoreTables.TableBudget {
 	now := time.Now()
 	var resetBudgets []*configstoreTables.TableBudget
 	resetOne := func(value any) {
@@ -1832,7 +1837,7 @@ func (gs *LocalGovernanceStore) ResetExpiredBudgetsInMemory(ctx context.Context,
 		if !ok || budget == nil {
 			return
 		}
-		if resetBudget := gs.resetExpiredBudgetFromSnapshot(ctx, budget, now); resetBudget != nil {
+		if resetBudget := gs.resetExpiredBudgetFromSnapshot(ctx, budget, now, refreshReferences); resetBudget != nil {
 			resetBudgets = append(resetBudgets, resetBudget)
 		}
 	}
@@ -1889,7 +1894,7 @@ func (gs *LocalGovernanceStore) rateLimitResetTargets(rateLimit *configstoreTabl
 }
 
 // resetExpiredRateLimitFromSnapshot applies the local side effects for an expired rate-limit snapshot.
-func (gs *LocalGovernanceStore) resetExpiredRateLimitFromSnapshot(ctx context.Context, rateLimit *configstoreTables.TableRateLimit, now time.Time) *configstoreTables.TableRateLimit {
+func (gs *LocalGovernanceStore) resetExpiredRateLimitFromSnapshot(ctx context.Context, rateLimit *configstoreTables.TableRateLimit, now time.Time, refreshReferences bool) *configstoreTables.TableRateLimit {
 	tokenNewLastReset, requestNewLastReset := gs.rateLimitResetTargets(rateLimit, now)
 	if tokenNewLastReset == nil && requestNewLastReset == nil {
 		return nil
@@ -1908,13 +1913,18 @@ func (gs *LocalGovernanceStore) resetExpiredRateLimitFromSnapshot(ctx context.Co
 		gs.LastDBUsagesRequestsRateLimits[resetRateLimit.ID] = 0
 		gs.LastDBUsagesRateLimitsRequestsMu.Unlock()
 	}
-	gs.updateRateLimitReferences(ctx, resetRateLimit)
+	if refreshReferences {
+		gs.updateRateLimitReferences(ctx, resetRateLimit)
+	}
 	return resetRateLimit
 }
 
-// ResetExpiredRateLimitsInMemory performs background reset of expired rate limits for both provider-level and VK-level.
+// ResetExpiredRateLimitsInMemory performs reset of expired rate limits for both provider-level and VK-level.
 // With no rateLimitIDs it scans every rate limit; with IDs it only checks those rate limits.
-func (gs *LocalGovernanceStore) ResetExpiredRateLimitsInMemory(ctx context.Context, rateLimitIDs ...string) []*configstoreTables.TableRateLimit {
+// refreshReferences controls whether embedded owner references (VK, team, customer) are updated
+// after reset. Background/ticker callers pass true; request-time callers pass false to avoid
+// an O(N) scan of all owners on the hot path.
+func (gs *LocalGovernanceStore) ResetExpiredRateLimitsInMemory(ctx context.Context, refreshReferences bool, rateLimitIDs ...string) []*configstoreTables.TableRateLimit {
 	now := time.Now()
 	var resetRateLimits []*configstoreTables.TableRateLimit
 	resetOne := func(value any) {
@@ -1922,7 +1932,7 @@ func (gs *LocalGovernanceStore) ResetExpiredRateLimitsInMemory(ctx context.Conte
 		if !ok || rateLimit == nil {
 			return
 		}
-		if resetRateLimit := gs.resetExpiredRateLimitFromSnapshot(ctx, rateLimit, now); resetRateLimit != nil {
+		if resetRateLimit := gs.resetExpiredRateLimitFromSnapshot(ctx, rateLimit, now, refreshReferences); resetRateLimit != nil {
 			resetRateLimits = append(resetRateLimits, resetRateLimit)
 		}
 	}

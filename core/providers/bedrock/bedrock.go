@@ -300,7 +300,8 @@ func (provider *BedrockProvider) completeRequest(ctx *schemas.BifrostContext, js
 		}
 	}
 
-	return provider.executeBedrockRequest(req)
+	body, latency, providerResponseHeaders, bErr := provider.executeBedrockRequest(req)
+	return body, latency, providerResponseHeaders, bErr
 }
 
 // executeBedrockRequest sends an already-built (and authenticated) request via the
@@ -313,42 +314,42 @@ func (provider *BedrockProvider) executeBedrockRequest(req *http.Request) ([]byt
 	latency := time.Since(startTime)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
-			return nil, latency, nil, &schemas.BifrostError{
+			return nil, latency, nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
 				IsBifrostError: false,
 				Error: &schemas.ErrorField{
 					Type:    schemas.Ptr(schemas.RequestCancelled),
 					Message: schemas.ErrRequestCancelled,
 					Error:   err,
 				},
-			}
+			}, latency)
 		}
 		// Check for timeout first using net.Error before checking net.OpError
 		var netErr net.Error
 		if errors.As(err, &netErr) && netErr.Timeout() {
-			return nil, latency, nil, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err)
+			return nil, latency, nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), latency)
 		}
 		if errors.Is(err, http.ErrHandlerTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, latency, nil, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err)
+			return nil, latency, nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), latency)
 		}
 		// Check for DNS lookup and network errors after timeout checks
 		var opErr *net.OpError
 		var dnsErr *net.DNSError
 		if errors.As(err, &opErr) || errors.As(err, &dnsErr) {
-			return nil, latency, nil, &schemas.BifrostError{
+			return nil, latency, nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
 				IsBifrostError: false,
 				Error: &schemas.ErrorField{
 					Message: schemas.ErrProviderNetworkError,
 					Error:   err,
 				},
-			}
+			}, latency)
 		}
-		return nil, latency, nil, &schemas.BifrostError{
+		return nil, latency, nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{
 				Message: schemas.ErrProviderDoRequest,
 				Error:   err,
 			},
-		}
+		}, latency)
 	}
 
 	// Extract provider response headers before closing the body
@@ -358,46 +359,17 @@ func (provider *BedrockProvider) executeBedrockRequest(req *http.Request) ([]byt
 	// Read response body
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, latency, providerResponseHeaders, &schemas.BifrostError{
+		return nil, latency, providerResponseHeaders, providerUtils.SetErrorLatency(&schemas.BifrostError{
 			IsBifrostError: true,
 			Error: &schemas.ErrorField{
 				Message: "error reading request",
 				Error:   err,
 			},
-		}
+		}, latency)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		var errorResp BedrockError
-
-		var rawErrorResponse interface{}
-		if err := sonic.Unmarshal(body, &rawErrorResponse); err != nil {
-			rawErrorResponse = string(body)
-		}
-
-		if err := sonic.Unmarshal(body, &errorResp); err != nil {
-			return nil, latency, providerResponseHeaders, &schemas.BifrostError{
-				IsBifrostError: true,
-				StatusCode:     &resp.StatusCode,
-				Error: &schemas.ErrorField{
-					Message: schemas.ErrProviderResponseUnmarshal,
-					Error:   err,
-				},
-				ExtraFields: schemas.BifrostErrorExtraFields{
-					RawResponse: rawErrorResponse,
-				},
-			}
-		}
-
-		return nil, latency, providerResponseHeaders, &schemas.BifrostError{
-			StatusCode: &resp.StatusCode,
-			Error: &schemas.ErrorField{
-				Message: errorResp.Message,
-			},
-			ExtraFields: schemas.BifrostErrorExtraFields{
-				RawResponse: rawErrorResponse,
-			},
-		}
+		return nil, latency, providerResponseHeaders, providerUtils.SetErrorLatency(parseBedrockHTTPError(resp.StatusCode, resp.Header, body), latency)
 	}
 
 	return body, latency, providerResponseHeaders, nil
@@ -439,40 +411,40 @@ func (provider *BedrockProvider) completeAgentRuntimeRequest(ctx *schemas.Bifros
 	latency := time.Since(startTime)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
-			return nil, latency, nil, &schemas.BifrostError{
+			return nil, latency, nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
 				IsBifrostError: false,
 				Error: &schemas.ErrorField{
 					Type:    schemas.Ptr(schemas.RequestCancelled),
 					Message: schemas.ErrRequestCancelled,
 					Error:   err,
 				},
-			}
+			}, latency)
 		}
 		var netErr net.Error
 		if errors.As(err, &netErr) && netErr.Timeout() {
-			return nil, latency, nil, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err)
+			return nil, latency, nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), latency)
 		}
 		if errors.Is(err, http.ErrHandlerTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, latency, nil, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err)
+			return nil, latency, nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), latency)
 		}
 		var opErr *net.OpError
 		var dnsErr *net.DNSError
 		if errors.As(err, &opErr) || errors.As(err, &dnsErr) {
-			return nil, latency, nil, &schemas.BifrostError{
+			return nil, latency, nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
 				IsBifrostError: false,
 				Error: &schemas.ErrorField{
 					Message: schemas.ErrProviderNetworkError,
 					Error:   err,
 				},
-			}
+			}, latency)
 		}
-		return nil, latency, nil, &schemas.BifrostError{
+		return nil, latency, nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{
 				Message: schemas.ErrProviderDoRequest,
 				Error:   err,
 			},
-		}
+		}, latency)
 	}
 
 	// Extract provider response headers before closing the body
@@ -481,17 +453,17 @@ func (provider *BedrockProvider) completeAgentRuntimeRequest(ctx *schemas.Bifros
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, latency, providerResponseHeaders, &schemas.BifrostError{
+		return nil, latency, providerResponseHeaders, providerUtils.SetErrorLatency(&schemas.BifrostError{
 			IsBifrostError: true,
 			Error: &schemas.ErrorField{
 				Message: "error reading request",
 				Error:   err,
 			},
-		}
+		}, latency)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, latency, providerResponseHeaders, parseBedrockHTTPError(resp.StatusCode, resp.Header, body)
+		return nil, latency, providerResponseHeaders, providerUtils.SetErrorLatency(parseBedrockHTTPError(resp.StatusCode, resp.Header, body), latency)
 	}
 
 	return body, latency, providerResponseHeaders, nil
@@ -536,45 +508,47 @@ func (provider *BedrockProvider) makeStreamingRequest(ctx *schemas.BifrostContex
 	}
 
 	// Make the request
+	startTime := time.Now()
 	resp, respErr := provider.streamingClient.Do(req)
+	latency := time.Since(startTime)
 	if respErr != nil {
 		if errors.Is(respErr, context.Canceled) {
-			return nil, &schemas.BifrostError{
+			return nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
 				IsBifrostError: false,
 				Error: &schemas.ErrorField{
 					Type:    schemas.Ptr(schemas.RequestCancelled),
 					Message: schemas.ErrRequestCancelled,
 					Error:   respErr,
 				},
-			}
+			}, latency)
 		}
 		// Check for timeout first using net.Error before checking net.OpError
 		var netErr net.Error
 		if errors.As(respErr, &netErr) && netErr.Timeout() {
-			return nil, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, respErr)
+			return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, respErr), latency)
 		}
 		if errors.Is(respErr, http.ErrHandlerTimeout) || errors.Is(respErr, context.DeadlineExceeded) {
-			return nil, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, respErr)
+			return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, respErr), latency)
 		}
 		// Check for DNS lookup and network errors after timeout checks
 		var opErr *net.OpError
 		var dnsErr *net.DNSError
 		if errors.As(respErr, &opErr) || errors.As(respErr, &dnsErr) {
-			return nil, &schemas.BifrostError{
+			return nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
 				IsBifrostError: false,
 				Error: &schemas.ErrorField{
 					Message: schemas.ErrProviderNetworkError,
 					Error:   respErr,
 				},
-			}
+			}, latency)
 		}
-		return nil, &schemas.BifrostError{
+		return nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{
 				Message: schemas.ErrProviderDoRequest,
 				Error:   respErr,
 			},
-		}
+		}, latency)
 	}
 
 	// Extract provider response headers before status check so error responses also forward them
@@ -584,7 +558,7 @@ func (provider *BedrockProvider) makeStreamingRequest(ctx *schemas.BifrostContex
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		return nil, parseBedrockHTTPError(resp.StatusCode, resp.Header, body)
+		return nil, providerUtils.SetErrorLatency(parseBedrockHTTPError(resp.StatusCode, resp.Header, body), latency)
 	}
 
 	return resp, nil
@@ -839,61 +813,62 @@ func (provider *BedrockProvider) listModelsByKey(ctx *schemas.BifrostContext, ke
 
 	// Execute the request
 	resp, err := provider.client.Do(req)
+	latency := time.Since(startTime)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
-			return nil, &schemas.BifrostError{
+			return nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
 				IsBifrostError: false,
 				Error: &schemas.ErrorField{
 					Type:    schemas.Ptr(schemas.RequestCancelled),
 					Message: schemas.ErrRequestCancelled,
 					Error:   err,
 				},
-			}
+			}, latency)
 		}
 		// Check for timeout first using net.Error before checking net.OpError
 		var netErr net.Error
 		if errors.As(err, &netErr) && netErr.Timeout() {
-			return nil, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err)
+			return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), latency)
 		}
 		if errors.Is(err, http.ErrHandlerTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err)
+			return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), latency)
 		}
 		// Check for DNS lookup and network errors after timeout checks
 		var opErr *net.OpError
 		var dnsErr *net.DNSError
 		if errors.As(err, &opErr) || errors.As(err, &dnsErr) {
-			return nil, &schemas.BifrostError{
+			return nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
 				IsBifrostError: false,
 				Error: &schemas.ErrorField{
 					Message: schemas.ErrProviderNetworkError,
 					Error:   err,
 				},
-			}
+			}, latency)
 		}
-		return nil, &schemas.BifrostError{
+		return nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{
 				Message: schemas.ErrProviderDoRequest,
 				Error:   err,
 			},
-		}
+		}, latency)
 	}
 
 	// Read response body and close
 	responseBody, err := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if err != nil {
-		return nil, &schemas.BifrostError{
+		return nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
 			IsBifrostError: true,
 			Error: &schemas.ErrorField{
 				Message: "error reading request",
 				Error:   err,
 			},
-		}
+		}, latency)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, parseBedrockHTTPError(resp.StatusCode, resp.Header, responseBody)
+		return nil, providerUtils.SetErrorLatency(parseBedrockHTTPError(resp.StatusCode, resp.Header, responseBody), latency)
 	}
 
 	// Parse Bedrock-specific response
@@ -979,7 +954,7 @@ func (provider *BedrockProvider) TextCompletion(ctx *schemas.BifrostContext, key
 		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
 	}
 	if err != nil {
-		return nil, providerUtils.EnrichError(ctx, err, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, err, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	// Handle model-specific response conversion
@@ -1190,7 +1165,7 @@ func (provider *BedrockProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
 	}
 	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	// Parse Bedrock Converse API response
@@ -1199,13 +1174,13 @@ func (provider *BedrockProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 
 	// Parse the response using the new Bedrock type
 	if err := sonic.Unmarshal(responseBody, bedrockResponse); err != nil {
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("failed to parse bedrock response", err), jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("failed to parse bedrock response", err), jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	// Convert using the new response converter
 	bifrostResponse, err := bedrockResponse.ToBifrostChatResponse(ctx, request.Model)
 	if err != nil {
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("failed to convert bedrock response", err), jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("failed to convert bedrock response", err), jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	// Override finish reason for structured output (Converse API only)
@@ -1666,7 +1641,7 @@ func (provider *BedrockProvider) Responses(ctx *schemas.BifrostContext, key sche
 		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
 	}
 	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	// Parse Bedrock Converse API response
@@ -1675,13 +1650,13 @@ func (provider *BedrockProvider) Responses(ctx *schemas.BifrostContext, key sche
 
 	// Parse the response using the new Bedrock type
 	if err := sonic.Unmarshal(responseBody, bedrockResponse); err != nil {
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("failed to parse bedrock response", err), jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("failed to parse bedrock response", err), jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	// Convert using the new response converter
 	bifrostResponse, err := bedrockResponse.ToBifrostResponsesResponse(ctx)
 	if err != nil {
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("failed to convert bedrock response", err), jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("failed to convert bedrock response", err), jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	bifrostResponse.Model = request.Model
@@ -1732,8 +1707,9 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 	startTime := time.Now()
 
 	resp, bifrostErr := provider.makeStreamingRequest(ctx, jsonData, key, request.Model, "converse-stream")
+	latency := time.Since(startTime)
 	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeadersFromHTTP(resp))
@@ -2035,7 +2011,7 @@ func (provider *BedrockProvider) Embedding(ctx *schemas.BifrostContext, key sche
 		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
 	}
 	if bifrostError != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostError, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, bifrostError, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 	// Parse response based on model type
 	var bifrostResponse *schemas.BifrostEmbeddingResponse
@@ -2043,7 +2019,7 @@ func (provider *BedrockProvider) Embedding(ctx *schemas.BifrostContext, key sche
 	case "titan":
 		var titanResp BedrockTitanEmbeddingResponse
 		if err := sonic.Unmarshal(rawResponse, &titanResp); err != nil {
-			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("error parsing Titan embedding response", err), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse)
+			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("error parsing Titan embedding response", err), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		}
 		bifrostResponse = titanResp.ToBifrostEmbeddingResponse()
 		bifrostResponse.Model = request.Model
@@ -2051,11 +2027,11 @@ func (provider *BedrockProvider) Embedding(ctx *schemas.BifrostContext, key sche
 	case "cohere":
 		var cohereResp BedrockCohereEmbeddingResponse
 		if err := sonic.Unmarshal(rawResponse, &cohereResp); err != nil {
-			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("error parsing Cohere embedding response", err), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse)
+			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("error parsing Cohere embedding response", err), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		}
 		converted, convErr := cohereResp.ToBifrostEmbeddingResponse()
 		if convErr != nil {
-			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("error parsing Cohere embedding response", convErr), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse)
+			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("error parsing Cohere embedding response", convErr), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		}
 		bifrostResponse = converted
 		bifrostResponse.Model = request.Model
@@ -2128,13 +2104,13 @@ func (provider *BedrockProvider) Rerank(ctx *schemas.BifrostContext, key schemas
 		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
 	}
 	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	response := &BedrockRerankResponse{}
 	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(rawResponseBody, response, jsonData, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, rawResponseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, rawResponseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	returnDocuments := request.Params != nil && request.Params.ReturnDocuments != nil && *request.Params.ReturnDocuments
@@ -2219,18 +2195,18 @@ func (provider *BedrockProvider) ImageGeneration(ctx *schemas.BifrostContext, ke
 		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
 	}
 	if bifrostError != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostError, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, bifrostError, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	// Parse response based on model type
 	var bifrostResponse *schemas.BifrostImageGenerationResponse
 	var imageResp BedrockImageGenerationResponse
 	if err := sonic.Unmarshal(rawResponse, &imageResp); err != nil {
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("error parsing image generation response", err), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("error parsing image generation response", err), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	if imageResp.Error != "" {
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(imageResp.Error, nil), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(imageResp.Error, nil), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	bifrostResponse = ToBifrostImageGenerationResponse(&imageResp)
@@ -2294,17 +2270,17 @@ func (provider *BedrockProvider) ImageEdit(ctx *schemas.BifrostContext, key sche
 		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
 	}
 	if bifrostError != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostError, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, bifrostError, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	// Parse response (reuse BedrockImageGenerationResponse)
 	var imageResp BedrockImageGenerationResponse
 	if err := sonic.Unmarshal(rawResponse, &imageResp); err != nil {
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("error parsing image edit response", err), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("error parsing image edit response", err), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	if imageResp.Error != "" {
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(imageResp.Error, nil), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(imageResp.Error, nil), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	// Convert response and set metadata
@@ -2361,17 +2337,17 @@ func (provider *BedrockProvider) ImageVariation(ctx *schemas.BifrostContext, key
 		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
 	}
 	if bifrostError != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostError, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, bifrostError, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	// Parse response (reuse BedrockImageGenerationResponse and ToBifrostImageGenerationResponse)
 	var imageResp BedrockImageGenerationResponse
 	if err := sonic.Unmarshal(rawResponse, &imageResp); err != nil {
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("error parsing image variation response", err), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("error parsing image variation response", err), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	if imageResp.Error != "" {
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(imageResp.Error, nil), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(imageResp.Error, nil), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	// Convert response and set metadata
@@ -3827,7 +3803,7 @@ func (provider *BedrockProvider) CountTokens(ctx *schemas.BifrostContext, key sc
 				},
 			}, nil
 		}
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	// Parse the response
@@ -3840,7 +3816,7 @@ func (provider *BedrockProvider) CountTokens(ctx *schemas.BifrostContext, key sc
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 	)
 	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	// Convert to Bifrost format

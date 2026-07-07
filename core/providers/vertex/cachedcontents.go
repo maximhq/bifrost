@@ -178,7 +178,7 @@ func (provider *VertexProvider) CachedContentCreate(ctx *schemas.BifrostContext,
 		return nil, bifrostErr
 	}
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, parseVertexCachedContentError(resp)
+		return nil, providerUtils.SetErrorLatency(parseVertexCachedContentError(resp), latency)
 	}
 
 	respBody, decErr := providerUtils.CheckAndDecodeBody(resp)
@@ -250,7 +250,7 @@ func (provider *VertexProvider) cachedContentListByKey(ctx *schemas.BifrostConte
 		return nil, latency, bifrostErr
 	}
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, latency, parseVertexCachedContentError(resp)
+		return nil, latency, providerUtils.SetErrorLatency(parseVertexCachedContentError(resp), latency)
 	}
 
 	respBody, decErr := providerUtils.CheckAndDecodeBody(resp)
@@ -323,7 +323,7 @@ func (provider *VertexProvider) cachedContentRetrieveByKey(ctx *schemas.BifrostC
 		return nil, latency, bifrostErr
 	}
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, latency, parseVertexCachedContentError(resp)
+		return nil, latency, providerUtils.SetErrorLatency(parseVertexCachedContentError(resp), latency)
 	}
 
 	respBody, decErr := providerUtils.CheckAndDecodeBody(resp)
@@ -427,7 +427,7 @@ func (provider *VertexProvider) cachedContentUpdateByKey(ctx *schemas.BifrostCon
 		return nil, latency, bifrostErr
 	}
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, latency, parseVertexCachedContentError(resp)
+		return nil, latency, providerUtils.SetErrorLatency(parseVertexCachedContentError(resp), latency)
 	}
 
 	respBody, decErr := providerUtils.CheckAndDecodeBody(resp)
@@ -512,7 +512,7 @@ func (provider *VertexProvider) cachedContentDeleteByKey(ctx *schemas.BifrostCon
 		return nil, latency, bifrostErr
 	}
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, latency, parseVertexCachedContentError(resp)
+		return nil, latency, providerUtils.SetErrorLatency(parseVertexCachedContentError(resp), latency)
 	}
 
 	return &schemas.BifrostCachedContentDeleteResponse{

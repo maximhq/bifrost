@@ -74,6 +74,10 @@ const RequestTypes: Array<{ key: RequestType; label: string }> = [
 	{ key: "chat_completion_stream", label: "Chat Completion Stream" },
 	{ key: "responses", label: "Responses" },
 	{ key: "responses_stream", label: "Responses Stream" },
+	{ key: "responses_retrieve", label: "Responses Retrieve" },
+	{ key: "responses_delete", label: "Responses Delete" },
+	{ key: "responses_cancel", label: "Responses Cancel" },
+	{ key: "responses_input_items", label: "Responses Input Items" },
 	{ key: "embedding", label: "Embedding" },
 	{ key: "rerank", label: "Rerank" },
 	{ key: "speech", label: "Speech" },
@@ -87,6 +91,15 @@ const RequestTypes: Array<{ key: RequestType; label: string }> = [
 	{ key: "image_variation", label: "Image Variation" },
 	{ key: "count_tokens", label: "Count Tokens" },
 ];
+
+// Path overrides replace the default path verbatim; these request paths embed the
+// response ID, so an override can never produce a valid URL for them.
+const PathOverrideUnsupported = new Set<RequestType>([
+	"responses_retrieve",
+	"responses_delete",
+	"responses_cancel",
+	"responses_input_items",
+]);
 
 export function AllowedRequestsFields({
 	control,
@@ -127,7 +140,7 @@ export function AllowedRequestsFields({
 						</div>
 						<div className="flex items-center gap-2">
 							{/* Settings icon for path override - only show when enabled */}
-							{allowedField.value && !isDisabled && !isPathOverrideDisabled && !disabled && (
+							{allowedField.value && !isDisabled && !isPathOverrideDisabled && !disabled && !PathOverrideUnsupported.has(requestType.key) && (
 								<FormField
 									control={control}
 									name={`${pathOverridesPrefix}.${requestType.key}`}

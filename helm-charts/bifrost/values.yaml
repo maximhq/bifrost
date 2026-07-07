@@ -200,6 +200,7 @@ bifrost:
   # Application settings
   appDir: /app/data
   port: 8080
+  # 0.0.0.0 binds IPv4 interfaces only; use "::" for dual-stack/IPv6-only clusters
   host: 0.0.0.0
   logLevel: info
   logStyle: json
@@ -296,6 +297,14 @@ bifrost:
     # routingChainMaxDepth: 10        # Maximum depth for routing rule chain evaluation
     # allowDirectKeys: false          # Allow callers to bypass the key pool via x-bf-direct-key + Authorization header
     # mcpExternalClientUrl: ""        # Public base URL used as redirect_uri when Bifrost is an OAuth client to MCP servers
+    # How /mcp authenticates inbound MCP clients: headers (default), both, or oauth
+    # mcpServerAuthMode: "headers"
+    # OAuth2 authorization server settings for /mcp (only used when mcpServerAuthMode is "both" or "oauth")
+    # oauth2ServerConfig:
+    #   issuerUrl: ""             # Stable public issuer URL; required for multi-host deployments. Supports env.VAR_NAME
+    #   authCodeTtl: 300          # Authorization code lifetime in seconds (default 300, max 900)
+    #   accessTokenTtl: 600       # Issued JWT lifetime in seconds (default 600)
+    #   disableVkIdentity: false  # Only valid when mcpServerAuthMode is "oauth"
 
   # Server configuration
   server:
@@ -401,6 +410,21 @@ bifrost:
   #         region: "us-east-1"
   #         access_key: "env.AWS_ACCESS_KEY_ID"
   #         secret_key: "env.AWS_SECRET_ACCESS_KEY"
+  #
+  # # AWS Bedrock Mantle example (requires bedrock_mantle_key_config)
+  # bedrock_mantle:
+  #   keys:
+  #     - name: "bedrock-mantle-key"
+  #       value: ""
+  #       weight: 1
+  #       bedrock_mantle_key_config:
+  #         region: "us-east-1"                     # Required
+  #         access_key: "env.AWS_ACCESS_KEY_ID"
+  #         secret_key: "env.AWS_SECRET_ACCESS_KEY"
+  #         # session_token: "env.AWS_SESSION_TOKEN"
+  #         # role_arn: ""                          # For AssumeRole
+  #         # external_id: ""
+  #         # session_name: ""
 
   # Provider secrets - use existing Kubernetes secrets for provider API keys
   # These will be injected as environment variables that can be referenced in providers config
@@ -435,6 +459,10 @@ bifrost:
       # - name: "example-https-mcp"
       #   connectionType: "http"
       #   connectionString: "https://my-internal-mcp.corp/mcp"
+      #   # Per-server tool execution timeout override. Go duration string ("30s", "2m")
+      #   # or a bare integer treated as seconds. Overrides toolManagerConfig.toolExecutionTimeout
+      #   # for this server only. Omit or set to 0 to use the global default.
+      #   toolExecutionTimeout: "30s"
       #   # TLS configuration for HTTP and SSE connection types.
       #   # Use when the MCP server presents a self-signed or private CA certificate.
       #   tlsConfig:
@@ -717,6 +745,7 @@ bifrost:
       #   description: "Virtual key description"
       #   value: "sk-bf-..."           # Optional - auto-generated if omitted
       #   is_active: true
+      #   expires_at: "2026-12-31T23:59:59Z"  # Optional RFC3339 expiry; requests rejected once passed. Omit for no expiry
       #   team_id: "team-1"        # Mutually exclusive with customer_id
       #   customer_id: ""          # Mutually exclusive with team_id
       #   rate_limit_id: "rate-limit-1"
@@ -1122,11 +1151,22 @@ storage:
   logsStore:
     enabled: true
     # Backend type for logs store. Empty string uses storage.mode as default
-    type: "" # Options: sqlite, postgres, or "" (uses storage.mode)
+    type: "" # Options: sqlite, postgres, clickhouse, or "" (uses storage.mode)
     # PostgreSQL connection pool tuning (only applies when type is postgres)
     # maxIdleConns: 5
     # maxOpenConns: 50
     # matviewRefreshInterval: "30s"  # How often to refresh materialized views. Go duration string (e.g. '30s', '5m', '1h'). Minimum 5s.
+    # ClickHouse connection settings (only applies when type is clickhouse)
+    # clickhouse:
+    #   host: "clickhouse.default.svc.cluster.local"  # Required
+    #   port: "9000"          # Defaults by protocol: native 9000 (9440 TLS), http 8123 (8443 TLS)
+    #   database: "default"
+    #   username: "default"
+    #   password: "env.CLICKHOUSE_PASSWORD"
+    #   protocol: "native"    # Options: native, http (default: native)
+    #   secure: false         # Enable TLS
+    #   dialTimeout: 10000    # Connection dial timeout in milliseconds
+    #   cluster: ""           # Optional cluster name; runs DDL ON CLUSTER with replicated engines
     # Async writer queue and batch tuning. Omitted fields use Bifrost defaults.
     # writer:
     #   maxBatchSize: 1000

@@ -1,9 +1,18 @@
 package schemas
 
-import "time"
+import (
+	"database/sql/driver"
+	"time"
+)
 
 // AsyncJobStatus represents the status of an async job
 type AsyncJobStatus string
+
+// Value implements driver.Valuer so database drivers that append typed
+// column values (e.g. clickhouse-go batch inserts) can serialize the type.
+func (s AsyncJobStatus) Value() (driver.Value, error) {
+	return string(s), nil
+}
 
 const (
 	AsyncJobStatusPending    AsyncJobStatus = "pending"
