@@ -26,9 +26,10 @@ import (
 
 // LoggingHandler manages HTTP requests for logging operations
 type LoggingHandler struct {
-	logManager          logging.LogManager
-	redactedKeysManager RedactedKeysManager
-	config              *lib.Config
+	logManager                  logging.LogManager
+	redactedKeysManager         RedactedKeysManager
+	config                      *lib.Config
+	logRedactionMappingResolver LogRedactionMappingResolver
 
 	// filterDataCache memoizes /api/logs/filterdata response bodies. Filter
 	// dropdowns don't need request-fresh data and the underlying matview-backed
@@ -203,6 +204,14 @@ type RedactedKeysManager interface {
 	GetAllRedactedRoutingRules(ctx context.Context, ids []string) []tables.TableRoutingRule
 }
 
+// LogRedactionMappingResolver optionally exposes decoded redaction mappings on log-detail responses.
+type LogRedactionMappingResolver interface {
+	// ResolveLogRedactionMapping returns a placeholder-to-original mapping when the caller may reveal it.
+	// Implementations should return nil, nil when the caller is not authorized or no mapping is available.
+	// Errors are treated as reveal-data failures only; the base log detail response is still served.
+	ResolveLogRedactionMapping(ctx *fasthttp.RequestCtx, log *logstore.Log) (map[string]string, error)
+}
+
 // NewLoggingHandler creates a new logging handler instance
 func NewLoggingHandler(logManager logging.LogManager, redactedKeysManager RedactedKeysManager, config *lib.Config) *LoggingHandler {
 	return &LoggingHandler{
@@ -210,6 +219,11 @@ func NewLoggingHandler(logManager logging.LogManager, redactedKeysManager Redact
 		redactedKeysManager: redactedKeysManager,
 		config:              config,
 	}
+}
+
+// SetLogRedactionMappingResolver wires the optional resolver used by Enterprise log-detail reads.
+func (h *LoggingHandler) SetLogRedactionMappingResolver(resolver LogRedactionMappingResolver) {
+	h.logRedactionMappingResolver = resolver
 }
 
 func (h *LoggingHandler) shouldHideDeletedVirtualKeysInFilters() bool {
@@ -600,6 +614,15 @@ func (h *LoggingHandler) getLogByID(ctx *fasthttp.RequestCtx) {
 		}
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get log: %v", err))
 		return
+	}
+
+	if h.logRedactionMappingResolver != nil && log.RedactionMapping != "" {
+		mapping, err := h.logRedactionMappingResolver.ResolveLogRedactionMapping(ctx, log)
+		if err != nil {
+			logger.Error("failed to resolve redaction mapping for log %s: %v", id, err)
+		} else if len(mapping) > 0 {
+			log.RevealRedactionMapping = mapping
+		}
 	}
 
 	// Assemble virtual key, selected key, and routing rule objects (gorm:"-" fields not

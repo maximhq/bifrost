@@ -22,6 +22,7 @@ import {
 	DropdownMenuTrigger,
 } from "@/components/ui/dropdownMenu";
 import { DottedSeparator } from "@/components/ui/separator";
+import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
@@ -35,7 +36,7 @@ import { isJson } from "@/lib/utils/validation";
 import { Link } from "@tanstack/react-router";
 import { addMilliseconds, format } from "date-fns";
 import { AlertCircle, ChevronDown, Clipboard, Copy, Download, Loader2, MoreVertical, Trash2, Wrench } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import BlockHeader from "../views/blockHeader";
 import CollapsibleBox from "../views/collapsibleBox";
@@ -83,28 +84,38 @@ const formatRealtimeSource = (value: unknown): string => {
 	}
 };
 
-const extractResponsesText = (msg: ResponsesMessage): string => {
+const extractResponsesText = (msg: ResponsesMessage, mapping?: Record<string, string>): string => {
+	let text: string;
 	if (msg.type === "reasoning") {
 		const summaryText = (msg.summary ?? [])
 			.map((s) => s.text)
 			.filter(Boolean)
 			.join("\n")
 			.trim();
-		if (summaryText) return summaryText;
-		if (msg.encrypted_content) return msg.encrypted_content;
-	}
-	if (typeof msg.content === "string") return msg.content;
-	if (Array.isArray(msg.content)) {
-		return msg.content
+		if (summaryText) text = summaryText;
+		else if (msg.encrypted_content) text = msg.encrypted_content;
+		else text = "";
+	} else if (typeof msg.content === "string") {
+		text = msg.content;
+	} else if (Array.isArray(msg.content)) {
+		text = msg.content
 			.filter(
 				(b: any) =>
 					b && b.text && (b.type === "input_text" || b.type === "output_text" || b.type === "reasoning_text" || b.type === "refusal"),
 			)
 			.map((b: any) => b.text as string)
 			.join("\n");
+	} else if (typeof (msg as any).arguments === "string") {
+		text = (msg as any).arguments as string;
+	} else {
+		text = "";
 	}
-	if (typeof (msg as any).arguments === "string") return (msg as any).arguments as string;
-	return "";
+	if (mapping && text) {
+		for (const [key, value] of Object.entries(mapping)) {
+			text = text.replaceAll(`[${key}]`, value);
+		}
+	}
+	return text;
 };
 
 type ReasoningParts = {
@@ -131,10 +142,10 @@ const collectReasoningFromBlocks = (blocks: any[]): { text: string; signatures: 
 	return { text: texts.join("\n"), signatures };
 };
 
-const extractReasoningParts = (msg: ResponsesMessage): ReasoningParts => {
-	const summaries = (msg.summary ?? []).map((s) => (s?.text ?? "").trim()).filter(Boolean);
+const extractReasoningParts = (msg: ResponsesMessage, mapping?: Record<string, string>): ReasoningParts => {
+	let summaries = (msg.summary ?? []).map((s) => (s?.text ?? "").trim()).filter(Boolean);
 	const encryptedRaw = (msg as any).encrypted_content?.trim?.();
-	const encrypted = encryptedRaw ? encryptedRaw : undefined;
+	let encrypted = encryptedRaw ? encryptedRaw : undefined;
 	const signatures: string[] = [];
 	let contentText = "";
 	if (typeof msg.content === "string") {
@@ -163,6 +174,24 @@ const extractReasoningParts = (msg: ResponsesMessage): ReasoningParts => {
 			"";
 		if (topText.trim()) contentText = topText;
 	}
+	if (mapping) {
+		summaries = summaries.map((s) => {
+			for (const [key, value] of Object.entries(mapping)) {
+				s = s.replaceAll(`[${key}]`, value);
+			}
+			return s;
+		});
+		if (encrypted) {
+			for (const [key, value] of Object.entries(mapping)) {
+				encrypted = encrypted.replaceAll(`[${key}]`, value);
+			}
+		}
+		if (contentText) {
+			for (const [key, value] of Object.entries(mapping)) {
+				contentText = contentText.replaceAll(`[${key}]`, value);
+			}
+		}
+	}
 	return {
 		summaries,
 		encrypted,
@@ -171,19 +200,24 @@ const extractReasoningParts = (msg: ResponsesMessage): ReasoningParts => {
 	};
 };
 
-const extractChatReasoning = (message: any): string => {
+const extractChatReasoning = (message: any, mapping?: Record<string, string>): string => {
 	if (!message) return "";
+	let text = "";
 	if (typeof message.reasoning === "string" && message.reasoning.trim()) {
-		return message.reasoning;
-	}
-	if (Array.isArray(message.reasoning_details)) {
+		text = message.reasoning;
+	} else if (Array.isArray(message.reasoning_details)) {
 		const parts = (message.reasoning_details as any[])
 			.map((d) => (typeof d?.text === "string" ? d.text : (d?.summary ?? "")))
 			.map((t: string) => (typeof t === "string" ? t.trim() : ""))
 			.filter(Boolean);
-		if (parts.length > 0) return parts.join("\n");
+		if (parts.length > 0) text = parts.join("\n");
 	}
-	return "";
+	if (mapping && text) {
+		for (const [key, value] of Object.entries(mapping)) {
+			text = text.replaceAll(`[${key}]`, value);
+		}
+	}
+	return text;
 };
 
 const getResponsesRole = (msg: ResponsesMessage): MessageRole => {
@@ -248,16 +282,25 @@ const coalesceResponsesMessages = (msgs: ResponsesMessage[]): ResponsesMessage[]
 	});
 };
 
-const extractMessageText = (message: any): string => {
+const extractMessageText = (message: any, mapping?: Record<string, string>): string => {
 	if (!message || message.content == null) return "";
-	if (typeof message.content === "string") return message.content;
-	if (Array.isArray(message.content)) {
-		return message.content
+	let text: string;
+	if (typeof message.content === "string") {
+		text = message.content;
+	} else if (Array.isArray(message.content)) {
+		text = message.content
 			.filter((block: any) => block && (block.type === "text" || block.type === "input_text" || block.type === "output_text") && block.text)
 			.map((block: any) => block.text)
 			.join("\n");
+	} else {
+		text = "";
 	}
-	return "";
+	if (mapping && text) {
+		for (const [key, value] of Object.entries(mapping)) {
+			text = text.replaceAll(`[${key}]`, value);
+		}
+	}
+	return text;
 };
 
 const formatJsonSafe = (str: string | undefined): string => {
@@ -511,6 +554,7 @@ interface LogDetailViewProps {
 	resolvedSelectedPromptName?: string; // Current prompt name from prompt-repo when `selected_prompt_id` is set; falls back to stored log name
 	loading?: boolean;
 	handleDelete?: (log: LogEntry) => void;
+	canReveal?: boolean;
 	onClose?: () => void;
 	headerAction?: ReactNode;
 	onFilterByParentRequestId?: (parentRequestId: string) => void;
@@ -521,6 +565,7 @@ export function LogDetailView({
 	resolvedSelectedPromptName,
 	loading = false,
 	handleDelete,
+	canReveal = false,
 	onClose,
 	headerAction,
 	onFilterByParentRequestId,
@@ -529,8 +574,33 @@ export function LogDetailView({
 		successMessage: "Request body copied to clipboard",
 		errorMessage: "Failed to copy request body",
 	});
+	const [showRevealedValues, setShowRevealedValues] = useState(false);
+	const revealMapping = log?.redaction_mapping;
+	const revealAvailable = canReveal && Boolean(revealMapping && Object.keys(revealMapping).length > 0);
+	const revealEnabled = revealAvailable && showRevealedValues;
+	const activeRevealedMapping = revealEnabled ? revealMapping : undefined;
+
+	useEffect(() => {
+		setShowRevealedValues(false);
+	}, [log?.id, revealAvailable]);
+
 	const allRoles: MessageRole[] = ["system", "user", "assistant", "tool", "reasoning"];
 	const [visibleRoles, setVisibleRoles] = useState<Set<MessageRole>>(new Set(allRoles));
+
+	const handleToggleReveal = (checked: boolean) => {
+		setShowRevealedValues(checked && revealAvailable);
+	};
+
+	// applyRedactionMapping replaces reversible placeholders like [EMAIL-1] with
+	// their original values when the reveal toggle is active.
+	const applyRedactionMapping = (text: string | undefined): string => {
+		if (!text || !activeRevealedMapping) return text || "";
+		let result = text;
+		for (const [key, value] of Object.entries(activeRevealedMapping)) {
+			result = result.replaceAll(`[${key}]`, value);
+		}
+		return result;
+	};
 
 	if (!log) return null;
 
@@ -586,62 +656,73 @@ export function LogDetailView({
 					{headerAction}
 					<span className="text-foreground font-medium">Request details</span>
 				</div>
-				{onClose ? (
-					<AlertDialog>
-						<DropdownMenu>
-							<DropdownMenuTrigger asChild>
-								<Button variant="ghost" className="size-8" type="button" data-testid="logdetails-actions-button">
-									<MoreVertical className="h-3 w-3" />
-								</Button>
-							</DropdownMenuTrigger>
-							<DropdownMenuContent align="end">
-								{!isPassthrough && (
-									<DropdownMenuItem onClick={() => copyRequestBody(log, copyBody)} data-testid="logdetails-copy-request-body-button">
-										<Clipboard className="h-4 w-4" />
-										Copy request body
+				<div className="flex items-center gap-3">
+					{revealAvailable && (
+						<div className="flex items-center gap-2">
+							<span className="text-muted-foreground text-[11px] font-medium">Show original values</span>
+							<Switch
+								checked={revealEnabled}
+								onCheckedChange={handleToggleReveal}
+								data-testid="logdetails-reveal-toggle"
+							/>
+						</div>
+					)}
+					{onClose ? (
+						<AlertDialog>
+							<DropdownMenu>
+								<DropdownMenuTrigger asChild>
+									<Button variant="ghost" className="size-8" type="button" data-testid="logdetails-actions-button">
+										<MoreVertical className="h-3 w-3" />
+									</Button>
+								</DropdownMenuTrigger>
+								<DropdownMenuContent align="end">
+									{!isPassthrough && (
+										<DropdownMenuItem onClick={() => copyRequestBody(log, copyBody)} data-testid="logdetails-copy-request-body-button">
+											<Clipboard className="h-4 w-4" />
+											Copy request body
+										</DropdownMenuItem>
+									)}
+									<DropdownMenuItem
+										onClick={() => downloadAsJson(log, `log-${log.id ?? "export"}.json`)}
+										data-testid="logdetails-export-log-button"
+									>
+										<Download className="h-4 w-4" />
+										Export as JSON
 									</DropdownMenuItem>
-								)}
-								<DropdownMenuItem
-									onClick={() => downloadAsJson(log, `log-${log.id ?? "export"}.json`)}
-									data-testid="logdetails-export-log-button"
-								>
-									<Download className="h-4 w-4" />
-									Export as JSON
-								</DropdownMenuItem>
-
-								{handleDelete ? (
-									<>
-										<DropdownMenuSeparator />
-										<AlertDialogTrigger asChild>
-											<DropdownMenuItem variant="destructive" data-testid="logdetails-delete-item">
-												<Trash2 className="h-4 w-4" />
-												Delete log
-											</DropdownMenuItem>
-										</AlertDialogTrigger>{" "}
-									</>
-								) : null}
-							</DropdownMenuContent>
-						</DropdownMenu>
-						<AlertDialogContent>
-							<AlertDialogHeader>
-								<AlertDialogTitle>Are you sure you want to delete this log?</AlertDialogTitle>
-								<AlertDialogDescription>This action cannot be undone. This will permanently delete the log entry.</AlertDialogDescription>
-							</AlertDialogHeader>
-							<AlertDialogFooter>
-								<AlertDialogCancel data-testid="logdetails-delete-cancel-button">Cancel</AlertDialogCancel>
-								<AlertDialogAction
-									data-testid="logdetails-delete-confirm-button"
-									onClick={() => {
-										if (handleDelete) handleDelete(log);
-										onClose();
-									}}
-								>
-									Delete
-								</AlertDialogAction>
-							</AlertDialogFooter>
-						</AlertDialogContent>
-					</AlertDialog>
-				) : null}
+									{handleDelete ? (
+										<>
+											<DropdownMenuSeparator />
+											<AlertDialogTrigger asChild>
+												<DropdownMenuItem variant="destructive" data-testid="logdetails-delete-item">
+													<Trash2 className="h-4 w-4" />
+													Delete log
+												</DropdownMenuItem>
+											</AlertDialogTrigger>{" "}
+										</>
+									) : null}
+								</DropdownMenuContent>
+							</DropdownMenu>
+							<AlertDialogContent>
+								<AlertDialogHeader>
+									<AlertDialogTitle>Are you sure you want to delete this log?</AlertDialogTitle>
+									<AlertDialogDescription>This action cannot be undone. This will permanently delete the log entry.</AlertDialogDescription>
+								</AlertDialogHeader>
+								<AlertDialogFooter>
+									<AlertDialogCancel data-testid="logdetails-delete-cancel-button">Cancel</AlertDialogCancel>
+									<AlertDialogAction
+										data-testid="logdetails-delete-confirm-button"
+										onClick={() => {
+											if (handleDelete) handleDelete(log);
+											onClose();
+										}}
+									>
+										Delete
+									</AlertDialogAction>
+								</AlertDialogFooter>
+							</AlertDialogContent>
+						</AlertDialog>
+					) : null}
+				</div>
 			</div>
 			<div className="border-border rounded-sm border">
 				<div className="flex items-start justify-between gap-6 px-5 pt-5 pb-4">
@@ -1741,8 +1822,8 @@ export function LogDetailView({
 									: log.input_history?.filter(Boolean)
 								)?.flatMap((message, index) => {
 									const role = ((message.role as string) || "user") as MessageRole;
-									const text = extractMessageText(message);
-									const reasoningText = extractChatReasoning(message);
+									const text = extractMessageText(message, activeRevealedMapping);
+									const reasoningText = extractChatReasoning(message, activeRevealedMapping);
 									const showAll = visibleRoles.size === allRoles.length;
 									const showMain = showAll || visibleRoles.has(role);
 									const showReasoning = !!reasoningText && (showAll || visibleRoles.has("reasoning"));
@@ -1840,12 +1921,12 @@ export function LogDetailView({
 								{log.output_message &&
 									!log.error_details?.error.message &&
 									(() => {
-										const reasoningText = extractChatReasoning(log.output_message);
+										const reasoningText = extractChatReasoning(log.output_message, activeRevealedMapping);
 										const showReasoning = !!reasoningText && (visibleRoles.size === allRoles.length || visibleRoles.has("reasoning"));
 										const showAssistant = visibleRoles.has("assistant");
 										if (!showReasoning && !showAssistant) return null;
-										const text = extractMessageText(log.output_message);
-										const refusalText = log.output_message.refusal;
+										const text = extractMessageText(log.output_message, activeRevealedMapping);
+										const refusalText = applyRedactionMapping(log.output_message.refusal);
 										const isStopReasonRefusal =
 											log.stop_reason === "refusal" || log.stop_reason === "content_filter" || log.stop_reason === "safety";
 										const showRefusal = refusalText || (!text && isStopReasonRefusal);
@@ -1942,14 +2023,14 @@ export function LogDetailView({
 								{all.map((msg, index) => {
 									const role = getResponsesRole(msg);
 									const isLast = index === all.length - 1;
-									const reasoningParts = role === "reasoning" ? extractReasoningParts(msg) : null;
+									const reasoningParts = role === "reasoning" ? extractReasoningParts(msg, activeRevealedMapping) : null;
 									const reasoningHasAny =
 										!!reasoningParts &&
 										(reasoningParts.summaries.length > 0 ||
 											!!reasoningParts.encrypted ||
 											!!reasoningParts.contentText ||
 											reasoningParts.signatures.length > 0);
-									const text = role === "reasoning" ? "" : extractResponsesText(msg);
+									const text = role === "reasoning" ? "" : extractResponsesText(msg, activeRevealedMapping);
 									const lineCount = text ? text.split("\n").length : 0;
 									const approxTokens = text ? Math.max(1, Math.round(text.length / 4)) : 0;
 									let meta: string | undefined;
