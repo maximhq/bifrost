@@ -213,6 +213,25 @@ func (sa *StreamAccumulator) getLastChatChunkLocked() *ChatStreamChunk {
 	return nil
 }
 
+// getChatFinishReasonLocked returns the finish_reason of the highest-index
+// chunk that actually carries one. The highest-index chunk overall can have a
+// nil finish_reason (a usage-only chunk, or the synthetic terminal chunk the
+// OpenAI-compatible handler appends after forwarding finish_reason on a content
+// chunk), so reading it blindly drops the value for providers that send
+// finish_reason together with content.
+// MUST be called with sa.mu already held.
+func (sa *StreamAccumulator) getChatFinishReasonLocked() *string {
+	var finishReason *string
+	maxIdx := -1
+	for _, chunk := range sa.ChatStreamChunks {
+		if chunk.FinishReason != nil && chunk.ChunkIndex > maxIdx {
+			finishReason = chunk.FinishReason
+			maxIdx = chunk.ChunkIndex
+		}
+	}
+	return finishReason
+}
+
 // getLastResponsesChunk returns the chunk with the highest ChunkIndex (contains metadata like TokenUsage, Cost)
 func (sa *StreamAccumulator) getLastResponsesChunk() *ResponsesStreamChunk {
 	sa.mu.Lock()

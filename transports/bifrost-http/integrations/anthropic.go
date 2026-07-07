@@ -937,6 +937,11 @@ func CreateAnthropicFilesRouteConfigs(pathPrefix string, handlerStore lib.Handle
 			}
 			uploadReq.File = fileData
 			uploadReq.Filename = fileHeader.Filename
+			if contentTypeValues := form.Value["content_type"]; len(contentTypeValues) > 0 && contentTypeValues[0] != "" {
+				uploadReq.ContentType = &contentTypeValues[0]
+			} else if partContentType := strings.TrimSpace(fileHeader.Header.Get("Content-Type")); partContentType != "" {
+				uploadReq.ContentType = &partContentType
+			}
 			return nil
 		},
 		FileRequestConverter: func(ctx *schemas.BifrostContext, req any) (*FileRequest, error) {
@@ -952,10 +957,11 @@ func CreateAnthropicFilesRouteConfigs(pathPrefix string, handlerStore lib.Handle
 				return &FileRequest{
 					Type: schemas.FileUploadRequest,
 					UploadRequest: &schemas.BifrostFileUploadRequest{
-						File:     uploadReq.File,
-						Filename: uploadReq.Filename,
-						Purpose:  schemas.FilePurpose(uploadReq.Purpose),
-						Provider: provider,
+						File:        uploadReq.File,
+						Filename:    uploadReq.Filename,
+						Purpose:     schemas.FilePurpose(uploadReq.Purpose),
+						ContentType: uploadReq.ContentType,
+						Provider:    provider,
 					},
 				}, nil
 			}

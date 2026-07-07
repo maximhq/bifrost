@@ -471,6 +471,8 @@ Each APM trace includes comprehensive LLM operation metadata:
 - Tool calls and results
 - Reasoning and refusal content (when present)
 
+When Enterprise guardrail redaction is enabled, Bifrost applies trace redaction replacements before exporting completed traces to Datadog. Exported span content receives the redacted or placeholderized value, but reversible reveal mappings are not exported. For the full mode matrix, see [Guardrail Redaction](/enterprise/guardrails/redaction).
+
 ### Performance Metrics
 
 - Token usage (prompt, completion, total)

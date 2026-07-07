@@ -126,6 +126,12 @@
           "    } else if (j.object === 'file' && typeof j.id === 'string') {",
           "        shape = 'file-object';",
           "        hasContent = !!j.id;",
+          "    } else if (j.type === 'file' && typeof j.id === 'string') {",
+          "        shape = 'anthropic-file-object';",
+          "        hasContent = !!j.id;",
+          "    } else if (j.type === 'file_deleted' && typeof j.id === 'string') {",
+          "        shape = 'anthropic-file-deleted';",
+          "        hasContent = !!j.id;",
           "    }",
           "    pm.expect(hasContent, 'expected non-empty content (shape=' + shape + ', body=' + JSON.stringify(j).slice(0, 200) + ')').to.be.true;",
           "  });",
@@ -14890,6 +14896,284 @@
                   ]
                 }
               }
+            },
+            {
+              "name": "Anthropic: file upload with content_type override",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "x-api-key",
+                    "value": "{{anthropicKey}}"
+                  },
+                  {
+                    "key": "anthropic-version",
+                    "value": "2023-06-01"
+                  },
+                  {
+                    "key": "anthropic-beta",
+                    "value": "files-api-2025-04-14"
+                  }
+                ],
+                "body": {
+                  "mode": "formdata",
+                  "formdata": [
+                    {
+                      "key": "file",
+                      "src": "tests/e2e/api/fixtures/sample.txt",
+                      "type": "file"
+                    },
+                    {
+                      "key": "purpose",
+                      "value": "user_data",
+                      "type": "text"
+                    },
+                    {
+                      "key": "content_type",
+                      "value": "text/markdown",
+                      "type": "text"
+                    }
+                  ]
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/anthropic/v1/files",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "anthropic",
+                    "v1",
+                    "files"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+                      "var j = pm.response.json();",
+                      "pm.test('has file id', function () { pm.expect(j.id).to.be.a('string').and.not.empty; });",
+                      "pm.collectionVariables.set('anthropicUploadFileIdA', j.id);"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "Anthropic: file upload content_type inferred from file part",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "x-api-key",
+                    "value": "{{anthropicKey}}"
+                  },
+                  {
+                    "key": "anthropic-version",
+                    "value": "2023-06-01"
+                  },
+                  {
+                    "key": "anthropic-beta",
+                    "value": "files-api-2025-04-14"
+                  }
+                ],
+                "body": {
+                  "mode": "formdata",
+                  "formdata": [
+                    {
+                      "key": "file",
+                      "src": "tests/e2e/api/fixtures/sample.txt",
+                      "type": "file"
+                    },
+                    {
+                      "key": "purpose",
+                      "value": "user_data",
+                      "type": "text"
+                    }
+                  ]
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/anthropic/v1/files",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "anthropic",
+                    "v1",
+                    "files"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+                      "var j = pm.response.json();",
+                      "pm.test('has file id', function () { pm.expect(j.id).to.be.a('string').and.not.empty; });",
+                      "pm.collectionVariables.set('anthropicUploadFileIdB', j.id);"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "[PREVIEW] Anthropic: document file_id source (auto files-api beta header)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-api-key",
+                    "value": "{{anthropicKey}}"
+                  },
+                  {
+                    "key": "anthropic-version",
+                    "value": "2023-06-01"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"max_tokens\": 512,\n  \"messages\": [{\"role\":\"user\",\"content\":[{\"type\":\"document\",\"source\":{\"type\":\"file\",\"file_id\":\"{{anthropicUploadFileIdB}}\"}},{\"type\":\"text\",\"text\":\"Summarize\"}]}]\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/anthropic/v1/messages",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "anthropic",
+                    "v1",
+                    "messages"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "[PREVIEW] Anthropic Responses: input_file by file_id (native /v1/responses)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"input\": [{\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"Summarize\"},{\"type\":\"input_file\",\"file_id\":\"{{anthropicUploadFileIdB}}\"}]}]\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/responses",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "responses"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "Anthropic: delete content_type test file A (cleanup)",
+              "request": {
+                "method": "DELETE",
+                "header": [
+                  {
+                    "key": "x-api-key",
+                    "value": "{{anthropicKey}}"
+                  },
+                  {
+                    "key": "anthropic-version",
+                    "value": "2023-06-01"
+                  },
+                  {
+                    "key": "anthropic-beta",
+                    "value": "files-api-2025-04-14"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/anthropic/v1/files/{{anthropicUploadFileIdA}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "anthropic",
+                    "v1",
+                    "files",
+                    "{{anthropicUploadFileIdA}}"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+                      "var j = pm.response.json();",
+                      "pm.test('Anthropic delete: file_deleted', function () { pm.expect(j.type).to.eql('file_deleted'); });",
+                      "pm.test('Anthropic delete: id matches', function () { pm.expect(j.id).to.eql(pm.collectionVariables.get('anthropicUploadFileIdA')); });"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "Anthropic: delete content_type test file B (cleanup)",
+              "request": {
+                "method": "DELETE",
+                "header": [
+                  {
+                    "key": "x-api-key",
+                    "value": "{{anthropicKey}}"
+                  },
+                  {
+                    "key": "anthropic-version",
+                    "value": "2023-06-01"
+                  },
+                  {
+                    "key": "anthropic-beta",
+                    "value": "files-api-2025-04-14"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/anthropic/v1/files/{{anthropicUploadFileIdB}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "anthropic",
+                    "v1",
+                    "files",
+                    "{{anthropicUploadFileIdB}}"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+                      "var j = pm.response.json();",
+                      "pm.test('Anthropic delete: file_deleted', function () { pm.expect(j.type).to.eql('file_deleted'); });",
+                      "pm.test('Anthropic delete: id matches', function () { pm.expect(j.id).to.eql(pm.collectionVariables.get('anthropicUploadFileIdB')); });"
+                    ]
+                  }
+                }
+              ]
             }
           ]
         },
