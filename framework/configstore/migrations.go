@@ -10362,6 +10362,7 @@ func migrationAddSidekiqTable(ctx context.Context, db *gorm.DB, logger schemas.L
 						id           TEXT PRIMARY KEY,
 						kind         TEXT NOT NULL,
 						status       TEXT NOT NULL DEFAULT 'pending',
+						runner_id    TEXT,
 						metadata     TEXT DEFAULT '{}',
 						attempts     INTEGER NOT NULL DEFAULT 0,
 						last_error   TEXT,
@@ -10376,6 +10377,7 @@ func migrationAddSidekiqTable(ctx context.Context, db *gorm.DB, logger schemas.L
 						id           TEXT PRIMARY KEY,
 						kind         TEXT NOT NULL,
 						status       TEXT NOT NULL DEFAULT 'pending',
+						runner_id    TEXT,
 						metadata     TEXT DEFAULT '{}',
 						attempts     INTEGER NOT NULL DEFAULT 0,
 						last_error   TEXT,
@@ -10393,9 +10395,12 @@ func migrationAddSidekiqTable(ctx context.Context, db *gorm.DB, logger schemas.L
 			if err := tx.Exec(createTable).Error; err != nil {
 				return err
 			}
-			// Index supports the reaper / recovery scan that filters by status and
-			// orders/filters by updated_at.
-			return tx.Exec(`CREATE INDEX IF NOT EXISTS idx_sidekiq_status_updated ON sidekiq (status, updated_at)`).Error
+			// idx_sidekiq_status_updated supports the reaper/recovery scan.
+			if err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_sidekiq_status_updated ON sidekiq (status, updated_at)`).Error; err != nil {
+				return err
+			}
+			// idx_sidekiq_runner supports fencing lookups by runner_id.
+			return tx.Exec(`CREATE INDEX IF NOT EXISTS idx_sidekiq_runner ON sidekiq (runner_id)`).Error
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
@@ -10407,3 +10412,4 @@ func migrationAddSidekiqTable(ctx context.Context, db *gorm.DB, logger schemas.L
 	}
 	return nil
 }
+

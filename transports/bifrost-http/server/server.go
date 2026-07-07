@@ -180,8 +180,8 @@ type BifrostHTTPServer struct {
 	// otherwise left nil so the quota endpoint reads the VK's own budget rows.
 	ExternalQuotaBudgetResolver handlers.ExternalQuotaBudgetResolver
 
-	SidekiqRunner     *sidekiq.Runner
-	SidekiqReaperStop func()
+	SidekiqRunner         *sidekiq.Runner
+	SidekiqDispatcherStop func()
 
 	wsPool *bfws.Pool
 }
@@ -1897,7 +1897,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 
 	// Initialize Sidekiq runner for background jobs
 	if s.Config != nil && s.Config.ConfigStore != nil {
-		s.SidekiqRunner = sidekiq.New(s.Config.ConfigStore, logger, 4)
+		s.SidekiqRunner = sidekiq.New(s.Config.ConfigStore, logger, 4, "")
 	}
 
 	// Register routes
@@ -1971,14 +1971,11 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	// Register UI handler
 	s.RegisterUIRoutes()
 
-	// Start Sidekiq reaper to clean up stale jobs
+	// Start the Sidekiq dispatcher: on every node it periodically claims pending and
+	// stale (orphaned) jobs, with an atomic claim guaranteeing exactly one node runs
+	// each job. Subsumes startup recovery of jobs left behind by a crash or restart.
 	if s.SidekiqRunner != nil {
-		s.SidekiqReaperStop = s.SidekiqRunner.StartReaper(sidekiq.ReaperInterval, sidekiq.StaleAfter)
-		go func() {
-			if err := s.SidekiqRunner.RecoverIncomplete(ctx); err != nil {
-				logger.Error("sidekiq: failed to recover incomplete provisioning jobs: %v", err)
-			}
-		}()
+		s.SidekiqDispatcherStop = s.SidekiqRunner.StartDispatcher(sidekiq.DispatchInterval, sidekiq.StaleAfter)
 	}
 
 	// Checking if config has server config and use it to set read buffer size
@@ -2068,9 +2065,9 @@ func (s *BifrostHTTPServer) Start() error {
 				s.OAuth2SweepWorker.stop()
 				s.OAuth2SweepWorker = nil
 			}
-			if s.SidekiqReaperStop != nil {
-				logger.Info("stopping sidekiq reaper...")
-				s.SidekiqReaperStop()
+			if s.SidekiqDispatcherStop != nil {
+				logger.Info("stopping sidekiq dispatcher...")
+				s.SidekiqDispatcherStop()
 			}
 			if s.SidekiqRunner != nil {
 				logger.Info("stopping sidekiq runner...")

@@ -1562,23 +1562,27 @@ func (m *MockConfigStore) GetSidekiqJob(ctx context.Context, id string) (*tables
 	return nil, nil
 }
 
-func (m *MockConfigStore) MarkSidekiqJobRunning(ctx context.Context, id string) error {
+func (m *MockConfigStore) ClaimSidekiqJob(ctx context.Context, id, runnerID string, staleBefore time.Time) (bool, error) {
+	return false, nil
+}
+
+func (m *MockConfigStore) HeartbeatSidekiqJob(ctx context.Context, id, runnerID string) (bool, error) {
+	return false, nil
+}
+
+func (m *MockConfigStore) CompleteSidekiqJob(ctx context.Context, id, runnerID, metadata string) error {
 	return nil
 }
 
-func (m *MockConfigStore) CompleteSidekiqJob(ctx context.Context, id, metadata string) error {
+func (m *MockConfigStore) UpdateSidekiqJobProgress(ctx context.Context, id, runnerID, metadata string) error {
 	return nil
 }
 
-func (m *MockConfigStore) UpdateSidekiqJobProgress(ctx context.Context, id, metadata string) error {
+func (m *MockConfigStore) FailSidekiqJob(ctx context.Context, id, runnerID, metadata, lastErr string) error {
 	return nil
 }
 
-func (m *MockConfigStore) FailSidekiqJob(ctx context.Context, id, metadata, lastErr string) error {
-	return nil
-}
-
-func (m *MockConfigStore) ListIncompleteSidekiqJobs(ctx context.Context) ([]tables.TableSidekiqJob, error) {
+func (m *MockConfigStore) ListClaimableSidekiqJobs(ctx context.Context, staleBefore time.Time) ([]tables.TableSidekiqJob, error) {
 	return nil, nil
 }
 
