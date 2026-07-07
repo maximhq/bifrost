@@ -311,7 +311,7 @@ func TestBuildRealtimeTurnPostResponseUsesFullResponseDonePayload(t *testing.T) 
 		}
 	}`)
 
-	resp := buildRealtimeTurnPostResponse(&openai.OpenAIProvider{}, schemas.OpenAI, "gpt-4o-realtime-preview-2025-06-03", rawRequest, rawResponse, "", 4321)
+	resp := buildRealtimeTurnPostResponse(&openai.OpenAIProvider{}, schemas.OpenAI, "gpt-4o-realtime-preview-2025-06-03", rawRequest, rawResponse, "", 4321, nil)
 	if resp == nil || resp.ResponsesResponse == nil {
 		t.Fatal("expected realtime post response to be built")
 	}
@@ -356,7 +356,7 @@ func TestBuildRealtimeTurnPostResponseMergesTextAndToolCalls(t *testing.T) {
 		}
 	}`)
 
-	resp := buildRealtimeTurnPostResponse(&openai.OpenAIProvider{}, schemas.OpenAI, "gpt-realtime", "", rawResponse, "", 123)
+	resp := buildRealtimeTurnPostResponse(&openai.OpenAIProvider{}, schemas.OpenAI, "gpt-realtime", "", rawResponse, "", 123, nil)
 	if resp == nil || resp.ResponsesResponse == nil {
 		t.Fatal("expected realtime post response")
 	}

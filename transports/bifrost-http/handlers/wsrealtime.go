@@ -538,6 +538,7 @@ func (h *WSRealtimeHandler) relayRealtimeProviderToClient(
 				}
 				// Track session tool definitions from session.created/session.updated.
 				updateRealtimeSessionFromEvent(session, event)
+				session.AppendRealtimeToolCalls(extractRealtimeEventToolCalls(event))
 				if event.Delta != nil && provider.ShouldAccumulateRealtimeOutput(event.Type) {
 					session.AppendRealtimeOutputText(event.Delta.Text)
 					session.AppendRealtimeOutputText(event.Delta.Transcript)

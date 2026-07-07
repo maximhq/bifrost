@@ -39,6 +39,14 @@ type Session struct {
 	// realtimeOutputText accumulates assistant/provider turn text until the terminal event.
 	realtimeOutputText string
 
+	// realtimeToolCalls accumulates function/tool calls observed during the
+	// current realtime turn. Used as a fallback source for turn-level audit
+	// logging when a provider's terminal turn event doesn't itself aggregate
+	// every tool call made during the turn (e.g. Deepgram's Voice Agent,
+	// unlike OpenAI's response.done) — see extractRealtimeTurnOutputMessage's
+	// caller in transports/bifrost-http/handlers/realtime_turn_pipeline.go.
+	realtimeToolCalls []schemas.ChatAssistantMessageToolCall
+
 	// realtimeTurnInputs accumulates finalized user/tool inputs in arrival order so the
 	// completed assistant turn can persist the full turn history instead of only the
 	// latest finalized input event.
@@ -237,6 +245,28 @@ func (s *Session) ConsumeRealtimeOutputText() string {
 	text := s.realtimeOutputText
 	s.realtimeOutputText = ""
 	return text
+}
+
+// AppendRealtimeToolCalls appends tool/function calls observed for the current realtime turn.
+func (s *Session) AppendRealtimeToolCalls(calls []schemas.ChatAssistantMessageToolCall) {
+	if len(calls) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return
+	}
+	s.realtimeToolCalls = append(s.realtimeToolCalls, calls...)
+}
+
+// ConsumeRealtimeToolCalls returns the accumulated tool calls and clears them.
+func (s *Session) ConsumeRealtimeToolCalls() []schemas.ChatAssistantMessageToolCall {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	calls := s.realtimeToolCalls
+	s.realtimeToolCalls = nil
+	return calls
 }
 
 // AddRealtimeInput stores a finalized user turn event in arrival order.

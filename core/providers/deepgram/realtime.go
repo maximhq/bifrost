@@ -195,26 +195,40 @@ func (provider *DeepgramProvider) ToBifrostRealtimeEvent(providerEvent json.RawM
 	case dgServerFunctionCallReq:
 		event.Type = schemas.RTEventResponseOutputItemDone
 		if len(raw.Functions) > 0 {
-			// Only the first function call is promoted — a deliberate,
-			// scoped limitation, not an oversight. schemas.RealtimeItem
-			// carries a single scalar Name/CallID/Arguments tuple and
-			// schemas.BifrostRealtimeEvent carries a single *RealtimeItem;
-			// neither has a mechanism for multiple items in one event.
-			// Genuinely supporting Deepgram's parallel function calls would
-			// require either widening RealtimeItem/BifrostRealtimeEvent to a
-			// list, or changing ToBifrostRealtimeEvent's signature to return
-			// []*BifrostRealtimeEvent — both are RealtimeProvider-interface-
-			// wide changes that ripple into every other realtime provider
-			// (OpenAI/Azure/ElevenLabs) and the single relay call site in
-			// wsrealtime.go, not something fixable from within this package
-			// alone. RawData (set below) preserves the full raw.Functions
-			// list for any caller that parses it directly.
+			// event.Item carries a single scalar Name/CallID/Arguments tuple,
+			// so only the first function call is promoted there — that
+			// field feeds turn-start detection and any single-item consumer.
+			// The client itself is never shorted: RawData (set above)
+			// preserves the full untranslated message, and the relay writes
+			// RawData verbatim to the client instead of re-encoding from
+			// Item whenever it's set. Any additional calls beyond the first
+			// are carried via ExtraParams[RealtimeExtraParamKeyAdditionalItems]
+			// so turn-level tool-call accumulation (for Bifrost's own audit
+			// logging, which Deepgram's terminal AgentAudioDone event has no
+			// aggregated summary for, unlike OpenAI's response.done) doesn't
+			// silently drop them either.
 			fn := raw.Functions[0]
 			event.Item = &schemas.RealtimeItem{
 				Type:      "function_call",
 				Name:      fn.Name,
 				CallID:    fn.ID,
 				Arguments: string(fn.Arguments),
+			}
+			if len(raw.Functions) > 1 {
+				additional := make([]schemas.RealtimeItem, 0, len(raw.Functions)-1)
+				for _, extra := range raw.Functions[1:] {
+					additional = append(additional, schemas.RealtimeItem{
+						Type:      "function_call",
+						Name:      extra.Name,
+						CallID:    extra.ID,
+						Arguments: string(extra.Arguments),
+					})
+				}
+				if encoded, err := json.Marshal(additional); err == nil {
+					event.ExtraParams = map[string]json.RawMessage{
+						schemas.RealtimeExtraParamKeyAdditionalItems: encoded,
+					}
+				}
 			}
 		}
 

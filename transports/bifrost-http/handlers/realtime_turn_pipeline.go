@@ -250,8 +250,9 @@ func buildRealtimeTurnPostResponse(
 	rawResponse []byte,
 	contentOverride string,
 	latency int64,
+	accumulatedToolCalls []schemas.ChatAssistantMessageToolCall,
 ) *schemas.BifrostResponse {
-	output := buildRealtimeTurnOutputMessages(rtProvider, rawResponse, contentOverride)
+	output := buildRealtimeTurnOutputMessages(rtProvider, rawResponse, contentOverride, accumulatedToolCalls)
 	resp := &schemas.BifrostResponsesResponse{
 		Object: "response",
 		Model:  model,
@@ -276,7 +277,7 @@ func buildRealtimeTurnPostResponse(
 	return &schemas.BifrostResponse{ResponsesResponse: resp}
 }
 
-func buildRealtimeTurnOutputMessages(rtProvider schemas.RealtimeProvider, rawResponse []byte, contentOverride string) []schemas.ResponsesMessage {
+func buildRealtimeTurnOutputMessages(rtProvider schemas.RealtimeProvider, rawResponse []byte, contentOverride string, accumulatedToolCalls []schemas.ChatAssistantMessageToolCall) []schemas.ResponsesMessage {
 	outputs := make([]schemas.ResponsesMessage, 0)
 	seenFunctionCalls := make(map[string]struct{})
 	if outputMessage := extractRealtimeTurnOutputMessage(rtProvider, rawResponse, contentOverride); outputMessage != nil {
@@ -339,6 +340,35 @@ func buildRealtimeTurnOutputMessages(rtProvider schemas.RealtimeProvider, rawRes
 				outputs = append(outputs, msg)
 			}
 		}
+	}
+
+	// Fallback for providers whose terminal turn event doesn't itself
+	// aggregate every tool call made during the turn (see accumulatedToolCalls'
+	// doc comment on bfws.Session). Deduped against the above so providers
+	// whose terminal event DOES already aggregate tool calls (OpenAI, via the
+	// parse above) never get them double-counted.
+	for _, toolCall := range accumulatedToolCalls {
+		if toolCall.Function.Name == nil || strings.TrimSpace(*toolCall.Function.Name) == "" {
+			continue
+		}
+		itemType := schemas.ResponsesMessageTypeFunctionCall
+		msg := schemas.ResponsesMessage{
+			Type:   &itemType,
+			Status: schemas.Ptr("completed"),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				Name:      toolCall.Function.Name,
+				Arguments: schemas.Ptr(toolCall.Function.Arguments),
+			},
+		}
+		if toolCall.ID != nil && strings.TrimSpace(*toolCall.ID) != "" {
+			msg.CallID = toolCall.ID
+		}
+		key := realtimeResponsesFunctionCallKey(msg)
+		if _, exists := seenFunctionCalls[key]; exists {
+			continue
+		}
+		seenFunctionCalls[key] = struct{}{}
+		outputs = append(outputs, msg)
 	}
 
 	if len(outputs) == 0 && strings.TrimSpace(contentOverride) != "" {
@@ -676,6 +706,7 @@ func finalizeRealtimeTurnHooks(
 
 	turnInputs := session.ConsumeRealtimeTurnInputs()
 	rawRequest := combineRealtimeInputRaw(turnInputs)
+	accumulatedToolCalls := session.ConsumeRealtimeToolCalls()
 
 	if activeHooks := session.ConsumeRealtimeTurnHooks(); activeHooks != nil {
 		defer func() {
@@ -691,6 +722,7 @@ func finalizeRealtimeTurnHooks(
 			rawResponse,
 			contentOverride,
 			time.Since(activeHooks.StartedAt).Milliseconds(),
+			accumulatedToolCalls,
 		)
 		postCtx := newRealtimeTurnContext(baseCtx, activeHooks.RequestID, session.ID(), session.ProviderSessionID(), realtimeTurnSourceLM, rtProvider.RealtimeTurnFinalEvent(), key)
 		applyRealtimeTurnContextValues(postCtx, activeHooks.PreHookValues)
@@ -727,6 +759,7 @@ func finalizeRealtimeTurnHooks(
 		rawResponse,
 		contentOverride,
 		time.Since(startedAt).Milliseconds(),
+		accumulatedToolCalls,
 	)
 	postCtx := newRealtimeTurnContext(baseCtx, requestID, session.ID(), session.ProviderSessionID(), realtimeTurnSourceLM, rtProvider.RealtimeTurnFinalEvent(), key)
 	applyRealtimeTurnContextValues(postCtx, preHookValues)

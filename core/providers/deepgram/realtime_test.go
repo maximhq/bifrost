@@ -159,6 +159,37 @@ func TestDeepgramToBifrostRealtimeEvent_FunctionCallRequest(t *testing.T) {
 	if event.Item == nil || event.Item.Name != "get_weather" || event.Item.CallID != "call_1" {
 		t.Fatalf("Item = %+v, want function_call for get_weather/call_1", event.Item)
 	}
+	if len(event.ExtraParams) != 0 {
+		t.Errorf("ExtraParams = %+v, want none for a single function call", event.ExtraParams)
+	}
+}
+
+func TestDeepgramToBifrostRealtimeEvent_FunctionCallRequestMultiple(t *testing.T) {
+	t.Parallel()
+	provider := &deepgram.DeepgramProvider{}
+
+	raw := `{"type":"FunctionCallRequest","functions":[
+		{"id":"call_1","name":"get_weather","arguments":{"city":"NYC"}},
+		{"id":"call_2","name":"get_time","arguments":{"tz":"EST"}}
+	]}`
+	event, err := provider.ToBifrostRealtimeEvent(json.RawMessage(raw))
+	if err != nil {
+		t.Fatalf("ToBifrostRealtimeEvent() error = %v", err)
+	}
+	if event.Item == nil || event.Item.Name != "get_weather" || event.Item.CallID != "call_1" {
+		t.Fatalf("Item = %+v, want the first function call (get_weather/call_1)", event.Item)
+	}
+	extra, ok := event.ExtraParams[schemas.RealtimeExtraParamKeyAdditionalItems]
+	if !ok {
+		t.Fatalf("ExtraParams missing %q for a multi-function request", schemas.RealtimeExtraParamKeyAdditionalItems)
+	}
+	var additional []schemas.RealtimeItem
+	if err := json.Unmarshal(extra, &additional); err != nil {
+		t.Fatalf("failed to parse additional items: %v", err)
+	}
+	if len(additional) != 1 || additional[0].Name != "get_time" || additional[0].CallID != "call_2" {
+		t.Fatalf("additional items = %+v, want [get_time/call_2]", additional)
+	}
 }
 
 func TestDeepgramToProviderRealtimeEvent(t *testing.T) {

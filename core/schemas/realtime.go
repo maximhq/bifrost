@@ -108,6 +108,19 @@ type BifrostRealtimeEvent struct {
 	RawData json.RawMessage `json:"raw_data,omitempty"`
 }
 
+// RealtimeExtraParamKeyAdditionalItems is a well-known ExtraParams key a
+// provider may set on a function-call-shaped event whose single raw upstream
+// message represents MORE than one item (e.g. Deepgram's Voice Agent
+// FunctionCallRequest, which batches a `functions` array into one message —
+// unlike OpenAI/ElevenLabs, which emit one message per call). Item only
+// carries one RealtimeItem, so a provider in this situation sets Item to the
+// first entry (for existing single-item consumers: turn-start detection,
+// forwarding) and additionally marshals the REMAINING entries here as a JSON
+// array of RealtimeItem, so turn-level accumulation (see
+// transports/bifrost-http/websocket Session.AppendRealtimeToolCalls) doesn't
+// silently drop them.
+const RealtimeExtraParamKeyAdditionalItems = "additional_items"
+
 // RealtimeSession describes session configuration for the Realtime connection.
 type RealtimeSession struct {
 	ID               string                     `json:"id,omitempty"`
