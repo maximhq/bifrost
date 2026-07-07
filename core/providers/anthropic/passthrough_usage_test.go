@@ -56,6 +56,30 @@ func TestExtractAnthropicPassthroughUsage(t *testing.T) {
 			},
 		},
 		{
+			name: "messages with thinking tokens",
+			path: "/v1/messages",
+			body: `{"usage":{"input_tokens":10,"output_tokens":50,"output_tokens_details":{"thinking_tokens":30}}}`,
+			check: func(t *testing.T, u *schemas.BifrostPassthroughUsage) {
+				if u == nil || u.LLMUsage == nil || u.LLMUsage.CompletionTokensDetails == nil ||
+					u.LLMUsage.CompletionTokensDetails.ReasoningTokens != 30 {
+					t.Fatalf("reasoning tokens = %+v, want 30", u)
+				}
+			},
+		},
+		{
+			name: "messages with zero thinking tokens does not allocate details",
+			path: "/v1/messages",
+			body: `{"usage":{"input_tokens":10,"output_tokens":5,"output_tokens_details":{"thinking_tokens":0}}}`,
+			check: func(t *testing.T, u *schemas.BifrostPassthroughUsage) {
+				if u == nil || u.LLMUsage == nil {
+					t.Fatalf("expected non-nil usage")
+				}
+				if u.LLMUsage.CompletionTokensDetails != nil {
+					t.Fatalf("expected nil CompletionTokensDetails for zero thinking tokens, got %+v", u.LLMUsage.CompletionTokensDetails)
+				}
+			},
+		},
+		{
 			name: "messages with priority tier",
 			path: "/v1/messages",
 			body: `{"usage":{"input_tokens":1,"output_tokens":1,"service_tier":"priority"}}`,
@@ -131,6 +155,16 @@ func TestAnthropicPassthroughStreamUsage(t *testing.T) {
 			u.LLMUsage.CompletionTokensDetails.NumSearchQueries == nil ||
 			*u.LLMUsage.CompletionTokensDetails.NumSearchQueries != 3 {
 			t.Fatalf("web search requests = %+v, want 3", u)
+		}
+	})
+
+	t.Run("thinking tokens max-merged across events", func(t *testing.T) {
+		acc := &anthropic.AnthropicPassthroughStreamUsage{}
+		acc.ObserveEvent([]byte(`{"type":"message_start","message":{"usage":{"input_tokens":10,"output_tokens":1,"output_tokens_details":{"thinking_tokens":12}}}}`))
+		u := acc.ObserveEvent([]byte(`{"type":"message_delta","usage":{"output_tokens":40,"output_tokens_details":{"thinking_tokens":30}}}`))
+		if u == nil || u.LLMUsage == nil || u.LLMUsage.CompletionTokensDetails == nil ||
+			u.LLMUsage.CompletionTokensDetails.ReasoningTokens != 30 {
+			t.Fatalf("reasoning tokens = %+v, want 30 (max of 12 and 30)", u)
 		}
 	})
 }

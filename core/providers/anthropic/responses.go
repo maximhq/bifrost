@@ -3751,7 +3751,7 @@ func ConvertAnthropicUsageToBifrostUsage(anthropicUsage *AnthropicUsage) *schema
 	}
 
 	// Propagate thinking token breakdown
-	if anthropicUsage.OutputTokensDetails != nil {
+	if anthropicUsage.OutputTokensDetails != nil && anthropicUsage.OutputTokensDetails.ThinkingTokens > 0 {
 		if bifrostUsage.OutputTokensDetails == nil {
 			bifrostUsage.OutputTokensDetails = &schemas.ResponsesResponseOutputTokens{}
 		}
