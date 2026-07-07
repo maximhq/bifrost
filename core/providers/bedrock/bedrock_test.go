@@ -3843,6 +3843,160 @@ func TestBedrockAnthropicChatStructuredOutputUsesSyntheticTool(t *testing.T) {
 	assert.Equal(t, "bf_so_classification", result.ToolConfig.ToolChoice.Tool.Name)
 }
 
+// eagerInputStreamingBeta is the wire value of Anthropic's
+// fine-grained-tool-streaming beta (anthropic.AnthropicEagerInputStreamingBetaHeader).
+// Kept as a literal here to pin the exact string that reaches Bedrock, matching
+// the style of the structured-outputs beta assertions above.
+const eagerInputStreamingBeta = "fine-grained-tool-streaming-2025-05-14"
+
+func eagerStreamingChatRequest(model string, eager *bool) *schemas.BifrostChatRequest {
+	return &schemas.BifrostChatRequest{
+		Model: model,
+		Input: []schemas.ChatMessage{
+			{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("What's the weather?")},
+			},
+		},
+		Params: &schemas.ChatParameters{
+			Tools: []schemas.ChatTool{
+				{
+					Type: schemas.ChatToolTypeFunction,
+					Function: &schemas.ChatToolFunction{
+						Name:        "get_weather",
+						Description: schemas.Ptr("Get weather information"),
+						Parameters: &schemas.ToolFunctionParameters{
+							Type: "object",
+							Properties: schemas.NewOrderedMapFromPairs(
+								schemas.KV("location", map[string]interface{}{"type": "string"}),
+							),
+							Required: []string{"location"},
+						},
+					},
+					EagerInputStreaming: eager,
+				},
+			},
+		},
+	}
+}
+
+// TestBedrockConverseEagerInputStreaming locks in the fix for
+// https://github.com/maximhq/bifrost/issues/4965. eager_input_streaming
+// (Anthropic's fine-grained-tool-streaming-2025-05-14 beta) has no slot in the
+// typed Converse toolSpec shape, and Bedrock's edge strips the outer
+// anthropic-beta HTTP header, so the only channel that activates the beta is the
+// body field additionalModelRequestFields.anthropic_beta. Before the fix the flag
+// was read nowhere on the Converse path, so it was a silent no-op.
+//
+// Converse also serves non-Anthropic families (Nova, Llama, ...). Tool filtering
+// keeps custom tools and their flag verbatim regardless of family, so the flag
+// survives on those models too; the injection must therefore be gated on the
+// Anthropic model family so a Nova request never receives an anthropic_beta field.
+func TestBedrockConverseEagerInputStreaming(t *testing.T) {
+	tests := []struct {
+		name     string
+		model    string
+		eager    *bool
+		wantBeta bool
+	}{
+		{
+			name:     "anthropic model, eager_input_streaming true activates the beta",
+			model:    "anthropic.claude-opus-4-7-v1:0",
+			eager:    schemas.Ptr(true),
+			wantBeta: true,
+		},
+		{
+			name:     "anthropic model, eager_input_streaming false leaves it off",
+			model:    "anthropic.claude-opus-4-7-v1:0",
+			eager:    schemas.Ptr(false),
+			wantBeta: false,
+		},
+		{
+			name:     "anthropic model, flag absent leaves it off",
+			model:    "anthropic.claude-opus-4-7-v1:0",
+			eager:    nil,
+			wantBeta: false,
+		},
+		{
+			name:     "non-anthropic (nova) model never gets the anthropic beta",
+			model:    "amazon.nova-lite-v1:0",
+			eager:    schemas.Ptr(true),
+			wantBeta: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			result, err := bedrock.ToBedrockChatCompletionRequest(ctx, eagerStreamingChatRequest(tt.model, tt.eager))
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			got := betaListContains(t, result.AdditionalModelRequestFields, eagerInputStreamingBeta)
+			assert.Equal(t, tt.wantBeta, got,
+				"additionalModelRequestFields.anthropic_beta contains %q = %v, want %v",
+				eagerInputStreamingBeta, got, tt.wantBeta)
+		})
+	}
+}
+
+// TestBedrockConverseEagerInputStreamingCoexistsWithServerTools proves the eager
+// beta append does not clobber (and is not clobbered by) the existing server-tool
+// tunnel, which writes its own tools + anthropic_beta into
+// additionalModelRequestFields. A request carrying both a computer_* server tool
+// (derives computer-use-2025-11-24) and a custom tool with eager_input_streaming
+// must end up with both betas and the tunneled tools.
+func TestBedrockConverseEagerInputStreamingCoexistsWithServerTools(t *testing.T) {
+	req := &schemas.BifrostChatRequest{
+		Model: "anthropic.claude-opus-4-7-v1:0",
+		Input: []schemas.ChatMessage{
+			{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("What's the weather?")},
+			},
+		},
+		Params: &schemas.ChatParameters{
+			Tools: []schemas.ChatTool{
+				{
+					Type:            schemas.ChatToolType("computer_20251124"),
+					Name:            "computer",
+					DisplayWidthPx:  schemas.Ptr(1280),
+					DisplayHeightPx: schemas.Ptr(800),
+				},
+				{
+					Type: schemas.ChatToolTypeFunction,
+					Function: &schemas.ChatToolFunction{
+						Name:        "get_weather",
+						Description: schemas.Ptr("Get weather information"),
+						Parameters: &schemas.ToolFunctionParameters{
+							Type: "object",
+							Properties: schemas.NewOrderedMapFromPairs(
+								schemas.KV("location", map[string]interface{}{"type": "string"}),
+							),
+							Required: []string{"location"},
+						},
+					},
+					EagerInputStreaming: schemas.Ptr(true),
+				},
+			},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result, err := bedrock.ToBedrockChatCompletionRequest(ctx, req)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, result.AdditionalModelRequestFields)
+
+	_, hasTools := result.AdditionalModelRequestFields.Get("tools")
+	assert.True(t, hasTools, "expected the server-tool tunnel to still set tools")
+	assert.True(t,
+		betaListContains(t, result.AdditionalModelRequestFields, "computer-use-2025-11-24"),
+		"server-tool beta computer-use-2025-11-24 should survive the eager append")
+	assert.True(t,
+		betaListContains(t, result.AdditionalModelRequestFields, eagerInputStreamingBeta),
+		"eager beta %q should be appended alongside the server-tool beta", eagerInputStreamingBeta)
+}
+
 // TestToBedrockResponsesRequest_AnthropicStructuredOutputUsesSyntheticTool
 // is the responses-path twin of TestBedrockAnthropicChatStructuredOutputUsesSyntheticTool.
 // The user's failing request comes through the Anthropic Messages SDK
