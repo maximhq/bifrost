@@ -895,6 +895,7 @@
             "icon": "building",
             "pages": [
               "changelogs/ent-v2.0.0-prerelease1",
+              "changelogs/ent-v1.5.3",
               "changelogs/ent-v1.5.2",
               "changelogs/ent-v1.5.1",
               "changelogs/ent-v1.5.0",
