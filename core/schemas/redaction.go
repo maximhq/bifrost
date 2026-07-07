@@ -47,6 +47,27 @@ func SetRedactionDataOnContext(ctx *BifrostContext, data RedactionData) bool {
 	return true
 }
 
+// IsContentAttribute reports whether a span attribute may carry user or model content.
+func IsContentAttribute(key string) bool {
+	switch key {
+	case AttrInputMessages, AttrOutputMessages,
+		AttrInputText, AttrInputSpeech,
+		AttrInputEmbedding,
+		AttrPrompt, AttrInstructions,
+		AttrRespReasoningText:
+		return true
+	case AttrTools, AttrRespTools,
+		AttrToolName, AttrToolCallID,
+		AttrToolCallArguments, AttrToolCallResult,
+		AttrToolType,
+		AttrToolChoiceType, AttrToolChoiceName,
+		AttrRespToolChoiceType, AttrRespToolChoiceName:
+		return true
+	default:
+		return false
+	}
+}
+
 // ApplyLiteralReplacements performs deterministic best-effort string redaction.
 func ApplyLiteralReplacements(text string, replacements map[string]string) string {
 	if text == "" || len(replacements) == 0 {
@@ -69,4 +90,43 @@ func ApplyLiteralReplacements(text string, replacements map[string]string) strin
 		redacted = strings.ReplaceAll(redacted, raw, replacements[raw])
 	}
 	return redacted
+}
+
+// RedactAttributeValue applies literal replacements to supported attribute value shapes.
+func RedactAttributeValue(value any, replacements map[string]string) any {
+	if len(replacements) == 0 {
+		return value
+	}
+	switch v := value.(type) {
+	case string:
+		return ApplyLiteralReplacements(v, replacements)
+	case []string:
+		redacted := make([]string, len(v))
+		for i, item := range v {
+			redacted[i] = ApplyLiteralReplacements(item, replacements)
+		}
+		return redacted
+	case []any:
+		redacted := make([]any, len(v))
+		for i, item := range v {
+			redacted[i] = RedactAttributeValue(item, replacements)
+		}
+		return redacted
+	case map[string]any:
+		redacted := make(map[string]any, len(v))
+		for key, item := range v {
+			redactedKey := ApplyLiteralReplacements(key, replacements)
+			redacted[redactedKey] = RedactAttributeValue(item, replacements)
+		}
+		return redacted
+	case map[string]string:
+		redacted := make(map[string]string, len(v))
+		for key, item := range v {
+			redactedKey := ApplyLiteralReplacements(key, replacements)
+			redacted[redactedKey] = ApplyLiteralReplacements(item, replacements)
+		}
+		return redacted
+	default:
+		return value
+	}
 }
