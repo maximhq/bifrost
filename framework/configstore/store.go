@@ -666,11 +666,12 @@ type ConfigStore interface {
 	// Sidekiq - generic durable background jobs
 	CreateSidekiqJob(ctx context.Context, job *tables.TableSidekiqJob) error
 	GetSidekiqJob(ctx context.Context, id string) (*tables.TableSidekiqJob, error)
-	MarkSidekiqJobRunning(ctx context.Context, id string) error
-	UpdateSidekiqJobProgress(ctx context.Context, id, metadata string) error
-	CompleteSidekiqJob(ctx context.Context, id, metadata string) error
-	FailSidekiqJob(ctx context.Context, id, metadata, lastErr string) error
-	ListIncompleteSidekiqJobs(ctx context.Context) ([]tables.TableSidekiqJob, error)
+	ClaimSidekiqJob(ctx context.Context, id, ownerID string, staleBefore time.Time) (bool, error)
+	HeartbeatSidekiqJob(ctx context.Context, id, ownerID string) (bool, error)
+	UpdateSidekiqJobProgress(ctx context.Context, id, ownerID, metadata string) error
+	CompleteSidekiqJob(ctx context.Context, id, ownerID, metadata string) error
+	FailSidekiqJob(ctx context.Context, id, ownerID, metadata, lastErr string) error
+	ListClaimableSidekiqJobs(ctx context.Context, staleBefore time.Time) ([]tables.TableSidekiqJob, error)
 	MarkStaleSidekiqJobsFailed(ctx context.Context, staleBefore time.Time) (int64, error)
 
 	// DB returns the underlying database connection.
