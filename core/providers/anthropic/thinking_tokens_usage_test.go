@@ -1,6 +1,7 @@
 package anthropic
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -159,6 +160,45 @@ func TestConvertBifrostUsageToAnthropicUsage_ThinkingTokens(t *testing.T) {
 		result := ConvertBifrostUsageToAnthropicUsage(bifrostUsage)
 		if result.OutputTokensDetails != nil {
 			t.Fatalf("expected nil OutputTokensDetails, got %+v", result.OutputTokensDetails)
+		}
+	})
+}
+
+// TestToAnthropicChatStreamResponse_ThinkingTokens verifies the outbound chat-stream converter
+// (used when serving an Anthropic-format SSE stream for a cross-provider response) forwards
+// ReasoningTokens as output_tokens_details.thinking_tokens, and omits it when absent/zero.
+func TestToAnthropicChatStreamResponse_ThinkingTokens(t *testing.T) {
+	t.Run("propagates reasoning tokens into SSE usage", func(t *testing.T) {
+		bifrostResp := &schemas.BifrostChatResponse{
+			ID: "msg_1",
+			Usage: &schemas.BifrostLLMUsage{
+				PromptTokens:     10,
+				CompletionTokens: 50,
+				CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{
+					ReasoningTokens: 30,
+				},
+			},
+		}
+		sse := ToAnthropicChatStreamResponse(bifrostResp)
+		if !strings.Contains(sse, `"thinking_tokens":30`) {
+			t.Fatalf("expected thinking_tokens=30 in SSE output, got: %s", sse)
+		}
+	})
+
+	t.Run("zero reasoning tokens omits output_tokens_details", func(t *testing.T) {
+		bifrostResp := &schemas.BifrostChatResponse{
+			ID: "msg_2",
+			Usage: &schemas.BifrostLLMUsage{
+				PromptTokens:     10,
+				CompletionTokens: 5,
+				CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{
+					ReasoningTokens: 0,
+				},
+			},
+		}
+		sse := ToAnthropicChatStreamResponse(bifrostResp)
+		if strings.Contains(sse, "output_tokens_details") {
+			t.Fatalf("expected no output_tokens_details in SSE output, got: %s", sse)
 		}
 	})
 }
