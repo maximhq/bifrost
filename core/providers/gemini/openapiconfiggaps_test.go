@@ -82,6 +82,7 @@ func TestResponsesRequestExtractsTranslationEnhancedCivicResponseFormat(t *testi
 						"mimeType": "TEXT_PLAIN",
 					},
 				},
+				"unrelated_passthrough_key": "keep-me",
 			},
 		},
 	})
@@ -97,6 +98,18 @@ func TestResponsesRequestExtractsTranslationEnhancedCivicResponseFormat(t *testi
 	require.NotNil(t, result.GenerationConfig.ResponseFormat)
 	require.NotNil(t, result.GenerationConfig.ResponseFormat.Text)
 	assert.Equal(t, "TEXT_PLAIN", result.GenerationConfig.ResponseFormat.Text.MimeType)
+
+	// Consumed keys must be removed from the passthrough ExtraParams so they aren't
+	// double-applied by the generic extra_params -> JSON merge at send time.
+	_, hasTranslation := result.ExtraParams["translation_config"]
+	assert.False(t, hasTranslation)
+	_, hasCivic := result.ExtraParams["enable_enhanced_civic_answers"]
+	assert.False(t, hasCivic)
+	_, hasResponseFormat := result.ExtraParams["response_format"]
+	assert.False(t, hasResponseFormat)
+
+	// Untouched keys must survive.
+	assert.Equal(t, "keep-me", result.ExtraParams["unrelated_passthrough_key"])
 }
 
 func TestGoogleSearchSearchTypesRoundTrip(t *testing.T) {
