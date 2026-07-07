@@ -117,8 +117,12 @@ Users need the `Logs:Reveal` permission to reveal original values for a log that
 ```json
 {
   "redaction_mapping": {
-    "EMAIL-1": "alex@example.com",
-    "PHONE_NUMBER-1": "+1 555 0100"
+    "input": {
+      "EMAIL-1": "alex@example.com"
+    },
+    "output": {
+      "PHONE_NUMBER-1": "+1 555 0100"
+    }
   }
 }
 ```

@@ -110,8 +110,8 @@ func (t *Tracer) SetTraceAttribute(traceID string, key string, value any) {
 	t.store.SetTraceAttribute(traceID, key, value)
 }
 
-// SetTraceRedactionReplacements stores connector-facing raw-to-placeholder replacements on a trace.
-func (t *Tracer) SetTraceRedactionReplacements(traceID string, replacements map[string]string) {
+// SetTraceRedactionReplacements stores phase-scoped connector-facing replacements on a trace.
+func (t *Tracer) SetTraceRedactionReplacements(traceID string, phase schemas.RedactionPhase, replacements map[string]string) {
 	if t == nil || t.store == nil || strings.TrimSpace(traceID) == "" || len(replacements) == 0 {
 		return
 	}
@@ -119,7 +119,7 @@ func (t *Tracer) SetTraceRedactionReplacements(traceID string, replacements map[
 	if trace == nil {
 		return
 	}
-	trace.SetRedactionReplacements(replacements)
+	trace.SetRedactionReplacements(phase, replacements)
 }
 
 // CreateTrace creates a new trace with optional parent ID and returns the trace ID.
