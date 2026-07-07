@@ -158,6 +158,21 @@ func (s *BifrostHTTPServer) LoadPlugins(ctx context.Context) error {
 	if err := s.loadCustomPlugins(ctx); err != nil {
 		return err
 	}
+	// Re-seed after custom plugins load. A custom .so plugin's init() only runs when
+	// its shared object is opened — which happens inside loadCustomPlugins (LoadPlugin
+	// for enabled plugins, VerifyBasePlugin for disabled ones), i.e. after the seed
+	// above. This pass picks up any marshallers those inits self-registered so a
+	// disabled custom plugin can still redact/normalize its stored config. Skip names
+	// already registered so we never clobber an enabled plugin's live instance.
+	existing := s.Config.ConfigMarshallers.Load()
+	for name, cm := range schemas.ConfigMarshallers() {
+		if existing != nil {
+			if _, ok := (*existing)[name]; ok {
+				continue
+			}
+		}
+		s.Config.RegisterConfigMarshaller(name, cm)
+	}
 	// Sort all plugins by placement group and order
 	s.Config.SortAndRebuildPlugins()
 	return nil
