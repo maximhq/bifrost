@@ -1,0 +1,4 @@
+- feat: added ChatGPT passthrough support to the OpenAI provider
+- feat: added user-agent tracking schemas with custom user-agent mapping
+- feat: MCP tool execution plugin pipeline improvements
+- fix: surface AWS exception types on Bedrock non-streaming error responses
