@@ -110,6 +110,7 @@ func (p *opencodeProvider) TextCompletionStream(ctx *schemas.BifrostContext, pos
 
 // ChatCompletion performs a chat completion request to the Opencode API.
 func (p *opencodeProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
 		p.client,
@@ -129,6 +130,7 @@ func (p *opencodeProvider) ChatCompletion(ctx *schemas.BifrostContext, key schem
 
 // ChatCompletionStream performs a streaming chat completion request to the Opencode API.
 func (p *opencodeProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
 		p.streamingClient,

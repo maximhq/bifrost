@@ -1,6 +1,11 @@
 package opencode
 
 import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -41,6 +46,62 @@ func TestOpencodeProviderConstructors(t *testing.T) {
 			t.Errorf("expected base URL https://opencode.ai/zen/go, got %s", provider.networkConfig.BaseURL)
 		}
 	})
+}
+
+// TestChatCompletion_ExtraParamsForwardedAutomatically verifies that provider-specific
+// extra params (e.g. thinking) are forwarded to Opencode without requiring
+// the caller to set BifrostContextKeyPassthroughExtraParams on the context.
+func TestChatCompletion_ExtraParamsForwardedAutomatically(t *testing.T) {
+	t.Parallel()
+
+	var capturedBody map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "read error", http.StatusInternalServerError)
+			return
+		}
+		if err := json.Unmarshal(body, &capturedBody); err != nil {
+			http.Error(w, "json error", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"id":"chatcmpl-test","object":"chat.completion","created":1,"model":"test-model","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	defer server.Close()
+
+	config := &schemas.ProviderConfig{}
+	config.NetworkConfig.BaseURL = server.URL
+	provider, err := NewOpencodeGoProvider(config, nil)
+	if err != nil {
+		t.Fatalf("NewOpencodeGoProvider failed: %v", err)
+	}
+
+	content := "hello"
+	req := &schemas.BifrostChatRequest{
+		Provider: schemas.OpencodeGo,
+		Model:    "test-model",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &content}},
+		},
+		Params: &schemas.ChatParameters{
+			ExtraParams: map[string]interface{}{
+				"thinking": false,
+			},
+		},
+	}
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+
+	_, bifrostErr := provider.ChatCompletion(ctx, schemas.Key{Value: schemas.SecretVar{Val: "test-key"}}, req)
+	if bifrostErr != nil {
+		t.Fatalf("ChatCompletion returned error: %v", bifrostErr.Error.Message)
+	}
+	if got, _ := ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams).(bool); !got {
+		t.Fatal("expected chat completion to enable extra params passthrough")
+	}
+	if capturedBody["thinking"] != false {
+		t.Fatalf("expected thinking=false in outgoing request body, got %v", capturedBody["thinking"])
+	}
 }
 
 // unsupportedOp represents an operation that opencodeProvider should reject.
