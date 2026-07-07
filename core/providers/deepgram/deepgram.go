@@ -436,30 +436,43 @@ func (provider *DeepgramProvider) Transcription(ctx *schemas.BifrostContext, key
 	provider.setAuthHeader(req, key)
 	req.SetBody(body)
 
+	// Raw-request diagnostics (EnrichError/ParseAndSetRawRequest) store the
+	// body as json.RawMessage, so only the JSON (URL-based) body is safe to
+	// pass through — raw audio bytes (the file-upload path) are not valid
+	// JSON and must never be embedded in a JSON response field.
+	var rawRequestForDiagnostics []byte
+	if contentType == "application/json" {
+		rawRequestForDiagnostics = body
+	}
+
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
 	defer wait()
 	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, body, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, rawRequestForDiagnostics, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, providerUtils.SetErrorLatency(parseDeepgramError(resp), latency)
+		return nil, providerUtils.EnrichError(ctx, parseDeepgramError(resp), rawRequestForDiagnostics, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	responseBody, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), rawRequestForDiagnostics, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	var deepgramResp DeepgramTranscriptionResponse
 	if err := sonic.Unmarshal(responseBody, &deepgramResp); err != nil {
-		return nil, providerUtils.NewBifrostOperationError("failed to parse Deepgram transcription response", err)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("failed to parse Deepgram transcription response", err), rawRequestForDiagnostics, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	response := ToBifrostTranscriptionResponse(&deepgramResp)
 	response.ExtraFields = schemas.BifrostResponseExtraFields{
 		Latency:                 latency.Milliseconds(),
 		ProviderResponseHeaders: providerUtils.ExtractProviderResponseHeaders(resp),
+	}
+
+	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) && rawRequestForDiagnostics != nil {
+		providerUtils.ParseAndSetRawRequest(&response.ExtraFields, rawRequestForDiagnostics)
 	}
 
 	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
