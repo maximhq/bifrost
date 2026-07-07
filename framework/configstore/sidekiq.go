@@ -47,36 +47,68 @@ func (s *RDBConfigStore) GetSidekiqJob(ctx context.Context, id string) (*tables.
 	return &job, nil
 }
 
-// MarkSidekiqJobRunning transitions a job to running, stamps started_at, bumps the
-// heartbeat (updated_at), and increments the attempt counter. Safe to call on
-// resume: each resumed run counts as a fresh attempt.
-func (s *RDBConfigStore) MarkSidekiqJobRunning(ctx context.Context, id string) error {
+// ClaimSidekiqJob atomically claims a job for ownerID and transitions it to
+// running. It is the cluster-wide mutual-exclusion primitive: the conditional
+// UPDATE means at most one claim affects a row, so exactly one node — and exactly
+// one goroutine — runs each job. A claim succeeds when the job is:
+//   - pending (never started), or
+//   - running but stale (updated_at < staleBefore, i.e. the owner's heartbeat
+//     lapsed, so it is presumed dead and the job is orphaned/resumable).
+//
+// A job running under a live owner (fresh heartbeat) yields RowsAffected == 0, so
+// it is not claimed. Note there is deliberately no "owner_id = ownerID" escape:
+// resume after a crash is covered by the stale condition (a restarted process has
+// a new ownerID anyway), and omitting it means a second concurrent claim on the
+// same node (e.g. Enqueue racing a dispatcher tick) loses instead of double-running.
+// The claim stamps owner_id, bumps the heartbeat, and increments the attempt
+// counter (each claimed run is a fresh attempt). started_at is only set on first
+// start; a resume keeps the original. Returns true when this claim won.
+func (s *RDBConfigStore) ClaimSidekiqJob(ctx context.Context, id, ownerID string, staleBefore time.Time) (bool, error) {
 	now := time.Now()
 	res := s.DB().WithContext(ctx).
 		Model(&tables.TableSidekiqJob{}).
-		Where("id = ?", id).
+		Where("id = ? AND (status = ? OR (status = ? AND updated_at < ?))",
+			id,
+			tables.SidekiqStatusPending,
+			tables.SidekiqStatusRunning, staleBefore).
 		Updates(map[string]any{
 			"status":     tables.SidekiqStatusRunning,
-			"started_at": now,
+			"owner_id":   ownerID,
+			"started_at": gorm.Expr("COALESCE(started_at, ?)", now),
 			"updated_at": now,
 			"attempts":   gorm.Expr("attempts + 1"),
 		})
 	if res.Error != nil {
-		return res.Error
+		return false, res.Error
 	}
-	if res.RowsAffected == 0 {
-		return errors.New("sidekiq job not found or already in terminal state")
+	return res.RowsAffected == 1, nil
+}
+
+// HeartbeatSidekiqJob bumps the heartbeat (updated_at) for a job the caller still
+// owns and is still running. Called on a fixed interval by the owning runner so a
+// slow-but-alive job (one whose handler has not checkpointed recently) is not
+// judged stale and re-claimed elsewhere. Fenced on owner_id: returns false when
+// the caller no longer owns the job (it was reaped and re-claimed), which the
+// runner treats as a signal to cancel its in-flight work.
+func (s *RDBConfigStore) HeartbeatSidekiqJob(ctx context.Context, id, ownerID string) (bool, error) {
+	res := s.DB().WithContext(ctx).
+		Model(&tables.TableSidekiqJob{}).
+		Where("id = ? AND owner_id = ? AND status = ?", id, ownerID, tables.SidekiqStatusRunning).
+		Update("updated_at", time.Now())
+	if res.Error != nil {
+		return false, res.Error
 	}
-	return nil
+	return res.RowsAffected == 1, nil
 }
 
 // UpdateSidekiqJobProgress persists a progress checkpoint: it replaces the metadata
 // blob and bumps the heartbeat (updated_at) so the reaper does not treat the job as
-// stale. Called after each processed page.
-func (s *RDBConfigStore) UpdateSidekiqJobProgress(ctx context.Context, id, metadata string) error {
+// stale. Called after each processed page. Fenced on owner_id so only the current
+// owner can advance the job; a stale owner that revives affects 0 rows.
+func (s *RDBConfigStore) UpdateSidekiqJobProgress(ctx context.Context, id, ownerID, metadata string) error {
 	res := s.DB().WithContext(ctx).
 		Model(&tables.TableSidekiqJob{}).
-		Where("id = ?", id).
+		Where("id = ? AND owner_id = ?", id, ownerID).
 		Updates(map[string]any{
 			"metadata":   metadata,
 			"updated_at": time.Now(),
@@ -85,18 +117,19 @@ func (s *RDBConfigStore) UpdateSidekiqJobProgress(ctx context.Context, id, metad
 		return res.Error
 	}
 	if res.RowsAffected == 0 {
-		return errors.New("sidekiq job not found")
+		return errors.New("sidekiq job not found or no longer owned by caller")
 	}
 	return nil
 }
 
 // CompleteSidekiqJob marks a job completed, stamps completed_at, and stores the
-// final metadata (counts, summary).
-func (s *RDBConfigStore) CompleteSidekiqJob(ctx context.Context, id, metadata string) error {
+// final metadata (counts, summary). Fenced on owner_id so a job that was reaped
+// and re-claimed elsewhere is not marked complete by its former owner.
+func (s *RDBConfigStore) CompleteSidekiqJob(ctx context.Context, id, ownerID, metadata string) error {
 	now := time.Now()
 	res := s.DB().WithContext(ctx).
 		Model(&tables.TableSidekiqJob{}).
-		Where("id = ?", id).
+		Where("id = ? AND owner_id = ?", id, ownerID).
 		Updates(map[string]any{
 			"status":       tables.SidekiqStatusCompleted,
 			"metadata":     metadata,
@@ -107,14 +140,15 @@ func (s *RDBConfigStore) CompleteSidekiqJob(ctx context.Context, id, metadata st
 		return res.Error
 	}
 	if res.RowsAffected == 0 {
-		return errors.New("sidekiq job not found")
+		return errors.New("sidekiq job not found or no longer owned by caller")
 	}
 	return nil
 }
 
 // FailSidekiqJob marks a job failed, records the error, stamps completed_at, and
 // preserves the latest metadata so a later resume can read the checkpoint cursor.
-func (s *RDBConfigStore) FailSidekiqJob(ctx context.Context, id, metadata, lastErr string) error {
+// Fenced on owner_id so a former owner cannot overwrite a re-claimed job's state.
+func (s *RDBConfigStore) FailSidekiqJob(ctx context.Context, id, ownerID, metadata, lastErr string) error {
 	now := time.Now()
 	updates := map[string]any{
 		"status":       tables.SidekiqStatusFailed,
@@ -127,24 +161,28 @@ func (s *RDBConfigStore) FailSidekiqJob(ctx context.Context, id, metadata, lastE
 	}
 	res := s.DB().WithContext(ctx).
 		Model(&tables.TableSidekiqJob{}).
-		Where("id = ?", id).
+		Where("id = ? AND owner_id = ?", id, ownerID).
 		Updates(updates)
 	if res.Error != nil {
 		return res.Error
 	}
 	if res.RowsAffected == 0 {
-		return errors.New("sidekiq job not found")
+		return errors.New("sidekiq job not found or no longer owned by caller")
 	}
 	return nil
 }
 
-// ListIncompleteSidekiqJobs returns jobs that are not in a terminal state
-// (pending or running). Used by startup recovery to resume work that was
-// interrupted by a restart or crash.
-func (s *RDBConfigStore) ListIncompleteSidekiqJobs(ctx context.Context) ([]tables.TableSidekiqJob, error) {
+// ListClaimableSidekiqJobs returns jobs eligible to be picked up: those that are
+// pending (never started), or running but stale (heartbeat older than staleBefore,
+// i.e. their owner is presumed dead). Ordered oldest-first. The dispatcher scans
+// this list and attempts to claim each; the atomic ClaimSidekiqJob decides the one
+// winner, so listing on every node is safe and needs no cross-node coordination.
+func (s *RDBConfigStore) ListClaimableSidekiqJobs(ctx context.Context, staleBefore time.Time) ([]tables.TableSidekiqJob, error) {
 	var jobs []tables.TableSidekiqJob
 	err := s.DB().WithContext(ctx).
-		Where("status IN ?", []string{tables.SidekiqStatusPending, tables.SidekiqStatusRunning}).
+		Where("status = ? OR (status = ? AND updated_at < ?)",
+			tables.SidekiqStatusPending,
+			tables.SidekiqStatusRunning, staleBefore).
 		Order("created_at ASC").
 		Find(&jobs).Error
 	if err != nil {

@@ -22,6 +22,11 @@ type TableSidekiqJob struct {
 	ID          string     `gorm:"column:id;primaryKey;type:text" json:"id"`
 	Kind        string     `gorm:"column:kind;not null;type:text;index:idx_sidekiq_status_updated,priority:3" json:"kind"`
 	Status      string     `gorm:"column:status;not null;default:pending;type:text;index:idx_sidekiq_status_updated,priority:1" json:"status"`
+	// OwnerID identifies the runner process that currently owns (claimed) this job.
+	// Empty until a node wins the claim. Progress/complete/fail/heartbeat writes are
+	// fenced on this value so a revived slow owner cannot stomp a job that was
+	// re-claimed by another node after its heartbeat went stale.
+	OwnerID     string     `gorm:"column:owner_id;type:text;index" json:"owner_id,omitempty"`
 	Metadata    string     `gorm:"column:metadata;type:text;default:'{}'" json:"metadata"`
 	Attempts    int        `gorm:"column:attempts;not null;default:0" json:"attempts"`
 	LastError   string     `gorm:"column:last_error;type:text" json:"last_error,omitempty"`

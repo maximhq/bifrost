@@ -437,6 +437,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_mcp_client_tool_execution_timeout_column"}, run: migrationAddMCPClientToolExecutionTimeoutColumn},
 	{IDs: []string{"add_virtual_key_expires_at_column"}, run: migrationAddVirtualKeyExpiresAtColumn},
 	{IDs: []string{"add_sidekiq_table"}, run: migrationAddSidekiqTable},
+	{IDs: []string{"add_sidekiq_owner_id"}, run: migrationAddSidekiqOwnerID},
 }
 
 // quoteSQLiteIdentifier quotes a SQLite identifier, escaping any double quotes.
@@ -10376,6 +10377,37 @@ func migrationAddSidekiqTable(ctx context.Context, db *gorm.DB, logger schemas.L
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			return tx.Exec(`DROP TABLE IF EXISTS sidekiq`).Error
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddSidekiqOwnerID adds the owner_id column to the sidekiq table. The
+// column fences job mutations to the runner process that claimed the job, so a
+// stale owner that revives cannot overwrite a job another node has re-claimed.
+// Idempotent via addColumnIfNotExists + CREATE INDEX IF NOT EXISTS.
+func migrationAddSidekiqOwnerID(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_sidekiq_owner_id"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableSidekiqJob{}, "owner_id"); err != nil {
+				return err
+			}
+			return tx.Exec(`CREATE INDEX IF NOT EXISTS idx_sidekiq_owner ON sidekiq (owner_id)`).Error
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := tx.Exec(`DROP INDEX IF EXISTS idx_sidekiq_owner`).Error; err != nil {
+				return err
+			}
+			return dropColumnIfExists(tx, logger, &tables.TableSidekiqJob{}, "owner_id")
 		},
 	}})
 	if err := m.Migrate(); err != nil {
