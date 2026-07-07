@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"encoding/json"
 	"strings"
 
 	"github.com/maximhq/bifrost/core/providers/utils"
@@ -444,6 +445,28 @@ type OpenAICompactionRequest struct {
 
 // GetExtraParams implements RequestBodyWithExtraParams.
 func (r *OpenAICompactionRequest) GetExtraParams() map[string]interface{} { return r.ExtraParams }
+
+// MarshalJSON serializes the compaction request. The embedded Input is shadowed
+// by a json.RawMessage so the OpenAIResponsesRequestInput union is written via
+// its own MarshalJSON (a pointer-receiver method that default struct encoding of
+// the value field would skip, emitting `input` as an object the endpoint
+// rejects). Empty input is omitted, since a previous_response_id-only compaction
+// is valid. Mirrors OpenAIResponsesRequest.MarshalJSON.
+func (r *OpenAICompactionRequest) MarshalJSON() ([]byte, error) {
+	type Alias OpenAICompactionRequest
+	var input json.RawMessage
+	if r.Input.OpenAIResponsesRequestInputStr != nil || r.Input.OpenAIResponsesRequestInputArray != nil {
+		b, err := r.Input.MarshalJSON()
+		if err != nil {
+			return nil, err
+		}
+		input = json.RawMessage(b)
+	}
+	return utils.MarshalSorted(struct {
+		*Alias
+		Input json.RawMessage `json:"input,omitempty"`
+	}{Alias: (*Alias)(r), Input: input})
+}
 
 // ToOpenAICompactionRequest converts a BifrostCompactionRequest to the OpenAI wire format.
 func ToOpenAICompactionRequest(ctx *schemas.BifrostContext, req *schemas.BifrostCompactionRequest) *OpenAICompactionRequest {
