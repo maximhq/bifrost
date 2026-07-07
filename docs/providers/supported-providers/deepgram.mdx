@@ -35,9 +35,12 @@ automatically. Control/config messages (`Settings`, `UpdateListen/Think/Speak/Pr
 route, same as OpenAI Realtime and ElevenLabs Conversational AI. Client **audio** input is
 different: Deepgram sends/expects raw binary WebSocket frames (not JSON-wrapped base64 like
 OpenAI/ElevenLabs), so it's served over a dedicated route, `/v1/realtime/audio`, which accepts
-binary frames and forwards them upstream verbatim. Verified live against the real API: connection,
-auth, and the `Settings`/`Welcome`/`SettingsApplied`/`UpdatePrompt`/`PromptUpdated` message shapes.
-Not yet exercised end-to-end with real audio (requires a live mic/audio source).
+binary frames and forwards them upstream verbatim. Verified live against the real API end-to-end,
+including a full audio-in-to-audio-out turn: synthetic speech streamed as binary `Media` frames
+produced the expected `UserStartedSpeaking` → `ConversationText` (user) → `ConversationText`
+(assistant) → binary `Audio` frames → `AgentAudioDone` sequence, matching every event mapping
+exactly. (Only running this same flow *through Bifrost's own HTTP transport*, rather than a direct
+client dial to Deepgram, is unverified — see the implementation plan for why.)
 
 **Async callback mode not supported**: Deepgram's `callback`/`callback_method` query params (webhook-delivered async results) are explicitly stripped and never forwarded — Bifrost's handler pipeline is synchronous request/response only.
 </Note>
