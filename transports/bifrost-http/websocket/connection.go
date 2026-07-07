@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -30,6 +31,39 @@ func redactURLForLog(rawURL string) string {
 	u.User = nil
 	u.RawQuery = ""
 	u.Fragment = ""
+	return u.String()
+}
+
+// sensitiveQueryParamSubstrings names the query-parameter name fragments
+// SanitizeEndpointForPoolKey strips. Deliberately name-based (not provider-
+// specific): today only Gemini Live puts a credential on the URL, but this
+// keeps the pool-identity path safe for any future provider that does the same,
+// without needing a per-provider special case in the caller.
+var sensitiveQueryParamSubstrings = []string{"key", "token", "secret", "auth"}
+
+// SanitizeEndpointForPoolKey strips credential-shaped query parameters from a
+// dial URL before it's used as PoolKey.Endpoint — the pool's Go map key, held
+// in memory for the life of every idle/in-flight connection and stored on
+// UpstreamConn for diagnostics. Non-credential query params (e.g. OpenAI's
+// `?model=`, needed to keep different models in separate pool buckets) are
+// preserved untouched. Callers whose URL contains a stripped param must pass
+// the original URL separately as PoolKey.DialURL.
+func SanitizeEndpointForPoolKey(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
+	}
+	q := u.Query()
+	for name := range q {
+		lower := strings.ToLower(name)
+		for _, substr := range sensitiveQueryParamSubstrings {
+			if strings.Contains(lower, substr) {
+				q.Del(name)
+				break
+			}
+		}
+	}
+	u.RawQuery = q.Encode()
 	return u.String()
 }
 

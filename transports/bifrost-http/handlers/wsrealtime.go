@@ -303,10 +303,18 @@ func (h *WSRealtimeHandler) runRealtimeSession(
 		clientConn.writeRealtimeError(headerErr)
 		return
 	}
+	// Some providers' RealtimeWebSocketURL embeds the credential itself (Gemini
+	// Live's `?key=` query param, since its protocol has no header-based auth
+	// option) — sanitize before it becomes the pool's Go map key / diagnostic
+	// value, and keep the real URL only as the dial target. This is a no-op for
+	// OpenAI/Azure (their `?model=`/`?deployment=` params aren't credential-shaped)
+	// and ElevenLabs (header auth, no query params at all).
+	poolEndpoint := bfws.SanitizeEndpointForPoolKey(wsURL)
 	upstream, err := h.pool.Get(bfws.PoolKey{
 		Provider: providerKey,
 		KeyID:    key.ID,
-		Endpoint: wsURL,
+		Endpoint: poolEndpoint,
+		DialURL:  wsURL,
 	}, mapToHTTPHeader(realtimeHeaders))
 	if err != nil {
 		clientConn.writeRealtimeError(newRealtimeWireBifrostError(502, "server_error", err.Error()))

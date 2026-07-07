@@ -46,3 +46,60 @@ func TestRedactURLForLog(t *testing.T) {
 		})
 	}
 }
+
+// Regression test (follow-up to the Greptile PR review finding): the Gemini
+// API key must never become part of PoolKey.Endpoint — the Go map key held in
+// memory for the pool's lifetime and stored on UpstreamConn for diagnostics —
+// while non-credential query params other providers rely on for correct pool
+// bucketing (OpenAI's `?model=`, Azure-style `?deployment=`) must be preserved
+// untouched, or connections for different models would collapse into the same
+// pool bucket.
+func TestSanitizeEndpointForPoolKey(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "strips Gemini API key query param",
+			in:   "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=AIzaSySECRET",
+			want: "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent",
+		},
+		{
+			name: "preserves OpenAI's model query param",
+			in:   "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview",
+			want: "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview",
+		},
+		{
+			name: "preserves Azure's deployment query param",
+			in:   "wss://my-resource.openai.azure.com/openai/v1/realtime?deployment=gpt-4o-realtime",
+			want: "wss://my-resource.openai.azure.com/openai/v1/realtime?deployment=gpt-4o-realtime",
+		},
+		{
+			name: "ElevenLabs has no query-param secret, unchanged",
+			in:   "wss://api.elevenlabs.io/v1/convai/conversation?agent_id=agent-123",
+			want: "wss://api.elevenlabs.io/v1/convai/conversation?agent_id=agent-123",
+		},
+		{
+			name: "no query params is a no-op",
+			in:   "wss://api.openai.com/v1/realtime",
+			want: "wss://api.openai.com/v1/realtime",
+		},
+		{
+			name: "strips a token-named param alongside a preserved one",
+			in:   "wss://example.com/realtime?model=foo&access_token=SECRET",
+			want: "wss://example.com/realtime?model=foo",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := SanitizeEndpointForPoolKey(tc.in)
+			if got != tc.want {
+				t.Fatalf("SanitizeEndpointForPoolKey(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
