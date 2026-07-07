@@ -72,6 +72,18 @@ const getRealtimeTransportBadgeClass = (value: unknown): string => {
 	}
 };
 
+const hasRedactionMappingEntries = (mapping?: LogEntry["redaction_mapping"]): boolean =>
+	Boolean(mapping && (Object.keys(mapping.input ?? {}).length > 0 || Object.keys(mapping.output ?? {}).length > 0));
+
+const applyRedactionMapping = (text: string | undefined, mapping?: Record<string, string>): string => {
+	if (!text || !mapping) return text || "";
+	let result = text;
+	for (const [key, value] of Object.entries(mapping)) {
+		result = result.replaceAll(`[${key}]`, value);
+	}
+	return result;
+};
+
 const formatRealtimeSource = (value: unknown): string => {
 	const source = String(value ?? "").trim();
 	switch (source.toLowerCase()) {
@@ -576,9 +588,10 @@ export function LogDetailView({
 	});
 	const [showRevealedValues, setShowRevealedValues] = useState(false);
 	const revealMapping = log?.redaction_mapping;
-	const revealAvailable = canReveal && Boolean(revealMapping && Object.keys(revealMapping).length > 0);
+	const revealAvailable = canReveal && hasRedactionMappingEntries(revealMapping);
 	const revealEnabled = revealAvailable && showRevealedValues;
-	const activeRevealedMapping = revealEnabled ? revealMapping : undefined;
+	const activeInputRevealMapping = revealEnabled ? revealMapping?.input : undefined;
+	const activeOutputRevealMapping = revealEnabled ? revealMapping?.output : undefined;
 
 	useEffect(() => {
 		setShowRevealedValues(false);
@@ -589,17 +602,6 @@ export function LogDetailView({
 
 	const handleToggleReveal = (checked: boolean) => {
 		setShowRevealedValues(checked && revealAvailable);
-	};
-
-	// applyRedactionMapping replaces reversible placeholders like [EMAIL-1] with
-	// their original values when the reveal toggle is active.
-	const applyRedactionMapping = (text: string | undefined): string => {
-		if (!text || !activeRevealedMapping) return text || "";
-		let result = text;
-		for (const [key, value] of Object.entries(activeRevealedMapping)) {
-			result = result.replaceAll(`[${key}]`, value);
-		}
-		return result;
 	};
 
 	if (!log) return null;
@@ -627,10 +629,10 @@ export function LogDetailView({
 	}
 
 	const audioFormat = (log.params as any)?.audio?.format || (log.params as any)?.extra_params?.audio?.format || undefined;
-	const rawRequest = log.raw_request;
-	const rawResponse = log.raw_response;
-	const passthroughRequestBody = log.passthrough_request_body;
-	const passthroughResponseBody = log.passthrough_response_body;
+	const rawRequest = applyRedactionMapping(log.raw_request, activeInputRevealMapping);
+	const rawResponse = applyRedactionMapping(log.raw_response, activeOutputRevealMapping);
+	const passthroughRequestBody = applyRedactionMapping(log.passthrough_request_body, activeInputRevealMapping);
+	const passthroughResponseBody = applyRedactionMapping(log.passthrough_response_body, activeOutputRevealMapping);
 	const videoOutput = log.video_generation_output || log.video_retrieve_output || log.video_download_output;
 	const videoListOutput = log.video_list_output;
 	const pluginLogCount = (() => {
@@ -1822,8 +1824,8 @@ export function LogDetailView({
 									: log.input_history?.filter(Boolean)
 								)?.flatMap((message, index) => {
 									const role = ((message.role as string) || "user") as MessageRole;
-									const text = extractMessageText(message, activeRevealedMapping);
-									const reasoningText = extractChatReasoning(message, activeRevealedMapping);
+									const text = extractMessageText(message, activeInputRevealMapping);
+									const reasoningText = extractChatReasoning(message, activeInputRevealMapping);
 									const showAll = visibleRoles.size === allRoles.length;
 									const showMain = showAll || visibleRoles.has(role);
 									const showReasoning = !!reasoningText && (showAll || visibleRoles.has("reasoning"));
@@ -1921,12 +1923,12 @@ export function LogDetailView({
 								{log.output_message &&
 									!log.error_details?.error.message &&
 									(() => {
-										const reasoningText = extractChatReasoning(log.output_message, activeRevealedMapping);
+										const reasoningText = extractChatReasoning(log.output_message, activeOutputRevealMapping);
 										const showReasoning = !!reasoningText && (visibleRoles.size === allRoles.length || visibleRoles.has("reasoning"));
 										const showAssistant = visibleRoles.has("assistant");
 										if (!showReasoning && !showAssistant) return null;
-										const text = extractMessageText(log.output_message, activeRevealedMapping);
-										const refusalText = applyRedactionMapping(log.output_message.refusal);
+										const text = extractMessageText(log.output_message, activeOutputRevealMapping);
+										const refusalText = applyRedactionMapping(log.output_message.refusal, activeOutputRevealMapping);
 										const isStopReasonRefusal =
 											log.stop_reason === "refusal" || log.stop_reason === "content_filter" || log.stop_reason === "safety";
 										const showRefusal = refusalText || (!text && isStopReasonRefusal);
@@ -2016,21 +2018,24 @@ export function LogDetailView({
 						const rawOutput = log.status !== "processing" && !log.error_details?.error.message ? (log.responses_output ?? []) : [];
 						const outputMsgs =
 							visibleRoles.size < allRoles.length ? rawOutput.filter((m) => visibleRoles.has(getResponsesRole(m))) : rawOutput;
-						const all: ResponsesMessage[] = coalesceResponsesMessages([...inputMsgs, ...outputMsgs]);
+						const all: Array<{ msg: ResponsesMessage; mapping?: Record<string, string> }> = [
+							...coalesceResponsesMessages(inputMsgs).map((msg) => ({ msg, mapping: activeInputRevealMapping })),
+							...coalesceResponsesMessages(outputMsgs).map((msg) => ({ msg, mapping: activeOutputRevealMapping })),
+						];
 						if (all.length === 0) return null;
 						return (
 							<div className="bg-card rounded-sm border p-5">
-								{all.map((msg, index) => {
+								{all.map(({ msg, mapping }, index) => {
 									const role = getResponsesRole(msg);
 									const isLast = index === all.length - 1;
-									const reasoningParts = role === "reasoning" ? extractReasoningParts(msg, activeRevealedMapping) : null;
+									const reasoningParts = role === "reasoning" ? extractReasoningParts(msg, mapping) : null;
 									const reasoningHasAny =
 										!!reasoningParts &&
 										(reasoningParts.summaries.length > 0 ||
 											!!reasoningParts.encrypted ||
 											!!reasoningParts.contentText ||
 											reasoningParts.signatures.length > 0);
-									const text = role === "reasoning" ? "" : extractResponsesText(msg, activeRevealedMapping);
+									const text = role === "reasoning" ? "" : extractResponsesText(msg, mapping);
 									const lineCount = text ? text.split("\n").length : 0;
 									const approxTokens = text ? Math.max(1, Math.round(text.length / 4)) : 0;
 									let meta: string | undefined;

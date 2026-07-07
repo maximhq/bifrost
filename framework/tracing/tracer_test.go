@@ -88,8 +88,11 @@ func TestTracer_CompleteAndFlushTraceRedactsContentBeforeInject(t *testing.T) {
 
 	// Store replacements before output attributes are populated. This mirrors
 	// streaming, where the final accumulated output lands near trace completion.
-	tracer.SetTraceRedactionReplacements(traceID, map[string]string{
-		"alex@example.com": "[EMAIL-1]",
+	tracer.SetTraceRedactionReplacements(traceID, schemas.RedactionPhaseInput, map[string]string{
+		"alex@example.com": "[EMAIL-INPUT]",
+	})
+	tracer.SetTraceRedactionReplacements(traceID, schemas.RedactionPhaseOutput, map[string]string{
+		"alex@example.com": "[EMAIL-OUTPUT]",
 	})
 
 	ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyTraceID, traceID)
@@ -106,8 +109,11 @@ func TestTracer_CompleteAndFlushTraceRedactsContentBeforeInject(t *testing.T) {
 		if strings.Contains(payload, "alex@example.com") {
 			t.Fatalf("injected trace leaked raw content: %s", payload)
 		}
-		if !strings.Contains(payload, "[EMAIL-1]") {
-			t.Fatalf("injected trace missing redacted placeholder: %s", payload)
+		if !strings.Contains(payload, "[EMAIL-INPUT]") {
+			t.Fatalf("injected trace missing input redacted placeholder: %s", payload)
+		}
+		if !strings.Contains(payload, "[EMAIL-OUTPUT]") {
+			t.Fatalf("injected trace missing output redacted placeholder: %s", payload)
 		}
 		if !strings.Contains(payload, "gpt-4o-mini") {
 			t.Fatalf("injected trace should retain non-content attributes: %s", payload)
@@ -125,7 +131,7 @@ func TestTracer_SetTraceRedactionReplacementsSurvivesLaterObservabilityPlugins(t
 	defer tracer.Stop()
 
 	traceID := tracer.CreateTrace("")
-	tracer.SetTraceRedactionReplacements(traceID, map[string]string{
+	tracer.SetTraceRedactionReplacements(traceID, schemas.RedactionPhaseInput, map[string]string{
 		"alex@example.com": "[EMAIL-1]",
 	})
 
