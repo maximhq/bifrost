@@ -79,7 +79,7 @@ SELECT
     COUNT(*) FILTER (WHERE ` + cacheDebugJSONGuard + `) AS cache_debug_count
 FROM logs
 WHERE status IN ('success', 'error', 'cancelled')
-GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15
+GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14
 `
 
 // cacheDebugJSONGuard matches rows whose cache_debug column holds a loose
@@ -127,6 +127,19 @@ var mvLogsHourlyRequiredColumns = []string{
 	"cache_debug_count",
 	"user_agent",
 	"app",
+	"count",
+	"success_count",
+	"error_count",
+	"cancelled_count",
+	"avg_latency",
+	"p90_latency",
+	"p95_latency",
+	"p99_latency",
+	"total_prompt_tokens",
+	"total_completion_tokens",
+	"total_tokens",
+	"total_cached_read_tokens",
+	"total_cost",
 }
 
 // legacyMatViewNames are matviews from previous schema versions that no longer
