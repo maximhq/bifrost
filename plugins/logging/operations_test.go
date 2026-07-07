@@ -958,8 +958,8 @@ func TestBuildInitialLogEntryPreservesUserAgent(t *testing.T) {
 	if entry.App == nil {
 		t.Fatalf("expected app on initial log entry")
 	}
-	if got := *entry.App; got != "Codex" {
-		t.Fatalf("expected app Codex, got %q", got)
+	if got := *entry.App; got != "Codex CLI" {
+		t.Fatalf("expected app Codex CLI, got %q", got)
 	}
 }
 
