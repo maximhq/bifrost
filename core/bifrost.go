@@ -5984,9 +5984,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		}
 		isCustomProvider := IsCustomProvider(config)
 		req.Context.SetValue(schemas.BifrostContextKeyIsCustomProvider, isCustomProvider)
-		if isCustomProvider {
-			req.Context.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
-		}
+		req.Context.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, isCustomProvider)
 
 		// Determine whether this provider attempt should capture raw payloads.
 		//
