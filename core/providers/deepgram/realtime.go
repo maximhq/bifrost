@@ -195,6 +195,20 @@ func (provider *DeepgramProvider) ToBifrostRealtimeEvent(providerEvent json.RawM
 	case dgServerFunctionCallReq:
 		event.Type = schemas.RTEventResponseOutputItemDone
 		if len(raw.Functions) > 0 {
+			// Only the first function call is promoted — a deliberate,
+			// scoped limitation, not an oversight. schemas.RealtimeItem
+			// carries a single scalar Name/CallID/Arguments tuple and
+			// schemas.BifrostRealtimeEvent carries a single *RealtimeItem;
+			// neither has a mechanism for multiple items in one event.
+			// Genuinely supporting Deepgram's parallel function calls would
+			// require either widening RealtimeItem/BifrostRealtimeEvent to a
+			// list, or changing ToBifrostRealtimeEvent's signature to return
+			// []*BifrostRealtimeEvent — both are RealtimeProvider-interface-
+			// wide changes that ripple into every other realtime provider
+			// (OpenAI/Azure/ElevenLabs) and the single relay call site in
+			// wsrealtime.go, not something fixable from within this package
+			// alone. RawData (set below) preserves the full raw.Functions
+			// list for any caller that parses it directly.
 			fn := raw.Functions[0]
 			event.Item = &schemas.RealtimeItem{
 				Type:      "function_call",
