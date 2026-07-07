@@ -316,3 +316,10 @@ Final chunk:
 **Impact**: Only recoverable via raw-response passthrough
 **Code**: `types.go` (`DeepgramTranscriptionResults`)
 </Accordion>
+
+<Accordion title="Parallel Function Calls in Voice Agent">
+**Severity**: Low
+**Behavior**: A single Deepgram `FunctionCallRequest` can batch multiple function calls into one message (`functions: [...]`), unlike OpenAI/ElevenLabs, which send one call per message. `event.Item` (the unified schema's single-item field) carries only the first call; any additional calls are carried in `event.ExtraParams["additional_items"]` as a JSON array of `RealtimeItem`, so they're never silently dropped
+**Impact**: The client is unaffected either way — Bifrost forwards Deepgram's untranslated raw message verbatim. Turn-level audit logging accumulates tool calls from both `event.Item` and `additional_items` automatically; direct consumers of the unified event schema should check `additional_items` if they need every parallel call, not just `event.Item`
+**Code**: `realtime.go` (`ToBifrostRealtimeEvent`, case `FunctionCallRequest`), `core/schemas/realtime.go` (`RealtimeExtraParamKeyAdditionalItems`)
+</Accordion>
