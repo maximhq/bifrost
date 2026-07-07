@@ -401,7 +401,6 @@ func (provider *DeepgramProvider) Transcription(ctx *schemas.BifrostContext, key
 	if !hasFile && request.Params != nil && request.Params.ExtraParams != nil {
 		if u, ok := schemas.SafeExtractStringPointer(request.Params.ExtraParams["url"]); ok && strings.TrimSpace(*u) != "" {
 			audioURL = *u
-			delete(request.Params.ExtraParams, "url")
 		}
 	}
 
@@ -440,7 +439,7 @@ func (provider *DeepgramProvider) Transcription(ctx *schemas.BifrostContext, key
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
 	defer wait()
 	if bifrostErr != nil {
-		return nil, bifrostErr
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, body, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
 	if resp.StatusCode() != fasthttp.StatusOK {

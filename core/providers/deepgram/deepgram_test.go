@@ -46,6 +46,72 @@ func TestBuildTranscriptionQueryParams(t *testing.T) {
 	}
 }
 
+// TestBuildTranscriptionQueryParams_URLNotMutatedOrForwarded guards against a
+// regression where Transcription() used to delete "url" from the caller's
+// ExtraParams map in-place to keep it off the query string. Since Bifrost's
+// retry loop reuses the same *BifrostTranscriptionRequest pointer across
+// attempts, that mutation silently broke every retry after the first (the
+// second attempt would see an empty ExtraParams and fail the
+// file-or-url-required guard). "url" must instead be filtered by
+// BuildTranscriptionQueryParams without touching the input map.
+func TestBuildTranscriptionQueryParams_URLNotMutatedOrForwarded(t *testing.T) {
+	t.Parallel()
+
+	extraParams := map[string]interface{}{
+		"url": "https://example.com/audio.wav",
+	}
+	req := &schemas.BifrostTranscriptionRequest{
+		Model: "nova-2-general",
+		Params: &schemas.TranscriptionParameters{
+			ExtraParams: extraParams,
+		},
+	}
+
+	q := deepgram.BuildTranscriptionQueryParams(req)
+	if q.Has("url") {
+		t.Errorf("url must never be forwarded as a query param, got query=%v", q)
+	}
+
+	// Simulate a second retry attempt reusing the same request/map pointer.
+	if _, ok := extraParams["url"]; !ok {
+		t.Fatal("ExtraParams[\"url\"] was mutated/removed by BuildTranscriptionQueryParams; a retry reusing this request would fail the file-or-url-required guard")
+	}
+	q2 := deepgram.BuildTranscriptionQueryParams(req)
+	if q2.Has("url") {
+		t.Errorf("url must never be forwarded as a query param on a repeated call either, got query=%v", q2)
+	}
+}
+
+// TestBuildTranscriptionQueryParams_MultiValuedArraysUseRepeatedKeys guards
+// against comma-joining array ExtraParams: Deepgram's keywords/replace/search
+// params are documented as multi-valued via key repetition
+// (?keywords=a&keywords=b), and comma-joining silently produces a malformed
+// request for those.
+func TestBuildTranscriptionQueryParams_MultiValuedArraysUseRepeatedKeys(t *testing.T) {
+	t.Parallel()
+
+	req := &schemas.BifrostTranscriptionRequest{
+		Model: "nova-2-general",
+		Params: &schemas.TranscriptionParameters{
+			ExtraParams: map[string]interface{}{
+				"keywords": []string{"foo:5", "bar:3"},
+			},
+		},
+	}
+
+	q := deepgram.BuildTranscriptionQueryParams(req)
+	got := q["keywords"]
+	want := []string{"foo:5", "bar:3"}
+	if len(got) != len(want) {
+		t.Fatalf("keywords = %v, want repeated keys %v", got, want)
+	}
+	for i, v := range want {
+		if got[i] != v {
+			t.Errorf("keywords[%d] = %q, want %q", i, got[i], v)
+		}
+	}
+}
+
 func TestBuildSpeakQueryParams(t *testing.T) {
 	t.Parallel()
 
