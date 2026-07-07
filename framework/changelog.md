@@ -1,3 +1,3 @@
-[fix]: keep the streaming finish_reason in the accumulated response when a provider forwards it on a content chunk, so logging and plugins record the real stop reason (closes #4963) [@fus3r](https://github.com/fus3r)
-[fix]: sweep orphaned deferred spans in trace store TTL cleanup [@citrocat](https://github.com/citrocat)
-[fix]: rebuild token usage from denormalized columns in hybrid log list [@G-XD](https://github.com/G-XD)
+- feat: added user-agent tracking columns, materialized views, and migrations to the log store
+- feat: added endpoint-agent columns (device_id, app_key, decision, source) to mcp_tool_logs for Edge agent log ingestion
+- chore: upgraded core to v1.7.0
