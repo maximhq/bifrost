@@ -29,7 +29,7 @@ var bifrostToDeepgramEncoding = map[string]struct {
 // bit_rate/speed) lives entirely in query params, not the body, so this only
 // carries the text.
 func ToDeepgramSpeakRequest(bifrostReq *schemas.BifrostSpeechRequest) *DeepgramSpeakRequest {
-	if bifrostReq == nil || bifrostReq.Input == nil {
+	if bifrostReq == nil || bifrostReq.Input == nil || bifrostReq.Input.Input == "" {
 		return nil
 	}
 	return &DeepgramSpeakRequest{Text: bifrostReq.Input.Input}

@@ -323,8 +323,11 @@ test.describe("Providers", () => {
       expect(await providersPage.keyExists(keyData.name)).toBe(true);
       expect(await providersPage.getKeyCount()).toBe(1);
 
-      // Remove the provider entirely
-      await providersPage.deleteProvider("deepgram");
+      // Remove the provider entirely. Skip the delete-confirmation toast
+      // wait — it flakily matches the still-visible earlier "Key added
+      // successfully" toast instead of a fresh one — and independently
+      // verify removal below via providerExists() instead.
+      await providersPage.deleteProvider("deepgram", { skipToastWait: true });
       createdProviders.splice(createdProviders.indexOf("deepgram"), 1);
       createdKeys.splice(
         createdKeys.findIndex((k) => k.provider === "deepgram"),

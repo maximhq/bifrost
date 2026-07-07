@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -138,24 +139,16 @@ type dgAgentEventEnvelope struct {
 	Type string `json:"type"`
 
 	// Server events
-	ConversationID string `json:"conversation_id,omitempty"`
-	RequestID      string `json:"request_id,omitempty"`
-	Role           string `json:"role,omitempty"`
-	Content        string `json:"content,omitempty"`
-	Description    string `json:"description,omitempty"`
-	Code           string `json:"code,omitempty"`
-	Message        string `json:"message,omitempty"`
+	RequestID   string `json:"request_id,omitempty"`
+	Role        string `json:"role,omitempty"`
+	Content     string `json:"content,omitempty"`
+	Description string `json:"description,omitempty"`
+	Code        string `json:"code,omitempty"`
+	Message     string `json:"message,omitempty"`
 
 	// FunctionCallRequest carries one or more function calls; only the first
 	// is promoted into the unified schema's single Item (see ToBifrostRealtimeEvent).
 	Functions []dgAgentFunctionCall `json:"functions,omitempty"`
-
-	// FunctionCallResponse (both directions)
-	ID   string `json:"id,omitempty"`
-	Name string `json:"name,omitempty"`
-
-	// InjectAgentMessage
-	Behavior string `json:"behavior,omitempty"`
 }
 
 type dgAgentFunctionCall struct {
@@ -322,15 +315,18 @@ func (provider *DeepgramProvider) buildSettingsMessage(session *schemas.Realtime
 	for key, raw := range session.ExtraParams {
 		var parsed interface{}
 		if err := json.Unmarshal(raw, &parsed); err != nil {
-			continue
+			return nil, fmt.Errorf("failed to parse session.extra_params[%q] for Deepgram Settings message: %w", key, err)
 		}
 		switch key {
 		case "agent":
-			if agentOverride, ok := parsed.(map[string]interface{}); ok {
-				for k, v := range agentOverride {
-					agent[k] = v
-				}
+			agentOverride, ok := parsed.(map[string]interface{})
+			if !ok {
+				return nil, fmt.Errorf("session.extra_params[\"agent\"] must be a JSON object, got %T", parsed)
 			}
+			// Recursive merge (not a shallow overwrite): a caller supplying
+			// agent.think.model, for example, must not clobber the
+			// agent.think.prompt set above from session.Instructions.
+			providerUtils.MergeExtraParams(agent, agentOverride)
 		case "audio":
 			settings["audio"] = parsed
 		default:

@@ -750,7 +750,8 @@ func isInferenceWSEndpoint(path string) bool {
 	case "/v1/responses",
 		"/responses",
 		"/v1/realtime",
-		"/realtime":
+		"/realtime",
+		"/v1/realtime/audio":
 		return true
 	default:
 		return false
@@ -771,6 +772,11 @@ func buildRealtimeTransportPathSet() map[string]struct{} {
 	for _, path := range integrations.OpenAIRealtimeWebRTCCallsPaths("/openai") {
 		paths[path] = struct{}{}
 	}
+	// Dedicated route for Realtime providers that send client audio as raw
+	// binary WebSocket frames (see schemas.RealtimeBinaryAudioProvider,
+	// wsrealtimebinary.go) — must bypass dashboard-session auth the same way
+	// /v1/realtime does.
+	paths["/v1/realtime/audio"] = struct{}{}
 	return paths
 }
 
