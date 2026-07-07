@@ -1002,12 +1002,56 @@ type TextResponseFormat struct {
 	Schema any `json:"schema,omitempty"`
 }
 
+// UnmarshalJSON handles both camelCase and snake_case
+func (t *TextResponseFormat) UnmarshalJSON(data []byte) error {
+	type Alias TextResponseFormat
+	aux := &struct {
+		*Alias
+		// snake_case alternatives
+		MimeTypeSnake string `json:"mime_type,omitempty"`
+	}{
+		Alias: (*Alias)(t),
+	}
+
+	if err := sonic.Unmarshal(data, aux); err != nil {
+		return err
+	}
+
+	if t.MimeType == "" && aux.MimeTypeSnake != "" {
+		t.MimeType = aux.MimeTypeSnake
+	}
+
+	return nil
+}
+
 // ImageResponseFormat configures image output format.
 type ImageResponseFormat struct {
 	// Optional. The aspect ratio for the image output.
 	AspectRatio string `json:"aspectRatio,omitempty"`
 	// Optional. The delivery mode for the image output.
 	Delivery string `json:"delivery,omitempty"`
+}
+
+// UnmarshalJSON handles both camelCase and snake_case
+func (i *ImageResponseFormat) UnmarshalJSON(data []byte) error {
+	type Alias ImageResponseFormat
+	aux := &struct {
+		*Alias
+		// snake_case alternatives
+		AspectRatioSnake string `json:"aspect_ratio,omitempty"`
+	}{
+		Alias: (*Alias)(i),
+	}
+
+	if err := sonic.Unmarshal(data, aux); err != nil {
+		return err
+	}
+
+	if i.AspectRatio == "" && aux.AspectRatioSnake != "" {
+		i.AspectRatio = aux.AspectRatioSnake
+	}
+
+	return nil
 }
 
 // AudioResponseFormat configures audio output format.
@@ -1023,6 +1067,36 @@ type AudioResponseFormat struct {
 	SampleRate *int32 `json:"sampleRate,omitempty"`
 }
 
+// UnmarshalJSON handles both camelCase and snake_case
+func (a *AudioResponseFormat) UnmarshalJSON(data []byte) error {
+	type Alias AudioResponseFormat
+	aux := &struct {
+		*Alias
+		// snake_case alternatives
+		BitRateSnake    *int32 `json:"bit_rate,omitempty"`
+		MimeTypeSnake   string `json:"mime_type,omitempty"`
+		SampleRateSnake *int32 `json:"sample_rate,omitempty"`
+	}{
+		Alias: (*Alias)(a),
+	}
+
+	if err := sonic.Unmarshal(data, aux); err != nil {
+		return err
+	}
+
+	if a.BitRate == nil && aux.BitRateSnake != nil {
+		a.BitRate = aux.BitRateSnake
+	}
+	if a.MimeType == "" && aux.MimeTypeSnake != "" {
+		a.MimeType = aux.MimeTypeSnake
+	}
+	if a.SampleRate == nil && aux.SampleRateSnake != nil {
+		a.SampleRate = aux.SampleRateSnake
+	}
+
+	return nil
+}
+
 // TranslationConfig configures translation features.
 type TranslationConfig struct {
 	// Optional. If true, the model will generate audio when the target language is spoken,
@@ -1032,6 +1106,32 @@ type TranslationConfig struct {
 	// Required. The target language for translation. Supported values are BCP-47 language
 	// codes (e.g. "en", "es", "fr").
 	TargetLanguageCode string `json:"targetLanguageCode,omitempty"`
+}
+
+// UnmarshalJSON handles both camelCase and snake_case
+func (t *TranslationConfig) UnmarshalJSON(data []byte) error {
+	type Alias TranslationConfig
+	aux := &struct {
+		*Alias
+		// snake_case alternatives
+		EchoTargetLanguageSnake *bool  `json:"echo_target_language,omitempty"`
+		TargetLanguageCodeSnake string `json:"target_language_code,omitempty"`
+	}{
+		Alias: (*Alias)(t),
+	}
+
+	if err := sonic.Unmarshal(data, aux); err != nil {
+		return err
+	}
+
+	if t.EchoTargetLanguage == nil && aux.EchoTargetLanguageSnake != nil {
+		t.EchoTargetLanguage = aux.EchoTargetLanguageSnake
+	}
+	if t.TargetLanguageCode == "" && aux.TargetLanguageCodeSnake != "" {
+		t.TargetLanguageCode = aux.TargetLanguageCodeSnake
+	}
+
+	return nil
 }
 
 // GeminiImageConfig represents image generation configuration within GenerationConfig.

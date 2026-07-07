@@ -77,6 +77,11 @@ func TestResponsesRequestExtractsTranslationEnhancedCivicResponseFormat(t *testi
 					"echoTargetLanguage": true,
 				},
 				"enable_enhanced_civic_answers": false,
+				"response_format": map[string]interface{}{
+					"text": map[string]interface{}{
+						"mimeType": "TEXT_PLAIN",
+					},
+				},
 			},
 		},
 	})
@@ -88,6 +93,10 @@ func TestResponsesRequestExtractsTranslationEnhancedCivicResponseFormat(t *testi
 
 	require.NotNil(t, result.GenerationConfig.EnableEnhancedCivicAnswers)
 	assert.False(t, *result.GenerationConfig.EnableEnhancedCivicAnswers)
+
+	require.NotNil(t, result.GenerationConfig.ResponseFormat)
+	require.NotNil(t, result.GenerationConfig.ResponseFormat.Text)
+	assert.Equal(t, "TEXT_PLAIN", result.GenerationConfig.ResponseFormat.Text.MimeType)
 }
 
 func TestGoogleSearchSearchTypesRoundTrip(t *testing.T) {
@@ -108,6 +117,34 @@ func TestGoogleSearchSearchTypesRoundTrip(t *testing.T) {
 		assert.NotNil(t, gs.SearchTypes.WebSearch)
 		assert.NotNil(t, gs.SearchTypes.ImageSearch)
 	})
+}
+
+func TestTranslationConfigSnakeCase(t *testing.T) {
+	raw := []byte(`{"target_language_code":"es","echo_target_language":true}`)
+	var tc TranslationConfig
+	require.NoError(t, json.Unmarshal(raw, &tc))
+	assert.Equal(t, "es", tc.TargetLanguageCode)
+	require.NotNil(t, tc.EchoTargetLanguage)
+	assert.True(t, *tc.EchoTargetLanguage)
+}
+
+func TestResponseFormatConfigSnakeCase(t *testing.T) {
+	raw := []byte(`{"text":{"mime_type":"APPLICATION_JSON"},"image":{"aspect_ratio":"ASPECT_RATIO_ONE_BY_ONE"},"audio":{"mime_type":"AUDIO_MP3","bit_rate":128000,"sample_rate":24000}}`)
+	var rf ResponseFormatConfig
+	require.NoError(t, json.Unmarshal(raw, &rf))
+
+	require.NotNil(t, rf.Text)
+	assert.Equal(t, "APPLICATION_JSON", rf.Text.MimeType)
+
+	require.NotNil(t, rf.Image)
+	assert.Equal(t, "ASPECT_RATIO_ONE_BY_ONE", rf.Image.AspectRatio)
+
+	require.NotNil(t, rf.Audio)
+	assert.Equal(t, "AUDIO_MP3", rf.Audio.MimeType)
+	require.NotNil(t, rf.Audio.BitRate)
+	assert.Equal(t, int32(128000), *rf.Audio.BitRate)
+	require.NotNil(t, rf.Audio.SampleRate)
+	assert.Equal(t, int32(24000), *rf.Audio.SampleRate)
 }
 
 func TestGenerateContentResponseCapturesModelStatus(t *testing.T) {
