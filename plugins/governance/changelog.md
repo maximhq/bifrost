@@ -1,2 +1,0 @@
-- feat: added resolver support for Bifrost Edge fallback pages
-- chore: upgraded core to v1.7.0 and framework to v1.5.0
