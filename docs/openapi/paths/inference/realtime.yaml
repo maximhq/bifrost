@@ -4,8 +4,9 @@ realtime:
     summary: Realtime API WebSocket
     description: |
       Opens a bidirectional WebSocket session to a realtime-capable provider
-      (e.g. OpenAI Realtime, Azure Realtime preview). Bifrost proxies the upstream
-      socket and applies governance, observability, and key selection on connect.
+      (e.g. OpenAI Realtime, Azure Realtime preview, Gemini Live). Bifrost proxies
+      the upstream socket and applies governance, observability, and key selection
+      on connect.
 
       The target model is provided via the `model` query parameter (or `deployment`
       for Azure-style routes). The OpenAI SDK sends the API key over the
@@ -74,6 +75,8 @@ realtime-calls:
       lifetime of the session.
 
       Inference auth applies (Bearer/Basic/Virtual Key/API Key).
+
+      Not supported for Gemini — Gemini Live has no public WebRTC SDP-exchange spec.
     tags:
     - Realtime
     requestBody:
@@ -133,6 +136,9 @@ realtime-client-secrets:
 
       Request body must be JSON. `session.model` (or top-level `model`) must use
       `provider/model` form.
+
+      Not supported for Gemini — its Ephemeral Tokens API is shaped differently
+      from OpenAI/Azure's `client_secrets`/`sessions` contract.
     tags:
     - Realtime
     requestBody:
@@ -170,7 +176,7 @@ realtime-sessions:
       Legacy alias for the realtime client-secret minting endpoint. Behaves
       identically to `createRealtimeClientSecret` but uses the `sessions` route
       shape; provided for compatibility with older OpenAI Realtime client
-      libraries.
+      libraries. Not supported for Gemini (see `createRealtimeClientSecret`).
     tags:
     - Realtime
     requestBody:

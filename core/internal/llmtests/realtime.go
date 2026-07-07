@@ -78,9 +78,12 @@ func RunRealtimeTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context,
 
 		t.Logf("connected to Realtime endpoint: %s", wsURL)
 
-		if testConfig.Provider == schemas.Elevenlabs {
+		switch testConfig.Provider {
+		case schemas.Elevenlabs:
 			runElevenLabsRealtimeTest(t, conn, testConfig)
-		} else {
+		case schemas.Gemini:
+			runGeminiRealtimeTest(t, conn, testConfig)
+		default:
 			runOpenAIRealtimeTest(t, conn, testConfig)
 		}
 	})
@@ -257,6 +260,124 @@ func runElevenLabsRealtimeTest(t *testing.T, conn *ws.Conn, testConfig Comprehen
 	}
 
 	t.Logf("ElevenLabs Realtime test passed (%d events)", eventCount)
+}
+
+// runGeminiRealtimeTest drives a Gemini Live (BidiGenerateContent) session using
+// its native wire protocol directly — this harness dials the provider endpoint
+// itself (bypassing Bifrost's translation layer), so it speaks Gemini's raw
+// setup/clientContent/serverContent shape, not the canonical Bifrost envelope.
+// Gemini's current live models only support AUDIO output (TEXT responseModalities
+// is rejected at setup time), so this enables outputAudioTranscription to also
+// assert on the text side-channel — confirmed live to ride in the same
+// serverContent message as the audio parts, not a separate message.
+func runGeminiRealtimeTest(t *testing.T, conn *ws.Conn, testConfig ComprehensiveTestConfig) {
+	model := testConfig.RealtimeModel
+	if !strings.HasPrefix(model, "models/") {
+		model = "models/" + model
+	}
+
+	setup := map[string]interface{}{
+		"setup": map[string]interface{}{
+			"model":                    model,
+			"generationConfig":         map[string]interface{}{"responseModalities": []string{"AUDIO"}},
+			"outputAudioTranscription": map[string]interface{}{},
+		},
+	}
+	writeJSON(t, conn, setup)
+
+	eventCount := 0
+	conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+
+	var gotSetupComplete bool
+	for i := 0; i < 5 && !gotSetupComplete; i++ {
+		_, msg, err := conn.ReadMessage()
+		if err != nil {
+			t.Fatalf("error reading setup response: %v", err)
+		}
+		eventCount++
+		if geminiHasTopLevelKey(msg, "setupComplete") {
+			gotSetupComplete = true
+		}
+		if geminiHasTopLevelKey(msg, "error") {
+			t.Fatalf("received error during setup: %s", string(msg))
+		}
+	}
+	if !gotSetupComplete {
+		t.Fatal("did not receive setupComplete event")
+	}
+	t.Logf("Gemini Live setup complete (%d events)", eventCount)
+
+	clientContent := map[string]interface{}{
+		"clientContent": map[string]interface{}{
+			"turns":        []map[string]interface{}{{"role": "user", "parts": []map[string]interface{}{{"text": "Say hello in exactly two words."}}}},
+			"turnComplete": true,
+		},
+	}
+	writeJSON(t, conn, clientContent)
+
+	var (
+		gotAudioOrTranscript bool
+		gotTurnComplete      bool
+	)
+
+	conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+	for i := 0; i < 100; i++ {
+		_, msg, err := conn.ReadMessage()
+		if err != nil {
+			if !gotTurnComplete {
+				t.Fatalf("WS read error before turnComplete (events=%d): %v", eventCount, err)
+			}
+			break
+		}
+		eventCount++
+
+		if geminiHasTopLevelKey(msg, "error") {
+			t.Fatalf("received error event: %s", string(msg))
+		}
+		if strings.Contains(string(msg), "inlineData") || strings.Contains(string(msg), "outputTranscription") {
+			gotAudioOrTranscript = true
+		}
+		if geminiServerContentTurnComplete(msg) {
+			gotTurnComplete = true
+			t.Logf("received serverContent.turnComplete (total events: %d)", eventCount)
+			break
+		}
+	}
+
+	if !gotAudioOrTranscript {
+		t.Error("expected at least one audio (inlineData) or outputTranscription event")
+	}
+	if !gotTurnComplete {
+		t.Error("expected a serverContent.turnComplete event")
+	}
+	t.Logf("Gemini Realtime test passed (%d events)", eventCount)
+}
+
+// geminiHasTopLevelKey reports whether a raw Gemini Live message has the given
+// top-level key present (Gemini's BidiGenerateContent messages are a oneof of
+// top-level keys — setupComplete/serverContent/toolCall/error/etc. — with no
+// shared "type" discriminator field, unlike OpenAI/ElevenLabs).
+func geminiHasTopLevelKey(msg []byte, key string) bool {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(msg, &raw); err != nil {
+		return false
+	}
+	_, ok := raw[key]
+	return ok
+}
+
+// geminiServerContentTurnComplete reports whether a message is a
+// serverContent.turnComplete terminal event.
+func geminiServerContentTurnComplete(msg []byte) bool {
+	var raw struct {
+		ServerContent *struct {
+			TurnComplete bool `json:"turnComplete"`
+		} `json:"serverContent"`
+	}
+	if err := json.Unmarshal(msg, &raw); err != nil {
+		return false
+	}
+	return raw.ServerContent != nil && raw.ServerContent.TurnComplete
 }
 
 func extractEventType(msg []byte) string {

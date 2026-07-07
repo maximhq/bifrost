@@ -394,7 +394,7 @@ func (h *WSRealtimeHandler) relayClientToRealtimeProvider(
 			}
 		}
 
-		sanitizeRealtimeSessionEventForProvider(event)
+		sanitizeRealtimeSessionEventForProvider(event, model)
 		providerEvent, err := provider.ToProviderRealtimeEvent(event)
 		if err != nil {
 			if startsTurn {
@@ -429,6 +429,37 @@ func (h *WSRealtimeHandler) relayClientToRealtimeProvider(
 			if inputSummary != "" {
 				session.RecordRealtimeInput(inputItemID, inputSummary, string(message))
 			}
+		}
+
+		// A nil/empty providerEvent means the provider intentionally dropped this
+		// client event (e.g. Gemini has no wire equivalent for it, and forwarding an
+		// empty/unrecognized payload risks the upstream closing the connection).
+		if len(providerEvent) == 0 {
+			// Defensive: no provider does this today (every ShouldStartRealtimeTurn
+			// trigger currently translates to a non-nil payload), but if one ever did,
+			// silently dropping a turn-starting event here would leave
+			// TryBeginRealtimeTurnHooks's turn-hooks slot occupied forever — every
+			// later turn on this connection would then be rejected as "already has an
+			// active response in progress" until the socket disconnects. Finalize with
+			// an error instead of leaking the slot.
+			if startsTurn {
+				if finalizeErr := finalizeRealtimeTurnHooksWithError(
+					h.client,
+					bifrostCtx,
+					session,
+					providerKey,
+					model,
+					&key,
+					schemas.RTEventError,
+					nil,
+					newRealtimeWireBifrostError(400, "invalid_request_error", "provider dropped a turn-starting event"),
+				); finalizeErr != nil {
+					clientConn.writeRealtimeError(finalizeErr)
+					return nil
+				}
+				clientConn.writeRealtimeError(newRealtimeWireBifrostError(400, "invalid_request_error", "provider dropped a turn-starting event"))
+			}
+			continue
 		}
 
 		if err := upstream.WriteMessage(ws.TextMessage, providerEvent); err != nil {

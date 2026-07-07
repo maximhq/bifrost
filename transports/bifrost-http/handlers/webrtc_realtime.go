@@ -841,7 +841,7 @@ func (r *webrtcRealtimeRelay) handleDownstreamMessage(msg webrtc.DataChannelMess
 		}
 	}
 
-	sanitizeRealtimeSessionEventForProvider(event)
+	sanitizeRealtimeSessionEventForProvider(event, r.model)
 	providerEvent, err := r.provider.ToProviderRealtimeEvent(event)
 	if err != nil {
 		if startsTurn {
@@ -869,6 +869,31 @@ func (r *webrtcRealtimeRelay) handleDownstreamMessage(msg webrtc.DataChannelMess
 	// Track session metadata only after provider translation succeeds. Rejected
 	// session.update events must not affect later turn logs.
 	updateRealtimeSessionFromEvent(r.session, event)
+	// A nil/empty providerEvent means the provider intentionally dropped this event
+	// (see wsrealtime.go's identical guard for the WS relay path). Defensive:
+	// finalize turn hooks if this was a turn-starting event, or the turn-hooks slot
+	// would stay occupied for the rest of the connection (see wsrealtime.go for the
+	// full rationale — no provider triggers this today).
+	if len(providerEvent) == 0 {
+		if startsTurn {
+			if finalizeErr := finalizeRealtimeTurnHooksOnTransportError(
+				r.client,
+				r.bifrostCtx,
+				r.session,
+				r.providerKey,
+				r.model,
+				r.key,
+				400,
+				"invalid_request_error",
+				"provider dropped a turn-starting event",
+			); finalizeErr != nil {
+				r.closeWithErrorEvent(newRealtimeTurnErrorEventPayload(finalizeErr))
+				return
+			}
+			r.closeWithErrorEvent(newRealtimeTurnErrorEventPayload(newRealtimeWireBifrostError(400, "invalid_request_error", "provider dropped a turn-starting event")))
+		}
+		return
+	}
 	r.sendUpstream(providerEvent, msg.IsString)
 }
 

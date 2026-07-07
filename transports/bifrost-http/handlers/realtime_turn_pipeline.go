@@ -153,7 +153,14 @@ func setRealtimeTurnStreamContext(ctx *schemas.BifrostContext, startedAt time.Ti
 // sanitizeRealtimeSessionEventForProvider mutates outbound session events before provider
 // serialization. It must not persist session state; rejected session.update events should
 // not affect later turn logs.
-func sanitizeRealtimeSessionEventForProvider(event *schemas.BifrostRealtimeEvent) {
+//
+// connectionModel is the model resolved from the connection's own URL/query param. Some
+// clients (notably OpenAI-style SDKs) omit session.model on session.update since it's
+// redundant with the URL for providers whose connect URL carries the model (OpenAI, Azure).
+// Providers whose wire protocol only learns the model from the session payload itself
+// (Gemini Live's `setup.model`) would otherwise silently receive an empty model and get
+// their connection rejected — fill it in from the connection when the client didn't send one.
+func sanitizeRealtimeSessionEventForProvider(event *schemas.BifrostRealtimeEvent, connectionModel string) {
 	if event == nil || event.Session == nil {
 		return
 	}
@@ -163,6 +170,9 @@ func sanitizeRealtimeSessionEventForProvider(event *schemas.BifrostRealtimeEvent
 		schemas.RTEventSessionUpdated:
 		if event.Session.ExtraParams != nil {
 			openaiProvider.StripNestedModelPrefixes(event.Session.ExtraParams)
+		}
+		if event.Type == schemas.RTEventSessionUpdate && event.Session.Model == "" {
+			event.Session.Model = connectionModel
 		}
 	}
 }
