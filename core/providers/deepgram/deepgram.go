@@ -476,7 +476,7 @@ func (provider *DeepgramProvider) Transcription(ctx *schemas.BifrostContext, key
 
 // TranscriptionStream is not supported by the Deepgram provider.
 // (Deepgram's realtime transcription is a WebSocket protocol, not an SSE/chunked
-// REST stream — see Phase 3 of gen/deepgram-provider/implementation-plan.md.)
+// REST stream — see the Voice Agent RealtimeProvider implementation in realtime.go.)
 func (provider *DeepgramProvider) TranscriptionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.TranscriptionStreamRequest, provider.GetProviderKey())
 }

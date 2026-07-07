@@ -13,7 +13,7 @@ import (
 // form fields), so only `model` and `language` are first-classed here — everything
 // else (diarization, formatting toggles, analytics toggles, keyword boosts, etc.)
 // passes through via ExtraParams, same pattern used for ElevenLabs' provider-specific
-// fields. See gen/deepgram-provider/compatibility_report.md §1a for the full mapping.
+// fields.
 func BuildTranscriptionQueryParams(bifrostReq *schemas.BifrostTranscriptionRequest) url.Values {
 	q := url.Values{}
 	if bifrostReq == nil {

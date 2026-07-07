@@ -9,7 +9,7 @@ import (
 // deepgramBlockedQueryParams are Deepgram query params Bifrost never forwards.
 // callback/callback_method would turn the request into Deepgram's async
 // webhook-delivery mode, which has no analog in Bifrost's synchronous
-// request/response handler pipeline (see gen/deepgram-provider/compatibility_report.md §1a).
+// request/response handler pipeline.
 var deepgramBlockedQueryParams = map[string]bool{
 	"callback":        true,
 	"callback_method": true,

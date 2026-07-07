@@ -29,8 +29,7 @@ func TestDeepgramRealtimeWebSocketURL(t *testing.T) {
 	t.Run("default BaseURL redirects to agent.deepgram.com", func(t *testing.T) {
 		provider := deepgram.NewDeepgramProvider(&schemas.ProviderConfig{}, testLogger{})
 		// Verified live: Deepgram's Voice Agent API is served from agent.deepgram.com,
-		// not api.deepgram.com (which 404s for /v1/agent/converse) — see
-		// gen/deepgram-provider/implementation-plan.md Phase 3 verification notes.
+		// not api.deepgram.com (which 404s for /v1/agent/converse).
 		want := "wss://agent.deepgram.com/v1/agent/converse"
 		if got := provider.RealtimeWebSocketURL(schemas.Key{}, "unused"); got != want {
 			t.Errorf("RealtimeWebSocketURL() = %q, want %q", got, want)
