@@ -1,0 +1,33 @@
+---
+title: "v2.0.0-prerelease1"
+description: "v2.0.0-prerelease1 changelog - 2026-07-07"
+---
+<Tabs>
+  <Tab title="NPX">
+    ```bash
+    npx -y @maximhq/bifrost --transport-version v2.0.0-prerelease1
+    ```
+  </Tab>
+  <Tab title="Docker">
+    ```bash
+    docker pull maximhq/bifrost:v2.0.0-prerelease1
+    docker run -p 8080:8080 maximhq/bifrost:v2.0.0-prerelease1
+    ```
+  </Tab>
+</Tabs>
+
+<Update label="Bifrost(HTTP)" description="2.0.0-prerelease1">
+
+<Note>
+This prerelease is based on [v1.6.3](/changelogs/v1.6.3) - see that changelog for the full baseline.
+</Note>
+
+- feat: ChatGPT passthrough route on the OpenAI integration with dedicated request handling
+- feat: track user agents on LLM and MCP logs, with custom user-agent mapping and dashboard dimension rankings
+- feat: MCP tool logs observed by the Bifrost Edge agent can now be ingested with device, app key, decision, and source attribution
+- feat: fallback pages for Bifrost Edge control views (config, devices, inventory) backed by governance resolver support
+- feat: agent handover page with seeded end-to-end data support
+- fix: stopped `/api/devices` bypassing auth via the `/api/dev` prefix
+- fix: surface the AWS exception type (`X-Amzn-Errortype`) on non-streaming Bedrock error responses instead of dropping it
+
+</Update>
