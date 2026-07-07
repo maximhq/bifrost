@@ -765,6 +765,28 @@ export const ProviderIcons = {
 			</svg>
 		);
 	},
+	// Placeholder monogram — replace with the official Requesty brand SVG.
+	requesty: ({ size = "md", className = "" }: IconProps) => {
+		const resolvedSize = resolveSize(size);
+
+		return (
+			<svg
+				width={resolvedSize}
+				height={resolvedSize}
+				viewBox="0 0 24 24"
+				fill="none"
+				xmlns="http://www.w3.org/2000/svg"
+				className={className}
+			>
+				<title>Requesty</title>
+				<rect x="2" y="2" width="20" height="20" rx="5" fill="#5B4BEA" />
+				<path
+					d="M8 17V7h4.2a3 3 0 0 1 .6 5.94L15.2 17h-2.1l-2.2-3.8H10V17H8Zm2-5.6h2.1a1.3 1.3 0 0 0 0-2.6H10v2.6Z"
+					fill="#ffffff"
+				/>
+			</svg>
+		);
+	},
 } as const;
 
 // Routing Engine Icons

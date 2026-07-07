@@ -150,6 +150,7 @@
                   "providers/supported-providers/openai",
                   "providers/supported-providers/openrouter",
                   "providers/supported-providers/parasail",
+                  "providers/supported-providers/requesty",
                   "providers/supported-providers/perplexity",
                   "providers/supported-providers/replicate",
                   "providers/supported-providers/runware",

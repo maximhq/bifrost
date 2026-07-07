@@ -413,6 +413,9 @@
         "fireworks": {
           "$ref": "#/$defs/provider"
         },
+        "requesty": {
+          "$ref": "#/$defs/provider"
+        },
         "nebius": {
           "$ref": "#/$defs/provider"
         },
@@ -5673,7 +5676,8 @@
             "vllm",
             "runway",
             "runware",
-            "fireworks"
+            "fireworks",
+            "requesty"
           ],
           "description": "Base provider type to extend"
         },

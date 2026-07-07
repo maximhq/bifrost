@@ -1,0 +1,177 @@
+---
+title: "Requesty"
+description: "Requesty API conversion guide - OpenAI-compatible format, streaming support, tool calling, and parameter handling"
+icon: "r"
+---
+
+## Overview
+
+Requesty is an **OpenAI-compatible provider** offering high-performance inference. Bifrost delegates to the OpenAI implementation with standard parameter handling. Key characteristics:
+- **OpenAI API compatibility** - Identical request/response format
+- **Full streaming support** - Server-Sent Events with usage tracking
+- **Tool calling** - Complete function definition and execution
+- **Parameter filtering** - Removes unsupported OpenAI-specific fields
+- **Responses API** - Fallback to Chat Completions
+
+### Supported Operations
+
+| Operation | Non-Streaming | Streaming | Endpoint |
+|-----------|---------------|-----------|----------|
+| Chat Completions | ✅ | ✅ | `/v1/chat/completions` |
+| Responses API | ✅ | ✅ | `/v1/chat/completions` |
+| List Models | ✅ | - | `/v1/models` |
+| Text Completions | ❌ | ❌ | - |
+| Embeddings | ❌ | ❌ | - |
+| Image Generation | ❌ | ❌ | - |
+| Speech (TTS) | ❌ | ❌ | - |
+| Transcriptions (STT) | ❌ | ❌ | - |
+| Files | ❌ | ❌ | - |
+| Batch | ❌ | ❌ | - |
+
+<Note>
+**Unsupported Operations** (❌): Text Completions, Embeddings, Image Generation, Speech, Transcriptions, Files, and Batch are not supported by the upstream Requesty API. These return `UnsupportedOperationError`.
+</Note>
+
+## Setup & Configuration
+
+Configure Requesty as a provider.
+
+<Tabs>
+<Tab title="Web UI">
+
+![Requesty provider dashboard](../../media/provider-dashboard-requesty.png)
+
+1. Navigate to **Models** > **Model Providers**. Look for **Requesty** under **Configured Providers**. If it is missing, click on **Add New Provider** and select **Requesty**.
+2. Click **Add Key** or edit an existing key.
+3. Set a name for your key.
+4. Paste your API key directly or use an environment variable (for example, `env.REQUESTY_API_KEY`).
+5. Set **Allowed Models** to **All Models** (default) or the specific model allowlist you want this key to serve.
+6. Save the provider configuration.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "requesty": {
+      "keys": [
+        {
+          "name": "requesty-key-1",
+          "value": "env.REQUESTY_API_KEY",
+          "models": [
+            "*"
+          ],
+          "weight": 1.0
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="API">
+Refer to the API documentation for [Provider Keys Management](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider).
+</Tab>
+<Tab title="Go SDK">
+
+```go
+case schemas.Requesty:
+    return []schemas.Key{{
+        Name:   "requesty-key-1",
+        Value:  *schemas.NewSecretVar("env.REQUESTY_API_KEY"),
+        Models: []string{"*"},
+        Weight: 1.0,
+    }}, nil
+```
+
+</Tab>
+</Tabs>
+
+---
+
+# 1. Chat Completions
+
+## Request Parameters
+
+Requesty supports all standard OpenAI chat completion parameters. For full parameter reference and behavior, see [OpenAI Chat Completions](/providers/supported-providers/openai#1-chat-completions).
+
+### Filtered Parameters
+
+Removed for Requesty compatibility:
+- `prompt_cache_key` - Not supported
+- `verbosity` - Anthropic-specific
+- `store` - Not supported
+- `service_tier` - Not supported
+
+### Reasoning Parameter
+
+Reasoning via standard OpenAI format:
+
+```json
+{
+  "model": "openai/gpt-4o-mini",
+  "messages": [...],
+  "reasoning_effort": "high"
+}
+```
+
+Requesty supports all standard OpenAI message types, tools, responses, and streaming formats. For details on message handling, tool conversion, responses, and streaming, refer to [OpenAI Chat Completions](/providers/supported-providers/openai#1-chat-completions).
+
+---
+
+# 2. Responses API
+
+Converted internally to Chat Completions:
+
+```
+ResponsesRequest → ChatRequest → ChatCompletion → ResponsesResponse
+```
+
+Same parameter support as Chat Completions.
+
+---
+
+# 3. List Models
+
+Lists available Requesty models with capabilities and context information.
+
+---
+
+## Unsupported Features
+
+| Feature | Reason |
+|---------|--------|
+| Text Completions | Not offered by Requesty API |
+| Embedding | Not offered by Requesty API |
+| Image Generation | Not offered by Requesty API |
+| Speech/TTS | Not offered by Requesty API |
+| Transcription/STT | Not offered by Requesty API |
+| Batch Operations | Not offered by Requesty API |
+| File Management | Not offered by Requesty API |
+
+---
+
+## Caveats
+
+<Accordion title="Cache Control Stripped">
+**Severity**: Medium
+**Behavior**: Cache control directives are removed from messages
+**Impact**: Prompt caching features don't work
+**Code**: Stripped during JSON marshaling
+</Accordion>
+
+<Accordion title="Parameter Filtering">
+**Severity**: Low
+**Behavior**: OpenAI-specific parameters filtered out
+**Impact**: prompt_cache_key, verbosity, store removed
+**Code**: filterOpenAISpecificParameters
+</Accordion>
+
+<Accordion title="User Field Size Limit">
+**Severity**: Low
+**Behavior**: User field > 64 characters silently dropped
+**Impact**: Longer user identifiers are lost
+**Code**: SanitizeUserField enforces 64-char max
+</Accordion>
