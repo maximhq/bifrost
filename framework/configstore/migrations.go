@@ -438,6 +438,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_virtual_key_expires_at_column"}, run: migrationAddVirtualKeyExpiresAtColumn},
 	{IDs: []string{"add_vertex_force_single_region_column"}, run: migrationAddVertexForceSingleRegionColumn},
 	{IDs: []string{"add_sidekiq_table"}, run: migrationAddSidekiqTable},
+	{IDs: []string{"add_sidekiq_kind_status_created_index"}, run: migrationAddSidekiqKindStatusCreatedIndex},
 }
 
 // quoteSQLiteIdentifier quotes a SQLite identifier, escaping any double quotes.
@@ -10413,3 +10414,41 @@ func migrationAddSidekiqTable(ctx context.Context, db *gorm.DB, logger schemas.L
 	return nil
 }
 
+// migrationAddSidekiqKindStatusCreatedIndex adds a composite index on
+// (kind, status, created_at) so GetInFlightSidekiqJobByKind — which filters by
+// kind + status and orders by created_at DESC — can seek instead of doing a
+// filtered full scan plus sort as the table accumulates historical jobs.
+// Idempotent via CREATE INDEX IF NOT EXISTS; works for postgres and sqlite.
+//
+// The index is built non-transactionally (UseTransaction=false) with CREATE
+// INDEX CONCURRENTLY on postgres so it does not take a ShareLock that blocks
+// concurrent writes to the sidekiq table for the duration of the build. SQLite
+// does not support CONCURRENTLY, so it uses the plain form there.
+func migrationAddSidekiqKindStatusCreatedIndex(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_sidekiq_kind_status_created_index"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	noTxOpts := *migrator.DefaultOptions
+	noTxOpts.UseTransaction = false
+	if err := RunSingleMigration(ctx, &noTxOpts, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			// SQLite does not support CONCURRENTLY; use the plain form there.
+			var stmt string
+			if tx.Dialector.Name() == "sqlite" {
+				stmt = "CREATE INDEX IF NOT EXISTS idx_sidekiq_kind_status_created ON sidekiq (kind, status, created_at)"
+			} else {
+				stmt = "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_sidekiq_kind_status_created ON sidekiq (kind, status, created_at)"
+			}
+			return tx.Exec(stmt).Error
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return tx.Exec(`DROP INDEX IF EXISTS idx_sidekiq_kind_status_created`).Error
+		},
+	}); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}

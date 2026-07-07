@@ -1586,6 +1586,10 @@ func (m *MockConfigStore) ListClaimableSidekiqJobs(ctx context.Context, staleBef
 	return nil, nil
 }
 
+func (m *MockConfigStore) GetInFlightSidekiqJobByKind(ctx context.Context, kind string) (*tables.TableSidekiqJob, error) {
+	return nil, nil
+}
+
 func (m *MockConfigStore) MarkStaleSidekiqJobsFailed(ctx context.Context, staleBefore time.Time) (int64, error) {
 	return 0, nil
 }
