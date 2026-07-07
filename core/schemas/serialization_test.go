@@ -1545,3 +1545,78 @@ func TestSonic_ToolFunctionParameters_DeepCopy_KeyOrderIndependent(t *testing.T)
 	assert.NotEqual(t, original.keyOrder.keys[0], copied.keyOrder.keys[0], "copy must not share JSONKeyOrder.keys backing array")
 	assert.Equal(t, "$defs", copied.keyOrder.keys[0])
 }
+
+// --- ChatPromptTokensDetails / ResponsesResponseInputTokens cached_tokens ---
+// Per the OpenAI spec, cached_tokens counts prompt tokens read from the cache. Cache
+// writes must not be folded in, or spec consumers price cache writes as cache reads.
+
+func TestSonic_ChatPromptTokensDetails_CachedTokensExcludesWrites(t *testing.T) {
+	// Fresh-cache turn: write only, no read. cached_tokens must stay 0.
+	out, err := Marshal(ChatPromptTokensDetails{CachedWriteTokens: 9106})
+	require.NoError(t, err)
+	var m map[string]any
+	require.NoError(t, json.Unmarshal(out, &m))
+	assert.Equal(t, float64(0), m["cached_tokens"])
+	assert.Equal(t, float64(9106), m["cached_write_tokens"])
+
+	// Cache-hit turn with a concurrent write: cached_tokens must equal reads only.
+	out, err = Marshal(ChatPromptTokensDetails{CachedReadTokens: 500, CachedWriteTokens: 100})
+	require.NoError(t, err)
+	m = nil
+	require.NoError(t, json.Unmarshal(out, &m))
+	assert.Equal(t, float64(500), m["cached_tokens"])
+	assert.Equal(t, float64(500), m["cached_read_tokens"])
+	assert.Equal(t, float64(100), m["cached_write_tokens"])
+}
+
+func TestSonic_ChatPromptTokensDetails_CachedTokensRoundTrip(t *testing.T) {
+	// Round-trip must preserve the read/write split; the bare cached_tokens fallback
+	// in UnmarshalJSON only applies when the split fields are absent.
+	in := ChatPromptTokensDetails{CachedReadTokens: 500, CachedWriteTokens: 100}
+	out, err := Marshal(in)
+	require.NoError(t, err)
+	var back ChatPromptTokensDetails
+	require.NoError(t, Unmarshal(out, &back))
+	assert.Equal(t, in.CachedReadTokens, back.CachedReadTokens)
+	assert.Equal(t, in.CachedWriteTokens, back.CachedWriteTokens)
+
+	// OpenAI-spec providers send only cached_tokens; it maps to reads.
+	var d ChatPromptTokensDetails
+	require.NoError(t, Unmarshal([]byte(`{"cached_tokens":42}`), &d))
+	assert.Equal(t, 42, d.CachedReadTokens)
+	assert.Equal(t, 0, d.CachedWriteTokens)
+}
+
+func TestSonic_ResponsesResponseInputTokens_CachedTokensExcludesWrites(t *testing.T) {
+	// Fresh-cache turn: write only, no read. cached_tokens must stay 0.
+	out, err := Marshal(ResponsesResponseInputTokens{CachedWriteTokens: 9106})
+	require.NoError(t, err)
+	var m map[string]any
+	require.NoError(t, json.Unmarshal(out, &m))
+	assert.Equal(t, float64(0), m["cached_tokens"])
+	assert.Equal(t, float64(9106), m["cached_write_tokens"])
+
+	// Cache-hit turn with a concurrent write: cached_tokens must equal reads only.
+	out, err = Marshal(ResponsesResponseInputTokens{CachedReadTokens: 500, CachedWriteTokens: 100})
+	require.NoError(t, err)
+	m = nil
+	require.NoError(t, json.Unmarshal(out, &m))
+	assert.Equal(t, float64(500), m["cached_tokens"])
+	assert.Equal(t, float64(500), m["cached_read_tokens"])
+	assert.Equal(t, float64(100), m["cached_write_tokens"])
+}
+
+func TestSonic_ResponsesResponseInputTokens_CachedTokensRoundTrip(t *testing.T) {
+	in := ResponsesResponseInputTokens{CachedReadTokens: 500, CachedWriteTokens: 100}
+	out, err := Marshal(in)
+	require.NoError(t, err)
+	var back ResponsesResponseInputTokens
+	require.NoError(t, Unmarshal(out, &back))
+	assert.Equal(t, in.CachedReadTokens, back.CachedReadTokens)
+	assert.Equal(t, in.CachedWriteTokens, back.CachedWriteTokens)
+
+	var d ResponsesResponseInputTokens
+	require.NoError(t, Unmarshal([]byte(`{"cached_tokens":42}`), &d))
+	assert.Equal(t, 42, d.CachedReadTokens)
+	assert.Equal(t, 0, d.CachedWriteTokens)
+}

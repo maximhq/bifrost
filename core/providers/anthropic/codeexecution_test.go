@@ -323,8 +323,8 @@ func TestCodeExecution_BashStream(t *testing.T) {
 	// -> ctx bridge (mirrored from anthropic.go) lets the reverse converter skip a
 	// duplicate message_delta on response.completed.
 	ctx.SetValue(schemas.BifrostContextKeyIntegrationType, "anthropic")
-	state := acquireAnthropicResponsesStreamState()
-	defer releaseAnthropicResponsesStreamState(state)
+	state := AcquireAnthropicResponsesStreamState()
+	defer ReleaseAnthropicResponsesStreamState(state)
 
 	var emitted []*schemas.BifrostResponsesStreamResponse
 	seq := 0
@@ -519,8 +519,8 @@ var textEditorCodeExecStreamEvents = []string{
 func TestCodeExecution_TextEditorStream(t *testing.T) {
 	ctx := schemas.NewBifrostContext(nil, time.Time{})
 	ctx.SetValue(schemas.BifrostContextKeyIntegrationType, "anthropic")
-	state := acquireAnthropicResponsesStreamState()
-	defer releaseAnthropicResponsesStreamState(state)
+	state := AcquireAnthropicResponsesStreamState()
+	defer ReleaseAnthropicResponsesStreamState(state)
 
 	var emitted []*schemas.BifrostResponsesStreamResponse
 	seq := 0
@@ -791,8 +791,8 @@ func TestGenerateSyntheticInputJSONDeltas_UTF8(t *testing.T) {
 func TestCodeExecution_ProgrammaticStreamRoundTrip(t *testing.T) {
 	ctx := schemas.NewBifrostContext(nil, time.Time{})
 	ctx.SetValue(schemas.BifrostContextKeyIntegrationType, "anthropic")
-	state := acquireAnthropicResponsesStreamState()
-	defer releaseAnthropicResponsesStreamState(state)
+	state := AcquireAnthropicResponsesStreamState()
+	defer ReleaseAnthropicResponsesStreamState(state)
 
 	var back []*AnthropicStreamEvent
 	seq := 0

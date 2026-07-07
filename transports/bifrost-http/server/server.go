@@ -161,6 +161,17 @@ type BifrostHTTPServer struct {
 	WSTicketStore        *handlers.WSTicketStore
 	TempTokens           *temptoken.Service
 	TempTokenSweepWorker *temptoken.SweepWorker
+	OAuth2SweepWorker    *oauth2SweepWorker
+	// OAuth2IdentityResolver scopes a user-mode /mcp request to the user's own
+	// tools. Optional; wired at server init when user-mode identity resolution
+	// is available, otherwise left nil (user-mode requests fall back to the
+	// global server).
+	OAuth2IdentityResolver handlers.OAuth2IdentityResolver
+	// ExternalQuotaBudgetResolver supplies budgets/usage for VKs whose
+	// authoritative usage is tracked outside their own budget rows (enterprise
+	// access-profile-managed VKs). Optional; wired at server init when available,
+	// otherwise left nil so the quota endpoint reads the VK's own budget rows.
+	ExternalQuotaBudgetResolver handlers.ExternalQuotaBudgetResolver
 
 	wsPool *bfws.Pool
 }
@@ -401,8 +412,8 @@ func (s *BifrostHTTPServer) ReloadVirtualKey(ctx context.Context, id string) (*t
 	}
 	if governanceData := governancePlugin.GetGovernanceStore().GetGovernanceData(ctx); governanceData != nil {
 		for _, existingVK := range governanceData.VirtualKeys {
-			if existingVK != nil && existingVK.ID == virtualKey.ID && existingVK.Value != "" && existingVK.Value != virtualKey.Value {
-				s.MCPServerHandler.DeleteVKMCPServer(existingVK.Value)
+			if existingVK != nil && existingVK.ID == virtualKey.ID && existingVK.Value.IsSet() && existingVK.Value.GetValue() != virtualKey.Value.GetValue() {
+				s.MCPServerHandler.DeleteVKMCPServer(existingVK.Value.GetValue())
 				break
 			}
 		}
@@ -446,7 +457,7 @@ func (s *BifrostHTTPServer) RemoveVirtualKey(ctx context.Context, id string) err
 		return nil
 	}
 	governancePlugin.GetGovernanceStore().DeleteVirtualKeyInMemory(ctx, id)
-	s.MCPServerHandler.DeleteVKMCPServer(preloadedVk.Value)
+	s.MCPServerHandler.DeleteVKMCPServer(preloadedVk.Value.GetValue())
 	return nil
 }
 
@@ -1326,7 +1337,17 @@ func (s *BifrostHTTPServer) RegisterInferenceRoutes(ctx context.Context, middlew
 	inferenceHandler := handlers.NewInferenceHandler(s.Client, s.Config)
 	s.IntegrationHandler = handlers.NewIntegrationHandler(s.Client, s.Config, wsResponsesHandler, wsRealtimeHandler, webrtcRealtimeHandler, realtimeClientSecretsHandler)
 	mcpInferenceHandler := handlers.NewMCPInferenceHandler(s.Client, s.Config)
-	mcpServerHandler, err := handlers.NewMCPServerHandler(ctx, s.Config, s)
+	// Serve by-ID virtual key lookups on the /mcp JWT auth path from the
+	// governance in-memory store (avoiding a per-request DB read). Best-effort:
+	// any store that exposes GetVirtualKeyByID qualifies; otherwise the handler
+	// falls back to the config store.
+	var vkCache handlers.VirtualKeyCache
+	if gp, gerr := s.getGovernancePlugin(); gerr == nil && gp != nil {
+		if c, ok := gp.GetGovernanceStore().(handlers.VirtualKeyCache); ok {
+			vkCache = c
+		}
+	}
+	mcpServerHandler, err := handlers.NewMCPServerHandler(ctx, s.Config, s, s.OAuth2IdentityResolver, vkCache)
 	if err != nil {
 		return fmt.Errorf("failed to initialize mcp server handler: %v", err)
 	}
@@ -1358,7 +1379,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	}
 	governancePlugin, _ := lib.FindPluginAs[schemas.LLMPlugin](s.Config, governancePluginName)
 	if governancePlugin != nil {
-		governanceHandler, err = handlers.NewGovernanceHandler(callbacks, s.Config.ConfigStore, govLogManager)
+		governanceHandler, err = handlers.NewGovernanceHandler(callbacks, s.Config.ConfigStore, govLogManager, s.ExternalQuotaBudgetResolver)
 		if err != nil {
 			return fmt.Errorf("failed to initialize governance handler: %v", err)
 		}
@@ -1402,6 +1423,16 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	featureFlagsHandler := handlers.NewFeatureFlagsHandler(s.Config.FeatureFlags, s.Config.ConfigStore)
 	copilotHandler := handlers.NewCopilotHandler(s.Config)
 	// Going ahead with API handlers
+	oauth2DiscoveryHandler := handlers.NewOAuth2DiscoveryHandler(s.Config)
+	oauth2IssuanceHandler := handlers.NewOAuth2IssuanceHandler(s.Config, s.TempTokens, s.OAuth2IdentityResolver)
+	oauth2SessionsHandler := handlers.NewOAuth2SessionsHandler(s.Config)
+	oauth2ConsentHandler := handlers.NewOAuth2ConsentHandler(s.Config, s.TempTokens, s.OAuth2IdentityResolver)
+
+	oauth2DiscoveryHandler.RegisterRoutes(s.Router, middlewares...)
+	// No middleware needed for mcp issuance routes, they should be open
+	oauth2IssuanceHandler.RegisterRoutes(s.Router)
+	oauth2SessionsHandler.RegisterRoutes(s.Router, middlewares...)
+	oauth2ConsentHandler.RegisterRoutes(s.Router, middlewares...)
 	healthHandler.RegisterRoutes(s.Router, middlewares...)
 	providerHandler.RegisterRoutes(s.Router, middlewares...)
 	copilotHandler.RegisterRoutes(s.Router, middlewares...)
@@ -1743,6 +1774,10 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		if s.TempTokenSweepWorker != nil {
 			s.TempTokenSweepWorker.Start(s.Ctx)
 		}
+		s.OAuth2SweepWorker = newOAuth2SweepWorker(s.Config.ConfigStore)
+		if s.OAuth2SweepWorker != nil {
+			s.OAuth2SweepWorker.start(s.Ctx)
+		}
 		// Hand the service to the OAuth provider so InitiateUserOAuthFlow mints
 		// a mcp_auth token and embeds it as a URL fragment on the auth-page link.
 		if s.Config.OAuthProvider != nil {
@@ -1761,6 +1796,10 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 				s.TempTokenSweepWorker.Stop()
 				s.TempTokenSweepWorker = nil
 			}
+			if s.OAuth2SweepWorker != nil {
+				s.OAuth2SweepWorker.stop()
+				s.OAuth2SweepWorker = nil
+			}
 			return fmt.Errorf("failed to initialize auth middleware: %v", err)
 		}
 		if ctx.Value(schemas.BifrostContextKeyIsEnterprise) == nil {
@@ -1772,6 +1811,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	if err == nil && semanticCachePlugin != nil {
 		semanticCachePlugin.SetEmbeddingRequestExecutor(s.Client.EmbeddingRequest)
 	}
+
 	// Register routes
 	err = s.RegisterAPIRoutes(s.Ctx, s, apiMiddlewares...)
 	if err != nil {
@@ -1782,6 +1822,10 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		if s.TempTokenSweepWorker != nil {
 			s.TempTokenSweepWorker.Stop()
 			s.TempTokenSweepWorker = nil
+		}
+		if s.OAuth2SweepWorker != nil {
+			s.OAuth2SweepWorker.stop()
+			s.OAuth2SweepWorker = nil
 		}
 		return fmt.Errorf("failed to initialize routes: %v", err)
 	}
@@ -1816,6 +1860,10 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		if s.TempTokenSweepWorker != nil {
 			s.TempTokenSweepWorker.Stop()
 			s.TempTokenSweepWorker = nil
+		}
+		if s.OAuth2SweepWorker != nil {
+			s.OAuth2SweepWorker.stop()
+			s.OAuth2SweepWorker = nil
 		}
 		return fmt.Errorf("failed to initialize inference routes: %v", err)
 	}
@@ -1865,7 +1913,7 @@ func (s *BifrostHTTPServer) Start() error {
 		return fmt.Errorf("failed to create listener on %s: %v", serverAddr, err)
 	}
 	go func() {
-		logger.Info("successfully started bifrost, serving UI on http://%s:%s", s.Host, s.Port)
+		logger.Info("successfully started bifrost, serving UI on http://%s", serverAddr)
 		if err := s.Server.Serve(ln); err != nil {
 			errChan <- err
 		}
@@ -1915,6 +1963,11 @@ func (s *BifrostHTTPServer) Start() error {
 			if s.TempTokenSweepWorker != nil {
 				logger.Info("stopping temp-token sweep worker...")
 				s.TempTokenSweepWorker.Stop()
+			}
+			if s.OAuth2SweepWorker != nil {
+				logger.Info("stopping oauth2 sweep worker...")
+				s.OAuth2SweepWorker.stop()
+				s.OAuth2SweepWorker = nil
 			}
 			if s.devPprofHandler != nil {
 				logger.Info("stopping dev pprof handler...")

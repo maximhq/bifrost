@@ -135,7 +135,7 @@ func generateBatch(prefix string, start, n int, now time.Time) []configstoreTabl
 		rows = append(rows, configstoreTables.TableVirtualKey{
 			ID:        uuid.NewString(),
 			Name:      fmt.Sprintf("%s-%d", prefix, idx),
-			Value:     virtualKeyPrefix + uuid.NewString(),
+			Value:     *schemas.NewSecretVar(virtualKeyPrefix + uuid.NewString()),
 			CreatedAt: now,
 			UpdatedAt: now,
 		})

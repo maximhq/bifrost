@@ -103,7 +103,7 @@ func (h *SessionHandler) login(ctx *fasthttp.RequestCtx) {
 		Password string `json:"password"`
 	}{}
 	if err := json.Unmarshal(ctx.PostBody(), &payload); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request format: %v", err))
+		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
 		return
 	}
 

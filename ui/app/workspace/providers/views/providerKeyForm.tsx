@@ -102,6 +102,10 @@ export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: P
 			const { _auth_type, ...rest } = key.bedrock_key_config;
 			key.bedrock_key_config = rest;
 		}
+		if (key.bedrock_mantle_key_config) {
+			const { _auth_type, ...rest } = key.bedrock_mantle_key_config;
+			key.bedrock_mantle_key_config = rest;
+		}
 		const mutation = isEditing
 			? updateProviderKey({
 					provider: provider.name,
@@ -138,6 +142,7 @@ export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: P
 					<ApiKeyFormFragment
 						control={form.control}
 						providerName={provider.name}
+						baseProviderType={provider.custom_provider_config?.base_provider_type}
 						form={form}
 						keyId={effectiveKeyId}
 						createProviderKey={createProviderKey}

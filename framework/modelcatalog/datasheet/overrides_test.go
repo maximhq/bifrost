@@ -33,6 +33,7 @@ func newTestStore() *Store {
 		supportedResponseTypes: map[string][]string{},
 		supportedParams:        map[string][]string{},
 		datasheetByProvider:    map[schemas.ModelProvider][]string{},
+		deprecatedByProvider:   map[schemas.ModelProvider][]string{},
 	}
 }
 

@@ -23,6 +23,7 @@ function sortProviders(a: ModelProvider, b: ModelProvider) {
 export interface ModelResponse {
 	name: string;
 	provider: string;
+	is_deprecated?: boolean;
 	accessible_by_keys?: string[];
 	additional_attributes?: Record<string, string>;
 }

@@ -279,6 +279,51 @@
             }
           ],
           "description": "Public base URL Bifrost uses as the redirect_uri when acting as an OAuth client to upstream MCP servers (Notion, Jira, etc.). Set when Bifrost's callback endpoint is reached via a different URL than its server-side metadata. Supports env var syntax: \"env.MY_VAR\"."
+        },
+        "mcp_server_auth_mode": {
+          "type": "string",
+          "enum": ["headers", "both", "oauth"],
+          "description": "How /mcp authenticates inbound MCP clients. 'headers' (default): VK/api-key/session headers only, discovery disabled. 'both': accepts header credentials and Bifrost-issued JWTs, discovery enabled. 'oauth': Bifrost JWTs only — WARNING: disables VK/header MCP access."
+        },
+        "oauth2_server_config": {
+          "type": "object",
+          "properties": {
+            "issuer_url": {
+              "anyOf": [
+                { "type": "string" },
+                {
+                  "type": "object",
+                  "properties": {
+                    "value": { "type": "string" },
+                    "env_var": { "type": "string" },
+                    "from_env": { "type": "boolean" }
+                  },
+                  "additionalProperties": false
+                }
+              ],
+              "description": "Stable public URL advertised as the OAuth2 AS issuer in discovery documents and JWT iss claim. Required for multi-host deployments; single-host deployments can omit this (falls back to request Host header). Supports env var syntax: \"env.MY_VAR\"."
+            },
+            "auth_code_ttl": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 900,
+              "default": 300,
+              "description": "Lifetime of the single-use authorization code in seconds (default: 300, max: 900 = 15 minutes)."
+            },
+            "access_token_ttl": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 600,
+              "description": "Lifetime of the issued JWT Bearer token in seconds (default: 600)."
+            },
+            "disable_vk_identity": {
+              "type": "boolean",
+              "default": false,
+              "description": "When true, the OAuth consent flow no longer offers or accepts virtual-key identity and existing virtual-key grants lose access immediately (rejected at request time and unable to refresh). Honored only when an identity provider is configured. Only valid when mcp_server_auth_mode is 'oauth'."
+            }
+          },
+          "additionalProperties": false,
+          "description": "OAuth2 authorization server settings for /mcp. Only relevant when mcp_server_auth_mode is 'both' or 'oauth'."
         }
       },
       "additionalProperties": false
@@ -304,6 +349,9 @@
         },
         "bedrock": {
           "$ref": "#/$defs/provider_with_bedrock_config"
+        },
+        "bedrock_mantle": {
+          "$ref": "#/$defs/provider_with_bedrock_mantle_config"
         },
         "cohere": {
           "$ref": "#/$defs/provider"
@@ -351,6 +399,9 @@
           "$ref": "#/$defs/provider"
         },
         "cerebras": {
+          "$ref": "#/$defs/provider"
+        },
+        "deepseek": {
           "$ref": "#/$defs/provider"
         },
         "vllm": {
@@ -722,6 +773,11 @@
                 "type": "boolean",
                 "description": "Whether the virtual key is active",
                 "default": true
+              },
+              "expires_at": {
+                "type": "string",
+                "format": "date-time",
+                "description": "Optional expiry timestamp (RFC3339). Once passed, requests using this virtual key are rejected. Omit for a key that never expires."
               },
               "calendar_aligned": {
                 "type": "boolean",
@@ -1207,7 +1263,7 @@
         },
         "type": {
           "type": "string",
-          "enum": ["sqlite", "postgres"],
+          "enum": ["sqlite", "postgres", "clickhouse"],
           "description": "Logs store type"
         },
         "config": {
@@ -1333,6 +1389,61 @@
                     "required": ["password_command"]
                   }
                 ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "../type": {
+                    "const": "clickhouse"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "host": {
+                    "type": "string",
+                    "description": "ClickHouse host"
+                  },
+                  "port": {
+                    "type": "string",
+                    "description": "ClickHouse port. Defaults by protocol: native 9000 (9440 TLS), http 8123 (8443 TLS)"
+                  },
+                  "database": {
+                    "type": "string",
+                    "description": "ClickHouse database name (default: default)"
+                  },
+                  "username": {
+                    "type": "string",
+                    "description": "ClickHouse username"
+                  },
+                  "password": {
+                    "type": "string",
+                    "description": "ClickHouse password"
+                  },
+                  "protocol": {
+                    "type": "string",
+                    "enum": ["native", "http"],
+                    "description": "ClickHouse wire protocol (default: native)"
+                  },
+                  "secure": {
+                    "type": "boolean",
+                    "description": "Enable TLS (native: secure=true; http: switches to https)",
+                    "default": false
+                  },
+                  "dial_timeout": {
+                    "type": "integer",
+                    "description": "Connection dial timeout in milliseconds (default: 10000)",
+                    "minimum": 1,
+                    "default": 10000
+                  },
+                  "cluster": {
+                    "type": "string",
+                    "description": "Optional cluster name; when set, DDL runs ON CLUSTER with replicated table engines"
+                  }
+                },
+                "required": ["host"],
                 "additionalProperties": false
               }
             }
@@ -1814,6 +1925,7 @@
                         "anthropic",
                         "gemini",
                         "bedrock",
+                        "bedrock_mantle",
                         "azure",
                         "cohere",
                         "mistral",
@@ -1822,6 +1934,7 @@
                         "openrouter",
                         "vertex",
                         "cerebras",
+                        "deepseek",
                         "vllm",
                         "parasail",
                         "perplexity",
@@ -3345,6 +3458,53 @@
         }
       ]
     },
+    "bedrock_mantle_key": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base_key"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "bedrock_mantle_key_config": {
+              "type": "object",
+              "properties": {
+                "access_key": {
+                  "type": "string",
+                  "description": "AWS access key for SigV4 (can use env. prefix)"
+                },
+                "secret_key": {
+                  "type": "string",
+                  "description": "AWS secret key for SigV4 (can use env. prefix)"
+                },
+                "session_token": {
+                  "type": "string",
+                  "description": "AWS session token for temporary credentials (can use env. prefix)"
+                },
+                "region": {
+                  "type": "string",
+                  "description": "AWS region used to build the bedrock-mantle endpoint host"
+                },
+                "role_arn": {
+                  "type": "string",
+                  "description": "AWS IAM role ARN for AssumeRole (can use env. prefix)"
+                },
+                "external_id": {
+                  "type": "string",
+                  "description": "External ID for AssumeRole (can use env. prefix)"
+                },
+                "session_name": {
+                  "type": "string",
+                  "description": "Role session name for AssumeRole (can use env. prefix)"
+                }
+              },
+              "required": ["region"],
+              "additionalProperties": false
+            }
+          }
+        }
+      ]
+    },
     "vllm_key": {
       "allOf": [
         {
@@ -3579,6 +3739,45 @@
           "type": "array",
           "items": {
             "$ref": "#/$defs/bedrock_key"
+          },
+          "minItems": 1,
+          "description": "API keys for this provider"
+        },
+        "network_config": {
+          "$ref": "#/$defs/network_config"
+        },
+        "concurrency_and_buffer_size": {
+          "$ref": "#/$defs/concurrency_and_buffer_size"
+        },
+        "proxy_config": {
+          "$ref": "#/$defs/proxy_config"
+        },
+        "send_back_raw_request": {
+          "type": "boolean",
+          "description": "Include raw request in BifrostResponse (default: false)"
+        },
+        "send_back_raw_response": {
+          "type": "boolean",
+          "description": "Include raw response in BifrostResponse (default: false)"
+        },
+        "store_raw_request_response": {
+          "type": "boolean",
+          "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
+        },
+        "custom_provider_config": {
+          "$ref": "#/$defs/custom_provider_config"
+        }
+      },
+      "required": ["keys"],
+      "additionalProperties": false
+    },
+    "provider_with_bedrock_mantle_config": {
+      "type": "object",
+      "properties": {
+        "keys": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/bedrock_mantle_key"
           },
           "minItems": 1,
           "description": "API keys for this provider"
@@ -3944,6 +4143,19 @@
             },
             {
               "type": "integer"
+            }
+          ]
+        },
+        "tool_execution_timeout": {
+          "description": "Per-client override for tool execution timeout. Accepts a Go duration string (e.g. '30s', '2m') or a bare integer treated as seconds. When set, overrides the global tool_manager_config.tool_execution_timeout for this MCP server only. Omit or set to 0 to use the global default.",
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^(?:\\d+(?:\\.\\d+)?(?:ns|us|µs|ms|s|m|h))+$"
+            },
+            {
+              "type": "integer",
+              "minimum": 0
             }
           ]
         },
@@ -5441,6 +5653,7 @@
             "azure",
             "anthropic",
             "bedrock",
+            "bedrock_mantle",
             "cohere",
             "vertex",
             "mistral",
@@ -5452,6 +5665,7 @@
             "parasail",
             "perplexity",
             "cerebras",
+            "deepseek",
             "gemini",
             "openrouter",
             "elevenlabs",
@@ -5497,6 +5711,22 @@
             },
             "responses_stream": {
               "type": "boolean"
+            },
+            "responses_retrieve": {
+              "type": "boolean",
+              "description": "GET stored response by id (OpenAI Responses lifecycle)"
+            },
+            "responses_delete": {
+              "type": "boolean",
+              "description": "DELETE stored response (OpenAI Responses lifecycle)"
+            },
+            "responses_cancel": {
+              "type": "boolean",
+              "description": "POST cancel in-flight stored response (OpenAI Responses lifecycle)"
+            },
+            "responses_input_items": {
+              "type": "boolean",
+              "description": "GET list input items for a stored response (OpenAI Responses lifecycle)"
             },
             "count_tokens": {
               "type": "boolean"

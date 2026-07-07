@@ -133,10 +133,12 @@
                   "providers/supported-providers/anthropic",
                   "providers/supported-providers/azure",
                   "providers/supported-providers/bedrock",
+                  "providers/supported-providers/bedrock-mantle",
                   "providers/supported-providers/cerebras",
                   "providers/supported-providers/cohere",
                   "providers/supported-providers/copilot",
                   "providers/supported-providers/databricks",
+                  "providers/supported-providers/deepseek",
                   "providers/supported-providers/elevenlabs",
                   "providers/supported-providers/fireworks",
                   "providers/supported-providers/gemini",
@@ -193,6 +195,7 @@
               "mcp/agent-mode",
               "mcp/code-mode",
               "mcp/gateway",
+              "mcp/gateway-auth",
               "mcp/tool-hosting",
               "mcp/filtering"
             ]
@@ -621,6 +624,7 @@
               "deployment-guides/how-to/install-make",
               "deployment-guides/how-to/multinode",
               "deployment-guides/how-to/nginx-reverse-proxy",
+              "deployment-guides/how-to/security-best-practices",
               "deployment-guides/how-to/airgapped",
               "deployment-guides/docker-tuning"
             ]
@@ -696,16 +700,25 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
-              "changelogs/v1.6.0",
-              "changelogs/v1.5.16",
-              "changelogs/v1.5.15",
-              "changelogs/v1.5.14",
-              "changelogs/v1.5.13",
-              "changelogs/v1.5.12",
-              "changelogs/v1.5.11",
-              "changelogs/v1.5.10",
-              "changelogs/v1.5.9",
-              "changelogs/v1.5.8",
+              "changelogs/v2.0.0-prerelease1",
+              "changelogs/v1.6.3",
+              "changelogs/v1.6.2",
+              {
+                "group": "June 2026",
+                "pages": [
+                  "changelogs/v1.6.1",
+                  "changelogs/v1.6.0",
+                  "changelogs/v1.5.16",
+                  "changelogs/v1.5.15",
+                  "changelogs/v1.5.14",
+                  "changelogs/v1.5.13",
+                  "changelogs/v1.5.12",
+                  "changelogs/v1.5.11",
+                  "changelogs/v1.5.10",
+                  "changelogs/v1.5.9",
+                  "changelogs/v1.5.8"
+                ]
+              },
               {
                 "group": "May 2026",
                 "pages": [
@@ -792,6 +805,7 @@
                 "pages": [
                   "changelogs/v1.4.0-prerelease2",
                   "changelogs/v1.4.0-prerelease1",
+                  "changelogs/v1.3.55",
                   "changelogs/v1.3.54",
                   "changelogs/v1.3.53",
                   "changelogs/v1.3.52",
@@ -881,6 +895,10 @@
             "item": "Enterprise",
             "icon": "building",
             "pages": [
+              "changelogs/ent-v2.0.0-prerelease1",
+              "changelogs/ent-v1.5.3",
+              "changelogs/ent-v1.5.2",
+              "changelogs/ent-v1.5.1",
               "changelogs/ent-v1.5.0",
               "changelogs/ent-v1.4.13",
               "changelogs/ent-v1.4.12",
@@ -890,34 +908,49 @@
               "changelogs/ent-v1.4.8",
               "changelogs/ent-v1.4.7",
               "changelogs/ent-v1.4.7-rc1",
-              "changelogs/ent-v1.4.6",
-              "changelogs/ent-v1.4.5",
-              "changelogs/ent-v1.4.4",
-              "changelogs/ent-v1.4.3",
-              "changelogs/ent-v1.4.2",
-              "changelogs/ent-v1.4.1",
-              "changelogs/ent-v1.4.0",
-              "changelogs/ent-v1.4.0-prerelease7",
-              "changelogs/ent-v1.3.21",
-              "changelogs/ent-v1.4.0-prerelease6",
-              "changelogs/ent-v1.4.0-prerelease5",
-              "changelogs/ent-v1.3.20",
-              "changelogs/ent-v1.4.0-prerelease4",
-              "changelogs/ent-v1.3.19",
-              "changelogs/ent-v1.4.0-prerelease3",
-              "changelogs/ent-v1.3.18",
-              "changelogs/ent-v1.4.0-prerelease2",
-              "changelogs/ent-v1.3.17",
-              "changelogs/ent-v1.4.0-prerelease1",
-              "changelogs/ent-v1.3.16",
-              "changelogs/ent-v1.3.15",
-              "changelogs/ent-v1.3.14",
-              "changelogs/ent-v1.3.13",
-              "changelogs/ent-v1.3.12",
-              "changelogs/ent-v1.3.11",
-              "changelogs/ent-v1.3.10",
-              "changelogs/ent-v1.3.9",
-              "changelogs/ent-v1.3.8"
+              {
+                "group": "May 2026",
+                "pages": [
+                  "changelogs/ent-v1.4.6",
+                  "changelogs/ent-v1.4.5",
+                  "changelogs/ent-v1.4.4",
+                  "changelogs/ent-v1.4.3",
+                  "changelogs/ent-v1.4.2",
+                  "changelogs/ent-v1.4.1",
+                  "changelogs/ent-v1.4.0",
+                  "changelogs/ent-v1.4.0-prerelease7"
+                ]
+              },
+              {
+                "group": "April 2026",
+                "pages": [
+                  "changelogs/ent-v1.3.21",
+                  "changelogs/ent-v1.4.0-prerelease6",
+                  "changelogs/ent-v1.4.0-prerelease5",
+                  "changelogs/ent-v1.3.20",
+                  "changelogs/ent-v1.4.0-prerelease4",
+                  "changelogs/ent-v1.3.19",
+                  "changelogs/ent-v1.4.0-prerelease3",
+                  "changelogs/ent-v1.3.18",
+                  "changelogs/ent-v1.4.0-prerelease2",
+                  "changelogs/ent-v1.3.17",
+                  "changelogs/ent-v1.4.0-prerelease1"
+                ]
+              },
+              {
+                "group": "March 2026",
+                "pages": [
+                  "changelogs/ent-v1.3.16",
+                  "changelogs/ent-v1.3.15",
+                  "changelogs/ent-v1.3.14",
+                  "changelogs/ent-v1.3.13",
+                  "changelogs/ent-v1.3.12",
+                  "changelogs/ent-v1.3.11",
+                  "changelogs/ent-v1.3.10",
+                  "changelogs/ent-v1.3.9",
+                  "changelogs/ent-v1.3.8"
+                ]
+              }
             ]
           },
           {
@@ -925,31 +958,47 @@
             "icon": "laptop-code",
             "pages": [
               "changelogs/cli-v0.10.6",
-              "changelogs/cli-v0.10.5",
-              "changelogs/cli-v0.10.4",
-              "changelogs/cli-v0.10.3",
-              "changelogs/cli-v0.10.2",
-              "changelogs/cli-v0.10.1",
-              "changelogs/cli-v0.10.0"
+              {
+                "group": "May 2026",
+                "pages": [
+                  "changelogs/cli-v0.10.5",
+                  "changelogs/cli-v0.10.4"
+                ]
+              },
+              {
+                "group": "March 2026",
+                "pages": [
+                  "changelogs/cli-v0.10.3",
+                  "changelogs/cli-v0.10.2",
+                  "changelogs/cli-v0.10.1",
+                  "changelogs/cli-v0.10.0"
+                ]
+              }
             ]
           },
           {
             "item": "Helm",
             "icon": "box",
             "pages": [
+              "changelogs/helm-v2.1.26",
               "changelogs/helm-v2.1.25",
               "changelogs/helm-v2.1.24",
               "changelogs/helm-v2.1.23",
               "changelogs/helm-v2.1.22",
               "changelogs/helm-v2.1.21",
-              "changelogs/helm-v2.1.20",
-              "changelogs/helm-v2.1.19",
-              "changelogs/helm-v2.1.18",
-              "changelogs/helm-v2.1.17",
-              "changelogs/helm-v2.1.16",
-              "changelogs/helm-v2.1.15",
-              "changelogs/helm-v2.1.14",
-              "changelogs/helm-v2.1.13",
+              {
+                "group": "May 2026",
+                "pages": [
+                  "changelogs/helm-v2.1.20",
+                  "changelogs/helm-v2.1.19",
+                  "changelogs/helm-v2.1.18",
+                  "changelogs/helm-v2.1.17",
+                  "changelogs/helm-v2.1.16",
+                  "changelogs/helm-v2.1.15",
+                  "changelogs/helm-v2.1.14",
+                  "changelogs/helm-v2.1.13"
+                ]
+              },
               {
                 "group": "April 2026",
                 "pages": [

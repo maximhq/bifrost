@@ -1,0 +1,1899 @@
+{
+  "info": {
+    "name": "Bifrost V1 - Virtual Key Expiry",
+    "description": "Virtual key expiry tests. Covers create/update validation (future-only timestamps, RFC3339 parsing, empty-string clear, omit-leaves-unchanged) and runtime enforcement (unexpired passes, expired blocks with 403 virtual_key_blocked, inactive wins before expired, clearing expiry restores access). Self-provisions VKs and cleans up.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8080",
+      "type": "string"
+    },
+    {
+      "key": "provider",
+      "value": "openai",
+      "type": "string"
+    },
+    {
+      "key": "chat_model",
+      "value": "gpt-4o",
+      "type": "string"
+    },
+    {
+      "key": "vk_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vk_value",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vk2_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "mcp_client_name",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "mcp_tool_name",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "mcp_candidates",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "short_expiry_epoch",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Setup",
+      "item": [
+        {
+          "name": "Create VK without expiry",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var timestamp = Date.now();",
+                  "var uniqueName = 'VK Expiry Test ' + timestamp;",
+                  "var provider = pm.variables.get('provider') || 'openai';",
+                  "pm.request.body.raw = JSON.stringify({name: uniqueName, provider_configs: [{provider: provider, weight: 1.0, allowed_models: ['*'], key_ids: ['*']}]});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Create VK returns 200 or 201', function() { pm.expect(code).to.be.oneOf([200, 201]); });",
+                  "if (code === 200 || code === 201) {",
+                  "  var jsonData = pm.response.json();",
+                  "  var vk = (jsonData && (jsonData.virtual_key || jsonData)) || null;",
+                  "  pm.test('VK has id and value', function() {",
+                  "    pm.expect(vk).to.be.an('object');",
+                  "    pm.expect(vk.id).to.be.a('string').and.not.be.empty;",
+                  "    pm.expect(vk.value).to.be.a('string').and.not.be.empty;",
+                  "  });",
+                  "  pm.test('VK without expiry has no expires_at', function() {",
+                  "    pm.expect(vk.expires_at == null).to.be.true;",
+                  "  });",
+                  "  pm.collectionVariables.set('vk_id', vk.id);",
+                  "  pm.collectionVariables.set('vk_value', vk.value);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"VK Expiry Test\"}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Discover MCP tool candidates for enforcement tests",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Executable tool names are registered as '<client>-<tool>'. Collect",
+                  "// candidates from connected clients, restricted to read-only-looking,",
+                  "// argument-free-callable tools so probing them is side-effect free.",
+                  "// Per-user-auth clients fail before the governance gate, so candidates",
+                  "// are verified with a live probe in the next request.",
+                  "pm.test('List MCP clients returns 200', function() { pm.expect(pm.response.code).to.equal(200); });",
+                  "var jsonData = pm.response.json();",
+                  "var clients = (jsonData && jsonData.clients) || [];",
+                  "var SAFE_TOOL = /(echo|greet|public|info|ping|health|status)/i;",
+                  "var candidates = [];",
+                  "clients.forEach(function(cl) {",
+                  "  if (cl.state !== 'connected' || !cl.config || !cl.config.name) return;",
+                  "  (cl.tools || []).forEach(function(t) {",
+                  "    if (t.name && SAFE_TOOL.test(t.name) && candidates.length < 5) {",
+                  "      candidates.push({client: cl.config.name, tool: cl.config.name + '-' + t.name});",
+                  "    }",
+                  "  });",
+                  "});",
+                  "pm.collectionVariables.set('mcp_candidates', JSON.stringify(candidates));",
+                  "if (!candidates.length) {",
+                  "  pm.test('Skipped: no connected MCP client with a safe probe tool', function() { pm.expect(true).to.be.true; });",
+                  "} else {",
+                  "  console.log('MCP candidates: ' + candidates.map(function(c) { return c.tool; }).join(', '));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/clients",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "clients"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Grant VK access to MCP candidate clients",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var candidates = JSON.parse(pm.collectionVariables.get('mcp_candidates') || '[]');",
+                  "var clientNames = candidates.map(function(c) { return c.client; }).filter(function(v, i, a) { return a.indexOf(v) === i; });",
+                  "// No usable MCP client: turn this into a harmless no-op update.",
+                  "if (!clientNames.length) {",
+                  "  pm.request.body.raw = JSON.stringify({description: 'no MCP client available'});",
+                  "} else {",
+                  "  pm.request.body.raw = JSON.stringify({mcp_configs: clientNames.map(function(n) { return {mcp_client_name: n, tools_to_execute: ['*']}; })});",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Grant MCP access returns 2xx', function() { pm.expect(pm.response.code).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vk_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Probe MCP candidates and pick a working tool",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A candidate only counts if a real execution with the fresh VK returns",
+                  "// 200 \u2014 this filters out per-user-auth clients, whose connection fails",
+                  "// before the governance gate the expiry tests need to reach.",
+                  "var candidates = JSON.parse(pm.collectionVariables.get('mcp_candidates') || '[]');",
+                  "pm.collectionVariables.set('mcp_tool_name', '');",
+                  "if (!candidates.length) {",
+                  "  pm.test('Skipped: no MCP candidates to probe', function() { pm.expect(true).to.be.true; });",
+                  "} else {",
+                  "  var baseUrl = pm.variables.get('base_url');",
+                  "  var vkValue = pm.collectionVariables.get('vk_value');",
+                  "  function probe(i) {",
+                  "    if (i >= candidates.length) {",
+                  "      pm.test('Skipped: no MCP candidate executed successfully', function() { pm.expect(true).to.be.true; });",
+                  "      return;",
+                  "    }",
+                  "    pm.sendRequest({",
+                  "      url: baseUrl + '/v1/mcp/tool/execute',",
+                  "      method: 'POST',",
+                  "      header: {'Content-Type': 'application/json', 'x-bf-vk': vkValue},",
+                  "      body: {mode: 'raw', raw: JSON.stringify({id: 'probe_' + i, type: 'function', function: {name: candidates[i].tool, arguments: '{}'}})}",
+                  "    }, function(err, res) {",
+                  "      if (!err && res.code === 200) {",
+                  "        pm.collectionVariables.set('mcp_tool_name', candidates[i].tool);",
+                  "        pm.test('Selected MCP tool for enforcement tests: ' + candidates[i].tool, function() { pm.expect(true).to.be.true; });",
+                  "      } else {",
+                  "        probe(i + 1);",
+                  "      }",
+                  "    });",
+                  "  }",
+                  "  probe(0);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/clients",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "clients"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Create Validation",
+      "item": [
+        {
+          "name": "Create VK with past expiry is rejected",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var uniqueName = 'VK Expiry Past ' + Date.now();",
+                  "var pastExpiry = new Date(Date.now() - 3600000).toISOString();",
+                  "pm.request.body.raw = JSON.stringify({name: uniqueName, expires_at: pastExpiry});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Create with past expiry returns 400', function() { pm.expect(pm.response.code).to.equal(400); });",
+                  "pm.test('Error mentions future timestamp', function() { pm.expect(pm.response.text()).to.include('future'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"VK Expiry Past\"}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create VK with future expiry persists it",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var uniqueName = 'VK Expiry Future ' + Date.now();",
+                  "var futureExpiry = new Date(Date.now() + 3600000).toISOString();",
+                  "pm.request.body.raw = JSON.stringify({name: uniqueName, expires_at: futureExpiry});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Create with future expiry returns 200 or 201', function() { pm.expect(code).to.be.oneOf([200, 201]); });",
+                  "if (code === 200 || code === 201) {",
+                  "  var jsonData = pm.response.json();",
+                  "  var vk = (jsonData && (jsonData.virtual_key || jsonData)) || null;",
+                  "  pm.test('Response echoes expires_at about 1h from now', function() {",
+                  "    pm.expect(vk).to.be.an('object');",
+                  "    pm.expect(vk.expires_at).to.be.a('string').and.not.be.empty;",
+                  "    var exp = new Date(vk.expires_at).getTime();",
+                  "    pm.expect(exp).to.be.greaterThan(Date.now() + 50 * 60000);",
+                  "    pm.expect(exp).to.be.lessThan(Date.now() + 70 * 60000);",
+                  "  });",
+                  "  if (vk && vk.id) { pm.collectionVariables.set('vk2_id', vk.id); }",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"VK Expiry Future\"}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Update Semantics",
+      "item": [
+        {
+          "name": "Set future expiry via update",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var futureExpiry = new Date(Date.now() + 3600000).toISOString();",
+                  "pm.request.body.raw = JSON.stringify({expires_at: futureExpiry});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Set expiry returns 2xx', function() { pm.expect(pm.response.code).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vk_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET reflects the new expiry",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('GET VK returns 200', function() { pm.expect(pm.response.code).to.equal(200); });",
+                  "var jsonData = pm.response.json();",
+                  "var vk = (jsonData && (jsonData.virtual_key || jsonData)) || null;",
+                  "pm.test('expires_at is about 1h from now', function() {",
+                  "  pm.expect(vk).to.be.an('object');",
+                  "  pm.expect(vk.expires_at).to.be.a('string').and.not.be.empty;",
+                  "  var exp = new Date(vk.expires_at).getTime();",
+                  "  pm.expect(exp).to.be.greaterThan(Date.now() + 50 * 60000);",
+                  "  pm.expect(exp).to.be.lessThan(Date.now() + 70 * 60000);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vk_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "List endpoint includes expires_at",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('List VKs returns 200', function() { pm.expect(pm.response.code).to.equal(200); });",
+                  "var jsonData = pm.response.json();",
+                  "var list = (jsonData && jsonData.virtual_keys) || [];",
+                  "var mine = list.filter(function(v) { return v.id === pm.collectionVariables.get('vk_id'); })[0];",
+                  "if (mine) {",
+                  "  pm.test('Listed VK carries its expires_at', function() {",
+                  "    pm.expect(mine.expires_at).to.be.a('string').and.not.be.empty;",
+                  "    pm.expect(new Date(mine.expires_at).getTime()).to.be.greaterThan(Date.now());",
+                  "  });",
+                  "} else {",
+                  "  pm.test('Skipped: VK not on this list page', function() { pm.expect(true).to.be.true; });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys?limit=500&offset=0",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "500"
+                },
+                {
+                  "key": "offset",
+                  "value": "0"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Update without expires_at leaves expiry unchanged",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Update without expires_at returns 2xx', function() { pm.expect(pm.response.code).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"description\": \"expiry untouched\"}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vk_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET still has the expiry",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('GET VK returns 200', function() { pm.expect(pm.response.code).to.equal(200); });",
+                  "var jsonData = pm.response.json();",
+                  "var vk = (jsonData && (jsonData.virtual_key || jsonData)) || null;",
+                  "pm.test('expires_at survives an unrelated update', function() {",
+                  "  pm.expect(vk).to.be.an('object');",
+                  "  pm.expect(vk.expires_at).to.be.a('string').and.not.be.empty;",
+                  "  pm.expect(new Date(vk.expires_at).getTime()).to.be.greaterThan(Date.now());",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vk_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Extend expiry to 2h",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var extended = new Date(Date.now() + 7200000).toISOString();",
+                  "pm.request.body.raw = JSON.stringify({expires_at: extended});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Extend expiry returns 2xx', function() { pm.expect(pm.response.code).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vk_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET reflects the extended expiry",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('GET VK returns 200', function() { pm.expect(pm.response.code).to.equal(200); });",
+                  "var jsonData = pm.response.json();",
+                  "var vk = (jsonData && (jsonData.virtual_key || jsonData)) || null;",
+                  "pm.test('expires_at moved out to about 2h from now', function() {",
+                  "  pm.expect(vk).to.be.an('object');",
+                  "  pm.expect(vk.expires_at).to.be.a('string').and.not.be.empty;",
+                  "  var exp = new Date(vk.expires_at).getTime();",
+                  "  pm.expect(exp).to.be.greaterThan(Date.now() + 110 * 60000);",
+                  "  pm.expect(exp).to.be.lessThan(Date.now() + 130 * 60000);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vk_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Set expiry with timezone offset",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// now+1h expressed in a +05:30 offset instead of Z; the backend must",
+                  "// store the same instant.",
+                  "var target = Date.now() + 3600000;",
+                  "var shifted = new Date(target + 330 * 60000);",
+                  "var offsetTimestamp = shifted.toISOString().slice(0, 19) + '+05:30';",
+                  "pm.request.body.raw = JSON.stringify({expires_at: offsetTimestamp});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Offset timestamp is accepted', function() { pm.expect(pm.response.code).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vk_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET normalizes offset expiry to the same instant",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('GET VK returns 200', function() { pm.expect(pm.response.code).to.equal(200); });",
+                  "var jsonData = pm.response.json();",
+                  "var vk = (jsonData && (jsonData.virtual_key || jsonData)) || null;",
+                  "pm.test('Stored expiry equals the +05:30 instant (about 1h from now)', function() {",
+                  "  pm.expect(vk).to.be.an('object');",
+                  "  pm.expect(vk.expires_at).to.be.a('string').and.not.be.empty;",
+                  "  var exp = new Date(vk.expires_at).getTime();",
+                  "  pm.expect(exp).to.be.greaterThan(Date.now() + 50 * 60000);",
+                  "  pm.expect(exp).to.be.lessThan(Date.now() + 70 * 60000);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vk_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Update with invalid timestamp is rejected",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Invalid timestamp returns 400', function() { pm.expect(pm.response.code).to.equal(400); });",
+                  "pm.test('Error mentions RFC3339', function() { pm.expect(pm.response.text()).to.include('RFC3339'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"expires_at\": \"not-a-timestamp\"}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vk_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Update with past expiry is rejected",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var pastExpiry = new Date(Date.now() - 60000).toISOString();",
+                  "pm.request.body.raw = JSON.stringify({expires_at: pastExpiry});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Past expiry returns 400', function() { pm.expect(pm.response.code).to.equal(400); });",
+                  "pm.test('Error mentions future timestamp', function() { pm.expect(pm.response.text()).to.include('future'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vk_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Clear expiry with empty string",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Clear expiry returns 2xx', function() { pm.expect(pm.response.code).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"expires_at\": \"\"}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vk_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET shows no expiry after clear",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('GET VK returns 200', function() { pm.expect(pm.response.code).to.equal(200); });",
+                  "var jsonData = pm.response.json();",
+                  "var vk = (jsonData && (jsonData.virtual_key || jsonData)) || null;",
+                  "pm.test('expires_at is cleared', function() {",
+                  "  pm.expect(vk).to.be.an('object');",
+                  "  pm.expect(vk.expires_at == null).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vk_id}}"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Enforcement",
+      "item": [
+        {
+          "name": "Re-set future expiry",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var futureExpiry = new Date(Date.now() + 3600000).toISOString();",
+                  "pm.request.body.raw = JSON.stringify({expires_at: futureExpiry});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Set expiry returns 2xx', function() { pm.expect(pm.response.code).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vk_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Inference with unexpired VK is not blocked as expired",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The provider call itself may fail in some environments; this test only",
+                  "// guards that governance does not reject an unexpired VK.",
+                  "pm.test('Response carries no expiry rejection', function() {",
+                  "  pm.expect(pm.response.text()).to.not.include('Virtual key has expired');",
+                  "  pm.expect(pm.response.text()).to.not.include('virtual_key_blocked');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{vk_value}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"{{chat_model}}\", \"messages\": [{\"role\": \"user\", \"content\": \"ok\"}], \"max_tokens\": 5}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "MCP tool execution with unexpired VK is not blocked",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('mcp_tool_name')) { pm.test('Skipped: no connected MCP client with tools', function() { pm.expect(true).to.be.true; }); } else {",
+                  "  pm.test('Unexpired VK MCP execution carries no governance rejection', function() {",
+                  "    pm.expect(pm.response.text(), 'body: ' + pm.response.text()).to.not.include('virtual_key_blocked');",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{vk_value}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\": \"call_expiry_test\", \"type\": \"function\", \"function\": {\"name\": \"{{mcp_tool_name}}\", \"arguments\": \"{}\"}}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/mcp/tool/execute",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Set short expiry",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Record the absolute expiry instant so the wait before the blocked-request",
+                  "// checks can anchor to it instead of guessing a fixed window.",
+                  "var shortExpiryEpoch = Date.now() + 5000;",
+                  "pm.collectionVariables.set('short_expiry_epoch', String(shortExpiryEpoch));",
+                  "pm.request.body.raw = JSON.stringify({expires_at: new Date(shortExpiryEpoch).toISOString()});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Set short expiry returns 2xx', function() { pm.expect(pm.response.code).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vk_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Inference after expiry is blocked",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Wait until the wall clock is safely past the expiry instant recorded by",
+                  "// 'Set short expiry'. Anchoring to the absolute epoch means PUT round-trip",
+                  "// time or a slow runner can never shrink the wait below the expiry boundary.",
+                  "// Newman's sandbox waits for pending timers before sending the request.",
+                  "var deadline = Number(pm.collectionVariables.get('short_expiry_epoch') || 0) + 2000;",
+                  "(function waitForExpiry() {",
+                  "  if (Date.now() < deadline) {",
+                  "    setTimeout(waitForExpiry, 250);",
+                  "  }",
+                  "})();"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Expired VK inference returns 403', function() {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(403);",
+                  "});",
+                  "pm.test('Rejection is virtual_key_blocked with expired reason', function() {",
+                  "  pm.expect(pm.response.text()).to.include('virtual_key_blocked');",
+                  "  pm.expect(pm.response.text().toLowerCase()).to.include('expired');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{vk_value}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"{{chat_model}}\", \"messages\": [{\"role\": \"user\", \"content\": \"ok\"}], \"max_tokens\": 5}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "MCP tool execution with expired VK is blocked",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('mcp_tool_name')) { pm.test('Skipped: no connected MCP client with tools', function() { pm.expect(true).to.be.true; }); } else {",
+                  "  pm.test('Expired VK MCP execution returns 403', function() {",
+                  "    pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(403);",
+                  "  });",
+                  "  pm.test('Rejection is virtual_key_blocked with expired reason', function() {",
+                  "    pm.expect(pm.response.text()).to.include('virtual_key_blocked');",
+                  "    pm.expect(pm.response.text().toLowerCase()).to.include('expired');",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{vk_value}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\": \"call_expiry_test\", \"type\": \"function\", \"function\": {\"name\": \"{{mcp_tool_name}}\", \"arguments\": \"{}\"}}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/mcp/tool/execute",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Expired VK stays visible via GET",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('GET expired VK returns 200', function() { pm.expect(pm.response.code).to.equal(200); });",
+                  "var jsonData = pm.response.json();",
+                  "var vk = (jsonData && (jsonData.virtual_key || jsonData)) || null;",
+                  "pm.test('Expired VK is still active with a past expires_at', function() {",
+                  "  pm.expect(vk).to.be.an('object');",
+                  "  pm.expect(vk.is_active).to.not.equal(false);",
+                  "  pm.expect(vk.expires_at).to.be.a('string').and.not.be.empty;",
+                  "  pm.expect(new Date(vk.expires_at).getTime()).to.be.lessThan(Date.now());",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vk_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Editing an expired VK without touching expiry succeeds",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The stored expiry is already in the past; an update that omits expires_at",
+                  "// must not re-validate it (omit means leave unchanged).",
+                  "pm.test('Unrelated edit of expired VK returns 2xx', function() { pm.expect(pm.response.code).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"description\": \"edited after expiry\"}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vk_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Deactivate expired VK",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Deactivate returns 2xx', function() { pm.expect(pm.response.code).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"is_active\": false}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vk_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Inactive wins before expired",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Inactive+expired VK inference returns 403', function() {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(403);",
+                  "});",
+                  "pm.test('Rejection reason is inactive, not expired', function() {",
+                  "  pm.expect(pm.response.text().toLowerCase()).to.include('inactive');",
+                  "  pm.expect(pm.response.text().toLowerCase()).to.not.include('expired');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{vk_value}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"{{chat_model}}\", \"messages\": [{\"role\": \"user\", \"content\": \"ok\"}], \"max_tokens\": 5}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "MCP tool execution with inactive VK is blocked as inactive",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('mcp_tool_name')) { pm.test('Skipped: no connected MCP client with tools', function() { pm.expect(true).to.be.true; }); } else {",
+                  "  pm.test('Inactive VK MCP execution returns 403', function() {",
+                  "    pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(403);",
+                  "  });",
+                  "  pm.test('Rejection reason is inactive, not expired', function() {",
+                  "    pm.expect(pm.response.text().toLowerCase()).to.include('inactive');",
+                  "    pm.expect(pm.response.text().toLowerCase()).to.not.include('expired');",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{vk_value}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\": \"call_expiry_test\", \"type\": \"function\", \"function\": {\"name\": \"{{mcp_tool_name}}\", \"arguments\": \"{}\"}}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/mcp/tool/execute",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Reactivate expired VK (expiry untouched)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Reactivate returns 2xx', function() { pm.expect(pm.response.code).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"is_active\": true}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vk_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Reactivated but still expired VK stays blocked",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Reactivation must not implicitly un-expire the key.",
+                  "pm.test('Still returns 403 after reactivation', function() {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(403);",
+                  "});",
+                  "pm.test('Rejection is still the expired reason', function() {",
+                  "  pm.expect(pm.response.text()).to.include('virtual_key_blocked');",
+                  "  pm.expect(pm.response.text().toLowerCase()).to.include('expired');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{vk_value}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"{{chat_model}}\", \"messages\": [{\"role\": \"user\", \"content\": \"ok\"}], \"max_tokens\": 5}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Extend expiry of expired VK",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var extended = new Date(Date.now() + 3600000).toISOString();",
+                  "pm.request.body.raw = JSON.stringify({expires_at: extended});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Extend expired VK returns 2xx', function() { pm.expect(pm.response.code).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vk_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET reflects extension into the future",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('GET VK returns 200', function() { pm.expect(pm.response.code).to.equal(200); });",
+                  "var jsonData = pm.response.json();",
+                  "var vk = (jsonData && (jsonData.virtual_key || jsonData)) || null;",
+                  "pm.test('expires_at is about 1h from now', function() {",
+                  "  pm.expect(vk).to.be.an('object');",
+                  "  pm.expect(vk.expires_at).to.be.a('string').and.not.be.empty;",
+                  "  var exp = new Date(vk.expires_at).getTime();",
+                  "  pm.expect(exp).to.be.greaterThan(Date.now() + 50 * 60000);",
+                  "  pm.expect(exp).to.be.lessThan(Date.now() + 70 * 60000);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vk_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Inference works after extending expiry",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Extension restores access (no expiry rejection)', function() {",
+                  "  pm.expect(pm.response.text()).to.not.include('virtual_key_blocked');",
+                  "  pm.expect(pm.response.text()).to.not.include('Virtual key has expired');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{vk_value}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"{{chat_model}}\", \"messages\": [{\"role\": \"user\", \"content\": \"ok\"}], \"max_tokens\": 5}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Clear expiry",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Clear expiry returns 2xx', function() { pm.expect(pm.response.code).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"expires_at\": \"\"}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vk_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Inference after clearing expiry is not blocked",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Response carries no governance rejection', function() {",
+                  "  pm.expect(pm.response.text()).to.not.include('virtual_key_blocked');",
+                  "  pm.expect(pm.response.text()).to.not.include('Virtual key has expired');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{vk_value}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"{{chat_model}}\", \"messages\": [{\"role\": \"user\", \"content\": \"ok\"}], \"max_tokens\": 5}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Teardown",
+      "item": [
+        {
+          "name": "Delete VK",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Delete VK returns 2xx', function() { pm.expect(pm.response.code).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vk_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete future-expiry VK",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Nothing to delete when the future-expiry VK was never created; skip so the",
+                  "// request doesn't fire a DELETE against the collection route with no ID.",
+                  "if (!pm.collectionVariables.get('vk2_id') && pm.execution && typeof pm.execution.skipRequest === 'function') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.collectionVariables.get('vk2_id')) {",
+                  "  pm.test('Delete future-expiry VK returns 2xx', function() { pm.expect(pm.response.code).to.be.within(200, 299); });",
+                  "} else {",
+                  "  pm.test('Skipped: future-expiry VK was never created', function() { pm.expect(true).to.be.true; });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vk2_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vk2_id}}"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

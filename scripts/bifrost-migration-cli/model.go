@@ -121,6 +121,7 @@ var standardProviders = map[string]bool{
 	"bedrock":     true,
 	"cerebras":    true,
 	"cohere":      true,
+	"deepseek":    true,
 	"elevenlabs":  true,
 	"fireworks":   true,
 	"gemini":      true,
