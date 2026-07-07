@@ -157,7 +157,7 @@ func (provider *CopilotProvider) mergedExtraHeaders() map[string]string {
 // copilotKey returns a copy of the key with the value replaced by the Copilot JWT.
 func copilotKey(key schemas.Key, token string) schemas.Key {
 	k := key
-	k.Value = *schemas.NewEnvVar(token)
+	k.Value = *schemas.NewSecretVar(token)
 	return k
 }
 
@@ -242,8 +242,7 @@ func (provider *CopilotProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 
 // chatNative issues a request against Copilot's native /chat/completions endpoint.
 func (provider *CopilotProvider) chatNative(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
-	tm := provider.getOrCreateTokenManager(key)
-	token, apiBase, bifrostErr := tm.getToken()
+	authHeader, apiBase, bifrostErr := provider.getCopilotAuth(key)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -253,11 +252,12 @@ func (provider *CopilotProvider) chatNative(ctx *schemas.BifrostContext, key sch
 		provider.client,
 		apiBase+providerUtils.GetPathFromContext(ctx, "/chat/completions"),
 		request,
-		copilotKey(key, token),
+		authHeader,
 		provider.mergedExtraHeaders(),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
+		nil,
 		nil,
 		nil,
 		provider.logger,
@@ -331,6 +331,7 @@ func (provider *CopilotProvider) chatStreamNative(ctx *schemas.BifrostContext, p
 		nil,
 		nil,
 		setChatChunkObject,
+		nil,
 		provider.logger,
 		postHookSpanFinalizer,
 	)
@@ -395,8 +396,7 @@ func (provider *CopilotProvider) Responses(ctx *schemas.BifrostContext, key sche
 
 // responsesNative issues a request against Copilot's native /responses endpoint.
 func (provider *CopilotProvider) responsesNative(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
-	tm := provider.getOrCreateTokenManager(key)
-	token, apiBase, bifrostErr := tm.getToken()
+	authHeader, apiBase, bifrostErr := provider.getCopilotAuth(key)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -406,11 +406,12 @@ func (provider *CopilotProvider) responsesNative(ctx *schemas.BifrostContext, ke
 		provider.client,
 		apiBase+providerUtils.GetPathFromContext(ctx, "/responses"),
 		request,
-		copilotKey(key, token),
+		authHeader,
 		provider.mergedExtraHeaders(),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
+		nil,
 		nil,
 		nil,
 		provider.logger,
@@ -473,6 +474,7 @@ func (provider *CopilotProvider) responsesStreamNative(ctx *schemas.BifrostConte
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
 		postHookRunner,
+		nil,
 		nil,
 		nil,
 		nil,
@@ -563,7 +565,6 @@ func chatUnsupportedByModel(err *schemas.BifrostError) bool {
 	msg := strings.ToLower(err.GetErrorString())
 	return strings.Contains(msg, "/chat/completions") && strings.Contains(msg, "not accessible")
 }
-
 
 // TextCompletion is not supported by the Copilot provider.
 func (provider *CopilotProvider) TextCompletion(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostTextCompletionRequest) (*schemas.BifrostTextCompletionResponse, *schemas.BifrostError) {

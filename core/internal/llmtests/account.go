@@ -545,7 +545,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 	case schemas.Copilot:
 		return []schemas.Key{
 			{
-				Value:          *schemas.NewEnvVar("env.GITHUB_COPILOT_TOKEN"),
+				Value:          *schemas.NewSecretVar("env.GITHUB_COPILOT_TOKEN"),
 				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
