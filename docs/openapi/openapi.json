@@ -78665,6 +78665,13 @@
             "type": "object",
             "additionalProperties": true,
             "description": "List models response output"
+          },
+          "redaction_mapping": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Placeholder-to-original-value mapping for reversible redactions. Present only on log detail responses when the caller has `Logs:Reveal`."
           }
         }
       },
