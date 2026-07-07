@@ -9,3 +9,7 @@
 - fix: round-trip Anthropic `redacted_thinking` blocks on the responses surface so multi-turn tool use with redacted reasoning can be replayed (closes #5093) [@fus3r](https://github.com/fus3r)
 [fix]: omit role from OpenAI Responses non-message items [@nettee](https://github.com/nettee)
 - fix: reset `HasEmittedWebSearch` when recycling pooled Gemini responses stream state so grounded streaming requests keep emitting `web_search_call` items (closes #5113) [@fus3r](https://github.com/fus3r)
+- feat: added ChatGPT passthrough support to the OpenAI provider
+- feat: added user-agent tracking schemas with custom user-agent mapping
+- feat: MCP tool execution plugin pipeline improvements
+- fix: surface AWS exception types on Bedrock non-streaming error responses
