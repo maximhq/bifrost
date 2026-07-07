@@ -296,7 +296,8 @@ test.describe("Providers", () => {
       providersPage,
     }) => {
       // Add Deepgram from the known-provider dropdown if not already present
-      if (!(await providersPage.providerExists("deepgram"))) {
+      const wasAlreadyConfigured = await providersPage.providerExists("deepgram");
+      if (!wasAlreadyConfigured) {
         await providersPage.addKnownProviderFromDropdown("deepgram");
         createdProviders.push("deepgram");
       }
@@ -305,10 +306,15 @@ test.describe("Providers", () => {
       const providerItem = providersPage.getProviderItem("deepgram");
       await expect(providerItem).toBeVisible({ timeout: 15000 });
 
-      // Select it and verify it starts with no keys configured (not yet usable)
+      // Select it. Only a freshly-added provider is guaranteed to start with
+      // zero keys — if it already existed (e.g. leftover from a prior failed
+      // cleanup), it may already have keys configured.
       await providersPage.selectProvider("deepgram");
       await expect(providersPage.page).toHaveURL(/provider=deepgram/);
-      expect(await providersPage.getKeyCount()).toBe(0);
+      if (!wasAlreadyConfigured) {
+        expect(await providersPage.getKeyCount()).toBe(0);
+      }
+      const keyCountBeforeAdd = await providersPage.getKeyCount();
 
       // Add a key — this is what makes the provider actually usable for requests
       const keyData = createProviderKeyData({
@@ -321,18 +327,21 @@ test.describe("Providers", () => {
 
       // Verify the key — and therefore usability — is reflected in the UI
       expect(await providersPage.keyExists(keyData.name)).toBe(true);
-      expect(await providersPage.getKeyCount()).toBe(1);
+      expect(await providersPage.getKeyCount()).toBe(keyCountBeforeAdd + 1);
 
       // Remove the provider entirely. Skip the delete-confirmation toast
       // wait — it flakily matches the still-visible earlier "Key added
       // successfully" toast instead of a fresh one — and independently
       // verify removal below via providerExists() instead.
       await providersPage.deleteProvider("deepgram", { skipToastWait: true });
-      createdProviders.splice(createdProviders.indexOf("deepgram"), 1);
-      createdKeys.splice(
-        createdKeys.findIndex((k) => k.provider === "deepgram"),
-        1,
-      );
+      const providerIdx = createdProviders.indexOf("deepgram");
+      if (providerIdx !== -1) {
+        createdProviders.splice(providerIdx, 1);
+      }
+      const keyIdx = createdKeys.findIndex((k) => k.provider === "deepgram");
+      if (keyIdx !== -1) {
+        createdKeys.splice(keyIdx, 1);
+      }
 
       // Verify it no longer reflects as available
       expect(await providersPage.providerExists("deepgram")).toBe(false);

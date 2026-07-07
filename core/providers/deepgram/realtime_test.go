@@ -45,6 +45,16 @@ func TestDeepgramRealtimeWebSocketURL(t *testing.T) {
 			t.Errorf("RealtimeWebSocketURL() = %q, want %q", got, want)
 		}
 	})
+
+	t.Run("custom BaseURL with a trailing slash does not produce a double slash", func(t *testing.T) {
+		provider := deepgram.NewDeepgramProvider(&schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{BaseURL: "https://my-dedicated.deepgram.example/"},
+		}, testLogger{})
+		want := "wss://my-dedicated.deepgram.example/v1/agent/converse"
+		if got := provider.RealtimeWebSocketURL(schemas.Key{}, "unused"); got != want {
+			t.Errorf("RealtimeWebSocketURL() = %q, want %q", got, want)
+		}
+	})
 }
 
 func TestDeepgramRealtimeCapabilities(t *testing.T) {
@@ -160,6 +170,7 @@ func TestDeepgramToProviderRealtimeEvent(t *testing.T) {
 			Type: schemas.RTEventSessionUpdate,
 			Session: &schemas.RealtimeSession{
 				Instructions: "Be helpful",
+				Model:        "gpt-4o-mini",
 				Voice:        "aura-asteria-en",
 			},
 		}
@@ -181,6 +192,18 @@ func TestDeepgramToProviderRealtimeEvent(t *testing.T) {
 		think, ok := agent["think"].(map[string]interface{})
 		if !ok || think["prompt"] != "Be helpful" {
 			t.Errorf("agent.think.prompt = %+v, want 'Be helpful'", agent["think"])
+		}
+		thinkProvider, ok := think["provider"].(map[string]interface{})
+		if !ok || thinkProvider["model"] != "gpt-4o-mini" {
+			t.Errorf("agent.think.provider.model = %+v, want gpt-4o-mini", think["provider"])
+		}
+		speak, ok := agent["speak"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("agent.speak block missing or wrong shape: %+v", agent)
+		}
+		speakProvider, ok := speak["provider"].(map[string]interface{})
+		if !ok || speakProvider["type"] != "deepgram" || speakProvider["model"] != "aura-asteria-en" {
+			t.Errorf("agent.speak.provider = %+v, want type=deepgram model=aura-asteria-en", speak["provider"])
 		}
 	})
 

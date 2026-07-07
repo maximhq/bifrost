@@ -36,8 +36,8 @@ const defaultDeepgramRESTBaseURL = "https://api.deepgram.com"
 // Settings message body (see ToProviderRealtimeEvent). The model argument is
 // accepted only for interface conformance and is otherwise unused.
 func (provider *DeepgramProvider) RealtimeWebSocketURL(key schemas.Key, model string) string {
-	base := provider.networkConfig.BaseURL
-	if strings.TrimRight(base, "/") == defaultDeepgramRESTBaseURL {
+	base := strings.TrimRight(provider.networkConfig.BaseURL, "/")
+	if base == defaultDeepgramRESTBaseURL {
 		base = "https://agent.deepgram.com"
 	}
 	base = strings.Replace(base, "https://", "wss://", 1)
@@ -305,11 +305,25 @@ func (provider *DeepgramProvider) buildSettingsMessage(session *schemas.Realtime
 	}
 
 	agent := map[string]interface{}{}
-	if session.Instructions != "" {
-		agent["think"] = map[string]interface{}{"prompt": session.Instructions}
+	if session.Instructions != "" || session.Model != "" {
+		think := map[string]interface{}{}
+		if session.Instructions != "" {
+			think["prompt"] = session.Instructions
+		}
+		if session.Model != "" {
+			// Deepgram's agent.think.provider also expects a vendor "type"
+			// (e.g. "open_ai", "anthropic"), which RealtimeSession has no
+			// field for — callers needing a non-default vendor should set it
+			// via session.ExtraParams["agent"], which merges on top of this.
+			think["provider"] = map[string]interface{}{"model": session.Model}
+		}
+		agent["think"] = think
 	}
 	if session.Voice != "" {
-		agent["speak"] = map[string]interface{}{"provider": map[string]interface{}{"model": session.Voice}}
+		agent["speak"] = map[string]interface{}{"provider": map[string]interface{}{
+			"type":  "deepgram",
+			"model": session.Voice,
+		}}
 	}
 
 	for key, raw := range session.ExtraParams {

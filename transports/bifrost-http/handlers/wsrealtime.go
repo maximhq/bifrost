@@ -686,7 +686,16 @@ type realtimeClientConn struct {
 	done      chan struct{}
 }
 
+// realtimeMaxMessageBytes caps a single WebSocket message (text or binary) at
+// 16MiB. Without an explicit limit, fasthttp/websocket (like gorilla) will
+// buffer an arbitrarily large message into memory before returning it from
+// ReadMessage — relevant for both the JSON control-message path and, since
+// RealtimeBinaryAudioProvider forwards binary audio frames verbatim, the raw
+// client audio path too.
+const realtimeMaxMessageBytes = 16 * 1024 * 1024
+
 func newRealtimeClientConn(conn *ws.Conn) *realtimeClientConn {
+	conn.SetReadLimit(realtimeMaxMessageBytes)
 	return &realtimeClientConn{
 		conn: conn,
 		done: make(chan struct{}),
