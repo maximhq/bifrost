@@ -93,6 +93,28 @@ func ToGeminiChatCompletionRequestWithImageURLSchemes(ctx *schemas.BifrostContex
 					geminiReq.Labels = labelMap
 				}
 			}
+
+			// Translation config
+			if translationConfig, ok := schemas.SafeExtractFromMap(bifrostReq.Params.ExtraParams, "translation_config"); ok {
+				delete(geminiReq.ExtraParams, "translation_config")
+				if config, ok := safeExtractGeminiStruct[TranslationConfig](translationConfig); ok {
+					geminiReq.GenerationConfig.TranslationConfig = config
+				}
+			}
+
+			// Enhanced civic answers
+			if enableEnhancedCivicAnswers, ok := schemas.SafeExtractBoolPointer(bifrostReq.Params.ExtraParams["enable_enhanced_civic_answers"]); ok {
+				delete(geminiReq.ExtraParams, "enable_enhanced_civic_answers")
+				geminiReq.GenerationConfig.EnableEnhancedCivicAnswers = enableEnhancedCivicAnswers
+			}
+
+			// Response format (flat per-modality output format config)
+			if responseFormat, ok := schemas.SafeExtractFromMap(bifrostReq.Params.ExtraParams, "response_format"); ok {
+				delete(geminiReq.ExtraParams, "response_format")
+				if config, ok := safeExtractGeminiStruct[ResponseFormatConfig](responseFormat); ok {
+					geminiReq.GenerationConfig.ResponseFormat = config
+				}
+			}
 		}
 	}
 	// Convert chat completion messages to Gemini format
