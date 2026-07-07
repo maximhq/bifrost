@@ -291,6 +291,13 @@ Final chunk:
 **Code**: `utils.go` (`deepgramBlockedQueryParams`)
 </Accordion>
 
+<Accordion title="2000 Character Limit on Speech Input">
+**Severity**: Medium
+**Behavior**: Deepgram's `/v1/speak` REST endpoint rejects text longer than 2000 characters with `413 Payload Too Large`
+**Impact**: Long-form text-to-speech requests must be chunked client-side before calling Bifrost; verified live against the real API
+**Code**: N/A (Deepgram API limit, not a Bifrost conversion issue)
+</Accordion>
+
 <Accordion title="Analytics Sidecars Not in Unified Schema">
 **Severity**: Low
 **Behavior**: `sentiment`/`summary`/`topics`/`intents`/`entities` response fields have no home in `BifrostTranscriptionResponse`

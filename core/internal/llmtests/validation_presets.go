@@ -517,6 +517,13 @@ func ModifyExpectationsForProvider(expectations ResponseExpectations, provider s
 		expectations.ShouldHaveTimestamps = false
 		expectations.ShouldHaveLatency = true
 
+	case schemas.Deepgram:
+		// Deepgram is audio-only — transcription/speech responses carry no token-based
+		// usage or created timestamps in Bifrost's unified schema today.
+		expectations.ShouldHaveUsageStats = false
+		expectations.ShouldHaveTimestamps = false
+		expectations.ShouldHaveLatency = true
+
 	case schemas.HuggingFace:
 		expectations.ShouldHaveUsageStats = false
 		expectations.ShouldHaveTimestamps = false
