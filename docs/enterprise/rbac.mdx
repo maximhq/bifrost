@@ -74,16 +74,18 @@ Bifrost protects access to the following resources:
 | **UserProvisioning** | User and group provisioning settings |
 | **Users** | User account management |
 | **AuditLogs** | Audit trail and compliance logs |
-| **GuardrailsConfig** | Guardrail configurations |
-| **GuardrailRules** | Individual guardrail rules |
+| **GuardrailsConfig** | Guardrail rules and configuration |
+| **GuardrailsProviders** | Guardrail provider profiles |
 | **Cluster** | Cluster configuration and nodes |
 | **Settings** | Workspace settings |
 | **MCPGateway** | MCP Gateway configurations |
+| **MCPToolGroups** | MCP tool group management |
+| **MCPLogs** | MCP tool execution logs |
 | **AdaptiveRouter** | Adaptive routing settings |
 
 ### Operations
 
-Each resource supports up to four operations:
+Most resources support the standard CRUD operations. Some resources expose specialized operations for security-sensitive or non-CRUD workflows.
 
 | Operation | Description |
 |-----------|-------------|
@@ -91,6 +93,9 @@ Each resource supports up to four operations:
 | **Create** | Ability to create new instances of the resource |
 | **Update** | Ability to modify existing resources |
 | **Delete** | Ability to remove resources |
+| **Download** | Ability to download resources, such as audit logs |
+| **Reveal** | Ability to reveal original values for reversible redactions in Bifrost logs |
+| **Inference operations** | Ability to invoke specific inference surfaces, such as chat completions, embeddings, images, audio, and moderations |
 
 ---
 

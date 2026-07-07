@@ -400,7 +400,7 @@ func TestCachedSigningKey_ConfigFaults(t *testing.T) {
 }
 
 func TestInjectJWTContext(t *testing.T) {
-	activeVK := &configtables.TableVirtualKey{ID: "vk-row-1", Value: "sk-bf-active"}
+	activeVK := &configtables.TableVirtualKey{ID: "vk-row-1", Value: *schemas.NewSecretVar("sk-bf-active")}
 
 	t.Run("user mode sets user id", func(t *testing.T) {
 		bc := schemas.NewBifrostContext(context.Background(), time.Time{})

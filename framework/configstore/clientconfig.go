@@ -10,6 +10,7 @@ import (
 	"math"
 	"sort"
 	"strconv"
+	"time"
 
 	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
@@ -771,6 +772,14 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 		}
 		hash.Write(data)
 	}
+	// Hash BedrockMantleKeyConfig
+	if key.BedrockMantleKeyConfig != nil {
+		data, err := sonic.Marshal(key.BedrockMantleKeyConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
 	// Hash Aliases
 	if key.Aliases != nil {
 		data, err := sonic.Marshal(key.Aliases)
@@ -867,13 +876,18 @@ func GenerateVirtualKeyHash(vk tables.TableVirtualKey) (string, error) {
 	hash.Write([]byte(vk.Name))
 	// Hash Description
 	hash.Write([]byte(vk.Description))
-	// Hash Value
-	hash.Write([]byte(vk.Value))
+	// Hash the resolved value so that secret rotation (vault/env change) is
+	// detected as a config change and triggers a re-sync.
+	hash.Write([]byte(vk.Value.GetValue()))
 	// Hash IsActive (nil treated as DB default true)
 	if vk.IsActiveValue() {
 		hash.Write([]byte("isActive:true"))
 	} else {
 		hash.Write([]byte("isActive:false"))
+	}
+	// Hash ExpiresAt only when set, so rows created before expiry existed keep their hash
+	if vk.ExpiresAt != nil {
+		hash.Write([]byte("expiresAt:" + vk.ExpiresAt.UTC().Format(time.RFC3339Nano)))
 	}
 	// Hash TeamID
 	if vk.TeamID != nil {

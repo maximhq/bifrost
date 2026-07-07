@@ -35,6 +35,125 @@ func newTestSQLiteStore(t *testing.T) *RDBLogStore {
 	return store
 }
 
+func TestCancelledStatusIncludedInLogAggregates(t *testing.T) {
+	store := newTestSQLiteStore(t)
+	ctx := context.Background()
+	base := time.Date(2026, 1, 2, 3, 4, 0, 0, time.UTC)
+	cost := 0.01
+	successLatency := 100.0
+	errorLatency := 200.0
+	cancelledLatency := 300.0
+	processingLatency := 400.0
+
+	entries := []*Log{
+		{
+			ID:          "aggregate-success",
+			Timestamp:   base,
+			Object:      "chat.completion",
+			Provider:    "openai",
+			Model:       "gpt-4o-mini",
+			Status:      "success",
+			Latency:     &successLatency,
+			TotalTokens: 10,
+			Cost:        &cost,
+		},
+		{
+			ID:          "aggregate-error",
+			Timestamp:   base.Add(time.Minute),
+			Object:      "chat.completion",
+			Provider:    "openai",
+			Model:       "gpt-4o-mini",
+			Status:      "error",
+			Latency:     &errorLatency,
+			TotalTokens: 20,
+			Cost:        &cost,
+		},
+		{
+			ID:          "aggregate-cancelled",
+			Timestamp:   base.Add(2 * time.Minute),
+			Object:      "chat.completion",
+			Provider:    "openai",
+			Model:       "gpt-4o-mini",
+			Status:      "cancelled",
+			Latency:     &cancelledLatency,
+			TotalTokens: 30,
+			Cost:        &cost,
+		},
+		{
+			ID:        "aggregate-processing",
+			Timestamp: base.Add(3 * time.Minute),
+			Object:    "chat.completion",
+			Provider:  "openai",
+			Model:     "gpt-4o-mini",
+			Status:    "processing",
+			Latency:   &processingLatency,
+		},
+	}
+
+	for _, entry := range entries {
+		if err := store.Create(ctx, entry); err != nil {
+			t.Fatalf("Create(%s) error = %v", entry.ID, err)
+		}
+	}
+
+	search, err := store.SearchLogs(ctx, SearchFilters{Status: []string{"cancelled"}}, PaginationOptions{Limit: 10})
+	if err != nil {
+		t.Fatalf("SearchLogs(cancelled) error = %v", err)
+	}
+	if search.Stats.TotalRequests != 1 {
+		t.Fatalf("expected cancelled search total to be 1, got %d", search.Stats.TotalRequests)
+	}
+
+	allStats, err := store.GetStats(ctx, SearchFilters{})
+	if err != nil {
+		t.Fatalf("GetStats(all) error = %v", err)
+	}
+	if allStats.TotalRequests != 4 {
+		t.Fatalf("expected total requests to include processing rows, got %d", allStats.TotalRequests)
+	}
+	if allStats.CacheHitRateTotalRequests == nil || *allStats.CacheHitRateTotalRequests != 3 {
+		t.Fatalf("expected terminal request denominator to include cancelled rows, got %v", allStats.CacheHitRateTotalRequests)
+	}
+
+	cancelledStats, err := store.GetStats(ctx, SearchFilters{Status: []string{"cancelled"}})
+	if err != nil {
+		t.Fatalf("GetStats(cancelled) error = %v", err)
+	}
+	if cancelledStats.TotalRequests != 1 {
+		t.Fatalf("expected cancelled stats total to be 1, got %d", cancelledStats.TotalRequests)
+	}
+	if cancelledStats.SuccessRate != 0 {
+		t.Fatalf("expected cancelled success rate to be 0, got %f", cancelledStats.SuccessRate)
+	}
+	if cancelledStats.AverageLatency != 300 {
+		t.Fatalf("expected cancelled average latency 300, got %f", cancelledStats.AverageLatency)
+	}
+
+	start := base.Add(-time.Minute)
+	end := base.Add(5 * time.Minute)
+	hist, err := store.GetHistogram(ctx, SearchFilters{
+		Status:    []string{"cancelled"},
+		StartTime: &start,
+		EndTime:   &end,
+	}, 3600)
+	if err != nil {
+		t.Fatalf("GetHistogram(cancelled) error = %v", err)
+	}
+	var cancelledBucket *HistogramBucket
+	for i := range hist.Buckets {
+		if hist.Buckets[i].Count > 0 {
+			cancelledBucket = &hist.Buckets[i]
+			break
+		}
+	}
+	if cancelledBucket == nil {
+		t.Fatal("expected a non-empty cancelled histogram bucket")
+	}
+	if cancelledBucket.Count != 1 || cancelledBucket.Success != 0 || cancelledBucket.Error != 0 || cancelledBucket.Cancelled != 1 {
+		t.Fatalf("unexpected cancelled histogram bucket: %+v", *cancelledBucket)
+	}
+}
+
 func TestLogCreateSerializesFields(t *testing.T) {
 	store := newTestSQLiteStore(t)
 	prompt := "hello"

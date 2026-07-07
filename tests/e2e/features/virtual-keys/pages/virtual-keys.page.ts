@@ -20,6 +20,7 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   openrouter: "OpenRouter",
   huggingface: "HuggingFace",
   cerebras: "Cerebras",
+  deepseek: "DeepSeek",
   perplexity: "Perplexity",
   elevenlabs: "Elevenlabs",
   parasail: "Parasail",

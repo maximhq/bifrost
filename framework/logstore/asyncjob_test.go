@@ -45,7 +45,7 @@ func newTestAsyncExecutor(t *testing.T) *AsyncJobExecutor {
 
 	govStore := &testGovernanceStore{
 		virtualKeys: map[string]*configstoreTables.TableVirtualKey{
-			"sk-bf-test": {ID: "vk-123", Value: "sk-bf-test"},
+			"sk-bf-test": {ID: "vk-123", Value: *schemas.NewSecretVar("sk-bf-test")},
 		},
 	}
 

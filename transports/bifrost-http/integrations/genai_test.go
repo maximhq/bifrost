@@ -62,6 +62,7 @@ func TestExtractAndSetModelAndRequestTypePreservesRawBodyForGenerateContent(t *t
 	ctx := &fasthttp.RequestCtx{}
 	ctx.SetUserValue("model", "gemini-2.5-flash:generateContent")
 	ctx.Request.Header.SetMethod("POST")
+	ctx.Request.Header.Set("x-model-provider", "gemini")
 	ctx.Request.SetBody(rawBody)
 
 	req := &gemini.GeminiGenerationRequest{}
@@ -73,6 +74,27 @@ func TestExtractAndSetModelAndRequestTypePreservesRawBodyForGenerateContent(t *t
 
 	assert.Equal(t, true, bifrostCtx.Value(schemas.BifrostContextKeyUseRawRequestBody))
 	assert.Equal(t, rawBody, bifrostCtx.Value(genAIRawRequestBodyContextKey))
+}
+
+func TestExtractAndSetModelAndRequestTypeNoRawPassthroughWithoutExplicitGemini(t *testing.T) {
+	// A bare model with no gemini/ prefix and no x-model-provider header may
+	// resolve to Vertex (or another provider) downstream, so the raw-body
+	// passthrough must not engage on the silent Gemini default.
+	rawBody := []byte(`{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}`)
+	ctx := &fasthttp.RequestCtx{}
+	ctx.SetUserValue("model", "gemini-2.5-flash:generateContent")
+	ctx.Request.Header.SetMethod("POST")
+	ctx.Request.SetBody(rawBody)
+
+	req := &gemini.GeminiGenerationRequest{}
+	require.NoError(t, sonic.Unmarshal(rawBody, req))
+	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	err := extractAndSetModelAndRequestType(ctx, bifrostCtx, req)
+	require.NoError(t, err)
+
+	assert.Nil(t, bifrostCtx.Value(schemas.BifrostContextKeyUseRawRequestBody))
+	assert.Nil(t, bifrostCtx.Value(genAIRawRequestBodyContextKey))
 }
 
 func TestExtractAndSetModelAndRequestTypeDoesNotRawPassthroughEmbedding(t *testing.T) {
@@ -98,6 +120,7 @@ func TestGenAIBatchCreateConverterCarriesRawBody(t *testing.T) {
 	ctx := &fasthttp.RequestCtx{}
 	ctx.SetUserValue("model", "gemini-2.5-flash:batchGenerateContent")
 	ctx.Request.Header.SetMethod("POST")
+	ctx.Request.Header.Set("x-model-provider", "gemini")
 	ctx.Request.SetBody(rawBody)
 
 	req := &gemini.GeminiBatchCreateRequest{}

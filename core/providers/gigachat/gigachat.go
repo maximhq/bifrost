@@ -712,6 +712,8 @@ func (provider *GigaChatProvider) responsesStreamWithRefresh(
 
 	if providerUtils.SetupStreamingPassthrough(ctx, resp) {
 		responseChan := make(chan *schemas.BifrostStreamChunk)
+		// resp is owned by the LargeResponseReader stored on ctx; the HTTP
+		// transport closes that reader, which releases resp.
 		defer providerUtils.EnsureStreamFinalizerCalled(ctx, postHookSpanFinalizer)
 		providerUtils.CloseStream(ctx, responseChan)
 		return responseChan, nil

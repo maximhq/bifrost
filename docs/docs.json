@@ -137,6 +137,7 @@
                   "providers/supported-providers/cerebras",
                   "providers/supported-providers/cohere",
                   "providers/supported-providers/databricks",
+                  "providers/supported-providers/deepseek",
                   "providers/supported-providers/elevenlabs",
                   "providers/supported-providers/fireworks",
                   "providers/supported-providers/gemini",
@@ -313,14 +314,23 @@
                 "icon": "road-barrier",
                 "pages": [
                   "enterprise/guardrails",
-                  "enterprise/guardrails/secrets-detection",
-                  "enterprise/guardrails/custom-regex",
-                  "integrations/guardrails/aws-bedrock",
-                  "integrations/guardrails/azure-content-safety",
-                  "integrations/guardrails/google-model-armor",
-                  "integrations/guardrails/crowdstrike-aidr",
-                  "integrations/guardrails/grayswan",
-                  "integrations/guardrails/patronus-ai"
+                  "enterprise/guardrails/redaction",
+                  {
+                    "group": "Providers",
+                    "icon": "shield-check",
+                    "pages": [
+                      "enterprise/guardrails/secrets-detection",
+                      "enterprise/guardrails/custom-regex",
+                      "integrations/guardrails/presidio",
+                      "integrations/guardrails/azure-language-pii",
+                      "integrations/guardrails/aws-bedrock",
+                      "integrations/guardrails/azure-content-safety",
+                      "integrations/guardrails/google-model-armor",
+                      "integrations/guardrails/crowdstrike-aidr",
+                      "integrations/guardrails/grayswan",
+                      "integrations/guardrails/patronus-ai"
+                    ]
+                  }
                 ]
               },
               "enterprise/audit-logs",
@@ -521,6 +531,8 @@
             "pages": [
               "enterprise/guardrails/secrets-detection",
               "enterprise/guardrails/custom-regex",
+              "integrations/guardrails/presidio",
+              "integrations/guardrails/azure-language-pii",
               "integrations/guardrails/aws-bedrock",
               "integrations/guardrails/azure-content-safety",
               "integrations/guardrails/google-model-armor",
@@ -699,6 +711,7 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
+              "changelogs/v1.6.3",
               "changelogs/v1.6.2",
               {
                 "group": "June 2026",
@@ -892,6 +905,8 @@
             "item": "Enterprise",
             "icon": "building",
             "pages": [
+              "changelogs/ent-v1.5.3",
+              "changelogs/ent-v1.5.2",
               "changelogs/ent-v1.5.1",
               "changelogs/ent-v1.5.0",
               "changelogs/ent-v1.4.13",
@@ -974,6 +989,7 @@
             "item": "Helm",
             "icon": "box",
             "pages": [
+              "changelogs/helm-v2.1.26",
               "changelogs/helm-v2.1.25",
               "changelogs/helm-v2.1.24",
               "changelogs/helm-v2.1.23",

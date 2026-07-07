@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -81,6 +82,7 @@ func testGigaChatResponsesStream(t *testing.T) {
 	t.Run("ClosesOnMessageDoneEvent", testGigaChatResponsesStreamClosesOnMessageDoneEvent)
 	t.Run("MapsErrorEvents", testGigaChatResponsesStreamMapsErrorEvents)
 	t.Run("HandlesContextCancellation", testGigaChatResponsesStreamHandlesContextCancellation)
+	t.Run("PassthroughResponseOwnedByLargeReader", testGigaChatResponsesStreamPassthroughResponseOwnedByLargeReader)
 }
 
 func testGigaChatResponsesSimpleTextInput(t *testing.T) {
@@ -2278,6 +2280,68 @@ func testGigaChatResponsesStreamHandlesContextCancellation(t *testing.T) {
 	case <-streamClosed:
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for stream to close after context cancellation")
+	}
+}
+
+func testGigaChatResponsesStreamPassthroughResponseOwnedByLargeReader(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/v2/chat/completions" {
+			t.Fatalf("unexpected path: %s", request.URL.Path)
+		}
+		assertGigaChatResponsesStreamRequestBody(t, request)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"event\":\"message\",\"message_id\":\"resp-large\",\"messages\":[{\"role\":\"assistant\",\"content\":[{\"text\":\"large\"}]}],\"created_at\":1700000000,\"model\":\"GigaChat-2\"}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	provider := newTestGigaChatChatProvider(t, server.URL)
+	ctx := testBifrostContext()
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadMode, true)
+
+	var finalizerCalls atomic.Int32
+	stream, bifrostErr := provider.ResponsesStream(ctx, testGigaChatPostHookRunner, func(context.Context) {
+		finalizerCalls.Add(1)
+	}, testGigaChatAccessTokenKey("responses-stream-token"), testGigaChatResponsesExecutionRequest())
+	if bifrostErr != nil {
+		t.Fatalf("ResponsesStream returned error: %v", bifrostErr)
+	}
+
+	select {
+	case chunk, ok := <-stream:
+		if ok {
+			t.Fatalf("passthrough stream channel should be closed without chunks, got %#v", chunk)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for passthrough stream channel to close")
+	}
+	if got := finalizerCalls.Load(); got != 1 {
+		t.Fatalf("finalizer calls mismatch: got %d, want 1", got)
+	}
+
+	reader, ok := ctx.Value(schemas.BifrostContextKeyLargeResponseReader).(io.ReadCloser)
+	if !ok || reader == nil {
+		t.Fatalf("large response reader missing from context: %#v", ctx.Value(schemas.BifrostContextKeyLargeResponseReader))
+	}
+	largeReader, ok := reader.(*providerUtils.LargeResponseReader)
+	if !ok {
+		t.Fatalf("large response reader type mismatch: %T", reader)
+	}
+
+	body, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("failed to read passthrough body: %v", err)
+	}
+	if !strings.Contains(string(body), `"message_id":"resp-large"`) {
+		t.Fatalf("passthrough body mismatch: %s", body)
+	}
+	if err := reader.Close(); err != nil {
+		t.Fatalf("failed to close large response reader: %v", err)
+	}
+	if largeReader.Resp != nil {
+		t.Fatal("large response reader did not release its fasthttp response")
 	}
 }
 

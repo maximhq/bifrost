@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -59,48 +60,104 @@ func makeRefreshToken(id, familyID, clientID, hash string) *tables.TableOAuth2Re
 	}
 }
 
-// TestGetExpiringOauthTokens_ExcludesTerminalConfigs verifies the refresh worker
-// query skips tokens whose oauth_config is already terminal (expired/revoked), so
-// a permanently-dead grant is not retried — and re-logged — on every tick.
-func TestGetExpiringOauthTokens_ExcludesTerminalConfigs(t *testing.T) {
-	s := setupRDBTestStore(t)
-	require.NoError(t, s.DB().AutoMigrate(&tables.TableOauthConfig{}, &tables.TableOauthToken{}))
-	ctx := context.Background()
+// seedExpiringTokenFixtures installs the token/config/client helpers shared by
+// the GetExpiringOauthTokens tests. Every token is created already-expired so
+// only the config/client conditions decide whether it is selected.
+func seedExpiringTokenFixtures(t *testing.T, s *RDBConfigStore) (mkToken func(id string), mkConfig func(id, tokenID, status, state string), mkClient func(name, oauthConfigID string, disabled bool)) {
+	t.Helper()
+	require.NoError(t, s.DB().AutoMigrate(&tables.TableOauthConfig{}, &tables.TableOauthToken{}, &tables.TableMCPClient{}))
 	past := time.Now().Add(-time.Hour)
 
-	mkToken := func(id string) {
+	mkToken = func(id string) {
 		require.NoError(t, s.DB().Create(&tables.TableOauthToken{
 			ID: id, AccessToken: "at-" + id, TokenType: "Bearer",
 			ExpiresAt: &past, CreatedAt: time.Now(), UpdatedAt: time.Now(),
 		}).Error)
 	}
-	mkConfig := func(id, tokenID, status, state string) {
+	mkConfig = func(id, tokenID, status, state string) {
 		require.NoError(t, s.DB().Create(&tables.TableOauthConfig{
 			ID: id, RedirectURI: "http://127.0.0.1/cb", State: state, Status: status,
 			TokenID: &tokenID, CreatedAt: time.Now(), UpdatedAt: time.Now(),
 			ExpiresAt: time.Now().Add(time.Hour),
 		}).Error)
 	}
+	mkClient = func(name, oauthConfigID string, disabled bool) {
+		require.NoError(t, s.DB().Create(&tables.TableMCPClient{
+			ClientID: "cid-" + name, Name: name, ConnectionType: "http",
+			AuthType: "oauth", OauthConfigID: &oauthConfigID, Disabled: disabled,
+			CreatedAt: time.Now(), UpdatedAt: time.Now(),
+		}).Error)
+	}
+	return mkToken, mkConfig, mkClient
+}
 
-	mkToken("tok-live")
-	mkConfig("cfg-live", "tok-live", "authorized", "state-live")
-	mkToken("tok-expired")
-	mkConfig("cfg-expired", "tok-expired", "expired", "state-expired")
-	mkToken("tok-revoked")
-	mkConfig("cfg-revoked", "tok-revoked", "revoked", "state-revoked")
-	mkToken("tok-orphan") // no owning config at all
-
-	got, err := s.GetExpiringOauthTokens(ctx, time.Now().Add(time.Minute))
+func expiringTokenIDs(t *testing.T, s *RDBConfigStore) map[string]bool {
+	t.Helper()
+	got, err := s.GetExpiringOauthTokens(context.Background(), time.Now().Add(time.Minute))
 	require.NoError(t, err)
-
 	ids := make(map[string]bool, len(got))
 	for _, tk := range got {
 		ids[tk.ID] = true
 	}
-	assert.True(t, ids["tok-live"], "token with an authorized config should be refreshed")
-	assert.True(t, ids["tok-orphan"], "token with no config should still be returned")
+	return ids
+}
+
+// TestGetExpiringOauthTokens_ExcludesTerminalConfigs verifies the refresh worker
+// query skips tokens whose oauth_config is already terminal (expired/revoked), so
+// a permanently-dead grant is not retried — and re-logged — on every tick. Each
+// config gets an enabled MCP client so status is the only deciding condition.
+func TestGetExpiringOauthTokens_ExcludesTerminalConfigs(t *testing.T) {
+	s := setupRDBTestStore(t)
+	mkToken, mkConfig, mkClient := seedExpiringTokenFixtures(t, s)
+
+	mkToken("tok-live")
+	mkConfig("cfg-live", "tok-live", "authorized", "state-live")
+	mkClient("client-live", "cfg-live", false)
+	mkToken("tok-expired")
+	mkConfig("cfg-expired", "tok-expired", "expired", "state-expired")
+	mkClient("client-expired", "cfg-expired", false)
+	mkToken("tok-revoked")
+	mkConfig("cfg-revoked", "tok-revoked", "revoked", "state-revoked")
+	mkClient("client-revoked", "cfg-revoked", false)
+
+	ids := expiringTokenIDs(t, s)
+	assert.True(t, ids["tok-live"], "token with an authorized config and enabled client should be refreshed")
 	assert.False(t, ids["tok-expired"], "token with an expired config must be excluded")
 	assert.False(t, ids["tok-revoked"], "token with a revoked config must be excluded")
+}
+
+// TestGetExpiringOauthTokens_RequiresEnabledClient verifies the refresh worker
+// only keeps tokens warm while at least one enabled MCP client references the
+// owning oauth_config. Disabled-only and unreferenced configs are skipped —
+// their tokens catch up via GetAccessToken's inline refresh on next use.
+func TestGetExpiringOauthTokens_RequiresEnabledClient(t *testing.T) {
+	s := setupRDBTestStore(t)
+	mkToken, mkConfig, mkClient := seedExpiringTokenFixtures(t, s)
+
+	mkToken("tok-enabled")
+	mkConfig("cfg-enabled", "tok-enabled", "authorized", "state-enabled")
+	mkClient("client-enabled", "cfg-enabled", false)
+
+	mkToken("tok-disabled")
+	mkConfig("cfg-disabled", "tok-disabled", "authorized", "state-disabled")
+	mkClient("client-disabled", "cfg-disabled", true)
+
+	mkToken("tok-shared")
+	mkConfig("cfg-shared", "tok-shared", "authorized", "state-shared")
+	mkClient("client-shared-off", "cfg-shared", true)
+	mkClient("client-shared-on", "cfg-shared", false)
+
+	mkToken("tok-no-client")
+	mkConfig("cfg-no-client", "tok-no-client", "authorized", "state-no-client")
+
+	mkToken("tok-orphan") // no owning config at all
+
+	ids := expiringTokenIDs(t, s)
+	assert.True(t, ids["tok-enabled"], "token with an enabled client should be refreshed")
+	assert.False(t, ids["tok-disabled"], "token referenced only by a disabled client must be excluded")
+	assert.True(t, ids["tok-shared"], "config shared with at least one enabled client should be refreshed")
+	assert.False(t, ids["tok-no-client"], "token whose config has no client rows must be excluded")
+	assert.False(t, ids["tok-orphan"], "token with no owning config must be excluded")
 }
 
 func TestGetOAuth2SigningKey_AutoGeneratesAndIsStable(t *testing.T) {
@@ -370,7 +427,7 @@ func TestListOAuth2Sessions_JoinsAndExcludesRevoked(t *testing.T) {
 		ID: "crow", ClientID: "client-1", ClientName: "Test Client",
 		RedirectURIs: []string{"http://127.0.0.1/cb"}, GrantTypes: []string{"authorization_code"}, CreatedAt: time.Now(),
 	}).Error)
-	require.NoError(t, s.DB().Create(&tables.TableVirtualKey{ID: "vk-1", Name: "Alpha VK", Value: "sk-bf-alpha"}).Error)
+	require.NoError(t, s.DB().Create(&tables.TableVirtualKey{ID: "vk-1", Name: "Alpha VK", Value: *schemas.NewSecretVar("sk-bf-alpha")}).Error)
 
 	vkTok := makeRefreshToken("rt-vk", "f1", "client-1", "h-vk")
 	vkTok.BfSub = "vk-1" // joins to governance_virtual_keys.id
@@ -425,7 +482,7 @@ func TestListOAuth2Sessions_FilterAndPaginate(t *testing.T) {
 		ID: "c2", ClientID: "client-2", ClientName: "Beta Server",
 		RedirectURIs: []string{"http://127.0.0.1/cb"}, GrantTypes: []string{"authorization_code"}, CreatedAt: time.Now(),
 	}).Error)
-	require.NoError(t, s.DB().Create(&tables.TableVirtualKey{ID: "vk-1", Name: "Alpha VK", Value: "sk-bf-alpha"}).Error)
+	require.NoError(t, s.DB().Create(&tables.TableVirtualKey{ID: "vk-1", Name: "Alpha VK", Value: *schemas.NewSecretVar("sk-bf-alpha")}).Error)
 
 	base := time.Now()
 	rtA := makeRefreshToken("rt-a", "fa", "client-1", "h-a") // vk mode, bf_sub vk-1 → display "Alpha VK"

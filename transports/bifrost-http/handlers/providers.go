@@ -869,9 +869,6 @@ func (h *ProviderHandler) listManagementModels(query modelListQuery) ([]listedMo
 	for _, provider := range providers {
 		models = append(models, h.listManagementModelsForProvider(provider, query)...)
 	}
-	models = slices.DeleteFunc(models, func(model listedModel) bool {
-		return h.isModelDeprecated(model.Name, model.Provider)
-	})
 
 	total := len(models)
 	if query.Offset > 0 {
@@ -1144,7 +1141,7 @@ func (h *ProviderHandler) listBaseModels(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	baseModels := modelCatalog.GetDistinctActiveBaseModelNames()
+	baseModels := modelCatalog.GetDistinctBaseModelNames()
 	sort.Strings(baseModels)
 
 	// Apply query filter if provided

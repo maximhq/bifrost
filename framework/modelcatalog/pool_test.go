@@ -154,6 +154,49 @@ func TestGetModelsForProvider_DeprecatedDatasheetModelsRespectAllowBlock(t *test
 	}
 }
 
+// TestGetModelsForProvider_PartialListModelsProviderUnionsDatasheet pins the
+// fix for Perplexity's partial /v1/models response: a callable-but-unlisted
+// datasheet model (the Sonar chat family) must survive once a live entry
+// exists, instead of being shadowed by the incomplete live list. The same
+// non-deprecated datasheet model stays excluded for a normal provider, whose
+// live list is treated as authoritative.
+func TestGetModelsForProvider_PartialListModelsProviderUnionsDatasheet(t *testing.T) {
+	pricingPath := filepath.Join(t.TempDir(), "pricing.json")
+	pricingJSON := []byte(`{
+		"sonar": {"provider":"perplexity","mode":"chat","base_model":"sonar"},
+		"openai-unlisted": {"provider":"openai","mode":"chat","base_model":"openai-unlisted"}
+	}`)
+	if err := os.WriteFile(pricingPath, pricingJSON, 0o600); err != nil {
+		t.Fatalf("write pricing testdata: %v", err)
+	}
+	ds := datasheet.New(nil, nil, datasheet.Config{URL: "file://" + pricingPath})
+	if err := ds.LoadFromURLIntoMemory(t.Context()); err != nil {
+		t.Fatalf("load pricing testdata: %v", err)
+	}
+
+	// Perplexity: live lists only a responses-API model; the unlisted "sonar"
+	// chat model must still be unioned in from the datasheet.
+	mcPerplexity := NewTestCatalogWithDatasheet(ds)
+	mcPerplexity.UpsertLive(schemas.Perplexity, "k1", false, []string{"listed-responses-model"})
+	gotPerplexity := mcPerplexity.GetModelsForProvider(schemas.Perplexity)
+	slices.Sort(gotPerplexity)
+	wantPerplexity := []string{"listed-responses-model", "sonar"}
+	if !slices.Equal(gotPerplexity, wantPerplexity) {
+		t.Errorf("GetModelsForProvider(Perplexity) = %v, want %v (unlisted datasheet model must be unioned)", gotPerplexity, wantPerplexity)
+	}
+
+	// OpenAI is not a partial-list-models provider: its non-deprecated unlisted
+	// datasheet model stays shadowed by the authoritative live list.
+	mcOpenAI := NewTestCatalogWithDatasheet(ds)
+	mcOpenAI.UpsertLive(schemas.OpenAI, "k1", false, []string{"live-model"})
+	gotOpenAI := mcOpenAI.GetModelsForProvider(schemas.OpenAI)
+	slices.Sort(gotOpenAI)
+	wantOpenAI := []string{"live-model"}
+	if !slices.Equal(gotOpenAI, wantOpenAI) {
+		t.Errorf("GetModelsForProvider(OpenAI) = %v, want %v (non-deprecated unlisted datasheet model must stay shadowed)", gotOpenAI, wantOpenAI)
+	}
+}
+
 // ptrBool returns a pointer to b, for building schemas.Key fixtures.
 func ptrBool(b bool) *bool { return &b }
 

@@ -44,6 +44,8 @@ const (
 	defaultFilterDataCutoffDays = 30
 )
 
+var terminalLogStatuses = []string{"success", "error", "cancelled"}
+
 // RDBLogStore represents a log store that uses a SQLite database.
 type RDBLogStore struct {
 	db            *gorm.DB
@@ -288,13 +290,19 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 			}
 		}
 		if len(valid) > 0 {
-			if s.db.Dialector.Name() == "postgres" {
+			switch s.db.Dialector.Name() {
+			case "postgres":
 				// Match the same loose-JSON guard used by aggregateCacheHits so the regex extract is safe.
 				baseQuery = baseQuery.Where(
 					"cache_debug IS NOT NULL AND cache_debug <> '' AND cache_debug ~ '^\\s*\\{.*\\}\\s*$' AND substring(cache_debug from '\"hit_type\"[[:space:]]*:[[:space:]]*\"([^\"]+)\"') IN ?",
 					valid,
 				)
-			} else {
+			case "clickhouse":
+				baseQuery = baseQuery.Where(
+					"cache_debug IS NOT NULL AND cache_debug != '' AND isValidJSON(cache_debug) AND JSONExtractString(cache_debug, 'hit_type') IN ?",
+					valid,
+				)
+			default:
 				baseQuery = baseQuery.Where(
 					"cache_debug IS NOT NULL AND cache_debug != '' AND json_valid(cache_debug) AND json_extract(cache_debug, '$.hit_type') IN ?",
 					valid,
@@ -316,9 +324,12 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 		dialect := s.db.Dialector.Name()
 		// Guard must match the partial-index predicate so the planner uses the GIN index.
 		// SQLite does not support IS JSON OBJECT, so fall back to the equivalent json_type check.
-		if dialect == "postgres" {
+		switch dialect {
+		case "postgres":
 			baseQuery = baseQuery.Where("metadata IS NOT NULL AND metadata IS JSON OBJECT")
-		} else {
+		case "clickhouse":
+			baseQuery = baseQuery.Where("metadata IS NOT NULL AND isValidJSON(metadata)")
+		default:
 			baseQuery = baseQuery.Where("metadata IS NOT NULL AND json_valid(metadata) AND json_type(metadata) = 'object'")
 		}
 		for key, value := range filters.MetadataFilters {
@@ -332,6 +343,10 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 				// strings — always match as a string to avoid type mismatch with jsonb.
 				jsonFragment := fmt.Sprintf(`{%q: %q}`, key, value)
 				baseQuery = baseQuery.Where("metadata::jsonb @> ?::jsonb", jsonFragment)
+			case "clickhouse":
+				// Metadata values are stored as JSON strings (see postgres note);
+				// match them as strings via JSONExtractString.
+				baseQuery = baseQuery.Where("JSONExtractString(metadata, ?) = ?", key, value)
 			default:
 				// SQLite: quote the member name so dots/hyphens stay part of the key
 				path := `$."` + key + `"`
@@ -459,9 +474,23 @@ func (s *RDBLogStore) GetNodeUsageAfter(ctx context.Context, nodeID string, curs
 		Where("cluster_node_id = ?", nodeID).
 		Where("status = ?", "success")
 	orderBy := "timestamp ASC, id ASC"
+	clickhouse := s.db.Dialector.Name() == "clickhouse"
 	if cursor.IncNumber != nil {
 		query = query.Where("inc_number > ?", *cursor.IncNumber)
 		orderBy = "inc_number ASC"
+	} else if clickhouse {
+		// The GORM ClickHouse driver truncates time.Time args to whole seconds
+		// (toDateTime('...')), which would rewind the cursor to the start of its
+		// second and re-aggregate rows already counted on the previous scan.
+		// Bind epoch millis instead; DateTime64(3) storage makes this exact.
+		// inc_number stays NULL on ClickHouse (no DB-assigned autoincrement), so
+		// this cursor form is the steady state, not just the first scan.
+		tsMs := cursor.Timestamp.UnixMilli()
+		if cursor.LogID != "" {
+			query = query.Where("timestamp > fromUnixTimestamp64Milli(?) OR (timestamp = fromUnixTimestamp64Milli(?) AND id > ?)", tsMs, tsMs, cursor.LogID)
+		} else {
+			query = query.Where("timestamp > fromUnixTimestamp64Milli(?)", tsMs)
+		}
 	} else if cursor.LogID != "" {
 		query = query.Where("timestamp > ? OR (timestamp = ? AND id > ?)", cursor.Timestamp, cursor.Timestamp, cursor.LogID)
 	} else {
@@ -863,8 +892,9 @@ func (s *RDBLogStore) listSelectColumns() string {
 		"selected_key_id", "selected_key_name",
 		"virtual_key_id", "virtual_key_name",
 		"routing_engines_used", "routing_rule_id", "routing_rule_name",
-		"user_id", "team_id", "team_name", "customer_id", "customer_name",
+		"user_id", "user_name", "team_id", "team_name", "customer_id", "customer_name",
 		"business_unit_id", "business_unit_name",
+		"team_ids", "team_names", "customer_ids", "customer_names", "business_unit_ids", "business_unit_names",
 		"speech_input", "transcription_input", "image_generation_input", "video_generation_input",
 		"latency", "token_usage", "cost", "status", "error_details", "stream",
 		fmt.Sprintf("substr(content_summary, 1, %d) AS content_summary", maxContentSummaryBytes),
@@ -890,6 +920,14 @@ func (s *RDBLogStore) listSelectColumns() string {
 			WHEN object_type = 'realtime.turn' THEN responses_input_history
 			ELSE bifrost_safe_jsonb(responses_input_history)
 			END AS responses_input_history`
+		outputMessageExpr = `CASE WHEN object_type = 'realtime.turn' THEN output_message ELSE NULL END AS output_message`
+	case "clickhouse":
+		// ClickHouse: return the full history columns as-is. The last-message
+		// truncation optimization the SQLite/Postgres list path applies is
+		// deferred (correctness over payload size); hybrid offloading and
+		// content_summary already bound list payloads in practice.
+		inputHistoryExpr = `input_history AS input_history`
+		responsesInputExpr = `responses_input_history AS responses_input_history`
 		outputMessageExpr = `CASE WHEN object_type = 'realtime.turn' THEN output_message ELSE NULL END AS output_message`
 	default: // sqlite
 		inputHistoryExpr = `CASE
@@ -937,7 +975,7 @@ func (s *RDBLogStore) GetStats(ctx context.Context, filters SearchFilters) (*Sea
 	}
 
 	if totalCount > 0 {
-		// Single query for all completed-request stats: counts, latency, tokens, cost
+		// Single query for all terminal-request stats: counts, latency, tokens, cost
 		var result struct {
 			CompletedCount sql.NullInt64   `gorm:"column:completed_count"`
 			SuccessCount   sql.NullInt64   `gorm:"column:success_count"`
@@ -948,7 +986,7 @@ func (s *RDBLogStore) GetStats(ctx context.Context, filters SearchFilters) (*Sea
 
 		statsQuery := s.ScopedDB(ctx).Model(&Log{})
 		statsQuery = s.applyFilters(statsQuery, filters)
-		statsQuery = statsQuery.Where("status IN ?", []string{"success", "error"})
+		statsQuery = statsQuery.Where("status IN ?", terminalLogStatuses)
 
 		if err := statsQuery.Select(`
 			COUNT(*) as completed_count,
@@ -991,7 +1029,7 @@ func (s *RDBLogStore) GetStats(ctx context.Context, filters SearchFilters) (*Sea
 			userFacingQuery = s.applyFilters(userFacingQuery, filters)
 			// Scope to root rows only so denominator and numerator are drawn from the same population.
 			// A chain is successful if the root itself succeeded or any of its fallbacks succeeded.
-			userFacingQuery = userFacingQuery.Where("fallback_index = ?", 0).Where("status IN ?", []string{"success", "error"})
+			userFacingQuery = userFacingQuery.Where("fallback_index = ?", 0).Where("status IN ?", terminalLogStatuses)
 			// Use a LEFT JOIN instead of a correlated EXISTS subquery: the inner set is computed
 			// once and hash-joined, reducing complexity from O(N×M) to O(N+M).
 			// The inner subquery is bounded by the same time window as the outer query for
@@ -1030,7 +1068,7 @@ func (s *RDBLogStore) GetStats(ctx context.Context, filters SearchFilters) (*Sea
 	}
 
 	// Count cache hits by hit_type from cache_debug JSON
-	cacheBase := s.ScopedDB(ctx).Model(&Log{}).Where("status IN ?", []string{"success", "error"})
+	cacheBase := s.ScopedDB(ctx).Model(&Log{}).Where("status IN ?", terminalLogStatuses)
 	direct, semantic, err := s.aggregateCacheHits(ctx, cacheBase, filters)
 	if err != nil {
 		s.logger.Warn(fmt.Sprintf("logstore: failed to aggregate cache-hit stats, skipping: %s", err))
@@ -1050,7 +1088,8 @@ func (s *RDBLogStore) aggregateCacheHits(ctx context.Context, base *gorm.DB, fil
 		SemanticHits sql.NullInt64 `gorm:"column:semantic_hits"`
 	}
 	q := s.applyFilters(base, filters)
-	if s.db.Dialector.Name() == "postgres" {
+	switch s.db.Dialector.Name() {
+	case "postgres":
 		q = q.Where("cache_debug IS NOT NULL AND cache_debug <> '' AND cache_debug ~ '^\\s*\\{.*\\}\\s*$'")
 		if err := q.Select(
 			`SUM(CASE WHEN substring(cache_debug from '"hit_type"[[:space:]]*:[[:space:]]*"([^"]+)"') = 'direct'   THEN 1 ELSE 0 END) AS direct_hits, ` +
@@ -1058,7 +1097,15 @@ func (s *RDBLogStore) aggregateCacheHits(ctx context.Context, base *gorm.DB, fil
 		).Scan(&result).Error; err != nil {
 			return nil, nil, fmt.Errorf("failed to aggregate cache-hit stats: %w", err)
 		}
-	} else {
+	case "clickhouse":
+		q = q.Where("cache_debug IS NOT NULL AND cache_debug != '' AND isValidJSON(cache_debug)")
+		if err := q.Select(
+			`SUM(CASE WHEN JSONExtractString(cache_debug, 'hit_type') = 'direct'   THEN 1 ELSE 0 END) AS direct_hits, ` +
+				`SUM(CASE WHEN JSONExtractString(cache_debug, 'hit_type') = 'semantic' THEN 1 ELSE 0 END) AS semantic_hits`,
+		).Scan(&result).Error; err != nil {
+			return nil, nil, fmt.Errorf("failed to aggregate cache-hit stats: %w", err)
+		}
+	default:
 		q = q.Where("cache_debug IS NOT NULL AND cache_debug != '' AND json_valid(cache_debug)")
 		if err := q.Select(
 			`SUM(CASE WHEN json_extract(cache_debug, '$.hit_type') = 'direct'   THEN 1 ELSE 0 END) AS direct_hits, ` +
@@ -1090,7 +1137,7 @@ func (s *RDBLogStore) GetHistogram(ctx context.Context, filters SearchFilters, b
 	// Build query with filters
 	baseQuery := s.ScopedDB(ctx).Model(&Log{})
 	baseQuery = s.applyFilters(baseQuery, filters)
-	baseQuery = baseQuery.Where("status IN ?", []string{"success", "error"})
+	baseQuery = baseQuery.Where("status IN ?", terminalLogStatuses)
 
 	// Query for histogram buckets - use int64 for bucket timestamp to avoid parsing issues
 	var results []struct {
@@ -1098,36 +1145,17 @@ func (s *RDBLogStore) GetHistogram(ctx context.Context, filters SearchFilters, b
 		Total           int64 `gorm:"column:total"`
 		Success         int64 `gorm:"column:success"`
 		Error           int64 `gorm:"column:error_count"`
+		Cancelled       int64 `gorm:"column:cancelled_count"`
 	}
 
 	// Build select clause with database-specific unix timestamp calculation
-	var selectClause string
-	switch dialect {
-	case "sqlite":
-		// SQLite: use strftime to get unix timestamp, then bucket
-		selectClause = fmt.Sprintf(`
-			(CAST(strftime('%%s', timestamp) AS INTEGER) / %d) * %d as bucket_timestamp,
+	selectClause := fmt.Sprintf(`
+			%s as bucket_timestamp,
 			COUNT(*) as total,
 			SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success,
-			SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error_count
-		`, bucketSizeSeconds, bucketSizeSeconds)
-	case "mysql":
-		// MySQL: use UNIX_TIMESTAMP
-		selectClause = fmt.Sprintf(`
-			(FLOOR(UNIX_TIMESTAMP(timestamp) / %d) * %d) as bucket_timestamp,
-			COUNT(*) as total,
-			SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success,
-			SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error_count
-		`, bucketSizeSeconds, bucketSizeSeconds)
-	default:
-		// PostgreSQL (and others): use EXTRACT(EPOCH FROM timestamp)
-		selectClause = fmt.Sprintf(`
-			CAST(FLOOR(EXTRACT(EPOCH FROM timestamp) / %d) * %d AS BIGINT) as bucket_timestamp,
-			COUNT(*) as total,
-			SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success,
-			SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error_count
-		`, bucketSizeSeconds, bucketSizeSeconds)
-	}
+			SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error_count,
+      		SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) as cancelled_count
+		`, unixBucketExpr(dialect, bucketSizeSeconds))
 
 	if err := baseQuery.
 		Select(selectClause).
@@ -1139,19 +1167,22 @@ func (s *RDBLogStore) GetHistogram(ctx context.Context, filters SearchFilters, b
 
 	// Create a map of bucket timestamp -> result for quick lookup
 	resultMap := make(map[int64]struct {
-		Total   int64
-		Success int64
-		Error   int64
+		Total     int64
+		Success   int64
+		Error     int64
+		Cancelled int64
 	})
 	for _, r := range results {
 		resultMap[r.BucketTimestamp] = struct {
-			Total   int64
-			Success int64
-			Error   int64
+			Total     int64
+			Success   int64
+			Error     int64
+			Cancelled int64
 		}{
-			Total:   r.Total,
-			Success: r.Success,
-			Error:   r.Error,
+			Total:     r.Total,
+			Success:   r.Success,
+			Error:     r.Error,
+			Cancelled: r.Cancelled,
 		}
 	}
 
@@ -1167,6 +1198,7 @@ func (s *RDBLogStore) GetHistogram(ctx context.Context, filters SearchFilters, b
 				Count:     r.Total,
 				Success:   r.Success,
 				Error:     r.Error,
+				Cancelled: r.Cancelled,
 			}
 		}
 		return &HistogramResult{
@@ -1184,6 +1216,7 @@ func (s *RDBLogStore) GetHistogram(ctx context.Context, filters SearchFilters, b
 				Count:     data.Total,
 				Success:   data.Success,
 				Error:     data.Error,
+				Cancelled: data.Cancelled,
 			}
 		} else {
 			buckets[i] = HistogramBucket{
@@ -1214,8 +1247,8 @@ func (s *RDBLogStore) GetTokenHistogram(ctx context.Context, filters SearchFilte
 
 	baseQuery := s.ScopedDB(ctx).Model(&Log{})
 	baseQuery = s.applyFilters(baseQuery, filters)
-	// Only count completed requests for token stats
-	baseQuery = baseQuery.Where("status IN ?", []string{"success", "error"})
+	// Only count terminal requests for token stats
+	baseQuery = baseQuery.Where("status IN ?", terminalLogStatuses)
 
 	var results []struct {
 		BucketTimestamp  int64 `gorm:"column:bucket_timestamp"`
@@ -1225,33 +1258,13 @@ func (s *RDBLogStore) GetTokenHistogram(ctx context.Context, filters SearchFilte
 		CachedReadTokens int64 `gorm:"column:cached_read_tokens"`
 	}
 
-	var selectClause string
-	switch dialect {
-	case "sqlite":
-		selectClause = fmt.Sprintf(`
-			(CAST(strftime('%%s', timestamp) AS INTEGER) / %d) * %d as bucket_timestamp,
+	selectClause := fmt.Sprintf(`
+			%s as bucket_timestamp,
 			COALESCE(SUM(prompt_tokens), 0) as prompt_tokens,
 			COALESCE(SUM(completion_tokens), 0) as completion_tokens,
 			COALESCE(SUM(total_tokens), 0) as total_tokens,
 			COALESCE(SUM(cached_read_tokens), 0) as cached_read_tokens
-		`, bucketSizeSeconds, bucketSizeSeconds)
-	case "mysql":
-		selectClause = fmt.Sprintf(`
-			(FLOOR(UNIX_TIMESTAMP(timestamp) / %d) * %d) as bucket_timestamp,
-			COALESCE(SUM(prompt_tokens), 0) as prompt_tokens,
-			COALESCE(SUM(completion_tokens), 0) as completion_tokens,
-			COALESCE(SUM(total_tokens), 0) as total_tokens,
-			COALESCE(SUM(cached_read_tokens), 0) as cached_read_tokens
-		`, bucketSizeSeconds, bucketSizeSeconds)
-	default:
-		selectClause = fmt.Sprintf(`
-			CAST(FLOOR(EXTRACT(EPOCH FROM timestamp) / %d) * %d AS BIGINT) as bucket_timestamp,
-			COALESCE(SUM(prompt_tokens), 0) as prompt_tokens,
-			COALESCE(SUM(completion_tokens), 0) as completion_tokens,
-			COALESCE(SUM(total_tokens), 0) as total_tokens,
-			COALESCE(SUM(cached_read_tokens), 0) as cached_read_tokens
-		`, bucketSizeSeconds, bucketSizeSeconds)
-	}
+		`, unixBucketExpr(dialect, bucketSizeSeconds))
 
 	if err := baseQuery.
 		Select(selectClause).
@@ -1340,8 +1353,8 @@ func (s *RDBLogStore) GetCostHistogram(ctx context.Context, filters SearchFilter
 
 	baseQuery := s.ScopedDB(ctx).Model(&Log{})
 	baseQuery = s.applyFilters(baseQuery, filters)
-	// Only count completed requests with cost
-	baseQuery = baseQuery.Where("status IN ?", []string{"success", "error"})
+	// Only count terminal requests with cost
+	baseQuery = baseQuery.Where("status IN ?", terminalLogStatuses)
 	baseQuery = baseQuery.Where("cost IS NOT NULL AND cost > 0")
 
 	// Query grouped by bucket and model
@@ -1351,27 +1364,11 @@ func (s *RDBLogStore) GetCostHistogram(ctx context.Context, filters SearchFilter
 		TotalCost       float64 `gorm:"column:total_cost"`
 	}
 
-	var selectClause string
-	switch dialect {
-	case "sqlite":
-		selectClause = fmt.Sprintf(`
-			(CAST(strftime('%%s', timestamp) AS INTEGER) / %d) * %d as bucket_timestamp,
+	selectClause := fmt.Sprintf(`
+			%s as bucket_timestamp,
 			model,
 			COALESCE(SUM(cost), 0) as total_cost
-		`, bucketSizeSeconds, bucketSizeSeconds)
-	case "mysql":
-		selectClause = fmt.Sprintf(`
-			(FLOOR(UNIX_TIMESTAMP(timestamp) / %d) * %d) as bucket_timestamp,
-			model,
-			COALESCE(SUM(cost), 0) as total_cost
-		`, bucketSizeSeconds, bucketSizeSeconds)
-	default:
-		selectClause = fmt.Sprintf(`
-			CAST(FLOOR(EXTRACT(EPOCH FROM timestamp) / %d) * %d AS BIGINT) as bucket_timestamp,
-			model,
-			COALESCE(SUM(cost), 0) as total_cost
-		`, bucketSizeSeconds, bucketSizeSeconds)
-	}
+		`, unixBucketExpr(dialect, bucketSizeSeconds))
 
 	if err := baseQuery.
 		Select(selectClause).
@@ -1462,7 +1459,7 @@ func (s *RDBLogStore) GetModelHistogram(ctx context.Context, filters SearchFilte
 
 	baseQuery := s.ScopedDB(ctx).Model(&Log{})
 	baseQuery = s.applyFilters(baseQuery, filters)
-	baseQuery = baseQuery.Where("status IN ?", []string{"success", "error"})
+	baseQuery = baseQuery.Where("status IN ?", terminalLogStatuses)
 
 	// Query grouped by bucket and model with status counts
 	var results []struct {
@@ -1471,35 +1468,17 @@ func (s *RDBLogStore) GetModelHistogram(ctx context.Context, filters SearchFilte
 		Total           int64  `gorm:"column:total"`
 		Success         int64  `gorm:"column:success"`
 		Error           int64  `gorm:"column:error_count"`
+		Cancelled       int64  `gorm:"column:cancelled_count"`
 	}
 
-	var selectClause string
-	switch dialect {
-	case "sqlite":
-		selectClause = fmt.Sprintf(`
-			(CAST(strftime('%%s', timestamp) AS INTEGER) / %d) * %d as bucket_timestamp,
+	selectClause := fmt.Sprintf(`
+			%s as bucket_timestamp,
 			model,
 			COUNT(*) as total,
 			SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success,
-			SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error_count
-		`, bucketSizeSeconds, bucketSizeSeconds)
-	case "mysql":
-		selectClause = fmt.Sprintf(`
-			(FLOOR(UNIX_TIMESTAMP(timestamp) / %d) * %d) as bucket_timestamp,
-			model,
-			COUNT(*) as total,
-			SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success,
-			SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error_count
-		`, bucketSizeSeconds, bucketSizeSeconds)
-	default:
-		selectClause = fmt.Sprintf(`
-			CAST(FLOOR(EXTRACT(EPOCH FROM timestamp) / %d) * %d AS BIGINT) as bucket_timestamp,
-			model,
-			COUNT(*) as total,
-			SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success,
-			SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error_count
-		`, bucketSizeSeconds, bucketSizeSeconds)
-	}
+			SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error_count,
+      		SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) as cancelled_count
+		`, unixBucketExpr(dialect, bucketSizeSeconds))
 
 	if err := baseQuery.
 		Select(selectClause).
@@ -1517,18 +1496,20 @@ func (s *RDBLogStore) GetModelHistogram(ctx context.Context, filters SearchFilte
 		modelsSet[r.Model] = true
 		if bucket, exists := bucketMap[r.BucketTimestamp]; exists {
 			bucket.ByModel[r.Model] = ModelUsageStats{
-				Total:   r.Total,
-				Success: r.Success,
-				Error:   r.Error,
+				Total:     r.Total,
+				Success:   r.Success,
+				Error:     r.Error,
+				Cancelled: r.Cancelled,
 			}
 		} else {
 			bucketMap[r.BucketTimestamp] = &ModelHistogramBucket{
 				Timestamp: time.Unix(r.BucketTimestamp, 0).UTC(),
 				ByModel: map[string]ModelUsageStats{
 					r.Model: {
-						Total:   r.Total,
-						Success: r.Success,
-						Error:   r.Error,
+						Total:     r.Total,
+						Success:   r.Success,
+						Error:     r.Error,
+						Cancelled: r.Cancelled,
 					},
 				},
 			}
@@ -1617,7 +1598,7 @@ func (s *RDBLogStore) GetLatencyHistogram(ctx context.Context, filters SearchFil
 
 	baseQuery := s.ScopedDB(ctx).Model(&Log{})
 	baseQuery = s.applyFilters(baseQuery, filters)
-	baseQuery = baseQuery.Where("status IN ?", []string{"success", "error"})
+	baseQuery = baseQuery.Where("status IN ?", terminalLogStatuses)
 	baseQuery = baseQuery.Where("latency IS NOT NULL")
 
 	switch dialect {
@@ -1625,9 +1606,58 @@ func (s *RDBLogStore) GetLatencyHistogram(ctx context.Context, filters SearchFil
 		return s.getLatencyHistogramSQLite(ctx, baseQuery, filters, bucketSizeSeconds)
 	case "mysql":
 		return s.getLatencyHistogramMySQL(ctx, baseQuery, filters, bucketSizeSeconds)
+	case "clickhouse":
+		return s.getLatencyHistogramClickHouse(ctx, baseQuery, filters, bucketSizeSeconds)
 	default:
 		return s.getLatencyHistogramPercentileCont(ctx, baseQuery, filters, bucketSizeSeconds)
 	}
+}
+
+// getLatencyHistogramClickHouse computes latency percentiles with ClickHouse's
+// quantile() aggregate (ClickHouse does not support percentile_cont ... WITHIN
+// GROUP). Shape mirrors getLatencyHistogramPercentileCont.
+func (s *RDBLogStore) getLatencyHistogramClickHouse(ctx context.Context, baseQuery *gorm.DB, filters SearchFilters, bucketSizeSeconds int64) (*LatencyHistogramResult, error) {
+	var results []struct {
+		BucketTimestamp int64           `gorm:"column:bucket_timestamp"`
+		AvgLatency      sql.NullFloat64 `gorm:"column:avg_latency"`
+		P90Latency      sql.NullFloat64 `gorm:"column:p90_latency"`
+		P95Latency      sql.NullFloat64 `gorm:"column:p95_latency"`
+		P99Latency      sql.NullFloat64 `gorm:"column:p99_latency"`
+		TotalRequests   int64           `gorm:"column:total_requests"`
+	}
+
+	selectClause := fmt.Sprintf(`
+		%s as bucket_timestamp,
+		AVG(latency) as avg_latency,
+		quantile(0.90)(latency) as p90_latency,
+		quantile(0.95)(latency) as p95_latency,
+		quantile(0.99)(latency) as p99_latency,
+		COUNT(*) as total_requests
+	`, unixBucketExpr("clickhouse", bucketSizeSeconds))
+
+	if err := baseQuery.
+		Select(selectClause).
+		Group("bucket_timestamp").
+		Order("bucket_timestamp ASC").
+		Find(&results).Error; err != nil {
+		return nil, fmt.Errorf("failed to get latency histogram: %w", err)
+	}
+
+	computedBuckets := make(map[int64]LatencyHistogramBucket, len(results))
+	var orderedKeys []int64
+	for _, r := range results {
+		orderedKeys = append(orderedKeys, r.BucketTimestamp)
+		computedBuckets[r.BucketTimestamp] = LatencyHistogramBucket{
+			Timestamp:     time.Unix(r.BucketTimestamp, 0).UTC(),
+			AvgLatency:    r.AvgLatency.Float64,
+			P90Latency:    r.P90Latency.Float64,
+			P95Latency:    r.P95Latency.Float64,
+			P99Latency:    r.P99Latency.Float64,
+			TotalRequests: r.TotalRequests,
+		}
+	}
+
+	return s.buildLatencyHistogramResult(computedBuckets, orderedKeys, filters, bucketSizeSeconds)
 }
 
 // getLatencyHistogramPercentileCont uses database-level percentile_cont for PostgreSQL.
@@ -1840,7 +1870,7 @@ func (s *RDBLogStore) GetModelRankings(ctx context.Context, filters SearchFilter
 	// Query current period
 	currentQuery := s.ScopedDB(ctx).Model(&Log{})
 	currentQuery = s.applyFilters(currentQuery, filters)
-	currentQuery = currentQuery.Where("status IN ?", []string{"success", "error"})
+	currentQuery = currentQuery.Where("status IN ?", terminalLogStatuses)
 	currentQuery = currentQuery.Where("model IS NOT NULL AND model != ''")
 
 	var currentResults []struct {
@@ -1879,7 +1909,7 @@ func (s *RDBLogStore) GetModelRankings(ctx context.Context, filters SearchFilter
 
 		prevQuery := s.ScopedDB(ctx).Model(&Log{})
 		prevQuery = s.applyFilters(prevQuery, prevFilters)
-		prevQuery = prevQuery.Where("status IN ?", []string{"success", "error"})
+		prevQuery = prevQuery.Where("status IN ?", terminalLogStatuses)
 		prevQuery = prevQuery.Where("model IS NOT NULL AND model != ''")
 
 		// Only fetch previous-period data for (model, provider) pairs that
@@ -1981,7 +2011,7 @@ func (s *RDBLogStore) GetUserRankings(ctx context.Context, filters SearchFilters
 	// Query current period
 	currentQuery := s.ScopedDB(ctx).Model(&Log{})
 	currentQuery = s.applyFilters(currentQuery, filters)
-	currentQuery = currentQuery.Where("status IN ?", []string{"success", "error"})
+	currentQuery = currentQuery.Where("status IN ?", terminalLogStatuses)
 	currentQuery = currentQuery.Where("user_id IS NOT NULL AND user_id != ''")
 
 	var currentResults []struct {
@@ -2013,7 +2043,7 @@ func (s *RDBLogStore) GetUserRankings(ctx context.Context, filters SearchFilters
 
 		prevQuery := s.ScopedDB(ctx).Model(&Log{})
 		prevQuery = s.applyFilters(prevQuery, prevFilters)
-		prevQuery = prevQuery.Where("status IN ?", []string{"success", "error"})
+		prevQuery = prevQuery.Where("status IN ?", terminalLogStatuses)
 		prevQuery = prevQuery.Where("user_id IS NOT NULL AND user_id != ''")
 
 		if len(currentResults) > 0 {
@@ -2125,7 +2155,7 @@ func (s *RDBLogStore) GetDimensionRankings(ctx context.Context, filters SearchFi
 
 	currentQuery := baseTable(s.ScopedDB(ctx))
 	currentQuery = s.applyFilters(currentQuery, filters)
-	currentQuery = currentQuery.Where("status IN ?", []string{"success", "error"})
+	currentQuery = currentQuery.Where("status IN ?", terminalLogStatuses)
 	currentQuery = currentQuery.Where(fmt.Sprintf("%s IS NOT NULL AND %s != ''", idCol, idCol))
 
 	var currentResults []struct {
@@ -2164,7 +2194,7 @@ func (s *RDBLogStore) GetDimensionRankings(ctx context.Context, filters SearchFi
 	if fanoutFrom != "" {
 		requestsCountsQuery := baseTable(s.ScopedDB(ctx))
 		requestsCountsQuery = s.applyFilters(requestsCountsQuery, filters)
-		requestsCountsQuery = requestsCountsQuery.Where("status IN ?", []string{"success", "error"})
+		requestsCountsQuery = requestsCountsQuery.Where("status IN ?", terminalLogStatuses)
 		requestsCountsQuery = requestsCountsQuery.Where(fmt.Sprintf("%s IS NOT NULL AND %s != ''", idCol, idCol))
 		if err := requestsCountsQuery.
 			Select("COUNT(DISTINCT id) as actual_requests, COUNT(*) as attributed_requests").
@@ -2185,7 +2215,7 @@ func (s *RDBLogStore) GetDimensionRankings(ctx context.Context, filters SearchFi
 
 		prevQuery := baseTable(s.ScopedDB(ctx))
 		prevQuery = s.applyFilters(prevQuery, prevFilters)
-		prevQuery = prevQuery.Where("status IN ?", []string{"success", "error"})
+		prevQuery = prevQuery.Where("status IN ?", terminalLogStatuses)
 		prevQuery = prevQuery.Where(fmt.Sprintf("%s IS NOT NULL AND %s != ''", idCol, idCol))
 
 		if len(currentResults) > 0 {
@@ -2280,7 +2310,7 @@ func (s *RDBLogStore) GetProviderCostHistogram(ctx context.Context, filters Sear
 
 	baseQuery := s.ScopedDB(ctx).Model(&Log{})
 	baseQuery = s.applyFilters(baseQuery, filters)
-	baseQuery = baseQuery.Where("status IN ?", []string{"success", "error"})
+	baseQuery = baseQuery.Where("status IN ?", terminalLogStatuses)
 	baseQuery = baseQuery.Where("cost IS NOT NULL AND cost > 0")
 
 	var results []struct {
@@ -2289,27 +2319,11 @@ func (s *RDBLogStore) GetProviderCostHistogram(ctx context.Context, filters Sear
 		TotalCost       float64 `gorm:"column:total_cost"`
 	}
 
-	var selectClause string
-	switch dialect {
-	case "sqlite":
-		selectClause = fmt.Sprintf(`
-			(CAST(strftime('%%s', timestamp) AS INTEGER) / %d) * %d as bucket_timestamp,
+	selectClause := fmt.Sprintf(`
+			%s as bucket_timestamp,
 			provider,
 			COALESCE(SUM(cost), 0) as total_cost
-		`, bucketSizeSeconds, bucketSizeSeconds)
-	case "mysql":
-		selectClause = fmt.Sprintf(`
-			(FLOOR(UNIX_TIMESTAMP(timestamp) / %d) * %d) as bucket_timestamp,
-			provider,
-			COALESCE(SUM(cost), 0) as total_cost
-		`, bucketSizeSeconds, bucketSizeSeconds)
-	default:
-		selectClause = fmt.Sprintf(`
-			CAST(FLOOR(EXTRACT(EPOCH FROM timestamp) / %d) * %d AS BIGINT) as bucket_timestamp,
-			provider,
-			COALESCE(SUM(cost), 0) as total_cost
-		`, bucketSizeSeconds, bucketSizeSeconds)
-	}
+		`, unixBucketExpr(dialect, bucketSizeSeconds))
 
 	if err := baseQuery.
 		Select(selectClause).
@@ -2391,7 +2405,7 @@ func (s *RDBLogStore) GetProviderTokenHistogram(ctx context.Context, filters Sea
 
 	baseQuery := s.ScopedDB(ctx).Model(&Log{})
 	baseQuery = s.applyFilters(baseQuery, filters)
-	baseQuery = baseQuery.Where("status IN ?", []string{"success", "error"})
+	baseQuery = baseQuery.Where("status IN ?", terminalLogStatuses)
 
 	var results []struct {
 		BucketTimestamp  int64  `gorm:"column:bucket_timestamp"`
@@ -2401,33 +2415,13 @@ func (s *RDBLogStore) GetProviderTokenHistogram(ctx context.Context, filters Sea
 		TotalTokens      int64  `gorm:"column:total_tokens"`
 	}
 
-	var selectClause string
-	switch dialect {
-	case "sqlite":
-		selectClause = fmt.Sprintf(`
-			(CAST(strftime('%%s', timestamp) AS INTEGER) / %d) * %d as bucket_timestamp,
+	selectClause := fmt.Sprintf(`
+			%s as bucket_timestamp,
 			provider,
 			COALESCE(SUM(prompt_tokens), 0) as prompt_tokens,
 			COALESCE(SUM(completion_tokens), 0) as completion_tokens,
 			COALESCE(SUM(total_tokens), 0) as total_tokens
-		`, bucketSizeSeconds, bucketSizeSeconds)
-	case "mysql":
-		selectClause = fmt.Sprintf(`
-			(FLOOR(UNIX_TIMESTAMP(timestamp) / %d) * %d) as bucket_timestamp,
-			provider,
-			COALESCE(SUM(prompt_tokens), 0) as prompt_tokens,
-			COALESCE(SUM(completion_tokens), 0) as completion_tokens,
-			COALESCE(SUM(total_tokens), 0) as total_tokens
-		`, bucketSizeSeconds, bucketSizeSeconds)
-	default:
-		selectClause = fmt.Sprintf(`
-			CAST(FLOOR(EXTRACT(EPOCH FROM timestamp) / %d) * %d AS BIGINT) as bucket_timestamp,
-			provider,
-			COALESCE(SUM(prompt_tokens), 0) as prompt_tokens,
-			COALESCE(SUM(completion_tokens), 0) as completion_tokens,
-			COALESCE(SUM(total_tokens), 0) as total_tokens
-		`, bucketSizeSeconds, bucketSizeSeconds)
-	}
+		`, unixBucketExpr(dialect, bucketSizeSeconds))
 
 	if err := baseQuery.
 		Select(selectClause).
@@ -2518,7 +2512,7 @@ func (s *RDBLogStore) GetProviderLatencyHistogram(ctx context.Context, filters S
 
 	baseQuery := s.ScopedDB(ctx).Model(&Log{})
 	baseQuery = s.applyFilters(baseQuery, filters)
-	baseQuery = baseQuery.Where("status IN ?", []string{"success", "error"})
+	baseQuery = baseQuery.Where("status IN ?", terminalLogStatuses)
 	baseQuery = baseQuery.Where("latency IS NOT NULL")
 
 	switch dialect {
@@ -2526,9 +2520,79 @@ func (s *RDBLogStore) GetProviderLatencyHistogram(ctx context.Context, filters S
 		return s.getProviderLatencyHistogramSQLite(ctx, baseQuery, filters, bucketSizeSeconds)
 	case "mysql":
 		return s.getProviderLatencyHistogramMySQL(ctx, baseQuery, filters, bucketSizeSeconds)
+	case "clickhouse":
+		return s.getProviderLatencyHistogramClickHouse(ctx, baseQuery, filters, bucketSizeSeconds)
 	default:
 		return s.getProviderLatencyHistogramPercentileCont(ctx, baseQuery, filters, bucketSizeSeconds)
 	}
+}
+
+// getProviderLatencyHistogramClickHouse computes per-provider latency
+// percentiles with ClickHouse's quantile() aggregate. Shape mirrors
+// getProviderLatencyHistogramPercentileCont.
+func (s *RDBLogStore) getProviderLatencyHistogramClickHouse(ctx context.Context, baseQuery *gorm.DB, filters SearchFilters, bucketSizeSeconds int64) (*ProviderLatencyHistogramResult, error) {
+	var results []struct {
+		BucketTimestamp int64           `gorm:"column:bucket_timestamp"`
+		Provider        string          `gorm:"column:provider"`
+		AvgLatency      sql.NullFloat64 `gorm:"column:avg_latency"`
+		P90Latency      sql.NullFloat64 `gorm:"column:p90_latency"`
+		P95Latency      sql.NullFloat64 `gorm:"column:p95_latency"`
+		P99Latency      sql.NullFloat64 `gorm:"column:p99_latency"`
+		TotalRequests   int64           `gorm:"column:total_requests"`
+	}
+
+	selectClause := fmt.Sprintf(`
+		%s as bucket_timestamp,
+		provider,
+		AVG(latency) as avg_latency,
+		quantile(0.90)(latency) as p90_latency,
+		quantile(0.95)(latency) as p95_latency,
+		quantile(0.99)(latency) as p99_latency,
+		COUNT(*) as total_requests
+	`, unixBucketExpr("clickhouse", bucketSizeSeconds))
+
+	if err := baseQuery.
+		Select(selectClause).
+		Group("bucket_timestamp, provider").
+		Order("bucket_timestamp ASC, provider ASC").
+		Find(&results).Error; err != nil {
+		return nil, fmt.Errorf("failed to get provider latency histogram: %w", err)
+	}
+
+	providersSet := make(map[string]bool)
+	computedBuckets := make(map[int64]*ProviderLatencyHistogramBucket)
+	var orderedBuckets []int64
+	seenBuckets := make(map[int64]bool)
+
+	for _, r := range results {
+		providersSet[r.Provider] = true
+		if !seenBuckets[r.BucketTimestamp] {
+			seenBuckets[r.BucketTimestamp] = true
+			orderedBuckets = append(orderedBuckets, r.BucketTimestamp)
+		}
+		stats := ProviderLatencyStats{
+			AvgLatency:    r.AvgLatency.Float64,
+			P90Latency:    r.P90Latency.Float64,
+			P95Latency:    r.P95Latency.Float64,
+			P99Latency:    r.P99Latency.Float64,
+			TotalRequests: r.TotalRequests,
+		}
+		if bucket, exists := computedBuckets[r.BucketTimestamp]; exists {
+			bucket.ByProvider[r.Provider] = stats
+		} else {
+			computedBuckets[r.BucketTimestamp] = &ProviderLatencyHistogramBucket{
+				Timestamp:  time.Unix(r.BucketTimestamp, 0).UTC(),
+				ByProvider: map[string]ProviderLatencyStats{r.Provider: stats},
+			}
+		}
+	}
+
+	providers := make([]string, 0, len(providersSet))
+	for provider := range providersSet {
+		providers = append(providers, provider)
+	}
+
+	return s.buildProviderLatencyHistogramResult(computedBuckets, orderedBuckets, providers, filters, bucketSizeSeconds)
 }
 
 // getProviderLatencyHistogramPercentileCont uses database-level percentile_cont for PostgreSQL.
@@ -2814,16 +2878,10 @@ func (s *RDBLogStore) GetDimensionCostHistogram(ctx context.Context, filters Sea
 		baseQuery = baseQuery.Model(&Log{})
 	}
 	baseQuery = s.applyFilters(baseQuery, filters)
-	baseQuery = baseQuery.Where("status IN ?", []string{"success", "error"})
+	baseQuery = baseQuery.Where("status IN ?", terminalLogStatuses)
 	baseQuery = baseQuery.Where("cost IS NOT NULL AND cost > 0")
 
-	var bucketExpr string
-	switch dialect {
-	case "sqlite":
-		bucketExpr = fmt.Sprintf("CAST((CAST(strftime('%%s', timestamp) AS INTEGER) / %d) * %d AS INTEGER)", bucketSizeSeconds, bucketSizeSeconds)
-	default:
-		bucketExpr = fmt.Sprintf("CAST(FLOOR(EXTRACT(EPOCH FROM timestamp) / %d) * %d AS BIGINT)", bucketSizeSeconds, bucketSizeSeconds)
-	}
+	bucketExpr := unixBucketExpr(dialect, bucketSizeSeconds)
 
 	var results []struct {
 		BucketTimestamp int64   `gorm:"column:bucket_timestamp"`
@@ -2923,15 +2981,9 @@ func (s *RDBLogStore) GetDimensionTokenHistogram(ctx context.Context, filters Se
 		baseQuery = baseQuery.Model(&Log{})
 	}
 	baseQuery = s.applyFilters(baseQuery, filters)
-	baseQuery = baseQuery.Where("status IN ?", []string{"success", "error"})
+	baseQuery = baseQuery.Where("status IN ?", terminalLogStatuses)
 
-	var bucketExpr string
-	switch dialect {
-	case "sqlite":
-		bucketExpr = fmt.Sprintf("CAST((CAST(strftime('%%s', timestamp) AS INTEGER) / %d) * %d AS INTEGER)", bucketSizeSeconds, bucketSizeSeconds)
-	default:
-		bucketExpr = fmt.Sprintf("CAST(FLOOR(EXTRACT(EPOCH FROM timestamp) / %d) * %d AS BIGINT)", bucketSizeSeconds, bucketSizeSeconds)
-	}
+	bucketExpr := unixBucketExpr(dialect, bucketSizeSeconds)
 
 	var results []struct {
 		BucketTimestamp  int64  `gorm:"column:bucket_timestamp"`
@@ -3039,16 +3091,10 @@ func (s *RDBLogStore) GetDimensionLatencyHistogram(ctx context.Context, filters 
 	dialect := s.db.Dialector.Name()
 	baseQuery := s.ScopedDB(ctx).Model(&Log{})
 	baseQuery = s.applyFilters(baseQuery, filters)
-	baseQuery = baseQuery.Where("status IN ?", []string{"success", "error"})
+	baseQuery = baseQuery.Where("status IN ?", terminalLogStatuses)
 	baseQuery = baseQuery.Where("latency IS NOT NULL")
 
-	var bucketExpr string
-	switch dialect {
-	case "sqlite":
-		bucketExpr = fmt.Sprintf("CAST((CAST(strftime('%%s', timestamp) AS INTEGER) / %d) * %d AS INTEGER)", bucketSizeSeconds, bucketSizeSeconds)
-	default:
-		bucketExpr = fmt.Sprintf("CAST(FLOOR(EXTRACT(EPOCH FROM timestamp) / %d) * %d AS BIGINT)", bucketSizeSeconds, bucketSizeSeconds)
-	}
+	bucketExpr := unixBucketExpr(dialect, bucketSizeSeconds)
 
 	var results []struct {
 		BucketTimestamp int64   `gorm:"column:bucket_timestamp"`
@@ -3132,10 +3178,12 @@ func (s *RDBLogStore) HasLogs(ctx context.Context) (bool, error) {
 	return true, nil
 }
 
-// FindByID gets a log entry from the database by its ID.
+// FindByID gets a log entry from the database by its ID. When ctx carries a
+// QueryScope (for example, Enterprise DAC), ScopedDB applies it so out-of-scope
+// IDs return ErrNotFound. Contexts without a QueryScope stay unscoped as before.
 func (s *RDBLogStore) FindByID(ctx context.Context, id string) (*Log, error) {
 	var log Log
-	if err := s.db.WithContext(ctx).Where("id = ?", id).First(&log).Error; err != nil {
+	if err := s.ScopedDB(ctx).Where("id = ?", id).First(&log).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
 		}
@@ -3364,9 +3412,12 @@ func (s *RDBLogStore) GetDistinctMetadataKeys(ctx context.Context, limit int, qu
 	var metadataStrings []string
 	// Guard must match the partial-index predicate so the planner uses the GIN index.
 	var metadataGuard string
-	if s.db.Dialector.Name() == "postgres" {
+	switch s.db.Dialector.Name() {
+	case "postgres":
 		metadataGuard = "metadata IS NOT NULL AND metadata IS JSON OBJECT AND metadata != '{}' AND timestamp >= ?"
-	} else {
+	case "clickhouse":
+		metadataGuard = "metadata IS NOT NULL AND isValidJSON(metadata) AND metadata != '{}' AND timestamp >= ?"
+	default:
 		metadataGuard = "metadata IS NOT NULL AND json_valid(metadata) AND json_type(metadata) = 'object' AND metadata != '{}' AND timestamp >= ?"
 	}
 	err := s.ScopedDB(ctx).Model(&Log{}).
@@ -3916,30 +3967,12 @@ func (s *RDBLogStore) GetMCPHistogram(ctx context.Context, filters MCPToolLogSea
 		Error           int64 `gorm:"column:error"`
 	}
 
-	var selectClause string
-	switch dialect {
-	case "sqlite":
-		selectClause = fmt.Sprintf(`
-			(CAST(strftime('%%s', timestamp) AS INTEGER) / %d) * %d as bucket_timestamp,
+	selectClause := fmt.Sprintf(`
+			%s as bucket_timestamp,
 			COUNT(*) as count,
 			SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success,
 			SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error
-		`, bucketSizeSeconds, bucketSizeSeconds)
-	case "mysql":
-		selectClause = fmt.Sprintf(`
-			(FLOOR(UNIX_TIMESTAMP(timestamp) / %d) * %d) as bucket_timestamp,
-			COUNT(*) as count,
-			SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success,
-			SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error
-		`, bucketSizeSeconds, bucketSizeSeconds)
-	default:
-		selectClause = fmt.Sprintf(`
-			CAST(FLOOR(EXTRACT(EPOCH FROM timestamp) / %d) * %d AS BIGINT) as bucket_timestamp,
-			COUNT(*) as count,
-			SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success,
-			SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error
-		`, bucketSizeSeconds, bucketSizeSeconds)
-	}
+		`, unixBucketExpr(dialect, bucketSizeSeconds))
 
 	if err := baseQuery.
 		Select(selectClause).
@@ -4011,24 +4044,10 @@ func (s *RDBLogStore) GetMCPCostHistogram(ctx context.Context, filters MCPToolLo
 		TotalCost       float64 `gorm:"column:total_cost"`
 	}
 
-	var selectClause string
-	switch dialect {
-	case "sqlite":
-		selectClause = fmt.Sprintf(`
-			(CAST(strftime('%%s', timestamp) AS INTEGER) / %d) * %d as bucket_timestamp,
+	selectClause := fmt.Sprintf(`
+			%s as bucket_timestamp,
 			COALESCE(SUM(cost), 0) as total_cost
-		`, bucketSizeSeconds, bucketSizeSeconds)
-	case "mysql":
-		selectClause = fmt.Sprintf(`
-			(FLOOR(UNIX_TIMESTAMP(timestamp) / %d) * %d) as bucket_timestamp,
-			COALESCE(SUM(cost), 0) as total_cost
-		`, bucketSizeSeconds, bucketSizeSeconds)
-	default:
-		selectClause = fmt.Sprintf(`
-			CAST(FLOOR(EXTRACT(EPOCH FROM timestamp) / %d) * %d AS BIGINT) as bucket_timestamp,
-			COALESCE(SUM(cost), 0) as total_cost
-		`, bucketSizeSeconds, bucketSizeSeconds)
-	}
+		`, unixBucketExpr(dialect, bucketSizeSeconds))
 
 	if err := baseQuery.
 		Select(selectClause).

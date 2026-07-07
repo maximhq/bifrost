@@ -657,6 +657,10 @@ export const allowedRequestsSchema = z.object({
 	chat_completion_stream: z.boolean(),
 	responses: z.boolean(),
 	responses_stream: z.boolean(),
+	responses_retrieve: z.boolean().optional(),
+	responses_delete: z.boolean().optional(),
+	responses_cancel: z.boolean().optional(),
+	responses_input_items: z.boolean().optional(),
 	embedding: z.boolean(),
 	speech: z.boolean(),
 	speech_stream: z.boolean(),
@@ -1190,6 +1194,7 @@ export const mcpClientUpdateSchema = z.object({
 		),
 	tool_pricing: z.record(z.string(), z.number().min(0, "Cost must be non-negative")).optional(),
 	tool_sync_interval: z.number().optional(), // -1 = disabled, 0 = use global, >0 = custom interval in minutes
+	tool_execution_timeout: z.number().int().min(0).optional(), // 0 = use global, >0 = per-server timeout in seconds
 	allowed_extra_headers: z
 		.array(z.string())
 		.optional()
