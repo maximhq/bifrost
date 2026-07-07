@@ -7048,12 +7048,18 @@ func (s *RDBConfigStore) GetOAuth2AuthorizeRequestByID(ctx context.Context, id s
 	return &req, nil
 }
 
-// GetOAuth2AuthorizeRequestByCodeHash finds a consented authorize request by
-// the hash of the auth code. Used by the token endpoint.
+// GetOAuth2AuthorizeRequestByCodeHash finds the authorize request holding the
+// hash of an auth code — consented (code still exchangeable) or code_issued
+// (code already consumed). Used by the token endpoint, which must distinguish
+// the two: a code_issued hit is a replayed code and triggers revocation of the
+// token family minted from it (RFC 6749 §4.1.2).
 func (s *RDBConfigStore) GetOAuth2AuthorizeRequestByCodeHash(ctx context.Context, codeHash string) (*tables.TableOAuth2AuthorizeRequest, error) {
 	var req tables.TableOAuth2AuthorizeRequest
 	err := s.DB().WithContext(ctx).
-		Where("code_hash = ? AND status = ?", codeHash, tables.OAuth2AuthorizeRequestStatusConsented).
+		Where("code_hash = ? AND status IN ?", codeHash, []tables.OAuth2AuthorizeRequestStatus{
+			tables.OAuth2AuthorizeRequestStatusConsented,
+			tables.OAuth2AuthorizeRequestStatusCodeIssued,
+		}).
 		First(&req).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, ErrNotFound
@@ -7089,10 +7095,23 @@ func (s *RDBConfigStore) ConsentOAuth2AuthorizeRequest(ctx context.Context, req 
 }
 
 // SweepExpiredOAuth2AuthorizeRequests deletes pending/consented requests past
-// their TTL. Safe to call periodically.
+// their TTL, plus consumed (code_issued) requests whose token family has no
+// active token left. A code_issued row is retained only while it can still
+// serve code-replay containment — presenting its code again revokes the family
+// (RFC 6749 §4.1.2) — which is worthless once every token in the family is
+// already revoked or gone. Safe to call periodically.
 func (s *RDBConfigStore) SweepExpiredOAuth2AuthorizeRequests(ctx context.Context) error {
+	now := time.Now()
+	if err := s.DB().WithContext(ctx).
+		Where("expires_at < ? AND status != ?", now, tables.OAuth2AuthorizeRequestStatusCodeIssued).
+		Delete(&tables.TableOAuth2AuthorizeRequest{}).Error; err != nil {
+		return err
+	}
 	return s.DB().WithContext(ctx).
-		Where("expires_at < ? AND status != ?", time.Now(), tables.OAuth2AuthorizeRequestStatusCodeIssued).
+		Where("expires_at < ? AND status = ? AND NOT EXISTS (?)", now, tables.OAuth2AuthorizeRequestStatusCodeIssued,
+			s.DB().Model(&tables.TableOAuth2RefreshToken{}).
+				Select("1").
+				Where("oauth2_refresh_tokens.family_id = oauth2_authorize_requests.id AND oauth2_refresh_tokens.revoked_at IS NULL")).
 		Delete(&tables.TableOAuth2AuthorizeRequest{}).Error
 }
 
