@@ -1689,8 +1689,9 @@ type AnthropicStreamDelta struct {
 	PartialJSON  *string                  `json:"partial_json,omitempty"`
 	Thinking     *string                  `json:"thinking,omitempty"`
 	Signature    *string                  `json:"signature,omitempty"`
-	Citation     *AnthropicTextCitation   `json:"citation,omitempty"`    // For citations_delta
-	StopReason   *AnthropicStopReason     `json:"stop_reason,omitempty"` // only not present in "message_start" events
+	Citation     *AnthropicTextCitation   `json:"citation,omitempty"`     // For citations_delta
+	StopReason   *AnthropicStopReason     `json:"stop_reason,omitempty"`  // only not present in "message_start" events
+	StopDetails  *AnthropicStopDetails    `json:"stop_details,omitempty"` // populated only when StopReason is "refusal"
 	StopSequence *string                  `json:"stop_sequence"`
 	// Container is the code-execution sandbox container, surfaced on the final
 	// message_delta of a response that used the code execution tool.

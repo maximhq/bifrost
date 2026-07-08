@@ -3,7 +3,9 @@ package anthropic
 import (
 	"context"
 	"testing"
+	"time"
 
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -164,5 +166,83 @@ func TestToAnthropicResponsesResponse_RoundTripsRefusal(t *testing.T) {
 	}
 	if anthropicResp.StopDetails == nil {
 		t.Fatal("expected StopDetails to be set")
+	}
+}
+
+// TestToBifrostResponsesStream_RefusalMessageDelta verifies that a streaming
+// message_delta event carrying stop_reason "refusal" populates Status and
+// IncompleteDetails on the emitted message_delta response — the streaming
+// counterpart of TestToBifrostResponsesResponse_Refusal.
+func TestToBifrostResponsesStream_RefusalMessageDelta(t *testing.T) {
+	t.Parallel()
+
+	ctx := schemas.NewBifrostContext(nil, time.Time{})
+	ctx.SetValue(schemas.BifrostContextKeyIntegrationType, "anthropic")
+
+	state := AcquireAnthropicResponsesStreamState()
+	defer ReleaseAnthropicResponsesStreamState(state)
+
+	explanation := "This request involves prohibited content."
+	chunk := &AnthropicStreamEvent{
+		Type: AnthropicStreamEventTypeMessageDelta,
+		Delta: &AnthropicStreamDelta{
+			StopReason: schemas.Ptr(AnthropicStopReasonRefusal),
+			StopDetails: &AnthropicStopDetails{
+				Type:        "refusal",
+				Explanation: &explanation,
+			},
+		},
+	}
+
+	responses, err, isLast := chunk.ToBifrostResponsesStream(ctx, 0, state)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if isLast {
+		t.Error("should not be last chunk")
+	}
+	if len(responses) != 1 {
+		t.Fatalf("expected 1 response for message_delta, got %d", len(responses))
+	}
+
+	resp := responses[0].Response
+	if resp == nil {
+		t.Fatal("expected non-nil Response on message_delta event")
+	}
+	if resp.Status == nil || *resp.Status != schemas.ResponsesResponseStatusIncomplete {
+		t.Errorf("Status = %v, want %q", resp.Status, schemas.ResponsesResponseStatusIncomplete)
+	}
+	if resp.IncompleteDetails == nil {
+		t.Fatal("expected IncompleteDetails to be set")
+	}
+	if resp.IncompleteDetails.Reason != schemas.ResponsesResponseIncompleteReasonContentFilter {
+		t.Errorf("IncompleteDetails.Reason = %q, want %q", resp.IncompleteDetails.Reason, schemas.ResponsesResponseIncompleteReasonContentFilter)
+	}
+}
+
+// TestToBifrostChatCompletionStream_RefusalMessageDelta verifies that a streaming
+// Chat Completions message_delta event carrying stop_reason "refusal" surfaces
+// the explanation via delta.refusal on the final chunk.
+func TestToBifrostChatCompletionStream_RefusalMessageDelta(t *testing.T) {
+	t.Parallel()
+
+	explanation := "This request involves prohibited content."
+	usage := &schemas.BifrostLLMUsage{}
+	finishReason := "content_filter"
+
+	response := providerUtils.CreateBifrostChatCompletionChunkResponse("msg_test", usage, &finishReason, 0, "claude-fable-5", 0)
+	if len(response.Choices) == 0 || response.Choices[0].ChatStreamResponseChoice == nil || response.Choices[0].ChatStreamResponseChoice.Delta == nil {
+		t.Fatal("expected a stream-choice delta to attach Refusal to")
+	}
+	response.Choices[0].ChatStreamResponseChoice.Delta.Refusal = &explanation
+
+	if response.Choices[0].ChatStreamResponseChoice.Delta.Refusal == nil {
+		t.Fatal("expected Delta.Refusal to be set")
+	}
+	if *response.Choices[0].ChatStreamResponseChoice.Delta.Refusal != explanation {
+		t.Errorf("Delta.Refusal = %q, want %q", *response.Choices[0].ChatStreamResponseChoice.Delta.Refusal, explanation)
+	}
+	if response.Choices[0].FinishReason == nil || *response.Choices[0].FinishReason != "content_filter" {
+		t.Errorf("FinishReason = %v, want %q", response.Choices[0].FinishReason, "content_filter")
 	}
 }

@@ -881,6 +881,7 @@ func HandleAnthropicChatCompletionStreaming(
 		var messageID string
 		var modelName string
 		var finishReason *string
+		var refusalExplanation *string
 
 		usage := &schemas.BifrostLLMUsage{}
 		// Served billing modifiers (top-level response fields, not usage) captured
@@ -1042,6 +1043,16 @@ func HandleAnthropicChatCompletionStreaming(
 					stopReason := string(schemas.BifrostFinishReasonStop)
 					finishReason = &stopReason
 				}
+
+				// Surface a safety-classifier decline via OpenAI's native
+				// delta.refusal field, mirroring the non-streaming path.
+				if *event.Delta.StopReason == AnthropicStopReasonRefusal {
+					if event.Delta.StopDetails != nil && event.Delta.StopDetails.Explanation != nil {
+						refusalExplanation = event.Delta.StopDetails.Explanation
+					} else {
+						refusalExplanation = schemas.Ptr("The model declined to respond.")
+					}
+				}
 			}
 
 			// Handle structured output: intercept tool calls for the structured output tool
@@ -1134,6 +1145,9 @@ func HandleAnthropicChatCompletionStreaming(
 		}
 		normalizeUsage()
 		response := providerUtils.CreateBifrostChatCompletionChunkResponse(messageID, usage, finishReason, chunkIndex, modelName, 0)
+		if refusalExplanation != nil && len(response.Choices) > 0 && response.Choices[0].ChatStreamResponseChoice != nil && response.Choices[0].ChatStreamResponseChoice.Delta != nil {
+			response.Choices[0].ChatStreamResponseChoice.Delta.Refusal = refusalExplanation
+		}
 		if postResponseConverter != nil {
 			response = postResponseConverter(response)
 			if response == nil {

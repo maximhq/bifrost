@@ -73,6 +73,7 @@ type AnthropicResponsesStreamState struct {
 	MessageID                 *string                           // Message ID from message_start
 	Model                     *string                           // Model name from message_start
 	StopReason                *string                           // Stop reason for the message
+	StopDetails               *AnthropicStopDetails             // Refusal detail (only set when the raw stop_reason was "refusal")
 	CreatedAt                 int                               // Timestamp for created_at consistency
 	HasEmittedCreated         bool                              // Whether we've emitted response.created
 	HasEmittedInProgress      bool                              // Whether we've emitted response.in_progress
@@ -2152,6 +2153,13 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 				mapped = string(schemas.BifrostFinishReasonStop)
 			}
 			state.StopReason = &mapped
+			if *chunk.Delta.StopReason == AnthropicStopReasonRefusal {
+				if chunk.Delta.StopDetails != nil {
+					state.StopDetails = chunk.Delta.StopDetails
+				} else {
+					state.StopDetails = &AnthropicStopDetails{Type: "refusal"}
+				}
+			}
 		}
 		// Check if integration type in ctx is anthropic
 		if ctx.Value(schemas.BifrostContextKeyIntegrationType) == "anthropic" {
@@ -2176,6 +2184,12 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 			}
 			if stopReason != nil {
 				response.StopReason = stopReason
+			}
+			if state.StopDetails != nil {
+				response.Status = schemas.Ptr(schemas.ResponsesResponseStatusIncomplete)
+				response.IncompleteDetails = &schemas.ResponsesResponseIncompleteDetails{
+					Reason: schemas.ResponsesResponseIncompleteReasonContentFilter,
+				}
 			}
 			if bifrostUsage != nil {
 				response.Usage = bifrostUsage
@@ -2219,6 +2233,12 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 		}
 		if state.StopReason != nil {
 			response.StopReason = state.StopReason
+		}
+		if state.StopDetails != nil {
+			response.Status = schemas.Ptr(schemas.ResponsesResponseStatusIncomplete)
+			response.IncompleteDetails = &schemas.ResponsesResponseIncompleteDetails{
+				Reason: schemas.ResponsesResponseIncompleteReasonContentFilter,
+			}
 		}
 
 		// Fold the sandbox container (delivered on the final message_delta) onto
