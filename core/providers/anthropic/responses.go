@@ -3887,6 +3887,15 @@ func (response *AnthropicMessageResponse) ToBifrostResponsesResponse(ctx *schema
 		bifrostResp.StopReason = &mapped
 	}
 
+	// Surface a safety-classifier decline via the OpenAI-native status/incomplete_details
+	// shape, using the already-defined "content_filter" reason constant.
+	if response.StopReason == AnthropicStopReasonRefusal {
+		bifrostResp.Status = schemas.Ptr(schemas.ResponsesResponseStatusIncomplete)
+		bifrostResp.IncompleteDetails = &schemas.ResponsesResponseIncompleteDetails{
+			Reason: schemas.ResponsesResponseIncompleteReasonContentFilter,
+		}
+	}
+
 	if response.Usage != nil && response.Usage.ServiceTier != nil {
 		mapped := MapAnthropicServiceTierToBifrost(*response.Usage.ServiceTier)
 		bifrostResp.ServiceTier = &mapped
@@ -3976,6 +3985,13 @@ func ToAnthropicResponsesResponse(ctx *schemas.BifrostContext, bifrostResp *sche
 				break
 			}
 		}
+	}
+
+	// Round-trip the OpenAI-native incomplete_details/content_filter shape back into
+	// Anthropic's stop_reason/stop_details, keeping the two in sync.
+	if bifrostResp.IncompleteDetails != nil && bifrostResp.IncompleteDetails.Reason == schemas.ResponsesResponseIncompleteReasonContentFilter {
+		anthropicResp.StopReason = AnthropicStopReasonRefusal
+		anthropicResp.StopDetails = &AnthropicStopDetails{Type: "refusal"}
 	}
 
 	anthropicResp.Model = bifrostResp.Model

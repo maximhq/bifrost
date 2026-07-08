@@ -1566,6 +1566,15 @@ const (
 	AnthropicStopReasonCompaction                 AnthropicStopReason = "compaction"
 )
 
+// AnthropicStopDetails carries structured information about why the model stopped,
+// populated only when StopReason is "refusal". Category is one of "cyber", "bio",
+// "reasoning_extraction", "frontier_llm", or absent (Anthropic may omit it entirely).
+type AnthropicStopDetails struct {
+	Type        string  `json:"type"` // always "refusal"
+	Category    *string `json:"category,omitempty"`
+	Explanation *string `json:"explanation,omitempty"`
+}
+
 // AnthropicResponseContainer is the "container" object returned on responses
 // that used the code execution tool. The id can be passed back as the request
 // "container" to reuse the sandbox across turns.
@@ -1583,6 +1592,7 @@ type AnthropicMessageResponse struct {
 	Content      []AnthropicContentBlock `json:"content"`
 	Model        string                  `json:"model"`
 	StopReason   AnthropicStopReason     `json:"stop_reason,omitempty"`
+	StopDetails  *AnthropicStopDetails   `json:"stop_details,omitempty"` // populated only when StopReason is "refusal"
 	StopSequence *string                 `json:"stop_sequence,omitempty"`
 	Usage        *AnthropicUsage         `json:"usage,omitempty"`
 	// Container is the code-execution sandbox container, present on responses that

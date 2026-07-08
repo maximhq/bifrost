@@ -450,6 +450,21 @@ func TestToBifrostResponsesResponse_PreservesStopReason(t *testing.T) {
 			stopReason:         AnthropicStopReasonMaxTokens,
 			expectedStopReason: "length",
 		},
+		{
+			name:               "refusal stop reason maps to content_filter",
+			stopReason:         AnthropicStopReasonRefusal,
+			expectedStopReason: "content_filter",
+		},
+		{
+			name:               "pause_turn stop reason maps to stop",
+			stopReason:         AnthropicStopReasonPauseTurn,
+			expectedStopReason: "stop",
+		},
+		{
+			name:               "model_context_window_exceeded stop reason maps to length",
+			stopReason:         AnthropicStopReasonModelContextWindowExceeded,
+			expectedStopReason: "length",
+		},
 	}
 
 	for _, tt := range tests {
@@ -524,6 +539,11 @@ func TestToAnthropicResponsesResponse_StopReasonFromBifrost(t *testing.T) {
 			name:           "tool_use mapped from tool_calls",
 			stopReason:     schemas.Ptr("tool_calls"),
 			expectedReason: AnthropicStopReasonToolUse,
+		},
+		{
+			name:           "refusal mapped from content_filter",
+			stopReason:     schemas.Ptr("content_filter"),
+			expectedReason: AnthropicStopReasonRefusal,
 		},
 		{
 			name:           "nil stop_reason defaults to end_turn",
