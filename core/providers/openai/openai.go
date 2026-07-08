@@ -2576,6 +2576,22 @@ func (provider *OpenAIProvider) Transcription(ctx *schemas.BifrostContext, key s
 	)
 }
 
+// openAIDiarizedTranscriptionResponse mirrors OpenAI's response_format=diarized_json
+// wire shape (e.g. gpt-4o-transcribe-diarize), which uses a distinct segment
+// shape (string id, speaker, type) that doesn't fit TranscriptionSegment, so
+// it's decoded separately instead of directly into BifrostTranscriptionResponse.
+// Duration/Task are pointers because OpenAI's actual responses omit them
+// entirely (despite the openai-python SDK's TranscriptionDiarized model
+// listing both as required), and a zero-value default would fabricate data
+// that never existed upstream.
+type openAIDiarizedTranscriptionResponse struct {
+	Duration *float64                               `json:"duration,omitempty"`
+	Segments []schemas.TranscriptionDiarizedSegment `json:"segments"`
+	Task     *string                                `json:"task,omitempty"`
+	Text     string                                 `json:"text"`
+	Usage    *schemas.TranscriptionUsage            `json:"usage,omitempty"`
+}
+
 func HandleOpenAITranscriptionRequest(
 	ctx *schemas.BifrostContext,
 	client *fasthttp.Client,
@@ -2601,7 +2617,17 @@ func HandleOpenAITranscriptionRequest(
 		// Unmarshal the upstream response body to preserve transcription text and fields
 		if len(lpResult.ResponseBody) > 0 {
 			response := &schemas.BifrostTranscriptionResponse{}
-			if err := sonic.Unmarshal(lpResult.ResponseBody, response); err != nil {
+			if request.Params != nil && schemas.IsDiarizedTranscriptionFormat(request.Params.ResponseFormat) {
+				var diarized openAIDiarizedTranscriptionResponse
+				if err := sonic.Unmarshal(lpResult.ResponseBody, &diarized); err != nil {
+					return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err)
+				}
+				response.Duration = diarized.Duration
+				response.Task = diarized.Task
+				response.Text = diarized.Text
+				response.DiarizedSegments = diarized.Segments
+				response.Usage = diarized.Usage
+			} else if err := sonic.Unmarshal(lpResult.ResponseBody, response); err != nil {
 				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err)
 			}
 			response.ExtraFields = schemas.BifrostResponseExtraFields{Latency: lpResult.Latency}
@@ -2698,6 +2724,37 @@ func HandleOpenAITranscriptionRequest(
 		response.Text = string(copiedResponseBody)
 		if sendBackRawResponse {
 			rawResponse = string(copiedResponseBody)
+		}
+	} else if request.Params != nil && schemas.IsDiarizedTranscriptionFormat(request.Params.ResponseFormat) {
+		var diarized openAIDiarizedTranscriptionResponse
+		if err := sonic.Unmarshal(copiedResponseBody, &diarized); err != nil {
+			if providerUtils.IsHTMLResponse(resp, copiedResponseBody) {
+				return nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
+					IsBifrostError: false,
+					Error: &schemas.ErrorField{
+						Message: schemas.ErrProviderResponseHTML,
+						Error:   errors.New(string(copiedResponseBody)),
+					},
+				}, latency)
+			}
+			return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err), latency)
+		}
+
+		// Duration/Task are decoded as pointers so an upstream response that
+		// omits them (as OpenAI's diarized_json actually does today, despite
+		// the SDK's TranscriptionDiarized model listing both as required)
+		// stays omitted here too, instead of fabricating "duration":0 /
+		// "task":"" that never existed in the real response.
+		response.Duration = diarized.Duration
+		response.Task = diarized.Task
+		response.Text = diarized.Text
+		response.DiarizedSegments = diarized.Segments
+		response.Usage = diarized.Usage
+
+		if sendBackRawResponse {
+			if err := sonic.Unmarshal(copiedResponseBody, &rawResponse); err != nil {
+				return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError(schemas.ErrProviderRawResponseUnmarshal, err), latency)
+			}
 		}
 	} else if customResponseHandler != nil {
 		_, rawResponse, bifrostErr = customResponseHandler(copiedResponseBody, response, nil, false, sendBackRawResponse)

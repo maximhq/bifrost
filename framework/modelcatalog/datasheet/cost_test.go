@@ -1527,7 +1527,7 @@ func TestExtractCostInput_ImageResponse(t *testing.T) {
 }
 
 func TestExtractCostInput_TranscriptionWithSeconds(t *testing.T) {
-	sec := 60
+	sec := 60.0
 	resp := &schemas.BifrostResponse{
 		TranscriptionResponse: &schemas.BifrostTranscriptionResponse{
 			Usage: &schemas.TranscriptionUsage{
