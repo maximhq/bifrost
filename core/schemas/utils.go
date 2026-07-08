@@ -760,6 +760,9 @@ func DeepCopyChatMessage(original ChatMessage) ChatMessage {
 					copyName := *toolCall.Function.Name
 					copyToolCall.Function.Name = &copyName
 				}
+				if len(toolCall.ExtraContent) > 0 {
+					copyToolCall.ExtraContent = append(json.RawMessage(nil), toolCall.ExtraContent...)
+				}
 				copy.ChatAssistantMessage.ToolCalls[i] = copyToolCall
 			}
 		}

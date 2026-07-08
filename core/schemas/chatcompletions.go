@@ -1553,7 +1553,8 @@ type ChatStreamResponseChoiceDelta struct {
 	Audio            *ChatAudioMessageAudio         `json:"audio,omitempty"`     // Audio data if any
 	Reasoning        *string                        `json:"reasoning,omitempty"` // May be empty string or null
 	ReasoningDetails []ChatReasoningDetails         `json:"reasoning_details,omitempty"`
-	ToolCalls        []ChatAssistantMessageToolCall `json:"tool_calls,omitempty"` // If tool calls used (supports incremental updates)
+	ToolCalls        []ChatAssistantMessageToolCall `json:"tool_calls,omitempty"`    // If tool calls used (supports incremental updates)
+	ExtraContent     json.RawMessage                `json:"extra_content,omitempty"` // Provider-specific metadata (e.g. Gemini thought markers, thought_signature)
 }
 
 // UnmarshalJSON implements custom unmarshalling for ChatStreamResponseChoiceDelta.
