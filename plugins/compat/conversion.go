@@ -4,17 +4,83 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+// compatContextKey is a private context key type to avoid collisions with keys
+// defined by other packages.
+type compatContextKey string
+
+// namespaceToolMapContextKey stores the map from a flattened tool name to its
+// originating namespace name. It is populated by flattenNamespaceTools when
+// namespace-scoped tools are expanded, and consumed by PostLLMHook to re-attach
+// the namespace to the provider's function_call items.
+const namespaceToolMapContextKey compatContextKey = "compat-namespace-tool-map"
+
 // applyParameterConversion rewrites request fields in place for provider compatibility.
-func applyParameterConversion(req *schemas.BifrostRequest) {
+func applyParameterConversion(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) {
 	if req == nil {
 		return
 	}
 	if req.ResponsesRequest != nil {
-		flattenNamespaceTools(req.ResponsesRequest)
+		namespaceByTool := flattenNamespaceTools(req.ResponsesRequest)
+		// Always record the (possibly nil) mapping for the current attempt so a
+		// later fallback that does not flatten (e.g. OpenAI) does not observe a
+		// stale mapping from a previous attempt in PostLLMHook.
+		if ctx != nil {
+			ctx.SetValue(namespaceToolMapContextKey, namespaceByTool)
+		}
 		disableThinkingWithToolChoiceForResponses(req.ResponsesRequest)
 	}
 	if req.ChatRequest != nil {
 		disableThinkingWithToolChoice(req.ChatRequest)
+	}
+}
+
+// restoreNamespaceOnResponse re-attaches the namespace to function_call items in a
+// responses result (streaming or non-streaming). When flattenNamespaceTools expands
+// namespace-scoped tools for providers that don't support the "namespace" tool type,
+// the provider returns function_call items without the namespace field. Clients that
+// rely on namespace tools (e.g. Codex) identify a tool by its (namespace, name) pair,
+// so a missing namespace surfaces as an "unsupported tool <name>" error. This restores
+// the namespace that flattening stripped.
+func restoreNamespaceOnResponse(result *schemas.BifrostResponse, namespaceByTool map[string]string) {
+	if result == nil || len(namespaceByTool) == 0 {
+		return
+	}
+	if result.ResponsesResponse != nil {
+		restoreNamespaceOnMessages(result.ResponsesResponse.Output, namespaceByTool)
+	}
+	if stream := result.ResponsesStreamResponse; stream != nil {
+		// output_item.added / output_item.done events carry the function_call item.
+		restoreNamespaceOnMessage(stream.Item, namespaceByTool)
+		// response.completed carries the full output array.
+		if stream.Response != nil {
+			restoreNamespaceOnMessages(stream.Response.Output, namespaceByTool)
+		}
+	}
+}
+
+// restoreNamespaceOnMessages re-attaches namespaces to every function_call item in the slice.
+func restoreNamespaceOnMessages(messages []schemas.ResponsesMessage, namespaceByTool map[string]string) {
+	for i := range messages {
+		restoreNamespaceOnMessage(&messages[i], namespaceByTool)
+	}
+}
+
+// restoreNamespaceOnMessage re-attaches the namespace to a single function_call item when
+// its name maps to a flattened namespace and the provider did not already supply one.
+func restoreNamespaceOnMessage(msg *schemas.ResponsesMessage, namespaceByTool map[string]string) {
+	if msg == nil || msg.Type == nil || *msg.Type != schemas.ResponsesMessageTypeFunctionCall {
+		return
+	}
+	tm := msg.ResponsesToolMessage
+	if tm == nil || tm.Name == nil {
+		return
+	}
+	// Never overwrite a namespace the provider already supplied.
+	if tm.Namespace != nil && *tm.Namespace != "" {
+		return
+	}
+	if namespace, ok := namespaceByTool[*tm.Name]; ok && namespace != "" {
+		tm.Namespace = &namespace
 	}
 }
 
@@ -53,13 +119,17 @@ func disableThinking(extraParams map[string]any) map[string]any {
 }
 
 // flattenNamespaceTools expands namespace scoped tools into a flat list of tools.
-func flattenNamespaceTools(req *schemas.BifrostResponsesRequest) {
+// It returns a map from each expanded tool's name to its originating namespace
+// name, so the namespace can be re-attached to the provider's function_call
+// items later (see restoreNamespaceOnResponse). Returns nil when no namespace
+// tool was flattened.
+func flattenNamespaceTools(req *schemas.BifrostResponsesRequest) map[string]string {
 	if req == nil || req.Params == nil {
-		return
+		return nil
 	}
 	// ignore openai models or azure hosted openai models
 	if req.Provider == schemas.OpenAI || (req.Provider == schemas.Azure && !schemas.IsAnthropicModel(req.Model)) {
-		return
+		return nil
 	}
 	hasNamespace := false
 	finalSize := len(req.Params.Tools)
@@ -71,15 +141,33 @@ func flattenNamespaceTools(req *schemas.BifrostResponsesRequest) {
 		hasNamespace = true
 	}
 	if !hasNamespace {
-		return
+		return nil
 	}
+	var namespaceByTool map[string]string
 	flattened := make([]schemas.ResponsesTool, 0, finalSize)
 	for _, tool := range req.Params.Tools {
 		if tool.Type != schemas.ResponsesToolTypeNamespace {
 			flattened = append(flattened, tool)
-		} else if tool.ResponsesToolNamespace != nil && tool.ResponsesToolNamespace.Tools != nil {
-			flattened = append(flattened, tool.ResponsesToolNamespace.Tools...)
+			continue
+		}
+		if tool.ResponsesToolNamespace == nil || tool.ResponsesToolNamespace.Tools == nil {
+			continue
+		}
+		namespace := ""
+		if tool.Name != nil {
+			namespace = *tool.Name
+		}
+		for _, inner := range tool.ResponsesToolNamespace.Tools {
+			flattened = append(flattened, inner)
+			if namespace == "" || inner.Name == nil || *inner.Name == "" {
+				continue
+			}
+			if namespaceByTool == nil {
+				namespaceByTool = make(map[string]string)
+			}
+			namespaceByTool[*inner.Name] = namespace
 		}
 	}
 	req.Params.Tools = flattened
+	return namespaceByTool
 }
