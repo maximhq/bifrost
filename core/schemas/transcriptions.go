@@ -1,10 +1,6 @@
 package schemas
 
-import (
-	"encoding/json"
-
-	"github.com/bytedance/sonic"
-)
+import "encoding/json"
 
 type BifrostTranscriptionRequest struct {
 	Provider       ModelProvider            `json:"provider"`
@@ -45,15 +41,24 @@ type BifrostTranscriptionResponse struct {
 // verbose_json's Optional segments), so a zero-segment diarized response
 // (e.g. silent audio) must still emit "segments":[] rather than omit the
 // key, or OpenAI SDK clients parsing it will fail on a missing required field.
+//
+// An "is_diarized" marker is also written whenever DiarizedSegments is set,
+// including when empty: an empty JSON array unmarshals successfully into
+// either segment type, so a zero-length diarized response has no shape of
+// its own for UnmarshalJSON to sniff. Real OpenAI SDK clients tolerate the
+// extra field (their generated models use extra="allow"); it exists purely
+// so Bifrost's own round-trip (e.g. framework/logstore's persist/reload) can
+// disambiguate the empty case.
 func (r BifrostTranscriptionResponse) MarshalJSON() ([]byte, error) {
 	type Alias BifrostTranscriptionResponse
 	if r.DiarizedSegments != nil {
-		return sonic.Marshal(&struct {
-			Segments []TranscriptionDiarizedSegment `json:"segments"`
+		return json.Marshal(&struct {
+			Segments   []TranscriptionDiarizedSegment `json:"segments"`
+			IsDiarized bool                           `json:"is_diarized,omitempty"`
 			Alias
-		}{Segments: r.DiarizedSegments, Alias: Alias(r)})
+		}{Segments: r.DiarizedSegments, IsDiarized: true, Alias: Alias(r)})
 	}
-	return sonic.Marshal(Alias(r))
+	return json.Marshal(Alias(r))
 }
 
 // UnmarshalJSON is the symmetric counterpart to MarshalJSON: since both
@@ -64,31 +69,49 @@ func (r BifrostTranscriptionResponse) MarshalJSON() ([]byte, error) {
 // hook on every read, so a diarized response must round-trip back into
 // DiarizedSegments (string id/speaker/type), not get mis-decoded as
 // TranscriptionSegment (int id) and fail or silently corrupt the data.
-// The shape is disambiguated by attempting verbose_json's int-id segments
-// first and falling back to the diarized string-id shape on a type mismatch.
+//
+// The "is_diarized" marker (see MarshalJSON) is authoritative when present.
+// Data persisted before this marker existed won't have it, so as a fallback
+// the shape is sniffed by attempting verbose_json's int-id segments first
+// and falling back to the diarized string-id shape on a type mismatch - this
+// fallback can't distinguish an empty verbose array from an empty diarized
+// one, which is exactly why new writes always include the marker.
 func (r *BifrostTranscriptionResponse) UnmarshalJSON(data []byte) error {
 	type Alias BifrostTranscriptionResponse
 	aux := &struct {
-		Segments json.RawMessage `json:"segments"`
+		Segments   json.RawMessage `json:"segments"`
+		IsDiarized bool            `json:"is_diarized,omitempty"`
 		*Alias
 	}{Alias: (*Alias)(r)}
 
-	if err := sonic.Unmarshal(data, aux); err != nil {
+	if err := json.Unmarshal(data, aux); err != nil {
 		return err
 	}
 
 	if len(aux.Segments) == 0 || string(aux.Segments) == "null" {
+		if aux.IsDiarized {
+			r.DiarizedSegments = []TranscriptionDiarizedSegment{}
+		}
+		return nil
+	}
+
+	if aux.IsDiarized {
+		var diarized []TranscriptionDiarizedSegment
+		if err := json.Unmarshal(aux.Segments, &diarized); err != nil {
+			return err
+		}
+		r.DiarizedSegments = diarized
 		return nil
 	}
 
 	var verbose []TranscriptionSegment
-	if err := sonic.Unmarshal(aux.Segments, &verbose); err == nil {
+	if err := json.Unmarshal(aux.Segments, &verbose); err == nil {
 		r.Segments = verbose
 		return nil
 	}
 
 	var diarized []TranscriptionDiarizedSegment
-	if err := sonic.Unmarshal(aux.Segments, &diarized); err != nil {
+	if err := json.Unmarshal(aux.Segments, &diarized); err != nil {
 		return err
 	}
 	r.DiarizedSegments = diarized

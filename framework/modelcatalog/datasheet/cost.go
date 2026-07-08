@@ -375,8 +375,7 @@ func extractTranscriptionUsage(u *schemas.TranscriptionUsage) (*schemas.BifrostL
 
 	var audioSeconds *int
 	if u.Seconds != nil {
-		secs := int(*u.Seconds)
-		audioSeconds = &secs
+		audioSeconds = new(int(*u.Seconds))
 	}
 
 	return usage, audioSeconds, audioTokenDetails

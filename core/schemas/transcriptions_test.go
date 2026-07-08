@@ -200,3 +200,68 @@ func TestBifrostTranscriptionResponse_RoundTrip_NoSegments(t *testing.T) {
 		t.Fatalf("expected text to survive round-trip, got %q", reloaded.Text)
 	}
 }
+
+// TestBifrostTranscriptionResponse_RoundTrip_DiarizedEmpty is the regression
+// case flagged in review: an empty JSON array unmarshals successfully into
+// either segment type, so without the "is_diarized" marker a diarized
+// response with zero segments (e.g. silent/very short audio) would always be
+// misclassified as an empty verbose Segments on reload, silently losing its
+// diarized identity (and, on the next re-marshal, losing the "segments" key
+// entirely too, since OpenAI's diarized_json treats it as required).
+func TestBifrostTranscriptionResponse_RoundTrip_DiarizedEmpty(t *testing.T) {
+	original := &BifrostTranscriptionResponse{
+		Text:             "",
+		DiarizedSegments: []TranscriptionDiarizedSegment{}, // non-nil, zero-length
+	}
+
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("marshal error: %v", err)
+	}
+
+	var reloaded BifrostTranscriptionResponse
+	if err := json.Unmarshal(data, &reloaded); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+
+	if reloaded.DiarizedSegments == nil {
+		t.Fatalf("expected DiarizedSegments to stay non-nil (empty) after reloading an empty diarized response, got nil (misclassified as verbose)")
+	}
+	if len(reloaded.DiarizedSegments) != 0 {
+		t.Fatalf("expected 0 diarized segments, got %d", len(reloaded.DiarizedSegments))
+	}
+	if len(reloaded.Segments) != 0 {
+		t.Fatalf("expected verbose Segments to stay empty, got %+v", reloaded.Segments)
+	}
+
+	// The reloaded value must itself still round-trip with "segments":[]
+	// present (not omitted), matching OpenAI's diarized_json contract.
+	reMarshaled, err := json.Marshal(&reloaded)
+	if err != nil {
+		t.Fatalf("re-marshal error: %v", err)
+	}
+	var decoded map[string]interface{}
+	if err := json.Unmarshal(reMarshaled, &decoded); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if _, present := decoded["segments"]; !present {
+		t.Fatalf(`expected "segments" key to survive a second round-trip, got: %s`, reMarshaled)
+	}
+}
+
+// TestBifrostTranscriptionResponse_UnmarshalJSON_LegacyDiarizedNoMarker
+// confirms backward compatibility with diarized data persisted before the
+// "is_diarized" marker existed: non-empty segments still get shape-sniffed
+// correctly by attempting the verbose int-id shape first and falling back to
+// diarized on a type mismatch, exactly as before this fix.
+func TestBifrostTranscriptionResponse_UnmarshalJSON_LegacyDiarizedNoMarker(t *testing.T) {
+	legacyJSON := `{"text":"Hi","segments":[{"id":"seg_0","type":"transcript.text.segment","speaker":"A","start":0,"end":1.2,"text":"Hi"}]}`
+
+	var reloaded BifrostTranscriptionResponse
+	if err := json.Unmarshal([]byte(legacyJSON), &reloaded); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if len(reloaded.DiarizedSegments) != 1 || reloaded.DiarizedSegments[0].ID != "seg_0" {
+		t.Fatalf("expected legacy (unmarked) diarized data to still be sniffed correctly, got %+v", reloaded.DiarizedSegments)
+	}
+}

@@ -262,12 +262,10 @@ func extractOAITranscriptionUsage(body []byte) *schemas.BifrostPassthroughUsage 
 			}
 		}
 		if r.Usage.Seconds != nil {
-			secs := int(*r.Usage.Seconds)
-			u.AudioSeconds = &secs
+			u.AudioSeconds = new(int(*r.Usage.Seconds))
 		}
 	} else if r.Duration > 0 {
-		secs := int(r.Duration)
-		u.AudioSeconds = &secs
+		u.AudioSeconds = new(int(r.Duration))
 	}
 	if u.LLMUsage == nil && u.AudioSeconds == nil {
 		return nil
