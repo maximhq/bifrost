@@ -206,10 +206,10 @@ type RedactedKeysManager interface {
 
 // LogRedactionMappingResolver optionally exposes decoded redaction mappings on log-detail responses.
 type LogRedactionMappingResolver interface {
-	// ResolveLogRedactionMapping returns a placeholder-to-original mapping when the caller may reveal it.
+	// ResolveLogRedactionMapping returns phase-scoped placeholder-to-original mappings when the caller may reveal them.
 	// Implementations should return nil, nil when the caller is not authorized or no mapping is available.
 	// Errors are treated as reveal-data failures only; the base log detail response is still served.
-	ResolveLogRedactionMapping(ctx *fasthttp.RequestCtx, log *logstore.Log) (map[string]string, error)
+	ResolveLogRedactionMapping(ctx *fasthttp.RequestCtx, log *logstore.Log) (*schemas.RedactionMapsByPhase, error)
 }
 
 // NewLoggingHandler creates a new logging handler instance
@@ -620,7 +620,7 @@ func (h *LoggingHandler) getLogByID(ctx *fasthttp.RequestCtx) {
 		mapping, err := h.logRedactionMappingResolver.ResolveLogRedactionMapping(ctx, log)
 		if err != nil {
 			logger.Error("failed to resolve redaction mapping for log %s: %v", id, err)
-		} else if len(mapping) > 0 {
+		} else if mapping != nil && mapping.HasReplacements() {
 			log.RevealRedactionMapping = mapping
 		}
 	}

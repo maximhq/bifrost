@@ -6,10 +6,57 @@ import (
 	"strings"
 )
 
+// RedactionPhase identifies which request lifecycle phase produced a redaction finding.
+type RedactionPhase string
+
+const (
+	// RedactionPhaseInput marks redaction findings discovered while inspecting request-side content.
+	RedactionPhaseInput RedactionPhase = "input"
+	// RedactionPhaseOutput marks redaction findings discovered while inspecting response-side content.
+	RedactionPhaseOutput RedactionPhase = "output"
+)
+
 // RedactionData carries request-scoped redaction data from guardrails to log and trace sinks.
 type RedactionData struct {
-	ReversibleMappings  map[string]string `json:"reversible_mappings,omitempty"`
-	LiteralReplacements map[string]string `json:"literal_replacements,omitempty"`
+	LiteralReplacements RedactionMapsByPhase `json:"literal_replacements,omitempty"`
+	ReversibleMappings  RedactionMapsByPhase `json:"reversible_mappings,omitempty"`
+}
+
+// RedactionMapsByPhase stores replacement maps separately for request and response content.
+type RedactionMapsByPhase struct {
+	Input  map[string]string `json:"input,omitempty"`
+	Output map[string]string `json:"output,omitempty"`
+}
+
+// Clone returns an owned copy of the phase-scoped maps.
+func (m RedactionMapsByPhase) Clone() RedactionMapsByPhase {
+	return RedactionMapsByPhase{
+		Input:  maps.Clone(m.Input),
+		Output: maps.Clone(m.Output),
+	}
+}
+
+// HasReplacements reports whether either phase has replacement entries.
+func (m RedactionMapsByPhase) HasReplacements() bool {
+	return len(m.Input) > 0 || len(m.Output) > 0
+}
+
+// MergePhase merges replacements into one phase, copying entries so callers cannot mutate stored state.
+func (m *RedactionMapsByPhase) MergePhase(phase RedactionPhase, replacements map[string]string) {
+	if m == nil || len(replacements) == 0 {
+		return
+	}
+	switch phase {
+	case RedactionPhaseInput:
+		m.Input = mergeRedactionStringMaps(m.Input, replacements)
+	case RedactionPhaseOutput:
+		m.Output = mergeRedactionStringMaps(m.Output, replacements)
+	}
+}
+
+// MergedForMixedFields returns both phase maps for fields that can contain input and output.
+func (m RedactionMapsByPhase) MergedForMixedFields() map[string]string {
+	return mergeRedactionStringMaps(m.Input, m.Output)
 }
 
 // Clone returns an owned snapshot of the redaction data maps.
@@ -21,9 +68,14 @@ type RedactionData struct {
 // contain immutable strings.
 func (d RedactionData) Clone() RedactionData {
 	return RedactionData{
-		ReversibleMappings:  maps.Clone(d.ReversibleMappings),
-		LiteralReplacements: maps.Clone(d.LiteralReplacements),
+		LiteralReplacements: d.LiteralReplacements.Clone(),
+		ReversibleMappings:  d.ReversibleMappings.Clone(),
 	}
+}
+
+// HasReplacements reports whether any reversible or literal redaction data is present.
+func (d RedactionData) HasReplacements() bool {
+	return d.LiteralReplacements.HasReplacements() || d.ReversibleMappings.HasReplacements()
 }
 
 // RedactionDataFromContext returns the redaction data stored on ctx.
@@ -32,7 +84,7 @@ func RedactionDataFromContext(ctx *BifrostContext) (RedactionData, bool) {
 		return RedactionData{}, false
 	}
 	data, ok := ctx.Value(BifrostContextKeyRedactionData).(RedactionData)
-	if !ok || (len(data.ReversibleMappings) == 0 && len(data.LiteralReplacements) == 0) {
+	if !ok || !data.HasReplacements() {
 		return RedactionData{}, false
 	}
 	return data, true
@@ -40,7 +92,7 @@ func RedactionDataFromContext(ctx *BifrostContext) (RedactionData, bool) {
 
 // SetRedactionDataOnContext stores non-empty redaction data on ctx.
 func SetRedactionDataOnContext(ctx *BifrostContext, data RedactionData) bool {
-	if ctx == nil || (len(data.ReversibleMappings) == 0 && len(data.LiteralReplacements) == 0) {
+	if ctx == nil || !data.HasReplacements() {
 		return false
 	}
 	ctx.SetValue(BifrostContextKeyRedactionData, data)
@@ -49,23 +101,7 @@ func SetRedactionDataOnContext(ctx *BifrostContext, data RedactionData) bool {
 
 // IsContentAttribute reports whether a span attribute may carry user or model content.
 func IsContentAttribute(key string) bool {
-	switch key {
-	case AttrInputMessages, AttrOutputMessages,
-		AttrInputText, AttrInputSpeech,
-		AttrInputEmbedding,
-		AttrPrompt, AttrInstructions,
-		AttrRespReasoningText:
-		return true
-	case AttrTools, AttrRespTools,
-		AttrToolName, AttrToolCallID,
-		AttrToolCallArguments, AttrToolCallResult,
-		AttrToolType,
-		AttrToolChoiceType, AttrToolChoiceName,
-		AttrRespToolChoiceType, AttrRespToolChoiceName:
-		return true
-	default:
-		return false
-	}
+	return traceContentAttributeScopeForKey(key) != traceContentAttributeScopeNone
 }
 
 // ApplyLiteralReplacements performs deterministic best-effort string redaction.
@@ -129,4 +165,19 @@ func RedactAttributeValue(value any, replacements map[string]string) any {
 	default:
 		return value
 	}
+}
+
+// mergeRedactionStringMaps returns a copied map containing both map values, with next taking precedence.
+func mergeRedactionStringMaps(current map[string]string, next map[string]string) map[string]string {
+	if len(current) == 0 && len(next) == 0 {
+		return nil
+	}
+	merged := maps.Clone(current)
+	if merged == nil {
+		merged = make(map[string]string, len(next))
+	}
+	for key, value := range next {
+		merged[key] = value
+	}
+	return merged
 }

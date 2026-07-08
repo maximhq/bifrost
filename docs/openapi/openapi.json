@@ -78669,10 +78669,21 @@
           },
           "redaction_mapping": {
             "type": "object",
-            "additionalProperties": {
-              "type": "string"
+            "properties": {
+              "input": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                }
+              },
+              "output": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                }
+              }
             },
-            "description": "Placeholder-to-original-value mapping for reversible redactions. Present only on log detail responses when the caller has `Logs:Reveal`."
+            "description": "Phase-scoped placeholder-to-original-value mappings for reversible redactions. Present only on log detail responses when the caller has `Logs:Reveal`."
           }
         }
       },
