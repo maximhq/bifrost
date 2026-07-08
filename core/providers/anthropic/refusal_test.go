@@ -44,7 +44,7 @@ func TestToBifrostChatResponse_Refusal(t *testing.T) {
 				ID:          "msg_refusal_test",
 				Type:        "message",
 				Role:        "assistant",
-				Model:       "claude-fable-5",
+				Model:       "claude-haiku-4-5",
 				StopReason:  AnthropicStopReasonRefusal,
 				StopDetails: tt.stopDetails,
 				Content:     []AnthropicContentBlock{},
@@ -72,9 +72,6 @@ func TestToBifrostChatResponse_Refusal(t *testing.T) {
 	}
 }
 
-// TestToAnthropicChatResponse_RoundTripsRefusal verifies that a Bifrost response
-// carrying ChatAssistantMessage.Refusal round-trips back into Anthropic's
-// stop_reason/stop_details.
 // TestToAnthropicChatResponse_NilChatNonStreamResponseChoiceDoesNotPanic guards
 // against a nil-pointer panic flagged in review: choice.Message is a field
 // promoted from the embedded *ChatNonStreamResponseChoice, so a bare
@@ -85,7 +82,7 @@ func TestToAnthropicChatResponse_NilChatNonStreamResponseChoiceDoesNotPanic(t *t
 
 	bifrostResp := &schemas.BifrostChatResponse{
 		ID:    "chatcmpl_test",
-		Model: "claude-fable-5",
+		Model: "claude-haiku-4-5",
 		Choices: []schemas.BifrostResponseChoice{
 			{
 				Index:        0,
@@ -111,13 +108,16 @@ func TestToAnthropicChatResponse_NilChatNonStreamResponseChoiceDoesNotPanic(t *t
 	}
 }
 
+// TestToAnthropicChatResponse_RoundTripsRefusal verifies that a Bifrost response
+// carrying ChatAssistantMessage.Refusal round-trips back into Anthropic's
+// stop_reason/stop_details.
 func TestToAnthropicChatResponse_RoundTripsRefusal(t *testing.T) {
 	t.Parallel()
 
 	explanation := "This request involves prohibited content."
 	bifrostResp := &schemas.BifrostChatResponse{
 		ID:    "chatcmpl_test",
-		Model: "claude-fable-5",
+		Model: "claude-haiku-4-5",
 		Choices: []schemas.BifrostResponseChoice{
 			{
 				Index:        0,
@@ -159,7 +159,7 @@ func TestToBifrostResponsesResponse_Refusal(t *testing.T) {
 		ID:         "msg_refusal_responses_test",
 		Type:       "message",
 		Role:       "assistant",
-		Model:      "claude-fable-5",
+		Model:      "claude-haiku-4-5",
 		StopReason: AnthropicStopReasonRefusal,
 		Content:    []AnthropicContentBlock{},
 	}
@@ -188,7 +188,7 @@ func TestToAnthropicResponsesResponse_RoundTripsRefusal(t *testing.T) {
 
 	bifrostResp := &schemas.BifrostResponsesResponse{
 		ID:    schemas.Ptr("resp_refusal_test"),
-		Model: "claude-fable-5",
+		Model: "claude-haiku-4-5",
 		IncompleteDetails: &schemas.ResponsesResponseIncompleteDetails{
 			Reason: schemas.ResponsesResponseIncompleteReasonContentFilter,
 		},

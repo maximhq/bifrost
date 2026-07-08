@@ -2141,8 +2141,10 @@ func ConvertAnthropicFinishReasonToBifrost(providerReason AnthropicStopReason) s
 // RefusalExplanationFromStreamDelta extracts the refusal explanation to surface via
 // OpenAI's native delta.refusal field from a streaming message_delta event, or nil if
 // the delta isn't a refusal. Falls back to a generic message when Anthropic omits
-// stop_details.explanation. Shared by the Chat Completions and Responses streaming
-// handlers so the mapping logic has a single, independently testable definition.
+// stop_details.explanation. Used by the Chat Completions streaming handler
+// (HandleAnthropicChatCompletionStreaming) so the mapping logic is independently
+// testable rather than inlined in the streaming loop. The Responses API streaming
+// path has its own separate handling (AnthropicResponsesStreamState.StopDetails).
 func RefusalExplanationFromStreamDelta(delta *AnthropicStreamDelta) *string {
 	if delta == nil || delta.StopReason == nil || *delta.StopReason != AnthropicStopReasonRefusal {
 		return nil
