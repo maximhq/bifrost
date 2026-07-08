@@ -381,6 +381,7 @@ func AcquireAnthropicResponsesStreamState() *AnthropicResponsesStreamState {
 	state.CurrentOutputIndex = 0
 	state.MessageID = nil
 	state.StopReason = nil
+	state.StopDetails = nil
 	state.Model = nil
 	state.CreatedAt = int(time.Now().Unix())
 	state.HasEmittedCreated = false
@@ -442,6 +443,7 @@ func (state *AnthropicResponsesStreamState) flush() {
 	state.CurrentOutputIndex = 0
 	state.MessageID = nil
 	state.StopReason = nil
+	state.StopDetails = nil
 	state.Model = nil
 	state.CreatedAt = int(time.Now().Unix())
 	state.HasEmittedCreated = false

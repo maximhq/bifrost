@@ -220,6 +220,25 @@ func TestToBifrostResponsesStream_RefusalMessageDelta(t *testing.T) {
 	}
 }
 
+// TestAnthropicResponsesStreamState_StopDetailsResetOnAcquire verifies that
+// StopDetails set by a refusal on one pooled stream state does not leak into
+// the next request that reuses the same pooled object (sync.Pool). Both
+// AcquireAnthropicResponsesStreamState and flush() must clear it, mirroring
+// the existing StopReason reset.
+func TestAnthropicResponsesStreamState_StopDetailsResetOnAcquire(t *testing.T) {
+	t.Parallel()
+
+	state := AcquireAnthropicResponsesStreamState()
+	state.StopDetails = &AnthropicStopDetails{Type: "refusal"}
+	ReleaseAnthropicResponsesStreamState(state) // exercises flush()
+
+	reused := AcquireAnthropicResponsesStreamState()
+	if reused.StopDetails != nil {
+		t.Errorf("StopDetails leaked across pooled acquisitions: got %+v, want nil", reused.StopDetails)
+	}
+	ReleaseAnthropicResponsesStreamState(reused)
+}
+
 // TestToBifrostChatCompletionStream_RefusalMessageDelta verifies that a streaming
 // Chat Completions message_delta event carrying stop_reason "refusal" surfaces
 // the explanation via delta.refusal on the final chunk.
