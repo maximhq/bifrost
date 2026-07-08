@@ -3346,6 +3346,32 @@ func parseTranscriptionMultipartRequest(ctx *fasthttp.RequestCtx, req interface{
 		}
 	}
 
+	// Any remaining multipart fields aren't part of OpenAI's own transcription
+	// schema, but provider-specific parameters (e.g. ElevenLabs' diarize,
+	// num_speakers, timestamps_granularity, sent via the SDK's extra_body) are
+	// still passed as plain multipart form fields. Without this, they'd be
+	// silently dropped instead of reaching ToElevenlabsTranscriptionRequest's
+	// ExtraParams lookups.
+	knownTranscriptionFields := map[string]bool{
+		"model": true, "file": true, "language": true, "prompt": true,
+		"response_format": true, "stream": true, "chunking_strategy": true,
+	}
+	for key, values := range form.Value {
+		if knownTranscriptionFields[key] || len(values) == 0 || values[0] == "" {
+			continue
+		}
+		if transcriptionReq.ExtraParams == nil {
+			transcriptionReq.ExtraParams = map[string]interface{}{}
+		}
+		raw := values[0]
+		var decoded interface{}
+		if err := json.Unmarshal([]byte(raw), &decoded); err == nil {
+			transcriptionReq.ExtraParams[key] = decoded
+		} else {
+			transcriptionReq.ExtraParams[key] = raw
+		}
+	}
+
 	return nil
 }
 

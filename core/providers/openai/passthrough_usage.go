@@ -261,7 +261,10 @@ func extractOAITranscriptionUsage(body []byte) *schemas.BifrostPassthroughUsage 
 				TextTokens:  r.Usage.InputTokenDetails.TextTokens,
 			}
 		}
-		u.AudioSeconds = r.Usage.Seconds
+		if r.Usage.Seconds != nil {
+			secs := int(*r.Usage.Seconds)
+			u.AudioSeconds = &secs
+		}
 	} else if r.Duration > 0 {
 		secs := int(r.Duration)
 		u.AudioSeconds = &secs
