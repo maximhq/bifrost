@@ -17,6 +17,10 @@ Bifrost integrates with **Azure AI Content Safety** to provide multi-modal conte
 - **Protected Material**: Detect copyrighted content (output only)
 - **Custom Blocklists**: Define organization-specific blocked terms
 
+<Note>
+  **Streaming output:** When this profile is used in an `output` or `both` rule, Bifrost accumulates the stream until the model response is complete, then checks the full response. It does not check individual stream chunks. See [Streaming Output Guardrails](/enterprise/guardrails#streaming-output-guardrails) for details.
+</Note>
+
 ## Configuration Fields
 
 | Field                            | Type    | Required | Default  | Description                                                  |

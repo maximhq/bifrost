@@ -4,9 +4,26 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.24
+**Latest Version:** 2.1.26
 
 ## Changelog
+
+### 2.1.26
+
+- Added `bifrost.client.mcpServerAuthMode` (`headers` | `both` | `oauth`) and `bifrost.client.oauth2ServerConfig` (`issuerUrl`, `authCodeTtl`, `accessTokenTtl`, `disableVkIdentity`) to control how `/mcp` authenticates inbound MCP clients. Renders into `client.mcp_server_auth_mode` and `client.oauth2_server_config`. `authCodeTtl` is capped at 900 seconds.
+- Added ClickHouse as a `storage.logsStore.type` option. Set `type: clickhouse` and a `storage.logsStore.clickhouse` block (`host` required; optional `port`, `database`, `username`, `password`, `protocol`, `secure`, `dialTimeout`, `cluster`). Renders into `logs_store` with `type: clickhouse`.
+- Added the `bedrock_mantle` provider with `bedrock_mantle_key_config` (`region` required; optional `access_key`, `secret_key`, `session_token`, `role_arn`, `external_id`, `session_name`). Added the key-config schema and mutual-exclusion validation in `values.schema.json`.
+- Added `toolExecutionTimeout` to `bifrost.mcp.clientConfigs[]` as a per-server override of the global `toolManagerConfig.toolExecutionTimeout`. Accepts a Go duration string (e.g. `"30s"`) or a bare integer treated as seconds. Renders into `mcp.client_configs[].tool_execution_timeout`.
+- Added `expires_at` to `bifrost.governance.virtualKeys[]`. Optional RFC3339 timestamp; requests using the virtual key are rejected once it passes. Omit for a key that never expires.
+
+### 2.1.25
+
+- Added `bifrost.circuitBreakerConfig`. Renders into `circuit_breaker_config` in the generated config JSON.
+- Extended `bifrost.loadBalancer` with four new behavioural flags: `directionSelectionEnabled`, `routeSelectionEnabled`, `rerouteFailedDirections`, and `pruneFailedFallbacks`. All are optional booleans; omitting a flag preserves the server default rather than forcing a value. Renders into the corresponding config.json fields inside `load_balancer_config`.
+- Added `evaluation_mode` to guardrail rules. Accepts `bundled` (default, evaluate all turns together) or `per_turn` (evaluate each turn independently). Set under `bifrost.guardrails.rules[].evaluation_mode`.
+- Added `group_traces_by_session` to the OTEL and Datadog plugin configs. When `true`, requests sharing the same `x-bf-session-id` header are grouped into a single trace. An inbound W3C `traceparent` always takes priority. Defaults to `false`.
+- Added `storage.configStore.vaultStore` to `values.yaml` with full commented-out examples for all three backends: `aws-secrets-manager`, `gcp-secret-manager`, and `hashicorp-vault`. Set `accessMode: read_and_write` to automatically store plaintext config fields as vault secrets; `read_only` (default) only resolves existing `vault.<path>` references.
+- `dns_names` in cluster discovery config now accepts `env.VAR_NAME` references in addition to literal hostnames, consistent with how other secret-bearing fields work across the chart.
 
 ### 2.1.24
 
@@ -683,6 +700,7 @@ bifrost:
 | Parameter                                     | Description                                 | Default |
 | --------------------------------------------- | ------------------------------------------- | ------- |
 | `bifrost.client.disableDbPingsInHealth`       | Disable DB pings in health check            | `false` |
+| `bifrost.client.dumpErrorsInConsoleLogs`      | Dump full error details to server console   | `false` |
 | `bifrost.client.headerFilterConfig.allowlist` | Headers allowed to forward to LLM providers | `[]`    |
 | `bifrost.client.headerFilterConfig.denylist`  | Headers blocked from forwarding             | `[]`    |
 

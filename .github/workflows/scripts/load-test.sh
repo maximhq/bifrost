@@ -8,43 +8,55 @@
 # 1. Builds bifrost-http and mocker locally
 # 2. Creates a config.json with mocker provider (OpenAI-style)
 # 3. Starts mocker with 0ms latency and bifrost-http
-# 4. Runs a calibration (Vegeta -> Mocker direct) to measure Vegeta+network baseline
-# 5. Runs the overhead test (Vegeta -> Bifrost -> Mocker) to measure total
+# 4. Runs calibration (Vegeta -> Mocker direct) for non-streaming and streaming
+# 5. Runs overhead tests (Vegeta -> Bifrost -> Mocker) for non-streaming and streaming
 # 6. Subtracts calibration from test to isolate Bifrost proxy overhead
 #    (includes local network hop, JSON parsing/unparsing, plugins, and mocker jitter)
-# 7. Restarts mocker with 10s latency for a sustained concurrency stress test
-# 8. Asserts overhead < tiered thresholds (per percentile) and stress test has 100% success rate
+# 7. Restarts mocker with 10s latency for sustained concurrency stress tests
+# 8. Asserts overhead < tiered thresholds (per percentile) and stress tests have 100% success rate
 
-set -e
+set -Ee
 
 # Configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
+
+# Setup Go workspace for CI (go.work is gitignored, must be regenerated) so the
+# build below resolves local core/framework/plugins instead of the published
+# versions pinned in transports/go.mod. Run with repo root as CWD because
+# setup-go-workspace.sh's `go work use ./core` paths are repo-root-relative; the
+# go.work file it writes at ${REPO_ROOT} is then auto-discovered by `go build`.
+( cd "${REPO_ROOT}" && source "${SCRIPT_DIR}/setup-go-workspace.sh" )
+
 BIFROST_HTTP_DIR="${REPO_ROOT}/transports/bifrost-http"
 TRANSPORTS_DIR="${REPO_ROOT}/transports"
 WORK_DIR="${SCRIPT_DIR}"
-MOCKER_DIR="${REPO_ROOT}/../bifrost-benchmarking/mocker"
+BENCHMARK_DIR="${BENCHMARK_DIR:-${REPO_ROOT}/../bifrost-benchmarking}"
+MOCKER_DIR="${BENCHMARK_DIR}/mocker"
 
-BIFROST_PORT=8080
-MOCKER_PORT=8000
-RATE=1000
-MAX_WORKERS=12000
-OVERHEAD_DURATION=30            # overhead measurement duration (seconds)
-STRESS_DURATION=30              # stress test duration (seconds)
-OVERHEAD_MOCKER_LATENCY_MS=1000  # 1 second latency for overhead measurement
-STRESS_MOCKER_LATENCY_MS=1000    # 1 second latency for stress test
+BIFROST_PORT="${BIFROST_PORT:-8080}"
+MOCKER_PORT="${MOCKER_PORT:-8000}"
+BIFROST_LOG_LEVEL="${BIFROST_LOG_LEVEL:-warn}"
+RATE="${RATE:-1000}"
+STREAMING_RATE="${STREAMING_RATE:-${RATE}}"
+MAX_WORKERS="${MAX_WORKERS:-12000}"
+OVERHEAD_DURATION="${OVERHEAD_DURATION:-30}"                       # overhead measurement duration (seconds)
+STRESS_DURATION="${STRESS_DURATION:-30}"                           # stress test duration per mode (seconds)
+OVERHEAD_MOCKER_LATENCY_MS="${OVERHEAD_MOCKER_LATENCY_MS:-1000}"   # 1 second latency for overhead measurement
+STRESS_MOCKER_LATENCY_MS="${STRESS_MOCKER_LATENCY_MS:-1000}"       # 1 second latency for stress test
 # Tiered overhead thresholds (µs) — these cover the full proxy cost:
 # local network hop, JSON parsing/unparsing, plugins, and mocker jitter.
-# At ${RATE} RPS × ${OVERHEAD_MOCKER_LATENCY_MS}ms latency ≈ 1000 concurrent requests.
-MAX_OVERHEAD_MEAN_US=5000       # mean overhead threshold (5ms)
-MAX_OVERHEAD_P50_US=5000        # p50 overhead threshold (5ms)
-MAX_OVERHEAD_P90_US=10000       # p90 overhead threshold (10ms)
-MAX_OVERHEAD_P95_US=20000       # p95 overhead threshold (20ms)
-MAX_OVERHEAD_P99_US=100000      # p99 overhead threshold (100ms)
+# At RATE RPS × latency, concurrency is calculated per mode.
+MAX_OVERHEAD_MEAN_US="${MAX_OVERHEAD_MEAN_US:-5000}"    # mean overhead threshold (5ms)
+MAX_OVERHEAD_P50_US="${MAX_OVERHEAD_P50_US:-5000}"      # p50 overhead threshold (5ms)
+MAX_OVERHEAD_P90_US="${MAX_OVERHEAD_P90_US:-10000}"     # p90 overhead threshold (10ms)
+MAX_OVERHEAD_P95_US="${MAX_OVERHEAD_P95_US:-20000}"     # p95 overhead threshold (20ms)
+MAX_OVERHEAD_P99_US="${MAX_OVERHEAD_P99_US:-100000}"    # p99 overhead threshold (100ms)
 
 # Results storage for summary table
 RESULTS_FILE="${WORK_DIR}/load-test-results.md"
 RESULTS_JSON="${WORK_DIR}/load-test-results.json"
+RESULTS_FILE_INITIALIZED=0
 
 # Process stats monitoring
 STATS_PID=""
@@ -64,6 +76,13 @@ CAL_90_NS=0
 CAL_95_NS=0
 CAL_99_NS=0
 CAL_MAX_NS=0
+
+# Mode currently being measured.
+CURRENT_MODE_LABEL="Non-streaming"
+CURRENT_MODE_KEY="non_streaming"
+CURRENT_STREAM=false
+CURRENT_PHASE="startup"
+FAILURE_CONTEXT_PRINTED=0
 
 # Colors for output
 RED='\033[0;31m'
@@ -88,8 +107,50 @@ log_error() {
   echo -e "${RED}[ERROR]${NC} $1"
 }
 
+print_result_locations() {
+  if [ -f "${RESULTS_FILE}" ]; then
+    log_info "Partial Markdown results: ${RESULTS_FILE}"
+  fi
+  if [ -f "${RESULTS_JSON}" ]; then
+    log_info "Partial JSON results: ${RESULTS_JSON}"
+  fi
+}
+
+print_failure_context() {
+  local exit_code="$1"
+  local line_no="$2"
+  local command="$3"
+
+  FAILURE_CONTEXT_PRINTED=1
+  echo ""
+  log_error "Load test failed"
+  log_error "  Exit code: ${exit_code}"
+  log_error "  Phase: ${CURRENT_PHASE}"
+  log_error "  Mode: ${CURRENT_MODE_LABEL}"
+  log_error "  Line: ${line_no}"
+  log_error "  Command: ${command}"
+  print_result_locations
+
+  if [ -f "${WORK_DIR}/bifrost.log" ]; then
+    echo ""
+    log_error "Last 80 lines from bifrost.log:"
+    tail -n 80 "${WORK_DIR}/bifrost.log" || true
+  fi
+  if [ -f "${WORK_DIR}/mocker.log" ]; then
+    echo ""
+    log_error "Last 40 lines from mocker.log:"
+    tail -n 40 "${WORK_DIR}/mocker.log" || true
+  fi
+}
+
 # Cleanup function to kill background processes
 cleanup() {
+  local exit_code=$?
+  set +e
+  if [ "${exit_code}" -ne 0 ] && [ "${FAILURE_CONTEXT_PRINTED}" -eq 0 ]; then
+    print_failure_context "${exit_code}" "unknown" "script exited before completion"
+  fi
+
   log_info "Cleaning up..."
   if [ -n "$STATS_PID" ] && kill -0 "$STATS_PID" 2>/dev/null; then
     kill "$STATS_PID" 2>/dev/null || true
@@ -104,10 +165,20 @@ cleanup() {
     wait "$MOCKER_PID" 2>/dev/null || true
   fi
   # Clean up temporary files (keep results files for artifact upload)
-  rm -f "${WORK_DIR}/config.json" "${WORK_DIR}/logs.db" "${WORK_DIR}/attack.bin" "${WORK_DIR}/calibration.bin" "${WORK_DIR}/stress.bin" "${WORK_DIR}/bifrost.log" "${WORK_DIR}/vegeta-target.json" "${WORK_DIR}/vegeta-target-calibration.json" "${WORK_DIR}/vegeta-target-stress.json" "${WORK_DIR}/vegeta-report.json" "${WORK_DIR}/bifrost-stats.csv" 2>/dev/null || true
+  rm -f "${WORK_DIR}/config.json" "${WORK_DIR}/logs.db" "${WORK_DIR}"/attack-*.bin "${WORK_DIR}"/calibration-*.bin "${WORK_DIR}"/stress-*.bin "${WORK_DIR}/bifrost.log" "${WORK_DIR}"/vegeta-target*.json "${WORK_DIR}/vegeta-report.json" "${WORK_DIR}/bifrost-stats.csv" 2>/dev/null || true
   log_info "Cleanup complete"
+  exit "${exit_code}"
 }
 
+on_error() {
+  local exit_code="$1"
+  local line_no="$2"
+  local command="$3"
+  trap - ERR
+  print_failure_context "${exit_code}" "${line_no}" "${command}"
+}
+
+trap 'on_error "$?" "$LINENO" "$BASH_COMMAND"' ERR
 trap cleanup EXIT
 
 # Check for required tools
@@ -124,13 +195,24 @@ check_dependencies() {
     exit 1
   fi
 
+  if ! command -v jq &> /dev/null; then
+    log_error "jq is not installed. Please install jq."
+    exit 1
+  fi
+
+  if ! command -v perl &> /dev/null; then
+    log_error "perl is not installed. It is required to patch the benchmark mocker checkout."
+    exit 1
+  fi
+
   log_success "All dependencies found"
 }
 
 # Kill any process listening on a specific port (not processes with connections to it)
 kill_port() {
   local port=$1
-  local pids=$(lsof -ti "TCP:${port}" -sTCP:LISTEN 2>/dev/null)
+  local pids
+  pids=$(lsof -ti "TCP:${port}" -sTCP:LISTEN 2>/dev/null || true)
   if [ -n "$pids" ]; then
     log_warn "Killing existing process(es) listening on port ${port}: ${pids}"
     echo "$pids" | xargs kill -9 2>/dev/null || true
@@ -189,19 +271,41 @@ build_bifrost_http() {
 
 # Clone and setup mocker from bifrost-benchmarking
 setup_mocker() {
-  if [ -d "${REPO_ROOT}/../bifrost-benchmarking" ]; then
+  if [ -d "${BENCHMARK_DIR}" ]; then
     log_info "Updating bifrost-benchmarking repository..."
-    cd "${REPO_ROOT}/../bifrost-benchmarking"
+    cd "${BENCHMARK_DIR}"
     git pull --quiet || true
     cd "${WORK_DIR}"
   else
     log_info "Cloning bifrost-benchmarking repository..."
-    cd "${REPO_ROOT}/.."
-    git clone --depth 1 https://github.com/maximhq/bifrost-benchmarking.git
+    mkdir -p "$(dirname "${BENCHMARK_DIR}")"
+    git clone --depth 1 https://github.com/maximhq/bifrost-benchmarking.git "${BENCHMARK_DIR}"
     cd "${WORK_DIR}"
   fi
 
   log_success "Mocker setup complete"
+}
+
+patch_mocker_for_load_test() {
+  local mocker_main="${MOCKER_DIR}/main.go"
+  if [ ! -f "${mocker_main}" ]; then
+    log_error "Mocker main.go not found at ${mocker_main}"
+    exit 1
+  fi
+
+  log_info "Patching mocker for high-RPS streaming load tests..."
+
+  LC_ALL=C perl -0pi -e 's/\n\tctx\.Response\.Header\.Set\("Connection", "close"\)//g; s/\n\tctx\.Response\.Header\.Set\("Transfer-Encoding", "chunked"\)//g; s/\n\tctx\.SetConnectionClose\(\)//g' "${mocker_main}"
+
+  LC_ALL=C perl -0pi -e 's/\n\tif provider != "" \{\n\t\tlog\.Printf\("\[chat\/completions\] provider=%s model=%s stream=%v", provider, model, stream\)\n\t\} else \{\n\t\tlog\.Printf\("\[chat\/completions\] model=%s stream=%v", model, stream\)\n\t\}\n/\n\tif logRaw {\n\t\tif provider != "" {\n\t\t\tlog.Printf("[chat\/completions] provider=%s model=%s stream=%v", provider, model, stream)\n\t\t} else {\n\t\t\tlog.Printf("[chat\/completions] model=%s stream=%v", model, stream)\n\t\t}\n\t}\n/s' "${mocker_main}"
+
+  if grep -q 'ctx.SetConnectionClose()' "${mocker_main}" || grep -q 'Header.Set("Connection", "close")' "${mocker_main}"; then
+    log_error "Failed to remove forced SSE connection close from mocker"
+    exit 1
+  fi
+
+  rm -f "${REPO_ROOT}/tmp/mocker"
+  log_success "Mocker patched for high-RPS streaming"
 }
 
 # Build mocker binary (avoids go run overhead)
@@ -214,7 +318,12 @@ build_mocker() {
   log_info "Building mocker..."
   cd "${MOCKER_DIR}"
 
-  if go build -o "${REPO_ROOT}/tmp/mocker" .; then
+  # GOWORK=off: in CI bifrost-benchmarking is checked out inside the repo root
+  # (${github.workspace}/bifrost-benchmarking), so `go build` would auto-discover
+  # the repo's go.work and reject the mocker module ("not one of the workspace
+  # modules"). The mocker is a standalone module and doesn't need local
+  # core/framework, so build it outside the workspace.
+  if GOWORK=off go build -o "${REPO_ROOT}/tmp/mocker" .; then
     log_success "mocker built successfully"
   else
     log_error "Failed to build mocker"
@@ -222,6 +331,11 @@ build_mocker() {
   fi
 
   cd "${WORK_DIR}"
+}
+
+initialize_results() {
+  rm -f "${RESULTS_FILE}" "${RESULTS_JSON}"
+  RESULTS_FILE_INITIALIZED=0
 }
 
 # Create config.json for bifrost with mocker provider
@@ -233,7 +347,8 @@ create_config() {
   "$schema": "https://www.getbifrost.ai/schema",
   "client": {
     "enable_logging": false,
-    "initial_pool_size": 20000,
+    "disable_content_logging": true,
+    "initial_pool_size": 5000,
     "drop_excess_requests": false,
     "allow_direct_keys": false
   },
@@ -243,7 +358,110 @@ create_config() {
   "logs_store": {
     "enabled": false
   },
+  "plugins": [],
   "providers": {
+    "anthropic": {
+      "keys": [{ "name": "mocker-anthropic-key", "value": "Bearer mocker-key", "weight": 1, "models": ["*"] }],
+      "network_config": { "base_url": "http://127.0.0.1:8000", "default_request_timeout_in_seconds": 30 },
+      "concurrency_and_buffer_size": { "concurrency": 1, "buffer_size": 1 }
+    },
+    "azure": {
+      "keys": [
+        {
+          "name": "mocker-azure-key",
+          "value": "mocker-key",
+          "weight": 1,
+          "models": ["*"],
+          "azure_key_config": { "endpoint": "http://127.0.0.1:8000" }
+        }
+      ],
+      "network_config": { "base_url": "http://127.0.0.1:8000", "default_request_timeout_in_seconds": 30 },
+      "concurrency_and_buffer_size": { "concurrency": 1, "buffer_size": 1 }
+    },
+    "bedrock": {
+      "keys": [
+        {
+          "name": "mocker-bedrock-key",
+          "weight": 1,
+          "models": ["*"],
+          "bedrock_key_config": {
+            "access_key": "mocker-access-key",
+            "secret_key": "mocker-secret-key",
+            "region": "us-east-1"
+          }
+        }
+      ],
+      "network_config": { "base_url": "http://127.0.0.1:8000", "default_request_timeout_in_seconds": 30 },
+      "concurrency_and_buffer_size": { "concurrency": 1, "buffer_size": 1 }
+    },
+    "cerebras": {
+      "keys": [{ "name": "mocker-cerebras-key", "value": "Bearer mocker-key", "weight": 1, "models": ["*"] }],
+      "network_config": { "base_url": "http://127.0.0.1:8000", "default_request_timeout_in_seconds": 30 },
+      "concurrency_and_buffer_size": { "concurrency": 1, "buffer_size": 1 }
+    },
+    "cohere": {
+      "keys": [{ "name": "mocker-cohere-key", "value": "Bearer mocker-key", "weight": 1, "models": ["*"] }],
+      "network_config": { "base_url": "http://127.0.0.1:8000", "default_request_timeout_in_seconds": 30 },
+      "concurrency_and_buffer_size": { "concurrency": 1, "buffer_size": 1 }
+    },
+    "elevenlabs": {
+      "keys": [{ "name": "mocker-elevenlabs-key", "value": "Bearer mocker-key", "weight": 1, "models": ["*"] }],
+      "network_config": { "base_url": "http://127.0.0.1:8000", "default_request_timeout_in_seconds": 30 },
+      "concurrency_and_buffer_size": { "concurrency": 1, "buffer_size": 1 }
+    },
+    "fireworks": {
+      "keys": [{ "name": "mocker-fireworks-key", "value": "Bearer mocker-key", "weight": 1, "models": ["*"] }],
+      "network_config": { "base_url": "http://127.0.0.1:8000", "default_request_timeout_in_seconds": 30 },
+      "concurrency_and_buffer_size": { "concurrency": 1, "buffer_size": 1 }
+    },
+    "gemini": {
+      "keys": [{ "name": "mocker-gemini-key", "value": "Bearer mocker-key", "weight": 1, "models": ["*"] }],
+      "network_config": { "base_url": "http://127.0.0.1:8000", "default_request_timeout_in_seconds": 30 },
+      "concurrency_and_buffer_size": { "concurrency": 1, "buffer_size": 1 }
+    },
+    "groq": {
+      "keys": [{ "name": "mocker-groq-key", "value": "Bearer mocker-key", "weight": 1, "models": ["*"] }],
+      "network_config": { "base_url": "http://127.0.0.1:8000", "default_request_timeout_in_seconds": 30 },
+      "concurrency_and_buffer_size": { "concurrency": 1, "buffer_size": 1 }
+    },
+    "huggingface": {
+      "keys": [{ "name": "mocker-huggingface-key", "value": "Bearer mocker-key", "weight": 1, "models": ["*"] }],
+      "network_config": { "base_url": "http://127.0.0.1:8000", "default_request_timeout_in_seconds": 30 },
+      "concurrency_and_buffer_size": { "concurrency": 1, "buffer_size": 1 }
+    },
+    "mistral": {
+      "keys": [{ "name": "mocker-mistral-key", "value": "Bearer mocker-key", "weight": 1, "models": ["*"] }],
+      "network_config": { "base_url": "http://127.0.0.1:8000", "default_request_timeout_in_seconds": 30 },
+      "concurrency_and_buffer_size": { "concurrency": 1, "buffer_size": 1 }
+    },
+    "nebius": {
+      "keys": [{ "name": "mocker-nebius-key", "value": "Bearer mocker-key", "weight": 1, "models": ["*"] }],
+      "network_config": { "base_url": "http://127.0.0.1:8000", "default_request_timeout_in_seconds": 30 },
+      "concurrency_and_buffer_size": { "concurrency": 1, "buffer_size": 1 }
+    },
+    "ollama": {
+      "keys": [
+        {
+          "name": "mocker-ollama-key",
+          "value": "Bearer mocker-key",
+          "weight": 1,
+          "models": ["*"],
+          "ollama_key_config": { "url": "http://127.0.0.1:8000" }
+        }
+      ],
+      "network_config": { "base_url": "http://127.0.0.1:8000", "default_request_timeout_in_seconds": 30 },
+      "concurrency_and_buffer_size": { "concurrency": 1, "buffer_size": 1 }
+    },
+    "opencode-go": {
+      "keys": [{ "name": "mocker-opencode-go-key", "value": "Bearer mocker-key", "weight": 1, "models": ["*"] }],
+      "network_config": { "base_url": "http://127.0.0.1:8000", "default_request_timeout_in_seconds": 30 },
+      "concurrency_and_buffer_size": { "concurrency": 1, "buffer_size": 1 }
+    },
+    "opencode-zen": {
+      "keys": [{ "name": "mocker-opencode-zen-key", "value": "Bearer mocker-key", "weight": 1, "models": ["*"] }],
+      "network_config": { "base_url": "http://127.0.0.1:8000", "default_request_timeout_in_seconds": 30 },
+      "concurrency_and_buffer_size": { "concurrency": 1, "buffer_size": 1 }
+    },
     "openai": {
       "keys": [
         {
@@ -254,13 +472,95 @@ create_config() {
         }
       ],
       "network_config": {
-        "base_url": "http://localhost:8000",
+        "base_url": "http://127.0.0.1:8000",
         "default_request_timeout_in_seconds": 30
       },
       "concurrency_and_buffer_size": {
-        "concurrency": 20000,
-        "buffer_size": 40000
+        "concurrency": 5000,
+        "buffer_size": 10000
       }
+    },
+    "openrouter": {
+      "keys": [{ "name": "mocker-openrouter-key", "value": "Bearer mocker-key", "weight": 1, "models": ["*"] }],
+      "network_config": { "base_url": "http://127.0.0.1:8000", "default_request_timeout_in_seconds": 30 },
+      "concurrency_and_buffer_size": { "concurrency": 1, "buffer_size": 1 }
+    },
+    "parasail": {
+      "keys": [{ "name": "mocker-parasail-key", "value": "Bearer mocker-key", "weight": 1, "models": ["*"] }],
+      "network_config": { "base_url": "http://127.0.0.1:8000", "default_request_timeout_in_seconds": 30 },
+      "concurrency_and_buffer_size": { "concurrency": 1, "buffer_size": 1 }
+    },
+    "perplexity": {
+      "keys": [{ "name": "mocker-perplexity-key", "value": "Bearer mocker-key", "weight": 1, "models": ["*"] }],
+      "network_config": { "base_url": "http://127.0.0.1:8000", "default_request_timeout_in_seconds": 30 },
+      "concurrency_and_buffer_size": { "concurrency": 1, "buffer_size": 1 }
+    },
+    "replicate": {
+      "keys": [
+        {
+          "name": "mocker-replicate-key",
+          "value": "Bearer mocker-key",
+          "weight": 1,
+          "models": ["*"],
+          "replicate_key_config": { "use_deployments_endpoint": false }
+        }
+      ],
+      "network_config": { "base_url": "http://127.0.0.1:8000", "default_request_timeout_in_seconds": 30 },
+      "concurrency_and_buffer_size": { "concurrency": 1, "buffer_size": 1 }
+    },
+    "runway": {
+      "keys": [{ "name": "mocker-runway-key", "value": "Bearer mocker-key", "weight": 1, "models": ["*"] }],
+      "network_config": { "base_url": "http://127.0.0.1:8000", "default_request_timeout_in_seconds": 30 },
+      "concurrency_and_buffer_size": { "concurrency": 1, "buffer_size": 1 }
+    },
+    "sgl": {
+      "keys": [
+        {
+          "name": "mocker-sgl-key",
+          "value": "Bearer mocker-key",
+          "weight": 1,
+          "models": ["*"],
+          "sgl_key_config": { "url": "http://127.0.0.1:8000" }
+        }
+      ],
+      "network_config": { "base_url": "http://127.0.0.1:8000", "default_request_timeout_in_seconds": 30 },
+      "concurrency_and_buffer_size": { "concurrency": 1, "buffer_size": 1 }
+    },
+    "vertex": {
+      "keys": [
+        {
+          "name": "mocker-vertex-key",
+          "weight": 1,
+          "models": ["*"],
+          "vertex_key_config": {
+            "project_id": "mocker-project",
+            "region": "us-central1"
+          }
+        }
+      ],
+      "network_config": { "base_url": "http://127.0.0.1:8000", "default_request_timeout_in_seconds": 30 },
+      "concurrency_and_buffer_size": { "concurrency": 1, "buffer_size": 1 }
+    },
+    "vllm": {
+      "keys": [
+        {
+          "name": "mocker-vllm-key",
+          "value": "Bearer mocker-key",
+          "weight": 1,
+          "models": ["*"],
+          "vllm_key_config": {
+            "url": "http://127.0.0.1:8000",
+            "model_name": "gpt-4o-mini"
+          }
+        }
+      ],
+      "network_config": { "base_url": "http://127.0.0.1:8000", "default_request_timeout_in_seconds": 30 },
+      "concurrency_and_buffer_size": { "concurrency": 1, "buffer_size": 1 }
+    },
+    "xai": {
+      "keys": [{ "name": "mocker-xai-key", "value": "Bearer mocker-key", "weight": 1, "models": ["*"] }],
+      "network_config": { "base_url": "http://127.0.0.1:8000", "default_request_timeout_in_seconds": 30 },
+      "concurrency_and_buffer_size": { "concurrency": 1, "buffer_size": 1 }
     }
   }
 }
@@ -273,15 +573,16 @@ EOF
 # Arguments: $1 = latency in ms
 start_mocker() {
   local latency_ms=${1:-0}
+  CURRENT_PHASE="start mocker (${latency_ms}ms)"
   log_info "Starting mocker server on port ${MOCKER_PORT} with ${latency_ms}ms latency..."
 
-  "${REPO_ROOT}/tmp/mocker" -port ${MOCKER_PORT} -host 0.0.0.0 -latency ${latency_ms} &
+  "${REPO_ROOT}/tmp/mocker" -port ${MOCKER_PORT} -host 0.0.0.0 -latency ${latency_ms} > "${WORK_DIR}/mocker.log" 2>&1 &
   MOCKER_PID=$!
 
   # Wait for mocker to be ready
   local max_attempts=30
   local attempt=0
-  while ! curl -s "http://localhost:${MOCKER_PORT}/v1/chat/completions" -X POST \
+  while ! curl -s "http://127.0.0.1:${MOCKER_PORT}/v1/chat/completions" -X POST \
     -H "Content-Type: application/json" \
     -H "Authorization: Bearer mocker-key" \
     -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"test"}]}' > /dev/null 2>&1; do
@@ -383,17 +684,19 @@ stop_stats_monitor() {
 
 # Start bifrost-http server
 start_bifrost() {
-  log_info "Starting bifrost-http on port ${BIFROST_PORT}..."
+  CURRENT_PHASE="start bifrost"
+  log_info "Starting bifrost-http on port ${BIFROST_PORT} with log level ${BIFROST_LOG_LEVEL}..."
 
   cd "${WORK_DIR}"
   local bifrost_log="${WORK_DIR}/bifrost.log"
-  "${REPO_ROOT}/tmp/bifrost-http" -app-dir "${WORK_DIR}" -port "${BIFROST_PORT}" -host "0.0.0.0" -log-level "info" > "${bifrost_log}" 2>&1 &
+  "${REPO_ROOT}/tmp/bifrost-http" -app-dir "${WORK_DIR}" -port "${BIFROST_PORT}" -host "0.0.0.0" -log-level "${BIFROST_LOG_LEVEL}" > "${bifrost_log}" 2>&1 &
   BIFROST_PID=$!
 
-  # Wait for bifrost to be fully ready (look for "successfully started bifrost" message)
+  # Wait for bifrost to be ready. /health is skipped by the access log middleware,
+  # so this works even when Bifrost runs at warn level to suppress per-request logs.
   local max_attempts=60
   local attempt=0
-  while ! grep -q "successfully started bifrost" "${bifrost_log}" 2>/dev/null; do
+  while ! curl -fsS "http://127.0.0.1:${BIFROST_PORT}/health" > /dev/null 2>&1; do
     sleep 1
     attempt=$((attempt + 1))
     if [ $attempt -ge $max_attempts ]; then
@@ -422,34 +725,135 @@ extract_latencies() {
   local json_report_file="${WORK_DIR}/vegeta-report.json"
   vegeta report -type=json < "${bin_file}" > "${json_report_file}"
 
-  if command -v jq &> /dev/null; then
-    EXTRACTED_MIN_NS=$(jq '.latencies.min // 0' "${json_report_file}")
-    EXTRACTED_MEAN_NS=$(jq '.latencies.mean // 0' "${json_report_file}")
-    EXTRACTED_50_NS=$(jq '.latencies["50th"] // 0' "${json_report_file}")
-    EXTRACTED_90_NS=$(jq '.latencies["90th"] // 0' "${json_report_file}")
-    EXTRACTED_95_NS=$(jq '.latencies["95th"] // 0' "${json_report_file}")
-    EXTRACTED_99_NS=$(jq '.latencies["99th"] // 0' "${json_report_file}")
-    EXTRACTED_MAX_NS=$(jq '.latencies.max // 0' "${json_report_file}")
-    EXTRACTED_SUCCESS=$(jq '.success // 0' "${json_report_file}")
-    EXTRACTED_RATE=$(jq '.rate // 0' "${json_report_file}")
-    EXTRACTED_THROUGHPUT=$(jq '.throughput // 0' "${json_report_file}")
-  elif command -v python3 &> /dev/null; then
-    EXTRACTED_MIN_NS=$(python3 -c "import json; d=json.load(open('${json_report_file}')); print(d.get('latencies', {}).get('min', 0))")
-    EXTRACTED_MEAN_NS=$(python3 -c "import json; d=json.load(open('${json_report_file}')); print(d.get('latencies', {}).get('mean', 0))")
-    EXTRACTED_50_NS=$(python3 -c "import json; d=json.load(open('${json_report_file}')); print(d.get('latencies', {}).get('50th', 0))")
-    EXTRACTED_90_NS=$(python3 -c "import json; d=json.load(open('${json_report_file}')); print(d.get('latencies', {}).get('90th', 0))")
-    EXTRACTED_95_NS=$(python3 -c "import json; d=json.load(open('${json_report_file}')); print(d.get('latencies', {}).get('95th', 0))")
-    EXTRACTED_99_NS=$(python3 -c "import json; d=json.load(open('${json_report_file}')); print(d.get('latencies', {}).get('99th', 0))")
-    EXTRACTED_MAX_NS=$(python3 -c "import json; d=json.load(open('${json_report_file}')); print(d.get('latencies', {}).get('max', 0))")
-    EXTRACTED_SUCCESS=$(python3 -c "import json; d=json.load(open('${json_report_file}')); print(d.get('success', 0))")
-    EXTRACTED_RATE=$(python3 -c "import json; d=json.load(open('${json_report_file}')); print(d.get('rate', 0))")
-    EXTRACTED_THROUGHPUT=$(python3 -c "import json; d=json.load(open('${json_report_file}')); print(d.get('throughput', 0))")
-  else
-    log_error "Neither jq nor python3 found. Cannot parse JSON results."
-    return 1
-  fi
+  EXTRACTED_MIN_NS=$(jq '.latencies.min // 0' "${json_report_file}")
+  EXTRACTED_MEAN_NS=$(jq '.latencies.mean // 0' "${json_report_file}")
+  EXTRACTED_50_NS=$(jq '.latencies["50th"] // 0' "${json_report_file}")
+  EXTRACTED_90_NS=$(jq '.latencies["90th"] // 0' "${json_report_file}")
+  EXTRACTED_95_NS=$(jq '.latencies["95th"] // 0' "${json_report_file}")
+  EXTRACTED_99_NS=$(jq '.latencies["99th"] // 0' "${json_report_file}")
+  EXTRACTED_MAX_NS=$(jq '.latencies.max // 0' "${json_report_file}")
+  EXTRACTED_SUCCESS=$(jq '.success // 0' "${json_report_file}")
+  EXTRACTED_RATE=$(jq '.rate // 0' "${json_report_file}")
+  EXTRACTED_THROUGHPUT=$(jq '.throughput // 0' "${json_report_file}")
 
   rm -f "${json_report_file}"
+}
+
+set_test_mode() {
+  CURRENT_MODE_LABEL="$1"
+  CURRENT_MODE_KEY="$2"
+  CURRENT_STREAM="$3"
+}
+
+current_rate() {
+  if [ "${CURRENT_STREAM}" = "true" ]; then
+    echo "${STREAMING_RATE}"
+  else
+    echo "${RATE}"
+  fi
+}
+
+current_concurrency() {
+  local rate="$1"
+  local latency_ms="$2"
+  local concurrency=$((rate * latency_ms / 1000))
+  if [ "${concurrency}" -lt 1 ]; then
+    concurrency=1
+  fi
+  echo "${concurrency}"
+}
+
+chat_payload() {
+  local model="$1"
+  local stream="$2"
+  if [ "${stream}" = "true" ]; then
+    printf '{"model":"%s","messages":[{"role":"user","content":"Hello, how are you?"}],"stream":true}' "${model}"
+  else
+    printf '{"model":"%s","messages":[{"role":"user","content":"Hello, how are you?"}]}' "${model}"
+  fi
+}
+
+base64_one_line() {
+  base64 | tr -d '\n'
+}
+
+append_overhead_json() {
+  local mode_key="$1"
+  local configured_rate="$2"
+  local concurrent="$3"
+  local actual_rps="$4"
+  local success_pct="$5"
+  local us_mean="$6"
+  local us_50="$7"
+  local us_90="$8"
+  local us_95="$9"
+  local us_99="${10}"
+
+  local tmp_json
+  tmp_json=$(mktemp)
+  if [ ! -f "${RESULTS_JSON}" ]; then
+    echo '{}' > "${RESULTS_JSON}"
+  fi
+
+  jq \
+    --arg mode_key "${mode_key}" \
+    --arg timestamp "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+    --arg configured_rate "${configured_rate}" \
+    --arg actual_rate "${actual_rps}" \
+    --arg duration "${OVERHEAD_DURATION}" \
+    --arg concurrent "${concurrent}" \
+    --arg success_rate "${success_pct}" \
+    --arg us_mean "${us_mean}" \
+    --arg us_50 "${us_50}" \
+    --arg us_90 "${us_90}" \
+    --arg us_95 "${us_95}" \
+    --arg us_99 "${us_99}" \
+    '.overhead[$mode_key] = {
+      configured_rate: ($configured_rate | tonumber),
+      actual_rate: ($actual_rate | tonumber),
+      duration: ($duration | tonumber),
+      concurrent: ($concurrent | tonumber),
+      success_rate: ($success_rate | tonumber),
+      latency_us: {
+        mean: ($us_mean | tonumber),
+        p50: ($us_50 | tonumber),
+        p90: ($us_90 | tonumber),
+        p95: ($us_95 | tonumber),
+        p99: ($us_99 | tonumber)
+      }
+    } | .timestamp = (.timestamp // $timestamp)' \
+    "${RESULTS_JSON}" > "${tmp_json}"
+  mv "${tmp_json}" "${RESULTS_JSON}"
+}
+
+append_stress_json() {
+  local mode_key="$1"
+  local label="$2"
+  local configured_rate="$3"
+  local success_pct="$4"
+
+  local tmp_json
+  tmp_json=$(mktemp)
+  if [ ! -f "${RESULTS_JSON}" ]; then
+    echo '{}' > "${RESULTS_JSON}"
+  fi
+
+  jq \
+    --arg mode_key "${mode_key}" \
+    --arg label "${label}" \
+    --arg timestamp "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+    --arg rate "${configured_rate}" \
+    --arg duration "${STRESS_DURATION}" \
+    --arg mocker_latency_ms "${STRESS_MOCKER_LATENCY_MS}" \
+    --arg success_rate "${success_pct}" \
+    '.stress[$mode_key][$label] = {
+      rate: ($rate | tonumber),
+      duration: ($duration | tonumber),
+      mocker_latency_ms: ($mocker_latency_ms | tonumber),
+      success_rate: ($success_rate | tonumber)
+    } | .timestamp = (.timestamp // $timestamp)' \
+    "${RESULTS_JSON}" > "${tmp_json}"
+  mv "${tmp_json}" "${RESULTS_JSON}"
 }
 
 # ============================================================
@@ -459,38 +863,47 @@ extract_latencies() {
 # Calibration: Vegeta -> Mocker direct (with latency)
 # Measures: Vegeta HTTP client + localhost network round-trip + mocker response generation
 run_calibration() {
+  CURRENT_PHASE="calibration (${CURRENT_MODE_LABEL})"
+  local test_rate
+  local test_concurrency
+  test_rate=$(current_rate)
+  test_concurrency=$(current_concurrency "${test_rate}" "${OVERHEAD_MOCKER_LATENCY_MS}")
+
   echo ""
   echo "╔═══════════════════════════════════════════════════════════╗"
-  echo "║    Calibration: Vegeta -> Mocker (${OVERHEAD_MOCKER_LATENCY_MS}ms, direct)        ║"
+  echo "║    Calibration (${CURRENT_MODE_LABEL}): Vegeta -> Mocker (${OVERHEAD_MOCKER_LATENCY_MS}ms)    ║"
   echo "╚═══════════════════════════════════════════════════════════╝"
   echo ""
-  log_info "Measuring Vegeta + network baseline (mocker at ${OVERHEAD_MOCKER_LATENCY_MS}ms latency)"
-  log_info "Duration: ${OVERHEAD_DURATION}s at ${RATE} RPS, ~$(( RATE * OVERHEAD_MOCKER_LATENCY_MS / 1000 )) concurrent"
+  log_info "Measuring ${CURRENT_MODE_LABEL} Vegeta + network baseline (mocker at ${OVERHEAD_MOCKER_LATENCY_MS}ms latency)"
+  log_info "Duration: ${OVERHEAD_DURATION}s at ${test_rate} RPS, ~${test_concurrency} concurrent"
   echo ""
 
-  local target_file="${WORK_DIR}/vegeta-target-calibration.json"
-  local payload='{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Hello, how are you?"}]}'
+  local target_file="${WORK_DIR}/vegeta-target-calibration-${CURRENT_MODE_KEY}.json"
+  local payload
+  local encoded_payload
+  payload=$(chat_payload "gpt-4o-mini" "${CURRENT_STREAM}")
+  encoded_payload=$(printf "%s" "${payload}" | base64_one_line)
 
   cat > "${target_file}" << EOF
-{"method": "POST", "url": "http://localhost:${MOCKER_PORT}/v1/chat/completions", "header": {"Content-Type": ["application/json"], "Authorization": ["Bearer mocker-key"]}, "body": "$(echo -n "${payload}" | base64)"}
+{"method": "POST", "url": "http://127.0.0.1:${MOCKER_PORT}/v1/chat/completions", "header": {"Content-Type": ["application/json"], "Authorization": ["Bearer mocker-key"]}, "body": "${encoded_payload}"}
 EOF
 
   vegeta attack \
     -format=json \
     -targets="${target_file}" \
-    -rate="${RATE}" \
+    -rate="${test_rate}" \
     -duration="${OVERHEAD_DURATION}s" \
-    -timeout="$((OVERHEAD_MOCKER_LATENCY_MS / 1000 + 5))s" \
-    -workers=$((RATE * OVERHEAD_MOCKER_LATENCY_MS / 1000)) \
-    -max-workers="${MAX_WORKERS}" > "${WORK_DIR}/calibration.bin"
+    -timeout="$((OVERHEAD_MOCKER_LATENCY_MS / 1000 + 15))s" \
+    -workers="${test_concurrency}" \
+    -max-workers="${MAX_WORKERS}" > "${WORK_DIR}/calibration-${CURRENT_MODE_KEY}.bin"
 
   echo ""
   log_info "Calibration complete. Results:"
-  vegeta report < "${WORK_DIR}/calibration.bin"
+  vegeta report < "${WORK_DIR}/calibration-${CURRENT_MODE_KEY}.bin"
 
-  extract_latencies "${WORK_DIR}/calibration.bin"
+  extract_latencies "${WORK_DIR}/calibration-${CURRENT_MODE_KEY}.bin"
 
-  log_info "Actual RPS: $(printf "%.0f" $EXTRACTED_RATE) (configured: ${RATE})"
+  log_info "Actual RPS: $(printf "%.0f" $EXTRACTED_RATE) (configured: ${test_rate})"
 
   CAL_MIN_NS=$EXTRACTED_MIN_NS
   CAL_MEAN_NS=$EXTRACTED_MEAN_NS
@@ -514,46 +927,55 @@ EOF
 # Overhead test: Vegeta -> Bifrost -> Mocker (with latency)
 # Same duration/rate as calibration so percentile distributions are comparable
 run_overhead_test() {
+  CURRENT_PHASE="overhead (${CURRENT_MODE_LABEL})"
+  local test_rate
+  local test_concurrency
+  test_rate=$(current_rate)
+  test_concurrency=$(current_concurrency "${test_rate}" "${OVERHEAD_MOCKER_LATENCY_MS}")
+
   echo ""
   echo "╔═══════════════════════════════════════════════════════════╗"
-  echo "║  Overhead Test: Vegeta -> Bifrost -> Mocker (${OVERHEAD_MOCKER_LATENCY_MS}ms)     ║"
+  echo "║  Overhead Test (${CURRENT_MODE_LABEL}): Vegeta -> Bifrost -> Mocker     ║"
   echo "╚═══════════════════════════════════════════════════════════╝"
   echo ""
-  log_info "Measuring Bifrost overhead (single instance, mocker at ${OVERHEAD_MOCKER_LATENCY_MS}ms latency)"
-  log_info "Duration: ${OVERHEAD_DURATION}s at ${RATE} RPS, ~$(( RATE * OVERHEAD_MOCKER_LATENCY_MS / 1000 )) concurrent requests through Bifrost"
+  log_info "Measuring ${CURRENT_MODE_LABEL} Bifrost overhead (single instance, mocker at ${OVERHEAD_MOCKER_LATENCY_MS}ms latency)"
+  log_info "Duration: ${OVERHEAD_DURATION}s at ${test_rate} RPS, ~${test_concurrency} concurrent requests through Bifrost"
   log_info "Overhead consists of: vegetta overhead and mocker timeout jitter"
   echo ""
 
-  local target_file="${WORK_DIR}/vegeta-target.json"
-  local payload='{"model":"openai/gpt-4o-mini","messages":[{"role":"user","content":"Hello, how are you?"}]}'
+  local target_file="${WORK_DIR}/vegeta-target-${CURRENT_MODE_KEY}.json"
+  local payload
+  local encoded_payload
+  payload=$(chat_payload "openai/gpt-4o-mini" "${CURRENT_STREAM}")
+  encoded_payload=$(printf "%s" "${payload}" | base64_one_line)
 
   cat > "${target_file}" << EOF
-{"method": "POST", "url": "http://localhost:${BIFROST_PORT}/v1/chat/completions", "header": {"Content-Type": ["application/json"]}, "body": "$(echo -n "${payload}" | base64)"}
+{"method": "POST", "url": "http://127.0.0.1:${BIFROST_PORT}/v1/chat/completions", "header": {"Content-Type": ["application/json"]}, "body": "${encoded_payload}"}
 EOF
 
   vegeta attack \
     -format=json \
     -targets="${target_file}" \
-    -rate="${RATE}" \
+    -rate="${test_rate}" \
     -duration="${OVERHEAD_DURATION}s" \
-    -timeout="$((OVERHEAD_MOCKER_LATENCY_MS / 1000 + 5))s" \
-    -workers=$((RATE * OVERHEAD_MOCKER_LATENCY_MS / 1000)) \
-    -max-workers="${MAX_WORKERS}" > "${WORK_DIR}/attack.bin"
+    -timeout="$((OVERHEAD_MOCKER_LATENCY_MS / 1000 + 15))s" \
+    -workers="${test_concurrency}" \
+    -max-workers="${MAX_WORKERS}" > "${WORK_DIR}/attack-${CURRENT_MODE_KEY}.bin"
 
   echo ""
   log_info "Overhead test complete. Results:"
-  vegeta report < "${WORK_DIR}/attack.bin"
+  vegeta report < "${WORK_DIR}/attack-${CURRENT_MODE_KEY}.bin"
 
   echo ""
   log_info "Latency histogram:"
-  vegeta report -type=hist[0,100us,500us,1ms,5ms,10ms,50ms,100ms] < "${WORK_DIR}/attack.bin" || log_warn "Histogram generation failed"
+  vegeta report -type=hist[0,100us,500us,1ms,5ms,10ms,50ms,100ms] < "${WORK_DIR}/attack-${CURRENT_MODE_KEY}.bin" || log_warn "Histogram generation failed"
 
   # Extract and compute overhead
-  extract_latencies "${WORK_DIR}/attack.bin"
+  extract_latencies "${WORK_DIR}/attack-${CURRENT_MODE_KEY}.bin"
 
   log_info "  Raw latencies (ns): min=$EXTRACTED_MIN_NS, mean=$EXTRACTED_MEAN_NS, p50=$EXTRACTED_50_NS, p99=$EXTRACTED_99_NS, max=$EXTRACTED_MAX_NS"
   log_info "  Success rate: $EXTRACTED_SUCCESS"
-  log_info "  Actual RPS: $(printf "%.0f" $EXTRACTED_RATE) (configured: ${RATE})"
+  log_info "  Actual RPS: $(printf "%.0f" $EXTRACTED_RATE) (configured: ${test_rate})"
 
   if [ -z "$EXTRACTED_MIN_NS" ] || [ "$EXTRACTED_MIN_NS" = "0" ] || [ "$EXTRACTED_MIN_NS" = "null" ]; then
     log_error "Failed to extract latency values from vegeta report"
@@ -561,40 +983,39 @@ EOF
   fi
 
   # Subtract calibration per bucket: overhead = through_bifrost - direct_to_mocker
-  local us_min=$(printf "%.2f" $(echo "scale=4; ($EXTRACTED_MIN_NS - $CAL_MIN_NS) / 1000" | bc))
   local us_mean=$(printf "%.2f" $(echo "scale=4; ($EXTRACTED_MEAN_NS - $CAL_MEAN_NS) / 1000" | bc))
   local us_50=$(printf "%.2f" $(echo "scale=4; ($EXTRACTED_50_NS - $CAL_50_NS) / 1000" | bc))
   local us_90=$(printf "%.2f" $(echo "scale=4; ($EXTRACTED_90_NS - $CAL_90_NS) / 1000" | bc))
   local us_95=$(printf "%.2f" $(echo "scale=4; ($EXTRACTED_95_NS - $CAL_95_NS) / 1000" | bc))
   local us_99=$(printf "%.2f" $(echo "scale=4; ($EXTRACTED_99_NS - $CAL_99_NS) / 1000" | bc))
-  local us_max=$(printf "%.2f" $(echo "scale=4; ($EXTRACTED_MAX_NS - $CAL_MAX_NS) / 1000" | bc))
 
   local success_pct=$(printf "%.2f" $(echo "scale=4; $EXTRACTED_SUCCESS * 100" | bc))
 
   echo ""
-  log_success "Bifrost overhead (per bucket):"
-  log_info "  Min:  ${us_min}µs"
+  log_success "Bifrost overhead (calibration-subtracted buckets):"
   log_info "  Mean: ${us_mean}µs"
   log_info "  P50:  ${us_50}µs"
   log_info "  P90:  ${us_90}µs"
   log_info "  P95:  ${us_95}µs"
   log_info "  P99:  ${us_99}µs"
-  log_info "  Max:  ${us_max}µs"
 
   local actual_rps=$(printf "%.0f" $EXTRACTED_RATE)
 
   # Write results
-  cat > "${RESULTS_FILE}" << EOF
-# Bifrost Load Test Results (single instance, ${actual_rps} RPS)
+  if [ "$RESULTS_FILE_INITIALIZED" -eq 0 ]; then
+    cat > "${RESULTS_FILE}" << EOF
+# Bifrost Load Test Results (single instance)
 
 ## Bifrost Processing Overhead
 
-| Metric | Actual RPS | Duration | Concurrent | Success Rate | Min | Mean | P50 | P90 | P95 | P99 | Max |
-|--------|-----------|----------|------------|--------------|-----|------|-----|-----|-----|-----|-----|
-| Overhead | ${actual_rps} | ${OVERHEAD_DURATION}s | ~$((RATE * OVERHEAD_MOCKER_LATENCY_MS / 1000)) | ${success_pct}% | ${us_min}µs | ${us_mean}µs | ${us_50}µs | ${us_90}µs | ${us_95}µs | ${us_99}µs | ${us_max}µs |
+| Metric | Actual RPS | Duration | Concurrent | Success Rate | Mean | P50 | P90 | P95 | P99 |
+|--------|-----------|----------|------------|--------------|------|-----|-----|-----|-----|
 EOF
+    RESULTS_FILE_INITIALIZED=1
+  fi
+  echo "| Overhead (${CURRENT_MODE_LABEL}) | ${actual_rps} | ${OVERHEAD_DURATION}s | ~${test_concurrency} | ${success_pct}% | ${us_mean}µs | ${us_50}µs | ${us_90}µs | ${us_95}µs | ${us_99}µs |" >> "${RESULTS_FILE}"
 
-  echo '{"overhead": {"configured_rate": '"${RATE}"', "actual_rate": '"${actual_rps}"', "duration": '"${OVERHEAD_DURATION}"', "concurrent": '$((RATE * OVERHEAD_MOCKER_LATENCY_MS / 1000))', "success_rate": '"${success_pct}"', "latency_us": {"min": '"${us_min}"', "mean": '"${us_mean}"', "p50": '"${us_50}"', "p90": '"${us_90}"', "p95": '"${us_95}"', "p99": '"${us_99}"', "max": '"${us_max}"'}}, "timestamp": "'"$(date -u +"%Y-%m-%dT%H:%M:%SZ")"'"}' > "${RESULTS_JSON}"
+  append_overhead_json "${CURRENT_MODE_KEY}" "${test_rate}" "${test_concurrency}" "${actual_rps}" "${success_pct}" "${us_mean}" "${us_50}" "${us_90}" "${us_95}" "${us_99}"
 
   # Check tiered thresholds (skip Min/Max — single-point extremes are too noisy)
   local failed=0
@@ -635,35 +1056,45 @@ EOF
 # Phase 2: Stress test (mocker at 10s latency)
 # ============================================================
 
-# Arguments: $1 = label (e.g. "Stress #1", "Stress #2")
+# Arguments: $1 = label
 run_stress_test() {
   local label="${1:-Stress}"
-  local bin_file="${WORK_DIR}/stress.bin"
+  CURRENT_PHASE="${label} (${CURRENT_MODE_LABEL})"
+  local test_rate
+  local test_concurrency
+  test_rate=$(current_rate)
+  test_concurrency=$(current_concurrency "${test_rate}" "${STRESS_MOCKER_LATENCY_MS}")
+  local safe_label
+  safe_label=$(echo "${label}" | tr '[:upper:]' '[:lower:]' | tr ' #' '--' | tr -cd '[:alnum:]_-')
+  local bin_file="${WORK_DIR}/stress-${CURRENT_MODE_KEY}-${safe_label}.bin"
 
   echo ""
   echo "╔═══════════════════════════════════════════════════════════╗"
-  echo "║    ${label}: ${RATE} RPS with ${STRESS_MOCKER_LATENCY_MS}ms mocker latency          ║"
+  echo "║    ${label} (${CURRENT_MODE_LABEL}): ${test_rate} RPS with ${STRESS_MOCKER_LATENCY_MS}ms latency   ║"
   echo "╚═══════════════════════════════════════════════════════════╝"
   echo ""
-  log_info "Testing single Bifrost instance under sustained concurrency"
-  log_info "Duration: ${STRESS_DURATION}s at ${RATE} RPS (${STRESS_MOCKER_LATENCY_MS}ms mocker latency)"
-  log_info "Expected concurrent requests: ~$(( RATE * STRESS_MOCKER_LATENCY_MS / 1000 )) (provider concurrency: 15,000, buffer: 20,000)"
+  log_info "Testing ${CURRENT_MODE_LABEL} single Bifrost instance under sustained concurrency"
+  log_info "Duration: ${STRESS_DURATION}s at ${test_rate} RPS (${STRESS_MOCKER_LATENCY_MS}ms mocker latency)"
+  log_info "Expected concurrent requests: ~${test_concurrency} (provider concurrency: 5,000, buffer: 10,000)"
   echo ""
 
-  local target_file="${WORK_DIR}/vegeta-target-stress.json"
-  local payload='{"model":"openai/gpt-4o-mini","messages":[{"role":"user","content":"Hello, how are you?"}]}'
+  local target_file="${WORK_DIR}/vegeta-target-stress-${CURRENT_MODE_KEY}-${safe_label}.json"
+  local payload
+  local encoded_payload
+  payload=$(chat_payload "openai/gpt-4o-mini" "${CURRENT_STREAM}")
+  encoded_payload=$(printf "%s" "${payload}" | base64_one_line)
 
   cat > "${target_file}" << EOF
-{"method": "POST", "url": "http://localhost:${BIFROST_PORT}/v1/chat/completions", "header": {"Content-Type": ["application/json"]}, "body": "$(echo -n "${payload}" | base64)"}
+{"method": "POST", "url": "http://127.0.0.1:${BIFROST_PORT}/v1/chat/completions", "header": {"Content-Type": ["application/json"]}, "body": "${encoded_payload}"}
 EOF
 
   vegeta attack \
     -format=json \
     -targets="${target_file}" \
-    -rate="${RATE}" \
+    -rate="${test_rate}" \
     -duration="${STRESS_DURATION}s" \
     -timeout="30s" \
-    -workers=$((RATE * STRESS_MOCKER_LATENCY_MS / 1000)) \
+    -workers="${test_concurrency}" \
     -max-workers="${MAX_WORKERS}" > "${bin_file}"
 
   echo ""
@@ -679,19 +1110,21 @@ EOF
 
   local success_pct=$(printf "%.2f" $(echo "scale=4; $EXTRACTED_SUCCESS * 100" | bc))
 
-  log_info "Actual RPS: $(printf "%.0f" $EXTRACTED_RATE) (configured: ${RATE})"
+  log_info "Actual RPS: $(printf "%.0f" $EXTRACTED_RATE) (configured: ${test_rate})"
 
   local stress_actual_rps=$(printf "%.0f" $EXTRACTED_RATE)
 
   # Append stress test results to results file
   cat >> "${RESULTS_FILE}" << EOF
 
-## ${label} (${STRESS_MOCKER_LATENCY_MS}ms mocker latency)
+## ${label} - ${CURRENT_MODE_LABEL} (${STRESS_MOCKER_LATENCY_MS}ms mocker latency)
 
 | Metric | Actual RPS | Duration | Concurrent | Success Rate | Min | Mean | P50 | P90 | P95 | P99 | Max |
 |--------|-----------|----------|------------|--------------|-----|------|-----|-----|-----|-----|-----|
-| ${label} | ${stress_actual_rps} | ${STRESS_DURATION}s | ~$((RATE * STRESS_MOCKER_LATENCY_MS / 1000)) | ${success_pct}% | $(echo "scale=2; $EXTRACTED_MIN_NS / 1000000" | bc)ms | $(echo "scale=2; $EXTRACTED_MEAN_NS / 1000000" | bc)ms | $(echo "scale=2; $EXTRACTED_50_NS / 1000000" | bc)ms | $(echo "scale=2; $EXTRACTED_90_NS / 1000000" | bc)ms | $(echo "scale=2; $EXTRACTED_95_NS / 1000000" | bc)ms | $(echo "scale=2; $EXTRACTED_99_NS / 1000000" | bc)ms | $(echo "scale=2; $EXTRACTED_MAX_NS / 1000000" | bc)ms |
+| ${label} (${CURRENT_MODE_LABEL}) | ${stress_actual_rps} | ${STRESS_DURATION}s | ~${test_concurrency} | ${success_pct}% | $(echo "scale=2; $EXTRACTED_MIN_NS / 1000000" | bc)ms | $(echo "scale=2; $EXTRACTED_MEAN_NS / 1000000" | bc)ms | $(echo "scale=2; $EXTRACTED_50_NS / 1000000" | bc)ms | $(echo "scale=2; $EXTRACTED_90_NS / 1000000" | bc)ms | $(echo "scale=2; $EXTRACTED_95_NS / 1000000" | bc)ms | $(echo "scale=2; $EXTRACTED_99_NS / 1000000" | bc)ms | $(echo "scale=2; $EXTRACTED_MAX_NS / 1000000" | bc)ms |
 EOF
+
+  append_stress_json "${CURRENT_MODE_KEY}" "${label}" "${test_rate}" "${success_pct}"
 
   if [ "$success_pct" != "100.00" ]; then
     echo ""
@@ -707,6 +1140,7 @@ EOF
 # ============================================================
 
 finalize_results() {
+  CURRENT_PHASE="finalize results"
   # Append process stats if available
   local has_overhead_stats=false
   local has_stress_stats=false
@@ -739,13 +1173,14 @@ EOF
 
 ## Method
 
-- **Single instance**: All tests run against one bifrost-http process at ${RATE} RPS
-- **Overhead measurement**: Mocker at ${OVERHEAD_MOCKER_LATENCY_MS}ms latency, calibration (Vegeta->Mocker) subtracted from test (Vegeta->Bifrost->Mocker)
-- **Stress test**: Mocker at ${STRESS_MOCKER_LATENCY_MS}ms latency, verifies 100% success under sustained concurrency
+- **Single instance**: All tests run against one bifrost-http process. Non-streaming uses ${RATE} RPS; streaming uses ${STREAMING_RATE} RPS.
+- **Overhead measurement**: Non-streaming and streaming chat completions. Mocker at ${OVERHEAD_MOCKER_LATENCY_MS}ms latency, calibration (Vegeta->Mocker) subtracted from test (Vegeta->Bifrost->Mocker)
+- **Stress test**: Non-streaming and streaming chat completions. Mocker at ${STRESS_MOCKER_LATENCY_MS}ms latency, verifies 100% success under sustained concurrency
 
 ## Notes
 
 - Overhead values are in microseconds (µs), stress test values in milliseconds (ms)
+- Overhead is computed by subtracting matching calibration buckets from test buckets; Min/Max are intentionally omitted because extrema from separate runs are not comparable.
 - Overhead ignores the mocker jitter, local network request queuing. In real-world the P99 overhead will be approximately 100 microseconds.
 - Tiered overhead thresholds: mean<${MAX_OVERHEAD_MEAN_US}µs, p50<${MAX_OVERHEAD_P50_US}µs, p90<${MAX_OVERHEAD_P90_US}µs, p95<${MAX_OVERHEAD_P95_US}µs, p99<${MAX_OVERHEAD_P99_US}µs
 - P50/P90/P95/P99 represent percentile latencies
@@ -754,15 +1189,14 @@ EOF
 *Generated by Bifrost Load Test Script*
 EOF
 
-  # Update JSON with stress results and process stats
+  # Update JSON with process stats
   local tmp_json=$(mktemp)
   if command -v jq &> /dev/null; then
-    jq --arg sr "$(printf "%.2f" $(echo "scale=4; $EXTRACTED_SUCCESS * 100" | bc))" \
-       --arg cpu_avg "${STATS_CPU_AVG:-0}" --arg cpu_peak "${STATS_CPU_PEAK:-0}" \
+    jq --arg cpu_avg "${STATS_CPU_AVG:-0}" --arg cpu_peak "${STATS_CPU_PEAK:-0}" \
        --arg rss_avg "${STATS_RSS_AVG:-0}" --arg rss_peak "${STATS_RSS_PEAK:-0}" \
        --arg oh_cpu_avg "${OVERHEAD_STATS_CPU_AVG:-0}" --arg oh_cpu_peak "${OVERHEAD_STATS_CPU_PEAK:-0}" \
        --arg oh_rss_avg "${OVERHEAD_STATS_RSS_AVG:-0}" --arg oh_rss_peak "${OVERHEAD_STATS_RSS_PEAK:-0}" \
-       '.stress = {"rate": '"${RATE}"', "duration": '"${STRESS_DURATION}"', "mocker_latency_ms": '"${STRESS_MOCKER_LATENCY_MS}"', "success_rate": ($sr | tonumber)} | .process_stats = {"overhead": {"cpu_avg_pct": ($oh_cpu_avg | tonumber), "cpu_peak_pct": ($oh_cpu_peak | tonumber), "rss_avg_mb": ($oh_rss_avg | tonumber), "rss_peak_mb": ($oh_rss_peak | tonumber)}, "stress": {"cpu_avg_pct": ($cpu_avg | tonumber), "cpu_peak_pct": ($cpu_peak | tonumber), "rss_avg_mb": ($rss_avg | tonumber), "rss_peak_mb": ($rss_peak | tonumber)}}' \
+       '.process_stats = {"overhead": {"cpu_avg_pct": ($oh_cpu_avg | tonumber), "cpu_peak_pct": ($oh_cpu_peak | tonumber), "rss_avg_mb": ($oh_rss_avg | tonumber), "rss_peak_mb": ($oh_rss_peak | tonumber)}, "stress": {"cpu_avg_pct": ($cpu_avg | tonumber), "cpu_peak_pct": ($cpu_peak | tonumber), "rss_avg_mb": ($rss_avg | tonumber), "rss_peak_mb": ($rss_peak | tonumber)}}' \
        "${RESULTS_JSON}" > "${tmp_json}"
     mv "${tmp_json}" "${RESULTS_JSON}"
   fi
@@ -770,27 +1204,44 @@ EOF
   log_success "Results saved to:"
   log_info "  - Markdown: ${RESULTS_FILE}"
   log_info "  - JSON: ${RESULTS_JSON}"
+
+  echo ""
+  log_success "Load test final result: PASS"
+  if [ -f "${RESULTS_JSON}" ]; then
+    echo "Summary:"
+    jq -r '
+      (.overhead // {}) | to_entries[] |
+      "  overhead \(.key): success=\(.value.success_rate)%, mean=\(.value.latency_us.mean)us, p99=\(.value.latency_us.p99)us"
+    ' "${RESULTS_JSON}"
+    jq -r '
+      (.stress // {}) | to_entries[] as $mode |
+      ($mode.value // {}) | to_entries[] |
+      "  stress \($mode.key) \(.key): success=\(.value.success_rate)%"
+    ' "${RESULTS_JSON}"
+  fi
 }
 
 # Main execution
 main() {
   echo ""
   echo "╔═══════════════════════════════════════════════════════════╗"
-  echo "║       Bifrost Load Test (single instance, ${RATE} RPS)        ║"
+  echo "║       Bifrost Load Test (single instance)                     ║"
   echo "╚═══════════════════════════════════════════════════════════╝"
   echo ""
 
-  log_info "Configuration: single bifrost-http instance, ${RATE} RPS"
-  log_info "Provider concurrency: 15,000 (buffer: 20,000)"
+  log_info "Configuration: single bifrost-http instance, non-streaming ${RATE} RPS, streaming ${STREAMING_RATE} RPS"
+  log_info "Provider concurrency: 5,000 (buffer: 10,000)"
   log_info "Overhead thresholds: mean<${MAX_OVERHEAD_MEAN_US}µs, p50<${MAX_OVERHEAD_P50_US}µs, p90<${MAX_OVERHEAD_P90_US}µs, p95<${MAX_OVERHEAD_P95_US}µs, p99<${MAX_OVERHEAD_P99_US}µs"
-  log_info "Phase 1: Overhead measurement — ${OVERHEAD_MOCKER_LATENCY_MS}ms mocker, ${OVERHEAD_DURATION}s, ~$(( RATE * OVERHEAD_MOCKER_LATENCY_MS / 1000 )) concurrent requests"
-  log_info "Phase 2: Stress test — ${STRESS_MOCKER_LATENCY_MS}ms mocker, ${STRESS_DURATION}s, ~$(( RATE * STRESS_MOCKER_LATENCY_MS / 1000 )) concurrent requests"
+  log_info "Phase 1: Overhead measurement — non-streaming + streaming, ${OVERHEAD_MOCKER_LATENCY_MS}ms mocker, ${OVERHEAD_DURATION}s each"
+  log_info "Phase 2: Stress test — non-streaming + streaming, ${STRESS_MOCKER_LATENCY_MS}ms mocker, ${STRESS_DURATION}s each"
 
   check_dependencies
   install_vegeta
   build_bifrost_http
   setup_mocker
+  patch_mocker_for_load_test
   build_mocker
+  initialize_results
   create_config
   cleanup_ports
 
@@ -799,6 +1250,11 @@ main() {
   start_bifrost
   start_stats_monitor
 
+  set_test_mode "Non-streaming" "non_streaming" "false"
+  run_calibration
+  run_overhead_test
+
+  set_test_mode "Streaming" "streaming" "true"
   run_calibration
   run_overhead_test
 
@@ -820,13 +1276,10 @@ main() {
   start_bifrost
   start_stats_monitor
 
-  run_stress_test "Stress #1"
-
-  echo ""
-  log_info "Waiting 30s before second stress test (idle period)..."
-  sleep 30
-
-  run_stress_test "Stress #2"
+  set_test_mode "Non-streaming" "non_streaming" "false"
+  run_stress_test "Stress"
+  set_test_mode "Streaming" "streaming" "true"
+  run_stress_test "Stress"
 
   # ── Collect process stats from stress phase ──
   stop_stats_monitor
@@ -848,4 +1301,3 @@ main() {
 }
 
 main "$@"
-

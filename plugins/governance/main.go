@@ -29,6 +29,8 @@ const (
 	governanceRejectedContextKey schemas.BifrostContextKey = "bf-governance-rejected"
 
 	VirtualKeyPrefix = "sk-bf-"
+
+	noComplexitySignalLog = "Complexity analysis skipped: no configured complexity signal matched the latest user message; continuing with existing routing path"
 )
 
 // Config is the configuration for the governance plugin
@@ -700,6 +702,13 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 			}
 
 			result := analyzer.Analyze(input)
+			if result == nil {
+				if p.logger != nil {
+					p.logger.Debug("[Governance] %s", noComplexitySignalLog)
+				}
+				ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelDebug, noComplexitySignalLog)
+				return nil
+			}
 			if p.logger != nil {
 				p.logger.Debug(
 					"[Governance] Complexity analysis details: tier=%s score=%.2f words=%d",
@@ -986,6 +995,7 @@ func (p *GovernancePlugin) EvaluateGovernanceRequest(ctx *schemas.BifrostContext
 	// pointer columns still participate in customer-level enforcement.
 	if !skipBudgetsAndRateLimits && result.Decision == DecisionAllow && hierarchyVK != nil {
 		var customerID string
+		customerFromTeam := false
 		switch {
 		case hierarchyVK.CustomerID != nil:
 			customerID = *hierarchyVK.CustomerID
@@ -993,10 +1003,18 @@ func (p *GovernancePlugin) EvaluateGovernanceRequest(ctx *schemas.BifrostContext
 			customerID = hierarchyVK.Customer.ID
 		case hierarchyVK.Team != nil && hierarchyVK.Team.CustomerID != nil:
 			customerID = *hierarchyVK.Team.CustomerID
+			customerFromTeam = true
 		case hierarchyVK.Team != nil && hierarchyVK.Team.Customer != nil:
 			customerID = hierarchyVK.Team.Customer.ID
+			customerFromTeam = true
 		}
-		if customerID != "" {
+		// When the request is scoped to a specific customer (header-driven, team-VK
+		// path; stamped by the enterprise plugin), skip enforcing the scalar
+		// team.CustomerID customer if it is not the scoped one — the enterprise layer
+		// enforces the scoped customer instead. Mirrors collectBudgetsFromHierarchy.
+		scopedCustomerID, _ := ctx.Value(schemas.BifrostContextKeyGovernanceScopedCustomerID).(string)
+		scopedAway := customerFromTeam && scopedCustomerID != "" && scopedCustomerID != customerID
+		if customerID != "" && !scopedAway {
 			result = p.resolver.EvaluateCustomerRequest(ctx, customerID, evaluationRequest)
 		}
 	}
@@ -1186,7 +1204,7 @@ func (p *GovernancePlugin) PreRequestHook(ctx *schemas.BifrostContext, req *sche
 	if virtualKeyValue != "" {
 		var ok bool
 		virtualKey, ok = p.store.GetVirtualKey(ctx, virtualKeyValue)
-		if !ok || virtualKey == nil || !virtualKey.IsActiveValue() {
+		if !ok || virtualKey == nil || !virtualKey.IsActiveValue() || virtualKey.IsExpiredAt(time.Now().UTC()) {
 			return nil
 		}
 	}
@@ -1260,16 +1278,14 @@ func (p *GovernancePlugin) PreRequestHook(ctx *schemas.BifrostContext, req *sche
 //   - *schemas.LLMPluginShortCircuit: The plugin short circuit if the request is not allowed
 //   - error: Any error that occurred during processing
 func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
-	// If its skip key selection - in that case we need to skip virtual key selection too
-	if bifrost.GetBoolFromContext(ctx, schemas.BifrostContextKeySkipKeySelection) {
-		return req, nil, nil
-	}
 	// Validate required headers are present
 	if headerErr := p.validateRequiredHeaders(ctx); headerErr != nil {
 		return req, &schemas.LLMPluginShortCircuit{Error: headerErr}, nil
 	}
-	// Extract governance headers and virtual key using utility functions
+
+	// Extract virtual key using utility functions
 	virtualKeyValue := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
+
 	// Extract user ID for enterprise user-level governance
 	userID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserID)
 	// Getting provider and mode from the request
@@ -1349,11 +1365,23 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 			ctx.SetValue(schemas.BifrostContextKeyGovernanceRateLimitIDs, rateLimitIDs)
 		}
 
+		// Attempt number distinguishes physical provider calls within one
+		// logical request so each token-consuming attempt bills exactly once.
+		// Set by core on every retry iteration.
+		attemptNumber := bifrost.GetIntFromContext(ctx, schemas.BifrostContextKeyNumberOfRetries)
+
 		p.wg.Add(1)
 		go func() {
 			defer p.wg.Done()
+			// Recover so a billing panic (e.g. an unexpected nil deref) can never
+			// crash the process and lose in-memory counters.
+			defer func() {
+				if r := recover(); r != nil {
+					p.logger.Error("recovered from panic in governance postHookWorker: %v", r)
+				}
+			}()
 			// Use the requested model for usage tracking
-			p.postHookWorker(result, provider, requestedModel, requestType, effectiveVK, requestID, userID, isFinalChunk, pricingScopes)
+			p.postHookWorker(result, err, provider, requestedModel, requestType, effectiveVK, requestID, userID, isFinalChunk, attemptNumber, pricingScopes)
 		}()
 	}
 
@@ -1412,7 +1440,7 @@ func (p *GovernancePlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.
 	// This runs independently of EvaluateGovernanceRequest to enforce execution-time allow-list.
 	if virtualKeyValue != "" {
 		vk, ok := p.store.GetVirtualKey(ctx, virtualKeyValue)
-		if !ok || vk == nil || !vk.IsActiveValue() {
+		if !ok || vk == nil {
 			// VK became invalid after initial check - fail closed for security
 			ctx.SetValue(governanceRejectedContextKey, true)
 			return req, &schemas.MCPPluginShortCircuit{Error: &schemas.BifrostError{
@@ -1420,6 +1448,26 @@ func (p *GovernancePlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.
 				StatusCode: bifrost.Ptr(403),
 				Error: &schemas.ErrorField{
 					Message: "Virtual key not found",
+				},
+			}}, nil
+		}
+		if !vk.IsActiveValue() {
+			ctx.SetValue(governanceRejectedContextKey, true)
+			return req, &schemas.MCPPluginShortCircuit{Error: &schemas.BifrostError{
+				Type:       bifrost.Ptr(string(DecisionVirtualKeyBlocked)),
+				StatusCode: bifrost.Ptr(403),
+				Error: &schemas.ErrorField{
+					Message: "Virtual key is inactive",
+				},
+			}}, nil
+		}
+		if vk.IsExpiredAt(time.Now().UTC()) {
+			ctx.SetValue(governanceRejectedContextKey, true)
+			return req, &schemas.MCPPluginShortCircuit{Error: &schemas.BifrostError{
+				Type:       bifrost.Ptr(string(DecisionVirtualKeyBlocked)),
+				StatusCode: bifrost.Ptr(403),
+				Error: &schemas.ErrorField{
+					Message: "Virtual key has expired",
 				},
 			}}, nil
 		}
@@ -1605,9 +1653,10 @@ func (p *GovernancePlugin) Cleanup() error {
 //   - isBatch: Whether the request is a batch request
 //   - isFinalChunk: Whether the request is the final chunk
 //   - pricingScopes: Prebuilt pricing lookup scopes using governance VK ID (nil if not applicable)
-func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, provider schemas.ModelProvider, model string, requestType schemas.RequestType, virtualKey, requestID, userID string, isFinalChunk bool, pricingScopes *modelcatalog.PricingLookupScopes) {
+func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError, provider schemas.ModelProvider, model string, requestType schemas.RequestType, virtualKey, requestID, userID string, isFinalChunk bool, attemptNumber int, pricingScopes *modelcatalog.PricingLookupScopes) {
 	// Determine if request was successful
 	success := (result != nil)
+	billedReason := "success"
 
 	// Streaming detection
 	isStreaming := bifrost.IsStreamRequestType(requestType)
@@ -1618,6 +1667,17 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, provi
 			cost = p.modelCatalog.CalculateCost(result, pricingScopes)
 		}
 		tokensUsed := 0
+		// The request failed/was cancelled but the provider still
+		// processed tokens (carried on BifrostError.ExtraFields.BilledUsage).
+		// Bill those tokens — Anthropic charges us for them regardless.
+		if result == nil && bifrostErr != nil && bifrostErr.ExtraFields.BilledUsage != nil {
+			billedUsage := bifrostErr.ExtraFields.BilledUsage
+			tokensUsed = billedUsage.TotalTokens
+			billedReason = "partial_usage_on_error"
+			if p.modelCatalog != nil {
+				cost = p.modelCatalog.CalculateCostForUsage(billedUsage, provider, model, requestType, pricingScopes)
+			}
+		}
 		if result != nil {
 			switch {
 			case result.TextCompletionResponse != nil && result.TextCompletionResponse.Usage != nil:
@@ -1647,17 +1707,19 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, provi
 
 		// Create usage update for tracker (business logic)
 		usageUpdate := &UsageUpdate{
-			VirtualKey:   virtualKey,
-			Provider:     provider,
-			Model:        model,
-			Success:      success,
-			TokensUsed:   int64(tokensUsed),
-			Cost:         cost,
-			RequestID:    requestID,
-			UserID:       userID,
-			IsStreaming:  isStreaming,
-			IsFinalChunk: isFinalChunk,
-			HasUsageData: tokensUsed > 0 || cost > 0,
+			VirtualKey:    virtualKey,
+			Provider:      provider,
+			Model:         model,
+			Success:       success,
+			TokensUsed:    int64(tokensUsed),
+			Cost:          cost,
+			RequestID:     requestID,
+			UserID:        userID,
+			IsStreaming:   isStreaming,
+			IsFinalChunk:  isFinalChunk,
+			HasUsageData:  tokensUsed > 0 || cost > 0,
+			AttemptNumber: attemptNumber,
+			BilledReason:  billedReason,
 		}
 
 		// Queue usage update asynchronously using tracker

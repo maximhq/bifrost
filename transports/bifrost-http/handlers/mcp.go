@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -111,11 +112,86 @@ func (h *MCPHandler) getMCPClients(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	limitStr := string(ctx.QueryArgs().Peek("limit"))
-	offsetStr := string(ctx.QueryArgs().Peek("offset"))
-	searchStr := string(ctx.QueryArgs().Peek("search"))
+	params := configstore.MCPClientsQueryParams{
+		Search:          string(ctx.QueryArgs().Peek("search")),
+		ClientID:        string(ctx.QueryArgs().Peek("server")),
+		ConnectionTypes: parseCommaSeparated(string(ctx.QueryArgs().Peek("connection_type"))),
+		AuthTypes:       parseCommaSeparated(string(ctx.QueryArgs().Peek("auth_type"))),
+		VirtualKeyIDs:   parseCommaSeparated(string(ctx.QueryArgs().Peek("virtual_keys"))),
+	}
+	if b, ok, err := parseBoolQueryArg(ctx, "all_virtual_keys"); err != nil {
+		SendError(ctx, 400, "Invalid all_virtual_keys parameter: must be a boolean")
+		return
+	} else if ok {
+		params.OnlyAllVirtualKeys = b
+	}
+	// Runtime state selection (connected/disconnected) — resolved against the
+	// live engine inside getMCPClientsPaginated since it isn't a DB column.
+	states := parseCommaSeparated(string(ctx.QueryArgs().Peek("state")))
+	for _, s := range states {
+		if s != "connected" && s != "disconnected" {
+			SendError(ctx, 400, "Invalid state parameter: must be 'connected' or 'disconnected'")
+			return
+		}
+	}
 
-	h.getMCPClientsPaginated(ctx, limitStr, offsetStr, searchStr)
+	if limitStr := string(ctx.QueryArgs().Peek("limit")); limitStr != "" {
+		n, err := strconv.Atoi(limitStr)
+		if err != nil {
+			SendError(ctx, 400, "Invalid limit parameter: must be a number")
+			return
+		}
+		if n < 0 {
+			SendError(ctx, 400, "Invalid limit parameter: must be non-negative")
+			return
+		}
+		params.Limit = n
+	}
+	if offsetStr := string(ctx.QueryArgs().Peek("offset")); offsetStr != "" {
+		n, err := strconv.Atoi(offsetStr)
+		if err != nil {
+			SendError(ctx, 400, "Invalid offset parameter: must be a number")
+			return
+		}
+		if n < 0 {
+			SendError(ctx, 400, "Invalid offset parameter: must be non-negative")
+			return
+		}
+		params.Offset = n
+	}
+	// Optional boolean facets — nil = no filter. Unparseable values are a hard
+	// error (like limit/offset) so a typo can't silently drop the filter.
+	if b, ok, err := parseBoolQueryArg(ctx, "code_mode"); err != nil {
+		SendError(ctx, 400, "Invalid code_mode parameter: must be a boolean")
+		return
+	} else if ok {
+		params.IsCodeModeClient = &b
+	}
+	if b, ok, err := parseBoolQueryArg(ctx, "disabled"); err != nil {
+		SendError(ctx, 400, "Invalid disabled parameter: must be a boolean")
+		return
+	} else if ok {
+		params.Disabled = &b
+	}
+
+	h.getMCPClientsPaginated(ctx, params, states)
+}
+
+// parseBoolQueryArg reads an optional boolean query parameter. It returns
+// (value, true, nil) when the parameter is present and parses as a bool,
+// (false, false, nil) when the parameter is absent (no filter), and
+// (false, false, err) when present but unparseable — callers should surface
+// the last case as an HTTP 400 rather than silently dropping the filter.
+func parseBoolQueryArg(ctx *fasthttp.RequestCtx, key string) (bool, bool, error) {
+	raw := string(ctx.QueryArgs().Peek(key))
+	if raw == "" {
+		return false, false, nil
+	}
+	b, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, false, err
+	}
+	return b, true, nil
 }
 
 // getMCPLibrary handles GET /api/mcp/library — paginated, searchable, filterable
@@ -244,45 +320,12 @@ func (h *MCPHandler) forceSyncMCPLibrary(ctx *fasthttp.RequestCtx) {
 	})
 }
 
-// getMCPClientsPaginated handles the paginated path for GET /api/mcp/clients
-func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, limitStr, offsetStr, searchStr string) {
-	params := configstore.MCPClientsQueryParams{
-		Search: searchStr,
-		Limit:  100,
-	}
-	if limitStr != "" {
-		n, err := strconv.Atoi(limitStr)
-		if err != nil {
-			SendError(ctx, 400, "Invalid limit parameter: must be a number")
-			return
-		}
-		if n < 0 {
-			SendError(ctx, 400, "Invalid limit parameter: must be non-negative")
-			return
-		}
-		params.Limit = n
-	}
-	if offsetStr != "" {
-		n, err := strconv.Atoi(offsetStr)
-		if err != nil {
-			SendError(ctx, 400, "Invalid offset parameter: must be a number")
-			return
-		}
-		if n < 0 {
-			SendError(ctx, 400, "Invalid offset parameter: must be non-negative")
-			return
-		}
-		params.Offset = n
-	}
-
-	dbClients, totalCount, err := h.store.ConfigStore.GetMCPClientsPaginated(ctx, params)
-	if err != nil {
-		logger.Error("failed to retrieve MCP clients: %v", err)
-		SendError(ctx, 500, "Failed to retrieve MCP clients")
-		return
-	}
-
-	// Get connected clients from Bifrost engine for state/tools merge
+// getMCPClientsPaginated handles the paginated path for GET /api/mcp/clients.
+// states carries the raw connection-state selection (connected/disconnected);
+// it is resolved against the live engine here because state is not a DB column.
+func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, params configstore.MCPClientsQueryParams, states []string) {
+	// Get connected clients from Bifrost engine — used both to resolve the
+	// runtime state filter and to merge live state/tools onto each row below.
 	clientsInBifrost, err := h.client.GetMCPClients()
 	if err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get MCP clients from Bifrost: %v", err))
@@ -291,6 +334,34 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, limitStr, 
 	connectedClientsMap := make(map[string]schemas.MCPClient)
 	for _, client := range clientsInBifrost {
 		connectedClientsMap[client.Config.ID] = client
+	}
+
+	// Resolve the runtime state filter into a connected-id allow/block list the
+	// store can apply within the same paginated query. "connected" means the
+	// engine reports MCPConnectionStateConnected; everything else (disconnected,
+	// error, disabled, not-in-engine) counts as disconnected. Selecting both —
+	// or neither — is a no-op.
+	if wantConnected, wantDisconnected := slices.Contains(states, "connected"), slices.Contains(states, "disconnected"); wantConnected != wantDisconnected {
+		connectedIDs := make([]string, 0, len(clientsInBifrost))
+		for _, c := range clientsInBifrost {
+			if c.State == schemas.MCPConnectionStateConnected {
+				connectedIDs = append(connectedIDs, c.Config.ID)
+			}
+		}
+		params.StateClientIDs = connectedIDs
+		params.StateInclude = &wantConnected
+	}
+
+	// Normalise pagination (0 → 25 default, cap 100) before the query so the
+	// echoed limit/offset match the rows actually returned — same helper every
+	// other paginated handler uses.
+	params.Limit, params.Offset = ClampPaginationParams(params.Limit, params.Offset)
+
+	dbClients, totalCount, err := h.store.ConfigStore.GetMCPClientsPaginated(ctx, params)
+	if err != nil {
+		logger.Error("failed to retrieve MCP clients: %v", err)
+		SendError(ctx, 500, "Failed to retrieve MCP clients")
+		return
 	}
 
 	// Batch-fetch all VK assignments for this page in a single query, then group by client ID.
@@ -372,6 +443,7 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, limitStr, 
 			AllowedExtraHeaders:   dbClient.AllowedExtraHeaders,
 			IsPingAvailable:       &isPingAvailable,
 			ToolSyncInterval:      time.Duration(dbClient.ToolSyncInterval) * time.Second,
+			ToolExecutionTimeout:  time.Duration(dbClient.ToolExecutionTimeout) * time.Second,
 			ToolPricing:           dbClient.ToolPricing,
 			AllowOnAllVirtualKeys: dbClient.AllowOnAllVirtualKeys,
 			Disabled:              dbClient.Disabled,
@@ -381,7 +453,7 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, limitStr, 
 		if dbClient.OauthConfigID != nil {
 			if oauthCfg, ok := oauthConfigsByID[*dbClient.OauthConfigID]; ok {
 				clientConfig.OauthClientID = oauthCfg.ClientID
-				clientConfig.OauthClientSecret = oauthCfg.GetClientSecretAsEnvVar()
+				clientConfig.OauthClientSecret = oauthCfg.GetClientSecretAsSecretVar()
 			}
 		}
 		// Enrich VK assignments using the pre-fetched batch result.
@@ -467,12 +539,12 @@ func (h *MCPHandler) reconnectMCPClient(ctx *fasthttp.RequestCtx) {
 
 // OAuthConfigRequest represents OAuth configuration in the request
 type OAuthConfigRequest struct {
-	ClientID        *schemas.EnvVar `json:"client_id"`
-	ClientSecret    *schemas.EnvVar `json:"client_secret"`
-	AuthorizeURL    string          `json:"authorize_url"`
-	TokenURL        string          `json:"token_url"`
-	RegistrationURL string          `json:"registration_url"`
-	Scopes          []string        `json:"scopes"`
+	ClientID        *schemas.SecretVar `json:"client_id"`
+	ClientSecret    *schemas.SecretVar `json:"client_secret"`
+	AuthorizeURL    string             `json:"authorize_url"`
+	TokenURL        string             `json:"token_url"`
+	RegistrationURL string             `json:"registration_url"`
+	Scopes          []string           `json:"scopes"`
 }
 
 // MCPClientRequest represents the full MCP client creation request with OAuth support.
@@ -499,21 +571,22 @@ type MCPVKConfigRequest struct {
 // Immutable fields (connection_type, auth_type, connection_string, stdio_config) are not
 // accepted here; they cannot be changed after creation.
 type MCPClientUpdateRequest struct {
-	Name                  *string                   `json:"name,omitempty"`
-	Disabled              *bool                     `json:"disabled,omitempty"`
-	AllowOnAllVirtualKeys *bool                     `json:"allow_on_all_virtual_keys,omitempty"`
-	IsCodeModeClient      *bool                     `json:"is_code_mode_client,omitempty"`
-	IsPingAvailable       *bool                     `json:"is_ping_available,omitempty"`
-	ToolSyncInterval      *int                      `json:"tool_sync_interval,omitempty"`
-	Headers               map[string]schemas.EnvVar `json:"headers,omitempty"`
-	AllowedExtraHeaders   *schemas.WhiteList        `json:"allowed_extra_headers,omitempty"`
-	ToolPricing           map[string]float64        `json:"tool_pricing,omitempty"`
-	ToolsToExecute        *schemas.WhiteList        `json:"tools_to_execute,omitempty"`
-	ToolsToAutoExecute    *schemas.WhiteList        `json:"tools_to_auto_execute,omitempty"`
-	PerUserHeaderKeys     *[]string                 `json:"per_user_header_keys,omitempty"`
-	TLSConfig             *schemas.MCPTLSConfig     `json:"tls_config,omitempty"`
-	VKConfigs             *[]MCPVKConfigRequest     `json:"vk_configs,omitempty"`
-	OauthConfig           *OAuthConfigRequest       `json:"oauth_config,omitempty"`
+	Name                  *string                      `json:"name,omitempty"`
+	Disabled              *bool                        `json:"disabled,omitempty"`
+	AllowOnAllVirtualKeys *bool                        `json:"allow_on_all_virtual_keys,omitempty"`
+	IsCodeModeClient      *bool                        `json:"is_code_mode_client,omitempty"`
+	IsPingAvailable       *bool                        `json:"is_ping_available,omitempty"`
+	ToolSyncInterval      *int                         `json:"tool_sync_interval,omitempty"`
+	ToolExecutionTimeout  *int                         `json:"tool_execution_timeout,omitempty"`
+	Headers               map[string]schemas.SecretVar `json:"headers,omitempty"`
+	AllowedExtraHeaders   *schemas.WhiteList           `json:"allowed_extra_headers,omitempty"`
+	ToolPricing           map[string]float64           `json:"tool_pricing,omitempty"`
+	ToolsToExecute        *schemas.WhiteList           `json:"tools_to_execute,omitempty"`
+	ToolsToAutoExecute    *schemas.WhiteList           `json:"tools_to_auto_execute,omitempty"`
+	PerUserHeaderKeys     *[]string                    `json:"per_user_header_keys,omitempty"`
+	TLSConfig             *schemas.MCPTLSConfig        `json:"tls_config,omitempty"`
+	VKConfigs             *[]MCPVKConfigRequest        `json:"vk_configs,omitempty"`
+	OauthConfig           *OAuthConfigRequest          `json:"oauth_config,omitempty"`
 }
 
 // addMCPClient handles POST /api/mcp/client - Add a new MCP client
@@ -527,7 +600,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 
 	var req MCPClientRequest
 	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request format: %v", err))
+		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
 		return
 	}
 
@@ -649,6 +722,10 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		schemasConfig.DiscoveredToolNameMapping = toolNameMapping
 
 		if err := h.store.ConfigStore.CreateMCPClientConfig(ctx, schemasConfig); err != nil {
+			if errors.Is(err, configstore.ErrAlreadyExists) {
+				SendError(ctx, fasthttp.StatusConflict, "An MCP client with this name already exists")
+				return
+			}
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to create MCP config: %v", err))
 			return
 		}
@@ -893,6 +970,10 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 	// Creating MCP client config in config store
 	if h.store.ConfigStore != nil {
 		if err := h.store.ConfigStore.CreateMCPClientConfig(ctx, schemasConfig); err != nil {
+			if errors.Is(err, configstore.ErrAlreadyExists) {
+				SendError(ctx, fasthttp.StatusConflict, "An MCP client with this name already exists")
+				return
+			}
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to create MCP config: %v", err))
 			return
 		}
@@ -929,7 +1010,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 	}
 	var req MCPClientUpdateRequest
 	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request format: %v", err))
+		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
 		return
 	}
 
@@ -1016,6 +1097,14 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 	if req.ToolSyncInterval != nil {
 		resolvedToolSyncInterval = time.Duration(*req.ToolSyncInterval) * time.Minute
 	}
+	resolvedToolExecutionTimeout := existingConfig.ToolExecutionTimeout
+	if req.ToolExecutionTimeout != nil {
+		if *req.ToolExecutionTimeout < 0 {
+			SendError(ctx, fasthttp.StatusBadRequest, "tool_execution_timeout must be >= 0")
+			return
+		}
+		resolvedToolExecutionTimeout = time.Duration(*req.ToolExecutionTimeout) * time.Second
+	}
 
 	// Resolve tools_to_execute and tools_to_auto_execute.
 	resolvedToolsToExecute := existingConfig.ToolsToExecute
@@ -1083,8 +1172,8 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	// shouldRotateOAuthConfig := req.OauthConfig != nil && (existingConfig.AuthType == schemas.MCPAuthTypeOauth || existingConfig.AuthType == schemas.MCPAuthTypePerUserOauth)
-	// var oauthClientID *schemas.EnvVar
-	// var oauthClientSecret *schemas.EnvVar
+	// var oauthClientID *schemas.SecretVar
+	// var oauthClientSecret *schemas.SecretVar
 	// oauthAuthorizeURL := ""
 	// oauthTokenURL := ""
 	// oauthRegistrationURL := ""
@@ -1186,6 +1275,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		IsPingAvailable:       isPingAvailable,
 		ToolPricing:           toolPricing,
 		ToolSyncInterval:      int(resolvedToolSyncInterval / time.Second),
+		ToolExecutionTimeout:  int(resolvedToolExecutionTimeout / time.Second),
 		AuthType:              string(existingConfig.AuthType),
 		OauthConfigID:         existingConfig.OauthConfigID,
 		AllowOnAllVirtualKeys: allowOnAllVKs,
@@ -1249,6 +1339,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		OauthConfigID:         existingConfig.OauthConfigID,
 		IsPingAvailable:       isPingAvailable,
 		ToolSyncInterval:      toolSyncInterval,
+		ToolExecutionTimeout:  resolvedToolExecutionTimeout,
 		ToolPricing:           toolPricing,
 		AllowOnAllVirtualKeys: allowOnAllVKs,
 		Disabled:              disabled,
@@ -1552,8 +1643,8 @@ func validateToolsToAutoExecute(toolsToAutoExecute schemas.WhiteList, toolsToExe
 // preserving stored raw values when an incoming header value is redacted and unchanged.
 // Only called when the caller explicitly provided a headers map (req.Headers != nil);
 // when headers are omitted entirely the caller retains the existing value directly.
-func mergeMCPHeaders(incoming, rawExisting, redactedExisting map[string]schemas.EnvVar) map[string]schemas.EnvVar {
-	merged := make(map[string]schemas.EnvVar, len(incoming))
+func mergeMCPHeaders(incoming, rawExisting, redactedExisting map[string]schemas.SecretVar) map[string]schemas.SecretVar {
+	merged := make(map[string]schemas.SecretVar, len(incoming))
 	for key, incomingValue := range incoming {
 		if redactedExisting != nil && rawExisting != nil {
 			if redactedValue, ok := redactedExisting[key]; ok {
@@ -1733,6 +1824,10 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 			// Persist MCP client config in config store (BeforeSave hook serializes DiscoveredTools)
 			if h.store.ConfigStore != nil {
 				if err := h.store.ConfigStore.CreateMCPClientConfig(ctx, mcpClientConfig); err != nil {
+					if errors.Is(err, configstore.ErrAlreadyExists) {
+						SendError(ctx, fasthttp.StatusConflict, "An MCP client with this name already exists")
+						return
+					}
 					SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to create MCP config: %v", err))
 					return
 				}
@@ -1804,6 +1899,10 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 	} else {
 		if h.store.ConfigStore != nil {
 			if err := h.store.ConfigStore.CreateMCPClientConfig(ctx, mcpClientConfig); err != nil {
+				if errors.Is(err, configstore.ErrAlreadyExists) {
+					SendError(ctx, fasthttp.StatusConflict, "An MCP client with this name already exists")
+					return
+				}
 				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to create MCP config: %v", err))
 				return
 			}
@@ -1910,7 +2009,7 @@ func (h *MCPHandler) createMCPLibraryEntry(ctx *fasthttp.RequestCtx) {
 
 	var req CreateMCPLibraryEntryRequest
 	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request format: %v", err))
+		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
 		return
 	}
 

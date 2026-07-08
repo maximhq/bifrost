@@ -22,18 +22,7 @@ import { getErrorMessage, useDeleteMCPClientMutation, useReconnectMCPClientMutat
 import { MCPClient } from "@/lib/types/mcp";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Link } from "@tanstack/react-router";
-import {
-	Box,
-	ChevronLeft,
-	ChevronRight,
-	Loader2,
-	MoreHorizontal,
-	PencilIcon,
-	Plus,
-	RefreshCcw,
-	Search,
-	Trash2,
-} from "lucide-react";
+import { Box, ChevronLeft, ChevronRight, Loader2, MoreHorizontal, PencilIcon, Plus, RefreshCcw, Search, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import MCPClientSheet from "./mcpClientSheet";
 import { MCPServersEmptyState } from "./mcpServersEmptyState";
@@ -136,7 +125,11 @@ interface MCPClientsTableProps {
 	refetch?: () => void;
 	search: string;
 	debouncedSearch: string;
+	server: string;
+	/** Whether any sidebar facet filter (connection/auth/code-mode/status) is active. */
+	filtersActive?: boolean;
 	onSearchChange: (value: string) => void;
+	onServerFilterClear: () => void;
 	offset: number;
 	limit: number;
 	onOffsetChange: (offset: number) => void;
@@ -148,7 +141,10 @@ export default function MCPClientsTable({
 	refetch,
 	search,
 	debouncedSearch,
+	server,
+	filtersActive = false,
 	onSearchChange,
+	onServerFilterClear,
 	offset,
 	limit,
 	onOffsetChange,
@@ -297,7 +293,7 @@ export default function MCPClientsTable({
 		}
 	};
 
-	const hasActiveFilters = debouncedSearch;
+	const hasActiveFilters = Boolean(debouncedSearch) || Boolean(server) || filtersActive;
 
 	// True empty state: no servers at all (not just filtered to zero)
 	if (totalCount === 0 && !hasActiveFilters) {
@@ -310,7 +306,7 @@ export default function MCPClientsTable({
 	}
 
 	return (
-		<div className="flex flex-col grow overflow-auto">
+		<div className="flex grow flex-col overflow-auto">
 			{showDetailSheet && selectedMCPClient && (
 				<MCPClientSheet
 					mcpClient={selectedMCPClient}
@@ -344,7 +340,7 @@ export default function MCPClientsTable({
 				</AlertDialogContent>
 			</AlertDialog>
 
-			<div className="flex items-center justify-between gap-4 mb-4">
+			<div className="mb-4 flex items-center justify-between gap-4">
 				<div>
 					<h2 className="text-lg font-semibold tracking-tight">MCP Server Catalog</h2>
 					<p className="text-muted-foreground text-sm">Manage servers that can connect to the MCP Tools endpoint.</p>
@@ -362,7 +358,7 @@ export default function MCPClientsTable({
 						disabled={!hasCreateMCPClientAccess}
 						data-testid="create-mcp-client-btn"
 						aria-label="New MCP Server"
-						className="gap-2 h-8"
+						className="h-8 gap-2"
 					>
 						<Plus />
 						<span className="hidden sm:inline">New MCP Server</span>
@@ -371,7 +367,7 @@ export default function MCPClientsTable({
 			</div>
 
 			{/* Toolbar: Search */}
-			<div className="flex items-center gap-3 mb-4">
+			<div className="mb-4 flex items-center gap-3">
 				<div className="relative max-w-sm flex-1">
 					<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 					<Input
@@ -383,23 +379,35 @@ export default function MCPClientsTable({
 						data-testid="mcp-clients-search-input"
 					/>
 				</div>
+				{server && (
+					<Button
+						variant="outline"
+						size="sm"
+						className="h-8 gap-2"
+						onClick={onServerFilterClear}
+						data-testid="mcp-client-server-filter-clear-btn"
+					>
+						Server filter
+						<X className="size-3" />
+					</Button>
+				)}
 			</div>
 
-			<div className="grow flex flex-col overflow-auto">
-				<div className="overflow-auto rounded-sm border grow mb-2">
-					<Table data-testid="mcp-clients-table">
+			<div className="flex grow flex-col overflow-auto">
+				<div className="mb-2 grow overflow-auto rounded-sm border">
+					<Table data-testid="mcp-clients-table" className="w-full min-w-[1516px] table-fixed">
 						<TableHeader className="sticky top-0">
 							<TableRow className="bg-muted/50">
-								<TableHead className="font-semibold">Name</TableHead>
-								<TableHead className="font-semibold">Connection Type</TableHead>
-								<TableHead className="font-semibold">Auth Type</TableHead>
-								<TableHead className="font-semibold">Auth Scope</TableHead>
-								<TableHead className="font-semibold">Code Mode</TableHead>
-								<TableHead className="font-semibold">VK Access</TableHead>
-								<TableHead className="font-semibold">Enabled Tools</TableHead>
-								<TableHead className="font-semibold">Auto-execute Tools</TableHead>
-								<TableHead className="font-semibold">State</TableHead>
-								<TableHead className="font-semibold">Status</TableHead>
+								<TableHead className="w-[260px] font-semibold">Name</TableHead>
+								<TableHead className="w-[150px] font-semibold">Connection Type</TableHead>
+								<TableHead className="w-[150px] font-semibold">Auth Type</TableHead>
+								<TableHead className="w-[140px] font-semibold">Auth Scope</TableHead>
+								<TableHead className="w-[120px] font-semibold">Code Mode</TableHead>
+								<TableHead className="w-[120px] font-semibold">VK Access</TableHead>
+								<TableHead className="w-[130px] font-semibold">Enabled Tools</TableHead>
+								<TableHead className="w-[160px] font-semibold">Auto-execute Tools</TableHead>
+								<TableHead className="w-[140px] font-semibold">State</TableHead>
+								<TableHead className="w-[90px] font-semibold">Status</TableHead>
 								<TableHead className={`bg-muted/50 sticky right-0 z-10 w-14 text-right ${PIN_SHADOW_RIGHT}`}></TableHead>
 							</TableRow>
 						</TableHeader>
@@ -430,7 +438,11 @@ export default function MCPClientsTable({
 											: 0;
 									return (
 										<TableRow key={c.config.client_id} className="group hover:bg-muted/50 transition-colors">
-											<TableCell className="font-medium">{c.config.name}</TableCell>
+											<TableCell className="font-medium">
+												<div className="truncate" title={c.config.name}>
+													{c.config.name}
+												</div>
+											</TableCell>
 											<TableCell data-testid="mcp-client-connection-type">
 												<Badge variant="outline" className="font-mono">
 													{getConnectionTypeDisplay(c.config.connection_type)}
@@ -544,7 +556,8 @@ export default function MCPClientsTable({
 				{totalCount > 0 && (
 					<div className="flex shrink-0 items-center justify-between text-xs" data-testid="pagination">
 						<div className="text-muted-foreground flex items-center gap-2">
-							{(offset + 1).toLocaleString()}-{Math.min(offset + limit, totalCount).toLocaleString()} of {totalCount.toLocaleString()} entries
+							{(offset + 1).toLocaleString()}-{Math.min(offset + limit, totalCount).toLocaleString()} of {totalCount.toLocaleString()}{" "}
+							entries
 						</div>
 
 						<div className="flex items-center gap-2">

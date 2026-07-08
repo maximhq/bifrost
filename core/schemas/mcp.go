@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"math/big"
 	"net/http"
 	"strconv"
@@ -281,15 +282,15 @@ type MCPClientConfig struct {
 	Name                string            `json:"name"`                            // Client name
 	IsCodeModeClient    bool              `json:"is_code_mode_client"`             // Whether the client is a code mode client
 	ConnectionType      MCPConnectionType `json:"connection_type"`                 // How to connect (HTTP, STDIO, SSE, or InProcess)
-	ConnectionString    *EnvVar           `json:"connection_string,omitempty"`     // HTTP or SSE URL (required for HTTP or SSE connections)
+	ConnectionString    *SecretVar           `json:"connection_string,omitempty"`     // HTTP or SSE URL (required for HTTP or SSE connections)
 	StdioConfig         *MCPStdioConfig   `json:"stdio_config,omitempty"`          // STDIO configuration (required for STDIO connections)
 	TLSConfig           *MCPTLSConfig     `json:"tls_config,omitempty"`            // TLS configuration for HTTP/SSE connections
 	AuthType            MCPAuthType       `json:"auth_type"`                       // Authentication type (none, headers, or oauth)
 	OauthConfigID       *string           `json:"oauth_config_id,omitempty"`       // OAuth config ID (references oauth_configs table)
-	OauthClientID       *EnvVar           `json:"oauth_client_id,omitempty"`       // Redacted OAuth client ID (populated on GET, not stored here)
-	OauthClientSecret   *EnvVar           `json:"oauth_client_secret,omitempty"`   // Redacted OAuth client secret (populated on GET, not stored here)
+	OauthClientID       *SecretVar           `json:"oauth_client_id,omitempty"`       // Redacted OAuth client ID (populated on GET, not stored here)
+	OauthClientSecret   *SecretVar           `json:"oauth_client_secret,omitempty"`   // Redacted OAuth client secret (populated on GET, not stored here)
 	State               string            `json:"state,omitempty"`                 // Connection state (connected, disconnected, error)
-	Headers             map[string]EnvVar `json:"headers,omitempty"`               // Headers to send with the request (for headers auth type)
+	Headers             map[string]SecretVar `json:"headers,omitempty"`               // Headers to send with the request (for headers auth type)
 	// PerUserHeaderKeys lists the header *names* each caller must supply for
 	// MCPAuthTypePerUserHeaders clients. Admin-declared schema only — the
 	// values live per-user in the mcp_per_user_header_credentials table and
@@ -313,9 +314,10 @@ type MCPClientConfig struct {
 	// - nil/omitted => treated as [] (no tools)
 	// - ["tool1", "tool2"] => auto-execute only the specified tools
 	// Note: If a tool is in ToolsToAutoExecute but not in ToolsToExecute, it will be skipped.
-	IsPingAvailable       *bool              `json:"is_ping_available,omitempty"`  // Whether the MCP server supports ping for health checks (nil/true = ping; false = listTools). Defaults to true.
-	ToolSyncInterval      time.Duration      `json:"tool_sync_interval,omitempty"` // Per-client override for tool sync interval (0 = use global, negative = disabled)
-	ToolPricing           map[string]float64 `json:"tool_pricing,omitempty"`       // Tool pricing for each tool (cost per execution)
+	IsPingAvailable       *bool              `json:"is_ping_available,omitempty"`       // Whether the MCP server supports ping for health checks (nil/true = ping; false = listTools). Defaults to true.
+	ToolSyncInterval      time.Duration      `json:"tool_sync_interval,omitempty"`      // Per-client override for tool sync interval (0 = use global, negative = disabled)
+	ToolExecutionTimeout  time.Duration      `json:"tool_execution_timeout,omitempty"`  // Per-client override for tool execution timeout (0 = use global from tool_manager_config)
+	ToolPricing           map[string]float64 `json:"tool_pricing,omitempty"`            // Tool pricing for each tool (cost per execution)
 	Disabled              bool               `json:"disabled"`                     // Whether the client is intentionally disabled (stops connection and workers)
 	ConfigHash            string             `json:"-"`                            // Config hash for reconciliation (not serialized)
 	AllowOnAllVirtualKeys bool               `json:"allow_on_all_virtual_keys"`    // Whether to allow the MCP client to run on all virtual keys
@@ -325,12 +327,14 @@ type MCPClientConfig struct {
 	DiscoveredToolNameMapping map[string]string   `json:"-"` // Mapping from sanitized tool names to original MCP names
 }
 
-// UnmarshalJSON supports Go duration strings (e.g. "10m") for tool_sync_interval.
-// Numeric values remain supported for backward compatibility (treated as raw nanoseconds).
+// UnmarshalJSON supports Go duration strings (e.g. "10m") for tool_sync_interval and
+// tool_execution_timeout. Numeric values are treated as raw nanoseconds for tool_sync_interval
+// and as seconds for tool_execution_timeout (matching tool_manager_config behaviour).
 func (c *MCPClientConfig) UnmarshalJSON(data []byte) error {
 	type alias MCPClientConfig
 	aux := &struct {
-		ToolSyncInterval *json.Number `json:"tool_sync_interval,omitempty"`
+		ToolSyncInterval     *json.Number     `json:"tool_sync_interval,omitempty"`
+		ToolExecutionTimeout *json.RawMessage `json:"tool_execution_timeout,omitempty"`
 		*alias
 	}{alias: (*alias)(c)}
 
@@ -340,34 +344,97 @@ func (c *MCPClientConfig) UnmarshalJSON(data []byte) error {
 		if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 			return errors.New("trailing JSON data")
 		}
-		if aux.ToolSyncInterval == nil {
-			return nil
+		if aux.ToolSyncInterval != nil {
+			dur, parseErr := parseFlexibleDurationField(*aux.ToolSyncInterval, "tool_sync_interval")
+			if parseErr != nil {
+				return parseErr
+			}
+			c.ToolSyncInterval = dur
 		}
-		dur, parseErr := parseFlexibleDurationField(*aux.ToolSyncInterval, "tool_sync_interval")
-		if parseErr != nil {
-			return parseErr
+		if aux.ToolExecutionTimeout != nil {
+			dur, err := parseToolExecutionTimeoutField(*aux.ToolExecutionTimeout)
+			if err != nil {
+				return err
+			}
+			c.ToolExecutionTimeout = dur
 		}
-		c.ToolSyncInterval = dur
 		return nil
 	}
 
 	// Allow Go duration strings while keeping numeric tokens as json.Number.
+	// ToolExecutionTimeout uses *json.RawMessage (not *string) so that integer
+	// values like 60 remain valid even when tool_sync_interval is a string.
 	auxStr := &struct {
-		ToolSyncInterval *string `json:"tool_sync_interval,omitempty"`
+		ToolSyncInterval     *string          `json:"tool_sync_interval,omitempty"`
+		ToolExecutionTimeout *json.RawMessage `json:"tool_execution_timeout,omitempty"`
 		*alias
 	}{alias: (*alias)(c)}
 	if err := json.Unmarshal(data, auxStr); err != nil {
 		return err
 	}
-	if auxStr.ToolSyncInterval == nil {
-		return nil
+	if auxStr.ToolSyncInterval != nil {
+		dur, err := parseFlexibleDurationField(*auxStr.ToolSyncInterval, "tool_sync_interval")
+		if err != nil {
+			return err
+		}
+		c.ToolSyncInterval = dur
 	}
-	dur, err := parseFlexibleDurationField(*auxStr.ToolSyncInterval, "tool_sync_interval")
-	if err != nil {
-		return err
+	if auxStr.ToolExecutionTimeout != nil {
+		dur, err := parseToolExecutionTimeoutField(*auxStr.ToolExecutionTimeout)
+		if err != nil {
+			return err
+		}
+		c.ToolExecutionTimeout = dur
 	}
-	c.ToolSyncInterval = dur
 	return nil
+}
+
+// parseToolExecutionTimeoutField parses a tool_execution_timeout JSON value.
+// Accepts a Go duration string (e.g. "30s") or a bare integer treated as seconds.
+// Rejects negative values and integers that would overflow time.Duration.
+func parseToolExecutionTimeoutField(raw json.RawMessage) (time.Duration, error) {
+	if len(raw) > 0 && raw[0] == '"' {
+		var s string
+		if err := json.Unmarshal(raw, &s); err != nil {
+			return 0, fmt.Errorf("invalid tool_execution_timeout: %w", err)
+		}
+		dur, err := time.ParseDuration(s)
+		if err != nil {
+			return 0, fmt.Errorf("invalid tool_execution_timeout %q: %w", s, err)
+		}
+		if dur < 0 {
+			return 0, fmt.Errorf("invalid tool_execution_timeout: value must be >= 0, got %v", dur)
+		}
+		return dur, nil
+	}
+	var n int64
+	if err := json.Unmarshal(raw, &n); err != nil {
+		return 0, fmt.Errorf("invalid tool_execution_timeout: expected a duration string (e.g. \"30s\") or integer seconds: %w", err)
+	}
+	if n < 0 {
+		return 0, fmt.Errorf("invalid tool_execution_timeout: value must be >= 0, got %d", n)
+	}
+	const maxTimeoutSeconds = math.MaxInt64 / int64(time.Second)
+	if n > maxTimeoutSeconds {
+		return 0, fmt.Errorf("invalid tool_execution_timeout: value %d seconds overflows duration (max %d)", n, maxTimeoutSeconds)
+	}
+	return time.Duration(n) * time.Second, nil
+}
+
+// MarshalJSON emits tool_execution_timeout as a duration string so it round-trips
+// correctly — default time.Duration marshaling emits nanoseconds, but UnmarshalJSON
+// treats bare integers as seconds.
+func (c MCPClientConfig) MarshalJSON() ([]byte, error) {
+	type alias MCPClientConfig
+	type shadow struct {
+		ToolExecutionTimeout string `json:"tool_execution_timeout,omitempty"`
+		*alias
+	}
+	s := shadow{alias: (*alias)(&c)}
+	if c.ToolExecutionTimeout > 0 {
+		s.ToolExecutionTimeout = c.ToolExecutionTimeout.String()
+	}
+	return json.Marshal(s)
 }
 
 func parseFlexibleDurationField(v any, fieldName string) (time.Duration, error) {
@@ -455,12 +522,12 @@ type MCPStdioConfig struct {
 // InsecureSkipVerify takes priority over CACertPEM when both are set.
 type MCPTLSConfig struct {
 	InsecureSkipVerify bool    `json:"insecure_skip_verify,omitempty"` // Disable TLS certificate verification (development only)
-	CACertPEM          *EnvVar `json:"ca_cert_pem,omitempty"`          // PEM-encoded CA certificate to trust (supports env.*)
+	CACertPEM          *SecretVar `json:"ca_cert_pem,omitempty"`          // PEM-encoded CA certificate to trust (supports env.*)
 }
 
 // MarshalForStorage serializes MCPTLSConfig for DB persistence.
 // ca_cert_pem is stored as a plain string ("env.VAR_NAME" or literal PEM).
-// For HTTP API responses use json.Marshal so clients receive the full EnvVar object.
+// For HTTP API responses use json.Marshal so clients receive the full SecretVar object.
 func (t *MCPTLSConfig) MarshalForStorage() ([]byte, error) {
 	if t == nil {
 		return []byte("null"), nil
@@ -471,7 +538,7 @@ func (t *MCPTLSConfig) MarshalForStorage() ([]byte, error) {
 	}
 	a := tlsConfigStorage{InsecureSkipVerify: t.InsecureSkipVerify}
 	if t.CACertPEM != nil {
-		a.CACertPEM = EnvVarAsString(t.CACertPEM)
+		a.CACertPEM = SecretVarAsString(t.CACertPEM)
 	}
 	return json.Marshal(a)
 }

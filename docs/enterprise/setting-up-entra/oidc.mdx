@@ -1,0 +1,409 @@
+---
+title: "SSO using OIDC"
+description: "Configure Microsoft Entra ID (Azure AD) as your identity provider for Bifrost Enterprise using OpenID Connect."
+---
+
+## Prerequisites
+
+- A Microsoft Azure account with admin access to create app registrations in Entra ID
+- Bifrost Enterprise deployed and accessible
+- Your Bifrost callback URL: `https://<your-bifrost-domain>/login`
+
+---
+
+### Step 1: Register an application
+
+<Steps>
+
+<Step title="Open App registrations">
+
+Sign in to the [Azure Portal](https://portal.azure.com) and navigate to **Microsoft Entra ID** → **App registrations**.
+
+Click **New registration**.
+
+</Step>
+
+<Step title="Fill in the registration form">
+
+Configure the new registration:
+
+| Field | Value |
+| --- | --- |
+| **Name** | `Bifrost SSO` |
+| **Supported account types** | Accounts in this organizational directory only (Single tenant) |
+| **Redirect URI** | Web: `https://<your-bifrost-domain>/login` |
+
+<Frame caption="New application registration form — enter the app name, account type, and redirect URI.">
+  <img src="/media/user-provisioning/entra/entra-oidc-register-app.png" alt="Register an Application dialog in Microsoft Entra showing name, account type, and redirect URI fields" />
+</Frame>
+
+Click **Register**.
+
+<Tip>
+  You can add an app icon to make the application easily recognizable. The Bifrost logo is available at `https://www.getmaxim.ai/bifrost/bifrost-logo-only.png`.
+</Tip>
+
+</Step>
+
+<Step title="Add the second redirect URI">
+
+After registering, go to **Authentication** and add a second redirect URI for the attribute discovery flow:
+
+| URI | Purpose |
+| --- | --- |
+| `https://<your-bifrost-domain>/login` | OIDC sign-in callback |
+| `https://<your-bifrost-domain>/workspace/scim/oauth-discover-callback` | Attribute discovery callback |
+
+<Frame caption="Authentication blade — confirm both redirect URIs are listed.">
+  <img src="/media/user-provisioning/entra/entra-oidc-redirect-uri.png" alt="Authentication blade showing the two Bifrost redirect URIs configured" />
+</Frame>
+
+</Step>
+
+</Steps>
+
+---
+
+### Step 2: Capture app registration information
+
+<Steps>
+
+<Step title="Copy your Client ID and Tenant ID">
+
+Navigate to **App registrations → Bifrost SSO → Overview**.
+
+<Frame caption="App Registration Overview — copy the Application (client) ID and Directory (tenant) ID from the Essentials section.">
+  <img src="/media/user-provisioning/entra/entra-oidc-app-overview.png" alt="Entra App Registration Overview page showing Application (client) ID and Directory (tenant) ID in the Essentials section" />
+</Frame>
+
+| Value | Where to find |
+| --- | --- |
+| **Application (client) ID** | Overview → Essentials |
+| **Directory (tenant) ID** | Overview → Essentials |
+
+</Step>
+
+</Steps>
+
+---
+
+### Step 3: Create app roles (optional)
+
+<Steps>
+
+<Step title="Add roles to the app registration">
+
+<Note>
+  This step is optional. App roles are one way to assign Bifrost roles to users, but you can also map any other Entra attribute (e.g. groups, department) instead. Role mapping itself is required.
+</Note>
+
+In your app registration, go to **App roles** and click **Create app role**.
+
+Create a role for each Bifrost role you want to use. For example, for the Viewer role:
+
+| Field | Value |
+| --- | --- |
+| **Display name** | `Viewer` |
+| **Allowed member types** | Users/Groups |
+| **Value** | `viewer` |
+| **Description** | Viewer role on Bifrost |
+| **State** | Enabled |
+
+Repeat with `developer` and `admin`.
+
+<Frame caption="App Roles list — Admin, Developer, and Viewer roles configured for the application.">
+  <img src="/media/user-provisioning/entra/entra-oidc-app-roles.png" alt="Entra App Roles list showing Admin, Developer, and Viewer roles configured for the Bifrost Enterprise application" />
+</Frame>
+
+</Step>
+
+</Steps>
+
+---
+
+### Step 4: Create a client secret
+
+<Steps>
+
+<Step title="Generate a secret">
+
+In your app registration, go to **Certificates & secrets** and click **New client secret**.
+
+| Field | Value |
+| --- | --- |
+| **Description** | `Bifrost Enterprise Secret` |
+| **Expires** | Choose based on your security policy (e.g. 24 months) |
+
+Click **Add**.
+
+<Frame caption="Certificates & secrets — click New client secret and copy the value immediately after saving.">
+  <img src="/media/user-provisioning/entra/entra-oidc-client-secret.png" alt="Entra Certificates and secrets page showing the client secret value" />
+</Frame>
+
+<Warning>
+  Copy the secret **Value** immediately — it is only shown once. Do not copy the Secret ID by mistake.
+</Warning>
+
+</Step>
+
+</Steps>
+
+---
+
+### Step 5: Configure API permissions (optional — bulk sync only)
+
+<Note>
+  This step is only required if you plan to use **bulk user sync** (importing users via the User Provisioning page). For standard OIDC login, skip this step — role and team mappings are evaluated from the JWT at login time.
+</Note>
+
+<Steps>
+
+<Step title="Add the required permissions">
+
+In your app registration, go to **API permissions** and click **Add a permission → Microsoft Graph**.
+
+Add the following **Delegated** permissions:
+
+- `openid`, `profile`, `email`, `offline_access`, `User.Read`
+
+Add the following **Application** permissions:
+
+- `User.Read.All`, `GroupMember.Read.All`, `Group.Read.All`
+- `Application.Read.All` — needed to read the app role catalog during bulk sync
+- `AppRoleAssignment.ReadWrite.All` — needed to read each user's app role assignments
+
+<Frame caption="API permissions — Delegated and Application permissions granted with admin consent.">
+  <img src="/media/user-provisioning/entra/entra-oidc-api-permissions.png" alt="Entra API permissions page showing all configured Delegated and Application permissions for Microsoft Graph" />
+</Frame>
+
+<Warning>
+  Permission **type** matters: `openid`, `profile`, `email`, `offline_access`, and `User.Read` must be **Delegated**, while the remaining five must be **Application**. The same name can appear under both types — adding the wrong one will cause failures even though the permission appears granted.
+</Warning>
+
+</Step>
+
+<Step title="Grant admin consent">
+
+Click **Grant admin consent for [Your Organization]**.
+
+Without admin consent, Application permissions are not effective even though they appear in the list.
+
+</Step>
+
+</Steps>
+
+---
+
+### Step 6: Configure token claims
+
+<Steps>
+
+<Step title="Add a groups claim">
+
+<Note>
+  If you prefer to configure claims via the App Manifest JSON in Step 7, you can skip this step — the manifest overrides UI-based token configuration.
+</Note>
+
+In your app registration, go to **Token configuration** and click **Add groups claim**.
+
+Select **Security groups** or **Groups assigned to the application**, enable **ID** and **Access** token types, and click **Add**.
+
+<Frame caption="Token configuration — groups claim added for ID and Access tokens.">
+  <img src="/media/user-provisioning/entra/entra-oidc-token-configuration.png" alt="Token configuration page showing the groups claim configured for ID, Access, and SAML tokens" />
+</Frame>
+
+<Note>
+  If you configure claims via the **Manifest** editor instead, also set `"requestedAccessTokenVersion": 2` (or `"accessTokenAcceptedVersion": 2` for legacy registrations) and `"groupMembershipClaims": "ApplicationGroup"` to restrict the groups claim to only app-assigned groups.
+</Note>
+
+</Step>
+
+</Steps>
+
+---
+
+### Step 7: Enable assignment requirement
+
+<Steps>
+
+<Step title="Open the Enterprise Application">
+
+From the Entra ID main menu, go to **Enterprise applications** and find **Bifrost SSO**.
+
+<Frame caption="Enterprise Applications list — select Bifrost SSO to open the enterprise application settings.">
+  <img src="/media/user-provisioning/entra/entra-oidc-enterprise-apps-list.png" alt="Enterprise Applications list in Microsoft Entra showing the Bifrost SSO entry" />
+</Frame>
+
+</Step>
+
+<Step title="Set assignment requirement">
+
+Go to **Properties**.
+
+<Frame caption="Enterprise Application Properties — set Assignment required to Yes so only assigned users can sign in.">
+  <img src="/media/user-provisioning/entra/entra-oidc-enable-assignment.png" alt="Enterprise Application Properties showing Assignment required and Enabled for users to sign-in toggles" />
+</Frame>
+
+Set **Assignment required?** to **Yes**, **Enabled for users to sign-in?** to **Yes**, and click **Save**.
+
+</Step>
+
+</Steps>
+
+---
+
+### Step 8: Assign users and roles
+
+<Steps>
+
+<Step title="Assign users or groups to the application">
+
+Go to **Bifrost SSO → Users and groups** and click **Add user/group**.
+
+Select users or groups, choose the appropriate role (Admin, Developer, or Viewer), and click **Assign**.
+
+<Frame caption="Users and groups — assign each user or group with a role. A missing role causes the roles claim to be omitted from the token.">
+  <img src="/media/user-provisioning/entra/entra-oidc-user-assignments.png" alt="Enterprise Application Users and groups page showing assigned users with their roles" />
+</Frame>
+
+
+<Tip>
+  Assign roles to groups for easier management. All users in a group inherit the assigned role. The group itself must appear in Users and groups with a role selected — adding users to an unassigned group does not propagate roles.
+</Tip>
+
+</Step>
+
+</Steps>
+
+---
+
+### Step 9: Configure Bifrost
+
+<Steps>
+
+<Step title="Open User Provisioning and choose Entra">
+
+In your Bifrost dashboard, go to **Governance** → **User Provisioning**.
+
+Select **Microsoft Entra** as the identity provider and click **Next**.
+
+<Frame caption="Select Microsoft Entra from the list of identity providers.">
+  <img src="/media/user-provisioning/entra/bifrost-provider-selection.png" alt="Bifrost Choose Provider screen with Microsoft Entra highlighted" />
+</Frame>
+
+</Step>
+
+<Step title="Fill in the provider configuration">
+
+Enter the credentials you collected in Steps 2 and 4:
+
+| Field | Value |
+| --- | --- |
+| **Client ID** | Application (client) ID from Step 2 |
+| **Tenant ID** | Directory (tenant) ID from Step 2 |
+| **Client Secret** | The secret value from Step 4 |
+| **Audience** | Your Client ID (optional, defaults to Client ID) |
+| **App ID URI** | `api://{client-id}` (optional, for v1.0 tokens) |
+
+Click **Verify & Next** to confirm the connection.
+
+</Step>
+
+<Step title="Discover claims">
+
+On the Attribute Mapping screen, click **Discover Claims**.
+
+Bifrost opens a sign-in popup — no session is created. Once you authenticate, it returns the exact claims your Entra tenant is sending in the JWT.
+
+Use this to confirm that the attributes you configured in Steps 3 and 6 — such as `roles` and `groups` — are present before building your mappings.
+
+<Frame caption="Discover Claims — shows the exact claims Entra is returning in the JWT, including roles, groups, and any custom attributes.">
+  <img src="/media/user-provisioning/entra/bifrost-discover-claims.png" alt="Bifrost Discover Claims screen listing all claims returned by Entra including roles, groups, email, and custom attributes" />
+</Frame>
+
+</Step>
+
+<Step title="Set up attribute mappings">
+
+Use the sections below the claim list to map Entra claim values to Bifrost roles, teams, and business units.
+
+**Attribute-to-Role Mappings**
+
+Map a claim value to a Bifrost role.
+
+- All matching rules are evaluated — if multiple rules match, the role with the highest permissions is assigned
+- If no rule matches, the user is not assigned a role and login is denied
+
+**Attribute-to-Team Mappings**
+
+Map a claim value to a Bifrost team. All matching rules apply.
+
+- Use a specific value (e.g. `engineering`) to map that exact claim value to a named Bifrost team
+- Use `*` as the value to sync the claim value directly as the team name
+- Use `${*}` to extract part of the string — e.g. `Bifrost Playground: ${*} Team` matches `Bifrost Playground: Alpha Team` and creates team **Alpha**
+
+**Attribute-to-Business Unit Mappings**
+
+Same wildcard support as team mappings.
+
+- Use a specific value (e.g. `platform`) to map that exact claim value to a named Bifrost business unit
+- Use `${*}` to extract a substring as the business unit name
+- When a rule matches, the resolved business unit is assigned to all of that user's teams
+
+<Frame caption="Attribute Mapping — configure role, team, and business unit rules based on the claims Entra sends.">
+  <img src="/media/user-provisioning/entra/bifrost-attribute-setup.png" alt="Bifrost Attribute Mapping screen showing role, team, and business unit mapping rules" />
+</Frame>
+
+<Note>
+  Setting a value to `*` maps the claim value directly as the entity name. Value comparisons are case-insensitive.
+</Note>
+
+Click **Next** when done.
+
+</Step>
+
+<Step title="Review and enable">
+
+Review your configuration on the final screen, then click **Enable**.
+
+<Warning>
+  Restart your Bifrost server after enabling for the changes to take effect.
+</Warning>
+
+</Step>
+
+</Steps>
+
+---
+
+## How background sync works
+
+Bifrost uses the app credentials from this setup to sync users in the background every **24 hours**. During that sync, Bifrost reconciles imported users, role mappings, team mappings, and business-unit mappings from Entra.
+
+Every **15 minutes**, Bifrost also refreshes active OIDC sessions. If a session cannot be refreshed, Bifrost checks with Entra whether the user is still active; if Entra reports the user as inactive, Bifrost decommissions that user locally.
+
+---
+
+## Optional next steps
+
+**Sync users and groups in real time** — OIDC alone provisions users on first login. To keep Bifrost in sync with Entra as users are created, deactivated, or moved between groups, set up [SCIM with Entra](./scim).
+
+---
+
+## Troubleshooting
+
+**User is not redirected to Microsoft login** — verify the provider is enabled in Bifrost and the server was restarted after saving. Check that the Tenant ID and Client ID are correct.
+
+**`AADSTS50011: The reply URL does not match`** — verify both redirect URIs in **Authentication** (Step 1) exactly match your Bifrost URLs. Check for trailing slashes or http vs https mismatches.
+
+**`AADSTS7000215: Invalid client secret`** — regenerate the client secret in Azure and ensure you are copying the secret **Value**, not the secret ID. Check for leading/trailing whitespace.
+
+**`Claim "roles" is not present in the token`** — the user signed in but Entra did not emit a `roles` claim. Common causes:
+- User isn't assigned a role at the Enterprise Application level — edit the assignment in Step 9 and select a role
+- Role assignment is via a group that isn't itself assigned to the app — the group must appear in Users and groups with a role selected
+- Optional `roles` claim is missing from the manifest — confirm Step 6 includes `roles` under `optionalClaims.idToken` (see the Note at the bottom of Step 6)
+- Sign out and back in to clear the cached token
+
+**Bulk user sync assigns Viewer instead of the mapped role** — confirm the user has an app role assigned in Entra, and that `Application.Read.All` and `AppRoleAssignment.ReadWrite.All` are granted with admin consent (Step 5). Server logs will contain `[ENTRA-ROLES] failed to fetch app role catalog: ... 403` if the permission is missing.
+
+**Token validation errors** — ensure the Tenant ID matches your Azure directory, the Client ID is correct, and the app registration is in the same tenant as your users.

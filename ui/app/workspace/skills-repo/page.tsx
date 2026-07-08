@@ -1,6 +1,6 @@
 "use client";
 
-import { useQueryStates, parseAsBoolean, parseAsString } from "nuqs";
+import { parseAsBoolean, parseAsString, useQueryStates } from "nuqs";
 import { SkillCreateView } from "./components/skillCreatorView";
 import { SkillDetailView } from "./components/skillDetailsView";
 import { SkillsListView } from "./components/skillListView";
@@ -42,7 +42,11 @@ export default function SkillsRepoPage() {
 	// Detail view when skillId is set
 	if (urlState.skillId) {
 		return (
-			<div className={urlState.edit ? "no-padding-parent flex h-full w-full flex-col p-0" : "no-padding-parent flex h-full w-full flex-col p-4 pt-0"}>
+			<div
+				className={
+					urlState.edit ? "no-padding-parent flex h-full w-full flex-col p-0" : "no-padding-parent flex h-full w-full flex-col p-4 pt-0"
+				}
+			>
 				<SkillDetailView skillId={urlState.skillId} isEditing={urlState.edit} setIsEditing={setIsEditing} onBack={handleBack} />
 			</div>
 		);
@@ -50,7 +54,7 @@ export default function SkillsRepoPage() {
 
 	// List view
 	return (
-		<div className="no-padding-parent flex w-full flex-col p-4">
+		<div className="no-padding-parent flex h-[calc(100dvh_-_16px)] w-full flex-col p-4">
 			<SkillsListView onSelectSkill={handleSelectSkill} onCreateNew={() => setUrlState({ create: true, skillId: null, edit: false })} />
 		</div>
 	);

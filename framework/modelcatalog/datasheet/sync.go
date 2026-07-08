@@ -13,7 +13,6 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
-	"gorm.io/gorm"
 )
 
 const (
@@ -51,22 +50,21 @@ func (s *Store) SyncFromURL(ctx context.Context) error {
 	}
 
 	if s.configStore != nil {
-		err = s.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
-			seen := make(map[string]struct{})
-			for modelKey, entry := range pricingData {
-				pricing := convertEntryToTablePricing(modelKey, entry)
-				key := makeKey(pricing.Model, pricing.Provider, pricing.Mode)
-				if _, ok := seen[key]; ok {
-					continue
-				}
-				seen[key] = struct{}{}
-				if err := s.configStore.UpsertModelPrices(ctx, &pricing, tx); err != nil {
-					return fmt.Errorf("failed to create pricing record for model %s: %w", pricing.Model, err)
-				}
+		// Dedup by (model, provider, mode) before the write: the batched upsert
+		// below issues multi-row ON CONFLICT statements, and PostgreSQL rejects a
+		// statement whose VALUES list hits the same conflict target twice.
+		records := make([]configstoreTables.TableModelPricing, 0, len(pricingData))
+		seen := make(map[string]struct{}, len(pricingData))
+		for modelKey, entry := range pricingData {
+			pricing := convertEntryToTablePricing(modelKey, entry)
+			key := makeKey(pricing.Model, pricing.Provider, pricing.Mode)
+			if _, ok := seen[key]; ok {
+				continue
 			}
-			return nil
-		})
-		if err != nil {
+			seen[key] = struct{}{}
+			records = append(records, pricing)
+		}
+		if err := s.configStore.UpsertModelPricesBatch(ctx, records); err != nil {
 			return fmt.Errorf("failed to sync pricing data to database: %w", err)
 		}
 
@@ -145,6 +143,27 @@ func (s *Store) applyPricingData(pricingData map[string]Entry) {
 	s.mu.Unlock()
 }
 
+// filePathFromURL resolves a parsed file:// URL to a filesystem path,
+// supporting both absolute and relative references. Go's url.Parse scatters a
+// relative path across different fields depending on its form, so we reassemble
+// it here:
+//   - file:./x.json or file:x.json -> Opaque ("./x.json")
+//   - file://./x.json              -> Host (".") + Path ("/x.json") = "./x.json"
+//   - file:///abs/x.json           -> Path ("/abs/x.json")
+//   - file://localhost/abs/x.json  -> Path ("/abs/x.json")
+//
+// Relative paths resolve against the process working directory, matching how the
+// sqlite config store treats a relative "path" value.
+func filePathFromURL(parsed *url.URL) string {
+	if parsed.Opaque != "" {
+		return parsed.Opaque
+	}
+	if parsed.Host != "" && parsed.Host != "localhost" {
+		return parsed.Host + parsed.Path
+	}
+	return parsed.Path
+}
+
 // loadPricingFromURL fetches and parses the pricing datasheet at the
 // configured URL. Honors ctx for cancellation.
 func (s *Store) loadPricingFromURL(ctx context.Context) (map[string]Entry, error) {
@@ -160,7 +179,7 @@ func (s *Store) loadPricingFromURL(ctx context.Context) (map[string]Entry, error
 	var data []byte
 
 	if parsed.Scheme == "file" {
-		data, err = os.ReadFile(parsed.Path)
+		data, err = os.ReadFile(filePathFromURL(parsed))
 		if err != nil {
 			return nil, fmt.Errorf("failed to read pricing file: %w", err)
 		}

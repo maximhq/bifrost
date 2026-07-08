@@ -358,3 +358,105 @@ func TestAdvisorStream_RoundTrip(t *testing.T) {
 		t.Error("text block dropped")
 	}
 }
+
+// countPassthroughMessageStarts mirrors the transport passthrough converter
+// (transports/bifrost-http/integrations/anthropic.go): for each bifrost stream
+// response it forwards the raw upstream frame verbatim when present (except
+// ContentPartAdded), otherwise falls back to the normalized converter. Returns
+// how many message_start frames are emitted and the raw bytes of the forwarded one.
+func countPassthroughMessageStarts(ctx *schemas.BifrostContext, responses []*schemas.BifrostResponsesStreamResponse) (int, string) {
+	count := 0
+	forwarded := ""
+	for _, r := range responses {
+		if r.ExtraFields.RawResponse != nil && r.Type != schemas.ResponsesStreamResponseTypeContentPartAdded {
+			raw, _ := r.ExtraFields.RawResponse.(string)
+			if gjson.Get(raw, "type").String() == "message_start" {
+				count++
+				forwarded = raw
+			}
+			continue
+		}
+		for _, ev := range ToAnthropicResponsesStreamResponse(ctx, r) {
+			if ev.Type == AnthropicStreamEventTypeMessageStart {
+				count++
+			}
+		}
+	}
+	return count, forwarded
+}
+
+// TestResponsesStream_MessageStart_NoDuplicateOnPassthrough guards the fix for the
+// duplicate message_start emitted on the Anthropic passthrough responses_stream
+// path. A single upstream message_start expands inbound into [response.created,
+// response.in_progress]. The raw upstream frame must ride on response.created
+// (which maps back to message_start) so it is forwarded once with all upstream
+// fields intact; response.in_progress must carry no raw and convert to nil.
+// Attaching the raw to in_progress instead (the old "last chunk" rule) produced
+// two message_start frames: a lossy synthesized one from created plus the
+// raw-forwarded one from in_progress.
+func TestResponsesStream_MessageStart_NoDuplicateOnPassthrough(t *testing.T) {
+	ctx := schemas.NewBifrostContext(nil, time.Time{})
+
+	const rawMessageStart = `{"type":"message_start","message":{"id":"msg_01","type":"message","role":"assistant","model":"claude-opus-4-8","content":[],"stop_reason":null,"usage":{"input_tokens":3450,"output_tokens":4,"service_tier":"standard","inference_geo":"not_available"}}}`
+
+	var chunk AnthropicStreamEvent
+	if err := sonic.Unmarshal([]byte(rawMessageStart), &chunk); err != nil {
+		t.Fatalf("unmarshal message_start: %v", err)
+	}
+
+	state := AcquireAnthropicResponsesStreamState()
+	defer ReleaseAnthropicResponsesStreamState(state)
+
+	responses, bErr, _ := chunk.ToBifrostResponsesStream(ctx, 0, state)
+	if bErr != nil {
+		t.Fatalf("ToBifrostResponsesStream error: %v", bErr)
+	}
+
+	// Inbound must expand the single message_start into [created, in_progress].
+	if len(responses) != 2 {
+		t.Fatalf("expected 2 bifrost responses (created, in_progress), got %d", len(responses))
+	}
+	createdIdx := -1
+	for i, r := range responses {
+		if r.Type == schemas.ResponsesStreamResponseTypeCreated {
+			createdIdx = i
+		}
+	}
+	if createdIdx == -1 {
+		t.Fatal("expected a response.created in the message_start expansion")
+	}
+	// The fix attaches the raw to response.created; the old rule attached it to the
+	// last response (in_progress). Confirm they differ so the cases below exercise it.
+	if createdIdx == len(responses)-1 {
+		t.Fatal("response.created is last; raw attachment would not exercise the fix")
+	}
+
+	t.Run("raw on created emits one full message_start", func(t *testing.T) {
+		for _, r := range responses {
+			r.ExtraFields.RawResponse = nil
+		}
+		responses[createdIdx].ExtraFields.RawResponse = rawMessageStart
+
+		count, forwarded := countPassthroughMessageStarts(ctx, responses)
+		if count != 1 {
+			t.Fatalf("expected exactly 1 message_start, got %d", count)
+		}
+		// The surviving frame must be the verbatim upstream bytes, preserving
+		// service_tier/inference_geo that the synthesized frame drops.
+		if forwarded != rawMessageStart {
+			t.Errorf("forwarded message_start is not the verbatim upstream frame: %s", forwarded)
+		}
+	})
+
+	t.Run("raw on in_progress (old behavior) duplicates message_start", func(t *testing.T) {
+		for _, r := range responses {
+			r.ExtraFields.RawResponse = nil
+		}
+		responses[len(responses)-1].ExtraFields.RawResponse = rawMessageStart
+
+		count, _ := countPassthroughMessageStarts(ctx, responses)
+		if count != 2 {
+			t.Fatalf("expected the old last-chunk rule to duplicate message_start (2), got %d", count)
+		}
+	})
+}

@@ -80,12 +80,9 @@ function virtualKeysToCSV(vks: VirtualKey[], accessProfileNames: Record<number, 
 			(vk.rate_limit?.request_current_usage &&
 				vk.rate_limit?.request_max_limit &&
 				vk.rate_limit.request_current_usage >= vk.rate_limit.request_max_limit);
-		const status = vk.is_active ? (isExhausted ? "Exhausted" : "Active") : "Inactive";
-		const assignedTo = vk.team
-			? `Team: ${vk.team.name}`
-			: vk.customer
-				? `Customer: ${vk.customer.name}`
-				: "";
+		const isExpired = !!vk.expires_at && Date.now() >= new Date(vk.expires_at).getTime();
+		const status = !vk.is_active ? "Inactive" : isExpired ? "Expired" : isExhausted ? "Exhausted" : "Active";
+		const assignedTo = vk.team ? `Team: ${vk.team.name}` : vk.customer ? `Customer: ${vk.customer.name}` : "";
 		const budgetLimit = vk.budgets?.length ? vk.budgets.map((b) => formatCurrency(b.max_limit)).join("; ") : "";
 		const budgetSpent = vk.budgets?.length ? vk.budgets.map((b) => formatCurrency(b.current_usage)).join("; ") : "";
 		const budgetReset = vk.budgets?.length ? vk.budgets.map((b) => formatResetDuration(b.reset_duration)).join("; ") : "";
@@ -129,11 +126,7 @@ function VKAssignedToCell({ vk }: { vk: VirtualKey }) {
 	return (
 		<Tooltip>
 			<TooltipTrigger asChild>
-				<Badge
-					variant="outline"
-					className="block max-w-full truncate text-left"
-					data-testid={`vk-assigned-to-tooltip-trigger-${vk.name}`}
-				>
+				<Badge variant="outline" className="block max-w-full truncate text-left" data-testid={`vk-assigned-to-tooltip-trigger-${vk.name}`}>
 					{label}
 				</Badge>
 			</TooltipTrigger>
@@ -217,11 +210,7 @@ function VKActionsMenu({
 						<Edit className="h-4 w-4" />
 						Edit
 					</DropdownMenuItem>
-					<DropdownMenuItem
-						asChild
-						className="cursor-pointer"
-						data-testid={`vk-view-logs-btn-${vk.name}`}
-					>
+					<DropdownMenuItem asChild className="cursor-pointer" data-testid={`vk-view-logs-btn-${vk.name}`}>
 						<Link to="/workspace/logs" search={{ virtual_key_ids: [vk.id] }} onClick={() => setIsOpen(false)}>
 							<ScrollText className="h-4 w-4" />
 							View logs
@@ -291,7 +280,7 @@ interface VirtualKeysTableProps {
 	onSortChange: (sortBy: string, order: string) => void;
 	selectedVkId: string;
 	onSelectedVkChange: (id: string, options?: { offset?: number }) => void;
-	isFetching?: boolean
+	isFetching?: boolean;
 }
 
 export default function VirtualKeysTable({
@@ -314,7 +303,7 @@ export default function VirtualKeysTable({
 	onSortChange,
 	selectedVkId,
 	onSelectedVkChange,
-	isFetching
+	isFetching,
 }: VirtualKeysTableProps) {
 	const [showVirtualKeySheet, setShowVirtualKeySheet] = useState(false);
 	const [editingVirtualKeyId, setEditingVirtualKeyId] = useState<string | null>(null);
@@ -361,14 +350,6 @@ export default function VirtualKeysTable({
 	const selectedCount = selectedIds.size;
 	const allVisibleSelected = visibleIds.length > 0 && selectedVisibleIds.length === visibleIds.length;
 	const someVisibleSelected = selectedVisibleIds.length > 0 && selectedVisibleIds.length < visibleIds.length;
-
-	useEffect(() => {
-		setSelectedIds((prev) => {
-			const visible = new Set(visibleIds);
-			const next = new Set([...prev].filter((id) => visible.has(id)));
-			return next.size === prev.size ? prev : next;
-		});
-	}, [visibleIds]);
 
 	const toggleSelectAllVisible = (checked: boolean) => {
 		setSelectedIds((prev) => {
@@ -768,7 +749,7 @@ export default function VirtualKeysTable({
 			</AlertDialog>
 
 			<div className="flex min-h-0 w-full grow flex-col overflow-hidden">
-				<div className="flex shrink-0 items-center justify-between mb-4">
+				<div className="mb-4 flex shrink-0 items-center justify-between">
 					<div>
 						<h2 className="text-lg font-semibold">Virtual Keys</h2>
 						<p className="text-muted-foreground text-sm">Manage virtual keys, their permissions, budgets, and rate limits.</p>
@@ -797,7 +778,7 @@ export default function VirtualKeysTable({
 				</div>
 
 				{/* Toolbar: Search + Filters */}
-				<div className="flex shrink-0 items-center gap-3  mb-4">
+				<div className="mb-4 flex shrink-0 items-center gap-3">
 					<div className="relative max-w-sm flex-1">
 						<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 						<Input
@@ -828,7 +809,7 @@ export default function VirtualKeysTable({
 					/>
 				</div>
 
-				<div className="min-h-0 grow overflow-hidden rounded-sm border mb-2">
+				<div className="mb-2 min-h-0 grow overflow-hidden rounded-sm border">
 					<Table containerClassName="h-full overflow-auto" className="w-full min-w-[1528px] table-fixed" data-testid="vk-table">
 						<TableHeader className="bg-muted sticky top-0 z-20">
 							<TableRow>
@@ -865,6 +846,8 @@ export default function VirtualKeysTable({
 							) : (
 								virtualKeys.map((vk) => {
 									const isRevealed = revealedKeys.has(vk.id);
+									const isExpired = !!vk.expires_at && Date.now() >= new Date(vk.expires_at).getTime();
+									const showExpiredBadge = vk.is_active && isExpired;
 
 									return (
 										<TableRow
@@ -919,7 +902,13 @@ export default function VirtualKeysTable({
 												<VKRateLimitCell vk={vk} />
 											</TableCell>
 											<TableCell onClick={(e) => e.stopPropagation()}>
-												<VKActiveSwitch vk={vk} hasUpdateAccess={hasUpdateAccess} onToggle={handleToggleActive} />
+												{showExpiredBadge ? (
+													<Badge variant="destructive" className="text-xs">
+														Expired
+													</Badge>
+												) : (
+													<VKActiveSwitch vk={vk} hasUpdateAccess={hasUpdateAccess} onToggle={handleToggleActive} />
+												)}
 											</TableCell>
 											<TableCell
 												className={`group-hover:bg-muted dark:bg-card dark:group-hover:bg-muted sticky right-0 z-20 bg-white text-right ${PIN_SHADOW_RIGHT}`}
@@ -946,7 +935,8 @@ export default function VirtualKeysTable({
 				{totalCount > 0 && (
 					<div className="flex shrink-0 items-center justify-between text-xs" data-testid="pagination">
 						<div className="text-muted-foreground flex items-center gap-2">
-							{(offset + 1).toLocaleString()}-{Math.min(offset + limit, totalCount).toLocaleString()} of {totalCount.toLocaleString()} entries
+							{(offset + 1).toLocaleString()}-{Math.min(offset + limit, totalCount).toLocaleString()} of {totalCount.toLocaleString()}{" "}
+							entries
 						</div>
 
 						<div className="flex items-center gap-2">

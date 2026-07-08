@@ -30,13 +30,13 @@ type PasswordCommandConfig struct {
 
 // Config is the shared Postgres connection configuration used by framework stores.
 type Config struct {
-	Host            *schemas.EnvVar        `json:"host"`
-	Port            *schemas.EnvVar        `json:"port"`
-	User            *schemas.EnvVar        `json:"user"`
-	Password        *schemas.EnvVar        `json:"password"`
+	Host            *schemas.SecretVar        `json:"host"`
+	Port            *schemas.SecretVar        `json:"port"`
+	User            *schemas.SecretVar        `json:"user"`
+	Password        *schemas.SecretVar        `json:"password"`
 	PasswordCommand *PasswordCommandConfig `json:"password_command,omitempty"`
-	DBName          *schemas.EnvVar        `json:"db_name"`
-	SSLMode         *schemas.EnvVar        `json:"ssl_mode"`
+	DBName          *schemas.SecretVar        `json:"db_name"`
+	SSLMode         *schemas.SecretVar        `json:"ssl_mode"`
 	MaxIdleConns    int                    `json:"max_idle_conns"`
 	MaxOpenConns    int                    `json:"max_open_conns"`
 	ConnMaxLifetime string                 `json:"conn_max_lifetime,omitempty"`
@@ -93,8 +93,8 @@ func BuildDSN(config *Config) string {
 		password = config.Password.GetValue()
 	}
 	return fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=%s",
-		config.Host.GetValue(), config.Port.GetValue(), config.User.GetValue(),
-		password, config.DBName.GetValue(), config.SSLMode.GetValue())
+		quoteLibpqValue(config.Host.GetValue()), quoteLibpqValue(config.Port.GetValue()), quoteLibpqValue(config.User.GetValue()),
+		quoteLibpqValue(password), quoteLibpqValue(config.DBName.GetValue()), quoteLibpqValue(config.SSLMode.GetValue()))
 }
 
 // Open opens a *gorm.DB against the configured Postgres instance.
@@ -242,6 +242,12 @@ func passwordCommandError(err error, stderr string) error {
 		return fmt.Errorf("postgres password_command failed: %w", err)
 	}
 	return fmt.Errorf("postgres password_command failed: %w: %s", err, stderr)
+}
+
+func quoteLibpqValue(value string) string {
+	value = strings.ReplaceAll(value, `\`, `\\`)
+	value = strings.ReplaceAll(value, `'`, `\'`)
+	return "'" + value + "'"
 }
 
 // validatePasswordCommand checks that password_command is a direct executable invocation.

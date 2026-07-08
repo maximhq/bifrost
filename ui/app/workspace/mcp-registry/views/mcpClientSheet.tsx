@@ -15,7 +15,7 @@ import { Fragment } from "react";
 
 import { SheetNavigationButtons } from "@/components/sheetNavigationButtons";
 import { CodeEditor } from "@/components/ui/codeEditor";
-import { EnvVarInput } from "@/components/ui/envVarInput";
+import { SecretVarInput } from "@/components/ui/secretVarInput";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { HeadersTable } from "@/components/ui/headersTable";
 import { Input } from "@/components/ui/input";
@@ -58,6 +58,28 @@ function toolSyncIntervalToMinutes(v: number | undefined | null): number {
 	if (Number.isNaN(n)) return 0;
 	if (Math.abs(n) >= 1e9) return Math.round(n / 6e10);
 	return n;
+}
+
+/** API sends tool_execution_timeout as a Go duration string e.g. "30s". Normalize to whole seconds for form. */
+function toolExecutionTimeoutToSeconds(v: string | number | undefined | null): number {
+	if (v === undefined || v === null || v === "") return 0;
+	if (typeof v === "number") return v;
+	// Parse Go duration string: "30s", "1m30s", "2h", etc.
+	let total = 0;
+	const re = /(\d+(?:\.\d+)?)(ns|us|µs|ms|s|m|h)/g;
+	let match;
+	while ((match = re.exec(v)) !== null) {
+		const n = parseFloat(match[1]);
+		switch (match[2]) {
+			case "ns": total += n / 1e9; break;
+			case "us": case "µs": total += n / 1e6; break;
+			case "ms": total += n / 1e3; break;
+			case "s": total += n; break;
+			case "m": total += n * 60; break;
+			case "h": total += n * 3600; break;
+		}
+	}
+	return Math.ceil(total);
 }
 
 export default function MCPClientSheet({
@@ -191,15 +213,16 @@ export default function MCPClientSheet({
 			tools_to_auto_execute: mcpClient.config.tools_to_auto_execute || [],
 			tool_pricing: mcpClient.config.tool_pricing || {},
 			tool_sync_interval: toolSyncIntervalToMinutes(mcpClient.config.tool_sync_interval),
+				tool_execution_timeout: toolExecutionTimeoutToSeconds(mcpClient.config.tool_execution_timeout),
 			allowed_extra_headers: mcpClient.config.allowed_extra_headers || [],
 			oauth_config: supportsOAuthCredentialUpdate
 				? { client_id: mcpClient.config.oauth_client_id, client_secret: mcpClient.config.oauth_client_secret }
 				: undefined,
 			tls_config: mcpClient.config.tls_config
 				? {
-					insecure_skip_verify: mcpClient.config.tls_config.insecure_skip_verify,
-					ca_cert_pem: mcpClient.config.tls_config.ca_cert_pem,
-				}
+						insecure_skip_verify: mcpClient.config.tls_config.insecure_skip_verify,
+						ca_cert_pem: mcpClient.config.tls_config.ca_cert_pem,
+					}
 				: undefined,
 		},
 	});
@@ -219,15 +242,16 @@ export default function MCPClientSheet({
 			tools_to_auto_execute: mcpClient.config.tools_to_auto_execute || [],
 			tool_pricing: mcpClient.config.tool_pricing || {},
 			tool_sync_interval: toolSyncIntervalToMinutes(mcpClient.config.tool_sync_interval),
+				tool_execution_timeout: toolExecutionTimeoutToSeconds(mcpClient.config.tool_execution_timeout),
 			allowed_extra_headers: mcpClient.config.allowed_extra_headers || [],
 			oauth_config: supportsOAuthCredentialUpdate
 				? { client_id: mcpClient.config.oauth_client_id, client_secret: mcpClient.config.oauth_client_secret }
 				: undefined,
 			tls_config: mcpClient.config.tls_config
 				? {
-					insecure_skip_verify: mcpClient.config.tls_config.insecure_skip_verify,
-					ca_cert_pem: mcpClient.config.tls_config.ca_cert_pem,
-				}
+						insecure_skip_verify: mcpClient.config.tls_config.insecure_skip_verify,
+						ca_cert_pem: mcpClient.config.tls_config.ca_cert_pem,
+					}
 				: undefined,
 		});
 	}, [form, mcpClient]);
@@ -282,19 +306,20 @@ export default function MCPClientSheet({
 					tools_to_auto_execute: data.tools_to_auto_execute,
 					tool_pricing: data.tool_pricing,
 					tool_sync_interval: data.tool_sync_interval ?? 0,
+					tool_execution_timeout: data.tool_execution_timeout ?? 0,
 					allowed_extra_headers: data.allowed_extra_headers,
 					oauth_config: shouldRotateOAuthCredentials
 						? {
-							client_id: oauthClientID,
-							client_secret: oauthClientSecret,
-						}
+								client_id: oauthClientID,
+								client_secret: oauthClientSecret,
+							}
 						: undefined,
 					tls_config:
 						data.tls_config !== undefined
 							? {
-								insecure_skip_verify: data.tls_config.insecure_skip_verify ?? false,
-								ca_cert_pem: data.tls_config.ca_cert_pem,
-							}
+									insecure_skip_verify: data.tls_config.insecure_skip_verify ?? false,
+									ca_cert_pem: data.tls_config.ca_cert_pem,
+								}
 							: undefined,
 					vk_configs: vkConfigsDirty ? vkConfigs : undefined,
 				},
@@ -505,9 +530,9 @@ export default function MCPClientSheet({
 											<span className="font-mono break-all">
 												{mcpClient.config.connection_type === "stdio"
 													? `${mcpClient.config.stdio_config?.command ?? ""} ${(mcpClient.config.stdio_config?.args ?? []).join(" ")}`.trim() ||
-													"-"
-													: mcpClient.config.connection_string?.from_env
-														? `env.${mcpClient.config.connection_string.env_var}`
+														"-"
+													: mcpClient.config.connection_string?.type === "env" || mcpClient.config.connection_string?.type === "vault"
+														? mcpClient.config.connection_string.ref
 														: mcpClient.config.connection_string?.value || "-"}
 											</span>
 										</div>
@@ -524,7 +549,7 @@ export default function MCPClientSheet({
 															return [name, valueParts.join("=")];
 														}),
 													)}
-													onChange={() => { }}
+													onChange={() => {}}
 													fixedKeys={mcpClient.config.stdio_config.envs.map((env) => env.split("=")[0])}
 													valuePlaceholder="—"
 													label=""
@@ -698,7 +723,7 @@ export default function MCPClientSheet({
 															<FormItem>
 																<FormLabel>CA Certificate (PEM) (Optional)</FormLabel>
 																<FormControl>
-																	<EnvVarInput
+																	<SecretVarInput
 																		variant="textarea"
 																		placeholder={`-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE----- or env.MCP_CA_CERT_PEM`}
 																		className="font-mono text-xs"
@@ -769,6 +794,58 @@ export default function MCPClientSheet({
 									/>
 									<FormField
 										control={form.control}
+										name="tool_execution_timeout"
+										render={({ field }) => {
+											const isUsingGlobal = field.value === undefined || field.value === null || field.value === 0;
+											return (
+												<FormItem className="flex items-center justify-between rounded-lg border px-4 py-2">
+													<div className="flex flex-col items-start gap-0.5">
+														<div className="flex items-start gap-2">
+															<div>
+																<FormLabel>Tool Execution Timeout (seconds)</FormLabel>
+															</div>
+															<TooltipProvider>
+																<Tooltip>
+																	<TooltipTrigger asChild>
+																		<Info className="text-muted-foreground h-4 w-4 cursor-help" />
+																	</TooltipTrigger>
+																	<TooltipContent className="max-w-xs">
+																		<p>
+																			Override the global tool execution timeout for this server. Leave empty or set to 0 to use
+																			the global setting.
+																		</p>
+																	</TooltipContent>
+																</Tooltip>
+															</TooltipProvider>
+														</div>
+														<div>{isUsingGlobal && <p className="text-muted-foreground text-xs">Using global setting</p>}</div>
+													</div>
+													<FormControl>
+														<Input
+															type="number"
+															className={`w-24 ${isUsingGlobal ? "text-muted-foreground" : ""}`}
+															placeholder="0"
+															value={field.value === 0 || field.value === undefined ? "" : String(field.value)}
+															onChange={(e) => {
+																if (e.target.value === "") {
+																	field.onChange(undefined);
+																	return;
+																}
+																const n = Number(e.target.value);
+																if (!Number.isInteger(n)) return;
+																field.onChange(n);
+															}}
+															min="0"
+															step="1"
+															data-testid="mcp-tool-execution-timeout"
+														/>
+													</FormControl>
+												</FormItem>
+											);
+										}}
+									/>
+									<FormField
+										control={form.control}
 										name="headers"
 										render={({ field }) => (
 											<FormItem className="flex flex-col gap-3">
@@ -779,7 +856,7 @@ export default function MCPClientSheet({
 														keyPlaceholder="Header name"
 														valuePlaceholder="Header value"
 														label="Headers"
-														useEnvVarInput
+														useSecretVarInput
 													/>
 												</FormControl>
 												<FormMessage />
@@ -870,9 +947,9 @@ export default function MCPClientSheet({
 														onBlur={() => {
 															const parsed = allowedExtraHeadersRaw.trim()
 																? allowedExtraHeadersRaw
-																	.split(",")
-																	.map((h) => h.trim())
-																	.filter(Boolean)
+																		.split(",")
+																		.map((h) => h.trim())
+																		.filter(Boolean)
 																: [];
 															field.onChange(parsed);
 															field.onBlur();
@@ -908,7 +985,7 @@ export default function MCPClientSheet({
 													<FormItem className="flex flex-col gap-2">
 														<FormLabel>Client ID</FormLabel>
 														<FormControl>
-															<EnvVarInput
+															<SecretVarInput
 																data-testid="mcpclient-input-oauth-client-id"
 																placeholder="Enter new OAuth client ID"
 																disabled={isDisabled}
@@ -930,7 +1007,7 @@ export default function MCPClientSheet({
 													<FormItem className="flex flex-col gap-2">
 														<FormLabel>Client Secret</FormLabel>
 														<FormControl>
-															<EnvVarInput
+															<SecretVarInput
 																data-testid="mcpclient-input-oauth-client-secret"
 																placeholder="Enter new OAuth client secret"
 																disabled={isDisabled}

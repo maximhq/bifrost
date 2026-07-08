@@ -76,7 +76,13 @@ func (request *GeminiGenerationRequest) ToBifrostResponsesRequest(ctx *schemas.B
 	return bifrostReq
 }
 
-func ToGeminiResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) (*GeminiGenerationRequest, error) {
+func ToGeminiResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostResponsesRequest) (*GeminiGenerationRequest, error) {
+	return ToGeminiResponsesRequestWithImageURLSchemes(ctx, bifrostReq, defaultGeminiImageURLSchemes...)
+}
+
+// ToGeminiResponsesRequestWithImageURLSchemes converts a Bifrost Responses request
+// to Gemini format using the provider-specific allowlist for non-data image URLs.
+func ToGeminiResponsesRequestWithImageURLSchemes(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostResponsesRequest, allowedImageURLSchemes ...string) (*GeminiGenerationRequest, error) {
 	if bifrostReq == nil {
 		return nil, nil
 	}
@@ -88,10 +94,13 @@ func ToGeminiResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) (*Gem
 		Model: bifrostReq.Model,
 	}
 
+	// Canonical model for capability gating only; wire model is untouched.
+	capModel := NormalizeModelName(schemas.ResolveCanonicalModel(ctx, bifrostReq.Model))
+
 	// Convert parameters to generation config
 	if bifrostReq.Params != nil {
 		var err error
-		geminiReq.GenerationConfig, err = geminiReq.convertParamsToGenerationConfigResponses(bifrostReq.Params)
+		geminiReq.GenerationConfig, err = geminiReq.convertParamsToGenerationConfigResponses(bifrostReq.Params, capModel)
 		if err != nil {
 			return nil, err
 		}
@@ -103,9 +112,20 @@ func ToGeminiResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) (*Gem
 				return nil, err
 			}
 
-			// Convert tool choice if present
+			// Convert tool choice if present, but only when function declarations exist.
+			// Gemini rejects functionCallingConfig without function_declarations
+			// (e.g. a web-search-only request has GoogleSearch but no declarations).
 			if bifrostReq.Params.ToolChoice != nil {
-				geminiReq.ToolConfig = convertResponsesToolChoiceToGemini(bifrostReq.Params.ToolChoice)
+				hasFunctionDeclarations := false
+				for _, tool := range geminiReq.Tools {
+					if len(tool.FunctionDeclarations) > 0 {
+						hasFunctionDeclarations = true
+						break
+					}
+				}
+				if hasFunctionDeclarations {
+					geminiReq.ToolConfig = convertResponsesToolChoiceToGemini(bifrostReq.Params.ToolChoice)
+				}
 			}
 		}
 
@@ -116,7 +136,7 @@ func ToGeminiResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) (*Gem
 
 	// Convert ResponsesInput messages to Gemini contents
 	if bifrostReq.Input != nil {
-		contents, systemInstruction, err := convertResponsesMessagesToGeminiContents(bifrostReq.Input, bifrostReq.Model, bifrostReq.Provider)
+		contents, systemInstruction, err := convertResponsesMessagesToGeminiContents(bifrostReq.Input, capModel, bifrostReq.Provider, allowedImageURLSchemes...)
 		if err != nil {
 			return nil, err
 		}
@@ -2819,7 +2839,7 @@ func reconstructSchemaFromJSONSchema(jsonSchema *schemas.ResponsesTextConfigForm
 }
 
 // convertParamsToGenerationConfigResponses converts ChatParameters to GenerationConfig for Responses
-func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(params *schemas.ResponsesParameters) (GenerationConfig, error) {
+func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(params *schemas.ResponsesParameters, capModel string) (GenerationConfig, error) {
 	config := GenerationConfig{}
 
 	if params.Temperature != nil {
@@ -2832,34 +2852,32 @@ func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(param
 		config.MaxOutputTokens = int32(*params.MaxOutputTokens)
 	}
 	// Only set ThinkingConfig if the model actually supports thinking
-	if params.Reasoning != nil && supportsThinkingConfig(r.Model) {
+	if params.Reasoning != nil && supportsThinkingConfig(capModel) {
 		config.ThinkingConfig = &GenerationConfigThinkingConfig{
 			IncludeThoughts: true,
 		}
 
 		hasMaxTokens := params.Reasoning.MaxTokens != nil
 		hasEffort := params.Reasoning.Effort != nil
-		supportsLevel := isGemini3Plus(r.Model) // Check if model is 3.0+
+		supportsLevel := isGemini3Plus(capModel) // Check if model is 3.0+
 
 		// PRIORITY RULE: If both max_tokens and effort are present, use ONLY max_tokens (budget)
 		// This ensures we send only thinkingBudget to Gemini, not thinkingLevel
 
 		// Handle "none" effort explicitly (only if max_tokens not present)
 		if !hasMaxTokens && hasEffort && *params.Reasoning.Effort == "none" {
-			config.ThinkingConfig.IncludeThoughts = false
-			config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(0))
+			setThinkingBudgetZeroIfSupported(&config, capModel)
 		} else if hasMaxTokens {
 			// User provided max_tokens - use thinkingBudget (all Gemini models support this)
 			// If both max_tokens and effort are present, we ignore effort and use ONLY max_tokens
 			budget := *params.Reasoning.MaxTokens
 			switch budget {
 			case 0:
-				config.ThinkingConfig.IncludeThoughts = false
-				config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(0))
+				setThinkingBudgetZeroIfSupported(&config, capModel)
 			case DynamicReasoningBudget: // Special case: -1 means dynamic budget
 				config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(DynamicReasoningBudget))
 			default:
-				if err := validateThinkingBudget(r.Model, budget); err != nil {
+				if err := validateThinkingBudget(capModel, budget); err != nil {
 					return config, err
 				}
 				config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(budget))
@@ -2868,13 +2886,13 @@ func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(param
 			// User provided effort only (no max_tokens)
 			if supportsLevel {
 				// Gemini 3.0+ - use thinkingLevel (more native)
-				config.ThinkingConfig.ThinkingLevel = schemas.Ptr(effortToThinkingLevel(*params.Reasoning.Effort, r.Model))
+				config.ThinkingConfig.ThinkingLevel = schemas.Ptr(effortToThinkingLevel(*params.Reasoning.Effort, capModel))
 			} else {
-				maxTokens := providerUtils.GetMaxOutputTokensOrDefault(r.Model, DefaultCompletionMaxTokens)
+				maxTokens := providerUtils.GetMaxOutputTokensOrDefault(capModel, DefaultCompletionMaxTokens)
 				if config.MaxOutputTokens > 0 {
 					maxTokens = int(config.MaxOutputTokens)
 				}
-				budgetRange := getThinkingBudgetRange(r.Model, maxTokens)
+				budgetRange := getThinkingBudgetRange(capModel, maxTokens)
 				// Gemini < 3.0 - must convert effort to budget
 				budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(
 					*params.Reasoning.Effort,
@@ -3046,7 +3064,11 @@ func convertResponsesToolChoiceToGemini(toolChoice *schemas.ResponsesToolChoice)
 // responses, where a tool returns images/files nested in functionResponse.parts). provider
 // distinguishes Vertex AI from the Gemini Developer API, which differ in how multimodal
 // function responses must be referenced (see the FunctionCallOutput handling below).
-func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessage, model string, provider schemas.ModelProvider) ([]Content, *Content, error) {
+func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessage, model string, provider schemas.ModelProvider, allowedImageURLSchemes ...string) ([]Content, *Content, error) {
+	if len(allowedImageURLSchemes) == 0 {
+		allowedImageURLSchemes = defaultGeminiImageURLSchemes
+	}
+
 	isVertex := provider == schemas.Vertex
 	// if only system / developer message is there, convert it to user message (since openai allows it)
 	if len(messages) == 1 && messages[0].Role != nil && (*messages[0].Role == schemas.ResponsesInputMessageRoleSystem || *messages[0].Role == schemas.ResponsesInputMessageRoleDeveloper) {
@@ -3059,7 +3081,7 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 			}
 			if messages[0].Content.ContentBlocks != nil {
 				for _, block := range messages[0].Content.ContentBlocks {
-					part, err := convertContentBlockToGeminiPart(block)
+					part, err := convertContentBlockToGeminiPart(block, allowedImageURLSchemes...)
 					if err != nil {
 						return nil, nil, fmt.Errorf("failed to convert system message content block: %w", err)
 					}
@@ -3116,7 +3138,7 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 				}
 				if msg.Content.ContentBlocks != nil {
 					for _, block := range msg.Content.ContentBlocks {
-						part, err := convertContentBlockToGeminiPart(block)
+						part, err := convertContentBlockToGeminiPart(block, allowedImageURLSchemes...)
 						if err != nil {
 							return nil, nil, fmt.Errorf("failed to convert system message content block: %w", err)
 						}
@@ -3220,6 +3242,10 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 						}
 					}
 
+					if part.ThoughtSignature == nil {
+						part.ThoughtSignature = []byte(skipThoughtSignatureValidator)
+					}
+
 					content.Parts = append(content.Parts, part)
 				}
 
@@ -3268,7 +3294,7 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 							if !supportsMultimodalToolOutput {
 								continue // older models can't accept media in a function response
 							}
-							mediaPart, err := convertContentBlockToGeminiPart(block)
+							mediaPart, err := convertContentBlockToGeminiPart(block, allowedImageURLSchemes...)
 							if err != nil {
 								return nil, nil, fmt.Errorf("failed to convert function output content block: %w", err)
 							}
@@ -3358,7 +3384,7 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 
 				if msg.Content.ContentBlocks != nil {
 					for _, block := range msg.Content.ContentBlocks {
-						part, err := convertContentBlockToGeminiPart(block)
+						part, err := convertContentBlockToGeminiPart(block, allowedImageURLSchemes...)
 						if err != nil {
 							return nil, nil, fmt.Errorf("failed to convert message content block: %w", err)
 						}
@@ -3379,7 +3405,11 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 }
 
 // convertContentBlockToGeminiPart converts a content block to Gemini part
-func convertContentBlockToGeminiPart(block schemas.ResponsesMessageContentBlock) (*Part, error) {
+func convertContentBlockToGeminiPart(block schemas.ResponsesMessageContentBlock, allowedImageURLSchemes ...string) (*Part, error) {
+	if len(allowedImageURLSchemes) == 0 {
+		allowedImageURLSchemes = defaultGeminiImageURLSchemes
+	}
+
 	switch block.Type {
 	case schemas.ResponsesInputMessageContentBlockTypeText,
 		schemas.ResponsesOutputMessageContentTypeText:
@@ -3425,7 +3455,7 @@ func convertContentBlockToGeminiPart(block schemas.ResponsesMessageContentBlock)
 			imageURL := *block.ResponsesInputMessageContentBlockImage.ImageURL
 
 			// Use existing utility functions to handle URL parsing
-			sanitizedURL, err := schemas.SanitizeImageURL(imageURL)
+			sanitizedURL, err := schemas.SanitizeImageURLWithAllowedSchemes(imageURL, allowedImageURLSchemes...)
 			if err != nil {
 				return nil, fmt.Errorf("failed to sanitize image URL: %w", err)
 			}

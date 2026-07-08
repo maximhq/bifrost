@@ -32,9 +32,9 @@ func TestGemini(t *testing.T) {
 
 	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:  schemas.Gemini,
-		ChatModel: "gemini-2.0-flash",
+		ChatModel: "gemini-2.5-flash",
 		Fallbacks: []schemas.Fallback{
-			{Provider: schemas.Gemini, Model: "gemini-2.5-flash"},
+			{Provider: schemas.Gemini, Model: "gemini-3.1-flash-lite"},
 		},
 		VisionModel:          "gemini-2.5-flash",
 		EmbeddingModel:       "gemini-embedding-001",
@@ -353,7 +353,7 @@ func TestThoughtSignatureInToolCalls(t *testing.T) {
 }
 
 func TestMissingThoughtSignatureUsesBypassSentinel(t *testing.T) {
-	result, err := gemini.ToGeminiChatCompletionRequest(&schemas.BifrostChatRequest{
+	result, err := gemini.ToGeminiChatCompletionRequest(nil, &schemas.BifrostChatRequest{
 		Model: "gemini-3.1-pro-preview",
 		Input: []schemas.ChatMessage{
 			{
@@ -391,11 +391,67 @@ func TestMissingThoughtSignatureUsesBypassSentinel(t *testing.T) {
 	assert.NotContains(t, string(encoded), `"thoughtSignature":"c2tpcF90aG91Z2h0X3NpZ25hdHVyZV92YWxpZGF0b3I="`)
 }
 
+func TestGeminiChatCompletionRejectsGCSImageURL(t *testing.T) {
+	_, err := gemini.ToGeminiChatCompletionRequest(nil, &schemas.BifrostChatRequest{
+		Model: "gemini-3-flash-preview",
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{
+					ContentBlocks: []schemas.ChatContentBlock{
+						{
+							Type: schemas.ChatContentBlockTypeText,
+							Text: schemas.Ptr("Describe this image."),
+						},
+						{
+							Type: schemas.ChatContentBlockTypeImage,
+							ImageURLStruct: &schemas.ChatInputImage{
+								URL: "gs://my-bucket/xxx.png",
+							},
+						},
+					},
+				},
+			},
+		},
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `URL scheme "gs" is not allowed`)
+}
+
+func TestGeminiResponsesRejectsGCSImageURL(t *testing.T) {
+	_, err := gemini.ToGeminiResponsesRequest(nil, &schemas.BifrostResponsesRequest{
+		Model: "gemini-3-flash-preview",
+		Input: []schemas.ResponsesMessage{
+			{
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{
+						{
+							Type: schemas.ResponsesInputMessageContentBlockTypeText,
+							Text: schemas.Ptr("Describe this image."),
+						},
+						{
+							Type: schemas.ResponsesInputMessageContentBlockTypeImage,
+							ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{
+								ImageURL: schemas.Ptr("gs://my-bucket/xxx.png"),
+							},
+						},
+					},
+				},
+			},
+		},
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `URL scheme "gs" is not allowed`)
+}
+
 func TestEmbeddedThoughtSignatureDoesNotUseBypassSentinel(t *testing.T) {
 	thoughtSig := base64.RawURLEncoding.EncodeToString([]byte{0x01, 0x02, 0x03})
 	callID := "call_1_ts_" + thoughtSig
 
-	result, err := gemini.ToGeminiChatCompletionRequest(&schemas.BifrostChatRequest{
+	result, err := gemini.ToGeminiChatCompletionRequest(nil, &schemas.BifrostChatRequest{
 		Model: "gemini-3.1-pro-preview",
 		Input: []schemas.ChatMessage{{
 			Role: schemas.ChatMessageRoleAssistant,
@@ -1143,7 +1199,7 @@ func TestBifrostToGeminiToolConversion(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := gemini.ToGeminiChatCompletionRequest(tt.input)
+			result, err := gemini.ToGeminiChatCompletionRequest(nil, tt.input)
 			require.NoError(t, err)
 			require.NotNil(t, result, "Conversion should not return nil")
 			tt.validate(t, result)
@@ -1178,7 +1234,7 @@ func TestBifrostToGeminiToolConversion_PropertyOrdering(t *testing.T) {
 		},
 	}
 
-	result, err := gemini.ToGeminiChatCompletionRequest(input)
+	result, err := gemini.ToGeminiChatCompletionRequest(nil, input)
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.Len(t, result.Tools, 1)
@@ -1227,7 +1283,7 @@ func TestBifrostToGeminiToolConversion_NestedPropertyOrdering(t *testing.T) {
 		},
 	}
 
-	result, err := gemini.ToGeminiChatCompletionRequest(input)
+	result, err := gemini.ToGeminiChatCompletionRequest(nil, input)
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.Len(t, result.Tools, 1)
@@ -1468,7 +1524,7 @@ func TestStructuredOutputConversion(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := gemini.ToGeminiChatCompletionRequest(tt.input)
+			result, err := gemini.ToGeminiChatCompletionRequest(nil, tt.input)
 			require.NoError(t, err)
 			require.NotNil(t, result, "Conversion should not return nil")
 			tt.validate(t, result)
@@ -1601,7 +1657,7 @@ func TestStructuredOutputWithToolsConflict(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := gemini.ToGeminiChatCompletionRequest(tt.input)
+			result, err := gemini.ToGeminiChatCompletionRequest(nil, tt.input)
 			require.NoError(t, err)
 			require.NotNil(t, result, "Conversion should not return nil")
 			tt.validate(t, result)
@@ -1737,7 +1793,7 @@ func TestResponsesStructuredOutputConversion(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := gemini.ToGeminiResponsesRequest(tt.input)
+			result, err := gemini.ToGeminiResponsesRequest(nil, tt.input)
 			require.NoError(t, err)
 			require.NotNil(t, result, "Responses API conversion should not return nil")
 			tt.validate(t, result)
@@ -1789,7 +1845,7 @@ func TestServiceTierMappingChat(t *testing.T) {
 					ServiceTier: tt.inputTier,
 				},
 			}
-			result, err := gemini.ToGeminiChatCompletionRequest(req)
+			result, err := gemini.ToGeminiChatCompletionRequest(nil, req)
 			require.NoError(t, err)
 			assert.Equal(t, tt.expectedGemini, result.ServiceTier)
 		})
@@ -1845,7 +1901,7 @@ func TestServiceTierMappingResponses(t *testing.T) {
 					ServiceTier: tt.inputTier,
 				},
 			}
-			result, err := gemini.ToGeminiResponsesRequest(req)
+			result, err := gemini.ToGeminiResponsesRequest(nil, req)
 			require.NoError(t, err)
 			assert.Equal(t, tt.expectedGemini, result.ServiceTier)
 		})
@@ -2204,7 +2260,7 @@ func TestParallelFunctionCallingConversion(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := gemini.ToGeminiChatCompletionRequest(tt.input)
+			result, err := gemini.ToGeminiChatCompletionRequest(nil, tt.input)
 			require.NoError(t, err)
 			require.NotNil(t, result, "Conversion should not return nil")
 			tt.validate(t, result)
@@ -2688,7 +2744,7 @@ func TestResponsesAPIParallelFunctionCalling(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := gemini.ToGeminiResponsesRequest(tt.input)
+			result, err := gemini.ToGeminiResponsesRequest(nil, tt.input)
 			require.NoError(t, err)
 			require.NotNil(t, result, "Responses API conversion should not return nil")
 			tt.validate(t, result)
@@ -2977,7 +3033,7 @@ func TestBifrostResponsesToGeminiToolConversion(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := gemini.ToGeminiResponsesRequest(tt.input)
+			result, err := gemini.ToGeminiResponsesRequest(nil, tt.input)
 			require.NoError(t, err)
 			require.NotNil(t, result, "Responses API conversion should not return nil")
 			tt.validate(t, result)
@@ -3351,7 +3407,7 @@ func TestGeminiToolInputKeyOrderPreservation(t *testing.T) {
 		},
 	}
 
-	result, err := gemini.ToGeminiChatCompletionRequest(bifrostReq)
+	result, err := gemini.ToGeminiChatCompletionRequest(nil, bifrostReq)
 	require.NoError(t, err)
 	require.NotNil(t, result)
 
@@ -3409,6 +3465,7 @@ func TestThinkingBudgetValidation_Chat(t *testing.T) {
 		wantDisabled bool   // budget=0: expect IncludeThoughts=false
 		wantDynamic  bool   // budget=-1: expect ThinkingBudget=-1
 		wantBudget   *int32 // expected ThinkingBudget value when no error
+		wantNoConfig bool
 	}{
 		// gemini-2.5-pro: valid range [128, 32768]
 		{
@@ -3495,10 +3552,16 @@ func TestThinkingBudgetValidation_Chat(t *testing.T) {
 
 		// Special values — exempt from range checks on any model.
 		{
-			name:         "budget_zero_disables_thinking",
-			model:        "gemini-2.5-pro",
+			name:         "flash_budget_zero_disables_thinking",
+			model:        "gemini-2.5-flash",
 			budget:       0,
 			wantDisabled: true,
+		},
+		{
+			name:         "pro_budget_zero_omits_thinking_config",
+			model:        "gemini-2.5-pro",
+			budget:       0,
+			wantNoConfig: true,
 		},
 		{
 			name:        "budget_minus_one_dynamic",
@@ -3520,7 +3583,7 @@ func TestThinkingBudgetValidation_Chat(t *testing.T) {
 				},
 			}
 
-			result, err := gemini.ToGeminiChatCompletionRequest(req)
+			result, err := gemini.ToGeminiChatCompletionRequest(nil, req)
 
 			if tt.wantErr {
 				require.Error(t, err, "expected error for budget %d on model %s", tt.budget, tt.model)
@@ -3529,6 +3592,10 @@ func TestThinkingBudgetValidation_Chat(t *testing.T) {
 
 			require.NoError(t, err)
 			require.NotNil(t, result)
+			if tt.wantNoConfig {
+				assert.Nil(t, result.GenerationConfig.ThinkingConfig)
+				return
+			}
 			require.NotNil(t, result.GenerationConfig.ThinkingConfig, "ThinkingConfig should be set")
 
 			tc := result.GenerationConfig.ThinkingConfig
@@ -3559,6 +3626,7 @@ func TestThinkingBudgetValidation_Responses(t *testing.T) {
 		wantDisabled bool
 		wantDynamic  bool
 		wantBudget   *int32
+		wantNoConfig bool
 	}{
 		// gemini-2.5-pro
 		{
@@ -3602,6 +3670,12 @@ func TestThinkingBudgetValidation_Responses(t *testing.T) {
 			wantDisabled: true,
 		},
 		{
+			name:         "pro_budget_zero_omits_thinking_config",
+			model:        "gemini-2.5-pro",
+			budget:       0,
+			wantNoConfig: true,
+		},
+		{
 			name:        "budget_minus_one_dynamic",
 			model:       "gemini-2.5-pro",
 			budget:      -1,
@@ -3620,7 +3694,7 @@ func TestThinkingBudgetValidation_Responses(t *testing.T) {
 				},
 			}
 
-			result, err := gemini.ToGeminiResponsesRequest(req)
+			result, err := gemini.ToGeminiResponsesRequest(nil, req)
 
 			if tt.wantErr {
 				require.Error(t, err, "expected error for budget %d on model %s", tt.budget, tt.model)
@@ -3629,6 +3703,10 @@ func TestThinkingBudgetValidation_Responses(t *testing.T) {
 
 			require.NoError(t, err)
 			require.NotNil(t, result)
+			if tt.wantNoConfig {
+				assert.Nil(t, result.GenerationConfig.ThinkingConfig)
+				return
+			}
 			require.NotNil(t, result.GenerationConfig.ThinkingConfig, "ThinkingConfig should be set")
 
 			tc := result.GenerationConfig.ThinkingConfig
@@ -3648,6 +3726,25 @@ func TestThinkingBudgetValidation_Responses(t *testing.T) {
 	}
 }
 
+func TestThinkingBudgetZeroUnsupportedForProResponses(t *testing.T) {
+	effortNone := "none"
+
+	req := &schemas.BifrostResponsesRequest{
+		Model: "gemini-2.5-pro",
+		Params: &schemas.ResponsesParameters{
+			Reasoning: &schemas.ResponsesParametersReasoning{
+				Effort: &effortNone,
+			},
+		},
+	}
+
+	result, err := gemini.ToGeminiResponsesRequest(nil, req)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Nil(t, result.GenerationConfig.ThinkingConfig)
+}
+
 // TestThinkingBudgetEffortUsesModelRange verifies that effort-based budget
 // calculation uses the correct model-specific range, not a global default.
 // In particular, gemini-2.5-flash-lite (min=512) must not use gemini-2.5-flash's
@@ -3663,7 +3760,7 @@ func TestThinkingBudgetEffortUsesModelRange(t *testing.T) {
 				Reasoning: &schemas.ChatReasoning{Effort: &effort},
 			},
 		}
-		result, err := gemini.ToGeminiChatCompletionRequest(req)
+		result, err := gemini.ToGeminiChatCompletionRequest(nil, req)
 		require.NoError(t, err)
 		require.NotNil(t, result)
 		require.NotNil(t, result.GenerationConfig.ThinkingConfig)
@@ -3680,7 +3777,7 @@ func TestThinkingBudgetEffortUsesModelRange(t *testing.T) {
 				Reasoning: &schemas.ChatReasoning{Effort: &effort},
 			},
 		}
-		result, err := gemini.ToGeminiChatCompletionRequest(req)
+		result, err := gemini.ToGeminiChatCompletionRequest(nil, req)
 		require.NoError(t, err)
 		require.NotNil(t, result)
 		require.NotNil(t, result.GenerationConfig.ThinkingConfig)
@@ -3714,7 +3811,7 @@ func TestGenAIThinkingLevel_RoundTripPreservesLevelNotBudget(t *testing.T) {
 	assert.Equal(t, "minimal", *bifrostReq.Params.Reasoning.Effort)
 	assert.Nil(t, bifrostReq.Params.Reasoning.MaxTokens, "thinkingLevel must not populate reasoning max_tokens")
 
-	roundTrip, err := gemini.ToGeminiResponsesRequest(bifrostReq)
+	roundTrip, err := gemini.ToGeminiResponsesRequest(nil, bifrostReq)
 	require.NoError(t, err)
 	require.NotNil(t, roundTrip)
 	require.NotNil(t, roundTrip.GenerationConfig.ThinkingConfig)
@@ -3986,7 +4083,7 @@ func TestFunctionCallingConfigModeAny_RoundTrip(t *testing.T) {
 			require.NotNil(t, bifrostReq.Params)
 			require.NotNil(t, bifrostReq.Params.ToolChoice, "ToolChoice must be set")
 
-			roundTrip, err := gemini.ToGeminiResponsesRequest(bifrostReq)
+			roundTrip, err := gemini.ToGeminiResponsesRequest(nil, bifrostReq)
 			require.NoError(t, err)
 			require.NotNil(t, roundTrip)
 			require.NotNil(t, roundTrip.ToolConfig)
@@ -4061,7 +4158,7 @@ func TestMultimodalFunctionResponse_RoundTrip(t *testing.T) {
 	assert.True(t, hasImage, "Image block must be preserved")
 
 	// --- Bifrost -> Gemini: image must land back in functionResponse.parts ---
-	roundTrip, err := gemini.ToGeminiResponsesRequest(bifrostReq)
+	roundTrip, err := gemini.ToGeminiResponsesRequest(nil, bifrostReq)
 	require.NoError(t, err)
 	require.NotNil(t, roundTrip)
 
@@ -4114,7 +4211,7 @@ func TestMultimodalFunctionResponse_PreservesNonRefFields(t *testing.T) {
 	bifrostReq := geminiReq.ToBifrostResponsesRequest(bifrostCtx)
 	require.NotNil(t, bifrostReq)
 
-	roundTrip, err := gemini.ToGeminiResponsesRequest(bifrostReq)
+	roundTrip, err := gemini.ToGeminiResponsesRequest(nil, bifrostReq)
 	require.NoError(t, err)
 	require.NotNil(t, roundTrip)
 
@@ -4258,4 +4355,102 @@ func TestImagenImageSizeCasing(t *testing.T) {
 			assert.Equal(t, tt.wantImageSize, *imagenReq.Parameters.SampleImageSize, "Imagen imageSize must be uppercase")
 		})
 	}
+}
+
+// TestGeminiImageGenerationAspectRatio verifies the explicit aspect_ratio branch on the
+// Gemini :generateContent path: aspect_ratio alone sets the ratio with no imageSize, and
+// aspect_ratio overrides the ratio derived from size.
+func TestGeminiImageGenerationAspectRatio(t *testing.T) {
+	t.Run("aspect_ratio_only", func(t *testing.T) {
+		bifrostReq := &schemas.BifrostImageGenerationRequest{
+			Provider: schemas.Gemini,
+			Model:    "gemini-3.1-flash-image-preview",
+			Input:    &schemas.ImageGenerationInput{Prompt: "test"},
+			Params:   &schemas.ImageGenerationParameters{AspectRatio: schemas.Ptr("16:9")},
+		}
+		outReq := gemini.ToGeminiImageGenerationRequest(bifrostReq)
+		require.NotNil(t, outReq)
+		require.NotNil(t, outReq.GenerationConfig.ImageConfig, "ImageConfig must be set from aspect_ratio alone")
+		assert.Equal(t, "16:9", outReq.GenerationConfig.ImageConfig.AspectRatio)
+		assert.Equal(t, "", outReq.GenerationConfig.ImageConfig.ImageSize, "imageSize must be empty when only aspect_ratio is set")
+	})
+
+	t.Run("aspect_ratio_overrides_size", func(t *testing.T) {
+		bifrostReq := &schemas.BifrostImageGenerationRequest{
+			Provider: schemas.Gemini,
+			Model:    "gemini-3.1-flash-image-preview",
+			Input:    &schemas.ImageGenerationInput{Prompt: "test"},
+			Params: &schemas.ImageGenerationParameters{
+				Size:        schemas.Ptr("1024x1024"),
+				AspectRatio: schemas.Ptr("16:9"),
+			},
+		}
+		outReq := gemini.ToGeminiImageGenerationRequest(bifrostReq)
+		require.NotNil(t, outReq)
+		require.NotNil(t, outReq.GenerationConfig.ImageConfig)
+		assert.Equal(t, "16:9", outReq.GenerationConfig.ImageConfig.AspectRatio, "explicit aspect_ratio must override size-derived ratio")
+		assert.Equal(t, "1K", outReq.GenerationConfig.ImageConfig.ImageSize, "imageSize stays derived from size")
+	})
+}
+
+// TestImagenImageGenerationAspectRatio verifies the explicit aspect_ratio branch on the
+// Imagen :predict path.
+func TestImagenImageGenerationAspectRatio(t *testing.T) {
+	t.Run("aspect_ratio_only", func(t *testing.T) {
+		bifrostReq := &schemas.BifrostImageGenerationRequest{
+			Provider: schemas.Gemini,
+			Model:    "imagen-4.0-generate-preview-05-20",
+			Input:    &schemas.ImageGenerationInput{Prompt: "test"},
+			Params:   &schemas.ImageGenerationParameters{AspectRatio: schemas.Ptr("16:9")},
+		}
+		imagenReq := gemini.ToImagenImageGenerationRequest(bifrostReq)
+		require.NotNil(t, imagenReq)
+		require.NotNil(t, imagenReq.Parameters.AspectRatio, "AspectRatio must be set from aspect_ratio alone")
+		assert.Equal(t, "16:9", *imagenReq.Parameters.AspectRatio)
+		assert.Nil(t, imagenReq.Parameters.SampleImageSize, "SampleImageSize must be nil when only aspect_ratio is set")
+	})
+
+	t.Run("aspect_ratio_overrides_size", func(t *testing.T) {
+		bifrostReq := &schemas.BifrostImageGenerationRequest{
+			Provider: schemas.Gemini,
+			Model:    "imagen-4.0-generate-preview-05-20",
+			Input:    &schemas.ImageGenerationInput{Prompt: "test"},
+			Params: &schemas.ImageGenerationParameters{
+				Size:        schemas.Ptr("1024x1024"),
+				AspectRatio: schemas.Ptr("16:9"),
+			},
+		}
+		imagenReq := gemini.ToImagenImageGenerationRequest(bifrostReq)
+		require.NotNil(t, imagenReq)
+		require.NotNil(t, imagenReq.Parameters.AspectRatio)
+		assert.Equal(t, "16:9", *imagenReq.Parameters.AspectRatio, "explicit aspect_ratio must override size-derived ratio")
+		require.NotNil(t, imagenReq.Parameters.SampleImageSize)
+		assert.Equal(t, "1K", *imagenReq.Parameters.SampleImageSize, "SampleImageSize stays derived from size")
+	})
+}
+
+// TestImagenImageEditSizeRoundtrip mirrors TestImagenImageSizeCasing for the Imagen edit path:
+// a Size on the edit request derives both SampleImageSize and AspectRatio.
+func TestImagenImageEditSizeRoundtrip(t *testing.T) {
+	// minimal 1x1 PNG for inline image data
+	pngPixel, _ := base64.StdEncoding.DecodeString(
+		"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+	)
+
+	bifrostReq := &schemas.BifrostImageEditRequest{
+		Provider: schemas.Gemini,
+		Model:    "imagen-3.0-capability-001",
+		Input: &schemas.ImageEditInput{
+			Prompt: "make it pop",
+			Images: []schemas.ImageInput{{Image: pngPixel}},
+		},
+		Params: &schemas.ImageEditParameters{Size: schemas.Ptr("2048x2048")},
+	}
+
+	imagenReq := gemini.ToImagenImageEditRequest(bifrostReq)
+	require.NotNil(t, imagenReq)
+	require.NotNil(t, imagenReq.Parameters.SampleImageSize, "SampleImageSize must be derived from Size on edit path")
+	assert.Equal(t, "2K", *imagenReq.Parameters.SampleImageSize)
+	require.NotNil(t, imagenReq.Parameters.AspectRatio, "AspectRatio must be derived from Size on edit path")
+	assert.Equal(t, "1:1", *imagenReq.Parameters.AspectRatio)
 }

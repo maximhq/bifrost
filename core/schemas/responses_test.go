@@ -146,6 +146,122 @@ func TestResponsesMessageContentEmptyMarshalsToEmptyString(t *testing.T) {
 	}
 }
 
+// TestResponsesMessageToolCallArguments verifies that function/tool-call
+// `arguments` parse whether the provider serializes them as a JSON string
+// (`function_call` items) or as a JSON object (`tool_search_call` items, emitted
+// when the request enables OpenAI's `tool_search` tool — captured live from
+// api.openai.com). The object form previously failed with "Mismatch type string
+// with value object", silently dropping the item mid-stream and hanging the
+// client.
+func TestResponsesMessageToolCallArguments(t *testing.T) {
+	t.Run("string arguments are preserved", func(t *testing.T) {
+		raw := []byte(`{"id":"fc_1","type":"function_call","status":"completed","name":"grafana","call_id":"call_123","arguments":"{\"query\":\"observability\"}"}`)
+
+		var msg ResponsesMessage
+		if err := Unmarshal(raw, &msg); err != nil {
+			t.Fatalf("unmarshal function_call item: %v", err)
+		}
+		if msg.ResponsesToolMessage == nil || msg.Arguments == nil {
+			t.Fatalf("expected arguments to be set, got %#v", msg.ResponsesToolMessage)
+		}
+		if *msg.Arguments != `{"query":"observability"}` {
+			t.Fatalf("expected stringified arguments, got %q", *msg.Arguments)
+		}
+		if msg.CallID == nil || *msg.CallID != "call_123" {
+			t.Fatalf("expected call_id to survive, got %#v", msg.CallID)
+		}
+		if msg.Name == nil || *msg.Name != "grafana" {
+			t.Fatalf("expected name to survive, got %#v", msg.Name)
+		}
+	})
+
+	t.Run("object arguments are normalized to stringified json", func(t *testing.T) {
+		raw := []byte(`{"id":"fc_1","type":"function_call","status":"completed","name":"grafana","call_id":"call_123","arguments":{"query":"observability"}}`)
+
+		var msg ResponsesMessage
+		if err := Unmarshal(raw, &msg); err != nil {
+			t.Fatalf("unmarshal function_call item with object arguments: %v", err)
+		}
+		if msg.ResponsesToolMessage == nil || msg.Arguments == nil {
+			t.Fatalf("expected arguments to be set, got %#v", msg.ResponsesToolMessage)
+		}
+		if *msg.Arguments != `{"query":"observability"}` {
+			t.Fatalf("expected object arguments to normalize to stringified json, got %q", *msg.Arguments)
+		}
+		if msg.CallID == nil || *msg.CallID != "call_123" {
+			t.Fatalf("expected call_id to survive object-argument decode, got %#v", msg.CallID)
+		}
+
+		encoded, err := MarshalSorted(msg)
+		if err != nil {
+			t.Fatalf("marshal normalized message: %v", err)
+		}
+		if !strings.Contains(string(encoded), `"arguments":"{\"query\":\"observability\"}"`) {
+			t.Fatalf("expected arguments to round-trip as a string, got %s", encoded)
+		}
+	})
+
+	t.Run("empty object arguments", func(t *testing.T) {
+		raw := []byte(`{"id":"fc_1","type":"function_call","name":"grafana","call_id":"call_123","arguments":{}}`)
+
+		var msg ResponsesMessage
+		if err := Unmarshal(raw, &msg); err != nil {
+			t.Fatalf("unmarshal function_call item with empty object arguments: %v", err)
+		}
+		if msg.Arguments == nil || *msg.Arguments != `{}` {
+			t.Fatalf("expected empty object arguments to normalize to %q, got %#v", `{}`, msg.Arguments)
+		}
+	})
+
+	t.Run("object arguments inside a streamed output_item.done event", func(t *testing.T) {
+		raw := []byte(`{"type":"response.output_item.done","sequence_number":7,"output_index":0,"item":{"id":"fc_1","type":"function_call","status":"completed","name":"grafana","call_id":"call_123","arguments":{"query":"observability"}}}`)
+
+		var resp BifrostResponsesStreamResponse
+		if err := Unmarshal(raw, &resp); err != nil {
+			t.Fatalf("unmarshal output_item.done with object arguments: %v", err)
+		}
+		if resp.Item == nil || resp.Item.ResponsesToolMessage == nil || resp.Item.Arguments == nil {
+			t.Fatalf("expected streamed item arguments to be set, got %#v", resp.Item)
+		}
+		if *resp.Item.Arguments != `{"query":"observability"}` {
+			t.Fatalf("expected streamed object arguments to normalize, got %q", *resp.Item.Arguments)
+		}
+	})
+
+	// Real tool_search_call frames captured from api.openai.com by replaying
+	// Codex's request (which enables the `tool_search` tool). These are the exact
+	// frames that triggered the production "Mismatch type string with value
+	// object" failure. tool_search items are preserved verbatim (see
+	// rawToolSearch), so the item must decode without error and re-encode
+	// byte-identically, object-form arguments included.
+	t.Run("real tool_search_call frames from openai", func(t *testing.T) {
+		items := map[string]string{
+			"in_progress (empty object)":   `{"id":"tsc_01429bcd111d3db1016a3abc8e12948191a9efb0edcbd7f68a","type":"tool_search_call","status":"in_progress","arguments":{},"call_id":"call_OYgDGFxcFL8POxRYssDHUsaM","execution":"client"}`,
+			"completed (populated object)": `{"id":"tsc_01429bcd111d3db1016a3abc8e12948191a9efb0edcbd7f68a","type":"tool_search_call","status":"completed","arguments":{"query":"observability_repro sentry grafana websocket responses","limit":10},"call_id":"call_OYgDGFxcFL8POxRYssDHUsaM","execution":"client"}`,
+		}
+		events := map[string]string{
+			"in_progress (empty object)":   `{"type":"response.output_item.added","output_index":1,"sequence_number":4,"item":` + items["in_progress (empty object)"] + `}`,
+			"completed (populated object)": `{"type":"response.output_item.done","output_index":1,"sequence_number":5,"item":` + items["completed (populated object)"] + `}`,
+		}
+		for name, raw := range events {
+			var resp BifrostResponsesStreamResponse
+			if err := Unmarshal([]byte(raw), &resp); err != nil {
+				t.Fatalf("[%s] unmarshal tool_search_call frame: %v", name, err)
+			}
+			if resp.Item == nil || resp.Item.Type == nil || *resp.Item.Type != ResponsesMessageTypeToolSearchCall {
+				t.Fatalf("[%s] expected tool_search_call item, got %#v", name, resp.Item)
+			}
+			encoded, err := MarshalSorted(resp.Item)
+			if err != nil {
+				t.Fatalf("[%s] marshal preserved tool_search_call item: %v", name, err)
+			}
+			if string(encoded) != items[name] {
+				t.Fatalf("[%s] expected item to round-trip verbatim\nwant: %s\ngot:  %s", name, items[name], encoded)
+			}
+		}
+	})
+}
+
 func TestResponsesMessagePreservesOpenAIPhase(t *testing.T) {
 	raw := []byte(`{"id":"msg_123","type":"message","status":"in_progress","content":[],"phase":"final_answer","role":"assistant"}`)
 
@@ -164,5 +280,95 @@ func TestResponsesMessagePreservesOpenAIPhase(t *testing.T) {
 	}
 	if !strings.Contains(string(encoded), `"phase":"final_answer"`) {
 		t.Fatalf("expected encoded message to contain phase, got %s", encoded)
+	}
+}
+
+// TestWithDefaultsStripsCodeExecutionCarry verifies that WithDefaults() (the
+// normalized provider-format converters, e.g. openai/v1/responses) drops the
+// Anthropic-only code-execution fidelity carry while keeping the neutral
+// code_interpreter_call view — and does not mutate the source response (the raw
+// Bifrost superset path keeps the carry).
+func TestWithDefaultsStripsCodeExecutionCarry(t *testing.T) {
+	code := "print(1)"
+	resp := &BifrostResponsesResponse{
+		ID: Ptr("resp_1"),
+		Output: []ResponsesMessage{
+			{
+				Type: Ptr(ResponsesMessageTypeCodeInterpreterCall),
+				ID:   Ptr("ci_1"),
+				ResponsesToolMessage: &ResponsesToolMessage{
+					CallID:                           Ptr("ci_1"),
+					ResponsesCodeInterpreterToolCall: &ResponsesCodeInterpreterToolCall{Code: &code, ContainerID: "cntr_1"},
+					ResponsesCodeExecutionCall:       &ResponsesCodeExecutionCall{ToolName: "bash_code_execution", Stdout: Ptr("hi\n")},
+				},
+			},
+		},
+	}
+
+	normalized := resp.WithDefaults()
+
+	// Normalized output: carry gone, neutral view intact.
+	tm := normalized.Output[0].ResponsesToolMessage
+	if tm.ResponsesCodeExecutionCall != nil {
+		t.Error("WithDefaults leaked the code-execution carry into normalized output")
+	}
+	if tm.ResponsesCodeInterpreterToolCall == nil || tm.ResponsesCodeInterpreterToolCall.ContainerID != "cntr_1" {
+		t.Error("WithDefaults dropped the neutral code_interpreter_call view")
+	}
+
+	// Source response (raw superset) must be untouched.
+	if resp.Output[0].ResponsesToolMessage.ResponsesCodeExecutionCall == nil {
+		t.Error("WithDefaults mutated the source response — superset lost the carry")
+	}
+
+	encoded, err := Marshal(normalized)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(encoded), "code_execution_") {
+		t.Errorf("normalized JSON still contains code_execution_* fields:\n%s", encoded)
+	}
+}
+
+// TestStreamWithDefaultsStripsCodeExecutionCarry verifies the streaming converter
+// drops the code-execution carry from output_item.added / output_item.done items
+// (the streaming analog of the non-streaming Output strip).
+func TestStreamWithDefaultsStripsCodeExecutionCarry(t *testing.T) {
+	mkItem := func() *ResponsesMessage {
+		return &ResponsesMessage{
+			Type: Ptr(ResponsesMessageTypeCodeInterpreterCall),
+			ID:   Ptr("ci_1"),
+			ResponsesToolMessage: &ResponsesToolMessage{
+				CallID:                           Ptr("ci_1"),
+				ResponsesCodeInterpreterToolCall: &ResponsesCodeInterpreterToolCall{ContainerID: "cntr_1"},
+				ResponsesCodeExecutionCall:       &ResponsesCodeExecutionCall{ToolName: "bash_code_execution"},
+			},
+		}
+	}
+
+	for _, typ := range []ResponsesStreamResponseType{
+		ResponsesStreamResponseTypeOutputItemAdded,
+		ResponsesStreamResponseTypeOutputItemDone,
+	} {
+		src := &BifrostResponsesStreamResponse{Type: typ, Item: mkItem()}
+		out := src.WithDefaults()
+
+		if out.Item.ResponsesToolMessage.ResponsesCodeExecutionCall != nil {
+			t.Errorf("%s: leaked code-execution carry on streamed item", typ)
+		}
+		if out.Item.ResponsesToolMessage.ResponsesCodeInterpreterToolCall == nil {
+			t.Errorf("%s: dropped neutral code_interpreter_call view", typ)
+		}
+		if src.Item.ResponsesToolMessage.ResponsesCodeExecutionCall == nil {
+			t.Errorf("%s: mutated source item — superset stream lost the carry", typ)
+		}
+
+		encoded, err := Marshal(out)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if strings.Contains(string(encoded), "code_execution_") {
+			t.Errorf("%s: normalized stream JSON still has code_execution_*:\n%s", typ, encoded)
+		}
 	}
 }

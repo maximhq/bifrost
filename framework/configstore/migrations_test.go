@@ -732,7 +732,7 @@ func TestMigrationAddStoreRawRequestResponseColumn(t *testing.T) {
 					// Insert a provider with the old schema (no store_raw_request_response column)
 					err := db.Exec(`
 						INSERT INTO config_providers (
-							name, send_back_raw_request, send_back_raw_response, 
+							name, send_back_raw_request, send_back_raw_response,
 							config_hash, created_at, updated_at, encryption_status
 						) VALUES (?, ?, ?, ?, ?, ?, ?)
 					`, providerName, tt.sendBackRawRequest, tt.sendBackRawResponse, staleHash, now, now, "plain_text").Error
@@ -812,7 +812,7 @@ func TestMigrationAddStoreRawRequestResponseColumn_MultipleProviders(t *testing.
 			for _, p := range providers {
 				err := db.Exec(`
 					INSERT INTO config_providers (
-						name, send_back_raw_request, send_back_raw_response, 
+						name, send_back_raw_request, send_back_raw_response,
 						config_hash, created_at, updated_at, encryption_status
 					) VALUES (?, ?, ?, ?, ?, ?, ?)
 				`, p.name, p.sendBackRawRequest, p.sendBackRawResponse, "stale_hash", now, now, "plain_text").Error
@@ -858,7 +858,7 @@ func TestMigrationAddStoreRawRequestResponseColumn_Idempotent(t *testing.T) {
 			// Insert a provider
 			err := db.Exec(`
 				INSERT INTO config_providers (
-					name, send_back_raw_request, send_back_raw_response, 
+					name, send_back_raw_request, send_back_raw_response,
 					config_hash, created_at, updated_at, encryption_status
 				) VALUES (?, ?, ?, ?, ?, ?, ?)
 			`, providerName, true, false, "stale_hash", now, now, "plain_text").Error
@@ -1167,6 +1167,7 @@ func TestTriggerMigrations_FreshDB(t *testing.T) {
 	for _, table := range criticalTables {
 		assert.True(t, migrator.HasTable(table), "table should exist: %T", table)
 	}
+	assert.True(t, migrator.HasColumn(&tables.TableModelPricing{}, "is_deprecated"), "model pricing is_deprecated column should exist")
 }
 
 func TestTriggerMigrations_Idempotent(t *testing.T) {
@@ -1204,7 +1205,7 @@ func TestFullMigration_ProviderAndKeyCRUD(t *testing.T) {
 			{
 				ID:     "key-uuid-1",
 				Name:   "openai-primary",
-				Value:  *schemas.NewEnvVar("sk-test-secret-key-12345"),
+				Value:  *schemas.NewSecretVar("sk-test-secret-key-12345"),
 				Models: schemas.WhiteList{"*"},
 				Weight: 1.0,
 			},
@@ -1249,7 +1250,7 @@ func TestFullMigration_VirtualKeyCRUD(t *testing.T) {
 	vk := &tables.TableVirtualKey{
 		ID:        "vk-test-001",
 		Name:      "test-virtual-key",
-		Value:     "vk-secret-value-12345",
+		Value:     *schemas.NewSecretVar("vk-secret-value-12345"),
 		IsActive:  bifrost.Ptr(true),
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -1265,7 +1266,7 @@ func TestFullMigration_VirtualKeyCRUD(t *testing.T) {
 
 	assert.Equal(t, "vk-test-001", vks[0].ID)
 	assert.Equal(t, "test-virtual-key", vks[0].Name)
-	assert.Equal(t, "vk-secret-value-12345", vks[0].Value) // AfterFind decrypts
+	assert.Equal(t, "vk-secret-value-12345", vks[0].Value.GetValue()) // AfterFind decrypts
 	assert.True(t, vks[0].IsActiveValue())
 
 	// Verify encryption at raw DB level
@@ -1297,7 +1298,7 @@ func TestFullMigration_MCPClientCRUD(t *testing.T) {
 		ID:               "mcp-client-001",
 		Name:             "test_mcp_server",
 		ConnectionType:   schemas.MCPConnectionTypeSSE,
-		ConnectionString: schemas.NewEnvVar("https://mcp.example.com/sse"),
+		ConnectionString: schemas.NewSecretVar("https://mcp.example.com/sse"),
 		ToolsToExecute:   schemas.WhiteList{"*"},
 	}
 
@@ -1390,12 +1391,12 @@ func TestFullMigration_EncryptPlaintextRows(t *testing.T) {
 	var key tables.TableKey
 	err = db.Where("key_id = ?", "pk-1").First(&key).Error
 	require.NoError(t, err)
-	assert.Equal(t, "sk-plaintext-secret", key.Value.GetValue())
+	assert.Equal(t, "sk-plaintext-secret", key.Value.Val)
 
 	var vk tables.TableVirtualKey
 	err = db.Where("id = ?", "vk-plain-1").First(&vk).Error
 	require.NoError(t, err)
-	assert.Equal(t, "vk-plain-secret", vk.Value)
+	assert.Equal(t, "vk-plain-secret", vk.Value.Val)
 }
 
 func TestFullMigration_EndToEnd(t *testing.T) {
@@ -1421,7 +1422,7 @@ func TestFullMigration_EndToEnd(t *testing.T) {
 			Keys: []schemas.Key{{
 				ID:     p.keyID,
 				Name:   p.keyName,
-				Value:  *schemas.NewEnvVar(p.keyValue),
+				Value:  *schemas.NewSecretVar(p.keyValue),
 				Models: schemas.WhiteList{"*"},
 				Weight: 1.0,
 			}},
@@ -1437,7 +1438,7 @@ func TestFullMigration_EndToEnd(t *testing.T) {
 		{"vk-2", "vk-beta", "vk-beta-secret"},
 	} {
 		err := store.CreateVirtualKey(ctx, &tables.TableVirtualKey{
-			ID: vk.id, Name: vk.name, Value: vk.value,
+			ID: vk.id, Name: vk.name, Value: *schemas.NewSecretVar(vk.value),
 			IsActive: bifrost.Ptr(true), CreatedAt: now, UpdatedAt: now,
 		})
 		require.NoError(t, err, "CreateVirtualKey %s", vk.name)
@@ -1448,7 +1449,7 @@ func TestFullMigration_EndToEnd(t *testing.T) {
 		ID:               "mcp-e2e-1",
 		Name:             "e2e_mcp_client",
 		ConnectionType:   schemas.MCPConnectionTypeSSE,
-		ConnectionString: schemas.NewEnvVar("https://mcp.e2e.test/sse"),
+		ConnectionString: schemas.NewSecretVar("https://mcp.e2e.test/sse"),
 		ToolsToExecute:   schemas.WhiteList{"*"},
 	})
 	require.NoError(t, err)
@@ -2599,4 +2600,82 @@ func TestMigrationMigrateProviderGovernanceToModelConfigs(t *testing.T) {
 		Where("scope = ? AND model_name = ? AND provider = ?", tables.ModelConfigScopeGlobal, tables.ModelConfigAllModels, "openai").
 		Count(&count).Error)
 	assert.Equal(t, int64(1), count, "re-run must not duplicate the wildcard config")
+}
+
+// TestMigrationRefreshConfigHash_ColumnAheadOfTable is the focused regression test
+// for issue #4797: the config-hash recompute must not fail when the
+// TableClientConfig struct declares a column the physical table does not have yet.
+//
+// On upgrade from a pre-1.6 schema, config_client lacks dump_errors_in_console_logs
+// (added by a later migration step). The old recompute derived its SELECT projection
+// from the struct, so it named the missing column and failed with 42703 on Postgres
+// (or "no such column" on SQLite). The fix intersects the struct columns with the
+// live table columns before selecting.
+func TestMigrationRefreshConfigHash_ColumnAheadOfTable(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	// Create config_client with the full current schema, then seed a row before
+	// dropping the column (GORM's struct-derived INSERT would fail once the column
+	// is gone). PrometheusLabels / AllowedOrigins exercise the AfterFind path the
+	// recompute depends on to compute the hash.
+	require.NoError(t, db.AutoMigrate(&tables.TableClientConfig{}))
+	seed := &tables.TableClientConfig{
+		ConfigHash:       "stale-hash",
+		PrometheusLabels: []string{"team", "env"},
+		AllowedOrigins:   []string{"https://example.com"},
+	}
+	require.NoError(t, db.Create(seed).Error)
+
+	// Simulate the pre-1.6 table: struct is ahead of the applied DDL.
+	require.NoError(t, db.Migrator().DropColumn(&tables.TableClientConfig{}, "dump_errors_in_console_logs"))
+	require.False(t, db.Migrator().HasColumn(&tables.TableClientConfig{}, "dump_errors_in_console_logs"),
+		"precondition: dump_errors_in_console_logs must be absent to reproduce the bug")
+
+	// Pre-fix this returned the 42703 / "no such column" error; post-fix the
+	// projection skips the absent column and the recompute succeeds.
+	require.NoError(t, migrationRefreshConfigHashAfterMCPExternalServerURLRemoval(ctx, db, testMigrationLogger))
+
+	// The stale hash was recomputed. Read via raw SQL to avoid the same
+	// struct-vs-table drift on the read path.
+	var gotHash string
+	require.NoError(t, db.Raw("SELECT config_hash FROM config_client WHERE id = ?", seed.ID).Scan(&gotHash).Error)
+	assert.NotEmpty(t, gotHash, "config_hash should have been recomputed")
+	assert.NotEqual(t, "stale-hash", gotHash, "config_hash should differ from the seeded stale value")
+}
+
+// TestFullMigration_UpgradeFromPreDumpErrorsSchema runs the entire ordered chain
+// against a config_client that predates dump_errors_in_console_logs, reproducing
+// the real upgrade path from issue #4797.
+//
+// A fresh triggerMigrations run cannot reproduce the bug because init's CreateTable
+// builds config_client from the current struct (with the column). We instead
+// pre-create the table and drop the column so the chain hits the recompute step
+// (which runs before add_dump_errors_in_console_logs_column) while the column is
+// still missing.
+func TestFullMigration_UpgradeFromPreDumpErrorsSchema(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	require.NoError(t, db.AutoMigrate(&tables.TableClientConfig{}))
+	seed := &tables.TableClientConfig{
+		ConfigHash:       "stale-hash",
+		PrometheusLabels: []string{"team"},
+	}
+	require.NoError(t, db.Create(seed).Error)
+	require.NoError(t, db.Migrator().DropColumn(&tables.TableClientConfig{}, "dump_errors_in_console_logs"))
+	require.False(t, db.Migrator().HasColumn(&tables.TableClientConfig{}, "dump_errors_in_console_logs"))
+
+	// The full chain must complete: init skips CreateTable (table exists), the
+	// recompute runs against the column-less table, and add_dump_errors re-adds it.
+	require.NoError(t, triggerMigrations(ctx, db, testMigrationLogger),
+		"full migration chain should complete on a pre-dump-errors config_client")
+
+	assert.True(t, db.Migrator().HasColumn(&tables.TableClientConfig{}, "dump_errors_in_console_logs"),
+		"chain should have re-added dump_errors_in_console_logs")
+
+	var gotHash string
+	require.NoError(t, db.Raw("SELECT config_hash FROM config_client WHERE id = ?", seed.ID).Scan(&gotHash).Error)
+	assert.NotEmpty(t, gotHash)
+	assert.NotEqual(t, "stale-hash", gotHash, "config_hash should have been recomputed by the chain")
 }

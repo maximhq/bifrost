@@ -200,6 +200,7 @@ bifrost:
   # Application settings
   appDir: /app/data
   port: 8080
+  # 0.0.0.0 binds IPv4 interfaces only; use "::" for dual-stack/IPv6-only clusters
   host: 0.0.0.0
   logLevel: info
   logStyle: json
@@ -262,6 +263,7 @@ bifrost:
     enableLogging: true
     disableContentLogging: false
     disableDbPingsInHealth: false
+    dumpErrorsInConsoleLogs: false
     logRetentionDays: 365
     # Deprecated: use enforceAuthOnInference instead.
     enforceGovernanceHeader: false
@@ -295,10 +297,18 @@ bifrost:
     # routingChainMaxDepth: 10        # Maximum depth for routing rule chain evaluation
     # allowDirectKeys: false          # Allow callers to bypass the key pool via x-bf-direct-key + Authorization header
     # mcpExternalClientUrl: ""        # Public base URL used as redirect_uri when Bifrost is an OAuth client to MCP servers
+    # How /mcp authenticates inbound MCP clients: headers (default), both, or oauth
+    # mcpServerAuthMode: "headers"
+    # OAuth2 authorization server settings for /mcp (only used when mcpServerAuthMode is "both" or "oauth")
+    # oauth2ServerConfig:
+    #   issuerUrl: ""             # Stable public issuer URL; required for multi-host deployments. Supports env.VAR_NAME
+    #   authCodeTtl: 300          # Authorization code lifetime in seconds (default 300, max 900)
+    #   accessTokenTtl: 600       # Issued JWT lifetime in seconds (default 600)
+    #   disableVkIdentity: false  # Only valid when mcpServerAuthMode is "oauth"
 
   # Server configuration
   server:
-    readBufferSize: 65536      # Read buffer size in bytes for reading HTTP headers (default: 64 KiB)
+    readBufferSize: 65536 # Read buffer size in bytes for reading HTTP headers (default: 64 KiB)
 
   # Framework configuration
   framework:
@@ -400,6 +410,21 @@ bifrost:
   #         region: "us-east-1"
   #         access_key: "env.AWS_ACCESS_KEY_ID"
   #         secret_key: "env.AWS_SECRET_ACCESS_KEY"
+  #
+  # # AWS Bedrock Mantle example (requires bedrock_mantle_key_config)
+  # bedrock_mantle:
+  #   keys:
+  #     - name: "bedrock-mantle-key"
+  #       value: ""
+  #       weight: 1
+  #       bedrock_mantle_key_config:
+  #         region: "us-east-1"                     # Required
+  #         access_key: "env.AWS_ACCESS_KEY_ID"
+  #         secret_key: "env.AWS_SECRET_ACCESS_KEY"
+  #         # session_token: "env.AWS_SESSION_TOKEN"
+  #         # role_arn: ""                          # For AssumeRole
+  #         # external_id: ""
+  #         # session_name: ""
 
   # Provider secrets - use existing Kubernetes secrets for provider API keys
   # These will be injected as environment variables that can be referenced in providers config
@@ -434,6 +459,10 @@ bifrost:
       # - name: "example-https-mcp"
       #   connectionType: "http"
       #   connectionString: "https://my-internal-mcp.corp/mcp"
+      #   # Per-server tool execution timeout override. Go duration string ("30s", "2m")
+      #   # or a bare integer treated as seconds. Overrides toolManagerConfig.toolExecutionTimeout
+      #   # for this server only. Omit or set to 0 to use the global default.
+      #   toolExecutionTimeout: "30s"
       #   # TLS configuration for HTTP and SSE connection types.
       #   # Use when the MCP server presents a self-signed or private CA certificate.
       #   tlsConfig:
@@ -539,16 +568,18 @@ bifrost:
         #     tls_ca_cert: ""         # Path to TLS CA certificate file
         #     insecure: true          # Skip TLS verification (ignored if tls_ca_cert is set)
         #     disable_content_logging: false
+        #     group_traces_by_session: false # Group requests sharing x-bf-session-id into one trace (traceparent takes precedence)
+        #     disable_root_span_content: false # Drop input/output from the root span only (keeps it on the llm.call span)
         #
         # Single-profile shape:
         service_name: "bifrost"
-        collector_url: ""             # e.g., http://otel-collector:4318 (HTTP) or otel-collector:4317 (gRPC)
+        collector_url: "" # e.g., http://otel-collector:4318 (HTTP) or otel-collector:4317 (gRPC)
         trace_type: "genai_extension" # genai_extension | vercel | open_inference
-        protocol: "grpc"              # http | grpc
+        protocol: "grpc" # http | grpc
         # Push-based metrics export via OTLP (recommended for multi-node clusters)
         metrics_enabled: false
-        metrics_endpoint: ""          # e.g., http://otel-collector:4318/v1/metrics (HTTP) or otel-collector:4317 (gRPC)
-        metrics_push_interval: 15     # Push interval in seconds (1-300)
+        metrics_endpoint: "" # e.g., http://otel-collector:4318/v1/metrics (HTTP) or otel-collector:4317 (gRPC)
+        metrics_push_interval: 15 # Push interval in seconds (1-300)
         # Custom headers for the collector (supports env.VAR_NAME prefix)
         headers: {}
         # TLS configuration
@@ -556,6 +587,10 @@ bifrost:
         insecure: false # Skip TLS verification (ignored if tls_ca_cert is set)
         # Drop message content (input/output messages, embeddings, tool defs/args/results) from exported spans
         disable_content_logging: false
+        # Group requests sharing the same x-bf-session-id header into one trace (an inbound W3C traceparent takes precedence)
+        group_traces_by_session: false
+        # Drop input/output content from the root span only (the llm.call generation span keeps it)
+        disable_root_span_content: false
     datadog:
       enabled: false
       version: 1
@@ -581,6 +616,7 @@ bifrost:
         # ml_app: ""                  # ML app name for LLM Observability (defaults to service_name)
         # enable_metrics: true
         # enable_llm_obs: true
+        # group_traces_by_session: false  # Group requests sharing x-bf-session-id into one APM trace (agent mode only)
         # disable_content_logging: false
         # request_headers: []         # Header name patterns (exact or wildcard like "x-custom-*")
         # Agentless mode (direct to Datadog API, no local agent):
@@ -595,7 +631,7 @@ bifrost:
       enabled: false
       version: 1
       config:
-        project_id: ""                # GCP project ID (required when enabled)
+        project_id: "" # GCP project ID (required when enabled)
         dataset_id: "bifrost_traces"
         table_id: "traces"
         location: "US"
@@ -614,8 +650,8 @@ bifrost:
       enabled: false
       version: 1
       config:
-        brokers: []                   # Kafka broker addresses (required when enabled)
-        topic: ""                     # Topic to publish traces to (required when enabled)
+        brokers: [] # Kafka broker addresses (required when enabled)
+        topic: "" # Topic to publish traces to (required when enabled)
         sasl_enabled: false
         # sasl:
         #   mechanism: "PLAIN"        # PLAIN | SCRAM-SHA-256 | SCRAM-SHA-512
@@ -623,7 +659,7 @@ bifrost:
         #   password: "env.KAFKA_PASSWORD"
         tls_enabled: false
         # ca_cert: "env.KAFKA_CA_CERT" # PEM CA certificate to verify the broker. Omit to use the system CA pool.
-        compression: "none"           # none | gzip | snappy | lz4 | zstd
+        compression: "none" # none | gzip | snappy | lz4 | zstd
         batch_size: 100
         flush_interval_ms: 1000
         auto_create_topic: false
@@ -637,8 +673,8 @@ bifrost:
       enabled: false
       version: 1
       config:
-        project_id: ""                # GCP project ID (required when enabled)
-        topic_id: ""                  # Pub/Sub topic ID (required when enabled)
+        project_id: "" # GCP project ID (required when enabled)
+        topic_id: "" # Pub/Sub topic ID (required when enabled)
         # service_account_key: ""     # Service account key JSON, or "env.VAR". Omit to use ADC.
         auto_create_topic: false
         disable_content_logging: false
@@ -709,6 +745,7 @@ bifrost:
       #   description: "Virtual key description"
       #   value: "sk-bf-..."           # Optional - auto-generated if omitted
       #   is_active: true
+      #   expires_at: "2026-12-31T23:59:59Z"  # Optional RFC3339 expiry; requests rejected once passed. Omit for no expiry
       #   team_id: "team-1"        # Mutually exclusive with customer_id
       #   customer_id: ""          # Mutually exclusive with team_id
       #   rate_limit_id: "rate-limit-1"
@@ -765,7 +802,8 @@ bifrost:
       #   pattern: "gpt-4o-mini"
       #   request_types: ["chat_completion"]
       #   pricing_patch: "{\"input_cost_per_token\":0.000001,\"output_cost_per_token\":0.000002}"
-    complexityAnalyzerConfig: null
+    complexityAnalyzerConfig:
+      null
       # tier_boundaries:
       #   simple_medium: 0.15
       #   medium_complex: 0.35
@@ -933,6 +971,10 @@ bifrost:
   # Load balancer configuration for intelligent request routing
   loadBalancer:
     enabled: false
+    # directionSelectionEnabled: true   # Enable adaptive provider selection. Defaults to true; omit to leave on.
+    # routeSelectionEnabled: true       # Enable adaptive per-key (route) selection. Defaults to true; omit to leave on.
+    # rerouteFailedDirections: false    # Re-route to a healthy provider when a pinned direction is unhealthy. Defaults to false.
+    # pruneFailedFallbacks: false       # Drop unhealthy directions from a request's configured fallbacks. Defaults to false.
     trackerConfig: {}
     bootstrap: {}
 
@@ -948,6 +990,7 @@ bifrost:
       #   sampling_rate: 100
       #   timeout: 60        # Timeout in seconds for rule execution (default: 60)
       #   max_turns_to_send: 0
+      #   evaluation_mode: "bundled"   # "bundled" (default) | "per_turn" (each turn scanned in isolation; avoids cross-turn false positives, more provider calls)
     providers: []
       # - id: 1
       #   provider_name: "bedrock"
@@ -1029,6 +1072,27 @@ bifrost:
   #     idleTimeoutSeconds: 600
   #     maxConnectionLifetimeSeconds: 7200
 
+  # Circuit breaker configuration: automatic failover when a provider endpoint degrades.
+  # Each policy monitors a primary provider+model and redirects traffic to a fallback
+  # when the circuit opens based on response header signals.
+  # circuitBreakerConfig:
+  #   policies:
+  #     - name: "azure-gpt4-ptu-failover"
+  #       enabled: true
+  #       primary_provider: "azure"
+  #       primary_model: "gpt-4-ptu"
+  #       primary_key_ids: []          # leave empty for a single shared circuit
+  #       fallback_provider: "openai"
+  #       fallback_model: "gpt-4o"
+  #       condition:
+  #         operator: "OR"             # OR (default) | AND
+  #         signals:
+  #           - source: "response_header"
+  #             header_name: "x-ms-throttle-reason"
+  #             header_value: "ModelCapacityExceeded"
+  #       default_cooldown: "30s"      # Go duration; used when no header-based cooldown
+  #       cooldown_header: "retry-after-ms"  # header whose value (ms) overrides default_cooldown
+
 # Storage configuration
 storage:
   # Default storage mode: sqlite or postgres
@@ -1052,15 +1116,57 @@ storage:
     # maxIdleConns: 5
     # maxOpenConns: 50
 
+    # Vault store for external secret management (enterprise).
+    # Resolves "vault.<path>" references in config fields at load time.
+    # vaultStore:
+    #   enabled: true
+    #   type: aws-secrets-manager  # Options: aws-secrets-manager, gcp-secret-manager, hashicorp-vault
+    #   prefix: bifrost             # Path prefix applied to every secret (default: bifrost)
+    #   accessMode: read_only       # read_only or read_and_write
+    #
+    #   # AWS Secrets Manager
+    #   aws:
+    #     region: us-east-1
+    #     accessKeyId: ""           # Leave empty to use default AWS credential chain
+    #     secretAccessKey: ""
+    #     sessionToken: ""          # AWS STS session token (optional)
+    #     roleArn: ""               # IAM role ARN to assume via STS
+    #     kmsKeyId: ""              # Customer-managed KMS key for encryption
+    #
+    #   # GCP Secret Manager
+    #   gcp:
+    #     projectId: ""
+    #     credentialsJson: ""       # Service account JSON; omit for default credentials
+    #
+    #   # HashiCorp Vault (KV v2)
+    #   hashicorp:
+    #     address: https://vault.example.com
+    #     token: ""                 # Static token; omit to use AppRole auth
+    #     namespace: ""             # Vault namespace (HCP Vault / Enterprise)
+    #     mountPath: secret         # KV v2 mount path
+    #     roleId: ""                # AppRole role_id
+    #     secretId: ""              # AppRole secret_id
+
   # Logs store settings
   logsStore:
     enabled: true
     # Backend type for logs store. Empty string uses storage.mode as default
-    type: "" # Options: sqlite, postgres, or "" (uses storage.mode)
+    type: "" # Options: sqlite, postgres, clickhouse, or "" (uses storage.mode)
     # PostgreSQL connection pool tuning (only applies when type is postgres)
     # maxIdleConns: 5
     # maxOpenConns: 50
     # matviewRefreshInterval: "30s"  # How often to refresh materialized views. Go duration string (e.g. '30s', '5m', '1h'). Minimum 5s.
+    # ClickHouse connection settings (only applies when type is clickhouse)
+    # clickhouse:
+    #   host: "clickhouse.default.svc.cluster.local"  # Required
+    #   port: "9000"          # Defaults by protocol: native 9000 (9440 TLS), http 8123 (8443 TLS)
+    #   database: "default"
+    #   username: "default"
+    #   password: "env.CLICKHOUSE_PASSWORD"
+    #   protocol: "native"    # Options: native, http (default: native)
+    #   secure: false         # Enable TLS
+    #   dialTimeout: 10000    # Connection dial timeout in milliseconds
+    #   cluster: ""           # Optional cluster name; runs DDL ON CLUSTER with replicated engines
     # Async writer queue and batch tuning. Omitted fields use Bifrost defaults.
     # writer:
     #   maxBatchSize: 1000

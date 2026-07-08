@@ -112,7 +112,18 @@
             "auth_credentials": "env.VERTEX_CREDENTIALS"
           },
           "weight": 1,
-          "models": ["*"]
+          "models": ["*"],
+          "blacklisted_models": ["claude-sonnet-4-6", "claude-opus-4-8", "moonshotai/kimi-k2-thinking-maas", "minimaxai/minimax-m2-maas"]
+        },
+        {
+          "name": "Vertex Global (Claude)",
+          "vertex_key_config": {
+            "project_id": "env.VERTEX_PROJECT_ID",
+            "region": "global",
+            "auth_credentials": "env.VERTEX_CREDENTIALS"
+          },
+          "weight": 1,
+          "models": ["claude-sonnet-4-6", "claude-opus-4-8", "moonshotai/kimi-k2-thinking-maas", "minimaxai/minimax-m2-maas"]
         }
       ],
       "network_config": {
@@ -339,6 +350,9 @@
         ]
       }
     ]
+  },
+  "server": {
+    "read_buffer_size": 65536
   },
   "client": {
     "drop_excess_requests": false,

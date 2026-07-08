@@ -1,7 +1,7 @@
 // Configuration types that match the Go backend structures
 
 import { KnownProvidersNames } from "@/lib/constants/logs";
-import { EnvVar } from "./schemas";
+import { SecretVar } from "./schemas";
 
 // Known provider names - all supported standard providers
 export type KnownProvider = (typeof KnownProvidersNames)[number];
@@ -57,50 +57,50 @@ export interface AliasConfig {
 	model_name?: string;
 	model_family?: ModelFamily;
 	description?: string;
-	region?: EnvVar;
+	region?: SecretVar;
 	// Azure overrides
 	api_version?: string;
 	anthropic_version?: string;
-	endpoint?: EnvVar;
+	endpoint?: SecretVar;
 	// Vertex overrides
-	project_id?: EnvVar;
-	project_number?: EnvVar;
+	project_id?: SecretVar;
+	project_number?: SecretVar;
 	// Bedrock overrides
-	inference_profile_arn?: EnvVar;
+	inference_profile_arn?: SecretVar;
 	// Replicate overrides
 	use_deployments_endpoint?: boolean;
 }
 
 // AzureKeyConfig matching Go's schemas.AzureKeyConfig
 export interface AzureKeyConfig {
-	endpoint: EnvVar;
-	client_id?: EnvVar;
-	client_secret?: EnvVar;
-	tenant_id?: EnvVar;
+	endpoint: SecretVar;
+	client_id?: SecretVar;
+	client_secret?: SecretVar;
+	tenant_id?: SecretVar;
 	scopes?: string[];
 }
 
 export const DefaultAzureKeyConfig: AzureKeyConfig = {
-	endpoint: { value: "", env_var: "", from_env: false },
-	client_id: { value: "", env_var: "", from_env: false },
-	client_secret: { value: "", env_var: "", from_env: false },
-	tenant_id: { value: "", env_var: "", from_env: false },
+	endpoint: { value: "", ref: "" },
+	client_id: { value: "", ref: "" },
+	client_secret: { value: "", ref: "" },
+	tenant_id: { value: "", ref: "" },
 	scopes: [],
 } as const satisfies Required<AzureKeyConfig>;
 
 // VertexKeyConfig matching Go's schemas.VertexKeyConfig
 export interface VertexKeyConfig {
-	project_id: EnvVar;
-	project_number?: EnvVar;
-	region: EnvVar;
-	auth_credentials?: EnvVar;
+	project_id: SecretVar;
+	project_number?: SecretVar;
+	region: SecretVar;
+	auth_credentials?: SecretVar;
 }
 
 export const DefaultVertexKeyConfig: VertexKeyConfig = {
-	project_id: { value: "", env_var: "", from_env: false },
-	project_number: { value: "", env_var: "", from_env: false },
-	region: { value: "", env_var: "", from_env: false },
-	auth_credentials: { value: "", env_var: "", from_env: false },
+	project_id: { value: "", ref: "" },
+	project_number: { value: "", ref: "" },
+	region: { value: "", ref: "" },
+	auth_credentials: { value: "", ref: "" },
 } as const satisfies Required<VertexKeyConfig>;
 
 export interface S3BucketConfig {
@@ -115,33 +115,55 @@ export interface BatchS3Config {
 
 // BedrockKeyConfig matching Go's schemas.BedrockKeyConfig
 export interface BedrockKeyConfig {
-	access_key?: EnvVar;
-	secret_key?: EnvVar;
-	session_token?: EnvVar;
-	region?: EnvVar;
-	arn?: EnvVar;
+	access_key?: SecretVar;
+	secret_key?: SecretVar;
+	session_token?: SecretVar;
+	region?: SecretVar;
+	arn?: SecretVar;
 	batch_s3_config?: BatchS3Config;
 }
 
 // Default BedrockKeyConfig
 export const DefaultBedrockKeyConfig: BedrockKeyConfig = {
-	access_key: { value: "", env_var: "", from_env: false },
-	secret_key: { value: "", env_var: "", from_env: false },
-	session_token: undefined as unknown as EnvVar,
-	region: { value: "us-east-1", env_var: "", from_env: false },
-	arn: { value: "", env_var: "", from_env: false },
+	access_key: { value: "", ref: "" },
+	secret_key: { value: "", ref: "" },
+	session_token: undefined as unknown as SecretVar,
+	region: { value: "us-east-1", ref: "" },
+	arn: { value: "", ref: "" },
 	batch_s3_config: undefined as unknown as BatchS3Config,
 } as const satisfies Required<BedrockKeyConfig>;
 
+// BedrockMantleKeyConfig matching Go's schemas.BedrockMantleKeyConfig
+export interface BedrockMantleKeyConfig {
+	access_key?: SecretVar;
+	secret_key?: SecretVar;
+	session_token?: SecretVar;
+	region?: SecretVar;
+	role_arn?: SecretVar;
+	external_id?: SecretVar;
+	session_name?: SecretVar;
+}
+
+// Default BedrockMantleKeyConfig
+export const DefaultBedrockMantleKeyConfig: BedrockMantleKeyConfig = {
+	access_key: { value: "", ref: "" },
+	secret_key: { value: "", ref: "" },
+	session_token: undefined as unknown as SecretVar,
+	region: { value: "us-east-1", ref: "" },
+	role_arn: undefined as unknown as SecretVar,
+	external_id: undefined as unknown as SecretVar,
+	session_name: undefined as unknown as SecretVar,
+} as const satisfies Required<BedrockMantleKeyConfig>;
+
 // VLLMKeyConfig matching Go's schemas.VLLMKeyConfig
 export interface VLLMKeyConfig {
-	url: EnvVar;
+	url: SecretVar;
 	model_name: string;
 }
 
 // Default VLLMKeyConfig
 export const DefaultVLLMKeyConfig: VLLMKeyConfig = {
-	url: { value: "", env_var: "", from_env: false },
+	url: { value: "", ref: "" },
 	model_name: "",
 } as const satisfies Required<VLLMKeyConfig>;
 
@@ -157,29 +179,29 @@ export const DefaultReplicateKeyConfig: ReplicateKeyConfig = {
 
 // OllamaKeyConfig matching Go's schemas.OllamaKeyConfig
 export interface OllamaKeyConfig {
-	url: EnvVar;
+	url: SecretVar;
 }
 
 // Default OllamaKeyConfig
 export const DefaultOllamaKeyConfig: OllamaKeyConfig = {
-	url: { value: "", env_var: "", from_env: false },
+	url: { value: "", ref: "" },
 } as const satisfies Required<OllamaKeyConfig>;
 
 // SGLKeyConfig matching Go's schemas.SGLKeyConfig
 export interface SGLKeyConfig {
-	url: EnvVar;
+	url: SecretVar;
 }
 
 // Default SGLKeyConfig
 export const DefaultSGLKeyConfig: SGLKeyConfig = {
-	url: { value: "", env_var: "", from_env: false },
+	url: { value: "", ref: "" },
 } as const satisfies Required<SGLKeyConfig>;
 
 // Key structure matching Go's schemas.Key
 export interface ModelProviderKey {
 	id: string;
 	name: string;
-	value?: EnvVar;
+	value?: SecretVar;
 	models?: string[];
 	blacklisted_models?: string[];
 	weight: number;
@@ -189,6 +211,7 @@ export interface ModelProviderKey {
 	azure_key_config?: AzureKeyConfig;
 	vertex_key_config?: VertexKeyConfig;
 	bedrock_key_config?: BedrockKeyConfig;
+	bedrock_mantle_key_config?: BedrockMantleKeyConfig;
 	vllm_key_config?: VLLMKeyConfig;
 	replicate_key_config?: ReplicateKeyConfig;
 	ollama_key_config?: OllamaKeyConfig;
@@ -204,8 +227,7 @@ export const DefaultModelProviderKey: ModelProviderKey = {
 	name: "",
 	value: {
 		value: "",
-		env_var: "",
-		from_env: false,
+		ref: "",
 	},
 	models: [],
 	blacklisted_models: [],
@@ -223,7 +245,7 @@ export interface NetworkConfig {
 	retry_backoff_initial: number; // Duration in milliseconds
 	retry_backoff_max: number; // Duration in milliseconds
 	insecure_skip_verify?: boolean;
-	ca_cert_pem?: EnvVar;
+	ca_cert_pem?: SecretVar;
 	stream_idle_timeout_in_seconds?: number;
 	max_conns_per_host?: number;
 	enforce_http2?: boolean;
@@ -243,10 +265,10 @@ export type ProxyType = "none" | "http" | "socks5" | "environment";
 // ProxyConfig matching Go's schemas.ProxyConfig
 export interface ProxyConfig {
 	type: ProxyType;
-	url?: EnvVar;
-	username?: EnvVar;
-	password?: EnvVar;
-	ca_cert_pem?: EnvVar;
+	url?: SecretVar;
+	username?: SecretVar;
+	password?: SecretVar;
+	ca_cert_pem?: SecretVar;
 }
 
 // Request types matching Go's schemas.RequestType
@@ -258,6 +280,10 @@ export type RequestType =
 	| "chat_completion_stream"
 	| "responses"
 	| "responses_stream"
+	| "responses_retrieve"
+	| "responses_delete"
+	| "responses_cancel"
+	| "responses_input_items"
 	| "embedding"
 	| "rerank"
 	| "speech"
@@ -309,6 +335,10 @@ export interface AllowedRequests {
 	chat_completion_stream: boolean;
 	responses: boolean;
 	responses_stream: boolean;
+	responses_retrieve?: boolean;
+	responses_delete?: boolean;
+	responses_cancel?: boolean;
+	responses_input_items?: boolean;
 	embedding: boolean;
 	speech: boolean;
 	speech_stream: boolean;
@@ -399,9 +429,9 @@ export interface UpdateProviderRequest {
 	openai_config?: OpenAIConfig;
 }
 
-export interface CreateProviderKeyRequest extends ModelProviderKey {}
+export interface CreateProviderKeyRequest extends ModelProviderKey { }
 
-export interface UpdateProviderKeyRequest extends ModelProviderKey {}
+export interface UpdateProviderKeyRequest extends ModelProviderKey { }
 
 export interface ListProviderKeysResponse {
 	keys: ModelProviderKey[];
@@ -439,8 +469,8 @@ export interface FrameworkConfig {
 
 // Auth config
 export interface AuthConfig {
-	admin_username: EnvVar;
-	admin_password: EnvVar;
+	admin_username: SecretVar;
+	admin_password: SecretVar;
 	is_enabled: boolean;
 }
 
@@ -538,6 +568,7 @@ export interface CoreConfig {
 	allow_per_request_raw_override: boolean;
 	allow_direct_keys: boolean;
 	disable_db_pings_in_health: boolean;
+	dump_errors_in_console_logs: boolean;
 	log_retention_days: number;
 	enforce_auth_on_inference: boolean;
 	allowed_origins: string[];
@@ -557,7 +588,14 @@ export interface CoreConfig {
 	hide_deleted_virtual_keys_in_filters: boolean;
 	routing_chain_max_depth: number;
 	header_filter_config?: GlobalHeaderFilterConfig;
-	mcp_external_client_url?: EnvVar;
+	mcp_external_client_url?: SecretVar;
+	mcp_server_auth_mode?: "headers" | "both" | "oauth";
+	oauth2_server_config?: {
+		issuer_url?: SecretVar;
+		auth_code_ttl?: number;
+		access_token_ttl?: number;
+		disable_vk_identity?: boolean;
+	};
 }
 
 export const DefaultCoreConfig: CoreConfig = {
@@ -570,6 +608,7 @@ export const DefaultCoreConfig: CoreConfig = {
 	allow_per_request_raw_override: false,
 	allow_direct_keys: false,
 	disable_db_pings_in_health: false,
+	dump_errors_in_console_logs: false,
 	log_retention_days: 365,
 	enforce_auth_on_inference: false,
 	allowed_origins: [],

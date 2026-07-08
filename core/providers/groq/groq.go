@@ -104,11 +104,12 @@ func (provider *GroqProvider) ChatCompletion(ctx *schemas.BifrostContext, key sc
 		provider.client,
 		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
 		request,
-		key,
+		openai.BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
+		nil,
 		nil,
 		nil,
 		provider.logger,
@@ -120,23 +121,19 @@ func (provider *GroqProvider) ChatCompletion(ctx *schemas.BifrostContext, key sc
 // Uses Groq's OpenAI-compatible streaming format.
 // Returns a channel containing BifrostStreamChunk objects representing the stream or an error if the request fails.
 func (provider *GroqProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	var authHeader map[string]string
-	if v := key.Value.GetValue(); v != "" {
-		authHeader = map[string]string{"Authorization": "Bearer " + v}
-	}
-	// Use shared OpenAI-compatible streaming logic
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
 		provider.streamingClient,
 		provider.networkConfig.BaseURL+"/v1/chat/completions",
 		request,
-		authHeader,
+		openai.BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
 		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		schemas.Groq,
 		postHookRunner,
+		nil,
 		nil,
 		nil,
 		nil,
@@ -187,6 +184,7 @@ func (provider *GroqProvider) Speech(ctx *schemas.BifrostContext, key schemas.Ke
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,
+		nil,
 		schemas.Groq,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
@@ -221,6 +219,7 @@ func (provider *GroqProvider) Transcription(ctx *schemas.BifrostContext, key sch
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,
+		nil,
 		schemas.Groq,
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		nil,

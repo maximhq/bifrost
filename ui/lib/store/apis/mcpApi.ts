@@ -26,6 +26,14 @@ export const mcpApi = baseApi.injectEndpoints({
 					...(params?.limit !== undefined && { limit: params.limit }),
 					...(params?.offset !== undefined && { offset: params.offset }),
 					...(params?.search && { search: params.search }),
+					...(params?.server && { server: params.server }),
+					...(params?.connection_type && { connection_type: params.connection_type }),
+					...(params?.auth_type && { auth_type: params.auth_type }),
+					...(params?.state && { state: params.state }),
+					...(params?.virtual_keys && { virtual_keys: params.virtual_keys }),
+					...(params?.code_mode !== undefined && { code_mode: params.code_mode }),
+					...(params?.disabled !== undefined && { disabled: params.disabled }),
+					...(params?.all_virtual_keys !== undefined && { all_virtual_keys: params.all_virtual_keys }),
 				},
 			}),
 			providesTags: ["MCPClients"],
@@ -66,10 +74,7 @@ export const mcpApi = baseApi.injectEndpoints({
 		}),
 
 		// Publish a custom (org-internal) MCP server into the library
-		createMCPLibraryEntry: builder.mutation<
-			{ status: string; message: string; entry: MCPLibraryEntry },
-			CreateMCPLibraryEntryRequest
-		>({
+		createMCPLibraryEntry: builder.mutation<{ status: string; message: string; entry: MCPLibraryEntry }, CreateMCPLibraryEntryRequest>({
 			query: (data) => ({
 				url: "/mcp/library",
 				method: "POST",

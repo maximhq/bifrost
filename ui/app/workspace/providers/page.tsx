@@ -2,6 +2,7 @@ import ModelProviderConfig from "@/app/workspace/providers/views/modelProviderCo
 import FullPageLoader from "@/components/fullPageLoader";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { TruncatedLabel } from "@/components/ui/truncatedLabel";
 import { DefaultNetworkConfig, DefaultPerformanceConfig } from "@/lib/constants/config";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { ProviderLabels, ProviderNames } from "@/lib/constants/logs";
@@ -20,7 +21,7 @@ import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useNavigate } from "@tanstack/react-router";
 import { AlertCircle } from "lucide-react";
 import { useQueryState } from "nuqs";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import AddCustomProviderSheet from "./dialogs/addNewCustomProviderSheet";
 import ConfirmDeleteProviderDialog from "./dialogs/confirmDeleteProviderDialog";
@@ -227,7 +228,7 @@ export default function Providers() {
 													size="sm"
 													className="h-4 w-4 shrink-0"
 												/>
-												<TruncatedName name={label} />
+												<TruncatedLabel className="flex-1 text-sm">{label}</TruncatedLabel>
 												<KeyDiscoveryFailedBadge provider={p} />
 												<ProviderStatusBadge status={p.provider_status} />
 												{isCustom && (
@@ -269,39 +270,6 @@ export default function Providers() {
 				<ModelProviderConfig provider={selectedProvider} onRequestDelete={() => setShowDeleteProviderDialog(true)} />
 			)}
 		</div>
-	);
-}
-
-function TruncatedName({ name }: { name: string }) {
-	const textRef = useRef<HTMLDivElement>(null);
-	const [isTruncated, setIsTruncated] = useState(false);
-
-	const checkTruncation = useCallback(() => {
-		const el = textRef.current;
-		if (el) {
-			setIsTruncated(el.scrollWidth > el.clientWidth);
-		}
-	}, []);
-
-	useEffect(() => {
-		checkTruncation();
-		window.addEventListener("resize", checkTruncation);
-		return () => window.removeEventListener("resize", checkTruncation);
-	}, [checkTruncation, name]);
-
-	const inner = (
-		<div ref={textRef} className="min-w-0 flex-1 truncate text-sm">
-			{name}
-		</div>
-	);
-
-	if (!isTruncated) return inner;
-
-	return (
-		<Tooltip>
-			<TooltipTrigger asChild>{inner}</TooltipTrigger>
-			<TooltipContent side="right">{name}</TooltipContent>
-		</Tooltip>
 	);
 }
 

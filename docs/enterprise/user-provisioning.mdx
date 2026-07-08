@@ -31,20 +31,26 @@ Once configured, users sign in to Bifrost with their corporate credentials and i
 Pick your IdP to follow a step-by-step setup guide. All providers share the same Bifrost configuration surface — the only difference is how the OAuth client and role/group claims are created on the provider side.
 
 <CardGroup cols={3}>
-  <Card title="Okta" icon="o" href="/enterprise/setting-up-okta">
+  <Card title="Okta" icon="/media/okta-card.svg" href="/enterprise/setting-up-okta/oidc">
     OIDC with Org or Custom Authorization Servers, plus group-to-role mapping and API tokens for bulk user sync and 24-hour background reconciliation.
   </Card>
-  <Card title="Microsoft Entra" icon="microsoft" href="/enterprise/setting-up-entra">
+  <Card title="Microsoft Entra" icon="microsoft" href="/enterprise/setting-up-entra/oidc">
     Entra ID (Azure AD) with app roles, group claims, and v1.0 / v2.0 token support.
   </Card>
-  <Card title="Keycloak" icon="lock" href="/enterprise/setting-up-keycloak">
+  <Card title="Keycloak" icon="/media/keycloak-card.svg" href="/enterprise/setting-up-keycloak/oidc">
     Self-hosted or managed Keycloak with OIDC login and Admin REST API based user provisioning.
   </Card>
-  <Card title="Zitadel" icon="cloud" href="/enterprise/setting-up-zitadel">
+  <Card title="Zitadel" icon="/media/zitadel-card.svg" href="/enterprise/setting-up-zitadel/oidc">
     Cloud or self-hosted Zitadel with project-scoped role claims and service-account-based provisioning.
   </Card>
   <Card title="Google Workspace" icon="google" href="/enterprise/setting-up-google-workspace">
     Google Workspace domains with OAuth login plus optional Directory API sync via a service account.
+  </Card>
+  <Card title="Auth0" icon="/media/auth0-card.svg" href="/enterprise/setting-up-auth0/oidc">
+    Auth0 with Post Login Actions for custom claims, role-to-role mapping, and optional M2M app for bulk user sync.
+  </Card>
+  <Card title="Generic OIDC" icon="fingerprint" href="/enterprise/setting-up-generic-oidc/oidc">
+    Any standards-compliant OIDC provider — PingIdentity, ForgeRock, OneLogin, JumpCloud, and others not covered by a dedicated guide.
   </Card>
 </CardGroup>
 

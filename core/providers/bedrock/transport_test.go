@@ -89,9 +89,9 @@ func newTestProviderWithServer(t *testing.T, ts *httptest.Server) *BedrockProvid
 // testBedrockKey returns a minimal Key with a bearer value so makeStreamingRequest
 // skips IAM signing and proceeds to the HTTP call.
 func testBedrockKey() schemas.Key {
-	region := schemas.NewEnvVar("us-east-1")
+	region := schemas.NewSecretVar("us-east-1")
 	return schemas.Key{
-		Value: *schemas.NewEnvVar("test-api-key"),
+		Value: *schemas.NewSecretVar("test-api-key"),
 		BedrockKeyConfig: &schemas.BedrockKeyConfig{
 			Region: region,
 		},
@@ -107,6 +107,12 @@ func testBedrockCtx() *schemas.BifrostContext {
 func noopPostHookRunner(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	return result, err
 }
+
+// testConverseStreamModel is a non-Anthropic, non-OpenAI Bedrock model that routes through
+// the Converse streaming path (and thus the AWS EventStream decoder). OpenAI-family models
+// stream via the Mantle endpoint instead; Anthropic/Claude also route through Converse, but
+// Nova is used here to keep the EventStream-exception cases provider-agnostic.
+const testConverseStreamModel = "amazon.nova-lite-v1:0"
 
 // testChatRequest returns a minimal BifrostChatRequest for streaming tests.
 func testChatRequest() *schemas.BifrostChatRequest {
@@ -331,7 +337,9 @@ func TestChatCompletionStream_RetryableException_ChunkIsRetryable(t *testing.T) 
 			ctx := testBedrockCtx()
 			key := testBedrockKey()
 
-			streamChan, bifrostErr := provider.ChatCompletionStream(ctx, noopPostHookRunner, nil, key, testChatRequest())
+			req := testChatRequest()
+			req.Model = testConverseStreamModel
+			streamChan, bifrostErr := provider.ChatCompletionStream(ctx, noopPostHookRunner, nil, key, req)
 			require.Nil(t, bifrostErr, "expected EventStream exception to surface as a stream chunk")
 
 			require.NotNil(t, streamChan)
@@ -378,7 +386,9 @@ func TestChatCompletionStream_NonRetryableException_IsTerminal(t *testing.T) {
 	ctx := testBedrockCtx()
 	key := testBedrockKey()
 
-	streamChan, bifrostErr := provider.ChatCompletionStream(ctx, noopPostHookRunner, nil, key, testChatRequest())
+	req := testChatRequest()
+	req.Model = testConverseStreamModel
+	streamChan, bifrostErr := provider.ChatCompletionStream(ctx, noopPostHookRunner, nil, key, req)
 	require.Nil(t, bifrostErr, "expected EventStream exception to surface as a stream chunk")
 
 	require.NotNil(t, streamChan)
@@ -517,7 +527,9 @@ func TestResponsesStream_RetryableException_ChunkIsRetryable(t *testing.T) {
 			defer ts.Close()
 
 			provider := newTestProviderWithServer(t, ts)
-			streamChan, bifrostErr := provider.ResponsesStream(testBedrockCtx(), noopPostHookRunner, nil, testBedrockKey(), testResponsesRequest())
+			req := testResponsesRequest()
+			req.Model = testConverseStreamModel
+			streamChan, bifrostErr := provider.ResponsesStream(testBedrockCtx(), noopPostHookRunner, nil, testBedrockKey(), req)
 			assertRetryableExceptionChunk(t, streamChan, bifrostErr, tc.excType, tc.expectedStatus)
 		})
 	}
@@ -547,7 +559,7 @@ func generateTestCACert(t *testing.T) string {
 func TestBedrockTransportHTTP2Config(t *testing.T) {
 	config := &schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
-			DefaultRequestTimeoutInSeconds: 30,
+			DefaultRequestTimeoutInSeconds: 300,
 			MaxConnsPerHost:                5000,
 			EnforceHTTP2:                   true,
 		},
@@ -570,7 +582,7 @@ func TestBedrockTransportHTTP2Config(t *testing.T) {
 func TestBedrockTransportCustomMaxConns(t *testing.T) {
 	config := &schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
-			DefaultRequestTimeoutInSeconds: 30,
+			DefaultRequestTimeoutInSeconds: 300,
 			MaxConnsPerHost:                50,
 		},
 	}
@@ -590,7 +602,7 @@ func TestBedrockTransportCustomMaxConns(t *testing.T) {
 func TestBedrockTransportDefaultMaxConns(t *testing.T) {
 	config := &schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
-			DefaultRequestTimeoutInSeconds: 30,
+			DefaultRequestTimeoutInSeconds: 300,
 			// MaxConnsPerHost left as 0 — should default to 5000
 		},
 	}
@@ -612,7 +624,7 @@ func TestBedrockTransportDefaultMaxConns(t *testing.T) {
 func TestBedrockTransportTLSInsecureSkipVerify(t *testing.T) {
 	config := &schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
-			DefaultRequestTimeoutInSeconds: 30,
+			DefaultRequestTimeoutInSeconds: 300,
 			InsecureSkipVerify:             true,
 			EnforceHTTP2:                   true,
 		},
@@ -636,8 +648,8 @@ func TestBedrockTransportTLSCACert(t *testing.T) {
 
 	config := &schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
-			DefaultRequestTimeoutInSeconds: 30,
-			CACertPEM:                      schemas.NewEnvVar(testCACert),
+			DefaultRequestTimeoutInSeconds: 300,
+			CACertPEM:                      schemas.NewSecretVar(testCACert),
 			EnforceHTTP2:                   true,
 		},
 	}
@@ -657,7 +669,7 @@ func TestBedrockTransportTLSCACert(t *testing.T) {
 func TestBedrockTransportDefaultTLS(t *testing.T) {
 	config := &schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
-			DefaultRequestTimeoutInSeconds: 30,
+			DefaultRequestTimeoutInSeconds: 300,
 			// No TLS settings — should use system defaults
 		},
 	}
@@ -677,7 +689,7 @@ func TestBedrockTransportDefaultTLS(t *testing.T) {
 func TestBedrockTransportEnforceHTTP2(t *testing.T) {
 	config := &schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
-			DefaultRequestTimeoutInSeconds: 30,
+			DefaultRequestTimeoutInSeconds: 300,
 			EnforceHTTP2:                   true,
 		},
 	}
@@ -696,7 +708,7 @@ func TestBedrockTransportEnforceHTTP2(t *testing.T) {
 func TestBedrockTransportEnforceHTTP2Disabled(t *testing.T) {
 	config := &schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
-			DefaultRequestTimeoutInSeconds: 30,
+			DefaultRequestTimeoutInSeconds: 300,
 			EnforceHTTP2:                   false,
 		},
 	}

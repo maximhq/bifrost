@@ -482,6 +482,19 @@ func findLastUserMessageIndex(msgs []schemas.ChatMessage) int {
 	return -1
 }
 
+// findLastUserResponsesMessageIndex returns the index of the last
+// ResponsesMessage with role "user", or -1 if none exists. Mirrors
+// findLastUserMessageIndex for the Responses API input history so prepareDBEntry
+// can preserve a last-user-message preview when payloads are offloaded.
+func findLastUserResponsesMessageIndex(msgs []schemas.ResponsesMessage) int {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role != nil && *msgs[i].Role == schemas.ResponsesInputMessageRoleUser {
+			return i
+		}
+	}
+	return -1
+}
+
 // BuildTags creates the S3 object tag map from a Log's index fields.
 // S3 allows max 10 tags per object; chosen for lifecycle rules and
 // S3 Metadata Tables queryability.

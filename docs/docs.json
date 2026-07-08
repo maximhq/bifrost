@@ -110,7 +110,8 @@
             "group": "Migration Guides",
             "icon": "arrow-up-right-dots",
             "pages": [
-              "migration-guides/v1.5.0"
+              "migration-guides/v1.5.0",
+              "migration-guides/litellm"
             ]
           },
           {
@@ -132,9 +133,11 @@
                   "providers/supported-providers/anthropic",
                   "providers/supported-providers/azure",
                   "providers/supported-providers/bedrock",
+                  "providers/supported-providers/bedrock-mantle",
                   "providers/supported-providers/cerebras",
                   "providers/supported-providers/cohere",
                   "providers/supported-providers/databricks",
+                  "providers/supported-providers/deepseek",
                   "providers/supported-providers/elevenlabs",
                   "providers/supported-providers/fireworks",
                   "providers/supported-providers/gemini",
@@ -149,6 +152,7 @@
                   "providers/supported-providers/parasail",
                   "providers/supported-providers/perplexity",
                   "providers/supported-providers/replicate",
+                  "providers/supported-providers/runware",
                   "providers/supported-providers/runway",
                   "providers/supported-providers/sgl",
                   "providers/supported-providers/vertex",
@@ -190,6 +194,7 @@
               "mcp/agent-mode",
               "mcp/code-mode",
               "mcp/gateway",
+              "mcp/gateway-auth",
               "mcp/tool-hosting",
               "mcp/filtering"
             ]
@@ -308,21 +313,32 @@
                 "icon": "road-barrier",
                 "pages": [
                   "enterprise/guardrails",
-                  "enterprise/guardrails/secrets-detection",
-                  "enterprise/guardrails/custom-regex",
-                  "integrations/guardrails/aws-bedrock",
-                  "integrations/guardrails/azure-content-safety",
-                  "integrations/guardrails/google-model-armor",
-                  "integrations/guardrails/crowdstrike-aidr",
-                  "integrations/guardrails/grayswan",
-                  "integrations/guardrails/patronus-ai"
+                  "enterprise/guardrails/redaction",
+                  {
+                    "group": "Providers",
+                    "icon": "shield-check",
+                    "pages": [
+                      "enterprise/guardrails/secrets-detection",
+                      "enterprise/guardrails/custom-regex",
+                      "integrations/guardrails/presidio",
+                      "integrations/guardrails/azure-language-pii",
+                      "integrations/guardrails/aws-bedrock",
+                      "integrations/guardrails/azure-content-safety",
+                      "integrations/guardrails/google-model-armor",
+                      "integrations/guardrails/crowdstrike-aidr",
+                      "integrations/guardrails/grayswan",
+                      "integrations/guardrails/patronus-ai"
+                    ]
+                  }
                 ]
               },
               "enterprise/audit-logs",
+              "enterprise/secret-management",
               "enterprise/log-exports",
               "enterprise/datadog-connector",
               "enterprise/clustering",
               "enterprise/adaptive-load-balancing",
+              "enterprise/circuit-breaker",
               "enterprise/invpc-deployments"
             ]
           },
@@ -392,6 +408,7 @@
               "cli-agents/cursor",
               "cli-agents/librechat",
               "cli-agents/claude-code",
+              "cli-agents/claude-desktop",
               "cli-agents/claude-for-office",
               "cli-agents/codex-cli",
               "cli-agents/gemini-cli",
@@ -447,11 +464,64 @@
             "group": "Identity Providers (SSO)",
             "icon": "id-card",
             "pages": [
-              "enterprise/setting-up-okta",
-              "enterprise/setting-up-entra",
-              "enterprise/setting-up-keycloak",
-              "enterprise/setting-up-zitadel",
-              "enterprise/setting-up-google-workspace"
+              {
+                "group": "Okta",
+                "icon": "/media/okta-icon.svg",
+                "collapsed": true,
+                "pages": [
+                  "enterprise/setting-up-okta/oidc",
+                  "enterprise/setting-up-okta/scim"
+                ]
+              },
+              {
+                "group": "Microsoft Entra",
+                "icon": "microsoft",
+                "collapsed": true,
+                "pages": [
+                  "enterprise/setting-up-entra/oidc"
+                ]
+              },
+              {
+                "group": "Zitadel",
+                "icon": "/media/zitadel-icon.svg",
+                "collapsed": true,
+                "pages": [
+                  "enterprise/setting-up-zitadel/oidc"
+                ]
+              },
+              {
+                "group": "Keycloak",
+                "icon": "/media/keycloak-icon.svg",
+                "collapsed": true,
+                "pages": [
+                  "enterprise/setting-up-keycloak/oidc"
+                ]
+              },
+              {
+                "group": "Google Workspace",
+                "icon": "google",
+                "collapsed": true,
+                "pages": [
+                  "enterprise/setting-up-google-workspace"
+                ]
+              },
+              {
+                "group": "Auth0",
+                "icon": "/media/auth0-icon.svg",
+                "collapsed": true,
+                "pages": [
+                  "enterprise/setting-up-auth0/oidc"
+                ]
+              },
+              {
+                "group": "Generic OIDC",
+                "icon": "fingerprint",
+                "collapsed": true,
+                "pages": [
+                  "enterprise/setting-up-generic-oidc/oidc",
+                  "enterprise/setting-up-generic-oidc/scim"
+                ]
+              }
             ]
           },
           {
@@ -460,6 +530,8 @@
             "pages": [
               "enterprise/guardrails/secrets-detection",
               "enterprise/guardrails/custom-regex",
+              "integrations/guardrails/presidio",
+              "integrations/guardrails/azure-language-pii",
               "integrations/guardrails/aws-bedrock",
               "integrations/guardrails/azure-content-safety",
               "integrations/guardrails/google-model-armor",
@@ -475,7 +547,8 @@
               "features/observability/default",
               "features/observability/maxim",
               "features/observability/otel",
-              "features/observability/prometheus"
+              "features/observability/prometheus",
+              "features/observability/kafka"
             ]
           },
           {
@@ -519,6 +592,7 @@
                   "deployment-guides/helm/plugins",
                   "deployment-guides/helm/governance",
                   "deployment-guides/helm/guardrails",
+                  "deployment-guides/helm/secret-management",
                   "deployment-guides/helm/cluster",
                   "deployment-guides/helm/troubleshooting"
                 ]
@@ -528,6 +602,7 @@
                 "icon": "file-code",
                 "pages": [
                   "deployment-guides/config-json",
+                  "deployment-guides/config-json/source-of-truth",
                   "deployment-guides/config-json/schema-reference",
                   "deployment-guides/config-json/client",
                   "deployment-guides/config-json/providers",
@@ -535,7 +610,8 @@
                   "deployment-guides/config-json/plugins",
                   "deployment-guides/config-json/governance",
                   "deployment-guides/config-json/cluster",
-                  "deployment-guides/config-json/guardrails"
+                  "deployment-guides/config-json/guardrails",
+                  "deployment-guides/config-json/secret-management"
                 ]
               }
             ]
@@ -558,6 +634,7 @@
               "deployment-guides/how-to/install-make",
               "deployment-guides/how-to/multinode",
               "deployment-guides/how-to/nginx-reverse-proxy",
+              "deployment-guides/how-to/security-best-practices",
               "deployment-guides/how-to/airgapped",
               "deployment-guides/docker-tuning"
             ]
@@ -633,13 +710,24 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
-              "changelogs/v1.5.14",
-              "changelogs/v1.5.13",
-              "changelogs/v1.5.12",
-              "changelogs/v1.5.11",
-              "changelogs/v1.5.10",
-              "changelogs/v1.5.9",
-              "changelogs/v1.5.8",
+              "changelogs/v1.6.3",
+              "changelogs/v1.6.2",
+              {
+                "group": "June 2026",
+                "pages": [
+                  "changelogs/v1.6.1",
+                  "changelogs/v1.6.0",
+                  "changelogs/v1.5.16",
+                  "changelogs/v1.5.15",
+                  "changelogs/v1.5.14",
+                  "changelogs/v1.5.13",
+                  "changelogs/v1.5.12",
+                  "changelogs/v1.5.11",
+                  "changelogs/v1.5.10",
+                  "changelogs/v1.5.9",
+                  "changelogs/v1.5.8"
+                ]
+              },
               {
                 "group": "May 2026",
                 "pages": [
@@ -726,6 +814,7 @@
                 "pages": [
                   "changelogs/v1.4.0-prerelease2",
                   "changelogs/v1.4.0-prerelease1",
+                  "changelogs/v1.3.55",
                   "changelogs/v1.3.54",
                   "changelogs/v1.3.53",
                   "changelogs/v1.3.52",
@@ -815,19 +904,31 @@
             "item": "Enterprise",
             "icon": "building",
             "pages": [
+              "changelogs/ent-v1.5.3",
+              "changelogs/ent-v1.5.2",
+              "changelogs/ent-v1.5.1",
+              "changelogs/ent-v1.5.0",
+              "changelogs/ent-v1.4.13",
+              "changelogs/ent-v1.4.12",
+              "changelogs/ent-v1.4.11",
               "changelogs/ent-v1.4.10",
               "changelogs/ent-v1.4.9",
               "changelogs/ent-v1.4.8",
               "changelogs/ent-v1.4.7",
               "changelogs/ent-v1.4.7-rc1",
-              "changelogs/ent-v1.4.6",
-              "changelogs/ent-v1.4.5",
-              "changelogs/ent-v1.4.4",
-              "changelogs/ent-v1.4.3",
-              "changelogs/ent-v1.4.2",
-              "changelogs/ent-v1.4.1",
-              "changelogs/ent-v1.4.0",
-              "changelogs/ent-v1.4.0-prerelease7",
+              {
+                "group": "May 2026",
+                "pages": [
+                  "changelogs/ent-v1.4.6",
+                  "changelogs/ent-v1.4.5",
+                  "changelogs/ent-v1.4.4",
+                  "changelogs/ent-v1.4.3",
+                  "changelogs/ent-v1.4.2",
+                  "changelogs/ent-v1.4.1",
+                  "changelogs/ent-v1.4.0",
+                  "changelogs/ent-v1.4.0-prerelease7"
+                ]
+              },
               {
                 "group": "April 2026",
                 "pages": [
@@ -864,8 +965,14 @@
             "item": "Bifrost CLI",
             "icon": "laptop-code",
             "pages": [
-              "changelogs/cli-v0.10.5",
-              "changelogs/cli-v0.10.4",
+              "changelogs/cli-v0.10.6",
+              {
+                "group": "May 2026",
+                "pages": [
+                  "changelogs/cli-v0.10.5",
+                  "changelogs/cli-v0.10.4"
+                ]
+              },
               {
                 "group": "March 2026",
                 "pages": [
@@ -881,18 +988,25 @@
             "item": "Helm",
             "icon": "box",
             "pages": [
+              "changelogs/helm-v2.1.26",
+              "changelogs/helm-v2.1.25",
               "changelogs/helm-v2.1.24",
               "changelogs/helm-v2.1.23",
               "changelogs/helm-v2.1.22",
               "changelogs/helm-v2.1.21",
-              "changelogs/helm-v2.1.20",
-              "changelogs/helm-v2.1.19",
-              "changelogs/helm-v2.1.18",
-              "changelogs/helm-v2.1.17",
-              "changelogs/helm-v2.1.16",
-              "changelogs/helm-v2.1.15",
-              "changelogs/helm-v2.1.14",
-              "changelogs/helm-v2.1.13",
+              {
+                "group": "May 2026",
+                "pages": [
+                  "changelogs/helm-v2.1.20",
+                  "changelogs/helm-v2.1.19",
+                  "changelogs/helm-v2.1.18",
+                  "changelogs/helm-v2.1.17",
+                  "changelogs/helm-v2.1.16",
+                  "changelogs/helm-v2.1.15",
+                  "changelogs/helm-v2.1.14",
+                  "changelogs/helm-v2.1.13"
+                ]
+              },
               {
                 "group": "April 2026",
                 "pages": [
@@ -1062,8 +1176,36 @@
       "destination": "/enterprise/adaptive-load-balancing"
     },
     {
+      "source": "/enterprise/setting-up-okta",
+      "destination": "/enterprise/setting-up-okta/oidc"
+    },
+    {
+      "source": "/enterprise/setting-up-entra",
+      "destination": "/enterprise/setting-up-entra/oidc"
+    },
+    {
+      "source": "/enterprise/setting-up-zitadel",
+      "destination": "/enterprise/setting-up-zitadel/oidc"
+    },
+    {
+      "source": "/enterprise/setting-up-keycloak",
+      "destination": "/enterprise/setting-up-keycloak/oidc"
+    },
+    {
+      "source": "/enterprise/setting-up-google-workspace",
+      "destination": "/enterprise/setting-up-google-workspace/oidc"
+    },
+    {
+      "source": "/enterprise/setting-up-auth0",
+      "destination": "/enterprise/setting-up-auth0/oidc"
+    },
+    {
+      "source": "/enterprise/setting-up-generic-oidc",
+      "destination": "/enterprise/setting-up-generic-oidc/oidc"
+    },
+    {
       "source": "/enterprise/users",
-      "destination": "/enterprise/setting-up-okta"
+      "destination": "/enterprise/setting-up-okta/oidc"
     },
     {
       "source": "/enterprise/data-connectors/datadog",

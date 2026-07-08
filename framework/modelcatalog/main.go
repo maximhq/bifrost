@@ -367,21 +367,6 @@ func (mc *ModelCatalog) ForceReloadPricing(ctx context.Context) error {
 		}
 	}()
 
-	// MCP library sync runs alongside but is non-fatal: a failure here must not
-	// block a pricing/params force-reload. It is logged and the last-sync
-	// timestamp is only advanced on success.
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		if err := mc.syncMCPLibrary(ctx); err != nil {
-			mc.logger.Warn("MCP library sync during force-reload failed: %v", err)
-			return
-		}
-		mc.syncMu.Lock()
-		mc.lastMCPLibrarySyncedAt = time.Now()
-		mc.syncMu.Unlock()
-	}()
-
 	wg.Wait()
 	if pricingErr != nil {
 		return pricingErr
@@ -624,6 +609,19 @@ func (mc *ModelCatalog) knownProviders() []schemas.ModelProvider {
 func NewTestCatalog(baseModelIndex map[string]string) *ModelCatalog {
 	return &ModelCatalog{
 		datasheet: datasheet.NewTestStore(baseModelIndex),
+		live:      live.New(nil),
+		keyconf:   keyconfig.New(nil),
+		done:      make(chan struct{}),
+	}
+}
+
+// NewTestCatalogWithDatasheet wraps a caller-provided datasheet.Store (e.g. one
+// loaded from a local testdata pricing file via datasheet.New(...) +
+// LoadFromURLIntoMemory) in a ModelCatalog, so tests in other packages can
+// exercise real pricing/cost computation without reaching the network.
+func NewTestCatalogWithDatasheet(ds *datasheet.Store) *ModelCatalog {
+	return &ModelCatalog{
+		datasheet: ds,
 		live:      live.New(nil),
 		keyconf:   keyconfig.New(nil),
 		done:      make(chan struct{}),

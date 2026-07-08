@@ -55,6 +55,7 @@ func setupRDBTestStore(t *testing.T) *RDBConfigStore {
 		&tables.TableOauthUserToken{},
 		&tables.TableMCPPerUserHeaderCredential{},
 		&tables.TableMCPPerUserHeaderFlow{},
+		&tables.TableOAuth2RefreshToken{},
 	)
 	require.NoError(t, err, "Failed to migrate test database")
 
@@ -85,6 +86,36 @@ func testComplexityAnalyzerConfig() *ComplexityAnalyzerConfig {
 			SimpleKeywords:    []string{"hello"},
 		},
 	}
+}
+
+func TestRDBConfigStore_UpsertModelPricesSyncsIsDeprecated(t *testing.T) {
+	store := setupRDBTestStore(t)
+	require.NoError(t, store.DB().AutoMigrate(&tables.TableModelPricing{}))
+	ctx := context.Background()
+
+	require.NoError(t, store.UpsertModelPrices(ctx, &tables.TableModelPricing{
+		Model:        "deprecated-model",
+		Provider:     "openai",
+		Mode:         "chat",
+		IsDeprecated: true,
+	}))
+
+	prices, err := store.GetModelPrices(ctx)
+	require.NoError(t, err)
+	require.Len(t, prices, 1)
+	assert.True(t, prices[0].IsDeprecated)
+
+	require.NoError(t, store.UpsertModelPrices(ctx, &tables.TableModelPricing{
+		Model:        "deprecated-model",
+		Provider:     "openai",
+		Mode:         "chat",
+		IsDeprecated: false,
+	}))
+
+	prices, err = store.GetModelPrices(ctx)
+	require.NoError(t, err)
+	require.Len(t, prices, 1)
+	assert.False(t, prices[0].IsDeprecated)
 }
 
 func TestRDBConfigStore_ComplexityAnalyzerConfigRoundTrip(t *testing.T) {
@@ -424,7 +455,7 @@ func TestUpdateProvidersConfig_CreateNew(t *testing.T) {
 				{
 					ID:     "key-uuid-1",
 					Name:   "openai-primary",
-					Value:  *schemas.NewEnvVar("sk-test-key"),
+					Value:  *schemas.NewSecretVar("sk-test-key"),
 					Weight: 1.0,
 				},
 			},
@@ -454,7 +485,7 @@ func TestUpdateProvidersConfig_UpdateExistingByKeyID(t *testing.T) {
 				{
 					ID:     "key-uuid-1",
 					Name:   "openai-primary",
-					Value:  *schemas.NewEnvVar("sk-test-key-v1"),
+					Value:  *schemas.NewSecretVar("sk-test-key-v1"),
 					Weight: 1.0,
 				},
 			},
@@ -469,7 +500,7 @@ func TestUpdateProvidersConfig_UpdateExistingByKeyID(t *testing.T) {
 			{
 				ID:     "key-uuid-1", // Same KeyID
 				Name:   "openai-primary",
-				Value:  *schemas.NewEnvVar("sk-test-key-v2"), // Updated value
+				Value:  *schemas.NewSecretVar("sk-test-key-v2"), // Updated value
 				Weight: 2.0,
 			},
 		},
@@ -497,7 +528,7 @@ func TestUpdateProvidersConfig_UpdateExistingByName_FallbackFix(t *testing.T) {
 				{
 					ID:     "original-uuid",
 					Name:   "openai-primary",
-					Value:  *schemas.NewEnvVar("sk-test-key-v1"),
+					Value:  *schemas.NewSecretVar("sk-test-key-v1"),
 					Weight: 1.0,
 				},
 			},
@@ -512,7 +543,7 @@ func TestUpdateProvidersConfig_UpdateExistingByName_FallbackFix(t *testing.T) {
 			{
 				ID:     "new-uuid-from-config-reload", // Different UUID!
 				Name:   "openai-primary",              // Same name
-				Value:  *schemas.NewEnvVar("sk-test-key-v2"),
+				Value:  *schemas.NewSecretVar("sk-test-key-v2"),
 				Weight: 1.5,
 			},
 		},
@@ -535,13 +566,13 @@ func TestUpdateProvidersConfig_MultipleKeys(t *testing.T) {
 	providers := map[schemas.ModelProvider]ProviderConfig{
 		"openai": {
 			Keys: []schemas.Key{
-				{ID: "key-1", Name: "openai-primary", Value: *schemas.NewEnvVar("sk-key-1"), Weight: 1.0},
-				{ID: "key-2", Name: "openai-secondary", Value: *schemas.NewEnvVar("sk-key-2"), Weight: 0.5},
+				{ID: "key-1", Name: "openai-primary", Value: *schemas.NewSecretVar("sk-key-1"), Weight: 1.0},
+				{ID: "key-2", Name: "openai-secondary", Value: *schemas.NewSecretVar("sk-key-2"), Weight: 0.5},
 			},
 		},
 		"anthropic": {
 			Keys: []schemas.Key{
-				{ID: "key-3", Name: "anthropic-main", Value: *schemas.NewEnvVar("sk-key-3"), Weight: 1.0},
+				{ID: "key-3", Name: "anthropic-main", Value: *schemas.NewSecretVar("sk-key-3"), Weight: 1.0},
 			},
 		},
 	}
@@ -572,7 +603,7 @@ func TestProviderKeyCRUD(t *testing.T) {
 	key := schemas.Key{
 		ID:     "key-uuid-1",
 		Name:   "openai-primary",
-		Value:  *schemas.NewEnvVar("sk-test-key-v1"),
+		Value:  *schemas.NewSecretVar("sk-test-key-v1"),
 		Weight: 1.0,
 	}
 
@@ -589,7 +620,7 @@ func TestProviderKeyCRUD(t *testing.T) {
 	require.NotNil(t, storedKey)
 	assert.Equal(t, "sk-test-key-v1", storedKey.Value.Val)
 
-	key.Value = *schemas.NewEnvVar("sk-test-key-v2")
+	key.Value = *schemas.NewSecretVar("sk-test-key-v2")
 	key.Weight = 2.0
 
 	err = store.UpdateProviderKey(ctx, "openai", key.ID, key)
@@ -616,7 +647,7 @@ func TestProviderKeyCRUD_ProviderMustExist(t *testing.T) {
 	key := schemas.Key{
 		ID:     "key-uuid-1",
 		Name:   "openai-primary",
-		Value:  *schemas.NewEnvVar("sk-test-key-v1"),
+		Value:  *schemas.NewSecretVar("sk-test-key-v1"),
 		Weight: 1.0,
 	}
 
@@ -835,7 +866,7 @@ func TestCreateVirtualKey(t *testing.T) {
 	vk := &tables.TableVirtualKey{
 		ID:       "vk-test",
 		Name:     "Test Virtual Key",
-		Value:    "vk-test-value-123",
+		Value:    *schemas.NewSecretVar("vk-test-value-123"),
 		IsActive: schemas.Ptr(true),
 	}
 
@@ -846,7 +877,7 @@ func TestCreateVirtualKey(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "vk-test", result.ID)
 	assert.Equal(t, "Test Virtual Key", result.Name)
-	assert.Equal(t, "vk-test-value-123", result.Value)
+	assert.Equal(t, "vk-test-value-123", result.Value.Val)
 	assert.True(t, result.IsActiveValue())
 }
 
@@ -880,7 +911,7 @@ func TestCreateVirtualKey_WithBudgetAndRateLimit(t *testing.T) {
 	vk := &tables.TableVirtualKey{
 		ID:          vkID,
 		Name:        "VK With References",
-		Value:       "vk-refs-value",
+		Value:       *schemas.NewSecretVar("vk-refs-value"),
 		IsActive:    schemas.Ptr(true),
 		RateLimitID: &rateLimitID,
 	}
@@ -908,7 +939,7 @@ func TestCreateVirtualKey_DuplicateName(t *testing.T) {
 	vk1 := &tables.TableVirtualKey{
 		ID:       "vk-1",
 		Name:     "Same Name",
-		Value:    "vk-value-1",
+		Value:    *schemas.NewSecretVar("vk-value-1"),
 		IsActive: schemas.Ptr(true),
 	}
 	err := store.CreateVirtualKey(ctx, vk1)
@@ -917,7 +948,7 @@ func TestCreateVirtualKey_DuplicateName(t *testing.T) {
 	vk2 := &tables.TableVirtualKey{
 		ID:       "vk-2",
 		Name:     "Same Name", // Duplicate name
-		Value:    "vk-value-2",
+		Value:    *schemas.NewSecretVar("vk-value-2"),
 		IsActive: schemas.Ptr(true),
 	}
 	err = store.CreateVirtualKey(ctx, vk2)
@@ -931,7 +962,7 @@ func TestGetVirtualKeyByValue(t *testing.T) {
 	vk := &tables.TableVirtualKey{
 		ID:       "vk-lookup",
 		Name:     "Lookup Key",
-		Value:    "vk-unique-value-xyz",
+		Value:    *schemas.NewSecretVar("vk-unique-value-xyz"),
 		IsActive: schemas.Ptr(true),
 	}
 	err := store.CreateVirtualKey(ctx, vk)
@@ -949,7 +980,7 @@ func TestUpdateVirtualKey(t *testing.T) {
 	vk := &tables.TableVirtualKey{
 		ID:       "vk-update",
 		Name:     "Original Name",
-		Value:    "vk-update-value",
+		Value:    *schemas.NewSecretVar("vk-update-value"),
 		IsActive: schemas.Ptr(true),
 	}
 	err := store.CreateVirtualKey(ctx, vk)
@@ -974,7 +1005,7 @@ func TestDeleteVirtualKey(t *testing.T) {
 	vk := &tables.TableVirtualKey{
 		ID:       "vk-delete",
 		Name:     "Delete Me",
-		Value:    "vk-delete-value",
+		Value:    *schemas.NewSecretVar("vk-delete-value"),
 		IsActive: schemas.Ptr(true),
 	}
 	err := store.CreateVirtualKey(ctx, vk)
@@ -987,6 +1018,40 @@ func TestDeleteVirtualKey(t *testing.T) {
 	assert.Error(t, err, "Should not find deleted virtual key")
 }
 
+func TestDeleteVirtualKey_RevokesInboundVKGrants(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	vk := &tables.TableVirtualKey{
+		ID:       "vk-grant",
+		Name:     "Grant VK",
+		Value:    *schemas.NewSecretVar("vk-grant-value"),
+		IsActive: schemas.Ptr(true),
+	}
+	require.NoError(t, store.CreateVirtualKey(ctx, vk))
+
+	// An active vk-mode inbound grant bound to this VK (vk-mode rows key bf_sub
+	// to the VK id).
+	rt := &tables.TableOAuth2RefreshToken{
+		ID:        "rt-vk-grant",
+		TokenHash: "hash-vk-grant",
+		FamilyID:  "fam-vk-grant",
+		ClientID:  "client-1",
+		BfMode:    string(schemas.MCPAuthModeVK),
+		BfSub:     vk.ID,
+		Scope:     "mcp",
+		Resource:  "https://example.test/mcp",
+		CreatedAt: time.Now(),
+	}
+	require.NoError(t, store.DB().WithContext(ctx).Create(rt).Error)
+
+	require.NoError(t, store.DeleteVirtualKey(ctx, vk.ID))
+
+	var got tables.TableOAuth2RefreshToken
+	require.NoError(t, store.DB().WithContext(ctx).First(&got, "id = ?", "rt-vk-grant").Error)
+	assert.NotNil(t, got.RevokedAt, "vk-mode grant should be revoked when its VK is deleted")
+}
+
 func TestDeleteVirtualKey_CleansUpScopedModelConfigs(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()
@@ -994,7 +1059,7 @@ func TestDeleteVirtualKey_CleansUpScopedModelConfigs(t *testing.T) {
 	vk := &tables.TableVirtualKey{
 		ID:       "vk-scoped",
 		Name:     "Scoped VK",
-		Value:    "vk-scoped-value",
+		Value:    *schemas.NewSecretVar("vk-scoped-value"),
 		IsActive: schemas.Ptr(true),
 	}
 	require.NoError(t, store.CreateVirtualKey(ctx, vk))
@@ -1048,7 +1113,7 @@ func TestDeleteVirtualKey_CleansUpMultiBudgetScopedModelConfigs(t *testing.T) {
 	vk := &tables.TableVirtualKey{
 		ID:       "vk-multibudget",
 		Name:     "MultiBudget VK",
-		Value:    "vk-multibudget-value",
+		Value:    *schemas.NewSecretVar("vk-multibudget-value"),
 		IsActive: schemas.Ptr(true),
 	}
 	require.NoError(t, store.CreateVirtualKey(ctx, vk))
@@ -1171,7 +1236,7 @@ func TestCreateVirtualKeyProviderConfig(t *testing.T) {
 	vk := &tables.TableVirtualKey{
 		ID:       "vk-for-pc",
 		Name:     "VK For Provider Config",
-		Value:    "vk-pc-value",
+		Value:    *schemas.NewSecretVar("vk-pc-value"),
 		IsActive: schemas.Ptr(true),
 	}
 	err := store.CreateVirtualKey(ctx, vk)
@@ -1203,7 +1268,7 @@ func TestCreateVirtualKeyProviderConfig_WithKeys(t *testing.T) {
 	providers := map[schemas.ModelProvider]ProviderConfig{
 		"openai": {
 			Keys: []schemas.Key{
-				{ID: "key-for-pc", Name: "openai-pc-key", Value: *schemas.NewEnvVar("sk-test"), Weight: 1.0},
+				{ID: "key-for-pc", Name: "openai-pc-key", Value: *schemas.NewSecretVar("sk-test"), Weight: 1.0},
 			},
 		},
 	}
@@ -1214,7 +1279,7 @@ func TestCreateVirtualKeyProviderConfig_WithKeys(t *testing.T) {
 	vk := &tables.TableVirtualKey{
 		ID:       "vk-with-keys",
 		Name:     "VK With Keys",
-		Value:    "vk-keys-value",
+		Value:    *schemas.NewSecretVar("vk-keys-value"),
 		IsActive: schemas.Ptr(true),
 	}
 	err = store.CreateVirtualKey(ctx, vk)
@@ -1254,7 +1319,7 @@ func TestCreateVirtualKeyProviderConfig_UnresolvedKeys(t *testing.T) {
 	vk := &tables.TableVirtualKey{
 		ID:       "vk-unresolved",
 		Name:     "VK Unresolved",
-		Value:    "vk-unresolved-value",
+		Value:    *schemas.NewSecretVar("vk-unresolved-value"),
 		IsActive: schemas.Ptr(true),
 	}
 	err := store.CreateVirtualKey(ctx, vk)
@@ -1285,8 +1350,8 @@ func TestUpdateProvider_RemovesStaleVirtualKeyProviderConfigKeyAssociations(t *t
 	providers := map[schemas.ModelProvider]ProviderConfig{
 		"openai": {
 			Keys: []schemas.Key{
-				{ID: "key-a", Name: "openai-key-a", Value: *schemas.NewEnvVar("sk-a"), Weight: 1.0},
-				{ID: "key-b", Name: "openai-key-b", Value: *schemas.NewEnvVar("sk-b"), Weight: 1.0},
+				{ID: "key-a", Name: "openai-key-a", Value: *schemas.NewSecretVar("sk-a"), Weight: 1.0},
+				{ID: "key-b", Name: "openai-key-b", Value: *schemas.NewSecretVar("sk-b"), Weight: 1.0},
 			},
 		},
 	}
@@ -1296,7 +1361,7 @@ func TestUpdateProvider_RemovesStaleVirtualKeyProviderConfigKeyAssociations(t *t
 	vk := &tables.TableVirtualKey{
 		ID:       "vk-update-provider-cleanup",
 		Name:     "VK Update Provider Cleanup",
-		Value:    "vk-update-provider-cleanup-value",
+		Value:    *schemas.NewSecretVar("vk-update-provider-cleanup-value"),
 		IsActive: schemas.Ptr(true),
 	}
 	err = store.CreateVirtualKey(ctx, vk)
@@ -1316,7 +1381,7 @@ func TestUpdateProvider_RemovesStaleVirtualKeyProviderConfigKeyAssociations(t *t
 
 	updatedProviderConfig := ProviderConfig{
 		Keys: []schemas.Key{
-			{ID: "key-a", Name: "openai-key-a", Value: *schemas.NewEnvVar("sk-a"), Weight: 1.0},
+			{ID: "key-a", Name: "openai-key-a", Value: *schemas.NewSecretVar("sk-a"), Weight: 1.0},
 		},
 	}
 	err = store.UpdateProvider(ctx, "openai", updatedProviderConfig)
@@ -1336,7 +1401,7 @@ func TestDeleteProvider_RemovesVirtualKeyProviderConfigs(t *testing.T) {
 
 	providers := map[schemas.ModelProvider]ProviderConfig{
 		"openai": {
-			Keys: []schemas.Key{{ID: "key-delete", Name: "openai-key-delete", Value: *schemas.NewEnvVar("sk-delete"), Weight: 1.0}},
+			Keys: []schemas.Key{{ID: "key-delete", Name: "openai-key-delete", Value: *schemas.NewSecretVar("sk-delete"), Weight: 1.0}},
 		},
 	}
 	err := store.UpdateProvidersConfig(ctx, providers)
@@ -1345,7 +1410,7 @@ func TestDeleteProvider_RemovesVirtualKeyProviderConfigs(t *testing.T) {
 	vk := &tables.TableVirtualKey{
 		ID:       "vk-delete-provider-cleanup",
 		Name:     "VK Delete Provider Cleanup",
-		Value:    "vk-delete-provider-cleanup-value",
+		Value:    *schemas.NewSecretVar("vk-delete-provider-cleanup-value"),
 		IsActive: schemas.Ptr(true),
 	}
 	err = store.CreateVirtualKey(ctx, vk)
@@ -1707,8 +1772,8 @@ func TestFullVirtualKeyFlow(t *testing.T) {
 	providers := map[schemas.ModelProvider]ProviderConfig{
 		"openai": {
 			Keys: []schemas.Key{
-				{ID: "key-1", Name: "openai-main", Value: *schemas.NewEnvVar("sk-main"), Weight: 1.0},
-				{ID: "key-2", Name: "openai-backup", Value: *schemas.NewEnvVar("sk-backup"), Weight: 0.5},
+				{ID: "key-1", Name: "openai-main", Value: *schemas.NewSecretVar("sk-main"), Weight: 1.0},
+				{ID: "key-2", Name: "openai-backup", Value: *schemas.NewSecretVar("sk-backup"), Weight: 0.5},
 			},
 		},
 	}
@@ -1741,7 +1806,7 @@ func TestFullVirtualKeyFlow(t *testing.T) {
 	vk := &tables.TableVirtualKey{
 		ID:          integrationVKID,
 		Name:        "Integration Virtual Key",
-		Value:       "vk-integration-xyz",
+		Value:       *schemas.NewSecretVar("vk-integration-xyz"),
 		IsActive:    schemas.Ptr(true),
 		RateLimitID: &rateLimitID,
 	}
@@ -1792,7 +1857,7 @@ func TestGetVirtualKeysUsesInternalPagination(t *testing.T) {
 		vk := &tables.TableVirtualKey{
 			ID:        fmt.Sprintf("vk-page-%04d", i),
 			Name:      fmt.Sprintf("Virtual Key %04d", i),
-			Value:     fmt.Sprintf("vk-value-%04d", i),
+			Value:     *schemas.NewSecretVar(fmt.Sprintf("vk-value-%04d", i)),
 			IsActive:  schemas.Ptr(true),
 			CreatedAt: createdAt,
 			UpdatedAt: createdAt,
@@ -2166,4 +2231,85 @@ func TestDeletePromptSession(t *testing.T) {
 		require.NoError(t, err)
 		assert.Len(t, versions, 2)
 	})
+}
+
+// TestUpsertModelPricesBatch_SQLite guards the pricing-sync write path on
+// SQLite. Batching these rows into a multi-row INSERT makes GORM emit the
+// DEFAULT keyword for the table's many default:null columns, which SQLite
+// rejects ("near \"DEFAULT\": syntax error"), so UpsertModelPricesBatch must
+// fall back to per-row writes on SQLite. The rows below intentionally leave
+// cost columns nil to exercise exactly that case.
+func TestUpsertModelPricesBatch_SQLite(t *testing.T) {
+	s := setupRDBTestStore(t)
+	require.NoError(t, s.DB().AutoMigrate(&tables.TableModelPricing{}))
+
+	ctx := context.Background()
+	cost := func(f float64) *float64 { return &f }
+
+	pricing := []tables.TableModelPricing{
+		{Model: "google/gemini-2.5-flash", Provider: "vertex", Mode: "chat", InputCostPerToken: cost(0.000001)},
+		{Model: "openai/gpt-4o", Provider: "openai", Mode: "chat"}, // all costs nil
+		{Model: "anthropic/claude-3", Provider: "anthropic", Mode: "chat", OutputCostPerToken: cost(0.000015)},
+	}
+
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, pricing))
+
+	got, err := s.GetModelPrices(ctx)
+	require.NoError(t, err)
+	assert.Len(t, got, 3)
+
+	// Re-upsert with a changed cost to exercise the ON CONFLICT update path.
+	pricing[1].InputCostPerToken = cost(0.000005)
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, pricing))
+
+	got, err = s.GetModelPrices(ctx)
+	require.NoError(t, err)
+	assert.Len(t, got, 3) // upsert, not duplicate insert
+
+	var updated *tables.TableModelPricing
+	for i := range got {
+		if got[i].Model == "openai/gpt-4o" {
+			updated = &got[i]
+		}
+	}
+	require.NotNil(t, updated)
+	require.NotNil(t, updated.InputCostPerToken)
+	assert.InDelta(t, 0.000005, *updated.InputCostPerToken, 1e-9)
+}
+
+func TestUpsertModelParametersBatch_SQLite(t *testing.T) {
+	s := setupRDBTestStore(t)
+	require.NoError(t, s.DB().AutoMigrate(&tables.TableModelParameters{}))
+
+	ctx := context.Background()
+	params := []tables.TableModelParameters{
+		{Model: "model-a", Data: `{"max_output_tokens":100}`},
+		{Model: "model-b", Data: `{"max_output_tokens":200}`},
+		{Model: "model-c", Data: `{"max_output_tokens":300}`},
+	}
+
+	require.NoError(t, s.UpsertModelParametersBatch(ctx, params))
+
+	got, err := s.GetModelParameters(ctx)
+	require.NoError(t, err)
+	assert.Len(t, got, 3)
+
+	params[1].Data = `{"max_output_tokens":250}`
+	require.NoError(t, s.UpsertModelParametersBatch(ctx, params))
+
+	updated, err := s.GetModelParametersByModel(ctx, "model-b")
+	require.NoError(t, err)
+	assert.Equal(t, `{"max_output_tokens":250}`, updated.Data)
+
+	require.NoError(t, s.UpsertModelParametersBatch(ctx, []tables.TableModelParameters{
+		{Model: "model-b", Data: `{"max_output_tokens":260}`},
+		{Model: "model-b", Data: `{"max_output_tokens":270}`},
+	}))
+	updated, err = s.GetModelParametersByModel(ctx, "model-b")
+	require.NoError(t, err)
+	assert.Equal(t, `{"max_output_tokens":270}`, updated.Data)
+
+	got, err = s.GetModelParameters(ctx)
+	require.NoError(t, err)
+	assert.Len(t, got, 3)
 }

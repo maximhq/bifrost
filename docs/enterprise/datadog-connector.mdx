@@ -44,13 +44,16 @@ The agent handles batching, retries, and provides lower latency. This is the rec
 
 ### Agentless Mode
 
-In agentless mode, the plugin sends data directly to Datadog's intake APIs:
+In agentless mode, the plugin sends data directly to Datadog's intake APIs (`{site}` is your configured Datadog site, e.g. `datadoghq.com`):
 
-- **APM Traces** → `https://trace.agent.{site}`
-- **LLM Observability** → Direct API submission
-- **Metrics** → Datadog Metrics API
+- **LLM Observability** → `https://api.{site}/api/intake/llm-obs/v1/trace/spans`
+- **Metrics** → `https://api.{site}` Metrics API (series to `/api/v2/series`, distributions to `/api/v1/distribution_points`)
 
 This mode requires an API key but simplifies deployment by eliminating the need for a local agent. Ideal for serverless environments, Kubernetes pods, or quick testing.
+
+<Note>
+Datadog officially supports agentless submission for [LLM Observability](https://docs.datadoghq.com/llm_observability/instrumentation/api/) and [metrics](https://docs.datadoghq.com/api/latest/metrics/), but **not** for general APM tracing - the [dd-trace-go setup](https://docs.datadoghq.com/tracing/trace_collection/dd_libraries/go/) assumes a running Agent (or the serverless extension). The plugin points the tracer at the public trace intake so APM spans are still emitted, but if you need fully-supported APM, run the Datadog Agent (agent mode). LLM Observability and metrics are unaffected.
+</Note>
 
 ---
 
@@ -74,6 +77,7 @@ This mode requires an API key but simplifies deployment by eliminating the need 
 | `enable_metrics` | `bool` | No | `true` | Enable metrics emission |
 | `enable_traces` | `bool` | No | `true` | Enable APM traces |
 | `enable_llm_obs` | `bool` | No | `true` | Enable LLM Observability |
+| `group_traces_by_session` | `bool` | No | `false` | Group requests sharing the same `x-bf-session-id` into one APM trace (agent mode only). See [Grouping APM Traces by Session](#grouping-apm-traces-by-session) |
 | `agentless` | `bool` | No | `false` | Use agentless mode (direct API) |
 | `api_key` | `string` | Agentless only | - | Datadog API key (supports `env.VAR_NAME`) |
 | `site` | `string` | No | `datadoghq.com` | Datadog site/region |
@@ -132,7 +136,7 @@ env:
 
 Configure the Datadog plugin through the Bifrost UI:
 
-1. Navigate to **Settings** → **Plugins**
+1. Navigate to **Plugins**
 2. Enable the **Datadog** plugin
 3. Configure the required fields based on your deployment mode
 
@@ -292,6 +296,7 @@ The plugin supports all Datadog regional sites. Set the `site` field to match yo
 | AP1 | Asia Pacific (Japan) | `ap1.datadoghq.com` |
 | AP2 | Asia Pacific (Australia) | `ap2.datadoghq.com` |
 | US1-FED | US Government | `ddog-gov.com` |
+| US2-FED | US Government | `us2.ddog-gov.com` |
 
 <Note>
 Ensure your API key corresponds to the selected site. API keys from one region will not work with another.
@@ -336,6 +341,30 @@ curl -X POST https://your-bifrost-gateway/v1/chat/completions \
 
 Sessions appear in Datadog LLM Observability, allowing you to trace entire conversation flows.
 
+### Grouping APM Traces by Session
+
+By default, every request is its own APM trace, so a multi-turn conversation appears as many separate traces in the APM trace view. (Cross-trace grouping normally lives in [LLM Observability sessions](#session-tracking), a separate product from APM.) Enable `group_traces_by_session` to instead group every request sharing the same `x-bf-session-id` into a **single APM trace**, where each request renders as a top-level sibling span:
+
+```json
+{
+  "group_traces_by_session": true
+}
+```
+
+```bash
+# Both requests below land in the same APM trace
+curl ... -H "x-bf-session-id: user-123-session-456" -d '{...}'
+curl ... -H "x-bf-session-id: user-123-session-456" -d '{...}'
+```
+
+Bifrost derives a stable Datadog trace ID from the `x-bf-session-id` value, so all requests carrying that header resolve to the same trace.
+
+<Note>
+  - **Agent mode only.** APM spans are emitted only in agent mode. In agentless mode the plugin emits LLM Observability spans only, which already group via [session tracking](#session-tracking).
+  - **W3C traceparent takes precedence.** If a request carries an inbound [`traceparent`](#w3c-distributed-tracing) header, it stays on that distributed trace and is not regrouped by session.
+  - **APM traces are not built for long-lived sessions.** Datadog has practical limits on spans-per-trace and trace-assembly windows; very long sessions may render with large time gaps or be truncated. For long conversations, prefer LLM Observability sessions.
+</Note>
+
 ### W3C Distributed Tracing
 
 The plugin supports [W3C Trace Context](https://www.w3.org/TR/trace-context/) for distributed tracing across services. When your upstream service sends a `traceparent` header, Bifrost automatically links its spans as children of the parent trace.
@@ -378,10 +407,10 @@ The plugin emits the following metrics to Datadog:
 
 | Metric | Type | Description | Tags |
 |--------|------|-------------|------|
-| `bifrost.requests.total` | Counter | Total LLM requests | provider, model, request_type |
-| `bifrost.success.total` | Counter | Successful requests | provider, model, request_type |
-| `bifrost.errors.total` | Counter | Failed requests | provider, model, request_type, reason |
-| `bifrost.latency.seconds` | Histogram | Request latency distribution | provider, model, request_type |
+| `bifrost.requests.total` | Counter | Total LLM requests | provider, model, method |
+| `bifrost.success.total` | Counter | Successful requests | provider, model, method |
+| `bifrost.errors.total` | Counter | Failed requests | provider, model, method, reason |
+| `bifrost.latency.seconds` | Histogram | Request latency distribution | provider, model, method |
 | `bifrost.tokens.input` | Counter | Input/prompt tokens consumed | provider, model |
 | `bifrost.tokens.output` | Counter | Output/completion tokens generated | provider, model |
 | `bifrost.tokens.total` | Counter | Total tokens (input + output) | provider, model |
@@ -411,9 +440,9 @@ The cost metric was renamed from `bifrost.cost.usd` to `bifrost.request.cost.usd
 All metrics include your configured `custom_tags` plus automatic tags for:
 - `provider` - LLM provider (openai, anthropic, etc.)
 - `model` - Model name
-- `request_type` - Type of request (chat, embedding, etc.)
-- `env` - Environment from configuration
+- `method` - Type of request (chat, embedding, etc.)
 - `bifrost_node` - Per-instance identity (`BIFROST_NODE_ID` if set, otherwise `hostname-pid`)
+- plus Bifrost-context tags when available (virtual key, selected key, team, customer, fallback index)
 
 ---
 
@@ -424,7 +453,7 @@ Each APM trace includes comprehensive LLM operation metadata:
 ### Span Attributes
 
 - **Span Name** - Based on request type (`genai.chat`, `genai.embedding`, etc.)
-- **Service Info** - `service.name`, `service.version`, `env`
+- **Service Info** - `service.name`, `service.version`, `env` (Datadog's [unified service tagging](https://docs.datadoghq.com/getting_started/tagging/unified_service_tagging/): `service`, `version`, `env`)
 - **Provider & Model** - `gen_ai.provider.name`, `gen_ai.request.model`
 
 ### Request Parameters
@@ -441,6 +470,8 @@ Each APM trace includes comprehensive LLM operation metadata:
 - Response content with role attribution
 - Tool calls and results
 - Reasoning and refusal content (when present)
+
+When Enterprise guardrail redaction is enabled, Bifrost applies trace redaction replacements before exporting completed traces to Datadog. Exported span content receives the redacted or placeholderized value, but reversible reveal mappings are not exported. For the full mode matrix, see [Guardrail Redaction](/enterprise/guardrails/redaction).
 
 ### Performance Metrics
 

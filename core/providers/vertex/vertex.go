@@ -64,6 +64,12 @@ var vertexShortModelRe = regexp.MustCompile(`"(models/[^/"]+)"`)
 // is empty and we fall back to google.FindDefaultCredentials.
 const defaultCredentialsCacheKey = "__default_credentials__"
 
+// geminiImageURLSchemes is the image URL scheme allowlist Vertex applies when it
+// routes a request through the Gemini converter. Vertex natively accepts gs://
+// FileData URIs (in addition to http(s)), so we extend the Gemini-default list
+// with "gs".
+var geminiImageURLSchemes = []string{"http", "https", "gs"}
+
 // getClientKey generates a unique key for caching token sources.
 // It uses a hash of the auth credentials for security.
 func getClientKey(authCredentials string) string {
@@ -263,7 +269,7 @@ func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 			providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 			req.Header.Set("Authorization", "Bearer "+token.AccessToken)
 
-			_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+			latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
 			if bifrostErr != nil {
 				wait()
 				respBody := append([]byte(nil), resp.Body()...)
@@ -301,9 +307,9 @@ func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 
 				var errorResp VertexError
 				if err := sonic.Unmarshal(respBody, &errorResp); err != nil {
-					return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err), nil, respBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
+					return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err), nil, respBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 				}
-				return nil, providerUtils.EnrichError(ctx, providerUtils.NewProviderAPIError(errorResp.Error.Message, nil, statusCode, nil, nil), nil, respBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
+				return nil, providerUtils.EnrichError(ctx, providerUtils.NewProviderAPIError(errorResp.Error.Message, nil, statusCode, nil, nil), nil, respBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 			}
 
 			// Parse Vertex's publisher models response
@@ -385,14 +391,20 @@ func (provider *VertexProvider) TextCompletionStream(ctx *schemas.BifrostContext
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.TextCompletionStreamRequest, provider.GetProviderKey())
 }
 
-// inlineDocumentURLs replaces document content blocks carrying a remote URL
-// source with inline base64 bytes by fetching each URL. Required because
-// Anthropic-on-Vertex does not accept URL-source documents (unlike direct
-// Anthropic). Mutates the request in place; safe to call when no document
-// blocks are present. The ctx is propagated to each fetch so request
-// cancellation/deadlines abort in-flight downloads.
-func inlineDocumentURLs(ctx context.Context, request *schemas.BifrostChatRequest) error {
+// inlineRemoteURLSources replaces document AND image content blocks carrying a
+// remote URL source with inline base64 bytes by fetching each URL. Required
+// because Anthropic-on-Vertex does not accept URL-source documents or images
+// (unlike direct Anthropic, which accepts source.type "url"). Mutates the
+// request in place; safe to call when no such blocks are present. The ctx is
+// propagated to each fetch so request cancellation/deadlines abort in-flight
+// downloads.
+func inlineRemoteURLSources(ctx context.Context, request *schemas.BifrostChatRequest) error {
 	if request == nil || request.Input == nil {
+		return nil
+	}
+	// When the caller is bypassing the converter via a pre-built raw body,
+	// the request struct isn't what gets sent — skip the fetch.
+	if useRawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && useRawBody {
 		return nil
 	}
 	for mi := range request.Input {
@@ -402,18 +414,97 @@ func inlineDocumentURLs(ctx context.Context, request *schemas.BifrostChatRequest
 		}
 		for bi := range msg.Content.ContentBlocks {
 			block := &msg.Content.ContentBlocks[bi]
-			if block.File == nil || block.File.FileURL == nil || *block.File.FileURL == "" {
-				continue
+
+			// Inline url-source documents.
+			if block.File != nil && block.File.FileURL != nil && *block.File.FileURL != "" {
+				mediaType, encoded, err := providerUtils.FetchAndEncodeURL(ctx, *block.File.FileURL)
+				if err != nil {
+					return err
+				}
+				block.File.FileData = &encoded
+				if mediaType != "" && block.File.FileType == nil {
+					block.File.FileType = &mediaType
+				}
+				block.File.FileURL = nil
 			}
-			mediaType, encoded, err := providerUtils.FetchAndEncodeURL(ctx, *block.File.FileURL)
-			if err != nil {
-				return err
+
+			// Inline url-source images to a base64 data URI; Anthropic-on-Vertex
+			// accepts base64 image sources only. Skip data: URIs (already inline).
+			if img := block.ImageURLStruct; img != nil && img.URL != "" && !strings.HasPrefix(img.URL, "data:") {
+				mediaType, encoded, err := providerUtils.FetchAndEncodeURL(ctx, img.URL)
+				if err != nil {
+					return err
+				}
+				if mediaType != "" {
+					img.URL = "data:" + mediaType + ";base64," + encoded
+				} else {
+					// Content-Type header absent; sniff the media type from the
+					// fetched bytes so we never emit a malformed "data:;base64,..."
+					// URI, which Anthropic-on-Vertex rejects.
+					sanitized, sErr := schemas.SanitizeImageURL(encoded)
+					if sErr != nil {
+						return sErr
+					}
+					img.URL = sanitized
+				}
 			}
-			block.File.FileData = &encoded
-			if mediaType != "" && block.File.FileType == nil {
-				block.File.FileType = &mediaType
+		}
+	}
+	return nil
+}
+
+// inlineDocumentURLsResponses is the Responses-API analogue of inlineDocumentURLs.
+// File blocks live on ResponsesMessageContentBlock.ResponsesInputMessageContentBlockFile
+// rather than the chat ContentBlock.File, so this walks the responses-shape input.
+func inlineDocumentURLsResponses(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest) error {
+	if request == nil || request.Input == nil {
+		return nil
+	}
+	if useRawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && useRawBody {
+		return nil
+	}
+	for mi := range request.Input {
+		msg := &request.Input[mi]
+		if msg.Content == nil || msg.Content.ContentBlocks == nil {
+			continue
+		}
+		for bi := range msg.Content.ContentBlocks {
+			block := &msg.Content.ContentBlocks[bi]
+
+			// Inline url-source files.
+			if f := block.ResponsesInputMessageContentBlockFile; f != nil && f.FileURL != nil && *f.FileURL != "" {
+				mediaType, encoded, err := providerUtils.FetchAndEncodeURL(ctx, *f.FileURL)
+				if err != nil {
+					return err
+				}
+				f.FileData = &encoded
+				if mediaType != "" && f.FileType == nil {
+					f.FileType = &mediaType
+				}
+				f.FileURL = nil
 			}
-			block.File.FileURL = nil
+
+			// Inline url-source images to a base64 data URI; Anthropic-on-Vertex
+			// accepts base64 image sources only. Skip data: URIs (already inline).
+			if img := block.ResponsesInputMessageContentBlockImage; img != nil && img.ImageURL != nil && *img.ImageURL != "" && !strings.HasPrefix(*img.ImageURL, "data:") {
+				mediaType, encoded, err := providerUtils.FetchAndEncodeURL(ctx, *img.ImageURL)
+				if err != nil {
+					return err
+				}
+				if mediaType != "" {
+					dataURI := "data:" + mediaType + ";base64," + encoded
+					img.ImageURL = &dataURI
+				} else {
+					// Content-Type header absent; sniff the media type from the
+					// fetched bytes so we never emit a malformed "data:;base64,..."
+					// URI, which Anthropic-on-Vertex rejects.
+					sanitized, sErr := schemas.SanitizeImageURL(encoded)
+					if sErr != nil {
+						return sErr
+					}
+					img.ImageURL = &sanitized
+				}
+			}
 		}
 	}
 	return nil
@@ -423,94 +514,70 @@ func inlineDocumentURLs(ctx context.Context, request *schemas.BifrostChatRequest
 // It supports both text and image content in messages.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
 func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
-	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
-		ctx,
-		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			// Format messages for Vertex API, preserving key order for prompt caching
-			var rawBody []byte
-			var extraParams map[string]interface{}
-			var err error
+	var jsonBody []byte
+	var bifrostErr *schemas.BifrostError
+	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
+		// Anthropic-on-Vertex doesn't accept URL-source document or image blocks.
+		// Inline any URL documents/images to base64 before the converter runs.
+		if err := inlineRemoteURLSources(ctx, request); err != nil {
+			return nil, providerUtils.NewBifrostOperationError("failed to inline remote URL sources for vertex/claude", err)
+		}
+		jsonBody, bifrostErr = anthropic.BuildAnthropicChatRequestBody(ctx, request, anthropic.AnthropicRequestBuildConfig{
+			Provider:                  schemas.Vertex,
+			Model:                     request.Model,
+			BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
+			ProviderExtraHeaders:      provider.networkConfig.ExtraHeaders,
+			ShouldSendBackRawRequest:  provider.sendBackRawRequest,
+			ShouldSendBackRawResponse: provider.sendBackRawResponse,
+		})
+	} else {
+		jsonBody, bifrostErr = providerUtils.CheckContextAndGetRequestBody(
+			ctx,
+			request,
+			func() (providerUtils.RequestBodyWithExtraParams, error) {
+				// Format messages for Vertex API, preserving key order for prompt caching
+				var rawBody []byte
+				var extraParams map[string]interface{}
+				var err error
 
-			if schemas.IsAnthropicModelFamily(ctx, request.Model) {
-				// Anthropic-on-Vertex doesn't accept URL-source document blocks.
-				// Inline any URL documents to base64 before the converter runs.
-				if err := inlineDocumentURLs(ctx, request); err != nil {
-					return nil, fmt.Errorf("failed to inline document URLs for vertex/claude: %w", err)
-				}
-				// Use centralized Anthropic converter
-				reqBody, convErr := anthropic.ToAnthropicChatRequest(ctx, request)
-				if convErr != nil {
-					return nil, convErr
-				}
-				if reqBody == nil {
-					return nil, fmt.Errorf("chat completion input is not provided")
-				}
-				extraParams = reqBody.GetExtraParams()
-				// Add provider-aware beta headers for Vertex
-				anthropic.AddMissingBetaHeadersToContext(ctx, reqBody, schemas.Vertex)
-				// Marshal to JSON bytes, preserving struct field order
-				rawBody, err = providerUtils.MarshalSorted(reqBody)
-				if err != nil {
-					return nil, fmt.Errorf("failed to marshal request body: %w", err)
-				}
-				// Add anthropic_version if not present (using sjson to preserve order)
-				if !providerUtils.JSONFieldExists(rawBody, "anthropic_version") {
-					rawBody, err = providerUtils.SetJSONField(rawBody, "anthropic_version", DefaultVertexAnthropicVersion)
+				if schemas.IsGeminiModelFamily(ctx, request.Model) || schemas.IsAllDigitsASCII(request.Model) || schemas.IsGemmaModelFamily(ctx, request.Model) {
+					reqBody, err := gemini.ToGeminiChatCompletionRequestWithImageURLSchemes(ctx, request, geminiImageURLSchemes...)
 					if err != nil {
-						return nil, fmt.Errorf("failed to set anthropic_version: %w", err)
+						return nil, err
+					}
+					if reqBody == nil {
+						return nil, fmt.Errorf("chat completion input is not provided")
+					}
+					extraParams = reqBody.GetExtraParams()
+					// Strip unsupported fields for Vertex Gemini
+					stripVertexGeminiUnsupportedFields(reqBody)
+					// Marshal to JSON bytes
+					rawBody, err = providerUtils.MarshalSorted(reqBody)
+					if err != nil {
+						return nil, fmt.Errorf("failed to marshal request body: %w", err)
+					}
+				} else {
+					// Use centralized OpenAI converter for non-Claude models
+					reqBody := openai.ToOpenAIChatRequest(ctx, request)
+					if reqBody == nil {
+						return nil, fmt.Errorf("chat completion input is not provided")
+					}
+					extraParams = reqBody.GetExtraParams()
+					// Marshal to JSON bytes
+					rawBody, err = providerUtils.MarshalSorted(reqBody)
+					if err != nil {
+						return nil, fmt.Errorf("failed to marshal request body: %w", err)
 					}
 				}
-				// Inject beta headers into body as anthropic_beta (Vertex uses body field, not HTTP header)
-				if betaHeaders := anthropic.FilterBetaHeadersForProvider(anthropic.MergeBetaHeaders(ctx, provider.networkConfig.ExtraHeaders), schemas.Vertex, provider.networkConfig.BetaHeaderOverrides); len(betaHeaders) > 0 {
-					rawBody, err = providerUtils.SetJSONField(rawBody, "anthropic_beta", betaHeaders)
-					if err != nil {
-						return nil, fmt.Errorf("failed to set anthropic_beta: %w", err)
-					}
-				}
-				// Remove model field (it's in URL for Vertex)
-				rawBody, err = providerUtils.DeleteJSONField(rawBody, "model")
+				// Remove region field if present
+				rawBody, err = providerUtils.DeleteJSONField(rawBody, "region")
 				if err != nil {
-					return nil, fmt.Errorf("failed to delete model field: %w", err)
+					return nil, fmt.Errorf("failed to delete region field: %w", err)
 				}
-			} else if schemas.IsGeminiModelFamily(ctx, request.Model) || schemas.IsAllDigitsASCII(request.Model) || schemas.IsGemmaModelFamily(ctx, request.Model) {
-				reqBody, err := gemini.ToGeminiChatCompletionRequest(request)
-				if err != nil {
-					return nil, err
-				}
-				if reqBody == nil {
-					return nil, fmt.Errorf("chat completion input is not provided")
-				}
-				extraParams = reqBody.GetExtraParams()
-				// Strip unsupported fields for Vertex Gemini
-				stripVertexGeminiUnsupportedFields(reqBody)
-				// Marshal to JSON bytes
-				rawBody, err = providerUtils.MarshalSorted(reqBody)
-				if err != nil {
-					return nil, fmt.Errorf("failed to marshal request body: %w", err)
-				}
-			} else {
-				// Use centralized OpenAI converter for non-Claude models
-				reqBody := openai.ToOpenAIChatRequest(ctx, request)
-				if reqBody == nil {
-					return nil, fmt.Errorf("chat completion input is not provided")
-				}
-				extraParams = reqBody.GetExtraParams()
-				// Marshal to JSON bytes
-				rawBody, err = providerUtils.MarshalSorted(reqBody)
-				if err != nil {
-					return nil, fmt.Errorf("failed to marshal request body: %w", err)
-				}
-			}
-
-			// Remove region field if present
-			rawBody, err = providerUtils.DeleteJSONField(rawBody, "region")
-			if err != nil {
-				return nil, fmt.Errorf("failed to delete region field: %w", err)
-			}
-			return &VertexRawRequestBody{RawBody: rawBody, ExtraParams: extraParams}, nil
-		},
-	)
+				return &VertexRawRequestBody{RawBody: rawBody, ExtraParams: extraParams}, nil
+			},
+		)
+	}
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -533,7 +600,8 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 
 	// Remap unsupported tool versions for Vertex (handles raw passthrough bodies)
 	if schemas.IsAnthropicModelFamily(ctx, request.Model) && jsonBody != nil {
-		remappedBody, remapErr := anthropic.RemapRawToolVersionsForProvider(jsonBody, schemas.Vertex, request.Model)
+		capModel := schemas.ResolveCanonicalModel(ctx, request.Model)
+		remappedBody, remapErr := anthropic.RemapRawToolVersionsForProvider(jsonBody, schemas.Vertex, capModel)
 		if remapErr != nil {
 			return nil, providerUtils.NewBifrostOperationError(remapErr.Error(), nil)
 		}
@@ -541,7 +609,7 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 
 		// Strip unsupported body fields for Vertex — covers both structured and raw passthrough paths.
 		var stripErr error
-		jsonBody, stripErr = anthropic.StripUnsupportedFieldsFromRawBody(jsonBody, schemas.Vertex, request.Model)
+		jsonBody, stripErr = anthropic.StripUnsupportedFieldsFromRawBody(jsonBody, schemas.Vertex, capModel)
 		if stripErr != nil {
 			return nil, providerUtils.NewBifrostOperationError(stripErr.Error(), nil)
 		}
@@ -628,7 +696,7 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
 	defer wait()
 	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 	if usedLargePayloadBody {
 		providerUtils.DrainLargePayloadRemainder(ctx)
@@ -641,12 +709,12 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
 			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
 		}
-		return nil, providerUtils.EnrichError(ctx, parseVertexError(resp), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, parseVertexError(resp), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	responseBody, isLargeResp, decodeErr := providerUtils.FinalizeResponseWithLargeDetection(ctx, resp, provider.logger)
 	if decodeErr != nil {
-		return nil, providerUtils.EnrichError(ctx, decodeErr, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, decodeErr, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 	if isLargeResp {
 		respOwned = false
@@ -666,7 +734,7 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 
 		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, anthropicResponse, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 		if bifrostErr != nil {
-			return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
+			return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		}
 
 		// Create final response
@@ -693,7 +761,7 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 
 		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, &geminiResponse, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 		if bifrostErr != nil {
-			return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
+			return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		}
 
 		response := geminiResponse.ToBifrostChatResponse()
@@ -715,7 +783,7 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 		// Use enhanced response handler with pre-allocated response
 		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, response, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 		if bifrostErr != nil {
-			return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
+			return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		}
 
 		response.ExtraFields.Latency = latency.Milliseconds()
@@ -751,77 +819,36 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 	}
 
 	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
-		// Use Anthropic-style streaming for Claude models
-		jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
-			ctx,
-			request,
-			func() (providerUtils.RequestBodyWithExtraParams, error) {
-				var extraParams map[string]interface{}
-				// Anthropic-on-Vertex doesn't accept URL-source document blocks.
-				// Inline any URL documents to base64 before the converter runs.
-				if err := inlineDocumentURLs(ctx, request); err != nil {
-					return nil, fmt.Errorf("failed to inline document URLs for vertex/claude: %w", err)
-				}
-				reqBody, convErr := anthropic.ToAnthropicChatRequest(ctx, request)
-				if convErr != nil {
-					return nil, convErr
-				}
-				if reqBody == nil {
-					return nil, fmt.Errorf("chat completion input is not provided")
-				}
-				extraParams = reqBody.GetExtraParams()
-				reqBody.Stream = new(true)
-				// Add provider-aware beta headers for Vertex
-				anthropic.AddMissingBetaHeadersToContext(ctx, reqBody, schemas.Vertex)
-
-				// Marshal to JSON bytes, preserving struct field order for prompt caching
-				rawBody, err := providerUtils.MarshalSorted(reqBody)
-				if err != nil {
-					return nil, fmt.Errorf("failed to marshal request body: %w", err)
-				}
-
-				// Add anthropic_version if not present (using sjson to preserve order)
-				if !providerUtils.JSONFieldExists(rawBody, "anthropic_version") {
-					rawBody, err = providerUtils.SetJSONField(rawBody, "anthropic_version", DefaultVertexAnthropicVersion)
-					if err != nil {
-						return nil, fmt.Errorf("failed to set anthropic_version: %w", err)
-					}
-				}
-				// Inject beta headers into body as anthropic_beta (Vertex uses body field, not HTTP header)
-				if betaHeaders := anthropic.FilterBetaHeadersForProvider(anthropic.MergeBetaHeaders(ctx, provider.networkConfig.ExtraHeaders), schemas.Vertex, provider.networkConfig.BetaHeaderOverrides); len(betaHeaders) > 0 {
-					rawBody, err = providerUtils.SetJSONField(rawBody, "anthropic_beta", betaHeaders)
-					if err != nil {
-						return nil, fmt.Errorf("failed to set anthropic_beta: %w", err)
-					}
-				}
-
-				// Remove model and region fields (using sjson to preserve order)
-				rawBody, err = providerUtils.DeleteJSONField(rawBody, "model")
-				if err != nil {
-					return nil, fmt.Errorf("failed to delete model field: %w", err)
-				}
-				rawBody, err = providerUtils.DeleteJSONField(rawBody, "region")
-				if err != nil {
-					return nil, fmt.Errorf("failed to delete region field: %w", err)
-				}
-				return &VertexRawRequestBody{RawBody: rawBody, ExtraParams: extraParams}, nil
-			},
-		)
+		// Use Anthropic-style streaming for Claude models.
+		// Anthropic-on-Vertex doesn't accept URL-source document or image blocks; inline first.
+		if err := inlineRemoteURLSources(ctx, request); err != nil {
+			return nil, providerUtils.NewBifrostOperationError("failed to inline remote URL sources for vertex/claude", err)
+		}
+		jsonData, bifrostErr := anthropic.BuildAnthropicChatRequestBody(ctx, request, anthropic.AnthropicRequestBuildConfig{
+			Provider:                  schemas.Vertex,
+			Model:                     request.Model,
+			IsStreaming:               true,
+			BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
+			ProviderExtraHeaders:      provider.networkConfig.ExtraHeaders,
+			ShouldSendBackRawRequest:  provider.sendBackRawRequest,
+			ShouldSendBackRawResponse: provider.sendBackRawResponse,
+		})
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
 
 		// Remap unsupported tool versions for Vertex streaming (handles raw passthrough bodies)
 		if jsonData != nil {
+			capModel := schemas.ResolveCanonicalModel(ctx, request.Model)
 			var remapErr error
-			jsonData, remapErr = anthropic.RemapRawToolVersionsForProvider(jsonData, schemas.Vertex, request.Model)
+			jsonData, remapErr = anthropic.RemapRawToolVersionsForProvider(jsonData, schemas.Vertex, capModel)
 			if remapErr != nil {
 				return nil, providerUtils.NewBifrostOperationError(remapErr.Error(), nil)
 			}
 
 			// Strip unsupported body fields for Vertex — covers both structured and raw passthrough paths.
 			var stripErr error
-			jsonData, stripErr = anthropic.StripUnsupportedFieldsFromRawBody(jsonData, schemas.Vertex, request.Model)
+			jsonData, stripErr = anthropic.StripUnsupportedFieldsFromRawBody(jsonData, schemas.Vertex, capModel)
 			if stripErr != nil {
 				return nil, providerUtils.NewBifrostOperationError(stripErr.Error(), nil)
 			}
@@ -862,6 +889,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 			providerName,
 			postHookRunner,
 			nil,
+			nil,
 			provider.logger,
 			postHookSpanFinalizer,
 		)
@@ -871,7 +899,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 			ctx,
 			request,
 			func() (providerUtils.RequestBodyWithExtraParams, error) {
-				reqBody, err := gemini.ToGeminiChatCompletionRequest(request)
+				reqBody, err := gemini.ToGeminiChatCompletionRequestWithImageURLSchemes(ctx, request, geminiImageURLSchemes...)
 				if err != nil {
 					return nil, err
 				}
@@ -946,6 +974,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 			jsonData,
 			headers,
 			provider.networkConfig.ExtraHeaders,
+			provider.networkConfig.StreamIdleTimeoutInSeconds,
 			providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 			providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 			provider.GetProviderKey(),
@@ -1007,6 +1036,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 			nil,
 			nil,
 			nil,
+			nil,
 			provider.logger,
 			postHookSpanFinalizer,
 		)
@@ -1016,7 +1046,20 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 // Responses performs a responses request to the Vertex API.
 func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
-		jsonBody, bifrostErr := getRequestBodyForAnthropicResponses(ctx, request, request.Model, false, false, provider.networkConfig.BetaHeaderOverrides, provider.networkConfig.ExtraHeaders, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		// Anthropic-on-Vertex doesn't accept URL-source document blocks.
+		// Inline any URL documents to base64 before the converter runs.
+		if err := inlineDocumentURLsResponses(ctx, request); err != nil {
+			return nil, providerUtils.NewBifrostOperationError("failed to inline document URLs for vertex/claude", err)
+		}
+		jsonBody, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, request, anthropic.AnthropicRequestBuildConfig{
+			Provider:                  schemas.Vertex,
+			Model:                     request.Model,
+			BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
+			ProviderExtraHeaders:      provider.networkConfig.ExtraHeaders,
+			ValidateTools:             true,
+			ShouldSendBackRawRequest:  provider.sendBackRawRequest,
+			ShouldSendBackRawResponse: provider.sendBackRawResponse,
+		})
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
@@ -1076,7 +1119,7 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
 		defer wait()
 		if bifrostErr != nil {
-			return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+			return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		}
 		if usedLargePayloadBody {
 			providerUtils.DrainLargePayloadRemainder(ctx)
@@ -1089,12 +1132,12 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 			if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
 				removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
 			}
-			return nil, providerUtils.EnrichError(ctx, parseVertexError(resp), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+			return nil, providerUtils.EnrichError(ctx, parseVertexError(resp), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		}
 
 		responseBody, isLargeResp, decodeErr := providerUtils.FinalizeResponseWithLargeDetection(ctx, resp, provider.logger)
 		if decodeErr != nil {
-			return nil, providerUtils.EnrichError(ctx, decodeErr, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+			return nil, providerUtils.EnrichError(ctx, decodeErr, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		}
 		if isLargeResp {
 			respOwned = false
@@ -1112,7 +1155,7 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 
 		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, anthropicResponse, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 		if bifrostErr != nil {
-			return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
+			return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		}
 
 		// Create final response
@@ -1139,7 +1182,7 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 			ctx,
 			request,
 			func() (providerUtils.RequestBodyWithExtraParams, error) {
-				reqBody, err := gemini.ToGeminiResponsesRequest(request)
+				reqBody, err := gemini.ToGeminiResponsesRequestWithImageURLSchemes(ctx, request, geminiImageURLSchemes...)
 				if err != nil {
 					return nil, err
 				}
@@ -1232,7 +1275,7 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
 		defer wait()
 		if bifrostErr != nil {
-			return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+			return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		}
 		if usedLargePayloadBody {
 			providerUtils.DrainLargePayloadRemainder(ctx)
@@ -1245,12 +1288,12 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 			if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
 				removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
 			}
-			return nil, providerUtils.EnrichError(ctx, parseVertexError(resp), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+			return nil, providerUtils.EnrichError(ctx, parseVertexError(resp), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		}
 
 		responseBody, isLargeResp, decodeErr := providerUtils.FinalizeResponseWithLargeDetection(ctx, resp, provider.logger)
 		if decodeErr != nil {
-			return nil, providerUtils.EnrichError(ctx, decodeErr, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+			return nil, providerUtils.EnrichError(ctx, decodeErr, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		}
 		if isLargeResp {
 			respOwned = false
@@ -1266,7 +1309,7 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 
 		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, geminiResponse, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 		if bifrostErr != nil {
-			return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
+			return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		}
 
 		response := geminiResponse.ToResponsesBifrostResponsesResponse()
@@ -1307,7 +1350,21 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 			return nil, providerUtils.NewConfigurationError("project ID is not set")
 		}
 
-		jsonBody, bifrostErr := getRequestBodyForAnthropicResponses(ctx, request, request.Model, true, false, provider.networkConfig.BetaHeaderOverrides, provider.networkConfig.ExtraHeaders, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		// Anthropic-on-Vertex doesn't accept URL-source document blocks.
+		// Inline any URL documents to base64 before the converter runs.
+		if err := inlineDocumentURLsResponses(ctx, request); err != nil {
+			return nil, providerUtils.NewBifrostOperationError("failed to inline document URLs for vertex/claude", err)
+		}
+		jsonBody, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, request, anthropic.AnthropicRequestBuildConfig{
+			Provider:                  schemas.Vertex,
+			Model:                     request.Model,
+			IsStreaming:               true,
+			BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
+			ProviderExtraHeaders:      provider.networkConfig.ExtraHeaders,
+			ValidateTools:             true,
+			ShouldSendBackRawRequest:  provider.sendBackRawRequest,
+			ShouldSendBackRawResponse: provider.sendBackRawResponse,
+		})
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
@@ -1347,6 +1404,7 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 			provider.GetProviderKey(),
 			postHookRunner,
 			nil,
+			nil,
 			provider.logger,
 			postHookSpanFinalizer,
 		)
@@ -1366,7 +1424,7 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 			ctx,
 			request,
 			func() (providerUtils.RequestBodyWithExtraParams, error) {
-				reqBody, err := gemini.ToGeminiResponsesRequest(request)
+				reqBody, err := gemini.ToGeminiResponsesRequestWithImageURLSchemes(ctx, request, geminiImageURLSchemes...)
 				if err != nil {
 					return nil, err
 				}
@@ -1444,6 +1502,7 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 			jsonData,
 			headers,
 			provider.networkConfig.ExtraHeaders,
+			provider.networkConfig.StreamIdleTimeoutInSeconds,
 			providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 			providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 			provider.GetProviderKey(),
@@ -1548,7 +1607,7 @@ func (provider *VertexProvider) Embedding(ctx *schemas.BifrostContext, key schem
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
 	defer wait()
 	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 	if usedLargePayloadBody {
 		providerUtils.DrainLargePayloadRemainder(ctx)
@@ -1570,7 +1629,7 @@ func (provider *VertexProvider) Embedding(ctx *schemas.BifrostContext, key schem
 			// Try to parse Vertex's error format
 			var vertexError map[string]interface{}
 			if err := sonic.Unmarshal(errBody, &vertexError); err != nil {
-				return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err), jsonBody, errBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
+				return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err), jsonBody, errBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 			}
 
 			if errorObj, exists := vertexError["error"]; exists {
@@ -1584,7 +1643,7 @@ func (provider *VertexProvider) Embedding(ctx *schemas.BifrostContext, key schem
 			}
 		}
 
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewProviderAPIError(errorMessage, nil, resp.StatusCode(), nil, nil), jsonBody, errBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewProviderAPIError(errorMessage, nil, resp.StatusCode(), nil, nil), jsonBody, errBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	responseBody, isLargeResp, decodeErr := providerUtils.FinalizeResponseWithLargeDetection(ctx, resp, provider.logger)
@@ -1693,7 +1752,7 @@ func (provider *VertexProvider) Rerank(ctx *schemas.BifrostContext, key schemas.
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
 	defer wait()
 	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 	if usedLargePayloadBody {
 		providerUtils.DrainLargePayloadRemainder(ctx)
@@ -1721,12 +1780,12 @@ func (provider *VertexProvider) Rerank(ctx *schemas.BifrostContext, key schemas.
 			}
 		}
 
-		return nil, providerUtils.EnrichError(ctx, parsedError, jsonBody, resp.Body(), provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, parsedError, jsonBody, resp.Body(), provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	responseBody, isLargeResp, decodeErr := providerUtils.FinalizeResponseWithLargeDetection(ctx, resp, provider.logger)
 	if decodeErr != nil {
-		return nil, providerUtils.EnrichError(ctx, decodeErr, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, decodeErr, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 	if isLargeResp {
 		respOwned = false
@@ -1742,13 +1801,13 @@ func (provider *VertexProvider) Rerank(ctx *schemas.BifrostContext, key schemas.
 	vertexResponse := &VertexRankResponse{}
 	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, vertexResponse, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	returnDocuments := request.Params != nil && request.Params.ReturnDocuments != nil && *request.Params.ReturnDocuments
 	bifrostResponse, err := vertexResponse.ToBifrostRerankResponse(request.Documents, returnDocuments)
 	if err != nil {
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("error converting rerank response", err), jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("error converting rerank response", err), jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
@@ -1918,7 +1977,7 @@ func (provider *VertexProvider) ImageGeneration(ctx *schemas.BifrostContext, key
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
 	defer wait()
 	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 	if usedLargePayloadBody {
 		providerUtils.DrainLargePayloadRemainder(ctx)
@@ -1931,12 +1990,12 @@ func (provider *VertexProvider) ImageGeneration(ctx *schemas.BifrostContext, key
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
 			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
 		}
-		return nil, providerUtils.EnrichError(ctx, parseVertexError(resp), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, parseVertexError(resp), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	responseBody, isLargeResp, decodeErr := providerUtils.FinalizeResponseWithLargeDetection(ctx, resp, provider.logger)
 	if decodeErr != nil {
-		return nil, providerUtils.EnrichError(ctx, decodeErr, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, decodeErr, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 	if isLargeResp {
 		respOwned = false
@@ -1953,12 +2012,12 @@ func (provider *VertexProvider) ImageGeneration(ctx *schemas.BifrostContext, key
 
 		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, &geminiResponse, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 		if bifrostErr != nil {
-			return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
+			return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		}
 
 		response, err := geminiResponse.ToBifrostImageGenerationResponse()
 		if err != nil {
-			return nil, providerUtils.EnrichError(ctx, err, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
+			return nil, providerUtils.EnrichError(ctx, err, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		}
 
 		response.ExtraFields.Latency = latency.Milliseconds()
@@ -1979,7 +2038,7 @@ func (provider *VertexProvider) ImageGeneration(ctx *schemas.BifrostContext, key
 
 		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, &imagenResponse, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 		if bifrostErr != nil {
-			return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
+			return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		}
 
 		response := imagenResponse.ToBifrostImageGenerationResponse()
@@ -2127,7 +2186,7 @@ func (provider *VertexProvider) ImageEdit(ctx *schemas.BifrostContext, key schem
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
 	defer wait()
 	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 	if usedLargePayloadBody {
 		providerUtils.DrainLargePayloadRemainder(ctx)
@@ -2139,12 +2198,12 @@ func (provider *VertexProvider) ImageEdit(ctx *schemas.BifrostContext, key schem
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
 			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
 		}
-		return nil, providerUtils.EnrichError(ctx, parseVertexError(resp), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, parseVertexError(resp), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	responseBody, isLargeResp, decodeErr := providerUtils.FinalizeResponseWithLargeDetection(ctx, resp, provider.logger)
 	if decodeErr != nil {
-		return nil, providerUtils.EnrichError(ctx, decodeErr, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, decodeErr, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 	if isLargeResp {
 		respOwned = false
@@ -2161,12 +2220,12 @@ func (provider *VertexProvider) ImageEdit(ctx *schemas.BifrostContext, key schem
 
 		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, &geminiResponse, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 		if bifrostErr != nil {
-			return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
+			return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		}
 
 		response, err := geminiResponse.ToBifrostImageGenerationResponse()
 		if err != nil {
-			return nil, providerUtils.EnrichError(ctx, err, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
+			return nil, providerUtils.EnrichError(ctx, err, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		}
 
 		response.ExtraFields.Latency = latency.Milliseconds()
@@ -2187,7 +2246,7 @@ func (provider *VertexProvider) ImageEdit(ctx *schemas.BifrostContext, key schem
 
 		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, &imagenResponse, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 		if bifrostErr != nil {
-			return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
+			return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		}
 
 		response := imagenResponse.ToBifrostImageGenerationResponse()
@@ -2295,7 +2354,7 @@ func (provider *VertexProvider) VideoGeneration(ctx *schemas.BifrostContext, key
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
 	defer wait()
 	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
 
@@ -2304,7 +2363,7 @@ func (provider *VertexProvider) VideoGeneration(ctx *schemas.BifrostContext, key
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
 			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
 		}
-		return nil, providerUtils.EnrichError(ctx, parseVertexError(resp), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, parseVertexError(resp), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	// Parse response
@@ -2411,7 +2470,7 @@ func (provider *VertexProvider) VideoRetrieve(ctx *schemas.BifrostContext, key s
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
 	defer wait()
 	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency)
 	}
 	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
 
@@ -2420,7 +2479,7 @@ func (provider *VertexProvider) VideoRetrieve(ctx *schemas.BifrostContext, key s
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
 			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
 		}
-		return nil, providerUtils.EnrichError(ctx, parseVertexError(resp), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, parseVertexError(resp), jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency)
 	}
 
 	// Parse response
@@ -2526,9 +2585,9 @@ func (provider *VertexProvider) VideoDownload(ctx *schemas.BifrostContext, key s
 		}
 		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
 		if resp.StatusCode() != fasthttp.StatusOK {
-			return nil, providerUtils.NewBifrostOperationError(
+			return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError(
 				fmt.Sprintf("failed to download video: HTTP %d", resp.StatusCode()),
-				nil)
+				nil), latency)
 		}
 		body, err := providerUtils.CheckAndDecodeBody(resp)
 		if err != nil {
@@ -2754,23 +2813,23 @@ func (provider *VertexProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 
 	startTime := time.Now()
-	_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
 	defer wait()
 	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	if resp.StatusCode() != fasthttp.StatusOK {
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
 			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
 		}
-		return nil, providerUtils.EnrichError(ctx, parseVertexJobAPIError(resp.Body(), resp.StatusCode(), "batch create"), jsonData, resp.Body(), provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, parseVertexJobAPIError(resp.Body(), resp.StatusCode(), "batch create"), jsonData, resp.Body(), provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	var created VertexBatchPredictionJob
 	rawRequest, rawResponse, parseErr := providerUtils.HandleProviderResponse(resp.Body(), &created, jsonData, sendBackRawRequest, sendBackRawResponse)
 	if parseErr != nil {
-		return nil, providerUtils.EnrichError(ctx, parseErr, jsonData, resp.Body(), provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, parseErr, jsonData, resp.Body(), provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	// In raw-passthrough mode inputFileID may be empty (e.g. BigQuery or multi-URI inputs the
@@ -2895,24 +2954,24 @@ func (provider *VertexProvider) batchListByKey(ctx *schemas.BifrostContext, key 
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 
 	startTime := time.Now()
-	_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
 	defer wait()
 	if bifrostErr != nil {
-		return nil, 0, providerUtils.EnrichError(ctx, bifrostErr, nil, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, 0, providerUtils.EnrichError(ctx, bifrostErr, nil, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	if resp.StatusCode() != fasthttp.StatusOK {
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
 			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
 		}
-		return nil, 0, providerUtils.EnrichError(ctx, parseVertexJobAPIError(resp.Body(), resp.StatusCode(), "batch list"), nil, resp.Body(), provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, 0, providerUtils.EnrichError(ctx, parseVertexJobAPIError(resp.Body(), resp.StatusCode(), "batch list"), nil, resp.Body(), provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	// GET request: no request body, so raw request capture is skipped by HandleProviderResponse.
 	var listResp VertexBatchJobListResponse
 	_, rawResponse, parseErr := providerUtils.HandleProviderResponse(resp.Body(), &listResp, nil, false, sendBackRawResponse)
 	if parseErr != nil {
-		return nil, 0, providerUtils.EnrichError(ctx, parseErr, nil, resp.Body(), provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, 0, providerUtils.EnrichError(ctx, parseErr, nil, resp.Body(), provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	data := make([]schemas.BifrostBatchRetrieveResponse, 0, len(listResp.BatchPredictionJobs))
@@ -2991,23 +3050,23 @@ func (provider *VertexProvider) vertexGetBatchJob(ctx *schemas.BifrostContext, k
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	req.Header.Set("Authorization", authHeader)
 
-	_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
 	defer wait()
 	if bifrostErr != nil {
-		return nil, nil, providerUtils.EnrichError(ctx, bifrostErr, nil, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, nil, providerUtils.EnrichError(ctx, bifrostErr, nil, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	if resp.StatusCode() != fasthttp.StatusOK {
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
 			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
 		}
-		return nil, nil, providerUtils.EnrichError(ctx, parseVertexJobAPIError(resp.Body(), resp.StatusCode(), "batch retrieve"), nil, resp.Body(), provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, nil, providerUtils.EnrichError(ctx, parseVertexJobAPIError(resp.Body(), resp.StatusCode(), "batch retrieve"), nil, resp.Body(), provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	var job VertexBatchPredictionJob
 	_, rawResponse, parseErr := providerUtils.HandleProviderResponse(resp.Body(), &job, nil, false, providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 	if parseErr != nil {
-		return nil, nil, providerUtils.EnrichError(ctx, parseErr, nil, resp.Body(), provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, nil, providerUtils.EnrichError(ctx, parseErr, nil, resp.Body(), provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 	return &job, rawResponse, nil
 }
@@ -3055,17 +3114,17 @@ func (provider *VertexProvider) batchCancelByKey(ctx *schemas.BifrostContext, ke
 	req.Header.Set("Authorization", authHeader)
 
 	startTime := time.Now()
-	_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
 	defer wait()
 	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, nil, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, nil, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	if resp.StatusCode() != fasthttp.StatusOK {
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
 			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
 		}
-		return nil, providerUtils.EnrichError(ctx, parseVertexJobAPIError(resp.Body(), resp.StatusCode(), "batch cancel"), nil, resp.Body(), provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, parseVertexJobAPIError(resp.Body(), resp.StatusCode(), "batch cancel"), nil, resp.Body(), provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	return &schemas.BifrostBatchCancelResponse{
@@ -3122,17 +3181,17 @@ func (provider *VertexProvider) batchDeleteByKey(ctx *schemas.BifrostContext, ke
 	req.Header.Set("Authorization", authHeader)
 
 	startTime := time.Now()
-	_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
 	defer wait()
 	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, nil, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, nil, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	if resp.StatusCode() != fasthttp.StatusOK {
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
 			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
 		}
-		return nil, providerUtils.EnrichError(ctx, parseVertexJobAPIError(resp.Body(), resp.StatusCode(), "batch delete"), nil, resp.Body(), provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, parseVertexJobAPIError(resp.Body(), resp.StatusCode(), "batch delete"), nil, resp.Body(), provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	return &schemas.BifrostBatchDeleteResponse{
@@ -3309,14 +3368,14 @@ func (provider *VertexProvider) gcsDownloadObject(ctx *schemas.BifrostContext, a
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	req.Header.Set("Authorization", authHeader)
 
-	_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
 
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, parseGCSAPIError(resp.Body(), resp.StatusCode(), "content download")
+		return nil, providerUtils.SetErrorLatency(parseGCSAPIError(resp.Body(), resp.StatusCode(), "content download"), latency)
 	}
 
 	content := make([]byte, len(resp.Body()))
@@ -3526,7 +3585,7 @@ func (provider *VertexProvider) gcsFileUploadDirect(
 	req.Header.Set("Authorization", authHeader)
 	req.SetBody(buf.Bytes())
 
-	_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -3536,7 +3595,7 @@ func (provider *VertexProvider) gcsFileUploadDirect(
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
 			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
 		}
-		return nil, parseGCSAPIError(resp.Body(), resp.StatusCode(), "upload")
+		return nil, providerUtils.SetErrorLatency(parseGCSAPIError(resp.Body(), resp.StatusCode(), "upload"), latency)
 	}
 
 	return &schemas.BifrostFileUploadResponse{
@@ -3600,7 +3659,7 @@ func (provider *VertexProvider) gcsFileUploadResumable(
 		}
 	}
 
-	_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -3610,7 +3669,7 @@ func (provider *VertexProvider) gcsFileUploadResumable(
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
 			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
 		}
-		return nil, parseGCSAPIError(resp.Body(), resp.StatusCode(), "resumable session initiation")
+		return nil, providerUtils.SetErrorLatency(parseGCSAPIError(resp.Body(), resp.StatusCode(), "resumable session initiation"), latency)
 	}
 
 	sessionURL := string(resp.Header.Peek("Location"))
@@ -3698,7 +3757,7 @@ func (provider *VertexProvider) FileList(ctx *schemas.BifrostContext, keys []sch
 	req.Header.Set("Authorization", authHeader)
 
 	startTime := time.Now()
-	_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -3708,7 +3767,7 @@ func (provider *VertexProvider) FileList(ctx *schemas.BifrostContext, keys []sch
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
 			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
 		}
-		return nil, parseGCSAPIError(resp.Body(), resp.StatusCode(), "list")
+		return nil, providerUtils.SetErrorLatency(parseGCSAPIError(resp.Body(), resp.StatusCode(), "list"), latency)
 	}
 
 	var listResp gcsObjectListResponse
@@ -3781,7 +3840,7 @@ func (provider *VertexProvider) fileRetrieveByKey(ctx *schemas.BifrostContext, k
 	req.Header.Set("Authorization", authHeader)
 
 	startTime := time.Now()
-	_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -3791,7 +3850,7 @@ func (provider *VertexProvider) fileRetrieveByKey(ctx *schemas.BifrostContext, k
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
 			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
 		}
-		return nil, parseGCSAPIError(resp.Body(), resp.StatusCode(), "retrieve")
+		return nil, providerUtils.SetErrorLatency(parseGCSAPIError(resp.Body(), resp.StatusCode(), "retrieve"), latency)
 	}
 
 	var obj gcsObjectMetadata
@@ -3868,7 +3927,7 @@ func (provider *VertexProvider) fileDeleteByKey(ctx *schemas.BifrostContext, key
 	req.Header.Set("Authorization", authHeader)
 
 	startTime := time.Now()
-	_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -3879,7 +3938,7 @@ func (provider *VertexProvider) fileDeleteByKey(ctx *schemas.BifrostContext, key
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
 			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
 		}
-		return nil, parseGCSAPIError(resp.Body(), resp.StatusCode(), "delete")
+		return nil, providerUtils.SetErrorLatency(parseGCSAPIError(resp.Body(), resp.StatusCode(), "delete"), latency)
 	}
 
 	return &schemas.BifrostFileDeleteResponse{
@@ -3934,7 +3993,7 @@ func (provider *VertexProvider) fileContentByKey(ctx *schemas.BifrostContext, ke
 	req.Header.Set("Authorization", authHeader)
 
 	startTime := time.Now()
-	_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -3944,7 +4003,7 @@ func (provider *VertexProvider) fileContentByKey(ctx *schemas.BifrostContext, ke
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
 			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
 		}
-		return nil, parseGCSAPIError(resp.Body(), resp.StatusCode(), "content download")
+		return nil, providerUtils.SetErrorLatency(parseGCSAPIError(resp.Body(), resp.StatusCode(), "content download"), latency)
 	}
 
 	// Copy body before deferred ReleaseResponse invalidates the buffer.
@@ -3975,7 +4034,21 @@ func (provider *VertexProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 	)
 
 	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
-		jsonBody, bifrostErr = getRequestBodyForAnthropicResponses(ctx, request, request.Model, false, true, provider.networkConfig.BetaHeaderOverrides, provider.networkConfig.ExtraHeaders, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		// Anthropic-on-Vertex doesn't accept URL-source document blocks.
+		// Inline any URL documents to base64 before the converter runs.
+		if err := inlineDocumentURLsResponses(ctx, request); err != nil {
+			return nil, providerUtils.NewBifrostOperationError("failed to inline document URLs for vertex/claude", err)
+		}
+		jsonBody, bifrostErr = anthropic.BuildAnthropicResponsesRequestBody(ctx, request, anthropic.AnthropicRequestBuildConfig{
+			Provider:                  schemas.Vertex,
+			Model:                     request.Model,
+			IsCountTokens:             true,
+			BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
+			ProviderExtraHeaders:      provider.networkConfig.ExtraHeaders,
+			ValidateTools:             true,
+			ShouldSendBackRawRequest:  provider.sendBackRawRequest,
+			ShouldSendBackRawResponse: provider.sendBackRawResponse,
+		})
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
@@ -3984,7 +4057,7 @@ func (provider *VertexProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 			ctx,
 			request,
 			func() (providerUtils.RequestBodyWithExtraParams, error) {
-				return gemini.ToGeminiResponsesRequest(request)
+				return gemini.ToGeminiResponsesRequestWithImageURLSchemes(ctx, request, geminiImageURLSchemes...)
 			},
 		)
 		if bifrostErr != nil {
@@ -4091,7 +4164,7 @@ func (provider *VertexProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
 			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
 		}
-		return nil, providerUtils.EnrichError(ctx, parseVertexError(resp), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, parseVertexError(resp), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	responseBody, isLargeResp, decodeErr := providerUtils.FinalizeResponseWithLargeDetection(ctx, resp, provider.logger)
@@ -4451,22 +4524,29 @@ func (provider *VertexProvider) PassthroughStream(
 	}
 
 	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.streamingClient, resp)
-	if err := activeClient.Do(fasthttpReq, resp); err != nil {
+	startTime := time.Now()
+	err := activeClient.Do(fasthttpReq, resp)
+	latency := time.Since(startTime)
+	if err != nil {
 		providerUtils.ReleaseStreamingResponse(ctx, resp)
 		if errors.Is(err, context.Canceled) {
-			return nil, &schemas.BifrostError{
+			return nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
 				IsBifrostError: false,
 				Error: &schemas.ErrorField{
 					Type:    schemas.Ptr(schemas.RequestCancelled),
 					Message: schemas.ErrRequestCancelled,
 					Error:   err,
 				},
-			}
+			}, latency)
 		}
 		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err)
+			return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), latency)
 		}
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err)
+		// Request failed before the first response byte (server closed an idle/pooled connection,
+		// broken pipe, connection refused, DNS failure, etc.). Surface as a retriable upstream
+		// connection error (502) so executeRequestWithRetries honors max_retries, matching the
+		// non-streaming path - see https://github.com/maximhq/bifrost/issues/4496.
+		return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostUpstreamConnectionError(schemas.ErrProviderDoRequest, err), latency)
 	}
 
 	if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {

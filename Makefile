@@ -580,7 +580,7 @@ test-core: install-gotestsum $(if $(DEBUG),install-delve) ## Run core tests (Usa
 		$(ECHO) "$(YELLOW)Attach your debugger to localhost:2345$(NC)"; \
 	fi; \
 	if [ -n "$(PROVIDER)" ]; then \
-		PROVIDER_TEST_NAME=$$($(ECHO) "$(PROVIDER)" | awk '{print toupper(substr($$0,1,1)) tolower(substr($$0,2))}' | sed 's/openai/OpenAI/i; s/sgl/SGL/i'); \
+		PROVIDER_TEST_NAME=$$($(ECHO) "$(PROVIDER)" | awk '{print toupper(substr($$0,1,1)) tolower(substr($$0,2))}' | sed 's/openai/OpenAI/i; s/openrouter/OpenRouter/i; s/sgl/SGL/i; s/xai/XAI/i'); \
 		if [ -n "$(TESTCASE)" ]; then \
 			CLEAN_TESTCASE="$(TESTCASE)"; \
 			CLEAN_TESTCASE=$${CLEAN_TESTCASE#Test$${PROVIDER_TEST_NAME}/}; \
@@ -748,6 +748,14 @@ test-core: install-gotestsum $(if $(DEBUG),install-delve) ## Run core tests (Usa
 			$(ECHO) ""; \
 		fi; \
 	fi; \
+	if [ -n "$$REPORT_FILE" ] && [ -f "$$REPORT_FILE" ]; then \
+		SUMMARY_PREFIX=$$(basename "$$REPORT_FILE" .xml | sed 's/-.*//'); \
+		SUMMARY_TITLE=$$($(ECHO) "$$SUMMARY_PREFIX" | awk '{print toupper(substr($$0,1,1)) substr($$0,2)}'); \
+		$(MAKE) --no-print-directory print-test-summary \
+			SUMMARY_LABEL="$$SUMMARY_TITLE" \
+			SUMMARY_STRIP="$$SUMMARY_PREFIX-" \
+			SUMMARY_FILES="$$REPORT_FILE"; \
+	fi; \
 	if [ $$TEST_FAILED -eq 1 ]; then \
 		exit 1; \
 	fi
@@ -806,23 +814,28 @@ test-plugins: install-gotestsum ## Run plugin tests
 	else \
 		$(ECHO) "$(CYAN)JUnit XML reports saved to $(TEST_REPORTS_DIR)/plugin-*.xml$(NC)"; \
 	fi
+	@$(MAKE) --no-print-directory print-test-summary \
+		SUMMARY_LABEL="Plugin" \
+		SUMMARY_STRIP="plugin-" \
+		SUMMARY_FILES="$(TEST_REPORTS_DIR)/plugin-*.xml"
 
 test-framework: install-gotestsum ## Run framework tests
 	@$(EXPOSE_ENV); \
 	$(ECHO) "$(GREEN)Running framework tests...$(NC)"; \
 	mkdir -p $(TEST_REPORTS_DIR); \
+	rm -f $(TEST_REPORTS_DIR)/.framework-failed; \
 	cd framework && find . -name "*.go" -path "*/tests/*" -o -name "*_test.go" | head -1 > /dev/null && \
 		for dir in $$(find . -name "*_test.go" -exec dirname {} \; | sort -u); do \
 			pkg_name=$$(echo $$dir | sed 's|^\./||' | sed 's|/|-|g'); \
 			$(ECHO) "Testing $$dir..."; \
-			cd $$dir && gotestsum \
+			( cd $$dir && gotestsum \
 				--format=$(GOTESTSUM_FORMAT) \
-				--junitfile=../../$(TEST_REPORTS_DIR)/framework-$$pkg_name.xml \
-				-- -v ./... && cd - > /dev/null; \
+				--junitfile=$(CURDIR)/$(TEST_REPORTS_DIR)/framework-$$pkg_name.xml \
+				-- -v ./... ) || touch $(CURDIR)/$(TEST_REPORTS_DIR)/.framework-failed; \
 			if [ -z "$$CI" ] && [ -z "$$GITHUB_ACTIONS" ] && [ -z "$$GITLAB_CI" ] && [ -z "$$CIRCLECI" ] && [ -z "$$JENKINS_HOME" ]; then \
 				if which junit-viewer > /dev/null 2>&1; then \
 					$(ECHO) "$(YELLOW)Generating HTML report for $$pkg_name...$(NC)"; \
-					junit-viewer --results=../$(TEST_REPORTS_DIR)/framework-$$pkg_name.xml --save=../$(TEST_REPORTS_DIR)/framework-$$pkg_name.html 2>/dev/null || true; \
+					junit-viewer --results=$(CURDIR)/$(TEST_REPORTS_DIR)/framework-$$pkg_name.xml --save=$(CURDIR)/$(TEST_REPORTS_DIR)/framework-$$pkg_name.html 2>/dev/null || true; \
 				fi; \
 			fi; \
 		done || $(ECHO) "No framework tests found"
@@ -831,6 +844,54 @@ test-framework: install-gotestsum ## Run framework tests
 		$(ECHO) "$(CYAN)HTML reports saved to $(TEST_REPORTS_DIR)/framework-*.html$(NC)"; \
 	else \
 		$(ECHO) "$(CYAN)JUnit XML reports saved to $(TEST_REPORTS_DIR)/framework-*.xml$(NC)"; \
+	fi
+	@$(MAKE) --no-print-directory print-test-summary \
+		SUMMARY_LABEL="Framework" \
+		SUMMARY_STRIP="framework-" \
+		SUMMARY_FILES="$(TEST_REPORTS_DIR)/framework-*.xml"
+	@if [ -f $(TEST_REPORTS_DIR)/.framework-failed ]; then \
+		rm -f $(TEST_REPORTS_DIR)/.framework-failed; \
+		exit 1; \
+	fi
+
+# Internal: render a table of test reports + a final pass/fail scenario.
+# Usage: $(MAKE) print-test-summary SUMMARY_LABEL="Framework" SUMMARY_STRIP="framework-" SUMMARY_FILES="<glob or files>"
+# Each report becomes one row: tests/failures/errors come from the <testsuites> aggregate,
+# while skipped is summed from the per-<testsuite> attrs (the aggregate omits skipped).
+SUMMARY_SEP := --------------------------------------------------
+print-test-summary:
+	@$(ECHO) ""; \
+	$(ECHO) "$(CYAN)============================================================================$(NC)"; \
+	$(ECHO) "$(CYAN)$(SUMMARY_LABEL) Test Report Summary$(NC)"; \
+	$(ECHO) "$(CYAN)============================================================================$(NC)"; \
+	total_tests=0; total_pass=0; total_fail=0; total_err=0; total_skip=0; reports=0; \
+	printf "%-50s %7s %7s %7s %7s %7s\n" "REPORT" "TESTS" "PASS" "FAIL" "ERR" "SKIP"; \
+	printf "%-50s %7s %7s %7s %7s %7s\n" "$(SUMMARY_SEP)" "-------" "-------" "-------" "-------" "-------"; \
+	for xml in $(SUMMARY_FILES); do \
+		[ -e "$$xml" ] || continue; \
+		line=$$(grep -o '<testsuites[^>]*>' "$$xml" | head -1); \
+		t=$$(printf '%s' "$$line" | sed -n 's/.*[^a-z]tests="\([0-9]*\)".*/\1/p'); \
+		f=$$(printf '%s' "$$line" | sed -n 's/.*failures="\([0-9]*\)".*/\1/p'); \
+		e=$$(printf '%s' "$$line" | sed -n 's/.*errors="\([0-9]*\)".*/\1/p'); \
+		s=$$(grep -o '<testsuite [^>]*>' "$$xml" | grep -o 'skipped="[0-9]*"' | grep -o '[0-9]*' | awk '{x+=$$1} END{print x+0}'); \
+		t=$${t:-0}; f=$${f:-0}; e=$${e:-0}; s=$${s:-0}; \
+		p=$$((t - f - e - s)); \
+		name=$$(basename "$$xml" .xml | sed 's/^$(SUMMARY_STRIP)//'); \
+		reports=$$((reports + 1)); \
+		total_tests=$$((total_tests + t)); total_pass=$$((total_pass + p)); \
+		total_fail=$$((total_fail + f)); total_err=$$((total_err + e)); total_skip=$$((total_skip + s)); \
+		if [ $$((f + e)) -gt 0 ]; then color="$(RED)"; else color="$(GREEN)"; fi; \
+		printf "%b%-50s %7s %7s %7s %7s %7s%b\n" "$$color" "$$name" "$$t" "$$p" "$$f" "$$e" "$$s" "$(NC)"; \
+	done; \
+	printf "%-50s %7s %7s %7s %7s %7s\n" "$(SUMMARY_SEP)" "-------" "-------" "-------" "-------" "-------"; \
+	printf "%-50s %7s %7s %7s %7s %7s\n" "TOTAL ($$reports reports)" "$$total_tests" "$$total_pass" "$$total_fail" "$$total_err" "$$total_skip"; \
+	$(ECHO) "$(CYAN)============================================================================$(NC)"; \
+	if [ "$$reports" -eq 0 ]; then \
+		$(ECHO) "$(YELLOW)No $(SUMMARY_LABEL) test reports found$(NC)"; \
+	elif [ $$((total_fail + total_err)) -eq 0 ]; then \
+		$(ECHO) "$(GREEN)✓ ALL $(SUMMARY_LABEL) TESTS PASSED ($$total_pass/$$total_tests passed, $$total_skip skipped)$(NC)"; \
+	else \
+		$(ECHO) "$(RED)✗ $(SUMMARY_LABEL) TESTS FAILED ($$total_fail failures, $$total_err errors out of $$total_tests tests)$(NC)"; \
 	fi
 
 test-http-transport: install-gotestsum ## Run HTTP transport tests
@@ -994,6 +1055,14 @@ test-governance: install-gotestsum $(if $(DEBUG),install-delve) ## Run governanc
 			$(ECHO) "$(GREEN)═══════════════════════════════════════════════════════════$(NC)"; \
 			$(ECHO) ""; \
 		fi; \
+	fi; \
+	if [ -n "$$REPORT_FILE" ] && [ -f "$$REPORT_FILE" ]; then \
+		SUMMARY_PREFIX=$$(basename "$$REPORT_FILE" .xml | sed 's/-.*//'); \
+		SUMMARY_TITLE=$$($(ECHO) "$$SUMMARY_PREFIX" | awk '{print toupper(substr($$0,1,1)) substr($$0,2)}'); \
+		$(MAKE) --no-print-directory print-test-summary \
+			SUMMARY_LABEL="$$SUMMARY_TITLE" \
+			SUMMARY_STRIP="$$SUMMARY_PREFIX-" \
+			SUMMARY_FILES="$$REPORT_FILE"; \
 	fi; \
 	if [ $$TEST_FAILED -eq 1 ]; then \
 		exit 1; \
@@ -1756,6 +1825,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		printf '  %-18s %s\n' "INCLUDE_SKIP=1"   "Run [SKIP]-tagged criss-cross cells (provider+modality pairs that return NewUnsupportedOperationError by design, e.g., anthropic embeddings, bedrock audio). Off by default."; \
 		printf '  %-18s %s\n' "PARALLEL=0"       "Disable per-provider parallelism (default: ON). When ON, forks one newman per provider (openai, anthropic, bedrock, gemini, vertex, azure) concurrently; reports merged into tmp/newman-report.json. The htmlextra report is only emitted in sequential mode (PARALLEL=0)."; \
 		printf '  %-18s %s\n' "SKIP_STREAM_CANCEL=1" "Skip the post-Newman stream-abort probes that verify server-side cancellation on client disconnect."; \
+		printf '  %-18s %s\n' "DB_VERIFY=0"      "Disable the dbverify reporter (ON by default). When on, [Costing]/[Accounting] requests assert the logs DB cost matches the getbifrost.ai/datasheet-computed cost (resolves DB from APP_DIR/config.json or BIFROST_LOGS_DB_URL); skips gracefully if no logs DB is reachable."; \
 		printf '  %-18s %s\n' "USE_INFISICAL=1" "Source secrets from Infisical CLI ('infisical export --path /local --format dotenv') instead of .env."; \
 		printf '  %-18s %s\n' "VERTEX_GCS_BUCKET" "Env-sourced (.env/Infisical): GCS bucket for Vertex file ops (forwarded to Newman as vertexGcsBucket)."; \
 		printf '  %-18s %s\n' "VERTEX_GCS_PREFIX" "Env-sourced: GCS object prefix for Vertex file ops (forwarded as vertexGcsPrefix)."; \
@@ -1805,6 +1875,27 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 	BASE_URL_VAL="$(or $(BASE_URL),http://localhost:8080)"; \
 	APP_DIR_VAL="$(or $(APP_DIR),tests/integrations/python)"; \
 	VIEWER_PORT_VAL="$(or $(VIEWER_PORT),8090)"; \
+	DBVERIFY_REPORTER=""; DBVERIFY_ARGS=""; DBVERIFY_READY=0; \
+	if [ "$(DB_VERIFY)" != "0" ]; then \
+		if [ -d tests/e2e/api/node_modules ] && npm --prefix tests/e2e/api ls --depth=0 >/dev/null 2>&1; then \
+			DBVERIFY_READY=1; \
+		else \
+			$(ECHO) "$(YELLOW)Installing dbverify reporter deps...$(NC)"; \
+			if (cd tests/e2e/api && npm install --silent); then \
+				DBVERIFY_READY=1; \
+			else \
+				$(ECHO) "$(YELLOW)dbverify dep install failed; cost checks disabled for this run (set DB_VERIFY=0 to silence)$(NC)"; \
+			fi; \
+		fi; \
+		if [ "$$DBVERIFY_READY" = "1" ]; then \
+			export NODE_PATH="$(CURDIR)/tests/e2e/api/node_modules$${NODE_PATH:+:$$NODE_PATH}"; \
+			DBVERIFY_REPORTER=",dbverify"; \
+			LOGS_DB_VAL="$${BIFROST_LOGS_DB_URL:-sqlite://$(CURDIR)/$$APP_DIR_VAL/logs.db}"; \
+			export BIFROST_LOGS_DB_URL="$$LOGS_DB_VAL"; \
+			DBVERIFY_ARGS="--reporter-dbverify-config $$APP_DIR_VAL/config.json"; \
+			$(ECHO) "$(CYAN)dbverify reporter enabled (logs DB: $$LOGS_DB_VAL). Set DB_VERIFY=0 to disable.$(NC)"; \
+		fi; \
+	fi; \
 	STARTED_BY_US=0; \
 	cleanup() { \
 		if [ -f tmp/harness-monitor.pid ]; then \
@@ -1931,7 +2022,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 					$${VERTEX_GCS_PREFIX:+--env-var "vertexGcsPrefix=$$VERTEX_GCS_PREFIX"} \
 					$(if $(ENV_FILE),--environment $(ENV_FILE),) \
 					$(if $(FOLDER),--folder "$(FOLDER)",) \
-					--reporters cli,json \
+					--reporters cli,json$$DBVERIFY_REPORTER $$DBVERIFY_ARGS \
 					--reporter-json-export "tmp/newman-report-$$p.json" 2>&1 | sed "s/^/[$$p] /" \
 			) > "tmp/newman-cli-$$p.log" 2>&1 & \
 			BG_PID=$$!; \
@@ -1975,7 +2066,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		fi; \
 		$(ECHO) "$(CYAN)Merging per-provider reports into tmp/newman-report.json...$(NC)"; \
 		if command -v jq >/dev/null 2>&1 && ls tmp/newman-report-*.json >/dev/null 2>&1; then \
-			jq -s 'def failed: (((.assertions // []) | any(.error?)) or ((.response.code // 0) == 0) or ((.response.code // 0) >= 400) or (.response | not)); def trimstream: if (.response.stream.type? == "Buffer" and ((.response.stream.data // []) | length) > 20000) then (.response.stream.data = .response.stream.data[:20000] | .response.stream.truncated = true) else . end; def sanitize: if failed then trimstream else (.response.stream = null) end; {collection: (.[0].collection // {}), environment: (.[0].environment // {}), run: {executions: [.[].run.executions[]? | sanitize], failures: [.[].run.failures[]?], stats: {iterations: {total: 1, pending: 0, failed: 0}, items: {total: ([.[].run.stats.items.total // 0] | add)}, requests: {total: ([.[].run.stats.requests.total // 0] | add), failed: ([.[].run.stats.requests.failed // 0] | add)}}, timings: (.[0].run.timings // {})}}' tmp/newman-report-*.json > tmp/newman-report.json || $(ECHO) "$(YELLOW)Report merge failed; per-provider reports remain at tmp/newman-report-*.json$(NC)"; \
+			jq -s 'def failed: (((.assertions // []) | any(.error?)) or ((.response.code // 0) == 0) or ((.response.code // 0) >= 400) or (.response | not)); def trimstream: if (.response.stream.type? == "Buffer" and ((.response.stream.data // []) | length) > 20000) then (.response.stream.data = .response.stream.data[:20000] | .response.stream.truncated = true) else . end; def sanitize: trimstream; {collection: (.[0].collection // {}), environment: (.[0].environment // {}), run: {executions: [.[].run.executions[]? | sanitize], failures: [.[].run.failures[]?], stats: {iterations: {total: 1, pending: 0, failed: 0}, items: {total: ([.[].run.stats.items.total // 0] | add)}, requests: {total: ([.[].run.stats.requests.total // 0] | add), failed: ([.[].run.stats.requests.failed // 0] | add)}}, timings: (.[0].run.timings // {})}}' tmp/newman-report-*.json > tmp/newman-report.json || $(ECHO) "$(YELLOW)Report merge failed; per-provider reports remain at tmp/newman-report-*.json$(NC)"; \
 			cat tmp/newman-cli-*.log > tmp/newman-cli.log 2>/dev/null || true; \
 		else \
 			$(ECHO) "$(YELLOW)jq not found or no reports produced; skipping merge. See tmp/newman-report-*.json$(NC)"; \
@@ -2014,7 +2105,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 				$${VERTEX_GCS_PREFIX:+--env-var "vertexGcsPrefix=$$VERTEX_GCS_PREFIX"} \
 				$(if $(ENV_FILE),--environment $(ENV_FILE),) \
 				$(if $(FOLDER),--folder "$(FOLDER)",) \
-				--reporters cli,json,htmlextra \
+				--reporters cli,json,htmlextra$$DBVERIFY_REPORTER $$DBVERIFY_ARGS \
 				--reporter-json-export tmp/newman-report.json \
 				--reporter-htmlextra-export tmp/newman-report.html \
 				--reporter-htmlextra-title "Bifrost Provider Harness" \
@@ -2038,7 +2129,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 				$${VERTEX_GCS_PREFIX:+--env-var "vertexGcsPrefix=$$VERTEX_GCS_PREFIX"} \
 				$(if $(ENV_FILE),--environment $(ENV_FILE),) \
 				$(if $(FOLDER),--folder "$(FOLDER)",) \
-				--reporters cli,json,htmlextra \
+				--reporters cli,json,htmlextra$$DBVERIFY_REPORTER $$DBVERIFY_ARGS \
 				--reporter-json-export tmp/newman-report.json \
 				--reporter-htmlextra-export tmp/newman-report.html \
 				--reporter-htmlextra-title "Bifrost Provider Harness" \

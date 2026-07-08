@@ -56,35 +56,35 @@ export const customProviderNameSchema = z.string().min(1, "Custom provider name 
 // Model provider name schema (union of known and custom providers)
 export const modelProviderNameSchema = z.union([knownProviderSchema, customProviderNameSchema]);
 
-// EnvVar schema - matches the Go EnvVar type from schemas/env.go
-export const _envVarBase = z.object({
+// SecretVar schema - matches the Go SecretVar type from schemas/secretvar.go
+export const _secretVarBase = z.object({
 	value: z.string().optional(),
-	env_var: z.string().optional(),
-	from_env: z.boolean().optional(),
+	ref: z.string().optional(),
+	type: z.enum(["plain_text", "env", "vault"]).optional(),
 });
 
 // Extending the base schema
-export const envVarSchema = Object.assign(_envVarBase, {
-	required: (message: string) => _envVarBase.refine((v) => !!v?.value?.trim() || !!v?.env_var?.trim(), message),
+export const secretVarSchema = Object.assign(_secretVarBase, {
+	required: (message: string) => _secretVarBase.refine((v) => !!v?.value?.trim() || !!v?.ref?.trim(), message),
 });
 
-// Helper to check if an envVar field has a value or env reference
-function isEnvVarSet(v: { value?: string; env_var?: string } | undefined): boolean {
+// Helper to check if a secretVar field has a value or secret reference
+function isSecretVarSet(v: { value?: string; ref?: string } | undefined): boolean {
 	if (!v) return false;
-	return !!v.value?.trim() || !!v.env_var?.trim();
+	return !!v.value?.trim() || !!v.ref?.trim();
 }
 
 // Azure key config schema
 export const azureKeyConfigSchema = z
 	.object({
 		_auth_type: z.enum(["api_key", "entra_id", "default_credential"]).optional(),
-		endpoint: envVarSchema.optional(),
-		client_id: envVarSchema.optional(),
-		client_secret: envVarSchema.optional(),
-		tenant_id: envVarSchema.optional(),
+		endpoint: secretVarSchema.optional(),
+		client_id: secretVarSchema.optional(),
+		client_secret: secretVarSchema.optional(),
+		tenant_id: secretVarSchema.optional(),
 		scopes: z.array(z.string()).optional(),
 	})
-	.refine((data) => isEnvVarSet(data.endpoint), {
+	.refine((data) => isSecretVarSet(data.endpoint), {
 		message: "Endpoint is required",
 		path: ["endpoint"],
 	})
@@ -92,12 +92,12 @@ export const azureKeyConfigSchema = z
 		(data) => {
 			// When using Entra ID, all three fields are required
 			if (data._auth_type === "entra_id") {
-				return isEnvVarSet(data.client_id) && isEnvVarSet(data.client_secret) && isEnvVarSet(data.tenant_id);
+				return isSecretVarSet(data.client_id) && isSecretVarSet(data.client_secret) && isSecretVarSet(data.tenant_id);
 			}
 			// Otherwise, if any Entra ID field is set, all three must be set
-			const hasClientId = isEnvVarSet(data.client_id);
-			const hasClientSecret = isEnvVarSet(data.client_secret);
-			const hasTenantId = isEnvVarSet(data.tenant_id);
+			const hasClientId = isSecretVarSet(data.client_id);
+			const hasClientSecret = isSecretVarSet(data.client_secret);
+			const hasTenantId = isSecretVarSet(data.tenant_id);
 			const anyEntraField = hasClientId || hasClientSecret || hasTenantId;
 			if (!anyEntraField) return true;
 			return hasClientId && hasClientSecret && hasTenantId;
@@ -112,16 +112,16 @@ export const azureKeyConfigSchema = z
 export const vertexKeyConfigSchema = z
 	.object({
 		_auth_type: z.enum(["service_account", "service_account_json", "api_key"]).optional(),
-		project_id: envVarSchema.optional(),
-		project_number: envVarSchema.optional(),
-		region: envVarSchema.optional(),
-		auth_credentials: envVarSchema.optional(),
+		project_id: secretVarSchema.optional(),
+		project_number: secretVarSchema.optional(),
+		region: secretVarSchema.optional(),
+		auth_credentials: secretVarSchema.optional(),
 	})
-	.refine((data) => isEnvVarSet(data.project_id), {
+	.refine((data) => isSecretVarSet(data.project_id), {
 		message: "Project ID is required",
 		path: ["project_id"],
 	})
-	.refine((data) => isEnvVarSet(data.region), {
+	.refine((data) => isSecretVarSet(data.region), {
 		message: "Region is required",
 		path: ["region"],
 	})
@@ -129,7 +129,7 @@ export const vertexKeyConfigSchema = z
 		(data) => {
 			// When using service_account_json auth, auth_credentials is required
 			if (data._auth_type === "service_account_json") {
-				return isEnvVarSet(data.auth_credentials);
+				return isSecretVarSet(data.auth_credentials);
 			}
 			return true;
 		},
@@ -154,20 +154,20 @@ export const batchS3ConfigSchema = z.object({
 export const bedrockKeyConfigSchema = z
 	.object({
 		_auth_type: z.enum(["iam_role", "explicit", "api_key"]).optional(),
-		access_key: envVarSchema.optional(),
-		secret_key: envVarSchema.optional(),
-		session_token: envVarSchema.optional(),
-		region: envVarSchema.optional(),
-		role_arn: envVarSchema.optional(),
-		external_id: envVarSchema.optional(),
-		session_name: envVarSchema.optional(),
-		arn: envVarSchema.optional(),
+		access_key: secretVarSchema.optional(),
+		secret_key: secretVarSchema.optional(),
+		session_token: secretVarSchema.optional(),
+		region: secretVarSchema.optional(),
+		role_arn: secretVarSchema.optional(),
+		external_id: secretVarSchema.optional(),
+		session_name: secretVarSchema.optional(),
+		arn: secretVarSchema.optional(),
 		batch_s3_config: batchS3ConfigSchema.optional(),
 	})
 	.refine(
 		(data) => {
 			// Region is required for Bedrock
-			return isEnvVarSet(data.region);
+			return isSecretVarSet(data.region);
 		},
 		{
 			message: "Region is required",
@@ -178,12 +178,47 @@ export const bedrockKeyConfigSchema = z
 		(data) => {
 			// When using explicit credentials, both access_key and secret_key are required
 			if (data._auth_type === "explicit") {
-				return isEnvVarSet(data.access_key) && isEnvVarSet(data.secret_key);
+				return isSecretVarSet(data.access_key) && isSecretVarSet(data.secret_key);
 			}
 			// Otherwise, if either is set both must be set
-			const hasAccessKey = isEnvVarSet(data.access_key);
-			const hasSecretKey = isEnvVarSet(data.secret_key);
+			const hasAccessKey = isSecretVarSet(data.access_key);
+			const hasSecretKey = isSecretVarSet(data.secret_key);
 			if (!hasAccessKey && !hasSecretKey) return true;
+			return hasAccessKey && hasSecretKey;
+		},
+		{
+			message: "Both Access Key and Secret Key are required for explicit credentials",
+			path: ["access_key"],
+		},
+	);
+
+// Bedrock Mantle key config schema (SigV4 credentials; no ARN / batch S3 config)
+export const bedrockMantleKeyConfigSchema = z
+	.object({
+		_auth_type: z.enum(["iam_role", "explicit", "api_key"]).optional(),
+		access_key: secretVarSchema.optional(),
+		secret_key: secretVarSchema.optional(),
+		session_token: secretVarSchema.optional(),
+		region: secretVarSchema.optional(),
+		role_arn: secretVarSchema.optional(),
+		external_id: secretVarSchema.optional(),
+		session_name: secretVarSchema.optional(),
+	})
+	.refine((data) => isSecretVarSet(data.region), {
+		message: "Region is required",
+		path: ["region"],
+	})
+	.refine(
+		(data) => {
+			// Explicit auth must carry both keys; a region-only config fails at request time.
+			if (data._auth_type === "explicit") {
+				return isSecretVarSet(data.access_key) && isSecretVarSet(data.secret_key);
+			}
+			// If either access_key or secret_key is set, both must be set.
+			const hasAccessKey = isSecretVarSet(data.access_key);
+			const hasSecretKey = isSecretVarSet(data.secret_key);
+			// IAM-role path: both keys empty is valid, but a lone session token cannot sign SigV4.
+			if (!hasAccessKey && !hasSecretKey) return !isSecretVarSet(data.session_token);
 			return hasAccessKey && hasSecretKey;
 		},
 		{
@@ -195,10 +230,10 @@ export const bedrockKeyConfigSchema = z
 // VLLM key config schema
 export const vllmKeyConfigSchema = z
 	.object({
-		url: envVarSchema.optional(),
+		url: secretVarSchema.optional(),
 		model_name: z.string().trim().min(1, "Model name is required"),
 	})
-	.refine((data) => isEnvVarSet(data.url), {
+	.refine((data) => isSecretVarSet(data.url), {
 		message: "Server URL is required",
 		path: ["url"],
 	});
@@ -210,9 +245,9 @@ export const replicateKeyConfigSchema = z.object({
 // Ollama key config schema
 export const ollamaKeyConfigSchema = z
 	.object({
-		url: envVarSchema.optional(),
+		url: secretVarSchema.optional(),
 	})
-	.refine((data) => isEnvVarSet(data.url), {
+	.refine((data) => isSecretVarSet(data.url), {
 		message: "Server URL is required",
 		path: ["url"],
 	});
@@ -220,9 +255,9 @@ export const ollamaKeyConfigSchema = z
 // SGL key config schema
 export const sglKeyConfigSchema = z
 	.object({
-		url: envVarSchema.optional(),
+		url: secretVarSchema.optional(),
 	})
-	.refine((data) => isEnvVarSet(data.url), {
+	.refine((data) => isSecretVarSet(data.url), {
 		message: "Server URL is required",
 		path: ["url"],
 	});
@@ -250,16 +285,16 @@ const aliasConfigObjectSchema = z.object({
 	model_name: z.string().trim().optional(),
 	model_family: modelFamilySchema.optional(),
 	description: z.string().optional(),
-	region: envVarSchema.optional(),
+	region: secretVarSchema.optional(),
 	// Azure overrides
 	api_version: z.string().optional(),
 	anthropic_version: z.string().optional(),
-	endpoint: envVarSchema.optional(),
+	endpoint: secretVarSchema.optional(),
 	// Vertex overrides
-	project_id: envVarSchema.optional(),
-	project_number: envVarSchema.optional(),
+	project_id: secretVarSchema.optional(),
+	project_number: secretVarSchema.optional(),
 	// Bedrock overrides
-	inference_profile_arn: envVarSchema.optional(),
+	inference_profile_arn: secretVarSchema.optional(),
 	// Replicate overrides
 	use_deployments_endpoint: z.boolean().optional(),
 });
@@ -277,7 +312,7 @@ export const modelProviderKeySchema = z
 	.object({
 		id: z.string().min(1, "Id is required"),
 		name: z.string().min(1, "Name is required"),
-		value: envVarSchema.optional(),
+		value: secretVarSchema.optional(),
 		models: z.array(z.string()).optional().default(["*"]),
 		blacklisted_models: z.array(z.string()).default([]).optional(),
 		weight: z
@@ -302,6 +337,7 @@ export const modelProviderKeySchema = z
 		azure_key_config: azureKeyConfigSchema.optional(),
 		vertex_key_config: vertexKeyConfigSchema.optional(),
 		bedrock_key_config: bedrockKeyConfigSchema.optional(),
+		bedrock_mantle_key_config: bedrockMantleKeyConfigSchema.optional(),
 		vllm_key_config: vllmKeyConfigSchema.optional(),
 		replicate_key_config: replicateKeyConfigSchema.optional(),
 		ollama_key_config: ollamaKeyConfigSchema.optional(),
@@ -315,29 +351,37 @@ export const modelProviderKeySchema = z
 			if (data.vllm_key_config || data.replicate_key_config || data.ollama_key_config || data.sgl_key_config) {
 				return true;
 			}
+			// Bedrock Mantle authenticates via SigV4 (its key config) or a Bearer key — only require
+			// a top-level API key when the user explicitly chose the api_key auth method.
+			if (data.bedrock_mantle_key_config) {
+				if (data.bedrock_mantle_key_config._auth_type === "api_key") {
+					return isSecretVarSet(data.value);
+				}
+				return true;
+			}
 			// Azure requires API key only when using api_key auth
 			if (data.azure_key_config) {
 				if (data.azure_key_config._auth_type === "api_key") {
-					return isEnvVarSet(data.value);
+					return isSecretVarSet(data.value);
 				}
 				return true;
 			}
 			// Bedrock only requires API key when using api_key auth
 			if (data.bedrock_key_config) {
 				if (data.bedrock_key_config._auth_type === "api_key") {
-					return isEnvVarSet(data.value);
+					return isSecretVarSet(data.value);
 				}
 				return true;
 			}
 			// Vertex requires API key only when using api_key auth
 			if (data.vertex_key_config) {
 				if (data.vertex_key_config._auth_type === "api_key") {
-					return isEnvVarSet(data.value);
+					return isSecretVarSet(data.value);
 				}
 				return true;
 			}
 			// Otherwise, value is required
-			return isEnvVarSet(data.value);
+			return isSecretVarSet(data.value);
 		},
 		{
 			message: "API Key is required",
@@ -358,7 +402,7 @@ export const networkConfigSchema = z
 		retry_backoff_initial: z.number().min(100),
 		retry_backoff_max: z.number().min(100),
 		insecure_skip_verify: z.boolean().optional(),
-		ca_cert_pem: envVarSchema.optional(),
+		ca_cert_pem: secretVarSchema.optional(),
 		stream_idle_timeout_in_seconds: z
 			.number()
 			.int("Stream idle timeout must be a whole number of seconds")
@@ -411,7 +455,7 @@ export const networkFormConfigSchema = z
 			.min(100, "Retry backoff max must be at least 100ms")
 			.max(1000000, "Retry backoff max must be at most 1000000ms"),
 		insecure_skip_verify: z.boolean().optional(),
-		ca_cert_pem: envVarSchema.optional(),
+		ca_cert_pem: secretVarSchema.optional(),
 		stream_idle_timeout_in_seconds: z.coerce
 			.number("Stream idle timeout must be a number")
 			.int("Stream idle timeout must be a whole number of seconds")
@@ -445,15 +489,16 @@ export const proxyTypeSchema = z.enum(["none", "http", "socks5", "environment"])
 export const proxyConfigSchema = z
 	.object({
 		type: proxyTypeSchema,
-		url: envVarSchema.optional(),
-		username: envVarSchema.optional(),
-		password: envVarSchema.optional(),
-		ca_cert_pem: envVarSchema.optional(),
+		url: secretVarSchema.optional(),
+		username: secretVarSchema.optional(),
+		password: secretVarSchema.optional(),
+		ca_cert_pem: secretVarSchema.optional(),
 	})
 	.refine(
 		(data) =>
 			!(data.type === "http" || data.type === "socks5") ||
-			data.url?.from_env === true ||
+			data.url?.type === "env" ||
+			data.url?.type === "vault" ||
 			(data.url?.value && data.url.value.trim().length > 0),
 		{
 			message: "Proxy URL is required when using HTTP or SOCKS5 proxy",
@@ -485,10 +530,10 @@ export const proxyConfigSchema = z
 export const proxyFormConfigSchema = z
 	.object({
 		type: proxyTypeSchema,
-		url: envVarSchema.optional(),
-		username: envVarSchema.optional(),
-		password: envVarSchema.optional(),
-		ca_cert_pem: envVarSchema.optional(),
+		url: secretVarSchema.optional(),
+		username: secretVarSchema.optional(),
+		password: secretVarSchema.optional(),
+		ca_cert_pem: secretVarSchema.optional(),
 	})
 	.refine(
 		(data) => {
@@ -498,7 +543,7 @@ export const proxyFormConfigSchema = z
 			// URL is required when proxy type is http or socks5
 			if (data.type === "http" || data.type === "socks5") {
 				// Env-backed URLs may have empty resolved value before env resolution.
-				if (data.url?.from_env || data.url?.env_var?.startsWith("env.")) return true;
+				if (!!(data.url?.type && data.url?.type !== "plain_text") || data.url?.ref) return true;
 				// Literal URLs must be non-empty.
 				if (!data.url?.value || data.url.value.trim().length === 0) return false;
 			}
@@ -546,6 +591,10 @@ export const allowedRequestsSchema = z.object({
 	chat_completion_stream: z.boolean(),
 	responses: z.boolean(),
 	responses_stream: z.boolean(),
+	responses_retrieve: z.boolean().optional(),
+	responses_delete: z.boolean().optional(),
+	responses_cancel: z.boolean().optional(),
+	responses_input_items: z.boolean().optional(),
 	embedding: z.boolean(),
 	speech: z.boolean(),
 	speech_stream: z.boolean(),
@@ -790,13 +839,13 @@ export const otelConfigSchema = z
 		// Per-profile enable toggle. A disabled profile exports nothing and is not validated.
 		enabled: z.boolean().default(true),
 		service_name: z.string().optional(),
-		collector_url: envVarSchema.default({ value: "", env_var: "", from_env: false }),
+		collector_url: secretVarSchema.default({ value: "" }),
 		trace_type: z
 			.enum(["genai_extension", "vercel", "open_inference"], {
 				message: "Please select a trace type",
 			})
 			.default("genai_extension"),
-		headers: z.record(z.string(), envVarSchema).optional(),
+		headers: z.record(z.string(), secretVarSchema).optional(),
 		protocol: z
 			.enum(["http", "grpc"], {
 				message: "Please select a protocol",
@@ -807,10 +856,12 @@ export const otelConfigSchema = z
 		insecure: z.boolean().default(true),
 		// Metrics push configuration
 		metrics_enabled: z.boolean().default(false),
-		metrics_endpoint: envVarSchema.optional(),
+		metrics_endpoint: secretVarSchema.optional(),
 		metrics_push_interval: z.number().int().min(1).max(300).default(15),
 		request_headers: z.array(z.string()).default([]),
 		disable_content_logging: z.boolean().default(false),
+		group_traces_by_session: z.boolean().default(false),
+		disable_root_span_content: z.boolean().default(false),
 	})
 	.superRefine((data, ctx) => {
 		// A disabled profile is not sent anywhere, so skip all validation for it.
@@ -866,7 +917,7 @@ export const otelConfigSchema = z
 		};
 
 		// Collector address is required for an enabled profile.
-		if (!isEnvVarSet(data.collector_url)) {
+		if (!isSecretVarSet(data.collector_url)) {
 			ctx.addIssue({
 				code: "custom",
 				path: ["collector_url"],
@@ -876,24 +927,24 @@ export const otelConfigSchema = z
 
 		// Validate collector_url format — skip format check for env var references
 		const collectorUrl = (data.collector_url?.value || "").trim();
-		if (collectorUrl && !data.collector_url?.from_env && protocol === "http") {
+		if (collectorUrl && (data.collector_url?.type === "plain_text" || !data.collector_url?.type) && protocol === "http") {
 			validateHttpUrl(collectorUrl, ["collector_url"]);
-		} else if (collectorUrl && !data.collector_url?.from_env && protocol === "grpc") {
+		} else if (collectorUrl && (data.collector_url?.type === "plain_text" || !data.collector_url?.type) && protocol === "grpc") {
 			validateHostPort(collectorUrl, ["collector_url"], "otel-collector:4317");
 		}
 
 		// Validate metrics_endpoint when metrics_enabled is true
 		if (data.metrics_enabled) {
 			const metricsEndpoint = (data.metrics_endpoint?.value || "").trim();
-			if (!isEnvVarSet(data.metrics_endpoint)) {
+			if (!isSecretVarSet(data.metrics_endpoint)) {
 				ctx.addIssue({
 					code: "custom",
 					path: ["metrics_endpoint"],
 					message: "Metrics endpoint is required when metrics push is enabled",
 				});
-			} else if (metricsEndpoint && !data.metrics_endpoint?.from_env && protocol === "http") {
+			} else if (metricsEndpoint && (data.metrics_endpoint?.type === "plain_text" || !data.metrics_endpoint?.type) && protocol === "http") {
 				validateHttpUrl(metricsEndpoint, ["metrics_endpoint"]);
-			} else if (metricsEndpoint && !data.metrics_endpoint?.from_env && protocol === "grpc") {
+			} else if (metricsEndpoint && (data.metrics_endpoint?.type === "plain_text" || !data.metrics_endpoint?.type) && protocol === "grpc") {
 				validateHostPort(metricsEndpoint, ["metrics_endpoint"], "otel-collector:4317");
 			}
 		}
@@ -941,17 +992,17 @@ export const maximFormSchema = z
 // Prometheus Push Gateway Configuration Schema
 export const prometheusConfigSchema = z
 	.object({
-		push_gateway_url: envVarSchema.optional(),
+		push_gateway_url: secretVarSchema.optional(),
 		job_name: z.string().default("bifrost"),
 		instance_id: z.string().optional(),
 		push_interval: z.number().min(1).max(300).default(15),
-		basic_auth_username: envVarSchema.optional(),
-		basic_auth_password: envVarSchema.optional(),
+		basic_auth_username: secretVarSchema.optional(),
+		basic_auth_password: secretVarSchema.optional(),
 	})
 	.superRefine((data, ctx) => {
 		// Validate push_gateway_url format — skip for env var references
 		const url = (data.push_gateway_url?.value || "").trim();
-		if (url && !data.push_gateway_url?.from_env) {
+		if (url && (data.push_gateway_url?.type === "plain_text" || !data.push_gateway_url?.type)) {
 			try {
 				const u = new URL(url);
 				if (!(u.protocol === "http:" || u.protocol === "https:")) {
@@ -971,8 +1022,8 @@ export const prometheusConfigSchema = z
 		}
 
 		// Validate basic auth: if one credential is provided, both must be provided
-		const hasUsername = isEnvVarSet(data.basic_auth_username);
-		const hasPassword = isEnvVarSet(data.basic_auth_password);
+		const hasUsername = isSecretVarSet(data.basic_auth_username);
+		const hasPassword = isSecretVarSet(data.basic_auth_password);
 		if (hasUsername && !hasPassword) {
 			ctx.addIssue({
 				code: "custom",
@@ -998,7 +1049,7 @@ export const prometheusFormSchema = z
 	})
 	.superRefine((data, ctx) => {
 		if (data.push_gateway_enabled) {
-			const urlIsSet = isEnvVarSet(data.prometheus_config.push_gateway_url);
+			const urlIsSet = isSecretVarSet(data.prometheus_config.push_gateway_url);
 			if (!urlIsSet) {
 				ctx.addIssue({
 					code: "custom",
@@ -1027,7 +1078,7 @@ export const mcpClientUpdateSchema = z.object({
 		.refine((val) => !/^[0-9]/.test(val), {
 			message: "Client name cannot start with a number",
 		}),
-	headers: z.record(z.string(), envVarSchema).optional().nullable(),
+	headers: z.record(z.string(), secretVarSchema).optional().nullable(),
 	per_user_header_keys: z
 		.array(z.string().trim().min(1, "Header name cannot be empty"))
 		.optional()
@@ -1077,6 +1128,7 @@ export const mcpClientUpdateSchema = z.object({
 		),
 	tool_pricing: z.record(z.string(), z.number().min(0, "Cost must be non-negative")).optional(),
 	tool_sync_interval: z.number().optional(), // -1 = disabled, 0 = use global, >0 = custom interval in minutes
+	tool_execution_timeout: z.number().int().min(0).optional(), // 0 = use global, >0 = per-server timeout in seconds
 	allowed_extra_headers: z
 		.array(z.string())
 		.optional()
@@ -1090,14 +1142,14 @@ export const mcpClientUpdateSchema = z.object({
 		),
 	oauth_config: z
 		.object({
-			client_id: envVarSchema.optional(),
-			client_secret: envVarSchema.optional(),
+			client_id: secretVarSchema.optional(),
+			client_secret: secretVarSchema.optional(),
 		})
 		.optional(),
 	tls_config: z
 		.object({
 			insecure_skip_verify: z.boolean().optional(),
-			ca_cert_pem: envVarSchema.optional(),
+			ca_cert_pem: secretVarSchema.optional(),
 		})
 		.optional(),
 });
@@ -1191,7 +1243,7 @@ export const routingRuleSchema = z
 	});
 
 // Export type inference helpers
-export type EnvVar = z.infer<typeof envVarSchema>;
+export type SecretVar = z.infer<typeof secretVarSchema>;
 export type MCPClientUpdateSchema = z.infer<typeof mcpClientUpdateSchema>;
 export type ModelProviderKeySchema = z.infer<typeof modelProviderKeySchema>;
 export type NetworkConfigSchema = z.infer<typeof networkConfigSchema>;

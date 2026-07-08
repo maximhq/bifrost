@@ -1,13 +1,22 @@
 package integrations
 
 import (
+	"bytes"
 	"context"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream"
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/bedrock"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/kvstore"
 	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -19,6 +28,7 @@ type mockHandlerStore struct {
 	headerMatcher              *lib.HeaderMatcher
 	availableProviders         []schemas.ModelProvider
 	mcpHeaderCombinedAllowlist schemas.WhiteList
+	modelCatalog               *modelcatalog.ModelCatalog
 }
 
 func (m *mockHandlerStore) GetHeaderMatcher() *lib.HeaderMatcher {
@@ -65,8 +75,41 @@ func (m *mockHandlerStore) GetMCPExternalClientURL() string {
 	return ""
 }
 
+func (m *mockHandlerStore) GetModelCatalog() *modelcatalog.ModelCatalog {
+	return m.modelCatalog
+}
+
 // Ensure mockHandlerStore implements lib.HandlerStore
 var _ lib.HandlerStore = (*mockHandlerStore)(nil)
+
+func TestGenericRouter_MarkDeprecatedListModelsResponseUsesCatalog(t *testing.T) {
+	pricingPath := filepath.Join(t.TempDir(), "pricing.json")
+	pricingJSON := []byte(`{
+		"deprecated-model": {"provider":"openai","mode":"chat","base_model":"deprecated-model","is_deprecated":true},
+		"current-model": {"provider":"openai","mode":"chat","base_model":"current-model"}
+	}`)
+	require.NoError(t, os.WriteFile(pricingPath, pricingJSON, 0o600))
+	ds := datasheet.New(nil, nil, datasheet.Config{URL: "file://" + pricingPath})
+	require.NoError(t, ds.LoadFromURLIntoMemory(t.Context()))
+	router := NewGenericRouter(nil, &mockHandlerStore{modelCatalog: modelcatalog.NewTestCatalogWithDatasheet(ds)}, nil, nil, nil)
+	resp := &schemas.BifrostListModelsResponse{Data: []schemas.Model{
+		{ID: "openai/deprecated-model"},
+		{ID: "openai/current-model"},
+		{ID: "openai/provider-deprecated", IsDeprecated: true},
+	}}
+
+	router.markDeprecatedListModelsResponse(resp)
+
+	// No models are removed; deprecated ones are flagged instead.
+	require.Len(t, resp.Data, 3)
+	byID := map[string]schemas.Model{}
+	for _, m := range resp.Data {
+		byID[m.ID] = m
+	}
+	assert.True(t, byID["openai/deprecated-model"].IsDeprecated)
+	assert.False(t, byID["openai/current-model"].IsDeprecated)
+	assert.True(t, byID["openai/provider-deprecated"].IsDeprecated)
+}
 
 func Test_parseS3URI(t *testing.T) {
 	tests := []struct {
@@ -175,6 +218,7 @@ func Test_createBedrockConverseStreamRouteConfig(t *testing.T) {
 	assert.Equal(t, "POST", route.Method)
 	assert.Equal(t, RouteConfigTypeBedrock, route.Type)
 	assert.NotNil(t, route.StreamConfig)
+	assert.NotNil(t, route.StreamConfig.ErrorConverter)
 	assert.NotNil(t, route.StreamConfig.ResponsesStreamResponseConverter)
 
 	// Verify request instance type
@@ -207,6 +251,7 @@ func Test_createBedrockInvokeWithResponseStreamRouteConfig(t *testing.T) {
 	assert.Equal(t, "POST", route.Method)
 	assert.Equal(t, RouteConfigTypeBedrock, route.Type)
 	assert.NotNil(t, route.StreamConfig)
+	assert.NotNil(t, route.StreamConfig.ErrorConverter)
 	assert.NotNil(t, route.StreamConfig.TextStreamResponseConverter)
 	assert.NotNil(t, route.StreamConfig.ResponsesStreamResponseConverter)
 
@@ -214,6 +259,114 @@ func Test_createBedrockInvokeWithResponseStreamRouteConfig(t *testing.T) {
 	reqInstance := route.GetRequestTypeInstance(context.Background())
 	_, ok := reqInstance.(*bedrock.BedrockInvokeRequest)
 	assert.True(t, ok, "GetRequestTypeInstance should return *bedrock.BedrockInvokeRequest")
+}
+
+func Test_bedrockStreamErrorConverterEncodesEventStreamException(t *testing.T) {
+	errType := "PluginDenied"
+	statusCode := fasthttp.StatusForbidden
+	bifrostErr := &schemas.BifrostError{
+		Type:       &errType,
+		StatusCode: &statusCode,
+		Error: &schemas.ErrorField{
+			Message: "blocked by policy",
+		},
+	}
+
+	converted := bedrockStreamErrorConverter(nil, bifrostErr)
+	exception, ok := converted.(*bedrockEventStreamException)
+	require.True(t, ok)
+
+	reader := lib.NewSSEStreamReader()
+	require.True(t, sendBedrockEventStreamException(reader, eventstream.NewEncoder(), exception, bifrost.NewNoOpLogger()))
+	reader.Done()
+
+	body, err := io.ReadAll(reader)
+	require.NoError(t, err)
+	require.False(t, bytes.HasPrefix(body, []byte("data: ")), "Bedrock streaming errors must not be plain SSE")
+
+	msg, err := eventstream.NewDecoder().Decode(bytes.NewReader(body), nil)
+	require.NoError(t, err)
+	assert.Equal(t, "exception", eventStreamHeaderString(t, msg.Headers, ":message-type"))
+	assert.Equal(t, "PluginDenied", eventStreamHeaderString(t, msg.Headers, ":exception-type"))
+	assert.JSONEq(t, `{"__type":"PluginDenied","message":"blocked by policy"}`, string(msg.Payload))
+	assert.False(t, strings.Contains(string(body), "data:"), "AWS EventStream bytes must not contain SSE framing")
+}
+
+func Test_toBedrockEventStreamExceptionAcceptsBedrockError(t *testing.T) {
+	exception, ok := toBedrockEventStreamException(&bedrock.BedrockError{
+		Type:    "ValidationException",
+		Message: "invalid request",
+	})
+	require.True(t, ok)
+
+	reader := lib.NewSSEStreamReader()
+	require.True(t, sendBedrockEventStreamException(reader, eventstream.NewEncoder(), exception, bifrost.NewNoOpLogger()))
+	reader.Done()
+
+	body, err := io.ReadAll(reader)
+	require.NoError(t, err)
+	require.False(t, bytes.HasPrefix(body, []byte("data: ")), "Bedrock streaming errors must not be plain SSE")
+
+	msg, err := eventstream.NewDecoder().Decode(bytes.NewReader(body), nil)
+	require.NoError(t, err)
+	assert.Equal(t, "exception", eventStreamHeaderString(t, msg.Headers, ":message-type"))
+	assert.Equal(t, "ValidationException", eventStreamHeaderString(t, msg.Headers, ":exception-type"))
+	assert.JSONEq(t, `{"__type":"ValidationException","message":"invalid request"}`, string(msg.Payload))
+}
+
+func Test_handleStreamingBedrockUnknownErrorResponseFallsBackToEventStreamException(t *testing.T) {
+	stream := make(chan *schemas.BifrostStreamChunk, 1)
+	statusCode := fasthttp.StatusInternalServerError
+	stream <- &schemas.BifrostStreamChunk{
+		BifrostError: &schemas.BifrostError{
+			StatusCode: &statusCode,
+			Error: &schemas.ErrorField{
+				Message: "plugin returned an unsupported error envelope",
+			},
+		},
+	}
+	close(stream)
+
+	router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, bifrost.NewNoOpLogger())
+	ctx := &fasthttp.RequestCtx{}
+	cancelCalled := false
+	router.handleStreaming(ctx, nil, RouteConfig{
+		Type: RouteConfigTypeBedrock,
+		StreamConfig: &StreamConfig{
+			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+				return map[string]interface{}{
+					"unexpected": "shape",
+				}
+			},
+		},
+	}, stream, func() {
+		cancelCalled = true
+	})
+
+	body, err := io.ReadAll(ctx.Response.BodyStream())
+	require.NoError(t, err)
+	require.NotEmpty(t, body)
+	require.False(t, bytes.HasPrefix(body, []byte("data: ")), "Bedrock fallback errors must not be plain SSE")
+
+	msg, err := eventstream.NewDecoder().Decode(bytes.NewReader(body), nil)
+	require.NoError(t, err)
+	assert.Equal(t, "exception", eventStreamHeaderString(t, msg.Headers, ":message-type"))
+	assert.Equal(t, "InternalServerException", eventStreamHeaderString(t, msg.Headers, ":exception-type"))
+	assert.JSONEq(t, `{"__type":"InternalServerException","message":"An error occurred while processing your request"}`, string(msg.Payload))
+	assert.False(t, cancelCalled, "fallback write should not cancel unless the client disconnects")
+}
+
+func eventStreamHeaderString(t *testing.T, headers eventstream.Headers, name string) string {
+	t.Helper()
+	for _, header := range headers {
+		if header.Name == name {
+			value, ok := header.Value.Get().(string)
+			require.True(t, ok, "%s header must be a string", name)
+			return value
+		}
+	}
+	t.Fatalf("missing EventStream header %s", name)
+	return ""
 }
 
 func Test_createBedrockRerankRouteConfig(t *testing.T) {
@@ -292,7 +445,9 @@ func Test_createBedrockRerankRouteRequestConverter(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, bifrostReq)
 	require.NotNil(t, bifrostReq.RerankRequest)
-	assert.Equal(t, schemas.Bedrock, bifrostReq.RerankRequest.Provider)
+	// Converters leave Provider empty; resolution happens later in the
+	// modelcatalogresolver PreRequestHook.
+	assert.Equal(t, schemas.ModelProvider(""), bifrostReq.RerankRequest.Provider)
 	assert.Equal(t, "capital of france", bifrostReq.RerankRequest.Query)
 	require.Len(t, bifrostReq.RerankRequest.Documents, 1)
 	assert.Equal(t, "Paris is capital of France", bifrostReq.RerankRequest.Documents[0].Text)

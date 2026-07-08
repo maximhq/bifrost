@@ -268,6 +268,9 @@ false
 {{- if hasKey .Values.bifrost.client "disableDbPingsInHealth" }}
 {{- $_ := set $client "disable_db_pings_in_health" .Values.bifrost.client.disableDbPingsInHealth }}
 {{- end }}
+{{- if hasKey .Values.bifrost.client "dumpErrorsInConsoleLogs" }}
+{{- $_ := set $client "dump_errors_in_console_logs" .Values.bifrost.client.dumpErrorsInConsoleLogs }}
+{{- end }}
 {{- if .Values.bifrost.client.headerFilterConfig }}
 {{- $headerFilter := dict }}
 {{- if .Values.bifrost.client.headerFilterConfig.allowlist }}
@@ -324,6 +327,17 @@ false
 {{- end }}
 {{- if .Values.bifrost.client.mcpExternalClientUrl }}
 {{- $_ := set $client "mcp_external_client_url" .Values.bifrost.client.mcpExternalClientUrl }}
+{{- end }}
+{{- if .Values.bifrost.client.mcpServerAuthMode }}
+{{- $_ := set $client "mcp_server_auth_mode" .Values.bifrost.client.mcpServerAuthMode }}
+{{- end }}
+{{- if .Values.bifrost.client.oauth2ServerConfig }}
+{{- $oauth2 := dict }}
+{{- with .Values.bifrost.client.oauth2ServerConfig.issuerUrl }}{{- $_ := set $oauth2 "issuer_url" . }}{{- end }}
+{{- with .Values.bifrost.client.oauth2ServerConfig.authCodeTtl }}{{- $_ := set $oauth2 "auth_code_ttl" (. | int) }}{{- end }}
+{{- with .Values.bifrost.client.oauth2ServerConfig.accessTokenTtl }}{{- $_ := set $oauth2 "access_token_ttl" (. | int) }}{{- end }}
+{{- if hasKey .Values.bifrost.client.oauth2ServerConfig "disableVkIdentity" }}{{- $_ := set $oauth2 "disable_vk_identity" .Values.bifrost.client.oauth2ServerConfig.disableVkIdentity }}{{- end }}
+{{- if $oauth2 }}{{- $_ := set $client "oauth2_server_config" $oauth2 }}{{- end }}
 {{- end }}
 {{- $_ := set $config "client" $client }}
 {{- end }}
@@ -493,6 +507,7 @@ false
 {{- if .value }}{{- $_ := set $vk "value" .value }}{{- end }}
 {{- if .description }}{{- $_ := set $vk "description" .description }}{{- end }}
 {{- if hasKey . "is_active" }}{{- $_ := set $vk "is_active" .is_active }}{{- end }}
+{{- if .expires_at }}{{- $_ := set $vk "expires_at" .expires_at }}{{- end }}
 {{- if .team_id }}{{- $_ := set $vk "team_id" .team_id }}{{- end }}
 {{- if .customer_id }}{{- $_ := set $vk "customer_id" .customer_id }}{{- end }}
 {{- if hasKey . "access_profile_id" }}{{- $_ := set $vk "access_profile_id" .access_profile_id }}{{- end }}
@@ -667,6 +682,18 @@ false
 {{- /* Load Balancer Config */ -}}
 {{- if and .Values.bifrost.loadBalancer .Values.bifrost.loadBalancer.enabled }}
 {{- $lb := dict "enabled" true }}
+{{- if hasKey .Values.bifrost.loadBalancer "directionSelectionEnabled" }}
+{{- $_ := set $lb "direction_selection_enabled" .Values.bifrost.loadBalancer.directionSelectionEnabled }}
+{{- end }}
+{{- if hasKey .Values.bifrost.loadBalancer "routeSelectionEnabled" }}
+{{- $_ := set $lb "route_selection_enabled" .Values.bifrost.loadBalancer.routeSelectionEnabled }}
+{{- end }}
+{{- if hasKey .Values.bifrost.loadBalancer "rerouteFailedDirections" }}
+{{- $_ := set $lb "reroute_failed_directions" .Values.bifrost.loadBalancer.rerouteFailedDirections }}
+{{- end }}
+{{- if hasKey .Values.bifrost.loadBalancer "pruneFailedFallbacks" }}
+{{- $_ := set $lb "prune_failed_fallbacks" .Values.bifrost.loadBalancer.pruneFailedFallbacks }}
+{{- end }}
 {{- if .Values.bifrost.loadBalancer.trackerConfig }}
 {{- $_ := set $lb "tracker_config" .Values.bifrost.loadBalancer.trackerConfig }}
 {{- end }}
@@ -687,6 +714,7 @@ false
 {{- if .sampling_rate }}{{- $_ := set $rule "sampling_rate" .sampling_rate }}{{- end }}
 {{- if .timeout }}{{- $_ := set $rule "timeout" .timeout }}{{- end }}
 {{- if hasKey . "max_turns_to_send" }}{{- $_ := set $rule "max_turns_to_send" .max_turns_to_send }}{{- end }}
+{{- if .evaluation_mode }}{{- $_ := set $rule "evaluation_mode" .evaluation_mode }}{{- end }}
 {{- if .provider_config_ids }}{{- $_ := set $rule "provider_config_ids" .provider_config_ids }}{{- end }}
 {{- $rules = append $rules $rule }}
 {{- end }}
@@ -738,6 +766,45 @@ false
 {{- $sqliteConfigStore := dict "enabled" true "type" "sqlite" "config" (dict "path" (printf "%s/config.db" .Values.bifrost.appDir)) }}
 {{- $_ := set $config "config_store" $sqliteConfigStore }}
 {{- end }}
+{{- /* Vault Store (enterprise secret management) */ -}}
+{{- if and .Values.storage.configStore.vaultStore .Values.storage.configStore.vaultStore.enabled }}
+{{- $vs := .Values.storage.configStore.vaultStore }}
+{{- $vaultStore := dict "enabled" true "type" $vs.type }}
+{{- if $vs.prefix }}
+{{- $_ := set $vaultStore "prefix" $vs.prefix }}
+{{- end }}
+{{- if $vs.accessMode }}
+{{- $_ := set $vaultStore "access_mode" $vs.accessMode }}
+{{- end }}
+{{- if $vs.aws }}
+{{- $aws := dict }}
+{{- if $vs.aws.region }}{{- $_ := set $aws "region" $vs.aws.region }}{{- end }}
+{{- if $vs.aws.accessKeyId }}{{- $_ := set $aws "access_key_id" $vs.aws.accessKeyId }}{{- end }}
+{{- if $vs.aws.secretAccessKey }}{{- $_ := set $aws "secret_access_key" $vs.aws.secretAccessKey }}{{- end }}
+{{- if $vs.aws.sessionToken }}{{- $_ := set $aws "session_token" $vs.aws.sessionToken }}{{- end }}
+{{- if $vs.aws.roleArn }}{{- $_ := set $aws "role_arn" $vs.aws.roleArn }}{{- end }}
+{{- if $vs.aws.kmsKeyId }}{{- $_ := set $aws "kms_key_id" $vs.aws.kmsKeyId }}{{- end }}
+{{- $_ := set $vaultStore "aws" $aws }}
+{{- end }}
+{{- if $vs.gcp }}
+{{- $gcp := dict }}
+{{- if $vs.gcp.projectId }}{{- $_ := set $gcp "project_id" $vs.gcp.projectId }}{{- end }}
+{{- if $vs.gcp.credentialsJson }}{{- $_ := set $gcp "credentials_json" $vs.gcp.credentialsJson }}{{- end }}
+{{- $_ := set $vaultStore "gcp" $gcp }}
+{{- end }}
+{{- if $vs.hashicorp }}
+{{- $hashicorp := dict }}
+{{- if $vs.hashicorp.address }}{{- $_ := set $hashicorp "address" $vs.hashicorp.address }}{{- end }}
+{{- if $vs.hashicorp.token }}{{- $_ := set $hashicorp "token" $vs.hashicorp.token }}{{- end }}
+{{- if $vs.hashicorp.namespace }}{{- $_ := set $hashicorp "namespace" $vs.hashicorp.namespace }}{{- end }}
+{{- if $vs.hashicorp.mountPath }}{{- $_ := set $hashicorp "mount_path" $vs.hashicorp.mountPath }}{{- end }}
+{{- if $vs.hashicorp.roleId }}{{- $_ := set $hashicorp "role_id" $vs.hashicorp.roleId }}{{- end }}
+{{- if $vs.hashicorp.secretId }}{{- $_ := set $hashicorp "secret_id" $vs.hashicorp.secretId }}{{- end }}
+{{- $_ := set $vaultStore "hashicorp" $hashicorp }}
+{{- end }}
+{{- $cs := index $config "config_store" }}
+{{- $_ := set $cs "vault_store" $vaultStore }}
+{{- end }}
 {{- end }}
 {{- /* Logs Store */ -}}
 {{- if .Values.storage.logsStore.enabled }}
@@ -771,6 +838,30 @@ false
 {{- if $writer }}{{- $_ := set $logsStore "writer" $writer }}{{- end }}
 {{- end }}
 {{- $_ := set $config "logs_store" $logsStore }}
+{{- else if eq $logsStoreType "clickhouse" }}
+{{- if not .Values.storage.logsStore.clickhouse }}{{- fail "ERROR: storage.logsStore.clickhouse is required when storage.logsStore.type is 'clickhouse'." }}{{- end }}
+{{- if not .Values.storage.logsStore.clickhouse.host }}{{- fail "ERROR: storage.logsStore.clickhouse.host is required when storage.logsStore.type is 'clickhouse'." }}{{- end }}
+{{- $ch := .Values.storage.logsStore.clickhouse }}
+{{- $chConfig := dict "host" $ch.host }}
+{{- with $ch.port }}{{- $_ := set $chConfig "port" (. | toString) }}{{- end }}
+{{- with $ch.database }}{{- $_ := set $chConfig "database" . }}{{- end }}
+{{- with $ch.username }}{{- $_ := set $chConfig "username" . }}{{- end }}
+{{- with $ch.password }}{{- $_ := set $chConfig "password" . }}{{- end }}
+{{- with $ch.protocol }}{{- $_ := set $chConfig "protocol" . }}{{- end }}
+{{- if hasKey $ch "secure" }}{{- $_ := set $chConfig "secure" $ch.secure }}{{- end }}
+{{- with $ch.dialTimeout }}{{- $_ := set $chConfig "dial_timeout" (. | int) }}{{- end }}
+{{- with $ch.cluster }}{{- $_ := set $chConfig "cluster" . }}{{- end }}
+{{- $clickhouseLogsStore := dict "enabled" true "type" "clickhouse" "config" $chConfig }}
+{{- if .Values.storage.logsStore.writer }}
+{{- $writer := dict }}
+{{- with .Values.storage.logsStore.writer.maxBatchSize }}{{- $_ := set $writer "max_batch_size" (. | int) }}{{- end }}
+{{- with .Values.storage.logsStore.writer.batchInterval }}{{- $_ := set $writer "batch_interval" . }}{{- end }}
+{{- with .Values.storage.logsStore.writer.maxBatchBytes }}{{- $_ := set $writer "max_batch_bytes" (. | int) }}{{- end }}
+{{- with .Values.storage.logsStore.writer.writeQueueCapacity }}{{- $_ := set $writer "write_queue_capacity" (. | int) }}{{- end }}
+{{- with .Values.storage.logsStore.writer.deferredUsageConcurrency }}{{- $_ := set $writer "deferred_usage_concurrency" (. | int) }}{{- end }}
+{{- if $writer }}{{- $_ := set $clickhouseLogsStore "writer" $writer }}{{- end }}
+{{- end }}
+{{- $_ := set $config "logs_store" $clickhouseLogsStore }}
 {{- else }}
 {{- $sqliteLogsStore := dict "enabled" true "type" "sqlite" "config" (dict "path" (printf "%s/logs.db" .Values.bifrost.appDir)) }}
 {{- if .Values.storage.logsStore.writer }}
@@ -1026,6 +1117,9 @@ false
 {{- if $client.toolSyncInterval }}
 {{- $_ := set $cc "tool_sync_interval" $client.toolSyncInterval }}
 {{- end }}
+{{- if hasKey $client "toolExecutionTimeout" }}
+{{- $_ := set $cc "tool_execution_timeout" $client.toolExecutionTimeout }}
+{{- end }}
 {{- if $client.toolPricing }}
 {{- $_ := set $cc "tool_pricing" $client.toolPricing }}
 {{- end }}
@@ -1235,6 +1329,12 @@ false
 {{- if hasKey $inputConfig "disable_content_logging" }}
 {{- $_ := set $otelConfig "disable_content_logging" $inputConfig.disable_content_logging }}
 {{- end }}
+{{- if hasKey $inputConfig "group_traces_by_session" }}
+{{- $_ := set $otelConfig "group_traces_by_session" $inputConfig.group_traces_by_session }}
+{{- end }}
+{{- if hasKey $inputConfig "disable_root_span_content" }}
+{{- $_ := set $otelConfig "disable_root_span_content" $inputConfig.disable_root_span_content }}
+{{- end }}
 {{- if $inputConfig.plugin_span_filter }}
 {{- $_ := set $otelConfig "plugin_span_filter" $inputConfig.plugin_span_filter }}
 {{- end }}
@@ -1290,6 +1390,9 @@ false
 {{- end }}
 {{- if hasKey $inputConfig "disable_content_logging" }}
 {{- $_ := set $datadogConfig "disable_content_logging" $inputConfig.disable_content_logging }}
+{{- end }}
+{{- if hasKey $inputConfig "group_traces_by_session" }}
+{{- $_ := set $datadogConfig "group_traces_by_session" $inputConfig.group_traces_by_session }}
 {{- end }}
 {{- if hasKey $inputConfig "agentless" }}
 {{- $_ := set $datadogConfig "agentless" $inputConfig.agentless }}
@@ -1525,6 +1628,10 @@ false
 {{- if $flags }}
 {{- $_ := set $config "feature_flags" (dict "flags" $flags) }}
 {{- end }}
+{{- end }}
+{{- /* Circuit Breaker Config */ -}}
+{{- if .Values.bifrost.circuitBreakerConfig }}
+{{- $_ := set $config "circuit_breaker_config" .Values.bifrost.circuitBreakerConfig }}
 {{- end }}
 {{- $config | toJson }}
 {{- end }}

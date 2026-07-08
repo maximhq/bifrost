@@ -43,6 +43,46 @@ var securityHeaders = []string{
 	"x-bf-vk",
 }
 
+func getPasswordPolicyFailures(password string) []string {
+	failures := make([]string, 0, 5)
+	hasUppercase := false
+	hasLowercase := false
+	hasDigit := false
+	hasSpecial := false
+
+	for i := 0; i < len(password); i++ {
+		char := password[i]
+		switch {
+		case char >= 'A' && char <= 'Z':
+			hasUppercase = true
+		case char >= 'a' && char <= 'z':
+			hasLowercase = true
+		case char >= '0' && char <= '9':
+			hasDigit = true
+		default:
+			hasSpecial = true
+		}
+	}
+
+	if len(password) < 12 {
+		failures = append(failures, "at least 12 characters")
+	}
+	if !hasUppercase {
+		failures = append(failures, "one uppercase letter")
+	}
+	if !hasLowercase {
+		failures = append(failures, "one lowercase letter")
+	}
+	if !hasDigit {
+		failures = append(failures, "one number")
+	}
+	if !hasSpecial {
+		failures = append(failures, "one special character")
+	}
+
+	return failures
+}
+
 // ConfigManager is the interface for the config manager
 type ConfigManager interface {
 	UpdateAuthConfig(ctx context.Context, authConfig *configstore.AuthConfig) error
@@ -132,40 +172,34 @@ func (h *ConfigHandler) getConfig(ctx *fasthttp.RequestCtx) {
 		// Getting username and password from auth config
 		// This username password is for the dashboard authentication
 		if authConfig != nil {
-			// For password, return EnvVar structure with redacted value
+			// For password, return SecretVar structure with redacted value
 			// If from env, preserve env_var reference but clear value
 			// If not from env, show <redacted> as the value
-			var passwordEnvVar *schemas.EnvVar
-			if authConfig.AdminPassword != nil && authConfig.AdminPassword.IsFromEnv() {
-				passwordEnvVar = &schemas.EnvVar{
-					Val:     "",
-					EnvVar:  authConfig.AdminPassword.EnvVar,
-					FromEnv: true,
-				}
+			var passwordSecretVar *schemas.SecretVar
+			if authConfig.AdminPassword != nil && authConfig.AdminPassword.IsFromSecret() {
+				passwordSecretVar = authConfig.AdminPassword.FullyRedacted()
 			} else {
-				passwordEnvVar = &schemas.EnvVar{
-					Val:     "<redacted>",
-					EnvVar:  "",
-					FromEnv: false,
+				passwordSecretVar = &schemas.SecretVar{
+					Val: "<redacted>",
 				}
 			}
 			mapConfig["auth_config"] = map[string]any{
 				"admin_username": authConfig.AdminUserName,
-				"admin_password": passwordEnvVar,
+				"admin_password": passwordSecretVar,
 				"is_enabled":     authConfig.IsEnabled,
 			}
 		} else {
-			// No auth config exists yet, return default empty EnvVar values
+			// No auth config exists yet, return default empty SecretVar values
 			mapConfig["auth_config"] = map[string]any{
-				"admin_username": &schemas.EnvVar{Val: "", EnvVar: "", FromEnv: false},
-				"admin_password": &schemas.EnvVar{Val: "", EnvVar: "", FromEnv: false},
+				"admin_username": &schemas.SecretVar{},
+				"admin_password": &schemas.SecretVar{},
 				"is_enabled":     false,
 			}
 		}
 	} else {
 		mapConfig["auth_config"] = map[string]any{
-			"admin_username": &schemas.EnvVar{Val: "", EnvVar: "", FromEnv: false},
-			"admin_password": &schemas.EnvVar{Val: "", EnvVar: "", FromEnv: false},
+			"admin_username": &schemas.SecretVar{},
+			"admin_password": &schemas.SecretVar{},
 			"is_enabled":     false,
 		}
 	}
@@ -219,7 +253,7 @@ func (h *ConfigHandler) updateMetadata(ctx *fasthttp.RequestCtx) {
 	}
 	var patch map[string]any
 	if err := json.Unmarshal(ctx.PostBody(), &patch); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid request format: %v", err))
+		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
 		return
 	}
 	if len(patch) == 0 {
@@ -253,7 +287,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	}{}
 
 	if err := json.Unmarshal(ctx.PostBody(), &payload); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request format: %v", err))
+		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
 		return
 	}
 
@@ -307,6 +341,58 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	// Get current config with proper locking
 	currentConfig := h.store.ClientConfig
 	updatedConfig := currentConfig
+
+	// Validate MCP auth-mode / OAuth2 server settings before any live mutation
+	// below (drop-excess flag, MCP tool-manager reload, compat plugin reload,
+	// in-memory MCP config). A late rejection would return 400 while runtime
+	// state had already changed but DB persistence was skipped, diverging
+	// in-memory, core, and DB state.
+
+	// Validate the inbound MCP auth mode against the allowed enum
+	// (config.schema.json is the source of truth: headers | both | oauth).
+	switch payload.ClientConfig.MCPServerAuthMode {
+	case "", configstoreTables.MCPServerAuthModeHeaders, configstoreTables.MCPServerAuthModeBoth, configstoreTables.MCPServerAuthModeOAuth:
+		// valid; empty means the field was omitted from a partial update
+	default:
+		SendError(ctx, fasthttp.StatusBadRequest, "mcp_server_auth_mode must be one of: headers, both, oauth")
+		return
+	}
+
+	// oauth2_server_config only applies when discovery is enabled (both | oauth).
+	// Evaluate against the effective mode so a partial update that supplies only
+	// the config cannot smuggle it in while the stored mode is headers.
+	effectiveAuthMode := payload.ClientConfig.MCPServerAuthMode
+	if effectiveAuthMode == "" {
+		effectiveAuthMode = currentConfig.MCPServerAuthMode
+	}
+	effectiveOAuth2Config := currentConfig.OAuth2ServerConfig
+	if payload.ClientConfig.OAuth2ServerConfig != nil {
+		effectiveOAuth2Config = payload.ClientConfig.OAuth2ServerConfig
+	}
+
+	// disable_vk_identity only makes sense in oauth mode: in both mode virtual
+	// keys can still authenticate via headers, so suppressing them in the consent
+	// flow alone would be misleading. Evaluate the merged config so a partial
+	// update that switches the mode away from oauth (without resending the config)
+	// cannot leave a previously stored disable_vk_identity active.
+	if effectiveOAuth2Config != nil &&
+		effectiveOAuth2Config.DisableVKIdentity &&
+		effectiveAuthMode != configstoreTables.MCPServerAuthModeOAuth {
+		SendError(ctx, fasthttp.StatusBadRequest, "disable_vk_identity is only valid when mcp_server_auth_mode is oauth")
+		return
+	}
+
+	// Cap auth_code_ttl so a leaked one-time code can't stay valid for long.
+	// This is an unconditional invariant on the stored value — enforced in every
+	// mode (not just both | oauth), mirroring the load-time validateClientConfig
+	// check — so a save can never persist a value that would then fail boot on the
+	// next restart. A zero/omitted value falls back to the default at issuance and
+	// is left alone here.
+	if effectiveOAuth2Config != nil &&
+		effectiveOAuth2Config.AuthCodeTTL > configstoreTables.MaxAuthCodeTTL {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("auth_code_ttl must not exceed %d seconds (15 minutes)", configstoreTables.MaxAuthCodeTTL))
+		return
+	}
 
 	var restartReasons []string
 
@@ -409,6 +495,9 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	// and ReloadClientConfigFromConfigStore mutates the struct in place so the next request picks up the new value.
 	updatedConfig.DisableContentLogging = payload.ClientConfig.DisableContentLogging
 	updatedConfig.DisableDBPingsInHealth = payload.ClientConfig.DisableDBPingsInHealth
+	// No restart needed - ReloadClientConfigFromConfigStore calls CorsMiddleware.UpdateConfig,
+	// which atomically swaps in a fresh immutable snapshot carrying the new value.
+	updatedConfig.DumpErrorsInConsoleLogs = payload.ClientConfig.DumpErrorsInConsoleLogs
 
 	updatedConfig.EnforceAuthOnInference = payload.ClientConfig.EnforceAuthOnInference
 	// Sync deprecated columns to match new field so they stay consistent in the DB
@@ -497,9 +586,21 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		updatedConfig.RoutingChainMaxDepth = payload.ClientConfig.RoutingChainMaxDepth
 	}
 
-	// Update external base URLs for OAuth server metadata and client redirect_uri (nil clears each override).
+	// Update external base URL for OAuth client redirect_uri (nil clears the override).
 	// Validation is performed up front in this handler so a failure here cannot leave the process in a partial state.
 	updatedConfig.MCPExternalClientURL = payload.ClientConfig.MCPExternalClientURL
+
+	// Only update each field when explicitly provided so partial /api/config
+	// payloads do not clear stored values (matches the MCP field handling above).
+	// The enum, disable_vk_identity, and auth_code_ttl validations for these
+	// fields run up front (before any live mutation) so a rejection can't leave
+	// runtime and DB state diverged.
+	if payload.ClientConfig.MCPServerAuthMode != "" {
+		updatedConfig.MCPServerAuthMode = payload.ClientConfig.MCPServerAuthMode
+	}
+	if payload.ClientConfig.OAuth2ServerConfig != nil {
+		updatedConfig.OAuth2ServerConfig = payload.ClientConfig.OAuth2ServerConfig
+	}
 
 	// Handle HeaderFilterConfig changes
 	if !headerFilterConfigEqual(payload.ClientConfig.HeaderFilterConfig, currentConfig.HeaderFilterConfig) {
@@ -672,11 +773,10 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			}
 		} else {
 			// Compare with existing config using value comparison (not pointer comparison)
-			// Password is considered changed only if it's NOT redacted and has a value
-			// (IsRedacted() returns true for <redacted>, asterisk patterns, and env var references)
+			// Password is considered changed when it was intentionally submitted —
+			// ShouldPreserveStored() returns false for both plain values and secret refs.
 			passwordChanged := payload.AuthConfig.AdminPassword != nil &&
-				!payload.AuthConfig.AdminPassword.IsRedacted() &&
-				payload.AuthConfig.AdminPassword.GetValue() != ""
+				!payload.AuthConfig.AdminPassword.ShouldPreserveStored()
 			usernameChanged := payload.AuthConfig.AdminUserName != nil &&
 				!payload.AuthConfig.AdminUserName.Equals(authConfig.AdminUserName)
 			if payload.AuthConfig.IsEnabled != authConfig.IsEnabled ||
@@ -687,21 +787,21 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		}
 
 		if payload.AuthConfig.IsEnabled {
-			// Initialize nil pointers to empty EnvVar to prevent nil-pointer dereference
+			// Initialize nil pointers to empty SecretVar to prevent nil-pointer dereference
 			if payload.AuthConfig.AdminUserName == nil {
-				payload.AuthConfig.AdminUserName = &schemas.EnvVar{}
+				payload.AuthConfig.AdminUserName = &schemas.SecretVar{}
 			}
 			if payload.AuthConfig.AdminPassword == nil {
-				payload.AuthConfig.AdminPassword = &schemas.EnvVar{}
+				payload.AuthConfig.AdminPassword = &schemas.SecretVar{}
 			}
 
 			// Validate env variables are set if referenced
-			if payload.AuthConfig.AdminUserName.IsFromEnv() && payload.AuthConfig.AdminUserName.GetValue() == "" {
-				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("environment variable %s is not set", payload.AuthConfig.AdminUserName.EnvVar))
+			if payload.AuthConfig.AdminUserName.IsFromSecret() && payload.AuthConfig.AdminUserName.GetValue() == "" {
+				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("external reference %s for admin_username resolved to an empty value", payload.AuthConfig.AdminUserName.GetRawRef()))
 				return
 			}
-			if payload.AuthConfig.AdminPassword.IsFromEnv() && payload.AuthConfig.AdminPassword.GetValue() == "" {
-				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("environment variable %s is not set", payload.AuthConfig.AdminPassword.EnvVar))
+			if payload.AuthConfig.AdminPassword.IsFromSecret() && payload.AuthConfig.AdminPassword.GetValue() == "" {
+				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("external reference %s for admin_password resolved to an empty value", payload.AuthConfig.AdminPassword.GetRawRef()))
 				return
 			}
 
@@ -711,7 +811,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			}
 			// Fetching current Auth config
 			if payload.AuthConfig.AdminUserName.GetValue() != "" {
-				if payload.AuthConfig.AdminPassword.IsRedacted() {
+				if payload.AuthConfig.AdminPassword.ShouldPreserveStored() {
 					if authConfig == nil || authConfig.AdminPassword.GetValue() == "" {
 						SendError(ctx, fasthttp.StatusBadRequest, "auth password must be provided")
 						return
@@ -720,6 +820,11 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 					payload.AuthConfig.AdminPassword = authConfig.AdminPassword
 				} else {
 					// Password has been changed
+					passwordPolicyFailures := getPasswordPolicyFailures(payload.AuthConfig.AdminPassword.GetValue())
+					if len(passwordPolicyFailures) > 0 {
+						SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("auth password must include %s", strings.Join(passwordPolicyFailures, ", ")))
+						return
+					}
 					// We will hash the password
 					hashedPassword, err := encrypt.Hash(payload.AuthConfig.AdminPassword.GetValue())
 					if err != nil {
@@ -727,11 +832,13 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 						SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to hash password: %v", err))
 						return
 					}
-					// Preserve env-var metadata when storing hashed password
-					payload.AuthConfig.AdminPassword = &schemas.EnvVar{
-						Val:     hashedPassword,
-						FromEnv: payload.AuthConfig.AdminPassword.IsFromEnv(),
-						EnvVar:  payload.AuthConfig.AdminPassword.EnvVar,
+					// Preserve env/vault reference metadata when storing hashed password
+					if payload.AuthConfig.AdminPassword.IsFromSecret() {
+						sv := *payload.AuthConfig.AdminPassword
+						sv.Val = hashedPassword
+						payload.AuthConfig.AdminPassword = &sv
+					} else {
+						payload.AuthConfig.AdminPassword = &schemas.SecretVar{Val: hashedPassword}
 					}
 				}
 			}
@@ -744,7 +851,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			}
 		} else if authConfig != nil {
 			// Auth is being disabled but there's an existing config - preserve credentials and update disabled state
-			if payload.AuthConfig.AdminPassword == nil || payload.AuthConfig.AdminPassword.IsRedacted() || payload.AuthConfig.AdminPassword.GetValue() == "" {
+			if payload.AuthConfig.AdminPassword.ShouldPreserveStored() {
 				payload.AuthConfig.AdminPassword = authConfig.AdminPassword
 			}
 			if payload.AuthConfig.AdminUserName == nil || payload.AuthConfig.AdminUserName.GetValue() == "" {
@@ -803,7 +910,7 @@ func (h *ConfigHandler) forceSyncPricing(ctx *fasthttp.RequestCtx) {
 	ctx.SetStatusCode(fasthttp.StatusOK)
 	SendJSON(ctx, map[string]any{
 		"status":  "success",
-		"message": "pricing sync triggered",
+		"message": "pricing synced successfully",
 	})
 }
 
@@ -842,7 +949,7 @@ func (h *ConfigHandler) updateProxyConfig(ctx *fasthttp.RequestCtx) {
 
 	var payload configstoreTables.GlobalProxyConfig
 	if err := json.Unmarshal(ctx.PostBody(), &payload); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid request format: %v", err))
+		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
 		return
 	}
 

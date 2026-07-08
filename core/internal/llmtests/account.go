@@ -99,6 +99,7 @@ type TestScenarios struct {
 	FastMode                     bool // Fast mode for Opus 4.6 (beta: research preview)
 	EagerInputStreaming          bool // Fine-grained tool input streaming (Anthropic fine-grained-tool-streaming-2025-05-14)
 	ServerToolsViaOpenAIEndpoint bool // Anthropic server-tool shapes in tools[] via /v1/chat/completions (web_search / web_fetch / code_execution)
+	ResponsesLifecycle           bool // OpenAI GET/DELETE responses + input_items lifecycle (stored responses)
 }
 
 // ComprehensiveTestConfig extends TestConfig with additional scenarios
@@ -115,34 +116,34 @@ type ComprehensiveTestConfig struct {
 	SpeechSynthesisModel     string
 	ChatAudioModel           string
 	Scenarios                TestScenarios
-	Fallbacks                []schemas.Fallback     // for chat, responses, image and reasoning tests
-	TextCompletionFallbacks  []schemas.Fallback     // for text completion tests
-	TranscriptionFallbacks   []schemas.Fallback     // for transcription tests
-	SpeechSynthesisFallbacks []schemas.Fallback     // for speech synthesis tests
-	EmbeddingFallbacks       []schemas.Fallback     // for embedding tests
-	RerankFallbacks          []schemas.Fallback     // for rerank tests
-	SkipReason               string                 // Reason to skip certain tests
-	ImageGenerationModel     string                 // Model for image generation
-	ImageGenerationFallbacks []schemas.Fallback     // Fallbacks for image generation
-	ImageEditModel           string                 // Model for image editing
-	ImageEditFallbacks       []schemas.Fallback     // Fallbacks for image editing
-	ImageVariationModel      string                 // Model for image variation
-	ImageVariationFallbacks  []schemas.Fallback     // Fallbacks for image variation
-	VideoGenerationModel     string                 // Model for video generation
-	ExternalTTSProvider      schemas.ModelProvider  // External TTS provider to use for testing
-	ExternalTTSModel         string                 // External TTS model to use for testing
+	Fallbacks                []schemas.Fallback         // for chat, responses, image and reasoning tests
+	TextCompletionFallbacks  []schemas.Fallback         // for text completion tests
+	TranscriptionFallbacks   []schemas.Fallback         // for transcription tests
+	SpeechSynthesisFallbacks []schemas.Fallback         // for speech synthesis tests
+	EmbeddingFallbacks       []schemas.Fallback         // for embedding tests
+	RerankFallbacks          []schemas.Fallback         // for rerank tests
+	SkipReason               string                     // Reason to skip certain tests
+	ImageGenerationModel     string                     // Model for image generation
+	ImageGenerationFallbacks []schemas.Fallback         // Fallbacks for image generation
+	ImageEditModel           string                     // Model for image editing
+	ImageEditFallbacks       []schemas.Fallback         // Fallbacks for image editing
+	ImageVariationModel      string                     // Model for image variation
+	ImageVariationFallbacks  []schemas.Fallback         // Fallbacks for image variation
+	VideoGenerationModel     string                     // Model for video generation
+	ExternalTTSProvider      schemas.ModelProvider      // External TTS provider to use for testing
+	ExternalTTSModel         string                     // External TTS model to use for testing
 	BatchExtraParams         map[string]interface{}     // Extra params for batch operations (e.g., role_arn, output_s3_uri for Bedrock)
 	BatchOutputFolder        *schemas.BatchOutputFolder // Typed batch output location (e.g., GCS gs:// prefix for Vertex)
 	FileExtraParams          map[string]interface{}     // Extra params for file operations (e.g., s3_bucket for Bedrock)
 	FileStorageConfig        *schemas.FileStorageConfig // Typed storage config for file operations (e.g., GCS bucket for Vertex)
-	DisableParallelFor       []string               // Test scenarios to disable parallel execution for (e.g., "Transcription" for rate-limited APIs)
-	ExpectRawRequestResponse bool                   // When true, validate rawRequest/rawResponse in ExtraFields
-	PassthroughModel         string                 // Model for passthrough API tests; defaults to ChatModel when empty
-	CompactionModel          string                 // Model for compaction tests; defaults to claude-sonnet-4-6
-	ExternalCompactionModel  string                 // Model for external compaction tests; defaults to gpt-4o
-	InterleavedThinkingModel string                 // Model for interleaved thinking tests; defaults to claude-opus-4-5
-	FastModeModel            string                 // Model for fast mode tests; defaults to claude-opus-4-6
-	RealtimeModel            string                 // Model for Realtime API (e.g., "gpt-4o-realtime-preview")
+	DisableParallelFor       []string                   // Test scenarios to disable parallel execution for (e.g., "Transcription" for rate-limited APIs)
+	ExpectRawRequestResponse bool                       // When true, validate rawRequest/rawResponse in ExtraFields
+	PassthroughModel         string                     // Model for passthrough API tests; defaults to ChatModel when empty
+	CompactionModel          string                     // Model for compaction tests; defaults to claude-sonnet-4-6
+	ExternalCompactionModel  string                     // Model for external compaction tests; defaults to gpt-4o
+	InterleavedThinkingModel string                     // Model for interleaved thinking tests; defaults to claude-opus-4-5
+	FastModeModel            string                     // Model for fast mode tests; defaults to claude-opus-4-6
+	RealtimeModel            string                     // Model for Realtime API (e.g., "gpt-4o-realtime-preview")
 }
 
 // ComprehensiveTestAccount provides a test implementation of the Account interface for comprehensive testing.
@@ -162,6 +163,7 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 		schemas.OpenAI,
 		schemas.Anthropic,
 		schemas.Bedrock,
+		schemas.BedrockMantle,
 		schemas.Cohere,
 		schemas.Azure,
 		schemas.Vertex,
@@ -173,6 +175,7 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 		schemas.Elevenlabs,
 		schemas.Perplexity,
 		schemas.Cerebras,
+		schemas.DeepSeek,
 		schemas.Gemini,
 		schemas.OpenRouter,
 		schemas.HuggingFace,
@@ -181,6 +184,7 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 		schemas.Replicate,
 		schemas.VLLM,
 		schemas.Runway,
+		schemas.Runware,
 		schemas.Fireworks,
 		ProviderOpenAICustom,
 	}, nil
@@ -191,7 +195,7 @@ func replicateProviderTestKeys() []schemas.Key {
 	return []schemas.Key{
 		{
 			Name:               ReplicateKeyNameListModels,
-			Value:              *schemas.NewEnvVar("env.REPLICATE_API_KEY"),
+			Value:              *schemas.NewSecretVar("env.REPLICATE_API_KEY"),
 			Models:             []string{"*"},
 			Weight:             0,
 			UseForBatchAPI:     bifrost.Ptr(false),
@@ -199,7 +203,7 @@ func replicateProviderTestKeys() []schemas.Key {
 		},
 		{
 			Name:               ReplicateKeyNameInference,
-			Value:              *schemas.NewEnvVar("env.REPLICATE_API_KEY"),
+			Value:              *schemas.NewSecretVar("env.REPLICATE_API_KEY"),
 			Models:             []string{"*"},
 			Weight:             1.0,
 			UseForBatchAPI:     bifrost.Ptr(true),
@@ -214,7 +218,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 	case schemas.OpenAI:
 		return []schemas.Key{
 			{
-				Value:          *schemas.NewEnvVar("env.OPENAI_API_KEY"),
+				Value:          *schemas.NewSecretVar("env.OPENAI_API_KEY"),
 				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
@@ -223,7 +227,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 	case ProviderOpenAICustom:
 		return []schemas.Key{
 			{
-				Value:          *schemas.NewEnvVar("env.OPENAI_API_KEY"), // Use GROQ API key for OpenAI-compatible endpoint
+				Value:          *schemas.NewSecretVar("env.OPENAI_API_KEY"), // Use GROQ API key for OpenAI-compatible endpoint
 				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
@@ -232,7 +236,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 	case schemas.Anthropic:
 		return []schemas.Key{
 			{
-				Value:          *schemas.NewEnvVar("env.ANTHROPIC_API_KEY"),
+				Value:          *schemas.NewSecretVar("env.ANTHROPIC_API_KEY"),
 				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
@@ -241,7 +245,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 	case schemas.Bedrock:
 		return []schemas.Key{
 			{
-				Models: []string{"*"},
+				Models: []string{"claude-3.7-sonnet", "claude-4-sonnet", "claude-4.5-sonnet", "claude-4.6-sonnet", "claude-4.5-haiku", "claude-opus-4-5"},
 				Weight: 1.0,
 				Aliases: schemas.KeyAliases{
 					"claude-3.7-sonnet": {ModelID: "us.anthropic.claude-3-7-sonnet-20250219-v1:0"},
@@ -249,17 +253,18 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 					"claude-4.5-sonnet": {ModelID: "global.anthropic.claude-sonnet-4-5-20250929-v1:0"},
 					"claude-4.6-sonnet": {ModelID: "global.anthropic.claude-sonnet-4-6"},
 					"claude-4.5-haiku":  {ModelID: "global.anthropic.claude-haiku-4-5-20251001-v1:0"},
+					"claude-opus-4-5":   {ModelID: "global.anthropic.claude-opus-4-5-20251101-v1:0"},
 				},
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
-					AccessKey:    *schemas.NewEnvVar("env.AWS_ACCESS_KEY_ID"),
-					SecretKey:    *schemas.NewEnvVar("env.AWS_SECRET_ACCESS_KEY"),
-					SessionToken: schemas.NewEnvVar("env.AWS_SESSION_TOKEN"),
-					Region:       schemas.NewEnvVar(getEnvWithDefault("AWS_REGION", "us-east-1")),
-					ARN:          schemas.NewEnvVar("env.AWS_ARN"),
+					AccessKey:    *schemas.NewSecretVar("env.AWS_ACCESS_KEY_ID"),
+					SecretKey:    *schemas.NewSecretVar("env.AWS_SECRET_ACCESS_KEY"),
+					SessionToken: schemas.NewSecretVar("env.AWS_SESSION_TOKEN"),
+					Region:       schemas.NewSecretVar(getEnvWithDefault("AWS_REGION", "us-east-1")),
+					ARN:          schemas.NewSecretVar("env.AWS_ARN"),
 				},
 			},
 			{
-				Models: []string{"*"},
+				Models: []string{"claude-3.5-sonnet", "claude-3.7-sonnet", "claude-4-sonnet", "claude-4.5-sonnet", "claude-4.6-sonnet", "claude-4.5-haiku"},
 				Weight: 1.0,
 				Aliases: schemas.KeyAliases{
 					"claude-3.5-sonnet": {ModelID: "anthropic.claude-3-5-sonnet-20240620-v1:0"},
@@ -270,11 +275,10 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 					"claude-4.5-haiku":  {ModelID: "global.anthropic.claude-haiku-4-5-20251001-v1:0"},
 				},
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
-					AccessKey:    *schemas.NewEnvVar("env.AWS_ACCESS_KEY_ID"),
-					SecretKey:    *schemas.NewEnvVar("env.AWS_SECRET_ACCESS_KEY"),
-					SessionToken: schemas.NewEnvVar("env.AWS_SESSION_TOKEN"),
-					Region:       schemas.NewEnvVar(getEnvWithDefault("AWS_REGION", "us-east-1")),
-					ARN:          schemas.NewEnvVar("env.AWS_BEDROCK_ARN"),
+					AccessKey:    *schemas.NewSecretVar("env.AWS_ACCESS_KEY_ID"),
+					SecretKey:    *schemas.NewSecretVar("env.AWS_SECRET_ACCESS_KEY"),
+					SessionToken: schemas.NewSecretVar("env.AWS_SESSION_TOKEN"),
+					Region:       schemas.NewSecretVar(getEnvWithDefault("AWS_REGION", "us-east-1")),
 				},
 				UseForBatchAPI: bifrost.Ptr(true),
 			},
@@ -282,17 +286,39 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				Models: []string{"cohere.embed-v4:0", "amazon.nova-canvas-v1:0", "anthropic.claude-sonnet-4-20250514-v1:0"},
 				Weight: 1.0,
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
-					AccessKey:    *schemas.NewEnvVar("env.AWS_ACCESS_KEY_ID"),
-					SecretKey:    *schemas.NewEnvVar("env.AWS_SECRET_ACCESS_KEY"),
-					SessionToken: schemas.NewEnvVar("env.AWS_SESSION_TOKEN"),
-					Region:       schemas.NewEnvVar(getEnvWithDefault("AWS_REGION", "us-east-1")),
+					AccessKey:    *schemas.NewSecretVar("env.AWS_ACCESS_KEY_ID"),
+					SecretKey:    *schemas.NewSecretVar("env.AWS_SECRET_ACCESS_KEY"),
+					SessionToken: schemas.NewSecretVar("env.AWS_SESSION_TOKEN"),
+					Region:       schemas.NewSecretVar(getEnvWithDefault("AWS_REGION", "us-east-1")),
 				},
+			},
+		}, nil
+	case schemas.BedrockMantle:
+		// A single Bedrock Mantle endpoint serves the whole catalog (see /v1/models), so one key
+		// serves all models ("*"). The native-Anthropic surface uses "anthropic.{model}" ids (no
+		// cross-region prefix or version suffix); the OpenAI-compatible surface uses
+		// "openai.{model}" / "google.{model}".
+		return []schemas.Key{
+			{
+				Models: []string{"*"},
+				Weight: 1.0,
+				BedrockMantleKeyConfig: &schemas.BedrockMantleKeyConfig{
+					AccessKey:    *schemas.NewSecretVar("env.AWS_ACCESS_KEY_ID"),
+					SecretKey:    *schemas.NewSecretVar("env.AWS_SECRET_ACCESS_KEY"),
+					SessionToken: schemas.NewSecretVar("env.AWS_SESSION_TOKEN"),
+					Region:       schemas.NewSecretVar(getEnvWithDefault("AWS_REGION", "us-east-1")),
+				},
+				// Mantle does not support batch/file ops, but the key must pass the batch-key
+				// filter so those requests reach the provider's unsupported-operation stub
+				// (the BatchUnsupported/FileUnsupported harness checks), as other non-batch
+				// providers (e.g. Cohere) do.
+				UseForBatchAPI: bifrost.Ptr(true),
 			},
 		}, nil
 	case schemas.Cohere:
 		return []schemas.Key{
 			{
-				Value:          *schemas.NewEnvVar("env.COHERE_API_KEY"),
+				Value:          *schemas.NewSecretVar("env.COHERE_API_KEY"),
 				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
@@ -301,7 +327,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 	case schemas.Azure:
 		return []schemas.Key{
 			{
-				Value:  *schemas.NewEnvVar("env.AZURE_API_KEY"),
+				Value:  *schemas.NewSecretVar("env.AZURE_API_KEY"),
 				Models: []string{"*"},
 				Weight: 1.0,
 				Aliases: schemas.KeyAliases{
@@ -314,15 +340,15 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 					"sora-2":                 {ModelID: "sora-2"},
 				},
 				AzureKeyConfig: &schemas.AzureKeyConfig{
-					Endpoint:     *schemas.NewEnvVar("env.AZURE_ENDPOINT"),
-					ClientID:     schemas.NewEnvVar("env.AZURE_CLIENT_ID"),
-					ClientSecret: schemas.NewEnvVar("env.AZURE_CLIENT_SECRET"),
-					TenantID:     schemas.NewEnvVar("env.AZURE_TENANT_ID"),
+					Endpoint:     *schemas.NewSecretVar("env.AZURE_ENDPOINT"),
+					ClientID:     schemas.NewSecretVar("env.AZURE_CLIENT_ID"),
+					ClientSecret: schemas.NewSecretVar("env.AZURE_CLIENT_SECRET"),
+					TenantID:     schemas.NewSecretVar("env.AZURE_TENANT_ID"),
 				},
 				UseForBatchAPI: bifrost.Ptr(true),
 			},
 			{
-				Value:  *schemas.NewEnvVar("env.AZURE_API_KEY"),
+				Value:  *schemas.NewSecretVar("env.AZURE_API_KEY"),
 				Models: []string{"*"},
 				Weight: 1.0,
 				Aliases: schemas.KeyAliases{
@@ -332,7 +358,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 					"gpt-4o-mini-audio-preview": {ModelID: "gpt-4o-mini-audio-preview"},
 				},
 				AzureKeyConfig: &schemas.AzureKeyConfig{
-					Endpoint: *schemas.NewEnvVar("env.AZURE_ENDPOINT"),
+					Endpoint: *schemas.NewSecretVar("env.AZURE_ENDPOINT"),
 				},
 			},
 		}, nil
@@ -341,29 +367,29 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 
 		return []schemas.Key{
 			{
-				Value:  *schemas.NewEnvVar("env.VERTEX_API_KEY"),
+				Value:  *schemas.NewSecretVar("env.VERTEX_API_KEY"),
 				Models: []string{"text-multilingual-embedding-002", "gemini-2.5-pro", "gemini-2.5-flash-image", "imagen-4.0-generate-001", "imagen-3.0-capability-001", "semantic-ranker-default@latest", "semantic-ranker-default-004"},
 				Weight: 1.0,
 				VertexKeyConfig: &schemas.VertexKeyConfig{
-					ProjectID:       *schemas.NewEnvVar("env.VERTEX_PROJECT_ID"),
-					Region:          *schemas.NewEnvVar(getEnvWithDefault("VERTEX_REGION", "us-central1")),
-					AuthCredentials: *schemas.NewEnvVar("env.VERTEX_CREDENTIALS"),
+					ProjectID:       *schemas.NewSecretVar("env.VERTEX_PROJECT_ID"),
+					Region:          *schemas.NewSecretVar(getEnvWithDefault("VERTEX_REGION", "us-central1")),
+					AuthCredentials: *schemas.NewSecretVar("env.VERTEX_CREDENTIALS"),
 				},
 				UseForBatchAPI: bifrost.Ptr(true),
 			},
 			{
-				Value:  *schemas.NewEnvVar("env.VERTEX_API_KEY"),
+				Value:  *schemas.NewSecretVar("env.VERTEX_API_KEY"),
 				Models: []string{"veo-3.1-generate-preview"},
 				Weight: 1.0,
 				VertexKeyConfig: &schemas.VertexKeyConfig{
-					ProjectID:       *schemas.NewEnvVar("env.VERTEX_PROJECT_ID"),
-					Region:          *schemas.NewEnvVar("global"),
-					AuthCredentials: *schemas.NewEnvVar("env.VERTEX_CREDENTIALS"),
+					ProjectID:       *schemas.NewSecretVar("env.VERTEX_PROJECT_ID"),
+					Region:          *schemas.NewSecretVar("global"),
+					AuthCredentials: *schemas.NewSecretVar("env.VERTEX_CREDENTIALS"),
 				},
 				UseForBatchAPI: bifrost.Ptr(true),
 			},
 			{
-				Value:  *schemas.NewEnvVar("env.VERTEX_API_KEY"),
+				Value:  *schemas.NewSecretVar("env.VERTEX_API_KEY"),
 				Models: []string{"claude-sonnet-4-5", "claude-4.5-haiku", "claude-opus-4-5"},
 				Weight: 1.0,
 				Aliases: schemas.KeyAliases{
@@ -372,9 +398,9 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 					"claude-opus-4-5":   {ModelID: "claude-opus-4-5"},
 				},
 				VertexKeyConfig: &schemas.VertexKeyConfig{
-					ProjectID:       *schemas.NewEnvVar("env.VERTEX_PROJECT_ID"),
-					Region:          *schemas.NewEnvVar(getEnvWithDefault("VERTEX_REGION_ANTHROPIC", "us-east5")),
-					AuthCredentials: *schemas.NewEnvVar("env.VERTEX_CREDENTIALS"),
+					ProjectID:       *schemas.NewSecretVar("env.VERTEX_PROJECT_ID"),
+					Region:          *schemas.NewSecretVar(getEnvWithDefault("VERTEX_REGION_ANTHROPIC", "us-east5")),
+					AuthCredentials: *schemas.NewSecretVar("env.VERTEX_CREDENTIALS"),
 				},
 				UseForBatchAPI: bifrost.Ptr(true),
 			},
@@ -382,7 +408,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 	case schemas.Mistral:
 		return []schemas.Key{
 			{
-				Value:          *schemas.NewEnvVar("env.MISTRAL_API_KEY"),
+				Value:          *schemas.NewSecretVar("env.MISTRAL_API_KEY"),
 				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
@@ -391,7 +417,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 	case schemas.Groq:
 		return []schemas.Key{
 			{
-				Value:          *schemas.NewEnvVar("env.GROQ_API_KEY"),
+				Value:          *schemas.NewSecretVar("env.GROQ_API_KEY"),
 				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
@@ -400,7 +426,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 	case schemas.Parasail:
 		return []schemas.Key{
 			{
-				Value:          *schemas.NewEnvVar("env.PARASAIL_API_KEY"),
+				Value:          *schemas.NewSecretVar("env.PARASAIL_API_KEY"),
 				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
@@ -409,7 +435,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 	case schemas.Elevenlabs:
 		return []schemas.Key{
 			{
-				Value:          *schemas.NewEnvVar("env.ELEVENLABS_API_KEY"),
+				Value:          *schemas.NewSecretVar("env.ELEVENLABS_API_KEY"),
 				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
@@ -418,7 +444,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 	case schemas.Perplexity:
 		return []schemas.Key{
 			{
-				Value:          *schemas.NewEnvVar("env.PERPLEXITY_API_KEY"),
+				Value:          *schemas.NewSecretVar("env.PERPLEXITY_API_KEY"),
 				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
@@ -427,7 +453,16 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 	case schemas.Cerebras:
 		return []schemas.Key{
 			{
-				Value:          *schemas.NewEnvVar("env.CEREBRAS_API_KEY"),
+				Value:          *schemas.NewSecretVar("env.CEREBRAS_API_KEY"),
+				Models:         []string{"*"},
+				Weight:         1.0,
+				UseForBatchAPI: bifrost.Ptr(true),
+			},
+		}, nil
+	case schemas.DeepSeek:
+		return []schemas.Key{
+			{
+				Value:          *schemas.NewSecretVar("env.DEEPSEEK_API_KEY"),
 				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
@@ -436,7 +471,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 	case schemas.Gemini:
 		return []schemas.Key{
 			{
-				Value:          *schemas.NewEnvVar("env.GEMINI_API_KEY"),
+				Value:          *schemas.NewSecretVar("env.GEMINI_API_KEY"),
 				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
@@ -445,7 +480,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 	case schemas.OpenRouter:
 		return []schemas.Key{
 			{
-				Value:          *schemas.NewEnvVar("env.OPENROUTER_API_KEY"),
+				Value:          *schemas.NewSecretVar("env.OPENROUTER_API_KEY"),
 				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
@@ -454,7 +489,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 	case schemas.HuggingFace:
 		return []schemas.Key{
 			{
-				Value:          *schemas.NewEnvVar("env.HUGGING_FACE_API_KEY"),
+				Value:          *schemas.NewSecretVar("env.HUGGING_FACE_API_KEY"),
 				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
@@ -463,7 +498,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 	case schemas.Nebius:
 		return []schemas.Key{
 			{
-				Value:          *schemas.NewEnvVar("env.NEBIUS_API_KEY"),
+				Value:          *schemas.NewSecretVar("env.NEBIUS_API_KEY"),
 				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
@@ -472,7 +507,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 	case schemas.XAI:
 		return []schemas.Key{
 			{
-				Value:          *schemas.NewEnvVar("env.XAI_API_KEY"),
+				Value:          *schemas.NewSecretVar("env.XAI_API_KEY"),
 				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
@@ -483,7 +518,16 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 	case schemas.Runway:
 		return []schemas.Key{
 			{
-				Value:          *schemas.NewEnvVar("env.RUNWAY_API_KEY"),
+				Value:          *schemas.NewSecretVar("env.RUNWAY_API_KEY"),
+				Models:         []string{"*"},
+				Weight:         1.0,
+				UseForBatchAPI: bifrost.Ptr(true),
+			},
+		}, nil
+	case schemas.Runware:
+		return []schemas.Key{
+			{
+				Value:          *schemas.NewSecretVar("env.RUNWARE_API_KEY"),
 				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
@@ -492,8 +536,8 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 	case schemas.Fireworks:
 		return []schemas.Key{
 			{
-				Value:          *schemas.NewEnvVar("env.FIREWORKS_API_KEY"),
-				Models:         []string{"*"},
+				Value:          *schemas.NewSecretVar("env.FIREWORKS_API_KEY"),
+				Models:         []string{"accounts/fireworks/models/deepseek-v4-pro", "fireworks/qwen3-embedding-8b"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
 			},
@@ -505,7 +549,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
 				OllamaKeyConfig: &schemas.OllamaKeyConfig{
-					URL: *schemas.NewEnvVar("env.OLLAMA_BASE_URL"),
+					URL: *schemas.NewSecretVar("env.OLLAMA_BASE_URL"),
 				},
 			},
 		}, nil
@@ -516,7 +560,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
 				VLLMKeyConfig: &schemas.VLLMKeyConfig{
-					URL: *schemas.NewEnvVar("env.VLLM_BASE_URL"),
+					URL: *schemas.NewSecretVar("env.VLLM_BASE_URL"),
 				},
 			},
 		}, nil
@@ -582,6 +626,19 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 			},
 		}, nil
 	case schemas.Bedrock:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 120,
+				MaxRetries:                     10, // AWS services can have occasional issues
+				RetryBackoffInitial:            5 * time.Second,
+				RetryBackoffMax:                40 * time.Second,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
+	case schemas.BedrockMantle:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
 				DefaultRequestTimeoutInSeconds: 120,
@@ -739,6 +796,19 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 				BufferSize:  10,
 			},
 		}, nil
+	case schemas.DeepSeek:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 120,
+				MaxRetries:                     10,
+				RetryBackoffInitial:            5 * time.Second,
+				RetryBackoffMax:                3 * time.Minute,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
 	case schemas.VLLM:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
@@ -844,6 +914,19 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 				BufferSize:  10,
 			},
 		}, nil
+	case schemas.Runware:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 300,
+				MaxRetries:                     10,
+				RetryBackoffInitial:            1 * time.Second,
+				RetryBackoffMax:                12 * time.Second,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
 	case schemas.Fireworks:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
@@ -925,6 +1008,7 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			ContainerFileRetrieve:      true, // OpenAI supports container file API
 			ContainerFileContent:       true, // OpenAI supports container file API
 			ContainerFileDelete:        true, // OpenAI supports container file API
+			ResponsesLifecycle:         true, // OpenAI stored response retrieve/delete/input_items
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.Anthropic, Model: "claude-3-7-sonnet-20250219"},

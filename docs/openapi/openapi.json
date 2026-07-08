@@ -174,8 +174,16 @@
       "description": "Cache management endpoints"
     },
     {
+      "name": "Vault",
+      "description": "Vault secret management endpoints"
+    },
+    {
       "name": "Skills",
       "description": "Skills Repository management, marketplace, and download endpoints"
+    },
+    {
+      "name": "Audit Logs",
+      "description": "CADF-compliant audit log search, export, and signature verification endpoints"
     }
   ],
   "paths": {
@@ -38066,9 +38074,106 @@
       "get": {
         "operationId": "getMCPClients",
         "summary": "List MCP clients",
-        "description": "Returns a list of all configured MCP clients with their tools and connection state.",
+        "description": "Returns a paginated list of configured MCP clients with their tools and connection state.\nSupports case-insensitive name search and exact-match filtering by connection type, auth type,\ncode-mode, and enabled/disabled status. Multi-value filters accept a comma-separated list and\nuse OR semantics within a field.\n",
         "tags": [
           "MCP"
+        ],
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum number of clients to return (1–100, default 25).",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 25
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Number of clients to skip.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "description": "Case-insensitive search by client name.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "server",
+            "in": "query",
+            "description": "Filter to a single client by its exact client_id.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "connection_type",
+            "in": "query",
+            "description": "Comma-separated connection types to include (OR semantics).",
+            "schema": {
+              "type": "string",
+              "example": "http,sse"
+            }
+          },
+          {
+            "name": "auth_type",
+            "in": "query",
+            "description": "Comma-separated auth types to include (OR semantics).",
+            "schema": {
+              "type": "string",
+              "example": "oauth,per_user_oauth"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "description": "Comma-separated runtime connection states to include (OR semantics),\nresolved against live engine state. `connected` matches clients the engine\ncurrently reports as connected; `disconnected` matches everything else.\n",
+            "schema": {
+              "type": "string",
+              "example": "connected"
+            }
+          },
+          {
+            "name": "all_virtual_keys",
+            "in": "query",
+            "description": "When true, include clients that are open to all virtual keys (allow_on_all_virtual_keys). ORs with virtual_keys.",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "virtual_keys",
+            "in": "query",
+            "description": "Comma-separated virtual key IDs; includes clients explicitly assigned to any of them. ORs with all_virtual_keys.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "code_mode",
+            "in": "query",
+            "description": "Filter by code-mode clients. Omit for no filter.",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "disabled",
+            "in": "query",
+            "description": "Filter by disabled status — true returns disabled clients, false returns enabled clients. Omit for no filter.",
+            "schema": {
+              "type": "boolean"
+            }
+          }
         ],
         "security": [
           {
@@ -38081,10 +38186,50 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/MCPClient"
+                  "type": "object",
+                  "description": "Paginated list of MCP clients.",
+                  "required": [
+                    "clients",
+                    "count",
+                    "total_count",
+                    "limit",
+                    "offset"
+                  ],
+                  "properties": {
+                    "clients": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/MCPClient"
+                      }
+                    },
+                    "count": {
+                      "type": "integer",
+                      "description": "Number of clients returned in this page"
+                    },
+                    "total_count": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "Total number of clients matching the query (before pagination)"
+                    },
+                    "limit": {
+                      "type": "integer",
+                      "description": "Page size used for the response"
+                    },
+                    "offset": {
+                      "type": "integer",
+                      "description": "Page offset used for the response"
+                    }
                   }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
                 }
               }
             }
@@ -48238,6 +48383,630 @@
         }
       }
     },
+    "/api/audit-logs": {
+      "get": {
+        "operationId": "getAuditLogs",
+        "summary": "List audit logs",
+        "description": "Retrieves CADF-compliant audit log events with filtering, search, and\npagination via query parameters. Most filter dimensions accept either a\nsingle value (singular parameter, e.g. `action`) or a JSON-encoded array\nof values (plural parameter, e.g. `actions`); when both are supplied the\nplural array takes precedence.\n",
+        "tags": [
+          "Audit Logs"
+        ],
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "description": "Page number for offset-based pagination (default 1).",
+            "schema": {
+              "type": "integer",
+              "default": 1,
+              "minimum": 1
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Number of events to return per page (default 100, max 1000).",
+            "schema": {
+              "type": "integer",
+              "default": 100,
+              "maximum": 1000
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaque cursor for cursor-based pagination (from `next_cursor`).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "description": "Free-text search across audit event fields.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "action",
+            "in": "query",
+            "description": "Filter by a single CADF action.",
+            "schema": {
+              "$ref": "#/components/schemas/AuditAction"
+            }
+          },
+          {
+            "name": "actions",
+            "in": "query",
+            "description": "JSON array of CADF actions to filter by (OR match).",
+            "schema": {
+              "type": "string"
+            },
+            "example": "[\"create\",\"update\"]"
+          },
+          {
+            "name": "outcome",
+            "in": "query",
+            "description": "Filter by a single outcome.",
+            "schema": {
+              "$ref": "#/components/schemas/AuditOutcome"
+            }
+          },
+          {
+            "name": "outcomes",
+            "in": "query",
+            "description": "JSON array of outcomes to filter by (OR match).",
+            "schema": {
+              "type": "string"
+            },
+            "example": "[\"success\",\"failure\"]"
+          },
+          {
+            "name": "event_type",
+            "in": "query",
+            "description": "Filter by a single event type.",
+            "schema": {
+              "$ref": "#/components/schemas/AuditEventType"
+            }
+          },
+          {
+            "name": "event_types",
+            "in": "query",
+            "description": "JSON array of event types to filter by (OR match).",
+            "schema": {
+              "type": "string"
+            },
+            "example": "[\"activity\",\"control\"]"
+          },
+          {
+            "name": "initiator_id",
+            "in": "query",
+            "description": "Filter by a single initiator ID.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "initiator_ids",
+            "in": "query",
+            "description": "JSON array of initiator IDs to filter by (OR match).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "initiator_type",
+            "in": "query",
+            "description": "Filter by a single initiator resource type.",
+            "schema": {
+              "$ref": "#/components/schemas/AuditResourceType"
+            }
+          },
+          {
+            "name": "initiator_types",
+            "in": "query",
+            "description": "JSON array of initiator resource types to filter by (OR match).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "target_id",
+            "in": "query",
+            "description": "Filter by a single target ID.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "target_ids",
+            "in": "query",
+            "description": "JSON array of target IDs to filter by (OR match).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "target_type",
+            "in": "query",
+            "description": "Filter by a single target resource type.",
+            "schema": {
+              "$ref": "#/components/schemas/AuditResourceType"
+            }
+          },
+          {
+            "name": "target_types",
+            "in": "query",
+            "description": "JSON array of target resource types to filter by (OR match).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "start_date",
+            "in": "query",
+            "description": "Filter events at or after this time (RFC3339 or `YYYY-MM-DD`).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "end_date",
+            "in": "query",
+            "description": "Filter events at or before this time (RFC3339 or `YYYY-MM-DD`; a date is treated as end-of-day).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "period",
+            "in": "query",
+            "description": "Relative time window that overrides `start_date`/`end_date` when set (e.g. `24h`, `7d`).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "request_method",
+            "in": "query",
+            "description": "Filter by a single HTTP request method.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "request_methods",
+            "in": "query",
+            "description": "JSON array of HTTP request methods to filter by (OR match).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "request_path",
+            "in": "query",
+            "description": "Filter by a single request path prefix.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "request_paths",
+            "in": "query",
+            "description": "JSON array of request path prefixes to filter by (OR match).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "request_ip",
+            "in": "query",
+            "description": "Filter by a single client IP address.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "request_ips",
+            "in": "query",
+            "description": "JSON array of client IP addresses to filter by (OR match).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tags",
+            "in": "query",
+            "description": "JSON array of tags to filter by (any match).",
+            "schema": {
+              "type": "string"
+            },
+            "example": "[\"security\",\"auth\"]"
+          },
+          {
+            "name": "sort_by",
+            "in": "query",
+            "description": "Field to sort by (default `event_time`).",
+            "schema": {
+              "type": "string",
+              "default": "event_time"
+            }
+          },
+          {
+            "name": "sort_order",
+            "in": "query",
+            "description": "Sort direction.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "default": "desc"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditLogsResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/audit-logs/filterdata": {
+      "get": {
+        "operationId": "getAuditLogsFilterData",
+        "summary": "Get audit log filter data",
+        "description": "Returns the distinct values available for each audit log filter dimension,\nused to populate filter dropdowns in the dashboard.\n",
+        "tags": [
+          "Audit Logs"
+        ],
+        "parameters": [
+          {
+            "name": "dimensions",
+            "in": "query",
+            "description": "Comma-separated list of dimensions to return. When omitted, all\ndimensions are returned. Unknown dimensions are ignored.\n",
+            "schema": {
+              "type": "string",
+              "example": "actions,outcomes,initiators"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Optional case-insensitive substring filter applied to dimension values.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditFilterDataResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/audit-logs/export": {
+      "get": {
+        "operationId": "exportAuditLogs",
+        "summary": "Export audit logs",
+        "description": "Streams audit log events matching the supplied filters as a downloadable\nfile. Accepts the same filter query parameters as `GET /api/audit-logs`.\nThe response is returned as an attachment with a generated filename.\n",
+        "tags": [
+          "Audit Logs"
+        ],
+        "parameters": [
+          {
+            "name": "format",
+            "in": "query",
+            "description": "Export format. Defaults to `json` when omitted or unrecognized.\n- `json`: a JSON array of events\n- `jsonl`: JSON Lines, one event per line\n- `syslog`: RFC 5424 syslog format\n",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "json",
+                "jsonl",
+                "syslog"
+              ],
+              "default": "json"
+            }
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "description": "Free-text search across audit event fields.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "actions",
+            "in": "query",
+            "description": "JSON array of CADF actions to filter by (OR match).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "outcomes",
+            "in": "query",
+            "description": "JSON array of outcomes to filter by (OR match).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "event_types",
+            "in": "query",
+            "description": "JSON array of event types to filter by (OR match).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "start_date",
+            "in": "query",
+            "description": "Filter events at or after this time (RFC3339 or `YYYY-MM-DD`).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "end_date",
+            "in": "query",
+            "description": "Filter events at or before this time (RFC3339 or `YYYY-MM-DD`).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "period",
+            "in": "query",
+            "description": "Relative time window that overrides `start_date`/`end_date` when set (e.g. `24h`, `7d`).",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A streamed export of the matching audit logs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "application/x-ndjson": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/audit-logs/{id}": {
+      "get": {
+        "operationId": "getAuditLogById",
+        "summary": "Get audit log by ID",
+        "description": "Retrieves a single audit log event by its unique ID.",
+        "tags": [
+          "Audit Logs"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The unique identifier of the audit log event.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditLogResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/audit-logs/{id}/verify": {
+      "get": {
+        "operationId": "verifyAuditLogSignature",
+        "summary": "Verify audit log signature",
+        "description": "Recomputes the HMAC-SHA256 signature for a single audit log event and\ncompares it (in constant time) against the stored signature to detect\ntampering.\n",
+        "tags": [
+          "Audit Logs"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The unique identifier of the audit log event to verify.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditVerifyResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/mcp/tool-groups": {
       "get": {
         "operationId": "listMCPToolGroups",
@@ -49017,6 +49786,861 @@
           },
           "404": {
             "description": "MCP tool group not found"
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/circuit-breaker/policies": {
+      "get": {
+        "operationId": "listCircuitBreakerPolicies",
+        "summary": "List circuit breaker policies",
+        "description": "Returns all circuit breaker policies defined in this workspace.",
+        "tags": [
+          "Circuit Breaker"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "policies": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "name",
+                          "primary_provider",
+                          "primary_model",
+                          "fallback_provider",
+                          "fallback_model",
+                          "condition"
+                        ],
+                        "properties": {
+                          "name": {
+                            "type": "string",
+                            "description": "Unique name for this policy."
+                          },
+                          "enabled": {
+                            "type": "boolean",
+                            "default": true,
+                            "description": "When `false`, the policy is registered but all hooks skip it."
+                          },
+                          "primary_provider": {
+                            "type": "string",
+                            "description": "Provider to monitor (e.g. `azure`, `openai`)."
+                          },
+                          "primary_model": {
+                            "type": "string",
+                            "description": "Model name as it appears in requests (e.g. `gpt-4o-ptu`)."
+                          },
+                          "primary_key_ids": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "API key UUIDs to track individually. Each key gets its own sub-circuit.\nThe main circuit opens only when all listed keys have tripped.\nLeave empty to use a single shared circuit for all keys serving this provider+model.\n"
+                          },
+                          "fallback_provider": {
+                            "type": "string",
+                            "description": "Provider to route to when the circuit is open."
+                          },
+                          "fallback_model": {
+                            "type": "string",
+                            "description": "Model to request from the fallback provider when the circuit is open."
+                          },
+                          "condition": {
+                            "type": "object",
+                            "required": [
+                              "signals"
+                            ],
+                            "properties": {
+                              "operator": {
+                                "type": "string",
+                                "enum": [
+                                  "OR",
+                                  "AND"
+                                ],
+                                "default": "OR",
+                                "description": "How multiple signals are combined.\n`OR` (default): circuit opens when any signal matches.\n`AND`: circuit opens only when all signals match simultaneously.\n"
+                              },
+                              "signals": {
+                                "type": "array",
+                                "minItems": 1,
+                                "description": "List of response signals to evaluate. At least one required.",
+                                "items": {
+                                  "type": "object",
+                                  "required": [
+                                    "source",
+                                    "header_name"
+                                  ],
+                                  "properties": {
+                                    "source": {
+                                      "type": "string",
+                                      "enum": [
+                                        "response_header"
+                                      ],
+                                      "description": "Part of the HTTP response to inspect. Only `response_header` is currently supported."
+                                    },
+                                    "header_name": {
+                                      "type": "string",
+                                      "description": "HTTP response header name to inspect (case-insensitive)."
+                                    },
+                                    "header_value": {
+                                      "type": "string",
+                                      "description": "Trips when the header value exactly equals this string (case-insensitive).\nMutually exclusive with `header_contains`. If neither is set, the signal trips whenever the header is present.\n"
+                                    },
+                                    "header_contains": {
+                                      "type": "string",
+                                      "description": "Trips when the header value contains this substring (case-insensitive).\nMutually exclusive with `header_value`. If neither is set, the signal trips whenever the header is present.\n"
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          },
+                          "default_cooldown": {
+                            "description": "How long to keep the circuit open (in nanoseconds).\nAccepted as a Go duration string on write (e.g. `\"30s\"`, `\"5m\"`); returned as an integer (nanoseconds) on read.\nDefaults to 30 seconds (30000000000 ns).\n",
+                            "oneOf": [
+                              {
+                                "type": "string",
+                                "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+                                "description": "Go duration string accepted on write."
+                              },
+                              {
+                                "type": "integer",
+                                "format": "int64",
+                                "description": "Nanoseconds returned on read."
+                              }
+                            ]
+                          },
+                          "cooldown_header": {
+                            "type": "string",
+                            "description": "Response header whose value (in milliseconds) overrides `default_cooldown`.\nFalls back to `default_cooldown` when the header is absent or unparsable.\n"
+                          }
+                        }
+                      }
+                    },
+                    "count": {
+                      "type": "integer",
+                      "description": "Total number of policies returned."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "createCircuitBreakerPolicy",
+        "summary": "Create circuit breaker policy",
+        "description": "Creates a new circuit breaker policy and immediately activates it in the running gateway.\nReturns 409 if a policy with the same name already exists.\n",
+        "tags": [
+          "Circuit Breaker"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "name",
+                  "primary_provider",
+                  "primary_model",
+                  "fallback_provider",
+                  "fallback_model",
+                  "condition"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "description": "Unique name for this policy."
+                  },
+                  "enabled": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "When `false`, the policy is registered but all hooks skip it."
+                  },
+                  "primary_provider": {
+                    "type": "string",
+                    "description": "Provider to monitor (e.g. `azure`, `openai`)."
+                  },
+                  "primary_model": {
+                    "type": "string",
+                    "description": "Model name as it appears in requests (e.g. `gpt-4o-ptu`)."
+                  },
+                  "primary_key_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "API key UUIDs to track individually. Each key gets its own sub-circuit.\nThe main circuit opens only when all listed keys have tripped.\nLeave empty to use a single shared circuit for all keys serving this provider+model.\n"
+                  },
+                  "fallback_provider": {
+                    "type": "string",
+                    "description": "Provider to route to when the circuit is open."
+                  },
+                  "fallback_model": {
+                    "type": "string",
+                    "description": "Model to request from the fallback provider when the circuit is open."
+                  },
+                  "condition": {
+                    "type": "object",
+                    "required": [
+                      "signals"
+                    ],
+                    "properties": {
+                      "operator": {
+                        "type": "string",
+                        "enum": [
+                          "OR",
+                          "AND"
+                        ],
+                        "default": "OR",
+                        "description": "How multiple signals are combined.\n`OR` (default): circuit opens when any signal matches.\n`AND`: circuit opens only when all signals match simultaneously.\n"
+                      },
+                      "signals": {
+                        "type": "array",
+                        "minItems": 1,
+                        "description": "List of response signals to evaluate. At least one required.",
+                        "items": {
+                          "type": "object",
+                          "required": [
+                            "source",
+                            "header_name"
+                          ],
+                          "properties": {
+                            "source": {
+                              "type": "string",
+                              "enum": [
+                                "response_header"
+                              ],
+                              "description": "Part of the HTTP response to inspect. Only `response_header` is currently supported."
+                            },
+                            "header_name": {
+                              "type": "string",
+                              "description": "HTTP response header name to inspect (case-insensitive)."
+                            },
+                            "header_value": {
+                              "type": "string",
+                              "description": "Trips when the header value exactly equals this string (case-insensitive).\nMutually exclusive with `header_contains`. If neither is set, the signal trips whenever the header is present.\n"
+                            },
+                            "header_contains": {
+                              "type": "string",
+                              "description": "Trips when the header value contains this substring (case-insensitive).\nMutually exclusive with `header_value`. If neither is set, the signal trips whenever the header is present.\n"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "default_cooldown": {
+                    "description": "How long to keep the circuit open (in nanoseconds).\nAccepted as a Go duration string on write (e.g. `\"30s\"`, `\"5m\"`); returned as an integer (nanoseconds) on read.\nDefaults to 30 seconds (30000000000 ns).\n",
+                    "oneOf": [
+                      {
+                        "type": "string",
+                        "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+                        "description": "Go duration string accepted on write."
+                      },
+                      {
+                        "type": "integer",
+                        "format": "int64",
+                        "description": "Nanoseconds returned on read."
+                      }
+                    ]
+                  },
+                  "cooldown_header": {
+                    "type": "string",
+                    "description": "Response header whose value (in milliseconds) overrides `default_cooldown`.\nFalls back to `default_cooldown` when the header is absent or unparsable.\n"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Policy created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "name",
+                    "primary_provider",
+                    "primary_model",
+                    "fallback_provider",
+                    "fallback_model",
+                    "condition"
+                  ],
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "description": "Unique name for this policy."
+                    },
+                    "enabled": {
+                      "type": "boolean",
+                      "default": true,
+                      "description": "When `false`, the policy is registered but all hooks skip it."
+                    },
+                    "primary_provider": {
+                      "type": "string",
+                      "description": "Provider to monitor (e.g. `azure`, `openai`)."
+                    },
+                    "primary_model": {
+                      "type": "string",
+                      "description": "Model name as it appears in requests (e.g. `gpt-4o-ptu`)."
+                    },
+                    "primary_key_ids": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "API key UUIDs to track individually. Each key gets its own sub-circuit.\nThe main circuit opens only when all listed keys have tripped.\nLeave empty to use a single shared circuit for all keys serving this provider+model.\n"
+                    },
+                    "fallback_provider": {
+                      "type": "string",
+                      "description": "Provider to route to when the circuit is open."
+                    },
+                    "fallback_model": {
+                      "type": "string",
+                      "description": "Model to request from the fallback provider when the circuit is open."
+                    },
+                    "condition": {
+                      "type": "object",
+                      "required": [
+                        "signals"
+                      ],
+                      "properties": {
+                        "operator": {
+                          "type": "string",
+                          "enum": [
+                            "OR",
+                            "AND"
+                          ],
+                          "default": "OR",
+                          "description": "How multiple signals are combined.\n`OR` (default): circuit opens when any signal matches.\n`AND`: circuit opens only when all signals match simultaneously.\n"
+                        },
+                        "signals": {
+                          "type": "array",
+                          "minItems": 1,
+                          "description": "List of response signals to evaluate. At least one required.",
+                          "items": {
+                            "type": "object",
+                            "required": [
+                              "source",
+                              "header_name"
+                            ],
+                            "properties": {
+                              "source": {
+                                "type": "string",
+                                "enum": [
+                                  "response_header"
+                                ],
+                                "description": "Part of the HTTP response to inspect. Only `response_header` is currently supported."
+                              },
+                              "header_name": {
+                                "type": "string",
+                                "description": "HTTP response header name to inspect (case-insensitive)."
+                              },
+                              "header_value": {
+                                "type": "string",
+                                "description": "Trips when the header value exactly equals this string (case-insensitive).\nMutually exclusive with `header_contains`. If neither is set, the signal trips whenever the header is present.\n"
+                              },
+                              "header_contains": {
+                                "type": "string",
+                                "description": "Trips when the header value contains this substring (case-insensitive).\nMutually exclusive with `header_value`. If neither is set, the signal trips whenever the header is present.\n"
+                              }
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "default_cooldown": {
+                      "description": "How long to keep the circuit open (in nanoseconds).\nAccepted as a Go duration string on write (e.g. `\"30s\"`, `\"5m\"`); returned as an integer (nanoseconds) on read.\nDefaults to 30 seconds (30000000000 ns).\n",
+                      "oneOf": [
+                        {
+                          "type": "string",
+                          "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+                          "description": "Go duration string accepted on write."
+                        },
+                        {
+                          "type": "integer",
+                          "format": "int64",
+                          "description": "Nanoseconds returned on read."
+                        }
+                      ]
+                    },
+                    "cooldown_header": {
+                      "type": "string",
+                      "description": "Response header whose value (in milliseconds) overrides `default_cooldown`.\nFalls back to `default_cooldown` when the header is absent or unparsable.\n"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A policy with this name already exists."
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/circuit-breaker/policies/{name}": {
+      "put": {
+        "operationId": "updateCircuitBreakerPolicy",
+        "summary": "Update circuit breaker policy",
+        "description": "Replaces a circuit breaker policy by name. The `name` field in the request body must match the URL parameter or be omitted.\nChanges take effect immediately in the running gateway.\n",
+        "tags": [
+          "Circuit Breaker"
+        ],
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Name of the policy to update."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "name",
+                  "primary_provider",
+                  "primary_model",
+                  "fallback_provider",
+                  "fallback_model",
+                  "condition"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "description": "Unique name for this policy."
+                  },
+                  "enabled": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "When `false`, the policy is registered but all hooks skip it."
+                  },
+                  "primary_provider": {
+                    "type": "string",
+                    "description": "Provider to monitor (e.g. `azure`, `openai`)."
+                  },
+                  "primary_model": {
+                    "type": "string",
+                    "description": "Model name as it appears in requests (e.g. `gpt-4o-ptu`)."
+                  },
+                  "primary_key_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "API key UUIDs to track individually. Each key gets its own sub-circuit.\nThe main circuit opens only when all listed keys have tripped.\nLeave empty to use a single shared circuit for all keys serving this provider+model.\n"
+                  },
+                  "fallback_provider": {
+                    "type": "string",
+                    "description": "Provider to route to when the circuit is open."
+                  },
+                  "fallback_model": {
+                    "type": "string",
+                    "description": "Model to request from the fallback provider when the circuit is open."
+                  },
+                  "condition": {
+                    "type": "object",
+                    "required": [
+                      "signals"
+                    ],
+                    "properties": {
+                      "operator": {
+                        "type": "string",
+                        "enum": [
+                          "OR",
+                          "AND"
+                        ],
+                        "default": "OR",
+                        "description": "How multiple signals are combined.\n`OR` (default): circuit opens when any signal matches.\n`AND`: circuit opens only when all signals match simultaneously.\n"
+                      },
+                      "signals": {
+                        "type": "array",
+                        "minItems": 1,
+                        "description": "List of response signals to evaluate. At least one required.",
+                        "items": {
+                          "type": "object",
+                          "required": [
+                            "source",
+                            "header_name"
+                          ],
+                          "properties": {
+                            "source": {
+                              "type": "string",
+                              "enum": [
+                                "response_header"
+                              ],
+                              "description": "Part of the HTTP response to inspect. Only `response_header` is currently supported."
+                            },
+                            "header_name": {
+                              "type": "string",
+                              "description": "HTTP response header name to inspect (case-insensitive)."
+                            },
+                            "header_value": {
+                              "type": "string",
+                              "description": "Trips when the header value exactly equals this string (case-insensitive).\nMutually exclusive with `header_contains`. If neither is set, the signal trips whenever the header is present.\n"
+                            },
+                            "header_contains": {
+                              "type": "string",
+                              "description": "Trips when the header value contains this substring (case-insensitive).\nMutually exclusive with `header_value`. If neither is set, the signal trips whenever the header is present.\n"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "default_cooldown": {
+                    "description": "How long to keep the circuit open (in nanoseconds).\nAccepted as a Go duration string on write (e.g. `\"30s\"`, `\"5m\"`); returned as an integer (nanoseconds) on read.\nDefaults to 30 seconds (30000000000 ns).\n",
+                    "oneOf": [
+                      {
+                        "type": "string",
+                        "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+                        "description": "Go duration string accepted on write."
+                      },
+                      {
+                        "type": "integer",
+                        "format": "int64",
+                        "description": "Nanoseconds returned on read."
+                      }
+                    ]
+                  },
+                  "cooldown_header": {
+                    "type": "string",
+                    "description": "Response header whose value (in milliseconds) overrides `default_cooldown`.\nFalls back to `default_cooldown` when the header is absent or unparsable.\n"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Policy updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "name",
+                    "primary_provider",
+                    "primary_model",
+                    "fallback_provider",
+                    "fallback_model",
+                    "condition"
+                  ],
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "description": "Unique name for this policy."
+                    },
+                    "enabled": {
+                      "type": "boolean",
+                      "default": true,
+                      "description": "When `false`, the policy is registered but all hooks skip it."
+                    },
+                    "primary_provider": {
+                      "type": "string",
+                      "description": "Provider to monitor (e.g. `azure`, `openai`)."
+                    },
+                    "primary_model": {
+                      "type": "string",
+                      "description": "Model name as it appears in requests (e.g. `gpt-4o-ptu`)."
+                    },
+                    "primary_key_ids": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "API key UUIDs to track individually. Each key gets its own sub-circuit.\nThe main circuit opens only when all listed keys have tripped.\nLeave empty to use a single shared circuit for all keys serving this provider+model.\n"
+                    },
+                    "fallback_provider": {
+                      "type": "string",
+                      "description": "Provider to route to when the circuit is open."
+                    },
+                    "fallback_model": {
+                      "type": "string",
+                      "description": "Model to request from the fallback provider when the circuit is open."
+                    },
+                    "condition": {
+                      "type": "object",
+                      "required": [
+                        "signals"
+                      ],
+                      "properties": {
+                        "operator": {
+                          "type": "string",
+                          "enum": [
+                            "OR",
+                            "AND"
+                          ],
+                          "default": "OR",
+                          "description": "How multiple signals are combined.\n`OR` (default): circuit opens when any signal matches.\n`AND`: circuit opens only when all signals match simultaneously.\n"
+                        },
+                        "signals": {
+                          "type": "array",
+                          "minItems": 1,
+                          "description": "List of response signals to evaluate. At least one required.",
+                          "items": {
+                            "type": "object",
+                            "required": [
+                              "source",
+                              "header_name"
+                            ],
+                            "properties": {
+                              "source": {
+                                "type": "string",
+                                "enum": [
+                                  "response_header"
+                                ],
+                                "description": "Part of the HTTP response to inspect. Only `response_header` is currently supported."
+                              },
+                              "header_name": {
+                                "type": "string",
+                                "description": "HTTP response header name to inspect (case-insensitive)."
+                              },
+                              "header_value": {
+                                "type": "string",
+                                "description": "Trips when the header value exactly equals this string (case-insensitive).\nMutually exclusive with `header_contains`. If neither is set, the signal trips whenever the header is present.\n"
+                              },
+                              "header_contains": {
+                                "type": "string",
+                                "description": "Trips when the header value contains this substring (case-insensitive).\nMutually exclusive with `header_value`. If neither is set, the signal trips whenever the header is present.\n"
+                              }
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "default_cooldown": {
+                      "description": "How long to keep the circuit open (in nanoseconds).\nAccepted as a Go duration string on write (e.g. `\"30s\"`, `\"5m\"`); returned as an integer (nanoseconds) on read.\nDefaults to 30 seconds (30000000000 ns).\n",
+                      "oneOf": [
+                        {
+                          "type": "string",
+                          "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+                          "description": "Go duration string accepted on write."
+                        },
+                        {
+                          "type": "integer",
+                          "format": "int64",
+                          "description": "Nanoseconds returned on read."
+                        }
+                      ]
+                    },
+                    "cooldown_header": {
+                      "type": "string",
+                      "description": "Response header whose value (in milliseconds) overrides `default_cooldown`.\nFalls back to `default_cooldown` when the header is absent or unparsable.\n"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Policy not found."
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteCircuitBreakerPolicy",
+        "summary": "Delete circuit breaker policy",
+        "description": "Deletes a circuit breaker policy by name and removes it from the running gateway.\nAny open circuits for this policy are discarded immediately.\n",
+        "tags": [
+          "Circuit Breaker"
+        ],
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Name of the policy to delete."
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Policy deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Policy not found."
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/circuit-breaker/state": {
+      "get": {
+        "operationId": "getCircuitBreakerState",
+        "summary": "Get circuit breaker state",
+        "description": "Returns a snapshot of all currently-open circuits.\nMain circuits are keyed by policy name. Per-key sub-circuits are keyed by `\"<policy_name>\\x00<key_id>\"`.\nCircuits not present in the map are closed.\n",
+        "tags": [
+          "Circuit Breaker"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "circuits": {
+                      "type": "object",
+                      "description": "Map of circuit keys to their current state.\nMain circuit key: the policy name.\nSub-circuit key: `\"<policy_name>\\x00<key_id>\"`.\n",
+                      "additionalProperties": {
+                        "type": "object",
+                        "description": "Runtime state of a single circuit (main circuit or per-key sub-circuit).",
+                        "properties": {
+                          "status": {
+                            "type": "string",
+                            "description": "Current circuit status. `open` means the circuit is tripped and requests are being rerouted."
+                          },
+                          "opened_at": {
+                            "type": "string",
+                            "format": "date-time",
+                            "description": "When the circuit was last tripped."
+                          },
+                          "cooldown": {
+                            "type": "integer",
+                            "format": "int64",
+                            "description": "Cooldown duration in nanoseconds."
+                          },
+                          "expires_at": {
+                            "type": "string",
+                            "format": "date-time",
+                            "description": "When the cooldown expires and the circuit will be probed again."
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
           },
           "500": {
             "description": "Internal server error",
@@ -50292,6 +51916,14 @@
             }
           },
           {
+            "name": "aliases",
+            "in": "query",
+            "description": "Comma-separated list of model aliases to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "status",
             "in": "query",
             "description": "Comma-separated list of statuses to filter by",
@@ -50319,6 +51951,38 @@
             "name": "virtual_key_ids",
             "in": "query",
             "description": "Comma-separated list of virtual key IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "team_ids",
+            "in": "query",
+            "description": "Comma-separated list of team IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "customer_ids",
+            "in": "query",
+            "description": "Comma-separated list of customer IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "user_ids",
+            "in": "query",
+            "description": "Comma-separated list of user IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "business_unit_ids",
+            "in": "query",
+            "description": "Comma-separated list of business unit IDs to filter by",
             "schema": {
               "type": "string"
             }
@@ -50355,6 +52019,14 @@
             "schema": {
               "type": "string",
               "format": "date-time"
+            }
+          },
+          {
+            "name": "period",
+            "in": "query",
+            "description": "Relative time period filter",
+            "schema": {
+              "type": "string"
             }
           },
           {
@@ -50411,6 +52083,38 @@
             "description": "Only show logs with missing cost",
             "schema": {
               "type": "boolean"
+            }
+          },
+          {
+            "name": "stop_reasons",
+            "in": "query",
+            "description": "Comma-separated list of stop reasons to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cache_hit_types",
+            "in": "query",
+            "description": "Comma-separated list of cache hit types to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "parent_request_id",
+            "in": "query",
+            "description": "Parent request ID to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "metadata_<key>",
+            "in": "query",
+            "description": "Metadata filter where <key> is the metadata key to match",
+            "schema": {
+              "type": "string"
             }
           },
           {
@@ -53082,6 +54786,14 @@
             }
           },
           {
+            "name": "aliases",
+            "in": "query",
+            "description": "Comma-separated list of model aliases to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "status",
             "in": "query",
             "description": "Comma-separated list of statuses to filter by",
@@ -53109,6 +54821,38 @@
             "name": "virtual_key_ids",
             "in": "query",
             "description": "Comma-separated list of virtual key IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "team_ids",
+            "in": "query",
+            "description": "Comma-separated list of team IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "customer_ids",
+            "in": "query",
+            "description": "Comma-separated list of customer IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "user_ids",
+            "in": "query",
+            "description": "Comma-separated list of user IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "business_unit_ids",
+            "in": "query",
+            "description": "Comma-separated list of business unit IDs to filter by",
             "schema": {
               "type": "string"
             }
@@ -53145,6 +54889,14 @@
             "schema": {
               "type": "string",
               "format": "date-time"
+            }
+          },
+          {
+            "name": "period",
+            "in": "query",
+            "description": "Relative time period filter",
+            "schema": {
+              "type": "string"
             }
           },
           {
@@ -53201,6 +54953,38 @@
             "description": "Only show logs with missing cost",
             "schema": {
               "type": "boolean"
+            }
+          },
+          {
+            "name": "stop_reasons",
+            "in": "query",
+            "description": "Comma-separated list of stop reasons to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cache_hit_types",
+            "in": "query",
+            "description": "Comma-separated list of cache hit types to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "parent_request_id",
+            "in": "query",
+            "description": "Parent request ID to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "metadata_<key>",
+            "in": "query",
+            "description": "Metadata filter where <key> is the metadata key to match",
+            "schema": {
+              "type": "string"
             }
           },
           {
@@ -53290,6 +55074,991 @@
                             }
                           }
                         ]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/logs/dashboard": {
+      "get": {
+        "operationId": "getDashboard",
+        "summary": "Get consolidated dashboard data",
+        "description": "Returns every metric shown on the workspace dashboard in a single\nresponse: overview totals and histograms, provider usage, model rankings,\ndimension rankings (team, user, virtual key, customer, business unit), and\nMCP usage. Intended for external integrations that want the full dashboard\nin one call rather than orchestrating the individual endpoints.\n\nAccepts the same LLM filter parameters as the histogram and rankings\nendpoints, plus the MCP filter parameters (`tool_names`, `server_labels`)\nwhich apply to the `mcp` section. Filters are applied once and every\nsection is computed against the same time window and bucket size. The\nrequest fails as a whole if any section cannot be computed, so the payload\nis always complete.\n",
+        "tags": [
+          "Logging"
+        ],
+        "parameters": [
+          {
+            "name": "providers",
+            "in": "query",
+            "description": "Comma-separated list of providers to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "models",
+            "in": "query",
+            "description": "Comma-separated list of models to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "aliases",
+            "in": "query",
+            "description": "Comma-separated list of model aliases to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "description": "Comma-separated list of statuses to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "objects",
+            "in": "query",
+            "description": "Comma-separated list of object types to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "selected_key_ids",
+            "in": "query",
+            "description": "Comma-separated list of selected key IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "virtual_key_ids",
+            "in": "query",
+            "description": "Comma-separated list of virtual key IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "team_ids",
+            "in": "query",
+            "description": "Comma-separated list of team IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "customer_ids",
+            "in": "query",
+            "description": "Comma-separated list of customer IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "user_ids",
+            "in": "query",
+            "description": "Comma-separated list of user IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "business_unit_ids",
+            "in": "query",
+            "description": "Comma-separated list of business unit IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "routing_rule_ids",
+            "in": "query",
+            "description": "Comma-separated list of routing rule IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "routing_engine_used",
+            "in": "query",
+            "description": "Comma-separated list of routing engines to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "start_time",
+            "in": "query",
+            "description": "Start time filter (RFC3339 format)",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "end_time",
+            "in": "query",
+            "description": "End time filter (RFC3339 format)",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "period",
+            "in": "query",
+            "description": "Relative time period filter",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "min_latency",
+            "in": "query",
+            "description": "Minimum latency filter",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "max_latency",
+            "in": "query",
+            "description": "Maximum latency filter",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "min_tokens",
+            "in": "query",
+            "description": "Minimum tokens filter",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "max_tokens",
+            "in": "query",
+            "description": "Maximum tokens filter",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "min_cost",
+            "in": "query",
+            "description": "Minimum cost filter",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "max_cost",
+            "in": "query",
+            "description": "Maximum cost filter",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "missing_cost_only",
+            "in": "query",
+            "description": "Only show logs with missing cost",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "stop_reasons",
+            "in": "query",
+            "description": "Comma-separated list of stop reasons to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cache_hit_types",
+            "in": "query",
+            "description": "Comma-separated list of cache hit types to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "parent_request_id",
+            "in": "query",
+            "description": "Parent request ID to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "metadata_<key>",
+            "in": "query",
+            "description": "Metadata filter where <key> is the metadata key to match",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "content_search",
+            "in": "query",
+            "description": "Search in request/response content",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tool_names",
+            "in": "query",
+            "description": "Comma-separated list of MCP tool names to filter the MCP section by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "server_labels",
+            "in": "query",
+            "description": "Comma-separated list of MCP server labels to filter the MCP section by",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Dashboard data retrieved successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Consolidated payload containing every metric shown on the workspace\ndashboard. Each section mirrors the response of its dedicated endpoint, so\nconsumers can integrate a single call instead of orchestrating many.\n",
+                  "properties": {
+                    "meta": {
+                      "type": "object",
+                      "description": "Parameters the dashboard data was computed with",
+                      "properties": {
+                        "generated_at": {
+                          "type": "string",
+                          "format": "date-time",
+                          "description": "UTC time the response was assembled"
+                        },
+                        "bucket_size_seconds": {
+                          "type": "integer",
+                          "format": "int64",
+                          "description": "Width of every histogram bucket, derived from the time range"
+                        },
+                        "start_time": {
+                          "type": "string",
+                          "format": "date-time",
+                          "description": "Resolved start of the queried range"
+                        },
+                        "end_time": {
+                          "type": "string",
+                          "format": "date-time",
+                          "description": "Resolved end of the queried range"
+                        }
+                      }
+                    },
+                    "overview": {
+                      "type": "object",
+                      "description": "Overview tab metrics",
+                      "properties": {
+                        "stats": {
+                          "$ref": "#/components/schemas/LogStats"
+                        },
+                        "requests": {
+                          "type": "object",
+                          "description": "Time-bucketed request count histogram",
+                          "properties": {
+                            "buckets": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "description": "Time-bucketed request count",
+                                "properties": {
+                                  "timestamp": {
+                                    "type": "string",
+                                    "format": "date-time"
+                                  },
+                                  "count": {
+                                    "type": "integer",
+                                    "format": "int64"
+                                  },
+                                  "success": {
+                                    "type": "integer",
+                                    "format": "int64"
+                                  },
+                                  "error": {
+                                    "type": "integer",
+                                    "format": "int64"
+                                  }
+                                }
+                              }
+                            },
+                            "bucket_size_seconds": {
+                              "type": "integer",
+                              "format": "int64"
+                            }
+                          }
+                        },
+                        "tokens": {
+                          "type": "object",
+                          "description": "Time-bucketed token usage histogram",
+                          "properties": {
+                            "buckets": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "description": "Time-bucketed token usage",
+                                "properties": {
+                                  "timestamp": {
+                                    "type": "string",
+                                    "format": "date-time"
+                                  },
+                                  "prompt_tokens": {
+                                    "type": "integer",
+                                    "format": "int64"
+                                  },
+                                  "completion_tokens": {
+                                    "type": "integer",
+                                    "format": "int64"
+                                  },
+                                  "total_tokens": {
+                                    "type": "integer",
+                                    "format": "int64"
+                                  }
+                                }
+                              }
+                            },
+                            "bucket_size_seconds": {
+                              "type": "integer",
+                              "format": "int64"
+                            }
+                          }
+                        },
+                        "cost": {
+                          "type": "object",
+                          "description": "Time-bucketed cost histogram with model breakdown",
+                          "properties": {
+                            "buckets": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "description": "Time-bucketed cost data with model breakdown",
+                                "properties": {
+                                  "timestamp": {
+                                    "type": "string",
+                                    "format": "date-time"
+                                  },
+                                  "total_cost": {
+                                    "type": "number"
+                                  },
+                                  "by_model": {
+                                    "type": "object",
+                                    "additionalProperties": {
+                                      "type": "number"
+                                    },
+                                    "description": "Cost breakdown by model name"
+                                  }
+                                }
+                              }
+                            },
+                            "bucket_size_seconds": {
+                              "type": "integer",
+                              "format": "int64"
+                            },
+                            "models": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              },
+                              "description": "List of models present in the histogram"
+                            }
+                          }
+                        },
+                        "models": {
+                          "type": "object",
+                          "description": "Time-bucketed model usage histogram",
+                          "properties": {
+                            "buckets": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "description": "Time-bucketed model usage with success/error breakdown",
+                                "properties": {
+                                  "timestamp": {
+                                    "type": "string",
+                                    "format": "date-time"
+                                  },
+                                  "by_model": {
+                                    "type": "object",
+                                    "additionalProperties": {
+                                      "type": "object",
+                                      "description": "Usage statistics for a single model",
+                                      "properties": {
+                                        "total": {
+                                          "type": "integer",
+                                          "format": "int64"
+                                        },
+                                        "success": {
+                                          "type": "integer",
+                                          "format": "int64"
+                                        },
+                                        "error": {
+                                          "type": "integer",
+                                          "format": "int64"
+                                        }
+                                      }
+                                    },
+                                    "description": "Usage breakdown by model name"
+                                  }
+                                }
+                              }
+                            },
+                            "bucket_size_seconds": {
+                              "type": "integer",
+                              "format": "int64"
+                            },
+                            "models": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            }
+                          }
+                        },
+                        "latency": {
+                          "type": "object",
+                          "description": "Time-bucketed latency histogram",
+                          "properties": {
+                            "buckets": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "description": "Time-bucketed latency percentiles",
+                                "properties": {
+                                  "timestamp": {
+                                    "type": "string",
+                                    "format": "date-time"
+                                  },
+                                  "avg_latency": {
+                                    "type": "number"
+                                  },
+                                  "p90_latency": {
+                                    "type": "number"
+                                  },
+                                  "p95_latency": {
+                                    "type": "number"
+                                  },
+                                  "p99_latency": {
+                                    "type": "number"
+                                  },
+                                  "total_requests": {
+                                    "type": "integer",
+                                    "format": "int64"
+                                  }
+                                }
+                              }
+                            },
+                            "bucket_size_seconds": {
+                              "type": "integer",
+                              "format": "int64"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "provider_usage": {
+                      "type": "object",
+                      "description": "Provider Usage tab metrics",
+                      "properties": {
+                        "cost": {
+                          "type": "object",
+                          "description": "Time-bucketed cost histogram with provider breakdown",
+                          "properties": {
+                            "buckets": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "description": "Time-bucketed cost data with provider breakdown",
+                                "properties": {
+                                  "timestamp": {
+                                    "type": "string",
+                                    "format": "date-time"
+                                  },
+                                  "total_cost": {
+                                    "type": "number"
+                                  },
+                                  "by_provider": {
+                                    "type": "object",
+                                    "additionalProperties": {
+                                      "type": "number"
+                                    },
+                                    "description": "Cost breakdown by provider name"
+                                  }
+                                }
+                              }
+                            },
+                            "bucket_size_seconds": {
+                              "type": "integer",
+                              "format": "int64"
+                            },
+                            "providers": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            }
+                          }
+                        },
+                        "tokens": {
+                          "type": "object",
+                          "description": "Time-bucketed token histogram with provider breakdown",
+                          "properties": {
+                            "buckets": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "description": "Time-bucketed token usage with provider breakdown",
+                                "properties": {
+                                  "timestamp": {
+                                    "type": "string",
+                                    "format": "date-time"
+                                  },
+                                  "by_provider": {
+                                    "type": "object",
+                                    "additionalProperties": {
+                                      "type": "object",
+                                      "description": "Token statistics for a single provider",
+                                      "properties": {
+                                        "prompt_tokens": {
+                                          "type": "integer",
+                                          "format": "int64"
+                                        },
+                                        "completion_tokens": {
+                                          "type": "integer",
+                                          "format": "int64"
+                                        },
+                                        "total_tokens": {
+                                          "type": "integer",
+                                          "format": "int64"
+                                        }
+                                      }
+                                    },
+                                    "description": "Token usage breakdown by provider name"
+                                  }
+                                }
+                              }
+                            },
+                            "bucket_size_seconds": {
+                              "type": "integer",
+                              "format": "int64"
+                            },
+                            "providers": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            }
+                          }
+                        },
+                        "latency": {
+                          "type": "object",
+                          "description": "Time-bucketed latency histogram with provider breakdown",
+                          "properties": {
+                            "buckets": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "description": "Time-bucketed latency data with provider breakdown",
+                                "properties": {
+                                  "timestamp": {
+                                    "type": "string",
+                                    "format": "date-time"
+                                  },
+                                  "by_provider": {
+                                    "type": "object",
+                                    "additionalProperties": {
+                                      "type": "object",
+                                      "description": "Latency statistics for a single provider",
+                                      "properties": {
+                                        "avg_latency": {
+                                          "type": "number"
+                                        },
+                                        "p90_latency": {
+                                          "type": "number"
+                                        },
+                                        "p95_latency": {
+                                          "type": "number"
+                                        },
+                                        "p99_latency": {
+                                          "type": "number"
+                                        },
+                                        "total_requests": {
+                                          "type": "integer",
+                                          "format": "int64"
+                                        }
+                                      }
+                                    },
+                                    "description": "Latency breakdown by provider name"
+                                  }
+                                }
+                              }
+                            },
+                            "bucket_size_seconds": {
+                              "type": "integer",
+                              "format": "int64"
+                            },
+                            "providers": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "model_rankings": {
+                      "type": "object",
+                      "description": "Model Rankings tab data",
+                      "properties": {
+                        "rankings": {
+                          "type": "object",
+                          "description": "Models ranked by usage with trend comparison",
+                          "properties": {
+                            "rankings": {
+                              "type": "array",
+                              "items": {
+                                "allOf": [
+                                  {
+                                    "type": "object",
+                                    "description": "Aggregated stats for a single model over the query period",
+                                    "properties": {
+                                      "model": {
+                                        "type": "string"
+                                      },
+                                      "provider": {
+                                        "type": "string"
+                                      },
+                                      "total_requests": {
+                                        "type": "integer",
+                                        "format": "int64"
+                                      },
+                                      "success_count": {
+                                        "type": "integer",
+                                        "format": "int64"
+                                      },
+                                      "success_rate": {
+                                        "type": "number"
+                                      },
+                                      "total_tokens": {
+                                        "type": "integer",
+                                        "format": "int64"
+                                      },
+                                      "total_cost": {
+                                        "type": "number"
+                                      },
+                                      "avg_latency": {
+                                        "type": "number"
+                                      }
+                                    }
+                                  },
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "trend": {
+                                        "type": "object",
+                                        "description": "Percentage change versus the previous comparable period",
+                                        "properties": {
+                                          "has_previous_period": {
+                                            "type": "boolean"
+                                          },
+                                          "requests_trend": {
+                                            "type": "number"
+                                          },
+                                          "tokens_trend": {
+                                            "type": "number"
+                                          },
+                                          "cost_trend": {
+                                            "type": "number"
+                                          },
+                                          "latency_trend": {
+                                            "type": "number"
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                ]
+                              }
+                            }
+                          }
+                        },
+                        "histogram": {
+                          "type": "object",
+                          "description": "Time-bucketed model usage histogram",
+                          "properties": {
+                            "buckets": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "description": "Time-bucketed model usage with success/error breakdown",
+                                "properties": {
+                                  "timestamp": {
+                                    "type": "string",
+                                    "format": "date-time"
+                                  },
+                                  "by_model": {
+                                    "type": "object",
+                                    "additionalProperties": {
+                                      "type": "object",
+                                      "description": "Usage statistics for a single model",
+                                      "properties": {
+                                        "total": {
+                                          "type": "integer",
+                                          "format": "int64"
+                                        },
+                                        "success": {
+                                          "type": "integer",
+                                          "format": "int64"
+                                        },
+                                        "error": {
+                                          "type": "integer",
+                                          "format": "int64"
+                                        }
+                                      }
+                                    },
+                                    "description": "Usage breakdown by model name"
+                                  }
+                                }
+                              }
+                            },
+                            "bucket_size_seconds": {
+                              "type": "integer",
+                              "format": "int64"
+                            },
+                            "models": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "dimension_rankings": {
+                      "type": "object",
+                      "description": "Ranking tables keyed by dimension (`team`, `user`, `virtual_key`,\n`customer`, `business_unit`); each value is that dimension's rankings.\n",
+                      "additionalProperties": {
+                        "type": "object",
+                        "description": "Dimension values ranked by usage with trend comparison",
+                        "properties": {
+                          "rankings": {
+                            "type": "array",
+                            "items": {
+                              "allOf": [
+                                {
+                                  "type": "object",
+                                  "description": "Aggregated usage for a single dimension value (team, user, virtual key, etc.)",
+                                  "properties": {
+                                    "id": {
+                                      "type": "string"
+                                    },
+                                    "name": {
+                                      "type": "string"
+                                    },
+                                    "total_requests": {
+                                      "type": "integer",
+                                      "format": "int64"
+                                    },
+                                    "total_tokens": {
+                                      "type": "integer",
+                                      "format": "int64"
+                                    },
+                                    "total_cost": {
+                                      "type": "number"
+                                    }
+                                  }
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "trend": {
+                                      "type": "object",
+                                      "description": "Percentage change versus the previous comparable period",
+                                      "properties": {
+                                        "has_previous_period": {
+                                          "type": "boolean"
+                                        },
+                                        "requests_trend": {
+                                          "type": "number"
+                                        },
+                                        "tokens_trend": {
+                                          "type": "number"
+                                        },
+                                        "cost_trend": {
+                                          "type": "number"
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              ]
+                            }
+                          },
+                          "dimension": {
+                            "type": "string",
+                            "description": "Entity used to group dimension rankings",
+                            "enum": [
+                              "team",
+                              "customer",
+                              "business_unit",
+                              "user",
+                              "virtual_key"
+                            ]
+                          },
+                          "total_actual_requests": {
+                            "type": "integer",
+                            "format": "int64",
+                            "description": "Distinct request count over the attributed population. Only set for\nfan-out dimensions (team, customer, business_unit) on Postgres.\n"
+                          },
+                          "total_attributed_requests": {
+                            "type": "integer",
+                            "format": "int64",
+                            "description": "Requests credited to every dimension value they touch; the sum can\nexceed the real request count. Only set for fan-out dimensions.\n"
+                          }
+                        }
+                      }
+                    },
+                    "mcp": {
+                      "type": "object",
+                      "description": "MCP usage tab metrics",
+                      "properties": {
+                        "volume": {
+                          "type": "object",
+                          "description": "Time-bucketed MCP tool call volume histogram",
+                          "properties": {
+                            "buckets": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "description": "Time-bucketed MCP tool call volume",
+                                "properties": {
+                                  "timestamp": {
+                                    "type": "string",
+                                    "format": "date-time"
+                                  },
+                                  "count": {
+                                    "type": "integer",
+                                    "format": "int64"
+                                  },
+                                  "success": {
+                                    "type": "integer",
+                                    "format": "int64"
+                                  },
+                                  "error": {
+                                    "type": "integer",
+                                    "format": "int64"
+                                  }
+                                }
+                              }
+                            },
+                            "bucket_size_seconds": {
+                              "type": "integer",
+                              "format": "int64"
+                            }
+                          }
+                        },
+                        "cost": {
+                          "type": "object",
+                          "description": "Time-bucketed MCP cost histogram",
+                          "properties": {
+                            "buckets": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "description": "Time-bucketed MCP cost data",
+                                "properties": {
+                                  "timestamp": {
+                                    "type": "string",
+                                    "format": "date-time"
+                                  },
+                                  "total_cost": {
+                                    "type": "number"
+                                  }
+                                }
+                              }
+                            },
+                            "bucket_size_seconds": {
+                              "type": "integer",
+                              "format": "int64"
+                            }
+                          }
+                        },
+                        "top_tools": {
+                          "type": "object",
+                          "description": "Top MCP tools by call count (limit 10)",
+                          "properties": {
+                            "tools": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "description": "Aggregated stats for a single MCP tool",
+                                "properties": {
+                                  "tool_name": {
+                                    "type": "string"
+                                  },
+                                  "count": {
+                                    "type": "integer",
+                                    "format": "int64"
+                                  },
+                                  "cost": {
+                                    "type": "number"
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
                       }
                     }
                   }
@@ -58678,6 +61447,65 @@
         }
       }
     },
+    "/api/vault/flush-cache": {
+      "post": {
+        "operationId": "flushVaultCache",
+        "summary": "Flush vault secret cache",
+        "description": "Clears the in-memory vault secret cache so the next resolution of every\n`vault.<path>` reference re-fetches from the configured backend (AWS Secrets\nManager, GCP Secret Manager, or HashiCorp Vault).\n\nUse this after rotating a secret when you cannot wait for the hourly\nbackground refresh. In a clustered deployment the flush is broadcast to all\npeer nodes automatically — you only need to call this on one node.\n\nReturns `400` if vault integration is not enabled.\n",
+        "tags": [
+          "Vault"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Vault cache flushed successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "example": "vault cache flushed"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Vault is not enabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "example": "vault is not enabled"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/ws": {
       "get": {
         "operationId": "websocketConnect",
@@ -58982,6 +61810,7 @@
           "perplexity",
           "replicate",
           "cerebras",
+          "deepseek",
           "gemini",
           "openrouter",
           "elevenlabs",
@@ -59843,7 +62672,7 @@
           "prompt_cache_retention": {
             "type": "string",
             "enum": [
-              "in-memory",
+              "in_memory",
               "24h"
             ],
             "description": "Prompt cache retention policy"
@@ -69431,7 +72260,7 @@
                 },
                 "description": "Headers to capture in log metadata. Values are extracted from incoming requests and stored in the metadata field of log entries. Case-insensitive matching. No restart required."
               },
-              "mcp_external_base_url": {
+              "mcp_external_client_url": {
                 "oneOf": [
                   {
                     "type": "string",
@@ -69453,7 +72282,66 @@
                     "additionalProperties": false
                   }
                 ],
-                "description": "Public base URL for OAuth callbacks and discovery metadata when Bifrost runs behind a reverse proxy. Overrides the host derived from the incoming request. Supports env var syntax (\"env.MY_VAR\"). Configurable via UI, API, or config.json.\n"
+                "description": "Public base URL Bifrost uses as the redirect_uri when acting as an OAuth client to upstream MCP servers (Notion, Jira, etc.). Set when Bifrost's callback endpoint is reached via a different URL than its server-side metadata. Supports env var syntax (\"env.MY_VAR\").\n"
+              },
+              "mcp_server_auth_mode": {
+                "type": "string",
+                "enum": [
+                  "headers",
+                  "both",
+                  "oauth"
+                ],
+                "default": "headers",
+                "description": "How /mcp authenticates inbound MCP clients. 'headers' (default): VK/api-key/session headers only, discovery disabled. 'both': accepts header credentials and Bifrost-issued JWTs, discovery enabled. 'oauth': Bifrost JWTs only — disables VK/header MCP access.\n"
+              },
+              "oauth2_server_config": {
+                "type": "object",
+                "description": "OAuth2 authorization server settings for /mcp. Only relevant when mcp_server_auth_mode is 'both' or 'oauth'.\n",
+                "properties": {
+                  "issuer_url": {
+                    "oneOf": [
+                      {
+                        "type": "string",
+                        "description": "Plain URL or env var reference (e.g. \"env.MY_VAR\")"
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "value": {
+                            "type": "string"
+                          },
+                          "env_var": {
+                            "type": "string"
+                          },
+                          "from_env": {
+                            "type": "boolean"
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    ],
+                    "description": "Stable public URL advertised as the OAuth2 AS issuer in discovery documents and the JWT iss claim. Required for multi-host deployments; single-host can omit it (falls back to the request Host header). Supports env var syntax (\"env.MY_VAR\").\n"
+                  },
+                  "auth_code_ttl": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 900,
+                    "default": 300,
+                    "description": "Lifetime of the single-use authorization code in seconds (default 300, max 900 = 15 minutes)."
+                  },
+                  "access_token_ttl": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "default": 600,
+                    "description": "Lifetime of the issued JWT Bearer token in seconds (default 600)."
+                  },
+                  "disable_vk_identity": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Require identity-provider login: virtual-key identity is removed from the consent flow, and existing virtual-key-mode grants are rejected at /mcp and denied on refresh. Only meaningful when mcp_server_auth_mode is 'oauth' and an identity provider is configured. Anonymous session identity is governed separately by enforce_auth_on_inference.\n"
+                  }
+                },
+                "additionalProperties": false
               }
             }
           },
@@ -69698,7 +72586,7 @@
                 },
                 "description": "Headers to capture in log metadata. Values are extracted from incoming requests and stored in the metadata field of log entries. Case-insensitive matching. No restart required."
               },
-              "mcp_external_base_url": {
+              "mcp_external_client_url": {
                 "oneOf": [
                   {
                     "type": "string",
@@ -69720,7 +72608,66 @@
                     "additionalProperties": false
                   }
                 ],
-                "description": "Public base URL for OAuth callbacks and discovery metadata when Bifrost runs behind a reverse proxy. Overrides the host derived from the incoming request. Supports env var syntax (\"env.MY_VAR\"). Configurable via UI, API, or config.json.\n"
+                "description": "Public base URL Bifrost uses as the redirect_uri when acting as an OAuth client to upstream MCP servers (Notion, Jira, etc.). Set when Bifrost's callback endpoint is reached via a different URL than its server-side metadata. Supports env var syntax (\"env.MY_VAR\").\n"
+              },
+              "mcp_server_auth_mode": {
+                "type": "string",
+                "enum": [
+                  "headers",
+                  "both",
+                  "oauth"
+                ],
+                "default": "headers",
+                "description": "How /mcp authenticates inbound MCP clients. 'headers' (default): VK/api-key/session headers only, discovery disabled. 'both': accepts header credentials and Bifrost-issued JWTs, discovery enabled. 'oauth': Bifrost JWTs only — disables VK/header MCP access.\n"
+              },
+              "oauth2_server_config": {
+                "type": "object",
+                "description": "OAuth2 authorization server settings for /mcp. Only relevant when mcp_server_auth_mode is 'both' or 'oauth'.\n",
+                "properties": {
+                  "issuer_url": {
+                    "oneOf": [
+                      {
+                        "type": "string",
+                        "description": "Plain URL or env var reference (e.g. \"env.MY_VAR\")"
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "value": {
+                            "type": "string"
+                          },
+                          "env_var": {
+                            "type": "string"
+                          },
+                          "from_env": {
+                            "type": "boolean"
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    ],
+                    "description": "Stable public URL advertised as the OAuth2 AS issuer in discovery documents and the JWT iss claim. Required for multi-host deployments; single-host can omit it (falls back to the request Host header). Supports env var syntax (\"env.MY_VAR\").\n"
+                  },
+                  "auth_code_ttl": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 900,
+                    "default": 300,
+                    "description": "Lifetime of the single-use authorization code in seconds (default 300, max 900 = 15 minutes)."
+                  },
+                  "access_token_ttl": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "default": 600,
+                    "description": "Lifetime of the issued JWT Bearer token in seconds (default 600)."
+                  },
+                  "disable_vk_identity": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Require identity-provider login: virtual-key identity is removed from the consent flow, and existing virtual-key-mode grants are rejected at /mcp and denied on refresh. Only meaningful when mcp_server_auth_mode is 'oauth' and an identity provider is configured. Anonymous session identity is governed separately by enforce_auth_on_inference.\n"
+                  }
+                },
+                "additionalProperties": false
               }
             }
           },
@@ -71813,6 +74760,14 @@
           "is_active": {
             "type": "boolean"
           },
+          "expires_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Expiry timestamp. Requests using this virtual key are rejected once it passes. Null or absent means the key never expires."
+          },
           "provider_configs": {
             "type": "array",
             "items": {
@@ -72266,6 +75221,11 @@
           "calendar_aligned": {
             "type": "boolean",
             "default": false
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Optional expiry timestamp. Must be in the future. Omit for a key that never expires."
           }
         }
       },
@@ -72373,6 +75333,10 @@
           "reset_budget_usage": {
             "type": "boolean",
             "description": "When true, resets usage for virtual-key and provider-config budget records reconciled by this update."
+          },
+          "expires_at": {
+            "type": "string",
+            "description": "RFC3339 timestamp to set a new expiry (must be in the future), empty string to clear an existing expiry, omitted to leave it unchanged."
           }
         }
       },
@@ -75701,6 +78665,24 @@
             "type": "object",
             "additionalProperties": true,
             "description": "List models response output"
+          },
+          "redaction_mapping": {
+            "type": "object",
+            "properties": {
+              "input": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                }
+              },
+              "output": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Phase-scoped placeholder-to-original-value mappings for reversible redactions. Present only on log detail responses when the caller has `Logs:Reveal`."
           }
         }
       },
@@ -75952,6 +78934,399 @@
             "example": "Cache cleared successfully"
           }
         }
+      },
+      "AuditEventType": {
+        "type": "string",
+        "description": "Classifies the audit event.",
+        "enum": [
+          "activity",
+          "monitor",
+          "control"
+        ]
+      },
+      "AuditAction": {
+        "type": "string",
+        "description": "The CADF action performed.",
+        "enum": [
+          "create",
+          "read",
+          "update",
+          "delete",
+          "authenticate",
+          "authorize",
+          "access",
+          "enable",
+          "disable",
+          "start",
+          "stop",
+          "backup",
+          "restore",
+          "export",
+          "import"
+        ]
+      },
+      "AuditOutcome": {
+        "type": "string",
+        "description": "The CADF outcome of the action.",
+        "enum": [
+          "success",
+          "failure",
+          "pending"
+        ]
+      },
+      "AuditResourceType": {
+        "type": "string",
+        "description": "The type of resource involved in an audit event (initiator or target).",
+        "enum": [
+          "user",
+          "api_key",
+          "system",
+          "provider",
+          "virtual_key",
+          "team",
+          "customer",
+          "role",
+          "permission",
+          "guardrail",
+          "mcp_client",
+          "mcp_tool_group",
+          "plugin",
+          "config",
+          "session",
+          "inference"
+        ]
+      },
+      "AuditResource": {
+        "type": "object",
+        "description": "A CADF resource (initiator, target, or observer).",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Unique identifier of the resource."
+          },
+          "typeURI": {
+            "type": "string",
+            "description": "Resource type URI (e.g., \"bifrost/user\", \"bifrost/api_key\")."
+          },
+          "name": {
+            "type": "string",
+            "description": "Human-readable name of the resource."
+          },
+          "host": {
+            "type": "string",
+            "description": "Hostname or IP address associated with the resource."
+          }
+        },
+        "required": [
+          "id",
+          "typeURI"
+        ]
+      },
+      "AuditReason": {
+        "type": "object",
+        "description": "The CADF reason for an outcome (especially for failures).",
+        "properties": {
+          "reasonCode": {
+            "type": "string",
+            "description": "Machine-readable code (e.g., \"401\", \"FORBIDDEN\")."
+          },
+          "reasonType": {
+            "type": "string",
+            "description": "Category of reason (e.g., \"HTTP\", \"policy\")."
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable description."
+          }
+        }
+      },
+      "AuditAttachment": {
+        "type": "object",
+        "description": "Additional CADF data attached to an event.",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Identifies the attachment."
+          },
+          "contentType": {
+            "type": "string",
+            "description": "MIME type of the content."
+          },
+          "content": {
+            "type": "string",
+            "description": "Attachment data (typically a JSON string)."
+          }
+        },
+        "required": [
+          "name",
+          "contentType",
+          "content"
+        ]
+      },
+      "AuditEvent": {
+        "type": "object",
+        "description": "A CADF-compliant audit event.",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Unique identifier for this event (UUID)."
+          },
+          "typeURI": {
+            "type": "string",
+            "description": "Event type URI (e.g., \"http://schemas.bifrost.io/audit/api/v1\")."
+          },
+          "eventType": {
+            "$ref": "#/components/schemas/AuditEventType"
+          },
+          "eventTime": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the event occurred (RFC 3339)."
+          },
+          "action": {
+            "$ref": "#/components/schemas/AuditAction"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/AuditOutcome"
+          },
+          "initiator": {
+            "$ref": "#/components/schemas/AuditResource"
+          },
+          "target": {
+            "$ref": "#/components/schemas/AuditResource"
+          },
+          "observer": {
+            "$ref": "#/components/schemas/AuditResource"
+          },
+          "reason": {
+            "$ref": "#/components/schemas/AuditReason"
+          },
+          "attachments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AuditAttachment"
+            }
+          },
+          "tags": {
+            "type": "array",
+            "description": "Searchable labels for categorization.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "requestMethod": {
+            "type": "string",
+            "description": "HTTP method (GET, POST, etc.)."
+          },
+          "requestPath": {
+            "type": "string",
+            "description": "HTTP request path."
+          },
+          "requestIP": {
+            "type": "string",
+            "description": "Client IP address."
+          },
+          "userAgent": {
+            "type": "string",
+            "description": "HTTP User-Agent header."
+          },
+          "duration": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Request duration in milliseconds."
+          },
+          "signature": {
+            "type": "string",
+            "description": "HMAC-SHA256 signature for tamper detection."
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the record was created in the database."
+          }
+        },
+        "required": [
+          "id",
+          "typeURI",
+          "eventType",
+          "eventTime",
+          "action",
+          "outcome",
+          "initiator",
+          "target",
+          "observer",
+          "signature",
+          "createdAt"
+        ]
+      },
+      "AuditLogsResult": {
+        "type": "object",
+        "description": "A paginated result of audit logs.",
+        "properties": {
+          "audit_logs": {
+            "type": "array",
+            "description": "The list of audit events.",
+            "items": {
+              "$ref": "#/components/schemas/AuditEvent"
+            }
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Total count of events matching the filter."
+          },
+          "page": {
+            "type": "integer",
+            "description": "Current page number."
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Page size."
+          },
+          "total_pages": {
+            "type": "integer",
+            "description": "Total number of pages."
+          },
+          "has_more": {
+            "type": "boolean",
+            "description": "Whether there are more results."
+          },
+          "next_cursor": {
+            "type": "string",
+            "description": "Opaque cursor for the next page (cursor-based pagination)."
+          }
+        },
+        "required": [
+          "audit_logs",
+          "total",
+          "page",
+          "limit",
+          "total_pages",
+          "has_more"
+        ]
+      },
+      "AuditLogResponse": {
+        "type": "object",
+        "description": "Response wrapper for a single audit log entry.",
+        "properties": {
+          "audit_log": {
+            "$ref": "#/components/schemas/AuditEvent"
+          }
+        },
+        "required": [
+          "audit_log"
+        ]
+      },
+      "AuditFilterKeyPair": {
+        "type": "object",
+        "description": "An id/name pair used for initiator and target filter dropdowns.",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ]
+      },
+      "AuditFilterDataResponse": {
+        "type": "object",
+        "description": "Distinct values available for each audit log filter dimension.",
+        "properties": {
+          "actions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "outcomes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "event_types": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "initiator_types": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "target_types": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "request_methods": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "initiators": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AuditFilterKeyPair"
+            }
+          },
+          "targets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AuditFilterKeyPair"
+            }
+          },
+          "request_paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "request_ips": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "AuditVerifyResult": {
+        "type": "object",
+        "description": "The result of an audit log signature verification.",
+        "properties": {
+          "valid": {
+            "type": "boolean",
+            "description": "Whether the stored signature matches the recomputed signature."
+          },
+          "computed": {
+            "type": "string",
+            "description": "The signature recomputed from the stored event fields."
+          },
+          "stored": {
+            "type": "string",
+            "description": "The signature persisted with the event."
+          }
+        },
+        "required": [
+          "valid",
+          "computed",
+          "stored"
+        ]
       }
     }
   }

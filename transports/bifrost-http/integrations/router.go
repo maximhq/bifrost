@@ -65,6 +65,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/bedrock"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -544,6 +545,10 @@ type GenericRouter struct {
 	largeResponseHook LargeResponseHook // Optional: enterprise hook for large response scanning
 }
 
+type modelCatalogProvider interface {
+	GetModelCatalog() *modelcatalog.ModelCatalog
+}
+
 // SetLargePayloadHook sets the hook for large payload detection and streaming.
 // This is used by enterprise to inject large payload optimization without
 // embedding the logic in the OSS router.
@@ -948,6 +953,7 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Bifrost response is nil after post-request callback"))
 			return
 		}
+		g.markDeprecatedListModelsResponse(listModelsResponse)
 
 		response, err = config.ListModelsResponseConverter(bifrostCtx, listModelsResponse)
 		bifrostExtraFields = listModelsResponse.ExtraFields
@@ -1448,6 +1454,90 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 		response, err = config.VideoListResponseConverter(bifrostCtx, videoListResponse)
 		bifrostExtraFields = videoListResponse.ExtraFields
 
+	case bifrostReq.ResponsesRetrieveRequest != nil:
+		responsesRetrieveResponse, bifrostErr := g.client.ResponsesRetrieveRequest(bifrostCtx, bifrostReq.ResponsesRetrieveRequest)
+		if bifrostErr != nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
+			return
+		}
+		if config.PostCallback != nil {
+			if err := config.PostCallback(ctx, req, responsesRetrieveResponse); err != nil {
+				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to execute post-request callback"))
+				return
+			}
+		}
+		if responsesRetrieveResponse == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Bifrost response is nil after post-request callback"))
+			return
+		}
+		if config.ResponsesResponseConverter == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "missing ResponsesResponseConverter for integration"))
+			return
+		}
+		response, err = config.ResponsesResponseConverter(bifrostCtx, responsesRetrieveResponse)
+		bifrostExtraFields = responsesRetrieveResponse.ExtraFields
+
+	case bifrostReq.ResponsesDeleteRequest != nil:
+		responsesDeleteResponse, bifrostErr := g.client.ResponsesDeleteRequest(bifrostCtx, bifrostReq.ResponsesDeleteRequest)
+		if bifrostErr != nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
+			return
+		}
+		if config.PostCallback != nil {
+			if err := config.PostCallback(ctx, req, responsesDeleteResponse); err != nil {
+				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to execute post-request callback"))
+				return
+			}
+		}
+		if responsesDeleteResponse == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Bifrost response is nil after post-request callback"))
+			return
+		}
+		response = responsesDeleteResponse
+		bifrostExtraFields = responsesDeleteResponse.ExtraFields
+
+	case bifrostReq.ResponsesCancelRequest != nil:
+		responsesCancelResponse, bifrostErr := g.client.ResponsesCancelRequest(bifrostCtx, bifrostReq.ResponsesCancelRequest)
+		if bifrostErr != nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
+			return
+		}
+		if config.PostCallback != nil {
+			if err := config.PostCallback(ctx, req, responsesCancelResponse); err != nil {
+				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to execute post-request callback"))
+				return
+			}
+		}
+		if responsesCancelResponse == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Bifrost response is nil after post-request callback"))
+			return
+		}
+		if config.ResponsesResponseConverter == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "missing ResponsesResponseConverter for integration"))
+			return
+		}
+		response, err = config.ResponsesResponseConverter(bifrostCtx, responsesCancelResponse)
+		bifrostExtraFields = responsesCancelResponse.ExtraFields
+
+	case bifrostReq.ResponsesInputItemsRequest != nil:
+		inputItemsResponse, bifrostErr := g.client.ResponsesInputItemsRequest(bifrostCtx, bifrostReq.ResponsesInputItemsRequest)
+		if bifrostErr != nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
+			return
+		}
+		if config.PostCallback != nil {
+			if err := config.PostCallback(ctx, req, inputItemsResponse); err != nil {
+				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to execute post-request callback"))
+				return
+			}
+		}
+		if inputItemsResponse == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Bifrost response is nil after post-request callback"))
+			return
+		}
+		response = inputItemsResponse
+		bifrostExtraFields = inputItemsResponse.ExtraFields
+
 	case bifrostReq.CountTokensRequest != nil:
 		countTokensResponse, bifrostErr := g.client.CountTokensRequest(bifrostCtx, bifrostReq.CountTokensRequest)
 		if bifrostErr != nil {
@@ -1689,6 +1779,32 @@ func (g *GenericRouter) handleAsyncJobResponse(ctx *fasthttp.RequestCtx, bifrost
 			}
 		}
 		g.sendError(ctx, bifrostCtx, config.ErrorConverter, &err)
+	}
+}
+
+// markDeprecatedListModelsResponse annotates deprecated models with the
+// IsDeprecated flag using catalog pricing data, without removing them from the
+// response. Clients decide how to surface deprecated entries (e.g. the UI keeps
+// them visible but non-selectable).
+func (g *GenericRouter) markDeprecatedListModelsResponse(resp *schemas.BifrostListModelsResponse) {
+	if resp == nil || len(resp.Data) == 0 {
+		return
+	}
+	catalogProvider, ok := g.handlerStore.(modelCatalogProvider)
+	if !ok || catalogProvider.GetModelCatalog() == nil {
+		return
+	}
+	catalog := catalogProvider.GetModelCatalog()
+	for i := range resp.Data {
+		model := resp.Data[i]
+		provider, modelName := schemas.ParseModelString(model.ID, "")
+		pricingEntry := catalog.GetPricingEntryForModel(modelName, provider)
+		if pricingEntry == nil && model.Alias != nil {
+			pricingEntry = catalog.GetPricingEntryForModel(*model.Alias, provider)
+		}
+		if pricingEntry != nil && pricingEntry.IsDeprecated {
+			resp.Data[i].IsDeprecated = true
+		}
 	}
 }
 
@@ -2588,12 +2704,16 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 			// Handle errors
 			if chunk.BifrostError != nil {
 				var errorResponse interface{}
+				bifrostErr := lib.SanitizeBifrostErrorForClient(chunk.BifrostError)
+				if bifrostErr == nil {
+					bifrostErr = newBifrostErrorWithCode(nil, lib.ClientSafeInternalErrorMessage, fasthttp.StatusInternalServerError)
+				}
 
 				// Use stream error converter if available, otherwise fallback to regular error converter
 				if config.StreamConfig != nil && config.StreamConfig.ErrorConverter != nil {
-					errorResponse = config.StreamConfig.ErrorConverter(bifrostCtx, chunk.BifrostError)
+					errorResponse = config.StreamConfig.ErrorConverter(bifrostCtx, bifrostErr)
 				} else if config.ErrorConverter != nil {
-					errorResponse = config.ErrorConverter(bifrostCtx, chunk.BifrostError)
+					errorResponse = config.ErrorConverter(bifrostCtx, bifrostErr)
 				} else {
 					// Default error response
 					errorResponse = map[string]interface{}{
@@ -2609,6 +2729,22 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 					// CUSTOM SSE FORMAT: The converter returned a complete SSE string
 					// This is used by providers like Anthropic that need custom event types
 					reader.Send([]byte(sseErrorString))
+				} else if config.Type == RouteConfigTypeBedrock && eventStreamEncoder != nil {
+					if bedrockException, ok := toBedrockEventStreamException(errorResponse); ok {
+						if !sendBedrockEventStreamException(reader, eventStreamEncoder, bedrockException, g.logger) {
+							cancel()
+						}
+						return
+					}
+					if bedrockEvent, ok := errorResponse.(*bedrock.BedrockStreamEvent); ok {
+						if !sendBedrockEventStream(reader, eventStreamEncoder, bedrockEvent, g.logger) {
+							cancel()
+						}
+						return
+					}
+					if !sendBedrockEventStreamException(reader, eventStreamEncoder, newBedrockEventStreamException("", ""), g.logger) {
+						cancel()
+					}
 				} else {
 					// STANDARD SSE FORMAT: The converter returned an object
 					errorJSON, err := sonic.Marshal(errorResponse)
@@ -2699,49 +2835,9 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 				if config.Type == RouteConfigTypeBedrock && eventStreamEncoder != nil {
 					// We need to cast to BedrockStreamEvent to determine event type and structure
 					if bedrockEvent, ok := convertedResponse.(*bedrock.BedrockStreamEvent); ok {
-						// Convert to sequence of specific Bedrock events
-						events := bedrockEvent.ToEncodedEvents()
-
-						// Send all collected events
-						for _, evt := range events {
-							jsonData, err := sonic.Marshal(evt.Payload)
-							if err != nil {
-								g.logger.Warn("Failed to marshal bedrock payload: %v", err)
-								continue
-							}
-
-							headers := eventstream.Headers{
-								{
-									Name:  ":content-type",
-									Value: eventstream.StringValue("application/json"),
-								},
-								{
-									Name:  ":event-type",
-									Value: eventstream.StringValue(evt.EventType),
-								},
-								{
-									Name:  ":message-type",
-									Value: eventstream.StringValue("event"),
-								},
-							}
-
-							message := eventstream.Message{
-								Headers: headers,
-								Payload: jsonData,
-							}
-
-							var msgBuf bytes.Buffer
-							if err := eventStreamEncoder.Encode(&msgBuf, message); err != nil {
-								g.logger.Warn("[Bedrock Stream] Failed to encode message: %v", err)
-								cancel()
-								return
-							}
-
-							if !reader.Send(msgBuf.Bytes()) {
-								g.logger.Warn("[Bedrock Stream] Client disconnected")
-								cancel()
-								return
-							}
+						if !sendBedrockEventStream(reader, eventStreamEncoder, bedrockEvent, g.logger) {
+							cancel()
+							return
 						}
 					}
 					// Continue to next chunk (we handled sending internally)
@@ -2803,6 +2899,126 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 			}
 		}
 	}()
+}
+
+type bedrockEventStreamException struct {
+	exceptionType string
+	payload       []byte
+}
+
+func toBedrockEventStreamException(errorResponse interface{}) (*bedrockEventStreamException, bool) {
+	switch response := errorResponse.(type) {
+	case *bedrockEventStreamException:
+		return response, true
+	case *bedrock.BedrockError:
+		return newBedrockEventStreamException(response.Type, response.Message), true
+	default:
+		return nil, false
+	}
+}
+
+func newBedrockEventStreamException(exceptionType, message string) *bedrockEventStreamException {
+	if message == "" {
+		message = "An error occurred while processing your request"
+	}
+	if exceptionType == "" {
+		exceptionType = "InternalServerException"
+	}
+
+	payloadJSON, err := sonic.Marshal(map[string]string{
+		"__type":  exceptionType,
+		"message": message,
+	})
+	if err != nil {
+		payloadJSON = []byte(fmt.Sprintf(`{"__type":%q,"message":"An error occurred while processing your request"}`, exceptionType))
+	}
+
+	return &bedrockEventStreamException{
+		exceptionType: exceptionType,
+		payload:       payloadJSON,
+	}
+}
+
+func sendBedrockEventStream(reader *lib.SSEStreamReader, encoder *eventstream.Encoder, bedrockEvent *bedrock.BedrockStreamEvent, logger schemas.Logger) bool {
+	// Convert to sequence of specific Bedrock events
+	events := bedrockEvent.ToEncodedEvents()
+
+	// Send all collected events
+	for _, evt := range events {
+		jsonData, err := sonic.Marshal(evt.Payload)
+		if err != nil {
+			logger.Warn("Failed to marshal bedrock payload: %v", err)
+			continue
+		}
+
+		headers := eventstream.Headers{
+			{
+				Name:  ":content-type",
+				Value: eventstream.StringValue("application/json"),
+			},
+			{
+				Name:  ":event-type",
+				Value: eventstream.StringValue(evt.EventType),
+			},
+			{
+				Name:  ":message-type",
+				Value: eventstream.StringValue("event"),
+			},
+		}
+
+		message := eventstream.Message{
+			Headers: headers,
+			Payload: jsonData,
+		}
+
+		var msgBuf bytes.Buffer
+		if err := encoder.Encode(&msgBuf, message); err != nil {
+			logger.Warn("[Bedrock Stream] Failed to encode message: %v", err)
+			return false
+		}
+
+		if !reader.Send(msgBuf.Bytes()) {
+			logger.Warn("[Bedrock Stream] Client disconnected")
+			return false
+		}
+	}
+
+	return true
+}
+
+func sendBedrockEventStreamException(reader *lib.SSEStreamReader, encoder *eventstream.Encoder, exception *bedrockEventStreamException, logger schemas.Logger) bool {
+	headers := eventstream.Headers{
+		{
+			Name:  ":content-type",
+			Value: eventstream.StringValue("application/json"),
+		},
+		{
+			Name:  ":exception-type",
+			Value: eventstream.StringValue(exception.exceptionType),
+		},
+		{
+			Name:  ":message-type",
+			Value: eventstream.StringValue("exception"),
+		},
+	}
+
+	message := eventstream.Message{
+		Headers: headers,
+		Payload: exception.payload,
+	}
+
+	var msgBuf bytes.Buffer
+	if err := encoder.Encode(&msgBuf, message); err != nil {
+		logger.Warn("[Bedrock Stream] Failed to encode exception: %v", err)
+		return false
+	}
+
+	if !reader.Send(msgBuf.Bytes()) {
+		logger.Warn("[Bedrock Stream] Client disconnected")
+		return false
+	}
+
+	return true
 }
 
 // extractPassthroughModel extracts the model from the passthrough request path and/or body.

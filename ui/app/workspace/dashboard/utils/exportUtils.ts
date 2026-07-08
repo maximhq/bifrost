@@ -24,8 +24,8 @@ import type {
 type CSVData = { headers: string[]; rows: unknown[][] };
 
 export function overviewVolumeToCSV(data: LogsHistogramResponse | null): CSVData {
-	const headers = ["Timestamp", "Total Requests", "Success", "Error"];
-	const rows = (data?.buckets ?? []).map((b) => [b.timestamp, b.count, b.success, b.error]);
+	const headers = ["Timestamp", "Total Requests", "Success", "Error", "Cancelled"];
+	const rows = (data?.buckets ?? []).map((b) => [b.timestamp, b.count, b.success, b.error, b.cancelled ?? 0]);
 	return { headers, rows };
 }
 
@@ -44,13 +44,13 @@ export function overviewCostToCSV(data: CostHistogramResponse | null): CSVData {
 
 export function overviewModelUsageToCSV(data: ModelHistogramResponse | null): CSVData {
 	const models = data?.models ?? [];
-	const modelHeaders = models.flatMap((m) => [`${m} Total`, `${m} Success`, `${m} Error`]);
+	const modelHeaders = models.flatMap((m) => [`${m} Total`, `${m} Success`, `${m} Error`, `${m} Cancelled`]);
 	const headers = ["Timestamp", ...modelHeaders];
 	const rows = (data?.buckets ?? []).map((b) => [
 		b.timestamp,
 		...models.flatMap((m) => {
 			const stats = b.by_model?.[m];
-			return [stats?.total ?? 0, stats?.success ?? 0, stats?.error ?? 0];
+			return [stats?.total ?? 0, stats?.success ?? 0, stats?.error ?? 0, stats?.cancelled ?? 0];
 		}),
 	]);
 	return { headers, rows };
@@ -195,13 +195,24 @@ export interface DashboardData {
 	customerRankingsData: DimensionRankingsResponse | null;
 	buRankingsData: DimensionRankingsResponse | null;
 	userRankingsData: DimensionRankingsResponse | null;
+	virtualKeyRankingsData: DimensionRankingsResponse | null;
 	// MCP
 	mcpHistogramData: MCPHistogramResponse | null;
 	mcpCostData: MCPCostHistogramResponse | null;
 	mcpTopToolsData: MCPTopToolsResponse | null;
 }
 
-export type ExportTab = "all" | "overview" | "provider-usage" | "rankings" | "team-rankings" | "customer-rankings" | "bu-rankings" | "user-rankings" | "mcp";
+export type ExportTab =
+	| "all"
+	| "overview"
+	| "provider-usage"
+	| "rankings"
+	| "team-rankings"
+	| "customer-rankings"
+	| "bu-rankings"
+	| "user-rankings"
+	| "virtual-key-rankings"
+	| "mcp";
 
 /** Return all CSV sections for the selected scope. Each entry becomes its own sheet / file section. */
 export function getCSVSections(data: DashboardData, tab: ExportTab): { name: string; csv: CSVData }[] {
@@ -243,6 +254,10 @@ export function getCSVSections(data: DashboardData, tab: ExportTab): { name: str
 
 	if (tab === "all" || tab === "user-rankings") {
 		sections.push({ name: "user-rankings", csv: dimensionRankingsToCSV(data.userRankingsData, "User") });
+	}
+
+	if (tab === "all" || tab === "virtual-key-rankings") {
+		sections.push({ name: "virtual-key-rankings", csv: dimensionRankingsToCSV(data.virtualKeyRankingsData, "Virtual Key") });
 	}
 
 	if (tab === "all" || tab === "mcp") {

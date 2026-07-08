@@ -12,6 +12,7 @@ import {
 	Construction,
 	DatabaseZap,
 	Flag,
+	ShieldHalf,
 	FlaskConical,
 	FolderGit,
 	Globe,
@@ -41,6 +42,8 @@ import {
 	Users,
 	Wallet,
 	WalletCards,
+	CircuitBoard,
+	GitCompareArrows,
 } from "lucide-react";
 
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -271,15 +274,14 @@ const SidebarItemView = ({
 
 	const isHighlighted = !hasSubItems && highlightedUrl === item.url;
 
-	const buttonClassName = `group/nav-item relative h-7.5 cursor-pointer rounded-sm border px-3 transition-all duration-200 ${
-		isHighlighted
-			? "bg-sidebar-accent text-accent-foreground border-primary/20"
-			: isActive || isAnySubItemActive
-				? "bg-sidebar-accent text-primary border-primary/20"
-				: item.hasAccess
-					? "hover:bg-sidebar-accent hover:text-accent-foreground border-transparent text-slate-500 dark:text-zinc-400"
-					: "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
-	} `;
+	const buttonClassName = `group/nav-item relative h-7.5 cursor-pointer rounded-sm border px-3 transition-all duration-200 ${isHighlighted
+		? "bg-sidebar-accent text-accent-foreground border-primary/20"
+		: isActive || isAnySubItemActive
+			? "bg-sidebar-accent text-primary border-primary/20"
+			: item.hasAccess
+				? "hover:bg-sidebar-accent hover:text-accent-foreground border-transparent text-slate-500 dark:text-zinc-400"
+				: "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
+		} `;
 
 	const innerContent = (
 		<div className="flex w-full items-center justify-between">
@@ -435,15 +437,14 @@ const SidebarItemView = ({
 						const isSubItemActive = subItem.queryParam ? pathname === subItem.url : isRouteMatch(subItem.url);
 						const isSubItemHighlighted = highlightedUrl ? subItemHref.startsWith(highlightedUrl) : false;
 						const SubItemIcon = subItem.icon;
-						const subItemClassName = `group/nav-item h-7 cursor-pointer rounded-sm px-2 transition-all duration-200 ${
-							isSubItemHighlighted
-								? "bg-sidebar-accent text-accent-foreground"
-								: isSubItemActive
-									? "bg-sidebar-accent text-primary font-medium"
-									: subItem.hasAccess === false
-										? "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
-										: "hover:bg-sidebar-accent hover:text-accent-foreground text-slate-500 dark:text-zinc-400"
-						}`;
+						const subItemClassName = `group/nav-item h-7 cursor-pointer rounded-sm px-2 transition-all duration-200 ${isSubItemHighlighted
+							? "bg-sidebar-accent text-accent-foreground"
+							: isSubItemActive
+								? "bg-sidebar-accent text-primary font-medium"
+								: subItem.hasAccess === false
+									? "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
+									: "hover:bg-sidebar-accent hover:text-accent-foreground text-slate-500 dark:text-zinc-400"
+							}`;
 						const subInner = (
 							<div className="flex w-full items-center gap-2">
 								{SubItemIcon && <SubItemIcon className={`h-3.5 w-3.5 ${isSubItemActive ? "text-primary" : "text-muted-foreground"}`} />}
@@ -560,6 +561,7 @@ export default function AppSidebar() {
 	const hasRoutingRulesAccess = useRbac(RbacResource.RoutingRules, RbacOperation.View);
 	const hasGuardrailsProvidersAccess = useRbac(RbacResource.GuardrailsProviders, RbacOperation.View);
 	const hasGuardrailsConfigAccess = useRbac(RbacResource.GuardrailsConfig, RbacOperation.View);
+	const hasCircuitBreakerAccess = useRbac(RbacResource.CircuitBreaker, RbacOperation.View);
 	const hasClusterConfigAccess = useRbac(RbacResource.Cluster, RbacOperation.View);
 	const isAdaptiveRoutingAllowed = useRbac(RbacResource.AdaptiveRouter, RbacOperation.View);
 	const hasSettingsAccess = useRbac(RbacResource.Settings, RbacOperation.View);
@@ -665,9 +667,16 @@ export default function AppSidebar() {
 					{
 						title: "Complexity Router",
 						url: "/workspace/complexity-router",
-						icon: Settings2Icon,
+						icon: GitCompareArrows,
 						description: "Complexity tier routing",
 						hasAccess: hasRoutingRulesAccess,
+					},
+					{
+						title: "Circuit Breaker",
+						url: "/workspace/circuit-breaker",
+						icon: CircuitBoard,
+						description: "Automatic fallback when primary endpoints fail",
+						hasAccess: hasCircuitBreakerAccess,
 					},
 					{
 						title: "Pricing Overrides",
@@ -718,6 +727,13 @@ export default function AppSidebar() {
 						url: "/workspace/mcp-sessions",
 						icon: KeyRound,
 						description: "Per-user OAuth sessions",
+						hasAccess: hasMCPGatewayAccess,
+					},
+					{
+						title: "OAuth Grants",
+						url: "/workspace/oauth-grants",
+						icon: ShieldCheck,
+						description: "Downstream OAuth grants",
 						hasAccess: hasMCPGatewayAccess,
 					},
 					{
@@ -863,21 +879,21 @@ export default function AppSidebar() {
 			},
 			...(isDbConnected
 				? [
-						{
-							title: "Prompt Repository",
-							url: "/workspace/prompt-repo",
-							icon: FolderGit,
-							description: "Prompt repository",
-							hasAccess: hasPromptRepositoryAccess,
-						},
-						{
-							title: "Skills Repository",
-							url: "/workspace/skills-repo",
-							icon: BookOpenText,
-							description: "Skills repository",
-							hasAccess: hasSkillsRepositoryAccess,
-						},
-					]
+					{
+						title: "Prompt Repository",
+						url: "/workspace/prompt-repo",
+						icon: FolderGit,
+						description: "Prompt repository",
+						hasAccess: hasPromptRepositoryAccess,
+					},
+					{
+						title: "Skills Repository",
+						url: "/workspace/skills-repo",
+						icon: BookOpenText,
+						description: "Skills repository",
+						hasAccess: hasSkillsRepositoryAccess,
+					},
+				]
 				: []),
 			{
 				title: "Evals",
@@ -924,14 +940,14 @@ export default function AppSidebar() {
 					},
 					...(IS_ENTERPRISE
 						? [
-								{
-									title: "Proxy",
-									url: "/workspace/config/proxy",
-									icon: Globe,
-									description: "Proxy configuration",
-									hasAccess: hasSettingsAccess,
-								},
-							]
+							{
+								title: "Proxy",
+								url: "/workspace/config/proxy",
+								icon: Globe,
+								description: "Proxy configuration",
+								hasAccess: hasSettingsAccess,
+							},
+						]
 						: []),
 					{
 						title: "API Keys",
@@ -980,6 +996,7 @@ export default function AppSidebar() {
 			hasRoutingRulesAccess,
 			hasGuardrailsProvidersAccess,
 			hasGuardrailsConfigAccess,
+			hasCircuitBreakerAccess,
 			hasClusterConfigAccess,
 			isAdaptiveRoutingAllowed,
 			hasSettingsAccess,

@@ -3,11 +3,11 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogClose, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { useGetSkillQuery, useShiftSkillVersionMutation } from "@/lib/store/apis/skillsApi";
 import { getErrorMessage } from "@/lib/store/apis/baseApi";
-import { getApiBaseUrl } from "@/lib/utils/port";
+import { useGetSkillQuery, useShiftSkillVersionMutation } from "@/lib/store/apis/skillsApi";
 import type { SkillFile, SkillFileEntry } from "@/lib/types/skills";
-import { Loader2, RefreshCw, Download, X } from "lucide-react";
+import { getApiBaseUrl } from "@/lib/utils/port";
+import { Download, Loader2, RefreshCw, X } from "lucide-react";
 import { toast } from "sonner";
 import { composeFrontmatter } from "../components/helpers";
 import { SkillHeader, SkillReadOnlyContent } from "../components/shared";
@@ -163,7 +163,7 @@ export function VersionDetailDialog({
 								/>
 							</div>
 
-							<div className="min-h-0 flex-1 px-6 pb-6">
+							<div className="flex min-h-0 flex-1 px-6 pb-6">
 								<SkillReadOnlyContent
 									skillName={skill.name}
 									skillMdBody={skill.skill_md_body}

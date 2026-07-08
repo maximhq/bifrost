@@ -9,17 +9,18 @@ import (
 
 // Trace represents a distributed trace that captures the full lifecycle of a request
 type Trace struct {
-	RequestID      string            // Request ID for the trace
-	TraceID        string            // Unique identifier for this trace
-	ParentID       string            // Parent trace ID from incoming W3C traceparent header
-	RootSpan       *Span             // The root span of this trace
-	Spans          []*Span           // All spans in this trace
-	StartTime      time.Time         // When the trace started
-	EndTime        time.Time         // When the trace completed
-	Attributes     map[string]any    // Additional attributes for the trace
-	RequestHeaders map[string]string // Lowercased request headers, populated only when a connector opts in
-	PluginLogs     []PluginLogEntry  // Plugin log entries accumulated during request processing
-	mu             sync.Mutex        // Mutex for thread-safe span operations
+	RequestID             string            // Request ID for the trace
+	TraceID               string            // Unique identifier for this trace
+	ParentID              string            // Parent trace ID from incoming W3C traceparent header
+	RootSpan              *Span             // The root span of this trace
+	Spans                 []*Span           // All spans in this trace
+	StartTime             time.Time         // When the trace started
+	EndTime               time.Time         // When the trace completed
+	Attributes            map[string]any    // Additional attributes for the trace
+	RequestHeaders        map[string]string // Lowercased request headers, populated only when a connector opts in
+	PluginLogs            []PluginLogEntry  // Plugin log entries accumulated during request processing
+	redactionReplacements RedactionMapsByPhase
+	mu                    sync.Mutex // Mutex for thread-safe span operations
 }
 
 // Trace-level attribute keys. Unlike span attributes, trace attributes are never
@@ -74,6 +75,47 @@ func (t *Trace) SetRequestHeaders(headers map[string]string) {
 	t.RequestHeaders = headers
 }
 
+// SetRedactionReplacements merges connector-facing raw-to-placeholder replacements on the trace.
+func (t *Trace) SetRedactionReplacements(phase RedactionPhase, replacements map[string]string) {
+	if len(replacements) == 0 {
+		return
+	}
+	copied := make(map[string]string, len(replacements))
+	for raw, placeholder := range replacements {
+		if raw != "" {
+			copied[raw] = placeholder
+		}
+	}
+	if len(copied) == 0 {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.redactionReplacements.MergePhase(phase, copied)
+}
+
+// ApplyRedactionReplacements redacts content attributes on every span in the trace and clears the replacement map.
+func (t *Trace) ApplyRedactionReplacements() {
+	t.mu.Lock()
+	if !t.redactionReplacements.HasReplacements() {
+		t.mu.Unlock()
+		return
+	}
+	replacements := t.redactionReplacements.Clone()
+	t.redactionReplacements = RedactionMapsByPhase{}
+	rootSpan := t.RootSpan
+	spans := append([]*Span(nil), t.Spans...)
+	t.mu.Unlock()
+
+	redactSpanAttributes(rootSpan, replacements.Input, replacements.Output)
+	for _, span := range spans {
+		if span == nil || span == rootSpan {
+			continue
+		}
+		redactSpanAttributes(span, replacements.Input, replacements.Output)
+	}
+}
+
 // SetAttribute sets a trace-level attribute in a thread-safe manner
 func (t *Trace) SetAttribute(key string, value any) {
 	if value == nil {
@@ -112,6 +154,7 @@ func (t *Trace) Reset() {
 	t.EndTime = time.Time{}
 	t.Attributes = nil
 	t.RequestHeaders = nil
+	t.redactionReplacements = RedactionMapsByPhase{}
 	for i := range t.PluginLogs {
 		t.PluginLogs[i] = PluginLogEntry{}
 	}
@@ -126,6 +169,73 @@ func (t *Trace) AppendPluginLogs(logs []PluginLogEntry) {
 	t.mu.Lock()
 	t.PluginLogs = append(t.PluginLogs, logs...)
 	t.mu.Unlock()
+}
+
+// traceContentAttributeScope describes which phase can safely redact a trace content attribute.
+type traceContentAttributeScope int
+
+const (
+	traceContentAttributeScopeNone traceContentAttributeScope = iota
+	traceContentAttributeScopeInput
+	traceContentAttributeScopeOutput
+	traceContentAttributeScopeMixed
+)
+
+// traceRedactionReplacementsForAttribute selects the phase-specific replacements for one trace attribute.
+func traceRedactionReplacementsForAttribute(key string, inputReplacements map[string]string, outputReplacements map[string]string) map[string]string {
+	switch traceContentAttributeScopeForKey(key) {
+	case traceContentAttributeScopeInput:
+		return inputReplacements
+	case traceContentAttributeScopeOutput:
+		return outputReplacements
+	case traceContentAttributeScopeMixed:
+		return mergeTraceRedactionReplacements(inputReplacements, outputReplacements)
+	default:
+		return nil
+	}
+}
+
+// traceContentAttributeScopeForKey classifies content attributes by request/response phase.
+func traceContentAttributeScopeForKey(key string) traceContentAttributeScope {
+	switch key {
+	case AttrInputMessages, AttrInputText, AttrInputSpeech, AttrInputEmbedding,
+		AttrPrompt, AttrInstructions,
+		AttrTools, AttrToolChoiceType, AttrToolChoiceName,
+		AttrRespTools, AttrRespToolChoiceType, AttrRespToolChoiceName:
+		return traceContentAttributeScopeInput
+	case AttrOutputMessages, AttrRespReasoningText:
+		return traceContentAttributeScopeOutput
+	case AttrToolName, AttrToolCallID, AttrToolCallArguments, AttrToolCallResult, AttrToolType:
+		return traceContentAttributeScopeMixed
+	default:
+		return traceContentAttributeScopeNone
+	}
+}
+
+// mergeTraceRedactionReplacements returns a combined replacement map for mixed trace attributes.
+func mergeTraceRedactionReplacements(inputReplacements map[string]string, outputReplacements map[string]string) map[string]string {
+	return mergeRedactionStringMaps(inputReplacements, outputReplacements)
+}
+
+// redactSpanAttributes applies phase-aware trace redaction replacements to one span's content attributes.
+func redactSpanAttributes(span *Span, inputReplacements map[string]string, outputReplacements map[string]string) {
+	if span == nil || (len(inputReplacements) == 0 && len(outputReplacements) == 0) {
+		return
+	}
+	span.mu.Lock()
+	defer span.mu.Unlock()
+	for key, value := range span.Attributes {
+		if replacements := traceRedactionReplacementsForAttribute(key, inputReplacements, outputReplacements); len(replacements) > 0 {
+			span.Attributes[key] = RedactAttributeValue(value, replacements)
+		}
+	}
+	for i := range span.Events {
+		for key, value := range span.Events[i].Attributes {
+			if replacements := traceRedactionReplacementsForAttribute(key, inputReplacements, outputReplacements); len(replacements) > 0 {
+				span.Events[i].Attributes[key] = RedactAttributeValue(value, replacements)
+			}
+		}
+	}
 }
 
 // Span represents a single operation within a trace
@@ -491,6 +601,16 @@ const (
 	AttrBifrostTeamName            = "bifrost.team.name"
 	AttrBifrostCustomerID          = "bifrost.customer.id"
 	AttrBifrostCustomerName        = "bifrost.customer.name"
+	AttrBifrostBusinessUnitID      = "bifrost.business_unit.id"
+	AttrBifrostBusinessUnitName    = "bifrost.business_unit.name"
+	AttrBifrostTeamIDs             = "bifrost.team.ids"
+	AttrBifrostTeamNames           = "bifrost.team.names"
+	AttrBifrostCustomerIDs         = "bifrost.customer.ids"
+	AttrBifrostCustomerNames       = "bifrost.customer.names"
+	AttrBifrostBusinessUnitIDs     = "bifrost.business_unit.ids"
+	AttrBifrostBusinessUnitNames   = "bifrost.business_unit.names"
+	AttrBifrostUserID              = "bifrost.user.id"
+	AttrBifrostUserName            = "bifrost.user.name"
 	AttrBifrostRetries             = "bifrost.retries"
 	AttrBifrostFallbackIndex       = "bifrost.fallback_index"
 	AttrBifrostStopSequencesJoined = "bifrost.request.stop_sequences"

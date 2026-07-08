@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -214,7 +215,15 @@ func (m *ToolsManager) GetAvailableTools(ctx *schemas.BifrostContext) []schemas.
 	// Track tool names to prevent duplicates
 	seenToolNames := make(map[string]bool)
 
-	for clientName, clientTools := range availableToolsPerClient {
+	// Sort client names for deterministic tool ordering
+	sortedClients := make([]string, 0, len(availableToolsPerClient))
+	for clientName := range availableToolsPerClient {
+		sortedClients = append(sortedClients, clientName)
+	}
+	slices.Sort(sortedClients)
+
+	for _, clientName := range sortedClients {
+		clientTools := availableToolsPerClient[clientName]
 		client := m.clientManager.GetClientByName(clientName)
 		if client == nil {
 			m.logger.Warn("%s Client %s not found, skipping", MCPLogPrefix, clientName)
@@ -674,18 +683,21 @@ func (m *ToolsManager) executeToolInternal(
 	sanitizedToolName := stripClientPrefix(toolName, executionConfig.Name)
 	originalMCPToolName := getOriginalToolName(sanitizedToolName, toolNameMapping)
 
-	// Create timeout context for tool execution
+	// Create timeout context for tool execution.
+	// Per-server timeout (executionConfig.ToolExecutionTimeout) takes precedence over the global.
 	toolExecutionTimeout := m.toolExecutionTimeout.Load().(time.Duration)
+	if executionConfig != nil && executionConfig.ToolExecutionTimeout > 0 {
+		toolExecutionTimeout = executionConfig.ToolExecutionTimeout
+	}
 	toolCtx, cancel := context.WithTimeout(ctx, toolExecutionTimeout)
 	defer cancel()
 
 	// The connection (shared persistent OR ephemeral per-call) is supplied by
 	// the caller via AcquireClientConn. Admin-level credentials live on the
-	// transport; per-call request carries filtered context-extras only.
-	reqHeaders, err := m.credStore.RequestHeaders(ctx, executionConfig)
-	if err != nil {
-		return nil, "", "", err
-	}
+	// transport; per-request filtered context-extras are injected uniformly by the
+	// transport headerFunc (see createHTTPConnection/createSSEConnection), so no
+	// per-call Header is set here — that keeps ping/list_tools and tools/call on a
+	// single header path.
 	callRequest := mcp.CallToolRequest{
 		Request: mcp.Request{
 			Method: string(mcp.MethodToolsCall),
@@ -694,7 +706,6 @@ func (m *ToolsManager) executeToolInternal(
 			Name:      originalMCPToolName,
 			Arguments: arguments,
 		},
-		Header: reqHeaders,
 	}
 
 	toolResponse, callErr := clientConn.CallTool(toolCtx, callRequest)

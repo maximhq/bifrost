@@ -163,7 +163,7 @@ test.describe("Providers", () => {
       const providerData = createCustomProviderData({
         name: `test-openai-${Date.now()}`,
         baseProviderType: "openai",
-        baseUrl: "https://api.test-provider.com/v1",
+        baseUrl: "https://api.openai.com/v1",
       });
 
       // Track for cleanup
@@ -182,7 +182,7 @@ test.describe("Providers", () => {
       const providerData = createCustomProviderData({
         name: `test-anthropic-${Date.now()}`,
         baseProviderType: "anthropic",
-        baseUrl: "https://api.anthropic-proxy.com",
+        baseUrl: "https://api.anthropic.com",
       });
 
       // Track for cleanup
@@ -221,7 +221,7 @@ test.describe("Providers", () => {
       const providerData = createCustomProviderData({
         name: `delete-test-${Date.now()}`,
         baseProviderType: "openai",
-        baseUrl: "https://api.delete-test.com/v1",
+        baseUrl: "https://api.openai.com/v1",
       });
       createdProviders.push(providerData.name);
 
@@ -271,6 +271,22 @@ test.describe("Providers", () => {
       await providersPage.customProviderSaveBtn.click();
 
       // Form should still be visible
+      await expect(providersPage.customProviderSheet).toBeVisible();
+    });
+
+    test("should show an error for an invalid custom provider hostname", async ({
+      providersPage,
+    }) => {
+      await providersPage.openCustomProviderSheet();
+
+      await providersPage.customProviderNameInput.fill(`invalid-host-${Date.now()}`);
+      await providersPage.baseProviderSelect.click();
+      await providersPage.page.getByRole("option", { name: "OpenAI" }).click();
+      await providersPage.baseUrlInput.fill("https://api.nonexistent-provider.invalid/v1");
+
+      await providersPage.customProviderSaveBtn.click();
+
+      await providersPage.waitForErrorToast("Invalid base URL");
       await expect(providersPage.customProviderSheet).toBeVisible();
     });
   });
@@ -776,10 +792,14 @@ test.describe("Governance (Budget & Rate Limits)", () => {
     const isVisible = await providersPage.isGovernanceTabVisible();
 
     if (isVisible) {
-      await providersPage.selectConfigTab("governance");
+      await providersPage.setGovernanceConfig({
+        budgets: [{ amount: 100, resetPeriod: "1h" }],
+      });
 
       // Should see budget limit input
-      const budgetInput = providersPage.page.locator("#providerBudgetMaxLimit");
+      const budgetInput = providersPage.page.getByTestId(
+        "provider-governance-budgets-amount-0",
+      );
       await expect(budgetInput).toBeVisible();
     }
   });
@@ -812,13 +832,13 @@ test.describe("Governance (Budget & Rate Limits)", () => {
     const isVisible = await providersPage.isGovernanceTabVisible();
 
     if (isVisible) {
-      await providersPage.selectConfigTab("governance");
+      await providersPage.setGovernanceConfig({
+        budgets: [{ amount: 100, resetPeriod: "1h" }],
+      });
 
-      const budgetInput = providersPage.page.locator("#providerBudgetMaxLimit");
-      await budgetInput.click();
-      await budgetInput.fill("");
-      // Type character by character to trigger React's onChange
-      await budgetInput.pressSequentially("100");
+      const budgetInput = providersPage.page.getByTestId(
+        "provider-governance-budgets-amount-0",
+      );
 
       // Verify value
       const value = await budgetInput.inputValue();

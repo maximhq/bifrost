@@ -1,8 +1,10 @@
 package vertex
 
 import (
+	"reflect"
 	"testing"
 
+	"github.com/maximhq/bifrost/core/providers/gemini"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -51,6 +53,36 @@ func TestGetVertexAPIHost(t *testing.T) {
 				t.Fatalf("expected %q, got %q", tt.expected, actual)
 			}
 		})
+	}
+}
+
+func TestVertexGeminiImageURLSchemesAllowGCS(t *testing.T) {
+	result, err := gemini.ToGeminiChatCompletionRequestWithImageURLSchemes(nil, &schemas.BifrostChatRequest{
+		Model: "gemini-3-flash-preview",
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{
+					ContentBlocks: []schemas.ChatContentBlock{
+						{
+							Type: schemas.ChatContentBlockTypeImage,
+							ImageURLStruct: &schemas.ChatInputImage{
+								URL: "gs://my-bucket/xxx.png",
+							},
+						},
+					},
+				},
+			},
+		},
+	}, geminiImageURLSchemes...)
+	if err != nil {
+		t.Fatalf("expected Vertex Gemini schemes to allow gs:// image URLs, got: %v", err)
+	}
+	if len(result.Contents) != 1 || len(result.Contents[0].Parts) != 1 || result.Contents[0].Parts[0].FileData == nil {
+		t.Fatalf("expected one fileData part, got %#v", result.Contents)
+	}
+	if result.Contents[0].Parts[0].FileData.FileURI != "gs://my-bucket/xxx.png" {
+		t.Fatalf("expected gs:// fileUri, got %q", result.Contents[0].Parts[0].FileData.FileURI)
 	}
 }
 
@@ -363,7 +395,7 @@ func TestResolveVertexProjectID_AliasOverride(t *testing.T) {
 	aliasProject := "alias-level-project"
 	key := schemas.Key{
 		VertexKeyConfig: &schemas.VertexKeyConfig{
-			ProjectID: *schemas.NewEnvVar(keyProject),
+			ProjectID: *schemas.NewSecretVar(keyProject),
 		},
 	}
 
@@ -381,7 +413,7 @@ func TestResolveVertexProjectID_AliasOverride(t *testing.T) {
 		Config: &schemas.AliasConfig{
 			ModelID: "claude-sonnet-4-5",
 			VertexAliasCfg: &schemas.VertexAliasCfg{
-				ProjectID: schemas.NewEnvVar(aliasProject),
+				ProjectID: schemas.NewSecretVar(aliasProject),
 			},
 		},
 	})
@@ -396,7 +428,7 @@ func TestResolveVertexProjectID_AliasOverride(t *testing.T) {
 		Config: &schemas.AliasConfig{
 			ModelID: "x",
 			VertexAliasCfg: &schemas.VertexAliasCfg{
-				ProjectID: schemas.NewEnvVar(""),
+				ProjectID: schemas.NewSecretVar(""),
 			},
 		},
 	})
@@ -412,7 +444,7 @@ func TestResolveVertexRegion_AliasOverride(t *testing.T) {
 	aliasRegion := "us-east5"
 	key := schemas.Key{
 		VertexKeyConfig: &schemas.VertexKeyConfig{
-			Region: *schemas.NewEnvVar(keyRegion),
+			Region: *schemas.NewSecretVar(keyRegion),
 		},
 	}
 
@@ -430,7 +462,7 @@ func TestResolveVertexRegion_AliasOverride(t *testing.T) {
 		Key: "best-claude",
 		Config: &schemas.AliasConfig{
 			ModelID: "claude-sonnet-4-5",
-			Region:  schemas.NewEnvVar(aliasRegion),
+			Region:  schemas.NewSecretVar(aliasRegion),
 		},
 	})
 	if got := resolveVertexRegion(ctx, key); got != aliasRegion {
@@ -442,7 +474,7 @@ func TestResolveVertexRegion_AliasOverride(t *testing.T) {
 		Key: "x",
 		Config: &schemas.AliasConfig{
 			ModelID: "x",
-			Region:  schemas.NewEnvVar(""),
+			Region:  schemas.NewSecretVar(""),
 		},
 	})
 	if got := resolveVertexRegion(ctx2, key); got != keyRegion {
@@ -456,7 +488,7 @@ func TestResolveVertexProjectNumber_AliasOverride(t *testing.T) {
 	aliasNumber := "222222"
 	key := schemas.Key{
 		VertexKeyConfig: &schemas.VertexKeyConfig{
-			ProjectNumber: *schemas.NewEnvVar(keyNumber),
+			ProjectNumber: *schemas.NewSecretVar(keyNumber),
 		},
 	}
 
@@ -475,7 +507,7 @@ func TestResolveVertexProjectNumber_AliasOverride(t *testing.T) {
 		Config: &schemas.AliasConfig{
 			ModelID: "x",
 			VertexAliasCfg: &schemas.VertexAliasCfg{
-				ProjectNumber: schemas.NewEnvVar(aliasNumber),
+				ProjectNumber: schemas.NewSecretVar(aliasNumber),
 			},
 		},
 	})
@@ -489,11 +521,23 @@ func TestResolveVertexProjectNumber_AliasOverride(t *testing.T) {
 		Config: &schemas.AliasConfig{
 			ModelID: "x",
 			VertexAliasCfg: &schemas.VertexAliasCfg{
-				ProjectNumber: schemas.NewEnvVar(""),
+				ProjectNumber: schemas.NewSecretVar(""),
 			},
 		},
 	})
 	if got := resolveVertexProjectNumber(ctx2, key); got != keyNumber {
 		t.Errorf("empty alias ProjectNumber should fall through: got %q, want %q", got, keyNumber)
+	}
+}
+
+// TestGeminiImageURLSchemesContract pins the exact allowlist that Vertex passes
+// into the Gemini converter. vertex.go reuses geminiImageURLSchemes across
+// ChatCompletion / ChatCompletionStream / Responses / ResponsesStream / CountTokens,
+// so a regression that drops "gs" (or accidentally adds e.g. "file") is caught
+// here without having to drive each provider entrypoint end-to-end.
+func TestGeminiImageURLSchemesContract(t *testing.T) {
+	want := []string{"http", "https", "gs"}
+	if !reflect.DeepEqual(geminiImageURLSchemes, want) {
+		t.Fatalf("geminiImageURLSchemes = %v, want %v", geminiImageURLSchemes, want)
 	}
 }

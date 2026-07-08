@@ -15,7 +15,6 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/tidwall/gjson"
-	"gorm.io/gorm"
 )
 
 // LoadModelParamsFromDB bulk-loads model parameters from the DB into the
@@ -76,19 +75,14 @@ func (s *Store) SyncModelParamsFromURL(ctx context.Context) error {
 	}
 
 	if s.configStore != nil {
-		err = s.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
-			for model, data := range paramsData {
-				params := &configstoreTables.TableModelParameters{
-					Model: model,
-					Data:  string(data),
-				}
-				if err := s.configStore.UpsertModelParameters(ctx, params, tx); err != nil {
-					return fmt.Errorf("failed to upsert model parameters for model %s: %w", model, err)
-				}
-			}
-			return nil
-		})
-		if err != nil {
+		records := make([]configstoreTables.TableModelParameters, 0, len(paramsData))
+		for model, data := range paramsData {
+			records = append(records, configstoreTables.TableModelParameters{
+				Model: model,
+				Data:  string(data),
+			})
+		}
+		if err := s.configStore.UpsertModelParametersBatch(ctx, records); err != nil {
 			return fmt.Errorf("failed to sync model parameters to database: %w", err)
 		}
 	}
@@ -128,7 +122,7 @@ func (s *Store) loadModelParametersFromURL(ctx context.Context) (map[string]json
 	var data []byte
 
 	if parsed.Scheme == "file" {
-		data, err = os.ReadFile(parsed.Path)
+		data, err = os.ReadFile(filePathFromURL(parsed))
 		if err != nil {
 			return nil, fmt.Errorf("failed to read model parameters file: %w", err)
 		}

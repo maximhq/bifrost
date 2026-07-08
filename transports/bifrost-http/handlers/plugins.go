@@ -318,7 +318,7 @@ func (h *PluginsHandler) createPlugin(ctx *fasthttp.RequestCtx) {
 	if isBuiltin && request.Path != nil {
 		request.Path = nil
 	}
-	// Normalize before DB write so EnvVar fields are stored as plain strings.
+	// Normalize before DB write so SecretVar fields are stored as plain strings.
 	normalizedConfig, err := h.normalizePluginConfig(request.Name, request.Config)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid plugin configuration: %v", err))
@@ -452,14 +452,14 @@ func (h *PluginsHandler) updatePlugin(ctx *fasthttp.RequestCtx) {
 		if existingCfg, ok := existingPlugin.Config.(map[string]any); ok && len(existingCfg) > 0 {
 			mergedConfig = make(map[string]any, len(existingCfg)+len(request.Config))
 			maps.Copy(mergedConfig, existingCfg)
-			// Before overwriting, substitute any redacted EnvVar placeholders in the
+			// Before overwriting, substitute any redacted SecretVar placeholders in the
 			// incoming config with the existing stored value so credentials are not
 			// replaced by "***" or similar client-side redaction markers.
 			incoming := restoreRedactedFromExisting(request.Config, existingCfg)
 			maps.Copy(mergedConfig, incoming)
 		}
 	}
-	// Normalize through the typed plugin config so custom MarshalJSON (e.g. EnvVar → string) runs.
+	// Normalize through the typed plugin config so custom MarshalJSON (e.g. SecretVar → string) runs.
 	mergedConfig, err = h.normalizePluginConfig(name, mergedConfig)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid plugin configuration: %v", err))
@@ -561,55 +561,100 @@ func (h *PluginsHandler) deletePlugin(ctx *fasthttp.RequestCtx) {
 	})
 }
 
-// restoreRedactedFromExisting walks the incoming config map and, for any field that
-// looks like an EnvVar object whose value ShouldPreserveStored (i.e. it is a redacted
-// placeholder like "***"), replaces the value with the corresponding field from the
-// existing DB config. This mirrors the mergeUpdatedKey pattern used by provider keys.
+// restoreRedactedFromExisting walks the incoming config map and, for any field whose
+// value is a redacted placeholder (a masked EnvVar object, or a masked plain string),
+// replaces it with the corresponding value from the existing DB
+// config so client-side redaction never overwrites real credentials. It descends into
+// nested maps AND slices (e.g. the OTEL `profiles` array), and handles header values that
+// are stored as plain strings rather than EnvVar objects. Mirrors the mergeUpdatedKey
+// pattern used by provider keys.
 func restoreRedactedFromExisting(incoming, existing map[string]any) map[string]any {
 	if len(incoming) == 0 {
 		return incoming
 	}
 	result := make(map[string]any, len(incoming))
 	for k, v := range incoming {
-		switch val := v.(type) {
-		case map[string]any:
-			if isEnvVarObject(val) {
-				ev := schemas.NewEnvVar(marshalEnvVarObject(val))
-				if ev.ShouldPreserveStored() {
-					if existingVal, ok := existing[k]; ok {
-						result[k] = existingVal
-						continue
-					}
-				}
-			} else if existingNested, ok := existing[k].(map[string]any); ok {
-				result[k] = restoreRedactedFromExisting(val, existingNested)
-				continue
-			}
-			result[k] = val
-		default:
-			result[k] = v
-		}
+		result[k] = restoreRedactedValue(v, existing[k])
 	}
 	return result
 }
 
-// isEnvVarObject returns true if m has exactly the shape of a serialised EnvVar:
-// keys "value", "env_var", and "from_env".
-func isEnvVarObject(m map[string]any) bool {
-	_, hasValue := m["value"]
-	_, hasEnvVar := m["env_var"]
-	_, hasFromEnv := m["from_env"]
-	return hasValue && hasEnvVar && hasFromEnv
+// restoreRedactedValue restores a single incoming value against its corresponding existing
+// value. It recurses through maps and slices, and treats both EnvVar-shaped objects and
+// plain redacted strings as placeholders to swap back to the stored original. Returns the
+// incoming value unchanged when it is not a redaction placeholder or has no stored match.
+func restoreRedactedValue(incoming, existing any) any {
+	switch val := incoming.(type) {
+	case map[string]any:
+		if isSecretVarObject(val) {
+			if schemas.NewSecretVar(marshalSecretVarObject(val)).ShouldPreserveStored() && existing != nil {
+				return existing
+			}
+			return val
+		}
+		if existingNested, ok := existing.(map[string]any); ok {
+			return restoreRedactedFromExisting(val, existingNested)
+		}
+		return val
+	case []any:
+		// Restore element-by-element against the existing slice (index-aligned). New
+		// elements beyond the existing length carry user-supplied values, so keep them.
+		existingSlice, ok := existing.([]any)
+		if !ok {
+			return val
+		}
+		out := make([]any, len(val))
+		for i, item := range val {
+			if i < len(existingSlice) {
+				out[i] = restoreRedactedValue(item, existingSlice[i])
+			} else {
+				out[i] = item
+			}
+		}
+		return out
+	case string:
+		// Plain-string secrets (e.g. OTEL headers): restore only when the incoming string
+		// is a redaction artifact and not an intentional env reference. Empty strings are
+		// left as-is so clearing a value works.
+		if existingStr, ok := existing.(string); ok {
+			secretVal := schemas.NewSecretVar(val)
+			if !secretVal.IsFromSecret() && secretVal.IsRedacted() {
+				return existingStr
+			}
+		}
+		return val
+	default:
+		return incoming
+	}
 }
 
-// marshalEnvVarObject serialises an EnvVar-shaped map back to the JSON string that
-// schemas.NewEnvVar expects so we can call ShouldPreserveStored on it.
-func marshalEnvVarObject(m map[string]any) string {
+// isSecretVarObject returns true if m has the shape of a serialised SecretVar.
+func isSecretVarObject(m map[string]any) bool {
+	_, hasValue := m["value"]
+	_, hasSecretRef := m["ref"]
+	_, hasType := m["type"]
+	// shipped backward compat: env_var/from_env
+	_, hasEnvVar := m["env_var"]
+	_, hasFromEnv := m["from_env"]
+	return hasValue && ((hasSecretRef && hasType) || (hasEnvVar && hasFromEnv))
+}
+
+// marshalSecretVarObject serialises a SecretVar-shaped map back to the JSON string that
+// schemas.NewSecretVar expects so we can call ShouldPreserveStored on it.
+func marshalSecretVarObject(m map[string]any) string {
 	value, _ := m["value"].(string)
-	envVar, _ := m["env_var"].(string)
+	if secretRef, ok := m["ref"].(string); ok {
+		secretType, _ := m["type"].(string)
+		if secretType != "" {
+			return fmt.Sprintf(`{"value":%q,"ref":%q,"type":%q}`, value, secretRef, secretType)
+		}
+		return fmt.Sprintf(`{"value":%q}`, value)
+	}
+	// backward compat: old env_var/from_env format
+	secretVar, _ := m["env_var"].(string)
 	fromEnv, _ := m["from_env"].(bool)
 	if fromEnv {
-		return fmt.Sprintf(`{"value":%q,"env_var":%q,"from_env":true}`, value, envVar)
+		return fmt.Sprintf(`{"value":%q,"env_var":%q,"from_env":true}`, value, secretVar)
 	}
-	return fmt.Sprintf(`{"value":%q,"env_var":%q,"from_env":false}`, value, envVar)
+	return fmt.Sprintf(`{"value":%q,"env_var":%q,"from_env":false}`, value, secretVar)
 }

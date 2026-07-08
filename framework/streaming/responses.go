@@ -1,6 +1,7 @@
 package streaming
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -156,6 +157,11 @@ func deepCopyResponsesStreamResponse(original *schemas.BifrostResponsesStreamRes
 		copy.AnnotationIndex = &copyAnnotationIndex
 	}
 
+	if original.Error != nil {
+		copyError := *original.Error
+		copy.Error = &copyError
+	}
+
 	if original.Code != nil {
 		copyCode := *original.Code
 		copy.Code = &copyCode
@@ -217,6 +223,16 @@ func deepCopyResponsesMessage(original schemas.ResponsesMessage) schemas.Respons
 				copy.Content.ContentBlocks[i] = deepCopyResponsesMessageContentBlock(block)
 			}
 		}
+	}
+
+	// Deep copy Author and Recipient (multi-agent collab_tool_call items).
+	// json.RawMessage is a []byte slice; copy the bytes so accumulators don't
+	// share (and mutate) the underlying array.
+	if original.Author != nil {
+		copy.Author = append(json.RawMessage(nil), original.Author...)
+	}
+	if original.Recipient != nil {
+		copy.Recipient = append(json.RawMessage(nil), original.Recipient...)
 	}
 
 	// Deep copy ResponsesReasoning if present
@@ -331,6 +347,15 @@ func deepCopyResponsesMessage(original schemas.ResponsesMessage) schemas.Respons
 			}
 		}
 
+		if original.ResponsesToolMessage.Caller != nil {
+			copyCaller := *original.ResponsesToolMessage.Caller
+			if original.ResponsesToolMessage.Caller.ToolID != nil {
+				copyToolID := *original.ResponsesToolMessage.Caller.ToolID
+				copyCaller.ToolID = &copyToolID
+			}
+			copy.ResponsesToolMessage.Caller = &copyCaller
+		}
+
 		// Deep copy embedded tool call structs
 		if original.ResponsesToolMessage.ResponsesFileSearchToolCall != nil {
 			copyToolCall := *original.ResponsesToolMessage.ResponsesFileSearchToolCall
@@ -382,6 +407,23 @@ func deepCopyResponsesMessage(original schemas.ResponsesMessage) schemas.Respons
 				}
 			}
 			copy.ResponsesToolMessage.ResponsesComputerToolCallOutput = &copyOutput
+		}
+
+		if original.ResponsesToolMessage.ResponsesWebFetchCall != nil {
+			copyCall := *original.ResponsesToolMessage.ResponsesWebFetchCall
+			if original.ResponsesToolMessage.ResponsesWebFetchCall.Document != nil {
+				docCopy := *original.ResponsesToolMessage.ResponsesWebFetchCall.Document
+				if original.ResponsesToolMessage.ResponsesWebFetchCall.Document.Source != nil {
+					srcCopy := *original.ResponsesToolMessage.ResponsesWebFetchCall.Document.Source
+					docCopy.Source = &srcCopy
+				}
+				if original.ResponsesToolMessage.ResponsesWebFetchCall.Document.Citations != nil {
+					citationsCopy := *original.ResponsesToolMessage.ResponsesWebFetchCall.Document.Citations
+					docCopy.Citations = &citationsCopy
+				}
+				copyCall.Document = &docCopy
+			}
+			copy.ResponsesToolMessage.ResponsesWebFetchCall = &copyCall
 		}
 
 		if original.ResponsesToolMessage.ResponsesCodeInterpreterToolCall != nil {
@@ -443,6 +485,17 @@ func deepCopyResponsesMessageContentBlock(original schemas.ResponsesMessageConte
 		copy.Text = &copyText
 	}
 
+	// Reasoning replay fields: Signature and EncryptedContent are echoed back
+	// verbatim to the provider, so they must survive the deep copy.
+	if original.Signature != nil {
+		copy.Signature = new(string)
+		*copy.Signature = *original.Signature
+	}
+	if original.EncryptedContent != nil {
+		copy.EncryptedContent = new(string)
+		*copy.EncryptedContent = *original.EncryptedContent
+	}
+
 	// Copy other specific content type fields as needed
 	if original.ResponsesOutputMessageContentText != nil {
 		t := *original.ResponsesOutputMessageContentText
@@ -478,7 +531,23 @@ func deepCopyResponsesMessageContentBlock(original schemas.ResponsesMessageConte
 	return copy
 }
 
-// buildCompleteMessageFromResponsesStreamChunks builds complete messages from accumulated responses stream chunks
+// respMsgAccum holds strings.Builders for one output message so streamed deltas
+// accumulate in O(n) instead of O(n²) repeated string concatenation. Keyed by the
+// message's index in the build's `messages` slice (append-only → stable identity).
+type respMsgAccum struct {
+	cbText      map[int]*strings.Builder // contentIndex -> text / reasoning-text builder (block.Text)
+	cbRefusal   map[int]*strings.Builder // contentIndex -> refusal builder
+	cbSignature map[int]*strings.Builder // contentIndex -> signature builder
+	args        *strings.Builder         // function-call arguments
+	summary     *strings.Builder         // reasoning summary text (Summary[0].Text)
+	encrypted   *strings.Builder         // reasoning encrypted content
+}
+
+// buildCompleteMessageFromResponsesStreamChunks builds complete messages from
+// accumulated responses stream chunks. Streamed string fields are gathered into
+// strings.Builder accumulators during the walk and materialized once at the end,
+// avoiding the O(n²) churn of repeated `*field += delta` on immutable strings
+// (mirrors buildCompleteMessageFromChatStreamChunks).
 func (a *Accumulator) buildCompleteMessageFromResponsesStreamChunks(chunks []*ResponsesStreamChunk) []schemas.ResponsesMessage {
 	var messages []schemas.ResponsesMessage
 
@@ -489,6 +558,62 @@ func (a *Accumulator) buildCompleteMessageFromResponsesStreamChunks(chunks []*Re
 		}
 		return chunks[i].ChunkIndex < chunks[j].ChunkIndex
 	})
+
+	// Builder accumulators keyed by message index. Materialized after the walk.
+	accums := map[int]*respMsgAccum{}
+	getAccum := func(idx int) *respMsgAccum {
+		acc := accums[idx]
+		if acc == nil {
+			acc = &respMsgAccum{
+				cbText:      map[int]*strings.Builder{},
+				cbRefusal:   map[int]*strings.Builder{},
+				cbSignature: map[int]*strings.Builder{},
+			}
+			accums[idx] = acc
+		}
+		return acc
+	}
+	// builderFor lazily creates a per-contentIndex builder, seeding it once with
+	// any value already present on the block (e.g. from content_part.added /
+	// output_item.added deep copies) so pre-existing content is preserved.
+	builderFor := func(m map[int]*strings.Builder, key int, seed *string) *strings.Builder {
+		b := m[key]
+		if b == nil {
+			b = &strings.Builder{}
+			if seed != nil {
+				b.WriteString(*seed)
+			}
+			m[key] = b
+		}
+		return b
+	}
+	// singleBuilder lazily creates a message-level builder, seeding once.
+	singleBuilder := func(b *strings.Builder, seed *string) *strings.Builder {
+		if b == nil {
+			b = &strings.Builder{}
+			if seed != nil {
+				b.WriteString(*seed)
+			}
+		}
+		return b
+	}
+	// ensureContentBlock grows the block slice to include contentIndex and sets
+	// its type if not yet initialized. The string mutation now flows through the
+	// builders above instead of in-place `+=`.
+	ensureContentBlock := func(message *schemas.ResponsesMessage, contentIndex int, typ schemas.ResponsesMessageContentBlockType) {
+		if message.Content == nil {
+			message.Content = &schemas.ResponsesMessageContent{}
+		}
+		if message.Content.ContentBlocks == nil {
+			message.Content.ContentBlocks = make([]schemas.ResponsesMessageContentBlock, contentIndex+1)
+		}
+		for len(message.Content.ContentBlocks) <= contentIndex {
+			message.Content.ContentBlocks = append(message.Content.ContentBlocks, schemas.ResponsesMessageContentBlock{})
+		}
+		if message.Content.ContentBlocks[contentIndex].Type == "" {
+			message.Content.ContentBlocks[contentIndex].Type = typ
+		}
+	}
 
 	for _, chunk := range chunks {
 		if chunk.StreamResponse == nil {
@@ -526,18 +651,31 @@ func (a *Accumulator) buildCompleteMessageFromResponsesStreamChunks(chunks []*Re
 			if len(messages) == 0 {
 				messages = append(messages, createNewMessage())
 			}
-			// Append text delta to the most recent message
+			// Accumulate text delta into the most recent message
 			if resp.Delta != nil && resp.ContentIndex != nil && len(messages) > 0 {
-				a.appendTextDeltaToResponsesMessage(&messages[len(messages)-1], *resp.Delta, *resp.ContentIndex)
+				idx := len(messages) - 1
+				ensureContentBlock(&messages[idx], *resp.ContentIndex, schemas.ResponsesOutputMessageContentTypeText)
+				block := &messages[idx].Content.ContentBlocks[*resp.ContentIndex]
+				if block.ResponsesOutputMessageContentText == nil {
+					block.ResponsesOutputMessageContentText = &schemas.ResponsesOutputMessageContentText{}
+				}
+				builderFor(getAccum(idx).cbText, *resp.ContentIndex, block.Text).WriteString(*resp.Delta)
 			}
 
 		case schemas.ResponsesStreamResponseTypeRefusalDelta:
 			if len(messages) == 0 {
 				messages = append(messages, createNewMessage())
 			}
-			// Append refusal delta to the most recent message
+			// Accumulate refusal delta into the most recent message
 			if resp.Refusal != nil && resp.ContentIndex != nil && len(messages) > 0 {
-				a.appendRefusalDeltaToResponsesMessage(&messages[len(messages)-1], *resp.Refusal, *resp.ContentIndex)
+				idx := len(messages) - 1
+				ensureContentBlock(&messages[idx], *resp.ContentIndex, schemas.ResponsesOutputMessageContentTypeRefusal)
+				block := &messages[idx].Content.ContentBlocks[*resp.ContentIndex]
+				var seed *string
+				if block.ResponsesOutputMessageContentRefusal != nil {
+					seed = &block.ResponsesOutputMessageContentRefusal.Refusal
+				}
+				builderFor(getAccum(idx).cbRefusal, *resp.ContentIndex, seed).WriteString(*resp.Refusal)
 			}
 
 		case schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta:
@@ -571,24 +709,30 @@ func (a *Accumulator) buildCompleteMessageFromResponsesStreamChunks(chunks []*Re
 						targetIdx = len(messages) - 1
 					}
 				}
-				a.appendFunctionArgumentsDeltaToResponsesMessage(&messages[targetIdx], *resp.Delta)
+				msg := &messages[targetIdx]
+				if msg.ResponsesToolMessage == nil {
+					msg.ResponsesToolMessage = &schemas.ResponsesToolMessage{}
+				}
+				acc := getAccum(targetIdx)
+				acc.args = singleBuilder(acc.args, msg.ResponsesToolMessage.Arguments)
+				acc.args.WriteString(*resp.Delta)
 			}
 
 		case schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta:
 			// Create new reasoning message if none exists, or find existing reasoning message to append delta to
 			if (resp.Delta != nil || resp.Signature != nil) && resp.ItemID != nil {
-				var targetMessage *schemas.ResponsesMessage
+				targetIdx := -1
 
 				// Find the reasoning message by ItemID
 				for i := len(messages) - 1; i >= 0; i-- {
 					if messages[i].ID != nil && *messages[i].ID == *resp.ItemID {
-						targetMessage = &messages[i]
+						targetIdx = i
 						break
 					}
 				}
 
 				// If no message found, create a new reasoning message
-				if targetMessage == nil {
+				if targetIdx == -1 {
 					// Deep copy ItemID to prevent shared pointer mutation
 					var copyID *string
 					if resp.ItemID != nil {
@@ -604,19 +748,94 @@ func (a *Accumulator) buildCompleteMessageFromResponsesStreamChunks(chunks []*Re
 						},
 					}
 					messages = append(messages, newMessage)
-					targetMessage = &messages[len(messages)-1]
+					targetIdx = len(messages) - 1
 				}
 
-				// Handle text delta
+				targetMessage := &messages[targetIdx]
+
+				// Handle text delta (content-block reasoning text or summary accumulation)
 				if resp.Delta != nil {
-					a.appendReasoningDeltaToResponsesMessage(targetMessage, *resp.Delta, resp.ContentIndex)
+					if resp.ContentIndex != nil {
+						ensureContentBlock(targetMessage, *resp.ContentIndex, schemas.ResponsesOutputMessageContentTypeReasoning)
+						block := &targetMessage.Content.ContentBlocks[*resp.ContentIndex]
+						builderFor(getAccum(targetIdx).cbText, *resp.ContentIndex, block.Text).WriteString(*resp.Delta)
+					} else {
+						if targetMessage.ResponsesReasoning == nil {
+							targetMessage.ResponsesReasoning = &schemas.ResponsesReasoning{Summary: []schemas.ResponsesReasoningSummary{}}
+						}
+						if len(targetMessage.ResponsesReasoning.Summary) == 0 {
+							targetMessage.ResponsesReasoning.Summary = append(targetMessage.ResponsesReasoning.Summary, schemas.ResponsesReasoningSummary{
+								Type: schemas.ResponsesReasoningContentBlockTypeSummaryText,
+							})
+						}
+						acc := getAccum(targetIdx)
+						acc.summary = singleBuilder(acc.summary, &targetMessage.ResponsesReasoning.Summary[0].Text)
+						acc.summary.WriteString(*resp.Delta)
+					}
 				}
 
-				// Handle signature delta
+				// Handle signature delta (content-block signature or encrypted content)
 				if resp.Signature != nil {
-					a.appendReasoningSignatureToResponsesMessage(targetMessage, *resp.Signature, resp.ContentIndex)
+					if resp.ContentIndex != nil {
+						ensureContentBlock(targetMessage, *resp.ContentIndex, schemas.ResponsesOutputMessageContentTypeReasoning)
+						block := &targetMessage.Content.ContentBlocks[*resp.ContentIndex]
+						builderFor(getAccum(targetIdx).cbSignature, *resp.ContentIndex, block.Signature).WriteString(*resp.Signature)
+					} else {
+						if targetMessage.ResponsesReasoning == nil {
+							targetMessage.ResponsesReasoning = &schemas.ResponsesReasoning{Summary: []schemas.ResponsesReasoningSummary{}}
+						}
+						acc := getAccum(targetIdx)
+						acc.encrypted = singleBuilder(acc.encrypted, targetMessage.ResponsesReasoning.EncryptedContent)
+						acc.encrypted.WriteString(*resp.Signature)
+					}
 				}
 			}
+		}
+	}
+
+	// Materialize all accumulated builders into the message fields once. Linear
+	// in total streamed bytes — this is what replaces the O(n²) in-place `+=`.
+	for idx, acc := range accums {
+		msg := &messages[idx]
+		for ci, b := range acc.cbText {
+			s := b.String()
+			msg.Content.ContentBlocks[ci].Text = &s
+		}
+		for ci, b := range acc.cbRefusal {
+			block := &msg.Content.ContentBlocks[ci]
+			if block.ResponsesOutputMessageContentRefusal == nil {
+				block.ResponsesOutputMessageContentRefusal = &schemas.ResponsesOutputMessageContentRefusal{}
+			}
+			block.ResponsesOutputMessageContentRefusal.Refusal = b.String()
+		}
+		for ci, b := range acc.cbSignature {
+			s := b.String()
+			msg.Content.ContentBlocks[ci].Signature = &s
+		}
+		if acc.args != nil {
+			s := acc.args.String()
+			if msg.ResponsesToolMessage == nil {
+				msg.ResponsesToolMessage = &schemas.ResponsesToolMessage{}
+			}
+			msg.ResponsesToolMessage.Arguments = &s
+		}
+		if acc.summary != nil {
+			if msg.ResponsesReasoning == nil {
+				msg.ResponsesReasoning = &schemas.ResponsesReasoning{}
+			}
+			if len(msg.ResponsesReasoning.Summary) == 0 {
+				msg.ResponsesReasoning.Summary = append(msg.ResponsesReasoning.Summary, schemas.ResponsesReasoningSummary{
+					Type: schemas.ResponsesReasoningContentBlockTypeSummaryText,
+				})
+			}
+			msg.ResponsesReasoning.Summary[0].Text = acc.summary.String()
+		}
+		if acc.encrypted != nil {
+			s := acc.encrypted.String()
+			if msg.ResponsesReasoning == nil {
+				msg.ResponsesReasoning = &schemas.ResponsesReasoning{}
+			}
+			msg.ResponsesReasoning.EncryptedContent = &s
 		}
 	}
 
@@ -630,184 +849,6 @@ func createNewMessage() schemas.ResponsesMessage {
 		Content: &schemas.ResponsesMessageContent{
 			ContentBlocks: make([]schemas.ResponsesMessageContentBlock, 0),
 		},
-	}
-}
-
-// appendTextDeltaToResponsesMessage appends text delta to a responses message
-func (a *Accumulator) appendTextDeltaToResponsesMessage(message *schemas.ResponsesMessage, delta string, contentIndex int) {
-	if message.Content == nil {
-		message.Content = &schemas.ResponsesMessageContent{}
-	}
-
-	// If we don't have content blocks yet, create them
-	if message.Content.ContentBlocks == nil {
-		message.Content.ContentBlocks = make([]schemas.ResponsesMessageContentBlock, contentIndex+1)
-	}
-
-	// Ensure we have enough content blocks
-	for len(message.Content.ContentBlocks) <= contentIndex {
-		message.Content.ContentBlocks = append(message.Content.ContentBlocks, schemas.ResponsesMessageContentBlock{})
-	}
-
-	// Initialize the content block if needed
-	if message.Content.ContentBlocks[contentIndex].Type == "" {
-		message.Content.ContentBlocks[contentIndex].Type = schemas.ResponsesOutputMessageContentTypeText
-		message.Content.ContentBlocks[contentIndex].ResponsesOutputMessageContentText = &schemas.ResponsesOutputMessageContentText{}
-	}
-
-	// Append to existing text or create new text
-	if message.Content.ContentBlocks[contentIndex].Text == nil {
-		message.Content.ContentBlocks[contentIndex].Text = &delta
-	} else {
-		*message.Content.ContentBlocks[contentIndex].Text += delta
-	}
-}
-
-// appendRefusalDeltaToResponsesMessage appends refusal delta to a responses message
-func (a *Accumulator) appendRefusalDeltaToResponsesMessage(message *schemas.ResponsesMessage, refusal string, contentIndex int) {
-	if message.Content == nil {
-		message.Content = &schemas.ResponsesMessageContent{}
-	}
-
-	// If we don't have content blocks yet, create them
-	if message.Content.ContentBlocks == nil {
-		message.Content.ContentBlocks = make([]schemas.ResponsesMessageContentBlock, contentIndex+1)
-	}
-
-	// Ensure we have enough content blocks
-	for len(message.Content.ContentBlocks) <= contentIndex {
-		message.Content.ContentBlocks = append(message.Content.ContentBlocks, schemas.ResponsesMessageContentBlock{})
-	}
-
-	// Initialize the content block if needed
-	if message.Content.ContentBlocks[contentIndex].Type == "" {
-		message.Content.ContentBlocks[contentIndex].Type = schemas.ResponsesOutputMessageContentTypeRefusal
-		message.Content.ContentBlocks[contentIndex].ResponsesOutputMessageContentRefusal = &schemas.ResponsesOutputMessageContentRefusal{}
-	}
-
-	// Append to existing refusal text
-	if message.Content.ContentBlocks[contentIndex].ResponsesOutputMessageContentRefusal == nil {
-		message.Content.ContentBlocks[contentIndex].ResponsesOutputMessageContentRefusal = &schemas.ResponsesOutputMessageContentRefusal{
-			Refusal: refusal,
-		}
-	} else {
-		message.Content.ContentBlocks[contentIndex].ResponsesOutputMessageContentRefusal.Refusal += refusal
-	}
-}
-
-// appendFunctionArgumentsDeltaToResponsesMessage appends function arguments delta to a responses message
-func (a *Accumulator) appendFunctionArgumentsDeltaToResponsesMessage(message *schemas.ResponsesMessage, arguments string) {
-	if message.ResponsesToolMessage == nil {
-		message.ResponsesToolMessage = &schemas.ResponsesToolMessage{}
-	}
-
-	if message.ResponsesToolMessage.Arguments == nil {
-		message.ResponsesToolMessage.Arguments = &arguments
-	} else {
-		*message.ResponsesToolMessage.Arguments += arguments
-	}
-}
-
-// appendReasoningDeltaToResponsesMessage appends reasoning delta to a responses message
-func (a *Accumulator) appendReasoningDeltaToResponsesMessage(message *schemas.ResponsesMessage, delta string, contentIndex *int) {
-	// Handle reasoning content in two ways:
-	// 1. Content blocks (for reasoning_text content blocks)
-	// 2. ResponsesReasoning.Summary (for reasoning summary accumulation)
-
-	// If we have a content index, this is reasoning content in content blocks
-	if contentIndex != nil {
-		if message.Content == nil {
-			message.Content = &schemas.ResponsesMessageContent{}
-		}
-
-		// If we don't have content blocks yet, create them
-		if message.Content.ContentBlocks == nil {
-			message.Content.ContentBlocks = make([]schemas.ResponsesMessageContentBlock, *contentIndex+1)
-		}
-
-		// Ensure we have enough content blocks
-		for len(message.Content.ContentBlocks) <= *contentIndex {
-			message.Content.ContentBlocks = append(message.Content.ContentBlocks, schemas.ResponsesMessageContentBlock{})
-		}
-
-		// Initialize the content block if needed
-		if message.Content.ContentBlocks[*contentIndex].Type == "" {
-			message.Content.ContentBlocks[*contentIndex].Type = schemas.ResponsesOutputMessageContentTypeReasoning
-		}
-
-		// Append to existing reasoning text or create new text
-		if message.Content.ContentBlocks[*contentIndex].Text == nil {
-			message.Content.ContentBlocks[*contentIndex].Text = &delta
-		} else {
-			*message.Content.ContentBlocks[*contentIndex].Text += delta
-		}
-	} else {
-		// No content index - this is reasoning summary accumulation
-		if message.ResponsesReasoning == nil {
-			message.ResponsesReasoning = &schemas.ResponsesReasoning{
-				Summary: []schemas.ResponsesReasoningSummary{},
-			}
-		}
-
-		// For now, accumulate into a single summary entry
-		// In the future, this could be enhanced to handle multiple summary entries
-		if len(message.ResponsesReasoning.Summary) == 0 {
-			message.ResponsesReasoning.Summary = append(message.ResponsesReasoning.Summary, schemas.ResponsesReasoningSummary{
-				Type: schemas.ResponsesReasoningContentBlockTypeSummaryText,
-				Text: delta,
-			})
-		} else {
-			// Append to the first (and typically only) summary entry
-			message.ResponsesReasoning.Summary[0].Text += delta
-		}
-	}
-}
-
-// appendReasoningSignatureToResponsesMessage appends reasoning signature to a responses message
-func (a *Accumulator) appendReasoningSignatureToResponsesMessage(message *schemas.ResponsesMessage, signature string, contentIndex *int) {
-	// Handle signature content in content blocks or ResponsesReasoning.EncryptedContent
-
-	// If we have a content index, this is signature content in content blocks
-	if contentIndex != nil {
-		if message.Content == nil {
-			message.Content = &schemas.ResponsesMessageContent{}
-		}
-
-		// If we don't have content blocks yet, create them
-		if message.Content.ContentBlocks == nil {
-			message.Content.ContentBlocks = make([]schemas.ResponsesMessageContentBlock, *contentIndex+1)
-		}
-
-		// Ensure we have enough content blocks
-		for len(message.Content.ContentBlocks) <= *contentIndex {
-			message.Content.ContentBlocks = append(message.Content.ContentBlocks, schemas.ResponsesMessageContentBlock{})
-		}
-
-		// Initialize the content block if needed
-		if message.Content.ContentBlocks[*contentIndex].Type == "" {
-			message.Content.ContentBlocks[*contentIndex].Type = schemas.ResponsesOutputMessageContentTypeReasoning
-		}
-
-		// Set or append signature to the content block
-		if message.Content.ContentBlocks[*contentIndex].Signature == nil {
-			message.Content.ContentBlocks[*contentIndex].Signature = &signature
-		} else {
-			*message.Content.ContentBlocks[*contentIndex].Signature += signature
-		}
-	} else {
-		// No content index - this is encrypted content at the reasoning level
-		if message.ResponsesReasoning == nil {
-			message.ResponsesReasoning = &schemas.ResponsesReasoning{
-				Summary: []schemas.ResponsesReasoningSummary{},
-			}
-		}
-
-		// Set or append to encrypted content
-		if message.ResponsesReasoning.EncryptedContent == nil {
-			message.ResponsesReasoning.EncryptedContent = &signature
-		} else {
-			*message.ResponsesReasoning.EncryptedContent += signature
-		}
 	}
 }
 

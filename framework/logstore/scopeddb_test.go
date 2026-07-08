@@ -3,6 +3,7 @@ package logstore
 import (
 	"context"
 	"testing"
+	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -73,4 +74,46 @@ func TestLogStoreScopedDB_TypedNilScopeIsIgnored(t *testing.T) {
 	got := s.ScopedDB(ctx)
 	require.NotNil(t, got)
 	require.NoError(t, got.Exec("SELECT 1").Error)
+}
+
+// TestFindByIDUsesScopedDB verifies point lookups honor caller-supplied row visibility.
+func TestFindByIDUsesScopedDB(t *testing.T) {
+	store := newTestSQLiteStore(t)
+	ctx := context.Background()
+	visibleUserID := "user-visible"
+	hiddenUserID := "user-hidden"
+
+	require.NoError(t, store.Create(ctx, &Log{
+		ID:        "visible-log",
+		Timestamp: time.Now().UTC(),
+		Object:    "chat_completion",
+		Provider:  "openai",
+		Model:     "gpt-4o-mini",
+		Status:    "success",
+		UserID:    &visibleUserID,
+	}))
+	require.NoError(t, store.Create(ctx, &Log{
+		ID:        "hidden-log",
+		Timestamp: time.Now().UTC(),
+		Object:    "chat_completion",
+		Provider:  "openai",
+		Model:     "gpt-4o-mini",
+		Status:    "success",
+		UserID:    &hiddenUserID,
+	}))
+
+	scopedCtx := queryscope.WithQueryScope(ctx, func(db *gorm.DB) *gorm.DB {
+		return db.Where("user_id = ?", visibleUserID)
+	})
+
+	visible, err := store.FindByID(scopedCtx, "visible-log")
+	require.NoError(t, err)
+	require.Equal(t, "visible-log", visible.ID)
+
+	_, err = store.FindByID(scopedCtx, "hidden-log")
+	require.ErrorIs(t, err, ErrNotFound)
+
+	hidden, err := store.FindByID(ctx, "hidden-log")
+	require.NoError(t, err)
+	require.Equal(t, "hidden-log", hidden.ID)
 }

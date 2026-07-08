@@ -429,6 +429,14 @@ func (a *Accumulator) processAccumulatedChatStreamingChunks(requestID string, re
 		}
 		data.FinishReason = lastChunk.FinishReason
 	}
+	// The highest-index chunk can carry a nil finish_reason (a usage-only chunk,
+	// or the synthetic terminal chunk the OpenAI-compatible handler appends after
+	// forwarding finish_reason on a content chunk). Fall back to the newest chunk
+	// that actually carries one so the accumulated response used for logging and
+	// plugins keeps it.
+	if data.FinishReason == nil {
+		data.FinishReason = accumulator.getChatFinishReasonLocked()
+	}
 	// Merge LogProbs from all chunks
 	if len(accumulator.ChatStreamChunks) > 0 {
 		var mergedLogProbs *schemas.BifrostLogProbs
@@ -547,7 +555,7 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 			chunk.SemanticCacheDebug = result.GetExtraFields().CacheDebug
 		}
 	}
-	if addErr := a.addChatStreamChunk(requestID, chunk, isFinalChunk); addErr != nil {
+	if addErr := a.addChatStreamChunk(requestID, streamType, chunk, isFinalChunk); addErr != nil {
 		return nil, fmt.Errorf("failed to add stream chunk for request %s: %w", requestID, addErr)
 	}
 	// If this is the final chunk, process accumulated chunks
