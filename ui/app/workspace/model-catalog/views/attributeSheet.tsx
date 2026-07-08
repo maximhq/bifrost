@@ -8,6 +8,7 @@ import { RenderProviderIcon } from "@/lib/constants/icons";
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
 import { getErrorMessage, ModelDetails, useGetCoreConfigQuery, useUpsertModelCatalogEntriesMutation } from "@/lib/store";
 import { KnownProvider } from "@/lib/types/config";
+import { formatTokenPriceFull } from "@/lib/utils/numbers";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { ExternalLink, Plus, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
@@ -46,16 +47,15 @@ function rowsFromAttributes(attrs?: Record<string, string>): AttributeRow[] {
 		.map(([key, value]) => ({ id: newRowId(), key, value }));
 }
 
-function formatTokenPrice(cost?: number) {
-	if (cost === undefined || cost === null) return "Not available";
-	return `$${(cost * 1_000_000).toLocaleString(undefined, {
-		minimumFractionDigits: 2,
-		maximumFractionDigits: 2,
-	})} / 1M tokens`;
-}
-
 function isLinkableSource(url: string) {
 	return url.startsWith("http://") || url.startsWith("https://");
+}
+
+function getPricingSourceUrl(configuredUrl: string | undefined, modelName: string) {
+	if (configuredUrl) return configuredUrl;
+	const url = new URL(DEFAULT_PRICING_SOURCE_URL);
+	url.searchParams.set("model", modelName);
+	return url.toString();
 }
 
 export default function AttributeSheet({ model, onClose }: AttributeSheetProps) {
@@ -75,7 +75,7 @@ export default function AttributeSheet({ model, onClose }: AttributeSheetProps) 
 
 	const rowsDirty = JSON.stringify(stripIds(extraRows)) !== initialRowsKey;
 	const isDirty = description !== initialDescription || rowsDirty;
-	const pricingSourceUrl = bifrostConfig?.framework_config?.pricing_url || DEFAULT_PRICING_SOURCE_URL;
+	const pricingSourceUrl = getPricingSourceUrl(bifrostConfig?.framework_config?.pricing_url, model.name);
 	const canOpenPricingSource = isLinkableSource(pricingSourceUrl);
 
 	const handleClose = () => {
@@ -198,25 +198,25 @@ export default function AttributeSheet({ model, onClose }: AttributeSheetProps) 
 								<div className="bg-muted/30 rounded-sm border px-3 py-2">
 									<p className="text-muted-foreground text-xs">Input</p>
 									<p className="mt-1 font-mono text-sm" data-testid="model-catalog-input-cost">
-										{formatTokenPrice(model.input_cost_per_token)}
+										{formatTokenPriceFull(model.input_cost_per_token)}
 									</p>
 								</div>
 								<div className="bg-muted/30 rounded-sm border px-3 py-2">
 									<p className="text-muted-foreground text-xs">Output</p>
 									<p className="mt-1 font-mono text-sm" data-testid="model-catalog-output-cost">
-										{formatTokenPrice(model.output_cost_per_token)}
+										{formatTokenPriceFull(model.output_cost_per_token)}
 									</p>
 								</div>
 								<div className="bg-muted/30 rounded-sm border px-3 py-2">
 									<p className="text-muted-foreground text-xs">Cache Write</p>
 									<p className="mt-1 font-mono text-sm" data-testid="model-catalog-cache-write-cost">
-										{formatTokenPrice(model.cache_creation_input_token_cost)}
+										{formatTokenPriceFull(model.cache_creation_input_token_cost)}
 									</p>
 								</div>
 								<div className="bg-muted/30 rounded-sm border px-3 py-2">
 									<p className="text-muted-foreground text-xs">Cache Read</p>
 									<p className="mt-1 font-mono text-sm" data-testid="model-catalog-cache-read-cost">
-										{formatTokenPrice(model.cache_read_input_token_cost)}
+										{formatTokenPriceFull(model.cache_read_input_token_cost)}
 									</p>
 								</div>
 							</div>

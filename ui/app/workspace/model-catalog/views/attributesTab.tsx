@@ -10,6 +10,7 @@ import { RenderProviderIcon } from "@/lib/constants/icons";
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
 import { ModelDetails, useGetModelDetailsQuery, useGetProvidersQuery } from "@/lib/store";
 import { KnownProvider } from "@/lib/types/config";
+import { formatTokenPriceCompact } from "@/lib/utils/numbers";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { ChevronLeft, ChevronRight, Edit, Search } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
@@ -38,14 +39,6 @@ function DescriptionCell({ description }: { description?: string }) {
 			</Tooltip>
 		</TooltipProvider>
 	);
-}
-
-function formatTokenPrice(cost?: number) {
-	if (cost === undefined || cost === null) return "—";
-	return `$${(cost * 1_000_000).toLocaleString(undefined, {
-		minimumFractionDigits: 2,
-		maximumFractionDigits: 2,
-	})}`;
 }
 
 interface AttributesTabProps {
@@ -190,13 +183,17 @@ export default function AttributesTab({ hasAccess }: AttributesTabProps) {
 											<TableCell className="truncate py-3 font-mono text-sm" title={m.name}>
 												{m.name}
 											</TableCell>
-											<TableCell className="px-2 py-3 text-right font-mono text-sm">{formatTokenPrice(m.input_cost_per_token)}</TableCell>
-											<TableCell className="px-2 py-3 text-right font-mono text-sm">{formatTokenPrice(m.output_cost_per_token)}</TableCell>
 											<TableCell className="px-2 py-3 text-right font-mono text-sm">
-												{formatTokenPrice(m.cache_creation_input_token_cost)}
+												{formatTokenPriceCompact(m.input_cost_per_token)}
 											</TableCell>
 											<TableCell className="px-2 py-3 text-right font-mono text-sm">
-												{formatTokenPrice(m.cache_read_input_token_cost)}
+												{formatTokenPriceCompact(m.output_cost_per_token)}
+											</TableCell>
+											<TableCell className="px-2 py-3 text-right font-mono text-sm">
+												{formatTokenPriceCompact(m.cache_creation_input_token_cost)}
+											</TableCell>
+											<TableCell className="px-2 py-3 text-right font-mono text-sm">
+												{formatTokenPriceCompact(m.cache_read_input_token_cost)}
 											</TableCell>
 											<TableCell className="py-3">
 												<DescriptionCell description={attrs.description} />
