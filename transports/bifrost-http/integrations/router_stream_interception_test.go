@@ -1,11 +1,13 @@
 package integrations
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"strings"
 	"testing"
 
+	"github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -150,6 +152,32 @@ func Test_handleStreamingInterceptionErrorIsSanitized(t *testing.T) {
 	assert.Equal(t, lib.ClientSafeInternalErrorMessage, converterErr.Error.Message,
 		"stack-trace-bearing messages must be replaced by the sanitizer")
 	assert.NotContains(t, body, "main.go:17")
+}
+
+// On Bedrock routes the converted interception error must be encoded as an
+// AWS event-stream exception, not SSE.
+func Test_handleStreamingInterceptionErrorBedrockEventStream(t *testing.T) {
+	config := RouteConfig{
+		Type: RouteConfigTypeBedrock,
+		StreamConfig: &StreamConfig{
+			ErrorConverter: bedrockStreamErrorConverter,
+		},
+	}
+
+	body, cancelCalled := runHandleStreamingWithInterceptor(t, config,
+		wrapInterceptionError(newStreamInterceptionError("Response blocked by content policy")))
+
+	require.NotEmpty(t, body)
+	require.False(t, strings.HasPrefix(body, "data: "), "Bedrock streaming errors must not be plain SSE")
+	require.False(t, strings.HasPrefix(body, "event: "), "Bedrock streaming errors must not be plain SSE")
+
+	msg, err := eventstream.NewDecoder().Decode(bytes.NewReader([]byte(body)), nil)
+	require.NoError(t, err)
+	assert.Equal(t, "exception", eventStreamHeaderString(t, msg.Headers, ":message-type"))
+	assert.Equal(t, "guardrail_intervention", eventStreamHeaderString(t, msg.Headers, ":exception-type"))
+	assert.JSONEq(t, `{"__type":"guardrail_intervention","message":"Response blocked by content policy"}`, string(msg.Payload))
+	assert.NotContains(t, string(msg.Payload), "failed to intercept chunk")
+	assert.True(t, cancelCalled)
 }
 
 // Plain (non-structured) interceptor errors keep the existing flat behavior.

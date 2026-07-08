@@ -2688,7 +2688,11 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 
 		// sendConvertedStreamError converts a sanitized BifrostError through the
 		// integration's error converter and emits it in the route's native SSE
-		// format. Callers decide how to terminate the stream afterwards.
+		// format. Callers decide how to terminate the stream afterwards, with
+		// one carve-out: on Bedrock event-stream write failures (client
+		// disconnect) it calls cancel() itself, preserving the pre-existing
+		// upstream-error behavior. cancel() is idempotent, so callers may
+		// still cancel unconditionally.
 		sendConvertedStreamError := func(bifrostErr *schemas.BifrostError) {
 			var errorResponse interface{}
 
