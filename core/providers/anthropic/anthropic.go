@@ -1046,13 +1046,7 @@ func HandleAnthropicChatCompletionStreaming(
 
 				// Surface a safety-classifier decline via OpenAI's native
 				// delta.refusal field, mirroring the non-streaming path.
-				if *event.Delta.StopReason == AnthropicStopReasonRefusal {
-					if event.Delta.StopDetails != nil && event.Delta.StopDetails.Explanation != nil {
-						refusalExplanation = event.Delta.StopDetails.Explanation
-					} else {
-						refusalExplanation = schemas.Ptr("The model declined to respond.")
-					}
-				}
+				refusalExplanation = RefusalExplanationFromStreamDelta(event.Delta)
 			}
 
 			// Handle structured output: intercept tool calls for the structured output tool

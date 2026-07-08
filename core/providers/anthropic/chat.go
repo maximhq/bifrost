@@ -1147,7 +1147,7 @@ func ToAnthropicChatResponse(bifrostResp *schemas.BifrostChatResponse) *Anthropi
 
 		// Round-trip a refusal set via OpenAI's native message.refusal field back
 		// into Anthropic's stop_details, keeping stop_reason in sync.
-		if choice.Message != nil && choice.Message.ChatAssistantMessage != nil && choice.Message.ChatAssistantMessage.Refusal != nil {
+		if choice.ChatNonStreamResponseChoice != nil && choice.Message != nil && choice.Message.ChatAssistantMessage != nil && choice.Message.ChatAssistantMessage.Refusal != nil {
 			anthropicResp.StopReason = AnthropicStopReasonRefusal
 			anthropicResp.StopDetails = &AnthropicStopDetails{
 				Type:        "refusal",

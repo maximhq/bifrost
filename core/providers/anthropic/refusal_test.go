@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -76,6 +75,42 @@ func TestToBifrostChatResponse_Refusal(t *testing.T) {
 // TestToAnthropicChatResponse_RoundTripsRefusal verifies that a Bifrost response
 // carrying ChatAssistantMessage.Refusal round-trips back into Anthropic's
 // stop_reason/stop_details.
+// TestToAnthropicChatResponse_NilChatNonStreamResponseChoiceDoesNotPanic guards
+// against a nil-pointer panic flagged in review: choice.Message is a field
+// promoted from the embedded *ChatNonStreamResponseChoice, so a bare
+// "choice.Message != nil" check dereferences that pointer and panics when a
+// streaming-shaped choice (ChatNonStreamResponseChoice == nil) is passed in.
+func TestToAnthropicChatResponse_NilChatNonStreamResponseChoiceDoesNotPanic(t *testing.T) {
+	t.Parallel()
+
+	bifrostResp := &schemas.BifrostChatResponse{
+		ID:    "chatcmpl_test",
+		Model: "claude-fable-5",
+		Choices: []schemas.BifrostResponseChoice{
+			{
+				Index:        0,
+				FinishReason: schemas.Ptr("stop"),
+				// ChatNonStreamResponseChoice deliberately nil; only the stream
+				// variant is set, as a streaming choice would be.
+				ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+					Delta: &schemas.ChatStreamResponseChoiceDelta{},
+				},
+			},
+		},
+	}
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("ToAnthropicChatResponse panicked: %v", r)
+		}
+	}()
+
+	anthropicResp := ToAnthropicChatResponse(bifrostResp)
+	if anthropicResp.StopReason != AnthropicStopReasonEndTurn {
+		t.Errorf("StopReason = %q, want %q", anthropicResp.StopReason, AnthropicStopReasonEndTurn)
+	}
+}
+
 func TestToAnthropicChatResponse_RoundTripsRefusal(t *testing.T) {
 	t.Parallel()
 
@@ -245,23 +280,59 @@ func TestAnthropicResponsesStreamState_StopDetailsResetOnAcquire(t *testing.T) {
 func TestToBifrostChatCompletionStream_RefusalMessageDelta(t *testing.T) {
 	t.Parallel()
 
-	explanation := "This request involves prohibited content."
-	usage := &schemas.BifrostLLMUsage{}
-	finishReason := "content_filter"
+	tests := []struct {
+		name            string
+		delta           *AnthropicStreamDelta
+		expectedRefusal *string
+	}{
+		{
+			name: "refusal with explanation",
+			delta: &AnthropicStreamDelta{
+				StopReason: schemas.Ptr(AnthropicStopReasonRefusal),
+				StopDetails: &AnthropicStopDetails{
+					Type:        "refusal",
+					Explanation: schemas.Ptr("This request involves prohibited content."),
+				},
+			},
+			expectedRefusal: schemas.Ptr("This request involves prohibited content."),
+		},
+		{
+			name: "refusal without stop_details",
+			delta: &AnthropicStreamDelta{
+				StopReason: schemas.Ptr(AnthropicStopReasonRefusal),
+			},
+			expectedRefusal: schemas.Ptr("The model declined to respond."),
+		},
+		{
+			name: "non-refusal stop reason",
+			delta: &AnthropicStreamDelta{
+				StopReason: schemas.Ptr(AnthropicStopReasonEndTurn),
+			},
+			expectedRefusal: nil,
+		},
+		{
+			name:            "nil delta",
+			delta:           nil,
+			expectedRefusal: nil,
+		},
+	}
 
-	response := providerUtils.CreateBifrostChatCompletionChunkResponse("msg_test", usage, &finishReason, 0, "claude-fable-5", 0)
-	if len(response.Choices) == 0 || response.Choices[0].ChatStreamResponseChoice == nil || response.Choices[0].ChatStreamResponseChoice.Delta == nil {
-		t.Fatal("expected a stream-choice delta to attach Refusal to")
-	}
-	response.Choices[0].ChatStreamResponseChoice.Delta.Refusal = &explanation
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Exercises the exact function HandleAnthropicChatCompletionStreaming calls
+			// (core/providers/anthropic/anthropic.go) to populate delta.refusal on the
+			// terminal chunk — not a hand-rolled duplicate of the production logic.
+			got := RefusalExplanationFromStreamDelta(tt.delta)
 
-	if response.Choices[0].ChatStreamResponseChoice.Delta.Refusal == nil {
-		t.Fatal("expected Delta.Refusal to be set")
-	}
-	if *response.Choices[0].ChatStreamResponseChoice.Delta.Refusal != explanation {
-		t.Errorf("Delta.Refusal = %q, want %q", *response.Choices[0].ChatStreamResponseChoice.Delta.Refusal, explanation)
-	}
-	if response.Choices[0].FinishReason == nil || *response.Choices[0].FinishReason != "content_filter" {
-		t.Errorf("FinishReason = %v, want %q", response.Choices[0].FinishReason, "content_filter")
+			if tt.expectedRefusal == nil {
+				if got != nil {
+					t.Errorf("RefusalExplanationFromStreamDelta() = %q, want nil", *got)
+				}
+				return
+			}
+			if got == nil || *got != *tt.expectedRefusal {
+				t.Errorf("RefusalExplanationFromStreamDelta() = %v, want %q", got, *tt.expectedRefusal)
+			}
+		})
 	}
 }
