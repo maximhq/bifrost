@@ -2566,6 +2566,22 @@ func (provider *OpenAIProvider) Transcription(ctx *schemas.BifrostContext, key s
 	)
 }
 
+// openAIDiarizedTranscriptionResponse mirrors OpenAI's response_format=diarized_json
+// wire shape (e.g. gpt-4o-transcribe-diarize), which uses a distinct segment
+// shape (string id, speaker, type) that doesn't fit TranscriptionSegment, so
+// it's decoded separately instead of directly into BifrostTranscriptionResponse.
+// Duration/Task are pointers because OpenAI's actual responses omit them
+// entirely (despite the openai-python SDK's TranscriptionDiarized model
+// listing both as required), and a zero-value default would fabricate data
+// that never existed upstream.
+type openAIDiarizedTranscriptionResponse struct {
+	Duration *float64                               `json:"duration,omitempty"`
+	Segments []schemas.TranscriptionDiarizedSegment `json:"segments"`
+	Task     *string                                `json:"task,omitempty"`
+	Text     string                                 `json:"text"`
+	Usage    *schemas.TranscriptionUsage            `json:"usage,omitempty"`
+}
+
 func HandleOpenAITranscriptionRequest(
 	ctx *schemas.BifrostContext,
 	client *fasthttp.Client,
@@ -2592,13 +2608,7 @@ func HandleOpenAITranscriptionRequest(
 		if len(lpResult.ResponseBody) > 0 {
 			response := &schemas.BifrostTranscriptionResponse{}
 			if request.Params != nil && schemas.IsDiarizedTranscriptionFormat(request.Params.ResponseFormat) {
-				var diarized struct {
-					Duration *float64                               `json:"duration,omitempty"`
-					Segments []schemas.TranscriptionDiarizedSegment `json:"segments"`
-					Task     *string                                `json:"task,omitempty"`
-					Text     string                                 `json:"text"`
-					Usage    *schemas.TranscriptionUsage            `json:"usage,omitempty"`
-				}
+				var diarized openAIDiarizedTranscriptionResponse
 				if err := sonic.Unmarshal(lpResult.ResponseBody, &diarized); err != nil {
 					return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err)
 				}
@@ -2706,16 +2716,7 @@ func HandleOpenAITranscriptionRequest(
 			rawResponse = string(copiedResponseBody)
 		}
 	} else if request.Params != nil && schemas.IsDiarizedTranscriptionFormat(request.Params.ResponseFormat) {
-		// diarized_json (e.g. gpt-4o-transcribe-diarize) uses a distinct segment
-		// shape (string id, speaker, type) that doesn't fit TranscriptionSegment,
-		// so it's decoded separately instead of directly into response.
-		var diarized struct {
-			Duration *float64                               `json:"duration,omitempty"`
-			Segments []schemas.TranscriptionDiarizedSegment `json:"segments"`
-			Task     *string                                `json:"task,omitempty"`
-			Text     string                                 `json:"text"`
-			Usage    *schemas.TranscriptionUsage            `json:"usage,omitempty"`
-		}
+		var diarized openAIDiarizedTranscriptionResponse
 		if err := sonic.Unmarshal(copiedResponseBody, &diarized); err != nil {
 			if providerUtils.IsHTMLResponse(resp, copiedResponseBody) {
 				return nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
