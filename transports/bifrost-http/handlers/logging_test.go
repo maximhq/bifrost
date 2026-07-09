@@ -157,7 +157,7 @@ func TestRecalculateLogCostsResolvesPeriodFilter(t *testing.T) {
 
 	mgr := &dashboardLogManager{}
 	store := newFakeSidekiqStore()
-	runner := sidekiq.New(store, &mockLogger{}, 1)
+	runner := sidekiq.New(store, &mockLogger{}, 1, "")
 	h := &LoggingHandler{logManager: mgr}
 	h.SetSidekiqBackend(runner, store)
 
@@ -201,7 +201,7 @@ func TestRecalculateLogCostsRejectsDuplicateJob(t *testing.T) {
 		Status:   tables.SidekiqStatusRunning,
 		Metadata: "{}",
 	}
-	runner := sidekiq.New(store, &mockLogger{}, 1)
+	runner := sidekiq.New(store, &mockLogger{}, 1, "")
 	h := &LoggingHandler{logManager: mgr}
 	h.SetSidekiqBackend(runner, store)
 
@@ -272,21 +272,23 @@ func (s *fakeSidekiqStore) GetInFlightSidekiqJobByKind(ctx context.Context, kind
 	return nil, nil
 }
 
-func (s *fakeSidekiqStore) MarkSidekiqJobRunning(ctx context.Context, id string) error { return nil }
-func (s *fakeSidekiqStore) UpdateSidekiqJobProgress(ctx context.Context, id, metadata string) error {
+func (s *fakeSidekiqStore) ClaimSidekiqJob(ctx context.Context, id, runnerID string, staleBefore time.Time) (bool, error) {
+	return true, nil
+}
+func (s *fakeSidekiqStore) HeartbeatSidekiqJob(ctx context.Context, id, runnerID string) (bool, error) {
+	return true, nil
+}
+func (s *fakeSidekiqStore) UpdateSidekiqJobProgress(ctx context.Context, id, runnerID, metadata string) error {
 	return nil
 }
-func (s *fakeSidekiqStore) CompleteSidekiqJob(ctx context.Context, id, metadata string) error {
+func (s *fakeSidekiqStore) CompleteSidekiqJob(ctx context.Context, id, runnerID, metadata string) error {
 	return nil
 }
-func (s *fakeSidekiqStore) FailSidekiqJob(ctx context.Context, id, metadata, lastErr string) error {
+func (s *fakeSidekiqStore) FailSidekiqJob(ctx context.Context, id, runnerID, metadata, lastErr string) error {
 	return nil
 }
-func (s *fakeSidekiqStore) ListIncompleteSidekiqJobs(ctx context.Context) ([]tables.TableSidekiqJob, error) {
+func (s *fakeSidekiqStore) ListClaimableSidekiqJobs(ctx context.Context, staleBefore time.Time) ([]tables.TableSidekiqJob, error) {
 	return nil, nil
-}
-func (s *fakeSidekiqStore) MarkStaleSidekiqJobsFailed(ctx context.Context, staleBefore time.Time) (int64, error) {
-	return 0, nil
 }
 
 type dashboardLogManager struct {
