@@ -287,10 +287,60 @@ func TestComputeTextCost_FastMode_Opus48CacheRegression(t *testing.T) {
 	assert.InDelta(t, expected, fast, 1e-9)
 }
 
+// TestComputeTextCost_InferenceGeoUS_AppliesMultiplier verifies the Anthropic
+// data-residency multiplier (inference_geo:"us") scales every token/cache cost by
+// 1.1x while leaving the flat per-search fee untouched.
+func TestComputeTextCost_InferenceGeoUS_AppliesMultiplier(t *testing.T) {
+	p := chatPricing(0.00001, 0.00005)
+	p.CacheReadInputTokenCost = bifrost.Ptr(0.000001)
+	p.CacheCreationInputTokenCost = bifrost.Ptr(0.0000125)
+	p.SearchContextCostPerQuery = bifrost.Ptr(0.01)
+	p.InferenceGeoUSMultiplier = bifrost.Ptr(1.1)
+
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens:     1000, // 500 non-cached + 200 read + 300 write
+		CompletionTokens: 100,
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+			CachedReadTokens:  200,
+			CachedWriteTokens: 300,
+		},
+		CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{
+			NumSearchQueries: bifrost.Ptr(2),
+		},
+	}
+
+	tokenCost := 500*0.00001 + 200*0.000001 + 300*0.0000125 + 100*0.00005
+	searchCost := 2 * 0.01
+
+	got := computeTextCost(&p, usage, serviceTier{inferenceGeoUS: true})
+	assert.InDelta(t, tokenCost*1.1+searchCost, got, 1e-9)
+
+	// Without US residency the multiplier is a no-op; the search fee is identical.
+	base := computeTextCost(&p, usage, serviceTier{})
+	assert.InDelta(t, tokenCost+searchCost, base, 1e-9)
+}
+
+// TestComputeTextCost_InferenceGeoUS_NoMultiplierColumn verifies US residency is a
+// safe no-op until the datasheet populates the multiplier column upstream.
+func TestComputeTextCost_InferenceGeoUS_NoMultiplierColumn(t *testing.T) {
+	p := chatPricing(0.00001, 0.00005)
+	usage := &schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 100}
+	withUS := computeTextCost(&p, usage, serviceTier{inferenceGeoUS: true})
+	without := computeTextCost(&p, usage, serviceTier{})
+	assert.InDelta(t, without, withUS, 1e-9)
+}
+
 func TestTierFromResponse_Speed(t *testing.T) {
-	assert.False(t, tierFromResponse(nil, nil).isFast)
-	assert.False(t, tierFromResponse(nil, bifrost.Ptr("standard")).isFast)
-	assert.True(t, tierFromResponse(nil, bifrost.Ptr("fast")).isFast)
+	assert.False(t, tierFromResponse(nil, nil, nil).isFast)
+	assert.False(t, tierFromResponse(nil, bifrost.Ptr("standard"), nil).isFast)
+	assert.True(t, tierFromResponse(nil, bifrost.Ptr("fast"), nil).isFast)
+}
+
+func TestTierFromResponse_InferenceGeo(t *testing.T) {
+	assert.False(t, tierFromResponse(nil, nil, nil).inferenceGeoUS)
+	assert.False(t, tierFromResponse(nil, nil, bifrost.Ptr("global")).inferenceGeoUS)
+	assert.True(t, tierFromResponse(nil, nil, bifrost.Ptr("us")).inferenceGeoUS)
+	assert.True(t, tierFromResponse(nil, nil, bifrost.Ptr("US")).inferenceGeoUS)
 }
 
 func TestComputeTextCost_With1hrCacheCreationTokens(t *testing.T) {
@@ -2351,28 +2401,28 @@ func TestTieredCacheReadRate_FallbackOrder(t *testing.T) {
 
 func TestTierFromResponse_Priority(t *testing.T) {
 	s := schemas.BifrostServiceTierPriority
-	tier := tierFromResponse(&s, nil)
+	tier := tierFromResponse(&s, nil, nil)
 	assert.True(t, tier.isPriority)
 	assert.False(t, tier.isFlex)
 }
 
 func TestTierFromResponse_Flex(t *testing.T) {
 	s := schemas.BifrostServiceTierFlex
-	tier := tierFromResponse(&s, nil)
+	tier := tierFromResponse(&s, nil, nil)
 	assert.False(t, tier.isPriority)
 	assert.True(t, tier.isFlex)
 }
 
 func TestTierFromResponse_Default(t *testing.T) {
 	for _, s := range []schemas.BifrostServiceTier{schemas.BifrostServiceTierAuto, schemas.BifrostServiceTierDefault, ""} {
-		tier := tierFromResponse(&s, nil)
+		tier := tierFromResponse(&s, nil, nil)
 		assert.False(t, tier.isPriority, "expected no priority for %q", s)
 		assert.False(t, tier.isFlex, "expected no flex for %q", s)
 	}
 }
 
 func TestTierFromResponse_Nil(t *testing.T) {
-	tier := tierFromResponse(nil, nil)
+	tier := tierFromResponse(nil, nil, nil)
 	assert.False(t, tier.isPriority)
 	assert.False(t, tier.isFlex)
 }
