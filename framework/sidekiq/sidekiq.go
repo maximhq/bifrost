@@ -109,7 +109,7 @@ func (r *Runner) handlerFor(kind string) (HandlerFunc, bool) {
 
 // Enqueue persists a new pending job and starts it as soon as a concurrency slot is free.
 // Returns once the DB row is committed so the caller can respond immediately.
-func (r *Runner) Enqueue(ctx context.Context, id, kind, metadata string) error {
+func (r *Runner) Enqueue(ctx context.Context, id, kind, metadata, createdBy string) error {
 	if _, ok := r.handlerFor(kind); !ok {
 		return fmt.Errorf("sidekiq: no handler registered for kind %q", kind)
 	}
@@ -118,6 +118,9 @@ func (r *Runner) Enqueue(ctx context.Context, id, kind, metadata string) error {
 		Kind:     kind,
 		Status:   tables.SidekiqStatusPending,
 		Metadata: metadata,
+	}
+	if createdBy != "" {
+		job.CreatedByUserID = &createdBy
 	}
 	if err := r.store.CreateSidekiqJob(ctx, job); err != nil {
 		return err
