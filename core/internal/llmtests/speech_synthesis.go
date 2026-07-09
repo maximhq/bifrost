@@ -81,11 +81,6 @@ func RunSpeechSynthesisTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 					Fallbacks: testConfig.SpeechSynthesisFallbacks,
 				}
 
-				// Sarvam requires target_language_code on every TTS request (no default)
-				if testConfig.Provider == schemas.Sarvam {
-					request.Params.LanguageCode = new("en-IN")
-				}
-
 				// Use retry framework with enhanced validation
 				retryConfig := GetTestRetryConfigForScenario("SpeechSynthesis", testConfig)
 				retryContext := TestRetryContext{
@@ -197,11 +192,6 @@ func RunSpeechSynthesisAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx c
 			if testConfig.Provider == schemas.Groq {
 				request.Params.Instructions = ""
 			}
-			// Sarvam requires target_language_code on every TTS request (no default);
-			// Instructions has no Sarvam equivalent and is silently ignored by ToSarvamSpeechRequest.
-			if testConfig.Provider == schemas.Sarvam {
-				request.Params.LanguageCode = new("en-IN")
-			}
 
 			retryConfig := GetTestRetryConfigForScenario("SpeechSynthesisHD", testConfig)
 			retryContext := TestRetryContext{
@@ -285,9 +275,6 @@ func RunSpeechSynthesisAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx c
 							ResponseFormat: GetProviderDefaultFormat(testConfig.Provider),
 						},
 						Fallbacks: testConfig.SpeechSynthesisFallbacks,
-					}
-					if testConfig.Provider == schemas.Sarvam {
-						request.Params.LanguageCode = new("en-IN")
 					}
 
 					// isStreaming=false, isMultipartRequest=false, isBinaryResponse=true (audio bytes don't have JSON raw response)

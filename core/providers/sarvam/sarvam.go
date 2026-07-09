@@ -178,12 +178,12 @@ func (provider *SarvamProvider) Embedding(ctx *schemas.BifrostContext, key schem
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.EmbeddingRequest, provider.GetProviderKey())
 }
 
-// Speech and SpeechStream are implemented in speech.go (Sarvam Bulbul
-// text-to-speech, custom mapping; SpeechStream over Sarvam's TTS WebSocket).
+// Speech and SpeechStream are stubbed in speech.go (unsupported on this
+// chat-only branch; see feature/sarvam-voice for the real implementation).
 
-// Transcription and TranscriptionStream are implemented in transcription.go
-// (Sarvam Saaras/Saarika speech-to-text, custom mapping; TranscriptionStream
-// over Sarvam's STT WebSocket).
+// Transcription and TranscriptionStream are stubbed in transcription.go
+// (unsupported on this chat-only branch; see feature/sarvam-voice for the
+// real implementation).
 
 // Rerank is not supported by the Sarvam provider.
 func (provider *SarvamProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostRerankRequest) (*schemas.BifrostRerankResponse, *schemas.BifrostError) {

@@ -4,7 +4,6 @@ import (
 	"os"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/maximhq/bifrost/core/internal/llmtests"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -29,10 +28,8 @@ func TestSarvam(t *testing.T) {
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.Sarvam, Model: "sarvam-30b"},
 		},
-		TextModel:            "", // Sarvam doesn't support text completion
-		EmbeddingModel:       "", // Sarvam doesn't support embedding
-		TranscriptionModel:   "saaras:v3",
-		SpeechSynthesisModel: "bulbul:v3",
+		TextModel:      "", // Sarvam doesn't support text completion
+		EmbeddingModel: "", // Sarvam doesn't support embedding
 		Scenarios: llmtests.TestScenarios{
 			TextCompletion:        false,
 			TextCompletionStream:  false,
@@ -64,9 +61,12 @@ func TestSarvam(t *testing.T) {
 			Embedding:             false,
 			ListModels:            true,  // undocumented but live GET /v1/models (chat models only)
 			Reasoning:             false, // reasoning_effort supported but not wired into validation yet
-			Transcription:         true,
-			SpeechSynthesis:       true,
-			SpeechSynthesisStream: true, // wss://api.sarvam.ai/text-to-speech/ws
+			// Transcription/SpeechSynthesis(Stream) are unsupported on this
+			// chat-only branch; see feature/sarvam-voice for the real
+			// implementation and its tests.
+			Transcription:         false,
+			SpeechSynthesis:       false,
+			SpeechSynthesisStream: false,
 		},
 	}
 	t.Run("SarvamTests", func(t *testing.T) {
@@ -225,98 +225,5 @@ func TestSarvamEnd2EndToolCallingWithToolsResent(t *testing.T) {
 	t.Logf("✅ Step2 final answer: %s", finalAnswer)
 	if !strings.Contains(finalAnswer, "18") {
 		t.Errorf("❌ Expected final answer to reference the tool result (18°C), got: %s", finalAnswer)
-	}
-}
-
-// TestSarvamTranscriptionStream exercises Sarvam's STT WebSocket
-// (TranscriptionStream) with a real TTS-generated WAV round trip. Written as
-// a dedicated test rather than enabling the generic TranscriptionStream
-// scenario because that shared harness hardcodes mp3 for its TTS round trip,
-// but Sarvam's STT WebSocket only accepts WAV audio (AudioDataEncoding has a
-// single enum value, "audio/wav") - a constraint specific to the WS endpoint
-// that doesn't apply to the sync REST Transcription endpoint.
-func TestSarvamTranscriptionStream(t *testing.T) {
-	t.Parallel()
-	if strings.TrimSpace(os.Getenv("SARVAM_API_KEY")) == "" {
-		t.Skip("Skipping Sarvam tests because SARVAM_API_KEY is not set")
-	}
-
-	client, ctx, cancel, err := llmtests.SetupTest()
-	if err != nil {
-		t.Fatalf("Error initializing test setup: %v", err)
-	}
-	defer cancel()
-	defer client.Shutdown()
-
-	// Step 1: generate WAV audio via Sarvam TTS.
-	wavCodec := "wav"
-	bfCtx1 := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
-	ttsReq := &schemas.BifrostSpeechRequest{
-		Provider: schemas.Sarvam,
-		Model:    "bulbul:v3",
-		Input:    &schemas.SpeechInput{Input: "This is a test of streaming speech to text transcription."},
-		Params: &schemas.SpeechParameters{
-			VoiceConfig:    &schemas.SpeechVoiceInput{Voice: new("shubh")},
-			LanguageCode:   new("en-IN"),
-			ResponseFormat: wavCodec,
-		},
-	}
-	ttsResp, bifrostErr := client.SpeechRequest(bfCtx1, ttsReq)
-	if bifrostErr != nil {
-		t.Fatalf("❌ TTS (wav) generation failed: %s", llmtests.GetErrorMessage(bifrostErr))
-	}
-	if len(ttsResp.Audio) == 0 {
-		t.Fatal("❌ TTS returned empty audio")
-	}
-	t.Logf("✅ Generated %d bytes of WAV audio", len(ttsResp.Audio))
-
-	// Step 2: stream-transcribe it.
-	bfCtx2 := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
-	transcriptionReq := &schemas.BifrostTranscriptionRequest{
-		Provider: schemas.Sarvam,
-		Model:    "saaras:v3",
-		Input:    &schemas.TranscriptionInput{File: ttsResp.Audio, Filename: "test.wav"},
-		Params:   &schemas.TranscriptionParameters{Language: new("en-IN")},
-	}
-	streamChan, bifrostErr := client.TranscriptionStreamRequest(bfCtx2, transcriptionReq)
-	if bifrostErr != nil {
-		t.Fatalf("❌ TranscriptionStream request failed: %s", llmtests.GetErrorMessage(bifrostErr))
-	}
-
-	var finalText string
-	var chunkCount int
-	timeout := time.After(30 * time.Second)
-streamLoop:
-	for {
-		select {
-		case chunk, ok := <-streamChan:
-			if !ok {
-				break streamLoop
-			}
-			if chunk.BifrostError != nil {
-				t.Fatalf("❌ Stream error: %s", llmtests.GetErrorMessage(chunk.BifrostError))
-			}
-			if chunk.BifrostTranscriptionStreamResponse != nil {
-				chunkCount++
-				resp := chunk.BifrostTranscriptionStreamResponse
-				t.Logf("Chunk %d: type=%s text=%q", chunkCount, resp.Type, resp.Text)
-				if resp.Text != "" {
-					finalText = resp.Text
-				}
-				if resp.Type == schemas.TranscriptionStreamResponseTypeDone {
-					break streamLoop
-				}
-			}
-		case <-timeout:
-			t.Fatal("❌ Timed out waiting for transcription stream")
-		}
-	}
-
-	if chunkCount == 0 {
-		t.Fatal("❌ Expected at least one stream chunk, got none")
-	}
-	t.Logf("✅ Final transcript: %q (%d chunks)", finalText, chunkCount)
-	if finalText == "" {
-		t.Error("❌ Expected a non-empty final transcript")
 	}
 }

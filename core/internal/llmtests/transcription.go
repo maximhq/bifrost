@@ -56,16 +56,6 @@ func RunTranscriptionTest(t *testing.T, client *bifrost.Bifrost, ctx context.Con
 
 		for _, tc := range roundTripCases {
 			t.Run(tc.name, func(t *testing.T) {
-				if testConfig.Provider == schemas.Sarvam && tc.name != "RoundTrip_Basic_MP3" {
-					// Sarvam's real-time /speech-to-text endpoint hard-caps audio at 30
-					// seconds ("Audio duration exceeds the maximum limit of 30 seconds.
-					// Please use the batch API for longer audio files."); the medium/
-					// technical round-trip texts synthesize audio well past that limit.
-					// Sarvam's separate async Batch API for longer files is out of scope
-					// for this provider (sync endpoint only) - not a mapping bug.
-					t.Skip("Skipping " + tc.name + " for Sarvam: audio exceeds Sarvam's real-time /speech-to-text 30s limit (Batch API not implemented)")
-				}
-
 				ShouldRunParallel(t, testConfig, "Transcription")
 
 				speechSynthesisProvider := testConfig.Provider
@@ -460,12 +450,6 @@ func RunTranscriptionAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx con
 		})
 
 		t.Run("WithCustomParameters", func(t *testing.T) {
-			if testConfig.Provider == schemas.Sarvam {
-				// Same 30s real-time /speech-to-text limit as the RoundTrip_Medium/
-				// Technical skip above - TTSTestTextMedium synthesizes audio past it.
-				t.Skip("Skipping WithCustomParameters for Sarvam: audio exceeds Sarvam's real-time /speech-to-text 30s limit (Batch API not implemented)")
-			}
-
 			ShouldRunParallel(t, testConfig, "Transcription")
 
 			speechSynthesisProvider := testConfig.Provider
