@@ -54,6 +54,7 @@ export const ModelPlaceholders = {
 	runway: "e.g. gen4_turbo_image_to_video, gen3a_turbo_image_to_video",
 	runware: "e.g. runware:100@1, runware:101@1",
 	fireworks: "e.g. accounts/fireworks/models/deepseek-v3p2",
+	sarvam: "e.g. sarvam-30b, sarvam-105b",
 };
 
 export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
@@ -85,6 +86,7 @@ export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
 	runware: true,
 	vllm: false,
 	fireworks: true,
+	sarvam: true,
 };
 
 export const DefaultNetworkConfig = {

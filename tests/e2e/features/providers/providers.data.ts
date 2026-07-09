@@ -45,6 +45,7 @@ export const KNOWN_PROVIDERS = [
   'cerebras',
   'nebius',
   'sambanova',
+  'sarvam',
 ] as const
 
 /**
