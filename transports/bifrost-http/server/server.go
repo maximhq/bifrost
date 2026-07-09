@@ -24,6 +24,7 @@ import (
 	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/logstore"
 	dynamicPlugins "github.com/maximhq/bifrost/framework/plugins"
+	"github.com/maximhq/bifrost/framework/sidekiq"
 	"github.com/maximhq/bifrost/framework/temptoken"
 	"github.com/maximhq/bifrost/framework/tracing"
 	"github.com/maximhq/bifrost/plugins/governance"
@@ -178,6 +179,9 @@ type BifrostHTTPServer struct {
 	// access-profile-managed VKs). Optional; wired at server init when available,
 	// otherwise left nil so the quota endpoint reads the VK's own budget rows.
 	ExternalQuotaBudgetResolver handlers.ExternalQuotaBudgetResolver
+
+	SidekiqRunner         *sidekiq.Runner
+	SidekiqDispatcherStop func()
 
 	wsPool *bfws.Pool
 }
@@ -1365,6 +1369,26 @@ func (s *BifrostHTTPServer) RemovePlugin(ctx context.Context, displayName string
 	return nil
 }
 
+// StartOAuth2SweepWorker creates and starts the janitor for the OAuth2
+// issuance tables (expired authorize requests, aged-out revoked refresh
+// tokens, orphaned dynamically-registered clients). Call it once from
+// single-threaded bootstrap wiring, like the other worker fields on this
+// struct — the nil-check makes double-wiring a no-op, it is not a concurrency
+// guard. It is also a no-op when no config store is configured. The Start()
+// shutdown path stops the worker.
+//
+// shouldSweep, when non-nil, is consulted before each pass; returning false
+// skips that pass. Deployments running several instances against one config
+// store can use it to restrict sweeping to a single instance. nil means
+// always sweep.
+func (s *BifrostHTTPServer) StartOAuth2SweepWorker(ctx context.Context, shouldSweep func() bool) {
+	if s.OAuth2SweepWorker != nil || s.Config == nil || s.Config.ConfigStore == nil {
+		return
+	}
+	s.OAuth2SweepWorker = newOAuth2SweepWorker(s.Config.ConfigStore, shouldSweep)
+	s.OAuth2SweepWorker.start(ctx)
+}
+
 // RegisterInferenceRoutes initializes the routes for the inference handler
 func (s *BifrostHTTPServer) RegisterInferenceRoutes(ctx context.Context, middlewares ...schemas.BifrostHTTPMiddleware) error {
 	// Initialize WebSocket pool and handler before integrations so it can be wired through
@@ -1678,7 +1702,6 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	s.Ctx, s.cancel = schemas.NewBifrostContextWithCancel(ctx)
 	handlers.SetVersion(s.Version)
 	configDir := GetDefaultConfigDir(s.AppDir)
-
 	// Ensure app directory exists
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
 		return fmt.Errorf("failed to create app directory %s: %v", configDir, err)
@@ -1837,10 +1860,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		if s.TempTokenSweepWorker != nil {
 			s.TempTokenSweepWorker.Start(s.Ctx)
 		}
-		s.OAuth2SweepWorker = newOAuth2SweepWorker(s.Config.ConfigStore)
-		if s.OAuth2SweepWorker != nil {
-			s.OAuth2SweepWorker.start(s.Ctx)
-		}
+		s.StartOAuth2SweepWorker(s.Ctx, nil)
 		// Hand the service to the OAuth provider so InitiateUserOAuthFlow mints
 		// a mcp_auth token and embeds it as a URL fragment on the auth-page link.
 		if s.Config.OAuthProvider != nil {
@@ -1873,6 +1893,11 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	semanticCachePlugin, err := lib.FindPluginAs[*semanticcache.Plugin](s.Config, semanticcache.PluginName)
 	if err == nil && semanticCachePlugin != nil {
 		semanticCachePlugin.SetEmbeddingRequestExecutor(s.Client.EmbeddingRequest)
+	}
+
+	// Initialize Sidekiq runner for background jobs
+	if s.Config != nil && s.Config.ConfigStore != nil {
+		s.SidekiqRunner = sidekiq.New(s.Config.ConfigStore, logger, 4, "")
 	}
 
 	// Register routes
@@ -1945,6 +1970,14 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	})
 	// Register UI handler
 	s.RegisterUIRoutes()
+
+	// Start the Sidekiq dispatcher: on every node it periodically claims pending and
+	// stale (orphaned) jobs, with an atomic claim guaranteeing exactly one node runs
+	// each job. Subsumes startup recovery of jobs left behind by a crash or restart.
+	if s.SidekiqRunner != nil {
+		s.SidekiqDispatcherStop = s.SidekiqRunner.StartDispatcher(sidekiq.DispatchInterval, sidekiq.StaleAfter)
+	}
+
 	// Checking if config has server config and use it to set read buffer size
 	logger.Debug("server read buffer size: %d", s.Config.ServerConfig.ReadBufferSize)
 	// Create fasthttp server instance
@@ -2031,6 +2064,14 @@ func (s *BifrostHTTPServer) Start() error {
 				logger.Info("stopping oauth2 sweep worker...")
 				s.OAuth2SweepWorker.stop()
 				s.OAuth2SweepWorker = nil
+			}
+			if s.SidekiqDispatcherStop != nil {
+				logger.Info("stopping sidekiq dispatcher...")
+				s.SidekiqDispatcherStop()
+			}
+			if s.SidekiqRunner != nil {
+				logger.Info("stopping sidekiq runner...")
+				s.SidekiqRunner.Shutdown()
 			}
 			if s.devPprofHandler != nil {
 				logger.Info("stopping dev pprof handler...")

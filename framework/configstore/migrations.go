@@ -437,6 +437,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_mcp_client_tool_execution_timeout_column"}, run: migrationAddMCPClientToolExecutionTimeoutColumn},
 	{IDs: []string{"add_virtual_key_expires_at_column"}, run: migrationAddVirtualKeyExpiresAtColumn},
 	{IDs: []string{"add_vertex_force_single_region_column"}, run: migrationAddVertexForceSingleRegionColumn},
+	{IDs: []string{"add_sidekiq_table"}, run: migrationAddSidekiqTable},
 }
 
 // quoteSQLiteIdentifier quotes a SQLite identifier, escaping any double quotes.
@@ -10340,3 +10341,75 @@ func migrationAddVertexForceSingleRegionColumn(ctx context.Context, db *gorm.DB,
 	}
 	return nil
 }
+
+// migrationAddSidekiqTable creates the generic `sidekiq` background-job table. Uses raw SQL
+// (not GORM auto-DDL) so the schema is explicit and stable across GORM versions.
+// Idempotent via CREATE TABLE IF NOT EXISTS; covers postgres and sqlite dialects.
+func migrationAddSidekiqTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_sidekiq_table"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+
+			var createTable string
+			switch tx.Dialector.Name() {
+			case "postgres":
+				createTable = `
+					CREATE TABLE IF NOT EXISTS sidekiq (
+						id           TEXT PRIMARY KEY,
+						kind         TEXT NOT NULL,
+						status       TEXT NOT NULL DEFAULT 'pending',
+						runner_id    TEXT,
+						metadata     TEXT DEFAULT '{}',
+						attempts     INTEGER NOT NULL DEFAULT 0,
+						last_error   TEXT,
+						created_at   TIMESTAMPTZ NOT NULL,
+						updated_at   TIMESTAMPTZ NOT NULL,
+						started_at   TIMESTAMPTZ,
+						completed_at TIMESTAMPTZ
+					)`
+			case "sqlite":
+				createTable = `
+					CREATE TABLE IF NOT EXISTS sidekiq (
+						id           TEXT PRIMARY KEY,
+						kind         TEXT NOT NULL,
+						status       TEXT NOT NULL DEFAULT 'pending',
+						runner_id    TEXT,
+						metadata     TEXT DEFAULT '{}',
+						attempts     INTEGER NOT NULL DEFAULT 0,
+						last_error   TEXT,
+						created_at   DATETIME NOT NULL,
+						updated_at   DATETIME NOT NULL,
+						started_at   DATETIME,
+						completed_at DATETIME
+					)`
+			default:
+				// Fall back to GORM for any other dialect so the migration does not
+				// hard-fail on an unsupported backend.
+				return tx.Migrator().CreateTable(&tables.TableSidekiqJob{})
+			}
+
+			if err := tx.Exec(createTable).Error; err != nil {
+				return err
+			}
+			// idx_sidekiq_status_updated supports the reaper/recovery scan.
+			if err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_sidekiq_status_updated ON sidekiq (status, updated_at)`).Error; err != nil {
+				return err
+			}
+			// idx_sidekiq_runner supports fencing lookups by runner_id.
+			return tx.Exec(`CREATE INDEX IF NOT EXISTS idx_sidekiq_runner ON sidekiq (runner_id)`).Error
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return tx.Exec(`DROP TABLE IF EXISTS sidekiq`).Error
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
