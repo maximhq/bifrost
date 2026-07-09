@@ -942,6 +942,10 @@ func tieredAudioTokenOutputRate(pricing *configstoreTables.TableModelPricing, to
 }
 
 func tieredCacheReadInputTokenRate(pricing *configstoreTables.TableModelPricing, totalTokens int, tier serviceTier) float64 {
+	// Fast mode (Anthropic) is a flat rate across the full context window.
+	if tier.isFast && pricing.CacheReadInputTokenCostFast != nil {
+		return *pricing.CacheReadInputTokenCostFast
+	}
 	if tier.isFlex && pricing.CacheReadInputTokenCostFlex != nil {
 		return *pricing.CacheReadInputTokenCostFlex
 	}
@@ -974,6 +978,10 @@ func tieredCacheReadInputTokenRate(pricing *configstoreTables.TableModelPricing,
 // OpenAI's pricing model (the only provider that uses flex tier). Only cache read
 // has a flex-specific rate.
 func tieredCacheCreationInputTokenRate(pricing *configstoreTables.TableModelPricing, totalTokens int, tier serviceTier) float64 {
+	// Fast mode (Anthropic) is a flat rate across the full context window.
+	if tier.isFast && pricing.CacheCreationInputTokenCostFast != nil {
+		return *pricing.CacheCreationInputTokenCostFast
+	}
 	if totalTokens > TokenTierAbove200K && pricing.CacheCreationInputTokenCostAbove200kTokens != nil {
 		return *pricing.CacheCreationInputTokenCostAbove200kTokens
 	}
@@ -984,6 +992,10 @@ func tieredCacheCreationInputTokenRate(pricing *configstoreTables.TableModelPric
 }
 
 func tieredCacheCreationInputAbove1hrTokenRate(pricing *configstoreTables.TableModelPricing, totalTokens int, tier serviceTier) float64 {
+	// Fast mode (Anthropic) is a flat rate across the full context window.
+	if tier.isFast && pricing.CacheCreationInputTokenCostAbove1hrFast != nil {
+		return *pricing.CacheCreationInputTokenCostAbove1hrFast
+	}
 	if totalTokens > TokenTierAbove200K && pricing.CacheCreationInputTokenCostAbove1hrAbove200kTokens != nil {
 		return *pricing.CacheCreationInputTokenCostAbove1hrAbove200kTokens
 	}
