@@ -92,6 +92,7 @@ type parityLogSpec struct {
 	model        string
 	status       string
 	alias        *string
+	canonical    *string
 	selectedKey  string
 	vkID, vkName *string
 	teamID       *string
@@ -122,6 +123,7 @@ func (s parityLogSpec) toLog(base time.Time) *Log {
 		Model:                 s.model,
 		Status:                s.status,
 		Alias:                 s.alias,
+		CanonicalModelName:    s.canonical,
 		SelectedKeyID:         s.selectedKey,
 		VirtualKeyID:          s.vkID,
 		VirtualKeyName:        s.vkName,
@@ -150,7 +152,7 @@ func (s parityLogSpec) toLog(base time.Time) *Log {
 func paritySpecs() []parityLogSpec {
 	return []parityLogSpec{
 		{id: "p1", offsetSec: 100, object: "chat.completion", provider: "openai", model: "gpt-4o", status: "success",
-			alias: strPtrP("a1"), selectedKey: "sk1", vkID: strPtrP("vk1"), vkName: strPtrP("VK One"),
+			alias: strPtrP("a1"), canonical: strPtrP("gpt-4o-2024-11-20"), selectedKey: "sk1", vkID: strPtrP("vk1"), vkName: strPtrP("VK One"),
 			teamID: strPtrP("t1"), customerID: strPtrP("c1"), buID: strPtrP("b1"), userID: strPtrP("u1"),
 			cost: f64PtrP(0.5), latency: f64PtrP(100), tokens: [3]int{100, 50, 150}, stopReason: strPtrP("stop"),
 			routing: strPtrP("governance,loadbalancing"), metadata: strPtrP(`{"env":"prod"}`),
@@ -172,7 +174,7 @@ func paritySpecs() []parityLogSpec {
 		{id: "p6", offsetSec: 50, object: "embedding", provider: "openai", model: "gpt-4o", status: "success",
 			cost: f64PtrP(0), latency: f64PtrP(75), tokens: [3]int{10, 5, 15}},
 		{id: "p7", offsetSec: 40, object: "chat.completion", provider: "mistral", model: "mistral-small", status: "success",
-			alias: strPtrP("a2"), vkID: strPtrP("vk3"), vkName: strPtrP("VK Three"), customerID: strPtrP("c2"),
+			alias: strPtrP("a2"), canonical: strPtrP("mistral-small-2409"), vkID: strPtrP("vk3"), vkName: strPtrP("VK Three"), customerID: strPtrP("c2"),
 			buID: strPtrP("b2"), userID: strPtrP("u4"), cost: f64PtrP(3.0), latency: f64PtrP(800),
 			tokens: [3]int{900, 100, 1000}, stopReason: strPtrP("stop"), content: "golf hotel"},
 		{id: "p8", offsetSec: 30, object: "chat.completion", provider: "openai", model: "gpt-4o", status: "success",
