@@ -3,9 +3,14 @@
   "version": "1.0.0",
   "private": true,
   "description": "E2E API test dependencies",
+  "scripts": {
+    "test": "node lib/pricing.test.js && node newman-reporter-dbverify/index.test.js"
+  },
   "dependencies": {
-    "pg": "8.13.0",
-    "better-sqlite3": "11.0.0",
     "newman-reporter-dbverify": "file:./newman-reporter-dbverify"
+  },
+  "optionalDependencies": {
+    "pg": "8.13.0",
+    "better-sqlite3": "11.0.0"
   }
 }

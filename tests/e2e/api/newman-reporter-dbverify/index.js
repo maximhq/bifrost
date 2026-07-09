@@ -742,6 +742,113 @@ async function verifyCostingRequest(db, reqId, name, results, silent) {
   }
 }
 
+// ─── Logs-API cost audit (report-only) ────────────────────────────────────────
+// After a successful inference response, fetch its log row via the logs API
+// (GET /api/logs/{request id}) and report whether cost was populated. Unlike the
+// DB-based costing check above, this needs no logs DB — it uses the same API a UI
+// would. The request id is always echoed on the x-request-id response header by
+// the TracingMiddleware, so any inference request can be correlated to its log.
+
+/**
+ * True for billable inference endpoints whose successful response must produce a
+ * costed log row. Utility endpoints (token counting, file/batch/model management)
+ * never carry cost and are excluded so they don't surface as false "cost missing".
+ */
+function isBillableInferenceURL(urlPath) {
+  if (!urlPath) return false;
+  // Exclusions first — utility endpoints with no billable cost.
+  if (/(:countTokens|\/count_tokens|\/input_tokens)$/i.test(urlPath)) return false;
+  if (/\/v1\/(models|files|batches)(\/|$)|\/v1\/messages\/batches(\/|$)/i.test(urlPath)) return false;
+  // Allowlist — chat / responses / messages / gemini generate / cohere / embeddings / audio / images.
+  return (
+    /\/chat\/completions$/i.test(urlPath) ||
+    /\/v1\/messages$/i.test(urlPath) ||
+    /\/v1\/responses(\/compact)?$/i.test(urlPath) ||
+    /\/deployments\/[^/]+\/responses$/i.test(urlPath) ||
+    /:(?:stream)?generatecontent$/i.test(urlPath) ||
+    /\/cohere\/v2\/chat$/i.test(urlPath) ||
+    /\/v1\/embeddings$/i.test(urlPath) ||
+    /:embedcontent$/i.test(urlPath) ||
+    /\/v1\/images\/generations$/i.test(urlPath) ||
+    /\/v1\/audio\/(speech|transcriptions)$/i.test(urlPath)
+  );
+}
+
+/** Classify a fetched log row's cost as populated (PASS) or missing (WARN). */
+function classifyLogCost(log) {
+  const cost = Number((log && log.cost) || 0);
+  const model = log && (log.provider || log.model) ? ` (${log.provider || '?'}/${log.model || '?'})` : '';
+  if (cost > 0) return { result: 'PASS', detail: `[LogsAPICost] cost populated: $${cost}${model}` };
+  return { result: 'WARN', detail: `[LogsAPICost] cost MISSING: log found (status=${log && log.status}) but cost=$${cost}${model}` };
+}
+
+/** GET a URL and resolve {status, json} without throwing on non-2xx (404 is expected while the log write settles). */
+function httpGetJSON(url, authHeader) {
+  return new Promise((resolve, reject) => {
+    const lib = url.startsWith('https:') ? require('https') : require('http');
+    const opts = { timeout: 15000 };
+    if (authHeader) opts.headers = { Authorization: authHeader };
+    const req = lib.get(url, opts, (res) => {
+      let buf = '';
+      res.setEncoding('utf8');
+      res.on('data', (c) => { buf += c; });
+      res.on('end', () => {
+        let json = null;
+        try { json = buf ? JSON.parse(buf) : null; } catch (_) { json = null; }
+        resolve({ status: res.statusCode || 0, json });
+      });
+    });
+    req.on('timeout', () => req.destroy(new Error('logs API fetch timeout')));
+    req.on('error', reject);
+  });
+}
+
+/**
+ * Poll GET {baseUrl}/api/logs/{reqId} until the (asynchronously written) log row
+ * lands, then push a PASS (cost populated), WARN (cost missing), or WARN (fetch
+ * error) result. Never fails the run — this is an audit, not a gate.
+ */
+async function verifyInferenceCostViaAPI(baseUrl, reqId, authHeader, name, results, silent) {
+  const url = `${baseUrl}/api/logs/${encodeURIComponent(reqId)}`;
+  const delays = [300, 700, 1200, 2000, 3000]; // ~7.2s: log write + deferred cost are async
+  let lastStatus = 0;
+  let lastErr = null;
+  let log = null;
+  for (let i = 0; i < delays.length; i++) {
+    await sleep(delays[i]);
+    let res;
+    try {
+      res = await httpGetJSON(url, authHeader);
+    } catch (e) {
+      lastErr = e.message;
+      continue;
+    }
+    lastStatus = res.status;
+    if (res.status === 401 || res.status === 403) {
+      const detail = `[LogsAPICost] fetch error: HTTP ${res.status} (logs API needs auth — set BIFROST_LOGS_API_AUTH)`;
+      results.push({ name, result: 'WARN', detail });
+      if (!silent) console.log(`[dbverify] logs-api cost ${reqId}: FETCH-ERR — ${detail}`);
+      return;
+    }
+    if (res.status === 404) continue;                                    // row not written yet — keep polling
+    if (res.status < 200 || res.status >= 300 || !res.json) { lastErr = `HTTP ${res.status}`; continue; }
+    log = res.json;
+    if (Number(log.cost || 0) > 0) break;                                // cost landed — stop early
+  }
+
+  if (!log) {
+    const why = lastErr || (lastStatus === 404 ? `no log row after ${delays.length} retries (404)` : `HTTP ${lastStatus || '?'}`);
+    results.push({ name, result: 'WARN', detail: `[LogsAPICost] fetch error: ${why}` });
+    if (!silent) console.log(`[dbverify] logs-api cost ${reqId}: FETCH-ERR — ${why}`);
+    return;
+  }
+
+  const r = classifyLogCost(log);
+  r.name = name;
+  results.push(r);
+  if (!silent) console.log(`[dbverify] logs-api cost ${reqId}: ${r.result === 'PASS' ? 'PASS' : 'MISSING'} — ${r.detail}`);
+}
+
 /**
  * Process a single request's DB verification (immediate or from queue).
  * Handles bulk DELETE, tracks promises, pushes results.
@@ -822,6 +929,7 @@ function printSummary(results, dbType) {
   const passed  = results.filter(r => r.result === 'PASS').length;
   const failed  = results.filter(r => r.result === 'FAIL').length;
   const skipped = results.filter(r => r.result === 'SKIP').length;
+  const warned  = results.filter(r => r.result === 'WARN').length;
 
   const nameW   = Math.max(20, ...results.map(r => (r.name || '').length));
   const resultW = 6;
@@ -845,9 +953,10 @@ function printSummary(results, dbType) {
     );
   }
   console.log('╚' + dline + '╝');
-  console.log(`DB Checks: ${passed} passed, ${failed} failed, ${skipped} skipped (non-2xx or unmapped)`);
+  console.log(`DB Checks: ${passed} passed, ${failed} failed, ${warned ? `${warned} warned, ` : ''}${skipped} skipped (non-2xx or unmapped)`);
   console.log('');
   if (failed > 0) console.warn(`[dbverify] WARNING: ${failed} DB verification(s) FAILED`);
+  if (warned > 0) console.warn(`[dbverify] NOTE: ${warned} logs-API cost check(s) reported cost missing / fetch errors (report-only)`);
 }
 
 // ─── Reporter entry point ─────────────────────────────────────────────────────
@@ -877,6 +986,15 @@ module.exports = function (newman, options) {
     logsDbUrl = logsDbUrlFromBifrostConfig(configPath);
     if (logsDbUrl && !silent) console.log(`[dbverify] Auto-detected logs DB from config: ${configPath}`);
   }
+
+  // Logs-API cost audit: after each successful inference response, GET the log row
+  // via the API and report whether cost was populated. On by default (base URL is
+  // taken from each request); disable with BIFROST_LOGS_API_COST=0. Auth is only
+  // needed if dashboard auth is enabled (set BIFROST_LOGS_API_AUTH).
+  const logsApiCostEnabled = !/^(0|false|no|off)$/i.test(
+    String((options && (options['logs-api-cost'] || options['logsApiCost'])) ?? process.env.BIFROST_LOGS_API_COST ?? '1')
+  );
+  const logsApiAuth = (options && (options['logs-api-auth'] || options['logsApiAuth'])) || process.env.BIFROST_LOGS_API_AUTH || '';
 
   const dbType     = dbUrl      ? detectDbType(dbUrl)      : 'unknown';
   const results    = [];
@@ -989,6 +1107,25 @@ module.exports = function (newman, options) {
       return;
     }
 
+    // Logs-API cost audit (report-only): for a successful inference response, fetch
+    // the log row via GET /api/logs/{request id} and record whether cost was populated.
+    // The request id is always echoed on the x-request-id response header.
+    if (logsApiCostEnabled && statusCode >= 200 && statusCode <= 299) {
+      const inferencePath = request.url.toString().replace(/\?.*$/, '').replace(/^https?:\/\/[^/]+/, '');
+      if (isBillableInferenceURL(inferencePath)) {
+        const reqId = getHeader(response, 'x-request-id') || getHeader(request, 'x-request-id');
+        const base = (request.url.toString().match(/^https?:\/\/[^/]+/) || [''])[0];
+        if (!reqId) {
+          results.push({ name, result: 'WARN', detail: '[LogsAPICost] no x-request-id on response; cannot locate log row' });
+        } else if (!base) {
+          results.push({ name, result: 'WARN', detail: '[LogsAPICost] could not derive base URL from request' });
+        } else {
+          pendingVerifications.push(verifyInferenceCostViaAPI(base, reqId, logsApiAuth, name, results, silent));
+        }
+        return;
+      }
+    }
+
     if (!statusCode || statusCode < 200 || statusCode > 299) {
       results.push({ name, result: 'SKIP', detail: `HTTP ${statusCode || '?'} (non-2xx)` });
       return;
@@ -1046,3 +1183,7 @@ module.exports = function (newman, options) {
       });
   });
 };
+
+// Exported for unit tests (index.test.js). Newman only ever calls the default export above.
+module.exports.isBillableInferenceURL = isBillableInferenceURL;
+module.exports.classifyLogCost = classifyLogCost;
