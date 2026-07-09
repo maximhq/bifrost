@@ -111,7 +111,7 @@ func (s *RDBConfigStore) HeartbeatSidekiqJob(ctx context.Context, id, runnerID s
 func (s *RDBConfigStore) UpdateSidekiqJobProgress(ctx context.Context, id, runnerID, metadata string) error {
 	res := s.DB().WithContext(ctx).
 		Model(&tables.TableSidekiqJob{}).
-		Where("id = ? AND runner_id = ?", id, runnerID).
+		Where("id = ? AND runner_id = ? AND status = ?", id, runnerID, tables.SidekiqStatusRunning).
 		Updates(map[string]any{
 			"metadata":   metadata,
 			"updated_at": time.Now(),

@@ -191,7 +191,7 @@ func TestEnqueueRunsHandlerAndCompletes(t *testing.T) {
 		return "final", nil
 	})
 
-	if err := r.Enqueue(context.Background(), "job1", "k", "{}"); err != nil {
+	if err := r.Enqueue(context.Background(), "job1", "k", "{}", ""); err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
 	id := waitTerminal(t, store)
@@ -219,7 +219,7 @@ func TestHandlerErrorMarksFailed(t *testing.T) {
 		return "partial", errors.New("boom")
 	})
 
-	if err := r.Enqueue(context.Background(), "job2", "k", "{}"); err != nil {
+	if err := r.Enqueue(context.Background(), "job2", "k", "{}", ""); err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
 	waitTerminal(t, store)
@@ -241,7 +241,7 @@ func TestHandlerPanicRecovered(t *testing.T) {
 		panic("kaboom")
 	})
 
-	if err := r.Enqueue(context.Background(), "job3", "k", "{}"); err != nil {
+	if err := r.Enqueue(context.Background(), "job3", "k", "{}", ""); err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
 	waitTerminal(t, store)
@@ -256,7 +256,7 @@ func TestHandlerPanicRecovered(t *testing.T) {
 func TestEnqueueUnknownKindErrors(t *testing.T) {
 	store := newFakeStore()
 	r := testRunner(store)
-	if err := r.Enqueue(context.Background(), "job4", "missing", "{}"); err == nil {
+	if err := r.Enqueue(context.Background(), "job4", "missing", "{}", ""); err == nil {
 		t.Fatal("expected error enqueuing an unregistered kind")
 	}
 	store.mu.Lock()
@@ -420,7 +420,7 @@ func TestHeartbeatCancelsOnLostOwnership(t *testing.T) {
 		return "", ctx.Err()
 	})
 
-	if err := r.Enqueue(context.Background(), "hb", "k", "{}"); err != nil {
+	if err := r.Enqueue(context.Background(), "hb", "k", "{}", ""); err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
 	<-started
@@ -457,12 +457,12 @@ func TestConcurrencySemaphoreBound(t *testing.T) {
 	// Enqueue maxConcurrent jobs and wait until all are inside the handler.
 	inFlight.Add(maxConcurrent)
 	for i := range maxConcurrent {
-		require.NoError(t, r.Enqueue(context.Background(), fmt.Sprintf("job-%d", i), "k", "{}"))
+		require.NoError(t, r.Enqueue(context.Background(), fmt.Sprintf("job-%d", i), "k", "{}", ""))
 	}
 	inFlight.Wait() // both slots are now busy
 
 	// Enqueue a third job — it should not start while the semaphore is full.
-	require.NoError(t, r.Enqueue(context.Background(), "job-extra", "k", "{}"))
+	require.NoError(t, r.Enqueue(context.Background(), "job-extra", "k", "{}", ""))
 	// Give it a moment to (not) run.
 	time.Sleep(50 * time.Millisecond)
 
@@ -578,7 +578,7 @@ func TestShutdownDrainsInFlight(t *testing.T) {
 		return "", nil
 	})
 
-	require.NoError(t, r.Enqueue(context.Background(), "j", "k", "{}"))
+	require.NoError(t, r.Enqueue(context.Background(), "j", "k", "{}", ""))
 	<-started
 
 	done := make(chan struct{})
