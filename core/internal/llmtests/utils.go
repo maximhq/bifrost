@@ -82,6 +82,18 @@ func GetProviderVoice(provider schemas.ModelProvider, voiceType string) string {
 		default:
 			return "21m00Tcm4TlvDq8ikWAM"
 		}
+	case schemas.Sarvam:
+		// bulbul:v3 speaker names (lowercase, case-sensitive)
+		switch voiceType {
+		case "primary":
+			return "shubh"
+		case "secondary":
+			return "priya"
+		case "tertiary":
+			return "kavya"
+		default:
+			return "shubh"
+		}
 	default:
 		// Default to OpenAI voices for other providers
 		switch voiceType {
