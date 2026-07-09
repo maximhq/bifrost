@@ -24,15 +24,6 @@ func RunResponsesStreamTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 			t.Parallel()
 		}
 
-		if testConfig.Provider == schemas.Sarvam {
-			// See the matching skip in RunChatCompletionStreamTest (chat_completion_stream.go)
-			// for the full verified root cause: Sarvam's default reasoning generates
-			// far more than this test's chunk/retry budget can absorb for a
-			// long-form prompt, and reasoning_effort can't be reliably disabled
-			// through Bifrost's typed params today.
-			t.Skip("Skipping ResponsesStream for Sarvam: reasoning_effort can't be reliably disabled through Bifrost's typed params today (see chat_completion_stream.go RunChatCompletionStreamTest comment)")
-		}
-
 		messages := []schemas.ResponsesMessage{
 			{
 				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
@@ -261,7 +252,14 @@ func RunResponsesStreamTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 						responseCount++
 
 						// Safety check to prevent infinite loops
-						if responseCount > 500 {
+						maxChunks := 500
+						if testConfig.Provider == schemas.Sarvam {
+							// Sarvam's default-on reasoning generates far more chunks than
+							// other providers for long-form prompts; see the matching
+							// comment in RunChatCompletionStreamTest (chat_completion_stream.go).
+							maxChunks = 3000
+						}
+						if responseCount > maxChunks {
 							return ResponsesStreamValidationResult{
 								Passed: false,
 								Errors: []string{"❌ Received too many streaming chunks, something might be wrong"},
@@ -686,16 +684,6 @@ func RunResponsesStreamTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 			t.Parallel()
 		}
 
-		if testConfig.Provider == schemas.Sarvam {
-			// See RunChatCompletionStreamTest's comment (chat_completion_stream.go)
-			// for the full verified root cause: even a "Say hello in 5 words"
-			// prompt never reaches the terminal response.completed/output_text.done
-			// events within this test's retry window, because Sarvam's default
-			// reasoning streams ahead of them and reasoning_effort can't be
-			// reliably disabled through Bifrost's typed params today.
-			t.Skip("Skipping ResponsesStreamLifecycle for Sarvam: reasoning_effort can't be reliably disabled through Bifrost's typed params today (see chat_completion_stream.go RunChatCompletionStreamTest comment)")
-		}
-
 		messages := []schemas.ResponsesMessage{
 			{
 				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
@@ -858,7 +846,15 @@ func RunResponsesStreamTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 						}
 
 						// Safety check to prevent infinite loops
-						if responseCount > 300 {
+						maxLifecycleChunks := 300
+						if testConfig.Provider == schemas.Sarvam {
+							// Sarvam's default-on reasoning generates far more chunks than
+							// other providers before terminal lifecycle events arrive; see
+							// the matching comment in RunChatCompletionStreamTest
+							// (chat_completion_stream.go).
+							maxLifecycleChunks = 3000
+						}
+						if responseCount > maxLifecycleChunks {
 							goto lifecycleComplete
 						}
 
