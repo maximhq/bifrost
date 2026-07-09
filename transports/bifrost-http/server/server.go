@@ -713,6 +713,12 @@ func (s *BifrostHTTPServer) OnKeyAdded(ctx context.Context, provider schemas.Mod
 	if isKeylessProvider(provider, s.Config) {
 		keyID = ""
 	}
+	// Skip the fetch for a disabled key — core rejects list-models calls
+	// scoped to a disabled key's ID, so it would just fail and fall back
+	// onto the (usually empty, for custom providers) static datasheet.
+	if !keyEnabled(key) {
+		return nil
+	}
 	s.FetchAndStoreLiveForKey(ctx, provider, keyID)
 	return nil
 }
@@ -734,6 +740,11 @@ func (s *BifrostHTTPServer) OnKeyUpdated(ctx context.Context, provider schemas.M
 		keyID = ""
 	}
 	s.Config.ModelCatalog.InvalidateLive(provider, keyID)
+	// Skip the fetch for a disabled key — the invalidate above still clears
+	// its stale cached entries, but re-fetching would just fail against core.
+	if !keyEnabled(key) {
+		return nil
+	}
 	s.FetchAndStoreLiveForKey(ctx, provider, keyID)
 	return nil
 }
@@ -752,6 +763,16 @@ func (s *BifrostHTTPServer) OnKeyDeleted(ctx context.Context, provider schemas.M
 	s.Config.ModelCatalog.SetKeyConfigForProvider(provider, keys)
 	s.Config.ModelCatalog.InvalidateLive(provider, keyID)
 	return nil
+}
+
+// keyEnabled reports whether a key should be treated as active for
+// scheduling model-discovery fetches. Enabled defaults to true when nil,
+// matching the convention core.getAllSupportedKeys uses to filter keys for
+// ListModels requests — a key discovery schedules a fetch for must be one
+// core will actually accept, or the call is a guaranteed
+// "no key found with id..." failure.
+func keyEnabled(key schemas.Key) bool {
+	return key.Enabled == nil || *key.Enabled
 }
 
 // isKeylessProvider returns true when the provider's config marks it
@@ -973,12 +994,25 @@ func (s *BifrostHTTPServer) RefreshLiveModelsForProvider(ctx context.Context, pr
 		return
 	}
 	var wg sync.WaitGroup
+	enabledCount := 0
 	for _, key := range keys {
+		// Skip disabled keys — core rejects list-models calls scoped to a
+		// disabled key's ID ("no key found with id..."), so fetching for one
+		// is guaranteed to fail and only adds "falling back onto the static
+		// datasheet" log noise per disabled key.
+		if !keyEnabled(key) {
+			continue
+		}
+		enabledCount++
 		wg.Add(1)
 		go func(keyID string) {
 			defer wg.Done()
 			s.FetchAndStoreLiveForKey(ctx, provider, keyID)
 		}(key.ID)
+	}
+	if enabledCount == 0 {
+		logger.Warn("model discovery skipped for provider %s: no enabled keys configured", provider)
+		return
 	}
 	wg.Wait()
 }
