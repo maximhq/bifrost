@@ -3476,11 +3476,11 @@ func TestStripEmptyThinkingBlocks(t *testing.T) {
 	}
 }
 
-// TestFastMode_StreamingForwardsSpeed verifies the streaming Responses converter
-// forwards the served speed onto the response, so streamed fast-mode requests
-// bill at fast rates (parity with the non-streaming ToBifrostResponsesResponse
-// path). Without this, tier.isFast is false for streams and cache/input/output
-// all bill at standard rates.
+// TestFastMode_StreamingForwardsSpeed verifies the per-event message_delta
+// converter surfaces the served speed on the emitted chunk (client-facing usage
+// visibility). NOTE: billing reads the terminal response.completed chunk, not
+// message_delta — that end-to-end billing contract is covered by
+// TestResponsesStream_TerminalChunkCarriesServedModifiers.
 func TestFastMode_StreamingForwardsSpeed(t *testing.T) {
 	ctx := schemas.NewBifrostContext(nil, time.Time{})
 	ctx.SetValue(schemas.BifrostContextKeyIntegrationType, "anthropic")
@@ -3516,5 +3516,201 @@ func TestFastMode_StreamingForwardsSpeed(t *testing.T) {
 	}
 	if !sawUsage {
 		t.Fatalf("no usage-bearing response emitted from message_delta")
+	}
+}
+
+// TestAccumulateResponsesUsage_BillsWebSearch verifies the streaming Responses
+// usage accumulator carries server-tool web search counts onto both the response
+// usage and the mirrored billed usage. The terminal chunk overwrites
+// Response.Usage with this accumulator, so without this the per-event search count
+// is lost and web search goes unbilled on streamed Responses requests.
+func TestAccumulateResponsesUsage_BillsWebSearch(t *testing.T) {
+	usage := &schemas.ResponsesResponseUsage{}
+	billed := &schemas.BifrostLLMUsage{}
+	accumulateAnthropicResponsesUsage(usage, billed, &AnthropicUsage{
+		InputTokens:   105,
+		OutputTokens:  6039,
+		ServerToolUse: &AnthropicServerToolUseUsage{WebSearchRequests: 2},
+	})
+
+	if usage.OutputTokensDetails == nil || usage.OutputTokensDetails.NumSearchQueries == nil {
+		t.Fatal("response usage NumSearchQueries not set")
+	}
+	if got := *usage.OutputTokensDetails.NumSearchQueries; got != 2 {
+		t.Fatalf("response usage NumSearchQueries = %d, want 2", got)
+	}
+	if billed.CompletionTokensDetails == nil || billed.CompletionTokensDetails.NumSearchQueries == nil {
+		t.Fatal("billed usage NumSearchQueries not set")
+	}
+	if got := *billed.CompletionTokensDetails.NumSearchQueries; got != 2 {
+		t.Fatalf("billed usage NumSearchQueries = %d, want 2", got)
+	}
+}
+
+// TestToBifrostChatResponse_ForwardsWebSearchAndInferenceGeo verifies the chat
+// converter surfaces server-tool web search counts (so they bill at
+// search_context_cost_per_query) and forwards the served inference geography (so
+// the data-residency multiplier applies) alongside fast-mode speed.
+func TestToBifrostChatResponse_ForwardsWebSearchAndInferenceGeo(t *testing.T) {
+	response := &AnthropicMessageResponse{
+		ID:    "msg_ws",
+		Type:  "message",
+		Role:  "assistant",
+		Model: "claude-opus-4-8",
+		Content: []AnthropicContentBlock{
+			{Type: AnthropicContentBlockTypeText, Text: schemas.Ptr("hi")},
+		},
+		StopReason: AnthropicStopReasonEndTurn,
+		Usage: &AnthropicUsage{
+			InputTokens:   105,
+			OutputTokens:  6039,
+			ServerToolUse: &AnthropicServerToolUseUsage{WebSearchRequests: 3},
+			InferenceGeo:  schemas.Ptr("us"),
+			Speed:         schemas.Ptr("fast"),
+		},
+	}
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+
+	result := response.ToBifrostChatResponse(ctx)
+	if result == nil || result.Usage == nil {
+		t.Fatal("expected non-nil result with usage")
+	}
+	if result.Usage.CompletionTokensDetails == nil || result.Usage.CompletionTokensDetails.NumSearchQueries == nil {
+		t.Fatal("web search request count not forwarded to chat usage")
+	}
+	if got := *result.Usage.CompletionTokensDetails.NumSearchQueries; got != 3 {
+		t.Fatalf("chat usage NumSearchQueries = %d, want 3", got)
+	}
+	if result.InferenceGeo == nil || *result.InferenceGeo != "us" {
+		t.Fatalf("inference_geo not forwarded; got %v", result.InferenceGeo)
+	}
+	if result.Speed == nil || *result.Speed != "fast" {
+		t.Fatalf("speed not forwarded; got %v", result.Speed)
+	}
+}
+
+// TestToBifrostResponsesResponse_ForwardsInferenceGeo verifies the non-streaming
+// Responses converter forwards the served inference geography for data-residency
+// billing (parity with the streaming message_delta path).
+func TestToBifrostResponsesResponse_ForwardsInferenceGeo(t *testing.T) {
+	response := &AnthropicMessageResponse{
+		ID:    "msg_geo",
+		Type:  "message",
+		Role:  "assistant",
+		Model: "claude-opus-4-8",
+		Content: []AnthropicContentBlock{
+			{Type: AnthropicContentBlockTypeText, Text: schemas.Ptr("hi")},
+		},
+		StopReason: AnthropicStopReasonEndTurn,
+		Usage: &AnthropicUsage{
+			InputTokens:  10,
+			OutputTokens: 5,
+			InferenceGeo: schemas.Ptr("us"),
+		},
+	}
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+
+	result := response.ToBifrostResponsesResponse(ctx)
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.InferenceGeo == nil || *result.InferenceGeo != "us" {
+		t.Fatalf("inference_geo not forwarded; got %v", result.InferenceGeo)
+	}
+}
+
+// TestResponsesStream_TerminalChunkCarriesServedModifiers pins the streaming
+// Responses BILLING contract. Billing (framework/streaming/responses.go) prices
+// the terminal response.completed chunk — whose builder starts fresh with no
+// Speed/InferenceGeo/Usage. So the handler must (a) accumulate usage across events
+// and (b) re-apply the served fast mode + data residency captured from earlier
+// events onto that terminal chunk. This replays message_start → message_delta →
+// message_stop through the real converters + accumulator and reproduces the
+// handler's capture/apply, asserting the billed chunk carries speed=fast,
+// inference_geo=us, the web-search count, and the cache-creation tokens. Without
+// the re-apply, speed/geo silently fall back to standard/non-US rates.
+func TestResponsesStream_TerminalChunkCarriesServedModifiers(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	ctx.SetValue(schemas.BifrostContextKeyIntegrationType, "anthropic")
+	state := AcquireAnthropicResponsesStreamState()
+	defer ReleaseAnthropicResponsesStreamState(state)
+
+	usage := &schemas.ResponsesResponseUsage{}
+	billed := &schemas.BifrostLLMUsage{}
+	var servedSpeed, servedInferenceGeo *string
+
+	events := []string{
+		`{"type":"message_start","message":{"id":"msg_1","model":"claude-opus-4-8","usage":{"input_tokens":2,"cache_creation_input_tokens":44667,"cache_creation":{"ephemeral_5m_input_tokens":44667}}}}`,
+		`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":2,"output_tokens":135,"cache_creation_input_tokens":44667,"cache_creation":{"ephemeral_5m_input_tokens":44667},"server_tool_use":{"web_search_requests":4},"speed":"fast","inference_geo":"us"}}`,
+		`{"type":"message_stop"}`,
+	}
+
+	var finalResp *schemas.BifrostResponsesResponse
+	for _, raw := range events {
+		var event AnthropicStreamEvent
+		if err := sonic.Unmarshal([]byte(raw), &event); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		// Handler step 1: extract usage (top-level or nested), accumulate, capture
+		// served modifiers — unconditionally, mirroring HandleAnthropicResponsesStream.
+		var usageToProcess *AnthropicUsage
+		if event.Usage != nil {
+			usageToProcess = event.Usage
+		} else if event.Message != nil && event.Message.Usage != nil {
+			usageToProcess = event.Message.Usage
+		}
+		if usageToProcess != nil {
+			accumulateAnthropicResponsesUsage(usage, billed, usageToProcess)
+			if usageToProcess.Speed != nil {
+				servedSpeed = usageToProcess.Speed
+			}
+			if usageToProcess.InferenceGeo != nil {
+				servedInferenceGeo = usageToProcess.InferenceGeo
+			}
+		}
+		// Handler step 2: convert + on the terminal chunk, attach usage and re-apply
+		// the captured served modifiers.
+		responses, bErr, isLastChunk := event.ToBifrostResponsesStream(ctx, 0, state)
+		if bErr != nil {
+			t.Fatalf("ToBifrostResponsesStream: %v", bErr)
+		}
+		if isLastChunk && len(responses) > 0 {
+			r := responses[len(responses)-1]
+			if r.Response == nil {
+				r.Response = &schemas.BifrostResponsesResponse{}
+			}
+			// Contract precondition: response.completed starts fresh (no served fields).
+			if r.Response.Speed != nil || r.Response.InferenceGeo != nil {
+				t.Fatal("expected fresh response.completed with no served modifiers")
+			}
+			r.Response.Usage = usage
+			if servedSpeed != nil {
+				r.Response.Speed = servedSpeed
+			}
+			if servedInferenceGeo != nil {
+				r.Response.InferenceGeo = servedInferenceGeo
+			}
+			finalResp = r.Response
+		}
+	}
+
+	if finalResp == nil {
+		t.Fatal("no terminal (isLastChunk) response produced")
+	}
+	if finalResp.Speed == nil || *finalResp.Speed != "fast" {
+		t.Fatalf("terminal billed chunk missing speed=fast; got %v", finalResp.Speed)
+	}
+	if finalResp.InferenceGeo == nil || *finalResp.InferenceGeo != "us" {
+		t.Fatalf("terminal billed chunk missing inference_geo=us; got %v", finalResp.InferenceGeo)
+	}
+	if finalResp.Usage == nil || finalResp.Usage.OutputTokensDetails == nil ||
+		finalResp.Usage.OutputTokensDetails.NumSearchQueries == nil ||
+		*finalResp.Usage.OutputTokensDetails.NumSearchQueries != 4 {
+		t.Fatal("terminal billed chunk missing web search count")
+	}
+	if finalResp.Usage.InputTokensDetails == nil || finalResp.Usage.InputTokensDetails.CachedWriteTokens != 44667 {
+		t.Fatal("terminal billed chunk missing cache-creation tokens")
 	}
 }
