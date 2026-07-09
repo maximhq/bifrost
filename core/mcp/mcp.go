@@ -249,10 +249,25 @@ func (m *MCPManager) runToolsUpdatedDispatcher() {
 			fn := m.onToolsUpdated
 			m.onToolsUpdatedMu.RUnlock()
 			if fn != nil {
-				fn()
+				m.runToolsUpdatedHookSafely(fn)
 			}
 		}
 	}
+}
+
+// runToolsUpdatedHookSafely invokes the tools-updated hook with panic recovery. The hook
+// is caller-supplied (the transport's SyncAllMCPServers wiring) and runs on this package's
+// single, long-lived dispatcher goroutine — an unrecovered panic there would crash the
+// whole process and, since the goroutine never restarts, silently stop all future gateway
+// resyncs for the rest of the process lifetime. Recovering keeps the dispatcher alive so a
+// single bad run doesn't take down MCP tool-sync entirely.
+func (m *MCPManager) runToolsUpdatedHookSafely(fn func()) {
+	defer func() {
+		if r := recover(); r != nil {
+			m.logger.Warn("%s onToolsUpdated hook panicked, recovered: %v", MCPLogPrefix, r)
+		}
+	}()
+	fn()
 }
 
 // notifyToolsUpdated signals that a client's live ToolMap changed. It never blocks and
