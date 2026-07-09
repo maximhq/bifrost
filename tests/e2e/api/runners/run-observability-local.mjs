@@ -385,6 +385,35 @@ async function assertLoggingTrace() {
   return log;
 }
 
+// assertMetricsMatchLogs reconciles the telemetry pull-scrape counters against the
+// logged usage for the SAME call. This is the exact invariant the customer reported
+// violated ("Grafana dashboard != Bifrost logs usage"): the Prometheus /metrics
+// counters and the logging store must agree on token counts. Because each run uses a
+// unique provider+model, the counter series is scoped to this single chat call, so the
+// cumulative counter equals precisely this call's usage — hence exact equality, not a
+// threshold. assertPrometheusScrape and assertLoggingTrace check each side in isolation;
+// only this cross-check catches a drift where both sides individually look "present".
+function assertMetricsMatchLogs(metrics, log) {
+  const labels = { provider: providerName, model: requestedModel, method: "chat_completion" };
+  const inputLine = findPrometheusSample(metrics, "bifrost_input_tokens_total", labels);
+  const outputLine = findPrometheusSample(metrics, "bifrost_output_tokens_total", labels);
+  if (!inputLine || !outputLine) {
+    throw new Error("metrics/logs reconciliation: /metrics is missing token counters for the LLM call");
+  }
+  const metricInput = parsePrometheusValue(inputLine);
+  const metricOutput = parsePrometheusValue(outputLine);
+
+  const logInput = log?.token_usage?.prompt_tokens;
+  const logOutput = log?.token_usage?.completion_tokens;
+
+  if (metricInput !== logInput) {
+    throw new Error(`metrics/logs input-token mismatch: /metrics bifrost_input_tokens_total=${metricInput} but logs prompt_tokens=${logInput}`);
+  }
+  if (metricOutput !== logOutput) {
+    throw new Error(`metrics/logs output-token mismatch: /metrics bifrost_output_tokens_total=${metricOutput} but logs completion_tokens=${logOutput}`);
+  }
+}
+
 function assertMockProviderRequest() {
   if (state.mockRequests.length !== 1) {
     throw new Error(`expected exactly one mock provider request, got ${state.mockRequests.length}`);
@@ -449,12 +478,14 @@ async function main() {
 
     await assertOtelReceived();
     await assertOtelMetricsReceived();
-    await assertPrometheusScrape();
-    await assertLoggingTrace();
+    const metrics = await assertPrometheusScrape();
+    const log = await assertLoggingTrace();
+    assertMetricsMatchLogs(metrics, log);
 
     console.log(`  OTEL trace exports received: ${state.otelTraceRequests.length}`);
     console.log(`  OTEL metric exports received: ${state.otelMetricRequests.length}`);
     console.log(`  Prometheus scrape includes provider="${providerName}" model="${requestedModel}"`);
+    console.log(`  Metrics/logs token usage reconciled (scrape == logs)`);
     console.log(`  Logging trace API returned id="${requestID}"`);
     console.log("Local observability API check passed.");
   } finally {
