@@ -1365,6 +1365,26 @@ func (s *BifrostHTTPServer) RemovePlugin(ctx context.Context, displayName string
 	return nil
 }
 
+// StartOAuth2SweepWorker creates and starts the janitor for the OAuth2
+// issuance tables (expired authorize requests, aged-out revoked refresh
+// tokens, orphaned dynamically-registered clients). Call it once from
+// single-threaded bootstrap wiring, like the other worker fields on this
+// struct — the nil-check makes double-wiring a no-op, it is not a concurrency
+// guard. It is also a no-op when no config store is configured. The Start()
+// shutdown path stops the worker.
+//
+// shouldSweep, when non-nil, is consulted before each pass; returning false
+// skips that pass. Deployments running several instances against one config
+// store can use it to restrict sweeping to a single instance. nil means
+// always sweep.
+func (s *BifrostHTTPServer) StartOAuth2SweepWorker(ctx context.Context, shouldSweep func() bool) {
+	if s.OAuth2SweepWorker != nil || s.Config == nil || s.Config.ConfigStore == nil {
+		return
+	}
+	s.OAuth2SweepWorker = newOAuth2SweepWorker(s.Config.ConfigStore, shouldSweep)
+	s.OAuth2SweepWorker.start(ctx)
+}
+
 // RegisterInferenceRoutes initializes the routes for the inference handler
 func (s *BifrostHTTPServer) RegisterInferenceRoutes(ctx context.Context, middlewares ...schemas.BifrostHTTPMiddleware) error {
 	// Initialize WebSocket pool and handler before integrations so it can be wired through
@@ -1837,10 +1857,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		if s.TempTokenSweepWorker != nil {
 			s.TempTokenSweepWorker.Start(s.Ctx)
 		}
-		s.OAuth2SweepWorker = newOAuth2SweepWorker(s.Config.ConfigStore)
-		if s.OAuth2SweepWorker != nil {
-			s.OAuth2SweepWorker.start(s.Ctx)
-		}
+		s.StartOAuth2SweepWorker(s.Ctx, nil)
 		// Hand the service to the OAuth provider so InitiateUserOAuthFlow mints
 		// a mcp_auth token and embeds it as a URL fragment on the auth-page link.
 		if s.Config.OAuthProvider != nil {
