@@ -2287,7 +2287,6 @@
       "required_header_keys": [
         "Authorization"
       ],
-      "icon_url": "https://xquik.com/icons/mcp/xquik.png",
       "docs_url": "https://docs.xquik.com/mcp/overview",
       "publisher": "Xquik",
       "tags": [
@@ -2296,7 +2295,8 @@
         "social",
         "tweets",
         "automation"
-      ]
+      ],
+      "icon_url": "https://xquik.com/icons/mcp/xquik.png"
     }
   ]
 }
