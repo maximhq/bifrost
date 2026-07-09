@@ -4809,6 +4809,21 @@ func convertAnthropicContentBlocksToResponsesMessagesGrouped(contentBlocks []Ant
 				bifrostMessages = append(bifrostMessages, bifrostMsg)
 			}
 
+		case AnthropicContentBlockTypeContainerUpload:
+			if block.FileID != nil {
+				bifrostMsg := schemas.ResponsesMessage{
+					Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+					Role: role,
+					Content: &schemas.ResponsesMessageContent{
+						ContentBlocks: []schemas.ResponsesMessageContentBlock{block.toBifrostResponsesContainerUploadBlock()},
+					},
+				}
+				if isOutputMessage {
+					bifrostMsg.ID = schemas.Ptr("msg_" + providerUtils.GetRandomString(50))
+				}
+				bifrostMessages = append(bifrostMessages, bifrostMsg)
+			}
+
 		case AnthropicContentBlockTypeThinking:
 			if block.Thinking != nil {
 				bifrostMsg := schemas.ResponsesMessage{
@@ -5117,6 +5132,20 @@ func convertAnthropicContentBlocksToResponsesMessages(ctx *schemas.BifrostContex
 					Role: role,
 					Content: &schemas.ResponsesMessageContent{
 						ContentBlocks: []schemas.ResponsesMessageContentBlock{block.toBifrostResponsesDocumentBlock()},
+					},
+				}
+				if isOutputMessage {
+					bifrostMsg.ID = schemas.Ptr("msg_" + providerUtils.GetRandomString(50))
+				}
+				bifrostMessages = append(bifrostMessages, bifrostMsg)
+			}
+		case AnthropicContentBlockTypeContainerUpload:
+			if block.FileID != nil {
+				bifrostMsg := schemas.ResponsesMessage{
+					Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+					Role: role,
+					Content: &schemas.ResponsesMessageContent{
+						ContentBlocks: []schemas.ResponsesMessageContentBlock{block.toBifrostResponsesContainerUploadBlock()},
 					},
 				}
 				if isOutputMessage {
@@ -7341,6 +7370,14 @@ func convertContentBlockToAnthropic(block schemas.ResponsesMessageContentBlock) 
 			)
 			return &anthropicBlock
 		}
+	case schemas.ResponsesInputMessageContentBlockTypeContainer:
+		if block.FileID != nil {
+			return &AnthropicContentBlock{
+				Type:         AnthropicContentBlockTypeContainerUpload,
+				FileID:       block.FileID,
+				CacheControl: block.CacheControl,
+			}
+		}
 	case schemas.ResponsesOutputMessageContentTypeReasoning:
 		if block.Text != nil {
 			return &AnthropicContentBlock{
@@ -7376,6 +7413,14 @@ func (block AnthropicContentBlock) toBifrostResponsesImageBlock() schemas.Respon
 		ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{
 			ImageURL: schemas.Ptr(getImageURLFromBlock(block)),
 		},
+		CacheControl: block.CacheControl,
+	}
+}
+
+func (block AnthropicContentBlock) toBifrostResponsesContainerUploadBlock() schemas.ResponsesMessageContentBlock {
+	return schemas.ResponsesMessageContentBlock{
+		Type:         schemas.ResponsesInputMessageContentBlockTypeContainer,
+		FileID:       block.FileID,
 		CacheControl: block.CacheControl,
 	}
 }

@@ -1,6 +1,5 @@
 import {
 	ArrowUpRight,
-	Bell,
 	BookOpenText,
 	BookUser,
 	Boxes,
@@ -37,6 +36,7 @@ import {
 	Settings2Icon,
 	ShieldCheck,
 	Shuffle,
+	Siren,
 	SlidersHorizontal,
 	Telescope,
 	ToolCase,
@@ -776,7 +776,7 @@ export default function AppSidebar() {
 			{
 				title: "Alerting",
 				url: "/workspace/alerting",
-				icon: Bell,
+				icon: Siren,
 				description: "Manage alert channels, rules, and history",
 				hasAccess: hasAlertingAccess,
 				subItems: [

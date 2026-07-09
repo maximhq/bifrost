@@ -1607,14 +1607,15 @@ type MCPTopToolsResult struct {
 
 // ModelRankingEntry represents aggregated stats for a single model over a time period.
 type ModelRankingEntry struct {
-	Model         string  `json:"model"`
-	Provider      string  `json:"provider"`
-	TotalRequests int64   `json:"total_requests"`
-	SuccessCount  int64   `json:"success_count"`
-	SuccessRate   float64 `json:"success_rate"`
-	TotalTokens   int64   `json:"total_tokens"`
-	TotalCost     float64 `json:"total_cost"`
-	AvgLatency    float64 `json:"avg_latency"`
+	Model              string  `json:"model"`
+	CanonicalModelName *string `json:"canonical_model_name,omitempty"`
+	Provider           string  `json:"provider"`
+	TotalRequests      int64   `json:"total_requests"`
+	SuccessCount       int64   `json:"success_count"`
+	SuccessRate        float64 `json:"success_rate"`
+	TotalTokens        int64   `json:"total_tokens"`
+	TotalCost          float64 `json:"total_cost"`
+	AvgLatency         float64 `json:"avg_latency"`
 }
 
 // ModelRankingTrend represents the percentage change compared to the previous period.
