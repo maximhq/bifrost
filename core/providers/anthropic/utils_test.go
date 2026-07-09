@@ -3476,11 +3476,11 @@ func TestStripEmptyThinkingBlocks(t *testing.T) {
 	}
 }
 
-// TestFastMode_StreamingForwardsSpeed verifies the streaming Responses converter
-// forwards the served speed onto the response, so streamed fast-mode requests
-// bill at fast rates (parity with the non-streaming ToBifrostResponsesResponse
-// path). Without this, tier.isFast is false for streams and cache/input/output
-// all bill at standard rates.
+// TestFastMode_StreamingForwardsSpeed verifies the per-event message_delta
+// converter surfaces the served speed on the emitted chunk (client-facing usage
+// visibility). NOTE: billing reads the terminal response.completed chunk, not
+// message_delta — that end-to-end billing contract is covered by
+// TestResponsesStream_TerminalChunkCarriesServedModifiers.
 func TestFastMode_StreamingForwardsSpeed(t *testing.T) {
 	ctx := schemas.NewBifrostContext(nil, time.Time{})
 	ctx.SetValue(schemas.BifrostContextKeyIntegrationType, "anthropic")
