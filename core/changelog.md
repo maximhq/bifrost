@@ -1,3 +1,4 @@
+- fix: cache GigaChat TLS clients without hot-path certificate file reads [@krakenalt](https://github.com/krakenalt)
 - fix: finalize GigaChat passthrough response stream lifecycle [@krakenalt](https://github.com/krakenalt)
 - fix: finalize GigaChat response streams through stream gate [@krakenalt](https://github.com/krakenalt)
 - fix: preserve Gemini file upload MIME types for GenAI file URI completions

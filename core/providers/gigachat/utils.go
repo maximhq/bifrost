@@ -189,10 +189,7 @@ func (provider *GigaChatProvider) getGigaChatTLSClient(baseClient *fasthttp.Clie
 		return buildGigaChatTLSClient(baseClient, keyConfig)
 	}
 
-	fingerprint, err := gigaChatTLSMaterialFingerprint(keyConfig)
-	if err != nil {
-		return nil, err
-	}
+	fingerprint := gigaChatTLSMaterialFingerprint(keyConfig)
 	cacheKey := cacheKind + ":" + fingerprint
 	provider.tlsClientCache.mu.Lock()
 	defer provider.tlsClientCache.mu.Unlock()
@@ -209,11 +206,14 @@ func (provider *GigaChatProvider) getGigaChatTLSClient(baseClient *fasthttp.Clie
 	return client, nil
 }
 
-func gigaChatTLSMaterialFingerprint(keyConfig *schemas.GigaChatKeyConfig) (string, error) {
+// gigaChatTLSMaterialFingerprint identifies the configured TLS inputs without
+// reading them, so cache hits never pay certificate file I/O on the request path.
+func gigaChatTLSMaterialFingerprint(keyConfig *schemas.GigaChatKeyConfig) string {
 	if keyConfig == nil {
-		return "", nil
+		return ""
 	}
 	hash := sha256.New()
+	_, _ = hash.Write([]byte("gigachat-tls-config-v1"))
 	for _, material := range []struct {
 		field string
 		path  string
@@ -226,20 +226,11 @@ func gigaChatTLSMaterialFingerprint(keyConfig *schemas.GigaChatKeyConfig) (strin
 		_, _ = hash.Write([]byte(material.field))
 		_, _ = hash.Write([]byte{0})
 		_, _ = hash.Write([]byte(material.path))
-		if material.path == "" {
-			continue
-		}
-		contents, err := os.ReadFile(material.path)
-		if err != nil {
-			return "", fmt.Errorf("failed to read gigachat_key_config.%s for TLS cache key: %w", material.field, err)
-		}
-		_, _ = hash.Write([]byte{0})
-		_, _ = hash.Write(contents)
 	}
-	return hex.EncodeToString(hash.Sum(nil)), nil
+	return hex.EncodeToString(hash.Sum(nil))
 }
 
-func gigaChatAuthTLSMaterialFingerprint(keyConfig *schemas.GigaChatKeyConfig) (string, error) {
+func gigaChatAuthTLSMaterialFingerprint(keyConfig *schemas.GigaChatKeyConfig) string {
 	return gigaChatTLSMaterialFingerprint(gigaChatAuthTLSKeyConfig(keyConfig))
 }
 

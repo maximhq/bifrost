@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -73,6 +74,12 @@ func TestGigaChatTokenCache(t *testing.T) {
 
 	t.Run("PrunesExpiredEntriesAndKeepsReusableEntries", testGigaChatTokenCachePrunesExpiredEntriesAndKeepsReusableEntries)
 	t.Run("ConcurrentAccess", testGigaChatTokenCacheConcurrentAccess)
+}
+
+func TestGigaChatTLSCacheKeys(t *testing.T) {
+	t.Parallel()
+
+	t.Run("TokenCacheKeysDoNotReadCABundleFiles", testGigaChatTokenCacheKeysDoNotReadCABundleFiles)
 }
 
 func testGigaChatTokenCachePrunesExpiredEntriesAndKeepsReusableEntries(t *testing.T) {
@@ -154,6 +161,44 @@ func testGigaChatTokenCacheConcurrentAccess(t *testing.T) {
 		if !valid && cacheKey != "final" {
 			t.Fatalf("unexpected stale cache entry after concurrent access: %s", cacheKey)
 		}
+	}
+}
+
+func testGigaChatTokenCacheKeysDoNotReadCABundleFiles(t *testing.T) {
+	t.Parallel()
+
+	certPEM, _ := generateGigaChatTestCertificate(t)
+	caBundleFile := writeGigaChatTestFile(t, "ca.pem", certPEM)
+	keyConfig := &schemas.GigaChatKeyConfig{CABundleFile: caBundleFile}
+
+	oauthConfig := gigaChatOAuthConfig{
+		authURL:     "https://auth.example/token",
+		credentials: "test-credentials",
+		scope:       schemas.DefaultGigaChatScope,
+		keyConfig:   keyConfig,
+	}
+	oauthCacheKey := buildGigaChatOAuthCacheKey(oauthConfig)
+
+	passwordConfig := gigaChatPasswordAuthConfig{
+		tokenURL:  "https://api.example/token",
+		user:      "test-user",
+		password:  "test-password",
+		keyConfig: keyConfig,
+	}
+	passwordCacheKey := buildGigaChatPasswordAuthCacheKey(passwordConfig)
+
+	if err := os.Remove(caBundleFile); err != nil {
+		t.Fatalf("failed to remove CA bundle file: %v", err)
+	}
+
+	repeatedOAuthCacheKey := buildGigaChatOAuthCacheKey(oauthConfig)
+	if repeatedOAuthCacheKey != oauthCacheKey {
+		t.Fatalf("OAuth token cache key changed after CA bundle removal: got %q, want %q", repeatedOAuthCacheKey, oauthCacheKey)
+	}
+
+	repeatedPasswordCacheKey := buildGigaChatPasswordAuthCacheKey(passwordConfig)
+	if repeatedPasswordCacheKey != passwordCacheKey {
+		t.Fatalf("password token cache key changed after CA bundle removal: got %q, want %q", repeatedPasswordCacheKey, passwordCacheKey)
 	}
 }
 

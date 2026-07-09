@@ -194,10 +194,7 @@ func (provider *GigaChatProvider) getOAuthAccessTokenWithRefresh(ctx *schemas.Bi
 		return "", bifrostErr
 	}
 
-	cacheKey, err := buildGigaChatOAuthCacheKey(authConfig)
-	if err != nil {
-		return "", newGigaChatConfigurationError(err.Error())
-	}
+	cacheKey := buildGigaChatOAuthCacheKey(authConfig)
 	entry := provider.tokenCache.acquireEntry(cacheKey)
 	entry.mu.Lock()
 	defer provider.tokenCache.releaseEntry(cacheKey, entry)
@@ -225,10 +222,7 @@ func (provider *GigaChatProvider) getPasswordAccessTokenWithRefresh(ctx *schemas
 		return "", bifrostErr
 	}
 
-	cacheKey, err := buildGigaChatPasswordAuthCacheKey(authConfig)
-	if err != nil {
-		return "", newGigaChatConfigurationError(err.Error())
-	}
+	cacheKey := buildGigaChatPasswordAuthCacheKey(authConfig)
 	entry := provider.tokenCache.acquireEntry(cacheKey)
 	entry.mu.Lock()
 	defer provider.tokenCache.releaseEntry(cacheKey, entry)
@@ -397,12 +391,8 @@ func resolveGigaChatOAuthConfig(key schemas.Key) (gigaChatOAuthConfig, *schemas.
 	}, nil
 }
 
-func buildGigaChatOAuthCacheKey(authConfig gigaChatOAuthConfig) (string, error) {
-	tlsFingerprint, err := gigaChatAuthTLSMaterialFingerprint(authConfig.keyConfig)
-	if err != nil {
-		return "", err
-	}
-
+func buildGigaChatOAuthCacheKey(authConfig gigaChatOAuthConfig) string {
+	tlsFingerprint := gigaChatAuthTLSMaterialFingerprint(authConfig.keyConfig)
 	hash := sha256.New()
 	hash.Write([]byte("oauth"))
 	hash.Write([]byte{0})
@@ -413,7 +403,7 @@ func buildGigaChatOAuthCacheKey(authConfig gigaChatOAuthConfig) (string, error) 
 	hash.Write([]byte(authConfig.credentials))
 	hash.Write([]byte{0})
 	hash.Write([]byte(tlsFingerprint))
-	return hex.EncodeToString(hash.Sum(nil)), nil
+	return hex.EncodeToString(hash.Sum(nil))
 }
 
 func (provider *GigaChatProvider) resolveGigaChatPasswordAuthConfig(key schemas.Key) (gigaChatPasswordAuthConfig, *schemas.BifrostError) {
@@ -440,12 +430,8 @@ func (provider *GigaChatProvider) resolveGigaChatPasswordAuthConfig(key schemas.
 	}, nil
 }
 
-func buildGigaChatPasswordAuthCacheKey(authConfig gigaChatPasswordAuthConfig) (string, error) {
-	tlsFingerprint, err := gigaChatAuthTLSMaterialFingerprint(authConfig.keyConfig)
-	if err != nil {
-		return "", err
-	}
-
+func buildGigaChatPasswordAuthCacheKey(authConfig gigaChatPasswordAuthConfig) string {
+	tlsFingerprint := gigaChatAuthTLSMaterialFingerprint(authConfig.keyConfig)
 	hash := sha256.New()
 	hash.Write([]byte("password"))
 	hash.Write([]byte{0})
@@ -456,7 +442,7 @@ func buildGigaChatPasswordAuthCacheKey(authConfig gigaChatPasswordAuthConfig) (s
 	hash.Write([]byte(authConfig.password))
 	hash.Write([]byte{0})
 	hash.Write([]byte(tlsFingerprint))
-	return hex.EncodeToString(hash.Sum(nil)), nil
+	return hex.EncodeToString(hash.Sum(nil))
 }
 
 func (provider *GigaChatProvider) requestGigaChatOAuthToken(ctx *schemas.BifrostContext, authConfig gigaChatOAuthConfig) (gigaChatCachedToken, *schemas.BifrostError) {

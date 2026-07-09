@@ -31,9 +31,9 @@ func TestGigachat(t *testing.T) {
 	t.Run("Tools", testGigaChatTools)
 	t.Run("Errors", testGigaChatErrors)
 	t.Run("BuildsTLSClientWithCABundle", testGigaChatBuildsTLSClientWithCABundle)
-	t.Run("RefreshesTLSClientWithCABundleRotation", testGigaChatRefreshesTLSClientWithCABundleRotation)
+	t.Run("ReusesTLSClientWithCABundleUntilProviderReload", testGigaChatReusesTLSClientWithCABundleUntilProviderReload)
 	t.Run("BuildsTLSClientWithCertificate", testGigaChatBuildsTLSClientWithCertificate)
-	t.Run("RefreshesTLSClientWithCertificateRotation", testGigaChatRefreshesTLSClientWithCertificateRotation)
+	t.Run("ReusesTLSClientWithCertificateUntilProviderReload", testGigaChatReusesTLSClientWithCertificateUntilProviderReload)
 	t.Run("RejectsMissingCertificatePair", testGigaChatRejectsMissingCertificatePair)
 }
 
@@ -136,7 +136,7 @@ func testGigaChatBuildsTLSClientWithCABundle(t *testing.T) {
 	}
 }
 
-func testGigaChatRefreshesTLSClientWithCABundleRotation(t *testing.T) {
+func testGigaChatReusesTLSClientWithCABundleUntilProviderReload(t *testing.T) {
 	t.Parallel()
 
 	certPEM1, _ := generateGigaChatTestCertificate(t)
@@ -161,19 +161,31 @@ func testGigaChatRefreshesTLSClientWithCABundleRotation(t *testing.T) {
 		t.Fatalf("failed to rotate CA bundle file: %v", err)
 	}
 
-	rotatedClient, err := provider.getGigaChatTLSClient(provider.client, gigaChatTLSClientCacheDefault, keyConfig)
+	reusedClient, err := provider.getGigaChatTLSClient(provider.client, gigaChatTLSClientCacheDefault, keyConfig)
 	if err != nil {
 		t.Fatalf("getGigaChatTLSClient returned error after CA rotation: %v", err)
 	}
-	if rotatedClient == client {
-		t.Fatal("expected rotated CA bundle contents to rebuild TLS client")
+	if reusedClient != client {
+		t.Fatal("expected cached TLS client to be reused after CA bundle rotation")
 	}
 
 	if err := os.Remove(caBundleFile); err != nil {
 		t.Fatalf("failed to remove CA bundle file: %v", err)
 	}
-	if _, err := provider.getGigaChatTLSClient(provider.client, gigaChatTLSClientCacheDefault, keyConfig); err == nil {
-		t.Fatal("expected missing CA bundle file to invalidate TLS client cache")
+	reusedClient, err = provider.getGigaChatTLSClient(provider.client, gigaChatTLSClientCacheDefault, keyConfig)
+	if err != nil {
+		t.Fatalf("cached TLS client lookup read removed CA bundle file: %v", err)
+	}
+	if reusedClient != client {
+		t.Fatal("expected cached TLS client to be reused after CA bundle removal")
+	}
+
+	reloadedProvider, err := NewGigaChatProvider(&schemas.ProviderConfig{}, nil)
+	if err != nil {
+		t.Fatalf("NewGigaChatProvider returned error: %v", err)
+	}
+	if _, err := reloadedProvider.getGigaChatTLSClient(reloadedProvider.client, gigaChatTLSClientCacheDefault, keyConfig); err == nil {
+		t.Fatal("expected provider reload to validate missing CA bundle file")
 	} else if !strings.Contains(err.Error(), "ca_bundle_file") {
 		t.Fatalf("unexpected missing CA error: %v", err)
 	}
@@ -203,7 +215,7 @@ func testGigaChatBuildsTLSClientWithCertificate(t *testing.T) {
 	}
 }
 
-func testGigaChatRefreshesTLSClientWithCertificateRotation(t *testing.T) {
+func testGigaChatReusesTLSClientWithCertificateUntilProviderReload(t *testing.T) {
 	t.Parallel()
 
 	certPEM1, keyPEM1 := generateGigaChatTestCertificate(t)
@@ -232,12 +244,36 @@ func testGigaChatRefreshesTLSClientWithCertificateRotation(t *testing.T) {
 		t.Fatalf("failed to rotate client key file: %v", err)
 	}
 
-	rotatedClient, err := provider.getGigaChatTLSClient(provider.client, gigaChatTLSClientCacheDefault, keyConfig)
+	reusedClient, err := provider.getGigaChatTLSClient(provider.client, gigaChatTLSClientCacheDefault, keyConfig)
 	if err != nil {
 		t.Fatalf("getGigaChatTLSClient returned error after certificate rotation: %v", err)
 	}
-	if rotatedClient == client {
-		t.Fatal("expected rotated client certificate contents to rebuild TLS client")
+	if reusedClient != client {
+		t.Fatal("expected cached TLS client to be reused after certificate rotation")
+	}
+
+	if err := os.Remove(certFile); err != nil {
+		t.Fatalf("failed to remove client certificate file: %v", err)
+	}
+	if err := os.Remove(keyFile); err != nil {
+		t.Fatalf("failed to remove client key file: %v", err)
+	}
+	reusedClient, err = provider.getGigaChatTLSClient(provider.client, gigaChatTLSClientCacheDefault, keyConfig)
+	if err != nil {
+		t.Fatalf("cached TLS client lookup read removed certificate files: %v", err)
+	}
+	if reusedClient != client {
+		t.Fatal("expected cached TLS client to be reused after certificate file removal")
+	}
+
+	reloadedProvider, err := NewGigaChatProvider(&schemas.ProviderConfig{}, nil)
+	if err != nil {
+		t.Fatalf("NewGigaChatProvider returned error: %v", err)
+	}
+	if _, err := reloadedProvider.getGigaChatTLSClient(reloadedProvider.client, gigaChatTLSClientCacheDefault, keyConfig); err == nil {
+		t.Fatal("expected provider reload to validate missing certificate files")
+	} else if !strings.Contains(err.Error(), "cert_file/key_file") {
+		t.Fatalf("unexpected missing certificate error: %v", err)
 	}
 }
 
