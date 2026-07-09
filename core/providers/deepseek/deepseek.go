@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/openai"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
@@ -58,6 +59,14 @@ func NewDeepSeekProvider(config *schemas.ProviderConfig, logger schemas.Logger) 
 		sendBackRawRequest:  config.SendBackRawRequest,
 		sendBackRawResponse: config.SendBackRawResponse,
 	}, nil
+}
+
+func (provider *DeepSeekProvider) anthropicHeaders(key schemas.Key) map[string]string {
+	headers := map[string]string{}
+	if key.Value.GetValue() != "" {
+		headers["x-api-key"] = key.Value.GetValue()
+	}
+	return headers
 }
 
 // GetProviderKey returns the provider identifier for DeepSeek.
@@ -126,75 +135,107 @@ func (provider *DeepSeekProvider) TextCompletionStream(ctx *schemas.BifrostConte
 	)
 }
 
-// ChatCompletion performs a chat completion request to the DeepSeek API.
+// ChatCompletion performs a chat completion request to DeepSeek's Anthropic-compatible API.
 func (provider *DeepSeekProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
-	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
-	return openai.HandleOpenAIChatCompletionRequest(
+	return anthropic.HandleAnthropicChatCompletionRequest(
 		ctx,
 		provider.client,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/chat/completions"),
+		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/anthropic/v1/messages"),
 		request,
-		openai.BearerAuthHeader(key),
+		anthropic.AnthropicRequestBuildConfig{
+			Provider:                  schemas.DeepSeek,
+			ShouldSendBackRawRequest:  provider.sendBackRawRequest,
+			ShouldSendBackRawResponse: provider.sendBackRawResponse,
+		},
+		provider.anthropicHeaders(key),
 		provider.networkConfig.ExtraHeaders,
-		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
-		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
-		provider.GetProviderKey(),
-		nil,
-		nil,
 		nil,
 		provider.logger,
 	)
 }
 
-// ChatCompletionStream performs a streaming chat completion request to the DeepSeek API.
+// ChatCompletionStream performs a streaming chat completion request to DeepSeek's Anthropic-compatible API.
 // It supports real-time streaming of responses using Server-Sent Events (SSE).
-// Uses DeepSeek's OpenAI-compatible streaming format.
 // Returns a channel containing BifrostStreamChunk objects representing the stream or an error if the request fails.
 func (provider *DeepSeekProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
-	return openai.HandleOpenAIChatCompletionStreaming(
+	jsonData, bifrostErr := anthropic.BuildAnthropicChatRequestBody(ctx, request, anthropic.AnthropicRequestBuildConfig{
+		Provider:                  schemas.DeepSeek,
+		IsStreaming:               true,
+		ShouldSendBackRawRequest:  provider.sendBackRawRequest,
+		ShouldSendBackRawResponse: provider.sendBackRawResponse,
+	})
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	return anthropic.HandleAnthropicChatCompletionStreaming(
 		ctx,
 		provider.streamingClient,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/chat/completions"),
-		request,
-		openai.BearerAuthHeader(key),
+		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/anthropic/v1/messages"),
+		jsonData,
+		provider.anthropicHeaders(key),
 		provider.networkConfig.ExtraHeaders,
 		provider.networkConfig.StreamIdleTimeoutInSeconds,
+		provider.networkConfig.BetaHeaderOverrides,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		schemas.DeepSeek,
 		postHookRunner,
 		nil,
 		nil,
-		nil,
-		nil,
-		nil,
-		nil,
 		provider.logger,
 		postHookSpanFinalizer,
 	)
 }
 
+// Responses performs a Responses API request against DeepSeek's Anthropic-compatible endpoint.
 func (provider *DeepSeekProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
-	chatResponse, err := provider.ChatCompletion(ctx, key, request.ToChatRequest())
-	if err != nil {
-		return nil, err
-	}
-
-	response := chatResponse.ToBifrostResponsesResponse()
-
-	return response, nil
+	return anthropic.HandleAnthropicResponsesRequest(
+		ctx,
+		provider.client,
+		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/anthropic/v1/messages"),
+		request,
+		anthropic.AnthropicRequestBuildConfig{
+			Provider:                  schemas.DeepSeek,
+			ShouldSendBackRawRequest:  provider.sendBackRawRequest,
+			ShouldSendBackRawResponse: provider.sendBackRawResponse,
+		},
+		provider.anthropicHeaders(key),
+		provider.networkConfig.ExtraHeaders,
+		nil,
+		provider.logger,
+	)
 }
 
-// ResponsesStream performs a streaming responses request to the DeepSeek API.
+// ResponsesStream performs a streaming Responses API request to DeepSeek's Anthropic-compatible endpoint.
 func (provider *DeepSeekProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	ctx.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
-	return provider.ChatCompletionStream(
+	jsonData, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, request, anthropic.AnthropicRequestBuildConfig{
+		Provider:                  schemas.DeepSeek,
+		IsStreaming:               true,
+		ShouldSendBackRawRequest:  provider.sendBackRawRequest,
+		ShouldSendBackRawResponse: provider.sendBackRawResponse,
+	})
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	return anthropic.HandleAnthropicResponsesStream(
 		ctx,
+		provider.streamingClient,
+		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/anthropic/v1/messages"),
+		jsonData,
+		provider.anthropicHeaders(key),
+		provider.networkConfig.ExtraHeaders,
+		provider.networkConfig.StreamIdleTimeoutInSeconds,
+		provider.networkConfig.BetaHeaderOverrides,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		provider.GetProviderKey(),
 		postHookRunner,
+		nil,
+		nil,
+		provider.logger,
 		postHookSpanFinalizer,
-		key,
-		request.ToChatRequest(),
 	)
 }
 
