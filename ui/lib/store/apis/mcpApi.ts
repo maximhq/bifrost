@@ -13,6 +13,11 @@ import {
 } from "@/lib/types/mcp";
 import { baseApi } from "./baseApi";
 
+// tool_sync_interval's request contract is minutes, but the cached/GET contract is
+// nanoseconds (see core/schemas/mcp.go's UnmarshalJSON doc comment) — named so a future
+// edit can't reintroduce this exact class of unit bug by eyeballing a bare multiplier.
+const NANOSECONDS_PER_MINUTE = 60_000_000_000;
+
 type CreateMCPClientResponse = { status: "success"; message: string } | OAuthFlowResponse;
 type UpdateMCPClientResponse = { status: "success"; message: string } | OAuthFlowResponse;
 
@@ -177,7 +182,7 @@ export const mcpApi = baseApi.injectEndpoints({
 									// config field mirrors GET, which reports nanoseconds. Convert before writing
 									// the optimistic value so the cache doesn't briefly show a 60x-wrong duration.
 									if (data.tool_sync_interval !== undefined)
-										draft.clients[index].config.tool_sync_interval = data.tool_sync_interval * 60_000_000_000;
+										draft.clients[index].config.tool_sync_interval = data.tool_sync_interval * NANOSECONDS_PER_MINUTE;
 									if (data.disabled !== undefined) {
 										draft.clients[index].config.disabled = data.disabled;
 										if (data.disabled) {

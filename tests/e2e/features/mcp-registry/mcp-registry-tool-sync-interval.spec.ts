@@ -70,8 +70,7 @@ test.describe('MCP Registry - tool_sync_interval unit corruption regression', ()
 
     // Toggle disabled via the actual UI switch — this is the code path that used to
     // resend the raw nanoseconds value and corrupt it.
-    const row = mcpRegistryPage.getClientRow(clientData.name)
-    const enabledSwitch = row.locator('button[role="switch"]').first()
+    const enabledSwitch = page.locator(`[data-testid="mcp-client-enabled-switch-${initialConfig.client_id}"]`)
     await expect(enabledSwitch).toBeVisible({ timeout: 10000 })
 
     const toggleResponsePromise = page.waitForResponse(
@@ -81,6 +80,10 @@ test.describe('MCP Registry - tool_sync_interval unit corruption regression', ()
     await enabledSwitch.click()
     const toggleResponse = await toggleResponsePromise
     expect(toggleResponse.ok()).toBe(true)
+    // Pin down the actual mechanism, not just the outcome: the toggle must send only
+    // the field it changes and rely on the endpoint's PATCH semantics for everything
+    // else — resending tool_sync_interval here is exactly what caused the corruption.
+    expect(JSON.parse(toggleResponse.request().postData() ?? '{}')).toEqual({ disabled: true })
 
     const afterDisable = await getClientConfig(page.request, clientData.name)
     expect(afterDisable.disabled).toBe(true)
