@@ -953,6 +953,14 @@
             ]
           },
           {
+            "item": "Edge",
+            "icon": "grip",
+            "pages": [
+              "changelogs/edge-v0.2.0",
+              "changelogs/edge-v0.1.0"
+            ]
+          },
+          {
             "item": "Bifrost CLI",
             "icon": "laptop-code",
             "pages": [
