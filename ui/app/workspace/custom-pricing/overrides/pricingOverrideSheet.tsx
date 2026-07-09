@@ -170,6 +170,9 @@ export const PRICING_FIELDS = [
 	},
 	{ key: "cache_read_input_token_cost_priority", label: "Cache read / token (priority)", group: "chat", requestTypeGroups: ["chat"] },
 	{ key: "cache_read_input_token_cost_flex", label: "Cache read / token (flex)", group: "chat", requestTypeGroups: ["chat"] },
+	{ key: "cache_creation_input_token_cost_fast", label: "Cache creation / token (fast)", group: "chat", requestTypeGroups: ["chat"] },
+	{ key: "cache_creation_input_token_cost_above_1hr_fast", label: "Cache creation / token (>1hr, fast)", group: "chat", requestTypeGroups: ["chat"] },
+	{ key: "cache_read_input_token_cost_fast", label: "Cache read / token (fast)", group: "chat", requestTypeGroups: ["chat"] },
 	{
 		key: "cache_read_input_token_cost_above_200k_tokens_priority",
 		label: "Cache read / token (>200k, priority)",

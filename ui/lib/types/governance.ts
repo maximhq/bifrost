@@ -455,6 +455,9 @@ export interface PricingOverridePatch {
 	cache_read_input_image_token_cost?: number;
 	cache_read_input_token_cost_above_272k_tokens?: number;
 	cache_read_input_token_cost_above_272k_tokens_priority?: number;
+	cache_creation_input_token_cost_fast?: number;
+	cache_creation_input_token_cost_above_1hr_fast?: number;
+	cache_read_input_token_cost_fast?: number;
 	// Image
 	input_cost_per_image_token?: number;
 	output_cost_per_image_token?: number;
