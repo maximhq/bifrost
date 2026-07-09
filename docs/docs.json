@@ -513,7 +513,8 @@
               "features/observability/otel",
               "features/observability/prometheus",
               "features/observability/kafka",
-              "features/observability/bigquery"
+              "features/observability/bigquery",
+              "features/observability/pubsub"
             ]
           },
           {
