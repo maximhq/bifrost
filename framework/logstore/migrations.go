@@ -283,7 +283,7 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"logs_recreate_matviews_with_user_agent_column"}, run: migrationRecreateMatViewsWithUserAgentColumn},
 	{IDs: []string{"logs_add_user_agent_column"}, run: migrationAddUserAgentColumn},
 	{IDs: []string{"mcp_tool_logs_add_user_agent_column"}, run: migrationAddUserAgentColumnToMCPToolLogs},
-	{IDs: []string{"logs_recreate_matviews_with_app_column"}, run: migrationRecreateMatViewsWithAppColumn},
+	{IDs: []string{"logs_recreate_matviews_with_app_column"}, run: migrationRecreateMatViewsWithUserAgentColumn},
 	{IDs: []string{"mcp_tool_logs_add_endpoint_columns"}, run: migrationAddEndpointColumnsToMCPToolLogs},
 }
 
@@ -3274,7 +3274,7 @@ func migrationAddUserAgentColumnToMCPToolLogs(ctx context.Context, db *gorm.DB, 
 // rolling deploys on large logs tables. The user_agent_mappings table guard
 // also runs here for local DBs that already recorded the edited column migration
 // before the table was added to it.
-func migrationRecreateMatViewsWithAppColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+func migrationRecreateMatViewsWithUserAgentColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
 	opts := *migrator.DefaultOptions
 	opts.UseTransaction = true
 	m := migrator.New(db, &opts, []*migrator.Migration{{
