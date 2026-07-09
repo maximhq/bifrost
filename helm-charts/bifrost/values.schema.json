@@ -3088,6 +3088,11 @@
                     },
                     "reset_duration": {
                       "type": "string"
+                    },
+                    "calendar_aligned": {
+                      "type": "boolean",
+                      "description": "Deprecated: set calendar_aligned on the parent access profile instead. The reconciler promotes any true value here to the profile's top-level calendar_aligned at load time.",
+                      "default": false
                     }
                   },
                   "required": ["id", "max_limit", "reset_duration"],
@@ -3146,6 +3151,11 @@
                           },
                           "reset_duration": {
                             "type": "string"
+                          },
+                          "calendar_aligned": {
+                            "type": "boolean",
+                            "description": "Deprecated: set calendar_aligned on the parent access profile instead. The reconciler promotes any true value here to the profile's top-level calendar_aligned at load time.",
+                            "default": false
                           }
                         },
                         "required": ["id", "max_limit", "reset_duration"],
@@ -3230,6 +3240,11 @@
                   "required": ["mcp_client_id", "tool_name", "action"],
                   "additionalProperties": false
                 }
+              },
+              "calendar_aligned": {
+                "type": "boolean",
+                "description": "Snap budget and rate-limit reset windows to clean calendar boundaries (day, week, month, year) for this profile",
+                "default": false
               }
             },
             "required": ["name"],
@@ -3244,6 +3259,69 @@
             },
             "hmacKey": {
               "type": "string"
+            },
+            "objectStorage": {
+              "type": "object",
+              "description": "Optional object storage for archiving audit events to S3/GCS. Each flushed batch is written as a gzipped JSONL object at {prefix}/audit-logs/YYYY/MM/DD/HH/{id}.jsonl[.gz], in addition to the database.",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "enum": ["s3", "gcs"],
+                  "description": "Object storage backend type"
+                },
+                "bucket": {
+                  "type": "string",
+                  "description": "Bucket name"
+                },
+                "prefix": {
+                  "type": "string",
+                  "description": "Base key path for stored audit objects; audit-logs/ is appended under it",
+                  "default": "bifrost"
+                },
+                "compress": {
+                  "type": "boolean",
+                  "description": "Enable gzip compression for stored objects",
+                  "default": false
+                },
+                "region": {
+                  "type": "string",
+                  "description": "AWS region (S3 only)"
+                },
+                "endpoint": {
+                  "type": "string",
+                  "description": "Custom S3-compatible endpoint for MinIO/R2 (S3 only)"
+                },
+                "accessKeyId": {
+                  "type": "string",
+                  "description": "AWS access key ID; omit to use default credential chain (S3 only)"
+                },
+                "secretAccessKey": {
+                  "type": "string",
+                  "description": "AWS secret access key (S3 only)"
+                },
+                "sessionToken": {
+                  "type": "string",
+                  "description": "AWS STS session token (S3 only, optional)"
+                },
+                "roleArn": {
+                  "type": "string",
+                  "description": "AWS IAM role ARN to assume via STS (S3 only)"
+                },
+                "forcePathStyle": {
+                  "type": "boolean",
+                  "description": "Use path-style S3 URLs; required for MinIO (S3 only)",
+                  "default": false
+                },
+                "projectId": {
+                  "type": "string",
+                  "description": "GCP project ID override (GCS only)"
+                },
+                "credentialsJson": {
+                  "type": "string",
+                  "description": "GCP service account credentials JSON or file path; omit for Application Default Credentials (GCS only)"
+                }
+              },
+              "required": ["type", "bucket"]
             }
           }
         },
@@ -4661,6 +4739,11 @@
               "type": "string",
               "description": "Authentication credentials (can use env. prefix)"
             },
+            "force_single_region": {
+              "type": "boolean",
+              "description": "When true, always call the configured region and skip automatic promotion of multi-region-only models to a multi-region endpoint. Enable for provisioned throughput.",
+              "default": false
+            },
             "deployments": {
               "type": "object",
               "additionalProperties": {
@@ -5567,6 +5650,11 @@
                   "auth_credentials": {
                     "type": "string",
                     "description": "Authentication credentials (can use env. prefix)"
+                  },
+                  "force_single_region": {
+                    "type": "boolean",
+                    "description": "When true, always call the configured region and skip automatic promotion of multi-region-only models to a multi-region endpoint. Enable for provisioned throughput.",
+                    "default": false
                   },
                   "deployments": {
                     "type": "object",
