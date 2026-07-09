@@ -1011,6 +1011,7 @@ func tieredCacheCreationInputTokenRate(pricing *configstoreTables.TableModelPric
 	if tier.isFast && pricing.CacheCreationInputTokenCostFast != nil {
 		return *pricing.CacheCreationInputTokenCostFast
 	}
+<<<<<<< HEAD
 	if tier.isFlex {
 		if totalTokens > TokenTierAbove272K && pricing.CacheCreationInputTokenCostFlexAbove272kTokens != nil {
 			return *pricing.CacheCreationInputTokenCostFlexAbove272kTokens
@@ -1029,6 +1030,8 @@ func tieredCacheCreationInputTokenRate(pricing *configstoreTables.TableModelPric
 	if totalTokens > TokenTierAbove272K && pricing.CacheCreationInputTokenCostAbove272kTokens != nil {
 		return *pricing.CacheCreationInputTokenCostAbove272kTokens
 	}
+=======
+>>>>>>> 2bd7ffe13 (fix: annthropic cache rate for fast mode (#5063))
 	if totalTokens > TokenTierAbove200K && pricing.CacheCreationInputTokenCostAbove200kTokens != nil {
 		return *pricing.CacheCreationInputTokenCostAbove200kTokens
 	}

@@ -291,6 +291,7 @@ func patchPricing(pricing configstoreTables.TableModelPricing, override Options)
 		{dst: &patched.CacheReadInputTokenCostAbove200kTokensPriority, src: override.CacheReadInputTokenCostAbove200kTokensPriority},
 		{dst: &patched.CacheReadInputTokenCostAbove272kTokens, src: override.CacheReadInputTokenCostAbove272kTokens},
 		{dst: &patched.CacheReadInputTokenCostAbove272kTokensPriority, src: override.CacheReadInputTokenCostAbove272kTokensPriority},
+
 		{dst: &patched.CacheReadInputTokenCostFlexAbove272kTokens, src: override.CacheReadInputTokenCostFlexAbove272kTokens},
 		{dst: &patched.CacheCreationInputTokenCostAbove272kTokens, src: override.CacheCreationInputTokenCostAbove272kTokens},
 		{dst: &patched.CacheCreationInputTokenCostFlex, src: override.CacheCreationInputTokenCostFlex},
@@ -300,6 +301,7 @@ func patchPricing(pricing configstoreTables.TableModelPricing, override Options)
 		{dst: &patched.CacheCreationInputTokenCostAbove1hrFast, src: override.CacheCreationInputTokenCostAbove1hrFast},
 		{dst: &patched.CacheReadInputTokenCostFast, src: override.CacheReadInputTokenCostFast},
 		{dst: &patched.InferenceGeoUSMultiplier, src: override.InferenceGeoUSMultiplier},
+
 		{dst: &patched.InputCostPerTokenBatches, src: override.InputCostPerTokenBatches},
 		{dst: &patched.OutputCostPerTokenBatches, src: override.OutputCostPerTokenBatches},
 		{dst: &patched.InputCostPerImageToken, src: override.InputCostPerImageToken},
