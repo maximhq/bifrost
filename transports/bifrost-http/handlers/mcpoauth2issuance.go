@@ -651,12 +651,24 @@ func isLoopbackRedirectHost(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// matchRedirectURI validates redirect_uri against registered URIs.
-// For loopback addresses (localhost / 127.0.0.1 / [::1]), port is ignored per RFC 8252 §7.3.
+// allowedPrivateUseRedirectSchemes is the default-deny allowlist of private-use
+// ("custom") URI schemes accepted as redirect targets, in addition to https and
+// http-loopback. Native apps register such schemes per RFC 8252 §7.1 (e.g.
+// Cursor uses cursor://anysphere.cursor-mcp/oauth/callback). Everything not on
+// this list is rejected so a dangerous scheme (javascript:, data:, file:, …) can
+// never be written into the Location header built from a redirect URI. url.Parse
+// lowercases the scheme, so keys here must be lowercase.
+var allowedPrivateUseRedirectSchemes = map[string]struct{}{
+	"cursor": {},
+}
+
 // isAllowedRedirectScheme reports whether a redirect URI uses a safe scheme:
-// https for any host, or http only for loopback addresses (localhost/127.0.0.1/[::1]).
-// This rejects javascript:, data:, and other schemes that could be abused when a
-// Location header is built from the URI.
+//   - https for any host,
+//   - http only for loopback addresses (localhost/127.0.0.1/[::1]), and
+//   - a private-use ("custom") URI scheme on the allowedPrivateUseRedirectSchemes
+//     allowlist that also carries an authority component (scheme://host/...).
+//
+// It is default-deny: any scheme not matching one of the above is rejected.
 func isAllowedRedirectScheme(candidate string) bool {
 	parsed, err := url.Parse(candidate)
 	if err != nil {
@@ -668,10 +680,17 @@ func isAllowedRedirectScheme(candidate string) bool {
 	case "http":
 		return isLoopbackRedirectHost(parsed.Hostname())
 	default:
-		return false
+		if _, ok := allowedPrivateUseRedirectSchemes[parsed.Scheme]; !ok {
+			return false
+		}
+		// Require an authority (scheme://host/...) so an opaque form of an
+		// allowlisted scheme (e.g. "cursor:whatever") is still rejected.
+		return parsed.Host != ""
 	}
 }
 
+// matchRedirectURI validates redirect_uri against registered URIs.
+// For loopback addresses (localhost / 127.0.0.1 / [::1]), port is ignored per RFC 8252 §7.3.
 func matchRedirectURI(candidate string, registered []string) bool {
 	parsed, err := url.Parse(candidate)
 	if err != nil {
