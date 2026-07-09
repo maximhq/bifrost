@@ -461,6 +461,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_pricing_override_user_id_column"}, run: migrationAddPricingOverrideUserIDColumn},
 	{IDs: []string{"add_vertex_force_single_region_column"}, run: migrationAddVertexForceSingleRegionColumn},
 	{IDs: []string{"add_sidekiq_table"}, run: migrationAddSidekiqTable},
+	{IDs: []string{"add_sidekiq_kind_status_created_index"}, run: migrationAddSidekiqKindStatusCreatedIndex},
 }
 
 // quoteSQLiteIdentifier quotes a SQLite identifier, escaping any double quotes.
