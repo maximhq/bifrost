@@ -43,7 +43,7 @@ func SecretVarAsString(e *SecretVar) string {
 	return e.GetValue()
 }
 
-// knownProvidersMu protects concurrent access to knownProviders.
+// knownProvidersMu protects concurrent access to knownProviders and knownProvidersLower.
 var knownProvidersMu sync.RWMutex
 
 // knownProviders is a set of all known provider strings for O(1) lookup.
@@ -59,6 +59,15 @@ var knownProviders = func() map[string]bool {
 	return m
 }()
 
+// knownProvidersLower maps a lowercased provider name to its canonical registered case.
+var knownProvidersLower = func() map[string]string {
+	m := make(map[string]string, len(StandardProviders))
+	for _, p := range StandardProviders {
+		m[strings.ToLower(string(p))] = string(p)
+	}
+	return m
+}()
+
 // RegisterKnownProvider adds a provider to the known providers set.
 // This allows ParseModelString to correctly parse model strings with
 // custom provider prefixes (e.g., "my-custom-provider/gpt-4").
@@ -66,6 +75,7 @@ func RegisterKnownProvider(provider ModelProvider) {
 	knownProvidersMu.Lock()
 	defer knownProvidersMu.Unlock()
 	knownProviders[string(provider)] = true
+	knownProvidersLower[strings.ToLower(string(provider))] = string(provider)
 }
 
 // UnregisterKnownProvider removes a custom provider from the known providers set.
@@ -79,13 +89,31 @@ func UnregisterKnownProvider(provider ModelProvider) {
 	knownProvidersMu.Lock()
 	defer knownProvidersMu.Unlock()
 	delete(knownProviders, string(provider))
+	lower := strings.ToLower(string(provider))
+	if knownProvidersLower[lower] == string(provider) {
+		delete(knownProvidersLower, lower)
+	}
 }
 
-// IsKnownProvider checks if a provider string is known.
+// IsKnownProvider checks if a provider string is known (exact case).
 func IsKnownProvider(provider string) bool {
 	knownProvidersMu.RLock()
 	defer knownProvidersMu.RUnlock()
 	return knownProviders[provider]
+}
+
+// ResolveKnownProvider resolves a provider prefix to its canonical registered case,
+// trying an exact match first and then a case-insensitive lookup.
+func ResolveKnownProvider(provider string) (ModelProvider, bool) {
+	knownProvidersMu.RLock()
+	defer knownProvidersMu.RUnlock()
+	if knownProviders[provider] {
+		return ModelProvider(provider), true
+	}
+	if canonical, ok := knownProvidersLower[strings.ToLower(provider)]; ok {
+		return ModelProvider(canonical), true
+	}
+	return "", false
 }
 
 // ParseModelString extracts provider and model from a model string.
@@ -97,8 +125,10 @@ func ParseModelString(model string, defaultProvider ModelProvider) (ModelProvide
 	// Check if model contains a provider prefix (only split on first "/" to preserve model names with "/")
 	if strings.Contains(model, "/") {
 		parts := strings.SplitN(model, "/", 2)
-		if len(parts) == 2 && IsKnownProvider(parts[0]) {
-			return ModelProvider(parts[0]), parts[1]
+		if len(parts) == 2 {
+			if provider, ok := ResolveKnownProvider(parts[0]); ok {
+				return provider, parts[1]
+			}
 		}
 	}
 	// No known provider prefix found, return default provider and the original model
