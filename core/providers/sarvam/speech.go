@@ -11,8 +11,6 @@ import (
 )
 
 // ToSarvamSpeechRequest maps a Bifrost speech request onto Sarvam's text-to-speech request.
-// Bifrost's generic voice/speed fields map to Sarvam's speaker/pace; Indic-specific fields
-// (target_language_code, pitch, loudness, dict_id, ...) are read from ExtraParams.
 func ToSarvamSpeechRequest(bifrostReq *schemas.BifrostSpeechRequest) *SarvamSpeechRequest {
 	if bifrostReq == nil || bifrostReq.Input == nil {
 		return nil
@@ -27,7 +25,13 @@ func ToSarvamSpeechRequest(bifrostReq *schemas.BifrostSpeechRequest) *SarvamSpee
 		return sarvamReq
 	}
 
-	sarvamReq.ExtraParams = bifrostReq.Params.ExtraParams
+	// Copy so consuming keys below doesn't mutate the caller's request map.
+	if bifrostReq.Params.ExtraParams != nil {
+		sarvamReq.ExtraParams = make(map[string]interface{}, len(bifrostReq.Params.ExtraParams))
+		for k, v := range bifrostReq.Params.ExtraParams {
+			sarvamReq.ExtraParams[k] = v
+		}
+	}
 
 	if bifrostReq.Params.LanguageCode != nil {
 		sarvamReq.TargetLanguageCode = *bifrostReq.Params.LanguageCode
@@ -89,8 +93,7 @@ func ToSarvamSpeechRequest(bifrostReq *schemas.BifrostSpeechRequest) *SarvamSpee
 	return sarvamReq
 }
 
-// Speech performs a text-to-speech request to Sarvam's API. Sarvam returns JSON with a
-// base64-encoded audios array rather than raw binary, so the audio is decoded here.
+// Speech performs a text-to-speech request to Sarvam's API.
 func (provider *SarvamProvider) Speech(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
 	if request == nil || request.Input == nil || request.Input.Input == "" {
 		return nil, providerUtils.NewBifrostOperationError("speech input text is required", nil)

@@ -26,14 +26,12 @@ type SarvamSpeechRequest struct {
 	ExtraParams map[string]interface{} `json:"-"`
 }
 
-// GetExtraParams satisfies providerUtils.RequestBodyWithExtraParams so provider-specific
-// fields flow through when passthrough is enabled.
+// GetExtraParams satisfies providerUtils.RequestBodyWithExtraParams.
 func (r *SarvamSpeechRequest) GetExtraParams() map[string]interface{} {
 	return r.ExtraParams
 }
 
 // SarvamSpeechResponse is the JSON response from Sarvam's /text-to-speech endpoint.
-// Audio is returned base64-encoded in the audios array rather than as raw binary.
 type SarvamSpeechResponse struct {
 	RequestID string   `json:"request_id"`
 	Audios    []string `json:"audios"`
@@ -79,8 +77,7 @@ type SarvamTranscriptionResponse struct {
 	DiarizedTranscript  *SarvamDiarizedTranscript `json:"diarized_transcript"`
 }
 
-// SarvamError models Sarvam's error responses. The chat/voice endpoints return an
-// {"error": {...}} object; FastAPI validation errors use {"detail": ...}.
+// SarvamError models Sarvam's error responses.
 type SarvamError struct {
 	Error  *sarvamErrorBody `json:"error"`
 	Detail json.RawMessage  `json:"detail"`

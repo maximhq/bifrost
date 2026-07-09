@@ -65,63 +65,19 @@ func (provider *SarvamProvider) GetProviderKey() schemas.ModelProvider {
 	return schemas.Sarvam
 }
 
-// ListModels performs a list models request to Sarvam's API.
+// ListModels is not supported by the Sarvam provider.
 func (provider *SarvamProvider) ListModels(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
-	return openai.HandleOpenAIListModelsRequest(
-		ctx,
-		provider.client,
-		request,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/models"),
-		keys,
-		provider.networkConfig.ExtraHeaders,
-		provider.GetProviderKey(),
-		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
-		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
-	)
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ListModelsRequest, provider.GetProviderKey())
 }
 
-// TextCompletion performs a text completion request to Sarvam's API.
-// It formats the request, sends it to Sarvam, and processes the response.
-// Returns a BifrostResponse containing the completion results or an error if the request fails.
+// TextCompletion is not supported by the Sarvam provider.
 func (provider *SarvamProvider) TextCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (*schemas.BifrostTextCompletionResponse, *schemas.BifrostError) {
-	return openai.HandleOpenAITextCompletionRequest(
-		ctx,
-		provider.client,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/completions"),
-		request,
-		openai.BearerAuthHeader(key),
-		provider.networkConfig.ExtraHeaders,
-		provider.GetProviderKey(),
-		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
-		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
-		nil,
-		nil,
-		provider.logger,
-	)
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.TextCompletionRequest, provider.GetProviderKey())
 }
 
-// TextCompletionStream performs a streaming text completion request to Sarvam's API.
-// It formats the request, sends it to Sarvam, and processes the response.
-// Returns a channel of BifrostStreamChunk objects or an error if the request fails.
+// TextCompletionStream is not supported by the Sarvam provider.
 func (provider *SarvamProvider) TextCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	return openai.HandleOpenAITextCompletionStreaming(
-		ctx,
-		provider.streamingClient,
-		provider.networkConfig.BaseURL+"/v1/completions",
-		request,
-		openai.BearerAuthHeader(key),
-		provider.networkConfig.ExtraHeaders,
-		provider.networkConfig.StreamIdleTimeoutInSeconds,
-		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
-		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
-		provider.GetProviderKey(),
-		nil,
-		postHookRunner,
-		nil,
-		nil,
-		provider.logger,
-		postHookSpanFinalizer,
-	)
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.TextCompletionStreamRequest, provider.GetProviderKey())
 }
 
 // ChatCompletion performs a chat completion request to the Sarvam API.
@@ -158,7 +114,7 @@ func (provider *SarvamProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
-		schemas.Sarvam,
+		provider.GetProviderKey(),
 		postHookRunner,
 		nil,
 		nil,

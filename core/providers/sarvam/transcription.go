@@ -12,8 +12,7 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-// ToSarvamTranscriptionRequest maps a Bifrost transcription request onto Sarvam's
-// speech-to-text multipart fields.
+// ToSarvamTranscriptionRequest maps a Bifrost transcription request onto Sarvam's speech-to-text fields.
 func ToSarvamTranscriptionRequest(bifrostReq *schemas.BifrostTranscriptionRequest) *SarvamTranscriptionRequest {
 	if bifrostReq == nil {
 		return nil
@@ -51,9 +50,7 @@ func ToSarvamTranscriptionRequest(bifrostReq *schemas.BifrostTranscriptionReques
 	return req
 }
 
-// ToBifrostTranscriptionResponse maps Sarvam's speech-to-text response onto Bifrost's
-// normalized transcription response, flattening Sarvam's parallel timestamp arrays into
-// per-word entries and its diarized entries into diarized segments.
+// ToBifrostTranscriptionResponse maps Sarvam's speech-to-text response onto Bifrost's transcription response.
 func ToBifrostTranscriptionResponse(sarvamResp *SarvamTranscriptionResponse) *schemas.BifrostTranscriptionResponse {
 	if sarvamResp == nil {
 		return nil
@@ -149,13 +146,13 @@ func (provider *SarvamProvider) Transcription(ctx *schemas.BifrostContext, key s
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
 	defer wait()
 	if bifrostErr != nil {
-		return nil, bifrostErr
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, nil, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
 
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, providerUtils.SetErrorLatency(parseSarvamError(resp), latency)
+		return nil, providerUtils.EnrichError(ctx, parseSarvamError(resp), nil, resp.Body(), provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	responseBody, err := providerUtils.CheckAndDecodeBody(resp)
@@ -185,8 +182,7 @@ func (provider *SarvamProvider) Transcription(ctx *schemas.BifrostContext, key s
 	return response, nil
 }
 
-// writeSarvamTranscriptionMultipart writes the audio file and optional fields into the
-// multipart form for Sarvam's speech-to-text endpoint.
+// writeSarvamTranscriptionMultipart writes the multipart form for Sarvam's speech-to-text request.
 func writeSarvamTranscriptionMultipart(writer *multipart.Writer, reqBody *SarvamTranscriptionRequest) *schemas.BifrostError {
 	filename := reqBody.Filename
 	if filename == "" {
