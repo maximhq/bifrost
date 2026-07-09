@@ -439,6 +439,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_fast_mode_cache_pricing_columns"}, run: migrationAddFastModeCachePricingColumns},
 	{IDs: []string{"add_inference_geo_multiplier_column"}, run: migrationAddInferenceGeoMultiplierColumn},
 	{IDs: []string{"add_flex_and_cache_creation_272k_pricing_columns"}, run: migrationAddFlexAndCacheCreation272kPricingColumns},
+	{IDs: []string{"add_vertex_force_single_region_column"}, run: migrationAddVertexForceSingleRegionColumn},
 }
 
 // quoteSQLiteIdentifier quotes a SQLite identifier, escaping any double quotes.
@@ -10431,6 +10432,29 @@ func migrationAddVirtualKeyExpiresAtColumn(ctx context.Context, db *gorm.DB, log
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			return dropColumnIfExists(tx, logger, &tables.TableVirtualKey{}, "expires_at")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddVertexForceSingleRegionColumn adds the vertex_force_single_region column to the key table.
+// Existing keys default to false (NULL), preserving the current multi-region promotion behaviour.
+func migrationAddVertexForceSingleRegionColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_vertex_force_single_region_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return addColumnIfNotExists(tx, logger, &tables.TableKey{}, "vertex_force_single_region")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return dropColumnIfExists(tx, logger, &tables.TableKey{}, "vertex_force_single_region")
 		},
 	}})
 	if err := m.Migrate(); err != nil {

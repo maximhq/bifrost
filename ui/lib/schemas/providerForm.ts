@@ -89,6 +89,7 @@ const VertexKeyConfigSchema = z.object({
 		.refine((value) => !value || isValidVertexAuthCredentials(value), {
 			message: "Auth Credentials must be a valid JSON object or env.VAR format when provided",
 		}),
+	force_single_region: z.boolean().optional(),
 });
 
 // S3 bucket configuration for Bedrock batch operations
