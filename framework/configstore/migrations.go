@@ -10359,32 +10359,34 @@ func migrationAddSidekiqTable(ctx context.Context, db *gorm.DB, logger schemas.L
 			case "postgres":
 				createTable = `
 					CREATE TABLE IF NOT EXISTS sidekiq (
-						id           TEXT PRIMARY KEY,
-						kind         TEXT NOT NULL,
-						status       TEXT NOT NULL DEFAULT 'pending',
-						runner_id    TEXT,
-						metadata     TEXT DEFAULT '{}',
-						attempts     INTEGER NOT NULL DEFAULT 0,
-						last_error   TEXT,
-						created_at   TIMESTAMPTZ NOT NULL,
-						updated_at   TIMESTAMPTZ NOT NULL,
-						started_at   TIMESTAMPTZ,
-						completed_at TIMESTAMPTZ
+						id                  TEXT PRIMARY KEY,
+						kind                TEXT NOT NULL,
+						status              TEXT NOT NULL DEFAULT 'pending',
+						runner_id           TEXT,
+						metadata            TEXT DEFAULT '{}',
+						attempts            INTEGER NOT NULL DEFAULT 0,
+						last_error          TEXT,
+						created_at          TIMESTAMPTZ NOT NULL,
+						updated_at          TIMESTAMPTZ NOT NULL,
+						started_at          TIMESTAMPTZ,
+						created_by_user_id  VARCHAR(255),
+						completed_at        TIMESTAMPTZ
 					)`
 			case "sqlite":
 				createTable = `
 					CREATE TABLE IF NOT EXISTS sidekiq (
-						id           TEXT PRIMARY KEY,
-						kind         TEXT NOT NULL,
-						status       TEXT NOT NULL DEFAULT 'pending',
-						runner_id    TEXT,
-						metadata     TEXT DEFAULT '{}',
-						attempts     INTEGER NOT NULL DEFAULT 0,
-						last_error   TEXT,
-						created_at   DATETIME NOT NULL,
-						updated_at   DATETIME NOT NULL,
-						started_at   DATETIME,
-						completed_at DATETIME
+						id                  TEXT PRIMARY KEY,
+						kind                TEXT NOT NULL,
+						status              TEXT NOT NULL DEFAULT 'pending',
+						runner_id           TEXT,
+						metadata            TEXT DEFAULT '{}',
+						attempts            INTEGER NOT NULL DEFAULT 0,
+						last_error          TEXT,
+						created_at          DATETIME NOT NULL,
+						updated_at          DATETIME NOT NULL,
+						started_at          DATETIME,
+						created_by_user_id  VARCHAR(255),
+						completed_at        DATETIME
 					)`
 			default:
 				// Fall back to GORM for any other dialect so the migration does not

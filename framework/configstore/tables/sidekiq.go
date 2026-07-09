@@ -32,8 +32,9 @@ type TableSidekiqJob struct {
 	LastError   string     `gorm:"column:last_error;type:text" json:"last_error,omitempty"`
 	CreatedAt   time.Time  `gorm:"column:created_at;not null" json:"created_at"`
 	UpdatedAt   time.Time  `gorm:"column:updated_at;not null;index:idx_sidekiq_status_updated,priority:2" json:"updated_at"`
-	StartedAt   *time.Time `gorm:"column:started_at" json:"started_at,omitempty"`
-	CompletedAt *time.Time `gorm:"column:completed_at" json:"completed_at,omitempty"`
+	StartedAt       *time.Time `gorm:"column:started_at" json:"started_at,omitempty"`
+	CreatedByUserID *string    `gorm:"column:created_by_user_id;type:varchar(255)" json:"created_by_user_id,omitempty"`
+	CompletedAt     *time.Time `gorm:"column:completed_at" json:"completed_at,omitempty"`
 }
 
 // TableName returns the backing table name for sidekiq jobs.
