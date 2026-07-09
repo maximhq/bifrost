@@ -248,7 +248,11 @@ func (c *MCPToolManagerConfig) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(raw, &n); err != nil {
 		return fmt.Errorf("invalid tool_execution_timeout: expected a duration string (e.g. \"30s\") or integer seconds: %w", err)
 	}
-	c.ToolExecutionTimeout = Duration(time.Duration(n) * time.Second)
+	dur, err := DurationFromUnits(n, time.Second, "tool_execution_timeout")
+	if err != nil {
+		return err
+	}
+	c.ToolExecutionTimeout = Duration(dur)
 	return nil
 }
 

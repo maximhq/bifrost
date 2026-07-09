@@ -4201,9 +4201,14 @@ func (bifrost *Bifrost) UpdateToolManagerConfig(maxAgentDepth int, toolExecution
 		return fmt.Errorf("mcp is not configured in this bifrost instance")
 	}
 
+	toolExecutionTimeout, err := schemas.DurationFromUnits(int64(toolExecutionTimeoutInSeconds), time.Second, "tool_execution_timeout")
+	if err != nil {
+		return err
+	}
+
 	bifrost.MCPManager.UpdateToolManagerConfig(&schemas.MCPToolManagerConfig{
 		MaxAgentDepth:         maxAgentDepth,
-		ToolExecutionTimeout:  schemas.Duration(time.Duration(toolExecutionTimeoutInSeconds) * time.Second),
+		ToolExecutionTimeout:  schemas.Duration(toolExecutionTimeout),
 		CodeModeBindingLevel:  schemas.CodeModeBindingLevel(codeModeBindingLevel),
 		DisableAutoToolInject: disableAutoToolInject,
 	})

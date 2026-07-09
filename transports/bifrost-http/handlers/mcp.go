@@ -676,11 +676,21 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 
 		toolSyncInterval := mcp.DefaultToolSyncInterval
 		if req.ToolSyncInterval != 0 {
-			toolSyncInterval = time.Duration(req.ToolSyncInterval) * time.Minute
+			dur, durErr := schemas.DurationFromUnits(int64(req.ToolSyncInterval), time.Minute, "tool_sync_interval")
+			if durErr != nil {
+				SendError(ctx, fasthttp.StatusBadRequest, durErr.Error())
+				return
+			}
+			toolSyncInterval = dur
 		} else {
 			config, cfgErr := h.store.ConfigStore.GetClientConfig(ctx)
 			if cfgErr == nil && config != nil {
-				toolSyncInterval = time.Duration(config.MCPToolSyncInterval) * time.Minute
+				dur, durErr := schemas.DurationFromUnits(int64(config.MCPToolSyncInterval), time.Minute, "tool_sync_interval")
+				if durErr != nil {
+					SendError(ctx, fasthttp.StatusInternalServerError, durErr.Error())
+					return
+				}
+				toolSyncInterval = dur
 			}
 		}
 
@@ -777,11 +787,21 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 
 		toolSyncInterval := mcp.DefaultToolSyncInterval
 		if req.ToolSyncInterval != 0 {
-			toolSyncInterval = time.Duration(req.ToolSyncInterval) * time.Minute
+			dur, durErr := schemas.DurationFromUnits(int64(req.ToolSyncInterval), time.Minute, "tool_sync_interval")
+			if durErr != nil {
+				SendError(ctx, fasthttp.StatusBadRequest, durErr.Error())
+				return
+			}
+			toolSyncInterval = dur
 		} else {
 			config, err := h.store.ConfigStore.GetClientConfig(ctx)
 			if err == nil && config != nil {
-				toolSyncInterval = time.Duration(config.MCPToolSyncInterval) * time.Minute
+				dur, durErr := schemas.DurationFromUnits(int64(config.MCPToolSyncInterval), time.Minute, "tool_sync_interval")
+				if durErr != nil {
+					SendError(ctx, fasthttp.StatusInternalServerError, durErr.Error())
+					return
+				}
+				toolSyncInterval = dur
 			}
 		}
 
@@ -869,7 +889,12 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 
 		toolSyncInterval := mcp.DefaultToolSyncInterval
 		if req.ToolSyncInterval != 0 {
-			toolSyncInterval = time.Duration(req.ToolSyncInterval) * time.Minute
+			dur, durErr := schemas.DurationFromUnits(int64(req.ToolSyncInterval), time.Minute, "tool_sync_interval")
+			if durErr != nil {
+				SendError(ctx, fasthttp.StatusBadRequest, durErr.Error())
+				return
+			}
+			toolSyncInterval = dur
 		} else {
 			config, err := h.store.ConfigStore.GetClientConfig(ctx)
 			if err != nil {
@@ -877,7 +902,12 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 				return
 			}
 			if config != nil {
-				toolSyncInterval = time.Duration(config.MCPToolSyncInterval) * time.Minute
+				dur, durErr := schemas.DurationFromUnits(int64(config.MCPToolSyncInterval), time.Minute, "tool_sync_interval")
+				if durErr != nil {
+					SendError(ctx, fasthttp.StatusInternalServerError, durErr.Error())
+					return
+				}
+				toolSyncInterval = dur
 			}
 		}
 
@@ -934,7 +964,12 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 
 	toolSyncInterval := mcp.DefaultToolSyncInterval
 	if req.ToolSyncInterval != 0 {
-		toolSyncInterval = time.Duration(req.ToolSyncInterval) * time.Minute
+		dur, durErr := schemas.DurationFromUnits(int64(req.ToolSyncInterval), time.Minute, "tool_sync_interval")
+		if durErr != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, durErr.Error())
+			return
+		}
+		toolSyncInterval = dur
 	} else {
 		config, err := h.store.ConfigStore.GetClientConfig(ctx)
 		if err != nil {
@@ -942,7 +977,12 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			return
 		}
 		if config != nil {
-			toolSyncInterval = time.Duration(config.MCPToolSyncInterval) * time.Minute
+			dur, durErr := schemas.DurationFromUnits(int64(config.MCPToolSyncInterval), time.Minute, "tool_sync_interval")
+			if durErr != nil {
+				SendError(ctx, fasthttp.StatusInternalServerError, durErr.Error())
+				return
+			}
+			toolSyncInterval = dur
 		}
 	}
 
@@ -1095,7 +1135,12 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 	// boundary below; the in-memory duration is the source of truth here.
 	resolvedToolSyncInterval := existingConfig.ToolSyncInterval
 	if req.ToolSyncInterval != nil {
-		resolvedToolSyncInterval = time.Duration(*req.ToolSyncInterval) * time.Minute
+		dur, durErr := schemas.DurationFromUnits(int64(*req.ToolSyncInterval), time.Minute, "tool_sync_interval")
+		if durErr != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, durErr.Error())
+			return
+		}
+		resolvedToolSyncInterval = dur
 	}
 	resolvedToolExecutionTimeout := existingConfig.ToolExecutionTimeout
 	if req.ToolExecutionTimeout != nil {
@@ -1103,7 +1148,12 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusBadRequest, "tool_execution_timeout must be >= 0")
 			return
 		}
-		resolvedToolExecutionTimeout = time.Duration(*req.ToolExecutionTimeout) * time.Second
+		dur, durErr := schemas.DurationFromUnits(int64(*req.ToolExecutionTimeout), time.Second, "tool_execution_timeout")
+		if durErr != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, durErr.Error())
+			return
+		}
+		resolvedToolExecutionTimeout = dur
 	}
 
 	// Resolve tools_to_execute and tools_to_auto_execute.
@@ -1303,13 +1353,10 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		dbUpdateRecord.DiscoveredTools = migrated
 		dbUpdateRecord.DiscoveredToolNameMapping = oldDBConfig.DiscoveredToolNameMapping
 	}
-	if h.store.ConfigStore != nil {
-		if err := h.store.ConfigStore.UpdateMCPClientConfig(ctx, id, &dbUpdateRecord); err != nil {
-			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update mcp client config in store: %v", err))
-			return
-		}
-	}
-
+	// Resolve toolSyncInterval (including the global-default fallback) and validate it
+	// before the DB write below — dbUpdateRecord only stores the raw per-client override
+	// (resolvedToolSyncInterval), not this fully-resolved value, so computing it first
+	// costs nothing and avoids persisting a change right before a validation failure.
 	toolSyncInterval := resolvedToolSyncInterval
 	if toolSyncInterval == 0 {
 		toolSyncInterval = mcp.DefaultToolSyncInterval
@@ -1319,7 +1366,19 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 			return
 		}
 		if config != nil {
-			toolSyncInterval = time.Duration(config.MCPToolSyncInterval) * time.Minute
+			dur, durErr := schemas.DurationFromUnits(int64(config.MCPToolSyncInterval), time.Minute, "tool_sync_interval")
+			if durErr != nil {
+				SendError(ctx, fasthttp.StatusInternalServerError, durErr.Error())
+				return
+			}
+			toolSyncInterval = dur
+		}
+	}
+
+	if h.store.ConfigStore != nil {
+		if err := h.store.ConfigStore.UpdateMCPClientConfig(ctx, id, &dbUpdateRecord); err != nil {
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update mcp client config in store: %v", err))
+			return
 		}
 	}
 	// Build in-memory config from resolved values.

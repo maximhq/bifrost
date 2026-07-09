@@ -3,6 +3,7 @@ package schemas
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"time"
 )
 
@@ -44,6 +45,26 @@ func (d *Duration) UnmarshalJSON(data []byte) error {
 	}
 	*d = Duration(dur)
 	return nil
+}
+
+// DurationFromUnits converts a whole-number count of a given time.Duration unit
+// (e.g. time.Minute, time.Second) into a time.Duration, returning an error instead
+// of silently overflowing int64 when the multiplication would wrap around.
+//
+// This guards call sites that convert a bare request/DB integer into a duration by
+// multiplying it by a unit constant (e.g. `time.Duration(n) * time.Minute`), which is
+// exactly the pattern that let a nanosecond value overflow into a garbage negative
+// duration when misinterpreted as minutes.
+func DurationFromUnits(n int64, unit time.Duration, fieldName string) (time.Duration, error) {
+	if unit <= 0 {
+		return 0, fmt.Errorf("invalid unit for %s: %v", fieldName, unit)
+	}
+	maxN := int64(math.MaxInt64) / int64(unit)
+	minN := int64(math.MinInt64) / int64(unit)
+	if n > maxN || n < minN {
+		return 0, fmt.Errorf("invalid %s: value %d overflows duration when scaled by %v (allowed range %d..%d)", fieldName, n, unit, minN, maxN)
+	}
+	return time.Duration(n) * unit, nil
 }
 
 // ParseFlexibleDuration parses a JSON token (raw bytes) as a time.Duration.

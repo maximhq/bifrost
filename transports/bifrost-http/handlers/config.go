@@ -342,6 +342,31 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	currentConfig := h.store.ClientConfig
 	updatedConfig := currentConfig
 
+	// Compute and validate the prospective tool_sync_interval / tool_execution_timeout
+	// values from the payload directly (not from updatedConfig) so this check runs
+	// strictly before the first `updatedConfig.X = ...` assignment below. updatedConfig
+	// is the same pointer as h.store.ClientConfig (a shallow alias, not a copy), so any
+	// assignment mutates live state immediately; a validation failure discovered after
+	// that point would leave the corrupted value in memory with no rollback.
+	prospectiveToolSyncInterval := currentConfig.MCPToolSyncInterval
+	if payload.ClientConfig.MCPToolSyncInterval != currentConfig.MCPToolSyncInterval {
+		prospectiveToolSyncInterval = payload.ClientConfig.MCPToolSyncInterval
+	}
+	prospectiveToolExecutionTimeout := currentConfig.MCPToolExecutionTimeout
+	if payload.ClientConfig.MCPToolExecutionTimeout > 0 {
+		prospectiveToolExecutionTimeout = payload.ClientConfig.MCPToolExecutionTimeout
+	}
+	toolSyncIntervalDur, durErr := schemas.DurationFromUnits(int64(prospectiveToolSyncInterval), time.Minute, "mcp_tool_sync_interval")
+	if durErr != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, durErr.Error())
+		return
+	}
+	toolExecutionTimeoutDur, durErr := schemas.DurationFromUnits(int64(prospectiveToolExecutionTimeout), time.Second, "mcp_tool_execution_timeout")
+	if durErr != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, durErr.Error())
+		return
+	}
+
 	// Validate MCP auth-mode / OAuth2 server settings before any live mutation
 	// below (drop-excess flag, MCP tool-manager reload, compat plugin reload,
 	// in-memory MCP config). A late rejection would return 400 while runtime
@@ -439,6 +464,10 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	}
 	updatedConfig.MCPEnableTempTokenAuth = payload.ClientConfig.MCPEnableTempTokenAuth
 
+	// toolSyncIntervalDur / toolExecutionTimeoutDur were already validated above
+	// (before any updatedConfig assignment) against the exact same prospective
+	// values updatedConfig.MCPToolSyncInterval / MCPToolExecutionTimeout hold here.
+
 	// Reload MCP tool manager config with all current values in one call
 	if shouldReloadMCPToolManagerConfig && h.store.MCPConfig != nil {
 		if err := h.configManager.UpdateMCPToolManagerConfig(ctx, updatedConfig.MCPAgentDepth, updatedConfig.MCPToolExecutionTimeout, updatedConfig.MCPCodeModeBindingLevel, updatedConfig.MCPDisableAutoToolInject); err != nil {
@@ -452,9 +481,9 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		if h.store.MCPConfig.ToolManagerConfig == nil {
 			h.store.MCPConfig.ToolManagerConfig = &schemas.MCPToolManagerConfig{}
 		}
-		h.store.MCPConfig.ToolSyncInterval = time.Duration(updatedConfig.MCPToolSyncInterval) * time.Second
+		h.store.MCPConfig.ToolSyncInterval = toolSyncIntervalDur
 		h.store.MCPConfig.ToolManagerConfig.MaxAgentDepth = updatedConfig.MCPAgentDepth
-		h.store.MCPConfig.ToolManagerConfig.ToolExecutionTimeout = schemas.Duration(time.Duration(updatedConfig.MCPToolExecutionTimeout) * time.Second)
+		h.store.MCPConfig.ToolManagerConfig.ToolExecutionTimeout = schemas.Duration(toolExecutionTimeoutDur)
 		h.store.MCPConfig.ToolManagerConfig.CodeModeBindingLevel = schemas.CodeModeBindingLevel(updatedConfig.MCPCodeModeBindingLevel)
 		h.store.MCPConfig.ToolManagerConfig.DisableAutoToolInject = updatedConfig.MCPDisableAutoToolInject
 	}

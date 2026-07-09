@@ -495,20 +495,15 @@ export default function MCPClientsTable({
 													disabled={!hasUpdateMCPClientAccess || togglingClientIds.has(c.config.client_id)}
 													onAsyncCheckedChange={async (checked) => {
 														setTogglingClientIds((prev) => new Set(prev).add(c.config.client_id));
+														// The update endpoint has PATCH semantics: omitted fields keep
+														// their existing value. Send only `disabled` here — resending
+														// config.tool_sync_interval (a nanoseconds value straight from
+														// GET) into a field the API parses as minutes previously
+														// overflowed int64 and corrupted the interval.
 														await updateMCPClient({
 															id: c.config.client_id,
 															data: {
-																name: c.config.name,
-																is_code_mode_client: c.config.is_code_mode_client,
-																is_ping_available: c.config.is_ping_available,
-																allow_on_all_virtual_keys: c.config.allow_on_all_virtual_keys,
 																disabled: !checked,
-																headers: c.config.headers ?? {},
-																tools_to_execute: c.config.tools_to_execute,
-																tools_to_auto_execute: c.config.tools_to_auto_execute,
-																tool_pricing: c.config.tool_pricing,
-																tool_sync_interval: c.config.tool_sync_interval ?? 0,
-																allowed_extra_headers: c.config.allowed_extra_headers,
 															},
 														})
 															.unwrap()
