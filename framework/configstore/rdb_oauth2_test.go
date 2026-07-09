@@ -384,19 +384,32 @@ func TestSweepExpiredOAuth2AuthorizeRequests(t *testing.T) {
 
 	seedAuthorizeRequest(t, s, "pending-expired", tables.OAuth2AuthorizeRequestStatusPending, nil, past)
 	seedAuthorizeRequest(t, s, "consented-expired", tables.OAuth2AuthorizeRequestStatusConsented, strPtr("ch"), past)
-	seedAuthorizeRequest(t, s, "issued-expired", tables.OAuth2AuthorizeRequestStatusCodeIssued, strPtr("ch2"), past)
+	seedAuthorizeRequest(t, s, "issued-orphan", tables.OAuth2AuthorizeRequestStatusCodeIssued, strPtr("ch2"), past)
+	seedAuthorizeRequest(t, s, "issued-active", tables.OAuth2AuthorizeRequestStatusCodeIssued, strPtr("ch3"), past)
+	seedAuthorizeRequest(t, s, "issued-revoked", tables.OAuth2AuthorizeRequestStatusCodeIssued, strPtr("ch4"), past)
 	seedAuthorizeRequest(t, s, "pending-fresh", tables.OAuth2AuthorizeRequestStatusPending, nil, future)
+
+	require.NoError(t, s.DB().Create(makeRefreshToken("rt-active", "issued-active", "client-1", "h-active")).Error)
+	revokedTok := makeRefreshToken("rt-revoked", "issued-revoked", "client-1", "h-revoked")
+	now := time.Now()
+	revokedTok.RevokedAt = &now
+	require.NoError(t, s.DB().Create(revokedTok).Error)
 
 	require.NoError(t, s.SweepExpiredOAuth2AuthorizeRequests(ctx))
 
-	// Expired pending/consented are gone; an expired code_issued row is retained
-	// (it represents a completed exchange), and a fresh pending row survives.
+	// Expired pending/consented are gone. An expired code_issued row is kept
+	// only while its family has an active token (code-replay containment still
+	// has something to revoke); with no tokens, or only revoked ones, it goes.
 	_, err := s.GetOAuth2AuthorizeRequestByID(ctx, "pending-expired")
 	assert.ErrorIs(t, err, ErrNotFound)
 	_, err = s.GetOAuth2AuthorizeRequestByID(ctx, "consented-expired")
 	assert.ErrorIs(t, err, ErrNotFound)
-	_, err = s.GetOAuth2AuthorizeRequestByID(ctx, "issued-expired")
+	_, err = s.GetOAuth2AuthorizeRequestByID(ctx, "issued-orphan")
+	assert.ErrorIs(t, err, ErrNotFound)
+	_, err = s.GetOAuth2AuthorizeRequestByID(ctx, "issued-active")
 	require.NoError(t, err)
+	_, err = s.GetOAuth2AuthorizeRequestByID(ctx, "issued-revoked")
+	assert.ErrorIs(t, err, ErrNotFound)
 	_, err = s.GetOAuth2AuthorizeRequestByID(ctx, "pending-fresh")
 	require.NoError(t, err)
 }

@@ -344,6 +344,21 @@ func (h *OAuth2IssuanceHandler) handleTokenAuthCode(ctx *fasthttp.RequestCtx) {
 		sendOAuthError(ctx, fasthttp.StatusInternalServerError, "server_error", "failed to look up authorization code")
 		return
 	}
+	// A hit on an already-consumed request means this code is being replayed:
+	// deny the request and revoke every token minted from the code (RFC 6749
+	// §4.1.2), so a stolen code and the legitimate exchange cannot coexist.
+	// The check runs before expiry/PKCE validation — a replayed code signals
+	// leakage no matter what else is wrong with the request. Fail closed: if
+	// the family revocation errors, surface server_error rather than reporting
+	// invalid_grant while a potentially compromised family stays usable.
+	if req.Status == configtables.OAuth2AuthorizeRequestStatusCodeIssued {
+		if revokeErr := h.store.ConfigStore.RevokeOAuth2RefreshTokensByFamilyID(ctx, req.ID); revokeErr != nil {
+			sendOAuthError(ctx, fasthttp.StatusInternalServerError, "server_error", "failed to revoke token family for replayed authorization code")
+			return
+		}
+		sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_grant", "authorization code already used")
+		return
+	}
 	if time.Now().After(req.ExpiresAt) {
 		sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_grant", "authorization code expired")
 		return

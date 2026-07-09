@@ -357,6 +357,43 @@ func TestHandleToken_AuthorizationCode(t *testing.T) {
 		assert.Contains(t, string(second.Response.Body()), "invalid_grant")
 	})
 
+	t.Run("replayed code revokes the token family", func(t *testing.T) {
+		h, store, _ := newIssuanceHandler(t)
+		cid := seedClient(t, store, []string{"http://127.0.0.1/cb"})
+		seedConsentedRequest(t, store, "req-1", cid, "code-1", challenge, "session", "sess-1", time.Now().Add(time.Minute))
+
+		body := url.Values{
+			"grant_type":    {"authorization_code"},
+			"code":          {"code-1"},
+			"code_verifier": {verifier},
+			"client_id":     {cid},
+			"redirect_uri":  {"http://127.0.0.1/cb"},
+		}.Encode()
+		first := formPostCtx(body)
+		h.handleToken(first)
+		require.Equal(t, fasthttp.StatusOK, first.Response.StatusCode())
+		var resp map[string]any
+		require.NoError(t, json.Unmarshal(first.Response.Body(), &resp))
+		refreshToken := resp["refresh_token"].(string)
+
+		// Replaying the consumed code is denied and reported as already used.
+		replay := formPostCtx(body)
+		h.handleToken(replay)
+		assert.Equal(t, fasthttp.StatusBadRequest, replay.Response.StatusCode())
+		assert.Contains(t, string(replay.Response.Body()), "authorization code already used")
+
+		// The refresh token minted by the legitimate exchange was revoked by the
+		// replay (RFC 6749 §4.1.2 family revocation) and no longer refreshes.
+		refresh := formPostCtx(url.Values{
+			"grant_type":    {"refresh_token"},
+			"refresh_token": {refreshToken},
+			"client_id":     {cid},
+		}.Encode())
+		h.handleToken(refresh)
+		assert.Equal(t, fasthttp.StatusBadRequest, refresh.Response.StatusCode())
+		assert.Contains(t, string(refresh.Response.Body()), "invalid_grant")
+	})
+
 	t.Run("expired code is rejected", func(t *testing.T) {
 		h, store, _ := newIssuanceHandler(t)
 		cid := seedClient(t, store, []string{"http://127.0.0.1/cb"})

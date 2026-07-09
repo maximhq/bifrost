@@ -703,12 +703,19 @@ type ConfigStore interface {
 	// OAuth2 authorize requests
 	CreateOAuth2AuthorizeRequest(ctx context.Context, req *tables.TableOAuth2AuthorizeRequest) error
 	GetOAuth2AuthorizeRequestByID(ctx context.Context, id string) (*tables.TableOAuth2AuthorizeRequest, error)
+	// GetOAuth2AuthorizeRequestByCodeHash returns the request holding the code
+	// hash — consented (code still exchangeable) or code_issued (already
+	// consumed; the token endpoint treats such a hit as a replayed code and
+	// revokes the token family minted from it).
 	GetOAuth2AuthorizeRequestByCodeHash(ctx context.Context, codeHash string) (*tables.TableOAuth2AuthorizeRequest, error)
 	// ConsentOAuth2AuthorizeRequest atomically transitions a still-pending request
 	// to consented (recording the code hash and resolved identity) — returns
 	// ErrNotFound when no longer pending, so concurrent double-consent can't
 	// overwrite an already-minted code.
 	ConsentOAuth2AuthorizeRequest(ctx context.Context, req *tables.TableOAuth2AuthorizeRequest) error
+	// SweepExpiredOAuth2AuthorizeRequests deletes pending/consented requests
+	// past their TTL, plus consumed (code_issued) requests whose token family
+	// has no active token left to revoke on code replay.
 	SweepExpiredOAuth2AuthorizeRequests(ctx context.Context) error
 
 	// OAuth2 refresh tokens
