@@ -891,6 +891,17 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 				if result.TranscriptionStreamResponse.Usage.OutputTokens != nil {
 					outputTokens = *result.TranscriptionStreamResponse.Usage.OutputTokens
 				}
+			case result.CompactionResponse != nil && result.CompactionResponse.Usage != nil:
+				if u := result.CompactionResponse.Usage.ToBifrostLLMUsage(); u != nil {
+					inputTokens = u.PromptTokens
+					outputTokens = u.CompletionTokens
+				}
+			case result.ImageGenerationResponse != nil && result.ImageGenerationResponse.Usage != nil:
+				inputTokens = result.ImageGenerationResponse.Usage.InputTokens
+				outputTokens = result.ImageGenerationResponse.Usage.OutputTokens
+			case result.PassthroughResponse != nil && result.PassthroughResponse.PassthroughUsage != nil && result.PassthroughResponse.PassthroughUsage.LLMUsage != nil:
+				inputTokens = result.PassthroughResponse.PassthroughUsage.LLMUsage.PromptTokens
+				outputTokens = result.PassthroughResponse.PassthroughUsage.LLMUsage.CompletionTokens
 			}
 
 			p.InputTokensTotal.WithLabelValues(promLabelValues...).Add(float64(inputTokens))
