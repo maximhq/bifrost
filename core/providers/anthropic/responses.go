@@ -1989,6 +1989,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 			if bifrostUsage != nil {
 				response.Usage = bifrostUsage
 				response.Speed = chunk.Usage.Speed
+				response.InferenceGeo = chunk.Usage.InferenceGeo
 			}
 			// Carry the sandbox container on the message_delta event so the reverse
 			// converter can re-emit it (Anthropic delivers it here, not earlier).
@@ -3701,6 +3702,11 @@ func (response *AnthropicMessageResponse) ToBifrostResponsesResponse(ctx *schema
 	// Forward the speed actually served (fast mode) — drives fast-mode billing.
 	if response.Usage != nil && response.Usage.Speed != nil {
 		bifrostResp.Speed = response.Usage.Speed
+	}
+
+	// Forward the inference geography served — drives the data-residency multiplier.
+	if response.Usage != nil && response.Usage.InferenceGeo != nil {
+		bifrostResp.InferenceGeo = response.Usage.InferenceGeo
 	}
 
 	// Forward cache diagnostics (cache-diagnosis-2026-04-07) to the client.

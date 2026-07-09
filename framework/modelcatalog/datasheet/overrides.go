@@ -292,6 +292,7 @@ func patchPricing(pricing configstoreTables.TableModelPricing, override Options)
 		{dst: &patched.CacheCreationInputTokenCostFast, src: override.CacheCreationInputTokenCostFast},
 		{dst: &patched.CacheCreationInputTokenCostAbove1hrFast, src: override.CacheCreationInputTokenCostAbove1hrFast},
 		{dst: &patched.CacheReadInputTokenCostFast, src: override.CacheReadInputTokenCostFast},
+		{dst: &patched.InferenceGeoUSMultiplier, src: override.InferenceGeoUSMultiplier},
 		{dst: &patched.InputCostPerTokenBatches, src: override.InputCostPerTokenBatches},
 		{dst: &patched.OutputCostPerTokenBatches, src: override.OutputCostPerTokenBatches},
 		{dst: &patched.InputCostPerImageToken, src: override.InputCostPerImageToken},
