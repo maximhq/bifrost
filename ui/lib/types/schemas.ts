@@ -120,6 +120,7 @@ export const vertexKeyConfigSchema = z
 		project_number: secretVarSchema.optional(),
 		region: secretVarSchema.optional(),
 		auth_credentials: secretVarSchema.optional(),
+		force_single_region: z.boolean().optional(),
 	})
 	.refine((data) => isSecretVarSet(data.project_id), {
 		message: "Project ID is required",
@@ -350,6 +351,7 @@ const aliasConfigObjectSchema = z.object({
 	// Vertex overrides
 	project_id: secretVarSchema.optional(),
 	project_number: secretVarSchema.optional(),
+	force_single_region: z.boolean().optional(),
 	// Bedrock overrides
 	inference_profile_arn: secretVarSchema.optional(),
 	// Replicate overrides

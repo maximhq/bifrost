@@ -191,8 +191,9 @@ type AzureAliasCfg struct {
 
 // VertexAliasCfg holds Vertex-specific overrides that apply to a single alias.
 type VertexAliasCfg struct {
-	ProjectID     *SecretVar `json:"project_id,omitempty"`
-	ProjectNumber *SecretVar `json:"project_number,omitempty"`
+	ProjectID         *SecretVar `json:"project_id,omitempty"`
+	ProjectNumber     *SecretVar `json:"project_number,omitempty"`
+	ForceSingleRegion *bool      `json:"force_single_region,omitempty"`
 }
 
 // BedrockAliasCfg holds Bedrock-specific overrides that apply to a single alias.
@@ -629,6 +630,9 @@ type VertexKeyConfig struct {
 	ProjectNumber   SecretVar `json:"project_number"`
 	Region          SecretVar `json:"region"`
 	AuthCredentials SecretVar `json:"auth_credentials"`
+	// ForceSingleRegion pins requests to the configured region and disables automatic promotion of
+	// multi-region-only models to a multi-region pool endpoint (e.g. for provisioned throughput).
+	ForceSingleRegion bool `json:"force_single_region,omitempty"`
 }
 
 // NOTE: To use Vertex IAM role authentication, set AuthCredentials to empty string.

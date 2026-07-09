@@ -544,6 +544,7 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			vertexConfig.ProjectNumber = *key.VertexKeyConfig.ProjectNumber.Redacted()
 			vertexConfig.Region = *key.VertexKeyConfig.Region.Redacted()
 			vertexConfig.AuthCredentials = *key.VertexKeyConfig.AuthCredentials.Redacted()
+			vertexConfig.ForceSingleRegion = key.VertexKeyConfig.ForceSingleRegion
 			redactedConfig.Keys[i].VertexKeyConfig = vertexConfig
 		}
 

@@ -437,6 +437,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_model_pricing_is_deprecated_column"}, run: migrationAddModelPricingIsDeprecatedColumn},
 	{IDs: []string{"add_mcp_client_tool_execution_timeout_column"}, run: migrationAddMCPClientToolExecutionTimeoutColumn},
 	{IDs: []string{"add_virtual_key_expires_at_column"}, run: migrationAddVirtualKeyExpiresAtColumn},
+	{IDs: []string{"add_vertex_force_single_region_column"}, run: migrationAddVertexForceSingleRegionColumn},
 }
 
 // quoteSQLiteIdentifier quotes a SQLite identifier, escaping any double quotes.
@@ -10346,6 +10347,29 @@ func migrationAddVirtualKeyExpiresAtColumn(ctx context.Context, db *gorm.DB, log
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			return dropColumnIfExists(tx, logger, &tables.TableVirtualKey{}, "expires_at")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddVertexForceSingleRegionColumn adds the vertex_force_single_region column to the key table.
+// Existing keys default to false (NULL), preserving the current multi-region promotion behaviour.
+func migrationAddVertexForceSingleRegionColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_vertex_force_single_region_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return addColumnIfNotExists(tx, logger, &tables.TableKey{}, "vertex_force_single_region")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return dropColumnIfExists(tx, logger, &tables.TableKey{}, "vertex_force_single_region")
 		},
 	}})
 	if err := m.Migrate(); err != nil {

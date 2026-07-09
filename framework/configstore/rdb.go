@@ -204,6 +204,7 @@ func tableKeyFromSchemaKey(provider tables.TableProvider, key schemas.Key) (tabl
 		dbKey.VertexProjectNumber = &key.VertexKeyConfig.ProjectNumber
 		dbKey.VertexRegion = &key.VertexKeyConfig.Region
 		dbKey.VertexAuthCredentials = &key.VertexKeyConfig.AuthCredentials
+		dbKey.VertexForceSingleRegion = &key.VertexKeyConfig.ForceSingleRegion
 	}
 
 	if key.BedrockKeyConfig != nil {
@@ -738,6 +739,7 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 				dbKey.VertexProjectNumber = &key.VertexKeyConfig.ProjectNumber
 				dbKey.VertexRegion = &key.VertexKeyConfig.Region
 				dbKey.VertexAuthCredentials = &key.VertexKeyConfig.AuthCredentials
+				dbKey.VertexForceSingleRegion = &key.VertexKeyConfig.ForceSingleRegion
 			}
 
 			// Handle Bedrock config
@@ -967,6 +969,7 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 			dbKey.VertexProjectNumber = &key.VertexKeyConfig.ProjectNumber
 			dbKey.VertexRegion = &key.VertexKeyConfig.Region
 			dbKey.VertexAuthCredentials = &key.VertexKeyConfig.AuthCredentials
+			dbKey.VertexForceSingleRegion = &key.VertexKeyConfig.ForceSingleRegion
 		}
 
 		// Handle Bedrock config
@@ -1105,6 +1108,7 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 			dbKey.VertexProjectNumber = &key.VertexKeyConfig.ProjectNumber
 			dbKey.VertexRegion = &key.VertexKeyConfig.Region
 			dbKey.VertexAuthCredentials = &key.VertexKeyConfig.AuthCredentials
+			dbKey.VertexForceSingleRegion = &key.VertexKeyConfig.ForceSingleRegion
 		}
 		// Handle Bedrock config
 		if key.BedrockKeyConfig != nil {
