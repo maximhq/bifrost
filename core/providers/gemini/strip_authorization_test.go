@@ -54,7 +54,7 @@ func TestStripsForwardedAuthorizationWhenAPIKeySet(t *testing.T) {
 			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 			ctx.SetValue(schemas.BifrostContextKeyURLPath, "/models/gemini-2.5-pro")
 
-			key := schemas.Key{Value: *schemas.NewEnvVar(tc.apiKey)}
+			key := schemas.Key{Value: *schemas.NewSecretVar(tc.apiKey)}
 			_, bifrostErr := provider.listModelsByKey(ctx, key, &schemas.BifrostListModelsRequest{
 				Provider:   schemas.Gemini,
 				Unfiltered: true,
@@ -104,6 +104,7 @@ func TestHandleGeminiChatCompletionStream_StripsForwardedAuthorization(t *testin
 			"Cache-Control":  "no-cache",
 		},
 		map[string]string{"Authorization": "Bearer leaked-token"}, // injected via SetExtraHeaders
+		30, // streamIdleTimeoutInSeconds
 		false,
 		false,
 		schemas.Gemini,
