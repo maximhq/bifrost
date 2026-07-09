@@ -76,3 +76,58 @@ func TestLoopbackRedirectURIsIPv6(t *testing.T) {
 		t.Error("non-loopback IPv6 must require an exact match")
 	}
 }
+
+func TestPrivateUseRedirectSchemes(t *testing.T) {
+	tests := []struct {
+		uri  string
+		want bool
+	}{
+		// Allowlisted private-use scheme used by native apps (RFC 8252 §7.1).
+		{"cursor://anysphere.cursor-mcp/oauth/callback", true},
+		// https / loopback still allowed.
+		{"https://example.com/cb", true},
+		{"http://127.0.0.1:49152/cb", true},
+		// Default-deny: custom schemes not on the allowlist are rejected.
+		{"com.example.app://oauth/callback", false},
+		{"myapp://callback", false},
+		{"vscode://callback", false},
+		// Dangerous / opaque schemes must stay rejected.
+		{"javascript:alert(1)", false},
+		{"javascript://alert(1)", false},
+		{"data:text/html,<script>alert(1)</script>", false},
+		{"file:///etc/passwd", false},
+		{"http://example.com/cb", false},  // http on non-loopback
+		{"cursor:oauth/callback", false},  // allowlisted scheme but no authority
+		{"cursor:", false},                // scheme only
+		{"", false},
+	}
+	for _, tt := range tests {
+		if got := isAllowedRedirectScheme(tt.uri); got != tt.want {
+			t.Errorf("isAllowedRedirectScheme(%q) = %v, want %v", tt.uri, got, tt.want)
+		}
+	}
+}
+
+func TestMatchRedirectURIPrivateUseSchemes(t *testing.T) {
+	registered := []string{"cursor://anysphere.cursor-mcp/oauth/callback"}
+	tests := []struct {
+		candidate string
+		want      bool
+	}{
+		// Exact match on a registered private-use URI.
+		{"cursor://anysphere.cursor-mcp/oauth/callback", true},
+		// Different path or host must not match.
+		{"cursor://anysphere.cursor-mcp/oauth/other", false},
+		{"cursor://evil.example/oauth/callback", false},
+		// Private-use hosts are not loopback, so the RFC 8252 §7.3 any-port
+		// leniency must not apply — a port makes it a different exact string.
+		{"cursor://anysphere.cursor-mcp:49152/oauth/callback", false},
+		// Scheme mismatch against the registration.
+		{"https://anysphere.cursor-mcp/oauth/callback", false},
+	}
+	for _, tt := range tests {
+		if got := matchRedirectURI(tt.candidate, registered); got != tt.want {
+			t.Errorf("matchRedirectURI(%q) = %v, want %v", tt.candidate, got, tt.want)
+		}
+	}
+}

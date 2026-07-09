@@ -1,4 +1,4 @@
-import { Bell } from "lucide-react";
+import { Siren } from "lucide-react";
 import ContactUsView from "../views/contactUsView";
 
 type AlertingPlaceholderViewProps = {
@@ -19,7 +19,7 @@ export default function AlertingPlaceholderView({
 		<div className="h-full w-full">
 			<ContactUsView
 				className="mx-auto min-h-[80vh]"
-				icon={<Bell className="h-[5.5rem] w-[5.5rem]" strokeWidth={1} />}
+				icon={<Siren className="h-[5.5rem] w-[5.5rem]" strokeWidth={1} />}
 				title={title}
 				description={description}
 				readmeLink={readmeLink}
