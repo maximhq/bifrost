@@ -1136,6 +1136,56 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 				})
 
 				return responses, nil, false
+			case AnthropicContentBlockTypeRedactedThinking:
+				// Redacted thinking blocks arrive complete in content_block_start (no
+				// deltas follow). Surface the encrypted payload as a reasoning item with
+				// encrypted_content, mirroring the non-streaming converter, so streaming
+				// clients can replay it on the next turn; Anthropic rejects tool-use
+				// follow-ups whose latest assistant message dropped it.
+				if chunk.ContentBlock.Data == nil || *chunk.ContentBlock.Data == "" {
+					// Track the index so this block's content_block_stop is skipped
+					// too: a data-less block contributes nothing at all, instead of
+					// leaving an orphan output_item.done with an empty message shell.
+					if chunk.Index != nil {
+						state.ContentIndexToBlockType[*chunk.Index] = AnthropicContentBlockTypeRedactedThinking
+					}
+					return nil, nil, false
+				}
+
+				messageType := schemas.ResponsesMessageTypeReasoning
+				role := schemas.ResponsesInputMessageRoleAssistant
+
+				// Generate stable ID for the reasoning item
+				var itemID string
+				if state.MessageID == nil {
+					itemID = fmt.Sprintf("reasoning_%d", outputIndex)
+				} else {
+					itemID = fmt.Sprintf("msg_%s_reasoning_%d", *state.MessageID, outputIndex)
+				}
+				state.ItemIDs[outputIndex] = itemID
+
+				item := &schemas.ResponsesMessage{
+					ID:   &itemID,
+					Type: &messageType,
+					Role: &role,
+					ResponsesReasoning: &schemas.ResponsesReasoning{
+						Summary:          []schemas.ResponsesReasoningSummary{},
+						EncryptedContent: chunk.ContentBlock.Data,
+					},
+				}
+
+				// Persist into OutputItems so the block's content_block_stop emits the
+				// matching output_item.done and response.completed carries the item.
+				itemCopy := *item
+				state.OutputItems[outputIndex] = &itemCopy
+
+				return []*schemas.BifrostResponsesStreamResponse{{
+					Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
+					SequenceNumber: sequenceNumber,
+					OutputIndex:    schemas.Ptr(outputIndex),
+					ContentIndex:   chunk.Index,
+					Item:           item,
+				}}, nil, false
 			default:
 				// Send down an empty response only when integration type is anthropic
 				if ctx.Value(schemas.BifrostContextKeyIntegrationType) == "anthropic" {
@@ -1707,6 +1757,13 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 					}
 					if blockType == AnthropicContentBlockTypeCompaction {
 						// Clean up the tracking
+						delete(state.ContentIndexToBlockType, *chunk.Index)
+						return nil, nil, false
+					}
+					if blockType == AnthropicContentBlockTypeRedactedThinking {
+						// Data-less redacted_thinking block: its start emitted
+						// nothing, so its stop must not synthesize an empty message
+						// shell either.
 						delete(state.ContentIndexToBlockType, *chunk.Index)
 						return nil, nil, false
 					}
@@ -5479,7 +5536,12 @@ func convertBifrostReasoningToAnthropicThinking(msg *schemas.ResponsesMessage) [
 			}
 		}
 	} else if msg.ResponsesReasoning != nil {
-		if msg.ResponsesReasoning.Summary != nil {
+		// Redacted-only reasoning items carry an EMPTY (non-nil) summary list next
+		// to encrypted_content, in both the streaming and non-streaming converters,
+		// so gate on the list having entries rather than on nil: a nil-check sends
+		// such items through the summary loop, emits nothing, and drops the
+		// encrypted payload from the replayed request.
+		if len(msg.ResponsesReasoning.Summary) > 0 {
 			for _, reasoningContent := range msg.ResponsesReasoning.Summary {
 				thinkingBlock := AnthropicContentBlock{
 					Type:     AnthropicContentBlockTypeThinking,
@@ -5487,7 +5549,7 @@ func convertBifrostReasoningToAnthropicThinking(msg *schemas.ResponsesMessage) [
 				}
 				thinkingBlocks = append(thinkingBlocks, thinkingBlock)
 			}
-		} else if msg.ResponsesReasoning.EncryptedContent != nil {
+		} else if msg.ResponsesReasoning.EncryptedContent != nil && *msg.ResponsesReasoning.EncryptedContent != "" {
 			thinkingBlock := AnthropicContentBlock{
 				Type: AnthropicContentBlockTypeRedactedThinking,
 				Data: msg.ResponsesReasoning.EncryptedContent,
