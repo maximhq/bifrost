@@ -1,16 +1,18 @@
 // Package sarvam implements the Sarvam AI provider.
 //
 // Sarvam AI (https://docs.sarvam.ai) is OpenAI wire-compatible for chat
-// completions only. Its Text-to-Speech and Speech-to-Text APIs use their own
-// native shapes (Sarvam's TTS returns a JSON body with base64-encoded audio,
-// not raw binary; Sarvam's STT response uses different field names than
-// OpenAI's transcription response) and are NOT delegated to the shared
-// openai adapter — see speech.go / transcription.go for the hand-written
-// conversions.
+// completions. This branch covers /v1/chat only (completions, streaming,
+// tool calling, responses fallback, passthrough, list models); Sarvam's
+// Text-to-Speech and Speech-to-Text APIs use their own native shapes (not
+// OpenAI wire-compatible) and are implemented on the feature/sarvam-voice
+// branch instead — see speech.go / transcription.go here for the
+// unsupported-operation stubs that satisfy the Provider interface on this
+// branch.
 package sarvam
 
 import (
 	"context"
+	"net/http"
 	"strings"
 	"time"
 
@@ -88,18 +90,70 @@ func AuthHeaders(key schemas.Key) map[string]string {
 // it only enumerates the two chat models (sarvam-30b/sarvam-105b), not the
 // separate speech/TTS/translation models (bulbul, saaras, saarika, ...),
 // which have no discovery endpoint of their own.
+//
+// Not delegated to the shared openai.HandleOpenAIListModelsRequest: that
+// helper's ListModelsByKey only ever sends "Authorization: Bearer", but
+// Sarvam's documented native auth is api-subscription-key (chat/passthrough
+// already send both via AuthHeaders). The endpoint happened to accept
+// unauthenticated requests when this was verified live, but relying on that
+// is fragile - send Sarvam's real auth headers instead.
 func (provider *SarvamProvider) ListModels(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
-	return openai.HandleOpenAIListModelsRequest(
-		ctx,
-		provider.client,
-		request,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/models"),
-		keys,
-		provider.networkConfig.ExtraHeaders,
-		schemas.Sarvam,
-		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
-		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
-	)
+	if len(keys) == 0 {
+		return provider.sarvamListModelsByKey(ctx, schemas.Key{}, request)
+	}
+	return providerUtils.HandleMultipleListModelsRequests(ctx, keys, request, provider.sarvamListModelsByKey)
+}
+
+func (provider *SarvamProvider) sarvamListModelsByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/v1/models"))
+	req.Header.SetMethod(http.MethodGet)
+	req.Header.SetContentType("application/json")
+	for k, v := range AuthHeaders(key) {
+		req.Header.Set(k, v)
+	}
+
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	defer wait()
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	providerResponseHeaders := providerUtils.ExtractProviderResponseHeaders(resp)
+	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
+
+	if resp.StatusCode() != fasthttp.StatusOK {
+		return nil, providerUtils.SetErrorLatency(parseSarvamError(resp), latency)
+	}
+
+	responseBody, err := providerUtils.CheckAndDecodeBody(resp)
+	if err != nil {
+		return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), latency)
+	}
+
+	openaiResponse := &openai.OpenAIListModelsResponse{}
+	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
+	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, openaiResponse, nil, sendBackRawRequest, sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, providerUtils.SetErrorLatency(bifrostErr, latency)
+	}
+
+	response := openaiResponse.ToBifrostListModelsResponse(schemas.Sarvam, key.Models, key.BlacklistedModels, key.Aliases, request.Unfiltered)
+	response.ExtraFields.Latency = latency.Milliseconds()
+	response.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
+	if sendBackRawRequest {
+		response.ExtraFields.RawRequest = rawRequest
+	}
+	if sendBackRawResponse {
+		response.ExtraFields.RawResponse = rawResponse
+	}
+
+	return response, nil
 }
 
 // TextCompletion is not supported by the Sarvam provider.
