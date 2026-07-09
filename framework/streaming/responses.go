@@ -662,6 +662,33 @@ func (a *Accumulator) buildCompleteMessageFromResponsesStreamChunks(chunks []*Re
 				builderFor(getAccum(idx).cbText, *resp.ContentIndex, block.Text).WriteString(*resp.Delta)
 			}
 
+		case schemas.ResponsesStreamResponseTypeOutputTextAnnotationAdded:
+			// Attach a streamed annotation (citation) to its text content block so
+			// the accumulated message keeps the citation provenance that the
+			// non-stream path already preserves on
+			// ResponsesOutputMessageContentText.Annotations. Route by ItemID when
+			// present (parallel/multiple output items), else the most recent message.
+			if resp.Annotation != nil && resp.ContentIndex != nil {
+				idx := len(messages) - 1
+				if resp.ItemID != nil {
+					idx = -1
+					for i := len(messages) - 1; i >= 0; i-- {
+						if messages[i].ID != nil && *messages[i].ID == *resp.ItemID {
+							idx = i
+							break
+						}
+					}
+				}
+				if idx >= 0 {
+					ensureContentBlock(&messages[idx], *resp.ContentIndex, schemas.ResponsesOutputMessageContentTypeText)
+					block := &messages[idx].Content.ContentBlocks[*resp.ContentIndex]
+					if block.ResponsesOutputMessageContentText == nil {
+						block.ResponsesOutputMessageContentText = &schemas.ResponsesOutputMessageContentText{}
+					}
+					block.ResponsesOutputMessageContentText.Annotations = append(block.ResponsesOutputMessageContentText.Annotations, *resp.Annotation)
+				}
+			}
+
 		case schemas.ResponsesStreamResponseTypeRefusalDelta:
 			if len(messages) == 0 {
 				messages = append(messages, createNewMessage())
