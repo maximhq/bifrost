@@ -628,6 +628,7 @@ export default function LogsPage() {
 								onPollToggle={handlePollToggle}
 								period={period}
 								onPeriodChange={handlePeriodChange}
+								totalLogs={totalItems}
 								columnEntries={columnEntries}
 								columnLabels={COLUMN_LABELS}
 								onToggleColumnVisibility={toggleColumnVisibility}
