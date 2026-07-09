@@ -1590,6 +1590,19 @@ func (s *BifrostHTTPServer) GetAllRedactedRoutingRules(ctx context.Context, ids 
 // PrepareCommonMiddlewares gets the common middlewares for the Bifrost HTTP server
 func (s *BifrostHTTPServer) PrepareCommonMiddlewares() []schemas.BifrostHTTPMiddleware {
 	commonMiddlewares := []schemas.BifrostHTTPMiddleware{}
+	// Copy the matched route template saved by the router (SaveMatchedRoutePath) into a
+	// stable, router-agnostic user value so metrics middlewares below can label by route
+	// template instead of the raw URL path.
+	commonMiddlewares = append(commonMiddlewares, func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) {
+			if route, ok := ctx.UserValue(router.MatchedRoutePathParam).(string); ok && route != "" {
+				ctx.SetUserValue(string(schemas.BifrostContextKeyHTTPRoute), route)
+				// Drop the router's randomized key so it doesn't leak into request PathParams.
+				ctx.RemoveUserValue(router.MatchedRoutePathParam)
+			}
+			next(ctx)
+		}
+	})
 	// Preparing middlewares
 	// Initializing prometheus plugin
 	prometheusPlugin, err := lib.FindPluginAs[*telemetry.PrometheusPlugin](s.Config, telemetry.PluginName)
@@ -1611,8 +1624,14 @@ func (s *BifrostHTTPServer) PrepareCommonMiddlewares() []schemas.BifrostHTTPMidd
 			if err != nil {
 				return
 			}
+			// Label by the matched route template when available (set by the middleware
+			// above) so path params (model names, batch/file IDs) don't explode cardinality.
+			path := string(ctx.Path())
+			if route, ok := ctx.UserValue(string(schemas.BifrostContextKeyHTTPRoute)).(string); ok && route != "" {
+				path = route
+			}
 			otelPlugin.RecordHTTPMetrics(ctx,
-				string(ctx.Path()),
+				path,
 				string(ctx.Method()),
 				strconv.Itoa(ctx.Response.StatusCode()),
 				time.Since(start).Seconds(),
@@ -1786,6 +1805,9 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	s.Config.SetBifrostClient(s.Client)
 	// Initialize routes
 	s.Router = router.New()
+	// Save the matched route template on each request
+	// so metrics can use it as the `path` label instead of the raw URL path.
+	s.Router.SaveMatchedRoutePath = true
 	// Initialize CORS middleware
 	s.CORSMiddleware = handlers.NewCorsMiddleware(s.Config)
 	commonMiddlewares := s.PrepareCommonMiddlewares()
