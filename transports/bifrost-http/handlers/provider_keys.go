@@ -325,7 +325,15 @@ func (h *ProviderHandler) deleteProviderKey(ctx *fasthttp.RequestCtx) {
 func (h *ProviderHandler) mergeUpdatedKey(oldRawKey, oldRedactedKey, updateKey schemas.Key) schemas.Key {
 	mergedKey := updateKey
 
-	if updateKey.Value.IsRedacted() && updateKey.Value.Equals(&oldRedactedKey.Value) {
+	// Never persist a masked preview as the real key value. A redacted, non-secret
+	// incoming value can only be the GET-render placeholder echoed back by a client,
+	// so keep the stored credential instead of writing the mask. Matching the exact
+	// current redaction is deliberately NOT required: a stale or differently-masked
+	// preview (e.g. a different asterisk count, or a render from another replica)
+	// must be rejected too, otherwise the mask lands in the store and later breaks
+	// JSON re-parsing on reload ("invalid character '*'"). Genuine env/vault refs
+	// report IsRedacted() but are intentional, so IsFromSecret() lets them through.
+	if updateKey.Value.IsRedacted() && !updateKey.Value.IsFromSecret() {
 		mergedKey.Value = oldRawKey.Value
 	}
 
