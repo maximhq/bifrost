@@ -1,5 +1,5 @@
-import { getErrorMessage, useGetModelConfigsQuery, useGetProvidersQuery } from "@/lib/store";
 import { useDebouncedValue } from "@/hooks/useDebounce";
+import { getErrorMessage, useGetModelConfigsQuery, useGetProvidersQuery } from "@/lib/store";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
@@ -25,7 +25,11 @@ export default function ModelLimitsView() {
 
 	const { data: providers } = useGetProvidersQuery();
 
-	const { data: modelConfigsData, error: modelConfigsError } = useGetModelConfigsQuery(
+	const {
+		data: modelConfigsData,
+		error: modelConfigsError,
+		isLoading: isModelConfigsLoading,
+	} = useGetModelConfigsQuery(
 		{
 			limit: PAGE_SIZE,
 			offset,
@@ -55,22 +59,21 @@ export default function ModelLimitsView() {
 	}, [modelConfigsError]);
 
 	return (
-		<div className="mx-auto w-full max-w-7xl">
-			<ModelLimitsTable
-				modelConfigs={modelConfigsData?.model_configs || []}
-				totalCount={modelConfigsData?.total_count || 0}
-				providers={providers ?? []}
-				search={search}
-				debouncedSearch={debouncedSearch}
-				onSearchChange={setSearch}
-				scope={scope}
-				onScopeChange={setScope}
-				provider={provider}
-				onProviderChange={setProvider}
-				offset={offset}
-				limit={PAGE_SIZE}
-				onOffsetChange={setOffset}
-			/>
-		</div>
+		<ModelLimitsTable
+			modelConfigs={modelConfigsData?.model_configs || []}
+			totalCount={modelConfigsData?.total_count || 0}
+			providers={providers ?? []}
+			search={search}
+			debouncedSearch={debouncedSearch}
+			onSearchChange={setSearch}
+			scope={scope}
+			onScopeChange={setScope}
+			provider={provider}
+			onProviderChange={setProvider}
+			offset={offset}
+			limit={PAGE_SIZE}
+			onOffsetChange={setOffset}
+			isLoading={isModelConfigsLoading}
+		/>
 	);
 }

@@ -74,7 +74,7 @@ func (h *ProviderHandler) createProviderKey(ctx *fasthttp.RequestCtx) {
 
 	var key schemas.Key
 	if err := sonic.Unmarshal(ctx.PostBody(), &key); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid JSON: %v", err))
+		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
 		return
 	}
 
@@ -113,7 +113,7 @@ func (h *ProviderHandler) createProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if err := key.Aliases.Validate(); err != nil {
+	if err := key.Aliases.Validate(baseProvider); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid aliases: %v", err))
 		return
 	}
@@ -132,15 +132,17 @@ func (h *ProviderHandler) createProviderKey(ctx *fasthttp.RequestCtx) {
 			return
 		}
 		if errors.Is(err, lib.ErrAlreadyExists) {
-			SendError(ctx, fasthttp.StatusConflict, err.Error())
+			SendError(ctx, fasthttp.StatusConflict, "API key names must be unique across providers. Choose a different name")
 			return
 		}
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to create provider key: %v", err))
 		return
 	}
 
-	if err := h.attemptModelDiscovery(ctx, provider, providerConfig.CustomProviderConfig); err != nil {
-		logger.Warn("Model discovery failed for provider %s after key create: %v", provider, err)
+	if providerConfig.CustomProviderConfig == nil || !providerConfig.CustomProviderConfig.IsKeyLess {
+		if err := h.modelsManager.OnKeyAdded(ctx, provider, key); err != nil {
+			logger.Warn("Catalog refresh failed for provider %s after key create: %v", provider, err)
+		}
 	}
 
 	redactedKey, err := h.inMemoryStore.GetProviderKeyRedacted(provider, key.ID)
@@ -167,7 +169,7 @@ func (h *ProviderHandler) updateProviderKey(ctx *fasthttp.RequestCtx) {
 
 	var updateKey schemas.Key
 	if err := sonic.Unmarshal(ctx.PostBody(), &updateKey); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid JSON: %v", err))
+		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
 		return
 	}
 
@@ -224,7 +226,7 @@ func (h *ProviderHandler) updateProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if err := mergedKey.Aliases.Validate(); err != nil {
+	if err := mergedKey.Aliases.Validate(baseProvider); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid aliases: %v", err))
 		return
 	}
@@ -240,12 +242,18 @@ func (h *ProviderHandler) updateProviderKey(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider key not found: %v", err))
 			return
 		}
+		if errors.Is(err, lib.ErrAlreadyExists) {
+			SendError(ctx, fasthttp.StatusConflict, "API key names must be unique across providers. Choose a different name")
+			return
+		}
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to update provider key: %v", err))
 		return
 	}
 
-	if err := h.attemptModelDiscovery(ctx, provider, providerConfig.CustomProviderConfig); err != nil {
-		logger.Warn("Model discovery failed for provider %s after key update: %v", provider, err)
+	if providerConfig.CustomProviderConfig == nil || !providerConfig.CustomProviderConfig.IsKeyLess {
+		if err := h.modelsManager.OnKeyUpdated(ctx, provider, mergedKey); err != nil {
+			logger.Warn("Catalog refresh failed for provider %s after key update: %v", provider, err)
+		}
 	}
 
 	redactedKey, err := h.inMemoryStore.GetProviderKeyRedacted(provider, keyID)
@@ -305,8 +313,8 @@ func (h *ProviderHandler) deleteProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if err := h.attemptModelDiscovery(ctx, provider, providerConfig.CustomProviderConfig); err != nil {
-		logger.Warn("Model discovery failed for provider %s after key delete: %v", provider, err)
+	if err := h.modelsManager.OnKeyDeleted(ctx, provider, keyID); err != nil {
+		logger.Warn("Catalog refresh failed for provider %s after key delete: %v", provider, err)
 	}
 
 	SendJSON(ctx, redactedKey)
@@ -418,6 +426,47 @@ func (h *ProviderHandler) mergeUpdatedKey(oldRawKey, oldRedactedKey, updateKey s
 			updateKey.BedrockKeyConfig.RoleSessionName.IsRedacted() &&
 			updateKey.BedrockKeyConfig.RoleSessionName.Equals(oldRedactedKey.BedrockKeyConfig.RoleSessionName) {
 			mergedKey.BedrockKeyConfig.RoleSessionName = oldRawKey.BedrockKeyConfig.RoleSessionName
+		}
+	}
+
+	if updateKey.BedrockMantleKeyConfig != nil && oldRedactedKey.BedrockMantleKeyConfig != nil && oldRawKey.BedrockMantleKeyConfig != nil {
+		if updateKey.BedrockMantleKeyConfig.AccessKey.IsRedacted() &&
+			updateKey.BedrockMantleKeyConfig.AccessKey.Equals(&oldRedactedKey.BedrockMantleKeyConfig.AccessKey) {
+			mergedKey.BedrockMantleKeyConfig.AccessKey = oldRawKey.BedrockMantleKeyConfig.AccessKey
+		}
+		if updateKey.BedrockMantleKeyConfig.SecretKey.IsRedacted() &&
+			updateKey.BedrockMantleKeyConfig.SecretKey.Equals(&oldRedactedKey.BedrockMantleKeyConfig.SecretKey) {
+			mergedKey.BedrockMantleKeyConfig.SecretKey = oldRawKey.BedrockMantleKeyConfig.SecretKey
+		}
+		if updateKey.BedrockMantleKeyConfig.SessionToken != nil &&
+			oldRedactedKey.BedrockMantleKeyConfig.SessionToken != nil &&
+			updateKey.BedrockMantleKeyConfig.SessionToken.IsRedacted() &&
+			updateKey.BedrockMantleKeyConfig.SessionToken.Equals(oldRedactedKey.BedrockMantleKeyConfig.SessionToken) {
+			mergedKey.BedrockMantleKeyConfig.SessionToken = oldRawKey.BedrockMantleKeyConfig.SessionToken
+		}
+		if updateKey.BedrockMantleKeyConfig.Region != nil &&
+			oldRedactedKey.BedrockMantleKeyConfig.Region != nil &&
+			updateKey.BedrockMantleKeyConfig.Region.IsRedacted() &&
+			updateKey.BedrockMantleKeyConfig.Region.Equals(oldRedactedKey.BedrockMantleKeyConfig.Region) {
+			mergedKey.BedrockMantleKeyConfig.Region = oldRawKey.BedrockMantleKeyConfig.Region
+		}
+		if updateKey.BedrockMantleKeyConfig.RoleARN != nil &&
+			oldRedactedKey.BedrockMantleKeyConfig.RoleARN != nil &&
+			updateKey.BedrockMantleKeyConfig.RoleARN.IsRedacted() &&
+			updateKey.BedrockMantleKeyConfig.RoleARN.Equals(oldRedactedKey.BedrockMantleKeyConfig.RoleARN) {
+			mergedKey.BedrockMantleKeyConfig.RoleARN = oldRawKey.BedrockMantleKeyConfig.RoleARN
+		}
+		if updateKey.BedrockMantleKeyConfig.ExternalID != nil &&
+			oldRedactedKey.BedrockMantleKeyConfig.ExternalID != nil &&
+			updateKey.BedrockMantleKeyConfig.ExternalID.IsRedacted() &&
+			updateKey.BedrockMantleKeyConfig.ExternalID.Equals(oldRedactedKey.BedrockMantleKeyConfig.ExternalID) {
+			mergedKey.BedrockMantleKeyConfig.ExternalID = oldRawKey.BedrockMantleKeyConfig.ExternalID
+		}
+		if updateKey.BedrockMantleKeyConfig.RoleSessionName != nil &&
+			oldRedactedKey.BedrockMantleKeyConfig.RoleSessionName != nil &&
+			updateKey.BedrockMantleKeyConfig.RoleSessionName.IsRedacted() &&
+			updateKey.BedrockMantleKeyConfig.RoleSessionName.Equals(oldRedactedKey.BedrockMantleKeyConfig.RoleSessionName) {
+			mergedKey.BedrockMantleKeyConfig.RoleSessionName = oldRawKey.BedrockMantleKeyConfig.RoleSessionName
 		}
 	}
 

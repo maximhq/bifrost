@@ -3,13 +3,13 @@
  * Main orchestrator component for routing rules management
  */
 
-import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Button } from "@/components/ui/button";
 import { useDebouncedValue } from "@/hooks/useDebounce";
 import { useGetRoutingRulesQuery } from "@/lib/store/apis/routingRulesApi";
 import { RoutingRule } from "@/lib/types/routingRules";
-import { GitBranch, Plus } from "lucide-react";
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Link } from "@tanstack/react-router";
+import { GitBranch, Plus } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { RoutingRuleInfoSheet } from "./routingRuleInfoSheet";
 import { RoutingRuleSheet } from "./routingRuleSheet";
@@ -113,9 +113,9 @@ export function RoutingRulesView() {
 	}
 
 	return (
-		<div className="space-y-4">
+		<div className="flex flex-col overflow-y-auto">
 			{/* Header */}
-			<div className="flex items-center justify-between">
+			<div className="mb-4 flex items-center justify-between">
 				<div>
 					<h1 className="text-foreground text-lg font-semibold">Routing Rules</h1>
 					<p className="text-muted-foreground text-sm">Manage CEL-based routing rules for intelligent request routing across providers</p>

@@ -152,6 +152,16 @@ func HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext, req *schemas.HTTP
 }
 
 
+// PreRequestHook is called once per top-level request (NOT per fallback attempt).
+// This is the routing phase — use it for provider/model/fallback decisions.
+// Mutations to req.Provider/req.Model/req.Fallbacks commit and propagate to every attempt.
+// Errors are non-blocking (logged + skipped).
+func PreRequestHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) error {
+	ctx.Log(schemas.LogLevelInfo, "PreRequestHook called")
+	// Plugins that don't participate in routing should just return nil
+	return nil
+}
+
 // PreLLMHook is called before the request is sent to the provider
 // This is where you can modify requests or short-circuit the flow
 func PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
@@ -267,6 +277,13 @@ func HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext, req *schemas.HTTP
 	// return modifiedChunk, nil
 }
 
+
+// PreRequestHook is called once per top-level request (routing phase)
+// Mutations to req.Provider/req.Model/req.Fallbacks commit across fallbacks
+func PreRequestHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) error {
+	fmt.Println("PreRequestHook called")
+	return nil
+}
 
 // PreLLMHook is called before the request is sent to the provider
 // This is where you can modify requests or short-circuit the flow
@@ -546,6 +563,58 @@ This function is **only called** when using `bifrost-http`. It's **not invoked**
 </Warning>
   </Tab>
 </Tabs>
+
+#### `PreRequestHook(...)` <sup>v1.6.x+</sup>
+
+Called **once per top-level request**, before any provider call and before `PreLLMHook`. This is the **routing phase**: it's where plugins decide which provider, model, and fallbacks the request should be sent to.
+
+Use this for:
+- **Routing decisions**: governance rules, virtual-key load balancing, geo/tier routing
+- **Provider resolution**: filling in `req.Provider` for unprefixed model names (the built-in `model-catalog-resolver` does this as the last routing layer)
+- **Fallback chain construction**: populating `req.Fallbacks` based on policy
+
+**Why a separate hook from `PreLLMHook`:**
+
+| Aspect | `PreRequestHook` | `PreLLMHook` |
+|---|---|---|
+| Runs | Once per request | Once per provider attempt (re-runs on each fallback) |
+| Provider/Model mutations | **Commit and propagate** to every attempt | No-op for `Provider`/`Model` (overwritten by core) |
+| Use for | Routing decisions | Request transforms, caching, validation |
+| Short-circuit | No | Yes (can return a synthetic response) |
+| Error semantics | Non-blocking (logged, pipeline continues) | Non-blocking (logged, pipeline continues) |
+
+**Routing Example:**
+
+```go
+func PreRequestHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) error {
+	provider, model, _ := req.GetRequestFields()
+
+	// Route premium-tier requests to a faster provider
+	if tier := ctx.Value(schemas.BifrostContextKey("x-tier")); tier == "premium" && provider == "openai" {
+		req.SetProvider(schemas.Anthropic)
+		req.SetModel("claude-3-5-sonnet")
+		// Emit a routing-engine log entry so users can see why this decision was made
+		ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelInfo,
+			fmt.Sprintf("Routed %s to anthropic/claude-3-5-sonnet (tier=premium)", model))
+		schemas.AppendToContextList(ctx, schemas.BifrostContextKeyRoutingEnginesUsed,
+			schemas.RoutingEngineRoutingRule)
+	}
+	return nil
+}
+```
+
+**Two helpers worth knowing when writing routing logic:**
+
+- `ctx.AppendRoutingEngineLog(engine, level, message)` — emits a structured log entry visible in observability tools. Use it to explain *why* a routing decision was made.
+- `schemas.AppendToContextList(ctx, schemas.BifrostContextKeyRoutingEnginesUsed, engineName)` — records which routing engine(s) participated. Surfaces in telemetry as `routing.engines_used`.
+
+<Info>
+**Plugin order matters for routing.** Built-in routing plugins run in this order within `PreRequestHook`: governance routing rules → governance VK load balancing → enterprise load balancer → model-catalog-resolver (final fallback). Custom plugins can slot in via `placement` + `order` — see [Plugin Sequencing](./sequencing).
+</Info>
+
+<Info>
+**Errors are non-blocking.** Returning a non-nil error from `PreRequestHook` logs a warning but does NOT fail the request — the pipeline continues with the next plugin. The core validates `req.Provider` after all `PreRequestHook` plugins have run; an unresolved provider returns a 400 to the caller.
+</Info>
 
 #### `PreLLMHook(...)`
 

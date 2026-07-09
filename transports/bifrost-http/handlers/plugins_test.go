@@ -51,9 +51,11 @@ func (noopPluginsLoader) RemovePlugin(_ context.Context, _ string) error { retur
 func (noopPluginsLoader) GetPluginStatus(_ context.Context) map[string]schemas.PluginStatus {
 	return nil
 }
+func (noopPluginsLoader) GetLoadedPluginNames() []string { return nil }
 func (noopPluginsLoader) NormalizePluginConfig(_ string, _ map[string]any) (map[string]any, error) {
 	return nil, nil
 }
+
 func (noopPluginsLoader) ExpandPluginConfigForAPI(_ string, _ map[string]any) (map[string]any, error) {
 	return nil, nil
 }
@@ -76,6 +78,69 @@ func buildUpdateRequest(t *testing.T, body any) *fasthttp.RequestCtx {
 // config over the existing DB config, preserving fields the caller did not send.
 // This is critical for the plugin_span_filter field: the OTEL config form in the
 // UI does not send plugin_span_filter, so it must survive a save without being wiped.
+// TestRestoreRedacted_OTELProfilesHeaders covers the two gaps that broke OTEL header
+// round-trips after the multi-profile change: (1) headers live inside the `profiles`
+// array (slice traversal), and (2) header values are plain redacted strings, not EnvVar
+// objects. Saving a config whose headers came back redacted must not overwrite the
+// stored credentials.
+func TestRestoreRedacted_OTELProfilesHeaders(t *testing.T) {
+	realAuth := "Basic-REAL-SUPER-SECRET-VALUE"
+	realVersion := "4"
+	maskedAuth := schemas.NewSecretVar(realAuth).Redacted().GetValue()       // long -> first4 + **** + last4
+	maskedVersion := schemas.NewSecretVar(realVersion).Redacted().GetValue() // "4" -> "*"
+
+	mkConfig := func(auth, version string) map[string]any {
+		return map[string]any{
+			"profiles": []any{
+				map[string]any{
+					"service_name": "langfuse",
+					"headers": map[string]any{
+						"Authorization":                auth,
+						"x-langfuse-ingestion-version": version,
+					},
+				},
+			},
+		}
+	}
+
+	existing := mkConfig(realAuth, realVersion)
+	incoming := mkConfig(maskedAuth, maskedVersion) // what the UI sends back after a redacted GET
+
+	got := restoreRedactedFromExisting(incoming, existing)
+	headers := got["profiles"].([]any)[0].(map[string]any)["headers"].(map[string]any)
+
+	if headers["Authorization"] != realAuth {
+		t.Errorf("Authorization not restored: got %q, want %q", headers["Authorization"], realAuth)
+	}
+	if headers["x-langfuse-ingestion-version"] != realVersion {
+		t.Errorf("version not restored: got %q, want %q", headers["x-langfuse-ingestion-version"], realVersion)
+	}
+
+	// A genuinely changed (non-redacted) header value must pass through untouched.
+	changed := mkConfig("Basic-A-BRAND-NEW-KEY-VALUE-1234", "3")
+	got2 := restoreRedactedFromExisting(changed, existing)
+	headers2 := got2["profiles"].([]any)[0].(map[string]any)["headers"].(map[string]any)
+	if headers2["Authorization"] != "Basic-A-BRAND-NEW-KEY-VALUE-1234" {
+		t.Errorf("new Authorization should pass through, got %q", headers2["Authorization"])
+	}
+	if headers2["x-langfuse-ingestion-version"] != "3" {
+		t.Errorf("new version should pass through, got %q", headers2["x-langfuse-ingestion-version"])
+	}
+
+	// An intentional env.* reference (e.g. credential rotation) must pass through.
+	// NewSecretVar parses the "env." prefix as FromEnv=true, which IsRedacted reports as
+	// redacted; the IsFromEnv guard must let it through rather than restoring the stored value.
+	rotated := mkConfig("env.NEW_TOKEN", "env.NEW_VERSION")
+	got3 := restoreRedactedFromExisting(rotated, existing)
+	headers3 := got3["profiles"].([]any)[0].(map[string]any)["headers"].(map[string]any)
+	if headers3["Authorization"] != "env.NEW_TOKEN" {
+		t.Errorf("env.* Authorization should pass through, got %q", headers3["Authorization"])
+	}
+	if headers3["x-langfuse-ingestion-version"] != "env.NEW_VERSION" {
+		t.Errorf("env.* version should pass through, got %q", headers3["x-langfuse-ingestion-version"])
+	}
+}
+
 func TestUpdatePlugin_ConfigMerge(t *testing.T) {
 	SetLogger(&mockLogger{})
 
@@ -84,9 +149,9 @@ func TestUpdatePlugin_ConfigMerge(t *testing.T) {
 		"plugins": []any{"logging", "compat"},
 	}
 	existingConfig := map[string]any{
-		"collector_url":    "localhost:4317",
-		"trace_type":       "genai_extension",
-		"protocol":         "grpc",
+		"collector_url":      "localhost:4317",
+		"trace_type":         "genai_extension",
+		"protocol":           "grpc",
 		"plugin_span_filter": spanFilter,
 	}
 
@@ -161,5 +226,47 @@ func TestUpdatePlugin_ConfigMerge_NewPlugin(t *testing.T) {
 	// Should succeed even when no existing plugin is found (creates then updates).
 	if ctx.Response.StatusCode() != 200 {
 		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+}
+
+// namedPluginsLoader is a noopPluginsLoader that returns a fixed set of loaded
+// plugin names, used to assert the getLoadedPlugins response contract.
+type namedPluginsLoader struct {
+	noopPluginsLoader
+	names []string
+}
+
+func (l namedPluginsLoader) GetLoadedPluginNames() []string { return l.names }
+
+// TestGetLoadedPlugins verifies that getLoadedPlugins returns the loader's plugin
+// names under the "plugins" JSON key, locking the response shape the UI depends on.
+func TestGetLoadedPlugins(t *testing.T) {
+	want := []string{"logging", "telemetry", "enterprise-governance"}
+	h := &PluginsHandler{
+		pluginsLoader: namedPluginsLoader{names: want},
+		configStore:   nil,
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("GET")
+	h.getLoadedPlugins(ctx)
+
+	if ctx.Response.StatusCode() != 200 {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+
+	var response struct {
+		Plugins []string `json:"plugins"`
+	}
+	if err := json.Unmarshal(ctx.Response.Body(), &response); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if len(response.Plugins) != len(want) {
+		t.Fatalf("expected %d plugins, got %d: %v", len(want), len(response.Plugins), response.Plugins)
+	}
+	for i, name := range want {
+		if response.Plugins[i] != name {
+			t.Errorf("plugins[%d] = %q, want %q", i, response.Plugins[i], name)
+		}
 	}
 }

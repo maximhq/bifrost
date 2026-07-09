@@ -26,6 +26,7 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
+	openai "github.com/maximhq/bifrost/core/providers/openai"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
@@ -36,7 +37,7 @@ type BedrockProvider struct {
 	logger                schemas.Logger                // Logger for provider operations
 	client                *http.Client                  // HTTP client for unary API requests (Client.Timeout bounds overall response)
 	streamingClient       *http.Client                  // HTTP client for streaming API requests (no Timeout; idle governed by NewIdleTimeoutReader)
-	mantleClient          *fasthttp.Client              // fasthttp client for Bedrock Mantle (OpenAI-compatible) requests
+	mantleClient          *fasthttp.Client              // fasthttp client for Bedrock Mantle unary requests (OpenAI-compatible and native-Anthropic paths)
 	mantleStreamingClient *fasthttp.Client              // fasthttp streaming client for Bedrock Mantle streaming requests
 	networkConfig         schemas.NetworkConfig         // Network configuration including extra headers
 	customProviderConfig  *schemas.CustomProviderConfig // Custom provider config
@@ -124,7 +125,9 @@ func NewBedrockProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 	client := &http.Client{Transport: transport, Timeout: requestTimeout}
 	streamingClient := providerUtils.BuildStreamingHTTPClient(client)
 
-	// fasthttp clients for Bedrock Mantle (OpenAI-compatible endpoint)
+	// fasthttp clients for Bedrock Mantle (shared by OpenAI-compatible and native-Anthropic paths).
+	// ReadTimeout is the shared provider request timeout, not an OpenAI-specific value; oversized
+	// Anthropic responses are handled by PrepareResponseStreaming, not by these static settings.
 	mantleFasthttpClient := &fasthttp.Client{
 		ReadTimeout:         requestTimeout,
 		WriteTimeout:        requestTimeout,
@@ -188,16 +191,74 @@ func isStreamTransportError(err error) bool {
 	return errors.As(err, &opErr) || errors.As(err, &dnsErr)
 }
 
-// retryableBedrockExceptions maps AWS Bedrock EventStream exception types to
-// their HTTP status code equivalents. These exceptions are transient and should
-// be retried — the retry gate in executeRequestWithRetries checks StatusCode
-// against transientServerStatusCodes (500, 502, 503, 504) for same-key retries
-// and perKeyFailureStatusCodes (429) for rotation-triggered retries.
+// retryableBedrockExceptions maps AWS Bedrock EventStream exception types (the
+// camelCase shape names AWS uses for ConverseStream / InvokeModelWithResponseStream
+// in-stream exception members) to a retryable HTTP status code. These exceptions
+// are transient and should be retried — the retry gate in executeRequestWithRetries
+// checks StatusCode against transientServerStatusCodes (500, 502, 503, 504) for
+// same-key retries and perKeyFailureStatusCodes (429) for rotation-triggered retries.
+//
+// Some AWS exceptions have a native status code the gate does not recognize
+// (modelStreamErrorException=424, modelTimeoutException=408); they are mapped to
+// the nearest gate-recognized transient code so the retry still fires. The client
+// still sees the original exception type — only the internal retry hint is mapped.
+//
+// modelNotReadyException is an HTTP-level error (not an in-stream member) but is
+// kept here because AWS auto-retries it; it is harmless when it never matches a
+// stream event. validationException / accessDeniedException / resourceNotFoundException
+// are intentionally absent — they are terminal request-bound errors.
 var retryableBedrockExceptions = map[string]int{
 	"throttlingException":         429,
 	"serviceUnavailableException": 503,
 	"modelNotReadyException":      503,
 	"internalServerException":     500,
+	"modelStreamErrorException":   503, // native 424; AWS guidance: "Retry your request"
+	"modelTimeoutException":       504, // native 408; processing timeout, transient
+}
+
+// newBedrockStreamException builds a BifrostError from an AWS EventStream
+// exception message (any :message-type other than "event"). It preserves the
+// upstream exception type — the payload's "__type" when present, else the
+// :exception-type header value (excType) — so downstream conversion
+// (ToBedrockError) forwards it instead of falling back to "InternalServerError".
+//
+// Retryable exceptions are emitted with IsBifrostError:false and the equivalent
+// HTTP status so the retry gate in executeRequestWithRetries handles them;
+// non-retryable ones are terminal (IsBifrostError:true). providerName is an
+// optional label prefix for the message.
+func newBedrockStreamException(providerName, excType string, payload []byte) *schemas.BifrostError {
+	errMsg := string(payload)
+	var bedrockErr BedrockError
+	if err := sonic.Unmarshal(payload, &bedrockErr); err == nil && bedrockErr.Message != "" {
+		errMsg = bedrockErr.Message
+	}
+
+	fwdType := bedrockErr.Type
+	if fwdType == "" {
+		fwdType = excType
+	}
+
+	prefix := "stream"
+	if providerName != "" {
+		prefix = providerName + " stream"
+	}
+
+	streamErr := &schemas.BifrostError{
+		IsBifrostError: false,
+		Error: &schemas.ErrorField{
+			Message: fmt.Sprintf("%s %s: %s", prefix, excType, errMsg),
+		},
+	}
+	if fwdType != "" {
+		streamErr.Type = &fwdType
+	}
+	if statusCode, ok := retryableBedrockExceptions[excType]; ok {
+		sc := statusCode
+		streamErr.StatusCode = &sc
+	} else {
+		streamErr.IsBifrostError = true
+	}
+	return streamErr
 }
 
 // completeRequest sends a request to Bedrock's API and handles the response.
@@ -205,7 +266,7 @@ var retryableBedrockExceptions = map[string]int{
 // Returns the response body, request latency, or an error if the request fails.
 func (provider *BedrockProvider) completeRequest(ctx *schemas.BifrostContext, jsonData []byte, path string, key schemas.Key, model string) ([]byte, time.Duration, map[string]string, *schemas.BifrostError) {
 	config := key.BedrockKeyConfig
-	region := resolveBedrockRegion(key, model)
+	region := resolveBedrockRegion(ctx, key, model)
 
 	// Create the request with the JSON body
 	requestURL := fmt.Sprintf("https://bedrock-runtime.%s.amazonaws.com/model/%s", region, path)
@@ -234,53 +295,61 @@ func (provider *BedrockProvider) completeRequest(ctx *schemas.BifrostContext, js
 		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", key.Value.GetValue()))
 	} else {
 		// Sign the request using either explicit credentials or IAM role authentication
-		if err := signAWSRequest(ctx, req, config.AccessKey, config.SecretKey, config.SessionToken, config.RoleARN, config.ExternalID, config.RoleSessionName, region, bedrockSigningService); err != nil {
+		if err := signAWSRequest(ctx, req, config, region, bedrockSigningService); err != nil {
 			return nil, 0, nil, err
 		}
 	}
 
+	body, latency, providerResponseHeaders, bErr := provider.executeBedrockRequest(req)
+	return body, latency, providerResponseHeaders, bErr
+}
+
+// executeBedrockRequest sends an already-built (and authenticated) request via the
+// unary HTTP client, measures latency, and parses a Bedrock error envelope on non-200
+// responses. Used by completeRequest for the bedrock-runtime (Converse) path.
+func (provider *BedrockProvider) executeBedrockRequest(req *http.Request) ([]byte, time.Duration, map[string]string, *schemas.BifrostError) {
 	// Execute the request and measure latency
 	startTime := time.Now()
 	resp, err := provider.client.Do(req)
 	latency := time.Since(startTime)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
-			return nil, latency, nil, &schemas.BifrostError{
+			return nil, latency, nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
 				IsBifrostError: false,
 				Error: &schemas.ErrorField{
 					Type:    schemas.Ptr(schemas.RequestCancelled),
 					Message: schemas.ErrRequestCancelled,
 					Error:   err,
 				},
-			}
+			}, latency)
 		}
 		// Check for timeout first using net.Error before checking net.OpError
 		var netErr net.Error
 		if errors.As(err, &netErr) && netErr.Timeout() {
-			return nil, latency, nil, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err)
+			return nil, latency, nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), latency)
 		}
 		if errors.Is(err, http.ErrHandlerTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, latency, nil, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err)
+			return nil, latency, nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), latency)
 		}
 		// Check for DNS lookup and network errors after timeout checks
 		var opErr *net.OpError
 		var dnsErr *net.DNSError
 		if errors.As(err, &opErr) || errors.As(err, &dnsErr) {
-			return nil, latency, nil, &schemas.BifrostError{
+			return nil, latency, nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
 				IsBifrostError: false,
 				Error: &schemas.ErrorField{
 					Message: schemas.ErrProviderNetworkError,
 					Error:   err,
 				},
-			}
+			}, latency)
 		}
-		return nil, latency, nil, &schemas.BifrostError{
+		return nil, latency, nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{
 				Message: schemas.ErrProviderDoRequest,
 				Error:   err,
 			},
-		}
+		}, latency)
 	}
 
 	// Extract provider response headers before closing the body
@@ -290,46 +359,17 @@ func (provider *BedrockProvider) completeRequest(ctx *schemas.BifrostContext, js
 	// Read response body
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, latency, providerResponseHeaders, &schemas.BifrostError{
+		return nil, latency, providerResponseHeaders, providerUtils.SetErrorLatency(&schemas.BifrostError{
 			IsBifrostError: true,
 			Error: &schemas.ErrorField{
 				Message: "error reading request",
 				Error:   err,
 			},
-		}
+		}, latency)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		var errorResp BedrockError
-
-		var rawErrorResponse interface{}
-		if err := sonic.Unmarshal(body, &rawErrorResponse); err != nil {
-			rawErrorResponse = string(body)
-		}
-
-		if err := sonic.Unmarshal(body, &errorResp); err != nil {
-			return nil, latency, providerResponseHeaders, &schemas.BifrostError{
-				IsBifrostError: true,
-				StatusCode:     &resp.StatusCode,
-				Error: &schemas.ErrorField{
-					Message: schemas.ErrProviderResponseUnmarshal,
-					Error:   err,
-				},
-				ExtraFields: schemas.BifrostErrorExtraFields{
-					RawResponse: rawErrorResponse,
-				},
-			}
-		}
-
-		return nil, latency, providerResponseHeaders, &schemas.BifrostError{
-			StatusCode: &resp.StatusCode,
-			Error: &schemas.ErrorField{
-				Message: errorResp.Message,
-			},
-			ExtraFields: schemas.BifrostErrorExtraFields{
-				RawResponse: rawErrorResponse,
-			},
-		}
+		return nil, latency, providerResponseHeaders, providerUtils.SetErrorLatency(parseBedrockHTTPError(resp.StatusCode, resp.Header, body), latency)
 	}
 
 	return body, latency, providerResponseHeaders, nil
@@ -361,7 +401,7 @@ func (provider *BedrockProvider) completeAgentRuntimeRequest(ctx *schemas.Bifros
 	if key.Value.GetValue() != "" {
 		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", key.Value.GetValue()))
 	} else {
-		if err := signAWSRequest(ctx, req, config.AccessKey, config.SecretKey, config.SessionToken, config.RoleARN, config.ExternalID, config.RoleSessionName, region, bedrockSigningService); err != nil {
+		if err := signAWSRequest(ctx, req, config, region, bedrockSigningService); err != nil {
 			return nil, 0, nil, err
 		}
 	}
@@ -371,40 +411,40 @@ func (provider *BedrockProvider) completeAgentRuntimeRequest(ctx *schemas.Bifros
 	latency := time.Since(startTime)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
-			return nil, latency, nil, &schemas.BifrostError{
+			return nil, latency, nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
 				IsBifrostError: false,
 				Error: &schemas.ErrorField{
 					Type:    schemas.Ptr(schemas.RequestCancelled),
 					Message: schemas.ErrRequestCancelled,
 					Error:   err,
 				},
-			}
+			}, latency)
 		}
 		var netErr net.Error
 		if errors.As(err, &netErr) && netErr.Timeout() {
-			return nil, latency, nil, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err)
+			return nil, latency, nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), latency)
 		}
 		if errors.Is(err, http.ErrHandlerTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, latency, nil, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err)
+			return nil, latency, nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), latency)
 		}
 		var opErr *net.OpError
 		var dnsErr *net.DNSError
 		if errors.As(err, &opErr) || errors.As(err, &dnsErr) {
-			return nil, latency, nil, &schemas.BifrostError{
+			return nil, latency, nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
 				IsBifrostError: false,
 				Error: &schemas.ErrorField{
 					Message: schemas.ErrProviderNetworkError,
 					Error:   err,
 				},
-			}
+			}, latency)
 		}
-		return nil, latency, nil, &schemas.BifrostError{
+		return nil, latency, nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{
 				Message: schemas.ErrProviderDoRequest,
 				Error:   err,
 			},
-		}
+		}, latency)
 	}
 
 	// Extract provider response headers before closing the body
@@ -413,17 +453,17 @@ func (provider *BedrockProvider) completeAgentRuntimeRequest(ctx *schemas.Bifros
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, latency, providerResponseHeaders, &schemas.BifrostError{
+		return nil, latency, providerResponseHeaders, providerUtils.SetErrorLatency(&schemas.BifrostError{
 			IsBifrostError: true,
 			Error: &schemas.ErrorField{
 				Message: "error reading request",
 				Error:   err,
 			},
-		}
+		}, latency)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, latency, providerResponseHeaders, parseBedrockHTTPError(resp.StatusCode, resp.Header, body)
+		return nil, latency, providerResponseHeaders, providerUtils.SetErrorLatency(parseBedrockHTTPError(resp.StatusCode, resp.Header, body), latency)
 	}
 
 	return body, latency, providerResponseHeaders, nil
@@ -434,7 +474,7 @@ func (provider *BedrockProvider) completeAgentRuntimeRequest(ctx *schemas.Bifros
 // Returns the response body and an error if the request fails.
 func (provider *BedrockProvider) makeStreamingRequest(ctx *schemas.BifrostContext, jsonData []byte, key schemas.Key, model string, action string) (*http.Response, *schemas.BifrostError) {
 	// Parse region and path in one pass to avoid running the regex twice.
-	path, region := provider.getModelPathAndRegion(action, model, key)
+	path, region := provider.getModelPathAndRegion(ctx, action, model, key)
 
 	// Create HTTP request for streaming
 	requestURL := fmt.Sprintf("https://bedrock-runtime.%s.amazonaws.com/model/%s", region, path)
@@ -454,56 +494,61 @@ func (provider *BedrockProvider) makeStreamingRequest(ctx *schemas.BifrostContex
 
 	// If Value is set, use API Key authentication - else use IAM role authentication
 	req.Header.Set("Accept", "application/vnd.amazon.eventstream")
+	// Force identity encoding so Go's net/http transport does NOT auto-negotiate
+	// gzip. A gzip-compressed eventstream buffers upstream until the stream
+	// completes, collapsing TTFB to the total generation time (issue #4542).
+	req.Header.Set("Accept-Encoding", "identity")
 	if key.Value.GetValue() != "" {
 		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", key.Value.GetValue()))
 	} else {
-		req.Header.Set("Accept", "application/vnd.amazon.eventstream")
 		// Sign the request using either explicit credentials or IAM role authentication
-		if err := signAWSRequest(ctx, req, key.BedrockKeyConfig.AccessKey, key.BedrockKeyConfig.SecretKey, key.BedrockKeyConfig.SessionToken, key.BedrockKeyConfig.RoleARN, key.BedrockKeyConfig.ExternalID, key.BedrockKeyConfig.RoleSessionName, region, bedrockSigningService); err != nil {
+		if err := signAWSRequest(ctx, req, key.BedrockKeyConfig, region, bedrockSigningService); err != nil {
 			return nil, err
 		}
 	}
 
 	// Make the request
+	startTime := time.Now()
 	resp, respErr := provider.streamingClient.Do(req)
+	latency := time.Since(startTime)
 	if respErr != nil {
 		if errors.Is(respErr, context.Canceled) {
-			return nil, &schemas.BifrostError{
+			return nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
 				IsBifrostError: false,
 				Error: &schemas.ErrorField{
 					Type:    schemas.Ptr(schemas.RequestCancelled),
 					Message: schemas.ErrRequestCancelled,
 					Error:   respErr,
 				},
-			}
+			}, latency)
 		}
 		// Check for timeout first using net.Error before checking net.OpError
 		var netErr net.Error
 		if errors.As(respErr, &netErr) && netErr.Timeout() {
-			return nil, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, respErr)
+			return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, respErr), latency)
 		}
 		if errors.Is(respErr, http.ErrHandlerTimeout) || errors.Is(respErr, context.DeadlineExceeded) {
-			return nil, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, respErr)
+			return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, respErr), latency)
 		}
 		// Check for DNS lookup and network errors after timeout checks
 		var opErr *net.OpError
 		var dnsErr *net.DNSError
 		if errors.As(respErr, &opErr) || errors.As(respErr, &dnsErr) {
-			return nil, &schemas.BifrostError{
+			return nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
 				IsBifrostError: false,
 				Error: &schemas.ErrorField{
 					Message: schemas.ErrProviderNetworkError,
 					Error:   respErr,
 				},
-			}
+			}, latency)
 		}
-		return nil, &schemas.BifrostError{
+		return nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{
 				Message: schemas.ErrProviderDoRequest,
 				Error:   respErr,
 			},
-		}
+		}, latency)
 	}
 
 	// Extract provider response headers before status check so error responses also forward them
@@ -513,51 +558,31 @@ func (provider *BedrockProvider) makeStreamingRequest(ctx *schemas.BifrostContex
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		return nil, parseBedrockHTTPError(resp.StatusCode, resp.Header, body)
+		return nil, providerUtils.SetErrorLatency(parseBedrockHTTPError(resp.StatusCode, resp.Header, body), latency)
 	}
 
 	return resp, nil
-}
-
-// signAWSRequest signs an HTTP request using AWS Signature Version 4.
-// It is used in providers like Bedrock.
-// It sets required headers, calculates the request body hash, and signs the request
-// using the provided AWS credentials.
-// signAWSRequestFromKey is a convenience wrapper around signAWSRequest that reads
-// credentials from a BedrockKeyConfig. When cfg is nil (no explicit key configured),
-// all credential fields are zero-valued, causing signAWSRequest to fall back to the
-// default AWS credential chain (IAM role, env vars, instance profile, etc.).
-func signAWSRequestFromKey(
-	ctx *schemas.BifrostContext,
-	req *http.Request,
-	cfg *schemas.BedrockKeyConfig,
-	region, service string,
-) *schemas.BifrostError {
-	if cfg != nil {
-		return signAWSRequest(ctx, req,
-			cfg.AccessKey, cfg.SecretKey,
-			cfg.SessionToken, cfg.RoleARN,
-			cfg.ExternalID, cfg.RoleSessionName,
-			region, service)
-	}
-	// No config: pass zero EnvVar values so signAWSRequest uses the default chain.
-	return signAWSRequest(ctx, req,
-		schemas.EnvVar{}, schemas.EnvVar{},
-		nil, nil, nil, nil,
-		region, service)
 }
 
 // Returns a BifrostError if signing fails.
 func signAWSRequest(
 	ctx *schemas.BifrostContext,
 	req *http.Request,
-	accessKey, secretKey schemas.EnvVar,
-	sessionToken *schemas.EnvVar,
-	roleARN *schemas.EnvVar,
-	externalID *schemas.EnvVar,
-	sessionName *schemas.EnvVar,
+	keyCfg *schemas.BedrockKeyConfig,
 	region, service string,
 ) *schemas.BifrostError {
+	var accessKey, secretKey schemas.SecretVar
+	var sessionToken, roleARN, externalID, sessionName *schemas.SecretVar
+
+	if keyCfg != nil {
+		accessKey = keyCfg.AccessKey
+		secretKey = keyCfg.SecretKey
+		sessionToken = keyCfg.SessionToken
+		roleARN = keyCfg.RoleARN
+		externalID = keyCfg.ExternalID
+		sessionName = keyCfg.RoleSessionName
+	}
+
 	// Set required headers before signing (only if not already set)
 	if req.Header.Get("Content-Type") == "" {
 		req.Header.Set("Content-Type", "application/json")
@@ -684,6 +709,52 @@ func signAWSRequest(
 
 // listModelsByKey performs a list models request to Bedrock's API for a single key.
 // It retrieves all foundation models available in Amazon Bedrock for a specific key.
+// listMantleModels lists models from the Bedrock Mantle (OpenAI-compatible) /v1/models
+// endpoint, converted to a Bifrost response with the same allow/blacklist/alias gating as
+// the foundation-model path. The bare /v1/models path returns the full mantle catalog
+// (including the mantle-only gpt-5.x / gemma-4 models that ListFoundationModels omits).
+// The request is signed as it is sent (mantleSigV4Headers signs POST and can't be reused
+// for this GET). Best-effort: returns nil on any failure so the foundation-model list is
+// still returned.
+func (provider *BedrockProvider) listMantleModels(ctx *schemas.BifrostContext, key schemas.Key, region string, unfiltered bool) *schemas.BifrostListModelsResponse {
+	mURL := mantleOpenAIURL(region, "", "models")
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, mURL, nil)
+	if err != nil {
+		provider.logger.Warn("failed to build mantle list-models request: %v", err)
+		return nil
+	}
+	providerUtils.SetExtraHeadersHTTP(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	if key.Value.GetValue() != "" {
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", key.Value.GetValue()))
+	} else if bifrostErr := signAWSRequest(ctx, req, key.BedrockKeyConfig, region, bedrockMantleSigningService); bifrostErr != nil {
+		provider.logger.Warn("failed to sign mantle list-models request: %v", bifrostErr.Error.Message)
+		return nil
+	}
+
+	resp, err := provider.client.Do(req)
+	if err != nil {
+		provider.logger.Warn("mantle list-models request failed: %v", err)
+		return nil
+	}
+	responseBody, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		provider.logger.Warn("failed to read mantle list-models response: %v", err)
+		return nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		provider.logger.Warn("mantle list-models returned status %d: %s", resp.StatusCode, string(responseBody))
+		return nil
+	}
+
+	mantleResponse := &openai.OpenAIListModelsResponse{}
+	if err := sonic.Unmarshal(responseBody, mantleResponse); err != nil {
+		provider.logger.Warn("failed to parse mantle list-models response: %v", err)
+		return nil
+	}
+	return mantleResponse.ToBifrostListModelsResponse(provider.GetProviderKey(), key.Models, key.BlacklistedModels, key.Aliases, unfiltered)
+}
+
 func (provider *BedrockProvider) listModelsByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	providerName := provider.GetProviderKey()
 	config := key.BedrockKeyConfig
@@ -733,7 +804,7 @@ func (provider *BedrockProvider) listModelsByKey(ctx *schemas.BifrostContext, ke
 	} else {
 		// Sign the request using either explicit credentials or IAM role authentication
 
-		if err := signAWSRequest(ctx, req, config.AccessKey, config.SecretKey, config.SessionToken, config.RoleARN, config.ExternalID, config.RoleSessionName, region, bedrockSigningService); err != nil {
+		if err := signAWSRequest(ctx, req, config, region, bedrockSigningService); err != nil {
 			return nil, err
 		}
 	}
@@ -742,61 +813,62 @@ func (provider *BedrockProvider) listModelsByKey(ctx *schemas.BifrostContext, ke
 
 	// Execute the request
 	resp, err := provider.client.Do(req)
+	latency := time.Since(startTime)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
-			return nil, &schemas.BifrostError{
+			return nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
 				IsBifrostError: false,
 				Error: &schemas.ErrorField{
 					Type:    schemas.Ptr(schemas.RequestCancelled),
 					Message: schemas.ErrRequestCancelled,
 					Error:   err,
 				},
-			}
+			}, latency)
 		}
 		// Check for timeout first using net.Error before checking net.OpError
 		var netErr net.Error
 		if errors.As(err, &netErr) && netErr.Timeout() {
-			return nil, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err)
+			return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), latency)
 		}
 		if errors.Is(err, http.ErrHandlerTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err)
+			return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), latency)
 		}
 		// Check for DNS lookup and network errors after timeout checks
 		var opErr *net.OpError
 		var dnsErr *net.DNSError
 		if errors.As(err, &opErr) || errors.As(err, &dnsErr) {
-			return nil, &schemas.BifrostError{
+			return nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
 				IsBifrostError: false,
 				Error: &schemas.ErrorField{
 					Message: schemas.ErrProviderNetworkError,
 					Error:   err,
 				},
-			}
+			}, latency)
 		}
-		return nil, &schemas.BifrostError{
+		return nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{
 				Message: schemas.ErrProviderDoRequest,
 				Error:   err,
 			},
-		}
+		}, latency)
 	}
 
 	// Read response body and close
 	responseBody, err := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if err != nil {
-		return nil, &schemas.BifrostError{
+		return nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
 			IsBifrostError: true,
 			Error: &schemas.ErrorField{
 				Message: "error reading request",
 				Error:   err,
 			},
-		}
+		}, latency)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, parseBedrockHTTPError(resp.StatusCode, resp.Header, responseBody)
+		return nil, providerUtils.SetErrorLatency(parseBedrockHTTPError(resp.StatusCode, resp.Header, responseBody), latency)
 	}
 
 	// Parse Bedrock-specific response
@@ -810,6 +882,22 @@ func (provider *BedrockProvider) listModelsByKey(ctx *schemas.BifrostContext, ke
 	response := bedrockResponse.ToBifrostListModelsResponse(providerName, key.Models, key.BlacklistedModels, key.Aliases, request.Unfiltered)
 	if response == nil {
 		return nil, providerUtils.NewBifrostOperationError("failed to convert Bedrock model list response", nil)
+	}
+
+	// Merge in the mantle catalog: ListFoundationModels omits the mantle-only models
+	// (gpt-5.x, gemma-4, ...) served on the OpenAI-compatible endpoint. Same gating, dedup by id.
+	if mantleResponse := provider.listMantleModels(ctx, key, region, request.Unfiltered); mantleResponse != nil {
+		seen := make(map[string]struct{}, len(response.Data))
+		for _, m := range response.Data {
+			seen[m.ID] = struct{}{}
+		}
+		for _, m := range mantleResponse.Data {
+			if _, ok := seen[m.ID]; ok {
+				continue
+			}
+			seen[m.ID] = struct{}{}
+			response.Data = append(response.Data, m)
+		}
 	}
 
 	response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
@@ -860,26 +948,26 @@ func (provider *BedrockProvider) TextCompletion(ctx *schemas.BifrostContext, key
 		return nil, bifrostErr
 	}
 
-	path, _ := provider.getModelPathAndRegion("invoke", request.Model, key)
+	path, _ := provider.getModelPathAndRegion(ctx, "invoke", request.Model, key)
 	body, latency, providerResponseHeaders, err := provider.completeRequest(ctx, jsonData, path, key, request.Model)
 	if providerResponseHeaders != nil {
 		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
 	}
 	if err != nil {
-		return nil, providerUtils.EnrichError(ctx, err, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, err, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	// Handle model-specific response conversion
 	var bifrostResponse *schemas.BifrostTextCompletionResponse
 	switch {
-	case schemas.IsAnthropicModel(request.Model):
+	case schemas.IsAnthropicModelFamily(ctx, request.Model):
 		var response BedrockAnthropicTextResponse
 		if err := sonic.Unmarshal(body, &response); err != nil {
 			return nil, providerUtils.NewBifrostOperationError("error parsing anthropic response", err)
 		}
 		bifrostResponse = response.ToBifrostTextCompletionResponse()
 
-	case schemas.IsMistralModel(request.Model):
+	case schemas.IsMistralModelFamily(ctx, request.Model):
 		var response BedrockMistralTextResponse
 		if err := sonic.Unmarshal(body, &response); err != nil {
 			return nil, providerUtils.NewBifrostOperationError("error parsing mistral response", err)
@@ -953,7 +1041,7 @@ func (provider *BedrockProvider) TextCompletionStream(ctx *schemas.BifrostContex
 			} else if ctx.Err() == context.DeadlineExceeded {
 				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, jsonData)
 			}
-			close(responseChan)
+			providerUtils.CloseStream(ctx, responseChan)
 		}()
 		defer resp.Body.Close()
 
@@ -1013,27 +1101,8 @@ func (provider *BedrockProvider) TextCompletionStream(ctx *schemas.BifrostContex
 								excType = v
 							}
 						}
-						errMsg := string(message.Payload)
-						var bedrockErr BedrockError
-						if err := sonic.Unmarshal(message.Payload, &bedrockErr); err == nil && bedrockErr.Message != "" {
-							errMsg = bedrockErr.Message
-						}
-						// Retryable AWS exceptions must not set IsBifrostError:true — that would
-						// bypass the retry gate in executeRequestWithRetries. Instead emit
-						// IsBifrostError:false with the equivalent HTTP status code so the existing
-						// retry gate (transientServerStatusCodes / perKeyFailureStatusCodes) handles the retry.
-						if statusCode, ok := retryableBedrockExceptions[excType]; ok {
-							providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, &schemas.BifrostError{
-								IsBifrostError: false,
-								StatusCode:     &statusCode,
-								Error: &schemas.ErrorField{
-									Message: fmt.Sprintf("%s stream %s: %s", providerName, excType, errMsg),
-								},
-							}, responseChan, provider.logger, postHookSpanFinalizer)
-						} else {
-							err := fmt.Errorf("%s stream %s: %s", providerName, excType, errMsg)
-							providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, provider.logger, postHookSpanFinalizer)
-						}
+						streamErr := newBedrockStreamException(string(providerName), excType, message.Payload)
+						providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, streamErr, responseChan, provider.logger, postHookSpanFinalizer)
 						return
 					}
 				}
@@ -1066,18 +1135,19 @@ func (provider *BedrockProvider) TextCompletionStream(ctx *schemas.BifrostContex
 }
 
 // ChatCompletion performs a chat completion request to Bedrock's API.
-// It formats the request, sends it to Bedrock, and processes the response.
+// OpenAI-family and Gemma 4 models route via the Bedrock Mantle OpenAI-compatible endpoint.
+// All other models (including Anthropic/Claude) use the Bedrock Converse API.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
 func (provider *BedrockProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.ChatCompletionRequest); err != nil {
 		return nil, err
 	}
 
-	if isMantleModel(request.Model) {
-		return provider.chatCompletionViaMantle(ctx, key, request)
+	if isMantleModel(ctx, request.Model) {
+		return provider.mantleChatCompletions(ctx, key, request)
 	}
 
-	// Use centralized Bedrock converter
+	// Use Bedrock Converse API for all other models
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
@@ -1087,9 +1157,7 @@ func (provider *BedrockProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
-
-	// Format the path with proper model identifier
-	path, _ := provider.getModelPathAndRegion("converse", request.Model, key)
+	path, _ := provider.getModelPathAndRegion(ctx, "converse", request.Model, key)
 
 	// Create the signed request
 	responseBody, latency, providerResponseHeaders, bifrostErr := provider.completeRequest(ctx, jsonData, path, key, request.Model)
@@ -1097,26 +1165,25 @@ func (provider *BedrockProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
 	}
 	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
-	// pool the response
+	// Parse Bedrock Converse API response
 	bedrockResponse := acquireBedrockChatResponse()
 	defer releaseBedrockChatResponse(bedrockResponse)
 
 	// Parse the response using the new Bedrock type
 	if err := sonic.Unmarshal(responseBody, bedrockResponse); err != nil {
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("failed to parse bedrock response", err), jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("failed to parse bedrock response", err), jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	// Convert using the new response converter
 	bifrostResponse, err := bedrockResponse.ToBifrostChatResponse(ctx, request.Model)
 	if err != nil {
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("failed to convert bedrock response", err), jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("failed to convert bedrock response", err), jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
-	// Override finish reason for structured output
-	// When structured output is used, tool_use is expected but should appear as "stop" to the client
+	// Override finish reason for structured output (Converse API only)
 	if _, ok := ctx.Value(schemas.BifrostContextKeyStructuredOutputToolName).(string); ok {
 		if len(bifrostResponse.Choices) > 0 && bifrostResponse.Choices[0].FinishReason != nil {
 			if *bifrostResponse.Choices[0].FinishReason == string(schemas.BifrostFinishReasonToolCalls) {
@@ -1129,12 +1196,9 @@ func (provider *BedrockProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
 	bifrostResponse.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
 
-	// Set raw request if enabled
 	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
 		providerUtils.ParseAndSetRawRequest(&bifrostResponse.ExtraFields, jsonData)
 	}
-
-	// Set raw response if enabled
 	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
 		var rawResponse interface{}
 		if err := sonic.Unmarshal(responseBody, &rawResponse); err == nil {
@@ -1145,18 +1209,106 @@ func (provider *BedrockProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 	return bifrostResponse, nil
 }
 
+// normalizeCachedUsage folds the accumulated cached read/write token counts into
+// PromptTokens. Bedrock reports TotalTokens directly on the stream, so only the
+// prompt counter needs the fold. The accumulator must apply it before billing -
+// including on a mid-stream cancel/timeout. The += is not idempotent; callers
+// guard with a flag to apply it exactly once.
+func normalizeCachedUsage(usage *schemas.BifrostLLMUsage) {
+	if usage == nil || usage.PromptTokensDetails == nil {
+		return
+	}
+	usage.PromptTokens += usage.PromptTokensDetails.CachedReadTokens + usage.PromptTokensDetails.CachedWriteTokens
+}
+
+func accumulateBedrockResponsesUsage(usage *schemas.ResponsesResponseUsage, billedUsage *schemas.BifrostLLMUsage, usageToProcess *BedrockTokenUsage) {
+	if usage == nil || usageToProcess == nil {
+		return
+	}
+	if usageToProcess.InputTokens > usage.InputTokens {
+		usage.InputTokens = usageToProcess.InputTokens
+		if billedUsage != nil {
+			billedUsage.PromptTokens = usageToProcess.InputTokens
+		}
+	}
+	if usageToProcess.OutputTokens > usage.OutputTokens {
+		usage.OutputTokens = usageToProcess.OutputTokens
+		if billedUsage != nil {
+			billedUsage.CompletionTokens = usageToProcess.OutputTokens
+		}
+	}
+	if usageToProcess.TotalTokens > usage.TotalTokens {
+		usage.TotalTokens = usageToProcess.TotalTokens
+		if billedUsage != nil {
+			billedUsage.TotalTokens = usageToProcess.TotalTokens
+		}
+	}
+	if usageToProcess.CacheReadInputTokens > 0 {
+		if usage.InputTokensDetails == nil {
+			usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{}
+		}
+		if billedUsage != nil && billedUsage.PromptTokensDetails == nil {
+			billedUsage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{}
+		}
+		if usageToProcess.CacheReadInputTokens > usage.InputTokensDetails.CachedReadTokens {
+			usage.InputTokensDetails.CachedReadTokens = usageToProcess.CacheReadInputTokens
+			if billedUsage != nil {
+				billedUsage.PromptTokensDetails.CachedReadTokens = usageToProcess.CacheReadInputTokens
+			}
+		}
+	}
+	if usageToProcess.CacheWriteInputTokens > 0 {
+		if usage.InputTokensDetails == nil {
+			usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{}
+		}
+		if billedUsage != nil && billedUsage.PromptTokensDetails == nil {
+			billedUsage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{}
+		}
+		if usageToProcess.CacheWriteInputTokens > usage.InputTokensDetails.CachedWriteTokens {
+			usage.InputTokensDetails.CachedWriteTokens = usageToProcess.CacheWriteInputTokens
+			if billedUsage != nil {
+				billedUsage.PromptTokensDetails.CachedWriteTokens = usageToProcess.CacheWriteInputTokens
+			}
+		}
+		if usageToProcess.CacheDetails != nil {
+			if usage.InputTokensDetails.CachedWriteTokenDetails == nil {
+				usage.InputTokensDetails.CachedWriteTokenDetails = &schemas.ChatCachedWriteTokenDetails{}
+			}
+			if billedUsage != nil && billedUsage.PromptTokensDetails.CachedWriteTokenDetails == nil {
+				billedUsage.PromptTokensDetails.CachedWriteTokenDetails = &schemas.ChatCachedWriteTokenDetails{}
+			}
+			for _, cacheDetail := range *usageToProcess.CacheDetails {
+				if cacheDetail.TTL == BedrockCacheWriteTTL5m {
+					usage.InputTokensDetails.CachedWriteTokenDetails.CachedWriteTokens5m = cacheDetail.InputTokens
+					if billedUsage != nil {
+						billedUsage.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens5m = cacheDetail.InputTokens
+					}
+				}
+				if cacheDetail.TTL == BedrockCacheWriteTTL1h {
+					usage.InputTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h = cacheDetail.InputTokens
+					if billedUsage != nil {
+						billedUsage.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h = cacheDetail.InputTokens
+					}
+				}
+			}
+		}
+	}
+}
+
 // ChatCompletionStream performs a streaming chat completion request to Bedrock's API.
-// It formats the request, sends it to Bedrock, and processes the streaming response.
+// OpenAI-family and Gemma 4 models route via the Bedrock Mantle OpenAI-compatible endpoint.
+// All other models (including Anthropic/Claude) use the Bedrock Converse streaming API.
 // Returns a channel for streaming BifrostStreamChunk objects or an error if the request fails.
 func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.ChatCompletionStreamRequest); err != nil {
 		return nil, err
 	}
 
-	if isMantleModel(request.Model) {
-		return provider.chatCompletionStreamViaMantle(ctx, postHookRunner, postHookSpanFinalizer, key, request)
+	if isMantleModel(ctx, request.Model) {
+		return provider.mantleChatCompletionsStream(ctx, postHookRunner, postHookSpanFinalizer, key, request)
 	}
 
+	// Use Bedrock Converse streaming API for all other models
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
@@ -1168,6 +1320,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 	}
 
 	startTime := time.Now()
+
 	resp, bifrostErr := provider.makeStreamingRequest(ctx, jsonData, key, request.Model, "converse-stream")
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
@@ -1188,7 +1341,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 			} else if ctx.Err() == context.DeadlineExceeded {
 				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, jsonData)
 			}
-			close(responseChan)
+			providerUtils.CloseStream(ctx, responseChan)
 		}()
 		defer resp.Body.Close()
 
@@ -1202,6 +1355,28 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 
 		// Process AWS Event Stream format
 		usage := &schemas.BifrostLLMUsage{}
+		// Register the accumulating usage handle so a mid-stream
+		// cancel/timeout can bill for tokens the provider already processed.
+		ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, usage)
+
+		// Fold cached tokens into PromptTokens exactly once at stream end. The EOF
+		// path calls normalizeUsage() after the loop; on a mid-stream cancel/timeout
+		// the deferred call below runs first (LIFO, registered after the cancellation
+		// handler at the top of the goroutine) so HandleStreamCancellation/Timeout
+		// bills the normalized totals.
+		usageNormalized := false
+		normalizeUsage := func() {
+			if usageNormalized {
+				return
+			}
+			usageNormalized = true
+			normalizeCachedUsage(usage)
+		}
+		defer func() {
+			if ctx.Err() != nil {
+				normalizeUsage()
+			}
+		}()
 		var finishReason *string
 		chunkIndex := 0
 
@@ -1219,13 +1394,12 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 		if toolName, ok := ctx.Value(schemas.BifrostContextKeyStructuredOutputToolName).(string); ok {
 			structuredOutputToolName = toolName
 		}
-		var structuredOutputBuilder strings.Builder
-		var isAccumulatingStructuredOutput bool
 
 		streamState := NewBedrockStreamStateWithContext(ctx)
+		var isAccumulatingStructuredOutput bool
+		var structuredOutputBuilder strings.Builder
 
 		for {
-			// If context was cancelled/timed out, let defer handle it
 			if ctx.Err() != nil {
 				return
 			}
@@ -1268,28 +1442,13 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 								excType = v
 							}
 						}
-						errMsg := string(message.Payload)
-						err := fmt.Errorf("stream %s: %s", excType, errMsg)
-						// Retryable AWS exceptions must not set IsBifrostError:true — that would
-						// bypass the retry gate in executeRequestWithRetries. Instead emit
-						// IsBifrostError:false with the equivalent HTTP status code so the existing
-						// retry gate (transientServerStatusCodes / perKeyFailureStatusCodes) handles the retry.
-						if statusCode, ok := retryableBedrockExceptions[excType]; ok {
-							providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, &schemas.BifrostError{
-								IsBifrostError: false,
-								StatusCode:     &statusCode,
-								Error: &schemas.ErrorField{
-									Message: err.Error(),
-								},
-							}, responseChan, provider.logger, postHookSpanFinalizer)
-						} else {
-							providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, provider.logger, postHookSpanFinalizer)
-						}
+						streamErr := newBedrockStreamException("", excType, message.Payload)
+						providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, streamErr, responseChan, provider.logger, postHookSpanFinalizer)
 						return
 					}
 				}
 
-				// Parse the JSON event into our typed structure
+				// Converse API path: parse Bedrock Converse-specific stream events
 				var streamEvent BedrockStreamEvent
 				if err := sonic.Unmarshal(message.Payload, &streamEvent); err != nil {
 					provider.logger.Debug("Failed to parse JSON from event buffer: %v, data: %s", err, string(message.Payload))
@@ -1435,11 +1594,9 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 			}
 		}
 
-		if usage.PromptTokensDetails != nil {
-			usage.PromptTokens = usage.PromptTokens + usage.PromptTokensDetails.CachedReadTokens + usage.PromptTokensDetails.CachedWriteTokens
-		}
+		normalizeUsage()
 
-		// Send final response
+		// Send final chunk with accumulated usage
 		response := providerUtils.CreateBifrostChatCompletionChunkResponse(id, usage, finishReason, chunkIndex, request.Model, 0)
 		// Set raw request if enabled
 		if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
@@ -1453,19 +1610,20 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 	return responseChan, nil
 }
 
-// Responses performs a chat completion request to Anthropic's API.
-// It formats the request, sends it to Anthropic, and processes the response.
+// Responses performs a responses request to Bedrock's API.
+// OpenAI-family and Gemma 4 models route via the Bedrock Mantle OpenAI-compatible endpoint.
+// All other models (including Anthropic/Claude) use the Bedrock Converse API.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
 func (provider *BedrockProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.ResponsesRequest); err != nil {
 		return nil, err
 	}
 
-	if isMantleModel(request.Model) {
-		return provider.responsesViaMantle(ctx, key, request)
+	if isMantleModel(ctx, request.Model) {
+		return provider.mantleResponses(ctx, key, request)
 	}
 
-	// Use centralized Bedrock converter
+	// Use Bedrock Converse API for all other models
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
@@ -1475,9 +1633,7 @@ func (provider *BedrockProvider) Responses(ctx *schemas.BifrostContext, key sche
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
-
-	// Format the path with proper model identifier
-	path, _ := provider.getModelPathAndRegion("converse", request.Model, key)
+	path, _ := provider.getModelPathAndRegion(ctx, "converse", request.Model, key)
 
 	// Create the signed request
 	responseBody, latency, providerResponseHeaders, bifrostErr := provider.completeRequest(ctx, jsonData, path, key, request.Model)
@@ -1485,22 +1641,22 @@ func (provider *BedrockProvider) Responses(ctx *schemas.BifrostContext, key sche
 		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
 	}
 	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
-	// pool the response
+	// Parse Bedrock Converse API response
 	bedrockResponse := acquireBedrockChatResponse()
 	defer releaseBedrockChatResponse(bedrockResponse)
 
 	// Parse the response using the new Bedrock type
 	if err := sonic.Unmarshal(responseBody, bedrockResponse); err != nil {
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("failed to parse bedrock response", err), jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("failed to parse bedrock response", err), jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	// Convert using the new response converter
 	bifrostResponse, err := bedrockResponse.ToBifrostResponsesResponse(ctx)
 	if err != nil {
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("failed to convert bedrock response", err), jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("failed to convert bedrock response", err), jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	bifrostResponse.Model = request.Model
@@ -1533,10 +1689,11 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 		return nil, err
 	}
 
-	if isMantleModel(request.Model) {
-		return provider.responsesStreamViaMantle(ctx, postHookRunner, postHookSpanFinalizer, key, request)
+	if isMantleModel(ctx, request.Model) {
+		return provider.mantleResponsesStream(ctx, postHookRunner, postHookSpanFinalizer, key, request)
 	}
 
+	// Use Bedrock Converse streaming API for all other models
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
@@ -1548,9 +1705,11 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 	}
 
 	startTime := time.Now()
+
 	resp, bifrostErr := provider.makeStreamingRequest(ctx, jsonData, key, request.Model, "converse-stream")
+	latency := time.Since(startTime)
 	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeadersFromHTTP(resp))
@@ -1569,7 +1728,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 			} else if ctx.Err() == context.DeadlineExceeded {
 				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, jsonData)
 			}
-			close(responseChan)
+			providerUtils.CloseStream(ctx, responseChan)
 		}()
 		// Always release response on exit; bodyStream close should prevent indefinite blocking.
 		defer resp.Body.Close()
@@ -1584,10 +1743,30 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 
 		// Process AWS Event Stream format
 		usage := &schemas.ResponsesResponseUsage{}
+		billedUsage := &schemas.BifrostLLMUsage{}
+		// Register the accumulating usage handle so a mid-stream cancel/timeout
+		// can bill for Bedrock Responses usage already reported by stream events
+		// before the stream was interrupted.
+		ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, billedUsage)
+
+		usageNormalized := false
+		normalizeUsage := func() {
+			if usageNormalized {
+				return
+			}
+			usageNormalized = true
+			normalizeCachedUsage(billedUsage)
+		}
+		defer func() {
+			if ctx.Err() != nil {
+				normalizeUsage()
+			}
+		}()
+
 		var streamTrace *BedrockConverseTrace
 		chunkIndex := 0
 
-		// Create stream state for stateful conversions
+		// Create stream state for stateful conversions (used by Converse API path)
 		streamState := acquireBedrockResponsesStreamState()
 		streamState.Model = &request.Model
 		streamState.Ctx = ctx
@@ -1618,7 +1797,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 					return
 				}
 				if err == io.EOF {
-					// End of stream - finalize any open items
+					// Converse API: finalize any open items at end of stream.
 					finalResponses := FinalizeBedrockStream(streamState, chunkIndex, usage, streamTrace)
 					for i, finalResponse := range finalResponses {
 						finalResponse.ExtraFields = schemas.BifrostResponseExtraFields{
@@ -1673,28 +1852,13 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 								excType = v
 							}
 						}
-						errMsg := string(message.Payload)
-						err := fmt.Errorf("stream %s: %s", excType, errMsg)
-						// Retryable AWS exceptions must not set IsBifrostError:true — that would
-						// bypass the retry gate in executeRequestWithRetries. Instead emit
-						// IsBifrostError:false with the equivalent HTTP status code so the existing
-						// retry gate (transientServerStatusCodes / perKeyFailureStatusCodes) handles the retry.
-						if statusCode, ok := retryableBedrockExceptions[excType]; ok {
-							providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, &schemas.BifrostError{
-								IsBifrostError: false,
-								StatusCode:     &statusCode,
-								Error: &schemas.ErrorField{
-									Message: err.Error(),
-								},
-							}, responseChan, provider.logger, postHookSpanFinalizer)
-						} else {
-							providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, provider.logger, postHookSpanFinalizer)
-						}
+						streamErr := newBedrockStreamException("", excType, message.Payload)
+						providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, streamErr, responseChan, provider.logger, postHookSpanFinalizer)
 						return
 					}
 				}
 
-				// Parse the JSON event into our typed structure
+				// Converse API path: parse Bedrock Converse-specific stream events
 				var streamEvent BedrockStreamEvent
 				if err := sonic.Unmarshal(message.Payload, &streamEvent); err != nil {
 					provider.logger.Debug("Failed to parse JSON from event buffer: %v, data: %s", err, string(message.Payload))
@@ -1709,45 +1873,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 				if streamEvent.Usage != nil {
 					// Accumulate usage information instead of overwriting
 					// In some cases usage comes in multiple events, so we need to take the maximum values
-					if streamEvent.Usage.InputTokens > usage.InputTokens {
-						usage.InputTokens = streamEvent.Usage.InputTokens
-					}
-					if streamEvent.Usage.OutputTokens > usage.OutputTokens {
-						usage.OutputTokens = streamEvent.Usage.OutputTokens
-					}
-					if streamEvent.Usage.TotalTokens > usage.TotalTokens {
-						usage.TotalTokens = streamEvent.Usage.TotalTokens
-					}
-					// Handle cached tokens if present
-					if streamEvent.Usage.CacheReadInputTokens > 0 {
-						if usage.InputTokensDetails == nil {
-							usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{}
-						}
-						if streamEvent.Usage.CacheReadInputTokens > usage.InputTokensDetails.CachedReadTokens {
-							usage.InputTokensDetails.CachedReadTokens = streamEvent.Usage.CacheReadInputTokens
-						}
-					}
-					if streamEvent.Usage.CacheWriteInputTokens > 0 {
-						if usage.InputTokensDetails == nil {
-							usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{}
-						}
-						if streamEvent.Usage.CacheWriteInputTokens > usage.InputTokensDetails.CachedWriteTokens {
-							usage.InputTokensDetails.CachedWriteTokens = streamEvent.Usage.CacheWriteInputTokens
-						}
-						if streamEvent.Usage.CacheDetails != nil {
-							if usage.InputTokensDetails.CachedWriteTokenDetails == nil {
-								usage.InputTokensDetails.CachedWriteTokenDetails = &schemas.ChatCachedWriteTokenDetails{}
-							}
-							for _, cacheDetail := range *streamEvent.Usage.CacheDetails {
-								if cacheDetail.TTL == BedrockCacheWriteTTL5m {
-									usage.InputTokensDetails.CachedWriteTokenDetails.CachedWriteTokens5m = cacheDetail.InputTokens
-								}
-								if cacheDetail.TTL == BedrockCacheWriteTTL1h {
-									usage.InputTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h = cacheDetail.InputTokens
-								}
-							}
-						}
-					}
+					accumulateBedrockResponsesUsage(usage, billedUsage, streamEvent.Usage)
 				}
 
 				// Handle structured output: intercept tool calls for the structured output tool
@@ -1837,7 +1963,7 @@ func (provider *BedrockProvider) Embedding(ctx *schemas.BifrostContext, key sche
 	}
 
 	// Determine model type
-	modelType, err := DetermineEmbeddingModelType(request.Model)
+	modelType, err := DetermineEmbeddingModelType(ctx, request.Model)
 	if err != nil {
 		return nil, providerUtils.NewConfigurationError(err.Error())
 	}
@@ -1861,7 +1987,7 @@ func (provider *BedrockProvider) Embedding(ctx *schemas.BifrostContext, key sche
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
-		path, _ = provider.getModelPathAndRegion("invoke", request.Model, key)
+		path, _ = provider.getModelPathAndRegion(ctx, "invoke", request.Model, key)
 		rawResponse, latency, providerResponseHeaders, bifrostError = provider.completeRequest(ctx, jsonData, path, key, request.Model)
 
 	case "cohere":
@@ -1874,7 +2000,7 @@ func (provider *BedrockProvider) Embedding(ctx *schemas.BifrostContext, key sche
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
-		path, _ = provider.getModelPathAndRegion("invoke", request.Model, key)
+		path, _ = provider.getModelPathAndRegion(ctx, "invoke", request.Model, key)
 		rawResponse, latency, providerResponseHeaders, bifrostError = provider.completeRequest(ctx, jsonData, path, key, request.Model)
 
 	default:
@@ -1885,7 +2011,7 @@ func (provider *BedrockProvider) Embedding(ctx *schemas.BifrostContext, key sche
 		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
 	}
 	if bifrostError != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostError, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, bifrostError, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 	// Parse response based on model type
 	var bifrostResponse *schemas.BifrostEmbeddingResponse
@@ -1893,7 +2019,7 @@ func (provider *BedrockProvider) Embedding(ctx *schemas.BifrostContext, key sche
 	case "titan":
 		var titanResp BedrockTitanEmbeddingResponse
 		if err := sonic.Unmarshal(rawResponse, &titanResp); err != nil {
-			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("error parsing Titan embedding response", err), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse)
+			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("error parsing Titan embedding response", err), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		}
 		bifrostResponse = titanResp.ToBifrostEmbeddingResponse()
 		bifrostResponse.Model = request.Model
@@ -1901,11 +2027,11 @@ func (provider *BedrockProvider) Embedding(ctx *schemas.BifrostContext, key sche
 	case "cohere":
 		var cohereResp BedrockCohereEmbeddingResponse
 		if err := sonic.Unmarshal(rawResponse, &cohereResp); err != nil {
-			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("error parsing Cohere embedding response", err), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse)
+			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("error parsing Cohere embedding response", err), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		}
 		converted, convErr := cohereResp.ToBifrostEmbeddingResponse()
 		if convErr != nil {
-			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("error parsing Cohere embedding response", convErr), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse)
+			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("error parsing Cohere embedding response", convErr), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		}
 		bifrostResponse = converted
 		bifrostResponse.Model = request.Model
@@ -1916,6 +2042,18 @@ func (provider *BedrockProvider) Embedding(ctx *schemas.BifrostContext, key sche
 			var rawResponseData interface{}
 			if err := sonic.Unmarshal(rawResponse, &rawResponseData); err == nil {
 				bifrostResponse.ExtraFields.RawResponse = rawResponseData
+			}
+		}
+	}
+
+	// Bedrock Cohere embed models omit token usage from the response body and instead
+	// return it in the X-Amzn-Bedrock-Input-Token-Count response header. Backfill Usage
+	// from that header when the body did not provide it. (#3917)
+	if bifrostResponse.Usage == nil {
+		if inputTokens, ok := inputTokensFromHeaders(providerResponseHeaders); ok {
+			bifrostResponse.Usage = &schemas.BifrostLLMUsage{
+				PromptTokens: inputTokens,
+				TotalTokens:  inputTokens,
 			}
 		}
 	}
@@ -1966,18 +2104,29 @@ func (provider *BedrockProvider) Rerank(ctx *schemas.BifrostContext, key schemas
 		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
 	}
 	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	response := &BedrockRerankResponse{}
 	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(rawResponseBody, response, jsonData, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, rawResponseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, rawResponseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	returnDocuments := request.Params != nil && request.Params.ReturnDocuments != nil && *request.Params.ReturnDocuments
 	bifrostResponse := response.ToBifrostRerankResponse(request.Documents, returnDocuments)
 	bifrostResponse.Model = request.Model
+
+	// Bedrock returns rerank input token usage only in the X-Amzn-Bedrock-Input-Token-Count
+	// response header (it is absent from the body); backfill Usage from it. (#3917)
+	if bifrostResponse.Usage == nil {
+		if inputTokens, ok := inputTokensFromHeaders(providerResponseHeaders); ok {
+			bifrostResponse.Usage = &schemas.BifrostLLMUsage{
+				PromptTokens: inputTokens,
+				TotalTokens:  inputTokens,
+			}
+		}
+	}
 
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
 	bifrostResponse.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
@@ -2027,7 +2176,7 @@ func (provider *BedrockProvider) ImageGeneration(ctx *schemas.BifrostContext, ke
 	var providerResponseHeaders map[string]string
 	var path string
 
-	path, _ = provider.getModelPathAndRegion("invoke", request.Model, key)
+	path, _ = provider.getModelPathAndRegion(ctx, "invoke", request.Model, key)
 
 	jsonData, bifrostError = providerUtils.CheckContextAndGetRequestBody(
 		ctx,
@@ -2046,18 +2195,18 @@ func (provider *BedrockProvider) ImageGeneration(ctx *schemas.BifrostContext, ke
 		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
 	}
 	if bifrostError != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostError, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, bifrostError, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	// Parse response based on model type
 	var bifrostResponse *schemas.BifrostImageGenerationResponse
 	var imageResp BedrockImageGenerationResponse
 	if err := sonic.Unmarshal(rawResponse, &imageResp); err != nil {
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("error parsing image generation response", err), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("error parsing image generation response", err), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	if imageResp.Error != "" {
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(imageResp.Error, nil), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(imageResp.Error, nil), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	bifrostResponse = ToBifrostImageGenerationResponse(&imageResp)
@@ -2100,7 +2249,7 @@ func (provider *BedrockProvider) ImageEdit(ctx *schemas.BifrostContext, key sche
 	var bifrostError *schemas.BifrostError
 
 	// Stability AI routing and task-type inference use the actual model ID.
-	path, _ := provider.getModelPathAndRegion("invoke", request.Model, key)
+	path, _ := provider.getModelPathAndRegion(ctx, "invoke", request.Model, key)
 
 	jsonData, bifrostError = providerUtils.CheckContextAndGetRequestBody(
 		ctx,
@@ -2121,17 +2270,17 @@ func (provider *BedrockProvider) ImageEdit(ctx *schemas.BifrostContext, key sche
 		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
 	}
 	if bifrostError != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostError, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, bifrostError, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	// Parse response (reuse BedrockImageGenerationResponse)
 	var imageResp BedrockImageGenerationResponse
 	if err := sonic.Unmarshal(rawResponse, &imageResp); err != nil {
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("error parsing image edit response", err), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("error parsing image edit response", err), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	if imageResp.Error != "" {
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(imageResp.Error, nil), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(imageResp.Error, nil), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	// Convert response and set metadata
@@ -2182,23 +2331,23 @@ func (provider *BedrockProvider) ImageVariation(ctx *schemas.BifrostContext, key
 	}
 
 	// Make API request (same URL as image generation)
-	path, _ := provider.getModelPathAndRegion("invoke", request.Model, key)
+	path, _ := provider.getModelPathAndRegion(ctx, "invoke", request.Model, key)
 	rawResponse, latency, providerResponseHeaders, bifrostError := provider.completeRequest(ctx, jsonData, path, key, request.Model)
 	if providerResponseHeaders != nil {
 		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
 	}
 	if bifrostError != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostError, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, bifrostError, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	// Parse response (reuse BedrockImageGenerationResponse and ToBifrostImageGenerationResponse)
 	var imageResp BedrockImageGenerationResponse
 	if err := sonic.Unmarshal(rawResponse, &imageResp); err != nil {
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("error parsing image variation response", err), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("error parsing image variation response", err), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	if imageResp.Error != "" {
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(imageResp.Error, nil), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(imageResp.Error, nil), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	// Convert response and set metadata
@@ -2324,7 +2473,7 @@ func (provider *BedrockProvider) FileUpload(ctx *schemas.BifrostContext, key sch
 	httpReq.ContentLength = int64(len(request.File))
 
 	// Sign request for S3
-	if err := signAWSRequest(ctx, httpReq, key.BedrockKeyConfig.AccessKey, key.BedrockKeyConfig.SecretKey, key.BedrockKeyConfig.SessionToken, key.BedrockKeyConfig.RoleARN, key.BedrockKeyConfig.ExternalID, key.BedrockKeyConfig.RoleSessionName, region, "s3"); err != nil {
+	if err := signAWSRequest(ctx, httpReq, key.BedrockKeyConfig, region, "s3"); err != nil {
 		provider.logger.Error("error signing request: %s", err.Error.Message)
 		return nil, err
 	}
@@ -2454,7 +2603,7 @@ func (provider *BedrockProvider) FileList(ctx *schemas.BifrostContext, keys []sc
 	}
 
 	// Sign request for S3
-	if bifrostErr := signAWSRequest(ctx, httpReq, key.BedrockKeyConfig.AccessKey, key.BedrockKeyConfig.SecretKey, key.BedrockKeyConfig.SessionToken, key.BedrockKeyConfig.RoleARN, key.BedrockKeyConfig.ExternalID, key.BedrockKeyConfig.RoleSessionName, region, "s3"); bifrostErr != nil {
+	if bifrostErr := signAWSRequest(ctx, httpReq, key.BedrockKeyConfig, region, "s3"); bifrostErr != nil {
 		return nil, bifrostErr
 	}
 
@@ -2565,7 +2714,7 @@ func (provider *BedrockProvider) FileRetrieve(ctx *schemas.BifrostContext, keys 
 		}
 
 		// Sign request for S3
-		if err := signAWSRequest(ctx, httpReq, key.BedrockKeyConfig.AccessKey, key.BedrockKeyConfig.SecretKey, key.BedrockKeyConfig.SessionToken, key.BedrockKeyConfig.RoleARN, key.BedrockKeyConfig.ExternalID, key.BedrockKeyConfig.RoleSessionName, region, "s3"); err != nil {
+		if err := signAWSRequest(ctx, httpReq, key.BedrockKeyConfig, region, "s3"); err != nil {
 			lastErr = err
 			continue
 		}
@@ -2663,7 +2812,7 @@ func (provider *BedrockProvider) FileDelete(ctx *schemas.BifrostContext, keys []
 		}
 
 		// Sign request for S3
-		if err := signAWSRequest(ctx, httpReq, key.BedrockKeyConfig.AccessKey, key.BedrockKeyConfig.SecretKey, key.BedrockKeyConfig.SessionToken, key.BedrockKeyConfig.RoleARN, key.BedrockKeyConfig.ExternalID, key.BedrockKeyConfig.RoleSessionName, region, "s3"); err != nil {
+		if err := signAWSRequest(ctx, httpReq, key.BedrockKeyConfig, region, "s3"); err != nil {
 			lastErr = err
 			continue
 		}
@@ -2744,7 +2893,7 @@ func (provider *BedrockProvider) FileContent(ctx *schemas.BifrostContext, keys [
 		}
 
 		// Sign request for S3
-		if err := signAWSRequest(ctx, httpReq, key.BedrockKeyConfig.AccessKey, key.BedrockKeyConfig.SecretKey, key.BedrockKeyConfig.SessionToken, key.BedrockKeyConfig.RoleARN, key.BedrockKeyConfig.ExternalID, key.BedrockKeyConfig.RoleSessionName, region, "s3"); err != nil {
+		if err := signAWSRequest(ctx, httpReq, key.BedrockKeyConfig, region, "s3"); err != nil {
 			lastErr = err
 			continue
 		}
@@ -2950,7 +3099,7 @@ func (provider *BedrockProvider) BatchCreate(ctx *schemas.BifrostContext, key sc
 	}
 
 	// Sign request
-	if err := signAWSRequest(ctx, httpReq, key.BedrockKeyConfig.AccessKey, key.BedrockKeyConfig.SecretKey, key.BedrockKeyConfig.SessionToken, key.BedrockKeyConfig.RoleARN, key.BedrockKeyConfig.ExternalID, key.BedrockKeyConfig.RoleSessionName, region, bedrockSigningService); err != nil {
+	if err := signAWSRequest(ctx, httpReq, key.BedrockKeyConfig, region, bedrockSigningService); err != nil {
 		return nil, providerUtils.EnrichError(ctx, err, jsonData, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
@@ -3075,7 +3224,7 @@ func (provider *BedrockProvider) BatchList(ctx *schemas.BifrostContext, keys []s
 	}
 
 	// Sign request
-	if bifrostErr := signAWSRequest(ctx, httpReq, key.BedrockKeyConfig.AccessKey, key.BedrockKeyConfig.SecretKey, key.BedrockKeyConfig.SessionToken, key.BedrockKeyConfig.RoleARN, key.BedrockKeyConfig.ExternalID, key.BedrockKeyConfig.RoleSessionName, region, bedrockSigningService); bifrostErr != nil {
+	if bifrostErr := signAWSRequest(ctx, httpReq, key.BedrockKeyConfig, region, bedrockSigningService); bifrostErr != nil {
 		return nil, bifrostErr
 	}
 
@@ -3194,7 +3343,7 @@ func (provider *BedrockProvider) fetchBatchManifest(ctx *schemas.BifrostContext,
 	}
 
 	// Sign request for S3
-	if err := signAWSRequest(ctx, httpReq, key.BedrockKeyConfig.AccessKey, key.BedrockKeyConfig.SecretKey, key.BedrockKeyConfig.SessionToken, key.BedrockKeyConfig.RoleARN, key.BedrockKeyConfig.ExternalID, key.BedrockKeyConfig.RoleSessionName, region, "s3"); err != nil {
+	if err := signAWSRequest(ctx, httpReq, key.BedrockKeyConfig, region, "s3"); err != nil {
 		provider.logger.Error("failed to sign manifest request: %v", err)
 		return nil
 	}
@@ -3254,7 +3403,7 @@ func (provider *BedrockProvider) BatchRetrieve(ctx *schemas.BifrostContext, keys
 		}
 
 		// Sign request
-		if err := signAWSRequest(ctx, httpReq, key.BedrockKeyConfig.AccessKey, key.BedrockKeyConfig.SecretKey, key.BedrockKeyConfig.SessionToken, key.BedrockKeyConfig.RoleARN, key.BedrockKeyConfig.ExternalID, key.BedrockKeyConfig.RoleSessionName, region, bedrockSigningService); err != nil {
+		if err := signAWSRequest(ctx, httpReq, key.BedrockKeyConfig, region, bedrockSigningService); err != nil {
 			lastErr = err
 			continue
 		}
@@ -3313,6 +3462,15 @@ func (provider *BedrockProvider) BatchRetrieve(ctx *schemas.BifrostContext, keys
 			ExtraFields: schemas.BifrostResponseExtraFields{
 				Latency: latency.Milliseconds(),
 			},
+		}
+
+		// Surface the AWS job message (e.g. a validation failure reason) so
+		// callers see why a job failed without dropping to the AWS CLI.
+		if bedrockResp.Message != "" {
+			result.Errors = &schemas.BatchErrors{
+				Object: "list",
+				Data:   []schemas.BatchError{{Message: bedrockResp.Message}},
+			}
 		}
 
 		if bedrockResp.InputDataConfig != nil {
@@ -3389,7 +3547,7 @@ func (provider *BedrockProvider) BatchCancel(ctx *schemas.BifrostContext, keys [
 		}
 
 		// Sign request
-		if err := signAWSRequest(ctx, httpReq, key.BedrockKeyConfig.AccessKey, key.BedrockKeyConfig.SecretKey, key.BedrockKeyConfig.SessionToken, key.BedrockKeyConfig.RoleARN, key.BedrockKeyConfig.ExternalID, key.BedrockKeyConfig.RoleSessionName, region, bedrockSigningService); err != nil {
+		if err := signAWSRequest(ctx, httpReq, key.BedrockKeyConfig, region, bedrockSigningService); err != nil {
 			lastErr = err
 			continue
 		}
@@ -3575,32 +3733,29 @@ func (provider *BedrockProvider) BatchResults(ctx *schemas.BifrostContext, keys 
 	return batchResultsResp, nil
 }
 
-// resolveBedrockRegion returns the AWS region to use for a request.
-// the priority is: model string region > key configured region > default region
-func resolveBedrockRegion(key schemas.Key, model string) string {
-	if region, _ := parseBedrockRegionAndModel(model); region != "" {
-		return region
-	}
-	if key.BedrockKeyConfig != nil && key.BedrockKeyConfig.Region != nil && key.BedrockKeyConfig.Region.GetValue() != "" {
-		return key.BedrockKeyConfig.Region.GetValue()
-	}
-	return DefaultBedrockRegion
-}
-
 // getModelPathAndRegion is a helper that calls parseBedrockRegionAndModel
-// once and returns both the request path and the AWS signing region
-func (provider *BedrockProvider) getModelPathAndRegion(basePath, model string, key schemas.Key) (path, region string) {
+// once and returns both the request path and the AWS signing region.
+// Honors per-alias Region and BedrockAliasCfg.InferenceProfileARN overrides
+// via the resolved alias in ctx.
+func (provider *BedrockProvider) getModelPathAndRegion(ctx *schemas.BifrostContext, basePath, model string, key schemas.Key) (path, region string) {
 	r, bareModel := parseBedrockRegionAndModel(model)
 	if r == "" {
-		if key.BedrockKeyConfig != nil && key.BedrockKeyConfig.Region != nil && key.BedrockKeyConfig.Region.GetValue() != "" {
-			r = key.BedrockKeyConfig.Region.GetValue()
-		} else {
-			r = DefaultBedrockRegion
+		if ra := schemas.GetResolvedAlias(ctx); ra != nil && ra.Config != nil && ra.Config.Region != nil {
+			if v := ra.Config.Region.GetValue(); v != "" {
+				r = v
+			}
+		}
+		if r == "" {
+			if key.BedrockKeyConfig != nil && key.BedrockKeyConfig.Region != nil && key.BedrockKeyConfig.Region.GetValue() != "" {
+				r = key.BedrockKeyConfig.Region.GetValue()
+			} else {
+				r = DefaultBedrockRegion
+			}
 		}
 	}
 	p := fmt.Sprintf("%s/%s", bareModel, basePath)
-	if key.BedrockKeyConfig != nil && key.BedrockKeyConfig.ARN != nil && key.BedrockKeyConfig.ARN.GetValue() != "" {
-		encodedModelIdentifier := url.PathEscape(fmt.Sprintf("%s/%s", key.BedrockKeyConfig.ARN.GetValue(), bareModel))
+	if arn := resolveBedrockARN(ctx, key); arn != "" {
+		encodedModelIdentifier := url.PathEscape(fmt.Sprintf("%s/%s", arn, bareModel))
 		p = fmt.Sprintf("%s/%s", encodedModelIdentifier, basePath)
 	}
 	return p, r
@@ -3627,7 +3782,7 @@ func (provider *BedrockProvider) CountTokens(ctx *schemas.BifrostContext, key sc
 	}
 
 	// Format the path with proper model identifier
-	path, _ := provider.getModelPathAndRegion("count-tokens", request.Model, key)
+	path, _ := provider.getModelPathAndRegion(ctx, "count-tokens", request.Model, key)
 
 	// Send the request
 	responseBody, latency, providerResponseHeaders, bifrostErr := provider.completeRequest(ctx, jsonData, path, key, request.Model)
@@ -3648,7 +3803,7 @@ func (provider *BedrockProvider) CountTokens(ctx *schemas.BifrostContext, key sc
 				},
 			}, nil
 		}
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	// Parse the response
@@ -3661,7 +3816,7 @@ func (provider *BedrockProvider) CountTokens(ctx *schemas.BifrostContext, key sc
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 	)
 	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	// Convert to Bifrost format

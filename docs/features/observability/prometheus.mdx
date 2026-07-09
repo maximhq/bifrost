@@ -192,6 +192,10 @@ The following metrics are available from both the `/metrics` endpoint and Push G
 | `http_request_size_bytes` | Histogram | Request body size |
 | `http_response_size_bytes` | Histogram | Response body size |
 
+<Note>
+The `path` label contains the matched route template (e.g. `/genai/v1beta/models/{model:*}`, `/v1/messages/batches/{batch_id}`), not the raw URL path. This keeps metric cardinality bounded by the number of registered routes instead of growing with every model name or resource ID that appears in a URL. For per-model breakdowns, use the `model` and `provider` labels on the `bifrost_*` metrics.
+</Note>
+
 ### Bifrost LLM Metrics
 
 | Metric | Type | Description |
@@ -220,7 +224,7 @@ Most request-level Bifrost LLM metrics include these labels (the `bifrost_key_ro
 - `alias` - Alias resolved to this model (empty if none)
 - `method` - Request type (chat, completion, embedding, etc.)
 - `virtual_key_id` / `virtual_key_name` - Virtual key identifiers
-- `routing_engine_used` - Comma-separated list of routing engines that contributed to the decision (e.g. `governance`, `routing-rule`, `loadbalancing`, `model-catalog`)
+- `routing_engine_used` - Comma-separated list of routing engines that contributed to the decision (e.g. `governance`, `routing-rule`, `loadbalancing`, `model-catalog`, `core`). `core` is emitted when the Bifrost orchestrator itself makes a routing decision — fallback transitions or retry transitions.
 - `routing_rule_id` / `routing_rule_name` - Routing rule that matched the request
 - `selected_key_id` / `selected_key_name` - API key that successfully served the request (`""` when all attempts failed)
 - `fallback_index` - Fallback position

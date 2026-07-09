@@ -18,6 +18,8 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+var defaultGeminiImageURLSchemes = []string{"http", "https"}
+
 // isGemini3Plus returns true if the model is Gemini 3.0 or higher
 // Uses simple string operations for hot path performance
 func isGemini3Plus(model string) bool {
@@ -163,6 +165,22 @@ func supportsThinkingConfig(model string) bool {
 
 	// Check for Gemini 3.0+ models
 	return isGemini3Plus(model)
+}
+
+func canDisableThinkingWithBudget(model string) bool {
+	return !strings.Contains(strings.ToLower(model), "gemini-2.5-pro")
+}
+
+func setThinkingBudgetZeroIfSupported(config *GenerationConfig, model string) {
+	if !canDisableThinkingWithBudget(model) {
+		config.ThinkingConfig = nil
+		return
+	}
+	if config.ThinkingConfig == nil {
+		config.ThinkingConfig = &GenerationConfigThinkingConfig{}
+	}
+	config.ThinkingConfig.IncludeThoughts = false
+	config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(0))
 }
 
 // effortToThinkingLevel converts reasoning effort to Gemini ThinkingLevel string
@@ -1184,16 +1202,14 @@ func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseMod
 
 		// Handle "none" effort explicitly (only if max_tokens not present)
 		if !hasMaxTokens && hasEffort && *params.Reasoning.Effort == "none" {
-			config.ThinkingConfig.IncludeThoughts = false
-			config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(0))
+			setThinkingBudgetZeroIfSupported(&config, model)
 		} else if hasMaxTokens {
 			// User provided max_tokens - use thinkingBudget (all Gemini models support this)
 			// If both max_tokens and effort are present, we ignore effort and use ONLY max_tokens
 			budget := *params.Reasoning.MaxTokens
 			switch budget {
 			case 0:
-				config.ThinkingConfig.IncludeThoughts = false
-				config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(0))
+				setThinkingBudgetZeroIfSupported(&config, model)
 			case DynamicReasoningBudget: // Special case: -1 means dynamic budget
 				config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(DynamicReasoningBudget))
 			default:
@@ -1808,12 +1824,16 @@ func addSpeechConfigToGenerationConfig(config *GenerationConfig, voiceConfig *sc
 }
 
 // convertBifrostMessagesToGemini converts Bifrost messages to Gemini format
-func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) ([]Content, *Content) {
+func convertBifrostMessagesToGemini(messages []schemas.ChatMessage, allowedImageURLSchemes ...string) ([]Content, *Content, error) {
+	if len(allowedImageURLSchemes) == 0 {
+		allowedImageURLSchemes = defaultGeminiImageURLSchemes
+	}
+
 	// if only system / developer message is there, convert it to user message (since openai allows it)
 	if len(messages) == 1 && (messages[0].Role == schemas.ChatMessageRoleSystem || messages[0].Role == schemas.ChatMessageRoleDeveloper) {
 		content := convertSystemChatMessageToGeminiUserContent(messages[0])
 		if len(content.Parts) > 0 {
-			return []Content{content}, nil
+			return []Content{content}, nil, nil
 		}
 	}
 
@@ -1999,10 +2019,9 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) ([]Content, 
 						imageURL := block.ImageURLStruct.URL
 
 						// Sanitize and parse the image URL
-						sanitizedURL, err := schemas.SanitizeImageURL(imageURL)
+						sanitizedURL, err := schemas.SanitizeImageURLWithAllowedSchemes(imageURL, allowedImageURLSchemes...)
 						if err != nil {
-							// Skip this block if URL is invalid
-							continue
+							return nil, nil, fmt.Errorf("failed to sanitize image URL: %w", err)
 						}
 
 						urlInfo := schemas.ExtractURLTypeInfo(sanitizedURL)
@@ -2164,7 +2183,7 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) ([]Content, 
 		}
 	}
 
-	return contents, systemInstruction
+	return contents, systemInstruction, nil
 }
 
 func convertSystemChatMessageToGeminiUserContent(message schemas.ChatMessage) Content {

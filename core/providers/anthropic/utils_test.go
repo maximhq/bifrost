@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/tidwall/gjson"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -848,6 +849,54 @@ func TestAddMissingBetaHeadersToContext_PerProvider(t *testing.T) {
 			expectHeaders: []string{AnthropicMCPClientBetaHeader},
 		},
 		{
+			name:     "Anthropic gets advisor header",
+			provider: schemas.Anthropic,
+			req: &AnthropicMessageRequest{
+				Tools: []AnthropicTool{{
+					Type:                 schemas.Ptr(AnthropicToolTypeAdvisor20260301),
+					Name:                 string(AnthropicToolNameAdvisor),
+					AnthropicToolAdvisor: &AnthropicToolAdvisor{Model: "claude-opus-4-8"},
+				}},
+			},
+			expectHeaders: []string{AnthropicAdvisorBetaHeader},
+		},
+		{
+			name:     "Vertex skips advisor header",
+			provider: schemas.Vertex,
+			req: &AnthropicMessageRequest{
+				Tools: []AnthropicTool{{
+					Type:                 schemas.Ptr(AnthropicToolTypeAdvisor20260301),
+					Name:                 string(AnthropicToolNameAdvisor),
+					AnthropicToolAdvisor: &AnthropicToolAdvisor{Model: "claude-opus-4-8"},
+				}},
+			},
+			unexpectHeaders: []string{AnthropicAdvisorBetaHeader},
+		},
+		{
+			name:     "Bedrock skips advisor header",
+			provider: schemas.Bedrock,
+			req: &AnthropicMessageRequest{
+				Tools: []AnthropicTool{{
+					Type:                 schemas.Ptr(AnthropicToolTypeAdvisor20260301),
+					Name:                 string(AnthropicToolNameAdvisor),
+					AnthropicToolAdvisor: &AnthropicToolAdvisor{Model: "claude-opus-4-8"},
+				}},
+			},
+			unexpectHeaders: []string{AnthropicAdvisorBetaHeader},
+		},
+		{
+			name:     "Azure skips advisor header",
+			provider: schemas.Azure,
+			req: &AnthropicMessageRequest{
+				Tools: []AnthropicTool{{
+					Type:                 schemas.Ptr(AnthropicToolTypeAdvisor20260301),
+					Name:                 string(AnthropicToolNameAdvisor),
+					AnthropicToolAdvisor: &AnthropicToolAdvisor{Model: "claude-opus-4-8"},
+				}},
+			},
+			unexpectHeaders: []string{AnthropicAdvisorBetaHeader},
+		},
+		{
 			name:     "Vertex gets compaction header",
 			provider: schemas.Vertex,
 			req: &AnthropicMessageRequest{
@@ -1480,9 +1529,9 @@ func TestNetworkConfigBetaOverridesFlow(t *testing.T) {
 
 func TestStripUnsupportedFieldsFromRawBody(t *testing.T) {
 	t.Run("diagnostics_gated_via_feature_map", func(t *testing.T) {
-		// diagnostics is an undocumented Claude Code session-continuity field
-		// (diagnostics.previous_message_id). Only Anthropic direct keeps it;
-		// every other provider strips it fail-closed via Diagnostics=false.
+		// diagnostics enables cache diagnostics (cache-diagnosis-2026-04-07,
+		// diagnostics.previous_message_id) — Claude API only. Only Anthropic direct
+		// keeps it; every other provider strips it fail-closed via Diagnostics=false.
 		const body = `{"model":"claude-opus-4-7","diagnostics":{"previous_message_id":null}}`
 		// Anthropic keeps it.
 		result, err := StripUnsupportedFieldsFromRawBody([]byte(body), schemas.Anthropic, "claude-opus-4-7")
@@ -2123,7 +2172,10 @@ func TestGetRequestBodyForResponses_RawBodyStripsFallbacks(t *testing.T) {
 		RawRequestBody: rawBody,
 	}
 
-	result, bifrostErr := getRequestBodyForResponses(ctx, request, false, nil, false, false)
+	result, bifrostErr := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
+		Provider:    schemas.Anthropic,
+		IsStreaming: false,
+	})
 	if bifrostErr != nil {
 		t.Fatalf("unexpected error: %v", bifrostErr)
 	}
@@ -2225,6 +2277,15 @@ func TestSupportsAdaptiveThinking(t *testing.T) {
 		{"claude-opus-4.6-20250514", true},
 		{"claude-sonnet-4-6-20250514", true},
 		{"claude-sonnet-4.6-20250514", true},
+		// Sonnet 5+: adaptive is the only thinking-on mode.
+		{"claude-sonnet-5", true},
+		{"claude-sonnet-5-20260101", true},
+		{"global.anthropic.claude-sonnet-5", true},
+		// Fable/Mythos family: adaptive thinking is always on.
+		{"claude-fable-5", true},
+		{"claude-mythos-5", true},
+		{"claude-mythos-preview", true},
+		{"global.anthropic.claude-fable-5", true},
 		{"claude-opus-4-5-20241022", false},
 		{"claude-sonnet-4-5-20241022", false},
 		{"claude-haiku-4-6-20250514", false}, // haiku does not support adaptive
@@ -2238,6 +2299,112 @@ func TestSupportsAdaptiveThinking(t *testing.T) {
 			got := SupportsAdaptiveThinking(tt.model)
 			if got != tt.expected {
 				t.Errorf("SupportsAdaptiveThinking(%q) = %v, want %v", tt.model, got, tt.expected)
+			}
+		})
+	}
+}
+
+// TestIsFableFamily pins the Fable/Mythos family predicate. These models share
+// Opus 4.7+'s adaptive-only / no-sampling surface and additionally reject
+// thinking:{type:"disabled"}.
+func TestIsFableFamily(t *testing.T) {
+	tests := []struct {
+		model    string
+		expected bool
+	}{
+		{"claude-fable-5", true},
+		{"claude-mythos-5", true},
+		{"claude-mythos-preview", true},
+		{"global.anthropic.claude-fable-5", true},
+		{"anthropic.claude-mythos-5-v1", true},
+		// Not Fable/Mythos.
+		{"claude-opus-4-8", false},
+		{"claude-opus-4-7", false},
+		{"claude-sonnet-4-6", false},
+		{"claude-haiku-4-5", false},
+		{"", false},
+		{"some-non-claude-model", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			if got := IsFableFamily(tt.model); got != tt.expected {
+				t.Errorf("IsFableFamily(%q) = %v, want %v", tt.model, got, tt.expected)
+			}
+		})
+	}
+}
+
+// TestIsSonnet5Plus pins the Sonnet 5 predicate. Sonnet 5 adopts the Opus 4.7+
+// request surface (adaptive-only thinking, temperature/top_p/top_k removed). The
+// "sonnet-5" substring must NOT match "sonnet-4-5" or "3-5-sonnet".
+func TestIsSonnet5Plus(t *testing.T) {
+	tests := []struct {
+		model    string
+		expected bool
+	}{
+		{"claude-sonnet-5", true},
+		{"claude-sonnet-5-20260101", true},
+		{"Claude-Sonnet-5", true},
+		{"global.anthropic.claude-sonnet-5", true},
+		{"anthropic.claude-sonnet-5-v1", true},
+		{"claude-sonnet-5@20260101", true},
+		// Must NOT match older Sonnets or other families.
+		{"claude-sonnet-4-5", false},
+		{"claude-sonnet-4-5-20250929", false},
+		{"claude-sonnet-4-6", false},
+		{"claude-3-5-sonnet-20241022", false},
+		{"claude-opus-4-8", false},
+		{"claude-fable-5", false},
+		{"claude-haiku-4-5", false},
+		{"", false},
+		{"some-non-claude-model", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			if got := IsSonnet5Plus(tt.model); got != tt.expected {
+				t.Errorf("IsSonnet5Plus(%q) = %v, want %v", tt.model, got, tt.expected)
+			}
+		})
+	}
+}
+
+// TestIsAdaptiveOnlyThinkingModel covers the union gate used for the thinking
+// and sampling-parameter surfaces: Opus 4.7+ OR Sonnet 5+ OR the Fable/Mythos family.
+func TestIsAdaptiveOnlyThinkingModel(t *testing.T) {
+	tests := []struct {
+		model    string
+		expected bool
+	}{
+		// Opus 4.7+.
+		{"claude-opus-4-8", true},
+		{"claude-opus-4-7", true},
+		{"claude-opus-4.8-20260601", true},
+		// Sonnet 5+.
+		{"claude-sonnet-5", true},
+		{"claude-sonnet-5-20260101", true},
+		{"global.anthropic.claude-sonnet-5", true},
+		// Fable/Mythos.
+		{"claude-fable-5", true},
+		{"claude-mythos-5", true},
+		{"claude-mythos-preview", true},
+		// Adaptive-capable but NOT adaptive-only (budget_tokens still accepted).
+		{"claude-opus-4-6", false},
+		{"claude-sonnet-4-6", false},
+		// Sonnet 4.5 must NOT match the "sonnet-5" substring gate.
+		{"claude-sonnet-4-5", false},
+		{"claude-sonnet-4-5-20250929", false},
+		// Other.
+		{"claude-opus-4-5", false},
+		{"claude-haiku-4-5", false},
+		{"", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			if got := IsAdaptiveOnlyThinkingModel(tt.model); got != tt.expected {
+				t.Errorf("IsAdaptiveOnlyThinkingModel(%q) = %v, want %v", tt.model, got, tt.expected)
 			}
 		})
 	}
@@ -2265,6 +2432,13 @@ func TestSupportsMidConversationSystem(t *testing.T) {
 		// Not supported: other model families.
 		{schemas.Anthropic, "claude-sonnet-4-8", false},
 		{schemas.Anthropic, "claude-haiku-4-8", false},
+		// Supported: Fable/Mythos family (Anthropic provider). Fable post-dates
+		// Opus 4.8 and supports mid-conversation system messages.
+		{schemas.Anthropic, "claude-fable-5", true},
+		{schemas.Anthropic, "claude-mythos-5", true},
+		// Not supported off the Anthropic provider, even for Fable.
+		{schemas.Bedrock, "claude-fable-5", false},
+		{schemas.Vertex, "claude-fable-5", false},
 		// Defensive cases.
 		{schemas.Anthropic, "", false},
 		{"", "claude-opus-4-8", false},
@@ -2303,6 +2477,10 @@ func TestSupportsFastMode(t *testing.T) {
 		{"claude-haiku-4-5", false},
 		{"claude-opus-4-5", false},
 		{"claude-opus-4-1", false},
+		// Fable/Mythos do NOT support fast mode (Opus 4.6/4.7/4.8 only).
+		{"claude-fable-5", false},
+		{"claude-mythos-5", false},
+		{"claude-mythos-preview", false},
 		// Defensive cases.
 		{"", false},
 		{"some-non-claude-model", false},
@@ -2320,14 +2498,17 @@ func TestSupportsFastMode(t *testing.T) {
 
 // TestSupportsEffortParameter pins the helper against the explicit doc list
 // at https://platform.claude.com/docs/en/build-with-claude/effort:
-// "Mythos Preview, Opus 4.8, Opus 4.7, Opus 4.6, Sonnet 4.6, Opus 4.5".
+// "Mythos Preview, Opus 4.8, Opus 4.7, Opus 4.6, Sonnet 5, Sonnet 4.6, Opus 4.5".
 func TestSupportsEffortParameter(t *testing.T) {
 	tests := []struct {
 		model    string
 		expected bool
 	}{
 		// Supported per docs.
+		{"claude-fable-5", true},
+		{"claude-mythos-5", true},
 		{"claude-mythos-preview", true},
+		{"global.anthropic.claude-fable-5", true},
 		{"claude-opus-4-8", true},
 		{"claude-opus-4.8-20260601", true},
 		{"claude-opus-4-7", true},
@@ -2336,6 +2517,9 @@ func TestSupportsEffortParameter(t *testing.T) {
 		{"claude-opus-4.6-20250514", true},
 		{"claude-sonnet-4-6", true},
 		{"claude-sonnet-4.6-20250514", true},
+		{"claude-sonnet-5", true},
+		{"claude-sonnet-5-20260101", true},
+		{"global.anthropic.claude-sonnet-5", true},
 		{"claude-opus-4-5", true},
 		{"claude-opus-4.5-20251101", true},
 		{"claude-opus-4-5-20251101", true},
@@ -2411,6 +2595,15 @@ func TestStripUnsupportedAnthropicFields_EffortGating(t *testing.T) {
 		{
 			name:  "sonnet 4.6 keeps effort",
 			model: "claude-sonnet-4-6",
+			req: &AnthropicMessageRequest{
+				OutputConfig: &AnthropicOutputConfig{Effort: &highEffort},
+			},
+			wantEffort: &highEffort,
+			wantOCNil:  false,
+		},
+		{
+			name:  "sonnet 5 keeps effort",
+			model: "claude-sonnet-5",
 			req: &AnthropicMessageRequest{
 				OutputConfig: &AnthropicOutputConfig{Effort: &highEffort},
 			},
@@ -2512,6 +2705,13 @@ func TestStripUnsupportedFieldsFromRawBody_EffortGating(t *testing.T) {
 			name:           "sonnet 4.6 keeps effort",
 			model:          "claude-sonnet-4-6",
 			body:           `{"model":"claude-sonnet-4-6","output_config":{"effort":"medium"}}`,
+			wantHasEffort:  true,
+			wantHasOCField: true,
+		},
+		{
+			name:           "sonnet 5 keeps effort",
+			model:          "claude-sonnet-5",
+			body:           `{"model":"claude-sonnet-5","output_config":{"effort":"medium"}}`,
 			wantHasEffort:  true,
 			wantHasOCField: true,
 		},
@@ -2627,6 +2827,166 @@ func TestAddMissingBetaHeadersToContext_TaskBudgets(t *testing.T) {
 	}
 }
 
+func TestAddMissingBetaHeadersToContext_CacheDiagnostics(t *testing.T) {
+	tests := []struct {
+		name            string
+		provider        schemas.ModelProvider
+		req             *AnthropicMessageRequest
+		expectHeaders   []string
+		unexpectHeaders []string
+	}{
+		{
+			name:          "Anthropic gets cache-diagnosis header when diagnostics set",
+			provider:      schemas.Anthropic,
+			req:           &AnthropicMessageRequest{Diagnostics: &AnthropicDiagnostics{}},
+			expectHeaders: []string{AnthropicCacheDiagnosisBetaHeader},
+		},
+		{
+			name:            "Bedrock does not get cache-diagnosis header (Diagnostics=false)",
+			provider:        schemas.Bedrock,
+			req:             &AnthropicMessageRequest{Diagnostics: &AnthropicDiagnostics{}},
+			unexpectHeaders: []string{AnthropicCacheDiagnosisBetaHeader},
+		},
+		{
+			name:            "Vertex does not get cache-diagnosis header (Diagnostics=false)",
+			provider:        schemas.Vertex,
+			req:             &AnthropicMessageRequest{Diagnostics: &AnthropicDiagnostics{}},
+			unexpectHeaders: []string{AnthropicCacheDiagnosisBetaHeader},
+		},
+		{
+			name:            "Azure does not get cache-diagnosis header (Diagnostics=false)",
+			provider:        schemas.Azure,
+			req:             &AnthropicMessageRequest{Diagnostics: &AnthropicDiagnostics{}},
+			unexpectHeaders: []string{AnthropicCacheDiagnosisBetaHeader},
+		},
+		{
+			name:            "no cache-diagnosis header when diagnostics is nil",
+			provider:        schemas.Anthropic,
+			req:             &AnthropicMessageRequest{},
+			unexpectHeaders: []string{AnthropicCacheDiagnosisBetaHeader},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+			AddMissingBetaHeadersToContext(ctx, tt.req, tt.provider)
+
+			var headers []string
+			if extraHeaders, ok := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string); ok {
+				headers = extraHeaders[AnthropicBetaHeader]
+			}
+
+			for _, expected := range tt.expectHeaders {
+				if !slices.Contains(headers, expected) {
+					t.Errorf("expected header %q not found in %v", expected, headers)
+				}
+			}
+			for _, unexpected := range tt.unexpectHeaders {
+				if slices.Contains(headers, unexpected) {
+					t.Errorf("unexpected header %q found in %v", unexpected, headers)
+				}
+			}
+		})
+	}
+}
+
+func TestDiagnostics_ResponsesRequestRoundTrip(t *testing.T) {
+	// The diagnostics opt-in must survive the AnthropicMessageRequest -> Bifrost
+	// -> AnthropicMessageRequest round-trip as a typed field (parity with
+	// cache_control), not get dropped into ungated ExtraParams.
+	prev := "msg_prev_123"
+	cases := []struct {
+		name string
+		diag *AnthropicDiagnostics
+		want string // expected previous_message_id raw JSON
+	}{
+		{"with_previous_id", &AnthropicDiagnostics{PreviousMessageID: &prev}, `"msg_prev_123"`},
+		{"first_turn_null", &AnthropicDiagnostics{}, `null`}, // opt-in: previous_message_id must serialize as null, not be omitted
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := &AnthropicMessageRequest{Model: "claude-opus-4-8", MaxTokens: 1024, Diagnostics: tc.diag}
+			bifrostReq := req.ToBifrostResponsesRequest(nil)
+			if bifrostReq == nil || bifrostReq.Params == nil {
+				t.Fatal("ToBifrostResponsesRequest returned nil")
+			}
+			back, err := ToAnthropicResponsesRequest(nil, bifrostReq)
+			if err != nil {
+				t.Fatalf("ToAnthropicResponsesRequest: %v", err)
+			}
+			if back.Diagnostics == nil {
+				t.Fatal("diagnostics dropped on round-trip")
+			}
+			out, err := sonic.Marshal(back)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			got := gjson.GetBytes(out, "diagnostics.previous_message_id")
+			if !got.Exists() {
+				t.Fatalf("diagnostics.previous_message_id missing from %s", string(out))
+			}
+			if got.Raw != tc.want {
+				t.Errorf("previous_message_id = %s, want %s", got.Raw, tc.want)
+			}
+		})
+	}
+}
+
+func TestDiagnostics_ResponseRoundTrip(t *testing.T) {
+	const raw = `{"id":"msg_1","type":"message","role":"assistant","model":"claude-opus-4-8",` +
+		`"content":[{"type":"text","text":"hi"}],` +
+		`"diagnostics":{"cache_miss_reason":{"type":"system_changed","cache_missed_input_tokens":41850}}}`
+	var resp AnthropicMessageResponse
+	if err := sonic.Unmarshal([]byte(raw), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Diagnostics == nil || resp.Diagnostics.CacheMissReason == nil {
+		t.Fatal("diagnostics not parsed onto AnthropicMessageResponse")
+	}
+	if resp.Diagnostics.CacheMissReason.Type != "system_changed" {
+		t.Errorf("type = %q, want system_changed", resp.Diagnostics.CacheMissReason.Type)
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	bifrostResp := resp.ToBifrostResponsesResponse(ctx)
+	if bifrostResp == nil || bifrostResp.Diagnostics == nil {
+		t.Fatal("diagnostics dropped in ToBifrostResponsesResponse")
+	}
+	back := ToAnthropicResponsesResponse(ctx, bifrostResp)
+	if back == nil || back.Diagnostics == nil || back.Diagnostics.CacheMissReason == nil {
+		t.Fatal("diagnostics dropped in ToAnthropicResponsesResponse")
+	}
+	if got := back.Diagnostics.CacheMissReason.CacheMissedInputTokens; got == nil || *got != 41850 {
+		t.Errorf("cache_missed_input_tokens not preserved: %+v", back.Diagnostics.CacheMissReason)
+	}
+}
+
+func TestDiagnostics_ChatResponseRoundTrip(t *testing.T) {
+	// Chat path promotes the diagnostics opt-in on the request, so the response
+	// payload must round-trip too rather than be silently dropped.
+	const raw = `{"id":"msg_1","type":"message","role":"assistant","model":"claude-opus-4-8",` +
+		`"content":[{"type":"text","text":"hi"}],` +
+		`"diagnostics":{"cache_miss_reason":{"type":"tools_changed","cache_missed_input_tokens":128}}}`
+	var resp AnthropicMessageResponse
+	if err := sonic.Unmarshal([]byte(raw), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	bifrostResp := resp.ToBifrostChatResponse(ctx)
+	if bifrostResp == nil || bifrostResp.Diagnostics == nil {
+		t.Fatal("diagnostics dropped in ToBifrostChatResponse")
+	}
+	back := ToAnthropicChatResponse(bifrostResp)
+	if back == nil || back.Diagnostics == nil || back.Diagnostics.CacheMissReason == nil {
+		t.Fatal("diagnostics dropped in ToAnthropicChatResponse")
+	}
+	if back.Diagnostics.CacheMissReason.Type != "tools_changed" {
+		t.Errorf("type = %q, want tools_changed", back.Diagnostics.CacheMissReason.Type)
+	}
+}
+
 // TestComputerUseGeneration verifies the (model -> generation) classifier
 // covers every Claude model that Anthropic explicitly maps to a computer-use
 // beta header version, plus the fallback for unknown / non-Claude models.
@@ -2645,8 +3005,17 @@ func TestComputerUseGeneration(t *testing.T) {
 		{"claude-opus-4-6", ComputerUseGen20251124},
 		{"claude-sonnet-4-6", ComputerUseGen20251124},
 		{"claude-sonnet-4.6", ComputerUseGen20251124},
+		// Sonnet 5+ uses the new generation (same tool surface as Sonnet 4.6).
+		{"claude-sonnet-5", ComputerUseGen20251124},
+		{"claude-sonnet-5-20260101", ComputerUseGen20251124},
+		{"global.anthropic.claude-sonnet-5", ComputerUseGen20251124},
 		{"claude-opus-4-5", ComputerUseGen20251124},
 		{"claude-opus-4-5-20251101", ComputerUseGen20251124},
+		// Fable/Mythos family uses the new generation, like Opus 4.8.
+		{"claude-fable-5", ComputerUseGen20251124},
+		{"claude-mythos-5", ComputerUseGen20251124},
+		{"claude-mythos-preview", ComputerUseGen20251124},
+		{"global.anthropic.claude-fable-5", ComputerUseGen20251124},
 		{"claude-sonnet-4-5", ComputerUseGen20250124},
 		{"claude-sonnet-4-5-20250929", ComputerUseGen20250124},
 		{"claude-haiku-4-5", ComputerUseGen20250124},
@@ -2977,8 +3346,8 @@ func TestBudgetTokensMaxEffortCapsBelowMaxTokens(t *testing.T) {
 	const minBudget = MinimumReasoningMaxTokens
 
 	cases := []struct {
-		maxTokens    int
-		wantBudget   int
+		maxTokens  int
+		wantBudget int
 	}{
 		{maxTokens: 16000, wantBudget: 15999},
 		{maxTokens: 32000, wantBudget: 31999},

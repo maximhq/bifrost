@@ -27,7 +27,7 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	type TempConfig struct {
 		Enabled bool            `json:"enabled"`
 		Type    ConfigStoreType `json:"type"`
-		Config  json.RawMessage `json:"config"` // Keep as raw JSON
+		Config  json.RawMessage `json:"config"`
 	}
 
 	var temp TempConfig

@@ -2,6 +2,7 @@ package bedrock
 
 import (
 	"net/http"
+	"strings"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -28,6 +29,27 @@ func parseBedrockHTTPError(statusCode int, headers http.Header, body []byte) *sc
 		}
 		bifrostErr.Error.Message = errorResp.Message
 		bifrostErr.Error.Code = errorResp.Code
+	}
+
+	exceptionType := errorResp.Type
+	if exceptionType == "" {
+		if hv := headers.Get("X-Amzn-Errortype"); hv != "" {
+			if i := strings.IndexAny(hv, ":#"); i >= 0 {
+				hv = hv[:i]
+			}
+			exceptionType = strings.TrimSpace(hv)
+		}
+	}
+	if exceptionType != "" {
+		if bifrostErr.Type == nil {
+			bifrostErr.Type = schemas.Ptr(exceptionType)
+		}
+		if bifrostErr.Error == nil {
+			bifrostErr.Error = &schemas.ErrorField{}
+		}
+		if bifrostErr.Error.Type == nil {
+			bifrostErr.Error.Type = schemas.Ptr(exceptionType)
+		}
 	}
 
 	return bifrostErr

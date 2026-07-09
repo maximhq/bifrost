@@ -330,6 +330,11 @@ func (plugin *Plugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext, 
 	return chunk, nil
 }
 
+// PreRequestHook implements schemas.LLMPlugin (no-op — required for plugin indexing).
+func (plugin *Plugin) PreRequestHook(_ *schemas.BifrostContext, _ *schemas.BifrostRequest) error {
+	return nil
+}
+
 // PreLLMHook performs the cache lookup before the request reaches the
 // provider. It runs the direct hash path first (cheapest), falls back to
 // semantic similarity search when configured, and short-circuits the
@@ -596,6 +601,19 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, res *schemas.Bifr
 	embeddingToStore := embedding
 	if !shouldStoreEmbeddings {
 		embeddingToStore = nil
+	}
+
+	// A store that requires vectors (Qdrant, Pinecone) rejects an empty-vector
+	// upsert ("Expected some vectors"). If embedding generation failed upstream
+	// (e.g. transient provider error, key resolution failure), skip the write
+	// rather than emit a broken point. cache_debug was already stamped above,
+	// so the miss stays observable.
+	if plugin.store.RequiresVectors() && len(embeddingToStore) == 0 {
+		// PostLLMHook runs once per streaming chunk; warn only once per request.
+		if !isStream || isFinalChunk {
+			plugin.logger.Warn("Skipping semantic cache write (namespace=%s, id=%s): store requires vectors but no embedding is available (embedding generation likely failed)", plugin.config.VectorStoreNamespace, storageID)
+		}
+		return res, nil, nil
 	}
 
 	plugin.writersWg.Add(1)

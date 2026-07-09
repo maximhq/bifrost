@@ -41,6 +41,7 @@ SELECT
     COUNT(*) AS count,
     SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success_count,
     SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS error_count,
+    SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) AS cancelled_count,
     COALESCE(AVG(latency), 0) AS avg_latency,
     COALESCE(percentile_cont(0.90) WITHIN GROUP (ORDER BY latency), 0) AS p90_latency,
     COALESCE(percentile_cont(0.95) WITHIN GROUP (ORDER BY latency), 0) AS p95_latency,
@@ -51,7 +52,7 @@ SELECT
     COALESCE(SUM(cached_read_tokens), 0) AS total_cached_read_tokens,
     COALESCE(SUM(cost), 0) AS total_cost
 FROM logs
-WHERE status IN ('success', 'error')
+WHERE status IN ('success', 'error', 'cancelled')
 GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13
 `
 
@@ -80,6 +81,7 @@ var mvLogsHourlyRequiredColumns = []string{
 	"customer_id",
 	"business_unit_id",
 	"alias",
+	"cancelled_count",
 }
 
 // legacyMatViewNames are matviews from previous schema versions that no longer
@@ -764,6 +766,7 @@ func startMatViewRefresher(ctx context.Context, db *gorm.DB, interval time.Durat
 func canUseMatViewFilters(f SearchFilters) bool {
 	return f.ContentSearch == "" &&
 		len(f.MetadataFilters) == 0 &&
+		canUseMatViewStatusFilter(f.Status) &&
 		len(f.RoutingEngineUsed) == 0 &&
 		len(f.StopReasons) == 0 &&
 		f.MinLatency == nil && f.MaxLatency == nil &&
@@ -774,6 +777,24 @@ func canUseMatViewFilters(f SearchFilters) bool {
 		len(f.TeamIDs) == 0 &&
 		len(f.BusinessUnitIDs) == 0 &&
 		len(f.CustomerIDs) == 0
+}
+
+func canUseMatViewStatusFilter(statuses []string) bool {
+	for _, status := range statuses {
+		if !isTerminalLogStatus(status) {
+			return false
+		}
+	}
+	return true
+}
+
+func isTerminalLogStatus(status string) bool {
+	for _, terminalStatus := range terminalLogStatuses {
+		if status == terminalStatus {
+			return true
+		}
+	}
+	return false
 }
 
 // canUseMatView checks both that materialized views are ready (created and
@@ -800,8 +821,9 @@ const freshAggregateMatViewMinWindow = 24 * time.Hour
 // (both StartTime and EndTime nil) are treated as matview-safe — a half-bounded
 // range has no measurable width and could still be a short window.
 //
-// Used by both /api/logs/stats (full metric payload) and /api/logs (pagination
-// total count) so those two surfaces stay consistent on the same window.
+// Used by /api/logs/stats (full metric payload), /api/logs (pagination total
+// count), and the model/user/dimension ranking readers so all those surfaces
+// stay consistent on the same window.
 func (s *RDBLogStore) canUseMatViewForFreshAggregate(f SearchFilters) bool {
 	if !s.canUseMatView(f) {
 		return false
@@ -949,7 +971,7 @@ func (s *RDBLogStore) getStatsFromMatView(ctx context.Context, filters SearchFil
 		alignedEnd := filters.EndTime.Truncate(time.Hour).Add(time.Hour - time.Nanosecond)
 		alignedFilters.EndTime = &alignedEnd
 	}
-	cacheBase := s.ScopedDB(ctx).Model(&Log{}).Where("status IN ?", []string{"success", "error"})
+	cacheBase := s.ScopedDB(ctx).Model(&Log{}).Where("status IN ?", terminalLogStatuses)
 	direct, semantic, err := s.aggregateCacheHits(ctx, cacheBase, alignedFilters)
 	if err != nil {
 		s.logger.Warn(fmt.Sprintf("logstore: failed to aggregate cache-hit stats, skipping: %s", err))
@@ -962,13 +984,14 @@ func (s *RDBLogStore) getStatsFromMatView(ctx context.Context, filters SearchFil
 }
 
 // getHistogramFromMatView returns time-bucketed request counts (total,
-// success, error) by re-aggregating hourly buckets from mv_logs_hourly.
+// success, error, cancelled) by re-aggregating hourly buckets from mv_logs_hourly.
 func (s *RDBLogStore) getHistogramFromMatView(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*HistogramResult, error) {
 	var results []struct {
 		BucketTimestamp int64 `gorm:"column:bucket_timestamp"`
 		Total           int64 `gorm:"column:total"`
 		Success         int64 `gorm:"column:success"`
 		ErrorCount      int64 `gorm:"column:error_count"`
+		CancelledCount  int64 `gorm:"column:cancelled_count"`
 	}
 	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, filters)
@@ -976,7 +999,8 @@ func (s *RDBLogStore) getHistogramFromMatView(ctx context.Context, filters Searc
 		CAST(FLOOR(EXTRACT(EPOCH FROM hour) / %d) * %d AS BIGINT) AS bucket_timestamp,
 		SUM(count) AS total,
 		SUM(success_count) AS success,
-		SUM(error_count) AS error_count
+		SUM(error_count) AS error_count,
+		SUM(cancelled_count) AS cancelled_count
 	`, bucketSizeSeconds, bucketSizeSeconds)).
 		Group("bucket_timestamp").
 		Order("bucket_timestamp ASC").
@@ -984,9 +1008,9 @@ func (s *RDBLogStore) getHistogramFromMatView(ctx context.Context, filters Searc
 		return nil, err
 	}
 
-	resultMap := make(map[int64]*struct{ total, success, errCount int64 }, len(results))
+	resultMap := make(map[int64]*struct{ total, success, errCount, cancelledCount int64 }, len(results))
 	for _, r := range results {
-		resultMap[r.BucketTimestamp] = &struct{ total, success, errCount int64 }{r.Total, r.Success, r.ErrorCount}
+		resultMap[r.BucketTimestamp] = &struct{ total, success, errCount, cancelledCount int64 }{r.Total, r.Success, r.ErrorCount, r.CancelledCount}
 	}
 
 	allTimestamps := generateBucketTimestamps(filters.StartTime, filters.EndTime, bucketSizeSeconds)
@@ -997,6 +1021,7 @@ func (s *RDBLogStore) getHistogramFromMatView(ctx context.Context, filters Searc
 			b.Count = a.total
 			b.Success = a.success
 			b.Error = a.errCount
+			b.Cancelled = a.cancelledCount
 		}
 		buckets = append(buckets, b)
 	}
@@ -1103,7 +1128,7 @@ func (s *RDBLogStore) getCostHistogramFromMatView(ctx context.Context, filters S
 }
 
 // getModelHistogramFromMatView returns time-bucketed model usage with
-// success/error breakdown per model from mv_logs_hourly.
+// success/error/cancelled breakdown per model from mv_logs_hourly.
 func (s *RDBLogStore) getModelHistogramFromMatView(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ModelHistogramResult, error) {
 	var results []struct {
 		BucketTimestamp int64  `gorm:"column:bucket_timestamp"`
@@ -1111,6 +1136,7 @@ func (s *RDBLogStore) getModelHistogramFromMatView(ctx context.Context, filters 
 		Total           int64  `gorm:"column:total"`
 		Success         int64  `gorm:"column:success"`
 		ErrorCount      int64  `gorm:"column:error_count"`
+		CancelledCount  int64  `gorm:"column:cancelled_count"`
 	}
 	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, filters)
@@ -1119,7 +1145,8 @@ func (s *RDBLogStore) getModelHistogramFromMatView(ctx context.Context, filters 
 		model,
 		SUM(count) AS total,
 		SUM(success_count) AS success,
-		SUM(error_count) AS error_count
+		SUM(error_count) AS error_count,
+		SUM(cancelled_count) AS cancelled_count
 	`, bucketSizeSeconds, bucketSizeSeconds)).
 		Group("bucket_timestamp, model").
 		Order("bucket_timestamp ASC").
@@ -1142,6 +1169,7 @@ func (s *RDBLogStore) getModelHistogramFromMatView(ctx context.Context, filters 
 		existing.Total += r.Total
 		existing.Success += r.Success
 		existing.Error += r.ErrorCount
+		existing.Cancelled += r.CancelledCount
 		a.byModel[r.Model] = existing
 		modelsSet[r.Model] = struct{}{}
 	}
@@ -1633,9 +1661,20 @@ func (s *RDBLogStore) getModelRankingsFromMatView(ctx context.Context, filters S
 	}
 	var prevResults []prevRow
 	if filters.StartTime != nil && filters.EndTime != nil {
-		duration := filters.EndTime.Sub(*filters.StartTime)
-		prevStart := filters.StartTime.Add(-duration)
-		prevEnd := filters.StartTime.Add(-time.Nanosecond)
+		// Anchor the previous period to the hour grid: the current period's
+		// hour >= date_trunc('hour', StartTime) predicate claims the bucket
+		// containing StartTime, so its effective span is [hourStart, EndTime].
+		// Derive the comparison duration from hourStart (not StartTime) so the
+		// previous window covers exactly the same effective interval; otherwise
+		// a sub-hour StartTime makes the current window longer by
+		// StartTime-hourStart and skews the trend. The previous period must
+		// also end strictly before that bucket: ending at StartTime-1ns would
+		// match the same bucket via hour <= prevEnd and double-count the
+		// boundary hour in both periods.
+		hourStart := filters.StartTime.Truncate(time.Hour)
+		duration := filters.EndTime.Sub(hourStart)
+		prevStart := hourStart.Add(-duration)
+		prevEnd := hourStart.Add(-time.Nanosecond)
 		prevFilters := filters
 		prevFilters.StartTime = &prevStart
 		prevFilters.EndTime = &prevEnd
@@ -1723,9 +1762,20 @@ func (s *RDBLogStore) getUserRankingsFromMatView(ctx context.Context, filters Se
 	}
 	var prevResults []prevRow
 	if filters.StartTime != nil && filters.EndTime != nil {
-		duration := filters.EndTime.Sub(*filters.StartTime)
-		prevStart := filters.StartTime.Add(-duration)
-		prevEnd := filters.StartTime.Add(-time.Nanosecond)
+		// Anchor the previous period to the hour grid: the current period's
+		// hour >= date_trunc('hour', StartTime) predicate claims the bucket
+		// containing StartTime, so its effective span is [hourStart, EndTime].
+		// Derive the comparison duration from hourStart (not StartTime) so the
+		// previous window covers exactly the same effective interval; otherwise
+		// a sub-hour StartTime makes the current window longer by
+		// StartTime-hourStart and skews the trend. The previous period must
+		// also end strictly before that bucket: ending at StartTime-1ns would
+		// match the same bucket via hour <= prevEnd and double-count the
+		// boundary hour in both periods.
+		hourStart := filters.StartTime.Truncate(time.Hour)
+		duration := filters.EndTime.Sub(hourStart)
+		prevStart := hourStart.Add(-duration)
+		prevEnd := hourStart.Add(-time.Nanosecond)
 		prevFilters := filters
 		prevFilters.StartTime = &prevStart
 		prevFilters.EndTime = &prevEnd
@@ -1825,9 +1875,20 @@ func (s *RDBLogStore) getDimensionRankingsFromMatView(ctx context.Context, filte
 	// Previous period
 	var prevResults []row
 	if filters.StartTime != nil && filters.EndTime != nil {
-		duration := filters.EndTime.Sub(*filters.StartTime)
-		prevStart := filters.StartTime.Add(-duration)
-		prevEnd := filters.StartTime.Add(-time.Nanosecond)
+		// Anchor the previous period to the hour grid: the current period's
+		// hour >= date_trunc('hour', StartTime) predicate claims the bucket
+		// containing StartTime, so its effective span is [hourStart, EndTime].
+		// Derive the comparison duration from hourStart (not StartTime) so the
+		// previous window covers exactly the same effective interval; otherwise
+		// a sub-hour StartTime makes the current window longer by
+		// StartTime-hourStart and skews the trend. The previous period must
+		// also end strictly before that bucket: ending at StartTime-1ns would
+		// match the same bucket via hour <= prevEnd and double-count the
+		// boundary hour in both periods.
+		hourStart := filters.StartTime.Truncate(time.Hour)
+		duration := filters.EndTime.Sub(hourStart)
+		prevStart := hourStart.Add(-duration)
+		prevEnd := hourStart.Add(-time.Nanosecond)
 		prevFilters := filters
 		prevFilters.StartTime = &prevStart
 		prevFilters.EndTime = &prevEnd

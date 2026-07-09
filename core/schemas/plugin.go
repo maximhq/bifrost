@@ -170,12 +170,22 @@ func ReleaseHTTPResponse(resp *HTTPResponse) {
 // PostHooks are executed in the reverse order of PreHooks.
 //
 // Execution order:
-// 1. HTTPTransportPreHook (HTTP transport only, executed in registration order)
-// 2. PreLLMHook (executed in registration order)
-// 3. Provider call
-// 4. PostLLMHook (executed in reverse order of PreHooks)
-// 5. HTTPTransportPostHook (HTTP transport only, executed in reverse order)
-// 5a. HTTPTransportStreamChunkHook (for streaming responses, called per-chunk in reverse order)
+// 1. HTTPTransportPreHook (HTTP transport only, once per request, executed in registration order)
+// 2. PreRequestHook (once per request, executed in registration order)
+// 3. PreLLMHook (executed in registration order, runs again on each fallback attempt)
+// 4. Provider call
+// 5. PostLLMHook (executed in reverse order of PreHooks, runs on each fallback attempt)
+// 6. HTTPTransportPostHook (HTTP transport only, once per request, executed in reverse order)
+// 6a. HTTPTransportStreamChunkHook (for streaming responses, called per-chunk in reverse order)
+//
+// Per-request vs per-attempt phases:
+// - HTTPTransportPreHook, PreRequestHook, HTTPTransportPostHook run ONCE per top-level request.
+// - PreLLMHook, PostLLMHook run ONCE PER ATTEMPT: the primary provider call, plus once per
+//   fallback attempt. Mutations a PreLLMHook makes to the request only carry to later
+//   fallbacks where prepareFallbackRequest happens to share pointers (shallow copy) —
+//   visibility across fallbacks is incidental. PreRequestHook is the explicit phase whose
+//   mutations are committed to the request before any fan-out and are observed by every
+//   subsequent plugin, every PreLLMHook invocation, the provider call, and every fallback.
 //
 // Common use cases: rate limiting, caching, logging, monitoring, request transformation, governance.
 //
@@ -254,8 +264,37 @@ type HTTPTransportPlugin interface {
 	HTTPTransportStreamChunkHook(ctx *BifrostContext, req *HTTPRequest, chunk *BifrostStreamChunk) (*BifrostStreamChunk, error)
 }
 
+// StreamInterceptionError carries a structured client error when an HTTP stream plugin terminates a stream.
+type StreamInterceptionError struct {
+	BifrostError *BifrostError
+}
+
+// Error returns the best available client message for callers that only understand Go errors.
+func (e *StreamInterceptionError) Error() string {
+	if e != nil && e.BifrostError != nil && e.BifrostError.Error != nil && e.BifrostError.Error.Message != "" {
+		return e.BifrostError.Error.Message
+	}
+	return "stream interception failed"
+}
+
 type LLMPlugin interface {
 	BasePlugin
+
+	// PreRequestHook is called once per top-level request, after HTTPTransportPreHook and before
+	// PreLLMHook. It is the canonical phase for deciding which provider/model/fallbacks the
+	// request should be sent to. Plugins are free to mutate any field on req (Provider, Model,
+	// Fallbacks, Input, Params, Tools, ...) — unlike PreLLMHook, mutations made here are
+	// committed to the request and are observed by all subsequent plugins, the provider call,
+	// and every fallback attempt.
+	//
+	// Error semantics match PreLLMHook: a non-nil error is non-blocking — it is logged as a
+	// warning, the request continues, and the pipeline moves on to the next plugin. PreRequestHook
+	// CANNOT abort the request via error return. Plugins that need to gate or reject a request
+	// (e.g., authorization, content policy) must do so in HTTPTransportPreHook or via a
+	// short-circuit response in PreLLMHook — not by returning an error here.
+	//
+	// Plugins that don't participate in routing should return nil.
+	PreRequestHook(ctx *BifrostContext, req *BifrostRequest) error
 
 	PreLLMHook(ctx *BifrostContext, req *BifrostRequest) (*BifrostRequest, *LLMPluginShortCircuit, error)
 	PostLLMHook(ctx *BifrostContext, resp *BifrostResponse, bifrostErr *BifrostError) (*BifrostResponse, *BifrostError, error)
@@ -340,7 +379,7 @@ type ConfigMarshallerPlugin interface {
 	BasePlugin
 
 	// MarshalConfigForStorage converts the raw config map (as received from the API)
-	// into the canonical DB-storage format (e.g. *EnvVar fields as plain strings).
+	// into the canonical DB-storage format (e.g. *SecretVar fields as plain strings).
 	MarshalConfigForStorage(config map[string]any) (map[string]any, error)
 	// RedactConfig converts a stored config map into the API-response format,
 	// masking sensitive literal values.
@@ -378,9 +417,8 @@ type ObservabilityPlugin interface {
 	// The context passed is a fresh background context, not the request context.
 	//
 	// Retention: implementations MUST NOT retain the *Trace pointer after Inject
-	// returns. The caller releases the trace back to a sync.Pool immediately after
-	// Inject completes, so any background goroutine that still references it will
-	// race with pool reuse. If a plugin needs to forward the trace asynchronously,
-	// it must copy the data it needs before returning.
+	// returns. The caller releases the underlying trace back to a sync.Pool
+	// immediately after Inject completes. If a plugin needs to forward the trace
+	// asynchronously, it must copy the data it needs before returning.
 	Inject(ctx context.Context, trace *Trace) error
 }

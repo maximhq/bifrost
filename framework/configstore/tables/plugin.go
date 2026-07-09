@@ -24,7 +24,7 @@ type TablePlugin struct {
 	IsCustom   bool      `gorm:"not null;default:false" json:"isCustom"`
 
 	Placement *schemas.PluginPlacement `gorm:"column:placement;type:varchar(20);null" json:"placement,omitempty"`
-	Order     *int    `gorm:"column:exec_order;type:int;null" json:"order,omitempty"`
+	Order     *int                     `gorm:"column:exec_order;type:int;null" json:"order,omitempty"`
 
 	// Config hash is used to detect the changes synced from config.json file
 	// Every time we sync the config.json file, we will update the config hash
@@ -68,12 +68,15 @@ func (p *TablePlugin) BeforeSave(tx *gorm.DB) error {
 // AfterFind is a GORM hook that decrypts the plugin config JSON (if encrypted) and
 // deserializes it back into the runtime Config field after reading from the database.
 func (p *TablePlugin) AfterFind(tx *gorm.DB) error {
-	if p.EncryptionStatus == "encrypted" && p.ConfigJSON != "" {
-		decrypted, err := encrypt.Decrypt(p.ConfigJSON)
-		if err != nil {
-			return fmt.Errorf("failed to decrypt plugin config: %w", err)
+	switch p.EncryptionStatus {
+	case EncryptionStatusEncrypted:
+		if p.ConfigJSON != "" {
+			decrypted, err := encrypt.Decrypt(p.ConfigJSON)
+			if err != nil {
+				return fmt.Errorf("failed to decrypt plugin config: %w", err)
+			}
+			p.ConfigJSON = decrypted
 		}
-		p.ConfigJSON = decrypted
 	}
 	if p.ConfigJSON != "" {
 		if err := json.Unmarshal([]byte(p.ConfigJSON), &p.Config); err != nil {
@@ -85,3 +88,4 @@ func (p *TablePlugin) AfterFind(tx *gorm.DB) error {
 
 	return nil
 }
+

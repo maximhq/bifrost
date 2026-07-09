@@ -158,9 +158,9 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
                 Models: []string{"*"},
                 Weight: 1.0,
                 VertexKeyConfig: &schemas.VertexKeyConfig{
-                    ProjectID:       *schemas.NewEnvVar("env.VERTEX_PROJECT_ID"),
-                    Region:          *schemas.NewEnvVar("us-central1"),
-                    AuthCredentials: *schemas.NewEnvVar("env.VERTEX_CREDENTIALS"), // full service account JSON
+                    ProjectID:       *schemas.NewSecretVar("env.VERTEX_PROJECT_ID"),
+                    Region:          *schemas.NewSecretVar("us-central1"),
+                    AuthCredentials: *schemas.NewSecretVar("env.VERTEX_CREDENTIALS"), // full service account JSON
                 },
             },
         }, nil
@@ -274,8 +274,8 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
                 Models: []string{"*"},
                 Weight: 1.0,
                 VertexKeyConfig: &schemas.VertexKeyConfig{
-                    ProjectID: *schemas.NewEnvVar("env.VERTEX_PROJECT_ID"),
-                    Region:    *schemas.NewEnvVar("us-central1"),
+                    ProjectID: *schemas.NewSecretVar("env.VERTEX_PROJECT_ID"),
+                    Region:    *schemas.NewSecretVar("us-central1"),
                     // Leave AuthCredentials empty - uses Application Default Credentials
                 },
             },
@@ -402,16 +402,16 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
     case schemas.Vertex:
         return []schemas.Key{
             {
-                Value:  *schemas.NewEnvVar("env.VERTEX_API_KEY"), // only when using Gemini or fine-tuned models
+                Value:  *schemas.NewSecretVar("env.VERTEX_API_KEY"), // only when using Gemini or fine-tuned models
                 Models: []string{"gemini-pro", "gemini-2.0-flash", "my-fine-tuned-model"},
                 Weight: 1.0,
                 Aliases: schemas.KeyAliases{
                     "my-fine-tuned-model": "123456789",
                 },
                 VertexKeyConfig: &schemas.VertexKeyConfig{
-                    ProjectID:     *schemas.NewEnvVar("env.VERTEX_PROJECT_ID"),
-                    ProjectNumber: *schemas.NewEnvVar("env.VERTEX_PROJECT_NUMBER"), // required for fine-tuned models
-                    Region:        *schemas.NewEnvVar("us-central1"),
+                    ProjectID:     *schemas.NewSecretVar("env.VERTEX_PROJECT_ID"),
+                    ProjectNumber: *schemas.NewSecretVar("env.VERTEX_PROJECT_NUMBER"), // required for fine-tuned models
+                    Region:        *schemas.NewSecretVar("us-central1"),
                 },
             },
         }, nil
@@ -431,12 +431,13 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
 
 **`vertex_key_config` fields:**
 
-| Field              | Required | Description                                            |
-| ------------------ | -------- | ------------------------------------------------------ |
-| `project_id`       | Yes      | Google Cloud project ID                                |
-| `region`           | Yes      | GCP region (e.g., `us-central1`, `eu-west1`, `global`) |
-| `auth_credentials` | No       | Service account JSON string (leave empty for ADC)      |
-| `project_number`   | No       | GCP project number (required for fine-tuned models)    |
+| Field                 | Required | Description                                                                                          |
+| --------------------- | -------- | -------------------------------------------------------------------------------------------------- |
+| `project_id`          | Yes      | Google Cloud project ID                                                                            |
+| `region`              | Yes      | GCP region (e.g., `us-central1`, `eu-west1`, `global`)                                             |
+| `auth_credentials`    | No       | Service account JSON string (leave empty for ADC)                                                  |
+| `project_number`      | No       | GCP project number (required for fine-tuned models)                                                |
+| `force_single_region` | No       | When `true`, always call `region` and skip multi-region promotion of multi-region-only models     |
 
 **Key-level fields:**
 
@@ -693,6 +694,10 @@ The region determines the API endpoint:
 | `global`      | `aiplatform.googleapis.com`             | Global (no region prefix) |
 
 Availability varies by region. Check [GCP documentation](https://cloud.google.com/vertex-ai/docs/general/locations) for model availability.
+
+### Multi-region-only models
+
+Some models (e.g. Claude Opus 4.7/4.8) are published only on Google's multi-region pool endpoints. When such a model is requested with a single US or Europe region, Bifrost automatically promotes the call to the matching pool endpoint (`aiplatform.us.rep.googleapis.com` / `aiplatform.eu.rep.googleapis.com`) and rewrites the `locations/` path segment to `us` / `eu`. Set `force_single_region: true` on the Vertex key (or per-deployment) to disable this and keep the exact region you configured — for example when you serve these models from a single region via provisioned throughput. Endpoint rewrites are emitted at `debug` log level.
 
 ## Streaming
 

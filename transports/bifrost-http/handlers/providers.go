@@ -31,6 +31,9 @@ type ModelsManager interface {
 	GetModelsForProvider(provider schemas.ModelProvider) []string
 	GetUnfilteredModelsForProvider(provider schemas.ModelProvider) []string
 	UpsertModelPricingAttributes(ctx context.Context, entries []ModelPricingAttributesEntry) error
+	OnKeyAdded(ctx context.Context, provider schemas.ModelProvider, key schemas.Key) error
+	OnKeyUpdated(ctx context.Context, provider schemas.ModelProvider, key schemas.Key) error
+	OnKeyDeleted(ctx context.Context, provider schemas.ModelProvider, keyID string) error
 }
 
 // ModelPricingAttributesEntry is the wire shape for PUT /api/models/catalog.
@@ -237,7 +240,7 @@ func (h *ProviderHandler) getProvider(ctx *fasthttp.RequestCtx) {
 func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 	var payload providerCreatePayload
 	if err := sonic.Unmarshal(ctx.PostBody(), &payload); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid JSON: %v", err))
+		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
 		return
 	}
 	// Validate provider
@@ -382,7 +385,22 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	}{}
 
 	if err := sonic.Unmarshal(ctx.PostBody(), &payload); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid JSON: %v", err))
+		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
+		return
+	}
+
+	// Reject `keys` in the request body. This endpoint manages provider-level
+	// configuration only; keys are managed via the dedicated /keys endpoints
+	// (POST/PUT/DELETE /api/providers/{provider}/keys[/{key_id}]). Accepting
+	// the field silently would discard the caller's intent — the construction
+	// below ignores `payload.Keys` and reuses `oldConfigRaw.Keys`. Failing
+	// fast keeps the API contract honest.
+	if len(payload.Keys) > 0 {
+		SendError(
+			ctx,
+			fasthttp.StatusBadRequest,
+			"keys are not accepted on this endpoint; use POST/PUT /api/providers/{provider}/keys[/{key_id}] to manage keys",
+		)
 		return
 	}
 
@@ -606,6 +624,7 @@ func (h *ProviderHandler) listKeys(ctx *fasthttp.RequestCtx) {
 type ModelResponse struct {
 	Name             string   `json:"name"`
 	Provider         string   `json:"provider"`
+	IsDeprecated     bool     `json:"is_deprecated,omitempty"`
 	AccessibleByKeys []string `json:"accessible_by_keys,omitempty"`
 }
 
@@ -623,6 +642,7 @@ type ModelDetailsResponse struct {
 	MaxInputTokens       *int                  `json:"max_input_tokens,omitempty"`
 	MaxOutputTokens      *int                  `json:"max_output_tokens,omitempty"`
 	Architecture         *schemas.Architecture `json:"architecture,omitempty"`
+	IsDeprecated         bool                  `json:"is_deprecated,omitempty"`
 	AdditionalAttributes map[string]string     `json:"additional_attributes,omitempty"`
 	AccessibleByKeys     []string              `json:"accessible_by_keys,omitempty"`
 }
@@ -676,8 +696,9 @@ func (h *ProviderHandler) listModels(ctx *fasthttp.RequestCtx) {
 	responseModels := make([]ModelResponse, 0, len(allModels))
 	for _, model := range allModels {
 		entry := ModelResponse{
-			Name:     model.Name,
-			Provider: string(model.Provider),
+			Name:         model.Name,
+			Provider:     string(model.Provider),
+			IsDeprecated: h.isModelDeprecated(model.Name, model.Provider),
 		}
 		if len(model.AccessibleByKeys) > 0 {
 			entry.AccessibleByKeys = model.AccessibleByKeys
@@ -737,6 +758,7 @@ func (h *ProviderHandler) listModelDetails(ctx *fasthttp.RequestCtx) {
 			details.MaxInputTokens = capabilities.MaxInputTokens
 			details.MaxOutputTokens = capabilities.MaxOutputTokens
 			details.Architecture = capabilities.Architecture
+			details.IsDeprecated = capabilities.IsDeprecated
 			details.AdditionalAttributes = capabilities.AdditionalAttributes
 		}
 		responseModels = append(responseModels, details)
@@ -746,6 +768,15 @@ func (h *ProviderHandler) listModelDetails(ctx *fasthttp.RequestCtx) {
 		Models: responseModels,
 		Total:  total,
 	})
+}
+
+func (h *ProviderHandler) isModelDeprecated(model string, provider schemas.ModelProvider) bool {
+	modelCatalog := h.inMemoryStore.ModelCatalog
+	if modelCatalog == nil {
+		return false
+	}
+	capabilities := modelCatalog.GetModelCapabilityEntryForModel(model, provider)
+	return capabilities != nil && capabilities.IsDeprecated
 }
 
 // parseModelListQuery normalizes the management model-list query string and resolves
@@ -1243,7 +1274,7 @@ func validateRetryBackoff(networkConfig *schemas.NetworkConfig) error {
 func (h *ProviderHandler) upsertModelCatalogEntries(ctx *fasthttp.RequestCtx) {
 	var payload []ModelPricingAttributesEntry
 	if err := sonic.Unmarshal(ctx.PostBody(), &payload); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid JSON: %v", err))
+		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
 		return
 	}
 	for i := range payload {

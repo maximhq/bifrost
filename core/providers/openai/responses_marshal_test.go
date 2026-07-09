@@ -331,7 +331,7 @@ func TestToOpenAIResponsesRequest_FireworksPreservesNativeFields(t *testing.T) {
 		},
 	}
 
-	request := ToOpenAIResponsesRequest(bifrostReq)
+	request := ToOpenAIResponsesRequest(nil, bifrostReq)
 	if request == nil {
 		t.Fatal("expected non-nil request")
 	}
@@ -728,6 +728,12 @@ func TestOpenAIResponsesRequest_MarshalJSON_StripsAnthropicToolFlags(t *testing.
 					},
 					ResponsesToolFunction: &schemas.ResponsesToolFunction{},
 				},
+				{
+					Type: schemas.ResponsesToolTypeCodeInterpreter,
+					ResponsesToolCodeInterpreter: &schemas.ResponsesToolCodeInterpreter{
+						Version: schemas.Ptr("code_execution_20260120"),
+					},
+				},
 			},
 		},
 	}
@@ -738,8 +744,8 @@ func TestOpenAIResponsesRequest_MarshalJSON_StripsAnthropicToolFlags(t *testing.
 	}
 	raw := string(jsonBytes)
 
-	// None of the five Anthropic-only tool keys must survive on the wire.
-	for _, key := range []string{`"cache_control"`, `"defer_loading"`, `"allowed_callers"`, `"input_examples"`, `"eager_input_streaming"`} {
+	// None of the Anthropic-only tool keys must survive on the wire.
+	for _, key := range []string{`"cache_control"`, `"defer_loading"`, `"allowed_callers"`, `"input_examples"`, `"eager_input_streaming"`, `"code_execution_version"`} {
 		if strings.Contains(raw, key) {
 			t.Errorf("OpenAI Responses serializer must strip %s; raw=%s", key, raw)
 		}
@@ -959,5 +965,74 @@ func TestOpenAIResponsesRequest_MarshalJSON_CompactionSummaryStripped(t *testing
 		t.Errorf("reasoning item should retain its summary field, got: %s", string(data))
 	} else if string(rawSummary) != "[]" {
 		t.Errorf("reasoning item summary should be [], got: %s", string(rawSummary))
+	}
+}
+
+// TestOpenAICompactionRequest_MarshalJSON_Input guards against the `input` union
+// serializing as a JSON object (which /v1/responses/compact rejects with
+// "Invalid type for 'input': expected a string, but got an object instead").
+func TestOpenAICompactionRequest_MarshalJSON_Input(t *testing.T) {
+	tests := []struct {
+		name    string
+		request *OpenAICompactionRequest
+		assert  func(t *testing.T, m map[string]interface{})
+	}{
+		{
+			name: "empty input is omitted (previous_response_id-only compaction)",
+			request: &OpenAICompactionRequest{
+				Model:              "gpt-5",
+				PreviousResponseID: schemas.Ptr("resp_123"),
+			},
+			assert: func(t *testing.T, m map[string]interface{}) {
+				if v, ok := m["input"]; ok {
+					t.Errorf("input should be omitted when empty, got: %#v", v)
+				}
+			},
+		},
+		{
+			name: "string input serializes as a bare string",
+			request: &OpenAICompactionRequest{
+				Model: "gpt-5",
+				Input: OpenAIResponsesRequestInput{OpenAIResponsesRequestInputStr: schemas.Ptr("hello")},
+			},
+			assert: func(t *testing.T, m map[string]interface{}) {
+				if s, ok := m["input"].(string); !ok || s != "hello" {
+					t.Errorf("input should be the string %q, got: %#v", "hello", m["input"])
+				}
+			},
+		},
+		{
+			name: "array input serializes as an array",
+			request: &OpenAICompactionRequest{
+				Model: "gpt-5",
+				Input: OpenAIResponsesRequestInput{OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{{
+					Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+				}}},
+			},
+			assert: func(t *testing.T, m map[string]interface{}) {
+				if _, ok := m["input"].([]interface{}); !ok {
+					t.Errorf("input should be an array, got: %#v", m["input"])
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			jsonBytes, err := tt.request.MarshalJSON()
+			if err != nil {
+				t.Fatalf("MarshalJSON failed: %v", err)
+			}
+			var m map[string]interface{}
+			if err := sonic.Unmarshal(jsonBytes, &m); err != nil {
+				t.Fatalf("unmarshal failed: %v", err)
+			}
+			// The regression: input must never be a JSON object.
+			if obj, ok := m["input"].(map[string]interface{}); ok {
+				t.Fatalf("input serialized as an object (the bug): %v", obj)
+			}
+			tt.assert(t, m)
+		})
 	}
 }

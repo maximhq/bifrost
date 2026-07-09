@@ -4,42 +4,71 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/gemini"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
-// getRequestBodyForAnthropicResponses serializes a BifrostResponsesRequest into the Anthropic wire format for Vertex AI.
-// Compared to the native Anthropic path, it strips model/region fields, remaps tool versions, injects beta headers
-// into the request body (rather than HTTP headers), and pins the Anthropic API version to DefaultVertexAnthropicVersion.
-func getRequestBodyForAnthropicResponses(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest, deployment string, isStreaming bool, isCountTokens bool, betaHeaderOverrides map[string]bool, providerExtraHeaders map[string]string, shouldSendBackRawRequest bool, shouldSendBackRawResponse bool) ([]byte, *schemas.BifrostError) {
-	jsonBody, buildErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, request, anthropic.AnthropicRequestBuildConfig{
-		Provider:                  schemas.Vertex,
-		Deployment:                deployment,
-		DeleteModelField:          true,
-		DeleteRegionField:         true,
-		IsStreaming:               isStreaming,
-		IsCountTokens:             isCountTokens,
-		AddAnthropicVersion:       true,
-		AnthropicVersion:          DefaultVertexAnthropicVersion,
-		StripCacheControlScope:    true,
-		RemapToolVersions:         true,
-		InjectBetaHeadersIntoBody: true,
-		BetaHeaderOverrides:       betaHeaderOverrides,
-		ProviderExtraHeaders:      providerExtraHeaders,
-		ValidateTools:             true,
-		ShouldSendBackRawRequest:  shouldSendBackRawRequest,
-		ShouldSendBackRawResponse: shouldSendBackRawResponse,
-	})
-	if buildErr != nil {
-		return nil, buildErr
+// resolveVertexProjectID returns the GCP project ID for the current attempt.
+// Priority: alias-level VertexAliasCfg.ProjectID > key-level
+// VertexKeyConfig.ProjectID. Per-alias override lets one Vertex credential
+// span deployments across distinct GCP projects (e.g. Anthropic models in
+// one project, Gemini in another).
+func resolveVertexProjectID(ctx *schemas.BifrostContext, key schemas.Key) string {
+	if ra := schemas.GetResolvedAlias(ctx); ra != nil && ra.Config != nil && ra.Config.VertexAliasCfg != nil && ra.Config.VertexAliasCfg.ProjectID != nil {
+		if v := ra.Config.VertexAliasCfg.ProjectID.GetValue(); v != "" {
+			return v
+		}
 	}
-	stripped, err := anthropic.StripUnsupportedFieldsFromRawBody(jsonBody, schemas.Vertex, deployment)
-	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError(err.Error(), nil)
+	if key.VertexKeyConfig != nil {
+		return key.VertexKeyConfig.ProjectID.GetValue()
 	}
-	return stripped, nil
+	return ""
+}
+
+// resolveVertexProjectNumber returns the GCP project number for the current
+// attempt. Same precedence as resolveVertexProjectID.
+func resolveVertexProjectNumber(ctx *schemas.BifrostContext, key schemas.Key) string {
+	if ra := schemas.GetResolvedAlias(ctx); ra != nil && ra.Config != nil && ra.Config.VertexAliasCfg != nil && ra.Config.VertexAliasCfg.ProjectNumber != nil {
+		if v := ra.Config.VertexAliasCfg.ProjectNumber.GetValue(); v != "" {
+			return v
+		}
+	}
+	if key.VertexKeyConfig != nil {
+		return key.VertexKeyConfig.ProjectNumber.GetValue()
+	}
+	return ""
+}
+
+// resolveVertexRegion returns the Vertex region for the current attempt.
+// Priority: alias-level AliasConfig.Region (top-level, shared with other
+// providers) > key-level VertexKeyConfig.Region. Different Vertex model
+// families publish in different regions (Anthropic on us-east5, Gemini on
+// us-central1, …), so per-alias overrides let one credential reach all of
+// them.
+func resolveVertexRegion(ctx *schemas.BifrostContext, key schemas.Key) string {
+	if ra := schemas.GetResolvedAlias(ctx); ra != nil && ra.Config != nil && ra.Config.Region != nil {
+		if v := ra.Config.Region.GetValue(); v != "" {
+			return v
+		}
+	}
+	if key.VertexKeyConfig != nil {
+		return key.VertexKeyConfig.Region.GetValue()
+	}
+	return ""
+}
+
+// resolveVertexForceSingleRegion reports whether Bifrost must use the configured
+// region as-is and skip promoting multi-region-only models to a multi-region pool
+// endpoint. Priority: per-alias VertexAliasCfg.ForceSingleRegion (when set) >
+// key-level VertexKeyConfig.ForceSingleRegion. Used by provisioned-throughput
+// customers who can serve multi-region-only models (e.g. Opus 4.7/4.8) from a
+// single region.
+func resolveVertexForceSingleRegion(ctx *schemas.BifrostContext, key schemas.Key) bool {
+	if ra := schemas.GetResolvedAlias(ctx); ra != nil && ra.Config != nil && ra.Config.VertexAliasCfg != nil && ra.Config.VertexAliasCfg.ForceSingleRegion != nil {
+		return *ra.Config.VertexAliasCfg.ForceSingleRegion
+	}
+	return key.VertexKeyConfig != nil && key.VertexKeyConfig.ForceSingleRegion
 }
 
 // isVertexMultiRegionEndpoint reports whether the Vertex location uses Google's
@@ -72,7 +101,10 @@ func getVertexAPIHost(region string) string {
 // the corresponding multi-region pool endpoint — but only for US (us-*) and
 // Europe (europe-*) regions that have multi-region pools. Other regions
 // (asia-*, me-*, etc.) stay on the single-region host.
-func getVertexModelAwareAPIHost(region string, model string) string {
+//
+// When forceSingleRegion is set the promotion is skipped and the configured
+// single-region host is used as-is (e.g. provisioned-throughput deployments).
+func getVertexModelAwareAPIHost(region string, model string, forceSingleRegion bool, logger schemas.Logger) string {
 	if region == "global" {
 		return "aiplatform.googleapis.com"
 	}
@@ -83,7 +115,16 @@ func getVertexModelAwareAPIHost(region string, model string) string {
 	// Single-region: promote to multi-region pool if the model requires it
 	// and the region belongs to a pool that supports multi-region.
 	if providerUtils.IsVertexMultiRegionOnlyModel(model) {
+		if forceSingleRegion {
+			if logger != nil {
+				logger.Debug("[vertex] force_single_region set: keeping requested region %q for multi-region-only model %q; skipping multi-region pool promotion", region, model)
+			}
+			return fmt.Sprintf("%s-aiplatform.googleapis.com", region)
+		}
 		if pool, ok := vertexRegionToPool(region); ok {
+			if logger != nil {
+				logger.Debug("[vertex] promoting multi-region-only model %q from region %q to multi-region pool %q (host aiplatform.%s.rep.googleapis.com)", model, region, pool, pool)
+			}
 			return fmt.Sprintf("aiplatform.%s.rep.googleapis.com", pool)
 		}
 	}
@@ -118,8 +159,8 @@ func getVertexAPIBaseURL(region string, apiVersion string) string {
 
 // getVertexModelAwareAPIBaseURL is like getVertexAPIBaseURL but uses model-aware
 // host selection for multi-region endpoints.
-func getVertexModelAwareAPIBaseURL(region string, apiVersion string, model string) string {
-	return fmt.Sprintf("https://%s/%s", getVertexModelAwareAPIHost(region, model), apiVersion)
+func getVertexModelAwareAPIBaseURL(region string, apiVersion string, model string, forceSingleRegion bool, logger schemas.Logger) string {
+	return fmt.Sprintf("https://%s/%s", getVertexModelAwareAPIHost(region, model, forceSingleRegion, logger), apiVersion)
 }
 
 func getVertexProjectLocationURL(region string, apiVersion string, projectID string) string {
@@ -135,21 +176,22 @@ func getVertexPublisherModelURL(region string, apiVersion string, projectID stri
 // inference endpoints that may need multi-region pool hosts.
 // When a single-region is promoted to multi-region, both the host AND the
 // locations/ path segment are updated to the pool region.
-func getVertexModelAwarePublisherModelURL(region string, apiVersion string, projectID string, publisher string, model string, method string) string {
-	effectiveRegion := getVertexEffectiveRegion(region, model)
-	baseURL := fmt.Sprintf("https://%s/%s", getVertexModelAwareAPIHost(region, model), apiVersion)
+func getVertexModelAwarePublisherModelURL(region string, apiVersion string, projectID string, publisher string, model string, method string, forceSingleRegion bool, logger schemas.Logger) string {
+	effectiveRegion := getVertexEffectiveRegion(region, model, forceSingleRegion)
+	baseURL := fmt.Sprintf("https://%s/%s", getVertexModelAwareAPIHost(region, model, forceSingleRegion, logger), apiVersion)
 	return fmt.Sprintf("%s/projects/%s/locations/%s/publishers/%s/models/%s%s", baseURL, projectID, effectiveRegion, publisher, model, method)
 }
 
 // getVertexEffectiveRegion returns the region to use in URL path segments.
 // For multi-region locations it returns the region as-is. For single-region
 // locations it returns the multi-region pool if the model is flagged, otherwise
-// the original region.
-func getVertexEffectiveRegion(region string, model string) string {
+// the original region. When forceSingleRegion is set the region is returned
+// as-is (no pool promotion).
+func getVertexEffectiveRegion(region string, model string, forceSingleRegion bool) string {
 	if isVertexMultiRegionEndpoint(region) || region == "global" {
 		return region
 	}
-	if providerUtils.IsVertexMultiRegionOnlyModel(model) {
+	if !forceSingleRegion && providerUtils.IsVertexMultiRegionOnlyModel(model) {
 		if pool, ok := vertexRegionToPool(region); ok {
 			return pool
 		}
@@ -242,7 +284,7 @@ func vertexServiceTierHeaderValue(region string, model string, tier schemas.Bifr
 
 // buildResponseFromConfig builds a list models response from configured deployments and allowedModels.
 // This is used when the user has explicitly configured which models they want to use.
-func buildResponseFromConfig(deployments map[string]string, allowedModels schemas.WhiteList, blacklistedModels schemas.BlackList) *schemas.BifrostListModelsResponse {
+func buildResponseFromConfig(deployments schemas.KeyAliases, allowedModels schemas.WhiteList, blacklistedModels schemas.BlackList) *schemas.BifrostListModelsResponse {
 	response := &schemas.BifrostListModelsResponse{
 		Data: make([]schemas.Model, 0),
 	}
@@ -272,7 +314,7 @@ func buildResponseFromConfig(deployments map[string]string, allowedModels schema
 		modelEntry := schemas.Model{
 			ID:    modelID,
 			Name:  schemas.Ptr(modelName),
-			Alias: schemas.Ptr(deploymentValue),
+			Alias: schemas.Ptr(deploymentValue.ModelID),
 		}
 
 		response.Data = append(response.Data, modelEntry)

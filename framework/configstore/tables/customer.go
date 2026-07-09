@@ -9,14 +9,14 @@ import (
 // TableCustomer represents a customer entity with budgets, rate limit and team/VK association
 type TableCustomer struct {
 	ID          string  `gorm:"primaryKey;type:varchar(255)" json:"id"`
-	Name        string  `gorm:"type:varchar(255);not null" json:"name"`
+	Name        string  `gorm:"type:varchar(255);not null;uniqueIndex:idx_governance_customers_name" json:"name"`
 	RateLimitID *string `gorm:"type:varchar(255);index" json:"rate_limit_id,omitempty"`
 
 	// BudgetID is a config-file-only field referencing a pre-declared budget (from governance.budgets) to link to this customer. Not persisted; used by the config sync path to set customer_id on the referenced budget row.
 	BudgetID *string `gorm:"-" json:"budget_id,omitempty"`
 
 	// Relationships
-	Budgets []TableBudget `gorm:"foreignKey:CustomerID;constraint:OnDelete:CASCADE" json:"budgets,omitempty"`
+	Budgets     []TableBudget     `gorm:"foreignKey:CustomerID;constraint:OnDelete:CASCADE" json:"budgets,omitempty"`
 	RateLimit   *TableRateLimit   `gorm:"foreignKey:RateLimitID" json:"rate_limit,omitempty"`
 	Teams       []TableTeam       `gorm:"foreignKey:CustomerID" json:"teams"`
 	VirtualKeys []TableVirtualKey `gorm:"foreignKey:CustomerID" json:"virtual_keys"`

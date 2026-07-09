@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -67,10 +68,62 @@ func clientForwardedIP(ctx *fasthttp.RequestCtx) string {
 	return ""
 }
 
+// corsMiddlewareConfig is an immutable snapshot of the CORS-relevant client config.
+// The slices are cloned at construction so a hot reload mutating the source
+// ClientConfig in place cannot race with in-flight requests reading these fields.
+type corsMiddlewareConfig struct {
+	dumpErrorsInConsoleLogs bool
+	allowedOrigins          []string
+	allowedHeaders          []string
+}
+
+// newCorsMiddlewareConfig builds an immutable snapshot from the live config,
+// cloning the slices so the snapshot never aliases the shared ClientConfig.
+func newCorsMiddlewareConfig(config *lib.Config) *corsMiddlewareConfig {
+	if config == nil || config.ClientConfig == nil {
+		return nil
+	}
+	return &corsMiddlewareConfig{
+		dumpErrorsInConsoleLogs: config.ClientConfig.DumpErrorsInConsoleLogs,
+		allowedOrigins:          slices.Clone(config.ClientConfig.AllowedOrigins),
+		allowedHeaders:          slices.Clone(config.ClientConfig.AllowedHeaders),
+	}
+}
+
+// CorsMiddleware handles CORS headers for localhost and configured allowed origins.
+// The snapshot is held in an atomic.Pointer so UpdateConfig can swap it at runtime
+// without racing in-flight requests, which read the pointer concurrently. Because the
+// snapshot is immutable (slices cloned), readers never observe a torn or half-updated
+// config even while a reload swaps in a new one.
+type CorsMiddleware struct {
+	config atomic.Pointer[corsMiddlewareConfig]
+}
+
+func NewCorsMiddleware(config *lib.Config) *CorsMiddleware {
+	c := &CorsMiddleware{}
+	c.config.Store(newCorsMiddlewareConfig(config))
+	return c
+}
+
+// UpdateConfig atomically swaps in a fresh immutable snapshot of the configuration.
+// In-flight requests reading the pointer observe either the old or the new snapshot,
+// never a torn value. ReloadClientConfigFromConfigStore must call this whenever the
+// client config is refreshed, mirroring how AuthMiddleware is updated.
+func (c *CorsMiddleware) UpdateConfig(config *lib.Config) {
+	c.config.Store(newCorsMiddlewareConfig(config))
+}
+
 // CorsMiddleware handles CORS headers for localhost and configured allowed origins
-func CorsMiddleware(config *lib.Config) schemas.BifrostHTTPMiddleware {
+func (c *CorsMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
 		return func(ctx *fasthttp.RequestCtx) {
+			// Snapshot the config once per request so a concurrent UpdateConfig swap
+			// cannot apply two different configs within a single response.
+			cfg := c.config.Load()
+			if cfg == nil {
+				SendError(ctx, fasthttp.StatusInternalServerError, "CORS middleware configuration not loaded")
+				return
+			}
 			shouldLog := slices.IndexFunc(loggingSkipPaths, func(path string) bool {
 				return strings.HasPrefix(string(ctx.RequestURI()), path)
 			}) == -1
@@ -97,24 +150,26 @@ func CorsMiddleware(config *lib.Config) schemas.BifrostHTTPMiddleware {
 					if traceID, ok := ctx.UserValue(schemas.BifrostContextKeyTraceID).(string); ok && traceID != "" {
 						logBuilder = logBuilder.Str("trace_id", traceID)
 					}
-					if statusCode >= 400 && !ctx.Response.IsBodyStream() {
-						if body := ctx.Response.Body(); len(body) > 0 {
-							logBuilder = logBuilder.Str("http.error", string(body))
+					if cfg.dumpErrorsInConsoleLogs {
+						if statusCode >= 400 && !ctx.Response.IsBodyStream() {
+							if body := ctx.Response.Body(); len(body) > 0 {
+								logBuilder = logBuilder.Str("http.error", string(body))
+							}
 						}
 					}
 					logBuilder.Send()
 				}()
 			}
 			origin := string(ctx.Request.Header.Peek("Origin"))
-			allowed := IsOriginAllowed(origin, config.ClientConfig.AllowedOrigins)
+			allowed := IsOriginAllowed(origin, cfg.allowedOrigins)
 			// Credentialed responses are sent when the origin is not matched solely by a
 			// wildcard AllowedOrigins — i.e. the origin is localhost or explicitly listed.
-			credentialed := !slices.Contains(config.ClientConfig.AllowedOrigins, "*") ||
+			credentialed := !slices.Contains(cfg.allowedOrigins, "*") ||
 				isLocalhostOrigin(origin) ||
-				slices.Contains(config.ClientConfig.AllowedOrigins, origin)
+				slices.Contains(cfg.allowedOrigins, origin)
 
 			allowedHeaders := []string{"Content-Type", "Authorization", "X-Requested-With", "X-Stainless-Timeout", "X-Api-Key", "X-OpenAI-Agents-SDK", "X-Operation-ID"}
-			if slices.Contains(config.ClientConfig.AllowedHeaders, "*") {
+			if slices.Contains(cfg.allowedHeaders, "*") {
 				if credentialed {
 					// Per the Fetch spec, Access-Control-Allow-Headers: * is NOT treated as a
 					// wildcard when Access-Control-Allow-Credentials: true is set — browsers
@@ -127,9 +182,9 @@ func CorsMiddleware(config *lib.Config) schemas.BifrostHTTPMiddleware {
 				} else {
 					allowedHeaders = []string{"*"}
 				}
-			} else if len(config.ClientConfig.AllowedHeaders) > 0 {
+			} else if len(cfg.allowedHeaders) > 0 {
 				// append allowed headers from config to the default headers
-				for _, header := range config.ClientConfig.AllowedHeaders {
+				for _, header := range cfg.allowedHeaders {
 					if !slices.Contains(allowedHeaders, header) {
 						allowedHeaders = append(allowedHeaders, header)
 					}
@@ -806,10 +861,21 @@ func (m *AuthMiddleware) tryTempTokenOrUnauthorized(ctx *fasthttp.RequestCtx, ne
 	SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized")
 }
 
-// InferenceMiddleware is for inference requests (including MCP routes) if authConfig is set, it will skip authentication if disableAuthOnInference is true.
+// InferenceMiddleware is for inference requests (including MCP routes). It always
+// passes the request through — inference authentication is owned entirely by the
+// governance plugin, not by this dashboard-auth middleware.
+//
+// Governance runs downstream on every inference request type (via RunLLMPreHooks) and
+// is the authoritative virtual-key validator: it rejects missing/unknown/revoked keys
+// and enforces whether a VK is mandatory (driven by ClientConfig.EnforceAuthOnInference).
+// In OSS it is loaded unconditionally and cannot be disabled, so delegating to it never
+// leaves inference ungated. Keeping admin-password checks out of this path is deliberate:
+// gating inference on dashboard credentials would reject virtual-key callers, since a VK
+// is not an admin/session credential. Admin-password auth therefore stays exclusive to
+// dashboard/API routes (APIMiddleware) and is never required for inference.
 func (m *AuthMiddleware) InferenceMiddleware() schemas.BifrostHTTPMiddleware {
 	return m.middleware(func(authConfig *configstore.AuthConfig, url string) bool {
-		return authConfig.DisableAuthOnInference
+		return true
 	})
 }
 
@@ -846,6 +912,15 @@ func (m *AuthMiddleware) APIMiddleware() schemas.BifrostHTTPMiddleware {
 		// /api/oauth/config/* (admin-only) and bypass the temp-token fallback
 		// in tryTempTokenOrUnauthorized.
 		"/api/dev",
+		// Skills serving endpoints are public — marketplace URLs cannot carry
+		// credentials securely. Management endpoints under /api/skills (without
+		// /serve/) remain authenticated.
+		"/api/skills/serve/",
+		// OAuth2 discovery endpoints (RFC 8414 AS metadata, RFC 9728 protected
+		// resource metadata, RFC 7517 JWKS) must be reachable without auth so
+		// clients can bootstrap the flow. Each handler still gates availability
+		// behind discoveryEnabled() and serves 404 when OAuth mode is off.
+		"/.well-known/",
 	}
 	return m.middleware(func(authConfig *configstore.AuthConfig, url string) bool {
 		if slices.Contains(systemWhitelistedRoutes, url) ||
@@ -857,8 +932,8 @@ func (m *AuthMiddleware) APIMiddleware() schemas.BifrostHTTPMiddleware {
 		// Check user-configured whitelisted routes
 		if configuredRoutes := m.whitelistedRoutes.Load(); configuredRoutes != nil {
 			if slices.Contains(*configuredRoutes, url) || slices.IndexFunc(*configuredRoutes, func(route string) bool {
-				if strings.HasSuffix(route, "*") {
-					return strings.HasPrefix(url, strings.TrimSuffix(route, "*"))
+				if before, ok := strings.CutSuffix(route, "*"); ok {
+					return strings.HasPrefix(url, before)
 				}
 				return false
 			}) != -1 {
@@ -897,7 +972,7 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 				next(ctx)
 				return
 			}
-			if isRealtimeTransportEndpoint(string(ctx.Path())) {
+			if isRealtimeTransportEndpoint(url) {
 				next(ctx)
 				return
 			}
@@ -1072,20 +1147,25 @@ type TracingMiddleware struct {
 	tracer atomic.Pointer[tracing.Tracer]
 }
 
-func attachDimensionAttributesToHTTPSpan(ctx *fasthttp.RequestCtx, setAttribute func(key string, value any)) {
-	if ctx == nil || setAttribute == nil {
-		return
+// collectDimensionHeaders gathers x-bf-dim-* request headers into a map keyed by
+// the bare dimension name. TracingMiddleware runs before ConvertToBifrostContext,
+// so it reads the headers directly rather than BifrostContextKeyDimensions.
+func collectDimensionHeaders(ctx *fasthttp.RequestCtx) map[string]string {
+	if ctx == nil {
+		return nil
 	}
-	// Root HTTP span starts before ConvertToBifrostContext, so read x-bf-dim-* directly.
+	var dims map[string]string
 	ctx.Request.Header.All()(func(key, value []byte) bool {
 		keyStr := strings.ToLower(string(key))
 		if labelName, ok := strings.CutPrefix(keyStr, "x-bf-dim-"); ok && labelName != "" {
-			if labelName != "path" && labelName != "method" {
-				setAttribute(labelName, string(value))
+			if dims == nil {
+				dims = make(map[string]string)
 			}
+			dims[labelName] = string(value)
 		}
 		return true
 	})
+	return dims
 }
 
 // NewTracingMiddleware creates a new tracing middleware
@@ -1131,6 +1211,18 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 			inheritedTraceID := tracing.ExtractParentID(&ctx.Request.Header)
 			// Create trace in store - only ID returned (trace data stays in store)
 			traceID := tracer.CreateTrace(inheritedTraceID, requestID)
+			// Store dimensions and session ID at the trace level (not as span
+			// attributes) so connectors like BigQuery can export them without
+			// changing the OTEL/Datadog span payloads.
+			dimensions := collectDimensionHeaders(ctx)
+			if len(dimensions) > 0 {
+				// Hand the trace its own copy — connectors read the attribute
+				// asynchronously and must never observe later mutations.
+				tracer.SetTraceAttribute(traceID, schemas.TraceAttrDimensions, maps.Clone(dimensions))
+			}
+			if sessionID := strings.TrimSpace(string(ctx.Request.Header.Peek("x-bf-session-id"))); sessionID != "" {
+				tracer.SetTraceAttribute(traceID, schemas.TraceAttrSessionID, sessionID)
+			}
 			// Only trace ID goes into context (lightweight, no bloat)
 			ctx.SetUserValue(schemas.BifrostContextKeyTraceID, traceID)
 			// Extract parent span ID from W3C traceparent header (if present)
@@ -1159,13 +1251,24 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 					tracer.EndSpan(rootHandle, schemas.SpanStatusOk, "")
 				}
 				tracer.CompleteAndFlushTrace(traceID)
+				// Guaranteed end-of-stream backstop: force-reap the stream accumulator
+				// now that the stream has fully drained and the trace is flushed. This
+				// covers streams that ended without a clean terminal chunk (client abort,
+				// broken SSE write, or a multi-plugin refcount imbalance), which would
+				// otherwise leak their accumulated (deep-copied) chunks until the TTL
+				// sweep. Safe after CompleteAndFlushTrace: span completion reads the
+				// separately stored accumulated response, not the live accumulator.
+				tracer.ForceCleanupStreamAccumulator(traceID)
 			})
 			// Create root span for the HTTP request
 			spanCtx, rootSpan := tracer.StartSpan(ctx, string(ctx.RequestURI()), schemas.SpanKindHTTPRequest)
 			if rootSpan != nil {
-				attachDimensionAttributesToHTTPSpan(ctx, func(key string, value any) {
-					tracer.SetAttribute(rootSpan, key, value)
-				})
+				for name, value := range dimensions {
+					// "path" and "method" stay reserved for the standard http.* attributes.
+					if name != "path" && name != "method" {
+						tracer.SetAttribute(rootSpan, name, value)
+					}
+				}
 				tracer.SetAttribute(rootSpan, "http.method", string(ctx.Method()))
 				tracer.SetAttribute(rootSpan, "http.url", string(ctx.RequestURI()))
 				tracer.SetAttribute(rootSpan, "http.user_agent", string(ctx.Request.Header.UserAgent()))

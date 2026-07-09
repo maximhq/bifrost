@@ -59,17 +59,17 @@ curl -X POST http://localhost:8080/api/mcp/client \
     "connection_string": "https://mcp.example.com/mcp",
     "auth_type": "headers",
     "headers": {
-      "Authorization": { "value": "Bearer your-api-key" },
-      "X-Tenant-ID":   { "value": "acme-corp" }
+      "Authorization": "Bearer your-api-key",
+      "X-Tenant-ID":   "acme-corp"
     },
     "tools_to_execute": ["*"]
   }'
 ```
 
-To reference an environment variable instead of a literal:
+To reference an environment variable instead of a literal, use the `env.` prefix:
 
 ```json
-"Authorization": { "env_var": "MCP_API_KEY", "from_env": true }
+"Authorization": "env.MCP_API_KEY"
 ```
 
 </Tab>
@@ -85,8 +85,8 @@ To reference an environment variable instead of a literal:
         "connection_string": "https://mcp.example.com/mcp",
         "auth_type": "headers",
         "headers": {
-          "Authorization": { "value": "Bearer your-api-key" },
-          "X-Tenant-ID":   { "value": "acme-corp" }
+          "Authorization": "Bearer your-api-key",
+          "X-Tenant-ID":   "acme-corp"
         },
         "tools_to_execute": ["*"]
       }
@@ -95,7 +95,7 @@ To reference an environment variable instead of a literal:
 }
 ```
 
-Use `{ "env_var": "MCP_API_KEY", "from_env": true }` for env references — same shape as the API tab.
+Use `"env.MY_VAR"` for environment variable references — e.g. `"Authorization": "env.MCP_API_KEY"`.
 
 </Tab>
 </Tabs>

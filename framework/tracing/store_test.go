@@ -250,3 +250,64 @@ func TestGenerateSpanID_Format(t *testing.T) {
 		t.Errorf("generateSpanID() = %q, not valid hex", id)
 	}
 }
+
+func TestSetTraceAttribute(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+
+	traceID := store.CreateTrace("")
+	dims := map[string]string{"environment": "prod"}
+	store.SetTraceAttribute(traceID, schemas.TraceAttrDimensions, dims)
+	store.SetTraceAttribute(traceID, schemas.TraceAttrSessionID, "sess-1")
+
+	trace := store.GetTrace(traceID)
+	if trace == nil {
+		t.Fatal("GetTrace() returned nil")
+	}
+	dimsAttr, _ := trace.GetAttribute(schemas.TraceAttrDimensions)
+	got, ok := dimsAttr.(map[string]string)
+	if !ok || got["environment"] != "prod" {
+		t.Errorf("trace dimensions attribute = %v, want map with environment=prod", dimsAttr)
+	}
+	if sessionAttr, _ := trace.GetAttribute(schemas.TraceAttrSessionID); sessionAttr != "sess-1" {
+		t.Errorf("trace session attribute = %v, want sess-1", sessionAttr)
+	}
+	if _, ok := trace.GetAttribute("missing"); ok {
+		t.Error("GetAttribute(missing) reported present, want absent")
+	}
+
+	// Unknown trace ID must be a no-op, not a panic.
+	store.SetTraceAttribute("does-not-exist", "k", "v")
+}
+
+func TestCleanupOldTraces_RemovesOrphanedDeferredSpans(t *testing.T) {
+	store := NewTraceStore(10*time.Millisecond, nil)
+	defer store.Stop()
+
+	// Simulate a streaming request whose trace completer never ran: the trace
+	// and its deferred span both exist, and nothing will call CompleteTrace or
+	// ClearDeferredSpan for them.
+	orphanTraceID := store.CreateTrace("")
+	store.StoreDeferredSpan(orphanTraceID, "orphan-span")
+
+	// Let the orphan exceed the TTL, then register a fresh deferred span that
+	// must survive the sweep.
+	time.Sleep(20 * time.Millisecond)
+	freshTraceID := store.CreateTrace("")
+	store.StoreDeferredSpan(freshTraceID, "fresh-span")
+
+	store.cleanupOldTraces()
+
+	if store.GetDeferredSpan(orphanTraceID) != nil {
+		t.Error("orphaned deferred span should be removed by TTL cleanup")
+	}
+	if store.GetTrace(orphanTraceID) != nil {
+		t.Error("orphaned trace should be removed by TTL cleanup")
+	}
+	if store.GetDeferredSpan(freshTraceID) == nil {
+		t.Error("fresh deferred span should survive TTL cleanup")
+	}
+	if store.GetTrace(freshTraceID) == nil {
+		t.Error("fresh trace should survive TTL cleanup")
+	}
+}

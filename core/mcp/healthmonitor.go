@@ -174,8 +174,14 @@ func (chm *ClientHealthMonitor) performHealthCheck() {
 		err = fmt.Errorf("no active connection")
 	} else {
 		// Perform health check with timeout
-		ctx, cancel := context.WithTimeout(context.Background(), chm.timeout)
+		timeoutCtx, cancel := context.WithTimeout(context.Background(), chm.timeout)
 		defer cancel()
+
+		// Mark the request as bifrost-generated for health checks so plugins/hooks can
+		// distinguish these internal pings/list_tools probes from caller-initiated requests.
+		// runPingWithHooks / runListToolsWithHooks wrap this ctx, so the marker propagates.
+		ctx := schemas.NewBifrostContext(timeoutCtx, schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyMCPHealthCheckRequest, true)
 
 		if chm.isPingAvailable {
 			err = chm.runPingWithHooks(ctx, conn, clientName)

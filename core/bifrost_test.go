@@ -711,7 +711,7 @@ func (ma *MockAccount) AddProviderWithBaseURL(provider schemas.ModelProvider, co
 	ma.configs[provider] = &schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
 			BaseURL:                        baseURL,
-			DefaultRequestTimeoutInSeconds: 30,
+			DefaultRequestTimeoutInSeconds: 300,
 			MaxRetries:                     3,
 			RetryBackoffInitial:            500 * time.Millisecond,
 			RetryBackoffMax:                5 * time.Second,
@@ -725,7 +725,7 @@ func (ma *MockAccount) AddProviderWithBaseURL(provider schemas.ModelProvider, co
 	ma.keys[provider] = []schemas.Key{
 		{
 			ID:     fmt.Sprintf("test-key-%s", provider),
-			Value:  *schemas.NewEnvVar(fmt.Sprintf("sk-test-%s", provider)),
+			Value:  *schemas.NewSecretVar(fmt.Sprintf("sk-test-%s", provider)),
 			Weight: 100,
 		},
 	}
@@ -943,8 +943,8 @@ func TestSelectKeyFromProviderForModel_SessionStickiness(t *testing.T) {
 	account.AddProvider(schemas.OpenAI, 5, 1000)
 	// Use 2 keys so we hit the keySelector path (single key returns early)
 	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
-		{ID: "key-a", Name: "Key A", Value: *schemas.NewEnvVar("sk-a"), Models: schemas.WhiteList{"*"}, Weight: 1},
-		{ID: "key-b", Name: "Key B", Value: *schemas.NewEnvVar("sk-b"), Models: schemas.WhiteList{"*"}, Weight: 1},
+		{ID: "key-a", Name: "Key A", Value: *schemas.NewSecretVar("sk-a"), Models: schemas.WhiteList{"*"}, Weight: 1},
+		{ID: "key-b", Name: "Key B", Value: *schemas.NewSecretVar("sk-b"), Models: schemas.WhiteList{"*"}, Weight: 1},
 	})
 
 	var keySelectorCalls int
@@ -1010,8 +1010,8 @@ func TestSelectKeyFromProviderForModel_NoStickinessWithoutSessionID(t *testing.T
 	account := NewMockAccount()
 	account.AddProvider(schemas.OpenAI, 5, 1000)
 	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
-		{ID: "key-a", Name: "Key A", Value: *schemas.NewEnvVar("sk-a"), Models: schemas.WhiteList{"*"}, Weight: 1},
-		{ID: "key-b", Name: "Key B", Value: *schemas.NewEnvVar("sk-b"), Models: schemas.WhiteList{"*"}, Weight: 1},
+		{ID: "key-a", Name: "Key A", Value: *schemas.NewSecretVar("sk-a"), Models: schemas.WhiteList{"*"}, Weight: 1},
+		{ID: "key-b", Name: "Key B", Value: *schemas.NewSecretVar("sk-b"), Models: schemas.WhiteList{"*"}, Weight: 1},
 	})
 
 	var keySelectorCalls int
@@ -1062,8 +1062,8 @@ func TestSelectKeyFromProviderForModel_SessionStickinessNoRotation(t *testing.T)
 	account := NewMockAccount()
 	account.AddProvider(schemas.OpenAI, 5, 1000)
 	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
-		{ID: "key-a", Name: "Key A", Value: *schemas.NewEnvVar("sk-a"), Models: schemas.WhiteList{"*"}, Weight: 1},
-		{ID: "key-b", Name: "Key B", Value: *schemas.NewEnvVar("sk-b"), Models: schemas.WhiteList{"*"}, Weight: 1},
+		{ID: "key-a", Name: "Key A", Value: *schemas.NewSecretVar("sk-a"), Models: schemas.WhiteList{"*"}, Weight: 1},
+		{ID: "key-b", Name: "Key B", Value: *schemas.NewSecretVar("sk-b"), Models: schemas.WhiteList{"*"}, Weight: 1},
 	})
 
 	deterministicSelector := func(ctx *schemas.BifrostContext, keys []schemas.Key, _ schemas.ModelProvider, _ string) (schemas.Key, error) {
@@ -1147,7 +1147,7 @@ func TestSelectKeyFromProviderForModel_BlacklistedModels(t *testing.T) {
 
 	t.Run("all keys blacklist model", func(t *testing.T) {
 		account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
-			{ID: "k1", Name: "K1", Value: *schemas.NewEnvVar("sk-1"), Weight: 1, BlacklistedModels: []string{"gpt-4"}},
+			{ID: "k1", Name: "K1", Value: *schemas.NewSecretVar("sk-1"), Weight: 1, BlacklistedModels: []string{"gpt-4"}},
 		})
 		_, _, err := bifrost.selectKeyFromProviderForModelWithPool(bfCtx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", schemas.OpenAI)
 		if err == nil {
@@ -1161,7 +1161,7 @@ func TestSelectKeyFromProviderForModel_BlacklistedModels(t *testing.T) {
 	t.Run("blacklist wins over models allow list", func(t *testing.T) {
 		account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
 			{
-				ID: "k1", Name: "K1", Value: *schemas.NewEnvVar("sk-1"), Weight: 1,
+				ID: "k1", Name: "K1", Value: *schemas.NewSecretVar("sk-1"), Weight: 1,
 				Models:            []string{"gpt-4"},
 				BlacklistedModels: []string{"gpt-4"},
 			},
@@ -1174,8 +1174,8 @@ func TestSelectKeyFromProviderForModel_BlacklistedModels(t *testing.T) {
 
 	t.Run("second key used when first blacklists", func(t *testing.T) {
 		account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
-			{ID: "k1", Name: "K1", Value: *schemas.NewEnvVar("sk-1"), Weight: 1, BlacklistedModels: []string{"gpt-4"}},
-			{ID: "k2", Name: "K2", Value: *schemas.NewEnvVar("sk-2"), Weight: 1, Models: []string{"*"}},
+			{ID: "k1", Name: "K1", Value: *schemas.NewSecretVar("sk-1"), Weight: 1, BlacklistedModels: []string{"gpt-4"}},
+			{ID: "k2", Name: "K2", Value: *schemas.NewSecretVar("sk-2"), Weight: 1, Models: []string{"*"}},
 		})
 		pool, canRotate, err := bifrost.selectKeyFromProviderForModelWithPool(bfCtx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", schemas.OpenAI)
 		if err != nil {
@@ -2756,4 +2756,167 @@ func TestPluginPipelineStreamingRace(t *testing.T) {
 	}()
 
 	wg.Wait()
+}
+
+// TestFilterKeysByID covers the KeyID scoping path for ListModels requests:
+// a hit returns the single matching key, a miss returns an empty slice
+// (which the caller surfaces as "no key found"), and the input slice must
+// not be mutated.
+func TestFilterKeysByID(t *testing.T) {
+	keys := []schemas.Key{
+		{ID: "k1"},
+		{ID: "k2"},
+		{ID: "k3"},
+	}
+
+	t.Run("match returns single key", func(t *testing.T) {
+		got := filterKeysByID(keys, "k2")
+		if len(got) != 1 || got[0].ID != "k2" {
+			t.Fatalf("filterKeysByID(_, k2) = %+v, want one key with ID=k2", got)
+		}
+	})
+
+	t.Run("no match returns empty slice", func(t *testing.T) {
+		got := filterKeysByID(keys, "does-not-exist")
+		if len(got) != 0 {
+			t.Fatalf("filterKeysByID(_, missing) = %+v, want empty", got)
+		}
+	})
+
+	t.Run("empty target returns empty slice", func(t *testing.T) {
+		got := filterKeysByID(keys, "")
+		if len(got) != 0 {
+			t.Fatalf("filterKeysByID(_, \"\") = %+v, want empty", got)
+		}
+	})
+
+	t.Run("input slice is not mutated", func(t *testing.T) {
+		before := make([]schemas.Key, len(keys))
+		copy(before, keys)
+		_ = filterKeysByID(keys, "k1")
+		for i := range keys {
+			if keys[i].ID != before[i].ID {
+				t.Fatalf("input mutated at index %d: got %q, want %q", i, keys[i].ID, before[i].ID)
+			}
+		}
+	})
+}
+
+// fakeRoutingPlugin is a minimal LLMPlugin whose PreRequestHook writes a routing key pin to the
+// non-reserved BifrostContextKeyRoutingPinnedAPIKeyID, mirroring what the governance routing
+// engine does. It exists to exercise the commit step in PluginPipeline.RunPreRequestHooks.
+type fakeRoutingPlugin struct {
+	name     string
+	pinKeyID string // written to BifrostContextKeyRoutingPinnedAPIKeyID when non-empty
+}
+
+func (f *fakeRoutingPlugin) GetName() string { return f.name }
+func (f *fakeRoutingPlugin) Cleanup() error  { return nil }
+func (f *fakeRoutingPlugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) error {
+	if f.pinKeyID != "" {
+		// A direct write to the reserved BifrostContextKeyAPIKeyID here would be dropped by the
+		// restricted-write block; routing must use the non-reserved key.
+		ctx.SetValue(schemas.BifrostContextKeyRoutingPinnedAPIKeyID, f.pinKeyID)
+	}
+	return nil
+}
+func (f *fakeRoutingPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	return req, nil, nil
+}
+func (f *fakeRoutingPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	return resp, bifrostErr, nil
+}
+
+func newRoutingCommitPipeline(plugins ...schemas.LLMPlugin) *PluginPipeline {
+	return &PluginPipeline{
+		logger:     NewDefaultLogger(schemas.LogLevelError),
+		tracer:     &schemas.NoOpTracer{},
+		llmPlugins: plugins,
+	}
+}
+
+// TestRunPreRequestHooks_CommitsRoutingPinnedKey verifies that the pinned key a routing rule
+// writes to the non-reserved BifrostContextKeyRoutingPinnedAPIKeyID (during the blocked
+// PreRequestHook phase) is committed by core into the reserved BifrostContextKeyAPIKeyID that
+// key selection reads — and that the routing pin's precedence over a caller-supplied pin holds.
+func TestRunPreRequestHooks_CommitsRoutingPinnedKey(t *testing.T) {
+	const pinned = "routing-pinned-key-id"
+
+	t.Run("routing pin is committed to reserved api-key-id", func(t *testing.T) {
+		p := newRoutingCommitPipeline(&fakeRoutingPlugin{name: "gov", pinKeyID: pinned})
+		ctx := schemas.NewBifrostContext(context.Background(), time.Now())
+		p.RunPreRequestHooks(ctx, &schemas.BifrostRequest{})
+		if got, _ := ctx.Value(schemas.BifrostContextKeyAPIKeyID).(string); got != pinned {
+			t.Fatalf("APIKeyID = %q, want %q", got, pinned)
+		}
+	})
+
+	t.Run("routing pin overrides a caller-supplied api-key-id", func(t *testing.T) {
+		p := newRoutingCommitPipeline(&fakeRoutingPlugin{name: "gov", pinKeyID: pinned})
+		ctx := schemas.NewBifrostContext(context.Background(), time.Now())
+		ctx.SetValue(schemas.BifrostContextKeyAPIKeyID, "caller-pin")
+		p.RunPreRequestHooks(ctx, &schemas.BifrostRequest{})
+		if got, _ := ctx.Value(schemas.BifrostContextKeyAPIKeyID).(string); got != pinned {
+			t.Fatalf("APIKeyID = %q, want %q (routing pin must override caller pin)", got, pinned)
+		}
+	})
+
+	t.Run("caller api-key-id preserved when no routing pin", func(t *testing.T) {
+		p := newRoutingCommitPipeline(&fakeRoutingPlugin{name: "noop"})
+		ctx := schemas.NewBifrostContext(context.Background(), time.Now())
+		ctx.SetValue(schemas.BifrostContextKeyAPIKeyID, "caller-pin")
+		p.RunPreRequestHooks(ctx, &schemas.BifrostRequest{})
+		if got, _ := ctx.Value(schemas.BifrostContextKeyAPIKeyID).(string); got != "caller-pin" {
+			t.Fatalf("APIKeyID = %q, want %q (no routing pin must not clobber caller pin)", got, "caller-pin")
+		}
+	})
+}
+
+// TestClearAnthropicPassthroughForNonNativeProvider verifies that Anthropic raw-body
+// passthrough flags are cleared only when an Anthropic-integration request resolves to a
+// provider that doesn't speak the Anthropic Messages API natively (e.g. Bedrock). This
+// guards the fix for Claude-via-Bedrock tool calls breaking when the model is routed to
+// Bedrock through a key alias (so the catalog-time guard never fires).
+func TestClearAnthropicPassthroughForNonNativeProvider(t *testing.T) {
+	flagKeys := []schemas.BifrostContextKey{
+		schemas.BifrostContextKeyUseRawRequestBody,
+		schemas.BifrostContextKeySendBackRawResponse,
+		schemas.BifrostContextKeyPassthroughOverridesPresent,
+	}
+
+	tests := []struct {
+		name            string
+		integrationType string
+		baseProvider    schemas.ModelProvider
+		wantCleared     bool
+	}{
+		{"anthropic integration to bedrock clears", "anthropic", schemas.Bedrock, true},
+		{"anthropic integration to anthropic preserved", "anthropic", schemas.Anthropic, false},
+		{"anthropic integration to vertex preserved", "anthropic", schemas.Vertex, false},
+		{"anthropic integration to azure preserved", "anthropic", schemas.Azure, false},
+		{"non-anthropic integration to bedrock preserved", "openai", schemas.Bedrock, false},
+		{"no integration type to bedrock preserved", "", schemas.Bedrock, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if tt.integrationType != "" {
+				ctx.SetValue(schemas.BifrostContextKeyIntegrationType, tt.integrationType)
+			}
+			for _, k := range flagKeys {
+				ctx.SetValue(k, true)
+			}
+
+			clearAnthropicPassthroughForNonNativeProvider(ctx, tt.baseProvider)
+
+			for _, k := range flagKeys {
+				got, _ := ctx.Value(k).(bool)
+				want := !tt.wantCleared // flags start true; cleared means false
+				if got != want {
+					t.Errorf("flag %v = %v, want %v", k, got, want)
+				}
+			}
+		})
+	}
 }

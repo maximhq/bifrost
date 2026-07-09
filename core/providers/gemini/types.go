@@ -42,7 +42,7 @@ var thinkingBudgetRanges = []struct {
 }
 
 // thoughtSignatureSeparator is used to separate the base ID from the thought signature in tool IDs
-const thoughtSignatureSeparator = "_ts_"
+const thoughtSignatureSeparator = providerUtils.ThoughtSignatureSeparator
 
 type Role string
 
@@ -1363,6 +1363,10 @@ func (p *Part) UnmarshalJSON(data []byte) error {
 		FunctionCall        *FunctionCall        `json:"functionCall,omitempty"`
 		FunctionResponse    *FunctionResponse    `json:"functionResponse,omitempty"`
 		Text                string               `json:"text,omitempty"`
+		// snake_case fallbacks: the google-genai SDK serializes FunctionResponsePart
+		// (nested inside functionResponse.parts) with snake_case keys, unlike top-level parts.
+		InlineDataSnake *Blob     `json:"inline_data,omitempty"`
+		FileDataSnake   *FileData `json:"file_data,omitempty"`
 	}
 
 	var aux PartAlias
@@ -1373,7 +1377,13 @@ func (p *Part) UnmarshalJSON(data []byte) error {
 	p.VideoMetadata = aux.VideoMetadata
 	p.Thought = aux.Thought
 	p.InlineData = aux.InlineData
+	if p.InlineData == nil {
+		p.InlineData = aux.InlineDataSnake
+	}
 	p.FileData = aux.FileData
+	if p.FileData == nil {
+		p.FileData = aux.FileDataSnake
+	}
 	p.CodeExecutionResult = aux.CodeExecutionResult
 	p.ExecutableCode = aux.ExecutableCode
 	p.FunctionCall = aux.FunctionCall
@@ -1415,12 +1425,16 @@ type Blob struct {
 	MIMEType string `json:"mimeType,omitempty"`
 }
 
-// UnmarshalJSON custom unmarshaler for Blob to handle URL-safe base64
+// UnmarshalJSON custom unmarshaler for Blob to handle URL-safe base64.
+// Also accepts the snake_case keys (mime_type, display_name) the google-genai SDK
+// emits inside functionResponse.parts (FunctionResponseBlob), preferring camelCase.
 func (b *Blob) UnmarshalJSON(data []byte) error {
 	type BlobAlias struct {
-		DisplayName string `json:"displayName,omitempty"`
-		Data        string `json:"data,omitempty"`
-		MIMEType    string `json:"mimeType,omitempty"`
+		DisplayName      string `json:"displayName,omitempty"`
+		DisplayNameSnake string `json:"display_name,omitempty"`
+		Data             string `json:"data,omitempty"`
+		MIMEType         string `json:"mimeType,omitempty"`
+		MIMETypeSnake    string `json:"mime_type,omitempty"`
 	}
 
 	var aux BlobAlias
@@ -1429,7 +1443,13 @@ func (b *Blob) UnmarshalJSON(data []byte) error {
 	}
 
 	b.DisplayName = aux.DisplayName
+	if b.DisplayName == "" {
+		b.DisplayName = aux.DisplayNameSnake
+	}
 	b.MIMEType = aux.MIMEType
+	if b.MIMEType == "" {
+		b.MIMEType = aux.MIMETypeSnake
+	}
 
 	if aux.Data != "" {
 		// Convert URL-safe base64 to standard base64
@@ -1507,6 +1527,40 @@ type FileData struct {
 	MIMEType string `json:"mimeType,omitempty"`
 }
 
+// UnmarshalJSON custom unmarshaler for FileData. Also accepts the snake_case keys
+// (mime_type, file_uri, display_name) the google-genai SDK emits inside
+// functionResponse.parts (FunctionResponseFileData), preferring camelCase.
+func (f *FileData) UnmarshalJSON(data []byte) error {
+	type FileDataAlias struct {
+		DisplayName      string `json:"displayName,omitempty"`
+		DisplayNameSnake string `json:"display_name,omitempty"`
+		FileURI          string `json:"fileUri,omitempty"`
+		FileURISnake     string `json:"file_uri,omitempty"`
+		MIMEType         string `json:"mimeType,omitempty"`
+		MIMETypeSnake    string `json:"mime_type,omitempty"`
+	}
+
+	var aux FileDataAlias
+	if err := sonic.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+
+	f.DisplayName = aux.DisplayName
+	if f.DisplayName == "" {
+		f.DisplayName = aux.DisplayNameSnake
+	}
+	f.FileURI = aux.FileURI
+	if f.FileURI == "" {
+		f.FileURI = aux.FileURISnake
+	}
+	f.MIMEType = aux.MIMEType
+	if f.MIMEType == "" {
+		f.MIMEType = aux.MIMETypeSnake
+	}
+
+	return nil
+}
+
 // FunctionCall represents a function call.
 type FunctionCall struct {
 	// Optional. The unique ID of the function call. If populated, the client to execute
@@ -1543,6 +1597,10 @@ type FunctionResponse struct {
 	// function output and "error" key to specify error details (if any). If "output" and
 	// "error" keys are not specified, then whole "response" is treated as function output.
 	Response json.RawMessage `json:"response,omitempty"`
+	// Optional. Multimodal content (images, files) returned by the function. Each part must
+	// contain inlineData or fileData with a displayName, referenced from `response` via
+	// {"$ref": "<displayName>"}. Supported on Gemini 3 series models.
+	Parts []*Part `json:"parts,omitempty"`
 }
 
 // ==================== RESPONSE TYPES ====================
@@ -2203,7 +2261,8 @@ type GeminiBatchMetadataInputConfig struct {
 
 // GeminiBatchMetadataOutputConfig represents the output config in batch job metadata.
 type GeminiBatchMetadataOutputConfig struct {
-	ResponsesFile string `json:"responsesFile,omitempty"`
+	ResponsesFile    string                  `json:"responsesFile,omitempty"`
+	InlinedResponses *GeminiInlinedResponses `json:"inlinedResponses,omitempty"`
 }
 
 // GeminiBatchMetadata contains metadata for tracking batch requests.
@@ -2232,18 +2291,26 @@ type GeminiBatchJobResponse struct {
 	Response *GeminiBatchOutput    `json:"response,omitempty"`
 }
 
-// GeminiBatchOutput represents the output of a successful batch job.
+// GeminiBatchOutput represents the output of a successful batch job. It mirrors the
+// GenerateContentBatchOutput union returned under the Operation's response field
+// (and metadata.output): either a responses file or a set of inline responses.
 type GeminiBatchOutput struct {
-	Type          string `json:"@type,omitempty"`
-	ResponsesFile string `json:"responsesFile,omitempty"`
+	Type             string                  `json:"@type,omitempty"`
+	ResponsesFile    string                  `json:"responsesFile,omitempty"`
+	InlinedResponses *GeminiInlinedResponses `json:"inlinedResponses,omitempty"`
 }
 
-// GeminiBatchDest contains the destination/output of a batch job.
-// For inline requests, results are in InlinedResponses.
-// For file-based input, results are in a file referenced by FileName.
+// GeminiBatchDest is the client-SDK-facing output shape (dest.fileName) emitted when
+// converting a Bifrost batch response back to Gemini format. The raw REST API reports
+// output under the Operation's response / metadata.output fields, not dest.
 type GeminiBatchDest struct {
+	FileName string `json:"fileName,omitempty"`
+}
+
+// GeminiInlinedResponses wraps the array of inline batch responses. The REST API nests
+// the array one level deep: response.inlinedResponses.inlinedResponses[].
+type GeminiInlinedResponses struct {
 	InlinedResponses []GeminiInlinedResponse `json:"inlinedResponses,omitempty"`
-	FileName         string                  `json:"fileName,omitempty"`
 }
 
 // GeminiInlinedResponse represents a single response in the batch output.
@@ -2805,6 +2872,7 @@ type GeminiResumableUploadSession struct {
 	DisplayName string
 	MimeType    string
 	Provider    schemas.ModelProvider
+	VirtualKey  string
 }
 
 // GeminiFileUploadHandlerReqFile represents the file metadata in a Gemini file upload request.

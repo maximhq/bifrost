@@ -7,8 +7,6 @@ icon: "user-shield"
 
 ## Overview
 
-<Info>Per-user OAuth is available in **Bifrost v1.5.0-prerelease2 and above**.</Info>
-
 `auth_type: "per_user_oauth"` lets each end-user connect to an upstream MCP service (Notion, GitHub, Sentry, etc.) under their own account. Bifrost stores one OAuth token per `(identity, mcp_client)` and reuses it on every later call.
 
 If a single shared admin token is fine, use [OAuth 2.0](./oauth) instead.
@@ -16,7 +14,9 @@ If a single shared admin token is fine, use [OAuth 2.0](./oauth) instead.
 This auth type is only valid for **HTTP** and **SSE** connections.
 
 <Note>
-Bifrost is **not** an OAuth 2.1 Authorization Server. The MCP Gateway (`/mcp`) does not advertise its own `.well-known` endpoints or run a consent screen for inbound MCP clients. Identity is asserted by the caller via headers (or upstream SSO), and auth happens **lazily** — on the first tool call that needs an upstream token.
+This page covers **upstream** per-user OAuth — Bifrost holding a token *for* an upstream MCP service on behalf of each end-user, resolved **lazily** on the first tool call that needs it. Identity is asserted by the caller via headers (or upstream SSO).
+
+This is separate from Bifrost acting as an OAuth 2.1 Authorization Server *for inbound* `/mcp` clients (browser consent + `.well-known` discovery), which is covered in [Gateway Authentication](../gateway-auth).
 </Note>
 
 | | Server-level OAuth (`oauth`) | Per-user OAuth (`per_user_oauth`) |

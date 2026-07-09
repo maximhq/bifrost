@@ -21,6 +21,7 @@ type SweepWorker struct {
 	sweepInterval time.Duration
 	stopCh        chan struct{}
 	stopOnce      sync.Once
+	cancel        context.CancelFunc
 	logger        schemas.Logger
 }
 
@@ -44,7 +45,9 @@ func NewSweepWorker(service *Service, logger schemas.Logger) *SweepWorker {
 
 // Start begins the sweep loop in a background goroutine.
 func (w *SweepWorker) Start(ctx context.Context) {
-	go w.run(ctx)
+	runCtx, cancel := context.WithCancel(ctx)
+	w.cancel = cancel
+	go w.run(runCtx)
 	if w.logger != nil {
 		w.logger.Info("temp-token sweep worker started (interval=%s)", w.sweepInterval)
 	}
@@ -54,6 +57,11 @@ func (w *SweepWorker) Start(ctx context.Context) {
 // panics from redundant shutdown paths.
 func (w *SweepWorker) Stop() {
 	w.stopOnce.Do(func() {
+		// Cancel any in-flight sweep so a blocked DB call unwinds promptly,
+		// then signal run() to exit its ticker loop.
+		if w.cancel != nil {
+			w.cancel()
+		}
 		close(w.stopCh)
 		if w.logger != nil {
 			w.logger.Info("temp-token sweep worker stopped")
