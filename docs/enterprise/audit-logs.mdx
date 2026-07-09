@@ -23,6 +23,7 @@ Audit log entries can be signed with an HMAC key, retained for a configurable nu
 | **Filtering**        | Filter by search text, action, outcome, and date range.                                       |
 | **Export**           | Export matching entries as JSON, JSON Lines, or Syslog when the user has download permission. |
 | **Retention**        | Configure how long audit log entries are kept.                                                |
+| **Object storage archival** | Continuously archive audit events to S3/GCS for long-term, off-box, compliance-grade retention. |
 
 ---
 
@@ -44,7 +45,8 @@ Audit log entries can be signed with an HMAC key, retained for a configurable nu
 | ---------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
 | `disabled`       | boolean | When `true`, audit logging is turned off. Default: `false`.                                                                                |
 | `hmac_key`       | string  | HMAC secret key used to sign audit events. Minimum 32 bytes. Supports `env.` prefix for environment variables (e.g. `env.AUDIT_HMAC_KEY`). |
-| `retention_days` | integer | Days to retain audit log entries. `0` disables retention-based cleanup.                                                                    |
+| `retention_days` | integer | Days to retain audit log entries **in the database**. `0` disables retention-based cleanup. Does not affect archived objects (see [Archiving to Object Storage](#archiving-to-object-storage)). |
+| `object_storage` | object  | Optional. When set, archives audit events to S3/GCS in addition to the database. See [Archiving to Object Storage](#archiving-to-object-storage). |
 
 ## Viewing Audit Logs
 
@@ -76,6 +78,123 @@ Supported export formats:
 | JSON              | Structured review or ad hoc processing.                      |
 | JSON Lines        | Line-delimited ingestion pipelines.                          |
 | Syslog (RFC 5424) | SIEM or log-forwarding pipelines that accept syslog records. |
+
+## Archiving to Object Storage
+
+By default, audit events live only in the database, which is the source of truth for everything you see in the dashboard (viewing, filtering, HMAC verification, and export). Databases, however, are not ideal for multi-year compliance retention or off-box durability.
+
+When you configure `object_storage`, Bifrost **additionally** writes every audit event to an S3-compatible bucket (S3, GCS, MinIO, R2) as it is recorded. This is a dual-write, not an offload: the full event goes to **both** the database and object storage, so each store holds a complete, independent copy.
+
+<Note>
+This differs from [Log Exports](/enterprise/log-exports), where object storage *offloads* the heavy request/response payload out of the database. For audit logs, object storage is a complete **mirror** — the database is never trimmed of data by enabling it.
+</Note>
+
+### Database vs. Object Storage
+
+| Concern | Database | Object Storage |
+| ------- | -------- | -------------- |
+| Role | Source of truth | Durable archive |
+| Used by dashboard / API / export / HMAC verify | Yes | No |
+| Contents | Full event | Full event (identical copy) |
+| Retention | Governed by `retention_days` | Governed by your bucket's lifecycle rules |
+| When populated | Always | Only when `object_storage` is configured, **going forward** (no backfill of existing rows) |
+
+Because the two are decoupled, the archive can outlive the database: once `retention_days` deletes an old row, its object in the bucket is left untouched. Use S3 Object Lock / WORM and bucket lifecycle rules to govern how long the archive is kept.
+
+### How Archival Works
+
+Audit events are written in small batches (buffered and flushed together). Each flushed batch becomes **one gzipped JSON Lines object**, written **after** the database write succeeds. The object key is time-partitioned:
+
+```
+{prefix}/audit-logs/{YYYY}/{MM}/{DD}/{HH}/{batchID}.jsonl.gz
+```
+
+For example, with `"prefix": "acme-prod"` and `"compress": true`:
+
+```
+acme-prod/audit-logs/2026/07/07/14/9f3a1c2b-6d4e-4a1b-8c2f-1e2d3c4b5a6f.jsonl.gz
+```
+
+| Key segment | Meaning |
+| ----------- | ------- |
+| `{prefix}` | The configurable base path from `object_storage.prefix` (default `bifrost`). |
+| `audit-logs` | Fixed segment so audit objects never collide with request logs (`logs/`, `mcp-logs/`). |
+| `{YYYY}/{MM}/{DD}/{HH}` | UTC hour of the batch's first event — enables lifecycle rules and prefix-scoped queries (Athena, SIEM ingestion). |
+| `{batchID}` | UUID of the first event in the batch; unique, so objects never overwrite each other. |
+| `.jsonl.gz` | JSON Lines (one event per line). The `.gz` suffix is present only when `compress` is enabled. |
+
+<Info>
+Archival is **best-effort, not guaranteed**. The upload happens synchronously within the flush and audit batches are never dropped under back-pressure. If an upload fails, the error is logged but the flush still succeeds — the **database** already holds the record and remains the source of truth, but that batch will be **missing from the bucket**, and nothing blocks request handling. Treat object storage as a complete compliance mirror only if you monitor upload failures and replay any missed batches; the database, not the archive, is authoritative.
+</Info>
+
+### Configuration
+
+<Tabs group="storage-backend">
+<Tab title="S3 / MinIO / R2">
+
+```json
+{
+  "audit_logs": {
+    "hmac_key": "env.AUDIT_HMAC_KEY",
+    "retention_days": 365,
+    "object_storage": {
+      "type": "s3",
+      "bucket": "acme-audit-archive",
+      "prefix": "acme-prod",
+      "compress": true,
+      "region": "us-east-1",
+      "access_key_id": "env.AUDIT_S3_KEY",
+      "secret_access_key": "env.AUDIT_S3_SECRET"
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="GCS">
+
+```json
+{
+  "audit_logs": {
+    "hmac_key": "env.AUDIT_HMAC_KEY",
+    "retention_days": 365,
+    "object_storage": {
+      "type": "gcs",
+      "bucket": "acme-audit-archive",
+      "prefix": "acme-prod",
+      "compress": true,
+      "credentials_json": "env.AUDIT_GCS_CREDENTIALS"
+    }
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
+#### Object Storage Fields
+
+| Field | Type | Required | Description |
+| ----- | ---- | -------- | ----------- |
+| `type` | string | Yes | Backend type: `s3` or `gcs`. |
+| `bucket` | string | Yes | Bucket name. Supports `env.` references. |
+| `prefix` | string | No | Configurable base key path; `audit-logs/` is appended under it. Default: `bifrost`. |
+| `compress` | boolean | No | Gzip stored objects (objects use a `.jsonl.gz` extension). Default: `false`. |
+| `region` | string | No | AWS region (S3). Supports `env.` references. |
+| `endpoint` | string | No | Custom S3-compatible endpoint for MinIO/R2. Supports `env.` references. |
+| `access_key_id` | string | No | AWS access key ID. Omit to use the default credential chain (instance role, env vars). Requires `secret_access_key`. |
+| `secret_access_key` | string | No | AWS secret access key. Supports `env.` references. |
+| `session_token` | string | No | STS temporary session token. |
+| `role_arn` | string | No | IAM role ARN for STS AssumeRole. |
+| `force_path_style` | boolean | No | Path-style URLs (required for MinIO). Default: `false`. |
+| `credentials_json` | string | No | GCS service account JSON or file path. Omit to use Application Default Credentials. |
+| `project_id` | string | No | GCP project ID override (GCS). |
+
+<Note>
+You can point audit archival at its own dedicated (ideally write-once/locked) bucket, or reuse the same bucket as request `logs_store` with a distinct `prefix`. The `audit-logs/` path segment keeps the two from overlapping.
+</Note>
+
+If the object store cannot be reached at startup, Bifrost logs the error and continues **without** archival — audit logging to the database is never blocked by object-storage problems.
 
 ## API Reference
 

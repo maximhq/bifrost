@@ -107,6 +107,7 @@ export function providerLatencyToCSV(data: ProviderLatencyHistogramResponse | nu
 export function modelRankingsToCSV(data: ModelRankingsResponse | null): CSVData {
 	const headers = [
 		"Model",
+		"Canonical Model",
 		"Provider",
 		"Total Requests",
 		"Success Count",
@@ -121,6 +122,7 @@ export function modelRankingsToCSV(data: ModelRankingsResponse | null): CSVData 
 	];
 	const rows = (data?.rankings ?? []).map((r) => [
 		r.model,
+		r.canonical_model_name ?? "",
 		r.provider,
 		r.total_requests,
 		r.success_count,

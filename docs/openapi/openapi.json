@@ -77846,6 +77846,24 @@
           "raw_response": {
             "type": "string"
           },
+          "redaction_mapping": {
+            "type": "object",
+            "properties": {
+              "input": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                }
+              },
+              "output": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Phase-scoped placeholder-to-original-value mappings for reversible redactions. Present only on log detail responses when the caller has `Logs:Reveal`."
+          },
           "created_at": {
             "type": "string",
             "format": "date-time"
@@ -78665,24 +78683,6 @@
             "type": "object",
             "additionalProperties": true,
             "description": "List models response output"
-          },
-          "redaction_mapping": {
-            "type": "object",
-            "properties": {
-              "input": {
-                "type": "object",
-                "additionalProperties": {
-                  "type": "string"
-                }
-              },
-              "output": {
-                "type": "object",
-                "additionalProperties": {
-                  "type": "string"
-                }
-              }
-            },
-            "description": "Phase-scoped placeholder-to-original-value mappings for reversible redactions. Present only on log detail responses when the caller has `Logs:Reveal`."
           }
         }
       },

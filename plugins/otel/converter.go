@@ -374,6 +374,8 @@ func convertSpanKind(kind schemas.SpanKind) tracepb.Span_SpanKind {
 		return tracepb.Span_SPAN_KIND_INTERNAL
 	case schemas.SpanKindMCPTool:
 		return tracepb.Span_SPAN_KIND_CLIENT
+	case schemas.SpanKindMCPClient:
+		return tracepb.Span_SPAN_KIND_CLIENT
 	case schemas.SpanKindEmbedding:
 		return tracepb.Span_SPAN_KIND_CLIENT
 	case schemas.SpanKindSpeech:
