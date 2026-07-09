@@ -446,6 +446,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_inference_geo_multiplier_column"}, run: migrationAddInferenceGeoMultiplierColumn},
 	{IDs: []string{"repair_bare_wildcard_allowed_models"}, run: migrationRepairBareWildcardAllowedModels},
 	{IDs: []string{"add_bedrock_project_id_columns"}, run: migrationAddBedrockProjectIDColumns},
+	{IDs: []string{"add_vertex_force_single_region_column"}, run: migrationAddVertexForceSingleRegionColumn},
 }
 
 // quoteSQLiteIdentifier quotes a SQLite identifier, escaping any double quotes.
@@ -10551,6 +10552,7 @@ func migrationAddVertexForceSingleRegionColumn(ctx context.Context, db *gorm.DB,
 	}
 	return nil
 }
+<<<<<<< HEAD
 
 // migrationAddSidekiqTable creates the generic `sidekiq` background-job table. Uses raw SQL
 // (not GORM auto-DDL) so the schema is explicit and stable across GORM versions.
@@ -10678,3 +10680,5 @@ func migrationAddSidekiqKindStatusCreatedIndex(ctx context.Context, db *gorm.DB,
 	}
 	return nil
 }
+=======
+>>>>>>> fae994f4a (feat: force single region config in vertex key config (#5035))
