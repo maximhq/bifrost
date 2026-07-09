@@ -7,8 +7,8 @@
   "properties": {
     "$schema": {
       "type": "string",
-      "description": "The schema version. This should be set to \"https://www.getbifrost.ai/schema\"",
-      "const": "https://www.getbifrost.ai/schema"
+      "description": "Schema location for IDE validation. Defaults to \"https://www.getbifrost.ai/schema\" and can be set to a mirrored URL, file:// URL, or filesystem path for isolated deployments.",
+      "default": "https://www.getbifrost.ai/schema"
     },
     "server": {
       "type": "object",
