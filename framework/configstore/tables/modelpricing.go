@@ -109,6 +109,12 @@ type TableModelPricing struct {
 	// datasheet sync never overwrites user-set values.
 	AdditionalAttributesJSON string            `gorm:"type:text;column:additional_attributes" json:"-"`
 	AdditionalAttributes     map[string]string `gorm:"-" json:"additional_attributes,omitempty"`
+
+	// Bifrost-specific behaviour overrides sourced from the datasheet.
+	// Stored as a single JSON-serialized column so the schema can grow
+	// without DB migrations for every new field. nil if the datasheet
+	// has no overrides for this (model, provider) pair.
+	BifrostOverrides *schemas.BifrostOverrides `gorm:"type:text;serializer:json;default:null;column:bifrost_overrides" json:"bifrost_overrides,omitempty"`
 }
 
 // TableName sets the table name for each model
