@@ -62,6 +62,12 @@ type MCPManagerInterface interface {
 	// PreMCPConnectionHook sees the full plugin set.
 	ConnectConfiguredClients(ctx context.Context)
 
+	// SetOnToolsUpdated registers a callback invoked whenever a client's live tool
+	// set changes (connect, reconnect, or periodic tool sync), so callers can resync
+	// any derived tool registry (e.g. a gateway's tools/list snapshot) without relying
+	// on unrelated admin config mutations to trigger it.
+	SetOnToolsUpdated(fn func())
+
 	// RemoveClient removes an MCP client by ID
 	RemoveClient(id string) error
 

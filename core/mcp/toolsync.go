@@ -158,6 +158,12 @@ func (cts *ClientToolSyncer) performSync() {
 	} else {
 		cts.logger.Debug("%s Tool sync completed for %s: %d tools (no change)", MCPLogPrefix, cts.clientID, newToolCount)
 	}
+
+	// Notify the transport so gateway-facing tool registries pick up the change (or
+	// confirm no drift) instead of only refreshing on the next unrelated admin mutation.
+	// Fired unconditionally: the old/new count comparison above is only for logging and
+	// can miss same-count renames, so don't gate the notify on it.
+	cts.manager.notifyToolsUpdated()
 }
 
 // ToolSyncManager manages all client tool syncers
