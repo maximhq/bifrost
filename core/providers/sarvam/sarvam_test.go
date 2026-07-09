@@ -44,8 +44,13 @@ func TestSarvam(t *testing.T) {
 			// dual-intent prompt). That's model capability variance, not a mapping
 			// bug - see TestSarvamMultipleToolCallsLenient below for real coverage
 			// of the multi-tool code path with an assertion that tolerates it.
+			// MultipleToolCallsStreaming is disabled for the same reason - it hits
+			// the identical strict "both tools must be called" assertion, and
+			// RunMultipleToolCallsTest gates its streaming subtests behind the
+			// MultipleToolCalls flag anyway, so leaving this true here would be
+			// misleading dead configuration, not real coverage.
 			MultipleToolCalls:          false,
-			MultipleToolCallsStreaming: true,
+			MultipleToolCallsStreaming: false,
 			// End2EndToolCalling/CompleteEnd2End step 2 (below) omit `tools` on the
 			// follow-up request carrying tool-result messages, which OpenAI tolerates
 			// but Sarvam rejects ("Tool messages found but no tools provided") -

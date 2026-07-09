@@ -1,4 +1,5 @@
 import { expect, test } from "../../core/fixtures/base.fixture";
+import type { ProvidersPage } from "./pages/providers.page";
 import { createProviderKeyData } from "./providers.data";
 
 // Track created resources for cleanup
@@ -47,7 +48,7 @@ test.describe("Sarvam Provider - Add Provider + API Key End-to-End", () => {
 
   // Adds the provider only if it isn't already configured, and records
   // whether we're the ones who created it (see createdSarvamProvider above).
-  async function ensureSarvamConfigured(providersPage: import("./pages/providers.page").ProvidersPage) {
+  async function ensureSarvamConfigured(providersPage: ProvidersPage) {
     if (await providersPage.providerExists("sarvam")) return;
     await providersPage.addKnownProviderFromDropdown("sarvam");
     createdSarvamProvider = true;
