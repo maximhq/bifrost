@@ -18,13 +18,13 @@ import (
 // framework's TraceStore implementation.
 // It also embeds a streaming.Accumulator for centralized streaming chunk accumulation.
 type Tracer struct {
-	store              *TraceStore
-	accumulator        *streaming.Accumulator
-	pricingManager     *modelcatalog.ModelCatalog
-	logger             schemas.Logger
-	obsPlugins         atomic.Pointer[[]schemas.ObservabilityPlugin]
-	cachedHdrPatterns  atomic.Pointer[[]string]
-	flushWG            sync.WaitGroup
+	store             *TraceStore
+	accumulator       *streaming.Accumulator
+	pricingManager    *modelcatalog.ModelCatalog
+	logger            schemas.Logger
+	obsPlugins        atomic.Pointer[[]schemas.ObservabilityPlugin]
+	cachedHdrPatterns atomic.Pointer[[]string]
+	flushWG           sync.WaitGroup
 }
 
 // NewTracer creates a new Tracer wrapping the given TraceStore.
@@ -108,6 +108,18 @@ func (t *Tracer) SetTraceRequestHeaders(traceID string, headers map[string]strin
 // directly off the completed trace.
 func (t *Tracer) SetTraceAttribute(traceID string, key string, value any) {
 	t.store.SetTraceAttribute(traceID, key, value)
+}
+
+// SetTraceRedactionReplacements stores phase-scoped connector-facing replacements on a trace.
+func (t *Tracer) SetTraceRedactionReplacements(traceID string, phase schemas.RedactionPhase, replacements map[string]string) {
+	if t == nil || t.store == nil || strings.TrimSpace(traceID) == "" || len(replacements) == 0 {
+		return
+	}
+	trace := t.store.GetTrace(strings.TrimSpace(traceID))
+	if trace == nil {
+		return
+	}
+	trace.SetRedactionReplacements(phase, replacements)
 }
 
 // CreateTrace creates a new trace with optional parent ID and returns the trace ID.
@@ -679,6 +691,16 @@ func (t *Tracer) CompleteAndFlushTrace(traceID string) {
 		// trace object and takes down the whole process.
 		defer t.ReleaseTrace(completedTrace)
 
+		completedTrace.ApplyRedactionReplacements()
+
+		// Give every connector a private, lock-safe snapshot. Late writers may
+		// still mutate the pooled spans under the span lock (streaming
+		// finalization, redaction), and connectors iterate the attribute maps
+		// (directly or via Marshal) — racing them fatals with "concurrent map
+		// iteration and map write", which recover() can't catch. One snapshot
+		// here covers all connectors.
+		exportTrace := completedTrace.SnapshotForExport()
+
 		var obsPlugins []schemas.ObservabilityPlugin
 		if loaded := t.obsPlugins.Load(); loaded != nil {
 			obsPlugins = *loaded
@@ -702,7 +724,7 @@ func (t *Tracer) CompleteAndFlushTrace(traceID string) {
 					return
 				}
 				seen[name] = struct{}{}
-				if err := plugin.Inject(context.Background(), completedTrace); err != nil && t.logger != nil {
+				if err := plugin.Inject(context.Background(), exportTrace); err != nil && t.logger != nil {
 					t.logger.Warn("observability plugin %s failed to inject trace: %v", name, err)
 				}
 			}(plugin)

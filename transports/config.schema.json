@@ -3345,6 +3345,10 @@
                     "type": "string",
                     "description": "Per-alias Vertex project number override (can use env. prefix)."
                   },
+                  "force_single_region": {
+                    "type": "boolean",
+                    "description": "Per-alias Vertex override: when true, call the alias region as-is and skip promoting multi-region-only models to a multi-region endpoint."
+                  },
                   "inference_profile_arn": {
                     "type": "string",
                     "description": "Per-alias Bedrock inference profile ARN (can use env. prefix)."
@@ -3680,6 +3684,11 @@
                 "auth_credentials": {
                   "type": "string",
                   "description": "Authentication credentials (can use env. prefix)"
+                },
+                "force_single_region": {
+                  "type": "boolean",
+                  "description": "When true, always call the configured region and skip automatic promotion of multi-region-only models to a multi-region endpoint. Enable for provisioned throughput.",
+                  "default": false
                 }
               },
               "required": ["project_id", "region"],

@@ -2150,6 +2150,7 @@ func (provider *OpenAIProvider) Speech(ctx *schemas.BifrostContext, key schemas.
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,
+		nil,
 		provider.GetProviderKey(),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
@@ -2167,6 +2168,7 @@ func HandleOpenAISpeechRequest(
 	request *schemas.BifrostSpeechRequest,
 	key schemas.Key,
 	extraHeaders map[string]string,
+	authHeaders map[string]string,
 	providerName schemas.ModelProvider,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
@@ -2192,12 +2194,16 @@ func HandleOpenAISpeechRequest(
 	req.SetRequestURI(url)
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
-	if key.Value.GetValue() != "" {
-		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
+	// Prefer provider-supplied auth headers (e.g. Azure service principal / api-key); else Bearer from key.
+	if len(authHeaders) == 0 {
+		authHeaders = BearerAuthHeader(key)
+	}
+	for k, v := range authHeaders {
+		req.Header.Set(k, v)
 	}
 
 	// Large payload passthrough: stream body directly without JSON marshaling
-	if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, BearerAuthHeader(key), extraHeaders, providerName, logger); handled {
+	if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, authHeaders, extraHeaders, providerName, logger); handled {
 		if lpErr != nil {
 			return nil, lpErr
 		}
@@ -2552,11 +2558,28 @@ func (provider *OpenAIProvider) Transcription(ctx *schemas.BifrostContext, key s
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,
+		nil,
 		provider.GetProviderKey(),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		nil,
 		provider.logger,
 	)
+}
+
+// openAIDiarizedTranscriptionResponse mirrors OpenAI's response_format=diarized_json
+// wire shape (e.g. gpt-4o-transcribe-diarize), which uses a distinct segment
+// shape (string id, speaker, type) that doesn't fit TranscriptionSegment, so
+// it's decoded separately instead of directly into BifrostTranscriptionResponse.
+// Duration/Task are pointers because OpenAI's actual responses omit them
+// entirely (despite the openai-python SDK's TranscriptionDiarized model
+// listing both as required), and a zero-value default would fabricate data
+// that never existed upstream.
+type openAIDiarizedTranscriptionResponse struct {
+	Duration *float64                               `json:"duration,omitempty"`
+	Segments []schemas.TranscriptionDiarizedSegment `json:"segments"`
+	Task     *string                                `json:"task,omitempty"`
+	Text     string                                 `json:"text"`
+	Usage    *schemas.TranscriptionUsage            `json:"usage,omitempty"`
 }
 
 func HandleOpenAITranscriptionRequest(
@@ -2566,20 +2589,35 @@ func HandleOpenAITranscriptionRequest(
 	request *schemas.BifrostTranscriptionRequest,
 	key schemas.Key,
 	extraHeaders map[string]string,
+	authHeaders map[string]string,
 	providerName schemas.ModelProvider,
 	sendBackRawResponse bool,
 	customResponseHandler responseHandler[schemas.BifrostTranscriptionResponse],
 	logger schemas.Logger,
 ) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
+	// Prefer provider-supplied auth headers (e.g. Azure service principal / api-key); else Bearer from key.
+	if len(authHeaders) == 0 {
+		authHeaders = BearerAuthHeader(key)
+	}
 	// Large payload passthrough: stream multipart body directly without parsing
-	if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, BearerAuthHeader(key), extraHeaders, providerName, logger); handled {
+	if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, authHeaders, extraHeaders, providerName, logger); handled {
 		if lpErr != nil {
 			return nil, lpErr
 		}
 		// Unmarshal the upstream response body to preserve transcription text and fields
 		if len(lpResult.ResponseBody) > 0 {
 			response := &schemas.BifrostTranscriptionResponse{}
-			if err := sonic.Unmarshal(lpResult.ResponseBody, response); err != nil {
+			if request.Params != nil && schemas.IsDiarizedTranscriptionFormat(request.Params.ResponseFormat) {
+				var diarized openAIDiarizedTranscriptionResponse
+				if err := sonic.Unmarshal(lpResult.ResponseBody, &diarized); err != nil {
+					return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err)
+				}
+				response.Duration = diarized.Duration
+				response.Task = diarized.Task
+				response.Text = diarized.Text
+				response.DiarizedSegments = diarized.Segments
+				response.Usage = diarized.Usage
+			} else if err := sonic.Unmarshal(lpResult.ResponseBody, response); err != nil {
 				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err)
 			}
 			response.ExtraFields = schemas.BifrostResponseExtraFields{Latency: lpResult.Latency}
@@ -2608,8 +2646,8 @@ func HandleOpenAITranscriptionRequest(
 
 	req.SetRequestURI(url)
 	req.Header.SetMethod(http.MethodPost)
-	if key.Value.GetValue() != "" {
-		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
+	for k, v := range authHeaders {
+		req.Header.Set(k, v)
 	}
 
 	// Use centralized converter
@@ -2676,6 +2714,37 @@ func HandleOpenAITranscriptionRequest(
 		response.Text = string(copiedResponseBody)
 		if sendBackRawResponse {
 			rawResponse = string(copiedResponseBody)
+		}
+	} else if request.Params != nil && schemas.IsDiarizedTranscriptionFormat(request.Params.ResponseFormat) {
+		var diarized openAIDiarizedTranscriptionResponse
+		if err := sonic.Unmarshal(copiedResponseBody, &diarized); err != nil {
+			if providerUtils.IsHTMLResponse(resp, copiedResponseBody) {
+				return nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
+					IsBifrostError: false,
+					Error: &schemas.ErrorField{
+						Message: schemas.ErrProviderResponseHTML,
+						Error:   errors.New(string(copiedResponseBody)),
+					},
+				}, latency)
+			}
+			return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err), latency)
+		}
+
+		// Duration/Task are decoded as pointers so an upstream response that
+		// omits them (as OpenAI's diarized_json actually does today, despite
+		// the SDK's TranscriptionDiarized model listing both as required)
+		// stays omitted here too, instead of fabricating "duration":0 /
+		// "task":"" that never existed in the real response.
+		response.Duration = diarized.Duration
+		response.Task = diarized.Task
+		response.Text = diarized.Text
+		response.DiarizedSegments = diarized.Segments
+		response.Usage = diarized.Usage
+
+		if sendBackRawResponse {
+			if err := sonic.Unmarshal(copiedResponseBody, &rawResponse); err != nil {
+				return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError(schemas.ErrProviderRawResponseUnmarshal, err), latency)
+			}
 		}
 	} else if customResponseHandler != nil {
 		_, rawResponse, bifrostErr = customResponseHandler(copiedResponseBody, response, nil, false, sendBackRawResponse)
@@ -3008,6 +3077,7 @@ func (provider *OpenAIProvider) ImageGeneration(ctx *schemas.BifrostContext, key
 		req,
 		key,
 		provider.networkConfig.ExtraHeaders,
+		nil,
 		provider.GetProviderKey(),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
@@ -3024,6 +3094,7 @@ func HandleOpenAIImageGenerationRequest(
 	request *schemas.BifrostImageGenerationRequest,
 	key schemas.Key,
 	extraHeaders map[string]string,
+	authHeaders map[string]string,
 	providerName schemas.ModelProvider,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
@@ -3049,12 +3120,16 @@ func HandleOpenAIImageGenerationRequest(
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
 
-	if value := key.Value.GetValue(); value != "" {
-		req.Header.Set("Authorization", "Bearer "+value)
+	// Prefer provider-supplied auth headers (e.g. Azure service principal / api-key); else Bearer from key.
+	if len(authHeaders) == 0 {
+		authHeaders = BearerAuthHeader(key)
+	}
+	for k, v := range authHeaders {
+		req.Header.Set(k, v)
 	}
 
 	// Large payload passthrough: stream body directly without JSON marshaling
-	if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, BearerAuthHeader(key), extraHeaders, providerName, logger); handled {
+	if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, authHeaders, extraHeaders, providerName, logger); handled {
 		if lpErr != nil {
 			return nil, lpErr
 		}
@@ -3564,6 +3639,7 @@ func (provider *OpenAIProvider) VideoGeneration(ctx *schemas.BifrostContext, key
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,
+		nil,
 		provider.GetProviderKey(),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
@@ -3698,6 +3774,7 @@ func (provider *OpenAIProvider) VideoDelete(ctx *schemas.BifrostContext, key sch
 		videoID,
 		key,
 		provider.networkConfig.ExtraHeaders,
+		nil, // OpenAI uses Bearer from key
 		providerName,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
@@ -3718,6 +3795,7 @@ func (provider *OpenAIProvider) VideoList(ctx *schemas.BifrostContext, key schem
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,
+		nil, // OpenAI uses Bearer from key
 		provider.GetProviderKey(),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
@@ -3734,6 +3812,7 @@ func HandleOpenAIVideoGenerationRequest(
 	request *schemas.BifrostVideoGenerationRequest,
 	key schemas.Key,
 	extraHeaders map[string]string,
+	authHeaders map[string]string,
 	providerName schemas.ModelProvider,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
@@ -3750,8 +3829,12 @@ func HandleOpenAIVideoGenerationRequest(
 
 	req.SetRequestURI(url)
 	req.Header.SetMethod(http.MethodPost)
-	if key.Value.GetValue() != "" {
-		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
+	// Prefer provider-supplied auth headers (e.g. Azure service principal / api-key); else Bearer from key.
+	if len(authHeaders) == 0 {
+		authHeaders = BearerAuthHeader(key)
+	}
+	for k, v := range authHeaders {
+		req.Header.Set(k, v)
 	}
 
 	// Use centralized converter
@@ -3945,6 +4028,7 @@ func HandleOpenAIVideoDeleteRequest(
 	videoID string,
 	key schemas.Key,
 	extraHeaders map[string]string,
+	authHeaders map[string]string,
 	providerName schemas.ModelProvider,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
@@ -3962,7 +4046,11 @@ func HandleOpenAIVideoDeleteRequest(
 	req.Header.SetMethod(http.MethodDelete)
 	req.Header.SetContentType("application/json")
 
-	if key.Value.GetValue() != "" {
+	if len(authHeaders) > 0 {
+		for k, v := range authHeaders {
+			req.Header.Set(k, v)
+		}
+	} else if key.Value.GetValue() != "" {
 		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
 	}
 
@@ -4020,6 +4108,7 @@ func HandleOpenAIVideoListRequest(
 	request *schemas.BifrostVideoListRequest,
 	key schemas.Key,
 	extraHeaders map[string]string,
+	authHeaders map[string]string,
 	providerName schemas.ModelProvider,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
@@ -4053,7 +4142,11 @@ func HandleOpenAIVideoListRequest(
 	req.Header.SetMethod(http.MethodGet)
 	req.Header.SetContentType("application/json")
 
-	if key.Value.GetValue() != "" {
+	if len(authHeaders) > 0 {
+		for k, v := range authHeaders {
+			req.Header.Set(k, v)
+		}
+	} else if key.Value.GetValue() != "" {
 		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
 	}
 
@@ -4391,6 +4484,7 @@ func (provider *OpenAIProvider) ImageEdit(ctx *schemas.BifrostContext, key schem
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,
+		nil,
 		false,
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
@@ -4405,13 +4499,18 @@ func HandleOpenAIImageEditRequest(
 	request *schemas.BifrostImageEditRequest,
 	key schemas.Key,
 	extraHeaders map[string]string,
+	authHeaders map[string]string,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
 	providerName schemas.ModelProvider,
 	logger schemas.Logger,
 ) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+	// Prefer provider-supplied auth headers (e.g. Azure service principal / api-key); else Bearer from key.
+	if len(authHeaders) == 0 {
+		authHeaders = BearerAuthHeader(key)
+	}
 	// Large payload passthrough: stream multipart body directly without parsing
-	if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, BearerAuthHeader(key), extraHeaders, providerName, logger); handled {
+	if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, authHeaders, extraHeaders, providerName, logger); handled {
 		if lpErr != nil {
 			return nil, lpErr
 		}
@@ -4450,8 +4549,8 @@ func HandleOpenAIImageEditRequest(
 	req.SetRequestURI(url)
 	req.Header.SetMethod(http.MethodPost)
 
-	if key.Value.GetValue() != "" {
-		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
+	for k, v := range authHeaders {
+		req.Header.Set(k, v)
 	}
 	req.Header.Set("Content-Type", "multipart/form-data")
 

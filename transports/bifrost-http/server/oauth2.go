@@ -16,12 +16,18 @@ type oauth2SweepWorker struct {
 	sweepInterval     time.Duration
 	revokedRetention  time.Duration
 	orphanClientGrace time.Duration
-	stopCh            chan struct{}
-	stopOnce          sync.Once
-	cancel            context.CancelFunc
+	// shouldSweep is consulted before each pass; when it returns false the pass
+	// is skipped. The deletes touch shared state, so when several instances use
+	// one config store a single sweeper suffices — the gate is re-checked every
+	// interval because which instance should sweep can change at runtime. nil
+	// means always sweep.
+	shouldSweep func() bool
+	stopCh      chan struct{}
+	stopOnce    sync.Once
+	cancel      context.CancelFunc
 }
 
-func newOAuth2SweepWorker(store configstore.ConfigStore) *oauth2SweepWorker {
+func newOAuth2SweepWorker(store configstore.ConfigStore, shouldSweep func() bool) *oauth2SweepWorker {
 	if store == nil {
 		return nil
 	}
@@ -33,6 +39,7 @@ func newOAuth2SweepWorker(store configstore.ConfigStore) *oauth2SweepWorker {
 		// authorization code TTL so a client mid-handshake (code issued, not yet
 		// exchanged) is not swept before it can mint its first token.
 		orphanClientGrace: time.Hour,
+		shouldSweep:       shouldSweep,
 		stopCh:            make(chan struct{}),
 	}
 }
@@ -71,11 +78,14 @@ func (w *oauth2SweepWorker) run(ctx context.Context) {
 }
 
 func (w *oauth2SweepWorker) sweep(ctx context.Context) {
+	if w.shouldSweep != nil && !w.shouldSweep() {
+		return
+	}
 	if err := w.store.SweepExpiredOAuth2AuthorizeRequests(ctx); err != nil {
-		logger.Debug("oauth2 authorize request sweep failed: %v", err)
+		logger.Warn("oauth2 authorize request sweep failed: %v", err)
 	}
 	if n, err := w.store.SweepOAuth2RefreshTokens(ctx, w.revokedRetention); err != nil {
-		logger.Debug("oauth2 refresh token sweep failed: %v", err)
+		logger.Warn("oauth2 refresh token sweep failed: %v", err)
 	} else if n > 0 {
 		logger.Debug("oauth2 refresh token sweep removed %d revoked rows", n)
 	}
@@ -83,9 +93,8 @@ func (w *oauth2SweepWorker) sweep(ctx context.Context) {
 	// tokens have aged out of their retention window, never while they are still
 	// kept for reuse detection.
 	if n, err := w.store.SweepOrphanedOAuth2Clients(ctx, w.orphanClientGrace); err != nil {
-		logger.Debug("oauth2 orphaned client sweep failed: %v", err)
+		logger.Warn("oauth2 orphaned client sweep failed: %v", err)
 	} else if n > 0 {
 		logger.Debug("oauth2 orphaned client sweep removed %d rows", n)
 	}
 }
-

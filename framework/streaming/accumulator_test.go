@@ -724,3 +724,104 @@ func TestProcessStreamingResponseSupportsWebSocketResponsesRequest(t *testing.T)
 		t.Fatalf("expected total tokens 19, got %d", processed.Data.TokenUsage.TotalTokens)
 	}
 }
+
+// newChatChunkResponse builds a chat streaming chunk mirroring what the
+// OpenAI-compatible provider handler emits (content in the delta, an optional
+// finish_reason on the choice, an optional usage block, and a chunk index).
+func newChatChunkResponse(idx int, content string, finishReason *string, usage *schemas.BifrostLLMUsage) *schemas.BifrostResponse {
+	delta := &schemas.ChatStreamResponseChoiceDelta{}
+	if content != "" {
+		delta.Content = bifrost.Ptr(content)
+	}
+	return &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{
+			ID:     "msg_finish",
+			Object: "chat.completion.chunk",
+			Choices: []schemas.BifrostResponseChoice{{
+				ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{Delta: delta},
+				FinishReason:             finishReason,
+			}},
+			Usage: usage,
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.ChatCompletionStreamRequest,
+				Provider:    schemas.OpenAI,
+				ChunkIndex:  idx,
+			},
+		},
+	}
+}
+
+// TestChatStreamingFinishReasonForwardedOnContentChunk covers providers that
+// send finish_reason together with the final content delta. The provider
+// forwards that terminal chunk as-is and then appends a synthetic tail chunk
+// (higher index) whose finish_reason is nil to avoid a duplicate client-facing
+// emission. The accumulated response must still keep the finish_reason rather
+// than reading nil from the max-index tail chunk.
+func TestChatStreamingFinishReasonForwardedOnContentChunk(t *testing.T) {
+	logger := bifrost.NewDefaultLogger(schemas.LogLevelError)
+	accumulator := NewAccumulator(nil, logger)
+
+	requestID := "finish-glued-request"
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	ctx.SetValue(schemas.BifrostContextKeyAccumulatorID, requestID)
+
+	stop := "stop"
+	usage := &schemas.BifrostLLMUsage{PromptTokens: 10, CompletionTokens: 2, TotalTokens: 12}
+
+	if _, err := accumulator.processChatStreamingResponse(ctx, newChatChunkResponse(0, "Hello", nil, nil), nil); err != nil {
+		t.Fatalf("chunk 0: %v", err)
+	}
+	// Terminal content chunk carries the finish_reason.
+	if _, err := accumulator.processChatStreamingResponse(ctx, newChatChunkResponse(1, " world", &stop, nil), nil); err != nil {
+		t.Fatalf("chunk 1: %v", err)
+	}
+	// Synthetic tail chunk: empty delta, nil finish_reason, usage, final chunk.
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+	processed, err := accumulator.processChatStreamingResponse(ctx, newChatChunkResponse(2, "", nil, usage), nil)
+	if err != nil {
+		t.Fatalf("final chunk: %v", err)
+	}
+	if processed == nil || processed.Data == nil {
+		t.Fatal("expected accumulated data on final chunk")
+	}
+	if processed.Data.FinishReason == nil {
+		t.Fatal("finish_reason was dropped from the accumulated response")
+	}
+	if *processed.Data.FinishReason != "stop" {
+		t.Fatalf("accumulated finish_reason = %q, want %q", *processed.Data.FinishReason, "stop")
+	}
+}
+
+// TestChatStreamingFinishReasonOnTerminalChunk is the standard OpenAI shape: the
+// finish_reason arrives on the terminal (highest-index) chunk. This guards
+// against the fallback over-reaching and changing the common path.
+func TestChatStreamingFinishReasonOnTerminalChunk(t *testing.T) {
+	logger := bifrost.NewDefaultLogger(schemas.LogLevelError)
+	accumulator := NewAccumulator(nil, logger)
+
+	requestID := "finish-tail-request"
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	ctx.SetValue(schemas.BifrostContextKeyAccumulatorID, requestID)
+
+	stop := "stop"
+	usage := &schemas.BifrostLLMUsage{PromptTokens: 10, CompletionTokens: 2, TotalTokens: 12}
+
+	if _, err := accumulator.processChatStreamingResponse(ctx, newChatChunkResponse(0, "Hello", nil, nil), nil); err != nil {
+		t.Fatalf("chunk 0: %v", err)
+	}
+	if _, err := accumulator.processChatStreamingResponse(ctx, newChatChunkResponse(1, " world", nil, nil), nil); err != nil {
+		t.Fatalf("chunk 1: %v", err)
+	}
+	// Terminal chunk carries the finish_reason and usage.
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+	processed, err := accumulator.processChatStreamingResponse(ctx, newChatChunkResponse(2, "", &stop, usage), nil)
+	if err != nil {
+		t.Fatalf("final chunk: %v", err)
+	}
+	if processed == nil || processed.Data == nil || processed.Data.FinishReason == nil {
+		t.Fatal("expected finish_reason on the accumulated response")
+	}
+	if *processed.Data.FinishReason != "stop" {
+		t.Fatalf("accumulated finish_reason = %q, want %q", *processed.Data.FinishReason, "stop")
+	}
+}

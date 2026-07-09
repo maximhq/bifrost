@@ -1,0 +1,301 @@
+# Audit Logs API schemas
+
+AuditEventType:
+  type: string
+  description: Classifies the audit event.
+  enum: [activity, monitor, control]
+
+AuditAction:
+  type: string
+  description: The CADF action performed.
+  enum:
+    - create
+    - read
+    - update
+    - delete
+    - authenticate
+    - authorize
+    - access
+    - enable
+    - disable
+    - start
+    - stop
+    - backup
+    - restore
+    - export
+    - import
+
+AuditOutcome:
+  type: string
+  description: The CADF outcome of the action.
+  enum: [success, failure, pending]
+
+AuditResourceType:
+  type: string
+  description: The type of resource involved in an audit event (initiator or target).
+  enum:
+    - user
+    - api_key
+    - system
+    - provider
+    - virtual_key
+    - team
+    - customer
+    - role
+    - permission
+    - guardrail
+    - mcp_client
+    - mcp_tool_group
+    - plugin
+    - config
+    - session
+    - inference
+
+AuditResource:
+  type: object
+  description: A CADF resource (initiator, target, or observer).
+  properties:
+    id:
+      type: string
+      description: Unique identifier of the resource.
+    typeURI:
+      type: string
+      description: Resource type URI (e.g., "bifrost/user", "bifrost/api_key").
+    name:
+      type: string
+      description: Human-readable name of the resource.
+    host:
+      type: string
+      description: Hostname or IP address associated with the resource.
+  required:
+    - id
+    - typeURI
+
+AuditReason:
+  type: object
+  description: The CADF reason for an outcome (especially for failures).
+  properties:
+    reasonCode:
+      type: string
+      description: Machine-readable code (e.g., "401", "FORBIDDEN").
+    reasonType:
+      type: string
+      description: Category of reason (e.g., "HTTP", "policy").
+    message:
+      type: string
+      description: Human-readable description.
+
+AuditAttachment:
+  type: object
+  description: Additional CADF data attached to an event.
+  properties:
+    name:
+      type: string
+      description: Identifies the attachment.
+    contentType:
+      type: string
+      description: MIME type of the content.
+    content:
+      type: string
+      description: Attachment data (typically a JSON string).
+  required:
+    - name
+    - contentType
+    - content
+
+AuditEvent:
+  type: object
+  description: A CADF-compliant audit event.
+  properties:
+    id:
+      type: string
+      description: Unique identifier for this event (UUID).
+    typeURI:
+      type: string
+      description: Event type URI (e.g., "http://schemas.bifrost.io/audit/api/v1").
+    eventType:
+      $ref: '#/AuditEventType'
+    eventTime:
+      type: string
+      format: date-time
+      description: When the event occurred (RFC 3339).
+    action:
+      $ref: '#/AuditAction'
+    outcome:
+      $ref: '#/AuditOutcome'
+    initiator:
+      $ref: '#/AuditResource'
+    target:
+      $ref: '#/AuditResource'
+    observer:
+      $ref: '#/AuditResource'
+    reason:
+      $ref: '#/AuditReason'
+    attachments:
+      type: array
+      items:
+        $ref: '#/AuditAttachment'
+    tags:
+      type: array
+      description: Searchable labels for categorization.
+      items:
+        type: string
+    requestMethod:
+      type: string
+      description: HTTP method (GET, POST, etc.).
+    requestPath:
+      type: string
+      description: HTTP request path.
+    requestIP:
+      type: string
+      description: Client IP address.
+    userAgent:
+      type: string
+      description: HTTP User-Agent header.
+    duration:
+      type: integer
+      format: int64
+      description: Request duration in milliseconds.
+    signature:
+      type: string
+      description: HMAC-SHA256 signature for tamper detection.
+    createdAt:
+      type: string
+      format: date-time
+      description: When the record was created in the database.
+  required:
+    - id
+    - typeURI
+    - eventType
+    - eventTime
+    - action
+    - outcome
+    - initiator
+    - target
+    - observer
+    - signature
+    - createdAt
+
+AuditLogsResult:
+  type: object
+  description: A paginated result of audit logs.
+  properties:
+    audit_logs:
+      type: array
+      description: The list of audit events.
+      items:
+        $ref: '#/AuditEvent'
+    total:
+      type: integer
+      format: int64
+      description: Total count of events matching the filter.
+    page:
+      type: integer
+      description: Current page number.
+    limit:
+      type: integer
+      description: Page size.
+    total_pages:
+      type: integer
+      description: Total number of pages.
+    has_more:
+      type: boolean
+      description: Whether there are more results.
+    next_cursor:
+      type: string
+      description: Opaque cursor for the next page (cursor-based pagination).
+  required:
+    - audit_logs
+    - total
+    - page
+    - limit
+    - total_pages
+    - has_more
+
+AuditLogResponse:
+  type: object
+  description: Response wrapper for a single audit log entry.
+  properties:
+    audit_log:
+      $ref: '#/AuditEvent'
+  required:
+    - audit_log
+
+AuditFilterKeyPair:
+  type: object
+  description: An id/name pair used for initiator and target filter dropdowns.
+  properties:
+    id:
+      type: string
+    name:
+      type: string
+  required:
+    - id
+    - name
+
+AuditFilterDataResponse:
+  type: object
+  description: Distinct values available for each audit log filter dimension.
+  properties:
+    actions:
+      type: array
+      items:
+        type: string
+    outcomes:
+      type: array
+      items:
+        type: string
+    event_types:
+      type: array
+      items:
+        type: string
+    initiator_types:
+      type: array
+      items:
+        type: string
+    target_types:
+      type: array
+      items:
+        type: string
+    request_methods:
+      type: array
+      items:
+        type: string
+    initiators:
+      type: array
+      items:
+        $ref: '#/AuditFilterKeyPair'
+    targets:
+      type: array
+      items:
+        $ref: '#/AuditFilterKeyPair'
+    request_paths:
+      type: array
+      items:
+        type: string
+    request_ips:
+      type: array
+      items:
+        type: string
+    tags:
+      type: array
+      items:
+        type: string
+
+AuditVerifyResult:
+  type: object
+  description: The result of an audit log signature verification.
+  properties:
+    valid:
+      type: boolean
+      description: Whether the stored signature matches the recomputed signature.
+    computed:
+      type: string
+      description: The signature recomputed from the stored event fields.
+    stored:
+      type: string
+      description: The signature persisted with the event.
+  required:
+    - valid
+    - computed
+    - stored

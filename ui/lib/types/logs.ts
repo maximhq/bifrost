@@ -581,6 +581,10 @@ export interface LogEntry {
 	passthrough_request_body?: string; // Raw passthrough request body (UTF-8)
 	passthrough_response_body?: string; // Raw passthrough response body (UTF-8)
 	metadata?: Record<string, string>; // JSON metadata (e.g., isAsyncRequest)
+	redaction_mapping?: {
+		input?: Record<string, string>;
+		output?: Record<string, string>;
+	}; // Phase-scoped placeholder-to-original mappings, present only when caller has Logs:Reveal
 }
 
 export interface LogFilters {
