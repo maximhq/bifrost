@@ -50,105 +50,71 @@ func TestGetBifrostOverrides_PresentButEmpty(t *testing.T) {
 	assert.Nil(t, got)
 }
 
-// TestGetBifrostOverridesForRequest_Verbatim covers the (1) precedence path:
-// callers passing already-prefixed datasheet keys (Bedrock canonical IDs,
-// Vertex "@date" suffixes, Azure "azure/..." keys) match without any
-// per-provider prefix construction.
-func TestGetBifrostOverridesForRequest_Verbatim(t *testing.T) {
-	truePtr := true
-	cases := []struct {
-		name     string
-		key      string
-		provider schemas.ModelProvider
-	}{
-		{"bedrock canonical", "anthropic.claude-opus-4-7-20251101-v1:0", schemas.Bedrock},
-		{"bedrock regional", "us.anthropic.claude-opus-4-7-20251101-v1:0", schemas.Bedrock},
-		{"vertex with date", "claude-opus-4-7@20251101", schemas.Vertex},
-		{"azure prefixed", "azure/claude-opus-4-7", schemas.Azure},
-		{"anthropic native", "claude-opus-4-7", schemas.Anthropic},
-	}
+// TestGetBifrostOverridesForRequest_ProviderIsKey verifies the same model on
+// different providers resolves to distinct overrides — provider is part of the
+// cache key (mirrors pricing), so there is no cross-provider collision.
+func TestGetBifrostOverridesForRequest_ProviderIsKey(t *testing.T) {
+	yes, no := true, false
+	anthKey := OverrideCacheKey("claude-opus-4-8", schemas.Anthropic)
+	vertexKey := OverrideCacheKey("claude-opus-4-8", schemas.Vertex)
+	SetModelParams(anthKey, ModelParams{BifrostOverrides: &schemas.BifrostOverrides{SupportsFastMode: &yes}})
+	SetModelParams(vertexKey, ModelParams{BifrostOverrides: &schemas.BifrostOverrides{SupportsFastMode: &no}})
+	t.Cleanup(func() { DeleteModelParams(anthKey); DeleteModelParams(vertexKey) })
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			ov := schemas.BifrostOverrides{SupportsCachePoint: &truePtr}
-			SetModelParams(tc.key, ModelParams{BifrostOverrides: &ov})
-			t.Cleanup(func() { DeleteModelParams(tc.key) })
+	anth := GetBifrostOverridesForRequest(schemas.Anthropic, "claude-opus-4-8")
+	require.NotNil(t, anth)
+	assert.True(t, *anth.SupportsFastMode)
 
-			got := GetBifrostOverridesForRequest(tc.provider, tc.key)
-			require.NotNil(t, got, "verbatim lookup should hit")
-			assert.True(t, *got.SupportsCachePoint)
-		})
-	}
+	vertex := GetBifrostOverridesForRequest(schemas.Vertex, "claude-opus-4-8")
+	require.NotNil(t, vertex)
+	assert.False(t, *vertex.SupportsFastMode)
 }
 
-// TestGetBifrostOverridesForRequest_BedrockFamilyPrefix verifies that bare
-// model names route to the right Bedrock family-stamped prefix (anthropic./
-// meta./mistral./amazon.) when the datasheet stores them under that prefix.
-func TestGetBifrostOverridesForRequest_BedrockFamilyPrefix(t *testing.T) {
-	truePtr := true
-	cases := []struct {
-		name      string
-		bareModel string
-		storedKey string
-	}{
-		{"claude → anthropic.", "claude-opus-4-7", "anthropic.claude-opus-4-7"},
-		{"llama → meta.", "llama3-1-70b-instruct", "meta.llama3-1-70b-instruct"},
-		{"mistral → mistral.", "mistral-large-2407-v1:0", "mistral.mistral-large-2407-v1:0"},
-		{"nova → amazon.", "nova-pro-v1:0", "amazon.nova-pro-v1:0"},
-	}
+// TestGetBifrostOverridesForRequest_NoCrossProviderCollision verifies a bare
+// model on a non-Anthropic provider does NOT borrow the Anthropic-native entry
+// — it misses cleanly so the caller falls back to substring detection.
+func TestGetBifrostOverridesForRequest_NoCrossProviderCollision(t *testing.T) {
+	yes := true
+	anthKey := OverrideCacheKey("claude-opus-4-8", schemas.Anthropic)
+	SetModelParams(anthKey, ModelParams{BifrostOverrides: &schemas.BifrostOverrides{SupportsFastMode: &yes}})
+	t.Cleanup(func() { DeleteModelParams(anthKey) })
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			ov := schemas.BifrostOverrides{SupportsCachePoint: &truePtr}
-			SetModelParams(tc.storedKey, ModelParams{BifrostOverrides: &ov})
-			t.Cleanup(func() { DeleteModelParams(tc.storedKey) })
-
-			got := GetBifrostOverridesForRequest(schemas.Bedrock, tc.bareModel)
-			require.NotNil(t, got, "family-prefix lookup should hit %s", tc.storedKey)
-			assert.True(t, *got.SupportsCachePoint)
-		})
-	}
+	assert.Nil(t, GetBifrostOverridesForRequest(schemas.Vertex, "claude-opus-4-8"))
+	assert.Nil(t, GetBifrostOverridesForRequest(schemas.Bedrock, "claude-opus-4-8"))
+	assert.Nil(t, GetBifrostOverridesForRequest(schemas.Azure, "claude-opus-4-8"))
 }
 
-// TestGetBifrostOverridesForRequest_VertexPrefix verifies bare Gemini /
-// Mistral model names route to vertex_ai/<model>.
-func TestGetBifrostOverridesForRequest_VertexPrefix(t *testing.T) {
-	truePtr := true
-	cases := []string{"gemini-2.5-pro", "gemini-2.5-flash"}
+// TestGetBifrostOverridesForRequest_BedrockDotted verifies Bedrock's dotted
+// runtime model (which equals the datasheet key form) matches under its
+// composite key.
+func TestGetBifrostOverridesForRequest_BedrockDotted(t *testing.T) {
+	yes := true
+	key := OverrideCacheKey("global.anthropic.claude-opus-4-7", schemas.Bedrock)
+	SetModelParams(key, ModelParams{BifrostOverrides: &schemas.BifrostOverrides{SupportsFastMode: &yes}})
+	t.Cleanup(func() { DeleteModelParams(key) })
 
-	for _, model := range cases {
-		t.Run(model, func(t *testing.T) {
-			storedKey := "vertex_ai/" + model
-			ov := schemas.BifrostOverrides{SupportsCachePoint: &truePtr}
-			SetModelParams(storedKey, ModelParams{BifrostOverrides: &ov})
-			t.Cleanup(func() { DeleteModelParams(storedKey) })
-
-			got := GetBifrostOverridesForRequest(schemas.Vertex, model)
-			require.NotNil(t, got)
-			assert.True(t, *got.SupportsCachePoint)
-		})
-	}
-}
-
-// TestGetBifrostOverridesForRequest_AzurePrefix verifies bare Azure model
-// names route to azure/<model>.
-func TestGetBifrostOverridesForRequest_AzurePrefix(t *testing.T) {
-	truePtr := true
-	storedKey := "azure/claude-opus-4-7"
-	ov := schemas.BifrostOverrides{SupportsCachePoint: &truePtr}
-	SetModelParams(storedKey, ModelParams{BifrostOverrides: &ov})
-	t.Cleanup(func() { DeleteModelParams(storedKey) })
-
-	got := GetBifrostOverridesForRequest(schemas.Azure, "claude-opus-4-7")
+	got := GetBifrostOverridesForRequest(schemas.Bedrock, "global.anthropic.claude-opus-4-7")
 	require.NotNil(t, got)
-	assert.True(t, *got.SupportsCachePoint)
+	assert.True(t, *got.SupportsFastMode)
+}
+
+// TestGetBifrostOverridesForRequest_BaseModelFallback verifies a dated model
+// falls back to the base-model entry, matching the pricing capability lookup.
+func TestGetBifrostOverridesForRequest_BaseModelFallback(t *testing.T) {
+	yes := true
+	key := OverrideCacheKey("claude-opus-4-7", schemas.Anthropic)
+	SetModelParams(key, ModelParams{BifrostOverrides: &schemas.BifrostOverrides{SupportsFastMode: &yes}})
+	t.Cleanup(func() { DeleteModelParams(key) })
+
+	got := GetBifrostOverridesForRequest(schemas.Anthropic, "claude-opus-4-7-20260401")
+	require.NotNil(t, got, "dated model should fall back to base entry")
+	assert.True(t, *got.SupportsFastMode)
 }
 
 // TestGetBifrostOverridesForRequest_Miss verifies that an unknown
 // (provider, model) pair returns nil cleanly.
 func TestGetBifrostOverridesForRequest_Miss(t *testing.T) {
-	got := GetBifrostOverridesForRequest(schemas.Anthropic, "definitely-nonexistent-model-12345")
-	assert.Nil(t, got)
+	assert.Nil(t, GetBifrostOverridesForRequest(schemas.Anthropic, "definitely-nonexistent-model-12345"))
 }
 
 // TestGetBifrostOverridesForRequest_EmptyModel verifies short-circuit on
