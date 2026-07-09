@@ -459,6 +459,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_sidekiq_table"}, run: migrationAddSidekiqTable},
 	{IDs: []string{"add_sidekiq_kind_status_created_index"}, run: migrationAddSidekiqKindStatusCreatedIndex},
 	{IDs: []string{"add_fast_mode_cache_pricing_columns"}, run: migrationAddFastModeCachePricingColumns},
+	{IDs: []string{"add_inference_geo_multiplier_column"}, run: migrationAddInferenceGeoMultiplierColumn},
 }
 
 // quoteSQLiteIdentifier quotes a SQLite identifier, escaping any double quotes.

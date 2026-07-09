@@ -1603,6 +1603,7 @@ func HandleAnthropicResponsesStream(
 				// Also mirror it into billedUsage so cancellation/timeout paths can
 				// charge for provider-reported usage before the final chunk arrives.
 				accumulateAnthropicResponsesUsage(usage, billedUsage, usageToProcess)
+<<<<<<< HEAD
 				// Mirror served tier onto billedUsage so a mid-stream cancel/timeout can
 				// still apply the served-tier multiplier (billed usage is otherwise bare).
 				if usageToProcess.Speed != nil {
@@ -1616,6 +1617,13 @@ func HandleAnthropicResponsesStream(
 					if billedUsage != nil {
 						billedUsage.InferenceGeo = usageToProcess.InferenceGeo
 					}
+=======
+				if usageToProcess.Speed != nil {
+					servedSpeed = usageToProcess.Speed
+				}
+				if usageToProcess.InferenceGeo != nil {
+					servedInferenceGeo = usageToProcess.InferenceGeo
+>>>>>>> c911b5603 (fix: inference geo cost on anthropic (#5072))
 				}
 				if served := usageToProcess.ServerSideFallbackModel(); served != nil {
 					servedFallbackModel = served
