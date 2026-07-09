@@ -60,9 +60,7 @@
           {
             "group": "Overview",
             "icon": "book-open-cover",
-            "pages": [
-              "overview"
-            ]
+            "pages": ["overview"]
           },
           {
             "group": "Quick Start",
@@ -102,24 +100,17 @@
           {
             "group": "Release Cadence",
             "icon": "calendar",
-            "pages": [
-              "release-cadence"
-            ]
+            "pages": ["release-cadence"]
           },
           {
             "group": "Migration Guides",
             "icon": "arrow-up-right-dots",
-            "pages": [
-              "migration-guides/v1.5.0",
-              "migration-guides/litellm"
-            ]
+            "pages": ["migration-guides/v1.5.0", "migration-guides/litellm"]
           },
           {
             "group": "SDK Integrations",
             "icon": "plug",
-            "pages": [
-              "integrations/what-is-an-integration"
-            ]
+            "pages": ["integrations/what-is-an-integration"]
           },
           {
             "group": "Providers & Guides",
@@ -270,9 +261,7 @@
           {
             "group": "Getting Started",
             "icon": "rocket",
-            "pages": [
-              "enterprise/overview"
-            ]
+            "pages": ["enterprise/overview"]
           },
           {
             "group": "Moving from OSS",
@@ -288,16 +277,12 @@
           {
             "group": "Release Cadence",
             "icon": "calendar",
-            "pages": [
-              "enterprise/release-cadence"
-            ]
+            "pages": ["enterprise/release-cadence"]
           },
           {
             "group": "Migration Guides",
             "icon": "arrow-up-right-dots",
-            "pages": [
-              "enterprise/migration-guides/v1.4.0"
-            ]
+            "pages": ["enterprise/migration-guides/v1.4.0"]
           },
           {
             "group": "Features",
@@ -345,9 +330,7 @@
           {
             "group": "Security",
             "icon": "shield",
-            "pages": [
-              "security"
-            ]
+            "pages": ["security"]
           }
         ]
       },
@@ -357,10 +340,7 @@
         "groups": [
           {
             "group": "Overview",
-            "pages": [
-              "edge/overview",
-              "edge/how-it-works"
-            ]
+            "pages": ["edge/overview", "edge/how-it-works"]
           },
           {
             "group": "Governance & Control",
@@ -383,16 +363,12 @@
           {
             "group": "Deployment",
             "icon": "cloud-arrow-up",
-            "pages": [
-              "edge/deployment-mdm"
-            ]
+            "pages": ["edge/deployment-mdm"]
           },
           {
             "group": "Reference",
             "icon": "list",
-            "pages": [
-              "edge/supported-applications"
-            ]
+            "pages": ["edge/supported-applications"]
           }
         ]
       },
@@ -450,9 +426,7 @@
               {
                 "group": "GenAI SDK",
                 "icon": "diamond",
-                "pages": [
-                  "integrations/genai-sdk/overview"
-                ]
+                "pages": ["integrations/genai-sdk/overview"]
               },
               "integrations/litellm-sdk",
               "integrations/langchain-sdk",
@@ -477,41 +451,31 @@
                 "group": "Microsoft Entra",
                 "icon": "microsoft",
                 "collapsed": true,
-                "pages": [
-                  "enterprise/setting-up-entra/oidc"
-                ]
+                "pages": ["enterprise/setting-up-entra/oidc"]
               },
               {
                 "group": "Zitadel",
                 "icon": "/media/zitadel-icon.svg",
                 "collapsed": true,
-                "pages": [
-                  "enterprise/setting-up-zitadel/oidc"
-                ]
+                "pages": ["enterprise/setting-up-zitadel/oidc"]
               },
               {
                 "group": "Keycloak",
                 "icon": "/media/keycloak-icon.svg",
                 "collapsed": true,
-                "pages": [
-                  "enterprise/setting-up-keycloak/oidc"
-                ]
+                "pages": ["enterprise/setting-up-keycloak/oidc"]
               },
               {
                 "group": "Google Workspace",
                 "icon": "google",
                 "collapsed": true,
-                "pages": [
-                  "enterprise/setting-up-google-workspace"
-                ]
+                "pages": ["enterprise/setting-up-google-workspace"]
               },
               {
                 "group": "Auth0",
                 "icon": "/media/auth0-icon.svg",
                 "collapsed": true,
-                "pages": [
-                  "enterprise/setting-up-auth0/oidc"
-                ]
+                "pages": ["enterprise/setting-up-auth0/oidc"]
               },
               {
                 "group": "Generic OIDC",
@@ -548,7 +512,8 @@
               "features/observability/maxim",
               "features/observability/otel",
               "features/observability/prometheus",
-              "features/observability/kafka"
+              "features/observability/kafka",
+              "features/observability/bigquery"
             ]
           },
           {
@@ -894,10 +859,7 @@
               },
               {
                 "group": "September 2025",
-                "pages": [
-                  "changelogs/v1.2.22",
-                  "changelogs/v1.2.21"
-                ]
+                "pages": ["changelogs/v1.2.22", "changelogs/v1.2.21"]
               }
             ]
           },
@@ -978,10 +940,7 @@
               "changelogs/cli-v0.10.6",
               {
                 "group": "May 2026",
-                "pages": [
-                  "changelogs/cli-v0.10.5",
-                  "changelogs/cli-v0.10.4"
-                ]
+                "pages": ["changelogs/cli-v0.10.5", "changelogs/cli-v0.10.4"]
               },
               {
                 "group": "March 2026",
