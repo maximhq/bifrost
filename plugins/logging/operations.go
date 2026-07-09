@@ -1439,6 +1439,22 @@ func (p *LoggerPlugin) calculateCostForLog(logEntry *logstore.Log) (float64, err
 		OriginalModelRequested: originalModelRequested,
 		ResolvedModelUsed:      logEntry.Model,
 		CacheDebug:             cacheDebug,
+		RoutingInfo: schemas.RoutingInfo{
+			Provider: schemas.ModelProvider(logEntry.Provider),
+			Model:    originalModelRequested,
+		},
+	}
+
+	// Reconstruct the resolved alias from the stored log columns so recalc feeds
+	// pricing the same routing info live logging had. Without this the canonical
+	// model name is dropped and pricing only tries the wire model / alias name,
+	// nulling costs that live logging resolved via the canonical name.
+	if logEntry.CanonicalModelName != nil && *logEntry.CanonicalModelName != "" {
+		canonical := *logEntry.CanonicalModelName
+		extraFields.RoutingInfo.ResolvedKeyAlias = &schemas.ResolvedKeyAlias{
+			ModelID:   logEntry.Model,
+			ModelName: &canonical,
+		}
 	}
 
 	resp := buildResponseForRequestType(requestType, usage, extraFields)

@@ -7,8 +7,8 @@
   "properties": {
     "$schema": {
       "type": "string",
-      "description": "The schema version. This should be set to \"https://www.getbifrost.ai/schema\"",
-      "const": "https://www.getbifrost.ai/schema"
+      "description": "Schema location for IDE validation. Defaults to \"https://www.getbifrost.ai/schema\" and can be set to a mirrored URL, file:// URL, or filesystem path for isolated deployments.",
+      "default": "https://www.getbifrost.ai/schema"
     },
     "server": {
       "type": "object",
@@ -1496,9 +1496,11 @@
               "description": "Object storage backend type"
             },
             "bucket": {
-              "type": "string",
-              "minLength": 1,
-              "description": "Bucket name. Supports env var reference (e.g. env.S3_BUCKET)"
+              "anyOf": [
+                { "type": "string", "minLength": 1 },
+                { "type": "object", "properties": { "value": { "type": "string" }, "ref": { "type": "string" }, "type": { "type": "string", "enum": ["plain_text", "env", "vault"] }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "required": ["value"], "additionalProperties": false }
+              ],
+              "description": "Bucket name. Supports env var reference (e.g. env.S3_BUCKET) or a structured secret reference."
             },
             "prefix": {
               "type": "string",
@@ -1525,27 +1527,45 @@
               "bucket": true,
               "prefix": true,
               "region": {
-                "type": "string",
+                "anyOf": [
+                  { "type": "string" },
+                  { "type": "object", "properties": { "value": { "type": "string" }, "ref": { "type": "string" }, "type": { "type": "string", "enum": ["plain_text", "env", "vault"] }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "required": ["value"], "additionalProperties": false }
+                ],
                 "description": "AWS region. Supports env var reference"
               },
               "endpoint": {
-                "type": "string",
+                "anyOf": [
+                  { "type": "string" },
+                  { "type": "object", "properties": { "value": { "type": "string" }, "ref": { "type": "string" }, "type": { "type": "string", "enum": ["plain_text", "env", "vault"] }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "required": ["value"], "additionalProperties": false }
+                ],
                 "description": "Custom S3-compatible endpoint for MinIO/R2. Supports env var reference"
               },
               "access_key_id": {
-                "type": "string",
+                "anyOf": [
+                  { "type": "string" },
+                  { "type": "object", "properties": { "value": { "type": "string" }, "ref": { "type": "string" }, "type": { "type": "string", "enum": ["plain_text", "env", "vault"] }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "required": ["value"], "additionalProperties": false }
+                ],
                 "description": "AWS access key ID. Omit to use default credential chain (instance role, env vars, etc.). Supports env var reference"
               },
               "secret_access_key": {
-                "type": "string",
+                "anyOf": [
+                  { "type": "string" },
+                  { "type": "object", "properties": { "value": { "type": "string" }, "ref": { "type": "string" }, "type": { "type": "string", "enum": ["plain_text", "env", "vault"] }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "required": ["value"], "additionalProperties": false }
+                ],
                 "description": "AWS secret access key. Supports env var reference"
               },
               "session_token": {
-                "type": "string",
+                "anyOf": [
+                  { "type": "string" },
+                  { "type": "object", "properties": { "value": { "type": "string" }, "ref": { "type": "string" }, "type": { "type": "string", "enum": ["plain_text", "env", "vault"] }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "required": ["value"], "additionalProperties": false }
+                ],
                 "description": "AWS session token for STS temporary credentials. Supports env var reference"
               },
               "role_arn": {
-                "type": "string",
+                "anyOf": [
+                  { "type": "string" },
+                  { "type": "object", "properties": { "value": { "type": "string" }, "ref": { "type": "string" }, "type": { "type": "string", "enum": ["plain_text", "env", "vault"] }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "required": ["value"], "additionalProperties": false }
+                ],
                 "description": "AWS IAM role ARN for STS AssumeRole. Works with static creds or instance role. Supports env var reference"
               },
               "force_path_style": {
@@ -1568,15 +1588,24 @@
               "bucket": true,
               "prefix": true,
               "credentials_json": {
-                "type": "string",
+                "anyOf": [
+                  { "type": "string" },
+                  { "type": "object", "properties": { "value": { "type": "string" }, "ref": { "type": "string" }, "type": { "type": "string", "enum": ["plain_text", "env", "vault"] }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "required": ["value"], "additionalProperties": false }
+                ],
                 "description": "GCP service account credentials JSON or file path. Omit to use Application Default Credentials. Supports env var reference"
               },
               "credentials": {
-                "type": "string",
+                "anyOf": [
+                  { "type": "string" },
+                  { "type": "object", "properties": { "value": { "type": "string" }, "ref": { "type": "string" }, "type": { "type": "string", "enum": ["plain_text", "env", "vault"] }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "required": ["value"], "additionalProperties": false }
+                ],
                 "description": "Deprecated: use credentials_json. Kept for backwards compatibility."
               },
               "project_id": {
-                "type": "string",
+                "anyOf": [
+                  { "type": "string" },
+                  { "type": "object", "properties": { "value": { "type": "string" }, "ref": { "type": "string" }, "type": { "type": "string", "enum": ["plain_text", "env", "vault"] }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "required": ["value"], "additionalProperties": false }
+                ],
                 "description": "GCP project ID override. Supports env var reference"
               },
               "compress": true
@@ -5457,6 +5486,133 @@
           "type": "integer",
           "minimum": 0,
           "description": "Number of days to retain audit logs (0 means no retention limit)"
+        },
+        "object_storage": {
+          "type": "object",
+          "description": "Optional object storage for archiving audit events to S3/GCS. When configured, each flushed batch of audit events is written as a gzipped JSONL object at {prefix}/audit-logs/YYYY/MM/DD/HH/{id}.jsonl[.gz], in addition to the database (which remains the source of truth). Archival is going-forward only; existing rows are not backfilled.",
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": ["s3", "gcs"],
+              "description": "Object storage backend type"
+            },
+            "bucket": {
+              "anyOf": [
+                { "type": "string", "minLength": 1 },
+                { "type": "object", "properties": { "value": { "type": "string" }, "ref": { "type": "string" }, "type": { "type": "string", "enum": ["plain_text", "env", "vault"] }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "required": ["value"], "additionalProperties": false }
+              ],
+              "description": "Bucket name. Supports env var reference (e.g. env.S3_BUCKET) or a structured secret reference."
+            },
+            "prefix": {
+              "type": "string",
+              "description": "Configurable base key path for stored audit objects; the 'audit-logs/' segment is appended under it (default: bifrost)",
+              "default": "bifrost"
+            },
+            "compress": {
+              "type": "boolean",
+              "description": "Enable gzip compression for stored objects. Default: false",
+              "default": false
+            }
+          },
+          "required": ["type", "bucket"],
+          "if": {
+            "properties": {
+              "type": {
+                "const": "s3"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "type": true,
+              "bucket": true,
+              "prefix": true,
+              "region": {
+                "anyOf": [
+                  { "type": "string" },
+                  { "type": "object", "properties": { "value": { "type": "string" }, "ref": { "type": "string" }, "type": { "type": "string", "enum": ["plain_text", "env", "vault"] }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "required": ["value"], "additionalProperties": false }
+                ],
+                "description": "AWS region. Supports env var reference"
+              },
+              "endpoint": {
+                "anyOf": [
+                  { "type": "string" },
+                  { "type": "object", "properties": { "value": { "type": "string" }, "ref": { "type": "string" }, "type": { "type": "string", "enum": ["plain_text", "env", "vault"] }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "required": ["value"], "additionalProperties": false }
+                ],
+                "description": "Custom S3-compatible endpoint for MinIO/R2. Supports env var reference"
+              },
+              "access_key_id": {
+                "anyOf": [
+                  { "type": "string" },
+                  { "type": "object", "properties": { "value": { "type": "string" }, "ref": { "type": "string" }, "type": { "type": "string", "enum": ["plain_text", "env", "vault"] }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "required": ["value"], "additionalProperties": false }
+                ],
+                "description": "AWS access key ID. Omit to use default credential chain (instance role, env vars, etc.). Supports env var reference"
+              },
+              "secret_access_key": {
+                "anyOf": [
+                  { "type": "string" },
+                  { "type": "object", "properties": { "value": { "type": "string" }, "ref": { "type": "string" }, "type": { "type": "string", "enum": ["plain_text", "env", "vault"] }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "required": ["value"], "additionalProperties": false }
+                ],
+                "description": "AWS secret access key. Supports env var reference"
+              },
+              "session_token": {
+                "anyOf": [
+                  { "type": "string" },
+                  { "type": "object", "properties": { "value": { "type": "string" }, "ref": { "type": "string" }, "type": { "type": "string", "enum": ["plain_text", "env", "vault"] }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "required": ["value"], "additionalProperties": false }
+                ],
+                "description": "AWS session token for STS temporary credentials. Supports env var reference"
+              },
+              "role_arn": {
+                "anyOf": [
+                  { "type": "string" },
+                  { "type": "object", "properties": { "value": { "type": "string" }, "ref": { "type": "string" }, "type": { "type": "string", "enum": ["plain_text", "env", "vault"] }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "required": ["value"], "additionalProperties": false }
+                ],
+                "description": "AWS IAM role ARN for STS AssumeRole. Works with static creds or instance role. Supports env var reference"
+              },
+              "force_path_style": {
+                "type": "boolean",
+                "description": "Use path-style URLs for S3 (required for MinIO). Default: false",
+                "default": false
+              },
+              "compress": true
+            },
+            "dependentRequired": {
+              "access_key_id": ["secret_access_key"],
+              "secret_access_key": ["access_key_id"],
+              "session_token": ["access_key_id", "secret_access_key"]
+            },
+            "additionalProperties": false
+          },
+          "else": {
+            "properties": {
+              "type": true,
+              "bucket": true,
+              "prefix": true,
+              "credentials_json": {
+                "anyOf": [
+                  { "type": "string" },
+                  { "type": "object", "properties": { "value": { "type": "string" }, "ref": { "type": "string" }, "type": { "type": "string", "enum": ["plain_text", "env", "vault"] }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "required": ["value"], "additionalProperties": false }
+                ],
+                "description": "GCP service account credentials JSON or file path. Omit to use Application Default Credentials. Supports env var reference"
+              },
+              "credentials": {
+                "anyOf": [
+                  { "type": "string" },
+                  { "type": "object", "properties": { "value": { "type": "string" }, "ref": { "type": "string" }, "type": { "type": "string", "enum": ["plain_text", "env", "vault"] }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "required": ["value"], "additionalProperties": false }
+                ],
+                "description": "Deprecated: use credentials_json. Kept for backwards compatibility."
+              },
+              "project_id": {
+                "anyOf": [
+                  { "type": "string" },
+                  { "type": "object", "properties": { "value": { "type": "string" }, "ref": { "type": "string" }, "type": { "type": "string", "enum": ["plain_text", "env", "vault"] }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "required": ["value"], "additionalProperties": false }
+                ],
+                "description": "GCP project ID override. Supports env var reference"
+              },
+              "compress": true
+            },
+            "additionalProperties": false
+          }
         }
       },
       "additionalProperties": false

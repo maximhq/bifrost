@@ -439,6 +439,8 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_vertex_force_single_region_column"}, run: migrationAddVertexForceSingleRegionColumn},
 	{IDs: []string{"add_sidekiq_table"}, run: migrationAddSidekiqTable},
 	{IDs: []string{"add_sidekiq_kind_status_created_index"}, run: migrationAddSidekiqKindStatusCreatedIndex},
+	{IDs: []string{"add_fast_mode_cache_pricing_columns"}, run: migrationAddFastModeCachePricingColumns},
+	{IDs: []string{"add_inference_geo_multiplier_column"}, run: migrationAddInferenceGeoMultiplierColumn},
 }
 
 // quoteSQLiteIdentifier quotes a SQLite identifier, escaping any double quotes.
@@ -7800,6 +7802,82 @@ func migrationAddFastModePricingColumns(ctx context.Context, db *gorm.DB, logger
 	return nil
 }
 
+// migrationAddFastModeCachePricingColumns adds fast-mode cache pricing columns
+// for Anthropic (speed:"fast"). Caching multipliers stack on the fast base input
+// rate, so cache tokens need dedicated fast rates instead of the standard ones.
+func migrationAddFastModeCachePricingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_fast_mode_cache_pricing_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	columns := []string{
+		"cache_creation_input_token_cost_fast",
+		"cache_creation_input_token_cost_above_1hr_fast",
+		"cache_read_input_token_cost_fast",
+	}
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range columns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to add column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range columns {
+				if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to drop column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running fast mode cache pricing columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddInferenceGeoMultiplierColumn adds the inference_geo_us_multiplier
+// column for Anthropic data residency (inference_geo:"us" applies a 1.1x
+// multiplier stacking on top of all token/cache costs).
+func migrationAddInferenceGeoMultiplierColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_inference_geo_multiplier_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	columns := []string{
+		"inference_geo_us_multiplier",
+	}
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range columns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to add column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range columns {
+				if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to drop column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running inference geo multiplier column migration: %s", err.Error())
+	}
+	return nil
+}
+
 // migrationAddWhitelistedRoutesJSONColumn adds the whitelisted_routes_json column to the config_client table
 func migrationAddWhitelistedRoutesJSONColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
 	migrationName := "add_whitelisted_routes_json_column"
@@ -10360,32 +10438,34 @@ func migrationAddSidekiqTable(ctx context.Context, db *gorm.DB, logger schemas.L
 			case "postgres":
 				createTable = `
 					CREATE TABLE IF NOT EXISTS sidekiq (
-						id           TEXT PRIMARY KEY,
-						kind         TEXT NOT NULL,
-						status       TEXT NOT NULL DEFAULT 'pending',
-						runner_id    TEXT,
-						metadata     TEXT DEFAULT '{}',
-						attempts     INTEGER NOT NULL DEFAULT 0,
-						last_error   TEXT,
-						created_at   TIMESTAMPTZ NOT NULL,
-						updated_at   TIMESTAMPTZ NOT NULL,
-						started_at   TIMESTAMPTZ,
-						completed_at TIMESTAMPTZ
+						id                  TEXT PRIMARY KEY,
+						kind                TEXT NOT NULL,
+						status              TEXT NOT NULL DEFAULT 'pending',
+						runner_id           TEXT,
+						metadata            TEXT DEFAULT '{}',
+						attempts            INTEGER NOT NULL DEFAULT 0,
+						last_error          TEXT,
+						created_at          TIMESTAMPTZ NOT NULL,
+						updated_at          TIMESTAMPTZ NOT NULL,
+						started_at          TIMESTAMPTZ,
+						created_by_user_id  VARCHAR(255),
+						completed_at        TIMESTAMPTZ
 					)`
 			case "sqlite":
 				createTable = `
 					CREATE TABLE IF NOT EXISTS sidekiq (
-						id           TEXT PRIMARY KEY,
-						kind         TEXT NOT NULL,
-						status       TEXT NOT NULL DEFAULT 'pending',
-						runner_id    TEXT,
-						metadata     TEXT DEFAULT '{}',
-						attempts     INTEGER NOT NULL DEFAULT 0,
-						last_error   TEXT,
-						created_at   DATETIME NOT NULL,
-						updated_at   DATETIME NOT NULL,
-						started_at   DATETIME,
-						completed_at DATETIME
+						id                  TEXT PRIMARY KEY,
+						kind                TEXT NOT NULL,
+						status              TEXT NOT NULL DEFAULT 'pending',
+						runner_id           TEXT,
+						metadata            TEXT DEFAULT '{}',
+						attempts            INTEGER NOT NULL DEFAULT 0,
+						last_error          TEXT,
+						created_at          DATETIME NOT NULL,
+						updated_at          DATETIME NOT NULL,
+						started_at          DATETIME,
+						created_by_user_id  VARCHAR(255),
+						completed_at        DATETIME
 					)`
 			default:
 				// Fall back to GORM for any other dialect so the migration does not

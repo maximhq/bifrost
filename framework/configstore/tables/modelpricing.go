@@ -30,7 +30,7 @@ type TableModelPricing struct {
 	InputCostPerTokenFlex      *float64 `gorm:"default:null;column:input_cost_per_token_flex" json:"input_cost_per_token_flex,omitempty"`
 	OutputCostPerTokenFlex     *float64 `gorm:"default:null;column:output_cost_per_token_flex" json:"output_cost_per_token_flex,omitempty"`
 	// Fast mode (Anthropic research preview, speed:"fast" on Opus 4.6/4.7/4.8).
-	// Flat rate across the full context window; cache tokens bill at standard cache rates.
+	// Flat rate across the full context window; cache tokens use the _fast cache columns below.
 	InputCostPerTokenFast  *float64 `gorm:"default:null;column:input_cost_per_token_fast" json:"input_cost_per_token_fast,omitempty"`
 	OutputCostPerTokenFast *float64 `gorm:"default:null;column:output_cost_per_token_fast" json:"output_cost_per_token_fast,omitempty"`
 	InputCostPerCharacter  *float64 `gorm:"default:null;column:input_cost_per_character" json:"input_cost_per_character,omitempty"`
@@ -65,6 +65,10 @@ type TableModelPricing struct {
 	CacheReadInputImageTokenCost                       *float64 `gorm:"default:null;column:cache_read_input_image_token_cost" json:"cache_read_input_image_token_cost,omitempty"`
 	CacheReadInputTokenCostAbove272kTokens             *float64 `gorm:"default:null;column:cache_read_input_token_cost_above_272k_tokens" json:"cache_read_input_token_cost_above_272k_tokens,omitempty"`
 	CacheReadInputTokenCostAbove272kTokensPriority     *float64 `gorm:"default:null;column:cache_read_input_token_cost_above_272k_tokens_priority" json:"cache_read_input_token_cost_above_272k_tokens_priority,omitempty"`
+	// Fast mode (Anthropic) cache rates — flat across the full context window, no tiering.
+	CacheCreationInputTokenCostFast         *float64 `gorm:"default:null;column:cache_creation_input_token_cost_fast" json:"cache_creation_input_token_cost_fast,omitempty"`
+	CacheCreationInputTokenCostAbove1hrFast *float64 `gorm:"default:null;column:cache_creation_input_token_cost_above_1hr_fast" json:"cache_creation_input_token_cost_above_1hr_fast,omitempty"`
+	CacheReadInputTokenCostFast             *float64 `gorm:"default:null;column:cache_read_input_token_cost_fast" json:"cache_read_input_token_cost_fast,omitempty"`
 
 	// Costs - Image
 	InputCostPerImage                             *float64 `gorm:"default:null;column:input_cost_per_image" json:"input_cost_per_image,omitempty"`
@@ -97,6 +101,8 @@ type TableModelPricing struct {
 	// Costs - Other
 	SearchContextCostPerQuery     *float64 `gorm:"default:null;column:search_context_cost_per_query" json:"search_context_cost_per_query,omitempty"`
 	CodeInterpreterCostPerSession *float64 `gorm:"default:null;column:code_interpreter_cost_per_session" json:"code_interpreter_cost_per_session,omitempty"`
+	// Data-residency multiplier scaling all token/cache costs when Anthropic serves inference_geo:"us" (1.1x); nil = no multiplier.
+	InferenceGeoUSMultiplier *float64 `gorm:"default:null;column:inference_geo_us_multiplier" json:"inference_geo_us_multiplier,omitempty"`
 
 	// Costs - OCR
 	OCRCostPerPage        *float64 `gorm:"default:null;column:ocr_cost_per_page" json:"ocr_cost_per_page,omitempty"`

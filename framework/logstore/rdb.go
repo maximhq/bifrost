@@ -154,7 +154,11 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 		baseQuery = baseQuery.Where("provider IN ?", filters.Providers)
 	}
 	if len(filters.Models) > 0 {
-		baseQuery = baseQuery.Where("model IN ?", filters.Models)
+		// Match either the wire model or the canonical model name so that
+		// filtering by a canonical model (e.g. gpt-4o-mini) also surfaces
+		// requests routed through an alias whose wire model differs. Parens
+		// keep the OR grouped when GORM ANDs this with the other predicates.
+		baseQuery = baseQuery.Where("(model IN ? OR canonical_model_name IN ?)", filters.Models, filters.Models)
 	}
 	if len(filters.Aliases) > 0 {
 		baseQuery = baseQuery.Where("alias IN ?", filters.Aliases)
