@@ -1493,9 +1493,11 @@
               "description": "Object storage backend type"
             },
             "bucket": {
-              "type": "string",
-              "minLength": 1,
-              "description": "Bucket name. Supports env var reference (e.g. env.S3_BUCKET)"
+              "anyOf": [
+                { "type": "string", "minLength": 1 },
+                { "type": "object", "properties": { "value": { "type": "string" }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "additionalProperties": false }
+              ],
+              "description": "Bucket name. Supports env var reference (e.g. env.S3_BUCKET) or a structured secret reference."
             },
             "prefix": {
               "type": "string",
@@ -1522,27 +1524,45 @@
               "bucket": true,
               "prefix": true,
               "region": {
-                "type": "string",
+                "anyOf": [
+                  { "type": "string" },
+                  { "type": "object", "properties": { "value": { "type": "string" }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "additionalProperties": false }
+                ],
                 "description": "AWS region. Supports env var reference"
               },
               "endpoint": {
-                "type": "string",
+                "anyOf": [
+                  { "type": "string" },
+                  { "type": "object", "properties": { "value": { "type": "string" }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "additionalProperties": false }
+                ],
                 "description": "Custom S3-compatible endpoint for MinIO/R2. Supports env var reference"
               },
               "access_key_id": {
-                "type": "string",
+                "anyOf": [
+                  { "type": "string" },
+                  { "type": "object", "properties": { "value": { "type": "string" }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "additionalProperties": false }
+                ],
                 "description": "AWS access key ID. Omit to use default credential chain (instance role, env vars, etc.). Supports env var reference"
               },
               "secret_access_key": {
-                "type": "string",
+                "anyOf": [
+                  { "type": "string" },
+                  { "type": "object", "properties": { "value": { "type": "string" }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "additionalProperties": false }
+                ],
                 "description": "AWS secret access key. Supports env var reference"
               },
               "session_token": {
-                "type": "string",
+                "anyOf": [
+                  { "type": "string" },
+                  { "type": "object", "properties": { "value": { "type": "string" }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "additionalProperties": false }
+                ],
                 "description": "AWS session token for STS temporary credentials. Supports env var reference"
               },
               "role_arn": {
-                "type": "string",
+                "anyOf": [
+                  { "type": "string" },
+                  { "type": "object", "properties": { "value": { "type": "string" }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "additionalProperties": false }
+                ],
                 "description": "AWS IAM role ARN for STS AssumeRole. Works with static creds or instance role. Supports env var reference"
               },
               "force_path_style": {
@@ -1565,15 +1585,24 @@
               "bucket": true,
               "prefix": true,
               "credentials_json": {
-                "type": "string",
+                "anyOf": [
+                  { "type": "string" },
+                  { "type": "object", "properties": { "value": { "type": "string" }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "additionalProperties": false }
+                ],
                 "description": "GCP service account credentials JSON or file path. Omit to use Application Default Credentials. Supports env var reference"
               },
               "credentials": {
-                "type": "string",
+                "anyOf": [
+                  { "type": "string" },
+                  { "type": "object", "properties": { "value": { "type": "string" }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "additionalProperties": false }
+                ],
                 "description": "Deprecated: use credentials_json. Kept for backwards compatibility."
               },
               "project_id": {
-                "type": "string",
+                "anyOf": [
+                  { "type": "string" },
+                  { "type": "object", "properties": { "value": { "type": "string" }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "additionalProperties": false }
+                ],
                 "description": "GCP project ID override. Supports env var reference"
               },
               "compress": true
@@ -5465,9 +5494,11 @@
               "description": "Object storage backend type"
             },
             "bucket": {
-              "type": "string",
-              "minLength": 1,
-              "description": "Bucket name. Supports env var reference (e.g. env.S3_BUCKET)"
+              "anyOf": [
+                { "type": "string", "minLength": 1 },
+                { "type": "object", "properties": { "value": { "type": "string" }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "additionalProperties": false }
+              ],
+              "description": "Bucket name. Supports env var reference (e.g. env.S3_BUCKET) or a structured secret reference."
             },
             "prefix": {
               "type": "string",
@@ -5494,27 +5525,45 @@
               "bucket": true,
               "prefix": true,
               "region": {
-                "type": "string",
+                "anyOf": [
+                  { "type": "string" },
+                  { "type": "object", "properties": { "value": { "type": "string" }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "additionalProperties": false }
+                ],
                 "description": "AWS region. Supports env var reference"
               },
               "endpoint": {
-                "type": "string",
+                "anyOf": [
+                  { "type": "string" },
+                  { "type": "object", "properties": { "value": { "type": "string" }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "additionalProperties": false }
+                ],
                 "description": "Custom S3-compatible endpoint for MinIO/R2. Supports env var reference"
               },
               "access_key_id": {
-                "type": "string",
+                "anyOf": [
+                  { "type": "string" },
+                  { "type": "object", "properties": { "value": { "type": "string" }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "additionalProperties": false }
+                ],
                 "description": "AWS access key ID. Omit to use default credential chain (instance role, env vars, etc.). Supports env var reference"
               },
               "secret_access_key": {
-                "type": "string",
+                "anyOf": [
+                  { "type": "string" },
+                  { "type": "object", "properties": { "value": { "type": "string" }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "additionalProperties": false }
+                ],
                 "description": "AWS secret access key. Supports env var reference"
               },
               "session_token": {
-                "type": "string",
+                "anyOf": [
+                  { "type": "string" },
+                  { "type": "object", "properties": { "value": { "type": "string" }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "additionalProperties": false }
+                ],
                 "description": "AWS session token for STS temporary credentials. Supports env var reference"
               },
               "role_arn": {
-                "type": "string",
+                "anyOf": [
+                  { "type": "string" },
+                  { "type": "object", "properties": { "value": { "type": "string" }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "additionalProperties": false }
+                ],
                 "description": "AWS IAM role ARN for STS AssumeRole. Works with static creds or instance role. Supports env var reference"
               },
               "force_path_style": {
@@ -5537,15 +5586,24 @@
               "bucket": true,
               "prefix": true,
               "credentials_json": {
-                "type": "string",
+                "anyOf": [
+                  { "type": "string" },
+                  { "type": "object", "properties": { "value": { "type": "string" }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "additionalProperties": false }
+                ],
                 "description": "GCP service account credentials JSON or file path. Omit to use Application Default Credentials. Supports env var reference"
               },
               "credentials": {
-                "type": "string",
+                "anyOf": [
+                  { "type": "string" },
+                  { "type": "object", "properties": { "value": { "type": "string" }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "additionalProperties": false }
+                ],
                 "description": "Deprecated: use credentials_json. Kept for backwards compatibility."
               },
               "project_id": {
-                "type": "string",
+                "anyOf": [
+                  { "type": "string" },
+                  { "type": "object", "properties": { "value": { "type": "string" }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "additionalProperties": false }
+                ],
                 "description": "GCP project ID override. Supports env var reference"
               },
               "compress": true
