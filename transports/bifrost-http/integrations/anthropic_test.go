@@ -1,8 +1,10 @@
 package integrations
 
 import (
+	"context"
 	"testing"
 
+	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -75,5 +77,65 @@ func TestMustConvertInPassthrough(t *testing.T) {
 				t.Errorf("mustConvertInPassthrough(%s) = %v, want %v", tc.name, got, tc.want)
 			}
 		})
+	}
+}
+
+// A user message containing a container_upload block must survive the full
+// Anthropic integration request pipeline (parse → Bifrost → normalize → Anthropic
+// wire) with its file_id intact, and must NOT be replaced by the "..." empty-content
+// placeholder that normalizeBifrostInputContentBlocks backfills for otherwise-empty
+// user messages.
+func TestAnthropicContainerUploadSurvivesNormalization(t *testing.T) {
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+
+	fileID := "file_011CcpBQA2BV1gthmNPSYzkh"
+	req := &anthropic.AnthropicMessageRequest{
+		Model:     "anthropic/claude-sonnet-4-6",
+		MaxTokens: 1024,
+		Messages: []anthropic.AnthropicMessage{
+			{
+				Role: anthropic.AnthropicMessageRoleUser,
+				Content: anthropic.AnthropicContent{
+					ContentBlocks: []anthropic.AnthropicContentBlock{
+						{Type: anthropic.AnthropicContentBlockTypeText, Text: schemas.Ptr("analyse and share model names")},
+						{Type: anthropic.AnthropicContentBlockTypeContainerUpload, FileID: &fileID},
+					},
+				},
+			},
+		},
+	}
+
+	bifrostReq := req.ToBifrostResponsesRequest(ctx)
+	normalizeBifrostInputContentBlocks(bifrostReq)
+
+	out, err := anthropic.ToAnthropicResponsesRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("ToAnthropicResponsesRequest: %v", err)
+	}
+
+	var containerFileID *string
+	sawPlaceholder := false
+	for _, m := range out.Messages {
+		for _, b := range m.Content.ContentBlocks {
+			switch b.Type {
+			case anthropic.AnthropicContentBlockTypeContainerUpload:
+				containerFileID = b.FileID
+			case anthropic.AnthropicContentBlockTypeText:
+				if b.Text != nil && *b.Text == "..." {
+					sawPlaceholder = true
+				}
+			}
+		}
+	}
+
+	if sawPlaceholder {
+		t.Errorf("container_upload was replaced by the \"...\" empty-content placeholder")
+	}
+	if containerFileID == nil {
+		t.Fatalf("container_upload block missing from Anthropic request")
+	}
+	if *containerFileID != fileID {
+		t.Errorf("file_id = %q, want %q", *containerFileID, fileID)
 	}
 }
