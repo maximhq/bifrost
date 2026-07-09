@@ -454,7 +454,8 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_oauth_config_resource_column"}, run: migrationAddOauthConfigResourceColumn},
 	{IDs: []string{"add_use_anthropic_endpoints_column"}, run: migrationAddUseAnthropicEndpointsColumn},
 	{IDs: []string{"add_bedrock_batch_role_arn_column"}, run: migrationAddBedrockBatchRoleARNColumn},
-  {IDs: []string{"add_budget_override_columns"}, run: migrationAddBudgetOverrideColumns},
+	{IDs: []string{"add_budget_override_columns"}, run: migrationAddBudgetOverrideColumns},
+	{IDs: []string{"add_vertex_force_single_region_column"}, run: migrationAddVertexForceSingleRegionColumn},
 }
 
 // quoteSQLiteIdentifier quotes a SQLite identifier, escaping any double quotes.
