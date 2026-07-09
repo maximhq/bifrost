@@ -15,8 +15,8 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 - Added `calendar_aligned` to `bifrost.accessProfiles[*]` (top-level on each profile). Snaps all budget and rate-limit reset windows to calendar boundaries for the profile. Passes through directly into `access_profiles[*].calendar_aligned`.
 - Added `calendar_aligned` to `bifrost.accessProfiles[*].budgets[*]` and `bifrost.accessProfiles[*].provider_configs[*].budgets[*]`. Schema previously blocked this field via `additionalProperties: false`; now parity with `governance.budgets[*].calendar_aligned`.
 - Added `calendar_aligned` rendering for `bifrost.governance.virtualKeys[*].calendar_aligned`. Was in schema but not rendered into config. Now emits `virtual_keys[*].calendar_aligned` in the generated config.
-- Added `allowOnAllVirtualKeys` to the `bifrost.mcp.clientConfigs[*]` example documentation. Field was already wired in the template; now visible in `values.yaml`. Renders into `mcp.client_configs[*].allow_on_all_virtual_keys`.
 - Documented `calendar_aligned` in the `bifrost.governance.budgets[*]` example. Was already schema-supported; now shown in the `values.yaml` commented example.
+- Added `bifrost.alerting` for declarative alert channels and rules. Supports `history_retention_days`, `webhook_network` (`allow_http`, `allow_private_network`), `channels[]` (slack, microsoft_teams, pagerduty, webhook), and `rules[]` (CEL-expression-based, governance-scope-aware). Renders into `alerting`.
 
 ### 2.1.27
 

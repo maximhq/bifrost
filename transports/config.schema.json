@@ -1026,18 +1026,18 @@
                       "properties": {
                         "webhook_url": {
                           "type": "string",
-                          "format": "uri",
                           "minLength": 1,
-                          "description": "Slack incoming webhook URL."
+                          "anyOf": [{ "format": "uri" }, { "pattern": "^env\\.[A-Za-z_][A-Za-z0-9_]*$" }],
+                          "description": "Slack incoming webhook URL. Supports env.VAR_NAME references."
                         },
                         "url": {
                           "type": "string",
-                          "format": "uri",
                           "minLength": 1,
-                          "description": "Alias for webhook_url."
+                          "anyOf": [{ "format": "uri" }, { "pattern": "^env\\.[A-Za-z_][A-Za-z0-9_]*$" }],
+                          "description": "Alias for webhook_url. Supports env.VAR_NAME references."
                         }
                       },
-                      "anyOf": [{ "required": ["webhook_url"] }, { "required": ["url"] }],
+                      "oneOf": [{ "required": ["webhook_url"] }, { "required": ["url"] }],
                       "additionalProperties": true
                     }
                   },
@@ -1056,18 +1056,18 @@
                       "properties": {
                         "webhook_url": {
                           "type": "string",
-                          "format": "uri",
                           "minLength": 1,
-                          "description": "Microsoft Teams incoming webhook or workflow URL."
+                          "anyOf": [{ "format": "uri" }, { "pattern": "^env\\.[A-Za-z_][A-Za-z0-9_]*$" }],
+                          "description": "Microsoft Teams incoming webhook or workflow URL. Supports env.VAR_NAME references."
                         },
                         "url": {
                           "type": "string",
-                          "format": "uri",
                           "minLength": 1,
-                          "description": "Alias for webhook_url."
+                          "anyOf": [{ "format": "uri" }, { "pattern": "^env\\.[A-Za-z_][A-Za-z0-9_]*$" }],
+                          "description": "Alias for webhook_url. Supports env.VAR_NAME references."
                         }
                       },
-                      "anyOf": [{ "required": ["webhook_url"] }, { "required": ["url"] }],
+                      "oneOf": [{ "required": ["webhook_url"] }, { "required": ["url"] }],
                       "additionalProperties": true
                     }
                   },
@@ -1086,14 +1086,16 @@
                       "properties": {
                         "routing_key": {
                           "type": "string",
-                          "description": "PagerDuty Events API v2 integration key."
+                          "minLength": 1,
+                          "description": "PagerDuty Events API v2 integration key. Supports env.VAR_NAME references."
                         },
                         "integration_key": {
                           "type": "string",
-                          "description": "Alias for routing_key."
+                          "minLength": 1,
+                          "description": "Alias for routing_key. Supports env.VAR_NAME references."
                         }
                       },
-                      "anyOf": [{ "required": ["routing_key"] }, { "required": ["integration_key"] }],
+                      "oneOf": [{ "required": ["routing_key"] }, { "required": ["integration_key"] }],
                       "additionalProperties": true
                     }
                   },
@@ -1112,23 +1114,23 @@
                       "properties": {
                         "url": {
                           "type": "string",
-                          "format": "uri",
                           "minLength": 1,
-                          "description": "Generic webhook URL."
+                          "anyOf": [{ "format": "uri" }, { "pattern": "^env\\.[A-Za-z_][A-Za-z0-9_]*$" }],
+                          "description": "Generic webhook URL. Supports env.VAR_NAME references."
                         },
                         "webhook_url": {
                           "type": "string",
-                          "format": "uri",
                           "minLength": 1,
-                          "description": "Alias for url."
+                          "anyOf": [{ "format": "uri" }, { "pattern": "^env\\.[A-Za-z_][A-Za-z0-9_]*$" }],
+                          "description": "Alias for url. Supports env.VAR_NAME references."
                         },
                         "headers": {
                           "type": "object",
-                          "description": "Optional headers to send with the webhook request. Sensitive hop-by-hop headers are ignored at send time.",
+                          "description": "Optional headers to send with the webhook request. Values support env.VAR_NAME references. Sensitive hop-by-hop headers are ignored at send time.",
                           "additionalProperties": { "type": "string" }
                         }
                       },
-                      "anyOf": [{ "required": ["url"] }, { "required": ["webhook_url"] }],
+                      "oneOf": [{ "required": ["url"] }, { "required": ["webhook_url"] }],
                       "additionalProperties": true
                     }
                   },
