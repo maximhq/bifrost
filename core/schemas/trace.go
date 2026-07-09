@@ -2,6 +2,7 @@
 package schemas
 
 import (
+	"maps"
 	"strings"
 	"sync"
 	"time"
@@ -138,6 +139,60 @@ func (t *Trace) GetAttribute(key string) (any, bool) {
 	return value, ok
 }
 
+// SnapshotForExport returns a copy of the trace that is safe for concurrent
+// read-only use by observability exporters (Datadog, OTEL, ...) while the
+// original trace's spans may still be mutated.
+//
+// Trace- and span-level attribute maps are cloned under their respective locks,
+// so an exporter iterating the returned maps can never race a late writer — e.g.
+// streaming span finalization (completeDeferredSpan) or redaction replacement —
+// that legitimately holds the span lock. Without this, an exporter iterating the
+// live span.Attributes map (which cannot take the unexported span lock) triggers
+// a fatal "concurrent map iteration and map write" that recover() cannot catch.
+//
+// Span pointer identity is preserved *within* the returned trace: RootSpan and
+// the entries of Spans refer to the same copied *Span values, so pointer-equality
+// checks (e.g. span == finalAttempt) still work against the snapshot's own spans.
+// Attribute values are copied by reference and must be treated as read-only.
+func (t *Trace) SnapshotForExport() *Trace {
+	if t == nil {
+		return nil
+	}
+	t.mu.Lock()
+	clone := &Trace{
+		RequestID:      t.RequestID,
+		TraceID:        t.TraceID,
+		ParentID:       t.ParentID,
+		StartTime:      t.StartTime,
+		EndTime:        t.EndTime,
+		Attributes:     maps.Clone(t.Attributes),
+		RequestHeaders: maps.Clone(t.RequestHeaders),
+		PluginLogs:     append([]PluginLogEntry(nil), t.PluginLogs...),
+	}
+	spans := append([]*Span(nil), t.Spans...)
+	rootSpan := t.RootSpan
+	t.mu.Unlock()
+
+	spanCopies := make(map[*Span]*Span, len(spans))
+	clone.Spans = make([]*Span, 0, len(spans))
+	for _, span := range spans {
+		if span == nil {
+			continue
+		}
+		cp := span.snapshotForExport()
+		spanCopies[span] = cp
+		clone.Spans = append(clone.Spans, cp)
+	}
+	if rootSpan != nil {
+		if cp, ok := spanCopies[rootSpan]; ok {
+			clone.RootSpan = cp
+		} else {
+			clone.RootSpan = rootSpan.snapshotForExport()
+		}
+	}
+	return clone
+}
+
 // Reset clears the trace for reuse from pool
 func (t *Trace) Reset() {
 	t.mu.Lock()
@@ -267,6 +322,39 @@ func (s *Span) SetAttribute(key string, value any) {
 	s.Attributes[key] = value
 }
 
+// snapshotForExport returns a copy of the span whose Attributes (and Events)
+// are cloned under the span lock, so observability exporters can read them
+// concurrently while a late writer (streaming finalization, redaction) may still
+// mutate the original span. See Trace.SnapshotForExport. The returned span has a
+// fresh zero-value mutex and its attribute values are copied by reference.
+func (s *Span) snapshotForExport() *Span {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cp := &Span{
+		SpanID:     s.SpanID,
+		ParentID:   s.ParentID,
+		TraceID:    s.TraceID,
+		Name:       s.Name,
+		Kind:       s.Kind,
+		StartTime:  s.StartTime,
+		EndTime:    s.EndTime,
+		Status:     s.Status,
+		StatusMsg:  s.StatusMsg,
+		Attributes: maps.Clone(s.Attributes),
+	}
+	if len(s.Events) > 0 {
+		cp.Events = make([]SpanEvent, len(s.Events))
+		for i := range s.Events {
+			cp.Events[i] = SpanEvent{
+				Name:       s.Events[i].Name,
+				Timestamp:  s.Events[i].Timestamp,
+				Attributes: maps.Clone(s.Events[i].Attributes),
+			}
+		}
+	}
+	return cp
+}
+
 // AddEvent adds an event to the span in a thread-safe manner
 func (s *Span) AddEvent(event SpanEvent) {
 	s.mu.Lock()
@@ -283,8 +371,12 @@ func (s *Span) End(status SpanStatus, statusMsg string) {
 	s.StatusMsg = statusMsg
 }
 
-// Reset clears the span for reuse from pool
+// Reset clears the span for reuse from pool. It holds s.mu — like every other
+// Span mutator — so a straggling writer (e.g. streaming finalization) that races
+// pool release can't trigger a fatal concurrent map access on s.Attributes.
 func (s *Span) Reset() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.SpanID = ""
 	s.ParentID = ""
 	s.TraceID = ""

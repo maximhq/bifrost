@@ -693,6 +693,14 @@ func (t *Tracer) CompleteAndFlushTrace(traceID string) {
 
 		completedTrace.ApplyRedactionReplacements()
 
+		// Give every connector a private, lock-safe snapshot. Late writers may
+		// still mutate the pooled spans under the span lock (streaming
+		// finalization, redaction), and connectors iterate the attribute maps
+		// (directly or via Marshal) — racing them fatals with "concurrent map
+		// iteration and map write", which recover() can't catch. One snapshot
+		// here covers all connectors.
+		exportTrace := completedTrace.SnapshotForExport()
+
 		var obsPlugins []schemas.ObservabilityPlugin
 		if loaded := t.obsPlugins.Load(); loaded != nil {
 			obsPlugins = *loaded
@@ -716,7 +724,7 @@ func (t *Tracer) CompleteAndFlushTrace(traceID string) {
 					return
 				}
 				seen[name] = struct{}{}
-				if err := plugin.Inject(context.Background(), completedTrace); err != nil && t.logger != nil {
+				if err := plugin.Inject(context.Background(), exportTrace); err != nil && t.logger != nil {
 					t.logger.Warn("observability plugin %s failed to inject trace: %v", name, err)
 				}
 			}(plugin)
