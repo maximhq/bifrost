@@ -6,12 +6,15 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { Textarea } from "@/components/ui/textarea";
 import { RenderProviderIcon } from "@/lib/constants/icons";
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
-import { getErrorMessage, ModelDetails, useUpsertModelCatalogEntriesMutation } from "@/lib/store";
+import { getErrorMessage, ModelDetails, useGetCoreConfigQuery, useUpsertModelCatalogEntriesMutation } from "@/lib/store";
 import { KnownProvider } from "@/lib/types/config";
+import { formatTokenPriceFull } from "@/lib/utils/numbers";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { Plus, Trash2 } from "lucide-react";
+import { ExternalLink, Plus, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
+
+const DEFAULT_PRICING_SOURCE_URL = "https://getbifrost.ai/datasheet";
 
 interface AttributeSheetProps {
 	model: ModelDetails;
@@ -44,9 +47,21 @@ function rowsFromAttributes(attrs?: Record<string, string>): AttributeRow[] {
 		.map(([key, value]) => ({ id: newRowId(), key, value }));
 }
 
+function isLinkableSource(url: string) {
+	return url.startsWith("http://") || url.startsWith("https://");
+}
+
+function getPricingSourceUrl(configuredUrl: string | undefined, modelName: string) {
+	if (configuredUrl) return configuredUrl;
+	const url = new URL(DEFAULT_PRICING_SOURCE_URL);
+	url.searchParams.set("model", modelName);
+	return url.toString();
+}
+
 export default function AttributeSheet({ model, onClose }: AttributeSheetProps) {
 	const [isOpen, setIsOpen] = useState(true);
 	const hasUpdateAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Update);
+	const { data: bifrostConfig } = useGetCoreConfigQuery({ fromDB: true });
 
 	const [upsertEntries, { isLoading }] = useUpsertModelCatalogEntriesMutation();
 
@@ -60,6 +75,8 @@ export default function AttributeSheet({ model, onClose }: AttributeSheetProps) 
 
 	const rowsDirty = JSON.stringify(stripIds(extraRows)) !== initialRowsKey;
 	const isDirty = description !== initialDescription || rowsDirty;
+	const pricingSourceUrl = getPricingSourceUrl(bifrostConfig?.framework_config?.pricing_url, model.name);
+	const canOpenPricingSource = isLinkableSource(pricingSourceUrl);
 
 	const handleClose = () => {
 		setIsOpen(false);
@@ -151,6 +168,57 @@ export default function AttributeSheet({ model, onClose }: AttributeSheetProps) 
 							<div>
 								<Label className="text-sm font-medium">Model</Label>
 								<div className="bg-muted/30 mt-2 rounded-sm border px-3 py-2 font-mono text-sm">{model.name}</div>
+							</div>
+						</div>
+
+						<DottedSeparator />
+
+						{/* Pricing */}
+						<div className="space-y-3">
+							<div className="flex items-center justify-between gap-3">
+								<Label className="text-sm font-medium">Pricing</Label>
+								{canOpenPricingSource ? (
+									<a
+										href={pricingSourceUrl}
+										target="_blank"
+										rel="noreferrer"
+										className="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 text-xs"
+										data-testid="model-catalog-pricing-source-link"
+									>
+										Source
+										<ExternalLink className="h-3 w-3" />
+									</a>
+								) : (
+									<span className="text-muted-foreground max-w-[260px] truncate text-right font-mono text-xs" title={pricingSourceUrl}>
+										{pricingSourceUrl}
+									</span>
+								)}
+							</div>
+							<div className="grid grid-cols-2 gap-4">
+								<div className="bg-muted/30 rounded-sm border px-3 py-2">
+									<p className="text-muted-foreground text-xs">Input</p>
+									<p className="mt-1 font-mono text-sm" data-testid="model-catalog-input-cost">
+										{formatTokenPriceFull(model.input_cost_per_token)}
+									</p>
+								</div>
+								<div className="bg-muted/30 rounded-sm border px-3 py-2">
+									<p className="text-muted-foreground text-xs">Output</p>
+									<p className="mt-1 font-mono text-sm" data-testid="model-catalog-output-cost">
+										{formatTokenPriceFull(model.output_cost_per_token)}
+									</p>
+								</div>
+								<div className="bg-muted/30 rounded-sm border px-3 py-2">
+									<p className="text-muted-foreground text-xs">Cache Write</p>
+									<p className="mt-1 font-mono text-sm" data-testid="model-catalog-cache-write-cost">
+										{formatTokenPriceFull(model.cache_creation_input_token_cost)}
+									</p>
+								</div>
+								<div className="bg-muted/30 rounded-sm border px-3 py-2">
+									<p className="text-muted-foreground text-xs">Cache Read</p>
+									<p className="mt-1 font-mono text-sm" data-testid="model-catalog-cache-read-cost">
+										{formatTokenPriceFull(model.cache_read_input_token_cost)}
+									</p>
+								</div>
 							</div>
 						</div>
 
