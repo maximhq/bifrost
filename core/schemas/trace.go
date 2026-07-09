@@ -708,6 +708,8 @@ const (
 	AttrBifrostUserName            = "bifrost.user.name"
 	AttrBifrostRetries             = "bifrost.retries"
 	AttrBifrostFallbackIndex       = "bifrost.fallback_index"
+	AttrBifrostAlias               = "bifrost.alias"                // original requested model when it differs from the resolved model
+	AttrBifrostRoutingEngineUsed   = "bifrost.routing_engine_used"  // comma-joined routing engines that handled the request
 	AttrBifrostStopSequencesJoined = "bifrost.request.stop_sequences"
 
 	// OTel general semconv (no gen_ai prefix). Emitted alongside the legacy
