@@ -426,3 +426,82 @@ func TestRoundTrip_ContentBlocks_Bedrock(t *testing.T) {
 		}
 	}
 }
+
+// --- container_upload -------------------------------------------------------
+
+// findContainerUploadBlocks collects every container_upload block across a
+// message slice.
+func findContainerUploadBlocks(msgs []AnthropicMessage) []AnthropicContentBlock {
+	var out []AnthropicContentBlock
+	for _, m := range msgs {
+		for _, b := range m.Content.ContentBlocks {
+			if b.Type == AnthropicContentBlockTypeContainerUpload {
+				out = append(out, b)
+			}
+		}
+	}
+	return out
+}
+
+// container_upload (file staged into the code-execution container) must survive
+// Anthropic → Bifrost → Anthropic, carrying file_id and cache_control.
+func TestRoundTrip_ContainerUpload(t *testing.T) {
+	fileID := "file_011CcpBQA2BV1gthmNPSYzkh"
+	messages := []AnthropicMessage{
+		{
+			Role: AnthropicMessageRoleUser,
+			Content: AnthropicContent{
+				ContentBlocks: []AnthropicContentBlock{
+					{Type: AnthropicContentBlockTypeText, Text: schemas.Ptr("analyse and share model names")},
+					{
+						Type:         AnthropicContentBlockTypeContainerUpload,
+						FileID:       &fileID,
+						CacheControl: &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral},
+					},
+				},
+			},
+		},
+	}
+
+	outMsgs, _ := roundTrip(t, messages, nil, schemas.Anthropic, "claude-sonnet-4-6")
+
+	blocks := findContainerUploadBlocks(outMsgs)
+	if len(blocks) != 1 {
+		t.Fatalf("container_upload blocks = %d, want 1", len(blocks))
+	}
+	if blocks[0].FileID == nil || *blocks[0].FileID != fileID {
+		t.Errorf("file_id = %v, want %q", blocks[0].FileID, fileID)
+	}
+	if blocks[0].CacheControl == nil || blocks[0].CacheControl.Type != schemas.CacheControlTypeEphemeral {
+		t.Errorf("cache_control = %v, want ephemeral", blocks[0].CacheControl)
+	}
+}
+
+// The grouped converter (used for Bedrock-routed Anthropic models) must also
+// emit a neutral container_upload block rather than dropping it.
+func TestRoundTrip_ContainerUpload_Grouped(t *testing.T) {
+	fileID := "file_grouped_123"
+	role := schemas.ResponsesInputMessageRoleUser
+	msgs := convertAnthropicContentBlocksToResponsesMessagesGrouped(
+		[]AnthropicContentBlock{{Type: AnthropicContentBlockTypeContainerUpload, FileID: &fileID}},
+		&role, false,
+	)
+
+	var found *schemas.ResponsesMessageContentBlock
+	for i := range msgs {
+		if msgs[i].Content == nil {
+			continue
+		}
+		for j := range msgs[i].Content.ContentBlocks {
+			if msgs[i].Content.ContentBlocks[j].Type == schemas.ResponsesInputMessageContentBlockTypeContainer {
+				found = &msgs[i].Content.ContentBlocks[j]
+			}
+		}
+	}
+	if found == nil {
+		t.Fatalf("grouped converter dropped container_upload block")
+	}
+	if found.FileID == nil || *found.FileID != fileID {
+		t.Errorf("file_id = %v, want %q", found.FileID, fileID)
+	}
+}

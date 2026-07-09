@@ -631,7 +631,7 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 		completeURL = getVertexEndpointURL(region, "v1beta1", projectNumber, request.Model, ":generateContent")
 	} else if schemas.IsAnthropicModelFamily(ctx, request.Model) {
 		// Claude models use Anthropic publisher — model-aware host for multi-region support
-		completeURL = getVertexModelAwarePublisherModelURL(region, "v1", projectID, "anthropic", request.Model, ":rawPredict")
+		completeURL = getVertexModelAwarePublisherModelURL(region, "v1", projectID, "anthropic", request.Model, ":rawPredict", resolveVertexForceSingleRegion(ctx, key), provider.logger)
 	} else if schemas.IsMistralModelFamily(ctx, request.Model) {
 		// Mistral models use mistralai publisher with rawPredict
 		completeURL = getVertexPublisherModelURL(region, "v1", projectID, "mistralai", request.Model, ":rawPredict")
@@ -854,7 +854,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 			}
 		}
 
-		completeURL := getVertexModelAwarePublisherModelURL(region, "v1", projectID, "anthropic", request.Model, ":streamRawPredict")
+		completeURL := getVertexModelAwarePublisherModelURL(region, "v1", projectID, "anthropic", request.Model, ":streamRawPredict", resolveVertexForceSingleRegion(ctx, key), provider.logger)
 
 		// Prepare headers for Vertex Anthropic
 		headers := map[string]string{
@@ -1074,7 +1074,7 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 		}
 
 		// Claude models use Anthropic publisher — model-aware host for multi-region support
-		url := getVertexModelAwarePublisherModelURL(region, "v1beta1", projectID, "anthropic", request.Model, ":rawPredict")
+		url := getVertexModelAwarePublisherModelURL(region, "v1beta1", projectID, "anthropic", request.Model, ":rawPredict", resolveVertexForceSingleRegion(ctx, key), provider.logger)
 
 		// Create HTTP request for streaming
 		req := fasthttp.AcquireRequest()
@@ -1369,7 +1369,7 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 			return nil, bifrostErr
 		}
 
-		url := getVertexModelAwarePublisherModelURL(region, "v1", projectID, "anthropic", request.Model, ":streamRawPredict")
+		url := getVertexModelAwarePublisherModelURL(region, "v1", projectID, "anthropic", request.Model, ":streamRawPredict", resolveVertexForceSingleRegion(ctx, key), provider.logger)
 
 		// Prepare headers for Vertex Anthropic
 		headers := map[string]string{
@@ -4093,8 +4093,9 @@ func (provider *VertexProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 
 	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
 		// Use model-aware host based on request.Model, but URL path uses "count-tokens"
-		effectiveRegion := getVertexEffectiveRegion(region, request.Model)
-		baseURL := getVertexModelAwareAPIBaseURL(region, "v1", request.Model)
+		forceSingleRegion := resolveVertexForceSingleRegion(ctx, key)
+		effectiveRegion := getVertexEffectiveRegion(region, request.Model, forceSingleRegion)
+		baseURL := getVertexModelAwareAPIBaseURL(region, "v1", request.Model, forceSingleRegion, provider.logger)
 		completeURL = fmt.Sprintf("%s/projects/%s/locations/%s/publishers/%s/models/%s%s", baseURL, projectID, effectiveRegion, "anthropic", "count-tokens", ":rawPredict")
 	} else if schemas.IsGeminiModelFamily(ctx, request.Model) || schemas.IsAllDigitsASCII(request.Model) || schemas.IsGemmaModelFamily(ctx, request.Model) {
 		if key.Value.GetValue() != "" {

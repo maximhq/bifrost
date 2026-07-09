@@ -183,7 +183,7 @@ function VertexSection({ config, onChange, disabled }: ProviderSectionProps) {
 					disabled={disabled}
 				/>
 			</FieldRow>
-			<FieldRow label="Region">
+			<FieldRow label="Region" hint="Multi-region-only models are auto-routed to a multi-region endpoint unless Force single region is on.">
 				<SecretVarField
 					value={config.region}
 					onChange={(v) => onChange({ region: v })}
@@ -191,6 +191,20 @@ function VertexSection({ config, onChange, disabled }: ProviderSectionProps) {
 					disabled={disabled}
 				/>
 			</FieldRow>
+			<div className="flex items-start justify-between gap-4 rounded-md border p-3">
+				<div className="space-y-0.5">
+					<label className="text-sm font-medium">Force single region</label>
+					<p className="text-muted-foreground text-xs">
+						Call the region above as-is and skip multi-region promotion of multi-region-only models. Use for provisioned
+						throughput.
+					</p>
+				</div>
+				<Switch
+					checked={config.force_single_region ?? false}
+					onCheckedChange={(checked) => onChange({ force_single_region: checked })}
+					disabled={disabled}
+				/>
+			</div>
 		</div>
 	);
 }
