@@ -542,6 +542,9 @@ const (
 	// unprefixed "error.type". Emitted in parallel from PopulateErrorAttributes.
 	AttrErrorType = "gen_ai.error.type"
 	AttrErrorCode = "gen_ai.error.code"
+	// AttrHTTPResponseStatusCode is the OTel semconv HTTP response status code (e.g. 400).
+	// Sourced from BifrostError.StatusCode; used as the status_code dimension on error metrics.
+	AttrHTTPResponseStatusCode = "http.response.status_code"
 
 	// Input/Output Attributes
 	AttrInputText      = "gen_ai.input.text"
