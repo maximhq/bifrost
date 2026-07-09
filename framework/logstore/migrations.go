@@ -2489,6 +2489,14 @@ var performanceIndexes = []performanceIndexDef{
 	},
 	{
 		table: "logs",
+		name:  "idx_logs_canonical_model_name",
+		// Filtering by model matches either `model` or `canonical_model_name`
+		// (see applyFilters). This single-column index lets Postgres BitmapOr it
+		// with idx_logs_model instead of scanning the whole table for the OR branch.
+		sql: "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_canonical_model_name ON logs(canonical_model_name) WHERE canonical_model_name IS NOT NULL",
+	},
+	{
+		table: "logs",
 		name:  "idx_logs_team_id",
 		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_team_id ON logs(team_id)",
 	},
