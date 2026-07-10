@@ -550,6 +550,15 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 	case AnthropicStreamEventTypeContentBlockStart:
 		// Content block start - emit output_item.added (OpenAI-style)
 		if chunk.ContentBlock != nil && chunk.Index != nil {
+			// A data-less redacted_thinking block contributes nothing; skip it
+			// before reserving an output index so later items keep their
+			// positions in response.completed output.
+			if chunk.ContentBlock.Type == AnthropicContentBlockTypeRedactedThinking &&
+				(chunk.ContentBlock.Data == nil || *chunk.ContentBlock.Data == "") {
+				state.ContentIndexToBlockType[*chunk.Index] = AnthropicContentBlockTypeRedactedThinking
+				return nil, nil, false
+			}
+
 			outputIndex := state.getOrCreateOutputIndex(chunk.Index)
 
 			if chunk.ContentBlock.Type == AnthropicContentBlockTypeToolUse &&
@@ -1138,20 +1147,12 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 				return responses, nil, false
 			case AnthropicContentBlockTypeRedactedThinking:
 				// Redacted thinking blocks arrive complete in content_block_start (no
-				// deltas follow). Surface the encrypted payload as a reasoning item with
-				// encrypted_content, mirroring the non-streaming converter, so streaming
-				// clients can replay it on the next turn; Anthropic rejects tool-use
-				// follow-ups whose latest assistant message dropped it.
-				if chunk.ContentBlock.Data == nil || *chunk.ContentBlock.Data == "" {
-					// Track the index so this block's content_block_stop is skipped
-					// too: a data-less block contributes nothing at all, instead of
-					// leaving an orphan output_item.done with an empty message shell.
-					if chunk.Index != nil {
-						state.ContentIndexToBlockType[*chunk.Index] = AnthropicContentBlockTypeRedactedThinking
-					}
-					return nil, nil, false
-				}
-
+				// deltas follow; data-less blocks were already skipped above, before
+				// an output index was reserved). Surface the encrypted payload as a
+				// reasoning item with encrypted_content, mirroring the non-streaming
+				// converter, so streaming clients can replay it on the next turn;
+				// Anthropic rejects tool-use follow-ups whose latest assistant
+				// message dropped it.
 				messageType := schemas.ResponsesMessageTypeReasoning
 				role := schemas.ResponsesInputMessageRoleAssistant
 
@@ -1379,6 +1380,14 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 	case AnthropicStreamEventTypeContentBlockStop:
 		// Content block is complete - emit output_item.done (OpenAI-style)
 		if chunk.Index != nil {
+			// Data-less redacted_thinking: its start reserved no output index, so
+			// its stop must not reserve one (or synthesize a done) either.
+			if blockType, exists := state.ContentIndexToBlockType[*chunk.Index]; exists &&
+				blockType == AnthropicContentBlockTypeRedactedThinking {
+				delete(state.ContentIndexToBlockType, *chunk.Index)
+				return nil, nil, false
+			}
+
 			outputIndex := state.getOrCreateOutputIndex(chunk.Index)
 
 			if inputJSON, inputKind, hasInputBuffer := state.finishInputJSONBuffer(chunk.Index); hasInputBuffer {
@@ -1757,13 +1766,6 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 					}
 					if blockType == AnthropicContentBlockTypeCompaction {
 						// Clean up the tracking
-						delete(state.ContentIndexToBlockType, *chunk.Index)
-						return nil, nil, false
-					}
-					if blockType == AnthropicContentBlockTypeRedactedThinking {
-						// Data-less redacted_thinking block: its start emitted
-						// nothing, so its stop must not synthesize an empty message
-						// shell either.
 						delete(state.ContentIndexToBlockType, *chunk.Index)
 						return nil, nil, false
 					}

@@ -193,6 +193,27 @@ func TestToBifrostResponsesStream_RedactedThinkingWithoutDataSkipped(t *testing.
 			if len(state.ContentIndexToBlockType) != 0 {
 				t.Errorf("expected block-type tracking to be cleaned up on stop, got %d entries", len(state.ContentIndexToBlockType))
 			}
+			if state.CurrentOutputIndex != 0 {
+				t.Errorf("expected no output index to be reserved for a data-less block, got CurrentOutputIndex=%d", state.CurrentOutputIndex)
+			}
+
+			// A following block must keep its position: the skipped block did not
+			// shift output indices.
+			textStart := &AnthropicStreamEvent{
+				Type:  AnthropicStreamEventTypeContentBlockStart,
+				Index: schemas.Ptr(1),
+				ContentBlock: &AnthropicContentBlock{
+					Type: AnthropicContentBlockTypeText,
+					Text: schemas.Ptr(""),
+				},
+			}
+			responses, err, _ = textStart.ToBifrostResponsesStream(context.Background(), 0, state)
+			if err != nil {
+				t.Fatalf("unexpected error on following text start: %v", err)
+			}
+			if len(responses) == 0 || responses[0].OutputIndex == nil || *responses[0].OutputIndex != 0 {
+				t.Errorf("expected the following text block to take output index 0, got %+v", responses)
+			}
 		})
 	}
 }
