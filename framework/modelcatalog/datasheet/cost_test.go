@@ -1,6 +1,7 @@
 package datasheet
 
 import (
+	"encoding/json"
 	"testing"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -151,6 +152,126 @@ func TestComputeTextCost_WithCachedPromptTokens(t *testing.T) {
 	// Output: 500*0.000015 = 0.0075
 	// Total: 0.0021 + 0.0075 = 0.0096
 	assert.InDelta(t, 0.0096, cost, 1e-12)
+}
+
+// gpt56SolPricing returns the full tiered pricing for gpt-5.6-sol (per the OpenAI
+// pricing page), including flex/priority and the 272k context tier used to
+// exercise the cache-write (cache-creation) tiering added with gpt-5.6.
+func gpt56SolPricing() configstoreTables.TableModelPricing {
+	p := chatPricing(0.000005, 0.00003) // standard input $5/M, output $30/M
+	p.InputCostPerTokenAbove272kTokens = bifrost.Ptr(0.00001)
+	p.InputCostPerTokenFlex = bifrost.Ptr(0.0000025)
+	p.InputCostPerTokenFlexAbove272kTokens = bifrost.Ptr(0.000005)
+	p.InputCostPerTokenPriority = bifrost.Ptr(0.00001)
+	p.OutputCostPerTokenAbove272kTokens = bifrost.Ptr(0.000045)
+	p.OutputCostPerTokenFlex = bifrost.Ptr(0.000015)
+	p.OutputCostPerTokenFlexAbove272kTokens = bifrost.Ptr(0.0000225)
+	p.OutputCostPerTokenPriority = bifrost.Ptr(0.00006)
+	p.CacheReadInputTokenCost = bifrost.Ptr(0.0000005)
+	p.CacheReadInputTokenCostAbove272kTokens = bifrost.Ptr(0.000001)
+	p.CacheReadInputTokenCostFlex = bifrost.Ptr(0.00000025)
+	p.CacheReadInputTokenCostFlexAbove272kTokens = bifrost.Ptr(0.0000005)
+	p.CacheReadInputTokenCostPriority = bifrost.Ptr(0.000001)
+	p.CacheCreationInputTokenCost = bifrost.Ptr(0.00000625)
+	p.CacheCreationInputTokenCostAbove272kTokens = bifrost.Ptr(0.0000125)
+	p.CacheCreationInputTokenCostFlex = bifrost.Ptr(0.000003125)
+	p.CacheCreationInputTokenCostFlexAbove272kTokens = bifrost.Ptr(0.00000625)
+	p.CacheCreationInputTokenCostPriority = bifrost.Ptr(0.0000125)
+	return p
+}
+
+// The reported bug scenario: a fresh-cache gpt-5.6-sol turn now returns and bills
+// cache-write tokens at the base cache-creation rate.
+func TestComputeTextCost_GPT56_StandardCacheWrite(t *testing.T) {
+	p := gpt56SolPricing()
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens:     28006,
+		CompletionTokens: 443,
+		TotalTokens:      28449,
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+			CachedReadTokens:  0,
+			CachedWriteTokens: 28003,
+		},
+	}
+	cost := computeTextCost(&p, usage, serviceTier{})
+	// input: (28006-28003)*0.000005 = 0.000015
+	// write: 28003*0.00000625 = 0.17501875
+	// output: 443*0.00003 = 0.01329
+	assert.InDelta(t, 0.000015+0.17501875+0.01329, cost, 1e-9)
+}
+
+func TestComputeTextCost_GPT56_StandardCacheWriteAbove272k(t *testing.T) {
+	p := gpt56SolPricing()
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens:        300000,
+		CompletionTokens:    1000,
+		TotalTokens:         301000,
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{CachedWriteTokens: 100000},
+	}
+	cost := computeTextCost(&p, usage, serviceTier{})
+	// input: 200000*0.00001 = 2.0; write: 100000*0.0000125 = 1.25; output: 1000*0.000045 = 0.045
+	assert.InDelta(t, 2.0+1.25+0.045, cost, 1e-9)
+}
+
+func TestComputeTextCost_GPT56_FlexTier(t *testing.T) {
+	p := gpt56SolPricing()
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens:     10000,
+		CompletionTokens: 1000,
+		TotalTokens:      11000,
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+			CachedReadTokens:  4000,
+			CachedWriteTokens: 2000,
+		},
+	}
+	cost := computeTextCost(&p, usage, serviceTier{isFlex: true})
+	// input: 4000*0.0000025 = 0.01; read: 4000*0.00000025 = 0.001
+	// write: 2000*0.000003125 = 0.00625; output: 1000*0.000015 = 0.015
+	assert.InDelta(t, 0.01+0.001+0.00625+0.015, cost, 1e-12)
+}
+
+func TestComputeTextCost_GPT56_FlexTierAbove272k(t *testing.T) {
+	p := gpt56SolPricing()
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens:     300000,
+		CompletionTokens: 1000,
+		TotalTokens:      301000,
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+			CachedReadTokens:  100000,
+			CachedWriteTokens: 50000,
+		},
+	}
+	cost := computeTextCost(&p, usage, serviceTier{isFlex: true})
+	// input: 150000*0.000005 = 0.75; read: 100000*0.0000005 = 0.05
+	// write: 50000*0.00000625 = 0.3125; output: 1000*0.0000225 = 0.0225
+	assert.InDelta(t, 0.75+0.05+0.3125+0.0225, cost, 1e-9)
+}
+
+func TestComputeTextCost_GPT56_PriorityTier(t *testing.T) {
+	p := gpt56SolPricing()
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens:     10000,
+		CompletionTokens: 1000,
+		TotalTokens:      11000,
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+			CachedReadTokens:  4000,
+			CachedWriteTokens: 2000,
+		},
+	}
+	cost := computeTextCost(&p, usage, serviceTier{isPriority: true})
+	// input: 4000*0.00001 = 0.04; read: 4000*0.000001 = 0.004
+	// write: 2000*0.0000125 = 0.025; output: 1000*0.00006 = 0.06
+	assert.InDelta(t, 0.04+0.004+0.025+0.06, cost, 1e-12)
+}
+
+// Regression: a flex model without a flex-272k column keeps the flat flex rate
+// above 272k (no new tiering leaks into existing flex models).
+func TestComputeTextCost_FlexFlatAbove272kWhenNoFlexTierColumn(t *testing.T) {
+	p := chatPricing(0.000005, 0.00003)
+	p.InputCostPerTokenFlex = bifrost.Ptr(0.0000025)
+	usage := &schemas.BifrostLLMUsage{PromptTokens: 300000, TotalTokens: 300000}
+	cost := computeTextCost(&p, usage, serviceTier{isFlex: true})
+	assert.InDelta(t, 300000*0.0000025, cost, 1e-9)
 }
 
 func TestComputeTextCost_FastMode(t *testing.T) {
@@ -3149,4 +3270,292 @@ func TestCalculateCostForUsage_NilUsageIsZero(t *testing.T) {
 		makeKey("gpt-4o", "openai", "chat"): chatPricing(0.000005, 0.000015),
 	})
 	assert.Equal(t, 0.0, s.CalculateCostForUsage(nil, schemas.OpenAI, "gpt-4o", schemas.ChatCompletionRequest, nil))
+}
+
+// ===========================================================================
+// Golden per-model OpenAI pricing tests
+//
+// These feed the exact published OpenAI rates through the real datasheet
+// JSON -> TableModelPricing conversion (convertEntryToTablePricing) and assert
+// the invoice cost for every service tier and context window. They pin two
+// things at once: the rate-selection ladders in cost.go, and the field wiring
+// that carries each new rate from the datasheet JSON into the pricing row.
+//
+// NOTE: the numbers below are the source of truth for *expected billing*,
+// transcribed from the OpenAI pricing page. The live per-model values arrive
+// via the datasheet sync (not this repo), so these tests validate the compute
+// engine + wiring, not the sync payload.
+// ===========================================================================
+
+// pricingRowFromDatasheetJSON parses a datasheet entry (the shape stored in the
+// synced pricing catalog) and runs the production JSON -> row conversion, so a
+// dropped json tag or a missing conversion-map line would fail these tests.
+func pricingRowFromDatasheetJSON(t *testing.T, modelKey, blob string) configstoreTables.TableModelPricing {
+	t.Helper()
+	var entry Entry
+	require.NoError(t, json.Unmarshal([]byte(blob), &entry))
+	return convertEntryToTablePricing(modelKey, entry)
+}
+
+// Datasheet entries (pricing fields only) for the gpt-5.6 flagship family.
+// Cache writes are the cache_creation_* fields. Short/long context are the
+// base vs _above_272k rates.
+const (
+	gpt56SolDatasheet = `{
+		"provider": "openai", "mode": "chat", "base_model": "gpt-5.6-sol",
+		"input_cost_per_token": 0.000005,
+		"input_cost_per_token_above_272k_tokens": 0.00001,
+		"input_cost_per_token_flex": 0.0000025,
+		"input_cost_per_token_flex_above_272k_tokens": 0.000005,
+		"input_cost_per_token_priority": 0.00001,
+		"output_cost_per_token": 0.00003,
+		"output_cost_per_token_above_272k_tokens": 0.000045,
+		"output_cost_per_token_flex": 0.000015,
+		"output_cost_per_token_flex_above_272k_tokens": 0.0000225,
+		"output_cost_per_token_priority": 0.00006,
+		"cache_read_input_token_cost": 0.0000005,
+		"cache_read_input_token_cost_above_272k_tokens": 0.000001,
+		"cache_read_input_token_cost_flex": 0.00000025,
+		"cache_read_input_token_cost_flex_above_272k_tokens": 0.0000005,
+		"cache_read_input_token_cost_priority": 0.000001,
+		"cache_creation_input_token_cost": 0.00000625,
+		"cache_creation_input_token_cost_above_272k_tokens": 0.0000125,
+		"cache_creation_input_token_cost_flex": 0.000003125,
+		"cache_creation_input_token_cost_flex_above_272k_tokens": 0.00000625,
+		"cache_creation_input_token_cost_priority": 0.0000125
+	}`
+	gpt56TerraDatasheet = `{
+		"provider": "openai", "mode": "chat", "base_model": "gpt-5.6-terra",
+		"input_cost_per_token": 0.0000025,
+		"input_cost_per_token_above_272k_tokens": 0.000005,
+		"input_cost_per_token_flex": 0.00000125,
+		"input_cost_per_token_flex_above_272k_tokens": 0.0000025,
+		"input_cost_per_token_priority": 0.000005,
+		"output_cost_per_token": 0.000015,
+		"output_cost_per_token_above_272k_tokens": 0.0000225,
+		"output_cost_per_token_flex": 0.0000075,
+		"output_cost_per_token_flex_above_272k_tokens": 0.00001125,
+		"output_cost_per_token_priority": 0.00003,
+		"cache_read_input_token_cost": 0.00000025,
+		"cache_read_input_token_cost_above_272k_tokens": 0.0000005,
+		"cache_read_input_token_cost_flex": 0.000000125,
+		"cache_read_input_token_cost_flex_above_272k_tokens": 0.00000025,
+		"cache_read_input_token_cost_priority": 0.0000005,
+		"cache_creation_input_token_cost": 0.000003125,
+		"cache_creation_input_token_cost_above_272k_tokens": 0.00000625,
+		"cache_creation_input_token_cost_flex": 0.0000015625,
+		"cache_creation_input_token_cost_flex_above_272k_tokens": 0.000003125,
+		"cache_creation_input_token_cost_priority": 0.00000625
+	}`
+	gpt56LunaDatasheet = `{
+		"provider": "openai", "mode": "chat", "base_model": "gpt-5.6-luna",
+		"input_cost_per_token": 0.000001,
+		"input_cost_per_token_above_272k_tokens": 0.000002,
+		"input_cost_per_token_flex": 0.0000005,
+		"input_cost_per_token_flex_above_272k_tokens": 0.000001,
+		"input_cost_per_token_priority": 0.000002,
+		"output_cost_per_token": 0.000006,
+		"output_cost_per_token_above_272k_tokens": 0.000009,
+		"output_cost_per_token_flex": 0.000003,
+		"output_cost_per_token_flex_above_272k_tokens": 0.0000045,
+		"output_cost_per_token_priority": 0.000012,
+		"cache_read_input_token_cost": 0.0000001,
+		"cache_read_input_token_cost_above_272k_tokens": 0.0000002,
+		"cache_read_input_token_cost_flex": 0.00000005,
+		"cache_read_input_token_cost_flex_above_272k_tokens": 0.0000001,
+		"cache_read_input_token_cost_priority": 0.0000002,
+		"cache_creation_input_token_cost": 0.00000125,
+		"cache_creation_input_token_cost_above_272k_tokens": 0.0000025,
+		"cache_creation_input_token_cost_flex": 0.000000625,
+		"cache_creation_input_token_cost_flex_above_272k_tokens": 0.00000125,
+		"cache_creation_input_token_cost_priority": 0.0000025
+	}`
+	// gpt-5.5: long-context tiering but NO published cache-write rate ("-").
+	gpt55Datasheet = `{
+		"provider": "openai", "mode": "chat", "base_model": "gpt-5.5",
+		"input_cost_per_token": 0.000005,
+		"input_cost_per_token_above_272k_tokens": 0.00001,
+		"input_cost_per_token_flex": 0.0000025,
+		"input_cost_per_token_flex_above_272k_tokens": 0.000005,
+		"input_cost_per_token_priority": 0.0000125,
+		"output_cost_per_token": 0.00003,
+		"output_cost_per_token_above_272k_tokens": 0.000045,
+		"output_cost_per_token_flex": 0.000015,
+		"output_cost_per_token_flex_above_272k_tokens": 0.0000225,
+		"output_cost_per_token_priority": 0.000075,
+		"cache_read_input_token_cost": 0.0000005,
+		"cache_read_input_token_cost_above_272k_tokens": 0.000001,
+		"cache_read_input_token_cost_flex": 0.00000025,
+		"cache_read_input_token_cost_flex_above_272k_tokens": 0.0000005,
+		"cache_read_input_token_cost_priority": 0.00000125
+	}`
+	// gpt-5.4-mini: NO long-context tier and NO cache-write rate.
+	gpt54MiniDatasheet = `{
+		"provider": "openai", "mode": "chat", "base_model": "gpt-5.4-mini",
+		"input_cost_per_token": 0.00000075,
+		"input_cost_per_token_flex": 0.000000375,
+		"input_cost_per_token_priority": 0.0000015,
+		"output_cost_per_token": 0.0000045,
+		"output_cost_per_token_flex": 0.00000225,
+		"output_cost_per_token_priority": 0.000009,
+		"cache_read_input_token_cost": 0.000000075,
+		"cache_read_input_token_cost_flex": 0.0000000375,
+		"cache_read_input_token_cost_priority": 0.00000015
+	}`
+)
+
+// TestGoldenOpenAIPricing_GPT56Family asserts the exact invoice cost for every
+// (tier x context) cell of the gpt-5.6 pricing tables, including cache read and
+// cache write. Each row hardcodes the rate that *should* apply, so a mis-selected
+// tier or context bucket fails the assertion.
+func TestGoldenOpenAIPricing_GPT56Family(t *testing.T) {
+	sol := pricingRowFromDatasheetJSON(t, "gpt-5.6-sol", gpt56SolDatasheet)
+	terra := pricingRowFromDatasheetJSON(t, "gpt-5.6-terra", gpt56TerraDatasheet)
+	luna := pricingRowFromDatasheetJSON(t, "gpt-5.6-luna", gpt56LunaDatasheet)
+
+	// Short context stays under 272k; long context crosses it.
+	const (
+		shortPrompt, shortRead, shortWrite, shortOut = 10000, 4000, 2000, 1000
+		longPrompt, longRead, longWrite, longOut     = 300000, 100000, 50000, 1000
+	)
+
+	type rates struct{ in, cacheRead, cacheWrite, out float64 }
+	cases := []struct {
+		name    string
+		pricing configstoreTables.TableModelPricing
+		tier    serviceTier
+		long    bool
+		r       rates
+	}{
+		// gpt-5.6-sol
+		{"sol/standard/short", sol, serviceTier{}, false, rates{0.000005, 0.0000005, 0.00000625, 0.00003}},
+		{"sol/standard/long", sol, serviceTier{}, true, rates{0.00001, 0.000001, 0.0000125, 0.000045}},
+		{"sol/flex/short", sol, serviceTier{isFlex: true}, false, rates{0.0000025, 0.00000025, 0.000003125, 0.000015}},
+		{"sol/flex/long", sol, serviceTier{isFlex: true}, true, rates{0.000005, 0.0000005, 0.00000625, 0.0000225}},
+		{"sol/priority/short", sol, serviceTier{isPriority: true}, false, rates{0.00001, 0.000001, 0.0000125, 0.00006}},
+		// gpt-5.6-terra
+		{"terra/standard/short", terra, serviceTier{}, false, rates{0.0000025, 0.00000025, 0.000003125, 0.000015}},
+		{"terra/standard/long", terra, serviceTier{}, true, rates{0.000005, 0.0000005, 0.00000625, 0.0000225}},
+		{"terra/flex/short", terra, serviceTier{isFlex: true}, false, rates{0.00000125, 0.000000125, 0.0000015625, 0.0000075}},
+		{"terra/flex/long", terra, serviceTier{isFlex: true}, true, rates{0.0000025, 0.00000025, 0.000003125, 0.00001125}},
+		{"terra/priority/short", terra, serviceTier{isPriority: true}, false, rates{0.000005, 0.0000005, 0.00000625, 0.00003}},
+		// gpt-5.6-luna
+		{"luna/standard/short", luna, serviceTier{}, false, rates{0.000001, 0.0000001, 0.00000125, 0.000006}},
+		{"luna/standard/long", luna, serviceTier{}, true, rates{0.000002, 0.0000002, 0.0000025, 0.000009}},
+		{"luna/flex/short", luna, serviceTier{isFlex: true}, false, rates{0.0000005, 0.00000005, 0.000000625, 0.000003}},
+		{"luna/flex/long", luna, serviceTier{isFlex: true}, true, rates{0.000001, 0.0000001, 0.00000125, 0.0000045}},
+		{"luna/priority/short", luna, serviceTier{isPriority: true}, false, rates{0.000002, 0.0000002, 0.0000025, 0.000012}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			prompt, read, write, out := shortPrompt, shortRead, shortWrite, shortOut
+			if tc.long {
+				prompt, read, write, out = longPrompt, longRead, longWrite, longOut
+			}
+			usage := &schemas.BifrostLLMUsage{
+				PromptTokens:     prompt,
+				CompletionTokens: out,
+				TotalTokens:      prompt + out,
+				PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+					CachedReadTokens:  read,
+					CachedWriteTokens: write,
+				},
+			}
+			p := tc.pricing
+			cost := computeTextCost(&p, usage, tc.tier)
+			nonCached := prompt - read - write
+			want := float64(nonCached)*tc.r.in + float64(read)*tc.r.cacheRead + float64(write)*tc.r.cacheWrite + float64(out)*tc.r.out
+			assert.InDelta(t, want, cost, 1e-9)
+		})
+	}
+}
+
+// TestGoldenOpenAIPricing_NoCacheWriteModels covers models that OpenAI prices
+// without a cache-write rate (gpt-5.5) and without a long-context tier
+// (gpt-5.4-mini): cache-write tokens fall back to the input rate, and a >272k
+// request on a model with no long-context rate stays on the base rate.
+func TestGoldenOpenAIPricing_NoCacheWriteModels(t *testing.T) {
+	gpt55 := pricingRowFromDatasheetJSON(t, "gpt-5.5", gpt55Datasheet)
+	gpt54mini := pricingRowFromDatasheetJSON(t, "gpt-5.4-mini", gpt54MiniDatasheet)
+
+	// gpt-5.5 has no cache-write rate: write tokens bill at the (long-context) input rate.
+	t.Run("gpt-5.5/standard/long: cache-write falls back to input rate", func(t *testing.T) {
+		usage := &schemas.BifrostLLMUsage{
+			PromptTokens: 300000, CompletionTokens: 1000, TotalTokens: 301000,
+			PromptTokensDetails: &schemas.ChatPromptTokensDetails{CachedReadTokens: 100000, CachedWriteTokens: 50000},
+		}
+		p := gpt55
+		cost := computeTextCost(&p, usage, serviceTier{})
+		// non-cached 150000*0.00001 + read 100000*0.000001 + write 50000*0.00001 (input fallback) + out 1000*0.000045
+		want := 150000*0.00001 + 100000*0.000001 + 50000*0.00001 + 1000*0.000045
+		assert.InDelta(t, want, cost, 1e-9)
+	})
+
+	t.Run("gpt-5.5/flex/short", func(t *testing.T) {
+		usage := &schemas.BifrostLLMUsage{
+			PromptTokens: 10000, CompletionTokens: 1000, TotalTokens: 11000,
+			PromptTokensDetails: &schemas.ChatPromptTokensDetails{CachedReadTokens: 4000},
+		}
+		p := gpt55
+		cost := computeTextCost(&p, usage, serviceTier{isFlex: true})
+		want := 6000*0.0000025 + 4000*0.00000025 + 1000*0.000015
+		assert.InDelta(t, want, cost, 1e-12)
+	})
+
+	t.Run("gpt-5.5/priority/short", func(t *testing.T) {
+		usage := &schemas.BifrostLLMUsage{
+			PromptTokens: 10000, CompletionTokens: 1000, TotalTokens: 11000,
+			PromptTokensDetails: &schemas.ChatPromptTokensDetails{CachedReadTokens: 4000},
+		}
+		p := gpt55
+		cost := computeTextCost(&p, usage, serviceTier{isPriority: true})
+		want := 6000*0.0000125 + 4000*0.00000125 + 1000*0.000075
+		assert.InDelta(t, want, cost, 1e-9)
+	})
+
+	// gpt-5.4-mini has no long-context rate: a >272k request must use the base rate.
+	t.Run("gpt-5.4-mini/standard/above-272k uses base rate", func(t *testing.T) {
+		usage := &schemas.BifrostLLMUsage{
+			PromptTokens: 300000, CompletionTokens: 1000, TotalTokens: 301000,
+			PromptTokensDetails: &schemas.ChatPromptTokensDetails{CachedReadTokens: 50000},
+		}
+		p := gpt54mini
+		cost := computeTextCost(&p, usage, serviceTier{})
+		want := 250000*0.00000075 + 50000*0.000000075 + 1000*0.0000045
+		assert.InDelta(t, want, cost, 1e-9)
+	})
+}
+
+// TestCalculateCost_GPT56_Responses_FlexLongContext_EndToEnd drives the full
+// pipeline for a gpt-5.6 Responses call: service_tier=flex + a >272k prompt with
+// cache writes, through tier detection, usage mapping, pricing lookup, and cost.
+func TestCalculateCost_GPT56_Responses_FlexLongContext_EndToEnd(t *testing.T) {
+	sol := pricingRowFromDatasheetJSON(t, "gpt-5.6-sol", gpt56SolDatasheet)
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-5.6-sol", "openai", "responses"): sol,
+	})
+	tier := schemas.BifrostServiceTierFlex
+	resp := &schemas.BifrostResponse{
+		ResponsesResponse: &schemas.BifrostResponsesResponse{
+			ServiceTier: &tier,
+			Usage: &schemas.ResponsesResponseUsage{
+				InputTokens:  300000,
+				OutputTokens: 1000,
+				TotalTokens:  301000,
+				InputTokensDetails: &schemas.ResponsesResponseInputTokens{
+					CachedReadTokens:  100000,
+					CachedWriteTokens: 50000,
+				},
+			},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.ResponsesRequest,
+				RoutingInfo: routingInfoFor(schemas.OpenAI, "gpt-5.6-sol"),
+			},
+		},
+	}
+	cost := s.CalculateCost(resp, nil)
+	// flex long-context: 150000*0.000005 + 100000*0.0000005 + 50000*0.00000625 + 1000*0.0000225
+	want := 150000*0.000005 + 100000*0.0000005 + 50000*0.00000625 + 1000*0.0000225
+	assert.InDelta(t, want, cost, 1e-9)
 }

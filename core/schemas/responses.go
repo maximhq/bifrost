@@ -150,6 +150,7 @@ type BifrostCompactionRequest struct {
 	PreviousResponseID   *string                `json:"previous_response_id,omitempty"`
 	PromptCacheKey       *string                `json:"prompt_cache_key,omitempty"`
 	PromptCacheRetention *string                `json:"prompt_cache_retention,omitempty"`
+	PromptCacheOptions   *PromptCacheOptions    `json:"prompt_cache_options,omitempty"`
 	ServiceTier          *BifrostServiceTier    `json:"service_tier,omitempty"`
 	Fallbacks            []Fallback             `json:"fallbacks,omitempty"`
 	ExtraParams          map[string]interface{} `json:"-"`
@@ -225,6 +226,7 @@ type BifrostResponsesResponse struct {
 	Prompt               *ResponsesPrompt                    `json:"prompt,omitempty"` // Reference to a prompt template and variables
 	PromptCacheKey       *string                             `json:"prompt_cache_key"` // Prompt cache key
 	PromptCacheRetention *string                             `json:"prompt_cache_retention,omitempty"`
+	PromptCacheOptions   *PromptCacheOptions                 `json:"prompt_cache_options,omitempty"` // Prompt-caching options applied to the response (OpenAI gpt-5.6+)
 	PresencePenalty      *float64                            `json:"presence_penalty,omitempty"`
 	FrequencyPenalty     *float64                            `json:"frequency_penalty,omitempty"`
 	Reasoning            *ResponsesParametersReasoning       `json:"reasoning"`         // Configuration options for reasoning models
@@ -340,6 +342,7 @@ func (resp *BifrostResponsesResponse) WithDefaults() *BifrostResponsesResponse {
 	result.PreviousResponseID = resp.PreviousResponseID
 	result.PromptCacheKey = resp.PromptCacheKey
 	result.PromptCacheRetention = resp.PromptCacheRetention
+	result.PromptCacheOptions = resp.PromptCacheOptions
 	result.SafetyIdentifier = resp.SafetyIdentifier
 	result.MaxToolCalls = resp.MaxToolCalls
 	result.Instructions = resp.Instructions
@@ -468,6 +471,21 @@ func orDefault[T any](src *T, defaultVal T) *T {
 	return Ptr(defaultVal)
 }
 
+// PromptCacheOptions is the request-wide prompt-caching configuration OpenAI
+// added with the gpt-5.6 family (echoed back on the response). Mode is
+// "implicit" or "explicit"; TTL is the minimum breakpoint lifetime (currently
+// "30m"). Values are passed through untouched.
+type PromptCacheOptions struct {
+	Mode *string `json:"mode,omitempty"`
+	TTL  *string `json:"ttl,omitempty"`
+}
+
+// PromptCacheBreakpoint marks the end of a cacheable prompt prefix on a content
+// block (OpenAI gpt-5.6+). Only "explicit" is valid for Mode.
+type PromptCacheBreakpoint struct {
+	Mode *string `json:"mode,omitempty"`
+}
+
 type ResponsesParameters struct {
 	Background           *bool                         `json:"background,omitempty"`
 	Conversation         *string                       `json:"conversation,omitempty"`
@@ -480,8 +498,9 @@ type ResponsesParameters struct {
 	PreviousResponseID   *string                       `json:"previous_response_id,omitempty"`
 	PromptCacheKey       *string                       `json:"prompt_cache_key,omitempty"` // Prompt cache key
 	PromptCacheRetention *string                       `json:"prompt_cache_retention,omitempty"`
-	Reasoning            *ResponsesParametersReasoning `json:"reasoning,omitempty"`         // Configuration options for reasoning models
-	SafetyIdentifier     *string                       `json:"safety_identifier,omitempty"` // Safety identifier
+	PromptCacheOptions   *PromptCacheOptions           `json:"prompt_cache_options,omitempty"` // Request-wide prompt cache options (OpenAI gpt-5.6+)
+	Reasoning            *ResponsesParametersReasoning `json:"reasoning,omitempty"`            // Configuration options for reasoning models
+	SafetyIdentifier     *string                       `json:"safety_identifier,omitempty"`    // Safety identifier
 	ServiceTier          *BifrostServiceTier           `json:"service_tier,omitempty"`
 	StreamOptions        *ResponsesStreamOptions       `json:"stream_options,omitempty"`
 	Store                *bool                         `json:"store,omitempty"`
@@ -966,6 +985,7 @@ func (d *ResponsesResponseInputTokens) UnmarshalJSON(data []byte) error {
 		CachedWriteTokens       int                          `json:"cached_write_tokens"`
 		CachedWriteTokenDetails *ChatCachedWriteTokenDetails `json:"cached_write_token_details"`
 		CachedTokens            *int                         `json:"cached_tokens"`
+		CacheWriteTokens        *int                         `json:"cache_write_tokens"`
 	}
 	if err := Unmarshal(data, &raw); err != nil {
 		return err
@@ -979,6 +999,10 @@ func (d *ResponsesResponseInputTokens) UnmarshalJSON(data []byte) error {
 	// OpenAI spec providers send just cached_tokens, not separate read and write tokens and we handle them as read tokens in pricing calculations.
 	if raw.CachedTokens != nil && raw.CachedReadTokens == 0 && raw.CachedWriteTokens == 0 {
 		d.CachedReadTokens = *raw.CachedTokens
+	}
+	// OpenAI's Responses API reports cache writes under cache_write_tokens (distinct from Bifrost's cached_write_tokens).
+	if raw.CacheWriteTokens != nil && d.CachedWriteTokens == 0 {
+		d.CachedWriteTokens = *raw.CacheWriteTokens
 	}
 	return nil
 }
@@ -1268,6 +1292,9 @@ type ResponsesMessageContentBlock struct {
 	// Not in OpenAI's schemas, but sent by a few providers (Anthropic, Bedrock are some of them)
 	CacheControl *CacheControl `json:"cache_control,omitempty"`
 	Citations    *Citations    `json:"citations,omitempty"`
+
+	// PromptCacheBreakpoint marks an explicit prompt-cache breakpoint on this block (OpenAI gpt-5.6+).
+	PromptCacheBreakpoint *PromptCacheBreakpoint `json:"prompt_cache_breakpoint,omitempty"`
 }
 
 type ResponsesOutputMessageContentCompaction struct {
