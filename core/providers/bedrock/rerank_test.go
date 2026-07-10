@@ -9,6 +9,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestToBedrockRerankRequest verifies Bifrost rerank requests convert to the
+// Bedrock wire format with documents, top_n, and model ARN in place.
 func TestToBedrockRerankRequest(t *testing.T) {
 	topN := 10
 	maxTokensPerDoc := 512
@@ -48,6 +50,8 @@ func TestToBedrockRerankRequest(t *testing.T) {
 	assert.Equal(t, "END", fields["truncate"])
 }
 
+// TestBedrockRerankResponseToBifrostRerankResponse verifies result ordering
+// and document parsing when converting a Bedrock rerank response.
 func TestBedrockRerankResponseToBifrostRerankResponse(t *testing.T) {
 	response := (&BedrockRerankResponse{
 		Results: []BedrockRerankResult{
@@ -85,6 +89,8 @@ func TestBedrockRerankResponseToBifrostRerankResponse(t *testing.T) {
 	assert.Equal(t, "doc-1", response.Results[1].Document.Text)
 }
 
+// TestBedrockRerankResponseToBifrostRerankResponseReturnDocuments verifies
+// request documents are echoed back onto results when return_documents is set.
 func TestBedrockRerankResponseToBifrostRerankResponseReturnDocuments(t *testing.T) {
 	requestDocs := []schemas.RerankDocument{
 		{Text: "request-doc-0"},
@@ -132,6 +138,8 @@ func TestBedrockRerankResponseToBifrostRerankResponseReturnDocuments(t *testing.
 	assert.Equal(t, "request-doc-2", response.Results[2].Document.Text)
 }
 
+// TestBedrockRerankRequestToBifrostRerankRequest verifies the Bedrock rerank
+// request converts back to the Bifrost request shape.
 func TestBedrockRerankRequestToBifrostRerankRequest(t *testing.T) {
 	topN := 3
 	bedrockReq := &BedrockRerankRequest{
@@ -191,11 +199,15 @@ func TestBedrockRerankRequestToBifrostRerankRequest(t *testing.T) {
 	assert.Equal(t, "END", result.Params.ExtraParams["truncate"])
 }
 
+// TestBedrockRerankRequestToBifrostRerankRequestNil verifies a nil request
+// converts to nil instead of panicking.
 func TestBedrockRerankRequestToBifrostRerankRequestNil(t *testing.T) {
 	var req *BedrockRerankRequest
 	assert.Nil(t, req.ToBifrostRerankRequest(nil))
 }
 
+// TestResolveBedrockDeployment verifies deployment resolution falls back to
+// the requested model when no deployment mapping exists.
 func TestResolveBedrockDeployment(t *testing.T) {
 	key := schemas.Key{
 		Aliases: schemas.KeyAliases{
@@ -209,6 +221,8 @@ func TestResolveBedrockDeployment(t *testing.T) {
 	assert.Equal(t, "", key.Aliases.Resolve(""))
 }
 
+// TestBedrockRerankRequiresARNModelIdentifier verifies rerank rejects
+// non-ARN model identifiers with a configuration error.
 func TestBedrockRerankRequiresARNModelIdentifier(t *testing.T) {
 	provider := &BedrockProvider{}
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
@@ -230,4 +244,58 @@ func TestBedrockRerankRequiresARNModelIdentifier(t *testing.T) {
 	require.NotNil(t, bifrostErr)
 	require.NotNil(t, bifrostErr.Error)
 	assert.Contains(t, bifrostErr.Error.Message, "requires an ARN")
+}
+
+// TestBedrockRerankResponseToBifrostRerankResponseSynthesizesQueryUsage verifies
+// that the conversion synthesizes per-query usage (one billable query per call),
+// since Bedrock's rerank response body carries no usage payload.
+func TestBedrockRerankResponseToBifrostRerankResponseSynthesizesQueryUsage(t *testing.T) {
+	response := (&BedrockRerankResponse{
+		Results: []BedrockRerankResult{
+			{Index: 0, RelevanceScore: 0.91},
+		},
+	}).ToBifrostRerankResponse(nil, false)
+
+	require.NotNil(t, response)
+	require.NotNil(t, response.Usage)
+	require.NotNil(t, response.Usage.CompletionTokensDetails)
+	require.NotNil(t, response.Usage.CompletionTokensDetails.NumSearchQueries)
+	assert.Equal(t, 1, *response.Usage.CompletionTokensDetails.NumSearchQueries)
+}
+
+// TestBedrockRerankResponseToBifrostRerankResponseUsageIsolated confirms the
+// converter sets only the synthesized query count and no spurious token fields,
+// so the unconditional Usage assignment has nothing to clobber. The Bedrock
+// header-token backfill (#3917) is the only path that adds PromptTokens, and it
+// merges in (guarded on PromptTokens == 0) rather than replacing Usage.
+func TestBedrockRerankResponseToBifrostRerankResponseUsageIsolated(t *testing.T) {
+	response := (&BedrockRerankResponse{
+		Results: []BedrockRerankResult{
+			{Index: 0, RelevanceScore: 0.91},
+		},
+	}).ToBifrostRerankResponse(nil, false)
+
+	require.NotNil(t, response)
+	require.NotNil(t, response.Usage)
+	// Only the per-query count is synthesized; token fields stay zero so a later
+	// header-token backfill can populate them without being overwritten.
+	assert.Equal(t, 0, response.Usage.PromptTokens)
+	assert.Equal(t, 0, response.Usage.CompletionTokens)
+	assert.Equal(t, 0, response.Usage.TotalTokens)
+	require.NotNil(t, response.Usage.CompletionTokensDetails)
+	require.NotNil(t, response.Usage.CompletionTokensDetails.NumSearchQueries)
+	assert.Equal(t, 1, *response.Usage.CompletionTokensDetails.NumSearchQueries)
+}
+
+// TestBedrockRerankResponseToBifrostRerankResponseSynthesizesQueryUsageEmptyResults
+// confirms one billable query is recorded even when the response carries no
+// results, since Bedrock bills per call regardless of result count.
+func TestBedrockRerankResponseToBifrostRerankResponseSynthesizesQueryUsageEmptyResults(t *testing.T) {
+	response := (&BedrockRerankResponse{}).ToBifrostRerankResponse(nil, false)
+
+	require.NotNil(t, response)
+	require.NotNil(t, response.Usage)
+	require.NotNil(t, response.Usage.CompletionTokensDetails)
+	require.NotNil(t, response.Usage.CompletionTokensDetails.NumSearchQueries)
+	assert.Equal(t, 1, *response.Usage.CompletionTokensDetails.NumSearchQueries)
 }
