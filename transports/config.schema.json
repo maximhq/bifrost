@@ -947,6 +947,290 @@
       },
       "additionalProperties": false
     },
+    "alerting": {
+      "type": "object",
+      "description": "Enterprise alerting configuration for governance-backed alert channels, rules, history retention, and outbound webhook URL validation.",
+      "properties": {
+        "history_retention_days": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 365,
+          "description": "Number of days to retain alert history. Omit to use the default. Set to 0 to disable retention pruning."
+        },
+        "webhook_network": {
+          "type": "object",
+          "description": "Outbound URL validation controls for Slack, Microsoft Teams, and generic webhook alert channels.",
+          "properties": {
+            "allow_http": {
+              "type": "boolean",
+              "default": false,
+              "description": "Allow alert webhooks to use http URLs. By default only https URLs are accepted."
+            },
+            "allow_private_network": {
+              "type": "boolean",
+              "default": false,
+              "description": "Allow alert webhooks to target private or loopback network addresses. Useful for local testing."
+            }
+          },
+          "additionalProperties": false
+        },
+        "channels": {
+          "type": "array",
+          "description": "Declarative alert channels synced into the enterprise config store at startup.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "Stable alert channel ID."
+              },
+              "name": {
+                "type": "string",
+                "description": "Operator-facing alert channel name."
+              },
+              "description": {
+                "type": "string",
+                "description": "Optional alert channel description."
+              },
+              "type": {
+                "type": "string",
+                "enum": ["slack", "microsoft_teams", "pagerduty", "webhook"],
+                "description": "Alert channel type."
+              },
+              "enabled": {
+                "type": "boolean",
+                "description": "Whether this alert channel can receive notifications."
+              },
+              "cooldown_seconds": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Minimum seconds between sends for this channel. Set to 0 for no channel-level cooldown."
+              },
+              "config": {
+                "type": "object",
+                "description": "Channel-specific delivery configuration. Slack and Microsoft Teams use webhook_url or url. PagerDuty uses routing_key or integration_key. Generic webhook uses url or webhook_url, plus optional string headers.",
+                "additionalProperties": true
+              }
+            },
+            "required": ["id", "name", "type", "enabled"],
+            "allOf": [
+              {
+                "if": {
+                  "properties": { "type": { "const": "slack" } },
+                  "required": ["type"]
+                },
+                "then": {
+                  "properties": {
+                    "config": {
+                      "type": "object",
+                      "properties": {
+                        "webhook_url": {
+                          "type": "string",
+                          "format": "uri",
+                          "minLength": 1,
+                          "description": "Slack incoming webhook URL."
+                        },
+                        "url": {
+                          "type": "string",
+                          "format": "uri",
+                          "minLength": 1,
+                          "description": "Alias for webhook_url."
+                        }
+                      },
+                      "anyOf": [{ "required": ["webhook_url"] }, { "required": ["url"] }],
+                      "additionalProperties": true
+                    }
+                  },
+                  "required": ["config"]
+                }
+              },
+              {
+                "if": {
+                  "properties": { "type": { "const": "microsoft_teams" } },
+                  "required": ["type"]
+                },
+                "then": {
+                  "properties": {
+                    "config": {
+                      "type": "object",
+                      "properties": {
+                        "webhook_url": {
+                          "type": "string",
+                          "format": "uri",
+                          "minLength": 1,
+                          "description": "Microsoft Teams incoming webhook or workflow URL."
+                        },
+                        "url": {
+                          "type": "string",
+                          "format": "uri",
+                          "minLength": 1,
+                          "description": "Alias for webhook_url."
+                        }
+                      },
+                      "anyOf": [{ "required": ["webhook_url"] }, { "required": ["url"] }],
+                      "additionalProperties": true
+                    }
+                  },
+                  "required": ["config"]
+                }
+              },
+              {
+                "if": {
+                  "properties": { "type": { "const": "pagerduty" } },
+                  "required": ["type"]
+                },
+                "then": {
+                  "properties": {
+                    "config": {
+                      "type": "object",
+                      "properties": {
+                        "routing_key": {
+                          "type": "string",
+                          "description": "PagerDuty Events API v2 integration key."
+                        },
+                        "integration_key": {
+                          "type": "string",
+                          "description": "Alias for routing_key."
+                        }
+                      },
+                      "anyOf": [{ "required": ["routing_key"] }, { "required": ["integration_key"] }],
+                      "additionalProperties": true
+                    }
+                  },
+                  "required": ["config"]
+                }
+              },
+              {
+                "if": {
+                  "properties": { "type": { "const": "webhook" } },
+                  "required": ["type"]
+                },
+                "then": {
+                  "properties": {
+                    "config": {
+                      "type": "object",
+                      "properties": {
+                        "url": {
+                          "type": "string",
+                          "format": "uri",
+                          "minLength": 1,
+                          "description": "Generic webhook URL."
+                        },
+                        "webhook_url": {
+                          "type": "string",
+                          "format": "uri",
+                          "minLength": 1,
+                          "description": "Alias for url."
+                        },
+                        "headers": {
+                          "type": "object",
+                          "description": "Optional headers to send with the webhook request. Sensitive hop-by-hop headers are ignored at send time.",
+                          "additionalProperties": { "type": "string" }
+                        }
+                      },
+                      "anyOf": [{ "required": ["url"] }, { "required": ["webhook_url"] }],
+                      "additionalProperties": true
+                    }
+                  },
+                  "required": ["config"]
+                }
+              }
+            ],
+            "additionalProperties": false
+          }
+        },
+        "rules": {
+          "type": "array",
+          "description": "Declarative alert rules synced into the enterprise config store at startup.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "Stable alert rule ID."
+              },
+              "name": {
+                "type": "string",
+                "description": "Operator-facing alert rule name."
+              },
+              "description": {
+                "type": "string",
+                "description": "Optional alert rule description."
+              },
+              "enabled": {
+                "type": "boolean",
+                "description": "Whether this alert rule is evaluated."
+              },
+              "scope_type": {
+                "type": "string",
+                "enum": ["virtual_key", "team", "customer"],
+                "description": "Governance owner scope to evaluate."
+              },
+              "scope_id": {
+                "type": "string",
+                "description": "ID of the virtual key, team, or customer referenced by scope_type."
+              },
+              "cel_expression": {
+                "type": "string",
+                "description": "CEL expression evaluated against alerting usage variables such as budget_usage_percent, budget_spent, request_usage, token_usage, and rate-limit percentages."
+              },
+              "query": {
+                "type": "object",
+                "description": "Optional UI query-builder representation of cel_expression.",
+                "additionalProperties": true
+              },
+              "cooldown_seconds": {
+                "type": "integer",
+                "minimum": 0,
+                "default": 60,
+                "description": "Minimum seconds between notifications for this rule. Omit to use the default. Set to 0 for no rule cooldown."
+              },
+              "notify_once_per_reset_cycle": {
+                "type": "boolean",
+                "default": false,
+                "description": "When true, notify at most once per matched budget or rate-limit reset cycle. This overrides rule cooldown to 0."
+              },
+              "channel_ids": {
+                "type": "array",
+                "description": "IDs of alert channels to notify when this rule matches.",
+                "items": { "type": "string", "minLength": 1 },
+                "minItems": 1
+              },
+              "target_type": {
+                "type": "string",
+                "enum": ["budget"],
+                "description": "Optional explicit target type. Use budget with target_id to evaluate one specific budget; omit to evaluate all budgets for the scope."
+              },
+              "target_id": {
+                "type": "string",
+                "description": "ID of the explicit target referenced by target_type."
+              }
+            },
+            "required": ["id", "name", "enabled", "scope_type", "scope_id", "cel_expression", "channel_ids"],
+            "allOf": [
+              {
+                "if": {
+                  "required": ["target_type"]
+                },
+                "then": {
+                  "required": ["target_id"]
+                }
+              },
+              {
+                "if": {
+                  "required": ["target_id"]
+                },
+                "then": {
+                  "required": ["target_type"]
+                }
+              }
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
     "mcp": {
       "type": "object",
       "description": "Model Context Protocol configuration",
