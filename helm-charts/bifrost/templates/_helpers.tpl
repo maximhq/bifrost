@@ -512,6 +512,7 @@ false
 {{- if .customer_id }}{{- $_ := set $vk "customer_id" .customer_id }}{{- end }}
 {{- if hasKey . "access_profile_id" }}{{- $_ := set $vk "access_profile_id" .access_profile_id }}{{- end }}
 {{- if .rate_limit_id }}{{- $_ := set $vk "rate_limit_id" .rate_limit_id }}{{- end }}
+{{- if hasKey . "calendar_aligned" }}{{- $_ := set $vk "calendar_aligned" .calendar_aligned }}{{- end }}
 {{- if .provider_configs }}{{- $_ := set $vk "provider_configs" .provider_configs }}{{- end }}
 {{- if .mcp_configs }}{{- $_ := set $vk "mcp_configs" .mcp_configs }}{{- end }}
 {{- $vks = append $vks $vk }}
@@ -1554,7 +1555,49 @@ false
 {{- if .Values.bifrost.auditLogs.hmacKey }}
 {{- $_ := set $auditLogs "hmac_key" .Values.bifrost.auditLogs.hmacKey }}
 {{- end }}
-{{- if or (hasKey $auditLogs "disabled") $auditLogs.hmac_key }}
+{{- if .Values.bifrost.auditLogs.objectStorage }}
+{{- $aos := .Values.bifrost.auditLogs.objectStorage }}
+{{- $aosConfig := dict "type" $aos.type "bucket" $aos.bucket }}
+{{- if $aos.prefix }}
+{{- $_ := set $aosConfig "prefix" $aos.prefix }}
+{{- end }}
+{{- if $aos.compress }}
+{{- $_ := set $aosConfig "compress" true }}
+{{- end }}
+{{- if eq $aos.type "s3" }}
+{{- if $aos.region }}
+{{- $_ := set $aosConfig "region" $aos.region }}
+{{- end }}
+{{- if $aos.endpoint }}
+{{- $_ := set $aosConfig "endpoint" $aos.endpoint }}
+{{- end }}
+{{- if $aos.accessKeyId }}
+{{- $_ := set $aosConfig "access_key_id" $aos.accessKeyId }}
+{{- end }}
+{{- if $aos.secretAccessKey }}
+{{- $_ := set $aosConfig "secret_access_key" $aos.secretAccessKey }}
+{{- end }}
+{{- if $aos.sessionToken }}
+{{- $_ := set $aosConfig "session_token" $aos.sessionToken }}
+{{- end }}
+{{- if $aos.roleArn }}
+{{- $_ := set $aosConfig "role_arn" $aos.roleArn }}
+{{- end }}
+{{- if $aos.forcePathStyle }}
+{{- $_ := set $aosConfig "force_path_style" true }}
+{{- end }}
+{{- end }}
+{{- if eq $aos.type "gcs" }}
+{{- if $aos.projectId }}
+{{- $_ := set $aosConfig "project_id" $aos.projectId }}
+{{- end }}
+{{- if $aos.credentialsJson }}
+{{- $_ := set $aosConfig "credentials_json" $aos.credentialsJson }}
+{{- end }}
+{{- end }}
+{{- $_ := set $auditLogs "object_storage" $aosConfig }}
+{{- end }}
+{{- if or (hasKey $auditLogs "disabled") $auditLogs.hmac_key $auditLogs.object_storage }}
 {{- $_ := set $config "audit_logs" $auditLogs }}
 {{- end }}
 {{- end }}
