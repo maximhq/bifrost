@@ -1,0 +1,17 @@
+---
+title: "v2.1.28"
+description: "Helm v2.1.28 changelog - 2026-07-10"
+---
+
+<Update label="Bifrost Helm" description="v2.1.28">
+
+## Changelog
+
+- `bifrost.auditLogs.objectStorage` for archiving audit events to S3/GCS. Each flushed batch is written as a JSONL object (`{prefix}/audit-logs/YYYY/MM/DD/HH/{id}.jsonl`); set `compress: true` to gzip the output (`.jsonl.gz`). Supports `type` (s3/gcs), `bucket`, `prefix`, `compress`, and full S3 credential fields (`region`, `endpoint`, `accessKeyId`, `secretAccessKey`, `sessionToken`, `roleArn`, `forcePathStyle`) and GCS fields (`projectId`, `credentialsJson`). Renders into `audit_logs.object_storage`.
+- `force_single_region` on `bifrost.providers.vertex.keys[*].vertex_key_config` — when `true`, skips automatic promotion of multi-region-only models to a multi-region endpoint. Enable for provisioned throughput. Renders into `vertex_key_config.force_single_region`.
+- `calendar_aligned` on `bifrost.accessProfiles[*]` (top-level) — snaps all budget and rate-limit reset windows to calendar boundaries for the profile. Passes through into `access_profiles[*].calendar_aligned`.
+- `calendar_aligned` on `bifrost.accessProfiles[*].budgets[*]` and `bifrost.accessProfiles[*].provider_configs[*].budgets[*]` — schema previously blocked this field; now matches parity with `governance.budgets[*].calendar_aligned`.
+- `calendar_aligned` on `bifrost.governance.virtualKeys[*]` — was accepted by schema but not rendered into config. Now correctly emits `virtual_keys[*].calendar_aligned` in the generated config.
+- `allowOnAllVirtualKeys` on `bifrost.mcp.clientConfigs[*]` — grants this MCP server access to all virtual keys without per-key assignment. Already wired in the template; now documented in `values.yaml`. Renders into `mcp.client_configs[*].allow_on_all_virtual_keys`.
+
+</Update>
