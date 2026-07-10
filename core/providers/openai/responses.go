@@ -437,6 +437,7 @@ type OpenAICompactionRequest struct {
 	PreviousResponseID   *string                     `json:"previous_response_id,omitempty"`
 	PromptCacheKey       *string                     `json:"prompt_cache_key,omitempty"`
 	PromptCacheRetention *string                     `json:"prompt_cache_retention,omitempty"`
+	PromptCacheOptions   *schemas.PromptCacheOptions `json:"prompt_cache_options,omitempty"`
 	ServiceTier          *schemas.BifrostServiceTier `json:"service_tier,omitempty"`
 	ExtraParams          map[string]interface{}      `json:"-"`
 }
@@ -455,6 +456,7 @@ func ToOpenAICompactionRequest(ctx *schemas.BifrostContext, req *schemas.Bifrost
 		PreviousResponseID:   req.PreviousResponseID,
 		PromptCacheKey:       req.PromptCacheKey,
 		PromptCacheRetention: req.PromptCacheRetention,
+		PromptCacheOptions:   req.PromptCacheOptions,
 		ServiceTier:          req.ServiceTier,
 		ExtraParams:          req.ExtraParams,
 	}
@@ -497,6 +499,7 @@ func (r *OpenAICompactionRequest) ToBifrostCompactionRequest(ctx *schemas.Bifros
 		PreviousResponseID:   r.PreviousResponseID,
 		PromptCacheKey:       r.PromptCacheKey,
 		PromptCacheRetention: r.PromptCacheRetention,
+		PromptCacheOptions:   r.PromptCacheOptions,
 		ServiceTier:          r.ServiceTier,
 		ExtraParams:          r.ExtraParams,
 	}

@@ -813,8 +813,13 @@ func tieredInputRate(pricing *configstoreTables.TableModelPricing, totalTokens i
 	if tier.isFast && pricing.InputCostPerTokenFast != nil {
 		return *pricing.InputCostPerTokenFast
 	}
-	if tier.isFlex && pricing.InputCostPerTokenFlex != nil {
-		return *pricing.InputCostPerTokenFlex
+	if tier.isFlex {
+		if totalTokens > TokenTierAbove272K && pricing.InputCostPerTokenFlexAbove272kTokens != nil {
+			return *pricing.InputCostPerTokenFlexAbove272kTokens
+		}
+		if pricing.InputCostPerTokenFlex != nil {
+			return *pricing.InputCostPerTokenFlex
+		}
 	}
 	if totalTokens > TokenTierAbove272K {
 		if tier.isPriority && pricing.InputCostPerTokenAbove272kTokensPriority != nil {
@@ -852,8 +857,13 @@ func tieredOutputRate(pricing *configstoreTables.TableModelPricing, totalTokens 
 	if tier.isFast && pricing.OutputCostPerTokenFast != nil {
 		return *pricing.OutputCostPerTokenFast
 	}
-	if tier.isFlex && pricing.OutputCostPerTokenFlex != nil {
-		return *pricing.OutputCostPerTokenFlex
+	if tier.isFlex {
+		if totalTokens > TokenTierAbove272K && pricing.OutputCostPerTokenFlexAbove272kTokens != nil {
+			return *pricing.OutputCostPerTokenFlexAbove272kTokens
+		}
+		if pricing.OutputCostPerTokenFlex != nil {
+			return *pricing.OutputCostPerTokenFlex
+		}
 	}
 	if totalTokens > TokenTierAbove272K {
 		if tier.isPriority && pricing.OutputCostPerTokenAbove272kTokensPriority != nil {
@@ -955,8 +965,13 @@ func tieredCacheReadInputTokenRate(pricing *configstoreTables.TableModelPricing,
 	if tier.isFast && pricing.CacheReadInputTokenCostFast != nil {
 		return *pricing.CacheReadInputTokenCostFast
 	}
-	if tier.isFlex && pricing.CacheReadInputTokenCostFlex != nil {
-		return *pricing.CacheReadInputTokenCostFlex
+	if tier.isFlex {
+		if totalTokens > TokenTierAbove272K && pricing.CacheReadInputTokenCostFlexAbove272kTokens != nil {
+			return *pricing.CacheReadInputTokenCostFlexAbove272kTokens
+		}
+		if pricing.CacheReadInputTokenCostFlex != nil {
+			return *pricing.CacheReadInputTokenCostFlex
+		}
 	}
 	if totalTokens > TokenTierAbove272K {
 		if tier.isPriority && pricing.CacheReadInputTokenCostAbove272kTokensPriority != nil {
@@ -983,13 +998,31 @@ func tieredCacheReadInputTokenRate(pricing *configstoreTables.TableModelPricing,
 	return tieredInputRate(pricing, totalTokens, tier)
 }
 
-// Note: flex tier is not checked here because cache creation is not a concept in
-// OpenAI's pricing model (the only provider that uses flex tier). Only cache read
-// has a flex-specific rate.
+// OpenAI introduced cache-write (cache-creation) pricing with gpt-5.6, tiered by
+// service tier (flex/priority) and by the 272k context window; Anthropic uses the
+// flat fast rate. Precedence mirrors tieredCacheReadInputTokenRate.
 func tieredCacheCreationInputTokenRate(pricing *configstoreTables.TableModelPricing, totalTokens int, tier serviceTier) float64 {
 	// Fast mode (Anthropic) is a flat rate across the full context window.
 	if tier.isFast && pricing.CacheCreationInputTokenCostFast != nil {
 		return *pricing.CacheCreationInputTokenCostFast
+	}
+	if tier.isFlex {
+		if totalTokens > TokenTierAbove272K && pricing.CacheCreationInputTokenCostFlexAbove272kTokens != nil {
+			return *pricing.CacheCreationInputTokenCostFlexAbove272kTokens
+		}
+		if pricing.CacheCreationInputTokenCostFlex != nil {
+			return *pricing.CacheCreationInputTokenCostFlex
+		}
+	}
+	// Priority has no long context: OpenAI does not offer priority >272k, and billing
+	// uses the served tier (response.service_tier), so an actual-priority request is
+	// always ≤272k. Its cache-write rate is flat, so it takes precedence over the
+	// standard context tiers below (which would otherwise capture the 200k–272k band).
+	if tier.isPriority && pricing.CacheCreationInputTokenCostPriority != nil {
+		return *pricing.CacheCreationInputTokenCostPriority
+	}
+	if totalTokens > TokenTierAbove272K && pricing.CacheCreationInputTokenCostAbove272kTokens != nil {
+		return *pricing.CacheCreationInputTokenCostAbove272kTokens
 	}
 	if totalTokens > TokenTierAbove200K && pricing.CacheCreationInputTokenCostAbove200kTokens != nil {
 		return *pricing.CacheCreationInputTokenCostAbove200kTokens

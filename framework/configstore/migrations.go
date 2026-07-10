@@ -438,6 +438,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_virtual_key_expires_at_column"}, run: migrationAddVirtualKeyExpiresAtColumn},
 	{IDs: []string{"add_fast_mode_cache_pricing_columns"}, run: migrationAddFastModeCachePricingColumns},
 	{IDs: []string{"add_inference_geo_multiplier_column"}, run: migrationAddInferenceGeoMultiplierColumn},
+	{IDs: []string{"add_flex_and_cache_creation_272k_pricing_columns"}, run: migrationAddFlexAndCacheCreation272kPricingColumns},
 }
 
 // quoteSQLiteIdentifier quotes a SQLite identifier, escaping any double quotes.
@@ -7871,6 +7872,49 @@ func migrationAddInferenceGeoMultiplierColumn(ctx context.Context, db *gorm.DB, 
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running inference geo multiplier column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddFlexAndCacheCreation272kPricingColumns adds the flex 272k-tier
+// rates and the OpenAI cache-write (cache-creation) tiered rates introduced with
+// gpt-5.6 (flex, priority, and the 272k context tier).
+func migrationAddFlexAndCacheCreation272kPricingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_flex_and_cache_creation_272k_pricing_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	columns := []string{
+		"input_cost_per_token_flex_above_272k_tokens",
+		"output_cost_per_token_flex_above_272k_tokens",
+		"cache_read_input_token_cost_flex_above_272k_tokens",
+		"cache_creation_input_token_cost_above_272k_tokens",
+		"cache_creation_input_token_cost_flex",
+		"cache_creation_input_token_cost_flex_above_272k_tokens",
+		"cache_creation_input_token_cost_priority",
+	}
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range columns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to add column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range columns {
+				if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to drop column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running flex and cache creation 272k pricing columns migration: %s", err.Error())
 	}
 	return nil
 }
