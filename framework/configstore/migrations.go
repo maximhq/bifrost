@@ -10516,10 +10516,19 @@ func migrationAddSidekiqTable(ctx context.Context, db *gorm.DB, logger schemas.L
 			default:
 				// Fall back to GORM for any other dialect so the migration does not
 				// hard-fail on an unsupported backend.
-				return tx.Migrator().CreateTable(&tables.TableSidekiqJob{})
+				err := tx.Migrator().AutoMigrate(&tables.TableSidekiqJob{})
+				if err != nil {
+					return err
+				}
 			}
-
 			if err := tx.Exec(createTable).Error; err != nil {
+				return err
+			}
+			// For existing enterprise table we will need to handle new column additions
+			if err := addColumnIfNotExists(tx, logger, &tables.TableSidekiqJob{}, "runner_id"); err != nil {
+				return err
+			}
+			if err := addColumnIfNotExists(tx, logger, &tables.TableSidekiqJob{}, "created_by_user_id"); err != nil {
 				return err
 			}
 			// idx_sidekiq_status_updated supports the reaper/recovery scan.
