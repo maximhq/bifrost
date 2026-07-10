@@ -7,6 +7,7 @@ import (
 	"maps"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -821,7 +822,12 @@ func (p *OtelPlugin) recordMetricsFromTrace(ctx context.Context, exporter *Metri
 		}
 
 		if span.Status == schemas.SpanStatusError {
-			exporter.RecordErrorRequest(ctx, spanAttrs...)
+			statusCode := "unknown"
+			if code := getIntAttr(span.Attributes, schemas.AttrHTTPResponseStatusCode); code != 0 {
+				statusCode = strconv.Itoa(code)
+			}
+			errorAttrs := append(spanAttrs[:len(spanAttrs):len(spanAttrs)], attribute.String("status_code", statusCode))
+			exporter.RecordErrorRequest(ctx, errorAttrs...)
 		} else {
 			exporter.RecordSuccessRequest(ctx, spanAttrs...)
 		}

@@ -145,6 +145,9 @@ func PopulateErrorAttributes(err *schemas.BifrostError) map[string]any {
 	if err.Error.Code != nil {
 		attrs[schemas.AttrErrorCode] = *err.Error.Code
 	}
+	if err.StatusCode != nil {
+		attrs[schemas.AttrHTTPResponseStatusCode] = *err.StatusCode
+	}
 
 	return attrs
 }

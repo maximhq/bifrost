@@ -139,6 +139,10 @@ type Options struct {
 	CacheReadInputImageTokenCost                       *float64 `json:"cache_read_input_image_token_cost,omitempty"`
 	CacheReadInputTokenCostAbove272kTokens             *float64 `json:"cache_read_input_token_cost_above_272k_tokens,omitempty"`
 	CacheReadInputTokenCostAbove272kTokensPriority     *float64 `json:"cache_read_input_token_cost_above_272k_tokens_priority,omitempty"`
+	// Fast mode (Anthropic) cache rates — flat across the full context window, no tiering.
+	CacheCreationInputTokenCostFast         *float64 `json:"cache_creation_input_token_cost_fast,omitempty"`
+	CacheCreationInputTokenCostAbove1hrFast *float64 `json:"cache_creation_input_token_cost_above_1hr_fast,omitempty"`
+	CacheReadInputTokenCostFast             *float64 `json:"cache_read_input_token_cost_fast,omitempty"`
 
 	// Costs - Image
 	InputCostPerImage                             *float64 `json:"input_cost_per_image,omitempty"`
@@ -174,6 +178,7 @@ type Options struct {
 	// represents it as a tiered object. See Entry.UnmarshalJSON.
 	SearchContextCostPerQuery     *float64 `json:"search_context_cost_per_query,omitempty"`
 	CodeInterpreterCostPerSession *float64 `json:"code_interpreter_cost_per_session,omitempty"`
+	InferenceGeoUSMultiplier      *float64 `json:"inference_geo_us_multiplier,omitempty"`
 
 	// Costs - OCR
 	OCRCostPerPage        *float64 `json:"ocr_cost_per_page,omitempty"`
@@ -252,6 +257,8 @@ type serviceTier struct {
 	isPriority bool // true when service_tier == "priority"
 	isFlex     bool // true when service_tier == "flex"
 	isFast     bool // true when usage.speed == "fast" (Anthropic fast mode)
+	// true when usage.inference_geo == "us" (Anthropic data residency 1.1x multiplier)
+	inferenceGeoUS bool
 }
 
 // costInput holds the extracted usage data from a BifrostResponse,
@@ -593,6 +600,9 @@ func convertEntryToTablePricing(modelKey string, entry Entry) configstoreTables.
 		CacheReadInputImageTokenCost:                       entry.CacheReadInputImageTokenCost,
 		CacheReadInputTokenCostAbove272kTokens:             entry.CacheReadInputTokenCostAbove272kTokens,
 		CacheReadInputTokenCostAbove272kTokensPriority:     entry.CacheReadInputTokenCostAbove272kTokensPriority,
+		CacheCreationInputTokenCostFast:                    entry.CacheCreationInputTokenCostFast,
+		CacheCreationInputTokenCostAbove1hrFast:            entry.CacheCreationInputTokenCostAbove1hrFast,
+		CacheReadInputTokenCostFast:                        entry.CacheReadInputTokenCostFast,
 
 		InputCostPerImage:                             entry.InputCostPerImage,
 		InputCostPerPixel:                             entry.InputCostPerPixel,
@@ -622,6 +632,7 @@ func convertEntryToTablePricing(modelKey string, entry Entry) configstoreTables.
 
 		SearchContextCostPerQuery:     entry.SearchContextCostPerQuery,
 		CodeInterpreterCostPerSession: entry.CodeInterpreterCostPerSession,
+		InferenceGeoUSMultiplier:      entry.InferenceGeoUSMultiplier,
 
 		OCRCostPerPage:        entry.OCRCostPerPage,
 		AnnotationCostPerPage: entry.AnnotationCostPerPage,
@@ -670,6 +681,9 @@ func convertTablePricingToEntry(pricing *configstoreTables.TableModelPricing) *E
 		CacheReadInputImageTokenCost:                       pricing.CacheReadInputImageTokenCost,
 		CacheReadInputTokenCostAbove272kTokens:             pricing.CacheReadInputTokenCostAbove272kTokens,
 		CacheReadInputTokenCostAbove272kTokensPriority:     pricing.CacheReadInputTokenCostAbove272kTokensPriority,
+		CacheCreationInputTokenCostFast:                    pricing.CacheCreationInputTokenCostFast,
+		CacheCreationInputTokenCostAbove1hrFast:            pricing.CacheCreationInputTokenCostAbove1hrFast,
+		CacheReadInputTokenCostFast:                        pricing.CacheReadInputTokenCostFast,
 
 		InputCostPerImage:                             pricing.InputCostPerImage,
 		InputCostPerPixel:                             pricing.InputCostPerPixel,
@@ -699,6 +713,7 @@ func convertTablePricingToEntry(pricing *configstoreTables.TableModelPricing) *E
 
 		SearchContextCostPerQuery:     pricing.SearchContextCostPerQuery,
 		CodeInterpreterCostPerSession: pricing.CodeInterpreterCostPerSession,
+		InferenceGeoUSMultiplier:      pricing.InferenceGeoUSMultiplier,
 
 		OCRCostPerPage:        pricing.OCRCostPerPage,
 		AnnotationCostPerPage: pricing.AnnotationCostPerPage,
