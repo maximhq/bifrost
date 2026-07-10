@@ -286,6 +286,10 @@ func normalizeRealtimeClientSecretBody(root map[string]json.RawMessage, bareMode
 					return nil, newRealtimeClientSecretHandlerError(fasthttp.StatusInternalServerError, "server_error", "failed to re-encode session", err)
 				}
 				root["session"] = rewritten
+			} else if rewritten, changed, err := rewriteGASessionTranscriptionModel(session, normalizedModel); err != nil {
+				return nil, err
+			} else if changed {
+				root["session"] = rewritten
 			}
 		}
 	}
@@ -299,6 +303,63 @@ func normalizeRealtimeClientSecretBody(root map[string]json.RawMessage, bareMode
 		return nil, newRealtimeClientSecretHandlerError(fasthttp.StatusInternalServerError, "server_error", "failed to re-encode body", marshalErr)
 	}
 	return normalized, nil
+}
+
+// rewriteGASessionTranscriptionModel updates session.audio.input.transcription.model
+// in place for a GA transcription-shaped session (RealtimeTranscriptionSessionCreateRequestGA,
+// which has no top-level session.model — the field this function's caller
+// already checked is absent). Needed so that alias resolution (which changes
+// the routing model after key selection) actually reaches the field the
+// provider layer reads, instead of silently leaving the pre-alias model in
+// the body. Returns changed=false when the session isn't transcription-shaped
+// (e.g. a full realtime session with no model set yet, which the caller
+// should leave untouched).
+func rewriteGASessionTranscriptionModel(session map[string]json.RawMessage, normalizedModel json.RawMessage) ([]byte, bool, *schemas.BifrostError) {
+	audioJSON, ok := session["audio"]
+	if !ok || len(audioJSON) == 0 || string(audioJSON) == "null" {
+		return nil, false, nil
+	}
+	var audio map[string]json.RawMessage
+	if err := json.Unmarshal(audioJSON, &audio); err != nil {
+		return nil, false, newRealtimeClientSecretHandlerError(fasthttp.StatusBadRequest, "invalid_request_error", "session.audio must be an object", err)
+	}
+	inputJSON, ok := audio["input"]
+	if !ok || len(inputJSON) == 0 || string(inputJSON) == "null" {
+		return nil, false, nil
+	}
+	var input map[string]json.RawMessage
+	if err := json.Unmarshal(inputJSON, &input); err != nil {
+		return nil, false, newRealtimeClientSecretHandlerError(fasthttp.StatusBadRequest, "invalid_request_error", "session.audio.input must be an object", err)
+	}
+	transJSON, ok := input["transcription"]
+	if !ok || len(transJSON) == 0 || string(transJSON) == "null" {
+		return nil, false, nil
+	}
+	var transcription map[string]json.RawMessage
+	if err := json.Unmarshal(transJSON, &transcription); err != nil {
+		return nil, false, newRealtimeClientSecretHandlerError(fasthttp.StatusBadRequest, "invalid_request_error", "session.audio.input.transcription must be an object", err)
+	}
+	transcription["model"] = normalizedModel
+	transcriptionJSON, err := json.Marshal(transcription)
+	if err != nil {
+		return nil, false, newRealtimeClientSecretHandlerError(fasthttp.StatusInternalServerError, "server_error", "failed to re-encode session.audio.input.transcription", err)
+	}
+	input["transcription"] = transcriptionJSON
+	inputJSON, err = json.Marshal(input)
+	if err != nil {
+		return nil, false, newRealtimeClientSecretHandlerError(fasthttp.StatusInternalServerError, "server_error", "failed to re-encode session.audio.input", err)
+	}
+	audio["input"] = inputJSON
+	audioJSON, err = json.Marshal(audio)
+	if err != nil {
+		return nil, false, newRealtimeClientSecretHandlerError(fasthttp.StatusInternalServerError, "server_error", "failed to re-encode session.audio", err)
+	}
+	session["audio"] = audioJSON
+	rewritten, err := json.Marshal(session)
+	if err != nil {
+		return nil, false, newRealtimeClientSecretHandlerError(fasthttp.StatusInternalServerError, "server_error", "failed to re-encode session", err)
+	}
+	return rewritten, true, nil
 }
 
 const realtimeEphemeralKeyMappingPrefix = "realtime:ephemeral-key:"
