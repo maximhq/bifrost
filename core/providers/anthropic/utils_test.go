@@ -3475,3 +3475,46 @@ func TestStripEmptyThinkingBlocks(t *testing.T) {
 		})
 	}
 }
+
+// TestFastMode_StreamingForwardsSpeed verifies the streaming Responses converter
+// forwards the served speed onto the response, so streamed fast-mode requests
+// bill at fast rates (parity with the non-streaming ToBifrostResponsesResponse
+// path). Without this, tier.isFast is false for streams and cache/input/output
+// all bill at standard rates.
+func TestFastMode_StreamingForwardsSpeed(t *testing.T) {
+	ctx := schemas.NewBifrostContext(nil, time.Time{})
+	ctx.SetValue(schemas.BifrostContextKeyIntegrationType, "anthropic")
+	state := AcquireAnthropicResponsesStreamState()
+	defer ReleaseAnthropicResponsesStreamState(state)
+
+	// Final usage arrives on message_delta: speed:"fast" + 5m cache-creation tokens.
+	raw := `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":2,"output_tokens":135,"cache_creation_input_tokens":44667,"cache_creation":{"ephemeral_5m_input_tokens":44667,"ephemeral_1h_input_tokens":0},"speed":"fast"}}`
+	var chunk AnthropicStreamEvent
+	if err := sonic.Unmarshal([]byte(raw), &chunk); err != nil {
+		t.Fatalf("unmarshal event: %v", err)
+	}
+
+	responses, bErr, _ := chunk.ToBifrostResponsesStream(ctx, 0, state)
+	if bErr != nil {
+		t.Fatalf("ToBifrostResponsesStream error: %v", bErr)
+	}
+
+	var sawUsage bool
+	for _, r := range responses {
+		if r.Response == nil || r.Response.Usage == nil {
+			continue
+		}
+		sawUsage = true
+		if r.Response.Speed == nil || *r.Response.Speed != "fast" {
+			t.Fatalf("streamed message_delta did not forward speed=fast; got %v", r.Response.Speed)
+		}
+		// Cache-creation tokens must survive so the fast cache rate applies.
+		if r.Response.Usage.InputTokensDetails == nil ||
+			r.Response.Usage.InputTokensDetails.CachedWriteTokens != 44667 {
+			t.Fatalf("cache-creation tokens not carried onto streamed usage")
+		}
+	}
+	if !sawUsage {
+		t.Fatalf("no usage-bearing response emitted from message_delta")
+	}
+}

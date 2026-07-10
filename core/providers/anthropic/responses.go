@@ -1988,6 +1988,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 			}
 			if bifrostUsage != nil {
 				response.Usage = bifrostUsage
+				response.Speed = chunk.Usage.Speed
 			}
 			// Carry the sandbox container on the message_delta event so the reverse
 			// converter can re-emit it (Anthropic delivers it here, not earlier).
