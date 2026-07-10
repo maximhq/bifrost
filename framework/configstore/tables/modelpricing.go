@@ -48,8 +48,10 @@ type TableModelPricing struct {
 	// Costs - 272k Tier
 	InputCostPerTokenAbove272kTokens          *float64 `gorm:"default:null;column:input_cost_per_token_above_272k_tokens" json:"input_cost_per_token_above_272k_tokens,omitempty"`
 	InputCostPerTokenAbove272kTokensPriority  *float64 `gorm:"default:null;column:input_cost_per_token_above_272k_tokens_priority" json:"input_cost_per_token_above_272k_tokens_priority,omitempty"`
+	InputCostPerTokenFlexAbove272kTokens      *float64 `gorm:"default:null;column:input_cost_per_token_flex_above_272k_tokens" json:"input_cost_per_token_flex_above_272k_tokens,omitempty"`
 	OutputCostPerTokenAbove272kTokens         *float64 `gorm:"default:null;column:output_cost_per_token_above_272k_tokens" json:"output_cost_per_token_above_272k_tokens,omitempty"`
 	OutputCostPerTokenAbove272kTokensPriority *float64 `gorm:"default:null;column:output_cost_per_token_above_272k_tokens_priority" json:"output_cost_per_token_above_272k_tokens_priority,omitempty"`
+	OutputCostPerTokenFlexAbove272kTokens     *float64 `gorm:"default:null;column:output_cost_per_token_flex_above_272k_tokens" json:"output_cost_per_token_flex_above_272k_tokens,omitempty"`
 
 	// Costs - Cache
 	CacheCreationInputTokenCost                        *float64 `gorm:"default:null;column:cache_creation_input_token_cost" json:"cache_creation_input_token_cost,omitempty"`
@@ -65,6 +67,12 @@ type TableModelPricing struct {
 	CacheReadInputImageTokenCost                       *float64 `gorm:"default:null;column:cache_read_input_image_token_cost" json:"cache_read_input_image_token_cost,omitempty"`
 	CacheReadInputTokenCostAbove272kTokens             *float64 `gorm:"default:null;column:cache_read_input_token_cost_above_272k_tokens" json:"cache_read_input_token_cost_above_272k_tokens,omitempty"`
 	CacheReadInputTokenCostAbove272kTokensPriority     *float64 `gorm:"default:null;column:cache_read_input_token_cost_above_272k_tokens_priority" json:"cache_read_input_token_cost_above_272k_tokens_priority,omitempty"`
+	CacheReadInputTokenCostFlexAbove272kTokens         *float64 `gorm:"default:null;column:cache_read_input_token_cost_flex_above_272k_tokens" json:"cache_read_input_token_cost_flex_above_272k_tokens,omitempty"`
+	// OpenAI cache-write (cache-creation) tiered rates, added with gpt-5.6.
+	CacheCreationInputTokenCostAbove272kTokens     *float64 `gorm:"default:null;column:cache_creation_input_token_cost_above_272k_tokens" json:"cache_creation_input_token_cost_above_272k_tokens,omitempty"`
+	CacheCreationInputTokenCostFlex                *float64 `gorm:"default:null;column:cache_creation_input_token_cost_flex" json:"cache_creation_input_token_cost_flex,omitempty"`
+	CacheCreationInputTokenCostFlexAbove272kTokens *float64 `gorm:"default:null;column:cache_creation_input_token_cost_flex_above_272k_tokens" json:"cache_creation_input_token_cost_flex_above_272k_tokens,omitempty"`
+	CacheCreationInputTokenCostPriority            *float64 `gorm:"default:null;column:cache_creation_input_token_cost_priority" json:"cache_creation_input_token_cost_priority,omitempty"`
 	// Fast mode (Anthropic) cache rates — flat across the full context window, no tiering.
 	CacheCreationInputTokenCostFast         *float64 `gorm:"default:null;column:cache_creation_input_token_cost_fast" json:"cache_creation_input_token_cost_fast,omitempty"`
 	CacheCreationInputTokenCostAbove1hrFast *float64 `gorm:"default:null;column:cache_creation_input_token_cost_above_1hr_fast" json:"cache_creation_input_token_cost_above_1hr_fast,omitempty"`

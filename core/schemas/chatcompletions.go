@@ -204,6 +204,7 @@ type ChatParameters struct {
 	PresencePenalty      *float64              `json:"presence_penalty,omitempty"`       // Penalizes repeated tokens
 	PromptCacheKey       *string               `json:"prompt_cache_key,omitempty"`       // Prompt cache key
 	PromptCacheRetention *string               `json:"prompt_cache_retention,omitempty"` // Prompt cache retention ("in_memory" or "24h")
+	PromptCacheOptions   *PromptCacheOptions   `json:"prompt_cache_options,omitempty"`   // Request-wide prompt cache options (OpenAI gpt-5.6+)
 	Reasoning            *ChatReasoning        `json:"reasoning,omitempty"`              // Reasoning parameters
 	ResponseFormat       *interface{}          `json:"response_format,omitempty"`        // Format for the response
 	SafetyIdentifier     *string               `json:"safety_identifier,omitempty"`      // Safety identifier
@@ -1124,6 +1125,9 @@ type ChatContentBlock struct {
 	CacheControl *CacheControl `json:"cache_control,omitempty"`
 	Citations    *Citations    `json:"citations,omitempty"`
 
+	// PromptCacheBreakpoint marks an explicit prompt-cache breakpoint on this block (OpenAI gpt-5.6+).
+	PromptCacheBreakpoint *PromptCacheBreakpoint `json:"prompt_cache_breakpoint,omitempty"`
+
 	// CachePoint is a Bedrock-specific field for standalone cache point blocks
 	// When present without other content, this indicates a cache point marker
 	CachePoint *CachePoint `json:"cachePoint,omitempty"`
@@ -1655,6 +1659,7 @@ func (d *ChatPromptTokensDetails) UnmarshalJSON(data []byte) error {
 		CachedWriteTokens       int                          `json:"cached_write_tokens"`
 		CachedWriteTokenDetails *ChatCachedWriteTokenDetails `json:"cached_write_token_details"`
 		CachedTokens            *int                         `json:"cached_tokens"`
+		CacheWriteTokens        *int                         `json:"cache_write_tokens"`
 	}
 	if err := Unmarshal(data, &raw); err != nil {
 		return err
@@ -1668,6 +1673,10 @@ func (d *ChatPromptTokensDetails) UnmarshalJSON(data []byte) error {
 	// OpenAI spec providers send just cached_tokens, not separate read and write tokens and we handle them as read tokens in pricing calculations.
 	if raw.CachedTokens != nil && raw.CachedReadTokens == 0 && raw.CachedWriteTokens == 0 {
 		d.CachedReadTokens = *raw.CachedTokens
+	}
+	// OpenAI's Responses API reports cache writes under cache_write_tokens (distinct from Bifrost's cached_write_tokens).
+	if raw.CacheWriteTokens != nil && d.CachedWriteTokens == 0 {
+		d.CachedWriteTokens = *raw.CacheWriteTokens
 	}
 	return nil
 }
@@ -1684,6 +1693,9 @@ func (d ChatPromptTokensDetails) MarshalJSON() ([]byte, error) {
 		CachedWriteTokens       int                          `json:"cached_write_tokens,omitempty"`
 		CachedWriteTokenDetails *ChatCachedWriteTokenDetails `json:"cached_write_token_details,omitempty"`
 		CachedTokens            int                          `json:"cached_tokens"`
+		// OpenAI's field name for cache writes (mirrors cached_tokens for reads) so the
+		// OpenAI SDK — which reads cache_write_tokens, not cached_write_tokens — finds it.
+		CacheWriteTokens int `json:"cache_write_tokens"`
 	}
 	return MarshalSorted(raw{
 		TextTokens:              d.TextTokens,
@@ -1693,6 +1705,7 @@ func (d ChatPromptTokensDetails) MarshalJSON() ([]byte, error) {
 		CachedWriteTokens:       d.CachedWriteTokens,
 		CachedWriteTokenDetails: d.CachedWriteTokenDetails,
 		CachedTokens:            d.CachedReadTokens,
+		CacheWriteTokens:        d.CachedWriteTokens,
 	})
 }
 

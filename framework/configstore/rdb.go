@@ -2475,8 +2475,10 @@ var pricingSyncUpdateColumns = []string{
 	// Costs - 272k Tier
 	"input_cost_per_token_above_272k_tokens",
 	"input_cost_per_token_above_272k_tokens_priority",
+	"input_cost_per_token_flex_above_272k_tokens",
 	"output_cost_per_token_above_272k_tokens",
 	"output_cost_per_token_above_272k_tokens_priority",
+	"output_cost_per_token_flex_above_272k_tokens",
 	// Costs - Cache
 	"cache_creation_input_token_cost",
 	"cache_read_input_token_cost",
@@ -2491,6 +2493,11 @@ var pricingSyncUpdateColumns = []string{
 	"cache_read_input_image_token_cost",
 	"cache_read_input_token_cost_above_272k_tokens",
 	"cache_read_input_token_cost_above_272k_tokens_priority",
+	"cache_read_input_token_cost_flex_above_272k_tokens",
+	"cache_creation_input_token_cost_above_272k_tokens",
+	"cache_creation_input_token_cost_flex",
+	"cache_creation_input_token_cost_flex_above_272k_tokens",
+	"cache_creation_input_token_cost_priority",
 	"cache_creation_input_token_cost_fast",
 	"cache_creation_input_token_cost_above_1hr_fast",
 	"cache_read_input_token_cost_fast",

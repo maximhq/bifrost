@@ -152,6 +152,18 @@ export const PRICING_FIELDS = [
 		group: "chat",
 		requestTypeGroups: ["chat"],
 	},
+	{
+		key: "input_cost_per_token_flex_above_272k_tokens",
+		label: "Input / token (>272k, flex)",
+		group: "chat",
+		requestTypeGroups: ["chat"],
+	},
+	{
+		key: "output_cost_per_token_flex_above_272k_tokens",
+		label: "Output / token (>272k, flex)",
+		group: "chat",
+		requestTypeGroups: ["chat"],
+	},
 	{ key: "cache_creation_input_token_cost", label: "Cache creation / token", group: "chat", requestTypeGroups: ["chat"] },
 	{ key: "cache_read_input_token_cost", label: "Cache read / token", group: "chat", requestTypeGroups: ["chat"] },
 	{
@@ -171,7 +183,12 @@ export const PRICING_FIELDS = [
 	{ key: "cache_read_input_token_cost_priority", label: "Cache read / token (priority)", group: "chat", requestTypeGroups: ["chat"] },
 	{ key: "cache_read_input_token_cost_flex", label: "Cache read / token (flex)", group: "chat", requestTypeGroups: ["chat"] },
 	{ key: "cache_creation_input_token_cost_fast", label: "Cache creation / token (fast)", group: "chat", requestTypeGroups: ["chat"] },
-	{ key: "cache_creation_input_token_cost_above_1hr_fast", label: "Cache creation / token (>1hr, fast)", group: "chat", requestTypeGroups: ["chat"] },
+	{
+		key: "cache_creation_input_token_cost_above_1hr_fast",
+		label: "Cache creation / token (>1hr, fast)",
+		group: "chat",
+		requestTypeGroups: ["chat"],
+	},
 	{ key: "cache_read_input_token_cost_fast", label: "Cache read / token (fast)", group: "chat", requestTypeGroups: ["chat"] },
 	{
 		key: "cache_read_input_token_cost_above_200k_tokens_priority",
@@ -183,6 +200,31 @@ export const PRICING_FIELDS = [
 	{
 		key: "cache_read_input_token_cost_above_272k_tokens_priority",
 		label: "Cache read / token (>272k, priority)",
+		group: "chat",
+		requestTypeGroups: ["chat"],
+	},
+	{
+		key: "cache_read_input_token_cost_flex_above_272k_tokens",
+		label: "Cache read / token (>272k, flex)",
+		group: "chat",
+		requestTypeGroups: ["chat"],
+	},
+	{
+		key: "cache_creation_input_token_cost_priority",
+		label: "Cache creation / token (priority)",
+		group: "chat",
+		requestTypeGroups: ["chat"],
+	},
+	{ key: "cache_creation_input_token_cost_flex", label: "Cache creation / token (flex)", group: "chat", requestTypeGroups: ["chat"] },
+	{
+		key: "cache_creation_input_token_cost_above_272k_tokens",
+		label: "Cache creation / token (>272k)",
+		group: "chat",
+		requestTypeGroups: ["chat"],
+	},
+	{
+		key: "cache_creation_input_token_cost_flex_above_272k_tokens",
+		label: "Cache creation / token (>272k, flex)",
 		group: "chat",
 		requestTypeGroups: ["chat"],
 	},
