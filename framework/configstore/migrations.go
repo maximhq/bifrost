@@ -10737,7 +10737,6 @@ func migrationAddSidekiqTable(ctx context.Context, db *gorm.DB, logger schemas.L
 				}
 				return nil
 			}
-
 			if err := tx.Exec(createTable).Error; err != nil {
 				return err
 			}
