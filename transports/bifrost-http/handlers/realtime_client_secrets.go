@@ -275,20 +275,31 @@ func normalizeRealtimeClientSecretBody(root map[string]json.RawMessage, bareMode
 		return nil, newRealtimeClientSecretHandlerError(fasthttp.StatusInternalServerError, "server_error", "failed to encode normalized model", marshalErr)
 	}
 
+	// Classify once, via the same canonical classifier extraction and the
+	// provider-layer normalizer use (schemas.IsGATranscriptionSessionBody),
+	// so this pass can't disagree with them about which shape a body is —
+	// a full realtime session must never take the GA-transcription rewrite
+	// branch just because it also enables live input-audio transcription as
+	// a sibling feature (checked via root.model/session.model presence, not
+	// just whether session.model happens to be set).
+	isGATranscription := schemas.IsGATranscriptionSessionBody(root)
+
 	// Normalize session.model if present
 	if sessionJSON, ok := root["session"]; ok && len(sessionJSON) > 0 {
 		var session map[string]json.RawMessage
 		if err := json.Unmarshal(sessionJSON, &session); err == nil {
-			if _, hasModel := session["model"]; hasModel {
+			if isGATranscription {
+				if rewritten, changed, err := rewriteGASessionTranscriptionModel(session, normalizedModel); err != nil {
+					return nil, err
+				} else if changed {
+					root["session"] = rewritten
+				}
+			} else if _, hasModel := session["model"]; hasModel {
 				session["model"] = normalizedModel
 				rewritten, err := json.Marshal(session)
 				if err != nil {
 					return nil, newRealtimeClientSecretHandlerError(fasthttp.StatusInternalServerError, "server_error", "failed to re-encode session", err)
 				}
-				root["session"] = rewritten
-			} else if rewritten, changed, err := rewriteGASessionTranscriptionModel(session, normalizedModel); err != nil {
-				return nil, err
-			} else if changed {
 				root["session"] = rewritten
 			}
 		}

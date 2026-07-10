@@ -321,11 +321,17 @@ func normalizeRealtimeClientSecretsRequest(
 		return nil, "", newRealtimeClientSecretError(fasthttp.StatusInternalServerError, "server_error", "failed to encode normalized model", marshalErr)
 	}
 
-	if isGATranscriptionSession(session) {
+	if schemas.IsGATranscriptionSessionBody(root) {
 		// RealtimeTranscriptionSessionCreateRequestGA has no top-level session.model
 		// field at all — the model lives only at session.audio.input.transcription.model.
 		// Writing a bogus top-level session.model here would send OpenAI a field its
-		// transcription-session schema doesn't define.
+		// transcription-session schema doesn't define. Also strip any stray
+		// session.model a permissive client sent alongside the transcription
+		// shape — IsGATranscriptionSessionBody's classification (checked
+		// against root, not session, before we ever get here) guarantees
+		// session.model was absent when the shape was decided, but delete it
+		// defensively in case a caller constructs the map directly.
+		delete(session, "model")
 		if bifrostErr := writeGASessionTranscriptionModel(session, modelJSON); bifrostErr != nil {
 			return nil, "", bifrostErr
 		}
@@ -361,42 +367,6 @@ func normalizeRealtimeClientSecretsRequest(
 	}
 
 	return normalizedBody, normalizedModel, nil
-}
-
-// isGATranscriptionSession reports whether session is shaped like
-// RealtimeTranscriptionSessionCreateRequestGA rather than a full realtime
-// session: either explicit session.type == "transcription", or (no explicit
-// type, no top-level model) session.audio.input.transcription is present —
-// the shape only a transcription-session client would send.
-func isGATranscriptionSession(session map[string]json.RawMessage) bool {
-	if typeJSON, ok := session["type"]; ok {
-		var sessionType string
-		if json.Unmarshal(typeJSON, &sessionType) == nil {
-			return sessionType == "transcription"
-		}
-		return false
-	}
-	if _, hasModel := session["model"]; hasModel {
-		return false
-	}
-	audioJSON, ok := session["audio"]
-	if !ok {
-		return false
-	}
-	var audio map[string]json.RawMessage
-	if json.Unmarshal(audioJSON, &audio) != nil {
-		return false
-	}
-	inputJSON, ok := audio["input"]
-	if !ok {
-		return false
-	}
-	var input map[string]json.RawMessage
-	if json.Unmarshal(inputJSON, &input) != nil {
-		return false
-	}
-	_, hasTranscription := input["transcription"]
-	return hasTranscription
 }
 
 // writeGASessionTranscriptionModel sets session.audio.input.transcription.model
