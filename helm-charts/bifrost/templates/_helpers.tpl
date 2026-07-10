@@ -743,6 +743,20 @@ false
 {{- if .Values.bifrost.accessProfiles }}
 {{- $_ := set $config "access_profiles" .Values.bifrost.accessProfiles }}
 {{- end }}
+{{- /* Alerting */ -}}
+{{- if .Values.bifrost.alerting }}
+{{- if .Values.bifrost.alerting.rules }}
+{{- range .Values.bifrost.alerting.rules }}
+{{- if and (hasKey . "target_type") (not (hasKey . "target_id")) }}
+{{- fail (printf "alerting rule '%s': target_type is set but target_id is missing" .id) }}
+{{- end }}
+{{- if and (hasKey . "target_id") (not (hasKey . "target_type")) }}
+{{- fail (printf "alerting rule '%s': target_id is set but target_type is missing" .id) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- $_ := set $config "alerting" .Values.bifrost.alerting }}
+{{- end }}
 {{- /* Config Store */ -}}
 {{- if .Values.storage.configStore.enabled }}
 {{- $configStoreType := .Values.storage.configStore.type | default .Values.storage.mode }}

@@ -12,6 +12,6 @@ description: "Helm v2.1.28 changelog - 2026-07-10"
 - `calendar_aligned` on `bifrost.accessProfiles[*]` (top-level) — snaps all budget and rate-limit reset windows to calendar boundaries for the profile. Passes through into `access_profiles[*].calendar_aligned`.
 - `calendar_aligned` on `bifrost.accessProfiles[*].budgets[*]` and `bifrost.accessProfiles[*].provider_configs[*].budgets[*]` — schema previously blocked this field; now matches parity with `governance.budgets[*].calendar_aligned`.
 - `calendar_aligned` on `bifrost.governance.virtualKeys[*]` — was accepted by schema but not rendered into config. Now correctly emits `virtual_keys[*].calendar_aligned` in the generated config.
-- `allowOnAllVirtualKeys` on `bifrost.mcp.clientConfigs[*]` — grants this MCP server access to all virtual keys without per-key assignment. Already wired in the template; now documented in `values.yaml`. Renders into `mcp.client_configs[*].allow_on_all_virtual_keys`.
+- `bifrost.alerting` for declarative alert channels and rules. Supports `history_retention_days`, `webhook_network` (`allow_http`, `allow_private_network`), `channels[]` (slack, microsoft_teams, pagerduty, webhook), and `rules[]` (CEL-expression-based, governance-scope-aware). Renders into `alerting`.
 
 </Update>
