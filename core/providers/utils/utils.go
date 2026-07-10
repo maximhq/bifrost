@@ -59,7 +59,10 @@ const maxSanitizedAnthropicToolUseIDLen = 64
 // id always sanitize to the same value within a request, matching the alias pattern
 // used for Bedrock tool names (see bedrockAliasToolName).
 func SanitizeAnthropicToolUseID(id string) string {
-	if id == "" || !anthropicUnsafeToolUseIDCharRegex.MatchString(id) {
+	// The empty string doesn't match Anthropic's pattern either (it requires at
+	// least one character), so it needs the same hash-based rewrite as ids with
+	// disallowed characters rather than being passed through unchanged.
+	if id != "" && !anthropicUnsafeToolUseIDCharRegex.MatchString(id) {
 		return id
 	}
 	// Use the full 64-bit hash (not a 32-bit truncation) to keep collisions

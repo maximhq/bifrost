@@ -1955,17 +1955,17 @@ func TestSanitizeAnthropicToolUseID(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			got := SanitizeAnthropicToolUseID(tc.in)
 
-			if tc.in == "" {
-				if got != "" {
-					t.Errorf("SanitizeAnthropicToolUseID(%q) = %q, want empty", tc.in, got)
-				}
-				return
-			}
-			if !anthropicUnsafeToolUseIDCharRegex.MatchString(tc.in) {
+			// Anthropic's pattern requires at least one character, so an already-valid,
+			// non-empty id is the only case left unchanged; everything else (including
+			// the empty string) must be rewritten to a non-empty, conforming id.
+			if tc.in != "" && !anthropicUnsafeToolUseIDCharRegex.MatchString(tc.in) {
 				if got != tc.in {
 					t.Errorf("SanitizeAnthropicToolUseID(%q) = %q, want unchanged", tc.in, got)
 				}
 				return
+			}
+			if got == "" {
+				t.Errorf("SanitizeAnthropicToolUseID(%q) = empty, want a non-empty conforming id", tc.in)
 			}
 			if anthropicUnsafeToolUseIDCharRegex.MatchString(got) {
 				t.Errorf("SanitizeAnthropicToolUseID(%q) = %q, still contains unsafe characters", tc.in, got)
