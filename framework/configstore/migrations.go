@@ -437,7 +437,12 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_mcp_client_tool_execution_timeout_column"}, run: migrationAddMCPClientToolExecutionTimeoutColumn},
 	{IDs: []string{"add_virtual_key_expires_at_column"}, run: migrationAddVirtualKeyExpiresAtColumn},
 	{IDs: []string{"add_vertex_force_single_region_column"}, run: migrationAddVertexForceSingleRegionColumn},
+	// add_sidekiq_runner_id_column must run before add_sidekiq_table: it backfills
+	// runner_id on tables created by the early enterprise ent_add_sidekiq_table
+	// shape, which add_sidekiq_table's idx_sidekiq_runner index depends on.
+	{IDs: []string{"add_sidekiq_runner_id_column"}, run: migrationAddSidekiqRunnerIDColumn},
 	{IDs: []string{"add_sidekiq_table"}, run: migrationAddSidekiqTable},
+	{IDs: []string{"add_sidekiq_created_by_user_id_column"}, run: migrationAddSidekiqCreatedByUserIDColumn},
 	{IDs: []string{"add_sidekiq_kind_status_created_index"}, run: migrationAddSidekiqKindStatusCreatedIndex},
 	{IDs: []string{"add_fast_mode_cache_pricing_columns"}, run: migrationAddFastModeCachePricingColumns},
 	{IDs: []string{"add_inference_geo_multiplier_column"}, run: migrationAddInferenceGeoMultiplierColumn},
@@ -10438,34 +10443,32 @@ func migrationAddSidekiqTable(ctx context.Context, db *gorm.DB, logger schemas.L
 			case "postgres":
 				createTable = `
 					CREATE TABLE IF NOT EXISTS sidekiq (
-						id                  TEXT PRIMARY KEY,
-						kind                TEXT NOT NULL,
-						status              TEXT NOT NULL DEFAULT 'pending',
-						runner_id           TEXT,
-						metadata            TEXT DEFAULT '{}',
-						attempts            INTEGER NOT NULL DEFAULT 0,
-						last_error          TEXT,
-						created_at          TIMESTAMPTZ NOT NULL,
-						updated_at          TIMESTAMPTZ NOT NULL,
-						started_at          TIMESTAMPTZ,
-						created_by_user_id  VARCHAR(255),
-						completed_at        TIMESTAMPTZ
+						id           TEXT PRIMARY KEY,
+						kind         TEXT NOT NULL,
+						status       TEXT NOT NULL DEFAULT 'pending',
+						runner_id    TEXT,
+						metadata     TEXT DEFAULT '{}',
+						attempts     INTEGER NOT NULL DEFAULT 0,
+						last_error   TEXT,
+						created_at   TIMESTAMPTZ NOT NULL,
+						updated_at   TIMESTAMPTZ NOT NULL,
+						started_at   TIMESTAMPTZ,
+						completed_at TIMESTAMPTZ
 					)`
 			case "sqlite":
 				createTable = `
 					CREATE TABLE IF NOT EXISTS sidekiq (
-						id                  TEXT PRIMARY KEY,
-						kind                TEXT NOT NULL,
-						status              TEXT NOT NULL DEFAULT 'pending',
-						runner_id           TEXT,
-						metadata            TEXT DEFAULT '{}',
-						attempts            INTEGER NOT NULL DEFAULT 0,
-						last_error          TEXT,
-						created_at          DATETIME NOT NULL,
-						updated_at          DATETIME NOT NULL,
-						started_at          DATETIME,
-						created_by_user_id  VARCHAR(255),
-						completed_at        DATETIME
+						id           TEXT PRIMARY KEY,
+						kind         TEXT NOT NULL,
+						status       TEXT NOT NULL DEFAULT 'pending',
+						runner_id    TEXT,
+						metadata     TEXT DEFAULT '{}',
+						attempts     INTEGER NOT NULL DEFAULT 0,
+						last_error   TEXT,
+						created_at   DATETIME NOT NULL,
+						updated_at   DATETIME NOT NULL,
+						started_at   DATETIME,
+						completed_at DATETIME
 					)`
 			default:
 				// Fall back to GORM for any other dialect so the migration does not
@@ -10486,6 +10489,74 @@ func migrationAddSidekiqTable(ctx context.Context, db *gorm.DB, logger schemas.L
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			return tx.Exec(`DROP TABLE IF EXISTS sidekiq`).Error
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddSidekiqRunnerIDColumn backfills the runner_id column on sidekiq
+// tables that were created before the column existed (the enterprise
+// ent_add_sidekiq_table migration shipped an early shape without it). It must
+// run BEFORE add_sidekiq_table in the migration sequence: that migration
+// creates idx_sidekiq_runner, which fails on a pre-existing table missing the
+// column. No-op on fresh databases (table not yet created) and on tables that
+// already have the column.
+func migrationAddSidekiqRunnerIDColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_sidekiq_runner_id_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if !tx.Migrator().HasTable(&tables.TableSidekiqJob{}) {
+				return nil
+			}
+			if tx.Migrator().HasColumn(&tables.TableSidekiqJob{}, "runner_id") {
+				return nil
+			}
+			return tx.Exec(`ALTER TABLE sidekiq ADD COLUMN runner_id TEXT`).Error
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if !tx.Migrator().HasTable(&tables.TableSidekiqJob{}) || !tx.Migrator().HasColumn(&tables.TableSidekiqJob{}, "runner_id") {
+				return nil
+			}
+			return tx.Exec(`ALTER TABLE sidekiq DROP COLUMN runner_id`).Error
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddSidekiqCreatedByUserIDColumn adds the created_by_user_id column
+// to the sidekiq table. The column was introduced after add_sidekiq_table first
+// shipped, so databases that already recorded that migration need this separate
+// migration to pick it up. No-op when the column already exists.
+func migrationAddSidekiqCreatedByUserIDColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_sidekiq_created_by_user_id_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if tx.Migrator().HasColumn(&tables.TableSidekiqJob{}, "created_by_user_id") {
+				return nil
+			}
+			return tx.Exec(`ALTER TABLE sidekiq ADD COLUMN created_by_user_id VARCHAR(255)`).Error
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if !tx.Migrator().HasColumn(&tables.TableSidekiqJob{}, "created_by_user_id") {
+				return nil
+			}
+			return tx.Exec(`ALTER TABLE sidekiq DROP COLUMN created_by_user_id`).Error
 		},
 	}})
 	if err := m.Migrate(); err != nil {
