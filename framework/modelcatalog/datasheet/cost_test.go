@@ -205,14 +205,16 @@ func TestComputeTextCost_FastMode_FallsBackWhenUnconfigured(t *testing.T) {
 	assert.InDelta(t, 1000*0.000005+500*0.000025, fast, 1e-12)
 }
 
-func TestComputeTextCost_FastMode_CacheBillsAtStandardRates(t *testing.T) {
-	// Per design: cache tokens on a fast request bill at standard cache rates;
-	// only the non-cached input and the output use the fast rate.
+func TestComputeTextCost_FastMode_UsesFastCacheRates(t *testing.T) {
+	// Fast mode has dedicated cache columns; when set, cache tokens bill at the
+	// _fast rate, not the standard rate.
 	p := chatPricing(0.000005, 0.000025)
 	p.InputCostPerTokenFast = bifrost.Ptr(0.00001)
 	p.OutputCostPerTokenFast = bifrost.Ptr(0.00005)
-	p.CacheReadInputTokenCost = bifrost.Ptr(0.0000005)      // standard read
-	p.CacheCreationInputTokenCost = bifrost.Ptr(0.00000625) // standard 5m write
+	p.CacheReadInputTokenCost = bifrost.Ptr(0.0000005)         // standard read (ignored in fast)
+	p.CacheCreationInputTokenCost = bifrost.Ptr(0.00000625)    // standard 5m write (ignored in fast)
+	p.CacheReadInputTokenCostFast = bifrost.Ptr(0.000001)      // fast read
+	p.CacheCreationInputTokenCostFast = bifrost.Ptr(0.0000125) // fast 5m write
 
 	usage := &schemas.BifrostLLMUsage{
 		PromptTokens:     2000,
@@ -225,16 +227,120 @@ func TestComputeTextCost_FastMode_CacheBillsAtStandardRates(t *testing.T) {
 	}
 
 	fast := computeTextCost(&p, usage, serviceTier{isFast: true})
-	// Input: non-cached (2000-1500-200)*fast + read 1500*stdRead + write 200*stdWrite
-	//      = 300*0.00001 + 1500*0.0000005 + 200*0.00000625 = 0.003 + 0.00075 + 0.00125 = 0.0019(? recompute)
+	// non-cached 300*fast + read 1500*fastRead + write 200*fastWrite + output 500*fast
+	expected := 300*0.00001 + 1500*0.000001 + 200*0.0000125 + 500*0.00005
+	assert.InDelta(t, expected, fast, 1e-12)
+}
+
+func TestComputeTextCost_FastMode_CacheFallsBackToStandardWhenFastUnset(t *testing.T) {
+	// When the _fast cache columns are absent, cache tokens fall back to standard
+	// cache rates (mirrors the input/output fast fallback) — the flag is a no-op.
+	p := chatPricing(0.000005, 0.000025)
+	p.InputCostPerTokenFast = bifrost.Ptr(0.00001)
+	p.OutputCostPerTokenFast = bifrost.Ptr(0.00005)
+	p.CacheReadInputTokenCost = bifrost.Ptr(0.0000005)
+	p.CacheCreationInputTokenCost = bifrost.Ptr(0.00000625)
+
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens:     2000,
+		CompletionTokens: 500,
+		TotalTokens:      2500,
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+			CachedReadTokens:  1500,
+			CachedWriteTokens: 200,
+		},
+	}
+
+	fast := computeTextCost(&p, usage, serviceTier{isFast: true})
+	// input/output use fast; cache uses standard.
 	expected := 300*0.00001 + 1500*0.0000005 + 200*0.00000625 + 500*0.00005
 	assert.InDelta(t, expected, fast, 1e-12)
 }
 
+// TestComputeTextCost_FastMode_Opus48CacheRegression pins the reported real-world
+// miscalculation: fast mode + cache_control billed cache creation at the standard
+// rate. Opus 4.8: fast $10/$50, fast 5m cache write $12.50 per MTok.
+func TestComputeTextCost_FastMode_Opus48CacheRegression(t *testing.T) {
+	p := chatPricing(0.000005, 0.000025)
+	p.InputCostPerTokenFast = bifrost.Ptr(0.00001)
+	p.OutputCostPerTokenFast = bifrost.Ptr(0.00005)
+	p.CacheCreationInputTokenCost = bifrost.Ptr(0.00000625)    // standard 5m write (ignored in fast)
+	p.CacheCreationInputTokenCostFast = bifrost.Ptr(0.0000125) // fast 5m write
+
+	// input_tokens=2, cache_creation=44667 (all 5m), output=135. PromptTokens
+	// carries the cache-creation tokens (Anthropic responses usage mapping).
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens:     44669,
+		CompletionTokens: 135,
+		TotalTokens:      44804,
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+			CachedWriteTokens: 44667,
+			CachedWriteTokenDetails: &schemas.ChatCachedWriteTokenDetails{
+				CachedWriteTokens5m: 44667,
+			},
+		},
+	}
+
+	fast := computeTextCost(&p, usage, serviceTier{isFast: true})
+	// 2*$10/M + 44667*$12.50/M (fast 5m cache) + 135*$50/M = $0.565108
+	expected := 2*0.00001 + 44667*0.0000125 + 135*0.00005
+	assert.InDelta(t, expected, fast, 1e-9)
+}
+
+// TestComputeTextCost_InferenceGeoUS_AppliesMultiplier verifies the Anthropic
+// data-residency multiplier (inference_geo:"us") scales every token/cache cost by
+// 1.1x while leaving the flat per-search fee untouched.
+func TestComputeTextCost_InferenceGeoUS_AppliesMultiplier(t *testing.T) {
+	p := chatPricing(0.00001, 0.00005)
+	p.CacheReadInputTokenCost = bifrost.Ptr(0.000001)
+	p.CacheCreationInputTokenCost = bifrost.Ptr(0.0000125)
+	p.SearchContextCostPerQuery = bifrost.Ptr(0.01)
+	p.InferenceGeoUSMultiplier = bifrost.Ptr(1.1)
+
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens:     1000, // 500 non-cached + 200 read + 300 write
+		CompletionTokens: 100,
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+			CachedReadTokens:  200,
+			CachedWriteTokens: 300,
+		},
+		CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{
+			NumSearchQueries: bifrost.Ptr(2),
+		},
+	}
+
+	tokenCost := 500*0.00001 + 200*0.000001 + 300*0.0000125 + 100*0.00005
+	searchCost := 2 * 0.01
+
+	got := computeTextCost(&p, usage, serviceTier{inferenceGeoUS: true})
+	assert.InDelta(t, tokenCost*1.1+searchCost, got, 1e-9)
+
+	// Without US residency the multiplier is a no-op; the search fee is identical.
+	base := computeTextCost(&p, usage, serviceTier{})
+	assert.InDelta(t, tokenCost+searchCost, base, 1e-9)
+}
+
+// TestComputeTextCost_InferenceGeoUS_NoMultiplierColumn verifies US residency is a
+// safe no-op until the datasheet populates the multiplier column upstream.
+func TestComputeTextCost_InferenceGeoUS_NoMultiplierColumn(t *testing.T) {
+	p := chatPricing(0.00001, 0.00005)
+	usage := &schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 100}
+	withUS := computeTextCost(&p, usage, serviceTier{inferenceGeoUS: true})
+	without := computeTextCost(&p, usage, serviceTier{})
+	assert.InDelta(t, without, withUS, 1e-9)
+}
+
 func TestTierFromResponse_Speed(t *testing.T) {
-	assert.False(t, tierFromResponse(nil, nil).isFast)
-	assert.False(t, tierFromResponse(nil, bifrost.Ptr("standard")).isFast)
-	assert.True(t, tierFromResponse(nil, bifrost.Ptr("fast")).isFast)
+	assert.False(t, tierFromResponse(nil, nil, nil).isFast)
+	assert.False(t, tierFromResponse(nil, bifrost.Ptr("standard"), nil).isFast)
+	assert.True(t, tierFromResponse(nil, bifrost.Ptr("fast"), nil).isFast)
+}
+
+func TestTierFromResponse_InferenceGeo(t *testing.T) {
+	assert.False(t, tierFromResponse(nil, nil, nil).inferenceGeoUS)
+	assert.False(t, tierFromResponse(nil, nil, bifrost.Ptr("global")).inferenceGeoUS)
+	assert.True(t, tierFromResponse(nil, nil, bifrost.Ptr("us")).inferenceGeoUS)
+	assert.True(t, tierFromResponse(nil, nil, bifrost.Ptr("US")).inferenceGeoUS)
 }
 
 func TestComputeTextCost_With1hrCacheCreationTokens(t *testing.T) {
@@ -2295,28 +2401,28 @@ func TestTieredCacheReadRate_FallbackOrder(t *testing.T) {
 
 func TestTierFromResponse_Priority(t *testing.T) {
 	s := schemas.BifrostServiceTierPriority
-	tier := tierFromResponse(&s, nil)
+	tier := tierFromResponse(&s, nil, nil)
 	assert.True(t, tier.isPriority)
 	assert.False(t, tier.isFlex)
 }
 
 func TestTierFromResponse_Flex(t *testing.T) {
 	s := schemas.BifrostServiceTierFlex
-	tier := tierFromResponse(&s, nil)
+	tier := tierFromResponse(&s, nil, nil)
 	assert.False(t, tier.isPriority)
 	assert.True(t, tier.isFlex)
 }
 
 func TestTierFromResponse_Default(t *testing.T) {
 	for _, s := range []schemas.BifrostServiceTier{schemas.BifrostServiceTierAuto, schemas.BifrostServiceTierDefault, ""} {
-		tier := tierFromResponse(&s, nil)
+		tier := tierFromResponse(&s, nil, nil)
 		assert.False(t, tier.isPriority, "expected no priority for %q", s)
 		assert.False(t, tier.isFlex, "expected no flex for %q", s)
 	}
 }
 
 func TestTierFromResponse_Nil(t *testing.T) {
-	tier := tierFromResponse(nil, nil)
+	tier := tierFromResponse(nil, nil, nil)
 	assert.False(t, tier.isPriority)
 	assert.False(t, tier.isFlex)
 }

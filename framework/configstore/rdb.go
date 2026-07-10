@@ -2495,6 +2495,10 @@ var pricingSyncUpdateColumns = []string{
 	"cache_read_input_image_token_cost",
 	"cache_read_input_token_cost_above_272k_tokens",
 	"cache_read_input_token_cost_above_272k_tokens_priority",
+	"cache_creation_input_token_cost_fast",
+	"cache_creation_input_token_cost_above_1hr_fast",
+	"cache_read_input_token_cost_fast",
+	"inference_geo_us_multiplier",
 	// Costs - Image
 	"input_cost_per_image",
 	"input_cost_per_pixel",

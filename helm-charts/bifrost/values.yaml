@@ -406,6 +406,7 @@ bifrost:
   #         project_id: "my-gcp-project"
   #         region: "us-central1"
   #         auth_credentials: "env.GOOGLE_CREDENTIALS"
+  #         force_single_region: false  # Set true for provisioned throughput to skip multi-region promotion
   #
   # # AWS Bedrock example (requires bedrock_key_config)
   # bedrock:
@@ -484,6 +485,9 @@ bifrost:
       #   #   oauth_config is registered via the API (POST /api/mcp/clients), not configured here.
       #   authType: "oauth"
       #   oauthConfigId: "my-oauth-config-id"   # ID of the OAuth config created in Bifrost
+      #   # When true, this MCP server is accessible to all virtual keys without explicit per-key assignment.
+      #   # If a virtual key has an explicit MCP config for this server, that config takes precedence.
+      #   allowOnAllVirtualKeys: false
     # toolSyncInterval: "10m"   # Global tool sync interval (Go duration string, e.g. "10m", "1h", "0s")
     # Tool manager configuration
     toolManagerConfig:
@@ -705,6 +709,7 @@ bifrost:
       # - id: "budget-1"
       #   max_limit: 100
       #   reset_duration: "1M"     # Supports: 30s, 5m, 1h, 1d, 1w, 1M, 1Y
+      #   calendar_aligned: false  # Snap reset to calendar boundaries (e.g. 1M resets on the 1st)
     rateLimits: []
       # - id: "rate-limit-1"
       #   token_max_limit: 100000
@@ -753,6 +758,7 @@ bifrost:
       #   value: "sk-bf-..."           # Optional - auto-generated if omitted
       #   is_active: true
       #   expires_at: "2026-12-31T23:59:59Z"  # Optional RFC3339 expiry; requests rejected once passed. Omit for no expiry
+      #   calendar_aligned: false  # Snap all budget resets for this key to calendar boundaries
       #   team_id: "team-1"        # Mutually exclusive with customer_id
       #   customer_id: ""          # Mutually exclusive with team_id
       #   rate_limit_id: "rate-limit-1"
@@ -1033,11 +1039,13 @@ bifrost:
     # - name: "platform-default"
     #   description: "Default platform profile"
     #   is_active: true
+    #   calendar_aligned: false  # Snap all budget/rate-limit resets to calendar boundaries
     #   tags: ["platform", "default"]
     #   budgets:
     #     - id: "ap-budget-1"
     #       max_limit: 100
     #       reset_duration: "1M"
+    #       calendar_aligned: false  # Snap this budget's reset to calendar boundaries
     #   rate_limit:
     #     id: "ap-rate-limit-1"
     #     token_max_limit: 200000
@@ -1055,10 +1063,81 @@ bifrost:
     #       tool_name: "create_pull_request"
     #       action: "include"
 
+  # Alerting: declarative alert channels and rules seeded from Helm.
+  # Rendered directly as top-level `alerting` in config.json.
+  # alerting:
+  #   history_retention_days: 365   # Days to retain alert history (0 = no pruning)
+  #   webhook_network:
+  #     allow_http: false            # Allow http (not just https) webhook URLs
+  #     allow_private_network: false # Allow webhooks targeting private/loopback addresses
+  #   channels:
+  #     - id: "slack-ops"
+  #       name: "Ops Slack"
+  #       type: slack                # Options: slack, microsoft_teams, pagerduty, webhook
+  #       enabled: true
+  #       cooldown_seconds: 300
+  #       config:
+  #         webhook_url: "env.SLACK_WEBHOOK_URL"
+  #     - id: "pagerduty-critical"
+  #       name: "PagerDuty Critical"
+  #       type: pagerduty
+  #       enabled: true
+  #       config:
+  #         routing_key: "env.PAGERDUTY_ROUTING_KEY"
+  #     - id: "teams-alerts"
+  #       name: "Teams Alerts"
+  #       type: microsoft_teams
+  #       enabled: true
+  #       config:
+  #         webhook_url: "env.TEAMS_WEBHOOK_URL"
+  #     - id: "generic-webhook"
+  #       name: "Generic Webhook"
+  #       type: webhook
+  #       enabled: true
+  #       config:
+  #         url: "https://my-internal-hook.corp/alerts"
+  #         headers:
+  #           X-Alert-Token: "env.WEBHOOK_AUTH_HEADER"
+  #   rules:
+  #     - id: "budget-80pct"
+  #       name: "Budget 80% Alert"
+  #       enabled: true
+  #       scope_type: virtual_key    # Options: virtual_key, team, customer
+  #       scope_id: "vk-1"
+  #       cel_expression: "budget_usage_percent >= 80"
+  #       cooldown_seconds: 3600
+  #       notify_once_per_reset_cycle: false
+  #       channel_ids: ["slack-ops"]
+  #       # Optionally target a specific budget:
+  #       # target_type: budget
+  #       # target_id: "budget-1"
+
   # Audit logs configuration for CADF-compliant activity logging
   auditLogs:
     disabled: false
     hmacKey: ""
+    # Object storage archival for audit events (optional)
+    # When configured, each flushed batch of audit events is written as a JSONL object at
+    # {prefix}/audit-logs/YYYY/MM/DD/HH/{id}.jsonl in addition to the DB.
+    # Set compress: true to gzip the objects ({id}.jsonl.gz).
+    # objectStorage:
+    #   type: s3        # Options: s3, gcs
+    #   bucket: ""      # Bucket name
+    #   prefix: bifrost # Base key path (audit-logs/ is appended under it)
+    #   compress: false # Enable gzip compression for stored objects
+    #
+    #   # S3 configuration (when type is s3)
+    #   region: us-east-1
+    #   endpoint: ""          # Custom endpoint for MinIO/R2
+    #   accessKeyId: ""       # Leave empty to use default AWS credential chain
+    #   secretAccessKey: ""
+    #   sessionToken: ""      # AWS STS session token (optional)
+    #   roleArn: ""           # AWS IAM role ARN to assume via STS
+    #   forcePathStyle: false # Set true for MinIO
+    #
+    #   # GCS configuration (when type is gcs)
+    #   projectId: ""
+    #   credentialsJson: ""   # Service account JSON, omit for default credentials
 
   # Large payload optimization - streams large payloads without full materialization
   # largePayloadOptimization:
