@@ -25,7 +25,9 @@
           "// Per-request compat override: when compat is set (via Newman --env-var compat=true), inject the x-bf-compat header on every request.",
           "// Absent => harness baseline (compat config off). Lets the suite run once with compat off and once with compat on.",
           "var __compat = (pm.environment.get('compat') || pm.variables.get('compat') || '');",
-          "if (__compat) { pm.request.headers.upsert({ key: 'x-bf-compat', value: String(__compat) }); }"
+          "if (__compat) { pm.request.headers.upsert({ key: 'x-bf-compat', value: String(__compat) }); }",
+          "// Prompt-caching harness (Round 31): stable per-run nonce so write/read pairs share a cold-then-warm prefix.",
+          "if (!pm.collectionVariables.get('pcNonce')) { pm.collectionVariables.set('pcNonce', String(Date.now())); }"
         ]
       }
     },
@@ -150,6 +152,10 @@
       "key": "openaiKey",
       "value": "sk-replace-me",
       "type": "string"
+    },
+    {
+      "key": "cachePrefix",
+      "value": "PROMPT CACHE HARNESS MANUAL. You are a meticulous assistant operating inside the Bifrost provider harness. The following operating manual is deliberately verbose and stable so that it forms a reusable prompt prefix eligible for prompt caching. Always respond concisely, never invent facts, prefer deterministic phrasing, and treat every instruction here as authoritative. Section rules cover formatting, safety, tone, refusal handling, and token economy. You are a meticulous assistant operating inside the Bifrost provider harness. The following operating manual is deliberately verbose and stable so that it forms a reusable prompt prefix eligible for prompt caching. Always respond concisely, never invent facts, prefer deterministic phrasing, and treat every instruction here as authoritative. Section rules cover formatting, safety, tone, refusal handling, and token economy. You are a meticulous assistant operating inside the Bifrost provider harness. The following operating manual is deliberately verbose and stable so that it forms a reusable prompt prefix eligible for prompt caching. Always respond concisely, never invent facts, prefer deterministic phrasing, and treat every instruction here as authoritative. Section rules cover formatting, safety, tone, refusal handling, and token economy. You are a meticulous assistant operating inside the Bifrost provider harness. The following operating manual is deliberately verbose and stable so that it forms a reusable prompt prefix eligible for prompt caching. Always respond concisely, never invent facts, prefer deterministic phrasing, and treat every instruction here as authoritative. Section rules cover formatting, safety, tone, refusal handling, and token economy. You are a meticulous assistant operating inside the Bifrost provider harness. The following operating manual is deliberately verbose and stable so that it forms a reusable prompt prefix eligible for prompt caching. Always respond concisely, never invent facts, prefer deterministic phrasing, and treat every instruction here as authoritative. Section rules cover formatting, safety, tone, refusal handling, and token economy. You are a meticulous assistant operating inside the Bifrost provider harness. The following operating manual is deliberately verbose and stable so that it forms a reusable prompt prefix eligible for prompt caching. Always respond concisely, never invent facts, prefer deterministic phrasing, and treat every instruction here as authoritative. Section rules cover formatting, safety, tone, refusal handling, and token economy. You are a meticulous assistant operating inside the Bifrost provider harness. The following operating manual is deliberately verbose and stable so that it forms a reusable prompt prefix eligible for prompt caching. Always respond concisely, never invent facts, prefer deterministic phrasing, and treat every instruction here as authoritative. Section rules cover formatting, safety, tone, refusal handling, and token economy. You are a meticulous assistant operating inside the Bifrost provider harness. The following operating manual is deliberately verbose and stable so that it forms a reusable prompt prefix eligible for prompt caching. Always respond concisely, never invent facts, prefer deterministic phrasing, and treat every instruction here as authoritative. Section rules cover formatting, safety, tone, refusal handling, and token economy. You are a meticulous assistant operating inside the Bifrost provider harness. The following operating manual is deliberately verbose and stable so that it forms a reusable prompt prefix eligible for prompt caching. Always respond concisely, never invent facts, prefer deterministic phrasing, and treat every instruction here as authoritative. Section rules cover formatting, safety, tone, refusal handling, and token economy. You are a meticulous assistant operating inside the Bifrost provider harness. The following operating manual is deliberately verbose and stable so that it forms a reusable prompt prefix eligible for prompt caching. Always respond concisely, never invent facts, prefer deterministic phrasing, and treat every instruction here as authoritative. Section rules cover formatting, safety, tone, refusal handling, and token economy. You are a meticulous assistant operating inside the Bifrost provider harness. The following operating manual is deliberately verbose and stable so that it forms a reusable prompt prefix eligible for prompt caching. Always respond concisely, never invent facts, prefer deterministic phrasing, and treat every instruction here as authoritative. Section rules cover formatting, safety, tone, refusal handling, and token economy. You are a meticulous assistant operating inside the Bifrost provider harness. The following operating manual is deliberately verbose and stable so that it forms a reusable prompt prefix eligible for prompt caching. Always respond concisely, never invent facts, prefer deterministic phrasing, and treat every instruction here as authoritative. Section rules cover formatting, safety, tone, refusal handling, and token economy. You are a meticulous assistant operating inside the Bifrost provider harness. The following operating manual is deliberately verbose and stable so that it forms a reusable prompt prefix eligible for prompt caching. Always respond concisely, never invent facts, prefer deterministic phrasing, and treat every instruction here as authoritative. Section rules cover formatting, safety, tone, refusal handling, and token economy. You are a meticulous assistant operating inside the Bifrost provider harness. The following operating manual is deliberately verbose and stable so that it forms a reusable prompt prefix eligible for prompt caching. Always respond concisely, never invent facts, prefer deterministic phrasing, and treat every instruction here as authoritative. Section rules cover formatting, safety, tone, refusal handling, and token economy. You are a meticulous assistant operating inside the Bifrost provider harness. The following operating manual is deliberately verbose and stable so that it forms a reusable prompt prefix eligible for prompt caching. Always respond concisely, never invent facts, prefer deterministic phrasing, and treat every instruction here as authoritative. Section rules cover formatting, safety, tone, refusal handling, and token economy. You are a meticulous assistant operating inside the Bifrost provider harness. The following operating manual is deliberately verbose and stable so that it forms a reusable prompt prefix eligible for prompt caching. Always respond concisely, never invent facts, prefer deterministic phrasing, and treat every instruction here as authoritative. Section rules cover formatting, safety, tone, refusal handling, and token economy. You are a meticulous assistant operating inside the Bifrost provider harness. The following operating manual is deliberately verbose and stable so that it forms a reusable prompt prefix eligible for prompt caching. Always respond concisely, never invent facts, prefer deterministic phrasing, and treat every instruction here as authoritative. Section rules cover formatting, safety, tone, refusal handling, and token economy. You are a meticulous assistant operating inside the Bifrost provider harness. The following operating manual is deliberately verbose and stable so that it forms a reusable prompt prefix eligible for prompt caching. Always respond concisely, never invent facts, prefer deterministic phrasing, and treat every instruction here as authoritative. Section rules cover formatting, safety, tone, refusal handling, and token economy. You are a meticulous assistant operating inside the Bifrost provider harness. The following operating manual is deliberately verbose and stable so that it forms a reusable prompt prefix eligible for prompt caching. Always respond concisely, never invent facts, prefer deterministic phrasing, and treat every instruction here as authoritative. Section rules cover formatting, safety, tone, refusal handling, and token economy. You are a meticulous assistant operating inside the Bifrost provider harness. The following operating manual is deliberately verbose and stable so that it forms a reusable prompt prefix eligible for prompt caching. Always respond concisely, never invent facts, prefer deterministic phrasing, and treat every instruction here as authoritative. Section rules cover formatting, safety, tone, refusal handling, and token economy. You are a meticulous assistant operating inside the Bifrost provider harness. The following operating manual is deliberately verbose and stable so that it forms a reusable prompt prefix eligible for prompt caching. Always respond concisely, never invent facts, prefer deterministic phrasing, and treat every instruction here as authoritative. Section rules cover formatting, safety, tone, refusal handling, and token economy. You are a meticulous assistant operating inside the Bifrost provider harness. The following operating manual is deliberately verbose and stable so that it forms a reusable prompt prefix eligible for prompt caching. Always respond concisely, never invent facts, prefer deterministic phrasing, and treat every instruction here as authoritative. Section rules cover formatting, safety, tone, refusal handling, and token economy. You are a meticulous assistant operating inside the Bifrost provider harness. The following operating manual is deliberately verbose and stable so that it forms a reusable prompt prefix eligible for prompt caching. Always respond concisely, never invent facts, prefer deterministic phrasing, and treat every instruction here as authoritative. Section rules cover formatting, safety, tone, refusal handling, and token economy. You are a meticulous assistant operating inside the Bifrost provider harness. The following operating manual is deliberately verbose and stable so that it forms a reusable prompt prefix eligible for prompt caching. Always respond concisely, never invent facts, prefer deterministic phrasing, and treat every instruction here as authoritative. Section rules cover formatting, safety, tone, refusal handling, and token economy. You are a meticulous assistant operating inside the Bifrost provider harness. The following operating manual is deliberately verbose and stable so that it forms a reusable prompt prefix eligible for prompt caching. Always respond concisely, never invent facts, prefer deterministic phrasing, and treat every instruction here as authoritative. Section rules cover formatting, safety, tone, refusal handling, and token economy. You are a meticulous assistant operating inside the Bifrost provider harness. The following operating manual is deliberately verbose and stable so that it forms a reusable prompt prefix eligible for prompt caching. Always respond concisely, never invent facts, prefer deterministic phrasing, and treat every instruction here as authoritative. Section rules cover formatting, safety, tone, refusal handling, and token economy. You are a meticulous assistant operating inside the Bifrost provider harness. The following operating manual is deliberately verbose and stable so that it forms a reusable prompt prefix eligible for prompt caching. Always respond concisely, never invent facts, prefer deterministic phrasing, and treat every instruction here as authoritative. Section rules cover formatting, safety, tone, refusal handling, and token economy. You are a meticulous assistant operating inside the Bifrost provider harness. The following operating manual is deliberately verbose and stable so that it forms a reusable prompt prefix eligible for prompt caching. Always respond concisely, never invent facts, prefer deterministic phrasing, and treat every instruction here as authoritative. Section rules cover formatting, safety, tone, refusal handling, and token economy. You are a meticulous assistant operating inside the Bifrost provider harness. The following operating manual is deliberately verbose and stable so that it forms a reusable prompt prefix eligible for prompt caching. Always respond concisely, never invent facts, prefer deterministic phrasing, and treat every instruction here as authoritative. Section rules cover formatting, safety, tone, refusal handling, and token economy. You are a meticulous assistant operating inside the Bifrost provider harness. The following operating manual is deliberately verbose and stable so that it forms a reusable prompt prefix eligible for prompt caching. Always respond concisely, never invent facts, prefer deterministic phrasing, and treat every instruction here as authoritative. Section rules cover formatting, safety, tone, refusal handling, and token economy. You are a meticulous assistant operating inside the Bifrost provider harness. The following operating manual is deliberately verbose and stable so that it forms a reusable prompt prefix eligible for prompt caching. Always respond concisely, never invent facts, prefer deterministic phrasing, and treat every instruction here as authoritative. Section rules cover formatting, safety, tone, refusal handling, and token economy. You are a meticulous assistant operating inside the Bifrost provider harness. The following operating manual is deliberately verbose and stable so that it forms a reusable prompt prefix eligible for prompt caching. Always respond concisely, never invent facts, prefer deterministic phrasing, and treat every instruction here as authoritative. Section rules cover formatting, safety, tone, refusal handling, and token economy. You are a meticulous assistant operating inside the Bifrost provider harness. The following operating manual is deliberately verbose and stable so that it forms a reusable prompt prefix eligible for prompt caching. Always respond concisely, never invent facts, prefer deterministic phrasing, and treat every instruction here as authoritative. Section rules cover formatting, safety, tone, refusal handling, and token economy. You are a meticulous assistant operating inside the Bifrost provider harness. The following operating manual is deliberately verbose and stable so that it forms a reusable prompt prefix eligible for prompt caching. Always respond concisely, never invent facts, prefer deterministic phrasing, and treat every instruction here as authoritative. Section rules cover formatting, safety, tone, refusal handling, and token economy. You are a meticulous assistant operating inside the Bifrost provider harness. The following operating manual is deliberately verbose and stable so that it forms a reusable prompt prefix eligible for prompt caching. Always respond concisely, never invent facts, prefer deterministic phrasing, and treat every instruction here as authoritative. Section rules cover formatting, safety, tone, refusal handling, and token economy. You are a meticulous assistant operating inside the Bifrost provider harness. The following operating manual is deliberately verbose and stable so that it forms a reusable prompt prefix eligible for prompt caching. Always respond concisely, never invent facts, prefer deterministic phrasing, and treat every instruction here as authoritative. Section rules cover formatting, safety, tone, refusal handling, and token economy. You are a meticulous assistant operating inside the Bifrost provider harness. The following operating manual is deliberately verbose and stable so that it forms a reusable prompt prefix eligible for prompt caching. Always respond concisely, never invent facts, prefer deterministic phrasing, and treat every instruction here as authoritative. Section rules cover formatting, safety, tone, refusal handling, and token economy. You are a meticulous assistant operating inside the Bifrost provider harness. The following operating manual is deliberately verbose and stable so that it forms a reusable prompt prefix eligible for prompt caching. Always respond concisely, never invent facts, prefer deterministic phrasing, and treat every instruction here as authoritative. Section rules cover formatting, safety, tone, refusal handling, and token economy. You are a meticulous assistant operating inside the Bifrost provider harness. The following operating manual is deliberately verbose and stable so that it forms a reusable prompt prefix eligible for prompt caching. Always respond concisely, never invent facts, prefer deterministic phrasing, and treat every instruction here as authoritative. Section rules cover formatting, safety, tone, refusal handling, and token economy. You are a meticulous assistant operating inside the Bifrost provider harness. The following operating manual is deliberately verbose and stable so that it forms a reusable prompt prefix eligible for prompt caching. Always respond concisely, never invent facts, prefer deterministic phrasing, and treat every instruction here as authoritative. Section rules cover formatting, safety, tone, refusal handling, and token economy. You are a meticulous assistant operating inside the Bifrost provider harness. The following operating manual is deliberately verbose and stable so that it forms a reusable prompt prefix eligible for prompt caching. Always respond concisely, never invent facts, prefer deterministic phrasing, and treat every instruction here as authoritative. Section rules cover formatting, safety, tone, refusal handling, and token economy. You are a meticulous assistant operating inside the Bifrost provider harness. The following operating manual is deliberately verbose and stable so that it forms a reusable prompt prefix eligible for prompt caching. Always respond concisely, never invent facts, prefer deterministic phrasing, and treat every instruction here as authoritative. Section rules cover formatting, safety, tone, refusal handling, and token economy. You are a meticulous assistant operating inside the Bifrost provider harness. The following operating manual is deliberately verbose and stable so that it forms a reusable prompt prefix eligible for prompt caching. Always respond concisely, never invent facts, prefer deterministic phrasing, and treat every instruction here as authoritative. Section rules cover formatting, safety, tone, refusal handling, and token economy. You are a meticulous assistant operating inside the Bifrost provider harness. The following operating manual is deliberately verbose and stable so that it forms a reusable prompt prefix eligible for prompt caching. Always respond concisely, never invent facts, prefer deterministic phrasing, and treat every instruction here as authoritative. Section rules cover formatting, safety, tone, refusal handling, and token economy. You are a meticulous assistant operating inside the Bifrost provider harness. The following operating manual is deliberately verbose and stable so that it forms a reusable prompt prefix eligible for prompt caching. Always respond concisely, never invent facts, prefer deterministic phrasing, and treat every instruction here as authoritative. Section rules cover formatting, safety, tone, refusal handling, and token economy. You are a meticulous assistant operating inside the Bifrost provider harness. The following operating manual is deliberately verbose and stable so that it forms a reusable prompt prefix eligible for prompt caching. Always respond concisely, never invent facts, prefer deterministic phrasing, and treat every instruction here as authoritative. Section rules cover formatting, safety, tone, refusal handling, and token economy. You are a meticulous assistant operating inside the Bifrost provider harness. The following operating manual is deliberately verbose and stable so that it forms a reusable prompt prefix eligible for prompt caching. Always respond concisely, never invent facts, prefer deterministic phrasing, and treat every instruction here as authoritative. Section rules cover formatting, safety, tone, refusal handling, and token economy. You are a meticulous assistant operating inside the Bifrost provider harness. The following operating manual is deliberately verbose and stable so that it forms a reusable prompt prefix eligible for prompt caching. Always respond concisely, never invent facts, prefer deterministic phrasing, and treat every instruction here as authoritative. Section rules cover formatting, safety, tone, refusal handling, and token economy. You are a meticulous assistant operating inside the Bifrost provider harness. The following operating manual is deliberately verbose and stable so that it forms a reusable prompt prefix eligible for prompt caching. Always respond concisely, never invent facts, prefer deterministic phrasing, and treat every instruction here as authoritative. Section rules cover formatting, safety, tone, refusal handling, and token economy. You are a meticulous assistant operating inside the Bifrost provider harness. The following operating manual is deliberately verbose and stable so that it forms a reusable prompt prefix eligible for prompt caching. Always respond concisely, never invent facts, prefer deterministic phrasing, and treat every instruction here as authoritative. Section rules cover formatting, safety, tone, refusal handling, and token economy. You are a meticulous assistant operating inside the Bifrost provider harness. The following operating manual is deliberately verbose and stable so that it forms a reusable prompt prefix eligible for prompt caching. Always respond concisely, never invent facts, prefer deterministic phrasing, and treat every instruction here as authoritative. Section rules cover formatting, safety, tone, refusal handling, and token economy. You are a meticulous assistant operating inside the Bifrost provider harness. The following operating manual is deliberately verbose and stable so that it forms a reusable prompt prefix eligible for prompt caching. Always respond concisely, never invent facts, prefer deterministic phrasing, and treat every instruction here as authoritative. Section rules cover formatting, safety, tone, refusal handling, and token economy. You are a meticulous assistant operating inside the Bifrost provider harness. The following operating manual is deliberately verbose and stable so that it forms a reusable prompt prefix eligible for prompt caching. Always respond concisely, never invent facts, prefer deterministic phrasing, and treat every instruction here as authoritative. Section rules cover formatting, safety, tone, refusal handling, and token economy. You are a meticulous assistant operating inside the Bifrost provider harness. The following operating manual is deliberately verbose and stable so that it forms a reusable prompt prefix eligible for prompt caching. Always respond concisely, never invent facts, prefer deterministic phrasing, and treat every instruction here as authoritative. Section rules cover formatting, safety, tone, refusal handling, and token economy. You are a meticulous assistant operating inside the Bifrost provider harness. The following operating manual is deliberately verbose and stable so that it forms a reusable prompt prefix eligible for prompt caching. Always respond concisely, never invent facts, prefer deterministic phrasing, and treat every instruction here as authoritative. Section rules cover formatting, safety, tone, refusal handling, and token economy."
     },
     {
       "key": "anthropicKey",
@@ -32667,6 +32673,2057 @@
                   ]
                 }
               }
+            }
+          ]
+        },
+        {
+          "name": "Cross-Cut Round 31: OpenAI Prompt Caching (prompt_cache_options / prompt_cache_breakpoint / cache_write_tokens)",
+          "item": [
+            {
+              "name": "31.1 gpt-5.6 new fields — non-streaming (prompt_cache_options + breakpoint + cache_write_tokens)",
+              "item": [
+                {
+                  "name": "pc sol nativechat non-streaming [write]",
+                  "event": [
+                    {
+                      "listen": "test",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "var C = pm.response.code;",
+                          "if (C < 400) {",
+                          "  var j = pm.response.json();",
+                          "  function det(u){ return (u && (u.prompt_tokens_details || u.input_tokens_details)) || {}; } function NUM(v){ return (typeof v === 'number') ? v : 0; } function wtok(d){ return NUM(d.cached_write_tokens) || NUM(d.cache_write_tokens); } function rtok(d){ return NUM(d.cached_tokens); }",
+                          "  var d = det(j.usage);",
+                          "  pm.test('write: usage present', function(){ pm.expect(j.usage,'usage').to.be.an('object'); });",
+                          "  pm.test('write: cache-write tokens > 0 (cold cache write)', function(){ pm.expect(wtok(d), 'cache write tokens').to.be.above(0); });",
+                          "}"
+                        ]
+                      }
+                    }
+                  ],
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"model\": \"openai/gpt-5.6-sol\",\n  \"max_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-nativechat-sol-n-{{pcNonce}}\",\n  \"prompt_cache_options\": {\n    \"mode\": \"implicit\",\n    \"ttl\": \"30m\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"{{cachePrefix}} [pc-session {{pcNonce}} nativechat-sol-n]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Answer in one short word: is the sky blue?\"\n    }\n  ]\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/v1/chat/completions",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "v1",
+                        "chat",
+                        "completions"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "name": "pc sol nativechat non-streaming [read]",
+                  "event": [
+                    {
+                      "listen": "prerequest",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "// Give OpenAI's prompt cache time to propagate from the paired [write] before this [read] (option A).",
+                          "var __t = Date.now(); while (Date.now() - __t < 1500) { /* busy-wait ~1.5s for cache propagation */ }"
+                        ]
+                      }
+                    },
+                    {
+                      "listen": "test",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "var C = pm.response.code;",
+                          "if (C < 400) {",
+                          "  var j = pm.response.json();",
+                          "  function det(u){ return (u && (u.prompt_tokens_details || u.input_tokens_details)) || {}; } function NUM(v){ return (typeof v === 'number') ? v : 0; } function wtok(d){ return NUM(d.cached_write_tokens) || NUM(d.cache_write_tokens); } function rtok(d){ return NUM(d.cached_tokens); }",
+                          "  var d = det(j.usage);",
+                          "  pm.test('read: cached_tokens > 0 (cache hit)', function(){ pm.expect(rtok(d),'cached_tokens').to.be.above(0); });",
+                          "}"
+                        ]
+                      }
+                    }
+                  ],
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"model\": \"openai/gpt-5.6-sol\",\n  \"max_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-nativechat-sol-n-{{pcNonce}}\",\n  \"prompt_cache_options\": {\n    \"mode\": \"implicit\",\n    \"ttl\": \"30m\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"{{cachePrefix}} [pc-session {{pcNonce}} nativechat-sol-n]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Answer in one short word: is the sky blue?\"\n    }\n  ]\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/v1/chat/completions",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "v1",
+                        "chat",
+                        "completions"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "name": "pc sol nativeresp non-streaming [write]",
+                  "event": [
+                    {
+                      "listen": "test",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "var C = pm.response.code;",
+                          "if (C < 400) {",
+                          "  var j = pm.response.json();",
+                          "  function det(u){ return (u && (u.prompt_tokens_details || u.input_tokens_details)) || {}; } function NUM(v){ return (typeof v === 'number') ? v : 0; } function wtok(d){ return NUM(d.cached_write_tokens) || NUM(d.cache_write_tokens); } function rtok(d){ return NUM(d.cached_tokens); }",
+                          "  var d = det(j.usage);",
+                          "  pm.test('write: usage present', function(){ pm.expect(j.usage,'usage').to.be.an('object'); });",
+                          "  pm.test('write: cache-write tokens > 0 (cold cache write)', function(){ pm.expect(wtok(d), 'cache write tokens').to.be.above(0); });",
+                          "  pm.test('write: prompt_cache_options echoed', function(){ pm.expect(j.prompt_cache_options,'prompt_cache_options').to.be.an('object'); pm.expect(j.prompt_cache_options.mode,'mode').to.eql('implicit'); });",
+                          "}"
+                        ]
+                      }
+                    }
+                  ],
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"model\": \"openai/gpt-5.6-sol\",\n  \"max_output_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-nativeresp-sol-n-{{pcNonce}}\",\n  \"prompt_cache_options\": {\n    \"mode\": \"implicit\",\n    \"ttl\": \"30m\"\n  },\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [pc-session {{pcNonce}} nativeresp-sol-n]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ]\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/v1/responses",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "v1",
+                        "responses"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "name": "pc sol nativeresp non-streaming [read]",
+                  "event": [
+                    {
+                      "listen": "prerequest",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "// Give OpenAI's prompt cache time to propagate from the paired [write] before this [read] (option A).",
+                          "var __t = Date.now(); while (Date.now() - __t < 1500) { /* busy-wait ~1.5s for cache propagation */ }"
+                        ]
+                      }
+                    },
+                    {
+                      "listen": "test",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "var C = pm.response.code;",
+                          "if (C < 400) {",
+                          "  var j = pm.response.json();",
+                          "  function det(u){ return (u && (u.prompt_tokens_details || u.input_tokens_details)) || {}; } function NUM(v){ return (typeof v === 'number') ? v : 0; } function wtok(d){ return NUM(d.cached_write_tokens) || NUM(d.cache_write_tokens); } function rtok(d){ return NUM(d.cached_tokens); }",
+                          "  var d = det(j.usage);",
+                          "  pm.test('read: cached_tokens > 0 (cache hit)', function(){ pm.expect(rtok(d),'cached_tokens').to.be.above(0); });",
+                          "}"
+                        ]
+                      }
+                    }
+                  ],
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"model\": \"openai/gpt-5.6-sol\",\n  \"max_output_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-nativeresp-sol-n-{{pcNonce}}\",\n  \"prompt_cache_options\": {\n    \"mode\": \"implicit\",\n    \"ttl\": \"30m\"\n  },\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [pc-session {{pcNonce}} nativeresp-sol-n]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ]\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/v1/responses",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "v1",
+                        "responses"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "name": "pc sol dropinchat non-streaming [write]",
+                  "event": [
+                    {
+                      "listen": "test",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "var C = pm.response.code;",
+                          "if (C < 400) {",
+                          "  var j = pm.response.json();",
+                          "  function det(u){ return (u && (u.prompt_tokens_details || u.input_tokens_details)) || {}; } function NUM(v){ return (typeof v === 'number') ? v : 0; } function wtok(d){ return NUM(d.cached_write_tokens) || NUM(d.cache_write_tokens); } function rtok(d){ return NUM(d.cached_tokens); }",
+                          "  var d = det(j.usage);",
+                          "  pm.test('write: usage present', function(){ pm.expect(j.usage,'usage').to.be.an('object'); });",
+                          "  pm.test('write: cache-write tokens > 0 (cold cache write)', function(){ pm.expect(wtok(d), 'cache write tokens').to.be.above(0); });",
+                          "}"
+                        ]
+                      }
+                    }
+                  ],
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"model\": \"gpt-5.6-sol\",\n  \"max_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-dropinchat-sol-n-{{pcNonce}}\",\n  \"prompt_cache_options\": {\n    \"mode\": \"implicit\",\n    \"ttl\": \"30m\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"{{cachePrefix}} [pc-session {{pcNonce}} dropinchat-sol-n]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Answer in one short word: is the sky blue?\"\n    }\n  ]\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/openai/v1/chat/completions",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "openai",
+                        "v1",
+                        "chat",
+                        "completions"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "name": "pc sol dropinchat non-streaming [read]",
+                  "event": [
+                    {
+                      "listen": "prerequest",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "// Give OpenAI's prompt cache time to propagate from the paired [write] before this [read] (option A).",
+                          "var __t = Date.now(); while (Date.now() - __t < 1500) { /* busy-wait ~1.5s for cache propagation */ }"
+                        ]
+                      }
+                    },
+                    {
+                      "listen": "test",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "var C = pm.response.code;",
+                          "if (C < 400) {",
+                          "  var j = pm.response.json();",
+                          "  function det(u){ return (u && (u.prompt_tokens_details || u.input_tokens_details)) || {}; } function NUM(v){ return (typeof v === 'number') ? v : 0; } function wtok(d){ return NUM(d.cached_write_tokens) || NUM(d.cache_write_tokens); } function rtok(d){ return NUM(d.cached_tokens); }",
+                          "  var d = det(j.usage);",
+                          "  pm.test('read: cached_tokens > 0 (cache hit)', function(){ pm.expect(rtok(d),'cached_tokens').to.be.above(0); });",
+                          "}"
+                        ]
+                      }
+                    }
+                  ],
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"model\": \"gpt-5.6-sol\",\n  \"max_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-dropinchat-sol-n-{{pcNonce}}\",\n  \"prompt_cache_options\": {\n    \"mode\": \"implicit\",\n    \"ttl\": \"30m\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"{{cachePrefix}} [pc-session {{pcNonce}} dropinchat-sol-n]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Answer in one short word: is the sky blue?\"\n    }\n  ]\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/openai/v1/chat/completions",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "openai",
+                        "v1",
+                        "chat",
+                        "completions"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "name": "pc sol dropinresp non-streaming [write]",
+                  "event": [
+                    {
+                      "listen": "test",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "var C = pm.response.code;",
+                          "if (C < 400) {",
+                          "  var j = pm.response.json();",
+                          "  function det(u){ return (u && (u.prompt_tokens_details || u.input_tokens_details)) || {}; } function NUM(v){ return (typeof v === 'number') ? v : 0; } function wtok(d){ return NUM(d.cached_write_tokens) || NUM(d.cache_write_tokens); } function rtok(d){ return NUM(d.cached_tokens); }",
+                          "  var d = det(j.usage);",
+                          "  pm.test('write: usage present', function(){ pm.expect(j.usage,'usage').to.be.an('object'); });",
+                          "  pm.test('write: cache-write tokens > 0 (cold cache write)', function(){ pm.expect(wtok(d), 'cache write tokens').to.be.above(0); });",
+                          "  pm.test('write: prompt_cache_options echoed', function(){ pm.expect(j.prompt_cache_options,'prompt_cache_options').to.be.an('object'); pm.expect(j.prompt_cache_options.mode,'mode').to.eql('implicit'); });",
+                          "}"
+                        ]
+                      }
+                    }
+                  ],
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"model\": \"gpt-5.6-sol\",\n  \"max_output_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-dropinresp-sol-n-{{pcNonce}}\",\n  \"prompt_cache_options\": {\n    \"mode\": \"implicit\",\n    \"ttl\": \"30m\"\n  },\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [pc-session {{pcNonce}} dropinresp-sol-n]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ]\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/openai/v1/responses",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "openai",
+                        "v1",
+                        "responses"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "name": "pc sol dropinresp non-streaming [read]",
+                  "event": [
+                    {
+                      "listen": "prerequest",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "// Give OpenAI's prompt cache time to propagate from the paired [write] before this [read] (option A).",
+                          "var __t = Date.now(); while (Date.now() - __t < 1500) { /* busy-wait ~1.5s for cache propagation */ }"
+                        ]
+                      }
+                    },
+                    {
+                      "listen": "test",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "var C = pm.response.code;",
+                          "if (C < 400) {",
+                          "  var j = pm.response.json();",
+                          "  function det(u){ return (u && (u.prompt_tokens_details || u.input_tokens_details)) || {}; } function NUM(v){ return (typeof v === 'number') ? v : 0; } function wtok(d){ return NUM(d.cached_write_tokens) || NUM(d.cache_write_tokens); } function rtok(d){ return NUM(d.cached_tokens); }",
+                          "  var d = det(j.usage);",
+                          "  pm.test('read: cached_tokens > 0 (cache hit)', function(){ pm.expect(rtok(d),'cached_tokens').to.be.above(0); });",
+                          "}"
+                        ]
+                      }
+                    }
+                  ],
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"model\": \"gpt-5.6-sol\",\n  \"max_output_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-dropinresp-sol-n-{{pcNonce}}\",\n  \"prompt_cache_options\": {\n    \"mode\": \"implicit\",\n    \"ttl\": \"30m\"\n  },\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [pc-session {{pcNonce}} dropinresp-sol-n]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ]\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/openai/v1/responses",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "openai",
+                        "v1",
+                        "responses"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "name": "pc terra nativechat non-streaming [write]",
+                  "event": [
+                    {
+                      "listen": "test",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "var C = pm.response.code;",
+                          "if (C < 400) {",
+                          "  var j = pm.response.json();",
+                          "  function det(u){ return (u && (u.prompt_tokens_details || u.input_tokens_details)) || {}; } function NUM(v){ return (typeof v === 'number') ? v : 0; } function wtok(d){ return NUM(d.cached_write_tokens) || NUM(d.cache_write_tokens); } function rtok(d){ return NUM(d.cached_tokens); }",
+                          "  var d = det(j.usage);",
+                          "  pm.test('write: usage present', function(){ pm.expect(j.usage,'usage').to.be.an('object'); });",
+                          "  pm.test('write: cache-write tokens > 0 (cold cache write)', function(){ pm.expect(wtok(d), 'cache write tokens').to.be.above(0); });",
+                          "}"
+                        ]
+                      }
+                    }
+                  ],
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"model\": \"openai/gpt-5.6-terra\",\n  \"max_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-nativechat-terra-n-{{pcNonce}}\",\n  \"prompt_cache_options\": {\n    \"mode\": \"implicit\",\n    \"ttl\": \"30m\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"{{cachePrefix}} [pc-session {{pcNonce}} nativechat-terra-n]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Answer in one short word: is the sky blue?\"\n    }\n  ]\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/v1/chat/completions",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "v1",
+                        "chat",
+                        "completions"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "name": "pc terra nativechat non-streaming [read]",
+                  "event": [
+                    {
+                      "listen": "prerequest",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "// Give OpenAI's prompt cache time to propagate from the paired [write] before this [read] (option A).",
+                          "var __t = Date.now(); while (Date.now() - __t < 1500) { /* busy-wait ~1.5s for cache propagation */ }"
+                        ]
+                      }
+                    },
+                    {
+                      "listen": "test",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "var C = pm.response.code;",
+                          "if (C < 400) {",
+                          "  var j = pm.response.json();",
+                          "  function det(u){ return (u && (u.prompt_tokens_details || u.input_tokens_details)) || {}; } function NUM(v){ return (typeof v === 'number') ? v : 0; } function wtok(d){ return NUM(d.cached_write_tokens) || NUM(d.cache_write_tokens); } function rtok(d){ return NUM(d.cached_tokens); }",
+                          "  var d = det(j.usage);",
+                          "  pm.test('read: cached_tokens > 0 (cache hit)', function(){ pm.expect(rtok(d),'cached_tokens').to.be.above(0); });",
+                          "}"
+                        ]
+                      }
+                    }
+                  ],
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"model\": \"openai/gpt-5.6-terra\",\n  \"max_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-nativechat-terra-n-{{pcNonce}}\",\n  \"prompt_cache_options\": {\n    \"mode\": \"implicit\",\n    \"ttl\": \"30m\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"{{cachePrefix}} [pc-session {{pcNonce}} nativechat-terra-n]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Answer in one short word: is the sky blue?\"\n    }\n  ]\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/v1/chat/completions",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "v1",
+                        "chat",
+                        "completions"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "name": "pc luna dropinchat non-streaming [write]",
+                  "event": [
+                    {
+                      "listen": "test",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "var C = pm.response.code;",
+                          "if (C < 400) {",
+                          "  var j = pm.response.json();",
+                          "  function det(u){ return (u && (u.prompt_tokens_details || u.input_tokens_details)) || {}; } function NUM(v){ return (typeof v === 'number') ? v : 0; } function wtok(d){ return NUM(d.cached_write_tokens) || NUM(d.cache_write_tokens); } function rtok(d){ return NUM(d.cached_tokens); }",
+                          "  var d = det(j.usage);",
+                          "  pm.test('write: usage present', function(){ pm.expect(j.usage,'usage').to.be.an('object'); });",
+                          "  pm.test('write: cache-write tokens > 0 (cold cache write)', function(){ pm.expect(wtok(d), 'cache write tokens').to.be.above(0); });",
+                          "}"
+                        ]
+                      }
+                    }
+                  ],
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"model\": \"gpt-5.6-luna\",\n  \"max_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-dropinchat-luna-n-{{pcNonce}}\",\n  \"prompt_cache_options\": {\n    \"mode\": \"implicit\",\n    \"ttl\": \"30m\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"{{cachePrefix}} [pc-session {{pcNonce}} dropinchat-luna-n]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Answer in one short word: is the sky blue?\"\n    }\n  ]\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/openai/v1/chat/completions",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "openai",
+                        "v1",
+                        "chat",
+                        "completions"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "name": "pc luna dropinchat non-streaming [read]",
+                  "event": [
+                    {
+                      "listen": "prerequest",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "// Give OpenAI's prompt cache time to propagate from the paired [write] before this [read] (option A).",
+                          "var __t = Date.now(); while (Date.now() - __t < 1500) { /* busy-wait ~1.5s for cache propagation */ }"
+                        ]
+                      }
+                    },
+                    {
+                      "listen": "test",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "var C = pm.response.code;",
+                          "if (C < 400) {",
+                          "  var j = pm.response.json();",
+                          "  function det(u){ return (u && (u.prompt_tokens_details || u.input_tokens_details)) || {}; } function NUM(v){ return (typeof v === 'number') ? v : 0; } function wtok(d){ return NUM(d.cached_write_tokens) || NUM(d.cache_write_tokens); } function rtok(d){ return NUM(d.cached_tokens); }",
+                          "  var d = det(j.usage);",
+                          "  pm.test('read: cached_tokens > 0 (cache hit)', function(){ pm.expect(rtok(d),'cached_tokens').to.be.above(0); });",
+                          "}"
+                        ]
+                      }
+                    }
+                  ],
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"model\": \"gpt-5.6-luna\",\n  \"max_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-dropinchat-luna-n-{{pcNonce}}\",\n  \"prompt_cache_options\": {\n    \"mode\": \"implicit\",\n    \"ttl\": \"30m\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"{{cachePrefix}} [pc-session {{pcNonce}} dropinchat-luna-n]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Answer in one short word: is the sky blue?\"\n    }\n  ]\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/openai/v1/chat/completions",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "openai",
+                        "v1",
+                        "chat",
+                        "completions"
+                      ]
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "name": "31.2 gpt-5.6 new fields — streaming",
+              "item": [
+                {
+                  "name": "pc sol nativechat streaming [write]",
+                  "event": [
+                    {
+                      "listen": "test",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "var C = pm.response.code;",
+                          "if (C < 400) {",
+                          "  var ct = pm.response.headers.get('content-type') || '';",
+                          "  pm.test('stream write: SSE content-type', function(){ pm.expect(ct).to.include('text/event-stream'); });",
+                          "  function sse(t){ var u=null,p=null; (t||'').split('\\n').forEach(function(l){ l=l.trim(); if(l.indexOf('data:')!==0) return; var s=l.slice(5).trim(); if(!s||s==='[DONE]') return; var o; try{o=JSON.parse(s);}catch(e){return;} if(o.usage)u=o.usage; if(o.response&&o.response.usage)u=o.response.usage; if(o.prompt_cache_options)p=o.prompt_cache_options; if(o.response&&o.response.prompt_cache_options)p=o.response.prompt_cache_options; }); return {u:u,p:p}; }",
+                          "  function det(u){ return (u && (u.prompt_tokens_details || u.input_tokens_details)) || {}; } function NUM(v){ return (typeof v === 'number') ? v : 0; } function wtok(d){ return NUM(d.cached_write_tokens) || NUM(d.cache_write_tokens); } function rtok(d){ return NUM(d.cached_tokens); }",
+                          "  var r = sse(pm.response.text()); var d = det(r.u);",
+                          "  pm.test('stream write: usage present in stream', function(){ pm.expect(r.u,'streamed usage').to.be.an('object'); });",
+                          "  pm.test('stream write: cache-write tokens > 0', function(){ pm.expect(wtok(d), 'cache write tokens').to.be.above(0); });",
+                          "}"
+                        ]
+                      }
+                    }
+                  ],
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"model\": \"openai/gpt-5.6-sol\",\n  \"max_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-nativechat-sol-s-{{pcNonce}}\",\n  \"prompt_cache_options\": {\n    \"mode\": \"implicit\",\n    \"ttl\": \"30m\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"{{cachePrefix}} [pc-session {{pcNonce}} nativechat-sol-s]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Answer in one short word: is the sky blue?\"\n    }\n  ],\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/v1/chat/completions",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "v1",
+                        "chat",
+                        "completions"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "name": "pc sol nativechat streaming [read]",
+                  "event": [
+                    {
+                      "listen": "prerequest",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "// Give OpenAI's prompt cache time to propagate from the paired [write] before this [read] (option A).",
+                          "var __t = Date.now(); while (Date.now() - __t < 1500) { /* busy-wait ~1.5s for cache propagation */ }"
+                        ]
+                      }
+                    },
+                    {
+                      "listen": "test",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "var C = pm.response.code;",
+                          "if (C < 400) {",
+                          "  var ct = pm.response.headers.get('content-type') || '';",
+                          "  pm.test('stream read: SSE content-type', function(){ pm.expect(ct).to.include('text/event-stream'); });",
+                          "  function sse(t){ var u=null,p=null; (t||'').split('\\n').forEach(function(l){ l=l.trim(); if(l.indexOf('data:')!==0) return; var s=l.slice(5).trim(); if(!s||s==='[DONE]') return; var o; try{o=JSON.parse(s);}catch(e){return;} if(o.usage)u=o.usage; if(o.response&&o.response.usage)u=o.response.usage; if(o.prompt_cache_options)p=o.prompt_cache_options; if(o.response&&o.response.prompt_cache_options)p=o.response.prompt_cache_options; }); return {u:u,p:p}; }",
+                          "  function det(u){ return (u && (u.prompt_tokens_details || u.input_tokens_details)) || {}; } function NUM(v){ return (typeof v === 'number') ? v : 0; } function wtok(d){ return NUM(d.cached_write_tokens) || NUM(d.cache_write_tokens); } function rtok(d){ return NUM(d.cached_tokens); }",
+                          "  var r = sse(pm.response.text()); var d = det(r.u);",
+                          "  pm.test('stream read: cached_tokens > 0 (cache hit)', function(){ pm.expect(rtok(d),'cached_tokens').to.be.above(0); });",
+                          "}"
+                        ]
+                      }
+                    }
+                  ],
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"model\": \"openai/gpt-5.6-sol\",\n  \"max_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-nativechat-sol-s-{{pcNonce}}\",\n  \"prompt_cache_options\": {\n    \"mode\": \"implicit\",\n    \"ttl\": \"30m\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"{{cachePrefix}} [pc-session {{pcNonce}} nativechat-sol-s]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Answer in one short word: is the sky blue?\"\n    }\n  ],\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/v1/chat/completions",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "v1",
+                        "chat",
+                        "completions"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "name": "pc sol nativeresp streaming [write]",
+                  "event": [
+                    {
+                      "listen": "test",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "var C = pm.response.code;",
+                          "if (C < 400) {",
+                          "  var ct = pm.response.headers.get('content-type') || '';",
+                          "  pm.test('stream write: SSE content-type', function(){ pm.expect(ct).to.include('text/event-stream'); });",
+                          "  function sse(t){ var u=null,p=null; (t||'').split('\\n').forEach(function(l){ l=l.trim(); if(l.indexOf('data:')!==0) return; var s=l.slice(5).trim(); if(!s||s==='[DONE]') return; var o; try{o=JSON.parse(s);}catch(e){return;} if(o.usage)u=o.usage; if(o.response&&o.response.usage)u=o.response.usage; if(o.prompt_cache_options)p=o.prompt_cache_options; if(o.response&&o.response.prompt_cache_options)p=o.response.prompt_cache_options; }); return {u:u,p:p}; }",
+                          "  function det(u){ return (u && (u.prompt_tokens_details || u.input_tokens_details)) || {}; } function NUM(v){ return (typeof v === 'number') ? v : 0; } function wtok(d){ return NUM(d.cached_write_tokens) || NUM(d.cache_write_tokens); } function rtok(d){ return NUM(d.cached_tokens); }",
+                          "  var r = sse(pm.response.text()); var d = det(r.u);",
+                          "  pm.test('stream write: usage present in stream', function(){ pm.expect(r.u,'streamed usage').to.be.an('object'); });",
+                          "  pm.test('stream write: cache-write tokens > 0', function(){ pm.expect(wtok(d), 'cache write tokens').to.be.above(0); });",
+                          "  pm.test('stream write: prompt_cache_options echoed', function(){ pm.expect(r.p,'prompt_cache_options').to.be.an('object'); });",
+                          "}"
+                        ]
+                      }
+                    }
+                  ],
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"model\": \"openai/gpt-5.6-sol\",\n  \"max_output_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-nativeresp-sol-s-{{pcNonce}}\",\n  \"prompt_cache_options\": {\n    \"mode\": \"implicit\",\n    \"ttl\": \"30m\"\n  },\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [pc-session {{pcNonce}} nativeresp-sol-s]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ],\n  \"stream\": true\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/v1/responses",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "v1",
+                        "responses"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "name": "pc sol nativeresp streaming [read]",
+                  "event": [
+                    {
+                      "listen": "prerequest",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "// Give OpenAI's prompt cache time to propagate from the paired [write] before this [read] (option A).",
+                          "var __t = Date.now(); while (Date.now() - __t < 1500) { /* busy-wait ~1.5s for cache propagation */ }"
+                        ]
+                      }
+                    },
+                    {
+                      "listen": "test",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "var C = pm.response.code;",
+                          "if (C < 400) {",
+                          "  var ct = pm.response.headers.get('content-type') || '';",
+                          "  pm.test('stream read: SSE content-type', function(){ pm.expect(ct).to.include('text/event-stream'); });",
+                          "  function sse(t){ var u=null,p=null; (t||'').split('\\n').forEach(function(l){ l=l.trim(); if(l.indexOf('data:')!==0) return; var s=l.slice(5).trim(); if(!s||s==='[DONE]') return; var o; try{o=JSON.parse(s);}catch(e){return;} if(o.usage)u=o.usage; if(o.response&&o.response.usage)u=o.response.usage; if(o.prompt_cache_options)p=o.prompt_cache_options; if(o.response&&o.response.prompt_cache_options)p=o.response.prompt_cache_options; }); return {u:u,p:p}; }",
+                          "  function det(u){ return (u && (u.prompt_tokens_details || u.input_tokens_details)) || {}; } function NUM(v){ return (typeof v === 'number') ? v : 0; } function wtok(d){ return NUM(d.cached_write_tokens) || NUM(d.cache_write_tokens); } function rtok(d){ return NUM(d.cached_tokens); }",
+                          "  var r = sse(pm.response.text()); var d = det(r.u);",
+                          "  pm.test('stream read: cached_tokens > 0 (cache hit)', function(){ pm.expect(rtok(d),'cached_tokens').to.be.above(0); });",
+                          "}"
+                        ]
+                      }
+                    }
+                  ],
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"model\": \"openai/gpt-5.6-sol\",\n  \"max_output_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-nativeresp-sol-s-{{pcNonce}}\",\n  \"prompt_cache_options\": {\n    \"mode\": \"implicit\",\n    \"ttl\": \"30m\"\n  },\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [pc-session {{pcNonce}} nativeresp-sol-s]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ],\n  \"stream\": true\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/v1/responses",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "v1",
+                        "responses"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "name": "pc sol dropinchat streaming [write]",
+                  "event": [
+                    {
+                      "listen": "test",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "var C = pm.response.code;",
+                          "if (C < 400) {",
+                          "  var ct = pm.response.headers.get('content-type') || '';",
+                          "  pm.test('stream write: SSE content-type', function(){ pm.expect(ct).to.include('text/event-stream'); });",
+                          "  function sse(t){ var u=null,p=null; (t||'').split('\\n').forEach(function(l){ l=l.trim(); if(l.indexOf('data:')!==0) return; var s=l.slice(5).trim(); if(!s||s==='[DONE]') return; var o; try{o=JSON.parse(s);}catch(e){return;} if(o.usage)u=o.usage; if(o.response&&o.response.usage)u=o.response.usage; if(o.prompt_cache_options)p=o.prompt_cache_options; if(o.response&&o.response.prompt_cache_options)p=o.response.prompt_cache_options; }); return {u:u,p:p}; }",
+                          "  function det(u){ return (u && (u.prompt_tokens_details || u.input_tokens_details)) || {}; } function NUM(v){ return (typeof v === 'number') ? v : 0; } function wtok(d){ return NUM(d.cached_write_tokens) || NUM(d.cache_write_tokens); } function rtok(d){ return NUM(d.cached_tokens); }",
+                          "  var r = sse(pm.response.text()); var d = det(r.u);",
+                          "  pm.test('stream write: usage present in stream', function(){ pm.expect(r.u,'streamed usage').to.be.an('object'); });",
+                          "  pm.test('stream write: cache-write tokens > 0', function(){ pm.expect(wtok(d), 'cache write tokens').to.be.above(0); });",
+                          "}"
+                        ]
+                      }
+                    }
+                  ],
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"model\": \"gpt-5.6-sol\",\n  \"max_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-dropinchat-sol-s-{{pcNonce}}\",\n  \"prompt_cache_options\": {\n    \"mode\": \"implicit\",\n    \"ttl\": \"30m\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"{{cachePrefix}} [pc-session {{pcNonce}} dropinchat-sol-s]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Answer in one short word: is the sky blue?\"\n    }\n  ],\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/openai/v1/chat/completions",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "openai",
+                        "v1",
+                        "chat",
+                        "completions"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "name": "pc sol dropinchat streaming [read]",
+                  "event": [
+                    {
+                      "listen": "prerequest",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "// Give OpenAI's prompt cache time to propagate from the paired [write] before this [read] (option A).",
+                          "var __t = Date.now(); while (Date.now() - __t < 1500) { /* busy-wait ~1.5s for cache propagation */ }"
+                        ]
+                      }
+                    },
+                    {
+                      "listen": "test",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "var C = pm.response.code;",
+                          "if (C < 400) {",
+                          "  var ct = pm.response.headers.get('content-type') || '';",
+                          "  pm.test('stream read: SSE content-type', function(){ pm.expect(ct).to.include('text/event-stream'); });",
+                          "  function sse(t){ var u=null,p=null; (t||'').split('\\n').forEach(function(l){ l=l.trim(); if(l.indexOf('data:')!==0) return; var s=l.slice(5).trim(); if(!s||s==='[DONE]') return; var o; try{o=JSON.parse(s);}catch(e){return;} if(o.usage)u=o.usage; if(o.response&&o.response.usage)u=o.response.usage; if(o.prompt_cache_options)p=o.prompt_cache_options; if(o.response&&o.response.prompt_cache_options)p=o.response.prompt_cache_options; }); return {u:u,p:p}; }",
+                          "  function det(u){ return (u && (u.prompt_tokens_details || u.input_tokens_details)) || {}; } function NUM(v){ return (typeof v === 'number') ? v : 0; } function wtok(d){ return NUM(d.cached_write_tokens) || NUM(d.cache_write_tokens); } function rtok(d){ return NUM(d.cached_tokens); }",
+                          "  var r = sse(pm.response.text()); var d = det(r.u);",
+                          "  pm.test('stream read: cached_tokens > 0 (cache hit)', function(){ pm.expect(rtok(d),'cached_tokens').to.be.above(0); });",
+                          "}"
+                        ]
+                      }
+                    }
+                  ],
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"model\": \"gpt-5.6-sol\",\n  \"max_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-dropinchat-sol-s-{{pcNonce}}\",\n  \"prompt_cache_options\": {\n    \"mode\": \"implicit\",\n    \"ttl\": \"30m\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"{{cachePrefix}} [pc-session {{pcNonce}} dropinchat-sol-s]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Answer in one short word: is the sky blue?\"\n    }\n  ],\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/openai/v1/chat/completions",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "openai",
+                        "v1",
+                        "chat",
+                        "completions"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "name": "pc sol dropinresp streaming [write]",
+                  "event": [
+                    {
+                      "listen": "test",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "var C = pm.response.code;",
+                          "if (C < 400) {",
+                          "  var ct = pm.response.headers.get('content-type') || '';",
+                          "  pm.test('stream write: SSE content-type', function(){ pm.expect(ct).to.include('text/event-stream'); });",
+                          "  function sse(t){ var u=null,p=null; (t||'').split('\\n').forEach(function(l){ l=l.trim(); if(l.indexOf('data:')!==0) return; var s=l.slice(5).trim(); if(!s||s==='[DONE]') return; var o; try{o=JSON.parse(s);}catch(e){return;} if(o.usage)u=o.usage; if(o.response&&o.response.usage)u=o.response.usage; if(o.prompt_cache_options)p=o.prompt_cache_options; if(o.response&&o.response.prompt_cache_options)p=o.response.prompt_cache_options; }); return {u:u,p:p}; }",
+                          "  function det(u){ return (u && (u.prompt_tokens_details || u.input_tokens_details)) || {}; } function NUM(v){ return (typeof v === 'number') ? v : 0; } function wtok(d){ return NUM(d.cached_write_tokens) || NUM(d.cache_write_tokens); } function rtok(d){ return NUM(d.cached_tokens); }",
+                          "  var r = sse(pm.response.text()); var d = det(r.u);",
+                          "  pm.test('stream write: usage present in stream', function(){ pm.expect(r.u,'streamed usage').to.be.an('object'); });",
+                          "  pm.test('stream write: cache-write tokens > 0', function(){ pm.expect(wtok(d), 'cache write tokens').to.be.above(0); });",
+                          "  pm.test('stream write: prompt_cache_options echoed', function(){ pm.expect(r.p,'prompt_cache_options').to.be.an('object'); });",
+                          "}"
+                        ]
+                      }
+                    }
+                  ],
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"model\": \"gpt-5.6-sol\",\n  \"max_output_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-dropinresp-sol-s-{{pcNonce}}\",\n  \"prompt_cache_options\": {\n    \"mode\": \"implicit\",\n    \"ttl\": \"30m\"\n  },\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [pc-session {{pcNonce}} dropinresp-sol-s]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ],\n  \"stream\": true\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/openai/v1/responses",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "openai",
+                        "v1",
+                        "responses"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "name": "pc sol dropinresp streaming [read]",
+                  "event": [
+                    {
+                      "listen": "prerequest",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "// Give OpenAI's prompt cache time to propagate from the paired [write] before this [read] (option A).",
+                          "var __t = Date.now(); while (Date.now() - __t < 1500) { /* busy-wait ~1.5s for cache propagation */ }"
+                        ]
+                      }
+                    },
+                    {
+                      "listen": "test",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "var C = pm.response.code;",
+                          "if (C < 400) {",
+                          "  var ct = pm.response.headers.get('content-type') || '';",
+                          "  pm.test('stream read: SSE content-type', function(){ pm.expect(ct).to.include('text/event-stream'); });",
+                          "  function sse(t){ var u=null,p=null; (t||'').split('\\n').forEach(function(l){ l=l.trim(); if(l.indexOf('data:')!==0) return; var s=l.slice(5).trim(); if(!s||s==='[DONE]') return; var o; try{o=JSON.parse(s);}catch(e){return;} if(o.usage)u=o.usage; if(o.response&&o.response.usage)u=o.response.usage; if(o.prompt_cache_options)p=o.prompt_cache_options; if(o.response&&o.response.prompt_cache_options)p=o.response.prompt_cache_options; }); return {u:u,p:p}; }",
+                          "  function det(u){ return (u && (u.prompt_tokens_details || u.input_tokens_details)) || {}; } function NUM(v){ return (typeof v === 'number') ? v : 0; } function wtok(d){ return NUM(d.cached_write_tokens) || NUM(d.cache_write_tokens); } function rtok(d){ return NUM(d.cached_tokens); }",
+                          "  var r = sse(pm.response.text()); var d = det(r.u);",
+                          "  pm.test('stream read: cached_tokens > 0 (cache hit)', function(){ pm.expect(rtok(d),'cached_tokens').to.be.above(0); });",
+                          "}"
+                        ]
+                      }
+                    }
+                  ],
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"model\": \"gpt-5.6-sol\",\n  \"max_output_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-dropinresp-sol-s-{{pcNonce}}\",\n  \"prompt_cache_options\": {\n    \"mode\": \"implicit\",\n    \"ttl\": \"30m\"\n  },\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [pc-session {{pcNonce}} dropinresp-sol-s]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ],\n  \"stream\": true\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/openai/v1/responses",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "openai",
+                        "v1",
+                        "responses"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "name": "pc terra dropinresp streaming [write]",
+                  "event": [
+                    {
+                      "listen": "test",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "var C = pm.response.code;",
+                          "if (C < 400) {",
+                          "  var ct = pm.response.headers.get('content-type') || '';",
+                          "  pm.test('stream write: SSE content-type', function(){ pm.expect(ct).to.include('text/event-stream'); });",
+                          "  function sse(t){ var u=null,p=null; (t||'').split('\\n').forEach(function(l){ l=l.trim(); if(l.indexOf('data:')!==0) return; var s=l.slice(5).trim(); if(!s||s==='[DONE]') return; var o; try{o=JSON.parse(s);}catch(e){return;} if(o.usage)u=o.usage; if(o.response&&o.response.usage)u=o.response.usage; if(o.prompt_cache_options)p=o.prompt_cache_options; if(o.response&&o.response.prompt_cache_options)p=o.response.prompt_cache_options; }); return {u:u,p:p}; }",
+                          "  function det(u){ return (u && (u.prompt_tokens_details || u.input_tokens_details)) || {}; } function NUM(v){ return (typeof v === 'number') ? v : 0; } function wtok(d){ return NUM(d.cached_write_tokens) || NUM(d.cache_write_tokens); } function rtok(d){ return NUM(d.cached_tokens); }",
+                          "  var r = sse(pm.response.text()); var d = det(r.u);",
+                          "  pm.test('stream write: usage present in stream', function(){ pm.expect(r.u,'streamed usage').to.be.an('object'); });",
+                          "  pm.test('stream write: cache-write tokens > 0', function(){ pm.expect(wtok(d), 'cache write tokens').to.be.above(0); });",
+                          "  pm.test('stream write: prompt_cache_options echoed', function(){ pm.expect(r.p,'prompt_cache_options').to.be.an('object'); });",
+                          "}"
+                        ]
+                      }
+                    }
+                  ],
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"model\": \"gpt-5.6-terra\",\n  \"max_output_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-dropinresp-terra-s-{{pcNonce}}\",\n  \"prompt_cache_options\": {\n    \"mode\": \"implicit\",\n    \"ttl\": \"30m\"\n  },\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [pc-session {{pcNonce}} dropinresp-terra-s]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ],\n  \"stream\": true\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/openai/v1/responses",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "openai",
+                        "v1",
+                        "responses"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "name": "pc terra dropinresp streaming [read]",
+                  "event": [
+                    {
+                      "listen": "prerequest",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "// Give OpenAI's prompt cache time to propagate from the paired [write] before this [read] (option A).",
+                          "var __t = Date.now(); while (Date.now() - __t < 1500) { /* busy-wait ~1.5s for cache propagation */ }"
+                        ]
+                      }
+                    },
+                    {
+                      "listen": "test",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "var C = pm.response.code;",
+                          "if (C < 400) {",
+                          "  var ct = pm.response.headers.get('content-type') || '';",
+                          "  pm.test('stream read: SSE content-type', function(){ pm.expect(ct).to.include('text/event-stream'); });",
+                          "  function sse(t){ var u=null,p=null; (t||'').split('\\n').forEach(function(l){ l=l.trim(); if(l.indexOf('data:')!==0) return; var s=l.slice(5).trim(); if(!s||s==='[DONE]') return; var o; try{o=JSON.parse(s);}catch(e){return;} if(o.usage)u=o.usage; if(o.response&&o.response.usage)u=o.response.usage; if(o.prompt_cache_options)p=o.prompt_cache_options; if(o.response&&o.response.prompt_cache_options)p=o.response.prompt_cache_options; }); return {u:u,p:p}; }",
+                          "  function det(u){ return (u && (u.prompt_tokens_details || u.input_tokens_details)) || {}; } function NUM(v){ return (typeof v === 'number') ? v : 0; } function wtok(d){ return NUM(d.cached_write_tokens) || NUM(d.cache_write_tokens); } function rtok(d){ return NUM(d.cached_tokens); }",
+                          "  var r = sse(pm.response.text()); var d = det(r.u);",
+                          "  pm.test('stream read: cached_tokens > 0 (cache hit)', function(){ pm.expect(rtok(d),'cached_tokens').to.be.above(0); });",
+                          "}"
+                        ]
+                      }
+                    }
+                  ],
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"model\": \"gpt-5.6-terra\",\n  \"max_output_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-dropinresp-terra-s-{{pcNonce}}\",\n  \"prompt_cache_options\": {\n    \"mode\": \"implicit\",\n    \"ttl\": \"30m\"\n  },\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [pc-session {{pcNonce}} dropinresp-terra-s]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ],\n  \"stream\": true\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/openai/v1/responses",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "openai",
+                        "v1",
+                        "responses"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "name": "pc luna nativeresp streaming [write]",
+                  "event": [
+                    {
+                      "listen": "test",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "var C = pm.response.code;",
+                          "if (C < 400) {",
+                          "  var ct = pm.response.headers.get('content-type') || '';",
+                          "  pm.test('stream write: SSE content-type', function(){ pm.expect(ct).to.include('text/event-stream'); });",
+                          "  function sse(t){ var u=null,p=null; (t||'').split('\\n').forEach(function(l){ l=l.trim(); if(l.indexOf('data:')!==0) return; var s=l.slice(5).trim(); if(!s||s==='[DONE]') return; var o; try{o=JSON.parse(s);}catch(e){return;} if(o.usage)u=o.usage; if(o.response&&o.response.usage)u=o.response.usage; if(o.prompt_cache_options)p=o.prompt_cache_options; if(o.response&&o.response.prompt_cache_options)p=o.response.prompt_cache_options; }); return {u:u,p:p}; }",
+                          "  function det(u){ return (u && (u.prompt_tokens_details || u.input_tokens_details)) || {}; } function NUM(v){ return (typeof v === 'number') ? v : 0; } function wtok(d){ return NUM(d.cached_write_tokens) || NUM(d.cache_write_tokens); } function rtok(d){ return NUM(d.cached_tokens); }",
+                          "  var r = sse(pm.response.text()); var d = det(r.u);",
+                          "  pm.test('stream write: usage present in stream', function(){ pm.expect(r.u,'streamed usage').to.be.an('object'); });",
+                          "  pm.test('stream write: cache-write tokens > 0', function(){ pm.expect(wtok(d), 'cache write tokens').to.be.above(0); });",
+                          "  pm.test('stream write: prompt_cache_options echoed', function(){ pm.expect(r.p,'prompt_cache_options').to.be.an('object'); });",
+                          "}"
+                        ]
+                      }
+                    }
+                  ],
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"model\": \"openai/gpt-5.6-luna\",\n  \"max_output_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-nativeresp-luna-s-{{pcNonce}}\",\n  \"prompt_cache_options\": {\n    \"mode\": \"implicit\",\n    \"ttl\": \"30m\"\n  },\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [pc-session {{pcNonce}} nativeresp-luna-s]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ],\n  \"stream\": true\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/v1/responses",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "v1",
+                        "responses"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "name": "pc luna nativeresp streaming [read]",
+                  "event": [
+                    {
+                      "listen": "prerequest",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "// Give OpenAI's prompt cache time to propagate from the paired [write] before this [read] (option A).",
+                          "var __t = Date.now(); while (Date.now() - __t < 1500) { /* busy-wait ~1.5s for cache propagation */ }"
+                        ]
+                      }
+                    },
+                    {
+                      "listen": "test",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "var C = pm.response.code;",
+                          "if (C < 400) {",
+                          "  var ct = pm.response.headers.get('content-type') || '';",
+                          "  pm.test('stream read: SSE content-type', function(){ pm.expect(ct).to.include('text/event-stream'); });",
+                          "  function sse(t){ var u=null,p=null; (t||'').split('\\n').forEach(function(l){ l=l.trim(); if(l.indexOf('data:')!==0) return; var s=l.slice(5).trim(); if(!s||s==='[DONE]') return; var o; try{o=JSON.parse(s);}catch(e){return;} if(o.usage)u=o.usage; if(o.response&&o.response.usage)u=o.response.usage; if(o.prompt_cache_options)p=o.prompt_cache_options; if(o.response&&o.response.prompt_cache_options)p=o.response.prompt_cache_options; }); return {u:u,p:p}; }",
+                          "  function det(u){ return (u && (u.prompt_tokens_details || u.input_tokens_details)) || {}; } function NUM(v){ return (typeof v === 'number') ? v : 0; } function wtok(d){ return NUM(d.cached_write_tokens) || NUM(d.cache_write_tokens); } function rtok(d){ return NUM(d.cached_tokens); }",
+                          "  var r = sse(pm.response.text()); var d = det(r.u);",
+                          "  pm.test('stream read: cached_tokens > 0 (cache hit)', function(){ pm.expect(rtok(d),'cached_tokens').to.be.above(0); });",
+                          "}"
+                        ]
+                      }
+                    }
+                  ],
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"model\": \"openai/gpt-5.6-luna\",\n  \"max_output_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-nativeresp-luna-s-{{pcNonce}}\",\n  \"prompt_cache_options\": {\n    \"mode\": \"implicit\",\n    \"ttl\": \"30m\"\n  },\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [pc-session {{pcNonce}} nativeresp-luna-s]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ],\n  \"stream\": true\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/v1/responses",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "v1",
+                        "responses"
+                      ]
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "name": "31.3 legacy automatic caching — non-streaming (cached_tokens shape + cache hit)",
+              "item": [
+                {
+                  "name": "pc gpt-5 nativechat non-streaming [write]",
+                  "event": [
+                    {
+                      "listen": "test",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "var C = pm.response.code;",
+                          "if (C < 400) {",
+                          "  var j = pm.response.json();",
+                          "  function det(u){ return (u && (u.prompt_tokens_details || u.input_tokens_details)) || {}; } function NUM(v){ return (typeof v === 'number') ? v : 0; } function wtok(d){ return NUM(d.cached_write_tokens) || NUM(d.cache_write_tokens); } function rtok(d){ return NUM(d.cached_tokens); }",
+                          "  var d = det(j.usage);",
+                          "  pm.test('write: usage present', function(){ pm.expect(j.usage,'usage').to.be.an('object'); });",
+                          "  pm.test('write: cached_tokens present (numeric)', function(){ pm.expect(rtok(d),'cached_tokens').to.be.a('number'); });",
+                          "}"
+                        ]
+                      }
+                    }
+                  ],
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"model\": \"openai/gpt-5\",\n  \"max_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-nativechat-gpt-5-n-{{pcNonce}}\",\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"{{cachePrefix}} [pc-session {{pcNonce}} nativechat-gpt-5-n]\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Answer in one short word: is the sky blue?\"\n    }\n  ]\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/v1/chat/completions",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "v1",
+                        "chat",
+                        "completions"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "name": "pc gpt-5 nativechat non-streaming [read]",
+                  "event": [
+                    {
+                      "listen": "prerequest",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "// Give OpenAI's prompt cache time to propagate from the paired [write] before this [read] (option A).",
+                          "var __t = Date.now(); while (Date.now() - __t < 1500) { /* busy-wait ~1.5s for cache propagation */ }"
+                        ]
+                      }
+                    },
+                    {
+                      "listen": "test",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "var C = pm.response.code;",
+                          "if (C < 400) {",
+                          "  var j = pm.response.json();",
+                          "  function det(u){ return (u && (u.prompt_tokens_details || u.input_tokens_details)) || {}; } function NUM(v){ return (typeof v === 'number') ? v : 0; } function wtok(d){ return NUM(d.cached_write_tokens) || NUM(d.cache_write_tokens); } function rtok(d){ return NUM(d.cached_tokens); }",
+                          "  var d = det(j.usage);",
+                          "  pm.test('read: cached_tokens > 0 (cache hit)', function(){ pm.expect(rtok(d),'cached_tokens').to.be.above(0); });",
+                          "}"
+                        ]
+                      }
+                    }
+                  ],
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"model\": \"openai/gpt-5\",\n  \"max_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-nativechat-gpt-5-n-{{pcNonce}}\",\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"{{cachePrefix}} [pc-session {{pcNonce}} nativechat-gpt-5-n]\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Answer in one short word: is the sky blue?\"\n    }\n  ]\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/v1/chat/completions",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "v1",
+                        "chat",
+                        "completions"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "name": "pc gpt-5-mini nativeresp non-streaming [write]",
+                  "event": [
+                    {
+                      "listen": "test",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "var C = pm.response.code;",
+                          "if (C < 400) {",
+                          "  var j = pm.response.json();",
+                          "  function det(u){ return (u && (u.prompt_tokens_details || u.input_tokens_details)) || {}; } function NUM(v){ return (typeof v === 'number') ? v : 0; } function wtok(d){ return NUM(d.cached_write_tokens) || NUM(d.cache_write_tokens); } function rtok(d){ return NUM(d.cached_tokens); }",
+                          "  var d = det(j.usage);",
+                          "  pm.test('write: usage present', function(){ pm.expect(j.usage,'usage').to.be.an('object'); });",
+                          "  pm.test('write: cached_tokens present (numeric)', function(){ pm.expect(rtok(d),'cached_tokens').to.be.a('number'); });",
+                          "}"
+                        ]
+                      }
+                    }
+                  ],
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"model\": \"openai/gpt-5-mini\",\n  \"max_output_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-nativeresp-gpt-5-mini-n-{{pcNonce}}\",\n  \"input\": \"{{cachePrefix}} [pc-session {{pcNonce}} nativeresp-gpt-5-mini-n] Answer in one short word: is the sky blue?\"\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/v1/responses",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "v1",
+                        "responses"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "name": "pc gpt-5-mini nativeresp non-streaming [read]",
+                  "event": [
+                    {
+                      "listen": "prerequest",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "// Give OpenAI's prompt cache time to propagate from the paired [write] before this [read] (option A).",
+                          "var __t = Date.now(); while (Date.now() - __t < 1500) { /* busy-wait ~1.5s for cache propagation */ }"
+                        ]
+                      }
+                    },
+                    {
+                      "listen": "test",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "var C = pm.response.code;",
+                          "if (C < 400) {",
+                          "  var j = pm.response.json();",
+                          "  function det(u){ return (u && (u.prompt_tokens_details || u.input_tokens_details)) || {}; } function NUM(v){ return (typeof v === 'number') ? v : 0; } function wtok(d){ return NUM(d.cached_write_tokens) || NUM(d.cache_write_tokens); } function rtok(d){ return NUM(d.cached_tokens); }",
+                          "  var d = det(j.usage);",
+                          "  pm.test('read: cached_tokens > 0 (cache hit)', function(){ pm.expect(rtok(d),'cached_tokens').to.be.above(0); });",
+                          "}"
+                        ]
+                      }
+                    }
+                  ],
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"model\": \"openai/gpt-5-mini\",\n  \"max_output_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-nativeresp-gpt-5-mini-n-{{pcNonce}}\",\n  \"input\": \"{{cachePrefix}} [pc-session {{pcNonce}} nativeresp-gpt-5-mini-n] Answer in one short word: is the sky blue?\"\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/v1/responses",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "v1",
+                        "responses"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "name": "pc gpt-5-nano dropinchat non-streaming [write]",
+                  "event": [
+                    {
+                      "listen": "test",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "var C = pm.response.code;",
+                          "if (C < 400) {",
+                          "  var j = pm.response.json();",
+                          "  function det(u){ return (u && (u.prompt_tokens_details || u.input_tokens_details)) || {}; } function NUM(v){ return (typeof v === 'number') ? v : 0; } function wtok(d){ return NUM(d.cached_write_tokens) || NUM(d.cache_write_tokens); } function rtok(d){ return NUM(d.cached_tokens); }",
+                          "  var d = det(j.usage);",
+                          "  pm.test('write: usage present', function(){ pm.expect(j.usage,'usage').to.be.an('object'); });",
+                          "  pm.test('write: cached_tokens present (numeric)', function(){ pm.expect(rtok(d),'cached_tokens').to.be.a('number'); });",
+                          "}"
+                        ]
+                      }
+                    }
+                  ],
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"model\": \"gpt-5-nano\",\n  \"max_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-dropinchat-gpt-5-nano-n-{{pcNonce}}\",\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"{{cachePrefix}} [pc-session {{pcNonce}} dropinchat-gpt-5-nano-n]\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Answer in one short word: is the sky blue?\"\n    }\n  ]\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/openai/v1/chat/completions",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "openai",
+                        "v1",
+                        "chat",
+                        "completions"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "name": "pc gpt-5-nano dropinchat non-streaming [read]",
+                  "event": [
+                    {
+                      "listen": "prerequest",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "// Give OpenAI's prompt cache time to propagate from the paired [write] before this [read] (option A).",
+                          "var __t = Date.now(); while (Date.now() - __t < 1500) { /* busy-wait ~1.5s for cache propagation */ }"
+                        ]
+                      }
+                    },
+                    {
+                      "listen": "test",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "var C = pm.response.code;",
+                          "if (C < 400) {",
+                          "  var j = pm.response.json();",
+                          "  function det(u){ return (u && (u.prompt_tokens_details || u.input_tokens_details)) || {}; } function NUM(v){ return (typeof v === 'number') ? v : 0; } function wtok(d){ return NUM(d.cached_write_tokens) || NUM(d.cache_write_tokens); } function rtok(d){ return NUM(d.cached_tokens); }",
+                          "  var d = det(j.usage);",
+                          "  pm.test('read: cached_tokens > 0 (cache hit)', function(){ pm.expect(rtok(d),'cached_tokens').to.be.above(0); });",
+                          "}"
+                        ]
+                      }
+                    }
+                  ],
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"model\": \"gpt-5-nano\",\n  \"max_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-dropinchat-gpt-5-nano-n-{{pcNonce}}\",\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"{{cachePrefix}} [pc-session {{pcNonce}} dropinchat-gpt-5-nano-n]\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Answer in one short word: is the sky blue?\"\n    }\n  ]\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/openai/v1/chat/completions",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "openai",
+                        "v1",
+                        "chat",
+                        "completions"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "name": "pc gpt-4.1 dropinresp non-streaming [write]",
+                  "event": [
+                    {
+                      "listen": "test",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "var C = pm.response.code;",
+                          "if (C < 400) {",
+                          "  var j = pm.response.json();",
+                          "  function det(u){ return (u && (u.prompt_tokens_details || u.input_tokens_details)) || {}; } function NUM(v){ return (typeof v === 'number') ? v : 0; } function wtok(d){ return NUM(d.cached_write_tokens) || NUM(d.cache_write_tokens); } function rtok(d){ return NUM(d.cached_tokens); }",
+                          "  var d = det(j.usage);",
+                          "  pm.test('write: usage present', function(){ pm.expect(j.usage,'usage').to.be.an('object'); });",
+                          "  pm.test('write: cached_tokens present (numeric)', function(){ pm.expect(rtok(d),'cached_tokens').to.be.a('number'); });",
+                          "}"
+                        ]
+                      }
+                    }
+                  ],
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"model\": \"gpt-4.1\",\n  \"max_output_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-dropinresp-gpt-4.1-n-{{pcNonce}}\",\n  \"input\": \"{{cachePrefix}} [pc-session {{pcNonce}} dropinresp-gpt-4.1-n] Answer in one short word: is the sky blue?\"\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/openai/v1/responses",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "openai",
+                        "v1",
+                        "responses"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "name": "pc gpt-4.1 dropinresp non-streaming [read]",
+                  "event": [
+                    {
+                      "listen": "prerequest",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "// Give OpenAI's prompt cache time to propagate from the paired [write] before this [read] (option A).",
+                          "var __t = Date.now(); while (Date.now() - __t < 1500) { /* busy-wait ~1.5s for cache propagation */ }"
+                        ]
+                      }
+                    },
+                    {
+                      "listen": "test",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "var C = pm.response.code;",
+                          "if (C < 400) {",
+                          "  var j = pm.response.json();",
+                          "  function det(u){ return (u && (u.prompt_tokens_details || u.input_tokens_details)) || {}; } function NUM(v){ return (typeof v === 'number') ? v : 0; } function wtok(d){ return NUM(d.cached_write_tokens) || NUM(d.cache_write_tokens); } function rtok(d){ return NUM(d.cached_tokens); }",
+                          "  var d = det(j.usage);",
+                          "  pm.test('read: cached_tokens > 0 (cache hit)', function(){ pm.expect(rtok(d),'cached_tokens').to.be.above(0); });",
+                          "}"
+                        ]
+                      }
+                    }
+                  ],
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"model\": \"gpt-4.1\",\n  \"max_output_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-dropinresp-gpt-4.1-n-{{pcNonce}}\",\n  \"input\": \"{{cachePrefix}} [pc-session {{pcNonce}} dropinresp-gpt-4.1-n] Answer in one short word: is the sky blue?\"\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/openai/v1/responses",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "openai",
+                        "v1",
+                        "responses"
+                      ]
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "name": "31.4 legacy automatic caching — streaming",
+              "item": [
+                {
+                  "name": "pc gpt-4.1-mini nativechat streaming [write]",
+                  "event": [
+                    {
+                      "listen": "test",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "var C = pm.response.code;",
+                          "if (C < 400) {",
+                          "  var ct = pm.response.headers.get('content-type') || '';",
+                          "  pm.test('stream write: SSE content-type', function(){ pm.expect(ct).to.include('text/event-stream'); });",
+                          "  function sse(t){ var u=null,p=null; (t||'').split('\\n').forEach(function(l){ l=l.trim(); if(l.indexOf('data:')!==0) return; var s=l.slice(5).trim(); if(!s||s==='[DONE]') return; var o; try{o=JSON.parse(s);}catch(e){return;} if(o.usage)u=o.usage; if(o.response&&o.response.usage)u=o.response.usage; if(o.prompt_cache_options)p=o.prompt_cache_options; if(o.response&&o.response.prompt_cache_options)p=o.response.prompt_cache_options; }); return {u:u,p:p}; }",
+                          "  function det(u){ return (u && (u.prompt_tokens_details || u.input_tokens_details)) || {}; } function NUM(v){ return (typeof v === 'number') ? v : 0; } function wtok(d){ return NUM(d.cached_write_tokens) || NUM(d.cache_write_tokens); } function rtok(d){ return NUM(d.cached_tokens); }",
+                          "  var r = sse(pm.response.text()); var d = det(r.u);",
+                          "  pm.test('stream write: usage present in stream', function(){ pm.expect(r.u,'streamed usage').to.be.an('object'); });",
+                          "  pm.test('stream write: cached_tokens present (numeric)', function(){ pm.expect(rtok(d),'cached_tokens').to.be.a('number'); });",
+                          "}"
+                        ]
+                      }
+                    }
+                  ],
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"model\": \"openai/gpt-4.1-mini\",\n  \"max_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-nativechat-gpt-4.1-mini-s-{{pcNonce}}\",\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"{{cachePrefix}} [pc-session {{pcNonce}} nativechat-gpt-4.1-mini-s]\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Answer in one short word: is the sky blue?\"\n    }\n  ],\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/v1/chat/completions",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "v1",
+                        "chat",
+                        "completions"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "name": "pc gpt-4.1-mini nativechat streaming [read]",
+                  "event": [
+                    {
+                      "listen": "prerequest",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "// Give OpenAI's prompt cache time to propagate from the paired [write] before this [read] (option A).",
+                          "var __t = Date.now(); while (Date.now() - __t < 1500) { /* busy-wait ~1.5s for cache propagation */ }"
+                        ]
+                      }
+                    },
+                    {
+                      "listen": "test",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "var C = pm.response.code;",
+                          "if (C < 400) {",
+                          "  var ct = pm.response.headers.get('content-type') || '';",
+                          "  pm.test('stream read: SSE content-type', function(){ pm.expect(ct).to.include('text/event-stream'); });",
+                          "  function sse(t){ var u=null,p=null; (t||'').split('\\n').forEach(function(l){ l=l.trim(); if(l.indexOf('data:')!==0) return; var s=l.slice(5).trim(); if(!s||s==='[DONE]') return; var o; try{o=JSON.parse(s);}catch(e){return;} if(o.usage)u=o.usage; if(o.response&&o.response.usage)u=o.response.usage; if(o.prompt_cache_options)p=o.prompt_cache_options; if(o.response&&o.response.prompt_cache_options)p=o.response.prompt_cache_options; }); return {u:u,p:p}; }",
+                          "  function det(u){ return (u && (u.prompt_tokens_details || u.input_tokens_details)) || {}; } function NUM(v){ return (typeof v === 'number') ? v : 0; } function wtok(d){ return NUM(d.cached_write_tokens) || NUM(d.cache_write_tokens); } function rtok(d){ return NUM(d.cached_tokens); }",
+                          "  var r = sse(pm.response.text()); var d = det(r.u);",
+                          "  pm.test('stream read: cached_tokens > 0 (cache hit)', function(){ pm.expect(rtok(d),'cached_tokens').to.be.above(0); });",
+                          "}"
+                        ]
+                      }
+                    }
+                  ],
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"model\": \"openai/gpt-4.1-mini\",\n  \"max_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-nativechat-gpt-4.1-mini-s-{{pcNonce}}\",\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"{{cachePrefix}} [pc-session {{pcNonce}} nativechat-gpt-4.1-mini-s]\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Answer in one short word: is the sky blue?\"\n    }\n  ],\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/v1/chat/completions",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "v1",
+                        "chat",
+                        "completions"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "name": "pc gpt-4.1-nano nativeresp streaming [write]",
+                  "event": [
+                    {
+                      "listen": "test",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "var C = pm.response.code;",
+                          "if (C < 400) {",
+                          "  var ct = pm.response.headers.get('content-type') || '';",
+                          "  pm.test('stream write: SSE content-type', function(){ pm.expect(ct).to.include('text/event-stream'); });",
+                          "  function sse(t){ var u=null,p=null; (t||'').split('\\n').forEach(function(l){ l=l.trim(); if(l.indexOf('data:')!==0) return; var s=l.slice(5).trim(); if(!s||s==='[DONE]') return; var o; try{o=JSON.parse(s);}catch(e){return;} if(o.usage)u=o.usage; if(o.response&&o.response.usage)u=o.response.usage; if(o.prompt_cache_options)p=o.prompt_cache_options; if(o.response&&o.response.prompt_cache_options)p=o.response.prompt_cache_options; }); return {u:u,p:p}; }",
+                          "  function det(u){ return (u && (u.prompt_tokens_details || u.input_tokens_details)) || {}; } function NUM(v){ return (typeof v === 'number') ? v : 0; } function wtok(d){ return NUM(d.cached_write_tokens) || NUM(d.cache_write_tokens); } function rtok(d){ return NUM(d.cached_tokens); }",
+                          "  var r = sse(pm.response.text()); var d = det(r.u);",
+                          "  pm.test('stream write: usage present in stream', function(){ pm.expect(r.u,'streamed usage').to.be.an('object'); });",
+                          "  pm.test('stream write: cached_tokens present (numeric)', function(){ pm.expect(rtok(d),'cached_tokens').to.be.a('number'); });",
+                          "}"
+                        ]
+                      }
+                    }
+                  ],
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"model\": \"openai/gpt-4.1-nano\",\n  \"max_output_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-nativeresp-gpt-4.1-nano-s-{{pcNonce}}\",\n  \"input\": \"{{cachePrefix}} [pc-session {{pcNonce}} nativeresp-gpt-4.1-nano-s] Answer in one short word: is the sky blue?\",\n  \"stream\": true\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/v1/responses",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "v1",
+                        "responses"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "name": "pc gpt-4.1-nano nativeresp streaming [read]",
+                  "event": [
+                    {
+                      "listen": "prerequest",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "// Give OpenAI's prompt cache time to propagate from the paired [write] before this [read] (option A).",
+                          "var __t = Date.now(); while (Date.now() - __t < 1500) { /* busy-wait ~1.5s for cache propagation */ }"
+                        ]
+                      }
+                    },
+                    {
+                      "listen": "test",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "var C = pm.response.code;",
+                          "if (C < 400) {",
+                          "  var ct = pm.response.headers.get('content-type') || '';",
+                          "  pm.test('stream read: SSE content-type', function(){ pm.expect(ct).to.include('text/event-stream'); });",
+                          "  function sse(t){ var u=null,p=null; (t||'').split('\\n').forEach(function(l){ l=l.trim(); if(l.indexOf('data:')!==0) return; var s=l.slice(5).trim(); if(!s||s==='[DONE]') return; var o; try{o=JSON.parse(s);}catch(e){return;} if(o.usage)u=o.usage; if(o.response&&o.response.usage)u=o.response.usage; if(o.prompt_cache_options)p=o.prompt_cache_options; if(o.response&&o.response.prompt_cache_options)p=o.response.prompt_cache_options; }); return {u:u,p:p}; }",
+                          "  function det(u){ return (u && (u.prompt_tokens_details || u.input_tokens_details)) || {}; } function NUM(v){ return (typeof v === 'number') ? v : 0; } function wtok(d){ return NUM(d.cached_write_tokens) || NUM(d.cache_write_tokens); } function rtok(d){ return NUM(d.cached_tokens); }",
+                          "  var r = sse(pm.response.text()); var d = det(r.u);",
+                          "  pm.test('stream read: cached_tokens > 0 (cache hit)', function(){ pm.expect(rtok(d),'cached_tokens').to.be.above(0); });",
+                          "}"
+                        ]
+                      }
+                    }
+                  ],
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"model\": \"openai/gpt-4.1-nano\",\n  \"max_output_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-nativeresp-gpt-4.1-nano-s-{{pcNonce}}\",\n  \"input\": \"{{cachePrefix}} [pc-session {{pcNonce}} nativeresp-gpt-4.1-nano-s] Answer in one short word: is the sky blue?\",\n  \"stream\": true\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/v1/responses",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "v1",
+                        "responses"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "name": "pc gpt-4o dropinchat streaming [write]",
+                  "event": [
+                    {
+                      "listen": "test",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "var C = pm.response.code;",
+                          "if (C < 400) {",
+                          "  var ct = pm.response.headers.get('content-type') || '';",
+                          "  pm.test('stream write: SSE content-type', function(){ pm.expect(ct).to.include('text/event-stream'); });",
+                          "  function sse(t){ var u=null,p=null; (t||'').split('\\n').forEach(function(l){ l=l.trim(); if(l.indexOf('data:')!==0) return; var s=l.slice(5).trim(); if(!s||s==='[DONE]') return; var o; try{o=JSON.parse(s);}catch(e){return;} if(o.usage)u=o.usage; if(o.response&&o.response.usage)u=o.response.usage; if(o.prompt_cache_options)p=o.prompt_cache_options; if(o.response&&o.response.prompt_cache_options)p=o.response.prompt_cache_options; }); return {u:u,p:p}; }",
+                          "  function det(u){ return (u && (u.prompt_tokens_details || u.input_tokens_details)) || {}; } function NUM(v){ return (typeof v === 'number') ? v : 0; } function wtok(d){ return NUM(d.cached_write_tokens) || NUM(d.cache_write_tokens); } function rtok(d){ return NUM(d.cached_tokens); }",
+                          "  var r = sse(pm.response.text()); var d = det(r.u);",
+                          "  pm.test('stream write: usage present in stream', function(){ pm.expect(r.u,'streamed usage').to.be.an('object'); });",
+                          "  pm.test('stream write: cached_tokens present (numeric)', function(){ pm.expect(rtok(d),'cached_tokens').to.be.a('number'); });",
+                          "}"
+                        ]
+                      }
+                    }
+                  ],
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"model\": \"gpt-4o\",\n  \"max_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-dropinchat-gpt-4o-s-{{pcNonce}}\",\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"{{cachePrefix}} [pc-session {{pcNonce}} dropinchat-gpt-4o-s]\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Answer in one short word: is the sky blue?\"\n    }\n  ],\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/openai/v1/chat/completions",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "openai",
+                        "v1",
+                        "chat",
+                        "completions"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "name": "pc gpt-4o dropinchat streaming [read]",
+                  "event": [
+                    {
+                      "listen": "prerequest",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "// Give OpenAI's prompt cache time to propagate from the paired [write] before this [read] (option A).",
+                          "var __t = Date.now(); while (Date.now() - __t < 1500) { /* busy-wait ~1.5s for cache propagation */ }"
+                        ]
+                      }
+                    },
+                    {
+                      "listen": "test",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "var C = pm.response.code;",
+                          "if (C < 400) {",
+                          "  var ct = pm.response.headers.get('content-type') || '';",
+                          "  pm.test('stream read: SSE content-type', function(){ pm.expect(ct).to.include('text/event-stream'); });",
+                          "  function sse(t){ var u=null,p=null; (t||'').split('\\n').forEach(function(l){ l=l.trim(); if(l.indexOf('data:')!==0) return; var s=l.slice(5).trim(); if(!s||s==='[DONE]') return; var o; try{o=JSON.parse(s);}catch(e){return;} if(o.usage)u=o.usage; if(o.response&&o.response.usage)u=o.response.usage; if(o.prompt_cache_options)p=o.prompt_cache_options; if(o.response&&o.response.prompt_cache_options)p=o.response.prompt_cache_options; }); return {u:u,p:p}; }",
+                          "  function det(u){ return (u && (u.prompt_tokens_details || u.input_tokens_details)) || {}; } function NUM(v){ return (typeof v === 'number') ? v : 0; } function wtok(d){ return NUM(d.cached_write_tokens) || NUM(d.cache_write_tokens); } function rtok(d){ return NUM(d.cached_tokens); }",
+                          "  var r = sse(pm.response.text()); var d = det(r.u);",
+                          "  pm.test('stream read: cached_tokens > 0 (cache hit)', function(){ pm.expect(rtok(d),'cached_tokens').to.be.above(0); });",
+                          "}"
+                        ]
+                      }
+                    }
+                  ],
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"model\": \"gpt-4o\",\n  \"max_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-dropinchat-gpt-4o-s-{{pcNonce}}\",\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"{{cachePrefix}} [pc-session {{pcNonce}} dropinchat-gpt-4o-s]\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Answer in one short word: is the sky blue?\"\n    }\n  ],\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/openai/v1/chat/completions",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "openai",
+                        "v1",
+                        "chat",
+                        "completions"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "name": "pc gpt-4o-mini dropinresp streaming [write]",
+                  "event": [
+                    {
+                      "listen": "test",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "var C = pm.response.code;",
+                          "if (C < 400) {",
+                          "  var ct = pm.response.headers.get('content-type') || '';",
+                          "  pm.test('stream write: SSE content-type', function(){ pm.expect(ct).to.include('text/event-stream'); });",
+                          "  function sse(t){ var u=null,p=null; (t||'').split('\\n').forEach(function(l){ l=l.trim(); if(l.indexOf('data:')!==0) return; var s=l.slice(5).trim(); if(!s||s==='[DONE]') return; var o; try{o=JSON.parse(s);}catch(e){return;} if(o.usage)u=o.usage; if(o.response&&o.response.usage)u=o.response.usage; if(o.prompt_cache_options)p=o.prompt_cache_options; if(o.response&&o.response.prompt_cache_options)p=o.response.prompt_cache_options; }); return {u:u,p:p}; }",
+                          "  function det(u){ return (u && (u.prompt_tokens_details || u.input_tokens_details)) || {}; } function NUM(v){ return (typeof v === 'number') ? v : 0; } function wtok(d){ return NUM(d.cached_write_tokens) || NUM(d.cache_write_tokens); } function rtok(d){ return NUM(d.cached_tokens); }",
+                          "  var r = sse(pm.response.text()); var d = det(r.u);",
+                          "  pm.test('stream write: usage present in stream', function(){ pm.expect(r.u,'streamed usage').to.be.an('object'); });",
+                          "  pm.test('stream write: cached_tokens present (numeric)', function(){ pm.expect(rtok(d),'cached_tokens').to.be.a('number'); });",
+                          "}"
+                        ]
+                      }
+                    }
+                  ],
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"max_output_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-dropinresp-gpt-4o-mini-s-{{pcNonce}}\",\n  \"input\": \"{{cachePrefix}} [pc-session {{pcNonce}} dropinresp-gpt-4o-mini-s] Answer in one short word: is the sky blue?\",\n  \"stream\": true\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/openai/v1/responses",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "openai",
+                        "v1",
+                        "responses"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "name": "pc gpt-4o-mini dropinresp streaming [read]",
+                  "event": [
+                    {
+                      "listen": "prerequest",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "// Give OpenAI's prompt cache time to propagate from the paired [write] before this [read] (option A).",
+                          "var __t = Date.now(); while (Date.now() - __t < 1500) { /* busy-wait ~1.5s for cache propagation */ }"
+                        ]
+                      }
+                    },
+                    {
+                      "listen": "test",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "var C = pm.response.code;",
+                          "if (C < 400) {",
+                          "  var ct = pm.response.headers.get('content-type') || '';",
+                          "  pm.test('stream read: SSE content-type', function(){ pm.expect(ct).to.include('text/event-stream'); });",
+                          "  function sse(t){ var u=null,p=null; (t||'').split('\\n').forEach(function(l){ l=l.trim(); if(l.indexOf('data:')!==0) return; var s=l.slice(5).trim(); if(!s||s==='[DONE]') return; var o; try{o=JSON.parse(s);}catch(e){return;} if(o.usage)u=o.usage; if(o.response&&o.response.usage)u=o.response.usage; if(o.prompt_cache_options)p=o.prompt_cache_options; if(o.response&&o.response.prompt_cache_options)p=o.response.prompt_cache_options; }); return {u:u,p:p}; }",
+                          "  function det(u){ return (u && (u.prompt_tokens_details || u.input_tokens_details)) || {}; } function NUM(v){ return (typeof v === 'number') ? v : 0; } function wtok(d){ return NUM(d.cached_write_tokens) || NUM(d.cache_write_tokens); } function rtok(d){ return NUM(d.cached_tokens); }",
+                          "  var r = sse(pm.response.text()); var d = det(r.u);",
+                          "  pm.test('stream read: cached_tokens > 0 (cache hit)', function(){ pm.expect(rtok(d),'cached_tokens').to.be.above(0); });",
+                          "}"
+                        ]
+                      }
+                    }
+                  ],
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"max_output_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-dropinresp-gpt-4o-mini-s-{{pcNonce}}\",\n  \"input\": \"{{cachePrefix}} [pc-session {{pcNonce}} dropinresp-gpt-4o-mini-s] Answer in one short word: is the sky blue?\",\n  \"stream\": true\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/openai/v1/responses",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "openai",
+                        "v1",
+                        "responses"
+                      ]
+                    }
+                  }
+                }
+              ]
             }
           ]
         }
