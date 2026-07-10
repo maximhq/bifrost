@@ -157,12 +157,12 @@ func (provider *SarvamProvider) Transcription(ctx *schemas.BifrostContext, key s
 
 	responseBody, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), nil, resp.Body(), provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	var sarvamResp SarvamTranscriptionResponse
 	if err := sonic.Unmarshal(responseBody, &sarvamResp); err != nil {
-		return nil, providerUtils.NewBifrostOperationError("failed to parse Sarvam speech-to-text response", err)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("failed to parse Sarvam speech-to-text response", err), nil, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	response := ToBifrostTranscriptionResponse(&sarvamResp)
