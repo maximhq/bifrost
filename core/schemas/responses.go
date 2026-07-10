@@ -449,6 +449,11 @@ func (resp *BifrostResponsesResponse) WithDefaults() *BifrostResponsesResponse {
 	if result.Usage != nil {
 		result.Usage.Iterations = nil
 		result.Usage.Type = nil
+		if result.Usage.OutputTokensDetails != nil {
+			// num_search_queries is a Bifrost billing signal (web_search_call count /
+			// server_tool_use), not part of OpenAI's output_tokens_details.
+			result.Usage.OutputTokensDetails.NumSearchQueries = nil
+		}
 		if result.Usage.InputTokensDetails == nil {
 			result.Usage.InputTokensDetails = &ResponsesResponseInputTokens{CachedReadTokens: 0, CachedWriteTokens: 0}
 		}

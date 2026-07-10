@@ -2080,3 +2080,110 @@ func TestToOpenAIResponsesRequest_StripsThoughtSignatureFromCallID(t *testing.T)
 		t.Error("original function_call_output call_id was mutated")
 	}
 }
+
+// wsItem builds a Responses output item of the given type and status for
+// setResponsesWebSearchCount tests.
+func wsItem(t schemas.ResponsesMessageType, status string) schemas.ResponsesMessage {
+	m := schemas.ResponsesMessage{Type: schemas.Ptr(t)}
+	if status != "" {
+		m.Status = schemas.Ptr(status)
+	}
+	return m
+}
+
+// TestSetResponsesWebSearchCount verifies OpenAI web-search billing: only
+// completed web_search_call output items are counted into NumSearchQueries,
+// which cost.go multiplies by search_context_cost_per_query.
+func TestSetResponsesWebSearchCount(t *testing.T) {
+	const completed = schemas.ResponsesResponseStatusCompleted
+
+	tests := []struct {
+		name   string
+		output []schemas.ResponsesMessage
+		want   *int // nil => NumSearchQueries must remain unset
+	}{
+		{
+			name: "three completed calls counted",
+			output: []schemas.ResponsesMessage{
+				wsItem(schemas.ResponsesMessageTypeWebSearchCall, completed),
+				wsItem(schemas.ResponsesMessageTypeMessage, completed),
+				wsItem(schemas.ResponsesMessageTypeWebSearchCall, completed),
+				wsItem(schemas.ResponsesMessageTypeWebSearchCall, completed),
+			},
+			want: schemas.Ptr(3),
+		},
+		{
+			name: "failed and in_progress calls excluded",
+			output: []schemas.ResponsesMessage{
+				wsItem(schemas.ResponsesMessageTypeWebSearchCall, completed),
+				wsItem(schemas.ResponsesMessageTypeWebSearchCall, schemas.ResponsesResponseStatusFailed),
+				wsItem(schemas.ResponsesMessageTypeWebSearchCall, schemas.ResponsesResponseStatusInProgress),
+			},
+			want: schemas.Ptr(1),
+		},
+		{
+			name: "status-less web_search_call not counted",
+			output: []schemas.ResponsesMessage{
+				wsItem(schemas.ResponsesMessageTypeWebSearchCall, ""),
+			},
+			want: nil,
+		},
+		{
+			name: "no web search leaves usage untouched",
+			output: []schemas.ResponsesMessage{
+				wsItem(schemas.ResponsesMessageTypeMessage, completed),
+			},
+			want: nil,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := &schemas.BifrostResponsesResponse{
+				Output: tc.output,
+				Usage:  &schemas.ResponsesResponseUsage{OutputTokens: 10},
+			}
+			setResponsesWebSearchCount(resp)
+
+			got := resp.Usage.OutputTokensDetails
+			switch {
+			case tc.want == nil:
+				if got != nil && got.NumSearchQueries != nil {
+					t.Fatalf("NumSearchQueries = %d, want unset", *got.NumSearchQueries)
+				}
+			default:
+				if got == nil || got.NumSearchQueries == nil {
+					t.Fatal("NumSearchQueries not set")
+				}
+				if *got.NumSearchQueries != *tc.want {
+					t.Fatalf("NumSearchQueries = %d, want %d", *got.NumSearchQueries, *tc.want)
+				}
+			}
+		})
+	}
+}
+
+// TestSetResponsesWebSearchCount_PreservesOutputDetails ensures the count is
+// merged into pre-existing OutputTokensDetails and that nil usage is a no-op.
+func TestSetResponsesWebSearchCount_PreservesOutputDetails(t *testing.T) {
+	resp := &schemas.BifrostResponsesResponse{
+		Output: []schemas.ResponsesMessage{
+			wsItem(schemas.ResponsesMessageTypeWebSearchCall, schemas.ResponsesResponseStatusCompleted),
+		},
+		Usage: &schemas.ResponsesResponseUsage{
+			OutputTokens:        10,
+			OutputTokensDetails: &schemas.ResponsesResponseOutputTokens{ReasoningTokens: 7},
+		},
+	}
+	setResponsesWebSearchCount(resp)
+	if resp.Usage.OutputTokensDetails.ReasoningTokens != 7 {
+		t.Fatalf("ReasoningTokens clobbered: got %d, want 7", resp.Usage.OutputTokensDetails.ReasoningTokens)
+	}
+	if resp.Usage.OutputTokensDetails.NumSearchQueries == nil || *resp.Usage.OutputTokensDetails.NumSearchQueries != 1 {
+		t.Fatal("NumSearchQueries not set alongside existing details")
+	}
+
+	// nil usage / nil response must not panic.
+	setResponsesWebSearchCount(&schemas.BifrostResponsesResponse{Output: resp.Output})
+	setResponsesWebSearchCount(nil)
+}

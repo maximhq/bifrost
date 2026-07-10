@@ -1615,6 +1615,8 @@ func HandleOpenAIResponsesRequest(
 	response.ExtraFields.Latency = latency.Milliseconds()
 	response.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
 
+	setResponsesWebSearchCount(response)
+
 	// Set raw request if enabled
 	if sendBackRawRequest {
 		response.ExtraFields.RawRequest = rawRequest
@@ -1956,6 +1958,7 @@ func HandleOpenAIResponsesStreaming(
 
 				response.ExtraFields.ChunkIndex = response.SequenceNumber
 				if response.Type == schemas.ResponsesStreamResponseTypeCompleted || response.Type == schemas.ResponsesStreamResponseTypeIncomplete {
+					setResponsesWebSearchCount(response.Response)
 					// Set raw request if enabled
 					if sendBackRawRequest {
 						providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonBody)
