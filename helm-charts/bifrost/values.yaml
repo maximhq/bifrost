@@ -1063,6 +1063,55 @@ bifrost:
     #       tool_name: "create_pull_request"
     #       action: "include"
 
+  # Alerting: declarative alert channels and rules seeded from Helm.
+  # Rendered directly as top-level `alerting` in config.json.
+  # alerting:
+  #   history_retention_days: 365   # Days to retain alert history (0 = no pruning)
+  #   webhook_network:
+  #     allow_http: false            # Allow http (not just https) webhook URLs
+  #     allow_private_network: false # Allow webhooks targeting private/loopback addresses
+  #   channels:
+  #     - id: "slack-ops"
+  #       name: "Ops Slack"
+  #       type: slack                # Options: slack, microsoft_teams, pagerduty, webhook
+  #       enabled: true
+  #       cooldown_seconds: 300
+  #       config:
+  #         webhook_url: "env.SLACK_WEBHOOK_URL"
+  #     - id: "pagerduty-critical"
+  #       name: "PagerDuty Critical"
+  #       type: pagerduty
+  #       enabled: true
+  #       config:
+  #         routing_key: "env.PAGERDUTY_ROUTING_KEY"
+  #     - id: "teams-alerts"
+  #       name: "Teams Alerts"
+  #       type: microsoft_teams
+  #       enabled: true
+  #       config:
+  #         webhook_url: "env.TEAMS_WEBHOOK_URL"
+  #     - id: "generic-webhook"
+  #       name: "Generic Webhook"
+  #       type: webhook
+  #       enabled: true
+  #       config:
+  #         url: "https://my-internal-hook.corp/alerts"
+  #         headers:
+  #           X-Alert-Token: "env.WEBHOOK_AUTH_HEADER"
+  #   rules:
+  #     - id: "budget-80pct"
+  #       name: "Budget 80% Alert"
+  #       enabled: true
+  #       scope_type: virtual_key    # Options: virtual_key, team, customer
+  #       scope_id: "vk-1"
+  #       cel_expression: "budget_usage_percent >= 80"
+  #       cooldown_seconds: 3600
+  #       notify_once_per_reset_cycle: false
+  #       channel_ids: ["slack-ops"]
+  #       # Optionally target a specific budget:
+  #       # target_type: budget
+  #       # target_id: "budget-1"
+
   # Audit logs configuration for CADF-compliant activity logging
   auditLogs:
     disabled: false
