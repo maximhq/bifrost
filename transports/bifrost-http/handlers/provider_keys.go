@@ -338,149 +338,139 @@ func (h *ProviderHandler) mergeUpdatedKey(oldRawKey, oldRedactedKey, updateKey s
 	}
 
 	if updateKey.AzureKeyConfig != nil && oldRedactedKey.AzureKeyConfig != nil && oldRawKey.AzureKeyConfig != nil {
-		if updateKey.AzureKeyConfig.Endpoint.IsRedacted() &&
-			updateKey.AzureKeyConfig.Endpoint.Equals(&oldRedactedKey.AzureKeyConfig.Endpoint) {
+		if updateKey.AzureKeyConfig.Endpoint.IsRedacted() && !updateKey.AzureKeyConfig.Endpoint.IsFromSecret() {
 			mergedKey.AzureKeyConfig.Endpoint = oldRawKey.AzureKeyConfig.Endpoint
 		}
 		if updateKey.AzureKeyConfig.ClientID != nil &&
 			oldRedactedKey.AzureKeyConfig.ClientID != nil &&
 			oldRawKey.AzureKeyConfig != nil &&
 			updateKey.AzureKeyConfig.ClientID.IsRedacted() &&
-			updateKey.AzureKeyConfig.ClientID.Equals(oldRedactedKey.AzureKeyConfig.ClientID) {
+			!updateKey.AzureKeyConfig.ClientID.IsFromSecret() {
 			mergedKey.AzureKeyConfig.ClientID = oldRawKey.AzureKeyConfig.ClientID
 		}
 		if updateKey.AzureKeyConfig.ClientSecret != nil &&
 			oldRedactedKey.AzureKeyConfig.ClientSecret != nil &&
 			oldRawKey.AzureKeyConfig != nil &&
 			updateKey.AzureKeyConfig.ClientSecret.IsRedacted() &&
-			updateKey.AzureKeyConfig.ClientSecret.Equals(oldRedactedKey.AzureKeyConfig.ClientSecret) {
+			!updateKey.AzureKeyConfig.ClientSecret.IsFromSecret() {
 			mergedKey.AzureKeyConfig.ClientSecret = oldRawKey.AzureKeyConfig.ClientSecret
 		}
 		if updateKey.AzureKeyConfig.TenantID != nil &&
 			oldRedactedKey.AzureKeyConfig.TenantID != nil &&
 			oldRawKey.AzureKeyConfig != nil &&
 			updateKey.AzureKeyConfig.TenantID.IsRedacted() &&
-			updateKey.AzureKeyConfig.TenantID.Equals(oldRedactedKey.AzureKeyConfig.TenantID) {
+			!updateKey.AzureKeyConfig.TenantID.IsFromSecret() {
 			mergedKey.AzureKeyConfig.TenantID = oldRawKey.AzureKeyConfig.TenantID
 		}
 	}
 
 	if updateKey.VertexKeyConfig != nil && oldRedactedKey.VertexKeyConfig != nil && oldRawKey.VertexKeyConfig != nil {
-		if updateKey.VertexKeyConfig.ProjectID.IsRedacted() &&
-			updateKey.VertexKeyConfig.ProjectID.Equals(&oldRedactedKey.VertexKeyConfig.ProjectID) {
+		if updateKey.VertexKeyConfig.ProjectID.IsRedacted() && !updateKey.VertexKeyConfig.ProjectID.IsFromSecret() {
 			mergedKey.VertexKeyConfig.ProjectID = oldRawKey.VertexKeyConfig.ProjectID
 		}
-		if updateKey.VertexKeyConfig.ProjectNumber.IsRedacted() &&
-			updateKey.VertexKeyConfig.ProjectNumber.Equals(&oldRedactedKey.VertexKeyConfig.ProjectNumber) {
+		if updateKey.VertexKeyConfig.ProjectNumber.IsRedacted() && !updateKey.VertexKeyConfig.ProjectNumber.IsFromSecret() {
 			mergedKey.VertexKeyConfig.ProjectNumber = oldRawKey.VertexKeyConfig.ProjectNumber
 		}
-		if updateKey.VertexKeyConfig.Region.IsRedacted() &&
-			updateKey.VertexKeyConfig.Region.Equals(&oldRedactedKey.VertexKeyConfig.Region) {
+		if updateKey.VertexKeyConfig.Region.IsRedacted() && !updateKey.VertexKeyConfig.Region.IsFromSecret() {
 			mergedKey.VertexKeyConfig.Region = oldRawKey.VertexKeyConfig.Region
 		}
-		if updateKey.VertexKeyConfig.AuthCredentials.IsRedacted() &&
-			updateKey.VertexKeyConfig.AuthCredentials.Equals(&oldRedactedKey.VertexKeyConfig.AuthCredentials) {
+		if updateKey.VertexKeyConfig.AuthCredentials.IsRedacted() && !updateKey.VertexKeyConfig.AuthCredentials.IsFromSecret() {
 			mergedKey.VertexKeyConfig.AuthCredentials = oldRawKey.VertexKeyConfig.AuthCredentials
 		}
 	}
 
 	if updateKey.BedrockKeyConfig != nil && oldRedactedKey.BedrockKeyConfig != nil && oldRawKey.BedrockKeyConfig != nil {
-		if updateKey.BedrockKeyConfig.AccessKey.IsRedacted() &&
-			updateKey.BedrockKeyConfig.AccessKey.Equals(&oldRedactedKey.BedrockKeyConfig.AccessKey) {
+		if updateKey.BedrockKeyConfig.AccessKey.IsRedacted() && !updateKey.BedrockKeyConfig.AccessKey.IsFromSecret() {
 			mergedKey.BedrockKeyConfig.AccessKey = oldRawKey.BedrockKeyConfig.AccessKey
 		}
-		if updateKey.BedrockKeyConfig.SecretKey.IsRedacted() &&
-			updateKey.BedrockKeyConfig.SecretKey.Equals(&oldRedactedKey.BedrockKeyConfig.SecretKey) {
+		if updateKey.BedrockKeyConfig.SecretKey.IsRedacted() && !updateKey.BedrockKeyConfig.SecretKey.IsFromSecret() {
 			mergedKey.BedrockKeyConfig.SecretKey = oldRawKey.BedrockKeyConfig.SecretKey
 		}
 		if updateKey.BedrockKeyConfig.SessionToken != nil &&
 			oldRedactedKey.BedrockKeyConfig.SessionToken != nil &&
 			oldRawKey.BedrockKeyConfig != nil &&
 			updateKey.BedrockKeyConfig.SessionToken.IsRedacted() &&
-			updateKey.BedrockKeyConfig.SessionToken.Equals(oldRedactedKey.BedrockKeyConfig.SessionToken) {
+			!updateKey.BedrockKeyConfig.SessionToken.IsFromSecret() {
 			mergedKey.BedrockKeyConfig.SessionToken = oldRawKey.BedrockKeyConfig.SessionToken
 		}
 		if updateKey.BedrockKeyConfig.Region != nil &&
 			oldRedactedKey.BedrockKeyConfig.Region != nil &&
 			oldRawKey.BedrockKeyConfig != nil &&
 			updateKey.BedrockKeyConfig.Region.IsRedacted() &&
-			updateKey.BedrockKeyConfig.Region.Equals(oldRedactedKey.BedrockKeyConfig.Region) {
+			!updateKey.BedrockKeyConfig.Region.IsFromSecret() {
 			mergedKey.BedrockKeyConfig.Region = oldRawKey.BedrockKeyConfig.Region
 		}
 		if updateKey.BedrockKeyConfig.ARN != nil &&
 			oldRedactedKey.BedrockKeyConfig.ARN != nil &&
 			oldRawKey.BedrockKeyConfig != nil &&
 			updateKey.BedrockKeyConfig.ARN.IsRedacted() &&
-			updateKey.BedrockKeyConfig.ARN.Equals(oldRedactedKey.BedrockKeyConfig.ARN) {
+			!updateKey.BedrockKeyConfig.ARN.IsFromSecret() {
 			mergedKey.BedrockKeyConfig.ARN = oldRawKey.BedrockKeyConfig.ARN
 		}
 		if updateKey.BedrockKeyConfig.RoleARN != nil &&
 			oldRedactedKey.BedrockKeyConfig.RoleARN != nil &&
 			oldRawKey.BedrockKeyConfig != nil &&
 			updateKey.BedrockKeyConfig.RoleARN.IsRedacted() &&
-			updateKey.BedrockKeyConfig.RoleARN.Equals(oldRedactedKey.BedrockKeyConfig.RoleARN) {
+			!updateKey.BedrockKeyConfig.RoleARN.IsFromSecret() {
 			mergedKey.BedrockKeyConfig.RoleARN = oldRawKey.BedrockKeyConfig.RoleARN
 		}
 		if updateKey.BedrockKeyConfig.ExternalID != nil &&
 			oldRedactedKey.BedrockKeyConfig.ExternalID != nil &&
 			oldRawKey.BedrockKeyConfig != nil &&
 			updateKey.BedrockKeyConfig.ExternalID.IsRedacted() &&
-			updateKey.BedrockKeyConfig.ExternalID.Equals(oldRedactedKey.BedrockKeyConfig.ExternalID) {
+			!updateKey.BedrockKeyConfig.ExternalID.IsFromSecret() {
 			mergedKey.BedrockKeyConfig.ExternalID = oldRawKey.BedrockKeyConfig.ExternalID
 		}
 		if updateKey.BedrockKeyConfig.RoleSessionName != nil &&
 			oldRedactedKey.BedrockKeyConfig.RoleSessionName != nil &&
 			oldRawKey.BedrockKeyConfig != nil &&
 			updateKey.BedrockKeyConfig.RoleSessionName.IsRedacted() &&
-			updateKey.BedrockKeyConfig.RoleSessionName.Equals(oldRedactedKey.BedrockKeyConfig.RoleSessionName) {
+			!updateKey.BedrockKeyConfig.RoleSessionName.IsFromSecret() {
 			mergedKey.BedrockKeyConfig.RoleSessionName = oldRawKey.BedrockKeyConfig.RoleSessionName
 		}
 	}
 
 	if updateKey.BedrockMantleKeyConfig != nil && oldRedactedKey.BedrockMantleKeyConfig != nil && oldRawKey.BedrockMantleKeyConfig != nil {
-		if updateKey.BedrockMantleKeyConfig.AccessKey.IsRedacted() &&
-			updateKey.BedrockMantleKeyConfig.AccessKey.Equals(&oldRedactedKey.BedrockMantleKeyConfig.AccessKey) {
+		if updateKey.BedrockMantleKeyConfig.AccessKey.IsRedacted() && !updateKey.BedrockMantleKeyConfig.AccessKey.IsFromSecret() {
 			mergedKey.BedrockMantleKeyConfig.AccessKey = oldRawKey.BedrockMantleKeyConfig.AccessKey
 		}
-		if updateKey.BedrockMantleKeyConfig.SecretKey.IsRedacted() &&
-			updateKey.BedrockMantleKeyConfig.SecretKey.Equals(&oldRedactedKey.BedrockMantleKeyConfig.SecretKey) {
+		if updateKey.BedrockMantleKeyConfig.SecretKey.IsRedacted() && !updateKey.BedrockMantleKeyConfig.SecretKey.IsFromSecret() {
 			mergedKey.BedrockMantleKeyConfig.SecretKey = oldRawKey.BedrockMantleKeyConfig.SecretKey
 		}
 		if updateKey.BedrockMantleKeyConfig.SessionToken != nil &&
 			oldRedactedKey.BedrockMantleKeyConfig.SessionToken != nil &&
 			updateKey.BedrockMantleKeyConfig.SessionToken.IsRedacted() &&
-			updateKey.BedrockMantleKeyConfig.SessionToken.Equals(oldRedactedKey.BedrockMantleKeyConfig.SessionToken) {
+			!updateKey.BedrockMantleKeyConfig.SessionToken.IsFromSecret() {
 			mergedKey.BedrockMantleKeyConfig.SessionToken = oldRawKey.BedrockMantleKeyConfig.SessionToken
 		}
 		if updateKey.BedrockMantleKeyConfig.Region != nil &&
 			oldRedactedKey.BedrockMantleKeyConfig.Region != nil &&
 			updateKey.BedrockMantleKeyConfig.Region.IsRedacted() &&
-			updateKey.BedrockMantleKeyConfig.Region.Equals(oldRedactedKey.BedrockMantleKeyConfig.Region) {
+			!updateKey.BedrockMantleKeyConfig.Region.IsFromSecret() {
 			mergedKey.BedrockMantleKeyConfig.Region = oldRawKey.BedrockMantleKeyConfig.Region
 		}
 		if updateKey.BedrockMantleKeyConfig.RoleARN != nil &&
 			oldRedactedKey.BedrockMantleKeyConfig.RoleARN != nil &&
 			updateKey.BedrockMantleKeyConfig.RoleARN.IsRedacted() &&
-			updateKey.BedrockMantleKeyConfig.RoleARN.Equals(oldRedactedKey.BedrockMantleKeyConfig.RoleARN) {
+			!updateKey.BedrockMantleKeyConfig.RoleARN.IsFromSecret() {
 			mergedKey.BedrockMantleKeyConfig.RoleARN = oldRawKey.BedrockMantleKeyConfig.RoleARN
 		}
 		if updateKey.BedrockMantleKeyConfig.ExternalID != nil &&
 			oldRedactedKey.BedrockMantleKeyConfig.ExternalID != nil &&
 			updateKey.BedrockMantleKeyConfig.ExternalID.IsRedacted() &&
-			updateKey.BedrockMantleKeyConfig.ExternalID.Equals(oldRedactedKey.BedrockMantleKeyConfig.ExternalID) {
+			!updateKey.BedrockMantleKeyConfig.ExternalID.IsFromSecret() {
 			mergedKey.BedrockMantleKeyConfig.ExternalID = oldRawKey.BedrockMantleKeyConfig.ExternalID
 		}
 		if updateKey.BedrockMantleKeyConfig.RoleSessionName != nil &&
 			oldRedactedKey.BedrockMantleKeyConfig.RoleSessionName != nil &&
 			updateKey.BedrockMantleKeyConfig.RoleSessionName.IsRedacted() &&
-			updateKey.BedrockMantleKeyConfig.RoleSessionName.Equals(oldRedactedKey.BedrockMantleKeyConfig.RoleSessionName) {
+			!updateKey.BedrockMantleKeyConfig.RoleSessionName.IsFromSecret() {
 			mergedKey.BedrockMantleKeyConfig.RoleSessionName = oldRawKey.BedrockMantleKeyConfig.RoleSessionName
 		}
 	}
 
 	if updateKey.VLLMKeyConfig != nil && oldRedactedKey.VLLMKeyConfig != nil && oldRawKey.VLLMKeyConfig != nil {
-		if updateKey.VLLMKeyConfig.URL.IsRedacted() &&
-			updateKey.VLLMKeyConfig.URL.Equals(&oldRedactedKey.VLLMKeyConfig.URL) {
+		if updateKey.VLLMKeyConfig.URL.IsRedacted() && !updateKey.VLLMKeyConfig.URL.IsFromSecret() {
 			mergedKey.VLLMKeyConfig.URL = oldRawKey.VLLMKeyConfig.URL
 		}
 	}
@@ -491,15 +481,13 @@ func (h *ProviderHandler) mergeUpdatedKey(oldRawKey, oldRedactedKey, updateKey s
 	}
 
 	if updateKey.OllamaKeyConfig != nil && oldRedactedKey.OllamaKeyConfig != nil && oldRawKey.OllamaKeyConfig != nil {
-		if updateKey.OllamaKeyConfig.URL.IsRedacted() &&
-			updateKey.OllamaKeyConfig.URL.Equals(&oldRedactedKey.OllamaKeyConfig.URL) {
+		if updateKey.OllamaKeyConfig.URL.IsRedacted() && !updateKey.OllamaKeyConfig.URL.IsFromSecret() {
 			mergedKey.OllamaKeyConfig.URL = oldRawKey.OllamaKeyConfig.URL
 		}
 	}
 
 	if updateKey.SGLKeyConfig != nil && oldRedactedKey.SGLKeyConfig != nil && oldRawKey.SGLKeyConfig != nil {
-		if updateKey.SGLKeyConfig.URL.IsRedacted() &&
-			updateKey.SGLKeyConfig.URL.Equals(&oldRedactedKey.SGLKeyConfig.URL) {
+		if updateKey.SGLKeyConfig.URL.IsRedacted() && !updateKey.SGLKeyConfig.URL.IsFromSecret() {
 			mergedKey.SGLKeyConfig.URL = oldRawKey.SGLKeyConfig.URL
 		}
 	}

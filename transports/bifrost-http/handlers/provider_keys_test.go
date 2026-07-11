@@ -103,3 +103,101 @@ func TestMergeUpdatedKey_Value(t *testing.T) {
 		}
 	})
 }
+
+func TestMergeUpdatedKey_ProviderConfigMaskedPreviews(t *testing.T) {
+	h := &ProviderHandler{}
+	secret := func(value string) schemas.SecretVar { return *schemas.NewSecretVar(value) }
+	secretPtr := func(value string) *schemas.SecretVar { return schemas.NewSecretVar(value) }
+	staleMaskValue := func(prefix, suffix string) string {
+		return prefix + strings.Repeat("*", 24) + suffix
+	}
+	staleMask := func(prefix, suffix string) schemas.SecretVar {
+		return secret(staleMaskValue(prefix, suffix))
+	}
+
+	oldRaw := schemas.Key{
+		AzureKeyConfig: &schemas.AzureKeyConfig{
+			Endpoint:     secret("https://current.azure.example.com"),
+			ClientSecret: secretPtr("azure-client-secret-current"),
+		},
+		VertexKeyConfig: &schemas.VertexKeyConfig{
+			AuthCredentials: secret("vertex-auth-credentials-current"),
+		},
+		BedrockKeyConfig: &schemas.BedrockKeyConfig{
+			AccessKey:    secret("bedrock-access-key-current"),
+			SessionToken: secretPtr("bedrock-session-token-current"),
+		},
+		BedrockMantleKeyConfig: &schemas.BedrockMantleKeyConfig{
+			SecretKey: secret("mantle-secret-key-current"),
+		},
+		VLLMKeyConfig:   &schemas.VLLMKeyConfig{URL: secret("https://current.vllm.example.com")},
+		OllamaKeyConfig: &schemas.OllamaKeyConfig{URL: secret("https://current.ollama.example.com")},
+		SGLKeyConfig:    &schemas.SGLKeyConfig{URL: secret("https://current.sgl.example.com")},
+	}
+	oldRedacted := schemas.Key{
+		AzureKeyConfig: &schemas.AzureKeyConfig{
+			Endpoint:     *oldRaw.AzureKeyConfig.Endpoint.Redacted(),
+			ClientSecret: oldRaw.AzureKeyConfig.ClientSecret.Redacted(),
+		},
+		VertexKeyConfig: &schemas.VertexKeyConfig{
+			AuthCredentials: *oldRaw.VertexKeyConfig.AuthCredentials.Redacted(),
+		},
+		BedrockKeyConfig: &schemas.BedrockKeyConfig{
+			AccessKey:    *oldRaw.BedrockKeyConfig.AccessKey.Redacted(),
+			SessionToken: oldRaw.BedrockKeyConfig.SessionToken.Redacted(),
+		},
+		BedrockMantleKeyConfig: &schemas.BedrockMantleKeyConfig{
+			SecretKey: *oldRaw.BedrockMantleKeyConfig.SecretKey.Redacted(),
+		},
+		VLLMKeyConfig:   &schemas.VLLMKeyConfig{URL: *oldRaw.VLLMKeyConfig.URL.Redacted()},
+		OllamaKeyConfig: &schemas.OllamaKeyConfig{URL: *oldRaw.OllamaKeyConfig.URL.Redacted()},
+		SGLKeyConfig:    &schemas.SGLKeyConfig{URL: *oldRaw.SGLKeyConfig.URL.Redacted()},
+	}
+	update := schemas.Key{
+		AzureKeyConfig: &schemas.AzureKeyConfig{
+			Endpoint:     staleMask("azur", "0001"),
+			ClientSecret: secretPtr(staleMaskValue("azcs", "0002")),
+		},
+		VertexKeyConfig: &schemas.VertexKeyConfig{
+			AuthCredentials: staleMask("vert", "0003"),
+		},
+		BedrockKeyConfig: &schemas.BedrockKeyConfig{
+			AccessKey:    staleMask("beda", "0004"),
+			SessionToken: secretPtr(staleMaskValue("beds", "0005")),
+		},
+		BedrockMantleKeyConfig: &schemas.BedrockMantleKeyConfig{
+			SecretKey: staleMask("mant", "0006"),
+		},
+		VLLMKeyConfig:   &schemas.VLLMKeyConfig{URL: staleMask("vllm", "0007")},
+		OllamaKeyConfig: &schemas.OllamaKeyConfig{URL: staleMask("olla", "0008")},
+		SGLKeyConfig:    &schemas.SGLKeyConfig{URL: staleMask("sgla", "0009")},
+	}
+
+	merged := h.mergeUpdatedKey(oldRaw, oldRedacted, update)
+	checks := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{"azure endpoint", merged.AzureKeyConfig.Endpoint.GetValue(), oldRaw.AzureKeyConfig.Endpoint.GetValue()},
+		{"azure client secret", merged.AzureKeyConfig.ClientSecret.GetValue(), oldRaw.AzureKeyConfig.ClientSecret.GetValue()},
+		{"vertex credentials", merged.VertexKeyConfig.AuthCredentials.GetValue(), oldRaw.VertexKeyConfig.AuthCredentials.GetValue()},
+		{"bedrock access key", merged.BedrockKeyConfig.AccessKey.GetValue(), oldRaw.BedrockKeyConfig.AccessKey.GetValue()},
+		{"bedrock session token", merged.BedrockKeyConfig.SessionToken.GetValue(), oldRaw.BedrockKeyConfig.SessionToken.GetValue()},
+		{"mantle secret key", merged.BedrockMantleKeyConfig.SecretKey.GetValue(), oldRaw.BedrockMantleKeyConfig.SecretKey.GetValue()},
+		{"vllm url", merged.VLLMKeyConfig.URL.GetValue(), oldRaw.VLLMKeyConfig.URL.GetValue()},
+		{"ollama url", merged.OllamaKeyConfig.URL.GetValue(), oldRaw.OllamaKeyConfig.URL.GetValue()},
+		{"sgl url", merged.SGLKeyConfig.URL.GetValue(), oldRaw.SGLKeyConfig.URL.GetValue()},
+	}
+	for _, check := range checks {
+		if check.got != check.want {
+			t.Errorf("%s: expected stored value %q, got %q", check.name, check.want, check.got)
+		}
+	}
+
+	update.VLLMKeyConfig.URL = secret("env.NEW_VLLM_URL")
+	merged = h.mergeUpdatedKey(oldRaw, oldRedacted, update)
+	if !merged.VLLMKeyConfig.URL.IsFromEnv() || merged.VLLMKeyConfig.URL.GetRawRef() != "env.NEW_VLLM_URL" {
+		t.Fatalf("expected nested env ref applied, got ref=%q", merged.VLLMKeyConfig.URL.GetRawRef())
+	}
+}
