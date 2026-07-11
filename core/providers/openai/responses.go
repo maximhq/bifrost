@@ -108,7 +108,8 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		}
 
 		// OpenAI accepts role only on message input items.
-		if message.Type != nil && *message.Type != schemas.ResponsesMessageTypeMessage {
+		if (message.Type != nil && *message.Type != schemas.ResponsesMessageTypeMessage) ||
+			(message.Type == nil && message.ResponsesReasoning != nil) {
 			message.Role = nil
 		}
 
