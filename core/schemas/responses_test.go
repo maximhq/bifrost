@@ -330,6 +330,71 @@ func TestWithDefaultsStripsCodeExecutionCarry(t *testing.T) {
 	}
 }
 
+// TestWithDefaultsStripsNumSearchQueries verifies WithDefaults() drops the
+// Bifrost-only num_search_queries billing signal (web_search_call count) from the
+// normalized usage while keeping real OpenAI fields. Billing/tracing read it
+// upstream, before wire normalization.
+func TestWithDefaultsStripsNumSearchQueries(t *testing.T) {
+	resp := &BifrostResponsesResponse{
+		ID: Ptr("resp_1"),
+		Usage: &ResponsesResponseUsage{
+			InputTokens:  5,
+			OutputTokens: 10,
+			TotalTokens:  15,
+			OutputTokensDetails: &ResponsesResponseOutputTokens{
+				ReasoningTokens:  3,
+				NumSearchQueries: Ptr(2),
+			},
+		},
+	}
+
+	normalized := resp.WithDefaults()
+
+	if got := normalized.Usage.OutputTokensDetails.NumSearchQueries; got != nil {
+		t.Errorf("WithDefaults leaked num_search_queries into normalized usage: %d", *got)
+	}
+	if normalized.Usage.OutputTokensDetails.ReasoningTokens != 3 {
+		t.Error("WithDefaults dropped reasoning_tokens from normalized usage")
+	}
+
+	encoded, err := Marshal(normalized)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(encoded), "num_search_queries") {
+		t.Errorf("normalized JSON still contains num_search_queries:\n%s", encoded)
+	}
+}
+
+// TestStreamWithDefaultsStripsNumSearchQueries verifies the streaming converter
+// strips num_search_queries from the response.completed usage (it delegates to
+// the non-streaming Response.WithDefaults), the streaming analog of the above.
+func TestStreamWithDefaultsStripsNumSearchQueries(t *testing.T) {
+	src := &BifrostResponsesStreamResponse{
+		Type: ResponsesStreamResponseTypeCompleted,
+		Response: &BifrostResponsesResponse{
+			Usage: &ResponsesResponseUsage{
+				OutputTokens:        10,
+				OutputTokensDetails: &ResponsesResponseOutputTokens{ReasoningTokens: 3, NumSearchQueries: Ptr(2)},
+			},
+		},
+	}
+
+	out := src.WithDefaults()
+
+	if got := out.Response.Usage.OutputTokensDetails.NumSearchQueries; got != nil {
+		t.Errorf("stream WithDefaults leaked num_search_queries: %d", *got)
+	}
+
+	encoded, err := Marshal(out)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(encoded), "num_search_queries") {
+		t.Errorf("normalized stream JSON still has num_search_queries:\n%s", encoded)
+	}
+}
+
 // TestStreamWithDefaultsStripsCodeExecutionCarry verifies the streaming converter
 // drops the code-execution carry from output_item.added / output_item.done items
 // (the streaming analog of the non-streaming Output strip).

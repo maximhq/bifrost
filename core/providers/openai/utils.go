@@ -189,3 +189,28 @@ func SanitizeUserField(user *string) *string {
 	}
 	return user
 }
+
+// setResponsesWebSearchCount records billable web-search calls for OpenAI-style
+// Responses. OpenAI reports each search only as a completed web_search_call
+// output item (never a usage counter), so we count them into NumSearchQueries,
+// which cost.go multiplies by search_context_cost_per_query.
+func setResponsesWebSearchCount(response *schemas.BifrostResponsesResponse) {
+	if response == nil || response.Usage == nil {
+		return
+	}
+	count := 0
+	for i := range response.Output {
+		msg := &response.Output[i]
+		if msg.Type != nil && *msg.Type == schemas.ResponsesMessageTypeWebSearchCall &&
+			msg.Status != nil && *msg.Status == schemas.ResponsesResponseStatusCompleted {
+			count++
+		}
+	}
+	if count == 0 {
+		return
+	}
+	if response.Usage.OutputTokensDetails == nil {
+		response.Usage.OutputTokensDetails = &schemas.ResponsesResponseOutputTokens{}
+	}
+	response.Usage.OutputTokensDetails.NumSearchQueries = &count
+}
