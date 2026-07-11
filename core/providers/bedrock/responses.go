@@ -1510,8 +1510,27 @@ func FinalizeBedrockStream(state *BedrockResponsesStreamState, sequenceNumber in
 		}
 	}
 
+	// Set Status/IncompleteDetails and the terminal event type per OpenAI's
+	// Responses-API contract, matching the non-streaming switch above so
+	// unmapped reasons leave Status unset on both paths.
+	terminalEventType := schemas.ResponsesStreamResponseTypeCompleted
+	if response.StopReason != nil {
+		switch *response.StopReason {
+		case string(schemas.BifrostFinishReasonLength):
+			terminalEventType = schemas.ResponsesStreamResponseTypeIncomplete
+			response.Status = schemas.Ptr(schemas.ResponsesResponseStatusIncomplete)
+			response.IncompleteDetails = &schemas.ResponsesResponseIncompleteDetails{
+				Reason: schemas.ResponsesResponseIncompleteReasonMaxOutputTokens,
+			}
+		case string(schemas.BifrostFinishReasonStop), string(schemas.BifrostFinishReasonToolCalls):
+			if response.Status == nil {
+				response.Status = schemas.Ptr(schemas.ResponsesResponseStatusCompleted)
+			}
+		}
+	}
+
 	responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-		Type:           schemas.ResponsesStreamResponseTypeCompleted,
+		Type:           terminalEventType,
 		SequenceNumber: sequenceNumber + len(responses),
 		Response:       response,
 	})
@@ -1754,12 +1773,20 @@ func ToBedrockConverseStreamResponse(bifrostResp *schemas.BifrostResponsesStream
 	case schemas.ResponsesStreamResponseTypeOutputTextDone,
 		schemas.ResponsesStreamResponseTypeContentPartDone,
 		schemas.ResponsesStreamResponseTypeReasoningSummaryTextDone:
-		// Content block done - Bedrock doesn't have explicit done events, so we skip them
+		// Content block done - the contentBlockStop is emitted on OutputItemDone,
+		// matching the invoke path
 		return nil, nil
 
 	case schemas.ResponsesStreamResponseTypeOutputItemDone:
-		// Item done - Bedrock doesn't have explicit done events, so we skip them
-		return nil, nil
+		// Item done - emit contentBlockStop. Bedrock terminates every content block
+		// with a contentBlockStop event carrying the block's index; consumers that
+		// assemble the message on block boundaries never finalize a block without it.
+		contentBlockIndex := 0
+		if bifrostResp.ContentIndex != nil {
+			contentBlockIndex = *bifrostResp.ContentIndex
+		}
+		event.ContentBlockIndex = &contentBlockIndex
+		event.ContentBlockStop = true
 
 	case schemas.ResponsesStreamResponseTypeCompleted:
 		// Message stop - always set stopReason
@@ -1846,6 +1873,17 @@ func (event *BedrockStreamEvent) ToEncodedEvents() []BedrockEncodedEvent {
 				ContentBlockIndex *int                      `json:"contentBlockIndex"`
 			}{
 				Delta:             event.Delta,
+				ContentBlockIndex: event.ContentBlockIndex,
+			},
+		})
+	}
+
+	if event.ContentBlockStop {
+		events = append(events, BedrockEncodedEvent{
+			EventType: "contentBlockStop",
+			Payload: struct {
+				ContentBlockIndex *int `json:"contentBlockIndex"`
+			}{
 				ContentBlockIndex: event.ContentBlockIndex,
 			},
 		})
@@ -2696,6 +2734,19 @@ func (response *BedrockConverseResponse) ToBifrostResponsesResponse(ctx *schemas
 			}
 		}
 		bifrostResp.StopReason = &stopReason
+		// Surface truncation via Status + IncompleteDetails per OpenAI's
+		// Responses-API contract; without these, truncations are silent.
+		switch stopReason {
+		case string(schemas.BifrostFinishReasonLength):
+			bifrostResp.Status = schemas.Ptr(schemas.ResponsesResponseStatusIncomplete)
+			bifrostResp.IncompleteDetails = &schemas.ResponsesResponseIncompleteDetails{
+				Reason: schemas.ResponsesResponseIncompleteReasonMaxOutputTokens,
+			}
+		case string(schemas.BifrostFinishReasonStop), string(schemas.BifrostFinishReasonToolCalls):
+			if bifrostResp.Status == nil {
+				bifrostResp.Status = schemas.Ptr(schemas.ResponsesResponseStatusCompleted)
+			}
+		}
 	}
 
 	if response.Trace != nil {

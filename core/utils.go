@@ -83,8 +83,10 @@ var dynamicallyConfigurableProviders = []schemas.ModelProvider{
 	schemas.Anthropic,
 	schemas.Azure,
 	schemas.Bedrock,
+	schemas.BedrockMantle,
 	schemas.Cerebras,
 	schemas.Cohere,
+	schemas.DeepSeek,
 	schemas.Elevenlabs,
 	schemas.Gemini,
 	schemas.Groq,
@@ -122,11 +124,11 @@ func providerRequiresKey(customConfig *schemas.CustomProviderConfig) bool {
 // Some providers like Vertex and Bedrock have their credentials in additional key configs.
 // Ollama and SGL are keyless (API Key is optional) but use per-key server URLs.
 func CanProviderKeyValueBeEmpty(providerKey schemas.ModelProvider) bool {
-	return providerKey == schemas.Vertex || providerKey == schemas.Bedrock || providerKey == schemas.VLLM || providerKey == schemas.Azure || providerKey == schemas.Ollama || providerKey == schemas.SGL
+	return providerKey == schemas.Vertex || providerKey == schemas.Bedrock || providerKey == schemas.BedrockMantle || providerKey == schemas.VLLM || providerKey == schemas.Azure || providerKey == schemas.Ollama || providerKey == schemas.SGL
 }
 
 func isKeySkippingAllowed(providerKey schemas.ModelProvider) bool {
-	return providerKey != schemas.Azure && providerKey != schemas.Bedrock && providerKey != schemas.Vertex
+	return providerKey != schemas.Azure && providerKey != schemas.Bedrock && providerKey != schemas.BedrockMantle && providerKey != schemas.Vertex
 }
 
 // calculateBackoff implements exponential backoff with jitter for retry attempts.
@@ -170,6 +172,11 @@ func validateKey(providerKey schemas.ModelProvider, key *schemas.Key) error {
 		// BedrockKeyConfig is optional — an empty config is valid for IRSA / ambient credential auth.
 		if key.BedrockKeyConfig == nil {
 			key.BedrockKeyConfig = &schemas.BedrockKeyConfig{}
+		}
+	case schemas.BedrockMantle:
+		// BedrockMantleKeyConfig is optional — an empty config is valid for IRSA / ambient credential auth.
+		if key.BedrockMantleKeyConfig == nil {
+			key.BedrockMantleKeyConfig = &schemas.BedrockMantleKeyConfig{}
 		}
 	case schemas.Vertex:
 		if key.VertexKeyConfig == nil {
@@ -324,7 +331,51 @@ func clearCtxForFallback(ctx *schemas.BifrostContext) {
 	ctx.ClearValue(schemas.BifrostContextKeyChangeRequestType)
 	ctx.ClearValue(schemas.BifrostContextKeyAttemptTrail)
 	ctx.ClearValue(schemas.BifrostContextKeyStreamEndIndicator)
+	ctx.ClearValue(schemas.BifrostContextKeyConnectionClosed)
 	ctx.ClearValue(schemas.BifrostContextKeySupportsAssistantPrefill)
+}
+
+// ClearContextForInternalRequest clears context state that is specific to the
+// caller's original request, so a context derived from it can carry an
+// internal sub-request (e.g. a plugin generating an embedding for its own
+// use) that must behave like a fresh top-level request.
+//
+// Two categories are cleared:
+//
+//   - Key routing: key-selection state resolved for the caller's provider
+//     (governance key allow-list, pinned/direct keys, key-selection skip). An
+//     internal request typically targets a different provider, and when it
+//     skips the plugin pipeline this state is never re-resolved — inherited,
+//     it is applied against the wrong provider's key pool and rejects every
+//     key ("no keys found for provider").
+//   - Body transport: raw-body passthrough and large-payload/large-response
+//     streaming state, plus caller-forwarded extra headers and the caller's
+//     URL-path override. Inherited, these make providers send the caller's
+//     raw or streamed body instead of marshaling the internal request, route
+//     it to the caller's endpoint path instead of the internal request's own,
+//     and forward the caller's headers on a call the caller doesn't own.
+//
+// Deliberately not cleared: tracing/observability keys (the sub-request
+// should stay tied to the caller's trace) and
+// BifrostContextKeySkipPluginPipeline (whether the internal request runs the
+// plugin pipeline is the caller's decision).
+func ClearContextForInternalRequest(ctx *schemas.BifrostContext) {
+	// Key routing.
+	ctx.ClearValue(schemas.BifrostContextKeyGovernanceIncludeOnlyKeys)
+	ctx.ClearValue(schemas.BifrostContextKeyRoutingPinnedAPIKeyID)
+	ctx.ClearValue(schemas.BifrostContextKeyAPIKeyID)
+	ctx.ClearValue(schemas.BifrostContextKeyAPIKeyName)
+	ctx.ClearValue(schemas.BifrostContextKeyDirectKey)
+	ctx.ClearValue(schemas.BifrostContextKeySkipKeySelection)
+	// Body transport.
+	ctx.ClearValue(schemas.BifrostContextKeyUseRawRequestBody)
+	ctx.ClearValue(schemas.BifrostContextKeySendBackRawRequest)
+	ctx.ClearValue(schemas.BifrostContextKeySendBackRawResponse)
+	ctx.ClearValue(schemas.BifrostContextKeyPassthroughOverridesPresent)
+	ctx.ClearValue(schemas.BifrostContextKeyLargePayloadMode)
+	ctx.ClearValue(schemas.BifrostContextKeyLargeResponseMode)
+	ctx.ClearValue(schemas.BifrostContextKeyExtraHeaders)
+	ctx.ClearValue(schemas.BifrostContextKeyURLPath)
 }
 
 var supportedBaseProvidersSet = func() map[schemas.ModelProvider]struct{} {
@@ -413,6 +464,16 @@ func isModellessVideoRequestType(reqType schemas.RequestType) bool {
 // isPassthroughRequestType returns true if the given request type is a passthrough request.
 func isPassthroughRequestType(reqType schemas.RequestType) bool {
 	return reqType == schemas.PassthroughRequest || reqType == schemas.PassthroughStreamRequest
+}
+
+// isResponsesLifecycleRequestType returns true for OpenAI Responses API lifecycle HTTP verbs.
+func isResponsesLifecycleRequestType(reqType schemas.RequestType) bool {
+	switch reqType {
+	case schemas.ResponsesRetrieveRequest, schemas.ResponsesDeleteRequest, schemas.ResponsesCancelRequest, schemas.ResponsesInputItemsRequest:
+		return true
+	default:
+		return false
+	}
 }
 
 // IsFinalChunk returns true if the given context is a final chunk.

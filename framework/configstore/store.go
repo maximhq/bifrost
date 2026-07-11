@@ -64,9 +64,27 @@ type RoutingRulesQueryParams struct {
 
 // MCPClientsQueryParams holds pagination, filtering, and search parameters for MCP client queries.
 type MCPClientsQueryParams struct {
-	Limit  int
-	Offset int
-	Search string
+	Limit            int
+	Offset           int
+	Search           string   // matches name (case-insensitive)
+	ClientID         string   // exact client_id match
+	ConnectionTypes  []string // exact connection_type filter(s), OR semantics (http | sse | stdio)
+	AuthTypes        []string // exact auth_type filter(s), OR semantics (none | headers | oauth | per_user_oauth | per_user_headers)
+	IsCodeModeClient *bool    // nil = no filter; true/false = filter on is_code_mode_client
+	Disabled         *bool    // nil = no filter; true/false = filter on disabled
+
+	// Runtime connection-state filter. State is not persisted, so the caller
+	// resolves the set of currently-connected client_ids from the engine and
+	// passes it here. StateInclude nil = no filter; true = client_id IN set
+	// (connected); false = client_id NOT IN set (disconnected).
+	StateClientIDs []string
+	StateInclude   *bool
+
+	// Virtual-key access filter (OR semantics within the group). When both are
+	// set, a client matches if it is open to all VKs OR explicitly assigned to
+	// one of VirtualKeyIDs.
+	OnlyAllVirtualKeys bool     // include clients with allow_on_all_virtual_keys=true
+	VirtualKeyIDs      []string // include clients explicitly assigned to any of these VK IDs
 }
 
 // MCPLibraryQueryParams holds pagination, filtering, search, and sort
@@ -126,6 +144,12 @@ type MCPSessionsFilterParams struct {
 	Statuses     []string
 	AuthModes    []string // matched against auth_mode (tokens, credentials) or flow_mode (sessions, flows)
 	MCPClientIDs []string
+	// Identity exact-matches a single resolved identity value against any of
+	// the row's identity columns (user_id, virtual_key_id, session_id). Unlike
+	// Search it is not a substring match — it pins the list to exactly one
+	// user, virtual key, or session. Typically paired with AuthModes to scope
+	// to that identity's rows for a known mode.
+	Identity string
 	// MatchedUserIDs is an optional set of user_ids that should be treated
 	// as a positive search hit alongside Search. Callers that maintain a
 	// user directory (display names, emails) resolve the search string
@@ -135,6 +159,18 @@ type MCPSessionsFilterParams struct {
 	// filter ORs `{table}.user_id IN (matched)` into the search WHERE.
 	// Only consulted when Search is non-empty.
 	MatchedUserIDs []string
+}
+
+// OAuth2SessionsQueryParams holds the filters + pagination for the OAuth2
+// grants list (Connected Clients UI). Search is a case-insensitive substring
+// matched against the client name/id, the bound identity (bf_sub), and the
+// joined virtual key name. Modes filters on bf_mode (user/vk/session); an
+// empty slice matches all. Limit/Offset paginate the filtered result in SQL.
+type OAuth2SessionsQueryParams struct {
+	Search string
+	Modes  []string
+	Limit  int
+	Offset int
 }
 
 // PricingOverrideFilters holds the filters for pricing overrides.
@@ -389,6 +425,7 @@ type ConfigStore interface {
 	GetModelParameters(ctx context.Context) ([]tables.TableModelParameters, error)
 	GetModelParametersByModel(ctx context.Context, model string) (*tables.TableModelParameters, error)
 	UpsertModelParameters(ctx context.Context, params *tables.TableModelParameters, tx ...*gorm.DB) error
+	UpsertModelParametersBatch(ctx context.Context, params []tables.TableModelParameters, tx ...*gorm.DB) error
 
 	// Key management
 	GetKeysByIDs(ctx context.Context, ids []string) ([]tables.TableKey, error)
@@ -654,6 +691,57 @@ type ConfigStore interface {
 	// pool complete before it closes; subsequent DB() calls return the new
 	// pool, whose connections carry no cached plans. SQLite is a no-op.
 	RefreshConnectionPool(ctx context.Context) error
+
+	// GetOAuth2SigningKey returns the signing key, creating and persisting one
+	// on first call. Always returns a usable key — never nil on a nil error.
+	GetOAuth2SigningKey(ctx context.Context) (*tables.OAuth2SigningKey, error)
+
+	// OAuth2 clients (DCR)
+	CreateOAuth2Client(ctx context.Context, client *tables.TableOAuth2Client) error
+	GetOAuth2ClientByClientID(ctx context.Context, clientID string) (*tables.TableOAuth2Client, error)
+
+	// OAuth2 authorize requests
+	CreateOAuth2AuthorizeRequest(ctx context.Context, req *tables.TableOAuth2AuthorizeRequest) error
+	GetOAuth2AuthorizeRequestByID(ctx context.Context, id string) (*tables.TableOAuth2AuthorizeRequest, error)
+	GetOAuth2AuthorizeRequestByCodeHash(ctx context.Context, codeHash string) (*tables.TableOAuth2AuthorizeRequest, error)
+	// ConsentOAuth2AuthorizeRequest atomically transitions a still-pending request
+	// to consented (recording the code hash and resolved identity) — returns
+	// ErrNotFound when no longer pending, so concurrent double-consent can't
+	// overwrite an already-minted code.
+	ConsentOAuth2AuthorizeRequest(ctx context.Context, req *tables.TableOAuth2AuthorizeRequest) error
+	SweepExpiredOAuth2AuthorizeRequests(ctx context.Context) error
+
+	// OAuth2 refresh tokens
+	GetOAuth2RefreshTokenByHash(ctx context.Context, hash string) (*tables.TableOAuth2RefreshToken, error)
+	// GetOAuth2RefreshTokenByHashAny returns the row including revoked tokens,
+	// used to detect token reuse attacks and trigger family revocation.
+	GetOAuth2RefreshTokenByHashAny(ctx context.Context, hash string) (*tables.TableOAuth2RefreshToken, error)
+	// ConsumeOAuth2AuthorizeRequest atomically marks the authorize request as
+	// code_issued and creates the refresh token — if either fails the client can retry.
+	ConsumeOAuth2AuthorizeRequest(ctx context.Context, requestID string, rt *tables.TableOAuth2RefreshToken) error
+	// RotateOAuth2RefreshToken atomically revokes the old token and creates the
+	// new one — if either fails the old token stays active and the client can retry.
+	RotateOAuth2RefreshToken(ctx context.Context, oldID string, newRT *tables.TableOAuth2RefreshToken) error
+	// RevokeOAuth2RefreshTokensByFamilyID revokes all active tokens in a family
+	// when a stolen-token reuse is detected (RFC 9700 §2.2.2).
+	RevokeOAuth2RefreshTokensByFamilyID(ctx context.Context, familyID string) error
+	// RevokeOAuth2RefreshTokensByMode revokes all active tokens for a given mode.
+	RevokeOAuth2RefreshTokensByMode(ctx context.Context, bfMode string) error
+	// SweepOAuth2RefreshTokens deletes revoked tokens older than the given duration.
+	SweepOAuth2RefreshTokens(ctx context.Context, revokedOlderThan time.Duration) (int64, error)
+	// SweepOrphanedOAuth2Clients deletes registered clients that back no refresh
+	// token and were registered before the grace cutoff. Run after the refresh
+	// token sweep so clients are not collected while their tokens are still
+	// retained for reuse detection.
+	SweepOrphanedOAuth2Clients(ctx context.Context, registeredOlderThan time.Duration) (int64, error)
+	// ListOAuth2Sessions returns a page of active downstream grants for the
+	// Connected Clients UI, plus the total count matching the filters (before
+	// the limit/offset are applied). Filtering and pagination are pushed to SQL.
+	ListOAuth2Sessions(ctx context.Context, params OAuth2SessionsQueryParams) ([]OAuth2SessionRow, int64, error)
+	// GetOAuth2SessionByID returns a single active grant row for permission checks.
+	GetOAuth2SessionByID(ctx context.Context, id string) (*tables.TableOAuth2RefreshToken, error)
+	// RevokeOAuth2Session revokes a specific downstream grant by refresh token ID.
+	RevokeOAuth2Session(ctx context.Context, id string) error
 
 	// Cleanup
 	Close(ctx context.Context) error

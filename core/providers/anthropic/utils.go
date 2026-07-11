@@ -1029,18 +1029,6 @@ func setEffortOnOutputConfig(req *AnthropicMessageRequest, effort string) {
 	req.OutputConfig.Effort = &effort
 }
 
-// getRequestBodyForResponses serializes a BifrostResponsesRequest into the Anthropic wire format.
-// It delegates to BuildAnthropicResponsesRequestBody with the appropriate provider and streaming config.
-func getRequestBodyForResponses(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest, isStreaming bool, excludeFields []string, shouldSendBackRawRequest bool, shouldSendBackRawResponse bool) ([]byte, *schemas.BifrostError) {
-	return BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
-		Provider:                  schemas.Anthropic,
-		IsStreaming:               isStreaming,
-		ExcludeFields:             excludeFields,
-		ShouldSendBackRawRequest:  shouldSendBackRawRequest,
-		ShouldSendBackRawResponse: shouldSendBackRawResponse,
-	})
-}
-
 // AddMissingBetaHeadersToContext analyzes the Anthropic request and adds missing beta headers to the context.
 // The provider parameter controls which headers are included — unsupported headers for the given provider are skipped.
 func AddMissingBetaHeadersToContext(ctx *schemas.BifrostContext, req *AnthropicMessageRequest, provider schemas.ModelProvider) error {
@@ -1216,6 +1204,26 @@ func AddMissingBetaHeadersToContext(ctx *schemas.BifrostContext, req *AnthropicM
 			}
 		}
 	}
+	// Check for file_id references (document/image blocks with a "file"
+	// source), which require the Files API beta header.
+	hasFileSource := false
+	for _, message := range req.Messages {
+		if hasFileSource {
+			break
+		}
+		if message.Content.ContentBlocks == nil {
+			continue
+		}
+		for _, block := range message.Content.ContentBlocks {
+			if block.Source != nil && block.Source.SourceObj != nil && block.Source.SourceObj.Type == "file" {
+				if !hasProvider || features.FilesAPI {
+					headers = appendUniqueHeader(headers, AnthropicFilesAPIBetaHeader)
+				}
+				hasFileSource = true
+				break
+			}
+		}
+	}
 	if len(headers) == 0 {
 		return nil
 	}
@@ -1353,6 +1361,8 @@ func doesWebSearchOrFetchAutoInjectCodeExecution(toolType string) bool {
 		return true
 	case string(AnthropicToolTypeWebFetch20260309):
 		return true
+	case string(AnthropicToolTypeWebFetch20260318):
+		return true
 	case string(AnthropicToolTypeWebFetch20250910):
 		return false
 	case string(AnthropicToolTypeWebFetch20260209):
@@ -1368,6 +1378,10 @@ func doesWebSearchOrFetchAutoInjectCodeExecution(toolType string) bool {
 // with an empty "signature" field. An empty signature means the block came
 // from a non-Anthropic upstream (OpenAI never emits signatures; Anthropic
 // always does), so it is unsafe to replay to Anthropic.
+//
+// The predicate must stay scoped to "thinking" blocks: "redacted_thinking"
+// blocks carry only an encrypted "data" payload (no thinking or signature
+// fields) and must be replayed to Anthropic untouched.
 func StripEmptyThinkingBlocks(jsonBody []byte) ([]byte, error) {
 	messagesResult := providerUtils.GetJSONField(jsonBody, "messages")
 	if !messagesResult.Exists() || !messagesResult.IsArray() {
@@ -2196,6 +2210,13 @@ func ConvertToAnthropicDocumentBlock(block schemas.ChatContentBlock) AnthropicCo
 		documentBlock.Title = file.Filename
 	}
 
+	// Handle uploaded file references from OpenAI-compatible file blocks.
+	if file.FileID != nil && *file.FileID != "" {
+		documentBlock.Source.SourceObj.Type = "file"
+		documentBlock.Source.SourceObj.FileID = file.FileID
+		return documentBlock
+	}
+
 	// Handle file URL
 	if file.FileURL != nil && *file.FileURL != "" {
 		documentBlock.Source.SourceObj.Type = "url"
@@ -2252,7 +2273,7 @@ func ConvertToAnthropicDocumentBlock(block schemas.ChatContentBlock) AnthropicCo
 }
 
 // ConvertResponsesFileBlockToAnthropic converts a Responses file block directly to Anthropic document format
-func ConvertResponsesFileBlockToAnthropic(fileBlock *schemas.ResponsesInputMessageContentBlockFile, cacheControl *schemas.CacheControl, citations *schemas.Citations) AnthropicContentBlock {
+func ConvertResponsesFileBlockToAnthropic(fileBlock *schemas.ResponsesInputMessageContentBlockFile, fileID *string, cacheControl *schemas.CacheControl, citations *schemas.Citations) AnthropicContentBlock {
 	documentBlock := AnthropicContentBlock{
 		Type:         AnthropicContentBlockTypeDocument,
 		CacheControl: cacheControl,
@@ -2263,13 +2284,20 @@ func ConvertResponsesFileBlockToAnthropic(fileBlock *schemas.ResponsesInputMessa
 		documentBlock.Citations = &AnthropicCitations{Config: citations}
 	}
 
-	if fileBlock == nil {
+	// Set title if provided
+	if fileBlock != nil && fileBlock.Filename != nil {
+		documentBlock.Title = fileBlock.Filename
+	}
+
+	// Handle file_id reference
+	if fileID != nil && *fileID != "" {
+		documentBlock.Source.SourceObj.Type = "file"
+		documentBlock.Source.SourceObj.FileID = fileID
 		return documentBlock
 	}
 
-	// Set title if provided
-	if fileBlock.Filename != nil {
-		documentBlock.Title = fileBlock.Filename
+	if fileBlock == nil {
+		return documentBlock
 	}
 
 	// Handle file_data (base64 encoded data or plain text)

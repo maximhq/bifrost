@@ -42,7 +42,7 @@ var thinkingBudgetRanges = []struct {
 }
 
 // thoughtSignatureSeparator is used to separate the base ID from the thought signature in tool IDs
-const thoughtSignatureSeparator = "_ts_"
+const thoughtSignatureSeparator = providerUtils.ThoughtSignatureSeparator
 
 type Role string
 
@@ -2246,7 +2246,8 @@ type GeminiBatchMetadataInputConfig struct {
 
 // GeminiBatchMetadataOutputConfig represents the output config in batch job metadata.
 type GeminiBatchMetadataOutputConfig struct {
-	ResponsesFile string `json:"responsesFile,omitempty"`
+	ResponsesFile    string                  `json:"responsesFile,omitempty"`
+	InlinedResponses *GeminiInlinedResponses `json:"inlinedResponses,omitempty"`
 }
 
 // GeminiBatchMetadata contains metadata for tracking batch requests.
@@ -2275,18 +2276,26 @@ type GeminiBatchJobResponse struct {
 	Response *GeminiBatchOutput    `json:"response,omitempty"`
 }
 
-// GeminiBatchOutput represents the output of a successful batch job.
+// GeminiBatchOutput represents the output of a successful batch job. It mirrors the
+// GenerateContentBatchOutput union returned under the Operation's response field
+// (and metadata.output): either a responses file or a set of inline responses.
 type GeminiBatchOutput struct {
-	Type          string `json:"@type,omitempty"`
-	ResponsesFile string `json:"responsesFile,omitempty"`
+	Type             string                  `json:"@type,omitempty"`
+	ResponsesFile    string                  `json:"responsesFile,omitempty"`
+	InlinedResponses *GeminiInlinedResponses `json:"inlinedResponses,omitempty"`
 }
 
-// GeminiBatchDest contains the destination/output of a batch job.
-// For inline requests, results are in InlinedResponses.
-// For file-based input, results are in a file referenced by FileName.
+// GeminiBatchDest is the client-SDK-facing output shape (dest.fileName) emitted when
+// converting a Bifrost batch response back to Gemini format. The raw REST API reports
+// output under the Operation's response / metadata.output fields, not dest.
 type GeminiBatchDest struct {
+	FileName string `json:"fileName,omitempty"`
+}
+
+// GeminiInlinedResponses wraps the array of inline batch responses. The REST API nests
+// the array one level deep: response.inlinedResponses.inlinedResponses[].
+type GeminiInlinedResponses struct {
 	InlinedResponses []GeminiInlinedResponse `json:"inlinedResponses,omitempty"`
-	FileName         string                  `json:"fileName,omitempty"`
 }
 
 // GeminiInlinedResponse represents a single response in the batch output.

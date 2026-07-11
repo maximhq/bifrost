@@ -5,6 +5,10 @@ description: "Enterprise v1.5.2 changelog - 2026-07-01"
 
 <Update label="Bifrost Enterprise" description="v1.5.2">
 
+<Warning>
+v1.5.2 has a [known CPU spike issue](https://github.com/maximhq/bifrost/issues/4851) for large number of budgets/teams/customers. The fix is part of v1.5.3
+</Warning>
+
 ## Changelog
 
 Release on `transports/v1.6.2`. Fixes a governance reset-consistency gap where request-time budget/rate-limit bumps could skip ghost-node cleanup, corrects OIDC cookie token selection for Generic OIDC providers like AD FS, and picks up OSS support for the Claude Sonnet 5 model family.
@@ -71,8 +75,8 @@ require (
 	github.com/maximhq/bifrost/framework v1.4.2
 	github.com/maximhq/bifrost/plugins/governance v1.6.2
 	github.com/maximhq/bifrost/plugins/logging v1.5.25
-	github.com/maximhq/bifrost/plugins/prompts v1.0.24
-	github.com/maximhq/bifrost/plugins/semanticcache v1.5.24
+	github.com/maximhq/bifrost/plugins/prompts v1.0.25
+	github.com/maximhq/bifrost/plugins/semanticcache v1.5.25
 	github.com/maximhq/bifrost/transports v1.6.2
 	github.com/nakabonne/tstorage v0.3.6
 	github.com/segmentio/kafka-go v0.4.47
@@ -280,12 +284,12 @@ require (
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-runewidth v0.0.15 // indirect
 	github.com/mattn/go-sqlite3 v1.14.32 // indirect
-	github.com/maximhq/bifrost/plugins/compat v0.1.23 // indirect
-	github.com/maximhq/bifrost/plugins/maxim v1.6.24 // indirect
-	github.com/maximhq/bifrost/plugins/mocker v1.5.24 // indirect
-	github.com/maximhq/bifrost/plugins/modelcatalogresolver v1.0.5 // indirect
-	github.com/maximhq/bifrost/plugins/otel v1.3.1 // indirect
-	github.com/maximhq/bifrost/plugins/telemetry v1.5.24 // indirect
+	github.com/maximhq/bifrost/plugins/compat v0.1.24 // indirect
+	github.com/maximhq/bifrost/plugins/maxim v1.6.25 // indirect
+	github.com/maximhq/bifrost/plugins/mocker v1.5.25 // indirect
+	github.com/maximhq/bifrost/plugins/modelcatalogresolver v1.0.6 // indirect
+	github.com/maximhq/bifrost/plugins/otel v1.3.2 // indirect
+	github.com/maximhq/bifrost/plugins/telemetry v1.5.25 // indirect
 	github.com/maximhq/maxim-go v0.2.1 // indirect
 	github.com/mholt/archives v0.1.2 // indirect
 	github.com/miekg/dns v1.1.68 // indirect

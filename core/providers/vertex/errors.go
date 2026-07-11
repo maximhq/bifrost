@@ -49,8 +49,14 @@ func parseVertexError(resp *fasthttp.Response) *schemas.BifrostError {
 		return bifrostErr
 	}
 
-	createError := func(message string) *schemas.BifrostError {
+	createError := func(message, status string) *schemas.BifrostError {
 		bifrostErr := providerUtils.NewProviderAPIError(message, nil, resp.StatusCode(), nil, nil)
+		if status != "" {
+			if bifrostErr.Error == nil {
+				bifrostErr.Error = &schemas.ErrorField{}
+			}
+			bifrostErr.Error.Type = &status
+		}
 		var rawResponse interface{}
 		if err := sonic.Unmarshal(decodedBody, &rawResponse); err != nil {
 			rawResponse = string(decodedBody)
@@ -72,17 +78,27 @@ func parseVertexError(resp *fasthttp.Response) *schemas.BifrostError {
 					return bifrostErr
 				}
 				if len(validationErr.Detail) > 0 {
-					return createError(validationErr.Detail[0].Msg)
+					return createError(validationErr.Detail[0].Msg, "")
 				}
-				return createError("Unknown error")
+				return createError("Unknown error", "")
 			}
-			return createError(vertexErr.Error.Message)
+			return createError(vertexErr.Error.Message, vertexErr.Error.Status)
 		}
 		if len(vertexErr) > 0 {
-			return createError(vertexErr[0].Error.Message)
+			return createError(vertexErr[0].Error.Message, vertexErr[0].Error.Status)
 		}
-		return createError("Unknown error")
+		return createError("Unknown error", "")
 	}
-	// OpenAI error format succeeded with valid Error field
-	return createError(openAIErr.Error.Message)
+	// OpenAI error format succeeded with valid Error field.
+	openAIStatus := ""
+	if openAIErr.Error.Type != nil {
+		openAIStatus = *openAIErr.Error.Type
+	}
+	if openAIStatus == "" {
+		var single VertexError
+		if err := sonic.Unmarshal(decodedBody, &single); err == nil {
+			openAIStatus = single.Error.Status
+		}
+	}
+	return createError(openAIErr.Error.Message, openAIStatus)
 }

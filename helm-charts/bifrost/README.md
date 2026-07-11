@@ -4,9 +4,17 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.25
+**Latest Version:** 2.1.26
 
 ## Changelog
+
+### 2.1.26
+
+- Added `bifrost.client.mcpServerAuthMode` (`headers` | `both` | `oauth`) and `bifrost.client.oauth2ServerConfig` (`issuerUrl`, `authCodeTtl`, `accessTokenTtl`, `disableVkIdentity`) to control how `/mcp` authenticates inbound MCP clients. Renders into `client.mcp_server_auth_mode` and `client.oauth2_server_config`. `authCodeTtl` is capped at 900 seconds.
+- Added ClickHouse as a `storage.logsStore.type` option. Set `type: clickhouse` and a `storage.logsStore.clickhouse` block (`host` required; optional `port`, `database`, `username`, `password`, `protocol`, `secure`, `dialTimeout`, `cluster`). Renders into `logs_store` with `type: clickhouse`.
+- Added the `bedrock_mantle` provider with `bedrock_mantle_key_config` (`region` required; optional `access_key`, `secret_key`, `session_token`, `role_arn`, `external_id`, `session_name`). Added the key-config schema and mutual-exclusion validation in `values.schema.json`.
+- Added `toolExecutionTimeout` to `bifrost.mcp.clientConfigs[]` as a per-server override of the global `toolManagerConfig.toolExecutionTimeout`. Accepts a Go duration string (e.g. `"30s"`) or a bare integer treated as seconds. Renders into `mcp.client_configs[].tool_execution_timeout`.
+- Added `expires_at` to `bifrost.governance.virtualKeys[]`. Optional RFC3339 timestamp; requests using the virtual key are rejected once it passes. Omit for a key that never expires.
 
 ### 2.1.25
 

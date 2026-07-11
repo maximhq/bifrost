@@ -68,6 +68,7 @@ export interface MCPClientConfig {
 	is_ping_available?: boolean;
 	tool_pricing?: Record<string, number>;
 	tool_sync_interval?: number; // Per-client override in minutes (0 = use global, -1 = disabled)
+	tool_execution_timeout?: string | number; // Per-client tool execution timeout; API returns string e.g. "30s", UI sends integer seconds (0 = use global)
 	allowed_extra_headers?: string[]; // Allowlist of x-bf-eh-* headers forwarded to this MCP server. ["*"] = allow all.
 	allow_on_all_virtual_keys?: boolean; // When true, available to all VKs with all tools allowed by default; explicit VK config overrides this
 	disabled?: boolean; // When true, connection/workers are shut down; tools are unavailable until re-enabled
@@ -147,6 +148,7 @@ export interface UpdateMCPClientRequest {
 	is_ping_available?: boolean;
 	tool_pricing?: Record<string, number>;
 	tool_sync_interval?: number; // Per-client override in minutes (0 = use global, -1 = disabled)
+	tool_execution_timeout?: number; // Per-client tool execution timeout in seconds (0 = use global)
 	allowed_extra_headers?: string[]; // Allowlist of x-bf-eh-* headers forwarded to this MCP server. ["*"] = allow all.
 	allow_on_all_virtual_keys?: boolean; // When true, available to all VKs with all tools allowed by default; explicit VK config overrides this
 	disabled?: boolean; // Set to true to shut down connection/workers; false to reconnect
@@ -155,11 +157,21 @@ export interface UpdateMCPClientRequest {
 	vk_configs?: MCPVKConfig[]; // When provided, replaces all VK assignments for this MCP client
 }
 
-// Pagination params for MCP clients list
+// Pagination + filter params for MCP clients list
 export interface GetMCPClientsParams {
 	limit?: number;
 	offset?: number;
 	search?: string;
+	server?: string;
+	// Comma-separated exact-match filters (OR semantics), mirroring the library page.
+	connection_type?: string; // http,sse,stdio
+	auth_type?: string; // none,headers,oauth,per_user_oauth,per_user_headers
+	state?: string; // connected,disconnected — resolved against live engine state
+	virtual_keys?: string; // comma-separated VK IDs the client is assigned to
+	// Boolean facets — omit for "no filter".
+	code_mode?: boolean; // filters is_code_mode_client
+	disabled?: boolean; // filters disabled status
+	all_virtual_keys?: boolean; // when true, include clients open to all virtual keys
 }
 
 // Paginated response for MCP clients list

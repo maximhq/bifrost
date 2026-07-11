@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net"
 	"testing"
+	"time"
 
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/queryscope"
@@ -148,10 +149,73 @@ func TestGetDashboard(t *testing.T) {
 	}
 }
 
+func TestRecalculateLogCostsResolvesPeriodFilter(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	mgr := &dashboardLogManager{}
+	h := &LoggingHandler{logManager: mgr}
+
+	var req fasthttp.Request
+	req.Header.SetMethod(fasthttp.MethodPost)
+	req.SetRequestURI("/api/logs/recalculate-cost")
+	req.Header.SetContentType("application/json")
+	req.SetBodyString(`{"filters":{"period":"1h"}}`)
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Init(&req, &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 12345}, nil)
+
+	h.recalculateLogCosts(ctx)
+
+	if got := ctx.Response.StatusCode(); got != fasthttp.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", got, string(ctx.Response.Body()))
+	}
+	filters := mgr.lastRecalculateFilters
+	if filters.StartTime == nil || filters.EndTime == nil {
+		t.Fatalf("expected period to resolve start/end, got start=%v end=%v", filters.StartTime, filters.EndTime)
+	}
+	if !filters.EndTime.After(*filters.StartTime) {
+		t.Fatalf("expected end_time after start_time, got start=%s end=%s", filters.StartTime, filters.EndTime)
+	}
+	if !filters.MissingCostOnly {
+		t.Fatal("expected recalculation to force missing_cost_only")
+	}
+}
+
+func TestStreamRecalculateLogCostsUsesRequestContext(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	mgr := &dashboardLogManager{lastRecalculateContext: make(chan context.Context, 1)}
+	h := &LoggingHandler{logManager: mgr}
+
+	var req fasthttp.Request
+	req.Header.SetMethod(fasthttp.MethodPost)
+	req.SetRequestURI("/api/logs/recalculate-cost")
+	req.Header.SetContentType("application/json")
+	req.Header.Set("Accept", "text/event-stream")
+	req.SetBodyString(`{"filters":{"period":"1h"}}`)
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Init(&req, &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 12345}, nil)
+	ctx.SetUserValue("request-scope", "preserved")
+
+	h.recalculateLogCosts(ctx)
+
+	select {
+	case recalculateCtx := <-mgr.lastRecalculateContext:
+		if got := recalculateCtx.Value("request-scope"); got != "preserved" {
+			t.Fatalf("expected request context value to be preserved, got %v", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for recalculation context")
+	}
+}
+
 type dashboardLogManager struct {
-	failStats      bool
-	lastLLMFilters logstore.SearchFilters
-	lastMCPFilters logstore.MCPToolLogSearchFilters
+	failStats              bool
+	lastLLMFilters         logstore.SearchFilters
+	lastMCPFilters         logstore.MCPToolLogSearchFilters
+	lastRecalculateFilters logstore.SearchFilters
+	lastRecalculateContext chan context.Context
 }
 
 func (m *dashboardLogManager) GetLog(ctx context.Context, id string) (*logstore.Log, error) {
@@ -252,6 +316,14 @@ func (m *dashboardLogManager) GetDimensionLatencyHistogram(ctx context.Context, 
 func (m *dashboardLogManager) DeleteLog(ctx context.Context, id string) error     { return nil }
 func (m *dashboardLogManager) DeleteLogs(ctx context.Context, ids []string) error { return nil }
 func (m *dashboardLogManager) RecalculateCosts(ctx context.Context, filters *logstore.SearchFilters, limit int) (*loggingplugin.RecalculateCostResult, error) {
+	m.lastRecalculateFilters = *filters
+	return &loggingplugin.RecalculateCostResult{}, nil
+}
+func (m *dashboardLogManager) RecalculateCostsWithProgress(ctx context.Context, filters *logstore.SearchFilters, limit int, progress func(loggingplugin.RecalculateCostProgress)) (*loggingplugin.RecalculateCostResult, error) {
+	m.lastRecalculateFilters = *filters
+	if m.lastRecalculateContext != nil {
+		m.lastRecalculateContext <- ctx
+	}
 	return nil, nil
 }
 func (m *dashboardLogManager) GetMCPToolLog(ctx context.Context, id string) (*logstore.MCPToolLog, error) {

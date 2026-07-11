@@ -1681,8 +1681,19 @@ func (h *LoggingHandler) recalculateLogCosts(ctx *fasthttp.RequestCtx) {
 		limit = 1000
 	}
 
-	filters := payload.Filters
+	filters := payload.Filters.SearchFilters
+	if payload.Filters.Period != "" {
+		if start, end := ResolvePeriod(payload.Filters.Period); start != nil {
+			filters.StartTime = start
+			filters.EndTime = end
+		}
+	}
 	filters.MissingCostOnly = true
+
+	if strings.Contains(string(ctx.Request.Header.Peek("Accept")), "text/event-stream") {
+		h.streamRecalculateLogCosts(ctx, filters, limit)
+		return
+	}
 
 	result, err := h.logManager.RecalculateCosts(ctx, &filters, limit)
 	if err != nil {
@@ -1692,6 +1703,50 @@ func (h *LoggingHandler) recalculateLogCosts(ctx *fasthttp.RequestCtx) {
 	}
 
 	SendJSON(ctx, result)
+}
+
+func (h *LoggingHandler) streamRecalculateLogCosts(ctx *fasthttp.RequestCtx, filters logstore.SearchFilters, limit int) {
+	ctx.SetContentType("text/event-stream")
+	ctx.Response.Header.Set("Cache-Control", "no-cache")
+	ctx.Response.Header.Set("Connection", "keep-alive")
+	ctx.Response.Header.Set("X-Accel-Buffering", "no")
+
+	reader := lib.NewSSEStreamReader()
+	ctx.Response.SetBodyStream(reader, -1)
+
+	streamCtx, cancel := context.WithCancel(ctx)
+	go func() {
+		defer reader.Done()
+		defer cancel()
+
+		result, err := h.logManager.RecalculateCostsWithProgress(streamCtx, &filters, limit, func(progress logging.RecalculateCostProgress) {
+			data, marshalErr := sonic.Marshal(progress)
+			if marshalErr != nil {
+				logger.Warn("failed to marshal recalculate cost progress: %v", marshalErr)
+				return
+			}
+			if !reader.SendEvent("progress", data) {
+				cancel()
+			}
+		})
+		if err != nil {
+			logger.Error("failed to recalculate log costs: %v", err)
+			data, marshalErr := sonic.Marshal(map[string]string{"message": fmt.Sprintf("Failed to recalculate costs: %v", err)})
+			if marshalErr != nil {
+				data = []byte(`{"message":"Failed to recalculate costs"}`)
+			}
+			reader.SendError(data)
+			return
+		}
+
+		data, marshalErr := sonic.Marshal(result)
+		if marshalErr != nil {
+			logger.Warn("failed to marshal recalculate cost result: %v", marshalErr)
+			reader.SendError([]byte(`{"message":"Failed to encode response"}`))
+			return
+		}
+		reader.SendEvent("done", data)
+	}()
 }
 
 // Helper functions
@@ -1823,8 +1878,13 @@ func parseMetadataFilters(ctx *fasthttp.RequestCtx, filters *logstore.SearchFilt
 }
 
 type recalculateCostRequest struct {
-	Filters logstore.SearchFilters `json:"filters"`
+	Filters recalculateCostFilters `json:"filters"`
 	Limit   *int                   `json:"limit,omitempty"`
+}
+
+type recalculateCostFilters struct {
+	logstore.SearchFilters
+	Period string `json:"period,omitempty"`
 }
 
 // parseMCPFiltersAndPagination parses MCP tool log filters and pagination from query parameters.

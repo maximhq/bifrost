@@ -38074,9 +38074,106 @@
       "get": {
         "operationId": "getMCPClients",
         "summary": "List MCP clients",
-        "description": "Returns a list of all configured MCP clients with their tools and connection state.",
+        "description": "Returns a paginated list of configured MCP clients with their tools and connection state.\nSupports case-insensitive name search and exact-match filtering by connection type, auth type,\ncode-mode, and enabled/disabled status. Multi-value filters accept a comma-separated list and\nuse OR semantics within a field.\n",
         "tags": [
           "MCP"
+        ],
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum number of clients to return (1–100, default 25).",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 25
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Number of clients to skip.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "description": "Case-insensitive search by client name.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "server",
+            "in": "query",
+            "description": "Filter to a single client by its exact client_id.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "connection_type",
+            "in": "query",
+            "description": "Comma-separated connection types to include (OR semantics).",
+            "schema": {
+              "type": "string",
+              "example": "http,sse"
+            }
+          },
+          {
+            "name": "auth_type",
+            "in": "query",
+            "description": "Comma-separated auth types to include (OR semantics).",
+            "schema": {
+              "type": "string",
+              "example": "oauth,per_user_oauth"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "description": "Comma-separated runtime connection states to include (OR semantics),\nresolved against live engine state. `connected` matches clients the engine\ncurrently reports as connected; `disconnected` matches everything else.\n",
+            "schema": {
+              "type": "string",
+              "example": "connected"
+            }
+          },
+          {
+            "name": "all_virtual_keys",
+            "in": "query",
+            "description": "When true, include clients that are open to all virtual keys (allow_on_all_virtual_keys). ORs with virtual_keys.",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "virtual_keys",
+            "in": "query",
+            "description": "Comma-separated virtual key IDs; includes clients explicitly assigned to any of them. ORs with all_virtual_keys.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "code_mode",
+            "in": "query",
+            "description": "Filter by code-mode clients. Omit for no filter.",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "disabled",
+            "in": "query",
+            "description": "Filter by disabled status — true returns disabled clients, false returns enabled clients. Omit for no filter.",
+            "schema": {
+              "type": "boolean"
+            }
+          }
         ],
         "security": [
           {
@@ -38089,10 +38186,50 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/MCPClient"
+                  "type": "object",
+                  "description": "Paginated list of MCP clients.",
+                  "required": [
+                    "clients",
+                    "count",
+                    "total_count",
+                    "limit",
+                    "offset"
+                  ],
+                  "properties": {
+                    "clients": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/MCPClient"
+                      }
+                    },
+                    "count": {
+                      "type": "integer",
+                      "description": "Number of clients returned in this page"
+                    },
+                    "total_count": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "Total number of clients matching the query (before pagination)"
+                    },
+                    "limit": {
+                      "type": "integer",
+                      "description": "Page size used for the response"
+                    },
+                    "offset": {
+                      "type": "integer",
+                      "description": "Page offset used for the response"
+                    }
                   }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
                 }
               }
             }
@@ -61673,6 +61810,7 @@
           "perplexity",
           "replicate",
           "cerebras",
+          "deepseek",
           "gemini",
           "openrouter",
           "elevenlabs",
@@ -62534,7 +62672,7 @@
           "prompt_cache_retention": {
             "type": "string",
             "enum": [
-              "in-memory",
+              "in_memory",
               "24h"
             ],
             "description": "Prompt cache retention policy"
@@ -72122,7 +72260,7 @@
                 },
                 "description": "Headers to capture in log metadata. Values are extracted from incoming requests and stored in the metadata field of log entries. Case-insensitive matching. No restart required."
               },
-              "mcp_external_base_url": {
+              "mcp_external_client_url": {
                 "oneOf": [
                   {
                     "type": "string",
@@ -72144,7 +72282,66 @@
                     "additionalProperties": false
                   }
                 ],
-                "description": "Public base URL for OAuth callbacks and discovery metadata when Bifrost runs behind a reverse proxy. Overrides the host derived from the incoming request. Supports env var syntax (\"env.MY_VAR\"). Configurable via UI, API, or config.json.\n"
+                "description": "Public base URL Bifrost uses as the redirect_uri when acting as an OAuth client to upstream MCP servers (Notion, Jira, etc.). Set when Bifrost's callback endpoint is reached via a different URL than its server-side metadata. Supports env var syntax (\"env.MY_VAR\").\n"
+              },
+              "mcp_server_auth_mode": {
+                "type": "string",
+                "enum": [
+                  "headers",
+                  "both",
+                  "oauth"
+                ],
+                "default": "headers",
+                "description": "How /mcp authenticates inbound MCP clients. 'headers' (default): VK/api-key/session headers only, discovery disabled. 'both': accepts header credentials and Bifrost-issued JWTs, discovery enabled. 'oauth': Bifrost JWTs only — disables VK/header MCP access.\n"
+              },
+              "oauth2_server_config": {
+                "type": "object",
+                "description": "OAuth2 authorization server settings for /mcp. Only relevant when mcp_server_auth_mode is 'both' or 'oauth'.\n",
+                "properties": {
+                  "issuer_url": {
+                    "oneOf": [
+                      {
+                        "type": "string",
+                        "description": "Plain URL or env var reference (e.g. \"env.MY_VAR\")"
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "value": {
+                            "type": "string"
+                          },
+                          "env_var": {
+                            "type": "string"
+                          },
+                          "from_env": {
+                            "type": "boolean"
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    ],
+                    "description": "Stable public URL advertised as the OAuth2 AS issuer in discovery documents and the JWT iss claim. Required for multi-host deployments; single-host can omit it (falls back to the request Host header). Supports env var syntax (\"env.MY_VAR\").\n"
+                  },
+                  "auth_code_ttl": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 900,
+                    "default": 300,
+                    "description": "Lifetime of the single-use authorization code in seconds (default 300, max 900 = 15 minutes)."
+                  },
+                  "access_token_ttl": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "default": 600,
+                    "description": "Lifetime of the issued JWT Bearer token in seconds (default 600)."
+                  },
+                  "disable_vk_identity": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Require identity-provider login: virtual-key identity is removed from the consent flow, and existing virtual-key-mode grants are rejected at /mcp and denied on refresh. Only meaningful when mcp_server_auth_mode is 'oauth' and an identity provider is configured. Anonymous session identity is governed separately by enforce_auth_on_inference.\n"
+                  }
+                },
+                "additionalProperties": false
               }
             }
           },
@@ -72389,7 +72586,7 @@
                 },
                 "description": "Headers to capture in log metadata. Values are extracted from incoming requests and stored in the metadata field of log entries. Case-insensitive matching. No restart required."
               },
-              "mcp_external_base_url": {
+              "mcp_external_client_url": {
                 "oneOf": [
                   {
                     "type": "string",
@@ -72411,7 +72608,66 @@
                     "additionalProperties": false
                   }
                 ],
-                "description": "Public base URL for OAuth callbacks and discovery metadata when Bifrost runs behind a reverse proxy. Overrides the host derived from the incoming request. Supports env var syntax (\"env.MY_VAR\"). Configurable via UI, API, or config.json.\n"
+                "description": "Public base URL Bifrost uses as the redirect_uri when acting as an OAuth client to upstream MCP servers (Notion, Jira, etc.). Set when Bifrost's callback endpoint is reached via a different URL than its server-side metadata. Supports env var syntax (\"env.MY_VAR\").\n"
+              },
+              "mcp_server_auth_mode": {
+                "type": "string",
+                "enum": [
+                  "headers",
+                  "both",
+                  "oauth"
+                ],
+                "default": "headers",
+                "description": "How /mcp authenticates inbound MCP clients. 'headers' (default): VK/api-key/session headers only, discovery disabled. 'both': accepts header credentials and Bifrost-issued JWTs, discovery enabled. 'oauth': Bifrost JWTs only — disables VK/header MCP access.\n"
+              },
+              "oauth2_server_config": {
+                "type": "object",
+                "description": "OAuth2 authorization server settings for /mcp. Only relevant when mcp_server_auth_mode is 'both' or 'oauth'.\n",
+                "properties": {
+                  "issuer_url": {
+                    "oneOf": [
+                      {
+                        "type": "string",
+                        "description": "Plain URL or env var reference (e.g. \"env.MY_VAR\")"
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "value": {
+                            "type": "string"
+                          },
+                          "env_var": {
+                            "type": "string"
+                          },
+                          "from_env": {
+                            "type": "boolean"
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    ],
+                    "description": "Stable public URL advertised as the OAuth2 AS issuer in discovery documents and the JWT iss claim. Required for multi-host deployments; single-host can omit it (falls back to the request Host header). Supports env var syntax (\"env.MY_VAR\").\n"
+                  },
+                  "auth_code_ttl": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 900,
+                    "default": 300,
+                    "description": "Lifetime of the single-use authorization code in seconds (default 300, max 900 = 15 minutes)."
+                  },
+                  "access_token_ttl": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "default": 600,
+                    "description": "Lifetime of the issued JWT Bearer token in seconds (default 600)."
+                  },
+                  "disable_vk_identity": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Require identity-provider login: virtual-key identity is removed from the consent flow, and existing virtual-key-mode grants are rejected at /mcp and denied on refresh. Only meaningful when mcp_server_auth_mode is 'oauth' and an identity provider is configured. Anonymous session identity is governed separately by enforce_auth_on_inference.\n"
+                  }
+                },
+                "additionalProperties": false
               }
             }
           },
@@ -74504,6 +74760,14 @@
           "is_active": {
             "type": "boolean"
           },
+          "expires_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Expiry timestamp. Requests using this virtual key are rejected once it passes. Null or absent means the key never expires."
+          },
           "provider_configs": {
             "type": "array",
             "items": {
@@ -74957,6 +75221,11 @@
           "calendar_aligned": {
             "type": "boolean",
             "default": false
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Optional expiry timestamp. Must be in the future. Omit for a key that never expires."
           }
         }
       },
@@ -75064,6 +75333,10 @@
           "reset_budget_usage": {
             "type": "boolean",
             "description": "When true, resets usage for virtual-key and provider-config budget records reconciled by this update."
+          },
+          "expires_at": {
+            "type": "string",
+            "description": "RFC3339 timestamp to set a new expiry (must be in the future), empty string to clear an existing expiry, omitted to leave it unchanged."
           }
         }
       },
