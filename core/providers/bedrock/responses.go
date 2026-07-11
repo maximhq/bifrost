@@ -2049,7 +2049,9 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest(ctx *schemas.Bi
 			reasoningConfig, ok = request.AdditionalModelRequestFields.Get("reasoning_config")
 		}
 		if ok {
-			if reasoningConfigMap, ok := reasoningConfig.(map[string]interface{}); ok {
+			// May arrive as *OrderedMap (HTTP unmarshal) or map[string]interface{} (in-process)
+			if reasoningConfigOrderedMap, ok := schemas.SafeExtractOrderedMap(reasoningConfig); ok && reasoningConfigOrderedMap != nil {
+				reasoningConfigMap := reasoningConfigOrderedMap.ToMap()
 				if typeStr, ok := schemas.SafeExtractString(reasoningConfigMap["type"]); ok {
 					if typeStr == "enabled" || typeStr == "adaptive" {
 						var summary *string
@@ -2115,7 +2117,8 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest(ctx *schemas.Bi
 
 		// Handle Nova reasoningConfig format (camelCase)
 		if novaReasoningConfig, ok := request.AdditionalModelRequestFields.Get("reasoningConfig"); ok {
-			if novaReasoningConfigMap, ok := novaReasoningConfig.(map[string]interface{}); ok {
+			if novaReasoningConfigOrderedMap, ok := schemas.SafeExtractOrderedMap(novaReasoningConfig); ok && novaReasoningConfigOrderedMap != nil {
+				novaReasoningConfigMap := novaReasoningConfigOrderedMap.ToMap()
 				if typeStr, ok := schemas.SafeExtractString(novaReasoningConfigMap["type"]); ok {
 					if typeStr == "enabled" {
 						// Extract maxReasoningEffort from Nova format
