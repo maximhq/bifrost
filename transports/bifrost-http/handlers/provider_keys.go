@@ -198,18 +198,12 @@ func (h *ProviderHandler) updateProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	oldRedactedKey, err := h.inMemoryStore.GetProviderKeyRedacted(provider, keyID)
+	updateKey.ID = keyID
+	mergedKey, err := h.mergeUpdatedKey(*oldRawKey, updateKey)
 	if err != nil {
-		if errors.Is(err, lib.ErrNotFound) {
-			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider key not found: %v", err))
-			return
-		}
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get provider key: %v", err))
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
 	}
-
-	updateKey.ID = keyID
-	mergedKey := h.mergeUpdatedKey(*oldRawKey, *oldRedactedKey, updateKey)
 
 	baseProvider := provider
 	if providerConfig.CustomProviderConfig != nil && providerConfig.CustomProviderConfig.BaseProviderType != "" {
@@ -320,158 +314,143 @@ func (h *ProviderHandler) deleteProviderKey(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, redactedKey)
 }
 
-// mergeUpdatedKey merges an updated key with the old raw/redacted versions,
-// preserving real values for fields that were sent back in redacted form.
-func (h *ProviderHandler) mergeUpdatedKey(oldRawKey, oldRedactedKey, updateKey schemas.Key) schemas.Key {
+// mergeUpdatedKey merges an updated key with the old raw version, preserving
+// stored values for masked placeholders. A placeholder without a stored
+// counterpart is rejected so it can never reach persistence.
+func (h *ProviderHandler) mergeUpdatedKey(oldRawKey, updateKey schemas.Key) (schemas.Key, error) {
 	mergedKey := updateKey
-
-	// Never persist a masked preview as the real key value. A redacted, non-secret
-	// incoming value can only be the GET-render placeholder echoed back by a client,
-	// so keep the stored credential instead of writing the mask. Matching the exact
-	// current redaction is deliberately NOT required: a stale or differently-masked
-	// preview (e.g. a different asterisk count, or a render from another replica)
-	// must be rejected too, otherwise the mask lands in the store and later breaks
-	// JSON re-parsing on reload ("invalid character '*'"). Genuine env/vault refs
-	// report IsRedacted() but are intentional, so IsFromSecret() lets them through.
-	if updateKey.Value.IsRedacted() && !updateKey.Value.IsFromSecret() {
-		mergedKey.Value = oldRawKey.Value
+	preserve := func(incoming, stored *schemas.SecretVar, field string) error {
+		if !incoming.IsMaskedPlaceholder() {
+			return nil
+		}
+		if stored == nil || !stored.IsSet() {
+			return fmt.Errorf("masked preview cannot be used for %s without a stored value", field)
+		}
+		*incoming = *stored
+		return nil
 	}
 
-	if updateKey.AzureKeyConfig != nil && oldRedactedKey.AzureKeyConfig != nil && oldRawKey.AzureKeyConfig != nil {
-		if updateKey.AzureKeyConfig.Endpoint.IsRedacted() && !updateKey.AzureKeyConfig.Endpoint.IsFromSecret() {
-			mergedKey.AzureKeyConfig.Endpoint = oldRawKey.AzureKeyConfig.Endpoint
-		}
-		if updateKey.AzureKeyConfig.ClientID != nil &&
-			oldRedactedKey.AzureKeyConfig.ClientID != nil &&
-			oldRawKey.AzureKeyConfig != nil &&
-			updateKey.AzureKeyConfig.ClientID.IsRedacted() &&
-			!updateKey.AzureKeyConfig.ClientID.IsFromSecret() {
-			mergedKey.AzureKeyConfig.ClientID = oldRawKey.AzureKeyConfig.ClientID
-		}
-		if updateKey.AzureKeyConfig.ClientSecret != nil &&
-			oldRedactedKey.AzureKeyConfig.ClientSecret != nil &&
-			oldRawKey.AzureKeyConfig != nil &&
-			updateKey.AzureKeyConfig.ClientSecret.IsRedacted() &&
-			!updateKey.AzureKeyConfig.ClientSecret.IsFromSecret() {
-			mergedKey.AzureKeyConfig.ClientSecret = oldRawKey.AzureKeyConfig.ClientSecret
-		}
-		if updateKey.AzureKeyConfig.TenantID != nil &&
-			oldRedactedKey.AzureKeyConfig.TenantID != nil &&
-			oldRawKey.AzureKeyConfig != nil &&
-			updateKey.AzureKeyConfig.TenantID.IsRedacted() &&
-			!updateKey.AzureKeyConfig.TenantID.IsFromSecret() {
-			mergedKey.AzureKeyConfig.TenantID = oldRawKey.AzureKeyConfig.TenantID
-		}
+	if err := preserve(&mergedKey.Value, &oldRawKey.Value, "value"); err != nil {
+		return schemas.Key{}, err
 	}
 
-	if updateKey.VertexKeyConfig != nil && oldRedactedKey.VertexKeyConfig != nil && oldRawKey.VertexKeyConfig != nil {
-		if updateKey.VertexKeyConfig.ProjectID.IsRedacted() && !updateKey.VertexKeyConfig.ProjectID.IsFromSecret() {
-			mergedKey.VertexKeyConfig.ProjectID = oldRawKey.VertexKeyConfig.ProjectID
+	if mergedKey.AzureKeyConfig != nil {
+		var endpoint, clientID, clientSecret, tenantID *schemas.SecretVar
+		if oldRawKey.AzureKeyConfig != nil {
+			endpoint = &oldRawKey.AzureKeyConfig.Endpoint
+			clientID = oldRawKey.AzureKeyConfig.ClientID
+			clientSecret = oldRawKey.AzureKeyConfig.ClientSecret
+			tenantID = oldRawKey.AzureKeyConfig.TenantID
 		}
-		if updateKey.VertexKeyConfig.ProjectNumber.IsRedacted() && !updateKey.VertexKeyConfig.ProjectNumber.IsFromSecret() {
-			mergedKey.VertexKeyConfig.ProjectNumber = oldRawKey.VertexKeyConfig.ProjectNumber
-		}
-		if updateKey.VertexKeyConfig.Region.IsRedacted() && !updateKey.VertexKeyConfig.Region.IsFromSecret() {
-			mergedKey.VertexKeyConfig.Region = oldRawKey.VertexKeyConfig.Region
-		}
-		if updateKey.VertexKeyConfig.AuthCredentials.IsRedacted() && !updateKey.VertexKeyConfig.AuthCredentials.IsFromSecret() {
-			mergedKey.VertexKeyConfig.AuthCredentials = oldRawKey.VertexKeyConfig.AuthCredentials
+		for _, item := range []struct {
+			incoming *schemas.SecretVar
+			stored   *schemas.SecretVar
+			field    string
+		}{
+			{&mergedKey.AzureKeyConfig.Endpoint, endpoint, "azure_key_config.endpoint"},
+			{mergedKey.AzureKeyConfig.ClientID, clientID, "azure_key_config.client_id"},
+			{mergedKey.AzureKeyConfig.ClientSecret, clientSecret, "azure_key_config.client_secret"},
+			{mergedKey.AzureKeyConfig.TenantID, tenantID, "azure_key_config.tenant_id"},
+		} {
+			if err := preserve(item.incoming, item.stored, item.field); err != nil {
+				return schemas.Key{}, err
+			}
 		}
 	}
 
-	if updateKey.BedrockKeyConfig != nil && oldRedactedKey.BedrockKeyConfig != nil && oldRawKey.BedrockKeyConfig != nil {
-		if updateKey.BedrockKeyConfig.AccessKey.IsRedacted() && !updateKey.BedrockKeyConfig.AccessKey.IsFromSecret() {
-			mergedKey.BedrockKeyConfig.AccessKey = oldRawKey.BedrockKeyConfig.AccessKey
+	if mergedKey.VertexKeyConfig != nil {
+		var projectID, projectNumber, region, authCredentials *schemas.SecretVar
+		if oldRawKey.VertexKeyConfig != nil {
+			projectID = &oldRawKey.VertexKeyConfig.ProjectID
+			projectNumber = &oldRawKey.VertexKeyConfig.ProjectNumber
+			region = &oldRawKey.VertexKeyConfig.Region
+			authCredentials = &oldRawKey.VertexKeyConfig.AuthCredentials
 		}
-		if updateKey.BedrockKeyConfig.SecretKey.IsRedacted() && !updateKey.BedrockKeyConfig.SecretKey.IsFromSecret() {
-			mergedKey.BedrockKeyConfig.SecretKey = oldRawKey.BedrockKeyConfig.SecretKey
-		}
-		if updateKey.BedrockKeyConfig.SessionToken != nil &&
-			oldRedactedKey.BedrockKeyConfig.SessionToken != nil &&
-			oldRawKey.BedrockKeyConfig != nil &&
-			updateKey.BedrockKeyConfig.SessionToken.IsRedacted() &&
-			!updateKey.BedrockKeyConfig.SessionToken.IsFromSecret() {
-			mergedKey.BedrockKeyConfig.SessionToken = oldRawKey.BedrockKeyConfig.SessionToken
-		}
-		if updateKey.BedrockKeyConfig.Region != nil &&
-			oldRedactedKey.BedrockKeyConfig.Region != nil &&
-			oldRawKey.BedrockKeyConfig != nil &&
-			updateKey.BedrockKeyConfig.Region.IsRedacted() &&
-			!updateKey.BedrockKeyConfig.Region.IsFromSecret() {
-			mergedKey.BedrockKeyConfig.Region = oldRawKey.BedrockKeyConfig.Region
-		}
-		if updateKey.BedrockKeyConfig.ARN != nil &&
-			oldRedactedKey.BedrockKeyConfig.ARN != nil &&
-			oldRawKey.BedrockKeyConfig != nil &&
-			updateKey.BedrockKeyConfig.ARN.IsRedacted() &&
-			!updateKey.BedrockKeyConfig.ARN.IsFromSecret() {
-			mergedKey.BedrockKeyConfig.ARN = oldRawKey.BedrockKeyConfig.ARN
-		}
-		if updateKey.BedrockKeyConfig.RoleARN != nil &&
-			oldRedactedKey.BedrockKeyConfig.RoleARN != nil &&
-			oldRawKey.BedrockKeyConfig != nil &&
-			updateKey.BedrockKeyConfig.RoleARN.IsRedacted() &&
-			!updateKey.BedrockKeyConfig.RoleARN.IsFromSecret() {
-			mergedKey.BedrockKeyConfig.RoleARN = oldRawKey.BedrockKeyConfig.RoleARN
-		}
-		if updateKey.BedrockKeyConfig.ExternalID != nil &&
-			oldRedactedKey.BedrockKeyConfig.ExternalID != nil &&
-			oldRawKey.BedrockKeyConfig != nil &&
-			updateKey.BedrockKeyConfig.ExternalID.IsRedacted() &&
-			!updateKey.BedrockKeyConfig.ExternalID.IsFromSecret() {
-			mergedKey.BedrockKeyConfig.ExternalID = oldRawKey.BedrockKeyConfig.ExternalID
-		}
-		if updateKey.BedrockKeyConfig.RoleSessionName != nil &&
-			oldRedactedKey.BedrockKeyConfig.RoleSessionName != nil &&
-			oldRawKey.BedrockKeyConfig != nil &&
-			updateKey.BedrockKeyConfig.RoleSessionName.IsRedacted() &&
-			!updateKey.BedrockKeyConfig.RoleSessionName.IsFromSecret() {
-			mergedKey.BedrockKeyConfig.RoleSessionName = oldRawKey.BedrockKeyConfig.RoleSessionName
+		for _, item := range []struct {
+			incoming *schemas.SecretVar
+			stored   *schemas.SecretVar
+			field    string
+		}{
+			{&mergedKey.VertexKeyConfig.ProjectID, projectID, "vertex_key_config.project_id"},
+			{&mergedKey.VertexKeyConfig.ProjectNumber, projectNumber, "vertex_key_config.project_number"},
+			{&mergedKey.VertexKeyConfig.Region, region, "vertex_key_config.region"},
+			{&mergedKey.VertexKeyConfig.AuthCredentials, authCredentials, "vertex_key_config.auth_credentials"},
+		} {
+			if err := preserve(item.incoming, item.stored, item.field); err != nil {
+				return schemas.Key{}, err
+			}
 		}
 	}
 
-	if updateKey.BedrockMantleKeyConfig != nil && oldRedactedKey.BedrockMantleKeyConfig != nil && oldRawKey.BedrockMantleKeyConfig != nil {
-		if updateKey.BedrockMantleKeyConfig.AccessKey.IsRedacted() && !updateKey.BedrockMantleKeyConfig.AccessKey.IsFromSecret() {
-			mergedKey.BedrockMantleKeyConfig.AccessKey = oldRawKey.BedrockMantleKeyConfig.AccessKey
+	if mergedKey.BedrockKeyConfig != nil {
+		var accessKey, secretKey, sessionToken, region, arn, roleARN, externalID, sessionName *schemas.SecretVar
+		if oldRawKey.BedrockKeyConfig != nil {
+			accessKey = &oldRawKey.BedrockKeyConfig.AccessKey
+			secretKey = &oldRawKey.BedrockKeyConfig.SecretKey
+			sessionToken = oldRawKey.BedrockKeyConfig.SessionToken
+			region = oldRawKey.BedrockKeyConfig.Region
+			arn = oldRawKey.BedrockKeyConfig.ARN
+			roleARN = oldRawKey.BedrockKeyConfig.RoleARN
+			externalID = oldRawKey.BedrockKeyConfig.ExternalID
+			sessionName = oldRawKey.BedrockKeyConfig.RoleSessionName
 		}
-		if updateKey.BedrockMantleKeyConfig.SecretKey.IsRedacted() && !updateKey.BedrockMantleKeyConfig.SecretKey.IsFromSecret() {
-			mergedKey.BedrockMantleKeyConfig.SecretKey = oldRawKey.BedrockMantleKeyConfig.SecretKey
-		}
-		if updateKey.BedrockMantleKeyConfig.SessionToken != nil &&
-			oldRedactedKey.BedrockMantleKeyConfig.SessionToken != nil &&
-			updateKey.BedrockMantleKeyConfig.SessionToken.IsRedacted() &&
-			!updateKey.BedrockMantleKeyConfig.SessionToken.IsFromSecret() {
-			mergedKey.BedrockMantleKeyConfig.SessionToken = oldRawKey.BedrockMantleKeyConfig.SessionToken
-		}
-		if updateKey.BedrockMantleKeyConfig.Region != nil &&
-			oldRedactedKey.BedrockMantleKeyConfig.Region != nil &&
-			updateKey.BedrockMantleKeyConfig.Region.IsRedacted() &&
-			!updateKey.BedrockMantleKeyConfig.Region.IsFromSecret() {
-			mergedKey.BedrockMantleKeyConfig.Region = oldRawKey.BedrockMantleKeyConfig.Region
-		}
-		if updateKey.BedrockMantleKeyConfig.RoleARN != nil &&
-			oldRedactedKey.BedrockMantleKeyConfig.RoleARN != nil &&
-			updateKey.BedrockMantleKeyConfig.RoleARN.IsRedacted() &&
-			!updateKey.BedrockMantleKeyConfig.RoleARN.IsFromSecret() {
-			mergedKey.BedrockMantleKeyConfig.RoleARN = oldRawKey.BedrockMantleKeyConfig.RoleARN
-		}
-		if updateKey.BedrockMantleKeyConfig.ExternalID != nil &&
-			oldRedactedKey.BedrockMantleKeyConfig.ExternalID != nil &&
-			updateKey.BedrockMantleKeyConfig.ExternalID.IsRedacted() &&
-			!updateKey.BedrockMantleKeyConfig.ExternalID.IsFromSecret() {
-			mergedKey.BedrockMantleKeyConfig.ExternalID = oldRawKey.BedrockMantleKeyConfig.ExternalID
-		}
-		if updateKey.BedrockMantleKeyConfig.RoleSessionName != nil &&
-			oldRedactedKey.BedrockMantleKeyConfig.RoleSessionName != nil &&
-			updateKey.BedrockMantleKeyConfig.RoleSessionName.IsRedacted() &&
-			!updateKey.BedrockMantleKeyConfig.RoleSessionName.IsFromSecret() {
-			mergedKey.BedrockMantleKeyConfig.RoleSessionName = oldRawKey.BedrockMantleKeyConfig.RoleSessionName
+		for _, item := range []struct {
+			incoming *schemas.SecretVar
+			stored   *schemas.SecretVar
+			field    string
+		}{
+			{&mergedKey.BedrockKeyConfig.AccessKey, accessKey, "bedrock_key_config.access_key"},
+			{&mergedKey.BedrockKeyConfig.SecretKey, secretKey, "bedrock_key_config.secret_key"},
+			{mergedKey.BedrockKeyConfig.SessionToken, sessionToken, "bedrock_key_config.session_token"},
+			{mergedKey.BedrockKeyConfig.Region, region, "bedrock_key_config.region"},
+			{mergedKey.BedrockKeyConfig.ARN, arn, "bedrock_key_config.arn"},
+			{mergedKey.BedrockKeyConfig.RoleARN, roleARN, "bedrock_key_config.role_arn"},
+			{mergedKey.BedrockKeyConfig.ExternalID, externalID, "bedrock_key_config.external_id"},
+			{mergedKey.BedrockKeyConfig.RoleSessionName, sessionName, "bedrock_key_config.session_name"},
+		} {
+			if err := preserve(item.incoming, item.stored, item.field); err != nil {
+				return schemas.Key{}, err
+			}
 		}
 	}
 
-	if updateKey.VLLMKeyConfig != nil && oldRedactedKey.VLLMKeyConfig != nil && oldRawKey.VLLMKeyConfig != nil {
-		if updateKey.VLLMKeyConfig.URL.IsRedacted() && !updateKey.VLLMKeyConfig.URL.IsFromSecret() {
-			mergedKey.VLLMKeyConfig.URL = oldRawKey.VLLMKeyConfig.URL
+	if mergedKey.BedrockMantleKeyConfig != nil {
+		var accessKey, secretKey, sessionToken, region, roleARN, externalID, sessionName *schemas.SecretVar
+		if oldRawKey.BedrockMantleKeyConfig != nil {
+			accessKey = &oldRawKey.BedrockMantleKeyConfig.AccessKey
+			secretKey = &oldRawKey.BedrockMantleKeyConfig.SecretKey
+			sessionToken = oldRawKey.BedrockMantleKeyConfig.SessionToken
+			region = oldRawKey.BedrockMantleKeyConfig.Region
+			roleARN = oldRawKey.BedrockMantleKeyConfig.RoleARN
+			externalID = oldRawKey.BedrockMantleKeyConfig.ExternalID
+			sessionName = oldRawKey.BedrockMantleKeyConfig.RoleSessionName
+		}
+		for _, item := range []struct {
+			incoming *schemas.SecretVar
+			stored   *schemas.SecretVar
+			field    string
+		}{
+			{&mergedKey.BedrockMantleKeyConfig.AccessKey, accessKey, "bedrock_mantle_key_config.access_key"},
+			{&mergedKey.BedrockMantleKeyConfig.SecretKey, secretKey, "bedrock_mantle_key_config.secret_key"},
+			{mergedKey.BedrockMantleKeyConfig.SessionToken, sessionToken, "bedrock_mantle_key_config.session_token"},
+			{mergedKey.BedrockMantleKeyConfig.Region, region, "bedrock_mantle_key_config.region"},
+			{mergedKey.BedrockMantleKeyConfig.RoleARN, roleARN, "bedrock_mantle_key_config.role_arn"},
+			{mergedKey.BedrockMantleKeyConfig.ExternalID, externalID, "bedrock_mantle_key_config.external_id"},
+			{mergedKey.BedrockMantleKeyConfig.RoleSessionName, sessionName, "bedrock_mantle_key_config.session_name"},
+		} {
+			if err := preserve(item.incoming, item.stored, item.field); err != nil {
+				return schemas.Key{}, err
+			}
+		}
+	}
+
+	if mergedKey.VLLMKeyConfig != nil {
+		var stored *schemas.SecretVar
+		if oldRawKey.VLLMKeyConfig != nil {
+			stored = &oldRawKey.VLLMKeyConfig.URL
+		}
+		if err := preserve(&mergedKey.VLLMKeyConfig.URL, stored, "vllm_key_config.url"); err != nil {
+			return schemas.Key{}, err
 		}
 	}
 
@@ -480,22 +459,30 @@ func (h *ProviderHandler) mergeUpdatedKey(oldRawKey, oldRedactedKey, updateKey s
 		mergedKey.ReplicateKeyConfig = oldRawKey.ReplicateKeyConfig
 	}
 
-	if updateKey.OllamaKeyConfig != nil && oldRedactedKey.OllamaKeyConfig != nil && oldRawKey.OllamaKeyConfig != nil {
-		if updateKey.OllamaKeyConfig.URL.IsRedacted() && !updateKey.OllamaKeyConfig.URL.IsFromSecret() {
-			mergedKey.OllamaKeyConfig.URL = oldRawKey.OllamaKeyConfig.URL
+	if mergedKey.OllamaKeyConfig != nil {
+		var stored *schemas.SecretVar
+		if oldRawKey.OllamaKeyConfig != nil {
+			stored = &oldRawKey.OllamaKeyConfig.URL
+		}
+		if err := preserve(&mergedKey.OllamaKeyConfig.URL, stored, "ollama_key_config.url"); err != nil {
+			return schemas.Key{}, err
 		}
 	}
 
-	if updateKey.SGLKeyConfig != nil && oldRedactedKey.SGLKeyConfig != nil && oldRawKey.SGLKeyConfig != nil {
-		if updateKey.SGLKeyConfig.URL.IsRedacted() && !updateKey.SGLKeyConfig.URL.IsFromSecret() {
-			mergedKey.SGLKeyConfig.URL = oldRawKey.SGLKeyConfig.URL
+	if mergedKey.SGLKeyConfig != nil {
+		var stored *schemas.SecretVar
+		if oldRawKey.SGLKeyConfig != nil {
+			stored = &oldRawKey.SGLKeyConfig.URL
+		}
+		if err := preserve(&mergedKey.SGLKeyConfig.URL, stored, "sgl_key_config.url"); err != nil {
+			return schemas.Key{}, err
 		}
 	}
 
 	mergedKey.ConfigHash = oldRawKey.ConfigHash
 	mergedKey.Status = oldRawKey.Status
 
-	return mergedKey
+	return mergedKey, nil
 }
 
 func getKeyIDFromCtx(ctx *fasthttp.RequestCtx) (string, error) {

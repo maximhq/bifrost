@@ -15,6 +15,14 @@ import (
 // later breaking JSON re-parsing on governance reload).
 func TestMergeUpdatedKey_Value(t *testing.T) {
 	h := &ProviderHandler{}
+	merge := func(oldRaw, update schemas.Key) schemas.Key {
+		t.Helper()
+		merged, err := h.mergeUpdatedKey(oldRaw, update)
+		if err != nil {
+			t.Fatalf("mergeUpdatedKey returned error: %v", err)
+		}
+		return merged
+	}
 
 	const rawValue = "sk-realkey1234567890abcdefghij"
 
@@ -31,7 +39,7 @@ func TestMergeUpdatedKey_Value(t *testing.T) {
 		// Client sends back exactly what GET rendered.
 		update := schemas.Key{ID: "key-1", Value: oldRedacted.Value}
 
-		merged := h.mergeUpdatedKey(oldRaw, oldRedacted, update)
+		merged := merge(oldRaw, update)
 		if merged.Value.GetValue() != rawValue {
 			t.Fatalf("expected stored raw value preserved, got %q", merged.Value.GetValue())
 		}
@@ -53,7 +61,7 @@ func TestMergeUpdatedKey_Value(t *testing.T) {
 		}
 		update := schemas.Key{ID: "key-1", Value: *schemas.NewSecretVar(mismatched)}
 
-		merged := h.mergeUpdatedKey(oldRaw, oldRedacted, update)
+		merged := merge(oldRaw, update)
 		if merged.Value.GetValue() != rawValue {
 			t.Fatalf("masked preview must not be persisted; expected %q, got %q", rawValue, merged.Value.GetValue())
 		}
@@ -64,11 +72,10 @@ func TestMergeUpdatedKey_Value(t *testing.T) {
 
 	t.Run("genuine new plaintext value is applied", func(t *testing.T) {
 		oldRaw := newRaw()
-		oldRedacted := redactedOf(oldRaw)
 		const newValue = "sk-brandnewkey0987654321zyxwvu"
 		update := schemas.Key{ID: "key-1", Value: *schemas.NewSecretVar(newValue)}
 
-		merged := h.mergeUpdatedKey(oldRaw, oldRedacted, update)
+		merged := merge(oldRaw, update)
 		if merged.Value.GetValue() != newValue {
 			t.Fatalf("expected new plaintext value applied, got %q", merged.Value.GetValue())
 		}
@@ -76,11 +83,10 @@ func TestMergeUpdatedKey_Value(t *testing.T) {
 
 	t.Run("genuine env ref is applied not preserved", func(t *testing.T) {
 		oldRaw := newRaw()
-		oldRedacted := redactedOf(oldRaw)
 		// env refs report IsRedacted() but are an intentional change.
 		update := schemas.Key{ID: "key-1", Value: *schemas.NewSecretVar("env.SOME_NEW_KEY")}
 
-		merged := h.mergeUpdatedKey(oldRaw, oldRedacted, update)
+		merged := merge(oldRaw, update)
 		if !merged.Value.IsFromEnv() || merged.Value.GetRawRef() != "env.SOME_NEW_KEY" {
 			t.Fatalf("expected env ref applied, got ref=%q fromEnv=%v", merged.Value.GetRawRef(), merged.Value.IsFromEnv())
 		}
@@ -91,13 +97,12 @@ func TestMergeUpdatedKey_Value(t *testing.T) {
 
 	t.Run("empty value is not treated as redacted", func(t *testing.T) {
 		// Empty non-secret values must stay empty so the downstream
-		// "must not be empty" validation still fires — the merge must not
+		// "must not be empty" validation still fires. The merge must not
 		// silently resurrect the stored value here.
 		oldRaw := newRaw()
-		oldRedacted := redactedOf(oldRaw)
 		update := schemas.Key{ID: "key-1", Value: *schemas.NewSecretVar("")}
 
-		merged := h.mergeUpdatedKey(oldRaw, oldRedacted, update)
+		merged := merge(oldRaw, update)
 		if merged.Value.GetValue() != "" {
 			t.Fatalf("expected empty value preserved for validation, got %q", merged.Value.GetValue())
 		}
@@ -106,6 +111,14 @@ func TestMergeUpdatedKey_Value(t *testing.T) {
 
 func TestMergeUpdatedKey_ProviderConfigMaskedPreviews(t *testing.T) {
 	h := &ProviderHandler{}
+	merge := func(oldRaw, update schemas.Key) schemas.Key {
+		t.Helper()
+		merged, err := h.mergeUpdatedKey(oldRaw, update)
+		if err != nil {
+			t.Fatalf("mergeUpdatedKey returned error: %v", err)
+		}
+		return merged
+	}
 	secret := func(value string) schemas.SecretVar { return *schemas.NewSecretVar(value) }
 	secretPtr := func(value string) *schemas.SecretVar { return schemas.NewSecretVar(value) }
 	staleMaskValue := func(prefix, suffix string) string {
@@ -134,25 +147,6 @@ func TestMergeUpdatedKey_ProviderConfigMaskedPreviews(t *testing.T) {
 		OllamaKeyConfig: &schemas.OllamaKeyConfig{URL: secret("https://current.ollama.example.com")},
 		SGLKeyConfig:    &schemas.SGLKeyConfig{URL: secret("https://current.sgl.example.com")},
 	}
-	oldRedacted := schemas.Key{
-		AzureKeyConfig: &schemas.AzureKeyConfig{
-			Endpoint:     *oldRaw.AzureKeyConfig.Endpoint.Redacted(),
-			ClientSecret: oldRaw.AzureKeyConfig.ClientSecret.Redacted(),
-		},
-		VertexKeyConfig: &schemas.VertexKeyConfig{
-			AuthCredentials: *oldRaw.VertexKeyConfig.AuthCredentials.Redacted(),
-		},
-		BedrockKeyConfig: &schemas.BedrockKeyConfig{
-			AccessKey:    *oldRaw.BedrockKeyConfig.AccessKey.Redacted(),
-			SessionToken: oldRaw.BedrockKeyConfig.SessionToken.Redacted(),
-		},
-		BedrockMantleKeyConfig: &schemas.BedrockMantleKeyConfig{
-			SecretKey: *oldRaw.BedrockMantleKeyConfig.SecretKey.Redacted(),
-		},
-		VLLMKeyConfig:   &schemas.VLLMKeyConfig{URL: *oldRaw.VLLMKeyConfig.URL.Redacted()},
-		OllamaKeyConfig: &schemas.OllamaKeyConfig{URL: *oldRaw.OllamaKeyConfig.URL.Redacted()},
-		SGLKeyConfig:    &schemas.SGLKeyConfig{URL: *oldRaw.SGLKeyConfig.URL.Redacted()},
-	}
 	update := schemas.Key{
 		AzureKeyConfig: &schemas.AzureKeyConfig{
 			Endpoint:     staleMask("azur", "0001"),
@@ -173,7 +167,7 @@ func TestMergeUpdatedKey_ProviderConfigMaskedPreviews(t *testing.T) {
 		SGLKeyConfig:    &schemas.SGLKeyConfig{URL: staleMask("sgla", "0009")},
 	}
 
-	merged := h.mergeUpdatedKey(oldRaw, oldRedacted, update)
+	merged := merge(oldRaw, update)
 	checks := []struct {
 		name string
 		got  string
@@ -196,8 +190,57 @@ func TestMergeUpdatedKey_ProviderConfigMaskedPreviews(t *testing.T) {
 	}
 
 	update.VLLMKeyConfig.URL = secret("env.NEW_VLLM_URL")
-	merged = h.mergeUpdatedKey(oldRaw, oldRedacted, update)
+	merged = merge(oldRaw, update)
 	if !merged.VLLMKeyConfig.URL.IsFromEnv() || merged.VLLMKeyConfig.URL.GetRawRef() != "env.NEW_VLLM_URL" {
 		t.Fatalf("expected nested env ref applied, got ref=%q", merged.VLLMKeyConfig.URL.GetRawRef())
+	}
+}
+
+func TestMergeUpdatedKey_RejectsMaskWithoutStoredCounterpart(t *testing.T) {
+	h := &ProviderHandler{}
+	mask := *schemas.NewSecretVar("abcd" + strings.Repeat("*", 24) + "wxyz")
+
+	tests := []struct {
+		name    string
+		oldRaw  schemas.Key
+		update  schemas.Key
+		wantErr string
+	}{
+		{
+			name:    "missing config section",
+			oldRaw:  schemas.Key{},
+			update:  schemas.Key{VLLMKeyConfig: &schemas.VLLMKeyConfig{URL: mask}},
+			wantErr: "vllm_key_config.url",
+		},
+		{
+			name: "missing optional field",
+			oldRaw: schemas.Key{BedrockKeyConfig: &schemas.BedrockKeyConfig{
+				AccessKey: *schemas.NewSecretVar("stored-access-key"),
+			}},
+			update: schemas.Key{BedrockKeyConfig: &schemas.BedrockKeyConfig{
+				SessionToken: schemas.NewSecretVar(mask.GetValue()),
+			}},
+			wantErr: "bedrock_key_config.session_token",
+		},
+		{
+			name: "empty stored value",
+			oldRaw: schemas.Key{VLLMKeyConfig: &schemas.VLLMKeyConfig{
+				URL: *schemas.NewSecretVar(""),
+			}},
+			update:  schemas.Key{VLLMKeyConfig: &schemas.VLLMKeyConfig{URL: mask}},
+			wantErr: "vllm_key_config.url",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := h.mergeUpdatedKey(tt.oldRaw, tt.update)
+			if err == nil {
+				t.Fatal("expected masked preview without stored counterpart to fail")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("expected error to name %q, got %q", tt.wantErr, err)
+			}
+		})
 	}
 }
