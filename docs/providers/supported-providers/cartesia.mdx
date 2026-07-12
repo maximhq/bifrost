@@ -234,3 +234,35 @@ stream, err := client.SpeechStreamRequest(schemas.NewBifrostContext(ctx, schemas
 
 </Tab>
 </Tabs>
+
+---
+
+## Caveats
+
+<Accordion title="Voice ID Required">
+**Severity**: High
+**Behavior**: A voice must be provided for every TTS request (mapped to `voice.mode = "id"`, `voice.id = <uuid>`)
+**Impact**: Request fails with `voice parameter is required` if `voice` is missing
+**Code**: `cartesia.go:108-110` (Speech), `cartesia.go:179-181` (SpeechStream)
+</Accordion>
+
+<Accordion title="Streaming Forces the raw PCM Container">
+**Severity**: Medium
+**Behavior**: The `/tts/sse` endpoint only supports the `raw` container. A non-raw `response_format` (e.g. `mp3`) on the streaming path is overridden to `container=raw` with `pcm_s16le` encoding, and a warning is logged
+**Impact**: The requested container is silently ignored on the streaming path; callers receive raw PCM chunks regardless
+**Code**: `cartesia.go:185-190`, `utils.go` (`resolveCartesiaOutputFormat`, `forStreaming` branch)
+</Accordion>
+
+<Accordion title="Default Output Format is MP3">
+**Severity**: Low
+**Behavior**: When `response_format` is omitted or unrecognized on the non-streaming path, the output defaults to `{ "container": "mp3", "sample_rate": 44100 }`
+**Impact**: Callers expecting a different default receive MP3 unless they set `response_format` or `extra_params`
+**Code**: `utils.go` (`bifrostToCartesiaFormat`, `resolveCartesiaOutputFormat`)
+</Accordion>
+
+<Accordion title="TTS-Only Provider">
+**Severity**: Low
+**Behavior**: Only Speech (`/tts/bytes`) and SpeechStream (`/tts/sse`) are supported; all other operations return `UnsupportedOperationError`
+**Impact**: Chat Completions, Responses API, Text Completions, Transcriptions, Embeddings, and Image Generation are unavailable
+**Code**: `cartesia.go` (unsupported-operation methods), `cachedcontents.go`
+</Accordion>
