@@ -1174,6 +1174,8 @@ func HandleOpenAIChatCompletionStreaming(
 		var messageID string
 		var modelName string
 		var created int
+		// service_tier is echoed on chunks; propagate to the final chunk for priority/flex billing
+		var serviceTier *schemas.BifrostServiceTier
 		forwardedTerminalFinishReason := false
 		// Defer final completed/incomplete event until usage chunk arrives (fallback path only).
 		var pendingFinalEvent *schemas.BifrostResponsesStreamResponse
@@ -1316,6 +1318,10 @@ func HandleOpenAIChatCompletionStreaming(
 					}
 				}
 
+				if response.ServiceTier != nil {
+					serviceTier = response.ServiceTier
+				}
+
 				// Handle usage-only chunks (when stream_options include_usage is true)
 				if response.Usage != nil {
 					// Collect usage information and send at the end of the stream
@@ -1421,6 +1427,10 @@ func HandleOpenAIChatCompletionStreaming(
 			response := providerUtils.CreateBifrostChatCompletionChunkResponse(messageID, usage, finalFinishReason, chunkIndex, modelName, created)
 			if postResponseConverter != nil {
 				response = postResponseConverter(response)
+			}
+			// Preserve captured tier so priority/flex billing applies to the streamed response
+			if serviceTier != nil {
+				response.ServiceTier = serviceTier
 			}
 			// Set raw request if enabled
 			if sendBackRawRequest {

@@ -588,6 +588,43 @@ func TestToOpenAIChatRequest_CachingDeterminism(t *testing.T) {
 	}
 }
 
+func TestToOpenAIChatRequest_PromptCacheOptions(t *testing.T) {
+	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	defer cancel()
+
+	mode := "explicit"
+	ttl := "30m"
+	userContent := "hello"
+	mkReq := func(provider schemas.ModelProvider, model string) *schemas.BifrostChatRequest {
+		return &schemas.BifrostChatRequest{
+			Provider: provider,
+			Model:    model,
+			Input: []schemas.ChatMessage{{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: &userContent},
+			}},
+			Params: &schemas.ChatParameters{
+				PromptCacheOptions: &schemas.PromptCacheOptions{Mode: &mode, TTL: &ttl},
+			},
+		}
+	}
+
+	// OpenAI keeps the OpenAI-native field.
+	openai := ToOpenAIChatRequest(ctx, mkReq(schemas.OpenAI, "gpt-5.6"))
+	if openai == nil || openai.ChatParameters.PromptCacheOptions == nil {
+		t.Fatal("expected prompt_cache_options preserved for OpenAI")
+	}
+	if *openai.ChatParameters.PromptCacheOptions.Mode != mode || *openai.ChatParameters.PromptCacheOptions.TTL != ttl {
+		t.Fatalf("unexpected options: %#v", openai.ChatParameters.PromptCacheOptions)
+	}
+
+	// A non-OpenAI OpenAI-compatible provider strips it.
+	fw := ToOpenAIChatRequest(ctx, mkReq(schemas.Fireworks, "accounts/fireworks/models/deepseek-v3p2"))
+	if fw == nil || fw.ChatParameters.PromptCacheOptions != nil {
+		t.Fatalf("expected prompt_cache_options stripped for Fireworks, got %#v", fw.ChatParameters.PromptCacheOptions)
+	}
+}
+
 func TestToOpenAIChatRequest_FireworksPreservesReasoningAndCacheIsolation(t *testing.T) {
 	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
 	defer cancel()
