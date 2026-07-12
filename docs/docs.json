@@ -143,6 +143,7 @@
                   "providers/supported-providers/gemini",
                   "providers/supported-providers/groq",
                   "providers/supported-providers/huggingface",
+                  "providers/supported-providers/minimax",
                   "providers/supported-providers/mistral",
                   "providers/supported-providers/nebius",
                   "providers/supported-providers/ollama",

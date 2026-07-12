@@ -404,6 +404,9 @@
         "deepseek": {
           "$ref": "#/$defs/provider"
         },
+        "minimax": {
+          "$ref": "#/$defs/provider"
+        },
         "vllm": {
           "$ref": "#/$defs/provider_with_vllm_config"
         },
@@ -1877,6 +1880,7 @@
                         "vertex",
                         "cerebras",
                         "deepseek",
+                        "minimax",
                         "vllm",
                         "parasail",
                         "perplexity",
@@ -5608,6 +5612,7 @@
             "perplexity",
             "cerebras",
             "deepseek",
+            "minimax",
             "gemini",
             "openrouter",
             "elevenlabs",

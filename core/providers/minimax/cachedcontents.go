@@ -5,10 +5,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// CachedContentCreate is unsupported on MinimaxProvider. Only Gemini and Vertex AI
-// implement the cached-content lifecycle (Google AI Studio + Vertex AI named
-// caches). Other providers either lack named cache management entirely or
-// handle caching implicitly via per-message cache_control markers.
+// CachedContentCreate is unsupported on MinimaxProvider.
 func (provider *MinimaxProvider) CachedContentCreate(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostCachedContentCreateRequest) (*schemas.BifrostCachedContentCreateResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.CachedContentCreateRequest, provider.GetProviderKey())
 }
