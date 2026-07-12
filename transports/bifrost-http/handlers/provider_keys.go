@@ -504,7 +504,10 @@ func getKeyIDFromCtx(ctx *fasthttp.RequestCtx) (string, error) {
 	return decoded, nil
 }
 
-// validateProviderKeyURL checks that Ollama/SGL keys have a server URL configured.
+// validateProviderKeyURL checks that provider keys carry the nested fields
+// config.schema.json marks as required, so a create or merge can never persist
+// a key missing them (a masked update against a stored key lacking the section
+// would otherwise only surface later as a downstream 500).
 func validateProviderKeyURL(provider schemas.ModelProvider, key schemas.Key) error {
 	switch provider {
 	case schemas.Ollama:
@@ -514,6 +517,25 @@ func validateProviderKeyURL(provider schemas.ModelProvider, key schemas.Key) err
 	case schemas.SGL:
 		if key.SGLKeyConfig == nil || !key.SGLKeyConfig.URL.IsSet() {
 			return fmt.Errorf("sgl_key_config.url is required for SGL keys")
+		}
+	case schemas.Azure:
+		if key.AzureKeyConfig == nil || !key.AzureKeyConfig.Endpoint.IsSet() {
+			return fmt.Errorf("azure_key_config.endpoint is required for Azure keys")
+		}
+	case schemas.Bedrock:
+		if key.BedrockKeyConfig == nil || key.BedrockKeyConfig.Region == nil || !key.BedrockKeyConfig.Region.IsSet() {
+			return fmt.Errorf("bedrock_key_config.region is required for Bedrock keys")
+		}
+	case schemas.BedrockMantle:
+		if key.BedrockMantleKeyConfig == nil || key.BedrockMantleKeyConfig.Region == nil || !key.BedrockMantleKeyConfig.Region.IsSet() {
+			return fmt.Errorf("bedrock_mantle_key_config.region is required for Bedrock Mantle keys")
+		}
+	case schemas.VLLM:
+		if key.VLLMKeyConfig == nil || !key.VLLMKeyConfig.URL.IsSet() {
+			return fmt.Errorf("vllm_key_config.url is required for VLLM keys")
+		}
+		if key.VLLMKeyConfig.ModelName == "" {
+			return fmt.Errorf("vllm_key_config.model_name is required for VLLM keys")
 		}
 	}
 	return nil
