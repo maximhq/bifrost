@@ -3,7 +3,7 @@ name: Release Pipeline
 # Triggers automatically on push to main when any version file changes
 on:
   push:
-    branches: ["main"]
+    branches: ["main", "v2.0.0"]
   workflow_dispatch:
     inputs:
       skip_tests:

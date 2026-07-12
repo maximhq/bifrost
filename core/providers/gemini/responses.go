@@ -112,9 +112,20 @@ func ToGeminiResponsesRequestWithImageURLSchemes(ctx *schemas.BifrostContext, bi
 				return nil, err
 			}
 
-			// Convert tool choice if present
+			// Convert tool choice if present, but only when function declarations exist.
+			// Gemini rejects functionCallingConfig without function_declarations
+			// (e.g. a web-search-only request has GoogleSearch but no declarations).
 			if bifrostReq.Params.ToolChoice != nil {
-				geminiReq.ToolConfig = convertResponsesToolChoiceToGemini(bifrostReq.Params.ToolChoice)
+				hasFunctionDeclarations := false
+				for _, tool := range geminiReq.Tools {
+					if len(tool.FunctionDeclarations) > 0 {
+						hasFunctionDeclarations = true
+						break
+					}
+				}
+				if hasFunctionDeclarations {
+					geminiReq.ToolConfig = convertResponsesToolChoiceToGemini(bifrostReq.Params.ToolChoice)
+				}
 			}
 		}
 
@@ -2270,10 +2281,10 @@ func convertGeminiFileDataToContentBlock(fileData *FileData) *schemas.ResponsesM
 		return nil
 	}
 
+	// Preserve the caller's MIME as-is; do NOT fabricate a default. A wrong default
+	// (application/pdf) on a non-PDF file propagates to the outgoing request and makes
+	// Gemini reject it with INVALID_ARGUMENT. An empty MIME lets Gemini use the stored type.
 	mimeType := fileData.MIMEType
-	if mimeType == "" {
-		mimeType = "application/pdf"
-	}
 
 	// Handle images
 	if isImageMimeType(mimeType) {
@@ -2293,8 +2304,10 @@ func convertGeminiFileDataToContentBlock(fileData *FileData) *schemas.ResponsesM
 		},
 	}
 
-	// Set FileType if available
-	block.ResponsesInputMessageContentBlockFile.FileType = &mimeType
+	// Only carry a MIME type when the caller actually provided one.
+	if mimeType != "" {
+		block.ResponsesInputMessageContentBlockFile.FileType = &mimeType
+	}
 
 	return block
 }
@@ -2855,16 +2868,14 @@ func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(param
 
 		// Handle "none" effort explicitly (only if max_tokens not present)
 		if !hasMaxTokens && hasEffort && *params.Reasoning.Effort == "none" {
-			config.ThinkingConfig.IncludeThoughts = false
-			config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(0))
+			setThinkingBudgetZeroIfSupported(&config, capModel)
 		} else if hasMaxTokens {
 			// User provided max_tokens - use thinkingBudget (all Gemini models support this)
 			// If both max_tokens and effort are present, we ignore effort and use ONLY max_tokens
 			budget := *params.Reasoning.MaxTokens
 			switch budget {
 			case 0:
-				config.ThinkingConfig.IncludeThoughts = false
-				config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(0))
+				setThinkingBudgetZeroIfSupported(&config, capModel)
 			case DynamicReasoningBudget: // Special case: -1 means dynamic budget
 				config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(DynamicReasoningBudget))
 			default:
@@ -3516,19 +3527,12 @@ func convertContentBlockToGeminiPart(block schemas.ResponsesMessageContentBlock,
 
 			// Handle FileURL (URI-based file)
 			if fileBlock.FileURL != nil {
-				mimeType := "application/pdf"
+				// Only set MIMEType when the caller provided one
+				fileData := &FileData{FileURI: *fileBlock.FileURL}
 				if fileBlock.FileType != nil {
-					mimeType = *fileBlock.FileType
+					fileData.MIMEType = *fileBlock.FileType
 				}
-
-				part := &Part{
-					FileData: &FileData{
-						MIMEType: mimeType,
-						FileURI:  *fileBlock.FileURL,
-					},
-				}
-
-				return part, nil
+				return &Part{FileData: fileData}, nil
 			}
 
 			// Handle FileData (inline file data)

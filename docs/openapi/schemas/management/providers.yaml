@@ -454,8 +454,24 @@ ModelDetailsResponse:
       type: integer
     max_output_tokens:
       type: integer
+    input_cost_per_token:
+      type: number
+      format: double
+    output_cost_per_token:
+      type: number
+      format: double
+    cache_creation_input_token_cost:
+      type: number
+      format: double
+    cache_read_input_token_cost:
+      type: number
+      format: double
     architecture:
       $ref: '#/Architecture'
+    additional_attributes:
+      type: object
+      additionalProperties:
+        type: string
     accessible_by_keys:
       type: array
       items:

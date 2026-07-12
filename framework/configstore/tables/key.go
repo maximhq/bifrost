@@ -40,10 +40,11 @@ type TableKey struct {
 	AzureScopesJSON   *string            `gorm:"column:azure_scopes;type:text" json:"-"` // JSON serialized []string
 
 	// Vertex config fields (embedded)
-	VertexProjectID       *schemas.SecretVar `gorm:"type:text" json:"vertex_project_id,omitempty"`
-	VertexProjectNumber   *schemas.SecretVar `gorm:"type:text" json:"vertex_project_number,omitempty"`
-	VertexRegion          *schemas.SecretVar `gorm:"type:text" json:"vertex_region,omitempty"`
-	VertexAuthCredentials *schemas.SecretVar `gorm:"type:text" json:"vertex_auth_credentials,omitempty"`
+	VertexProjectID         *schemas.SecretVar `gorm:"type:text" json:"vertex_project_id,omitempty"`
+	VertexProjectNumber     *schemas.SecretVar `gorm:"type:text" json:"vertex_project_number,omitempty"`
+	VertexRegion            *schemas.SecretVar `gorm:"type:text" json:"vertex_region,omitempty"`
+	VertexAuthCredentials   *schemas.SecretVar `gorm:"type:text" json:"vertex_auth_credentials,omitempty"`
+	VertexForceSingleRegion *bool              `gorm:"column:vertex_force_single_region" json:"vertex_force_single_region,omitempty"`
 
 	// Bedrock config fields (embedded)
 	BedrockAccessKey         *schemas.SecretVar `gorm:"type:text" json:"bedrock_access_key,omitempty"`
@@ -205,11 +206,14 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		} else {
 			k.VertexAuthCredentials = nil
 		}
+		fsr := k.VertexKeyConfig.ForceSingleRegion
+		k.VertexForceSingleRegion = &fsr
 	} else {
 		k.VertexProjectID = nil
 		k.VertexProjectNumber = nil
 		k.VertexRegion = nil
 		k.VertexAuthCredentials = nil
+		k.VertexForceSingleRegion = nil
 	}
 	if k.BedrockKeyConfig != nil {
 		if k.BedrockKeyConfig.AccessKey.IsSet() {
@@ -647,7 +651,7 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		k.AzureKeyConfig = azureConfig
 	}
 	// Reconstruct Vertex config if fields are present
-	if k.VertexProjectID != nil || k.VertexProjectNumber != nil || k.VertexRegion != nil || k.VertexAuthCredentials != nil {
+	if k.VertexProjectID != nil || k.VertexProjectNumber != nil || k.VertexRegion != nil || k.VertexAuthCredentials != nil || k.VertexForceSingleRegion != nil {
 		config := &schemas.VertexKeyConfig{}
 
 		if k.VertexProjectID != nil {
@@ -663,6 +667,9 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		}
 		if k.VertexAuthCredentials != nil {
 			config.AuthCredentials = *k.VertexAuthCredentials
+		}
+		if k.VertexForceSingleRegion != nil {
+			config.ForceSingleRegion = *k.VertexForceSingleRegion
 		}
 		k.VertexKeyConfig = config
 	}

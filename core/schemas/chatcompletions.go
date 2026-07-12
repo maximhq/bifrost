@@ -40,8 +40,9 @@ type BifrostChatResponse struct {
 	Model             string                     `json:"model"`
 	Object            string                     `json:"object"` // "chat.completion" or "chat.completion.chunk"
 	ServiceTier       *BifrostServiceTier        `json:"service_tier,omitempty"`
-	Speed             *string                    `json:"speed,omitempty"`       // "fast" | "standard" — speed actually served (Anthropic fast mode); drives fast-mode billing
-	Diagnostics       *CacheDiagnostics          `json:"diagnostics,omitempty"` // Anthropic cache diagnostics (cache-diagnosis-2026-04-07); first prompt-cache prefix divergence point
+	Speed             *string                    `json:"speed,omitempty"`         // "fast" | "standard" — speed actually served (Anthropic fast mode); drives fast-mode billing
+	InferenceGeo      *string                    `json:"inference_geo,omitempty"` // "us" | "global" — inference geography served (Anthropic data residency); drives the 1.1x US multiplier
+	Diagnostics       *CacheDiagnostics          `json:"diagnostics,omitempty"`   // Anthropic cache diagnostics (cache-diagnosis-2026-04-07); first prompt-cache prefix divergence point
 	SystemFingerprint string                     `json:"system_fingerprint"`
 	Usage             *BifrostLLMUsage           `json:"usage"`
 	ExtraFields       BifrostResponseExtraFields `json:"extra_fields"`
@@ -1553,7 +1554,8 @@ type ChatStreamResponseChoiceDelta struct {
 	Audio            *ChatAudioMessageAudio         `json:"audio,omitempty"`     // Audio data if any
 	Reasoning        *string                        `json:"reasoning,omitempty"` // May be empty string or null
 	ReasoningDetails []ChatReasoningDetails         `json:"reasoning_details,omitempty"`
-	ToolCalls        []ChatAssistantMessageToolCall `json:"tool_calls,omitempty"` // If tool calls used (supports incremental updates)
+	ToolCalls        []ChatAssistantMessageToolCall `json:"tool_calls,omitempty"`    // If tool calls used (supports incremental updates)
+	ExtraContent     json.RawMessage                `json:"extra_content,omitempty"` // Provider-specific metadata (e.g. Gemini thought markers, thought_signature)
 }
 
 // UnmarshalJSON implements custom unmarshalling for ChatStreamResponseChoiceDelta.

@@ -367,8 +367,6 @@ func (provider *GeminiProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		headers["x-goog-api-key"] = key.Value.GetValue()
 	}
 
-	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)
-
 	// Use shared Gemini streaming logic
 	return HandleGeminiChatCompletionStream(
 		ctx,
@@ -377,6 +375,7 @@ func (provider *GeminiProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		jsonData,
 		headers,
 		provider.networkConfig.ExtraHeaders,
+		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
@@ -396,6 +395,7 @@ func HandleGeminiChatCompletionStream(
 	jsonBody []byte,
 	headers map[string]string,
 	extraHeaders map[string]string,
+	streamIdleTimeoutInSeconds int,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
 	providerName schemas.ModelProvider,
@@ -405,6 +405,7 @@ func HandleGeminiChatCompletionStream(
 	logger schemas.Logger,
 	postHookSpanFinalizer func(context.Context),
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, streamIdleTimeoutInSeconds)
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	resp.StreamBody = true
@@ -879,8 +880,6 @@ func (provider *GeminiProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 		headers["x-goog-api-key"] = key.Value.GetValue()
 	}
 
-	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)
-
 	return HandleGeminiResponsesStream(
 		ctx,
 		provider.streamingClient,
@@ -888,6 +887,7 @@ func (provider *GeminiProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 		jsonData,
 		headers,
 		provider.networkConfig.ExtraHeaders,
+		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
@@ -907,6 +907,7 @@ func HandleGeminiResponsesStream(
 	jsonBody []byte,
 	headers map[string]string,
 	extraHeaders map[string]string,
+	streamIdleTimeoutInSeconds int,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
 	providerName schemas.ModelProvider,
@@ -916,6 +917,7 @@ func HandleGeminiResponsesStream(
 	logger schemas.Logger,
 	postHookSpanFinalizer func(context.Context),
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, streamIdleTimeoutInSeconds)
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	resp.StreamBody = true
@@ -1471,6 +1473,8 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 		return nil, providerUtils.EnrichError(ctx, parseGeminiError(resp), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
+	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)
+
 	// Large payload streaming passthrough — pipe raw upstream SSE to client
 	if providerUtils.SetupStreamingPassthrough(ctx, resp) {
 		responseChan := make(chan *schemas.BifrostStreamChunk)
@@ -1480,8 +1484,6 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 
 	// Create response channel
 	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
-
-	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)
 
 	// Start streaming in a goroutine
 	go func() {
@@ -1766,6 +1768,8 @@ func (provider *GeminiProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 		return nil, providerUtils.EnrichError(ctx, parseGeminiError(resp), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
+	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)
+
 	// Large payload streaming passthrough — pipe raw upstream SSE to client
 	if providerUtils.SetupStreamingPassthrough(ctx, resp) {
 		responseChan := make(chan *schemas.BifrostStreamChunk)
@@ -1775,8 +1779,6 @@ func (provider *GeminiProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 
 	// Create response channel
 	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
-
-	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)
 
 	// Start streaming in a goroutine
 	go func() {

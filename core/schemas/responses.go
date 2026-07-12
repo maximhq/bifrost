@@ -230,10 +230,11 @@ type BifrostResponsesResponse struct {
 	Reasoning            *ResponsesParametersReasoning       `json:"reasoning"`         // Configuration options for reasoning models
 	SafetyIdentifier     *string                             `json:"safety_identifier"` // Safety identifier
 	ServiceTier          *BifrostServiceTier                 `json:"service_tier"`
-	Speed                *string                             `json:"speed,omitempty"`       // "fast" | "standard" — speed actually served (Anthropic fast mode); drives fast-mode billing
-	Diagnostics          *CacheDiagnostics                   `json:"diagnostics,omitempty"` // Anthropic cache diagnostics (cache-diagnosis-2026-04-07); first prompt-cache prefix divergence point
-	Container            *ResponsesResponseContainer         `json:"container,omitempty"`   // Code-execution sandbox container (Anthropic surfaces it on the response / final streaming message_delta). The neutral per-call id also lives on ResponsesCodeInterpreterToolCall.ContainerID.
-	Status               *string                             `json:"status,omitempty"`      // completed, failed, in_progress, cancelled, queued, or incomplete
+	Speed                *string                             `json:"speed,omitempty"`         // "fast" | "standard" — speed actually served (Anthropic fast mode); drives fast-mode billing
+	InferenceGeo         *string                             `json:"inference_geo,omitempty"` // "us" | "global" — inference geography served (Anthropic data residency); drives the 1.1x US multiplier
+	Diagnostics          *CacheDiagnostics                   `json:"diagnostics,omitempty"`   // Anthropic cache diagnostics (cache-diagnosis-2026-04-07); first prompt-cache prefix divergence point
+	Container            *ResponsesResponseContainer         `json:"container,omitempty"`     // Code-execution sandbox container (Anthropic surfaces it on the response / final streaming message_delta). The neutral per-call id also lives on ResponsesCodeInterpreterToolCall.ContainerID.
+	Status               *string                             `json:"status,omitempty"`        // completed, failed, in_progress, cancelled, queued, or incomplete
 	StreamOptions        *ResponsesStreamOptions             `json:"stream_options,omitempty"`
 	StopReason           *string                             `json:"stop_reason,omitempty"` // Not in OpenAI's spec, but sent by other providers
 	Store                *bool                               `json:"store,omitempty"`
@@ -1228,10 +1229,12 @@ func (rc *ResponsesMessageContent) UnmarshalJSON(data []byte) error {
 type ResponsesMessageContentBlockType string
 
 const (
-	ResponsesInputMessageContentBlockTypeText  ResponsesMessageContentBlockType = "input_text"
-	ResponsesInputMessageContentBlockTypeImage ResponsesMessageContentBlockType = "input_image"
-	ResponsesInputMessageContentBlockTypeFile  ResponsesMessageContentBlockType = "input_file"
-	ResponsesInputMessageContentBlockTypeAudio ResponsesMessageContentBlockType = "input_audio"
+	ResponsesInputMessageContentBlockTypeText      ResponsesMessageContentBlockType = "input_text"
+	ResponsesInputMessageContentBlockTypeImage     ResponsesMessageContentBlockType = "input_image"
+	ResponsesInputMessageContentBlockTypeFile      ResponsesMessageContentBlockType = "input_file"
+	ResponsesInputMessageContentBlockTypeAudio     ResponsesMessageContentBlockType = "input_audio"
+	ResponsesInputMessageContentBlockTypeContainer ResponsesMessageContentBlockType = "input_container" // Anthropic-only: file staged into the code-execution container input dir
+
 	ResponsesOutputMessageContentTypeText      ResponsesMessageContentBlockType = "output_text"
 	ResponsesOutputMessageContentTypeRefusal   ResponsesMessageContentBlockType = "refusal"
 	ResponsesOutputMessageContentTypeReasoning ResponsesMessageContentBlockType = "reasoning_text"
@@ -1364,6 +1367,9 @@ type ResponsesToolMessage struct {
 	// Anthropic advisor-specific (advisor_call): carries the advisor_tool_result payload
 	*ResponsesAdvisorCall
 
+	// Anthropic web-fetch-specific (web_fetch_call): carries the web_fetch_tool_result payload
+	*ResponsesWebFetchCall
+
 	// Anthropic code-execution-specific (code_interpreter_call): carries the
 	// server_tool_use input + *_code_execution_tool_result payload that the
 	// neutral ResponsesCodeInterpreterToolCall cannot represent.
@@ -1378,6 +1384,34 @@ type ResponsesAdvisorCall struct {
 	EncryptedContent *string `json:"advisor_encrypted_content,omitempty"` // advisor_redacted_result variant
 	ErrorCode        *string `json:"advisor_error_code,omitempty"`        // advisor_tool_result_error variant
 	StopReason       *string `json:"advisor_stop_reason,omitempty"`       // present when max_tokens is set on the tool
+}
+
+// ResponsesWebFetchCall carries the Anthropic web_fetch_tool_result payload
+// alongside a web_fetch_call. Anthropic-only; the request URL lives on
+// ResponsesWebFetchToolCallAction.
+type ResponsesWebFetchCall struct {
+	ResultType  string                     `json:"web_fetch_result_type,omitempty"` // "web_fetch_result" | "web_fetch_tool_result_error"
+	URL         *string                    `json:"web_fetch_result_url,omitempty"`
+	RetrievedAt *string                    `json:"web_fetch_retrieved_at,omitempty"`
+	Document    *ResponsesWebFetchDocument `json:"web_fetch_document,omitempty"`
+	ErrorCode   *string                    `json:"web_fetch_error_code,omitempty"`
+}
+
+type ResponsesWebFetchDocument struct {
+	Type      string                   `json:"type,omitempty"` // "document"
+	Text      *string                  `json:"text,omitempty"`
+	Title     *string                  `json:"title,omitempty"`
+	Source    *ResponsesWebFetchSource `json:"source,omitempty"`
+	Citations *Citations               `json:"citations,omitempty"`
+	Context   *string                  `json:"context,omitempty"`
+}
+
+type ResponsesWebFetchSource struct {
+	Type      string  `json:"type,omitempty"` // "text" | "base64" | "url" | "file"
+	MediaType *string `json:"media_type,omitempty"`
+	Data      *string `json:"data,omitempty"`
+	URL       *string `json:"url,omitempty"`
+	FileID    *string `json:"file_id,omitempty"`
 }
 
 // ResponsesToolCaller is the neutral form of Anthropic's "caller" union on
@@ -1553,7 +1587,11 @@ func (output ResponsesToolMessageOutputStruct) MarshalJSON() ([]byte, error) {
 	if output.ResponsesComputerToolCallOutput != nil {
 		return MarshalSorted(output.ResponsesComputerToolCallOutput)
 	}
-	return nil, fmt.Errorf("responses tool message output struct is neither a string nor an array of responses message content blocks nor a computer tool call output data nor an image generation call output")
+	// All variants nil: a tool legitimately produced no output (e.g. an
+	// Anthropic tool_result with empty content). Serialize as an empty string
+	// rather than erroring, since an error here aborts marshaling of any
+	// enclosing structure (conversation histories, log rows).
+	return MarshalSorted("")
 }
 
 func (output *ResponsesToolMessageOutputStruct) UnmarshalJSON(data []byte) error {
@@ -2882,9 +2920,11 @@ type ResponsesToolToolSearch struct {
 
 // ResponsesToolWebFetch represents a web fetch tool
 type ResponsesToolWebFetch struct {
-	MaxUses          *int                           `json:"max_uses,omitempty"`
-	Filters          *ResponsesToolWebSearchFilters `json:"filters,omitempty"`
-	MaxContentTokens *int                           `json:"max_content_tokens,omitempty"`
+	MaxUses           *int                           `json:"max_uses,omitempty"`
+	Filters           *ResponsesToolWebSearchFilters `json:"filters,omitempty"`
+	MaxContentTokens  *int                           `json:"max_content_tokens,omitempty"`
+	UseCache          *bool                          `json:"use_cache,omitempty"`
+	ResponseInclusion *string                        `json:"response_inclusion,omitempty"` // "full" | "excluded" (web_fetch_20260318+)
 }
 
 // ResponsesToolAdvisorCaching toggles advisor-side prompt caching.
