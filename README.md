@@ -181,7 +181,7 @@ go get github.com/maximhq/bifrost/core
 - base_url = "https://api.openai.com"
 + base_url = "http://localhost:8080/openai"
 
-# Anthropic SDK  
+# Anthropic SDK
 - base_url = "https://api.anthropic.com"
 + base_url = "http://localhost:8080/anthropic"
 
@@ -259,7 +259,7 @@ Bifrost adds virtually zero overhead to your AI requests. In sustained 5,000 RPS
 Get help with:
 
 - Quick setup assistance and troubleshooting
-- Best practices and configuration tips  
+- Best practices and configuration tips
 - Community discussions and support
 - Real-time help with integrations
 
