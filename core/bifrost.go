@@ -7951,6 +7951,18 @@ func (bifrost *Bifrost) drainQueueWithErrors(pq *ProviderQueue) {
 
 // releaseChannelMessage returns a ChannelMessage and its channels to their respective pools.
 func (bifrost *Bifrost) releaseChannelMessage(msg *ChannelMessage) {
+	// Drain any undelivered values before pooling so an idle pooled channel
+	// doesn't pin a full response/error until its next reuse. getChannelMessage
+	// drains again on acquire as defense in depth.
+	select {
+	case <-msg.Response:
+	default:
+	}
+	select {
+	case <-msg.Err:
+	default:
+	}
+
 	// Put channels back in pools
 	bifrost.responseChannelPool.Put(msg.Response)
 	bifrost.errorChannelPool.Put(msg.Err)
@@ -7965,9 +7977,17 @@ func (bifrost *Bifrost) releaseChannelMessage(msg *ChannelMessage) {
 		bifrost.responseStreamPool.Put(msg.ResponseStream)
 	}
 
-	// Release of Bifrost Request is handled in handle methods as they are required for fallbacks
+	// Release of the pooled *BifrostRequest object is handled in handle methods
+	// as it is required for fallbacks; msg.BifrostRequest is a value copy, so
+	// zeroing it here only drops this message's references.
 
-	// Clear references and return to pool
+	// Clear all references before returning to the pool. The embedded
+	// BifrostRequest holds pointers to the fully parsed request body and
+	// Context holds per-request user values; leaving them set pins those
+	// allocations for as long as the message sits idle in the pool.
+	// getChannelMessage overwrites both on acquire.
+	msg.BifrostRequest = schemas.BifrostRequest{}
+	msg.Context = nil
 	msg.Response = nil
 	msg.ResponseStream = nil
 	msg.Err = nil
