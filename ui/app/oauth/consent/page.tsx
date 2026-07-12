@@ -250,9 +250,9 @@ function ConsentView({ flowId }: { flowId: string }) {
 								<KeyRound className="text-muted-foreground size-4" />
 							</div>
 							<div>
-								<p className="text-sm font-medium">Virtual key</p>
+								<p className="text-sm font-medium">Virtual Key</p>
 								<p className="text-muted-foreground text-xs">
-									Use an API key from your Bifrost workspace
+									Use a Virtual Key from your Bifrost workspace
 								</p>
 							</div>
 						</div>

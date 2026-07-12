@@ -74,6 +74,7 @@ export interface VirtualKey {
 	customer_id?: string;
 	rate_limit_id?: string;
 	is_active: boolean;
+	expires_at?: string | null; // ISO 8601 UTC timestamp; null or absent means never expires
 	calendar_aligned?: boolean;
 	created_at: string;
 	updated_at: string;
@@ -164,6 +165,7 @@ export interface CreateVirtualKeyRequest {
 	rate_limit?: CreateRateLimitRequest;
 	is_active?: boolean;
 	calendar_aligned?: boolean;
+	expires_at?: string; // RFC3339 UTC timestamp; omit for a key that never expires
 }
 
 export interface UpdateVirtualKeyRequest {
@@ -178,6 +180,7 @@ export interface UpdateVirtualKeyRequest {
 	is_active?: boolean;
 	calendar_aligned?: boolean;
 	reset_budget_usage?: boolean;
+	expires_at?: string; // RFC3339 UTC timestamp sets a new expiry, "" clears it, omit to leave unchanged
 }
 
 export interface BulkRotateVirtualKeysRequest {
@@ -452,6 +455,9 @@ export interface PricingOverridePatch {
 	cache_read_input_image_token_cost?: number;
 	cache_read_input_token_cost_above_272k_tokens?: number;
 	cache_read_input_token_cost_above_272k_tokens_priority?: number;
+	cache_creation_input_token_cost_fast?: number;
+	cache_creation_input_token_cost_above_1hr_fast?: number;
+	cache_read_input_token_cost_fast?: number;
 	// Image
 	input_cost_per_image_token?: number;
 	output_cost_per_image_token?: number;
@@ -479,6 +485,7 @@ export interface PricingOverridePatch {
 	// Other
 	search_context_cost_per_query?: number;
 	code_interpreter_cost_per_session?: number;
+	inference_geo_us_multiplier?: number;
 	// OCR
 	ocr_cost_per_page?: number;
 	annotation_cost_per_page?: number;

@@ -529,8 +529,10 @@ export interface LogEntry {
 	user_id?: string;
 	user_name?: string;
 	virtual_key_id?: string;
+	virtual_key_name?: string;
 	routing_engines_used?: string[];
 	routing_rule_id?: string;
+	routing_rule_name?: string;
 	routing_engine_logs?: string; // Human-readable routing decision logs
 	plugin_logs?: string; // JSON string of plugin execution logs grouped by plugin name
 	selected_key?: DBKey;
@@ -567,7 +569,7 @@ export interface LogEntry {
 	token_usage?: LLMUsage;
 	cache_debug?: CacheDebug;
 	cost?: number; // Cost in dollars (total cost of the request - includes cache lookup cost)
-	status: string; // "success" or "error"
+	status: string; // "success", "error", "processing", or "cancelled"
 	stop_reason?: string; // Why the model stopped: "stop", "length", "content_filter", "tool_calls", etc.
 	error_details?: BifrostError;
 	stream: boolean; // true if this was a streaming response
@@ -579,6 +581,10 @@ export interface LogEntry {
 	passthrough_request_body?: string; // Raw passthrough request body (UTF-8)
 	passthrough_response_body?: string; // Raw passthrough response body (UTF-8)
 	metadata?: Record<string, string>; // JSON metadata (e.g., isAsyncRequest)
+	redaction_mapping?: {
+		input?: Record<string, string>;
+		output?: Record<string, string>;
+	}; // Phase-scoped placeholder-to-original mappings, present only when caller has Logs:Reveal
 }
 
 export interface LogFilters {
@@ -654,6 +660,7 @@ export interface HistogramBucket {
 	count: number;
 	success: number;
 	error: number;
+	cancelled: number;
 }
 
 export interface LogsHistogramResponse {
@@ -693,6 +700,7 @@ export interface ModelUsageStats {
 	total: number;
 	success: number;
 	error: number;
+	cancelled: number;
 }
 
 export interface ModelHistogramBucket {
@@ -793,6 +801,21 @@ export interface RecalculateCostProgress {
 	done: boolean;
 }
 
+// RecalcJobStatus is the status of a background cost-recalculation job, returned by
+// POST /api/logs/recalculate-cost (202/409) and GET /api/logs/recalculate-cost/status.
+export interface RecalcJobStatus {
+	id?: string;
+	status: "idle" | "pending" | "running" | "completed" | "failed";
+	total: number;
+	processed: number;
+	updated: number;
+	skipped: number;
+	message?: string;
+	last_error?: string;
+	started_at?: string;
+	updated_at?: string;
+}
+
 // Responses API types (for responses_output field)
 
 // Message roles for responses
@@ -820,7 +843,10 @@ export type ResponsesMessageType =
 	| "mcp_approval_responses"
 	| "reasoning"
 	| "item_reference"
-	| "refusal";
+	| "refusal"
+	| "tool_search_call"
+	| "tool_search_output"
+	| "additional_tools";
 
 // Content block types for responses
 export type ResponsesMessageContentBlockType =
@@ -1127,6 +1153,7 @@ export interface MCPHistogramBucket {
 	count: number;
 	success: number;
 	error: number;
+	cancelled?: number;
 }
 
 export interface MCPHistogramResponse {
@@ -1165,6 +1192,7 @@ export interface ModelRankingTrend {
 
 export interface ModelRankingEntry {
 	model: string;
+	canonical_model_name?: string;
 	provider: string;
 	total_requests: number;
 	success_count: number;

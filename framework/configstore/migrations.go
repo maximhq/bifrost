@@ -435,6 +435,12 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_bedrock_mantle_key_columns"}, run: migrationAddBedrockMantleKeyColumns},
 	{IDs: []string{"add_model_pricing_is_deprecated_column"}, run: migrationAddModelPricingIsDeprecatedColumn},
 	{IDs: []string{"add_mcp_client_tool_execution_timeout_column"}, run: migrationAddMCPClientToolExecutionTimeoutColumn},
+	{IDs: []string{"add_virtual_key_expires_at_column"}, run: migrationAddVirtualKeyExpiresAtColumn},
+	{IDs: []string{"add_vertex_force_single_region_column"}, run: migrationAddVertexForceSingleRegionColumn},
+	{IDs: []string{"add_sidekiq_table"}, run: migrationAddSidekiqTable},
+	{IDs: []string{"add_sidekiq_kind_status_created_index"}, run: migrationAddSidekiqKindStatusCreatedIndex},
+	{IDs: []string{"add_fast_mode_cache_pricing_columns"}, run: migrationAddFastModeCachePricingColumns},
+	{IDs: []string{"add_inference_geo_multiplier_column"}, run: migrationAddInferenceGeoMultiplierColumn},
 }
 
 // quoteSQLiteIdentifier quotes a SQLite identifier, escaping any double quotes.
@@ -7796,6 +7802,82 @@ func migrationAddFastModePricingColumns(ctx context.Context, db *gorm.DB, logger
 	return nil
 }
 
+// migrationAddFastModeCachePricingColumns adds fast-mode cache pricing columns
+// for Anthropic (speed:"fast"). Caching multipliers stack on the fast base input
+// rate, so cache tokens need dedicated fast rates instead of the standard ones.
+func migrationAddFastModeCachePricingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_fast_mode_cache_pricing_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	columns := []string{
+		"cache_creation_input_token_cost_fast",
+		"cache_creation_input_token_cost_above_1hr_fast",
+		"cache_read_input_token_cost_fast",
+	}
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range columns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to add column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range columns {
+				if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to drop column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running fast mode cache pricing columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddInferenceGeoMultiplierColumn adds the inference_geo_us_multiplier
+// column for Anthropic data residency (inference_geo:"us" applies a 1.1x
+// multiplier stacking on top of all token/cache costs).
+func migrationAddInferenceGeoMultiplierColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_inference_geo_multiplier_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	columns := []string{
+		"inference_geo_us_multiplier",
+	}
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range columns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to add column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range columns {
+				if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to drop column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running inference geo multiplier column migration: %s", err.Error())
+	}
+	return nil
+}
+
 // migrationAddWhitelistedRoutesJSONColumn adds the whitelisted_routes_json column to the config_client table
 func migrationAddWhitelistedRoutesJSONColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
 	migrationName := "add_whitelisted_routes_json_column"
@@ -10288,6 +10370,164 @@ func migrationAddMCPClientToolExecutionTimeoutColumn(ctx context.Context, db *go
 		},
 	}})
 	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddVirtualKeyExpiresAtColumn adds nullable expires_at to governance_virtual_keys.
+// No index: expiry is checked in-memory from the already-loaded VK, never queried by column.
+func migrationAddVirtualKeyExpiresAtColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_virtual_key_expires_at_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return addColumnIfNotExists(tx, logger, &tables.TableVirtualKey{}, "expires_at")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return dropColumnIfExists(tx, logger, &tables.TableVirtualKey{}, "expires_at")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddVertexForceSingleRegionColumn adds the vertex_force_single_region column to the key table.
+// Existing keys default to false (NULL), preserving the current multi-region promotion behaviour.
+func migrationAddVertexForceSingleRegionColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_vertex_force_single_region_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return addColumnIfNotExists(tx, logger, &tables.TableKey{}, "vertex_force_single_region")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return dropColumnIfExists(tx, logger, &tables.TableKey{}, "vertex_force_single_region")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddSidekiqTable creates the generic `sidekiq` background-job table. Uses raw SQL
+// (not GORM auto-DDL) so the schema is explicit and stable across GORM versions.
+// Idempotent via CREATE TABLE IF NOT EXISTS; covers postgres and sqlite dialects.
+func migrationAddSidekiqTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_sidekiq_table"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+
+			var createTable string
+			switch tx.Dialector.Name() {
+			case "postgres":
+				createTable = `
+					CREATE TABLE IF NOT EXISTS sidekiq (
+						id                  TEXT PRIMARY KEY,
+						kind                TEXT NOT NULL,
+						status              TEXT NOT NULL DEFAULT 'pending',
+						runner_id           TEXT,
+						metadata            TEXT DEFAULT '{}',
+						attempts            INTEGER NOT NULL DEFAULT 0,
+						last_error          TEXT,
+						created_at          TIMESTAMPTZ NOT NULL,
+						updated_at          TIMESTAMPTZ NOT NULL,
+						started_at          TIMESTAMPTZ,
+						created_by_user_id  VARCHAR(255),
+						completed_at        TIMESTAMPTZ
+					)`
+			case "sqlite":
+				createTable = `
+					CREATE TABLE IF NOT EXISTS sidekiq (
+						id                  TEXT PRIMARY KEY,
+						kind                TEXT NOT NULL,
+						status              TEXT NOT NULL DEFAULT 'pending',
+						runner_id           TEXT,
+						metadata            TEXT DEFAULT '{}',
+						attempts            INTEGER NOT NULL DEFAULT 0,
+						last_error          TEXT,
+						created_at          DATETIME NOT NULL,
+						updated_at          DATETIME NOT NULL,
+						started_at          DATETIME,
+						created_by_user_id  VARCHAR(255),
+						completed_at        DATETIME
+					)`
+			default:
+				// Fall back to GORM for any other dialect so the migration does not
+				// hard-fail on an unsupported backend.
+				return tx.Migrator().CreateTable(&tables.TableSidekiqJob{})
+			}
+
+			if err := tx.Exec(createTable).Error; err != nil {
+				return err
+			}
+			// idx_sidekiq_status_updated supports the reaper/recovery scan.
+			if err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_sidekiq_status_updated ON sidekiq (status, updated_at)`).Error; err != nil {
+				return err
+			}
+			// idx_sidekiq_runner supports fencing lookups by runner_id.
+			return tx.Exec(`CREATE INDEX IF NOT EXISTS idx_sidekiq_runner ON sidekiq (runner_id)`).Error
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return tx.Exec(`DROP TABLE IF EXISTS sidekiq`).Error
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddSidekiqKindStatusCreatedIndex adds a composite index on
+// (kind, status, created_at) so GetInFlightSidekiqJobByKind — which filters by
+// kind + status and orders by created_at DESC — can seek instead of doing a
+// filtered full scan plus sort as the table accumulates historical jobs.
+// Idempotent via CREATE INDEX IF NOT EXISTS; works for postgres and sqlite.
+//
+// The index is built non-transactionally (UseTransaction=false) with CREATE
+// INDEX CONCURRENTLY on postgres so it does not take a ShareLock that blocks
+// concurrent writes to the sidekiq table for the duration of the build. SQLite
+// does not support CONCURRENTLY, so it uses the plain form there.
+func migrationAddSidekiqKindStatusCreatedIndex(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_sidekiq_kind_status_created_index"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	noTxOpts := *migrator.DefaultOptions
+	noTxOpts.UseTransaction = false
+	if err := RunSingleMigration(ctx, &noTxOpts, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			// SQLite does not support CONCURRENTLY; use the plain form there.
+			var stmt string
+			if tx.Dialector.Name() == "sqlite" {
+				stmt = "CREATE INDEX IF NOT EXISTS idx_sidekiq_kind_status_created ON sidekiq (kind, status, created_at)"
+			} else {
+				stmt = "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_sidekiq_kind_status_created ON sidekiq (kind, status, created_at)"
+			}
+			return tx.Exec(stmt).Error
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return tx.Exec(`DROP INDEX IF EXISTS idx_sidekiq_kind_status_created`).Error
+		},
+	}); err != nil {
 		return fmt.Errorf("error running %s migration: %w", migrationName, err)
 	}
 	return nil

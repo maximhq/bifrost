@@ -65,6 +65,7 @@ export interface AliasConfig {
 	// Vertex overrides
 	project_id?: SecretVar;
 	project_number?: SecretVar;
+	force_single_region?: boolean;
 	// Bedrock overrides
 	inference_profile_arn?: SecretVar;
 	// Replicate overrides
@@ -94,6 +95,7 @@ export interface VertexKeyConfig {
 	project_number?: SecretVar;
 	region: SecretVar;
 	auth_credentials?: SecretVar;
+	force_single_region?: boolean;
 }
 
 export const DefaultVertexKeyConfig: VertexKeyConfig = {
@@ -101,6 +103,7 @@ export const DefaultVertexKeyConfig: VertexKeyConfig = {
 	project_number: { value: "", ref: "" },
 	region: { value: "", ref: "" },
 	auth_credentials: { value: "", ref: "" },
+	force_single_region: false,
 } as const satisfies Required<VertexKeyConfig>;
 
 export interface S3BucketConfig {
@@ -280,6 +283,10 @@ export type RequestType =
 	| "chat_completion_stream"
 	| "responses"
 	| "responses_stream"
+	| "responses_retrieve"
+	| "responses_delete"
+	| "responses_cancel"
+	| "responses_input_items"
 	| "embedding"
 	| "rerank"
 	| "speech"
@@ -331,6 +338,10 @@ export interface AllowedRequests {
 	chat_completion_stream: boolean;
 	responses: boolean;
 	responses_stream: boolean;
+	responses_retrieve?: boolean;
+	responses_delete?: boolean;
+	responses_cancel?: boolean;
+	responses_input_items?: boolean;
 	embedding: boolean;
 	speech: boolean;
 	speech_stream: boolean;

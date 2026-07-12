@@ -59,6 +59,9 @@ func parseGeminiError(resp *fasthttp.Response) *schemas.BifrostError {
 		// Set Code from first error if available
 		if firstError != nil {
 			bifrostErr.Error.Code = schemas.Ptr(strconv.Itoa(firstError.Code))
+			if firstError.Status != "" {
+				bifrostErr.Error.Type = schemas.Ptr(firstError.Status)
+			}
 		}
 		// Set Message to trimmed concatenated message
 		bifrostErr.Error.Message = message
@@ -74,6 +77,9 @@ func parseGeminiError(resp *fasthttp.Response) *schemas.BifrostError {
 		}
 		bifrostErr.Error.Code = schemas.Ptr(strconv.Itoa(errorResp.Error.Code))
 		bifrostErr.Error.Message = errorResp.Error.Message
+		if errorResp.Error.Status != "" {
+			bifrostErr.Error.Type = schemas.Ptr(errorResp.Error.Status)
+		}
 	}
 	return bifrostErr
 }

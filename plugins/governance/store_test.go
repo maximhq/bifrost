@@ -738,7 +738,7 @@ func TestGovernanceStore_ResetExpiredRateLimits(t *testing.T) {
 	require.NoError(t, err)
 
 	// Reset expired rate limits
-	expiredRateLimits := store.ResetExpiredRateLimitsInMemory(context.Background())
+	expiredRateLimits := store.ResetExpiredRateLimitsInMemory(context.Background(), true)
 	err = store.ResetExpiredRateLimits(context.Background(), expiredRateLimits)
 	assert.NoError(t, err, "Reset should succeed")
 
@@ -773,7 +773,7 @@ func TestGovernanceStore_ResetExpiredBudgets(t *testing.T) {
 	require.NoError(t, err)
 
 	// Reset expired budgets
-	expiredBudgets := store.ResetExpiredBudgetsInMemory(context.Background())
+	expiredBudgets := store.ResetExpiredBudgetsInMemory(context.Background(), true)
 	err = store.ResetExpiredBudgets(context.Background(), expiredBudgets)
 	assert.NoError(t, err, "Reset should succeed")
 

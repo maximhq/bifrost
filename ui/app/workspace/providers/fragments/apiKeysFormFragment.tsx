@@ -52,14 +52,14 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 	// Credential UI keys off the base provider type for custom providers; the
 	// model list, deployments table, and API calls still use the real providerName.
 	const effectiveProvider = baseProviderType ?? providerName;
-	const isBedrock = providerName === "bedrock";
-	const isBedrockMantle = providerName === "bedrock_mantle";
-	const isVertex = providerName === "vertex";
-	const isAzure = providerName === "azure";
-	const isReplicate = providerName === "replicate";
-	const isVLLM = providerName === "vllm";
-	const isOllama = providerName === "ollama";
-	const isSGL = providerName === "sgl";
+	const isBedrock = effectiveProvider === "bedrock";
+	const isBedrockMantle = effectiveProvider === "bedrock_mantle";
+	const isVertex = effectiveProvider === "vertex";
+	const isAzure = effectiveProvider === "azure";
+	const isReplicate = effectiveProvider === "replicate";
+	const isVLLM = effectiveProvider === "vllm";
+	const isOllama = effectiveProvider === "ollama";
+	const isSGL = effectiveProvider === "sgl";
 	const isKeylessProvider = isOllama || isSGL;
 	const supportsBatchAPI = BATCH_SUPPORTED_PROVIDERS.includes(effectiveProvider);
 
@@ -608,6 +608,10 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 						render={({ field }) => (
 							<FormItem>
 								<FormLabel>Region (Required)</FormLabel>
+								<FormDescription>
+									Multi-region-only models are automatically routed to Google&apos;s matching multi-region endpoint. Turn on{" "}
+									<span className="font-medium">Force single region</span> below to always use exactly this region.
+								</FormDescription>
 								<FormControl>
 									<SecretVarInput placeholder="us-central1 or env.VERTEX_REGION" {...field} />
 								</FormControl>
@@ -661,6 +665,24 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 							)}
 						/>
 					)}
+					<FormField
+						control={control}
+						name="key.vertex_key_config.force_single_region"
+						render={({ field }) => (
+							<FormItem className="flex flex-row items-center justify-between rounded-sm border p-2">
+								<div className="space-y-1.5">
+									<FormLabel>Force single region</FormLabel>
+									<FormDescription>
+										Always call the region set above and skip automatic promotion of multi-region-only models to a
+										multi-region endpoint. Enable when serving these models from a single region via provisioned throughput.
+									</FormDescription>
+								</div>
+								<FormControl>
+									<Switch checked={field.value ?? false} onCheckedChange={field.onChange} />
+								</FormControl>
+							</FormItem>
+						)}
+					/>
 					{supportsBatchAPI && <BatchAPIFormField control={control} form={form} />}
 				</div>
 			)}

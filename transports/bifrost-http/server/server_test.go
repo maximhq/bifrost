@@ -6,6 +6,7 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 )
 
@@ -121,6 +122,122 @@ func TestUpdateKeyStatus_EmptyKeyIDDoesNotOverwriteKeyedProviderStatus(t *testin
 	}
 	if store.calls[0].Provider != "openai" || store.calls[0].KeyID != "" {
 		t.Fatalf("expected DB status update to retain empty key ID, got provider=%q keyID=%q", store.calls[0].Provider, store.calls[0].KeyID)
+	}
+}
+
+func TestKeyEnabled(t *testing.T) {
+	tests := []struct {
+		name string
+		key  schemas.Key
+		want bool
+	}{
+		{"nil Enabled defaults to enabled", schemas.Key{}, true},
+		{"explicit true is enabled", schemas.Key{Enabled: schemas.Ptr(true)}, true},
+		{"explicit false is disabled", schemas.Key{Enabled: schemas.Ptr(false)}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := keyEnabled(tt.key); got != tt.want {
+				t.Fatalf("keyEnabled(%+v) = %v, want %v", tt.key, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestRefreshLiveModelsForProvider_AllKeysDisabled cross-checks the "0
+// enabled keys" case for issue #5037: discovery must skip scheduling any
+// fetch (and therefore never touch s.Client, left nil here) rather than
+// attempting doomed-to-fail per-key calls.
+func TestRefreshLiveModelsForProvider_AllKeysDisabled(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	defer func() { logger = prevLogger }()
+
+	server := &BifrostHTTPServer{
+		Config: &lib.Config{
+			ModelCatalog: modelcatalog.NewTestCatalog(nil),
+			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+				"custom-provider": {},
+			},
+		},
+	}
+
+	keys := []schemas.Key{
+		{ID: "key-1", Enabled: schemas.Ptr(false)},
+		{ID: "key-2", Enabled: schemas.Ptr(false)},
+	}
+
+	// Must return without panicking: s.Client is nil, so any scheduled fetch
+	// would panic on the first ListModelsRequest call. Reaching the end of
+	// this test proves no fetch was scheduled for either disabled key.
+	server.RefreshLiveModelsForProvider(context.Background(), "custom-provider", keys)
+
+	if models := server.Config.ModelCatalog.GetModelsForProvider("custom-provider"); len(models) != 0 {
+		t.Fatalf("expected no live models to be written when all keys are disabled, got %v", models)
+	}
+}
+
+// TestOnKeyAdded_DisabledKeySkipsFetch cross-checks that adding a key that
+// is already disabled never schedules a discovery fetch for it.
+func TestOnKeyAdded_DisabledKeySkipsFetch(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	defer func() { logger = prevLogger }()
+
+	disabledKey := schemas.Key{ID: "key-1", Enabled: schemas.Ptr(false)}
+	server := &BifrostHTTPServer{
+		Config: &lib.Config{
+			ModelCatalog: modelcatalog.NewTestCatalog(nil),
+			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+				"custom-provider": {Keys: []schemas.Key{disabledKey}},
+			},
+		},
+	}
+
+	// s.Client is left nil: if the disabled-key guard regresses, the fetch
+	// goroutine would dereference it and panic, failing this test.
+	if err := server.OnKeyAdded(context.Background(), "custom-provider", disabledKey); err != nil {
+		t.Fatalf("OnKeyAdded returned unexpected error: %v", err)
+	}
+
+	if models := server.Config.ModelCatalog.GetModelsForProvider("custom-provider"); len(models) != 0 {
+		t.Fatalf("expected no live models to be written for a disabled key, got %v", models)
+	}
+}
+
+// TestOnKeyUpdated_DisabledKeySkipsFetchButInvalidatesCache cross-checks
+// that toggling a key to disabled still evicts its stale cached models
+// (InvalidateLive) even though the refetch is correctly skipped.
+func TestOnKeyUpdated_DisabledKeySkipsFetchButInvalidatesCache(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	defer func() { logger = prevLogger }()
+
+	catalog := modelcatalog.NewTestCatalog(nil)
+	catalog.UpsertLive("custom-provider", "key-1", false, []string{"custom-provider/some-model"})
+
+	disabledKey := schemas.Key{ID: "key-1", Enabled: schemas.Ptr(false)}
+	server := &BifrostHTTPServer{
+		Config: &lib.Config{
+			ModelCatalog: catalog,
+			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+				"custom-provider": {Keys: []schemas.Key{disabledKey}},
+			},
+		},
+	}
+
+	if models := server.Config.ModelCatalog.GetModelsForProvider("custom-provider"); len(models) == 0 {
+		t.Fatalf("expected seeded live model before update, got none")
+	}
+
+	// s.Client is left nil: if the disabled-key guard regresses, the fetch
+	// goroutine would dereference it and panic, failing this test.
+	if err := server.OnKeyUpdated(context.Background(), "custom-provider", disabledKey); err != nil {
+		t.Fatalf("OnKeyUpdated returned unexpected error: %v", err)
+	}
+
+	if models := server.Config.ModelCatalog.GetModelsForProvider("custom-provider"); len(models) != 0 {
+		t.Fatalf("expected InvalidateLive to drop the disabled key's cached models, got %v", models)
 	}
 }
 

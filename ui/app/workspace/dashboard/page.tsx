@@ -279,13 +279,15 @@ export default function DashboardPage() {
 	// Adapter: converts a full LogFilters object to dashboard URL state
 	const setFilters = useCallback(
 		(newFilters: LogFilters) => {
-			const newStartTime = newFilters.start_time ? dateUtils.toUnixTimestamp(new Date(newFilters.start_time)) : undefined;
-			const newEndTime = newFilters.end_time ? dateUtils.toUnixTimestamp(new Date(newFilters.end_time)) : undefined;
-			const timeChanged = newStartTime !== urlState.start_time || newEndTime !== urlState.end_time;
+			// The sidebar/header only manage dimension filters, never the time range: in
+			// period mode `newFilters` carries no start/end, so only touch time when an
+			// explicit range is actually provided — otherwise we'd clear the active period.
+			const hasExplicitTime = !!newFilters.start_time && !!newFilters.end_time;
+			const newStartTime = hasExplicitTime ? dateUtils.toUnixTimestamp(new Date(newFilters.start_time!)) : undefined;
+			const newEndTime = hasExplicitTime ? dateUtils.toUnixTimestamp(new Date(newFilters.end_time!)) : undefined;
+			const timeChanged = hasExplicitTime && (newStartTime !== urlState.start_time || newEndTime !== urlState.end_time);
 			setUrlState({
-				...(timeChanged && { period: "" }),
-				start_time: newStartTime,
-				end_time: newEndTime,
+				...(timeChanged && { period: "", start_time: newStartTime, end_time: newEndTime }),
 				providers: newFilters.providers || [],
 				models: newFilters.models || [],
 				selected_key_ids: newFilters.selected_key_ids || [],

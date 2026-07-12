@@ -227,6 +227,31 @@ var (
 )
 
 // Init creates a new PrometheusPlugin with initialized metrics.
+// defaultBifrostLabelNames is the canonical set of Prometheus labels attached to
+// bifrost.* metrics. It is a package var (not an Init local) so the connector-
+// parity conformance test can assert it against the shared enrichment registry
+// (core/schemas). Metric-tier dimensions only — no high-cardinality (user, arrays).
+var defaultBifrostLabelNames = []string{
+	"provider",
+	"model",
+	"alias",
+	"method",
+	"virtual_key_id",
+	"virtual_key_name",
+	"routing_engine_used",
+	"routing_rule_id",
+	"routing_rule_name",
+	"selected_key_id",
+	"selected_key_name",
+	"fallback_index",
+	"team_id",
+	"team_name",
+	"customer_id",
+	"customer_name",
+	"business_unit_id",
+	"business_unit_name",
+}
+
 func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger schemas.Logger) (*PrometheusPlugin, error) {
 	if config == nil {
 		return nil, fmt.Errorf("config is required")
@@ -257,24 +282,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 	}
 
 	defaultHTTPLabels := []string{"path", "method", "status"}
-	defaultBifrostLabels := []string{
-		"provider",
-		"model",
-		"alias",
-		"method",
-		"virtual_key_id",
-		"virtual_key_name",
-		"routing_engine_used",
-		"routing_rule_id",
-		"routing_rule_name",
-		"selected_key_id",
-		"selected_key_name",
-		"fallback_index",
-		"team_id",
-		"team_name",
-		"customer_id",
-		"customer_name",
-	}
+	defaultBifrostLabels := append([]string(nil), defaultBifrostLabelNames...)
 
 	var filteredCustomLabels []string
 	if len(config.CustomLabels) > 0 {
@@ -707,6 +715,8 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	teamName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceTeamName)
 	customerID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceCustomerID)
 	customerName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceCustomerName)
+	businessUnitID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceBusinessUnitID)
+	businessUnitName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceBusinessUnitName)
 
 	// Extract ALL context values BEFORE spawning the goroutine.
 	labelValues := map[string]string{
@@ -726,6 +736,8 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		"team_name":           teamName,
 		"customer_id":         customerID,
 		"customer_name":       customerName,
+		"business_unit_id":    businessUnitID,
+		"business_unit_name":  businessUnitName,
 	}
 
 	// Get all custom prometheus labels from context BEFORE the goroutine.
@@ -891,6 +903,17 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 				if result.TranscriptionStreamResponse.Usage.OutputTokens != nil {
 					outputTokens = *result.TranscriptionStreamResponse.Usage.OutputTokens
 				}
+			case result.CompactionResponse != nil && result.CompactionResponse.Usage != nil:
+				if u := result.CompactionResponse.Usage.ToBifrostLLMUsage(); u != nil {
+					inputTokens = u.PromptTokens
+					outputTokens = u.CompletionTokens
+				}
+			case result.ImageGenerationResponse != nil && result.ImageGenerationResponse.Usage != nil:
+				inputTokens = result.ImageGenerationResponse.Usage.InputTokens
+				outputTokens = result.ImageGenerationResponse.Usage.OutputTokens
+			case result.PassthroughResponse != nil && result.PassthroughResponse.PassthroughUsage != nil && result.PassthroughResponse.PassthroughUsage.LLMUsage != nil:
+				inputTokens = result.PassthroughResponse.PassthroughUsage.LLMUsage.PromptTokens
+				outputTokens = result.PassthroughResponse.PassthroughUsage.LLMUsage.CompletionTokens
 			}
 
 			p.InputTokensTotal.WithLabelValues(promLabelValues...).Add(float64(inputTokens))

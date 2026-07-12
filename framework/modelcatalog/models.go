@@ -9,6 +9,17 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 )
 
+// providersWithPartialListModels enumerates providers whose /v1/models response
+// is a strict subset of their callable catalog — Perplexity lists only
+// responses-API models and omits the Sonar chat family, which is still callable
+// via /chat/completions. For these, the datasheet (not the live list) is the
+// authoritative superset, so live must be unioned with the full allowed
+// datasheet set rather than only the deprecated backfill.
+var providersWithPartialListModels = map[schemas.ModelProvider]bool{
+	schemas.Perplexity: true,
+	schemas.Vertex:     true,
+}
+
 // GetModelsForProvider returns the effective allowed model set for the
 // provider. Filtered live entries are authoritative when present (they were
 // pre-gated by ListModelsPipeline against the key's allow/block/aliases);
@@ -20,7 +31,16 @@ func (mc *ModelCatalog) GetModelsForProvider(provider schemas.ModelProvider) []s
 	var out []string
 	if liveModels := mc.live.ModelsForProvider(provider); len(liveModels) > 0 {
 		out = liveModels
-		out = mc.appendAllowedDatasheetModels(out, mc.datasheet.DeprecatedDatasheetModelsForProvider(provider), allowed, blacklisted)
+		// Datasheet models to reconcile on top of the live list: normally just
+		// deprecated ones (dropped from list-models but still callable). For
+		// providers whose list-models is a partial subset, use the full
+		// datasheet so callable-but-unlisted models (e.g. Perplexity's Sonar
+		// chat family) aren't shadowed by the incomplete live list.
+		datasheetModelsToAppend := mc.datasheet.DeprecatedDatasheetModelsForProvider(provider)
+		if providersWithPartialListModels[provider] {
+			datasheetModelsToAppend = mc.datasheet.DatasheetModelsForProvider(provider)
+		}
+		out = mc.appendAllowedDatasheetModels(out, datasheetModelsToAppend, allowed, blacklisted)
 	} else if datasheetModels := mc.datasheet.DatasheetModelsForProvider(provider); len(datasheetModels) > 0 && allowed != nil {
 		out = make([]string, 0, len(datasheetModels))
 		for _, m := range datasheetModels {
@@ -128,13 +148,6 @@ func (mc *ModelCatalog) GetUnfilteredModelsForProvider(provider schemas.ModelPro
 // datasheet. Used by governance for cross-provider model selection.
 func (mc *ModelCatalog) GetDistinctBaseModelNames() []string {
 	return mc.datasheet.DistinctBaseModelNames()
-}
-
-// GetDistinctActiveBaseModelNames returns unique base model names backed by
-// non-deprecated pricing rows only. API handlers use this to avoid exposing
-// deprecated catalog entries.
-func (mc *ModelCatalog) GetDistinctActiveBaseModelNames() []string {
-	return mc.datasheet.DistinctActiveBaseModelNames()
 }
 
 // GetProvidersForModel returns every provider that can serve the model.

@@ -143,52 +143,54 @@ func toolSyncIntervalDurationToStoredSeconds(interval time.Duration) (int, error
 // schemaKeyFromTableKey converts a database key to a schema key.
 func schemaKeyFromTableKey(dbKey tables.TableKey) schemas.Key {
 	return schemas.Key{
-		ID:                 dbKey.KeyID,
-		Name:               dbKey.Name,
-		Value:              dbKey.Value,
-		Models:             dbKey.Models,
-		BlacklistedModels:  dbKey.BlacklistedModels,
-		Weight:             getWeight(dbKey.Weight),
-		Enabled:            dbKey.Enabled,
-		UseForBatchAPI:     dbKey.UseForBatchAPI,
-		AzureKeyConfig:     dbKey.AzureKeyConfig,
-		VertexKeyConfig:    dbKey.VertexKeyConfig,
-		BedrockKeyConfig:   dbKey.BedrockKeyConfig,
-		Aliases:            dbKey.Aliases,
-		VLLMKeyConfig:      dbKey.VLLMKeyConfig,
-		ReplicateKeyConfig: dbKey.ReplicateKeyConfig,
-		OllamaKeyConfig:    dbKey.OllamaKeyConfig,
-		SGLKeyConfig:       dbKey.SGLKeyConfig,
-		ConfigHash:         dbKey.ConfigHash,
-		Status:             schemas.KeyStatusType(dbKey.Status),
-		Description:        dbKey.Description,
+		ID:                     dbKey.KeyID,
+		Name:                   dbKey.Name,
+		Value:                  dbKey.Value,
+		Models:                 dbKey.Models,
+		BlacklistedModels:      dbKey.BlacklistedModels,
+		Weight:                 getWeight(dbKey.Weight),
+		Enabled:                dbKey.Enabled,
+		UseForBatchAPI:         dbKey.UseForBatchAPI,
+		AzureKeyConfig:         dbKey.AzureKeyConfig,
+		VertexKeyConfig:        dbKey.VertexKeyConfig,
+		BedrockKeyConfig:       dbKey.BedrockKeyConfig,
+		BedrockMantleKeyConfig: dbKey.BedrockMantleKeyConfig,
+		Aliases:                dbKey.Aliases,
+		VLLMKeyConfig:          dbKey.VLLMKeyConfig,
+		ReplicateKeyConfig:     dbKey.ReplicateKeyConfig,
+		OllamaKeyConfig:        dbKey.OllamaKeyConfig,
+		SGLKeyConfig:           dbKey.SGLKeyConfig,
+		ConfigHash:             dbKey.ConfigHash,
+		Status:                 schemas.KeyStatusType(dbKey.Status),
+		Description:            dbKey.Description,
 	}
 }
 
 // tableKeyFromSchemaKey converts a schema key to a database key.
 func tableKeyFromSchemaKey(provider tables.TableProvider, key schemas.Key) (tables.TableKey, error) {
 	dbKey := tables.TableKey{
-		Provider:           provider.Name,
-		ProviderID:         provider.ID,
-		KeyID:              key.ID,
-		Name:               key.Name,
-		Value:              key.Value,
-		Models:             key.Models,
-		BlacklistedModels:  key.BlacklistedModels,
-		Weight:             &key.Weight,
-		Enabled:            key.Enabled,
-		UseForBatchAPI:     key.UseForBatchAPI,
-		AzureKeyConfig:     key.AzureKeyConfig,
-		VertexKeyConfig:    key.VertexKeyConfig,
-		BedrockKeyConfig:   key.BedrockKeyConfig,
-		Aliases:            key.Aliases,
-		VLLMKeyConfig:      key.VLLMKeyConfig,
-		ReplicateKeyConfig: key.ReplicateKeyConfig,
-		OllamaKeyConfig:    key.OllamaKeyConfig,
-		SGLKeyConfig:       key.SGLKeyConfig,
-		ConfigHash:         key.ConfigHash,
-		Status:             string(key.Status),
-		Description:        key.Description,
+		Provider:               provider.Name,
+		ProviderID:             provider.ID,
+		KeyID:                  key.ID,
+		Name:                   key.Name,
+		Value:                  key.Value,
+		Models:                 key.Models,
+		BlacklistedModels:      key.BlacklistedModels,
+		Weight:                 &key.Weight,
+		Enabled:                key.Enabled,
+		UseForBatchAPI:         key.UseForBatchAPI,
+		AzureKeyConfig:         key.AzureKeyConfig,
+		VertexKeyConfig:        key.VertexKeyConfig,
+		BedrockKeyConfig:       key.BedrockKeyConfig,
+		BedrockMantleKeyConfig: key.BedrockMantleKeyConfig,
+		Aliases:                key.Aliases,
+		VLLMKeyConfig:          key.VLLMKeyConfig,
+		ReplicateKeyConfig:     key.ReplicateKeyConfig,
+		OllamaKeyConfig:        key.OllamaKeyConfig,
+		SGLKeyConfig:           key.SGLKeyConfig,
+		ConfigHash:             key.ConfigHash,
+		Status:                 string(key.Status),
+		Description:            key.Description,
 	}
 
 	if key.AzureKeyConfig != nil {
@@ -200,6 +202,7 @@ func tableKeyFromSchemaKey(provider tables.TableProvider, key schemas.Key) (tabl
 		dbKey.VertexProjectNumber = &key.VertexKeyConfig.ProjectNumber
 		dbKey.VertexRegion = &key.VertexKeyConfig.Region
 		dbKey.VertexAuthCredentials = &key.VertexKeyConfig.AuthCredentials
+		dbKey.VertexForceSingleRegion = &key.VertexKeyConfig.ForceSingleRegion
 	}
 
 	if key.BedrockKeyConfig != nil {
@@ -699,27 +702,28 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 				}
 			}
 			dbKey := tables.TableKey{
-				Provider:           dbProvider.Name,
-				ProviderID:         dbProvider.ID,
-				KeyID:              key.ID,
-				Name:               key.Name,
-				Value:              key.Value,
-				Models:             key.Models,
-				BlacklistedModels:  key.BlacklistedModels,
-				Weight:             &key.Weight,
-				Enabled:            key.Enabled,
-				UseForBatchAPI:     key.UseForBatchAPI,
-				AzureKeyConfig:     key.AzureKeyConfig,
-				VertexKeyConfig:    key.VertexKeyConfig,
-				BedrockKeyConfig:   key.BedrockKeyConfig,
-				Aliases:            key.Aliases,
-				VLLMKeyConfig:      key.VLLMKeyConfig,
-				ReplicateKeyConfig: key.ReplicateKeyConfig,
-				OllamaKeyConfig:    key.OllamaKeyConfig,
-				SGLKeyConfig:       key.SGLKeyConfig,
-				ConfigHash:         keyHash,
-				Status:             string(key.Status),
-				Description:        key.Description,
+				Provider:               dbProvider.Name,
+				ProviderID:             dbProvider.ID,
+				KeyID:                  key.ID,
+				Name:                   key.Name,
+				Value:                  key.Value,
+				Models:                 key.Models,
+				BlacklistedModels:      key.BlacklistedModels,
+				Weight:                 &key.Weight,
+				Enabled:                key.Enabled,
+				UseForBatchAPI:         key.UseForBatchAPI,
+				AzureKeyConfig:         key.AzureKeyConfig,
+				VertexKeyConfig:        key.VertexKeyConfig,
+				BedrockKeyConfig:       key.BedrockKeyConfig,
+				BedrockMantleKeyConfig: key.BedrockMantleKeyConfig,
+				Aliases:                key.Aliases,
+				VLLMKeyConfig:          key.VLLMKeyConfig,
+				ReplicateKeyConfig:     key.ReplicateKeyConfig,
+				OllamaKeyConfig:        key.OllamaKeyConfig,
+				SGLKeyConfig:           key.SGLKeyConfig,
+				ConfigHash:             keyHash,
+				Status:                 string(key.Status),
+				Description:            key.Description,
 			}
 
 			// Handle Azure config
@@ -733,6 +737,7 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 				dbKey.VertexProjectNumber = &key.VertexKeyConfig.ProjectNumber
 				dbKey.VertexRegion = &key.VertexKeyConfig.Region
 				dbKey.VertexAuthCredentials = &key.VertexKeyConfig.AuthCredentials
+				dbKey.VertexForceSingleRegion = &key.VertexKeyConfig.ForceSingleRegion
 			}
 
 			// Handle Bedrock config
@@ -927,27 +932,28 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 			return fmt.Errorf("failed to generate key hash: %w", err)
 		}
 		dbKey := tables.TableKey{
-			Provider:           dbProvider.Name,
-			ProviderID:         dbProvider.ID,
-			KeyID:              key.ID,
-			Name:               key.Name,
-			Value:              key.Value,
-			Models:             key.Models,
-			BlacklistedModels:  key.BlacklistedModels,
-			Weight:             &key.Weight,
-			Enabled:            key.Enabled,
-			UseForBatchAPI:     key.UseForBatchAPI,
-			AzureKeyConfig:     key.AzureKeyConfig,
-			VertexKeyConfig:    key.VertexKeyConfig,
-			BedrockKeyConfig:   key.BedrockKeyConfig,
-			Aliases:            key.Aliases,
-			VLLMKeyConfig:      key.VLLMKeyConfig,
-			ReplicateKeyConfig: key.ReplicateKeyConfig,
-			OllamaKeyConfig:    key.OllamaKeyConfig,
-			SGLKeyConfig:       key.SGLKeyConfig,
-			ConfigHash:         keyHash,
-			Status:             string(key.Status),
-			Description:        key.Description,
+			Provider:               dbProvider.Name,
+			ProviderID:             dbProvider.ID,
+			KeyID:                  key.ID,
+			Name:                   key.Name,
+			Value:                  key.Value,
+			Models:                 key.Models,
+			BlacklistedModels:      key.BlacklistedModels,
+			Weight:                 &key.Weight,
+			Enabled:                key.Enabled,
+			UseForBatchAPI:         key.UseForBatchAPI,
+			AzureKeyConfig:         key.AzureKeyConfig,
+			VertexKeyConfig:        key.VertexKeyConfig,
+			BedrockKeyConfig:       key.BedrockKeyConfig,
+			BedrockMantleKeyConfig: key.BedrockMantleKeyConfig,
+			Aliases:                key.Aliases,
+			VLLMKeyConfig:          key.VLLMKeyConfig,
+			ReplicateKeyConfig:     key.ReplicateKeyConfig,
+			OllamaKeyConfig:        key.OllamaKeyConfig,
+			SGLKeyConfig:           key.SGLKeyConfig,
+			ConfigHash:             keyHash,
+			Status:                 string(key.Status),
+			Description:            key.Description,
 		}
 
 		// Handle Azure config
@@ -961,6 +967,7 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 			dbKey.VertexProjectNumber = &key.VertexKeyConfig.ProjectNumber
 			dbKey.VertexRegion = &key.VertexKeyConfig.Region
 			dbKey.VertexAuthCredentials = &key.VertexKeyConfig.AuthCredentials
+			dbKey.VertexForceSingleRegion = &key.VertexKeyConfig.ForceSingleRegion
 		}
 
 		// Handle Bedrock config
@@ -1066,27 +1073,28 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 	// Create keys for this provider
 	for _, key := range configCopy.Keys {
 		dbKey := tables.TableKey{
-			Provider:           dbProvider.Name,
-			ProviderID:         dbProvider.ID,
-			KeyID:              key.ID,
-			Name:               key.Name,
-			Value:              key.Value,
-			Models:             key.Models,
-			BlacklistedModels:  key.BlacklistedModels,
-			Weight:             &key.Weight,
-			Enabled:            key.Enabled,
-			UseForBatchAPI:     key.UseForBatchAPI,
-			AzureKeyConfig:     key.AzureKeyConfig,
-			VertexKeyConfig:    key.VertexKeyConfig,
-			BedrockKeyConfig:   key.BedrockKeyConfig,
-			Aliases:            key.Aliases,
-			VLLMKeyConfig:      key.VLLMKeyConfig,
-			ReplicateKeyConfig: key.ReplicateKeyConfig,
-			OllamaKeyConfig:    key.OllamaKeyConfig,
-			SGLKeyConfig:       key.SGLKeyConfig,
-			ConfigHash:         key.ConfigHash,
-			Status:             string(key.Status),
-			Description:        key.Description,
+			Provider:               dbProvider.Name,
+			ProviderID:             dbProvider.ID,
+			KeyID:                  key.ID,
+			Name:                   key.Name,
+			Value:                  key.Value,
+			Models:                 key.Models,
+			BlacklistedModels:      key.BlacklistedModels,
+			Weight:                 &key.Weight,
+			Enabled:                key.Enabled,
+			UseForBatchAPI:         key.UseForBatchAPI,
+			AzureKeyConfig:         key.AzureKeyConfig,
+			VertexKeyConfig:        key.VertexKeyConfig,
+			BedrockKeyConfig:       key.BedrockKeyConfig,
+			BedrockMantleKeyConfig: key.BedrockMantleKeyConfig,
+			Aliases:                key.Aliases,
+			VLLMKeyConfig:          key.VLLMKeyConfig,
+			ReplicateKeyConfig:     key.ReplicateKeyConfig,
+			OllamaKeyConfig:        key.OllamaKeyConfig,
+			SGLKeyConfig:           key.SGLKeyConfig,
+			ConfigHash:             key.ConfigHash,
+			Status:                 string(key.Status),
+			Description:            key.Description,
 		}
 		// Handle Azure config
 		if key.AzureKeyConfig != nil {
@@ -1098,6 +1106,7 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 			dbKey.VertexProjectNumber = &key.VertexKeyConfig.ProjectNumber
 			dbKey.VertexRegion = &key.VertexKeyConfig.Region
 			dbKey.VertexAuthCredentials = &key.VertexKeyConfig.AuthCredentials
+			dbKey.VertexForceSingleRegion = &key.VertexKeyConfig.ForceSingleRegion
 		}
 		// Handle Bedrock config
 		if key.BedrockKeyConfig != nil {
@@ -2486,6 +2495,10 @@ var pricingSyncUpdateColumns = []string{
 	"cache_read_input_image_token_cost",
 	"cache_read_input_token_cost_above_272k_tokens",
 	"cache_read_input_token_cost_above_272k_tokens_priority",
+	"cache_creation_input_token_cost_fast",
+	"cache_creation_input_token_cost_above_1hr_fast",
+	"cache_read_input_token_cost_fast",
+	"inference_geo_us_multiplier",
 	// Costs - Image
 	"input_cost_per_image",
 	"input_cost_per_pixel",
@@ -3294,6 +3307,9 @@ func (s *RDBConfigStore) GetVirtualKeyByValue(ctx context.Context, value string)
 	// Use hash-based lookup if hash column is populated, fall back to plaintext for backward compat
 	if err := query.Where("value_hash = ?", valueHash).First(&virtualKey).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
+			if schemas.IsSecretRef(value) {
+				return nil, ErrNotFound
+			}
 			// Fallback: try plaintext lookup for rows not yet migrated
 			if err := query.Where("value = ?", value).First(&virtualKey).Error; err != nil {
 				if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -3321,6 +3337,9 @@ func (s *RDBConfigStore) GetVirtualKeyQuotaByValue(ctx context.Context, value st
 		Preload("ProviderConfigs.RateLimit")
 	if err := baseQuery.Session(&gorm.Session{}).Where("value_hash = ?", valueHash).First(&virtualKey).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
+			if schemas.IsSecretRef(value) {
+				return nil, ErrNotFound
+			}
 			// Fallback: try plaintext lookup for rows not yet migrated
 			if err := baseQuery.Session(&gorm.Session{}).Where("value = ?", value).First(&virtualKey).Error; err != nil {
 				if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -3376,7 +3395,7 @@ func (s *RDBConfigStore) UpdateVirtualKey(ctx context.Context, virtualKey *table
 	} else {
 		virtualKey.ID = existing.ID
 		if err := txDB.WithContext(ctx).
-			Select("name", "description", "value", "is_active", "team_id", "customer_id", "rate_limit_id", "calendar_aligned", "config_hash", "updated_at", "encryption_status", "value_hash").
+			Select("name", "description", "value", "is_active", "expires_at", "team_id", "customer_id", "rate_limit_id", "calendar_aligned", "config_hash", "updated_at", "encryption_status", "value_hash").
 			Updates(virtualKey).Error; err != nil {
 			return s.parseGormError(err)
 		}

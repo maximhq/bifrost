@@ -14,8 +14,9 @@ type LogStoreType string
 
 // LogStoreTypeSQLite is the type of log store for SQLite.
 const (
-	LogStoreTypeSQLite   LogStoreType = "sqlite"
-	LogStoreTypePostgres LogStoreType = "postgres"
+	LogStoreTypeSQLite     LogStoreType = "sqlite"
+	LogStoreTypePostgres   LogStoreType = "postgres"
+	LogStoreTypeClickHouse LogStoreType = "clickhouse"
 )
 
 // LogStore is the interface for the log store.
@@ -121,6 +122,12 @@ func NewLogStore(ctx context.Context, config *Config, logger schemas.Logger) (Lo
 			inner, err = newPostgresLogStore(ctx, postgresConfig, logger)
 		} else {
 			return nil, fmt.Errorf("invalid postgres config: %T", config.Config)
+		}
+	case LogStoreTypeClickHouse:
+		if clickhouseConfig, ok := config.Config.(*ClickHouseConfig); ok {
+			inner, err = newClickHouseLogStore(ctx, clickhouseConfig, config.RetentionDays, logger)
+		} else {
+			return nil, fmt.Errorf("invalid clickhouse config: %T", config.Config)
 		}
 	default:
 		return nil, fmt.Errorf("unsupported log store type: %s", config.Type)

@@ -167,6 +167,22 @@ func supportsThinkingConfig(model string) bool {
 	return isGemini3Plus(model)
 }
 
+func canDisableThinkingWithBudget(model string) bool {
+	return !strings.Contains(strings.ToLower(model), "gemini-2.5-pro")
+}
+
+func setThinkingBudgetZeroIfSupported(config *GenerationConfig, model string) {
+	if !canDisableThinkingWithBudget(model) {
+		config.ThinkingConfig = nil
+		return
+	}
+	if config.ThinkingConfig == nil {
+		config.ThinkingConfig = &GenerationConfigThinkingConfig{}
+	}
+	config.ThinkingConfig.IncludeThoughts = false
+	config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(0))
+}
+
 // effortToThinkingLevel converts reasoning effort to Gemini ThinkingLevel string
 // Pro models only support "low" or "high"
 // Other models support "minimal", "low", "medium", and "high"
@@ -1186,16 +1202,14 @@ func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseMod
 
 		// Handle "none" effort explicitly (only if max_tokens not present)
 		if !hasMaxTokens && hasEffort && *params.Reasoning.Effort == "none" {
-			config.ThinkingConfig.IncludeThoughts = false
-			config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(0))
+			setThinkingBudgetZeroIfSupported(&config, model)
 		} else if hasMaxTokens {
 			// User provided max_tokens - use thinkingBudget (all Gemini models support this)
 			// If both max_tokens and effort are present, we ignore effort and use ONLY max_tokens
 			budget := *params.Reasoning.MaxTokens
 			switch budget {
 			case 0:
-				config.ThinkingConfig.IncludeThoughts = false
-				config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(0))
+				setThinkingBudgetZeroIfSupported(&config, model)
 			case DynamicReasoningBudget: // Special case: -1 means dynamic budget
 				config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(DynamicReasoningBudget))
 			default:
@@ -1967,16 +1981,12 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage, allowedImage
 					} else if block.File != nil {
 						// Handle file blocks - use FileURL if available (uploaded file)
 						if block.File.FileURL != nil && *block.File.FileURL != "" {
-							mimeType := "application/pdf"
+							// Only set MIMEType when the caller actually provided one
+							fileData := &FileData{FileURI: *block.File.FileURL}
 							if block.File.FileType != nil {
-								mimeType = *block.File.FileType
+								fileData.MIMEType = *block.File.FileType
 							}
-							parts = append(parts, &Part{
-								FileData: &FileData{
-									FileURI:  *block.File.FileURL,
-									MIMEType: mimeType,
-								},
-							})
+							parts = append(parts, &Part{FileData: fileData})
 						} else if block.File.FileData != nil {
 							// Inline file data - convert to InlineData (Blob)
 							fileData := *block.File.FileData

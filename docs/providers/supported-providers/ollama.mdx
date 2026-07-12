@@ -169,11 +169,11 @@ Refer to the API documentation for [Provider Keys Management](https://docs.getbi
 case schemas.Ollama:
     return []schemas.Key{{
         Name:   "ollama-local",
-        Value:  *schemas.NewEnvVar(""),
+        Value:  *schemas.NewSecretVar(""),
         Models: []string{"*"},
         Weight: 1.0,
         OllamaKeyConfig: &schemas.OllamaKeyConfig{
-            URL: *schemas.NewEnvVar("http://localhost:11434"),
+            URL: *schemas.NewSecretVar("http://localhost:11434"),
         },
     }}, nil
 ```

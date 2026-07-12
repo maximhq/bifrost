@@ -116,6 +116,7 @@ export const vertexKeyConfigSchema = z
 		project_number: secretVarSchema.optional(),
 		region: secretVarSchema.optional(),
 		auth_credentials: secretVarSchema.optional(),
+		force_single_region: z.boolean().optional(),
 	})
 	.refine((data) => isSecretVarSet(data.project_id), {
 		message: "Project ID is required",
@@ -293,6 +294,7 @@ const aliasConfigObjectSchema = z.object({
 	// Vertex overrides
 	project_id: secretVarSchema.optional(),
 	project_number: secretVarSchema.optional(),
+	force_single_region: z.boolean().optional(),
 	// Bedrock overrides
 	inference_profile_arn: secretVarSchema.optional(),
 	// Replicate overrides
@@ -591,6 +593,10 @@ export const allowedRequestsSchema = z.object({
 	chat_completion_stream: z.boolean(),
 	responses: z.boolean(),
 	responses_stream: z.boolean(),
+	responses_retrieve: z.boolean().optional(),
+	responses_delete: z.boolean().optional(),
+	responses_cancel: z.boolean().optional(),
+	responses_input_items: z.boolean().optional(),
 	embedding: z.boolean(),
 	speech: z.boolean(),
 	speech_stream: z.boolean(),

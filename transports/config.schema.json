@@ -7,8 +7,8 @@
   "properties": {
     "$schema": {
       "type": "string",
-      "description": "The schema version. This should be set to \"https://www.getbifrost.ai/schema\"",
-      "const": "https://www.getbifrost.ai/schema"
+      "description": "Schema location for IDE validation. Defaults to \"https://www.getbifrost.ai/schema\" and can be set to a mirrored URL, file:// URL, or filesystem path for isolated deployments.",
+      "default": "https://www.getbifrost.ai/schema"
     },
     "server": {
       "type": "object",
@@ -401,6 +401,9 @@
         "cerebras": {
           "$ref": "#/$defs/provider"
         },
+        "deepseek": {
+          "$ref": "#/$defs/provider"
+        },
         "vllm": {
           "$ref": "#/$defs/provider_with_vllm_config"
         },
@@ -768,6 +771,11 @@
                 "description": "Whether the virtual key is active",
                 "default": true
               },
+              "expires_at": {
+                "type": "string",
+                "format": "date-time",
+                "description": "Optional expiry timestamp (RFC3339). Once passed, requests using this virtual key are rejected. Omit for a key that never expires."
+              },
               "calendar_aligned": {
                 "type": "boolean",
                 "description": "Snap all budget resets to calendar boundaries (day, week, month, year)",
@@ -934,6 +942,292 @@
               }
             },
             "required": ["name"]
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "alerting": {
+      "type": "object",
+      "description": "Enterprise alerting configuration for governance-backed alert channels, rules, history retention, and outbound webhook URL validation.",
+      "properties": {
+        "history_retention_days": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 365,
+          "description": "Number of days to retain alert history. Omit to use the default. Set to 0 to disable retention pruning."
+        },
+        "webhook_network": {
+          "type": "object",
+          "description": "Outbound URL validation controls for Slack, Microsoft Teams, and generic webhook alert channels.",
+          "properties": {
+            "allow_http": {
+              "type": "boolean",
+              "default": false,
+              "description": "Allow alert webhooks to use http URLs. By default only https URLs are accepted."
+            },
+            "allow_private_network": {
+              "type": "boolean",
+              "default": false,
+              "description": "Allow alert webhooks to target private or loopback network addresses. Useful for local testing."
+            }
+          },
+          "additionalProperties": false
+        },
+        "channels": {
+          "type": "array",
+          "description": "Declarative alert channels synced into the enterprise config store at startup.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "Stable alert channel ID."
+              },
+              "name": {
+                "type": "string",
+                "description": "Operator-facing alert channel name."
+              },
+              "description": {
+                "type": "string",
+                "description": "Optional alert channel description."
+              },
+              "type": {
+                "type": "string",
+                "enum": ["slack", "microsoft_teams", "pagerduty", "webhook"],
+                "description": "Alert channel type."
+              },
+              "enabled": {
+                "type": "boolean",
+                "description": "Whether this alert channel can receive notifications."
+              },
+              "cooldown_seconds": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Minimum seconds between sends for this channel. Set to 0 for no channel-level cooldown."
+              },
+              "config": {
+                "type": "object",
+                "description": "Channel-specific delivery configuration. Slack and Microsoft Teams use webhook_url or url. PagerDuty uses routing_key or integration_key. Generic webhook uses url or webhook_url, plus optional string headers.",
+                "additionalProperties": true
+              }
+            },
+            "required": ["id", "name", "type", "enabled"],
+            "allOf": [
+              {
+                "if": {
+                  "properties": { "type": { "const": "slack" } },
+                  "required": ["type"]
+                },
+                "then": {
+                  "properties": {
+                    "config": {
+                      "type": "object",
+                      "properties": {
+                        "webhook_url": {
+                          "type": "string",
+                          "minLength": 1,
+                          "anyOf": [{ "format": "uri" }, { "pattern": "^env\\.[A-Za-z_][A-Za-z0-9_]*$" }],
+                          "description": "Slack incoming webhook URL. Supports env.VAR_NAME references."
+                        },
+                        "url": {
+                          "type": "string",
+                          "minLength": 1,
+                          "anyOf": [{ "format": "uri" }, { "pattern": "^env\\.[A-Za-z_][A-Za-z0-9_]*$" }],
+                          "description": "Alias for webhook_url. Supports env.VAR_NAME references."
+                        }
+                      },
+                      "oneOf": [{ "required": ["webhook_url"] }, { "required": ["url"] }],
+                      "additionalProperties": true
+                    }
+                  },
+                  "required": ["config"]
+                }
+              },
+              {
+                "if": {
+                  "properties": { "type": { "const": "microsoft_teams" } },
+                  "required": ["type"]
+                },
+                "then": {
+                  "properties": {
+                    "config": {
+                      "type": "object",
+                      "properties": {
+                        "webhook_url": {
+                          "type": "string",
+                          "minLength": 1,
+                          "anyOf": [{ "format": "uri" }, { "pattern": "^env\\.[A-Za-z_][A-Za-z0-9_]*$" }],
+                          "description": "Microsoft Teams incoming webhook or workflow URL. Supports env.VAR_NAME references."
+                        },
+                        "url": {
+                          "type": "string",
+                          "minLength": 1,
+                          "anyOf": [{ "format": "uri" }, { "pattern": "^env\\.[A-Za-z_][A-Za-z0-9_]*$" }],
+                          "description": "Alias for webhook_url. Supports env.VAR_NAME references."
+                        }
+                      },
+                      "oneOf": [{ "required": ["webhook_url"] }, { "required": ["url"] }],
+                      "additionalProperties": true
+                    }
+                  },
+                  "required": ["config"]
+                }
+              },
+              {
+                "if": {
+                  "properties": { "type": { "const": "pagerduty" } },
+                  "required": ["type"]
+                },
+                "then": {
+                  "properties": {
+                    "config": {
+                      "type": "object",
+                      "properties": {
+                        "routing_key": {
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "PagerDuty Events API v2 integration key. Supports env.VAR_NAME references."
+                        },
+                        "integration_key": {
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "Alias for routing_key. Supports env.VAR_NAME references."
+                        }
+                      },
+                      "oneOf": [{ "required": ["routing_key"] }, { "required": ["integration_key"] }],
+                      "additionalProperties": true
+                    }
+                  },
+                  "required": ["config"]
+                }
+              },
+              {
+                "if": {
+                  "properties": { "type": { "const": "webhook" } },
+                  "required": ["type"]
+                },
+                "then": {
+                  "properties": {
+                    "config": {
+                      "type": "object",
+                      "properties": {
+                        "url": {
+                          "type": "string",
+                          "minLength": 1,
+                          "anyOf": [{ "format": "uri" }, { "pattern": "^env\\.[A-Za-z_][A-Za-z0-9_]*$" }],
+                          "description": "Generic webhook URL. Supports env.VAR_NAME references."
+                        },
+                        "webhook_url": {
+                          "type": "string",
+                          "minLength": 1,
+                          "anyOf": [{ "format": "uri" }, { "pattern": "^env\\.[A-Za-z_][A-Za-z0-9_]*$" }],
+                          "description": "Alias for url. Supports env.VAR_NAME references."
+                        },
+                        "headers": {
+                          "type": "object",
+                          "description": "Optional headers to send with the webhook request. Values support env.VAR_NAME references. Sensitive hop-by-hop headers are ignored at send time.",
+                          "additionalProperties": { "type": "string" }
+                        }
+                      },
+                      "oneOf": [{ "required": ["url"] }, { "required": ["webhook_url"] }],
+                      "additionalProperties": true
+                    }
+                  },
+                  "required": ["config"]
+                }
+              }
+            ],
+            "additionalProperties": false
+          }
+        },
+        "rules": {
+          "type": "array",
+          "description": "Declarative alert rules synced into the enterprise config store at startup.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "Stable alert rule ID."
+              },
+              "name": {
+                "type": "string",
+                "description": "Operator-facing alert rule name."
+              },
+              "description": {
+                "type": "string",
+                "description": "Optional alert rule description."
+              },
+              "enabled": {
+                "type": "boolean",
+                "description": "Whether this alert rule is evaluated."
+              },
+              "scope_type": {
+                "type": "string",
+                "enum": ["virtual_key", "team", "customer"],
+                "description": "Governance owner scope to evaluate."
+              },
+              "scope_id": {
+                "type": "string",
+                "description": "ID of the virtual key, team, or customer referenced by scope_type."
+              },
+              "cel_expression": {
+                "type": "string",
+                "description": "CEL expression evaluated against alerting usage variables such as budget_usage_percent, budget_spent, request_usage, token_usage, and rate-limit percentages."
+              },
+              "query": {
+                "type": "object",
+                "description": "Optional UI query-builder representation of cel_expression.",
+                "additionalProperties": true
+              },
+              "cooldown_seconds": {
+                "type": "integer",
+                "minimum": 0,
+                "default": 60,
+                "description": "Minimum seconds between notifications for this rule. Omit to use the default. Set to 0 for no rule cooldown."
+              },
+              "notify_once_per_reset_cycle": {
+                "type": "boolean",
+                "default": false,
+                "description": "When true, notify at most once per matched budget or rate-limit reset cycle. This overrides rule cooldown to 0."
+              },
+              "channel_ids": {
+                "type": "array",
+                "description": "IDs of alert channels to notify when this rule matches.",
+                "items": { "type": "string", "minLength": 1 },
+                "minItems": 1
+              },
+              "target_type": {
+                "type": "string",
+                "enum": ["budget"],
+                "description": "Optional explicit target type. Use budget with target_id to evaluate one specific budget; omit to evaluate all budgets for the scope."
+              },
+              "target_id": {
+                "type": "string",
+                "description": "ID of the explicit target referenced by target_type."
+              }
+            },
+            "required": ["id", "name", "enabled", "scope_type", "scope_id", "cel_expression", "channel_ids"],
+            "allOf": [
+              {
+                "if": {
+                  "required": ["target_type"]
+                },
+                "then": {
+                  "required": ["target_id"]
+                }
+              },
+              {
+                "if": {
+                  "required": ["target_id"]
+                },
+                "then": {
+                  "required": ["target_type"]
+                }
+              }
+            ],
+            "additionalProperties": false
           }
         }
       },
@@ -1252,7 +1546,7 @@
         },
         "type": {
           "type": "string",
-          "enum": ["sqlite", "postgres"],
+          "enum": ["sqlite", "postgres", "clickhouse"],
           "description": "Logs store type"
         },
         "config": {
@@ -1380,6 +1674,61 @@
                 ],
                 "additionalProperties": false
               }
+            },
+            {
+              "if": {
+                "properties": {
+                  "../type": {
+                    "const": "clickhouse"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "host": {
+                    "type": "string",
+                    "description": "ClickHouse host"
+                  },
+                  "port": {
+                    "type": "string",
+                    "description": "ClickHouse port. Defaults by protocol: native 9000 (9440 TLS), http 8123 (8443 TLS)"
+                  },
+                  "database": {
+                    "type": "string",
+                    "description": "ClickHouse database name (default: default)"
+                  },
+                  "username": {
+                    "type": "string",
+                    "description": "ClickHouse username"
+                  },
+                  "password": {
+                    "type": "string",
+                    "description": "ClickHouse password"
+                  },
+                  "protocol": {
+                    "type": "string",
+                    "enum": ["native", "http"],
+                    "description": "ClickHouse wire protocol (default: native)"
+                  },
+                  "secure": {
+                    "type": "boolean",
+                    "description": "Enable TLS (native: secure=true; http: switches to https)",
+                    "default": false
+                  },
+                  "dial_timeout": {
+                    "type": "integer",
+                    "description": "Connection dial timeout in milliseconds (default: 10000)",
+                    "minimum": 1,
+                    "default": 10000
+                  },
+                  "cluster": {
+                    "type": "string",
+                    "description": "Optional cluster name; when set, DDL runs ON CLUSTER with replicated table engines"
+                  }
+                },
+                "required": ["host"],
+                "additionalProperties": false
+              }
             }
           ]
         },
@@ -1430,9 +1779,11 @@
               "description": "Object storage backend type"
             },
             "bucket": {
-              "type": "string",
-              "minLength": 1,
-              "description": "Bucket name. Supports env var reference (e.g. env.S3_BUCKET)"
+              "anyOf": [
+                { "type": "string", "minLength": 1 },
+                { "type": "object", "properties": { "value": { "type": "string" }, "ref": { "type": "string" }, "type": { "type": "string", "enum": ["plain_text", "env", "vault"] }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "required": ["value"], "additionalProperties": false }
+              ],
+              "description": "Bucket name. Supports env var reference (e.g. env.S3_BUCKET) or a structured secret reference."
             },
             "prefix": {
               "type": "string",
@@ -1459,27 +1810,45 @@
               "bucket": true,
               "prefix": true,
               "region": {
-                "type": "string",
+                "anyOf": [
+                  { "type": "string" },
+                  { "type": "object", "properties": { "value": { "type": "string" }, "ref": { "type": "string" }, "type": { "type": "string", "enum": ["plain_text", "env", "vault"] }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "required": ["value"], "additionalProperties": false }
+                ],
                 "description": "AWS region. Supports env var reference"
               },
               "endpoint": {
-                "type": "string",
+                "anyOf": [
+                  { "type": "string" },
+                  { "type": "object", "properties": { "value": { "type": "string" }, "ref": { "type": "string" }, "type": { "type": "string", "enum": ["plain_text", "env", "vault"] }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "required": ["value"], "additionalProperties": false }
+                ],
                 "description": "Custom S3-compatible endpoint for MinIO/R2. Supports env var reference"
               },
               "access_key_id": {
-                "type": "string",
+                "anyOf": [
+                  { "type": "string" },
+                  { "type": "object", "properties": { "value": { "type": "string" }, "ref": { "type": "string" }, "type": { "type": "string", "enum": ["plain_text", "env", "vault"] }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "required": ["value"], "additionalProperties": false }
+                ],
                 "description": "AWS access key ID. Omit to use default credential chain (instance role, env vars, etc.). Supports env var reference"
               },
               "secret_access_key": {
-                "type": "string",
+                "anyOf": [
+                  { "type": "string" },
+                  { "type": "object", "properties": { "value": { "type": "string" }, "ref": { "type": "string" }, "type": { "type": "string", "enum": ["plain_text", "env", "vault"] }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "required": ["value"], "additionalProperties": false }
+                ],
                 "description": "AWS secret access key. Supports env var reference"
               },
               "session_token": {
-                "type": "string",
+                "anyOf": [
+                  { "type": "string" },
+                  { "type": "object", "properties": { "value": { "type": "string" }, "ref": { "type": "string" }, "type": { "type": "string", "enum": ["plain_text", "env", "vault"] }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "required": ["value"], "additionalProperties": false }
+                ],
                 "description": "AWS session token for STS temporary credentials. Supports env var reference"
               },
               "role_arn": {
-                "type": "string",
+                "anyOf": [
+                  { "type": "string" },
+                  { "type": "object", "properties": { "value": { "type": "string" }, "ref": { "type": "string" }, "type": { "type": "string", "enum": ["plain_text", "env", "vault"] }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "required": ["value"], "additionalProperties": false }
+                ],
                 "description": "AWS IAM role ARN for STS AssumeRole. Works with static creds or instance role. Supports env var reference"
               },
               "force_path_style": {
@@ -1502,15 +1871,24 @@
               "bucket": true,
               "prefix": true,
               "credentials_json": {
-                "type": "string",
+                "anyOf": [
+                  { "type": "string" },
+                  { "type": "object", "properties": { "value": { "type": "string" }, "ref": { "type": "string" }, "type": { "type": "string", "enum": ["plain_text", "env", "vault"] }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "required": ["value"], "additionalProperties": false }
+                ],
                 "description": "GCP service account credentials JSON or file path. Omit to use Application Default Credentials. Supports env var reference"
               },
               "credentials": {
-                "type": "string",
+                "anyOf": [
+                  { "type": "string" },
+                  { "type": "object", "properties": { "value": { "type": "string" }, "ref": { "type": "string" }, "type": { "type": "string", "enum": ["plain_text", "env", "vault"] }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "required": ["value"], "additionalProperties": false }
+                ],
                 "description": "Deprecated: use credentials_json. Kept for backwards compatibility."
               },
               "project_id": {
-                "type": "string",
+                "anyOf": [
+                  { "type": "string" },
+                  { "type": "object", "properties": { "value": { "type": "string" }, "ref": { "type": "string" }, "type": { "type": "string", "enum": ["plain_text", "env", "vault"] }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "required": ["value"], "additionalProperties": false }
+                ],
                 "description": "GCP project ID override. Supports env var reference"
               },
               "compress": true
@@ -1868,6 +2246,7 @@
                         "openrouter",
                         "vertex",
                         "cerebras",
+                        "deepseek",
                         "vllm",
                         "parasail",
                         "perplexity",
@@ -3281,6 +3660,10 @@
                     "type": "string",
                     "description": "Per-alias Vertex project number override (can use env. prefix)."
                   },
+                  "force_single_region": {
+                    "type": "boolean",
+                    "description": "Per-alias Vertex override: when true, call the alias region as-is and skip promoting multi-region-only models to a multi-region endpoint."
+                  },
                   "inference_profile_arn": {
                     "type": "string",
                     "description": "Per-alias Bedrock inference profile ARN (can use env. prefix)."
@@ -3616,6 +3999,11 @@
                 "auth_credentials": {
                   "type": "string",
                   "description": "Authentication credentials (can use env. prefix)"
+                },
+                "force_single_region": {
+                  "type": "boolean",
+                  "description": "When true, always call the configured region and skip automatic promotion of multi-region-only models to a multi-region endpoint. Enable for provisioned throughput.",
+                  "default": false
                 }
               },
               "required": ["project_id", "region"],
@@ -5381,6 +5769,133 @@
           "type": "integer",
           "minimum": 0,
           "description": "Number of days to retain audit logs (0 means no retention limit)"
+        },
+        "object_storage": {
+          "type": "object",
+          "description": "Optional object storage for archiving audit events to S3/GCS. When configured, each flushed batch of audit events is written as a gzipped JSONL object at {prefix}/audit-logs/YYYY/MM/DD/HH/{id}.jsonl[.gz], in addition to the database (which remains the source of truth). Archival is going-forward only; existing rows are not backfilled.",
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": ["s3", "gcs"],
+              "description": "Object storage backend type"
+            },
+            "bucket": {
+              "anyOf": [
+                { "type": "string", "minLength": 1 },
+                { "type": "object", "properties": { "value": { "type": "string" }, "ref": { "type": "string" }, "type": { "type": "string", "enum": ["plain_text", "env", "vault"] }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "required": ["value"], "additionalProperties": false }
+              ],
+              "description": "Bucket name. Supports env var reference (e.g. env.S3_BUCKET) or a structured secret reference."
+            },
+            "prefix": {
+              "type": "string",
+              "description": "Configurable base key path for stored audit objects; the 'audit-logs/' segment is appended under it (default: bifrost)",
+              "default": "bifrost"
+            },
+            "compress": {
+              "type": "boolean",
+              "description": "Enable gzip compression for stored objects. Default: false",
+              "default": false
+            }
+          },
+          "required": ["type", "bucket"],
+          "if": {
+            "properties": {
+              "type": {
+                "const": "s3"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "type": true,
+              "bucket": true,
+              "prefix": true,
+              "region": {
+                "anyOf": [
+                  { "type": "string" },
+                  { "type": "object", "properties": { "value": { "type": "string" }, "ref": { "type": "string" }, "type": { "type": "string", "enum": ["plain_text", "env", "vault"] }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "required": ["value"], "additionalProperties": false }
+                ],
+                "description": "AWS region. Supports env var reference"
+              },
+              "endpoint": {
+                "anyOf": [
+                  { "type": "string" },
+                  { "type": "object", "properties": { "value": { "type": "string" }, "ref": { "type": "string" }, "type": { "type": "string", "enum": ["plain_text", "env", "vault"] }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "required": ["value"], "additionalProperties": false }
+                ],
+                "description": "Custom S3-compatible endpoint for MinIO/R2. Supports env var reference"
+              },
+              "access_key_id": {
+                "anyOf": [
+                  { "type": "string" },
+                  { "type": "object", "properties": { "value": { "type": "string" }, "ref": { "type": "string" }, "type": { "type": "string", "enum": ["plain_text", "env", "vault"] }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "required": ["value"], "additionalProperties": false }
+                ],
+                "description": "AWS access key ID. Omit to use default credential chain (instance role, env vars, etc.). Supports env var reference"
+              },
+              "secret_access_key": {
+                "anyOf": [
+                  { "type": "string" },
+                  { "type": "object", "properties": { "value": { "type": "string" }, "ref": { "type": "string" }, "type": { "type": "string", "enum": ["plain_text", "env", "vault"] }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "required": ["value"], "additionalProperties": false }
+                ],
+                "description": "AWS secret access key. Supports env var reference"
+              },
+              "session_token": {
+                "anyOf": [
+                  { "type": "string" },
+                  { "type": "object", "properties": { "value": { "type": "string" }, "ref": { "type": "string" }, "type": { "type": "string", "enum": ["plain_text", "env", "vault"] }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "required": ["value"], "additionalProperties": false }
+                ],
+                "description": "AWS session token for STS temporary credentials. Supports env var reference"
+              },
+              "role_arn": {
+                "anyOf": [
+                  { "type": "string" },
+                  { "type": "object", "properties": { "value": { "type": "string" }, "ref": { "type": "string" }, "type": { "type": "string", "enum": ["plain_text", "env", "vault"] }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "required": ["value"], "additionalProperties": false }
+                ],
+                "description": "AWS IAM role ARN for STS AssumeRole. Works with static creds or instance role. Supports env var reference"
+              },
+              "force_path_style": {
+                "type": "boolean",
+                "description": "Use path-style URLs for S3 (required for MinIO). Default: false",
+                "default": false
+              },
+              "compress": true
+            },
+            "dependentRequired": {
+              "access_key_id": ["secret_access_key"],
+              "secret_access_key": ["access_key_id"],
+              "session_token": ["access_key_id", "secret_access_key"]
+            },
+            "additionalProperties": false
+          },
+          "else": {
+            "properties": {
+              "type": true,
+              "bucket": true,
+              "prefix": true,
+              "credentials_json": {
+                "anyOf": [
+                  { "type": "string" },
+                  { "type": "object", "properties": { "value": { "type": "string" }, "ref": { "type": "string" }, "type": { "type": "string", "enum": ["plain_text", "env", "vault"] }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "required": ["value"], "additionalProperties": false }
+                ],
+                "description": "GCP service account credentials JSON or file path. Omit to use Application Default Credentials. Supports env var reference"
+              },
+              "credentials": {
+                "anyOf": [
+                  { "type": "string" },
+                  { "type": "object", "properties": { "value": { "type": "string" }, "ref": { "type": "string" }, "type": { "type": "string", "enum": ["plain_text", "env", "vault"] }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "required": ["value"], "additionalProperties": false }
+                ],
+                "description": "Deprecated: use credentials_json. Kept for backwards compatibility."
+              },
+              "project_id": {
+                "anyOf": [
+                  { "type": "string" },
+                  { "type": "object", "properties": { "value": { "type": "string" }, "ref": { "type": "string" }, "type": { "type": "string", "enum": ["plain_text", "env", "vault"] }, "env_var": { "type": "string" }, "from_env": { "type": "boolean" } }, "required": ["value"], "additionalProperties": false }
+                ],
+                "description": "GCP project ID override. Supports env var reference"
+              },
+              "compress": true
+            },
+            "additionalProperties": false
+          }
         }
       },
       "additionalProperties": false
@@ -5598,6 +6113,7 @@
             "parasail",
             "perplexity",
             "cerebras",
+            "deepseek",
             "gemini",
             "openrouter",
             "elevenlabs",
@@ -5643,6 +6159,22 @@
             },
             "responses_stream": {
               "type": "boolean"
+            },
+            "responses_retrieve": {
+              "type": "boolean",
+              "description": "GET stored response by id (OpenAI Responses lifecycle)"
+            },
+            "responses_delete": {
+              "type": "boolean",
+              "description": "DELETE stored response (OpenAI Responses lifecycle)"
+            },
+            "responses_cancel": {
+              "type": "boolean",
+              "description": "POST cancel in-flight stored response (OpenAI Responses lifecycle)"
+            },
+            "responses_input_items": {
+              "type": "boolean",
+              "description": "GET list input items for a stored response (OpenAI Responses lifecycle)"
             },
             "count_tokens": {
               "type": "boolean"

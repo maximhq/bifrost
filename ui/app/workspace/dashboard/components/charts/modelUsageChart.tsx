@@ -77,6 +77,15 @@ function CustomTooltip({ active, payload, selectedModel, displayModels }: any) {
 								{(data.by_model?.[selectedModel]?.error || 0).toLocaleString()}
 							</span>
 						</div>
+						<div className="flex items-center justify-between gap-4">
+							<span className="flex items-center gap-1.5">
+								<span className="h-2 w-2 rounded-full" style={{ backgroundColor: CHART_COLORS.cancelled }} />
+								<span className="text-zinc-600 dark:text-zinc-400">Cancelled</span>
+							</span>
+							<span className="font-medium text-zinc-600 dark:text-zinc-400">
+								{(data.by_model?.[selectedModel]?.cancelled || 0).toLocaleString()}
+							</span>
+						</div>
 					</>
 				)}
 			</div>
@@ -124,10 +133,11 @@ function ModelUsageChartImpl({ data, chartType, startTime, endTime, selectedMode
 					}
 				});
 			} else {
-				// For specific model, show success/error breakdown
+				// For specific model, show success/error/cancelled breakdown
 				const stats = bucket.by_model?.[selectedModel];
 				item.success = stats?.success || 0;
 				item.error = stats?.error || 0;
+				item.cancelled = stats?.cancelled || 0;
 			}
 			return item;
 		});
@@ -203,6 +213,15 @@ function ModelUsageChartImpl({ data, chartType, startTime, endTime, selectedMode
 									stackId="status"
 									fill={CHART_COLORS.error}
 									fillOpacity={0.9}
+									radius={[0, 0, 0, 0]}
+									barSize={30}
+								/>
+								<Bar
+									isAnimationActive={false}
+									dataKey="cancelled"
+									stackId="status"
+									fill={CHART_COLORS.cancelled}
+									fillOpacity={0.9}
 									radius={[2, 2, 0, 0]}
 									barSize={30}
 								/>
@@ -269,6 +288,15 @@ function ModelUsageChartImpl({ data, chartType, startTime, endTime, selectedMode
 									stackId="1"
 									stroke={CHART_COLORS.error}
 									fill={CHART_COLORS.error}
+									fillOpacity={0.7}
+								/>
+								<Area
+									isAnimationActive={false}
+									type="monotone"
+									dataKey="cancelled"
+									stackId="1"
+									stroke={CHART_COLORS.cancelled}
+									fill={CHART_COLORS.cancelled}
 									fillOpacity={0.7}
 								/>
 							</>

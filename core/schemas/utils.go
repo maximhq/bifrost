@@ -791,6 +791,9 @@ func DeepCopyChatMessage(original ChatMessage) ChatMessage {
 					copyName := *toolCall.Function.Name
 					copyToolCall.Function.Name = &copyName
 				}
+				if len(toolCall.ExtraContent) > 0 {
+					copyToolCall.ExtraContent = append(json.RawMessage(nil), toolCall.ExtraContent...)
+				}
 				copy.ChatAssistantMessage.ToolCalls[i] = copyToolCall
 			}
 		}
@@ -1381,6 +1384,15 @@ func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {
 			}
 		}
 
+		if original.ResponsesToolMessage.Caller != nil {
+			copyCaller := *original.ResponsesToolMessage.Caller
+			if original.ResponsesToolMessage.Caller.ToolID != nil {
+				copyToolID := *original.ResponsesToolMessage.Caller.ToolID
+				copyCaller.ToolID = &copyToolID
+			}
+			copy.ResponsesToolMessage.Caller = &copyCaller
+		}
+
 		// Deep copy embedded tool call structs (simplified version - add more as needed)
 		if original.ResponsesToolMessage.ResponsesFileSearchToolCall != nil {
 			copyToolCall := *original.ResponsesToolMessage.ResponsesFileSearchToolCall
@@ -1392,6 +1404,23 @@ func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {
 				}
 			}
 			copy.ResponsesToolMessage.ResponsesFileSearchToolCall = &copyToolCall
+		}
+
+		if original.ResponsesToolMessage.ResponsesWebFetchCall != nil {
+			copyCall := *original.ResponsesToolMessage.ResponsesWebFetchCall
+			if original.ResponsesToolMessage.ResponsesWebFetchCall.Document != nil {
+				docCopy := *original.ResponsesToolMessage.ResponsesWebFetchCall.Document
+				if original.ResponsesToolMessage.ResponsesWebFetchCall.Document.Source != nil {
+					srcCopy := *original.ResponsesToolMessage.ResponsesWebFetchCall.Document.Source
+					docCopy.Source = &srcCopy
+				}
+				if original.ResponsesToolMessage.ResponsesWebFetchCall.Document.Citations != nil {
+					citationsCopy := *original.ResponsesToolMessage.ResponsesWebFetchCall.Document.Citations
+					docCopy.Citations = &citationsCopy
+				}
+				copyCall.Document = &docCopy
+			}
+			copy.ResponsesToolMessage.ResponsesWebFetchCall = &copyCall
 		}
 
 		// Add other embedded tool calls as needed...
@@ -1681,6 +1710,11 @@ func IsCohereModel(model string) bool {
 // Bedrock identifier prefix ("amazon.titan-*").
 func IsTitanModel(model string) bool {
 	return strings.Contains(model, "titan")
+}
+
+// IsGrokModel checks if the model is an xAI Grok model.
+func IsGrokModel(model string) bool {
+	return strings.Contains(model, "grok")
 }
 
 // List of grok reasoning models
