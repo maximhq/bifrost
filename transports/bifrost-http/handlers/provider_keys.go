@@ -103,7 +103,7 @@ func (h *ProviderHandler) createProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if err := validateProviderKeyURL(provider, key); err != nil {
+	if err := validateProviderKeyURL(baseProvider, key); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
 	}
@@ -225,7 +225,7 @@ func (h *ProviderHandler) updateProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if err := validateProviderKeyURL(provider, mergedKey); err != nil {
+	if err := validateProviderKeyURL(baseProvider, mergedKey); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
 	}

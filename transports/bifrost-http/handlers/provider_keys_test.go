@@ -5,6 +5,9 @@ import (
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/valyala/fasthttp"
 )
 
 // TestMergeUpdatedKey_Value locks in the invariant that a masked key preview can
@@ -281,5 +284,37 @@ func TestValidateProviderKeyRequiredNestedFields(t *testing.T) {
 				t.Fatalf("expected error containing %q, got %v", tc.wantErr, err)
 			}
 		})
+	}
+}
+
+// Regression for the custom-provider path: required-field validation must run
+// against the resolved BASE provider, not the custom route name, or a custom
+// provider based on Bedrock would skip the region requirement entirely.
+func TestCreateProviderKey_CustomBedrockRequiresRegion(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+
+	h := &ProviderHandler{
+		inMemoryStore: &lib.Config{
+			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+				"aws-custom": {
+					CustomProviderConfig: &schemas.CustomProviderConfig{
+						BaseProviderType: schemas.Bedrock,
+					},
+				},
+			},
+		},
+		modelsManager: &mockModelsManager{},
+	}
+
+	ctx := newTestRequestCtx(`{"value":"AKIAEXAMPLEKEY","weight":1.0,"bedrock_key_config":{}}`)
+	ctx.SetUserValue("provider", "aws-custom")
+
+	h.createProviderKey(ctx)
+	if ctx.Response.StatusCode() != fasthttp.StatusBadRequest {
+		t.Fatalf("custom-bedrock create without region: status got %d, want 400; body=%s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if body := string(ctx.Response.Body()); !strings.Contains(body, "bedrock_key_config.region") {
+		t.Fatalf("expected bedrock_key_config.region error, got %s", body)
 	}
 }
