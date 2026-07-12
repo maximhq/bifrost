@@ -367,8 +367,6 @@ func (provider *GeminiProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		headers["x-goog-api-key"] = key.Value.GetValue()
 	}
 
-	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)
-
 	// Use shared Gemini streaming logic
 	return HandleGeminiChatCompletionStream(
 		ctx,
@@ -377,6 +375,7 @@ func (provider *GeminiProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		jsonData,
 		headers,
 		provider.networkConfig.ExtraHeaders,
+		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
@@ -396,6 +395,7 @@ func HandleGeminiChatCompletionStream(
 	jsonBody []byte,
 	headers map[string]string,
 	extraHeaders map[string]string,
+	streamIdleTimeoutInSeconds int,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
 	providerName schemas.ModelProvider,
@@ -405,6 +405,7 @@ func HandleGeminiChatCompletionStream(
 	logger schemas.Logger,
 	postHookSpanFinalizer func(context.Context),
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, streamIdleTimeoutInSeconds)
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	resp.StreamBody = true
@@ -879,8 +880,6 @@ func (provider *GeminiProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 		headers["x-goog-api-key"] = key.Value.GetValue()
 	}
 
-	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)
-
 	return HandleGeminiResponsesStream(
 		ctx,
 		provider.streamingClient,
@@ -888,6 +887,7 @@ func (provider *GeminiProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 		jsonData,
 		headers,
 		provider.networkConfig.ExtraHeaders,
+		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
@@ -907,6 +907,7 @@ func HandleGeminiResponsesStream(
 	jsonBody []byte,
 	headers map[string]string,
 	extraHeaders map[string]string,
+	streamIdleTimeoutInSeconds int,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
 	providerName schemas.ModelProvider,
@@ -916,6 +917,7 @@ func HandleGeminiResponsesStream(
 	logger schemas.Logger,
 	postHookSpanFinalizer func(context.Context),
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, streamIdleTimeoutInSeconds)
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	resp.StreamBody = true
@@ -1471,6 +1473,8 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 		return nil, providerUtils.EnrichError(ctx, parseGeminiError(resp), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
+	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)
+
 	// Large payload streaming passthrough — pipe raw upstream SSE to client
 	if providerUtils.SetupStreamingPassthrough(ctx, resp) {
 		responseChan := make(chan *schemas.BifrostStreamChunk)
@@ -1480,8 +1484,6 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 
 	// Create response channel
 	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
-
-	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)
 
 	// Start streaming in a goroutine
 	go func() {
@@ -1766,6 +1768,8 @@ func (provider *GeminiProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 		return nil, providerUtils.EnrichError(ctx, parseGeminiError(resp), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
+	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)
+
 	// Large payload streaming passthrough — pipe raw upstream SSE to client
 	if providerUtils.SetupStreamingPassthrough(ctx, resp) {
 		responseChan := make(chan *schemas.BifrostStreamChunk)
@@ -1775,8 +1779,6 @@ func (provider *GeminiProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 
 	// Create response channel
 	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
-
-	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)
 
 	// Start streaming in a goroutine
 	go func() {
@@ -2629,8 +2631,9 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 	failedCount := 0
 
 	// If results are already available (fast completion), count them
-	if geminiResp.Dest != nil && len(geminiResp.Dest.InlinedResponses) > 0 {
-		for _, inlineResp := range geminiResp.Dest.InlinedResponses {
+	outputFile, inlinedResponses := geminiBatchOutput(&geminiResp)
+	if len(inlinedResponses) > 0 {
+		for _, inlineResp := range inlinedResponses {
 			if inlineResp.Error != nil {
 				failedCount++
 			} else if inlineResp.Response != nil {
@@ -2645,9 +2648,9 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 	status := ToBifrostBatchStatus(geminiResp.Metadata.State)
 
 	// If state is empty but we have results, it's completed
-	if geminiResp.Metadata.State == "" && geminiResp.Dest != nil && len(geminiResp.Dest.InlinedResponses) > 0 {
+	if geminiResp.Metadata.State == "" && len(inlinedResponses) > 0 {
 		status = schemas.BatchStatusCompleted
-		completedCount = len(geminiResp.Dest.InlinedResponses) - failedCount
+		completedCount = len(inlinedResponses) - failedCount
 	}
 
 	// Build response
@@ -2674,8 +2677,8 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 	}
 
 	// Include output file ID if results are in a file
-	if geminiResp.Dest != nil && geminiResp.Dest.FileName != "" {
-		result.OutputFileID = &geminiResp.Dest.FileName
+	if outputFile != "" {
+		result.OutputFileID = &outputFile
 	}
 
 	return result, nil
@@ -2904,7 +2907,7 @@ func (provider *GeminiProvider) batchRetrieveByKey(ctx *schemas.BifrostContext, 
 		geminiResp.Metadata.State == GeminiBatchStateCancelled ||
 		geminiResp.Metadata.State == GeminiBatchStateExpired
 
-	return &schemas.BifrostBatchRetrieveResponse{
+	result := &schemas.BifrostBatchRetrieveResponse{
 		ID:            geminiResp.Metadata.Name,
 		Object:        "batch",
 		Status:        ToBifrostBatchStatus(geminiResp.Metadata.State),
@@ -2921,7 +2924,16 @@ func (provider *GeminiProvider) batchRetrieveByKey(ctx *schemas.BifrostContext, 
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Latency: latency.Milliseconds(),
 		},
-	}, nil
+	}
+
+	// Surface the output file id for file-based batches so callers can download the
+	// results via files.content. Inline batches carry no file; their responses are
+	// exposed through BatchResults instead.
+	if outputFile, _ := geminiBatchOutput(&geminiResp); outputFile != "" {
+		result.OutputFileID = &outputFile
+	}
+
+	return result, nil
 }
 
 // BatchRetrieve retrieves a specific batch job for Gemini, trying each key until successful.
@@ -3302,66 +3314,21 @@ func (provider *GeminiProvider) batchResultsByKey(ctx *schemas.BifrostContext, k
 	var results []schemas.BatchResultItem
 	var parseErrors []schemas.BatchError
 
-	if geminiResp.Dest != nil && geminiResp.Dest.FileName != "" {
+	outputFile, inlinedResponses := geminiBatchOutput(&geminiResp)
+	if outputFile != "" {
 		// File-based results: download and parse the results file
-		provider.logger.Debug("gemini batch results in file: " + geminiResp.Dest.FileName)
-		fileResults, fileParseErrors, bifrostErr := provider.downloadBatchResultsFile(ctx, key, geminiResp.Dest.FileName)
+		provider.logger.Debug("gemini batch results in file: " + outputFile)
+		fileResults, fileParseErrors, bifrostErr := provider.downloadBatchResultsFile(ctx, key, outputFile)
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
 		results = fileResults
 		parseErrors = fileParseErrors
-	} else if geminiResp.Dest != nil && len(geminiResp.Dest.InlinedResponses) > 0 {
-		// Inline results: extract from inlinedResponses
-		results = make([]schemas.BatchResultItem, 0, len(geminiResp.Dest.InlinedResponses))
-		for i, inlineResp := range geminiResp.Dest.InlinedResponses {
-			customID := fmt.Sprintf("request-%d", i)
-			if inlineResp.Metadata != nil && inlineResp.Metadata.Key != "" {
-				customID = inlineResp.Metadata.Key
-			}
-
-			resultItem := schemas.BatchResultItem{
-				CustomID: customID,
-			}
-
-			if inlineResp.Error != nil {
-				resultItem.Error = &schemas.BatchResultError{
-					Code:    fmt.Sprintf("%d", inlineResp.Error.Code),
-					Message: inlineResp.Error.Message,
-				}
-			} else if inlineResp.Response != nil {
-				// Convert the response to a map for the Body field
-				respBody := make(map[string]interface{})
-				if len(inlineResp.Response.Candidates) > 0 {
-					candidate := inlineResp.Response.Candidates[0]
-					if candidate.Content != nil && len(candidate.Content.Parts) > 0 {
-						var textParts []string
-						for _, part := range candidate.Content.Parts {
-							if part.Text != "" {
-								textParts = append(textParts, part.Text)
-							}
-						}
-						if len(textParts) > 0 {
-							respBody["text"] = strings.Join(textParts, "")
-						}
-					}
-					respBody["finish_reason"] = string(candidate.FinishReason)
-				}
-				if inlineResp.Response.UsageMetadata != nil {
-					respBody["usage"] = map[string]interface{}{
-						"prompt_tokens":     inlineResp.Response.UsageMetadata.PromptTokenCount,
-						"completion_tokens": inlineResp.Response.UsageMetadata.CandidatesTokenCount,
-						"total_tokens":      inlineResp.Response.UsageMetadata.TotalTokenCount,
-					}
-				}
-
-				resultItem.Response = &schemas.BatchResultResponse{
-					StatusCode: 200,
-					Body:       respBody,
-				}
-			}
-
-			results = append(results, resultItem)
+	} else if len(inlinedResponses) > 0 {
+		// Inline results: extract from response.inlinedResponses
+		results = make([]schemas.BatchResultItem, 0, len(inlinedResponses))
+		for i, inlineResp := range inlinedResponses {
+			results = append(results, geminiInlineResponseToBatchResultItem(inlineResp, fmt.Sprintf("request-%d", i)))
 		}
 	}
 
@@ -3394,8 +3361,9 @@ func (provider *GeminiProvider) batchResultsByKey(ctx *schemas.BifrostContext, k
 }
 
 // BatchResults retrieves batch results for Gemini, trying each key until successful.
-// Results are extracted from dest.inlinedResponses for inline batches,
-// or downloaded from dest.fileName for file-based batches.
+// Results are extracted from the batch response's inline responses
+// (response.inlinedResponses) for inline batches, or downloaded from the responses
+// file (response.responsesFile) for file-based batches.
 func (provider *GeminiProvider) BatchResults(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostBatchResultsRequest) (*schemas.BifrostBatchResultsResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.BatchResultsRequest); err != nil {
 		return nil, err

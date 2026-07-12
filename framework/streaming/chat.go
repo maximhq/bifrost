@@ -429,6 +429,14 @@ func (a *Accumulator) processAccumulatedChatStreamingChunks(requestID string, re
 		}
 		data.FinishReason = lastChunk.FinishReason
 	}
+	// The highest-index chunk can carry a nil finish_reason (a usage-only chunk,
+	// or the synthetic terminal chunk the OpenAI-compatible handler appends after
+	// forwarding finish_reason on a content chunk). Fall back to the newest chunk
+	// that actually carries one so the accumulated response used for logging and
+	// plugins keeps it.
+	if data.FinishReason == nil {
+		data.FinishReason = accumulator.getChatFinishReasonLocked()
+	}
 	// Merge LogProbs from all chunks
 	if len(accumulator.ChatStreamChunks) > 0 {
 		var mergedLogProbs *schemas.BifrostLogProbs

@@ -99,7 +99,7 @@
 		"vitest": "4.1.6"
 	},
 	"overrides": {
-		"dompurify": "3.4.10",
+		"dompurify": "3.4.11",
 		"esbuild": "0.28.1",
 		"follow-redirects": "1.16.0",
 		"tar": "7.5.3"

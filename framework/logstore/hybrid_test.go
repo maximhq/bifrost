@@ -9,8 +9,10 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/objectstore"
+	"github.com/maximhq/bifrost/framework/queryscope"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 type hybridTestLogger struct{}
@@ -50,6 +52,27 @@ func waitForUploads(t *testing.T, done func() bool) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("timed out waiting for upload state")
+}
+
+func TestHybridScopedDBDelegatesToInnerRDBStore(t *testing.T) {
+	hybrid, _, _ := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+
+	scoped, ok := interface{}(hybrid).(scopedDBLogStore)
+	require.True(t, ok, "hybrid logstore should preserve the RDB ScopedDB surface")
+
+	called := false
+	scope := queryscope.QueryScope(func(db *gorm.DB) *gorm.DB {
+		called = true
+		return db.Where("status = ?", "success")
+	})
+	ctx := queryscope.WithQueryScope(context.Background(), scope)
+
+	got := scoped.ScopedDB(ctx)
+	require.NotNil(t, got)
+	stmt := got.Session(&gorm.Session{DryRun: true}).Table("logs").Find(&struct{}{}).Statement
+	assert.True(t, called, "ScopedDB should invoke the scope from ctx")
+	assert.Contains(t, stmt.SQL.String(), "status = ?")
 }
 
 func TestHybrid_CreateAndFindByID(t *testing.T) {

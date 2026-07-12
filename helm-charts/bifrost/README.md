@@ -4,9 +4,28 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.25
+**Latest Version:** 2.1.27
 
 ## Changelog
+
+### 2.1.27
+
+- Added `bifrost.auditLogs.objectStorage` for archiving audit events to S3/GCS. Supports `type` (s3/gcs), `bucket`, `prefix`, `compress`, and full S3 credential fields (`region`, `endpoint`, `accessKeyId`, `secretAccessKey`, `sessionToken`, `roleArn`, `forcePathStyle`) and GCS fields (`projectId`, `credentialsJson`). Renders into `audit_logs.object_storage`.
+- Added `bifrost.schemaUrl` to override the generated `config.json` `$schema` location for isolated deployments. It accepts HTTP(S), `file://`, or filesystem paths. When set, it is also exported as `BIFROST_SCHEMA_URL` in the pod; when empty (default), the env var is not injected and the public schema URL is used.
+- Added `force_single_region` to `bifrost.providers.vertex.keys[*].vertex_key_config`. When `true`, skips automatic promotion of multi-region-only models to a multi-region endpoint. Enable for provisioned throughput. Renders into `vertex_key_config.force_single_region`.
+- Added `calendar_aligned` to `bifrost.accessProfiles[*]` (top-level on each profile). Snaps all budget and rate-limit reset windows to calendar boundaries for the profile. Passes through directly into `access_profiles[*].calendar_aligned`.
+- Added `calendar_aligned` to `bifrost.accessProfiles[*].budgets[*]` and `bifrost.accessProfiles[*].provider_configs[*].budgets[*]`. Schema previously blocked this field via `additionalProperties: false`; now parity with `governance.budgets[*].calendar_aligned`.
+- Added `calendar_aligned` rendering for `bifrost.governance.virtualKeys[*].calendar_aligned`. Was in schema but not rendered into config. Now emits `virtual_keys[*].calendar_aligned` in the generated config.
+- Documented `calendar_aligned` in the `bifrost.governance.budgets[*]` example. Was already schema-supported; now shown in the `values.yaml` commented example.
+- Added `bifrost.alerting` for declarative alert channels and rules. Supports `history_retention_days`, `webhook_network` (`allow_http`, `allow_private_network`), `channels[]` (slack, microsoft_teams, pagerduty, webhook), and `rules[]` (CEL-expression-based, governance-scope-aware). Renders into `alerting`.
+
+### 2.1.26
+
+- Added `bifrost.client.mcpServerAuthMode` (`headers` | `both` | `oauth`) and `bifrost.client.oauth2ServerConfig` (`issuerUrl`, `authCodeTtl`, `accessTokenTtl`, `disableVkIdentity`) to control how `/mcp` authenticates inbound MCP clients. Renders into `client.mcp_server_auth_mode` and `client.oauth2_server_config`. `authCodeTtl` is capped at 900 seconds.
+- Added ClickHouse as a `storage.logsStore.type` option. Set `type: clickhouse` and a `storage.logsStore.clickhouse` block (`host` required; optional `port`, `database`, `username`, `password`, `protocol`, `secure`, `dialTimeout`, `cluster`). Renders into `logs_store` with `type: clickhouse`.
+- Added the `bedrock_mantle` provider with `bedrock_mantle_key_config` (`region` required; optional `access_key`, `secret_key`, `session_token`, `role_arn`, `external_id`, `session_name`). Added the key-config schema and mutual-exclusion validation in `values.schema.json`.
+- Added `toolExecutionTimeout` to `bifrost.mcp.clientConfigs[]` as a per-server override of the global `toolManagerConfig.toolExecutionTimeout`. Accepts a Go duration string (e.g. `"30s"`) or a bare integer treated as seconds. Renders into `mcp.client_configs[].tool_execution_timeout`.
+- Added `expires_at` to `bifrost.governance.virtualKeys[]`. Optional RFC3339 timestamp; requests using the virtual key are rejected once it passes. Omit for a key that never expires.
 
 ### 2.1.25
 

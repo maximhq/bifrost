@@ -1221,7 +1221,7 @@ func TestToOpenAIChatRequest_CacheControl_OpenRouterOnly(t *testing.T) {
 // (sonic.Unmarshal of the raw body into *OpenAIChatRequest, then
 // ToBifrostChatRequest) and asserts the top-level server-tool name survives.
 func TestOpenAIInbound_ServerToolNameSurvives(t *testing.T) {
-	body := `{"model":"bedrock/global.anthropic.claude-sonnet-4-6","max_tokens":1024,"tools":[{"type":"bash_20250124","name":"bash"}],"messages":[{"role":"user","content":"Run ls"}]}`
+	body := `{"model":"bedrock/global.anthropic.claude-sonnet-4-6","max_tokens":8000,"tools":[{"type":"bash_20250124","name":"bash"}],"messages":[{"role":"user","content":"Run ls"}]}`
 
 	var req OpenAIChatRequest
 	if err := sonic.Unmarshal([]byte(body), &req); err != nil {
@@ -1236,6 +1236,27 @@ func TestOpenAIInbound_ServerToolNameSurvives(t *testing.T) {
 	bifReq := req.ToBifrostChatRequest(ctx)
 	if bifReq.Params == nil || len(bifReq.Params.Tools) != 1 || bifReq.Params.Tools[0].Name != "bash" {
 		t.Fatalf("ToBifrostChatRequest dropped name: %+v", bifReq.Params)
+	}
+	if bifReq.Params.MaxCompletionTokens == nil || *bifReq.Params.MaxCompletionTokens != 8000 {
+		t.Fatalf("ToBifrostChatRequest did not map max_tokens to max_completion_tokens: %+v", bifReq.Params.MaxCompletionTokens)
+	}
+}
+
+func TestOpenAIInbound_MaxCompletionTokensTakesPriorityOverMaxTokens(t *testing.T) {
+	body := `{"model":"bedrock/global.anthropic.claude-sonnet-4-6","max_tokens":100,"max_completion_tokens":200,"messages":[{"role":"user","content":"Run ls"}]}`
+
+	var req OpenAIChatRequest
+	if err := sonic.Unmarshal([]byte(body), &req); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	bifReq := req.ToBifrostChatRequest(ctx)
+	if bifReq.Params == nil || bifReq.Params.MaxCompletionTokens == nil {
+		t.Fatalf("ToBifrostChatRequest dropped max_completion_tokens: %+v", bifReq.Params)
+	}
+	if *bifReq.Params.MaxCompletionTokens != 200 {
+		t.Fatalf("max_completion_tokens should take priority over max_tokens, got %d", *bifReq.Params.MaxCompletionTokens)
 	}
 }
 

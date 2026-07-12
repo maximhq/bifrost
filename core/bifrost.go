@@ -2776,6 +2776,34 @@ func (bifrost *Bifrost) PassthroughStream(
 	return bifrost.handleStreamRequest(ctx, bifrostReq)
 }
 
+// ensureMCPRawStorageContext sets BifrostContextKeyShouldStoreRawInLogs for standalone MCP
+// tool executions so PostMCPHook consumers (e.g. the logging plugin) see an explicit value.
+// In-pipeline tool calls already carry the key from the LLM request path (see the effective
+// raw-storage computation in requestWorker), so an existing value is never overwritten. There is
+// no provider config on the standalone path, so the default is false and only the per-request
+// override is honored, mirroring the per-request half of the LLM pipeline's logic.
+//
+// Callers must only pass request-scoped contexts, never the shared instance context
+// (bifrost.ctx): SetValue mutates the receiver's value map, so writing here would stamp the
+// flag onto state shared by unrelated calls. Nil-ctx standalone executions therefore skip this
+// entirely — consumers treat a missing key as false, and the per-request override keys can
+// never be present on the instance context, so the outcome is identical.
+func ensureMCPRawStorageContext(ctx *schemas.BifrostContext) {
+	if ctx == nil {
+		return
+	}
+	if _, ok := ctx.Value(schemas.BifrostContextKeyShouldStoreRawInLogs).(bool); ok {
+		return
+	}
+	effectiveStore := false
+	if allowStorageOverride, _ := ctx.Value(schemas.BifrostContextKeyAllowPerRequestStorageOverride).(bool); allowStorageOverride {
+		if override, ok := ctx.Value(schemas.BifrostContextKeyStoreRawRequestResponse).(bool); ok {
+			effectiveStore = override
+		}
+	}
+	ctx.SetValue(schemas.BifrostContextKeyShouldStoreRawInLogs, effectiveStore)
+}
+
 // ExecuteChatMCPTool executes an MCP tool call and returns the result as a chat message.
 // This is the main public API for manual MCP tool execution in Chat format. All the
 // real work — request pooling, plugin gate (PreMCPHook / PostMCPHook), short-circuit
@@ -2783,6 +2811,8 @@ func (bifrost *Bifrost) PassthroughStream(
 func (bifrost *Bifrost) ExecuteChatMCPTool(ctx *schemas.BifrostContext, toolCall *schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, *schemas.BifrostError) {
 	if ctx == nil {
 		ctx = bifrost.ctx
+	} else {
+		ensureMCPRawStorageContext(ctx)
 	}
 	if bifrost.MCPManager == nil {
 		return nil, &schemas.BifrostError{
@@ -2799,6 +2829,8 @@ func (bifrost *Bifrost) ExecuteChatMCPTool(ctx *schemas.BifrostContext, toolCall
 func (bifrost *Bifrost) ExecuteResponsesMCPTool(ctx *schemas.BifrostContext, toolCall *schemas.ResponsesToolMessage) (*schemas.ResponsesMessage, *schemas.BifrostError) {
 	if ctx == nil {
 		ctx = bifrost.ctx
+	} else {
+		ensureMCPRawStorageContext(ctx)
 	}
 	if bifrost.MCPManager == nil {
 		return nil, &schemas.BifrostError{
@@ -6065,6 +6097,12 @@ func executeRequestWithRetries[T any](
 				checkedStream, drainDone, firstChunkErr := providerUtils.CheckFirstStreamChunkForError(ctx, streamChan)
 				if firstChunkErr != nil {
 					<-drainDone
+					// The dead stream's teardown (ReleaseStreamingResponse) claimed the
+					// connection_closed flag on the shared context. That claim is scoped
+					// to the response it released; clear it so the retry or fallback
+					// attempt that follows doesn't see its own fresh stream as already
+					// closed and fail every read with ErrStreamClosed.
+					ctx.ClearValue(schemas.BifrostContextKeyConnectionClosed)
 					bifrostError = firstChunkErr
 				} else {
 					result = any(checkedStream).(T)
@@ -7913,6 +7951,18 @@ func (bifrost *Bifrost) drainQueueWithErrors(pq *ProviderQueue) {
 
 // releaseChannelMessage returns a ChannelMessage and its channels to their respective pools.
 func (bifrost *Bifrost) releaseChannelMessage(msg *ChannelMessage) {
+	// Drain any undelivered values before pooling so an idle pooled channel
+	// doesn't pin a full response/error until its next reuse. getChannelMessage
+	// drains again on acquire as defense in depth.
+	select {
+	case <-msg.Response:
+	default:
+	}
+	select {
+	case <-msg.Err:
+	default:
+	}
+
 	// Put channels back in pools
 	bifrost.responseChannelPool.Put(msg.Response)
 	bifrost.errorChannelPool.Put(msg.Err)
@@ -7927,9 +7977,17 @@ func (bifrost *Bifrost) releaseChannelMessage(msg *ChannelMessage) {
 		bifrost.responseStreamPool.Put(msg.ResponseStream)
 	}
 
-	// Release of Bifrost Request is handled in handle methods as they are required for fallbacks
+	// Release of the pooled *BifrostRequest object is handled in handle methods
+	// as it is required for fallbacks; msg.BifrostRequest is a value copy, so
+	// zeroing it here only drops this message's references.
 
-	// Clear references and return to pool
+	// Clear all references before returning to the pool. The embedded
+	// BifrostRequest holds pointers to the fully parsed request body and
+	// Context holds per-request user values; leaving them set pins those
+	// allocations for as long as the message sits idle in the pool.
+	// getChannelMessage overwrites both on acquire.
+	msg.BifrostRequest = schemas.BifrostRequest{}
+	msg.Context = nil
 	msg.Response = nil
 	msg.ResponseStream = nil
 	msg.Err = nil

@@ -15,12 +15,15 @@ import {
 	ShieldHalf,
 	FlaskConical,
 	FolderGit,
+	Gavel,
 	Globe,
+	History,
 	KeyRound,
 	Landmark,
 	LayoutGrid,
 	LogOut,
 	Logs,
+	Megaphone,
 	Network,
 	PanelLeftClose,
 	PanelLeftOpen,
@@ -33,6 +36,7 @@ import {
 	Settings2Icon,
 	ShieldCheck,
 	Shuffle,
+	Siren,
 	SlidersHorizontal,
 	Telescope,
 	ToolCase,
@@ -321,7 +325,12 @@ const SidebarItemView = ({
 	let menuButton: React.ReactNode;
 	if (hasSubItems) {
 		menuButton = (
-			<SidebarMenuButton tooltip={isSidebarCollapsed ? undefined : item.title} className={buttonClassName} onClick={handleClick}>
+			<SidebarMenuButton
+				tooltip={isSidebarCollapsed ? undefined : item.title}
+				className={buttonClassName}
+				onClick={handleClick}
+				data-testid={`sidebar-item-btn-${slug(item.title)}`}
+			>
 				{innerContent}
 			</SidebarMenuButton>
 		);
@@ -464,12 +473,21 @@ const SidebarItemView = ({
 						return (
 							<SidebarMenuSubItem key={subItem.title}>
 								{subItem.hasAccess === false ? (
-									<SidebarMenuSubButton data-nav-url={subItemHref} className={subItemClassName}>
+									<SidebarMenuSubButton
+										data-nav-url={subItemHref}
+										data-testid={`sidebar-subitem-disabled-${slug(subItem.title)}`}
+										className={subItemClassName}
+									>
 										{subInner}
 									</SidebarMenuSubButton>
 								) : (
 									<SidebarMenuSubButton asChild className={subItemClassName}>
-										<Link to={subItemHref as any} preload="intent" data-nav-url={subItemHref}>
+										<Link
+											to={subItemHref as any}
+											preload="intent"
+											data-nav-url={subItemHref}
+											data-testid={`sidebar-subitem-link-${slug(subItem.title)}`}
+										>
 											{subInner}
 										</Link>
 									</SidebarMenuSubButton>
@@ -543,6 +561,9 @@ export default function AppSidebar() {
 	});
 	const hasLogsAccess = useRbac(RbacResource.Logs, RbacOperation.View);
 	const hasObservabilityAccess = useRbac(RbacResource.Observability, RbacOperation.View);
+	// Alerting is currently surfaced under the existing governance permission
+	// until enterprise alerting gets its own RBAC resource.
+	const hasAlertingAccess = useRbac(RbacResource.Governance, RbacOperation.View);
 	const hasDashboardAccess = useRbac(RbacResource.Dashboard, RbacOperation.View);
 	const hasModelProvidersAccess = useRbac(RbacResource.ModelProvider, RbacOperation.View);
 	const hasMCPGatewayAccess = useRbac(RbacResource.MCPGateway, RbacOperation.View);
@@ -751,6 +772,36 @@ export default function AppSidebar() {
 				icon: Puzzle,
 				description: "Manage custom plugins",
 				hasAccess: hasPluginsAccess,
+			},
+			{
+				title: "Alerting",
+				url: "/workspace/alerting",
+				icon: Siren,
+				description: "Manage alert channels, rules, and history",
+				hasAccess: hasAlertingAccess,
+				subItems: [
+					{
+						title: "Channels",
+						url: "/workspace/alerting/channels",
+						icon: Megaphone,
+						description: "Configure notification channels",
+						hasAccess: hasAlertingAccess,
+					},
+					{
+						title: "Rules",
+						url: "/workspace/alerting/rules",
+						icon: Gavel,
+						description: "Define alerting rules",
+						hasAccess: hasAlertingAccess,
+					},
+					{
+						title: "History",
+						url: "/workspace/alerting/history",
+						icon: History,
+						description: "Review alert delivery history",
+						hasAccess: hasAlertingAccess,
+					},
+				],
 			},
 			{
 				title: "Governance",
@@ -977,6 +1028,7 @@ export default function AppSidebar() {
 			hasLogsAccess,
 			hasAPIKeyAccess,
 			hasObservabilityAccess,
+			hasAlertingAccess,
 			hasDashboardAccess,
 			hasModelProvidersAccess,
 			hasMCPGatewayAccess,

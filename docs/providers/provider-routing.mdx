@@ -1059,7 +1059,7 @@ flowchart TB
         Cat["Model Catalog Lookup"]
         Providers["Candidate Providers:<br/>openai, azure, groq"]
         Filter["Filter by allowed_models<br/>and key availability"]
-        Score["Score by performance:<br/>error rate, latency, utilization"]
+        Score["Score by performance:<br/>error rate, latency"]
         Select["Select: openai"]
     end
 
@@ -1075,7 +1075,7 @@ flowchart TB
 
 ### Level 1: Direction (Provider Selection)
 
-**When it runs**: Only when the model string has **no** provider prefix (e.g., `gpt-4o`)
+**When it runs**: Only when no provider has been selected yet — i.e. the request has no `provider/` prefix and no earlier layer (governance, routing rules) pinned one
 
 **How it works**:
 
@@ -1083,13 +1083,11 @@ flowchart TB
 2. **Provider filtering**: Filter based on:
    - Allowed models from keys configuration
    - Keys availability for the provider
-3. **Performance scoring**: Calculate scores for each provider based on:
-   - Error rates (50% weight)
-   - Latency (20% weight, using MV-TACOS algorithm)
-   - Utilization (5% weight)
-   - Momentum bias (recovery acceleration)
-4. **Smart selection**: Choose provider using weighted random with jitter and exploration
-5. **Fallbacks created**: Remaining providers sorted by performance score (descending) are added as fallbacks
+3. **Performance scoring**: Score each provider on its recent, realized performance for the model:
+   - **Error rate** — the primary, time-decayed signal
+   - **Token-aware latency** — secondary, comparing the provider both to its peers for the model and to its own recent baseline
+4. **Smooth selection**: Concentrate traffic on the best-scoring providers while keeping a small exploration share for the rest, so a recovered provider keeps getting re-probed
+5. **Fallbacks created**: Remaining healthy providers sorted by performance score (descending) are added as fallbacks
 
 ### Level 2: Route (Key Selection)
 
@@ -1104,21 +1102,23 @@ flowchart TB
    - Latency (response time)
    - TPM hits (rate limit violations)
    - Current state (Healthy, Degraded, Failed, Recovering)
-4. **Weighted random selection**: Choose key with exploration (25% chance to probe recovering keys)
+4. **Smooth weighted selection**: Concentrate traffic on higher-weight keys, with a small dedicated probe budget reserved for recovering keys so they can prove recovery
 5. **Circuit breaker**: Skip keys with zero weight (TPM hits, repeated failures)
 
-### Scoring Algorithm
+### Scoring
 
-The load balancer computes a performance score for each provider-model combination:
+Every 5 seconds the load balancer recomputes a weight for each route from its recent performance. Three signals drive the score, in priority order:
 
-$$
-Score = (P_{error} \times 0.5) + (P_{latency} \times 0.2) + (P_{util} \times 0.05) - M_{momentum}
-$$
+- **Error rate** — the primary, time-decayed signal
+- **Token-aware latency** — secondary; a route is compared both to its peers and to its own recent baseline
+- **Utilization** — a minor fair-share nudge that discourages overloading any single key
+
+Which signals apply depends on the route's health: healthy routes are scored mainly on errors and latency, while routes that are actively recovering are scored on latency and recovery progress so they aren't held back by stale error history. Provider-level (Level 1) selection scores on error rate and latency only.
 
 <Tip>
-  Lower penalties = Higher weights = More traffic. The system self-heals by
-  quickly penalizing failing routes but enabling fast recovery once issues are
-  resolved.
+  Lower penalties = higher weights = more traffic. The system self-heals by
+  quickly penalizing failing routes but decaying those penalties fast once issues
+  resolve, so a recovered route returns to full traffic within seconds.
 </Tip>
 
 ### Request Flow
@@ -1139,7 +1139,7 @@ $$
     - Groq: Score 0.65 (high latency recently)
   </Step>
   <Step title="Provider Selection">
-    OpenAI selected (highest score within jitter band)
+    OpenAI selected (highest performance score; a small exploration share is still kept for the others)
   </Step>
   <Step title="Request Transformation">
     ```json
@@ -1161,7 +1161,7 @@ $$
 | **Circuit Breakers**       | Failing routes automatically removed from rotation                  |
 | **Fast Recovery**          | 90% penalty reduction in 30 seconds after issues resolve            |
 | **Health States**          | Routes transition between Healthy, Degraded, Failed, and Recovering |
-| **Smart Exploration**      | 25% chance to probe potentially recovered routes                    |
+| **Smart Exploration**      | Keeps a small, dedicated share of traffic on recovering routes so they can prove recovery |
 
 ### Dashboard Visibility
 
@@ -1180,6 +1180,10 @@ The dashboard shows:
 - Performance metrics (error rates, latency, success rates)
 - State transitions (Healthy → Degraded → Failed → Recovering)
 - Actual vs expected traffic distribution
+
+<Note>
+  **Scope & tuning**: Adaptive load balancing operates **per node** (each node routes on its own observed metrics; only rate-limit/TPM backoffs are shared across nodes, and only within a region) and adapts on a **~5-second cycle** — distinct from per-request fallback, which is immediate. Both levels can be toggled independently, and the scoring parameters ship pre-tuned. See [Adaptive Load Balancing](/enterprise/adaptive-load-balancing) for configuration and limitations.
+</Note>
 
 ---
 

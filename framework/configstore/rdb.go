@@ -202,6 +202,7 @@ func tableKeyFromSchemaKey(provider tables.TableProvider, key schemas.Key) (tabl
 		dbKey.VertexProjectNumber = &key.VertexKeyConfig.ProjectNumber
 		dbKey.VertexRegion = &key.VertexKeyConfig.Region
 		dbKey.VertexAuthCredentials = &key.VertexKeyConfig.AuthCredentials
+		dbKey.VertexForceSingleRegion = &key.VertexKeyConfig.ForceSingleRegion
 	}
 
 	if key.BedrockKeyConfig != nil {
@@ -736,6 +737,7 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 				dbKey.VertexProjectNumber = &key.VertexKeyConfig.ProjectNumber
 				dbKey.VertexRegion = &key.VertexKeyConfig.Region
 				dbKey.VertexAuthCredentials = &key.VertexKeyConfig.AuthCredentials
+				dbKey.VertexForceSingleRegion = &key.VertexKeyConfig.ForceSingleRegion
 			}
 
 			// Handle Bedrock config
@@ -965,6 +967,7 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 			dbKey.VertexProjectNumber = &key.VertexKeyConfig.ProjectNumber
 			dbKey.VertexRegion = &key.VertexKeyConfig.Region
 			dbKey.VertexAuthCredentials = &key.VertexKeyConfig.AuthCredentials
+			dbKey.VertexForceSingleRegion = &key.VertexKeyConfig.ForceSingleRegion
 		}
 
 		// Handle Bedrock config
@@ -1103,6 +1106,7 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 			dbKey.VertexProjectNumber = &key.VertexKeyConfig.ProjectNumber
 			dbKey.VertexRegion = &key.VertexKeyConfig.Region
 			dbKey.VertexAuthCredentials = &key.VertexKeyConfig.AuthCredentials
+			dbKey.VertexForceSingleRegion = &key.VertexKeyConfig.ForceSingleRegion
 		}
 		// Handle Bedrock config
 		if key.BedrockKeyConfig != nil {
@@ -2491,6 +2495,10 @@ var pricingSyncUpdateColumns = []string{
 	"cache_read_input_image_token_cost",
 	"cache_read_input_token_cost_above_272k_tokens",
 	"cache_read_input_token_cost_above_272k_tokens_priority",
+	"cache_creation_input_token_cost_fast",
+	"cache_creation_input_token_cost_above_1hr_fast",
+	"cache_read_input_token_cost_fast",
+	"inference_geo_us_multiplier",
 	// Costs - Image
 	"input_cost_per_image",
 	"input_cost_per_pixel",
@@ -3299,6 +3307,9 @@ func (s *RDBConfigStore) GetVirtualKeyByValue(ctx context.Context, value string)
 	// Use hash-based lookup if hash column is populated, fall back to plaintext for backward compat
 	if err := query.Where("value_hash = ?", valueHash).First(&virtualKey).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
+			if schemas.IsSecretRef(value) {
+				return nil, ErrNotFound
+			}
 			// Fallback: try plaintext lookup for rows not yet migrated
 			if err := query.Where("value = ?", value).First(&virtualKey).Error; err != nil {
 				if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -3326,6 +3337,9 @@ func (s *RDBConfigStore) GetVirtualKeyQuotaByValue(ctx context.Context, value st
 		Preload("ProviderConfigs.RateLimit")
 	if err := baseQuery.Session(&gorm.Session{}).Where("value_hash = ?", valueHash).First(&virtualKey).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
+			if schemas.IsSecretRef(value) {
+				return nil, ErrNotFound
+			}
 			// Fallback: try plaintext lookup for rows not yet migrated
 			if err := baseQuery.Session(&gorm.Session{}).Where("value = ?", value).First(&virtualKey).Error; err != nil {
 				if errors.Is(err, gorm.ErrRecordNotFound) {

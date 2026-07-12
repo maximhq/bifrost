@@ -1937,3 +1937,215 @@ func TestStripThoughtSignature(t *testing.T) {
 		})
 	}
 }
+
+func TestSanitizeAnthropicToolUseID(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+	}{
+		{"empty", ""},
+		{"already valid", "call_abc123_XYZ-9"},
+		{"kimi-style colon and dot", "functions.Bash:0"},
+		{"gemini-style slash", "projects/foo/tool/1"},
+		{"only unsafe chars", "::.."},
+		{"long id with one unsafe char", "a-very-long-tool-call-identifier-that-goes-on-and-on:0"},
+		{"long id with many unsafe chars", strings.Repeat("segment.with.dots/and:colons/", 5)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := SanitizeAnthropicToolUseID(tc.in)
+
+			// Anthropic's pattern requires at least one character, so an already-valid,
+			// non-empty id is the only case left unchanged; everything else (including
+			// the empty string) must be rewritten to a non-empty, conforming id.
+			if tc.in != "" && !anthropicUnsafeToolUseIDCharRegex.MatchString(tc.in) {
+				if got != tc.in {
+					t.Errorf("SanitizeAnthropicToolUseID(%q) = %q, want unchanged", tc.in, got)
+				}
+				return
+			}
+			if got == "" {
+				t.Errorf("SanitizeAnthropicToolUseID(%q) = empty, want a non-empty conforming id", tc.in)
+			}
+			if anthropicUnsafeToolUseIDCharRegex.MatchString(got) {
+				t.Errorf("SanitizeAnthropicToolUseID(%q) = %q, still contains unsafe characters", tc.in, got)
+			}
+			if len(got) > maxSanitizedAnthropicToolUseIDLen {
+				t.Errorf("SanitizeAnthropicToolUseID(%q) = %q (len %d), exceeds %d-char cap", tc.in, got, len(got), maxSanitizedAnthropicToolUseIDLen)
+			}
+			if got2 := SanitizeAnthropicToolUseID(tc.in); got2 != got {
+				t.Errorf("SanitizeAnthropicToolUseID(%q) is not deterministic: %q != %q", tc.in, got, got2)
+			}
+		})
+	}
+
+	// A tool_use id and its matching tool_result id must sanitize identically,
+	// since Anthropic requires them to reference the same value.
+	toolUseID := "functions.get_weather:0"
+	if SanitizeAnthropicToolUseID(toolUseID) != SanitizeAnthropicToolUseID(toolUseID) {
+		t.Error("matching tool_use/tool_result ids diverged after sanitization")
+	}
+
+	// Distinct ids that collapse to the same replaced-character skeleton must
+	// still sanitize to distinct values (hash is computed on the original id).
+	if SanitizeAnthropicToolUseID("functions.Bash:0") == SanitizeAnthropicToolUseID("functions.Bash:1") {
+		t.Error("distinct tool ids sanitized to the same value")
+	}
+}
+
+func TestSanitizeAnthropicToolUseIDPtr(t *testing.T) {
+	if got := SanitizeAnthropicToolUseIDPtr(nil); got != nil {
+		t.Errorf("SanitizeAnthropicToolUseIDPtr(nil) = %v, want nil", got)
+	}
+
+	id := "functions.Bash:0"
+	got := SanitizeAnthropicToolUseIDPtr(&id)
+	if got == nil {
+		t.Fatal("SanitizeAnthropicToolUseIDPtr returned nil for non-nil input")
+	}
+	if *got != SanitizeAnthropicToolUseID(id) {
+		t.Errorf("SanitizeAnthropicToolUseIDPtr(%q) = %q, want %q", id, *got, SanitizeAnthropicToolUseID(id))
+	}
+}
+
+// finalizerTestTracer is a minimal schemas.Tracer that models only the
+// deferred-span lifecycle: a span stays parked until ClearDeferredSpan runs.
+// It records the status passed to EndSpan so tests can assert span outcomes.
+type finalizerTestTracer struct {
+	schemas.NoOpTracer
+	parked    bool
+	endStatus schemas.SpanStatus
+}
+
+func (t *finalizerTestTracer) GetDeferredSpanHandle(_ string) schemas.SpanHandle {
+	if t.parked {
+		return struct{}{} // any non-nil handle
+	}
+	return nil
+}
+
+func (t *finalizerTestTracer) ClearDeferredSpan(_ string) { t.parked = false }
+
+func (t *finalizerTestTracer) EndSpan(_ schemas.SpanHandle, status schemas.SpanStatus, _ string) {
+	t.endStatus = status
+}
+
+// A streaming goroutine that exits without reaching the final-chunk path (a
+// failed final send with a live context, or a mid-stream death) must not leak
+// its deferred span. EnsureStreamFinalizerCalled runs on every goroutine exit
+// and clears it.
+func TestEnsureStreamFinalizerCalled_ClearsOrphanedDeferredSpan(t *testing.T) {
+	tracer := &finalizerTestTracer{parked: true}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace-1")
+
+	if tracer.GetDeferredSpanHandle("trace-1") == nil {
+		t.Fatal("expected a parked deferred span before the finalizer runs")
+	}
+
+	EnsureStreamFinalizerCalled(ctx, func(context.Context) {})
+
+	if tracer.GetDeferredSpanHandle("trace-1") != nil {
+		t.Error("deferred span should be cleared when the streaming goroutine exits")
+	}
+}
+
+// The clear must survive a nil finalizer (finalizer is optional; the span
+// cleanup is not).
+func TestEnsureStreamFinalizerCalled_ClearsDeferredSpanWithNilFinalizer(t *testing.T) {
+	tracer := &finalizerTestTracer{parked: true}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace-1")
+
+	EnsureStreamFinalizerCalled(ctx, nil)
+
+	if tracer.GetDeferredSpanHandle("trace-1") != nil {
+		t.Error("deferred span should be cleared even when no finalizer is registered")
+	}
+}
+
+// When the terminal path already cleared the span (the common case), the
+// safety-net completion is a no-op (handle == nil early return) but the
+// finalizer must still run exactly once.
+func TestEnsureStreamFinalizerCalled_NoParkedSpan_StillRunsFinalizerOnce(t *testing.T) {
+	tracer := &finalizerTestTracer{parked: false}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace-1")
+
+	calls := 0
+	EnsureStreamFinalizerCalled(ctx, func(context.Context) { calls++ })
+
+	if calls != 1 {
+		t.Errorf("finalizer should run exactly once on the no-op path, ran %d times", calls)
+	}
+}
+
+// A stream that exits with its span parked and no terminal chunk
+// (StreamEndIndicator unset) died mid-flight and must be marked failed — not OK.
+func TestEnsureStreamFinalizerCalled_IncompleteStreamMarkedError(t *testing.T) {
+	tracer := &finalizerTestTracer{parked: true}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace-1")
+	// StreamEndIndicator deliberately unset: the stream never reached its end.
+
+	EnsureStreamFinalizerCalled(ctx, func(context.Context) {})
+
+	if tracer.endStatus != schemas.SpanStatusError {
+		t.Errorf("incomplete stream should end as %q, got %q", schemas.SpanStatusError, tracer.endStatus)
+	}
+}
+
+// A stream that reached its terminal chunk (StreamEndIndicator set) but was left
+// parked — e.g. the final send failed — succeeded at the LLM level and must keep
+// its OK status, never a fabricated error.
+func TestEnsureStreamFinalizerCalled_CompletedStreamKeepsOkStatus(t *testing.T) {
+	tracer := &finalizerTestTracer{parked: true}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace-1")
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+
+	EnsureStreamFinalizerCalled(ctx, func(context.Context) {})
+
+	if tracer.endStatus != schemas.SpanStatusOk {
+		t.Errorf("completed-but-undelivered stream should end as %q, got %q", schemas.SpanStatusOk, tracer.endStatus)
+	}
+}
+
+// Fix A: when the final chunk's send fails with the context still alive (a closed
+// consumer channel), ProcessAndSendResponse must still complete the deferred span
+// with its real (success) outcome rather than strand it.
+func TestProcessAndSendResponse_CompletesSpanWhenFinalSendFails(t *testing.T) {
+	tracer := &finalizerTestTracer{parked: true}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace-1")
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true) // final chunk
+
+	// A closed channel makes GateSendChunk fail while the context is still alive.
+	responseChan := make(chan *schemas.BifrostStreamChunk)
+	close(responseChan)
+
+	passthrough := func(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return resp, err
+	}
+
+	ProcessAndSendResponse(ctx, passthrough, &schemas.BifrostResponse{}, responseChan, func(context.Context) {})
+
+	if tracer.GetDeferredSpanHandle("trace-1") != nil {
+		t.Error("deferred span must be completed even when the final chunk send fails")
+	}
+	if tracer.endStatus != schemas.SpanStatusOk {
+		t.Errorf("successful stream whose delivery failed should end as %q, got %q", schemas.SpanStatusOk, tracer.endStatus)
+	}
+}

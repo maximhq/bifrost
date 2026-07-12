@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -347,11 +348,6 @@ func TestUpdateProvider_PassesThroughForEmptyOrAbsentKeys(t *testing.T) {
 	}
 }
 
-// boolPtr keeps pointer-valued key fixtures inline without pulling in pointer helpers.
-func boolPtr(v bool) *bool {
-	return &v
-}
-
 func modelCatalogForPricingJSON(t *testing.T, pricingJSON []byte) *modelcatalog.ModelCatalog {
 	t.Helper()
 	pricingPath := filepath.Join(t.TempDir(), "pricing.json")
@@ -485,7 +481,7 @@ func TestListModels_AppliesQueryAndLimitAfterFiltering(t *testing.T) {
 	}
 }
 
-func TestListModels_FiltersDeprecatedModelsBeforePagination(t *testing.T) {
+func TestListModels_MarksDeprecatedModelsWithoutFiltering(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	h := providerHandlerForTest(
@@ -504,7 +500,7 @@ func TestListModels_FiltersDeprecatedModelsBeforePagination(t *testing.T) {
 
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.Header.SetMethod("GET")
-	ctx.Request.SetRequestURI("/api/models?provider=openai&limit=1")
+	ctx.Request.SetRequestURI("/api/models?provider=openai&limit=10")
 
 	h.listModels(ctx)
 
@@ -517,18 +513,24 @@ func TestListModels_FiltersDeprecatedModelsBeforePagination(t *testing.T) {
 		t.Fatalf("failed to unmarshal response: %v", err)
 	}
 
-	if resp.Total != 2 {
-		t.Fatalf("expected total=2 after filtering deprecated models, got %d", resp.Total)
+	if resp.Total != 3 {
+		t.Fatalf("expected total=3 (deprecated models are not filtered), got %d", resp.Total)
 	}
-	if len(resp.Models) != 1 {
-		t.Fatalf("expected limit to apply after deprecated filtering, got %#v", resp.Models)
+	var deprecated *ModelResponse
+	for i := range resp.Models {
+		if resp.Models[i].Name == "deprecated-model" {
+			deprecated = &resp.Models[i]
+		}
 	}
-	if resp.Models[0].Name == "deprecated-model" || resp.Models[0].IsDeprecated {
-		t.Fatalf("deprecated model should not be returned, got %#v", resp.Models[0])
+	if deprecated == nil {
+		t.Fatalf("deprecated model should still be returned, got %#v", resp.Models)
+	}
+	if !deprecated.IsDeprecated {
+		t.Fatalf("deprecated model should carry is_deprecated=true, got %#v", *deprecated)
 	}
 }
 
-func TestListBaseModels_FiltersDeprecatedPricingRows(t *testing.T) {
+func TestListBaseModels_IncludesDeprecatedPricingRows(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	h := providerHandlerForTest(
@@ -556,12 +558,12 @@ func TestListBaseModels_FiltersDeprecatedPricingRows(t *testing.T) {
 	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
 		t.Fatalf("failed to unmarshal response: %v", err)
 	}
-	if resp.Total != 1 || len(resp.Models) != 1 || resp.Models[0] != "current-base" {
-		t.Fatalf("expected only current-base, got %#v", resp)
+	if resp.Total != 2 || !slices.Contains(resp.Models, "current-base") || !slices.Contains(resp.Models, "deprecated-base") {
+		t.Fatalf("expected both base models, got %#v", resp)
 	}
 }
 
-func TestEnrichAndFilterListModelsResponse_FiltersDeprecatedPricingRows(t *testing.T) {
+func TestEnrichListModelsResponse_MarksDeprecatedPricingRows(t *testing.T) {
 	catalog := modelCatalogForPricingJSON(t, []byte(`{
 		"deprecated-model": {"provider":"openai","mode":"chat","base_model":"deprecated-model","is_deprecated":true},
 		"current-model": {"provider":"openai","mode":"chat","base_model":"current-model"}
@@ -572,13 +574,23 @@ func TestEnrichAndFilterListModelsResponse_FiltersDeprecatedPricingRows(t *testi
 		{ID: "openai/provider-deprecated", IsDeprecated: true},
 	}}
 
-	enrichAndFilterListModelsResponse(resp, catalog)
+	enrichListModelsResponse(resp, catalog)
 
-	if len(resp.Data) != 1 || resp.Data[0].ID != "openai/current-model" {
-		t.Fatalf("expected only current model, got %#v", resp.Data)
+	if len(resp.Data) != 3 {
+		t.Fatalf("expected all models retained, got %#v", resp.Data)
 	}
-	if resp.Data[0].IsDeprecated {
-		t.Fatalf("current model should not be marked deprecated: %#v", resp.Data[0])
+	byID := map[string]schemas.Model{}
+	for _, m := range resp.Data {
+		byID[m.ID] = m
+	}
+	if !byID["openai/deprecated-model"].IsDeprecated {
+		t.Fatalf("catalog-deprecated model should be marked deprecated: %#v", byID["openai/deprecated-model"])
+	}
+	if byID["openai/current-model"].IsDeprecated {
+		t.Fatalf("current model should not be marked deprecated: %#v", byID["openai/current-model"])
+	}
+	if !byID["openai/provider-deprecated"].IsDeprecated {
+		t.Fatalf("provider-deprecated flag should be preserved: %#v", byID["openai/provider-deprecated"])
 	}
 }
 
@@ -811,6 +823,60 @@ func TestListModelDetails_UnfilteredIgnoresKeys(t *testing.T) {
 
 	if resp.Total != 2 || len(resp.Models) != 2 {
 		t.Fatalf("expected all unfiltered models when unfiltered=true, got %#v", resp.Models)
+	}
+}
+
+func TestListModelDetails_IncludesPricing(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	h := providerHandlerForTest(
+		schemas.OpenAI,
+		[]schemas.Key{{ID: "key-a"}},
+		[]string{"gpt-4o"},
+		[]string{"gpt-4o"},
+	)
+	h.inMemoryStore.ModelCatalog = modelCatalogForPricingJSON(t, []byte(`{
+		"gpt-4o": {
+			"provider": "openai",
+			"mode": "chat",
+			"input_cost_per_token": 0.0000025,
+			"output_cost_per_token": 0.00001,
+			"cache_creation_input_token_cost": 0.000003125,
+			"cache_read_input_token_cost": 0.00000025,
+			"max_input_tokens": 128000,
+			"max_output_tokens": 16384
+		}
+	}`))
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.SetRequestURI("/api/models/details?provider=openai&limit=100")
+
+	h.listModelDetails(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+
+	var resp ListModelDetailsResponse
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	if resp.Total != 1 || len(resp.Models) != 1 {
+		t.Fatalf("expected one model, got %#v", resp.Models)
+	}
+	if resp.Models[0].InputCostPerToken == nil || *resp.Models[0].InputCostPerToken != 0.0000025 {
+		t.Fatalf("expected input cost 0.0000025, got %#v", resp.Models[0].InputCostPerToken)
+	}
+	if resp.Models[0].OutputCostPerToken == nil || *resp.Models[0].OutputCostPerToken != 0.00001 {
+		t.Fatalf("expected output cost 0.00001, got %#v", resp.Models[0].OutputCostPerToken)
+	}
+	if resp.Models[0].CacheWriteCost == nil || *resp.Models[0].CacheWriteCost != 0.000003125 {
+		t.Fatalf("expected cache write cost 0.000003125, got %#v", resp.Models[0].CacheWriteCost)
+	}
+	if resp.Models[0].CacheReadCost == nil || *resp.Models[0].CacheReadCost != 0.00000025 {
+		t.Fatalf("expected cache read cost 0.00000025, got %#v", resp.Models[0].CacheReadCost)
 	}
 }
 

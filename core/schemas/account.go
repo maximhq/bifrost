@@ -190,8 +190,9 @@ type AzureAliasCfg struct {
 
 // VertexAliasCfg holds Vertex-specific overrides that apply to a single alias.
 type VertexAliasCfg struct {
-	ProjectID     *SecretVar `json:"project_id,omitempty"`
-	ProjectNumber *SecretVar `json:"project_number,omitempty"`
+	ProjectID         *SecretVar `json:"project_id,omitempty"`
+	ProjectNumber     *SecretVar `json:"project_number,omitempty"`
+	ForceSingleRegion *bool      `json:"force_single_region,omitempty"`
 }
 
 // BedrockAliasCfg holds Bedrock-specific overrides that apply to a single alias.
@@ -449,6 +450,15 @@ func IsOpenAIModelFamily(ctx *BifrostContext, model string) bool {
 	return ResolveFamily(ctx, model) == ModelFamilyOpenAI
 }
 
+// IsElevenlabsSoundModelFamily reports whether the current attempt resolves to
+// an ElevenLabs sound-effects (text-to-sound) model. It honors aliases by
+// resolving the canonical model name first, so an alias whose ModelName/ModelID
+// is a sound model is detected the same as a raw model id. See
+// IsAnthropicModelFamily for usage notes.
+func IsElevenlabsSoundModelFamily(ctx *BifrostContext, model string) bool {
+	return IsElevenlabsSoundModel(ResolveCanonicalModel(ctx, model))
+}
+
 // IsMistralModelFamily reports whether the current attempt resolves to the
 // Mistral model family. See IsAnthropicModelFamily for usage notes.
 func IsMistralModelFamily(ctx *BifrostContext, model string) bool {
@@ -628,6 +638,9 @@ type VertexKeyConfig struct {
 	ProjectNumber   SecretVar `json:"project_number"`
 	Region          SecretVar `json:"region"`
 	AuthCredentials SecretVar `json:"auth_credentials"`
+	// ForceSingleRegion pins requests to the configured region and disables automatic promotion of
+	// multi-region-only models to a multi-region pool endpoint (e.g. for provisioned throughput).
+	ForceSingleRegion bool `json:"force_single_region,omitempty"`
 }
 
 // NOTE: To use Vertex IAM role authentication, set AuthCredentials to empty string.

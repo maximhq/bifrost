@@ -269,30 +269,6 @@ func (s *Store) DistinctBaseModelNames() []string {
 	return out
 }
 
-// DistinctActiveBaseModelNames returns unique base names from non-deprecated
-// pricing rows only. Use this for API responses that should hide deprecated
-// catalog entries while preserving the full datasheet internally.
-func (s *Store) DistinctActiveBaseModelNames() []string {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	seen := make(map[string]struct{})
-	for _, pricing := range s.pricingData {
-		if pricing.IsDeprecated {
-			continue
-		}
-		baseName := pricing.BaseModel
-		if baseName == "" {
-			baseName = s.baseModelNameUnsafe(pricing.Model)
-		}
-		seen[baseName] = struct{}{}
-	}
-	out := make([]string, 0, len(seen))
-	for name := range seen {
-		out = append(out, name)
-	}
-	return out
-}
-
 // DatasheetModelsForProvider returns the per-provider model slice derived
 // from pricing data on the last load/sync. Composer unions this with
 // live.ModelsForProvider on read.
