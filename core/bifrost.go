@@ -25,6 +25,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/azure"
 	"github.com/maximhq/bifrost/core/providers/bedrock"
 	"github.com/maximhq/bifrost/core/providers/bedrockmantle"
+	"github.com/maximhq/bifrost/core/providers/cartesia"
 	"github.com/maximhq/bifrost/core/providers/cerebras"
 	"github.com/maximhq/bifrost/core/providers/cohere"
 	"github.com/maximhq/bifrost/core/providers/deepseek"
@@ -4275,6 +4276,8 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return openrouter.NewOpenRouterProvider(config, bifrost.logger), nil
 	case schemas.Elevenlabs:
 		return elevenlabs.NewElevenlabsProvider(config, bifrost.logger), nil
+	case schemas.Cartesia:
+		return cartesia.NewCartesiaProvider(config, bifrost.logger), nil
 	case schemas.Nebius:
 		return nebius.NewNebiusProvider(config, bifrost.logger)
 	case schemas.HuggingFace:

@@ -115,8 +115,6 @@ func RunSpeechSynthesisStreamTest(t *testing.T, client *bifrost.Bifrost, ctx con
 					},
 				}
 
-				
-
 				responseChannel, err := WithStreamRetry(t, retryConfig, retryContext, func() (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 					requestCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 					return client.SpeechStreamRequest(requestCtx, request)
@@ -227,8 +225,16 @@ func RunSpeechSynthesisStreamTest(t *testing.T, client *bifrost.Bifrost, ctx con
 				if audioBuffer.Len() > 0 {
 					var err error
 					audioData := audioBuffer.Bytes()
-					if testConfig.Provider == schemas.Gemini {
+					// Providers that stream raw (headerless) PCM must be wrapped in a WAV
+					// container before codec detection can identify the format.
+					switch testConfig.Provider {
+					case schemas.Gemini:
 						audioData, err = utils.ConvertPCMToWAV(audioData, utils.DefaultGeminiPCMConfig())
+						if err != nil {
+							t.Fatalf("Failed to convert PCM to WAV: %v", err)
+						}
+					case schemas.Cartesia:
+						audioData, err = utils.ConvertPCMToWAV(audioData, utils.DefaultCartesiaPCMConfig())
 						if err != nil {
 							t.Fatalf("Failed to convert PCM to WAV: %v", err)
 						}
@@ -371,11 +377,18 @@ func RunSpeechSynthesisStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost,
 
 			// Save audio to temp file, validate codec, and cleanup after test
 			if audioBuffer.Len() > 0 {
-				// If provider is Gemini, we will have to convert the PCM bytes to WAV bytes
+				// Providers that stream raw (headerless) PCM must be wrapped in a WAV
+				// container before codec detection can identify the format.
 				var err error
 				audioData := audioBuffer.Bytes()
-				if testConfig.Provider == schemas.Gemini {
+				switch testConfig.Provider {
+				case schemas.Gemini:
 					audioData, err = utils.ConvertPCMToWAV(audioData, utils.DefaultGeminiPCMConfig())
+					if err != nil {
+						t.Fatalf("Failed to convert PCM to WAV: %v", err)
+					}
+				case schemas.Cartesia:
+					audioData, err = utils.ConvertPCMToWAV(audioData, utils.DefaultCartesiaPCMConfig())
 					if err != nil {
 						t.Fatalf("Failed to convert PCM to WAV: %v", err)
 					}
@@ -406,6 +419,13 @@ func RunSpeechSynthesisStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost,
 			// it's not possible to test all voices with Elevenlabs, we are using a few
 			elevenlabsVoices := []string{"21m00Tcm4TlvDq8ikWAM", "29vD33N1CtxCmqQRPOHJ", "2EiwWnXFnvU5JabPnv8n"}
 
+			// Cartesia voices are UUIDs; reuse the ones from GetProviderVoice.
+			cartesiaVoices := []string{
+				GetProviderVoice(schemas.Cartesia, "primary"),
+				GetProviderVoice(schemas.Cartesia, "secondary"),
+				GetProviderVoice(schemas.Cartesia, "tertiary"),
+			}
+
 			testText := "Testing streaming speech synthesis with different voice options."
 
 			switch testConfig.Provider {
@@ -415,6 +435,8 @@ func RunSpeechSynthesisStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost,
 				voices = geminiVoices
 			case schemas.Elevenlabs:
 				voices = elevenlabsVoices
+			case schemas.Cartesia:
+				voices = cartesiaVoices
 			}
 
 			for _, voice := range voices {
@@ -452,14 +474,13 @@ func RunSpeechSynthesisStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost,
 						},
 					}
 
-					
 					// Use retry framework with stream validation
 					var accumulatedAudio bytes.Buffer // Accumulate audio for codec validation
 					validationResult := WithSpeechStreamValidationRetry(
 						t,
 						retryConfig,
 						retryContext,
-						func() (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {							
+						func() (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 							accumulatedAudio.Reset() // Reset buffer on retry
 							requestCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 							return client.SpeechStreamRequest(requestCtx, request)
@@ -527,8 +548,14 @@ func RunSpeechSynthesisStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost,
 					if accumulatedAudio.Len() > 0 {
 						var err error
 						audioData := accumulatedAudio.Bytes()
-						if testConfig.Provider == schemas.Gemini {
+						switch testConfig.Provider {
+						case schemas.Gemini:
 							audioData, err = utils.ConvertPCMToWAV(audioData, utils.DefaultGeminiPCMConfig())
+							if err != nil {
+								t.Fatalf("Failed to convert PCM to WAV: %v", err)
+							}
+						case schemas.Cartesia:
+							audioData, err = utils.ConvertPCMToWAV(audioData, utils.DefaultCartesiaPCMConfig())
 							if err != nil {
 								t.Fatalf("Failed to convert PCM to WAV: %v", err)
 							}

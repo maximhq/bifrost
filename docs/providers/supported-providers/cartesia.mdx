@@ -1,0 +1,236 @@
+---
+title: "Cartesia"
+description: "Cartesia API conversion guide - low-latency text-to-speech, streaming (SSE), voice selection, and output formats"
+icon: "waveform"
+---
+
+## Overview
+
+Cartesia is a specialized audio provider focused on low-latency text-to-speech (TTS) with its Sonic model family. Bifrost performs conversions including:
+- **Model ID mapping** - Uses the provider model identifier directly (e.g., `sonic-3.5`)
+- **Voice selection** - Maps the Bifrost voice string to Cartesia's `voice` object (`{ "mode": "id", "id": "<voice-uuid>" }`)
+- **Output format conversion** - Maps the Bifrost `response_format` string (`mp3`/`wav`/`pcm`) to Cartesia's `output_format` object (`container`/`encoding`/`sample_rate`)
+- **Streaming (SSE)** - Server-Sent Events streaming with base64-encoded raw PCM audio chunks
+- **Speed control** - Maps `speed` to `generation_config.speed`
+- **Advanced overrides** - `extra_params` can override the container, encoding, sample rate, and bit rate
+
+### Supported Operations
+
+| Operation | Non-Streaming | Streaming | Endpoint |
+|-----------|---------------|-----------|----------|
+| Speech (TTS) | ✅ | ✅ | `/tts/bytes` (bytes), `/tts/sse` (streaming) |
+| Transcriptions (STT) | ❌ | ❌ | - |
+| List Models | ❌ | - | - |
+| Chat Completions | ❌ | ❌ | - |
+| Responses API | ❌ | ❌ | - |
+| Text Completions | ❌ | ❌ | - |
+| Embeddings | ❌ | ❌ | - |
+| Image Generation | ❌ | ❌ | - |
+
+<Note>
+**Unsupported Operations** (❌): Chat Completions, Responses API, Text Completions, Transcriptions, Embeddings, and Image Generation are not supported by Cartesia (TTS-focused provider). These return `UnsupportedOperationError`.
+
+**Streaming format**: The `/tts/sse` endpoint only supports the `raw` PCM container. When a non-raw `response_format` (e.g. `mp3`) is requested on the streaming path, Bifrost automatically forces `container=raw` with `pcm_s16le` encoding and logs a warning.
+</Note>
+
+## Setup & Configuration
+
+Cartesia authenticates with an `Authorization: Bearer <key>` header (key format `sk_car_...`) and a required `Cartesia-Version` header, both set automatically by Bifrost.
+
+<Tabs>
+<Tab title="Web UI">
+
+1. Navigate to **Models** > **Model Providers**. Look for **Cartesia** under **Configured Providers**. If it is missing, click **Add New Provider** and select **Cartesia**.
+2. Click **Add Key** or edit an existing key.
+3. Set a name for your key.
+4. Paste your API key directly or use an environment variable (for example, `env.CARTESIA_API_KEY`).
+5. Set **Allowed Models** to **All Models** (default) or the specific model allowlist you want this key to serve.
+6. Save the provider configuration.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "cartesia": {
+      "keys": [
+        {
+          "name": "cartesia-key-1",
+          "value": "env.CARTESIA_API_KEY",
+          "models": [
+            "*"
+          ],
+          "weight": 1.0
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="API">
+Refer to the API documentation for [Provider Keys Management](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider).
+</Tab>
+<Tab title="Go SDK">
+
+```go
+case schemas.Cartesia:
+    return []schemas.Key{{
+        Name:   "cartesia-key-1",
+        Value:  *schemas.NewSecretVar("env.CARTESIA_API_KEY"),
+        Models: []string{"*"},
+        Weight: 1.0,
+    }}, nil
+```
+
+</Tab>
+</Tabs>
+
+For text-to-speech calls, the Bifrost `model` is the Cartesia model ID (e.g. `sonic-3.5`) and `voice` is the Cartesia voice UUID.
+
+---
+
+# 1. Speech (Text-to-Speech)
+
+## Request Parameters
+
+### Core Parameters
+
+| Parameter | Mapping | Notes |
+|-----------|---------|-------|
+| `input.input` | `transcript` | The text to convert to speech (required) |
+| `model` | `model_id` | Model identifier (e.g., `"sonic-3.5"`) |
+| `voice` | `voice.id` (with `voice.mode = "id"`) | Cartesia voice UUID (required) |
+| `response_format` | `output_format` object | See [Output Format](#output-format) |
+| `language_code` | `language` | Optional language code (e.g., `"en"`) |
+| `speed` | `generation_config.speed` | Optional playback speed |
+
+### Basic Usage
+
+<Tabs>
+<Tab title="Gateway">
+
+```bash
+curl -X POST http://localhost:8080/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "provider": "cartesia",
+    "model": "sonic-3.5",
+    "input": {"input": "Hello, how are you?"},
+    "voice": "f786b574-daa5-4673-aa0c-cbe3e8534c02",
+    "response_format": "mp3",
+    "language_code": "en",
+    "speed": 1.0
+  }'
+```
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+resp, err := client.SpeechRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostSpeechRequest{
+    Provider: schemas.Cartesia,
+    Model:    "sonic-3.5",
+    Input: &schemas.SpeechInput{
+        Input: "Hello, how are you?",
+    },
+    Params: &schemas.SpeechParameters{
+        VoiceConfig: &schemas.SpeechVoiceInput{
+            Voice: schemas.Ptr("f786b574-daa5-4673-aa0c-cbe3e8534c02"),
+        },
+        Speed:          schemas.Ptr(1.0),
+        ResponseFormat: "mp3",
+        LanguageCode:   schemas.Ptr("en"),
+    },
+})
+```
+
+</Tab>
+</Tabs>
+
+### Output Format
+
+The Bifrost `response_format` string is mapped to Cartesia's `output_format` object:
+
+| `response_format` | Cartesia `output_format` |
+|-------------------|--------------------------|
+| `mp3` (default) | `{ "container": "mp3", "sample_rate": 44100 }` |
+| `wav` | `{ "container": "wav", "encoding": "pcm_s16le", "sample_rate": 44100 }` |
+| `pcm` / `raw` | `{ "container": "raw", "encoding": "pcm_s16le", "sample_rate": 44100 }` |
+
+<Note>
+Defaults to MP3 if not specified. Streaming (`/tts/sse`) always uses the `raw` container regardless of the requested format.
+</Note>
+
+### Advanced Overrides
+
+Use `extra_params` to override the resolved output format for advanced use cases:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `container` | string | `"mp3"`, `"wav"`, or `"raw"` (ignored on the streaming path if not `"raw"`) |
+| `encoding` | string | PCM encoding: `pcm_f32le`, `pcm_s16le`, `pcm_mulaw`, `pcm_alaw` |
+| `sample_rate` | integer | `8000`, `16000`, `22050`, `24000`, `44100`, `48000` |
+| `bit_rate` | integer | mp3 only: `32000`, `64000`, `96000`, `128000`, `192000` |
+
+```json
+{
+  "sample_rate": 24000,
+  "encoding": "pcm_s16le",
+  "container": "wav"
+}
+```
+
+## Response Conversion
+
+The `/tts/bytes` endpoint returns raw binary audio, surfaced on `audio`:
+
+```json
+{
+  "audio": "<binary audio data>"
+}
+```
+
+---
+
+# 2. Speech Streaming (SSE)
+
+Streaming uses the `/tts/sse` endpoint. Each Server-Sent Event carries a base64-encoded raw PCM audio chunk, which Bifrost decodes and forwards as a `speech.audio.delta` chunk; a final `speech.audio.done` chunk closes the stream.
+
+<Tabs>
+<Tab title="Gateway">
+
+```bash
+curl -X POST http://localhost:8080/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "provider": "cartesia",
+    "model": "sonic-3.5",
+    "input": {"input": "Streaming synthesis test."},
+    "voice": "f786b574-daa5-4673-aa0c-cbe3e8534c02",
+    "stream_format": "sse"
+  }'
+```
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+stream, err := client.SpeechStreamRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostSpeechRequest{
+    Provider: schemas.Cartesia,
+    Model:    "sonic-3.5",
+    Input: &schemas.SpeechInput{
+        Input: "Streaming synthesis test.",
+    },
+    Params: &schemas.SpeechParameters{
+        VoiceConfig: &schemas.SpeechVoiceInput{
+            Voice: schemas.Ptr("f786b574-daa5-4673-aa0c-cbe3e8534c02"),
+        },
+    },
+})
+```
+
+</Tab>
+</Tabs>
