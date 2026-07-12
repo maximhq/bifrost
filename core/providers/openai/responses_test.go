@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -2078,5 +2079,79 @@ func TestToOpenAIResponsesRequest_StripsThoughtSignatureFromCallID(t *testing.T)
 	}
 	if *req.Input[1].ResponsesToolMessage.CallID != embeddedID {
 		t.Error("original function_call_output call_id was mutated")
+	}
+}
+
+func TestToOpenAIResponsesRequest_OmitsRoleFromNonMessageInputItems(t *testing.T) {
+	assistant := schemas.ResponsesInputMessageRoleAssistant
+	user := schemas.ResponsesInputMessageRoleUser
+	messageType := schemas.ResponsesMessageTypeMessage
+	functionCallType := schemas.ResponsesMessageTypeFunctionCall
+	req := &schemas.BifrostResponsesRequest{
+		Model: "gpt-4o",
+		Input: []schemas.ResponsesMessage{
+			{
+				Type:    &messageType,
+				Role:    &user,
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+			},
+			{
+				Type: &functionCallType,
+				Role: &assistant,
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID:    schemas.Ptr("call_123"),
+					Name:      schemas.Ptr("search"),
+					Arguments: schemas.Ptr(`{"query":"bifrost"}`),
+				},
+			},
+		},
+	}
+
+	converted := ToOpenAIResponsesRequest(nil, req)
+	if converted == nil {
+		t.Fatal("ToOpenAIResponsesRequest returned nil")
+	}
+	wire, err := sonic.Marshal(converted)
+	if err != nil {
+		t.Fatalf("marshal wire request: %v", err)
+	}
+
+	var payload struct {
+		Input []json.RawMessage `json:"input"`
+	}
+	if err := sonic.Unmarshal(wire, &payload); err != nil {
+		t.Fatalf("unmarshal wire request: %v", err)
+	}
+
+	items := make(map[string]map[string]json.RawMessage, len(payload.Input))
+	for _, raw := range payload.Input {
+		var item map[string]json.RawMessage
+		if err := sonic.Unmarshal(raw, &item); err != nil {
+			t.Fatalf("unmarshal input item: %v", err)
+		}
+		var itemType string
+		if err := sonic.Unmarshal(item["type"], &itemType); err != nil {
+			t.Fatalf("unmarshal input item type: %v", err)
+		}
+		items[itemType] = item
+	}
+
+	message := items["message"]
+	var messageRole string
+	if err := sonic.Unmarshal(message["role"], &messageRole); err != nil || messageRole != "user" {
+		t.Errorf("message role: got %q, want %q (err=%v)", messageRole, "user", err)
+	}
+	functionCall := items["function_call"]
+	if _, ok := functionCall["role"]; ok {
+		t.Error("function_call role present in wire request")
+	}
+	for field, want := range map[string]string{"call_id": "call_123", "name": "search", "arguments": `{"query":"bifrost"}`} {
+		var got string
+		if err := sonic.Unmarshal(functionCall[field], &got); err != nil || got != want {
+			t.Errorf("function_call %s: got %q, want %q (err=%v)", field, got, want, err)
+		}
+	}
+	if req.Input[0].Role == nil || req.Input[1].Role == nil {
+		t.Error("original input roles were mutated")
 	}
 }

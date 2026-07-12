@@ -1047,13 +1047,16 @@ const (
 	ResponsesMessageTypeItemReference        ResponsesMessageType = "item_reference"
 	ResponsesMessageTypeRefusal              ResponsesMessageType = "refusal"
 	ResponsesMessageTypeCompaction           ResponsesMessageType = "compaction"
-	// Codex deferred-tool discovery (tool_search). OpenAI's Responses API
-	// supports these item types natively; Bifrost preserves them verbatim
-	// because its typed schema doesn't model them (the call's `arguments` is a
-	// JSON object — unlike function_call's string — and the output carries a
-	// `tools` array). See ResponsesMessage's (Un)MarshalJSON.
+	// Codex deferred-tool discovery (tool_search) and code-mode tool
+	// declarations (additional_tools). OpenAI's Responses API supports these
+	// item types natively; Bifrost preserves them verbatim because its typed
+	// schema doesn't model them (tool_search_call's `arguments` is a JSON
+	// object — unlike function_call's string — and tool_search_output /
+	// additional_tools carry `tools` arrays whose entries don't fit any typed
+	// tool shape). See ResponsesMessage's (Un)MarshalJSON.
 	ResponsesMessageTypeToolSearchCall   ResponsesMessageType = "tool_search_call"
 	ResponsesMessageTypeToolSearchOutput ResponsesMessageType = "tool_search_output"
+	ResponsesMessageTypeAdditionalTools  ResponsesMessageType = "additional_tools"
 	ResponsesMessageTypeAdvisorCall      ResponsesMessageType = "advisor_call" // Anthropic advisor server tool (server_tool_use + advisor_tool_result)
 )
 
@@ -1084,40 +1087,46 @@ type ResponsesMessage struct {
 	// gpt-oss models include only reasoning_text content blocks in a message, while other openai models include summaries+encrypted_content
 	*ResponsesReasoning
 
-	// rawToolSearch preserves codex `tool_search_call` / `tool_search_output`
-	// items verbatim. OpenAI's Responses API accepts these natively, but
-	// Bifrost's typed schema doesn't model them (the call's `arguments` is a
-	// JSON object — unlike function_call's string — and the output carries a
-	// `tools` array). Rather than fail to deserialize the whole input array or
-	// drop/mangle these items, we round-trip the original bytes unchanged.
+	// rawPreserved preserves codex `tool_search_call` / `tool_search_output` /
+	// `additional_tools` items verbatim. OpenAI's Responses API accepts these
+	// natively, but Bifrost's typed schema doesn't model them:
+	// tool_search_call's `arguments` is a JSON object — unlike function_call's
+	// string — and tool_search_output / additional_tools carry `tools` arrays
+	// whose entries (per-entry `type` discriminators, function parameters,
+	// nested namespace tool lists) don't fit any typed tool shape; a typed
+	// decode promotes them into the embedded mcp_list_tools fields and strips
+	// required fields. Rather than fail to deserialize the whole input array
+	// or drop/mangle these items, we round-trip the original bytes unchanged.
 	// Set by UnmarshalJSON, emitted by MarshalJSON; nil for every other type.
-	rawToolSearch []byte
+	rawPreserved []byte
 }
 
-// isToolSearchItem reports whether t is a codex tool_search item type, which
-// Bifrost preserves verbatim rather than modelling field-by-field.
-func isToolSearchItem(t string) bool {
+// isRawPreservedItem reports whether t is an item type that Bifrost preserves
+// verbatim rather than modelling field-by-field (see rawPreserved).
+func isRawPreservedItem(t string) bool {
 	return t == string(ResponsesMessageTypeToolSearchCall) ||
-		t == string(ResponsesMessageTypeToolSearchOutput)
+		t == string(ResponsesMessageTypeToolSearchOutput) ||
+		t == string(ResponsesMessageTypeAdditionalTools)
 }
 
-// UnmarshalJSON preserves codex tool_search items verbatim (see rawToolSearch)
-// and otherwise normalizes function/tool-call arguments before decoding the rest
-// of the item. OpenAI's Responses API serializes `function_call` `arguments` as
-// a JSON string, but `tool_search_call` items serialize `arguments` as a JSON
-// object — e.g. {} while in_progress and {"query":"...","limit":10} when
-// completed. The embedded ResponsesToolMessage.Arguments field is a *string, so
-// an object value makes a plain decode fail with "Mismatch type string with
-// value object", which silently drops the item mid-stream and hangs streaming
-// clients. We shadow `arguments` as raw JSON, decode everything else as usual,
-// then store the canonical stringified form.
+// UnmarshalJSON preserves codex tool_search/additional_tools items verbatim
+// (see rawPreserved) and otherwise normalizes function/tool-call arguments
+// before decoding the rest of the item. OpenAI's Responses API serializes
+// `function_call` `arguments` as a JSON string, but `tool_search_call` items
+// serialize `arguments` as a JSON object — e.g. {} while in_progress and
+// {"query":"...","limit":10} when completed. The embedded
+// ResponsesToolMessage.Arguments field is a *string, so an object value makes
+// a plain decode fail with "Mismatch type string with value object", which
+// silently drops the item mid-stream and hangs streaming clients. We shadow
+// `arguments` as raw JSON, decode everything else as usual, then store the
+// canonical stringified form.
 func (m *ResponsesMessage) UnmarshalJSON(data []byte) error {
 	// Clear the receiver first so a reused instance never retains a stale
-	// rawToolSearch (or other fields) from a prior decode — unmarshalling a
-	// non-tool-search payload must not leave preserved bytes that MarshalJSON
+	// rawPreserved (or other fields) from a prior decode — unmarshalling a
+	// non-preserved payload must not leave preserved bytes that MarshalJSON
 	// would then re-emit.
 	*m = ResponsesMessage{}
-	if t := gjson.GetBytes(data, "type").String(); isToolSearchItem(t) {
+	if t := gjson.GetBytes(data, "type").String(); isRawPreservedItem(t) {
 		mt := ResponsesMessageType(t)
 		m.Type = &mt
 		m.rawToolSearch = append([]byte(nil), data...)
@@ -1125,6 +1134,7 @@ func (m *ResponsesMessage) UnmarshalJSON(data []byte) error {
 		// consumers that read Arguments keep working; MarshalJSON still re-emits the
 		// preserved bytes verbatim, so this is additive and does not affect round-trip.
 		m.setToolArguments(json.RawMessage(gjson.GetBytes(data, "arguments").Raw))
+		m.rawPreserved = append([]byte(nil), data...)
 		return nil
 	}
 
@@ -1162,9 +1172,10 @@ func (m *ResponsesMessage) setToolArguments(raw json.RawMessage) {
 
 // MarshalJSON re-emits preserved tool_search items verbatim and defers every
 // other item type to the default (sorted-key) struct encoding.
+
 func (m ResponsesMessage) MarshalJSON() ([]byte, error) {
-	if m.rawToolSearch != nil {
-		return m.rawToolSearch, nil
+	if m.rawPreserved != nil {
+		return m.rawPreserved, nil
 	}
 	type alias ResponsesMessage
 	return MarshalSorted(alias(m))
