@@ -6820,3 +6820,53 @@ func TestNoLeadingSystemBlockReminderInlined(t *testing.T) {
 	}
 	assert.True(t, inlined, "the mid-conversation reminder must be inlined as a wrapped user message")
 }
+
+// TestReasoningConfigSurvivesHTTPUnmarshal guards against reasoning_config /
+// thinking being silently dropped when a Bedrock Converse body is unmarshaled
+// from JSON (nested objects decode to *OrderedMap, not map[string]interface{})
+// and then translated to a non-Bedrock target.
+func TestReasoningConfigSurvivesHTTPUnmarshal(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	t.Run("reasoning_config", func(t *testing.T) {
+		body := []byte(`{
+			"messages": [{"role": "user", "content": [{"text": "Think step-by-step."}]}],
+			"inferenceConfig": {"maxTokens": 2012, "temperature": 1.0},
+			"additionalModelRequestFields": {
+				"reasoning_config": {"type": "enabled", "budget_tokens": 1500}
+			}
+		}`)
+
+		var req bedrock.BedrockConverseRequest
+		require.NoError(t, json.Unmarshal(body, &req))
+		req.ModelID = "anthropic/claude-sonnet-4-5-20250929"
+
+		out, err := req.ToBifrostResponsesRequest(ctx)
+		require.NoError(t, err)
+		require.NotNil(t, out.Params, "Params is nil")
+		require.NotNil(t, out.Params.Reasoning, "reasoning_config was silently dropped")
+		require.NotNil(t, out.Params.Reasoning.MaxTokens)
+		assert.Equal(t, 1500, *out.Params.Reasoning.MaxTokens)
+	})
+
+	t.Run("nova_reasoningConfig", func(t *testing.T) {
+		body := []byte(`{
+			"messages": [{"role": "user", "content": [{"text": "Think step-by-step."}]}],
+			"inferenceConfig": {"maxTokens": 2012},
+			"additionalModelRequestFields": {
+				"reasoningConfig": {"type": "enabled", "maxReasoningEffort": "high"}
+			}
+		}`)
+
+		var req bedrock.BedrockConverseRequest
+		require.NoError(t, json.Unmarshal(body, &req))
+		req.ModelID = "amazon.nova-premier-v1:0"
+
+		out, err := req.ToBifrostResponsesRequest(ctx)
+		require.NoError(t, err)
+		require.NotNil(t, out.Params, "Params is nil")
+		require.NotNil(t, out.Params.Reasoning, "nova reasoningConfig was silently dropped")
+		require.NotNil(t, out.Params.Reasoning.Effort)
+		assert.Equal(t, "high", *out.Params.Reasoning.Effort)
+	})
+}
