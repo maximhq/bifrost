@@ -9,6 +9,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestBuildVertexRankingConfig verifies the ranking config path is built from
+// project ID and optional ranking config parameters.
 func TestBuildVertexRankingConfig(t *testing.T) {
 	t.Parallel()
 
@@ -28,6 +30,8 @@ func TestBuildVertexRankingConfig(t *testing.T) {
 	require.Error(t, err)
 }
 
+// TestToVertexRankRequest verifies Bifrost rerank requests convert to the
+// Vertex rank wire format with records and options in place.
 func TestToVertexRankRequest(t *testing.T) {
 	t.Parallel()
 
@@ -63,6 +67,8 @@ func TestToVertexRankRequest(t *testing.T) {
 	assert.True(t, *req.IgnoreRecordDetailsInResponse)
 }
 
+// TestToVertexRankRequestTooManyRecords verifies conversion fails when the
+// document count exceeds the Vertex per-call record limit.
 func TestToVertexRankRequestTooManyRecords(t *testing.T) {
 	t.Parallel()
 
@@ -85,6 +91,8 @@ func TestToVertexRankRequestTooManyRecords(t *testing.T) {
 	assert.Contains(t, err.Error(), "supports up to")
 }
 
+// TestGetVertexRerankOptions verifies extra params are parsed into Vertex
+// rerank options with defaults applied.
 func TestGetVertexRerankOptions(t *testing.T) {
 	t.Parallel()
 
@@ -103,6 +111,8 @@ func TestGetVertexRerankOptions(t *testing.T) {
 	assert.Equal(t, map[string]string{"env": "test"}, options.UserLabels)
 }
 
+// TestVertexRankResponseToBifrostRerankResponse verifies result ordering and
+// document echo when converting a Vertex rank response.
 func TestVertexRankResponseToBifrostRerankResponse(t *testing.T) {
 	t.Parallel()
 
@@ -130,6 +140,8 @@ func TestVertexRankResponseToBifrostRerankResponse(t *testing.T) {
 	assert.Equal(t, "doc-0", response.Results[0].Document.Text)
 }
 
+// TestVertexRankRequestToBifrostRerankRequest verifies the Vertex rank
+// request converts back to the Bifrost request shape.
 func TestVertexRankRequestToBifrostRerankRequest(t *testing.T) {
 	t.Parallel()
 
@@ -185,6 +197,8 @@ func TestVertexRankRequestToBifrostRerankRequest(t *testing.T) {
 	assert.Equal(t, map[string]string{"env": "test"}, result.Params.ExtraParams["user_labels"])
 }
 
+// TestVertexRankRequestToBifrostRerankRequestNil verifies a nil request
+// converts to nil instead of panicking.
 func TestVertexRankRequestToBifrostRerankRequestNil(t *testing.T) {
 	t.Parallel()
 
@@ -192,6 +206,8 @@ func TestVertexRankRequestToBifrostRerankRequestNil(t *testing.T) {
 	assert.Nil(t, req.ToBifrostRerankRequest(nil))
 }
 
+// TestVertexRankResponseToBifrostRerankResponseInvalidID verifies malformed
+// record IDs surface as a conversion error.
 func TestVertexRankResponseToBifrostRerankResponseInvalidID(t *testing.T) {
 	t.Parallel()
 
@@ -202,4 +218,24 @@ func TestVertexRankResponseToBifrostRerankResponseInvalidID(t *testing.T) {
 	}).ToBifrostRerankResponse([]schemas.RerankDocument{{Text: "doc"}}, false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid record id")
+}
+
+// TestVertexRankResponseToBifrostRerankResponseSynthesizesQueryUsage verifies
+// that the conversion synthesizes per-query usage (one billable query per call),
+// since the Vertex AI Ranking API response carries no usage payload.
+func TestVertexRankResponseToBifrostRerankResponseSynthesizesQueryUsage(t *testing.T) {
+	t.Parallel()
+
+	response, err := (&VertexRankResponse{
+		Records: []VertexRankedRecord{
+			{ID: "idx:0", Score: 0.91},
+		},
+	}).ToBifrostRerankResponse([]schemas.RerankDocument{{Text: "doc-0"}}, false)
+	require.NoError(t, err)
+
+	require.NotNil(t, response)
+	require.NotNil(t, response.Usage)
+	require.NotNil(t, response.Usage.CompletionTokensDetails)
+	require.NotNil(t, response.Usage.CompletionTokensDetails.NumSearchQueries)
+	assert.Equal(t, 1, *response.Usage.CompletionTokensDetails.NumSearchQueries)
 }
