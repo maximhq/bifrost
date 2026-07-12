@@ -1129,6 +1129,11 @@ func (m *ResponsesMessage) UnmarshalJSON(data []byte) error {
 	if t := gjson.GetBytes(data, "type").String(); isRawPreservedItem(t) {
 		mt := ResponsesMessageType(t)
 		m.Type = &mt
+		m.rawToolSearch = append([]byte(nil), data...)
+		// Also surface `arguments` (a JSON object for tool_search_call) so downstream
+		// consumers that read Arguments keep working; MarshalJSON still re-emits the
+		// preserved bytes verbatim, so this is additive and does not affect round-trip.
+		m.setToolArguments(json.RawMessage(gjson.GetBytes(data, "arguments").Raw))
 		m.rawPreserved = append([]byte(nil), data...)
 		return nil
 	}
@@ -1145,19 +1150,29 @@ func (m *ResponsesMessage) UnmarshalJSON(data []byte) error {
 		return err
 	}
 
-	if len(aux.Arguments) > 0 && string(aux.Arguments) != "null" {
-		args := responsesToolArgumentsToString(aux.Arguments)
-		if m.ResponsesToolMessage == nil {
-			m.ResponsesToolMessage = &ResponsesToolMessage{}
-		}
-		m.Arguments = &args
-	}
+	m.setToolArguments(aux.Arguments)
 
 	return nil
 }
 
-// MarshalJSON re-emits preserved items verbatim and defers every other item
-// type to the default (sorted-key) struct encoding.
+// setToolArguments normalizes a raw tool-call `arguments` value and records it on
+// the message when present and non-null, initializing the tool-message wrapper as
+// needed. Shared by the tool_search and function/tool-call decode paths so their
+// null handling can't drift apart.
+func (m *ResponsesMessage) setToolArguments(raw json.RawMessage) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return
+	}
+	args := responsesToolArgumentsToString(raw)
+	if m.ResponsesToolMessage == nil {
+		m.ResponsesToolMessage = &ResponsesToolMessage{}
+	}
+	m.Arguments = &args
+}
+
+// MarshalJSON re-emits preserved tool_search items verbatim and defers every
+// other item type to the default (sorted-key) struct encoding.
+
 func (m ResponsesMessage) MarshalJSON() ([]byte, error) {
 	if m.rawPreserved != nil {
 		return m.rawPreserved, nil
@@ -1376,6 +1391,9 @@ type ResponsesToolMessage struct {
 	// Anthropic advisor-specific (advisor_call): carries the advisor_tool_result payload
 	*ResponsesAdvisorCall
 
+	// Anthropic tool_search-specific (tool_search_call): carries the discovered tool references
+	*ResponsesToolSearchCall
+
 	// Anthropic web-fetch-specific (web_fetch_call): carries the web_fetch_tool_result payload
 	*ResponsesWebFetchCall
 
@@ -1393,6 +1411,14 @@ type ResponsesAdvisorCall struct {
 	EncryptedContent *string `json:"advisor_encrypted_content,omitempty"` // advisor_redacted_result variant
 	ErrorCode        *string `json:"advisor_error_code,omitempty"`        // advisor_tool_result_error variant
 	StopReason       *string `json:"advisor_stop_reason,omitempty"`       // present when max_tokens is set on the tool
+}
+
+// ResponsesToolSearchCall carries the payload of an Anthropic server-side
+// tool_search (server_tool_use + tool_search_tool_result). ToolReferences holds
+// the names of the deferred tools the search discovered (from the result block's
+// tool_references); the model then emits a normal tool_use to call one of them.
+type ResponsesToolSearchCall struct {
+	ToolReferences []string `json:"tool_references,omitempty"` // names of discovered (deferred) tools
 }
 
 // ResponsesWebFetchCall carries the Anthropic web_fetch_tool_result payload
