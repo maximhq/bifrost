@@ -97,6 +97,7 @@ export default function MCPClientSheet({
 
 	const { data: bifrostConfig } = useGetCoreConfigQuery({ fromDB: true });
 	const globalToolSyncInterval = bifrostConfig?.client_config?.mcp_tool_sync_interval ?? 10;
+	const globalToolExecutionTimeout = bifrostConfig?.client_config?.mcp_tool_execution_timeout ?? 30;
 	const { toast } = useToast();
 	const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set());
 
@@ -824,7 +825,7 @@ export default function MCPClientSheet({
 														<Input
 															type="number"
 															className={`w-24 ${isUsingGlobal ? "text-muted-foreground" : ""}`}
-															placeholder="0"
+															placeholder={String(globalToolExecutionTimeout)}
 															value={field.value === 0 || field.value === undefined ? "" : String(field.value)}
 															onChange={(e) => {
 																if (e.target.value === "") {
