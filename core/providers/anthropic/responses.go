@@ -550,6 +550,15 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 	case AnthropicStreamEventTypeContentBlockStart:
 		// Content block start - emit output_item.added (OpenAI-style)
 		if chunk.ContentBlock != nil && chunk.Index != nil {
+			// A data-less redacted_thinking block contributes nothing; skip it
+			// before reserving an output index so later items keep their
+			// positions in response.completed output.
+			if chunk.ContentBlock.Type == AnthropicContentBlockTypeRedactedThinking &&
+				(chunk.ContentBlock.Data == nil || *chunk.ContentBlock.Data == "") {
+				state.ContentIndexToBlockType[*chunk.Index] = AnthropicContentBlockTypeRedactedThinking
+				return nil, nil, false
+			}
+
 			outputIndex := state.getOrCreateOutputIndex(chunk.Index)
 
 			if chunk.ContentBlock.Type == AnthropicContentBlockTypeToolUse &&
@@ -1136,6 +1145,48 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 				})
 
 				return responses, nil, false
+			case AnthropicContentBlockTypeRedactedThinking:
+				// Redacted thinking blocks arrive complete in content_block_start (no
+				// deltas follow; data-less blocks were already skipped above, before
+				// an output index was reserved). Surface the encrypted payload as a
+				// reasoning item with encrypted_content, mirroring the non-streaming
+				// converter, so streaming clients can replay it on the next turn;
+				// Anthropic rejects tool-use follow-ups whose latest assistant
+				// message dropped it.
+				messageType := schemas.ResponsesMessageTypeReasoning
+				role := schemas.ResponsesInputMessageRoleAssistant
+
+				// Generate stable ID for the reasoning item
+				var itemID string
+				if state.MessageID == nil {
+					itemID = fmt.Sprintf("reasoning_%d", outputIndex)
+				} else {
+					itemID = fmt.Sprintf("msg_%s_reasoning_%d", *state.MessageID, outputIndex)
+				}
+				state.ItemIDs[outputIndex] = itemID
+
+				item := &schemas.ResponsesMessage{
+					ID:   &itemID,
+					Type: &messageType,
+					Role: &role,
+					ResponsesReasoning: &schemas.ResponsesReasoning{
+						Summary:          []schemas.ResponsesReasoningSummary{},
+						EncryptedContent: chunk.ContentBlock.Data,
+					},
+				}
+
+				// Persist into OutputItems so the block's content_block_stop emits the
+				// matching output_item.done and response.completed carries the item.
+				itemCopy := *item
+				state.OutputItems[outputIndex] = &itemCopy
+
+				return []*schemas.BifrostResponsesStreamResponse{{
+					Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
+					SequenceNumber: sequenceNumber,
+					OutputIndex:    schemas.Ptr(outputIndex),
+					ContentIndex:   chunk.Index,
+					Item:           item,
+				}}, nil, false
 			default:
 				// Send down an empty response only when integration type is anthropic
 				if ctx.Value(schemas.BifrostContextKeyIntegrationType) == "anthropic" {
@@ -1329,6 +1380,14 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 	case AnthropicStreamEventTypeContentBlockStop:
 		// Content block is complete - emit output_item.done (OpenAI-style)
 		if chunk.Index != nil {
+			// Data-less redacted_thinking: its start reserved no output index, so
+			// its stop must not reserve one (or synthesize a done) either.
+			if blockType, exists := state.ContentIndexToBlockType[*chunk.Index]; exists &&
+				blockType == AnthropicContentBlockTypeRedactedThinking {
+				delete(state.ContentIndexToBlockType, *chunk.Index)
+				return nil, nil, false
+			}
+
 			outputIndex := state.getOrCreateOutputIndex(chunk.Index)
 
 			if inputJSON, inputKind, hasInputBuffer := state.finishInputJSONBuffer(chunk.Index); hasInputBuffer {
@@ -5481,7 +5540,12 @@ func convertBifrostReasoningToAnthropicThinking(msg *schemas.ResponsesMessage) [
 			}
 		}
 	} else if msg.ResponsesReasoning != nil {
-		if msg.ResponsesReasoning.Summary != nil {
+		// Redacted-only reasoning items carry an EMPTY (non-nil) summary list next
+		// to encrypted_content, in both the streaming and non-streaming converters,
+		// so gate on the list having entries rather than on nil: a nil-check sends
+		// such items through the summary loop, emits nothing, and drops the
+		// encrypted payload from the replayed request.
+		if len(msg.ResponsesReasoning.Summary) > 0 {
 			for _, reasoningContent := range msg.ResponsesReasoning.Summary {
 				thinkingBlock := AnthropicContentBlock{
 					Type:     AnthropicContentBlockTypeThinking,
@@ -5489,7 +5553,7 @@ func convertBifrostReasoningToAnthropicThinking(msg *schemas.ResponsesMessage) [
 				}
 				thinkingBlocks = append(thinkingBlocks, thinkingBlock)
 			}
-		} else if msg.ResponsesReasoning.EncryptedContent != nil {
+		} else if msg.ResponsesReasoning.EncryptedContent != nil && *msg.ResponsesReasoning.EncryptedContent != "" {
 			thinkingBlock := AnthropicContentBlock{
 				Type: AnthropicContentBlockTypeRedactedThinking,
 				Data: msg.ResponsesReasoning.EncryptedContent,
