@@ -444,6 +444,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_sidekiq_kind_status_created_index"}, run: migrationAddSidekiqKindStatusCreatedIndex},
 	{IDs: []string{"add_fast_mode_cache_pricing_columns"}, run: migrationAddFastModeCachePricingColumns},
 	{IDs: []string{"add_inference_geo_multiplier_column"}, run: migrationAddInferenceGeoMultiplierColumn},
+	{IDs: []string{"repair_bare_wildcard_allowed_models"}, run: migrationRepairBareWildcardAllowedModels},
 }
 
 // quoteSQLiteIdentifier quotes a SQLite identifier, escaping any double quotes.
@@ -6441,6 +6442,51 @@ func migrationBackfillAllowedModelsWildcard(ctx context.Context, db *gorm.DB, lo
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running backfill_allowed_models_wildcard migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationRepairBareWildcardAllowedModels repairs governance_virtual_key_provider_configs
+// rows whose allowed_models / blacklisted_models column holds the bare one-character
+// string '*' instead of the JSON array '["*"]'. Such rows abort the GORM json
+// deserializer ("invalid character '*' ...") when the VK is loaded, which poisons the
+// whole provider admin surface (see issue #4318). The repair rewrites the column to the
+// canonical '["*"]' form the serializer:json tag is supposed to produce; the intended
+// value at write time was already the WhiteList ["*"], so the config_hash — computed
+// from the in-memory slice — stays consistent and needs no recomputation.
+func migrationRepairBareWildcardAllowedModels(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "repair_bare_wildcard_allowed_models"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+
+			// Match the documented manual workaround exactly: bare '*' → '["*"]'.
+			// Covers both whitelist columns on the provider config, which share the
+			// serializer:json tag and the same corruption class.
+			for _, column := range []string{"allowed_models", "blacklisted_models"} {
+				res := tx.Model(&tables.TableVirtualKeyProviderConfig{}).
+					Where(column+" = ?", "*").
+					Update(column, `["*"]`)
+				if res.Error != nil {
+					return fmt.Errorf("failed to repair bare wildcard %s: %w", column, res.Error)
+				}
+				if res.RowsAffected > 0 {
+					logger.Info("[configstore] %s: repaired %d rows with bare wildcard %s", migrationName, res.RowsAffected, column)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			// Rollback is a no-op: reverting '["*"]' back to '*' would re-introduce
+			// the value that breaks the deserializer.
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
 	}
 	return nil
 }
