@@ -682,9 +682,10 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 			for i < len(messages) && messages[i].Role == schemas.ChatMessageRoleTool {
 				toolMsg := messages[i]
 				if toolMsg.ChatToolMessage != nil && toolMsg.ChatToolMessage.ToolCallID != nil {
+					sanitizedToolUseID := providerUtils.SanitizeAnthropicToolUseID(*toolMsg.ChatToolMessage.ToolCallID)
 					toolResult := AnthropicContentBlock{
 						Type:      AnthropicContentBlockTypeToolResult,
-						ToolUseID: toolMsg.ChatToolMessage.ToolCallID,
+						ToolUseID: &sanitizedToolUseID,
 					}
 
 					// Convert tool result content
@@ -783,7 +784,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 				for _, toolCall := range msg.ChatAssistantMessage.ToolCalls {
 					toolUse := AnthropicContentBlock{
 						Type: AnthropicContentBlockTypeToolUse,
-						ID:   toolCall.ID,
+						ID:   providerUtils.SanitizeAnthropicToolUseIDPtr(toolCall.ID),
 						Name: toolCall.Function.Name,
 					}
 
@@ -1180,7 +1181,7 @@ func ToAnthropicChatResponse(bifrostResp *schemas.BifrostChatResponse) *Anthropi
 
 				content = append(content, AnthropicContentBlock{
 					Type:  AnthropicContentBlockTypeToolUse,
-					ID:    toolCall.ID,
+					ID:    providerUtils.SanitizeAnthropicToolUseIDPtr(toolCall.ID),
 					Name:  toolCall.Function.Name,
 					Input: inputRaw,
 				})
@@ -1592,7 +1593,7 @@ func ToAnthropicChatStreamResponse(bifrostResp *schemas.BifrostChatResponse) str
 					streamResp.Index = &choice.Index
 					streamResp.ContentBlock = &AnthropicContentBlock{
 						Type: AnthropicContentBlockTypeToolUse,
-						ID:   toolCall.ID,
+						ID:   providerUtils.SanitizeAnthropicToolUseIDPtr(toolCall.ID),
 						Name: toolCall.Function.Name,
 					}
 				} else if toolCall.Function.Arguments != "" {

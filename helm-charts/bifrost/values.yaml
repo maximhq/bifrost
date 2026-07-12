@@ -57,9 +57,13 @@ deploymentLabels: {}
 podAnnotations: {}
 podLabels: {}
 
+# Pod-level security context. Defaults chown freshly provisioned PVCs (fsGroup)
+# and forbid running as root, which vanilla Kubernetes needs for restrictive
+# storage classes. On OpenShift (restricted-v2), set `podSecurityContext.fsGroup: null`
+# (Helm merges maps, so `{}` would keep this default) — the image supports
+# arbitrary UIDs with group 0, so no custom SCC is needed.
 podSecurityContext:
   fsGroup: 1000
-  runAsUser: 1000
   runAsNonRoot: true
 
 securityContext:
@@ -68,7 +72,6 @@ securityContext:
       - ALL
   readOnlyRootFilesystem: false
   runAsNonRoot: true
-  runAsUser: 1000
 
 service:
   type: ClusterIP
