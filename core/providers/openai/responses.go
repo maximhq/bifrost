@@ -107,6 +107,12 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			}
 		}
 
+		// OpenAI accepts role only on message input items.
+		if (message.Type != nil && *message.Type != schemas.ResponsesMessageTypeMessage) ||
+			(message.Type == nil && message.ResponsesReasoning != nil) {
+			message.Role = nil
+		}
+
 		if message.ResponsesReasoning != nil {
 			isGptOss := strings.Contains(capModel, "gpt-oss")
 			isReasoning := isOpenAIReasoningModel(capModel)
@@ -148,8 +154,6 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 				// Clone the embedded pointer to avoid mutating the original input
 				reasoningCopy := *message.ResponsesReasoning
 				message.ResponsesReasoning = &reasoningCopy
-				// OpenAI's Responses API does not accept 'role' on reasoning items
-				message.Role = nil
 				// Strip cross-provider encrypted content that non-reasoning models cannot decrypt.
 				// Reasoning models (o1/o3/o4/GPT-5) may use EncryptedContent for multi-turn state.
 				// Compaction items always carry encrypted_content and must never be stripped.
