@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/tidwall/gjson"
@@ -47,6 +48,55 @@ func TestResponsesInputRoundTripsToolSearchItems(t *testing.T) {
 	}
 	// The ordinary user message must still parse/serialize normally.
 	if got := gjson.GetBytes(out, "0.role").String(); got != "user" {
+		t.Fatalf("plain user message broke: %q", got)
+	}
+	t.Logf("round-trip OK:\n%s", out)
+}
+
+// TestResponsesInputRoundTripsAdditionalToolsItems reproduces the codex
+// first request for code-mode models (e.g. gpt-5.6-sol), whose
+// `additional_tools` input item previously had its nested tools re-serialized
+// through the mcp_list_tools shape — dropping every `tools[].type`
+// discriminator and making OpenAI reject with "Missing required parameter:
+// 'input[0].tools[0].type'" — and verifies the item now round-trips unchanged.
+func TestResponsesInputRoundTripsAdditionalToolsItems(t *testing.T) {
+	input := []byte(`[
+		{"type":"additional_tools","role":"developer","tools":[{"type":"custom","name":"apply_patch","description":"Apply a patch"},{"type":"function","name":"shell","description":"Runs a shell command","parameters":{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}},{"type":"namespace","name":"repo_tools","description":"Repository helper tools","tools":[{"type":"function","name":"open_file","description":"Open a file","parameters":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}},{"type":"function","name":"list_files","description":"List files","parameters":{"type":"object","properties":{"dir":{"type":"string"}},"required":["dir"]}}]}]},
+		{"role":"user","content":[{"type":"input_text","text":"Reply exactly with OK."}]}
+	]`)
+
+	var in OpenAIResponsesRequestInput
+	if err := in.UnmarshalJSON(input); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	if got := len(in.OpenAIResponsesRequestInputArray); got != 2 {
+		t.Fatalf("expected 2 input items, got %d", got)
+	}
+
+	out, err := in.MarshalJSON()
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+
+	// Every nested tools[].type must survive (OpenAI requires them).
+	for i, want := range []string{"custom", "function", "namespace"} {
+		if got := gjson.GetBytes(out, fmt.Sprintf("0.tools.%d.type", i)).String(); got != want {
+			t.Fatalf("additional_tools.tools[%d].type lost: %q (full: %s)", i, got, gjson.GetBytes(out, "0.tools").Raw)
+		}
+	}
+	// Function parameters and the namespace's nested tool list must survive.
+	if !gjson.GetBytes(out, "0.tools.1.parameters").IsObject() {
+		t.Fatalf("additional_tools function parameters lost: %s", gjson.GetBytes(out, "0.tools.1").Raw)
+	}
+	if got := gjson.GetBytes(out, "0.tools.2.tools.#").Int(); got != 2 {
+		t.Fatalf("additional_tools namespace nested tools lost: %s", gjson.GetBytes(out, "0.tools.2").Raw)
+	}
+	// The typed mcp_list_tools shape must not bleed in.
+	if gjson.GetBytes(out, "0.tools.0.input_schema").Exists() {
+		t.Fatalf("mcp_list_tools shape leaked into additional_tools: %s", gjson.GetBytes(out, "0.tools.0").Raw)
+	}
+	// The ordinary user message must still parse/serialize normally.
+	if got := gjson.GetBytes(out, "1.role").String(); got != "user" {
 		t.Fatalf("plain user message broke: %q", got)
 	}
 	t.Logf("round-trip OK:\n%s", out)

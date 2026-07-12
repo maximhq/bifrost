@@ -843,7 +843,10 @@ export type ResponsesMessageType =
 	| "mcp_approval_responses"
 	| "reasoning"
 	| "item_reference"
-	| "refusal";
+	| "refusal"
+	| "tool_search_call"
+	| "tool_search_output"
+	| "additional_tools";
 
 // Content block types for responses
 export type ResponsesMessageContentBlockType =
