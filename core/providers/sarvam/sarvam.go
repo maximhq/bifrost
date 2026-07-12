@@ -222,15 +222,15 @@ func (provider *SarvamProvider) Speech(ctx *schemas.BifrostContext, key schemas.
 
 	var sarvamResp SarvamSpeechResponse
 	if err := sonic.Unmarshal(body, &sarvamResp); err != nil {
-		return nil, providerUtils.NewBifrostOperationError("failed to parse Sarvam text-to-speech response", err)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("failed to parse Sarvam text-to-speech response", err), jsonData, body, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 	if len(sarvamResp.Audios) == 0 || sarvamResp.Audios[0] == "" {
-		return nil, providerUtils.NewBifrostOperationError("Sarvam text-to-speech response contained no audio", nil)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("Sarvam text-to-speech response contained no audio", nil), jsonData, body, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	audioBytes, err := base64.StdEncoding.DecodeString(sarvamResp.Audios[0])
 	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError("failed to decode Sarvam base64 audio", err)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("failed to decode Sarvam base64 audio", err), jsonData, body, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	bifrostResponse := &schemas.BifrostSpeechResponse{
