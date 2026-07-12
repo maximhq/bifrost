@@ -1,15 +1,7 @@
 package sarvam
 
 import (
-	"bytes"
-	"mime/multipart"
-	"net/http"
-	"strings"
-
-	"github.com/bytedance/sonic"
-	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
-	"github.com/valyala/fasthttp"
 )
 
 // ToSarvamTranscriptionRequest maps a Bifrost transcription request onto Sarvam's speech-to-text fields.
@@ -109,113 +101,4 @@ func ToBifrostTranscriptionResponse(sarvamResp *SarvamTranscriptionResponse) *sc
 	}
 
 	return response
-}
-
-// Transcription performs a speech-to-text request to Sarvam's API using multipart/form-data.
-func (provider *SarvamProvider) Transcription(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
-	reqBody := ToSarvamTranscriptionRequest(request)
-	if reqBody == nil || len(reqBody.File) == 0 {
-		return nil, providerUtils.NewBifrostOperationError("transcription file is required", nil)
-	}
-
-	var body bytes.Buffer
-	writer := multipart.NewWriter(&body)
-	if bifrostErr := writeSarvamTranscriptionMultipart(writer, reqBody); bifrostErr != nil {
-		return nil, bifrostErr
-	}
-	contentType := writer.FormDataContentType()
-	if err := writer.Close(); err != nil {
-		return nil, providerUtils.NewBifrostOperationError("failed to finalize multipart transcription request", err)
-	}
-
-	req := fasthttp.AcquireRequest()
-	resp := fasthttp.AcquireResponse()
-	defer fasthttp.ReleaseRequest(req)
-	defer fasthttp.ReleaseResponse(resp)
-
-	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-
-	req.SetRequestURI(provider.networkConfig.BaseURL + "/speech-to-text")
-	req.Header.SetMethod(http.MethodPost)
-	req.Header.SetContentType(contentType)
-	if key.Value.GetValue() != "" {
-		req.Header.Set("api-subscription-key", key.Value.GetValue())
-	}
-	req.SetBody(body.Bytes())
-
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
-	defer wait()
-	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, nil, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
-	}
-
-	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
-
-	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, providerUtils.EnrichError(ctx, parseSarvamError(resp), nil, resp.Body(), provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
-	}
-
-	responseBody, err := providerUtils.CheckAndDecodeBody(resp)
-	if err != nil {
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), nil, resp.Body(), provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
-	}
-
-	var sarvamResp SarvamTranscriptionResponse
-	if err := sonic.Unmarshal(responseBody, &sarvamResp); err != nil {
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("failed to parse Sarvam speech-to-text response", err), nil, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
-	}
-
-	response := ToBifrostTranscriptionResponse(&sarvamResp)
-	response.ExtraFields = schemas.BifrostResponseExtraFields{
-		Latency:                 latency.Milliseconds(),
-		ProviderResponseHeaders: providerUtils.ExtractProviderResponseHeaders(resp),
-	}
-
-	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
-		var rawResponse interface{}
-		if err := sonic.Unmarshal(responseBody, &rawResponse); err != nil {
-			rawResponse = string(responseBody)
-		}
-		response.ExtraFields.RawResponse = rawResponse
-	}
-
-	return response, nil
-}
-
-// writeSarvamTranscriptionMultipart writes the multipart form for Sarvam's speech-to-text request.
-func writeSarvamTranscriptionMultipart(writer *multipart.Writer, reqBody *SarvamTranscriptionRequest) *schemas.BifrostError {
-	filename := reqBody.Filename
-	if filename == "" {
-		filename = providerUtils.AudioFilenameFromBytes(reqBody.File)
-	}
-	fileWriter, err := writer.CreateFormFile("file", filename)
-	if err != nil {
-		return providerUtils.NewBifrostOperationError("failed to create file field", err)
-	}
-	if _, err := fileWriter.Write(reqBody.File); err != nil {
-		return providerUtils.NewBifrostOperationError("failed to write file data", err)
-	}
-
-	if reqBody.Model != "" {
-		if err := writer.WriteField("model", reqBody.Model); err != nil {
-			return providerUtils.NewBifrostOperationError("failed to write model field", err)
-		}
-	}
-	if reqBody.Mode != nil && strings.TrimSpace(*reqBody.Mode) != "" {
-		if err := writer.WriteField("mode", *reqBody.Mode); err != nil {
-			return providerUtils.NewBifrostOperationError("failed to write mode field", err)
-		}
-	}
-	if reqBody.LanguageCode != nil && strings.TrimSpace(*reqBody.LanguageCode) != "" {
-		if err := writer.WriteField("language_code", *reqBody.LanguageCode); err != nil {
-			return providerUtils.NewBifrostOperationError("failed to write language_code field", err)
-		}
-	}
-	if reqBody.InputAudioCodec != nil && strings.TrimSpace(*reqBody.InputAudioCodec) != "" {
-		if err := writer.WriteField("input_audio_codec", *reqBody.InputAudioCodec); err != nil {
-			return providerUtils.NewBifrostOperationError("failed to write input_audio_codec field", err)
-		}
-	}
-
-	return nil
 }

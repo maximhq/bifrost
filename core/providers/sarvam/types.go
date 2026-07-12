@@ -1,7 +1,6 @@
 package sarvam
 
 import (
-	"encoding/json"
 	"strings"
 
 	"github.com/bytedance/sonic"
@@ -79,8 +78,8 @@ type SarvamTranscriptionResponse struct {
 
 // SarvamError models Sarvam's error responses.
 type SarvamError struct {
-	Error  *sarvamErrorBody `json:"error"`
-	Detail json.RawMessage  `json:"detail"`
+	Error  *sarvamErrorBody  `json:"error"`
+	Detail sarvamErrorDetail `json:"detail"`
 }
 
 type sarvamErrorBody struct {
@@ -88,32 +87,43 @@ type sarvamErrorBody struct {
 	Code    string `json:"code"`
 }
 
+// sarvamErrorDetail captures Sarvam's "detail" field, which is either a plain
+// string or a FastAPI-style list of validation objects. UnmarshalJSON resolves
+// whichever shape is present into a single message at parse time.
+type sarvamErrorDetail struct {
+	Message string
+}
+
+func (d *sarvamErrorDetail) UnmarshalJSON(data []byte) error {
+	if len(data) == 0 || string(data) == "null" {
+		return nil
+	}
+	var s string
+	if err := sonic.Unmarshal(data, &s); err == nil {
+		d.Message = s
+		return nil
+	}
+	var arr []struct {
+		Msg string `json:"msg"`
+	}
+	if err := sonic.Unmarshal(data, &arr); err == nil {
+		msgs := make([]string, 0, len(arr))
+		for _, a := range arr {
+			if a.Msg != "" {
+				msgs = append(msgs, a.Msg)
+			}
+		}
+		d.Message = strings.Join(msgs, "; ")
+	}
+	return nil
+}
+
 // Message returns the best available human-readable error message.
 func (e SarvamError) Message() string {
 	if e.Error != nil && e.Error.Message != "" {
 		return e.Error.Message
 	}
-	if len(e.Detail) > 0 {
-		var s string
-		if err := sonic.Unmarshal(e.Detail, &s); err == nil && s != "" {
-			return s
-		}
-		var arr []struct {
-			Msg string `json:"msg"`
-		}
-		if err := sonic.Unmarshal(e.Detail, &arr); err == nil {
-			msgs := make([]string, 0, len(arr))
-			for _, a := range arr {
-				if a.Msg != "" {
-					msgs = append(msgs, a.Msg)
-				}
-			}
-			if len(msgs) > 0 {
-				return strings.Join(msgs, "; ")
-			}
-		}
-	}
-	return ""
+	return e.Detail.Message
 }
 
 // Code returns the provider error code when present.

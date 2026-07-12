@@ -1,13 +1,7 @@
 package sarvam
 
 import (
-	"encoding/base64"
-	"net/http"
-
-	"github.com/bytedance/sonic"
-	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
-	"github.com/valyala/fasthttp"
 )
 
 // ToSarvamSpeechRequest maps a Bifrost speech request onto Sarvam's text-to-speech request.
@@ -91,87 +85,4 @@ func ToSarvamSpeechRequest(bifrostReq *schemas.BifrostSpeechRequest) *SarvamSpee
 	}
 
 	return sarvamReq
-}
-
-// Speech performs a text-to-speech request to Sarvam's API.
-func (provider *SarvamProvider) Speech(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
-	if request == nil || request.Input == nil || request.Input.Input == "" {
-		return nil, providerUtils.NewBifrostOperationError("speech input text is required", nil)
-	}
-
-	req := fasthttp.AcquireRequest()
-	resp := fasthttp.AcquireResponse()
-	defer fasthttp.ReleaseRequest(req)
-	defer fasthttp.ReleaseResponse(resp)
-
-	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-
-	req.SetRequestURI(provider.networkConfig.BaseURL + "/text-to-speech")
-	req.Header.SetMethod(http.MethodPost)
-	req.Header.SetContentType("application/json")
-	if key.Value.GetValue() != "" {
-		req.Header.Set("api-subscription-key", key.Value.GetValue())
-	}
-
-	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
-		ctx,
-		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return ToSarvamSpeechRequest(request), nil
-		})
-	if bifrostErr != nil {
-		return nil, bifrostErr
-	}
-	req.SetBody(jsonData)
-
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
-	defer wait()
-	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
-	}
-
-	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
-
-	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, providerUtils.EnrichError(ctx, parseSarvamError(resp), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
-	}
-
-	body, err := providerUtils.CheckAndDecodeBody(resp)
-	if err != nil {
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
-	}
-
-	var sarvamResp SarvamSpeechResponse
-	if err := sonic.Unmarshal(body, &sarvamResp); err != nil {
-		return nil, providerUtils.NewBifrostOperationError("failed to parse Sarvam text-to-speech response", err)
-	}
-	if len(sarvamResp.Audios) == 0 || sarvamResp.Audios[0] == "" {
-		return nil, providerUtils.NewBifrostOperationError("Sarvam text-to-speech response contained no audio", nil)
-	}
-
-	audioBytes, err := base64.StdEncoding.DecodeString(sarvamResp.Audios[0])
-	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError("failed to decode Sarvam base64 audio", err)
-	}
-
-	bifrostResponse := &schemas.BifrostSpeechResponse{
-		Audio: audioBytes,
-		ExtraFields: schemas.BifrostResponseExtraFields{
-			Latency:                 latency.Milliseconds(),
-			ProviderResponseHeaders: providerUtils.ExtractProviderResponseHeaders(resp),
-		},
-	}
-
-	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-		providerUtils.ParseAndSetRawRequest(&bifrostResponse.ExtraFields, jsonData)
-	}
-	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
-		var rawResponse interface{}
-		if err := sonic.Unmarshal(body, &rawResponse); err != nil {
-			rawResponse = string(body)
-		}
-		bifrostResponse.ExtraFields.RawResponse = rawResponse
-	}
-
-	return bifrostResponse, nil
 }

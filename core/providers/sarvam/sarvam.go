@@ -2,10 +2,17 @@
 package sarvam
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
+	"errors"
+	"io"
+	"mime/multipart"
+	"net/http"
 	"strings"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/providers/openai"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
@@ -165,9 +172,344 @@ func (provider *SarvamProvider) OCR(ctx *schemas.BifrostContext, key schemas.Key
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.OCRRequest, provider.GetProviderKey())
 }
 
-// SpeechStream is not supported by the Sarvam provider.
+// Speech performs a text-to-speech request to Sarvam's API.
+func (provider *SarvamProvider) Speech(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
+	if request == nil || request.Input == nil || request.Input.Input == "" {
+		return nil, providerUtils.NewBifrostOperationError("speech input text is required", nil)
+	}
+
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+
+	req.SetRequestURI(provider.networkConfig.BaseURL + "/text-to-speech")
+	req.Header.SetMethod(http.MethodPost)
+	req.Header.SetContentType("application/json")
+	if key.Value.GetValue() != "" {
+		req.Header.Set("api-subscription-key", key.Value.GetValue())
+	}
+
+	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		request,
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			return ToSarvamSpeechRequest(request), nil
+		})
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	req.SetBody(jsonData)
+
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	defer wait()
+	if bifrostErr != nil {
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+	}
+
+	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
+
+	if resp.StatusCode() != fasthttp.StatusOK {
+		return nil, providerUtils.EnrichError(ctx, parseSarvamError(resp), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+	}
+
+	body, err := providerUtils.CheckAndDecodeBody(resp)
+	if err != nil {
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+	}
+
+	var sarvamResp SarvamSpeechResponse
+	if err := sonic.Unmarshal(body, &sarvamResp); err != nil {
+		return nil, providerUtils.NewBifrostOperationError("failed to parse Sarvam text-to-speech response", err)
+	}
+	if len(sarvamResp.Audios) == 0 || sarvamResp.Audios[0] == "" {
+		return nil, providerUtils.NewBifrostOperationError("Sarvam text-to-speech response contained no audio", nil)
+	}
+
+	audioBytes, err := base64.StdEncoding.DecodeString(sarvamResp.Audios[0])
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError("failed to decode Sarvam base64 audio", err)
+	}
+
+	bifrostResponse := &schemas.BifrostSpeechResponse{
+		Audio: audioBytes,
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			Latency:                 latency.Milliseconds(),
+			ProviderResponseHeaders: providerUtils.ExtractProviderResponseHeaders(resp),
+		},
+	}
+
+	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+		providerUtils.ParseAndSetRawRequest(&bifrostResponse.ExtraFields, jsonData)
+	}
+	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+		var rawResponse interface{}
+		if err := sonic.Unmarshal(body, &rawResponse); err != nil {
+			rawResponse = string(body)
+		}
+		bifrostResponse.ExtraFields.RawResponse = rawResponse
+	}
+
+	return bifrostResponse, nil
+}
+
+// SpeechStream performs a streaming text-to-speech request to Sarvam's API.
+// Sarvam streams raw binary audio chunks (application/octet-stream), which are
+// forwarded as speech-audio deltas.
 func (provider *SarvamProvider) SpeechStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostSpeechRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.SpeechStreamRequest, provider.GetProviderKey())
+	if request == nil || request.Input == nil || request.Input.Input == "" {
+		return nil, providerUtils.NewBifrostOperationError("speech input text is required", nil)
+	}
+
+	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		request,
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			return ToSarvamSpeechRequest(request), nil
+		})
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	resp.StreamBody = true
+	defer fasthttp.ReleaseRequest(req)
+
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+
+	req.SetRequestURI(provider.networkConfig.BaseURL + "/text-to-speech/stream")
+	req.Header.SetMethod(http.MethodPost)
+	req.Header.SetContentType("application/json")
+	if key.Value.GetValue() != "" {
+		req.Header.Set("api-subscription-key", key.Value.GetValue())
+	}
+	req.SetBody(jsonBody)
+
+	startTime := time.Now()
+	err := provider.streamingClient.Do(req, resp)
+	latency := time.Since(startTime)
+	if err != nil {
+		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
+		if errors.Is(err, context.Canceled) {
+			return nil, providerUtils.EnrichError(ctx, &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: &schemas.ErrorField{
+					Type:    schemas.Ptr(schemas.RequestCancelled),
+					Message: schemas.ErrRequestCancelled,
+					Error:   err,
+				},
+			}, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+		}
+		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+		}
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostUpstreamConnectionError(schemas.ErrProviderDoRequest, err), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+	}
+
+	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
+
+	if resp.StatusCode() != fasthttp.StatusOK {
+		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
+		return nil, providerUtils.EnrichError(ctx, parseSarvamError(resp), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+	}
+
+	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
+	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)
+
+	go func() {
+		defer func() {
+			if ctx.Err() == context.Canceled {
+				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, jsonBody)
+			} else if ctx.Err() == context.DeadlineExceeded {
+				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, jsonBody)
+			}
+			providerUtils.CloseStream(ctx, responseChan)
+		}()
+		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
+
+		reader, releaseGzip := providerUtils.DecompressStreamBody(resp)
+		defer releaseGzip()
+
+		reader, stopIdleTimeout := providerUtils.NewIdleTimeoutReader(reader, resp.BodyStream(), providerUtils.GetStreamIdleTimeout(ctx), ctx)
+		defer stopIdleTimeout()
+
+		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), provider.logger)
+		defer stopCancellation()
+		defer providerUtils.EnsureStreamFinalizerCalled(ctx, postHookSpanFinalizer)
+
+		buffer := make([]byte, 4096)
+		chunkIndex := -1
+		lastChunkTime := time.Now()
+
+		for {
+			if ctx.Err() != nil {
+				return
+			}
+			n, err := reader.Read(buffer)
+			if err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				if err == io.EOF {
+					break
+				}
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+				provider.logger.Warn("Error reading Sarvam speech stream: %v", err)
+				providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, provider.logger, postHookSpanFinalizer)
+				return
+			}
+
+			if n > 0 {
+				chunkIndex++
+				audioChunk := make([]byte, n)
+				copy(audioChunk, buffer[:n])
+
+				response := &schemas.BifrostSpeechStreamResponse{
+					Type:  schemas.SpeechStreamResponseTypeDelta,
+					Audio: audioChunk,
+					ExtraFields: schemas.BifrostResponseExtraFields{
+						ChunkIndex: chunkIndex,
+						Latency:    time.Since(lastChunkTime).Milliseconds(),
+					},
+				}
+				lastChunkTime = time.Now()
+
+				if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+					response.ExtraFields.RawResponse = audioChunk
+				}
+
+				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, response, nil, nil), responseChan, postHookSpanFinalizer)
+			}
+		}
+
+		finalResponse := &schemas.BifrostSpeechStreamResponse{
+			Type:  schemas.SpeechStreamResponseTypeDone,
+			Audio: []byte{},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				ChunkIndex: chunkIndex + 1,
+				Latency:    time.Since(startTime).Milliseconds(),
+			},
+		}
+		if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+			providerUtils.ParseAndSetRawRequest(&finalResponse.ExtraFields, jsonBody)
+		}
+		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+		providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, finalResponse, nil, nil), responseChan, postHookSpanFinalizer)
+	}()
+
+	return responseChan, nil
+}
+
+// Transcription performs a speech-to-text request to Sarvam's API using multipart/form-data.
+func (provider *SarvamProvider) Transcription(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
+	reqBody := ToSarvamTranscriptionRequest(request)
+	if reqBody == nil || len(reqBody.File) == 0 {
+		return nil, providerUtils.NewBifrostOperationError("transcription file is required", nil)
+	}
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if bifrostErr := writeSarvamTranscriptionMultipart(writer, reqBody); bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	contentType := writer.FormDataContentType()
+	if err := writer.Close(); err != nil {
+		return nil, providerUtils.NewBifrostOperationError("failed to finalize multipart transcription request", err)
+	}
+
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+
+	req.SetRequestURI(provider.networkConfig.BaseURL + "/speech-to-text")
+	req.Header.SetMethod(http.MethodPost)
+	req.Header.SetContentType(contentType)
+	if key.Value.GetValue() != "" {
+		req.Header.Set("api-subscription-key", key.Value.GetValue())
+	}
+	req.SetBody(body.Bytes())
+
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	defer wait()
+	if bifrostErr != nil {
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, nil, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+	}
+
+	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
+
+	if resp.StatusCode() != fasthttp.StatusOK {
+		return nil, providerUtils.EnrichError(ctx, parseSarvamError(resp), nil, resp.Body(), provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+	}
+
+	responseBody, err := providerUtils.CheckAndDecodeBody(resp)
+	if err != nil {
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), nil, resp.Body(), provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+	}
+
+	var sarvamResp SarvamTranscriptionResponse
+	if err := sonic.Unmarshal(responseBody, &sarvamResp); err != nil {
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("failed to parse Sarvam speech-to-text response", err), nil, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+	}
+
+	response := ToBifrostTranscriptionResponse(&sarvamResp)
+	response.ExtraFields = schemas.BifrostResponseExtraFields{
+		Latency:                 latency.Milliseconds(),
+		ProviderResponseHeaders: providerUtils.ExtractProviderResponseHeaders(resp),
+	}
+
+	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+		var rawResponse interface{}
+		if err := sonic.Unmarshal(responseBody, &rawResponse); err != nil {
+			rawResponse = string(responseBody)
+		}
+		response.ExtraFields.RawResponse = rawResponse
+	}
+
+	return response, nil
+}
+
+// writeSarvamTranscriptionMultipart writes the multipart form for Sarvam's speech-to-text request.
+func writeSarvamTranscriptionMultipart(writer *multipart.Writer, reqBody *SarvamTranscriptionRequest) *schemas.BifrostError {
+	filename := reqBody.Filename
+	if filename == "" {
+		filename = providerUtils.AudioFilenameFromBytes(reqBody.File)
+	}
+	fileWriter, err := writer.CreateFormFile("file", filename)
+	if err != nil {
+		return providerUtils.NewBifrostOperationError("failed to create file field", err)
+	}
+	if _, err := fileWriter.Write(reqBody.File); err != nil {
+		return providerUtils.NewBifrostOperationError("failed to write file data", err)
+	}
+
+	if reqBody.Model != "" {
+		if err := writer.WriteField("model", reqBody.Model); err != nil {
+			return providerUtils.NewBifrostOperationError("failed to write model field", err)
+		}
+	}
+	if reqBody.Mode != nil && strings.TrimSpace(*reqBody.Mode) != "" {
+		if err := writer.WriteField("mode", *reqBody.Mode); err != nil {
+			return providerUtils.NewBifrostOperationError("failed to write mode field", err)
+		}
+	}
+	if reqBody.LanguageCode != nil && strings.TrimSpace(*reqBody.LanguageCode) != "" {
+		if err := writer.WriteField("language_code", *reqBody.LanguageCode); err != nil {
+			return providerUtils.NewBifrostOperationError("failed to write language_code field", err)
+		}
+	}
+	if reqBody.InputAudioCodec != nil && strings.TrimSpace(*reqBody.InputAudioCodec) != "" {
+		if err := writer.WriteField("input_audio_codec", *reqBody.InputAudioCodec); err != nil {
+			return providerUtils.NewBifrostOperationError("failed to write input_audio_codec field", err)
+		}
+	}
+
+	return nil
 }
 
 // TranscriptionStream is not supported by the Sarvam provider.
