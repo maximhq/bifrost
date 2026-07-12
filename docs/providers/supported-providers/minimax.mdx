@@ -65,10 +65,10 @@ For the China endpoint, override the provider origin. Bifrost appends the operat
 
 ### Official Regional Endpoints
 
-| Region | OpenAI-compatible base URL | Anthropic SDK base URL | Anthropic HTTP API root |
+| Region | OpenAI-compatible base URL | Anthropic SDK base URL | Anthropic messages URL |
 | --- | --- | --- | --- |
-| Global | `https://api.minimax.io/v1` | `https://api.minimax.io/anthropic` | `https://api.minimax.io/anthropic/v1` |
-| China | `https://api.minimaxi.com/v1` | `https://api.minimaxi.com/anthropic` | `https://api.minimaxi.com/anthropic/v1` |
+| Global | `https://api.minimax.io/v1` | `https://api.minimax.io/anthropic` | `https://api.minimax.io/anthropic/v1/messages` |
+| China | `https://api.minimaxi.com/v1` | `https://api.minimaxi.com/anthropic` | `https://api.minimaxi.com/anthropic/v1/messages` |
 
 The Bifrost provider uses the compatible `/v1` upstream routes. Bifrost clients can still use either supported gateway integration format because requests are normalized before provider dispatch.
 
