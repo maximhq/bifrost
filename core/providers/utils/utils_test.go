@@ -1938,6 +1938,76 @@ func TestStripThoughtSignature(t *testing.T) {
 	}
 }
 
+func TestSanitizeAnthropicToolUseID(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+	}{
+		{"empty", ""},
+		{"already valid", "call_abc123_XYZ-9"},
+		{"kimi-style colon and dot", "functions.Bash:0"},
+		{"gemini-style slash", "projects/foo/tool/1"},
+		{"only unsafe chars", "::.."},
+		{"long id with one unsafe char", "a-very-long-tool-call-identifier-that-goes-on-and-on:0"},
+		{"long id with many unsafe chars", strings.Repeat("segment.with.dots/and:colons/", 5)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := SanitizeAnthropicToolUseID(tc.in)
+
+			// Anthropic's pattern requires at least one character, so an already-valid,
+			// non-empty id is the only case left unchanged; everything else (including
+			// the empty string) must be rewritten to a non-empty, conforming id.
+			if tc.in != "" && !anthropicUnsafeToolUseIDCharRegex.MatchString(tc.in) {
+				if got != tc.in {
+					t.Errorf("SanitizeAnthropicToolUseID(%q) = %q, want unchanged", tc.in, got)
+				}
+				return
+			}
+			if got == "" {
+				t.Errorf("SanitizeAnthropicToolUseID(%q) = empty, want a non-empty conforming id", tc.in)
+			}
+			if anthropicUnsafeToolUseIDCharRegex.MatchString(got) {
+				t.Errorf("SanitizeAnthropicToolUseID(%q) = %q, still contains unsafe characters", tc.in, got)
+			}
+			if len(got) > maxSanitizedAnthropicToolUseIDLen {
+				t.Errorf("SanitizeAnthropicToolUseID(%q) = %q (len %d), exceeds %d-char cap", tc.in, got, len(got), maxSanitizedAnthropicToolUseIDLen)
+			}
+			if got2 := SanitizeAnthropicToolUseID(tc.in); got2 != got {
+				t.Errorf("SanitizeAnthropicToolUseID(%q) is not deterministic: %q != %q", tc.in, got, got2)
+			}
+		})
+	}
+
+	// A tool_use id and its matching tool_result id must sanitize identically,
+	// since Anthropic requires them to reference the same value.
+	toolUseID := "functions.get_weather:0"
+	if SanitizeAnthropicToolUseID(toolUseID) != SanitizeAnthropicToolUseID(toolUseID) {
+		t.Error("matching tool_use/tool_result ids diverged after sanitization")
+	}
+
+	// Distinct ids that collapse to the same replaced-character skeleton must
+	// still sanitize to distinct values (hash is computed on the original id).
+	if SanitizeAnthropicToolUseID("functions.Bash:0") == SanitizeAnthropicToolUseID("functions.Bash:1") {
+		t.Error("distinct tool ids sanitized to the same value")
+	}
+}
+
+func TestSanitizeAnthropicToolUseIDPtr(t *testing.T) {
+	if got := SanitizeAnthropicToolUseIDPtr(nil); got != nil {
+		t.Errorf("SanitizeAnthropicToolUseIDPtr(nil) = %v, want nil", got)
+	}
+
+	id := "functions.Bash:0"
+	got := SanitizeAnthropicToolUseIDPtr(&id)
+	if got == nil {
+		t.Fatal("SanitizeAnthropicToolUseIDPtr returned nil for non-nil input")
+	}
+	if *got != SanitizeAnthropicToolUseID(id) {
+		t.Errorf("SanitizeAnthropicToolUseIDPtr(%q) = %q, want %q", id, *got, SanitizeAnthropicToolUseID(id))
+	}
+}
+
 // finalizerTestTracer is a minimal schemas.Tracer that models only the
 // deferred-span lifecycle: a span stays parked until ClearDeferredSpan runs.
 // It records the status passed to EndSpan so tests can assert span outcomes.

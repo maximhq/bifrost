@@ -10,7 +10,14 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 
 ### 2.1.27
 
+- Added `bifrost.auditLogs.objectStorage` for archiving audit events to S3/GCS. Supports `type` (s3/gcs), `bucket`, `prefix`, `compress`, and full S3 credential fields (`region`, `endpoint`, `accessKeyId`, `secretAccessKey`, `sessionToken`, `roleArn`, `forcePathStyle`) and GCS fields (`projectId`, `credentialsJson`). Renders into `audit_logs.object_storage`.
 - Added `bifrost.schemaUrl` to override the generated `config.json` `$schema` location for isolated deployments. It accepts HTTP(S), `file://`, or filesystem paths. When set, it is also exported as `BIFROST_SCHEMA_URL` in the pod; when empty (default), the env var is not injected and the public schema URL is used.
+- Added `force_single_region` to `bifrost.providers.vertex.keys[*].vertex_key_config`. When `true`, skips automatic promotion of multi-region-only models to a multi-region endpoint. Enable for provisioned throughput. Renders into `vertex_key_config.force_single_region`.
+- Added `calendar_aligned` to `bifrost.accessProfiles[*]` (top-level on each profile). Snaps all budget and rate-limit reset windows to calendar boundaries for the profile. Passes through directly into `access_profiles[*].calendar_aligned`.
+- Added `calendar_aligned` to `bifrost.accessProfiles[*].budgets[*]` and `bifrost.accessProfiles[*].provider_configs[*].budgets[*]`. Schema previously blocked this field via `additionalProperties: false`; now parity with `governance.budgets[*].calendar_aligned`.
+- Added `calendar_aligned` rendering for `bifrost.governance.virtualKeys[*].calendar_aligned`. Was in schema but not rendered into config. Now emits `virtual_keys[*].calendar_aligned` in the generated config.
+- Documented `calendar_aligned` in the `bifrost.governance.budgets[*]` example. Was already schema-supported; now shown in the `values.yaml` commented example.
+- Added `bifrost.alerting` for declarative alert channels and rules. Supports `history_retention_days`, `webhook_network` (`allow_http`, `allow_private_network`), `channels[]` (slack, microsoft_teams, pagerduty, webhook), and `rules[]` (CEL-expression-based, governance-scope-aware). Renders into `alerting`.
 
 ### 2.1.26
 
@@ -446,6 +453,38 @@ Use the included installation script for guided setup:
 cd bifrost/helm-charts/bifrost
 ./scripts/install.sh
 ```
+
+### OpenShift (restricted-v2 SCC)
+
+The default install sets `podSecurityContext.fsGroup: 1000`. OpenShift's
+`restricted-v2` SCC enforces `MustRunAs` against the namespace's allocated
+group range and rejects that value at admission:
+
+```text
+fsGroup: Invalid value: []int64{1000}: 1000 is not an allowed group
+```
+
+To deploy on OpenShift, clear the default `fsGroup` so the SCC can assign an
+in-range UID/GID:
+
+```yaml
+podSecurityContext:
+  # Helm merges maps, so `{}` does NOT clear this — you must use null.
+  fsGroup: null
+  runAsNonRoot: true
+```
+
+The Bifrost image supports arbitrary UIDs with group 0: the data directory is
+owned by group 0 and group-writable at build time, so the restricted-v2 UID
+(with GID 0) can write `config.db` and `logs.db` — no custom SCC or `anyuid` is
+needed.
+
+> **Behavior change:** the entrypoint's ownership repair now runs only as root
+> (uid 0). A non-root container that re-groups the data directory (for example
+> Docker Compose `user: "1000:2000"`) will no longer have its ownership silently
+> rewritten. Mount a volume already writable by the container's GID, or set
+> `BIFROST_SKIP_WRITE_CHECK=1` to boot read-only against external stores (e.g.
+> Postgres) even when `APP_DIR` is not writable.
 
 ## Configuration
 

@@ -1,6 +1,7 @@
 package schemas
 
 import (
+	"bytes"
 	"database/sql/driver"
 	"fmt"
 	"os"
@@ -49,8 +50,7 @@ func parseSecretRef(value string) *SecretVar {
 		val = unquoted
 	}
 	if sonic.Valid([]byte(value)) {
-		valueNode, _ := sonic.Get([]byte(val), "value")
-		if valueNode.Exists() {
+		if trimmed := bytes.TrimSpace([]byte(val)); len(trimmed) > 0 && trimmed[0] == '{' {
 			type secretVarCompat struct {
 				Val        string     `json:"value"`
 				Ref        string     `json:"ref"`
@@ -298,8 +298,7 @@ func (e *SecretVar) UnmarshalJSON(data []byte) error {
 		val = unquoted
 	}
 	if sonic.Valid(data) {
-		valueNode, _ := sonic.Get(data, "value")
-		if valueNode.Exists() {
+		if trimmed := bytes.TrimSpace(data); len(trimmed) > 0 && trimmed[0] == '{' {
 			type secretVarCompat struct {
 				Val        string     `json:"value"`
 				Ref        string     `json:"ref"`
@@ -460,6 +459,13 @@ func (e *SecretVar) ShouldPreserveStored() bool {
 		return false
 	}
 	return e.GetValue() == "" || e.IsRedacted()
+}
+
+// IsMaskedPlaceholder reports whether the value is a client-side redaction
+// placeholder that must not overwrite a stored credential. Secret references
+// are intentional updates and are never treated as placeholders.
+func (e *SecretVar) IsMaskedPlaceholder() bool {
+	return e != nil && e.IsRedacted() && !e.IsFromSecret()
 }
 
 // IsSet returns true if the SecretVar has a resolved value or a secret reference.
