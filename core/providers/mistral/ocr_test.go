@@ -352,6 +352,43 @@ func TestToBifrostOCRResponse(t *testing.T) {
 			},
 		},
 		{
+			// End-to-end regression for the shape reported in the field
+			// (top_left_x/top_left_y/bottom_right_x/bottom_right_y/content/type).
+			// Simulates the actual wire path: Mistral JSON → MistralOCRResponse →
+			// BifrostOCRResponse → JSON to client, and checks that block content
+			// (not just presence) survives the round-trip.
+			name: "populated blocks survive full JSON round-trip",
+			input: func() *MistralOCRResponse {
+				mistralJSON := []byte(`{
+					"model": "mistral-ocr-4-0",
+					"pages": [{
+						"index": 0,
+						"markdown": "hi",
+						"blocks": [
+							{"type":"text","content":"Hello","top_left_x":1,"top_left_y":2,"bottom_right_x":3,"bottom_right_y":4},
+							{"type":"text","content":"World","top_left_x":5,"top_left_y":6,"bottom_right_x":7,"bottom_right_y":8}
+						]
+					}]
+				}`)
+				var r MistralOCRResponse
+				require.NoError(t, sonic.Unmarshal(mistralJSON, &r))
+				return &r
+			}(),
+			validate: func(t *testing.T, result *schemas.BifrostOCRResponse) {
+				require.NotNil(t, result)
+				require.NotNil(t, result.Pages[0].Blocks)
+				require.Len(t, *result.Pages[0].Blocks, 2)
+
+				out, err := sonic.Marshal(result)
+				require.NoError(t, err)
+				body := string(out)
+				assert.Contains(t, body, `"blocks":[`, "blocks must appear in top-level JSON")
+				assert.Contains(t, body, `"content":"Hello"`, "block content must survive")
+				assert.Contains(t, body, `"top_left_x":1`, "bbox coord must survive")
+				assert.Contains(t, body, `"content":"World"`)
+			},
+		},
+		{
 			// Regression: `blocks: []` from Mistral is a distinct state from an
 			// absent field, and must not collapse into nil via omitempty.
 			name: "response with explicitly empty blocks preserves presence",
