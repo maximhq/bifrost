@@ -293,8 +293,9 @@ const aliasConfigObjectSchema = z.object({
 	api_version: z.string().optional(),
 	anthropic_version: z.string().optional(),
 	endpoint: secretVarSchema.optional(),
-	// Vertex overrides
+	// Shared per-alias project override (Vertex / Bedrock / Bedrock Mantle)
 	project_id: secretVarSchema.optional(),
+	// Vertex overrides
 	project_number: secretVarSchema.optional(),
 	force_single_region: z.boolean().optional(),
 	// Bedrock overrides
