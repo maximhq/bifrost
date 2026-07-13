@@ -1061,11 +1061,13 @@ func TestToolFunctionParameters_RawJSONValidation(t *testing.T) {
 		{name: "array schema", input: `{"type":"array"}`, wantErr: true},
 		{name: "union schema", input: `{"type":["object","null"]}`, wantErr: true},
 		{name: "non-string schema type", input: `{"type":42}`, wantErr: true},
+		{name: "enum schema without type", input: `{"enum":["a"]}`, wantErr: true},
+		{name: "properties schema without type", input: `{"properties":{"name":{"type":"string"}}}`, wantErr: true},
+		{name: "reference schema without type", input: `{"$ref":"#/$defs/arguments"}`, wantErr: true},
+		{name: "composition schema without type", input: `{"allOf":[{"type":"object"}]}`, wantErr: true},
 		{name: "empty object", input: `{}`},
 		{name: "object schema", input: `{"type":"object","properties":{}}`},
 		{name: "object with whitespace", input: `  {"type":"object"}  `},
-		{name: "reference schema", input: `{"$ref":"#/$defs/arguments"}`},
-		{name: "composition schema", input: `{"allOf":[{"type":"object"}]}`},
 	}
 
 	for _, tt := range tests {
