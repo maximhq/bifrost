@@ -1,0 +1,1 @@
+- fix: forward `include_blocks` to Mistral OCR and carry provider-native `pages[].blocks` through the response [@hugochinchilla](https://github.com/hugochinchilla)

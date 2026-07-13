@@ -90,6 +90,7 @@ func TestToMistralOCRRequest(t *testing.T) {
 				},
 				Params: &schemas.OCRParameters{
 					IncludeImageBase64:       schemas.Ptr(true),
+					IncludeBlocks:            schemas.Ptr(true),
 					Pages:                    []int{0, 1, 2},
 					ImageLimit:               schemas.Ptr(10),
 					ImageMinSize:             schemas.Ptr(100),
@@ -109,6 +110,8 @@ func TestToMistralOCRRequest(t *testing.T) {
 
 				require.NotNil(t, result.IncludeImageBase64)
 				assert.True(t, *result.IncludeImageBase64)
+				require.NotNil(t, result.IncludeBlocks)
+				assert.True(t, *result.IncludeBlocks)
 				assert.Equal(t, []int{0, 1, 2}, result.Pages)
 				require.NotNil(t, result.ImageLimit)
 				assert.Equal(t, 10, *result.ImageLimit)
@@ -141,6 +144,7 @@ func TestToMistralOCRRequest(t *testing.T) {
 			validate: func(t *testing.T, result *MistralOCRRequest) {
 				require.NotNil(t, result)
 				assert.Nil(t, result.IncludeImageBase64)
+				assert.Nil(t, result.IncludeBlocks)
 				assert.Nil(t, result.Pages)
 				assert.Nil(t, result.ImageLimit)
 				assert.Nil(t, result.ImageMinSize)
@@ -308,6 +312,38 @@ func TestToBifrostOCRResponse(t *testing.T) {
 				require.NotNil(t, result)
 				require.NotNil(t, result.DocumentAnnotation)
 				assert.Equal(t, "This is a legal contract.", *result.DocumentAnnotation)
+			},
+		},
+		{
+			name: "response with blocks passes through as opaque values",
+			input: &MistralOCRResponse{
+				Model: "mistral-ocr-latest",
+				Pages: []MistralOCRPage{
+					{
+						Index:    0,
+						Markdown: "Page with blocks",
+						Blocks: []any{
+							map[string]any{
+								"type": "text",
+								"text": "Hello",
+								"bbox": []any{float64(1), float64(2), float64(3), float64(4)},
+							},
+							map[string]any{
+								"type": "table",
+								"rows": float64(3),
+							},
+						},
+					},
+				},
+			},
+			validate: func(t *testing.T, result *schemas.BifrostOCRResponse) {
+				require.NotNil(t, result)
+				require.Len(t, result.Pages, 1)
+				require.Len(t, result.Pages[0].Blocks, 2)
+				first, ok := result.Pages[0].Blocks[0].(map[string]any)
+				require.True(t, ok)
+				assert.Equal(t, "text", first["type"])
+				assert.Equal(t, "Hello", first["text"])
 			},
 		},
 		{
