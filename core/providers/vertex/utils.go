@@ -15,9 +15,19 @@ import (
 // span deployments across distinct GCP projects (e.g. Anthropic models in
 // one project, Gemini in another).
 func resolveVertexProjectID(ctx *schemas.BifrostContext, key schemas.Key) string {
-	if ra := schemas.GetResolvedAlias(ctx); ra != nil && ra.Config != nil && ra.Config.VertexAliasCfg != nil && ra.Config.VertexAliasCfg.ProjectID != nil {
-		if v := ra.Config.VertexAliasCfg.ProjectID.GetValue(); v != "" {
-			return v
+	if ra := schemas.GetResolvedAlias(ctx); ra != nil && ra.Config != nil {
+		// Shared top-level override (how project_id now arrives from JSON/UI).
+		if ra.Config.ProjectID != nil {
+			if v := ra.Config.ProjectID.GetValue(); v != "" {
+				return v
+			}
+		}
+		// Back-compat for Go-constructed VertexAliasCfg (e.g. tests); the JSON
+		// path always populates the top-level field above.
+		if ra.Config.VertexAliasCfg != nil && ra.Config.VertexAliasCfg.ProjectID != nil {
+			if v := ra.Config.VertexAliasCfg.ProjectID.GetValue(); v != "" {
+				return v
+			}
 		}
 	}
 	if key.VertexKeyConfig != nil {

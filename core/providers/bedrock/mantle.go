@@ -39,15 +39,6 @@ func WithMantleProject(base map[string]string, headerName, projectID string) map
 	return out
 }
 
-// resolveMantleProjectID returns the Bedrock project configured for the mantle sub-surface of the
-// Bedrock provider, or "" when none is set (AWS then routes to the account's default project).
-func resolveMantleProjectID(key schemas.Key) string {
-	if key.BedrockKeyConfig != nil && key.BedrockKeyConfig.ProjectID != nil {
-		return key.BedrockKeyConfig.ProjectID.GetValue()
-	}
-	return ""
-}
-
 // isMantleModel reports whether a model should be routed via the Bedrock Mantle
 // OpenAI-compatible endpoint. OpenAI-family (gpt-*) and Gemma 4 models are mantle-only
 // (they have no Converse equivalent). Gemma 3 is intentionally excluded: it only supports
@@ -166,7 +157,7 @@ func (provider *BedrockProvider) mantleChatCompletions(
 		url,
 		request,
 		openai.BearerAuthHeader(key),
-		WithMantleProject(provider.networkConfig.ExtraHeaders, MantleOpenAIProjectHeader, resolveMantleProjectID(key)),
+		WithMantleProject(provider.networkConfig.ExtraHeaders, MantleOpenAIProjectHeader, resolveMantleProjectID(ctx, key)),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
@@ -200,7 +191,7 @@ func (provider *BedrockProvider) mantleChatCompletionsStream(
 
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx, provider.mantleStreamingClient, url, request,
-		openai.BearerAuthHeader(key), WithMantleProject(provider.networkConfig.ExtraHeaders, MantleOpenAIProjectHeader, resolveMantleProjectID(key)),
+		openai.BearerAuthHeader(key), WithMantleProject(provider.networkConfig.ExtraHeaders, MantleOpenAIProjectHeader, resolveMantleProjectID(ctx, key)),
 		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
@@ -241,7 +232,7 @@ func (provider *BedrockProvider) mantleResponses(
 		url,
 		request,
 		openai.BearerAuthHeader(key),
-		WithMantleProject(provider.networkConfig.ExtraHeaders, MantleOpenAIProjectHeader, resolveMantleProjectID(key)),
+		WithMantleProject(provider.networkConfig.ExtraHeaders, MantleOpenAIProjectHeader, resolveMantleProjectID(ctx, key)),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
@@ -275,7 +266,7 @@ func (provider *BedrockProvider) mantleResponsesStream(
 
 	return openai.HandleOpenAIResponsesStreaming(
 		ctx, provider.mantleStreamingClient, url, request,
-		openai.BearerAuthHeader(key), WithMantleProject(provider.networkConfig.ExtraHeaders, MantleOpenAIProjectHeader, resolveMantleProjectID(key)),
+		openai.BearerAuthHeader(key), WithMantleProject(provider.networkConfig.ExtraHeaders, MantleOpenAIProjectHeader, resolveMantleProjectID(ctx, key)),
 		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
