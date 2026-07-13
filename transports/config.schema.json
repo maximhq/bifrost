@@ -424,6 +424,9 @@
         },
         "runware": {
           "$ref": "#/$defs/provider"
+        },
+        "sarvam": {
+          "$ref": "#/$defs/provider"
         }
       },
       "additionalProperties": true
@@ -6137,7 +6140,8 @@
             "vllm",
             "runway",
             "runware",
-            "fireworks"
+            "fireworks",
+            "sarvam"
           ],
           "description": "Base provider type to extend"
         },
