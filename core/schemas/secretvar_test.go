@@ -694,6 +694,30 @@ func TestSecretVar_IsSet_VaultRef(t *testing.T) {
 	}
 }
 
+func TestSecretVar_IsMaskedPlaceholder(t *testing.T) {
+	tests := []struct {
+		name  string
+		value *SecretVar
+		want  bool
+	}{
+		{name: "nil", value: nil, want: false},
+		{name: "empty", value: NewSecretVar(""), want: false},
+		{name: "plain", value: NewSecretVar("sk-real-credential"), want: false},
+		{name: "masked", value: NewSecretVar("abcd************************wxyz"), want: true},
+		{name: "redacted sentinel", value: NewSecretVar("<redacted>"), want: true},
+		{name: "env reference", value: NewSecretVar("env.NEW_KEY"), want: false},
+		{name: "vault reference", value: NewSecretVar("vault.path/to/key"), want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.value.IsMaskedPlaceholder(); got != tt.want {
+				t.Fatalf("IsMaskedPlaceholder() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestNewSecretVar_VaultRef(t *testing.T) {
 	e := NewSecretVar("vault.bifrost/mykey")
 	if !e.IsFromVault() {
