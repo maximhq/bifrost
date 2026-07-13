@@ -492,6 +492,14 @@ bifrost:
       #   # If a virtual key has an explicit MCP config for this server, that config takes precedence.
       #   allowOnAllVirtualKeys: false
     # toolSyncInterval: "10m"   # Global tool sync interval (Go duration string, e.g. "10m", "1h", "0s")
+    # Assign groups of MCP tools to virtual keys / access profiles.
+    # toolGroups:
+    #   - id: 5                        # Optional: DB ID of an existing group; when set, reconciler updates it by ID instead of name
+    #     name: "Platform Tools"
+    #     enabled: true
+    #     tools:
+    #       - mcpClientName: "github"
+    #         toolNames: ["create_pull_request", "list_issues"]
     # Tool manager configuration
     toolManagerConfig:
       toolExecutionTimeout: "30s"

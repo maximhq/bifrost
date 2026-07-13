@@ -1190,6 +1190,7 @@ false
 {{- $toolGroups := list }}
 {{- range .Values.bifrost.mcp.toolGroups }}
 {{- $group := dict "name" .name }}
+{{- if .id }}{{- $_ := set $group "id" .id }}{{- end }}
 {{- if hasKey . "enabled" }}{{- $_ := set $group "enabled" .enabled }}{{- end }}
 {{- if .description }}{{- $_ := set $group "description" .description }}{{- end }}
 {{- if .tools }}
