@@ -60,36 +60,33 @@ func (r *MistralOCRResponse) ToBifrostOCRResponse() *schemas.BifrostOCRResponse 
 		DocumentAnnotation: r.DocumentAnnotation,
 	}
 
-	// Convert pages
-	if len(r.Pages) > 0 {
-		resp.Pages = make([]schemas.OCRPage, len(r.Pages))
-		for i, p := range r.Pages {
-			page := schemas.OCRPage{
-				Index:    p.Index,
-				Markdown: p.Markdown,
-			}
-			if len(p.Images) > 0 {
-				page.Images = make([]schemas.OCRPageImage, len(p.Images))
-				for j, img := range p.Images {
-					page.Images[j] = schemas.OCRPageImage{
-						ID:           img.ID,
-						TopLeftX:     img.TopLeftX,
-						TopLeftY:     img.TopLeftY,
-						BottomRightX: img.BottomRightX,
-						BottomRightY: img.BottomRightY,
-						ImageBase64:  img.ImageBase64,
-					}
-				}
-			}
-			if p.Dimensions != nil {
-				page.Dimensions = &schemas.OCRPageDimensions{
-					DPI:    p.Dimensions.DPI,
-					Height: p.Dimensions.Height,
-					Width:  p.Dimensions.Width,
-				}
-			}
-			resp.Pages[i] = page
+	// Convert pages. Pages and Images are allocated unconditionally so they
+	// serialize as [] rather than null/missing, per the Mistral contract.
+	resp.Pages = make([]schemas.OCRPage, len(r.Pages))
+	for i, p := range r.Pages {
+		page := schemas.OCRPage{
+			Index:    p.Index,
+			Markdown: p.Markdown,
+			Images:   make([]schemas.OCRPageImage, len(p.Images)),
 		}
+		for j, img := range p.Images {
+			page.Images[j] = schemas.OCRPageImage{
+				ID:           img.ID,
+				TopLeftX:     img.TopLeftX,
+				TopLeftY:     img.TopLeftY,
+				BottomRightX: img.BottomRightX,
+				BottomRightY: img.BottomRightY,
+				ImageBase64:  img.ImageBase64,
+			}
+		}
+		if p.Dimensions != nil {
+			page.Dimensions = &schemas.OCRPageDimensions{
+				DPI:    p.Dimensions.DPI,
+				Height: p.Dimensions.Height,
+				Width:  p.Dimensions.Width,
+			}
+		}
+		resp.Pages[i] = page
 	}
 
 	// Convert usage info
