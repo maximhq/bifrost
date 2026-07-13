@@ -24,7 +24,7 @@ func convertFunctionToolToAnthropic(tool schemas.ChatTool) AnthropicTool {
 	}
 
 	// Convert function parameters to input_schema
-	if tool.Function.Parameters != nil && (tool.Function.Parameters.Type != "" || tool.Function.Parameters.Properties != nil) {
+	if tool.Function.Parameters != nil && (tool.Function.Parameters.HasRawJSON() || tool.Function.Parameters.Type != "" || tool.Function.Parameters.Properties != nil) {
 		anthropicTool.InputSchema = schemas.DeepCopyToolFunctionParameters(tool.Function.Parameters)
 	}
 

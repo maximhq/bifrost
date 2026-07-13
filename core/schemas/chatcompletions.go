@@ -582,12 +582,37 @@ type ToolFunctionParameters struct {
 	keyOrder JSONKeyOrder `json:"-"`
 	// explicitEmptyObject tracks a client-supplied raw {} schema.
 	explicitEmptyObject bool `json:"-"`
+	// rawJSON stores a validated schema that should be forwarded without
+	// materializing the typed representation. It is immutable after construction.
+	rawJSON json.RawMessage `json:"-"`
+}
+
+// NewRawToolFunctionParameters creates tool parameters backed by validated raw
+// JSON. Providers that serialize ToolFunctionParameters can forward the schema
+// without first decoding it into OrderedMaps and other intermediate values.
+func NewRawToolFunctionParameters(data []byte) (*ToolFunctionParameters, error) {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || !json.Valid(trimmed) {
+		return nil, fmt.Errorf("invalid tool function parameters JSON")
+	}
+
+	return &ToolFunctionParameters{
+		rawJSON: append(json.RawMessage(nil), trimmed...),
+	}, nil
+}
+
+// HasRawJSON reports whether the parameters use the raw passthrough form.
+func (t *ToolFunctionParameters) HasRawJSON() bool {
+	return t != nil && len(t.rawJSON) > 0
 }
 
 // MarshalJSON serializes ToolFunctionParameters while preserving the original
 // top-level key order when available. A client-supplied raw `{}` stays `{}`;
 // otherwise object schemas always emit `properties` as an object, never null.
 func (t ToolFunctionParameters) MarshalJSON() ([]byte, error) {
+	if len(t.rawJSON) > 0 && !t.hasDefinedSchemaFields() {
+		return t.rawJSON, nil
+	}
 	if t.explicitEmptyObject && !t.hasDefinedSchemaFields() {
 		return []byte("{}"), nil
 	}
