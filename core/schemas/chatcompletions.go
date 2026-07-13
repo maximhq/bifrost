@@ -592,7 +592,7 @@ type ToolFunctionParameters struct {
 // without first decoding it into OrderedMaps and other intermediate values.
 func NewRawToolFunctionParameters(data []byte) (*ToolFunctionParameters, error) {
 	trimmed := bytes.TrimSpace(data)
-	if len(trimmed) == 0 || !json.Valid(trimmed) {
+	if len(trimmed) == 0 || !json.Valid(trimmed) || trimmed[0] != '{' {
 		return nil, fmt.Errorf("invalid tool function parameters JSON")
 	}
 
