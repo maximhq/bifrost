@@ -102,6 +102,27 @@ func deepCopyChatStreamDelta(original *schemas.ChatStreamResponseChoiceDelta) *s
 		}
 	}
 
+	// Deep copy Annotations slice
+	if original.Annotations != nil {
+		copy.Annotations = make([]schemas.ChatAssistantMessageAnnotation, len(original.Annotations))
+		for i, annotation := range original.Annotations {
+			copyAnnotation := annotation
+			if annotation.URLCitation.URL != nil {
+				copyURL := *annotation.URLCitation.URL
+				copyAnnotation.URLCitation.URL = &copyURL
+			}
+			if annotation.URLCitation.Text != nil {
+				copyText := *annotation.URLCitation.Text
+				copyAnnotation.URLCitation.Text = &copyText
+			}
+			if annotation.URLCitation.Type != nil {
+				copyType := *annotation.URLCitation.Type
+				copyAnnotation.URLCitation.Type = &copyType
+			}
+			copy.Annotations[i] = copyAnnotation
+		}
+	}
+
 	// Deep copy Audio
 	if original.Audio != nil {
 		copy.Audio = &schemas.ChatAudioMessageAudio{
@@ -133,6 +154,7 @@ func (a *Accumulator) buildCompleteMessageFromChatStreamChunks(chunks []*ChatStr
 	var audioDataBuilder strings.Builder
 	var audioTranscriptBuilder strings.Builder
 	hasContent, hasRefusal, hasReasoning := false, false, false
+	var annotations []schemas.ChatAssistantMessageAnnotation
 
 	// Reasoning details builders keyed by detail index
 	type rdAccum struct {
@@ -210,6 +232,8 @@ func (a *Accumulator) buildCompleteMessageFromChatStreamChunks(chunks []*ChatStr
 				acc.id = &idCopy
 			}
 		}
+		// Collect annotations (arrive whole per chunk, not incrementally)
+		annotations = append(annotations, chunk.Delta.Annotations...)
 		// Handle audio data
 		if chunk.Delta.Audio != nil {
 			if completeMessage.ChatAssistantMessage == nil {
@@ -322,6 +346,14 @@ func (a *Accumulator) buildCompleteMessageFromChatStreamChunks(chunks []*ChatStr
 			completeMessage.ChatAssistantMessage.ReasoningDetails = append(
 				completeMessage.ChatAssistantMessage.ReasoningDetails, rd)
 		}
+	}
+
+	// Finalize annotations
+	if len(annotations) > 0 {
+		if completeMessage.ChatAssistantMessage == nil {
+			completeMessage.ChatAssistantMessage = &schemas.ChatAssistantMessage{}
+		}
+		completeMessage.ChatAssistantMessage.Annotations = annotations
 	}
 
 	// Finalize audio
