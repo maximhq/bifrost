@@ -189,8 +189,15 @@ type AzureAliasCfg struct {
 }
 
 // VertexAliasCfg holds Vertex-specific overrides that apply to a single alias.
+//
+// Deprecated for ProjectID: the per-alias project override now lives on the
+// shared top-level AliasConfig.ProjectID field (see below), so one alias key can
+// scope any provider (Vertex, Bedrock, Bedrock Mantle) to a project without a
+// JSON field-name collision between the embedded sub-configs. ProjectID is kept
+// here only so Go code that constructs VertexAliasCfg directly keeps compiling;
+// the Vertex resolver reads AliasConfig.ProjectID first and falls back to this.
 type VertexAliasCfg struct {
-	ProjectID         *SecretVar `json:"project_id,omitempty"`
+	ProjectID         *SecretVar `json:"-"` // superseded by AliasConfig.ProjectID; not (de)serialized to avoid colliding with the top-level project_id
 	ProjectNumber     *SecretVar `json:"project_number,omitempty"`
 	ForceSingleRegion *bool      `json:"force_single_region,omitempty"`
 }
@@ -216,6 +223,13 @@ type AliasConfig struct {
 	ModelFamily *ModelFamily `json:"model_family,omitempty"` // 1st-tier family routing enum
 	Description string       `json:"description,omitempty"`  // description of the alias for users to understand its purpose (not used by bifrost)
 	Region      *SecretVar   `json:"region,omitempty"`
+	// ProjectID is a per-alias project override shared across providers (like Region).
+	// Vertex uses it as the GCP project; Bedrock and Bedrock Mantle use it as the
+	// AWS project sent via the OpenAI-Project / anthropic-workspace-id header. Kept
+	// top-level (rather than inside each provider sub-config) so the flat "project_id"
+	// JSON key does not collide between embedded sub-configs — Go/sonic silently drop
+	// a field name shared by multiple same-depth anonymous structs.
+	ProjectID *SecretVar `json:"project_id,omitempty"`
 
 	*AzureAliasCfg
 	*VertexAliasCfg
@@ -232,6 +246,7 @@ func (ac AliasConfig) isLegacyShape() bool {
 		ac.ModelFamily == nil &&
 		ac.Description == "" &&
 		ac.Region == nil &&
+		ac.ProjectID == nil &&
 		ac.AzureAliasCfg == nil &&
 		ac.VertexAliasCfg == nil &&
 		ac.BedrockAliasCfg == nil &&
@@ -243,6 +258,14 @@ func (ac AliasConfig) isLegacyShape() bool {
 // change on the wire. When any other field is populated, the full object is
 // emitted.
 func (ac AliasConfig) MarshalJSON() ([]byte, error) {
+	// The deprecated VertexAliasCfg.ProjectID is json:"-" (it would otherwise collide
+	// with the top-level project_id on the wire). Promote it to the shared top-level
+	// ProjectID before serializing so Go-constructed aliases that set only the legacy
+	// field don't lose their project on a save/export round-trip (or drop it from the
+	// config hash). Value receiver: this mutates only the local copy, not the caller's.
+	if ac.ProjectID == nil && ac.VertexAliasCfg != nil && ac.VertexAliasCfg.ProjectID != nil {
+		ac.ProjectID = ac.VertexAliasCfg.ProjectID
+	}
 	if ac.isLegacyShape() {
 		return Marshal(ac.ModelID)
 	}

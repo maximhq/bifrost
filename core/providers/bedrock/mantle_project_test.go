@@ -1,6 +1,7 @@
 package bedrock
 
 import (
+	"context"
 	"testing"
 
 	schemas "github.com/maximhq/bifrost/core/schemas"
@@ -50,24 +51,49 @@ func TestWithMantleProject(t *testing.T) {
 	})
 }
 
-// TestResolveMantleProjectID verifies precedence of the BedrockKeyConfig.ProjectID field.
+// TestResolveMantleProjectID verifies precedence: per-alias AliasConfig.ProjectID
+// overrides the key-level BedrockKeyConfig.ProjectID.
 func TestResolveMantleProjectID(t *testing.T) {
 	tests := []struct {
-		name string
-		key  schemas.Key
-		want string
+		name  string
+		alias *schemas.AliasConfig // nil = no resolved alias in context
+		key   schemas.Key
+		want  string
 	}{
 		{name: "no bedrock config", key: schemas.Key{}, want: ""},
 		{name: "config without project", key: schemas.Key{BedrockKeyConfig: &schemas.BedrockKeyConfig{}}, want: ""},
 		{
-			name: "config with project",
-			key:  schemas.Key{BedrockKeyConfig: &schemas.BedrockKeyConfig{ProjectID: schemas.NewSecretVar("proj_abc")}},
-			want: "proj_abc",
+			name: "key-level project",
+			key:  schemas.Key{BedrockKeyConfig: &schemas.BedrockKeyConfig{ProjectID: schemas.NewSecretVar("proj_key")}},
+			want: "proj_key",
+		},
+		{
+			name:  "alias override wins over key",
+			alias: &schemas.AliasConfig{ModelID: "chirp", ProjectID: schemas.NewSecretVar("proj_alias")},
+			key:   schemas.Key{BedrockKeyConfig: &schemas.BedrockKeyConfig{ProjectID: schemas.NewSecretVar("proj_key")}},
+			want:  "proj_alias",
+		},
+		{
+			name:  "empty alias override falls back to key",
+			alias: &schemas.AliasConfig{ModelID: "chirp", ProjectID: schemas.NewSecretVar("")},
+			key:   schemas.Key{BedrockKeyConfig: &schemas.BedrockKeyConfig{ProjectID: schemas.NewSecretVar("proj_key")}},
+			want:  "proj_key",
+		},
+		{
+			name:  "alias override with no key config",
+			alias: &schemas.AliasConfig{ModelID: "chirp", ProjectID: schemas.NewSecretVar("proj_alias")},
+			key:   schemas.Key{},
+			want:  "proj_alias",
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := resolveMantleProjectID(tt.key); got != tt.want {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			defer ctx.Cancel()
+			if tt.alias != nil {
+				ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{Key: "chirp", Config: tt.alias})
+			}
+			if got := resolveMantleProjectID(ctx, tt.key); got != tt.want {
 				t.Fatalf("resolveMantleProjectID = %q, want %q", got, tt.want)
 			}
 		})
