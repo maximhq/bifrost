@@ -2297,6 +2297,24 @@
         "automation"
       ],
       "icon_url": "https://xquik.com/icons/mcp/xquik.png"
+    },
+    {
+      "name": "Spala Public MCP",
+      "description": "Connect AI tools to Spala for public documentation, onboarding, backend template discovery, and addon discovery. Hosted remotely by Spala; project operations are currently unavailable on this public endpoint.",
+      "category": "Developer Tools",
+      "connection_type": "http",
+      "connection_url": "https://mcp.spala.ai/mcp",
+      "auth_type": "none",
+      "docs_url": "https://github.com/spala-ai/spala-public-mcp",
+      "publisher": "Spala AI",
+      "tags": [
+        "spala",
+        "backend",
+        "documentation",
+        "templates",
+        "developer-tools"
+      ],
+      "icon_url": "https://spala.ai/brand/spala-logo-512.png"
     }
   ]
 }
