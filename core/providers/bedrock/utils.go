@@ -28,6 +28,22 @@ var bedrockUnsafeToolNameCharRegex = regexp.MustCompile(`[^A-Za-z0-9_-]+`)
 // bedrockToolNameAliasKey stores Bedrock wire-name aliases on the request context.
 type bedrockToolNameAliasKey struct{}
 
+// resolveMantleProjectID returns the Bedrock project configured for the mantle sub-surface of the
+// Bedrock provider, or "" when none is set (AWS then routes to the account's default project).
+// Priority: per-alias AliasConfig.ProjectID > key-level BedrockKeyConfig.ProjectID. The per-alias
+// override lets one Bedrock credential scope different aliased models to different projects.
+func resolveMantleProjectID(ctx *schemas.BifrostContext, key schemas.Key) string {
+	if ra := schemas.GetResolvedAlias(ctx); ra != nil && ra.Config != nil && ra.Config.ProjectID != nil {
+		if v := ra.Config.ProjectID.GetValue(); v != "" {
+			return v
+		}
+	}
+	if key.BedrockKeyConfig != nil && key.BedrockKeyConfig.ProjectID != nil {
+		return key.BedrockKeyConfig.ProjectID.GetValue()
+	}
+	return ""
+}
+
 // parseBedrockRegionAndModel splits a model string that optionally carries an AWS region prefix
 // into its region and bare model ID components.
 // If no region prefix is present the returned region is empty and bareModel equals model.
