@@ -1043,10 +1043,39 @@ func TestToolFunctionParameters_RawJSONPassthrough(t *testing.T) {
 	assert.Equal(t, string(marshaled), string(normalized))
 }
 
-func TestToolFunctionParameters_RawJSONRejectsInvalidSyntax(t *testing.T) {
-	params, err := NewRawToolFunctionParameters([]byte(`{"type":"object"`))
-	require.Error(t, err)
-	assert.Nil(t, params)
+func TestToolFunctionParameters_RawJSONValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		wantErr bool
+	}{
+		{name: "empty", input: "", wantErr: true},
+		{name: "whitespace", input: "  \n\t", wantErr: true},
+		{name: "invalid syntax", input: `{"type":"object"`, wantErr: true},
+		{name: "null", input: `null`, wantErr: true},
+		{name: "array", input: `[]`, wantErr: true},
+		{name: "number", input: `42`, wantErr: true},
+		{name: "string", input: `"object"`, wantErr: true},
+		{name: "boolean", input: `true`, wantErr: true},
+		{name: "empty object", input: `{}`},
+		{name: "object schema", input: `{"type":"object","properties":{}}`},
+		{name: "object with whitespace", input: `  {"type":"object"}  `},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			params, err := NewRawToolFunctionParameters([]byte(tt.input))
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Nil(t, params)
+				return
+			}
+
+			require.NoError(t, err)
+			require.NotNil(t, params)
+			assert.True(t, params.HasRawJSON())
+		})
+	}
 }
 
 func TestToolFunctionParameters_RawJSONDeepCopy(t *testing.T) {
