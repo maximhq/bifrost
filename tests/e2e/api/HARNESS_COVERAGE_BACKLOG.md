@@ -42,7 +42,7 @@ Sources:
 - [ ] **Service tier** (`service_tier: "scale" | "default" | "priority"`)
 - [ ] **Audio input** (`input_audio` content block, gpt-4o-audio-preview)
 - [ ] **Audio output** (`modalities: ["text","audio"], audio: {voice, format}`)
-- [ ] **Web search options** (`web_search_options` for chat-completions web search)
+- [x] **Web search options** (`web_search_options` for chat-completions web search)
 - [ ] **Predicted outputs** (`prediction: { type: "content", content: "..." }`)
 - [ ] **Store + metadata for evals** (`store: true, metadata: {...}`)
 

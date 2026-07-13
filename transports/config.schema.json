@@ -424,6 +424,9 @@
         },
         "runware": {
           "$ref": "#/$defs/provider"
+        },
+        "sarvam": {
+          "$ref": "#/$defs/provider"
         }
       },
       "additionalProperties": true
@@ -3654,7 +3657,7 @@
                   },
                   "project_id": {
                     "type": "string",
-                    "description": "Per-alias Vertex project ID override (can use env. prefix)."
+                    "description": "Per-alias project override shared across providers: Vertex uses it as the GCP project; Bedrock and Bedrock Mantle send it as the AWS project via the OpenAI-Project / anthropic-workspace-id header (can use env. prefix)."
                   },
                   "project_number": {
                     "type": "string",
@@ -3728,6 +3731,10 @@
                 "session_name": {
                   "type": "string",
                   "description": "Role session name for AssumeRole (can use env. prefix)"
+                },
+                "project_id": {
+                  "type": "string",
+                  "description": "Bedrock project ID scoping the Mantle sub-surface (OpenAI-compatible gpt-*/Gemma routing) via the OpenAI-Project header. When empty, AWS routes to the account's default project. No effect on the Converse/bedrock-runtime paths (can use env. prefix)."
                 },
                 "deployments": {
                   "type": "object",
@@ -3812,6 +3819,10 @@
                 "session_name": {
                   "type": "string",
                   "description": "Role session name for AssumeRole (can use env. prefix)"
+                },
+                "project_id": {
+                  "type": "string",
+                  "description": "Bedrock project ID scoping inference and model listing. Sent as the OpenAI-Project header on the OpenAI-compatible surface and the anthropic-workspace-id header on the native-Anthropic (Claude) surface. When empty, AWS routes to the account's default project (can use env. prefix)."
                 }
               },
               "required": ["region"],
@@ -6129,7 +6140,8 @@
             "vllm",
             "runway",
             "runware",
-            "fireworks"
+            "fireworks",
+            "sarvam"
           ],
           "description": "Base provider type to extend"
         },
