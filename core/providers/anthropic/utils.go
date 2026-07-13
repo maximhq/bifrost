@@ -2487,6 +2487,18 @@ func NormalizeSchemaForAnthropic(schema map[string]interface{}) map[string]inter
 	return normalizeSchemaForAnthropic(schema)
 }
 
+// normalizeAnthropicToolInputSchema applies Anthropic's required fallback for
+// missing or explicitly empty tool schemas, then normalizes key ordering.
+func normalizeAnthropicToolInputSchema(params *schemas.ToolFunctionParameters) *schemas.ToolFunctionParameters {
+	if params == nil || params.IsExplicitEmptyObject() {
+		params = &schemas.ToolFunctionParameters{
+			Type:       "object",
+			Properties: &schemas.OrderedMap{},
+		}
+	}
+	return params.Normalized()
+}
+
 // sjsonEscapeKey escapes characters that have special meaning in sjson path
 // syntax. Necessary for property names that include such characters; for the
 // common JSON Schema case (alphanumeric + underscore + $ + -) this is a no-op.
