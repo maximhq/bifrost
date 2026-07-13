@@ -211,6 +211,27 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 			// Copy message
 			processedMessages[i] = msg
 
+			// Strip the Bifrost-extension citation text from assistant annotations
+			if msg.OpenAIChatAssistantMessage != nil {
+				needsAnnotationStrip := false
+				for _, annotation := range msg.OpenAIChatAssistantMessage.Annotations {
+					if annotation.URLCitation.Text != nil {
+						needsAnnotationStrip = true
+						break
+					}
+				}
+				if needsAnnotationStrip {
+					assistantCopy := *msg.OpenAIChatAssistantMessage
+					assistantCopy.Annotations = make([]schemas.ChatAssistantMessageAnnotation, len(msg.OpenAIChatAssistantMessage.Annotations))
+					for j, annotation := range msg.OpenAIChatAssistantMessage.Annotations {
+						annotationCopy := annotation
+						annotationCopy.URLCitation.Text = nil
+						assistantCopy.Annotations[j] = annotationCopy
+					}
+					processedMessages[i].OpenAIChatAssistantMessage = &assistantCopy
+				}
+			}
+
 			// Strip CacheControl and FileType from content blocks if needed
 			if msg.Content != nil && msg.Content.ContentBlocks != nil {
 				contentCopy := *msg.Content
@@ -307,6 +328,8 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 		// Shadow the embedded "reasoning" field and omit it
 		Reasoning       *schemas.ChatReasoning `json:"reasoning,omitempty"`
 		ReasoningEffort *string                `json:"reasoning_effort,omitempty"`
+		// Shadow the embedded "web_search_options" field to strip the Bifrost-extension filters
+		WebSearchOptions *schemas.ChatWebSearchOptions `json:"web_search_options,omitempty"`
 	}{
 		Alias:    (*Alias)(req),
 		Messages: processedMessages,
@@ -317,6 +340,15 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 
 	if req.Reasoning != nil && req.Reasoning.Effort != nil {
 		aux.ReasoningEffort = req.Reasoning.Effort
+	}
+
+	if req.ChatParameters.WebSearchOptions != nil {
+		aux.WebSearchOptions = req.ChatParameters.WebSearchOptions
+		if aux.WebSearchOptions.Filters != nil {
+			optionsCopy := *req.ChatParameters.WebSearchOptions
+			optionsCopy.Filters = nil
+			aux.WebSearchOptions = &optionsCopy
+		}
 	}
 
 	return providerUtils.MarshalSorted(aux)
@@ -647,6 +679,13 @@ func hasFieldsToStripInChatMessage(msg OpenAIMessage, keepCacheControl bool) boo
 				return true
 			}
 			if block.File != nil && (block.File.FileType != nil || block.File.FileURL != nil) {
+				return true
+			}
+		}
+	}
+	if msg.OpenAIChatAssistantMessage != nil {
+		for _, annotation := range msg.OpenAIChatAssistantMessage.Annotations {
+			if annotation.URLCitation.Text != nil {
 				return true
 			}
 		}
