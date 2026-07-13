@@ -9,6 +9,30 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+func TestConvertToolConfig_RawParametersPassthrough(t *testing.T) {
+	raw := []byte(`{"x-provider-key":{"enabled":true},"type":["object","null"],"properties":{"query":{"type":"string"}}}`)
+	toolParams, err := schemas.NewRawToolFunctionParameters(raw)
+	if err != nil {
+		t.Fatalf("create raw tool parameters: %v", err)
+	}
+
+	cfg := convertToolConfig("global.anthropic.claude-sonnet-4-6", &schemas.ChatParameters{
+		Tools: []schemas.ChatTool{{
+			Type: schemas.ChatToolTypeFunction,
+			Function: &schemas.ChatToolFunction{
+				Name:       "search",
+				Parameters: toolParams,
+			},
+		}},
+	})
+	if cfg == nil || len(cfg.Tools) != 1 || cfg.Tools[0].ToolSpec == nil {
+		t.Fatalf("expected one converted function tool, got %+v", cfg)
+	}
+	if got := string(cfg.Tools[0].ToolSpec.InputSchema.JSON); got != string(raw) {
+		t.Fatalf("raw schema changed during Bedrock conversion:\n got: %s\nwant: %s", got, raw)
+	}
+}
+
 // TestConvertToolConfig_DropsServerToolsOnBedrock locks in the bug fix from
 // the user-reported repro: sending `web_search_20260209` via the OpenAI-
 // compatible /v1/chat/completions endpoint to Bedrock was producing a

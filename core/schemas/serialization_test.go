@@ -1023,6 +1023,46 @@ func TestToolFunctionParameters_ExplicitObjectSchemaPreserved(t *testing.T) {
 	assert.JSONEq(t, `{"type":"object","properties":{}}`, string(normalized))
 }
 
+func TestToolFunctionParameters_RawJSONPassthrough(t *testing.T) {
+	raw := []byte(`{"x-provider-key":{"enabled":true},"type":["object","null"],"properties":{"query":{"type":"string"}}}`)
+	params, err := NewRawToolFunctionParameters(raw)
+	require.NoError(t, err)
+	require.True(t, params.HasRawJSON())
+	assert.Empty(t, params.Type, "raw construction must not materialize typed fields")
+	assert.Nil(t, params.Properties, "raw construction must not materialize ordered maps")
+
+	// The constructor owns its bytes so caller mutation cannot alter requests.
+	raw[2] = 'z'
+
+	marshaled, err := Marshal(params)
+	require.NoError(t, err)
+	assert.Equal(t, `{"x-provider-key":{"enabled":true},"type":["object","null"],"properties":{"query":{"type":"string"}}}`, string(marshaled))
+
+	normalized, err := Marshal(params.Normalized())
+	require.NoError(t, err)
+	assert.Equal(t, string(marshaled), string(normalized))
+}
+
+func TestToolFunctionParameters_RawJSONRejectsInvalidSyntax(t *testing.T) {
+	params, err := NewRawToolFunctionParameters([]byte(`{"type":"object"`))
+	require.Error(t, err)
+	assert.Nil(t, params)
+}
+
+func TestToolFunctionParameters_RawJSONDeepCopy(t *testing.T) {
+	params, err := NewRawToolFunctionParameters([]byte(`{"type":"object"}`))
+	require.NoError(t, err)
+
+	copied := DeepCopyToolFunctionParameters(params)
+	require.NotNil(t, copied)
+	require.True(t, copied.HasRawJSON())
+	params.rawJSON[2] = 'z'
+
+	marshaled, err := Marshal(copied)
+	require.NoError(t, err)
+	assert.Equal(t, `{"type":"object"}`, string(marshaled))
+}
+
 // TestResponsesToolFileSearchFilter_MarshalJSON_Deterministic verifies deterministic
 // serialization for file search filters.
 func TestResponsesToolFileSearchFilter_MarshalJSON_Deterministic(t *testing.T) {
