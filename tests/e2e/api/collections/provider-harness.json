@@ -39867,6 +39867,233 @@
           ]
         }
       ]
+    },
+    {
+      "name": "24. Responses Structured Output Schema Key Order (#5148 / PR #5151)",
+      "description": "Issue #5148 / PR #5151: Bifrost alphabetized every nested object inside a Responses request's text.format.schema (schema fields were map[string]any and the outbound marshal uses SortMapKeys), violating OpenAI's documented Structured Outputs key-ordering contract. Under constrained decoding, schema key order steers anyOf branch selection: alphabetizing TextPart {type, text} into {text, type} makes the natural '{\"type\":' opener grammatically eliminate the TextPart branch, locking generation into the sibling WebCitation branch - schema-valid but fabricated output (0/5 correct pre-fix, 5/5 direct-to-OpenAI and post-fix). PR #5151 migrates the schema-bearing fields to OrderedMap. These cases send the issue's exact discriminated-union schema (each $defs member declares its 'type' discriminator before the payload field, deliberately non-alphabetical) and assert the model returns the requested TextPart, not a fabricated cite:web citation, across the native non-streaming, native streaming, and /openai drop-in decode paths.",
+      "item": [
+        {
+          "name": "openai/gpt-4o-mini native /v1/responses anyOf union key order (structured output) - #5148",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"input\": \"Respond with a single text part whose content is \\\"hello world\\\". Do not emit any citation parts.\",\n  \"max_output_tokens\": 512,\n  \"text\": {\n    \"format\": {\n      \"type\": \"json_schema\",\n      \"name\": \"reply\",\n      \"strict\": true,\n      \"schema\": {\n        \"$defs\": {\n          \"TextPart\": {\n            \"additionalProperties\": false,\n            \"properties\": {\n              \"type\": {\n                \"const\": \"text\",\n                \"title\": \"Type\",\n                \"type\": \"string\"\n              },\n              \"text\": {\n                \"title\": \"Text\",\n                \"type\": \"string\"\n              }\n            },\n            \"required\": [\n              \"type\",\n              \"text\"\n            ],\n            \"title\": \"TextPart\",\n            \"type\": \"object\"\n          },\n          \"WebCitation\": {\n            \"additionalProperties\": false,\n            \"properties\": {\n              \"type\": {\n                \"const\": \"cite:web\",\n                \"title\": \"Type\",\n                \"type\": \"string\"\n              },\n              \"url\": {\n                \"title\": \"Url\",\n                \"type\": \"string\"\n              }\n            },\n            \"required\": [\n              \"type\",\n              \"url\"\n            ],\n            \"title\": \"WebCitation\",\n            \"type\": \"object\"\n          }\n        },\n        \"additionalProperties\": false,\n        \"properties\": {\n          \"parts\": {\n            \"items\": {\n              \"anyOf\": [\n                {\n                  \"$ref\": \"#/$defs/TextPart\"\n                },\n                {\n                  \"$ref\": \"#/$defs/WebCitation\"\n                }\n              ]\n            },\n            \"title\": \"Parts\",\n            \"type\": \"array\"\n          }\n        },\n        \"required\": [\n          \"parts\"\n        ],\n        \"title\": \"Reply\",\n        \"type\": \"object\"\n      }\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('key order native: 2xx (a 400 means the forwarded schema was mangled)', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var r = pm.response.json();",
+                  "pm.test('key order native: response completed (incomplete = runaway repetition, pre-fix signature)', function () {",
+                  "  pm.expect(r.status, 'status: ' + JSON.stringify(r.status) + ' incomplete_details: ' + JSON.stringify(r.incomplete_details)).to.eql('completed');",
+                  "});",
+                  "var outputText = null;",
+                  "if (r.output && r.output.length) {",
+                  "  for (var i = 0; i < r.output.length; i++) {",
+                  "    var item = r.output[i];",
+                  "    if (item.type === 'message' && item.content && item.content.length) {",
+                  "      for (var j = 0; j < item.content.length; j++) {",
+                  "        if (item.content[j].type === 'output_text') { outputText = item.content[j].text; }",
+                  "      }",
+                  "    }",
+                  "  }",
+                  "}",
+                  "pm.test('key order native: structured output present and parseable', function () {",
+                  "  pm.expect(outputText, 'no output_text in: ' + JSON.stringify(r.output)).to.be.a('string');",
+                  "});",
+                  "if (typeof outputText !== 'string') { return; }",
+                  "var parsed = JSON.parse(outputText);",
+                  "pm.test('key order native: anyOf picked the TextPart branch, not fabricated cite:web (pre-fix: 0/5 correct)', function () {",
+                  "  pm.expect(parsed.parts, 'parsed: ' + outputText).to.be.an('array').that.is.not.empty;",
+                  "  for (var k = 0; k < parsed.parts.length; k++) {",
+                  "    pm.expect(parsed.parts[k].type, 'wrong anyOf branch selected, output: ' + outputText).to.eql('text');",
+                  "  }",
+                  "  pm.expect(outputText.indexOf('cite:web'), 'fabricated citation in output: ' + outputText).to.eql(-1);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai/gpt-4o-mini native /v1/responses anyOf union key order streaming - #5148",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"input\": \"Respond with a single text part whose content is \\\"hello world\\\". Do not emit any citation parts.\",\n  \"max_output_tokens\": 512,\n  \"text\": {\n    \"format\": {\n      \"type\": \"json_schema\",\n      \"name\": \"reply\",\n      \"strict\": true,\n      \"schema\": {\n        \"$defs\": {\n          \"TextPart\": {\n            \"additionalProperties\": false,\n            \"properties\": {\n              \"type\": {\n                \"const\": \"text\",\n                \"title\": \"Type\",\n                \"type\": \"string\"\n              },\n              \"text\": {\n                \"title\": \"Text\",\n                \"type\": \"string\"\n              }\n            },\n            \"required\": [\n              \"type\",\n              \"text\"\n            ],\n            \"title\": \"TextPart\",\n            \"type\": \"object\"\n          },\n          \"WebCitation\": {\n            \"additionalProperties\": false,\n            \"properties\": {\n              \"type\": {\n                \"const\": \"cite:web\",\n                \"title\": \"Type\",\n                \"type\": \"string\"\n              },\n              \"url\": {\n                \"title\": \"Url\",\n                \"type\": \"string\"\n              }\n            },\n            \"required\": [\n              \"type\",\n              \"url\"\n            ],\n            \"title\": \"WebCitation\",\n            \"type\": \"object\"\n          }\n        },\n        \"additionalProperties\": false,\n        \"properties\": {\n          \"parts\": {\n            \"items\": {\n              \"anyOf\": [\n                {\n                  \"$ref\": \"#/$defs/TextPart\"\n                },\n                {\n                  \"$ref\": \"#/$defs/WebCitation\"\n                }\n              ]\n            },\n            \"title\": \"Parts\",\n            \"type\": \"array\"\n          }\n        },\n        \"required\": [\n          \"parts\"\n        ],\n        \"title\": \"Reply\",\n        \"type\": \"object\"\n      }\n    }\n  },\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('key order native stream: 2xx (a 400 means the forwarded schema was mangled)', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var lines = pm.response.text().split('\\n');",
+                  "var completed = null;",
+                  "for (var li = 0; li < lines.length; li++) {",
+                  "  var line = lines[li];",
+                  "  if (line.indexOf('data: ') !== 0) { continue; }",
+                  "  var payload = line.slice(6).trim();",
+                  "  if (payload === '' || payload === '[DONE]') { continue; }",
+                  "  try {",
+                  "    var evt = JSON.parse(payload);",
+                  "    if (evt.type === 'response.completed' && evt.response) { completed = evt.response; }",
+                  "  } catch (e) {}",
+                  "}",
+                  "pm.test('key order native stream: stream carries response.completed event', function () {",
+                  "  pm.expect(completed, 'no response.completed in stream: ' + pm.response.text().slice(0, 2000)).to.not.eql(null);",
+                  "});",
+                  "if (!completed) { return; }",
+                  "var r = completed;",
+                  "pm.test('key order native stream: response completed (incomplete = runaway repetition, pre-fix signature)', function () {",
+                  "  pm.expect(r.status, 'status: ' + JSON.stringify(r.status) + ' incomplete_details: ' + JSON.stringify(r.incomplete_details)).to.eql('completed');",
+                  "});",
+                  "var outputText = null;",
+                  "if (r.output && r.output.length) {",
+                  "  for (var i = 0; i < r.output.length; i++) {",
+                  "    var item = r.output[i];",
+                  "    if (item.type === 'message' && item.content && item.content.length) {",
+                  "      for (var j = 0; j < item.content.length; j++) {",
+                  "        if (item.content[j].type === 'output_text') { outputText = item.content[j].text; }",
+                  "      }",
+                  "    }",
+                  "  }",
+                  "}",
+                  "pm.test('key order native stream: structured output present and parseable', function () {",
+                  "  pm.expect(outputText, 'no output_text in: ' + JSON.stringify(r.output)).to.be.a('string');",
+                  "});",
+                  "if (typeof outputText !== 'string') { return; }",
+                  "var parsed = JSON.parse(outputText);",
+                  "pm.test('key order native stream: anyOf picked the TextPart branch, not fabricated cite:web (pre-fix: 0/5 correct)', function () {",
+                  "  pm.expect(parsed.parts, 'parsed: ' + outputText).to.be.an('array').that.is.not.empty;",
+                  "  for (var k = 0; k < parsed.parts.length; k++) {",
+                  "    pm.expect(parsed.parts[k].type, 'wrong anyOf branch selected, output: ' + outputText).to.eql('text');",
+                  "  }",
+                  "  pm.expect(outputText.indexOf('cite:web'), 'fabricated citation in output: ' + outputText).to.eql(-1);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai drop-in /openai/v1/responses gpt-4o-mini anyOf union key order - #5148",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"input\": \"Respond with a single text part whose content is \\\"hello world\\\". Do not emit any citation parts.\",\n  \"max_output_tokens\": 512,\n  \"text\": {\n    \"format\": {\n      \"type\": \"json_schema\",\n      \"name\": \"reply\",\n      \"strict\": true,\n      \"schema\": {\n        \"$defs\": {\n          \"TextPart\": {\n            \"additionalProperties\": false,\n            \"properties\": {\n              \"type\": {\n                \"const\": \"text\",\n                \"title\": \"Type\",\n                \"type\": \"string\"\n              },\n              \"text\": {\n                \"title\": \"Text\",\n                \"type\": \"string\"\n              }\n            },\n            \"required\": [\n              \"type\",\n              \"text\"\n            ],\n            \"title\": \"TextPart\",\n            \"type\": \"object\"\n          },\n          \"WebCitation\": {\n            \"additionalProperties\": false,\n            \"properties\": {\n              \"type\": {\n                \"const\": \"cite:web\",\n                \"title\": \"Type\",\n                \"type\": \"string\"\n              },\n              \"url\": {\n                \"title\": \"Url\",\n                \"type\": \"string\"\n              }\n            },\n            \"required\": [\n              \"type\",\n              \"url\"\n            ],\n            \"title\": \"WebCitation\",\n            \"type\": \"object\"\n          }\n        },\n        \"additionalProperties\": false,\n        \"properties\": {\n          \"parts\": {\n            \"items\": {\n              \"anyOf\": [\n                {\n                  \"$ref\": \"#/$defs/TextPart\"\n                },\n                {\n                  \"$ref\": \"#/$defs/WebCitation\"\n                }\n              ]\n            },\n            \"title\": \"Parts\",\n            \"type\": \"array\"\n          }\n        },\n        \"required\": [\n          \"parts\"\n        ],\n        \"title\": \"Reply\",\n        \"type\": \"object\"\n      }\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('key order drop-in: 2xx (a 400 means the forwarded schema was mangled)', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var r = pm.response.json();",
+                  "pm.test('key order drop-in: response completed (incomplete = runaway repetition, pre-fix signature)', function () {",
+                  "  pm.expect(r.status, 'status: ' + JSON.stringify(r.status) + ' incomplete_details: ' + JSON.stringify(r.incomplete_details)).to.eql('completed');",
+                  "});",
+                  "var outputText = null;",
+                  "if (r.output && r.output.length) {",
+                  "  for (var i = 0; i < r.output.length; i++) {",
+                  "    var item = r.output[i];",
+                  "    if (item.type === 'message' && item.content && item.content.length) {",
+                  "      for (var j = 0; j < item.content.length; j++) {",
+                  "        if (item.content[j].type === 'output_text') { outputText = item.content[j].text; }",
+                  "      }",
+                  "    }",
+                  "  }",
+                  "}",
+                  "pm.test('key order drop-in: structured output present and parseable', function () {",
+                  "  pm.expect(outputText, 'no output_text in: ' + JSON.stringify(r.output)).to.be.a('string');",
+                  "});",
+                  "if (typeof outputText !== 'string') { return; }",
+                  "var parsed = JSON.parse(outputText);",
+                  "pm.test('key order drop-in: anyOf picked the TextPart branch, not fabricated cite:web (pre-fix: 0/5 correct)', function () {",
+                  "  pm.expect(parsed.parts, 'parsed: ' + outputText).to.be.an('array').that.is.not.empty;",
+                  "  for (var k = 0; k < parsed.parts.length; k++) {",
+                  "    pm.expect(parsed.parts[k].type, 'wrong anyOf branch selected, output: ' + outputText).to.eql('text');",
+                  "  }",
+                  "  pm.expect(outputText.indexOf('cite:web'), 'fabricated citation in output: ' + outputText).to.eql(-1);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
