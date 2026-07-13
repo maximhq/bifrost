@@ -34,6 +34,7 @@ func TestSarvam(t *testing.T) {
 		Scenarios: llmtests.TestScenarios{
 			SimpleChat:            true,
 			MultiTurnConversation: true,
+			ListModels:            true,
 			// CompletionStream is left off: Sarvam's chat models are reasoning models that
 			// emit 500+ reasoning chunks, tripping the harness's 500-chunk safety cap.
 			// Streaming is delegated to the shared OpenAI handler and verified manually.

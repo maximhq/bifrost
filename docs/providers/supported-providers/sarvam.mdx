@@ -20,12 +20,12 @@ Sarvam AI is a voice and LLM provider focused on Indian languages (10 Indic lang
 | Responses API | ✅ | ✅ | `/v1/chat/completions` |
 | Speech (TTS) | ✅ | ✅ | `/text-to-speech`, `/text-to-speech/stream` |
 | Transcription (STT) | ✅ | ❌ | `/speech-to-text` |
+| List Models | ✅ | - | `/v1/models` |
 | Text Completions | ❌ | ❌ | - |
 | Embeddings | ❌ | ❌ | - |
-| List Models | ❌ | - | - |
 
 <Note>
-**Unsupported Operations** (❌): Text Completions, Embeddings, List Models, Images, Files, Batch, and streaming transcription are not offered by the upstream Sarvam API. These return `UnsupportedOperationError`.
+**Unsupported Operations** (❌): Text Completions, Embeddings, Images, Files, Batch, and streaming transcription are not offered by the upstream Sarvam API. These return `UnsupportedOperationError`.
 </Note>
 
 ## Setup & Configuration

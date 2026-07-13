@@ -72,9 +72,19 @@ func (provider *SarvamProvider) GetProviderKey() schemas.ModelProvider {
 	return schemas.Sarvam
 }
 
-// ListModels is not supported by the Sarvam provider.
+// ListModels performs a list models request to Sarvam's API.
 func (provider *SarvamProvider) ListModels(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.ListModelsRequest, provider.GetProviderKey())
+	return openai.HandleOpenAIListModelsRequest(
+		ctx,
+		provider.client,
+		request,
+		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/models"),
+		keys,
+		provider.networkConfig.ExtraHeaders,
+		provider.GetProviderKey(),
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+	)
 }
 
 // TextCompletion is not supported by the Sarvam provider.
