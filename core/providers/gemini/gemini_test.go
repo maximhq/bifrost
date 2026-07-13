@@ -1378,10 +1378,12 @@ func TestStructuredOutputConversion(t *testing.T) {
 				require.Len(t, anyOfSlice, 2, "anyOf should have 2 branches for string and integer")
 
 				// Verify the anyOf branches
-				stringBranch := anyOfSlice[0].(map[string]interface{})
+				stringBranch, ok := asPlainMap(t, anyOfSlice[0])
+				require.True(t, ok, "anyOf branch should be a map")
 				assert.Equal(t, "string", stringBranch["type"])
 
-				integerBranch := anyOfSlice[1].(map[string]interface{})
+				integerBranch, ok := asPlainMap(t, anyOfSlice[1])
+				require.True(t, ok, "anyOf branch should be a map")
 				assert.Equal(t, "integer", integerBranch["type"])
 
 				// Validate status property - should remain unchanged
@@ -1422,9 +1424,12 @@ func TestStructuredOutputConversion(t *testing.T) {
 				},
 			},
 			validate: func(t *testing.T, result *gemini.GeminiGenerationRequest) {
-				schemaMap := result.GenerationConfig.ResponseJSONSchema.(map[string]interface{})
-				properties := schemaMap["properties"].(map[string]interface{})
-				name := properties["name"].(map[string]interface{})
+				schemaMap, ok := asPlainMap(t, result.GenerationConfig.ResponseJSONSchema)
+				require.True(t, ok, "ResponseJSONSchema should be a map")
+				properties, ok := asPlainMap(t, schemaMap["properties"])
+				require.True(t, ok, "properties should be a map")
+				name, ok := asPlainMap(t, properties["name"])
+				require.True(t, ok, "name should be a map")
 
 				// Nullable types should be kept as array (Gemini supports this)
 				typeVal := name["type"]
@@ -1667,6 +1672,25 @@ func TestStructuredOutputWithToolsConflict(t *testing.T) {
 }
 
 // TestResponsesStructuredOutputConversion tests that Responses API text config with union types is properly handled
+
+// asPlainMap normalizes schema objects that may be either plain maps or
+// order-preserving OrderedMaps (schema fields preserve client key order).
+func asPlainMap(t *testing.T, v interface{}) (map[string]interface{}, bool) {
+	t.Helper()
+	switch m := v.(type) {
+	case map[string]interface{}:
+		return m, true
+	case *schemas.OrderedMap:
+		if m == nil {
+			return nil, false
+		}
+		return m.ToMap(), true
+	case schemas.OrderedMap:
+		return m.ToMap(), true
+	}
+	return nil, false
+}
+
 func TestResponsesStructuredOutputConversion(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -1694,7 +1718,7 @@ func TestResponsesStructuredOutputConversion(t *testing.T) {
 							Name: schemas.Ptr("UserInfo"),
 							JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
 								Type: schemas.Ptr("object"),
-								Properties: &map[string]interface{}{
+								Properties: schemas.OrderedMapFromMap(map[string]interface{}{
 									"user_id": map[string]interface{}{
 										"type":        []interface{}{"string", "integer"},
 										"description": "User ID as string or integer",
@@ -1703,7 +1727,7 @@ func TestResponsesStructuredOutputConversion(t *testing.T) {
 										"type": "string",
 										"enum": []interface{}{"active", "inactive"},
 									},
-								},
+								}),
 								Required: []string{"user_id", "status"},
 								AdditionalProperties: &schemas.AdditionalPropertiesStruct{
 									AdditionalPropertiesBool: schemas.Ptr(false),
@@ -1719,14 +1743,14 @@ func TestResponsesStructuredOutputConversion(t *testing.T) {
 				assert.NotNil(t, result.GenerationConfig.ResponseJSONSchema)
 
 				// Validate the schema structure
-				schemaMap, ok := result.GenerationConfig.ResponseJSONSchema.(map[string]interface{})
+				schemaMap, ok := asPlainMap(t, result.GenerationConfig.ResponseJSONSchema)
 				require.True(t, ok, "ResponseJSONSchema should be a map")
 
-				properties, ok := schemaMap["properties"].(map[string]interface{})
+				properties, ok := asPlainMap(t, schemaMap["properties"])
 				require.True(t, ok, "properties should be a map")
 
 				// Validate user_id property - should be converted to anyOf
-				userID, ok := properties["user_id"].(map[string]interface{})
+				userID, ok := asPlainMap(t, properties["user_id"])
 				require.True(t, ok, "user_id should exist in properties")
 
 				// user_id should have anyOf instead of type array
@@ -1738,10 +1762,12 @@ func TestResponsesStructuredOutputConversion(t *testing.T) {
 				require.Len(t, anyOfSlice, 2, "anyOf should have 2 branches for string and integer")
 
 				// Verify the anyOf branches
-				stringBranch := anyOfSlice[0].(map[string]interface{})
+				stringBranch, ok := asPlainMap(t, anyOfSlice[0])
+				require.True(t, ok, "anyOf branch should be a map")
 				assert.Equal(t, "string", stringBranch["type"])
 
-				integerBranch := anyOfSlice[1].(map[string]interface{})
+				integerBranch, ok := asPlainMap(t, anyOfSlice[1])
+				require.True(t, ok, "anyOf branch should be a map")
 				assert.Equal(t, "integer", integerBranch["type"])
 			},
 		},
@@ -1766,20 +1792,23 @@ func TestResponsesStructuredOutputConversion(t *testing.T) {
 							Name: schemas.Ptr("NullableData"),
 							JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
 								Type: schemas.Ptr("object"),
-								Properties: &map[string]interface{}{
+								Properties: schemas.OrderedMapFromMap(map[string]interface{}{
 									"name": map[string]interface{}{
 										"type": []interface{}{"string", "null"},
 									},
-								},
+								}),
 							},
 						},
 					},
 				},
 			},
 			validate: func(t *testing.T, result *gemini.GeminiGenerationRequest) {
-				schemaMap := result.GenerationConfig.ResponseJSONSchema.(map[string]interface{})
-				properties := schemaMap["properties"].(map[string]interface{})
-				name := properties["name"].(map[string]interface{})
+				schemaMap, ok := asPlainMap(t, result.GenerationConfig.ResponseJSONSchema)
+				require.True(t, ok, "ResponseJSONSchema should be a map")
+				properties, ok := asPlainMap(t, schemaMap["properties"])
+				require.True(t, ok, "properties should be a map")
+				name, ok := asPlainMap(t, properties["name"])
+				require.True(t, ok, "name should be a map")
 
 				// Nullable types should be kept as array (Gemini supports this)
 				typeVal := name["type"]

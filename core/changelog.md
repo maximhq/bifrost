@@ -1,3 +1,4 @@
+[fix]: OpenAI Responses - preserve JSON schema key order in structured-output requests [@georg-wolflein](https://github.com/georg-wolflein)
 [fix]: warn callers not to truncate the `#t=` temp-token fragment on MCP inline-auth links [@MarcusPeng](https://github.com/MarcusPeng)
 [fix]: zero pooled ChannelMessage references on release to avoid pinning request bodies [@citrocat](https://github.com/citrocat)
 - fix: preserve Gemini file upload MIME types for GenAI file URI completions

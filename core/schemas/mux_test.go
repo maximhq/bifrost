@@ -988,7 +988,7 @@ func TestToChatRequest_TextFormat_JSONSchema(t *testing.T) {
 					Name:        Ptr("CityInfo"),
 					Description: Ptr("City schema"),
 					Strict:      Ptr(true),
-					JSONSchema:  &ResponsesTextConfigFormatJSONSchema{Schema: func() *any { v := any(schema); return &v }()},
+					JSONSchema:  &ResponsesTextConfigFormatJSONSchema{Schema: OrderedMapFromMap(schema)},
 				},
 			},
 		},
@@ -1167,9 +1167,9 @@ func TestToChatRequest_TextFormat_TypedFields(t *testing.T) {
 					// Schema is nil — fields are spread across typed fields (direct client path)
 					JSONSchema: &ResponsesTextConfigFormatJSONSchema{
 						Type:       Ptr("object"),
-						Properties: &props,
+						Properties: OrderedMapFromMap(props),
 						Required:   []string{"name"},
-						// Schema *any is intentionally nil here
+						// Schema is intentionally nil here
 					},
 				},
 			},

@@ -517,30 +517,34 @@ type ResponsesTextConfigFormat struct {
 
 // ResponsesTextConfigFormatJSONSchema represents a JSON schema specification
 // It supports JSON Schema fields used by various providers for structured outputs.
+// Schema-bearing fields use OrderedMap (mirroring ToolFunctionParameters) because
+// structured-output generation is sensitive to JSON schema property order: providers
+// like OpenAI follow the literal key order of the schema, so decoding into plain Go
+// maps (and re-marshaling them sorted) degrades output quality.
 type ResponsesTextConfigFormatJSONSchema struct {
 	Name                 *string                     `json:"name,omitempty"`
-	Schema               *any                        `json:"schema,omitempty"`
+	Schema               *OrderedMap                 `json:"schema,omitempty"`
 	Description          *string                     `json:"description,omitempty"`
 	Strict               *bool                       `json:"strict,omitempty"`
 	AdditionalProperties *AdditionalPropertiesStruct `json:"additionalProperties,omitempty"`
-	Properties           *map[string]any             `json:"properties,omitempty"`
+	Properties           *OrderedMap                 `json:"properties,omitempty"`
 	Required             []string                    `json:"required,omitempty"`
 	Type                 *string                     `json:"type,omitempty"`
 
 	// JSON Schema definition fields
-	Defs        *map[string]any `json:"$defs,omitempty"`       // JSON Schema draft 2019-09+ definitions
-	Definitions *map[string]any `json:"definitions,omitempty"` // Legacy JSON Schema draft-07 definitions
-	Ref         *string         `json:"$ref,omitempty"`        // Reference to definition
+	Defs        *OrderedMap `json:"$defs,omitempty"`       // JSON Schema draft 2019-09+ definitions
+	Definitions *OrderedMap `json:"definitions,omitempty"` // Legacy JSON Schema draft-07 definitions
+	Ref         *string     `json:"$ref,omitempty"`        // Reference to definition
 
 	// Array schema fields
-	Items    *map[string]any `json:"items,omitempty"`    // Array element schema
-	MinItems *int64          `json:"minItems,omitempty"` // Minimum array length
-	MaxItems *int64          `json:"maxItems,omitempty"` // Maximum array length
+	Items    *OrderedMap `json:"items,omitempty"`    // Array element schema
+	MinItems *int64      `json:"minItems,omitempty"` // Minimum array length
+	MaxItems *int64      `json:"maxItems,omitempty"` // Maximum array length
 
 	// Composition fields (union types)
-	AnyOf []map[string]any `json:"anyOf,omitempty"` // Union types (any of these schemas)
-	OneOf []map[string]any `json:"oneOf,omitempty"` // Exclusive union types (exactly one of these)
-	AllOf []map[string]any `json:"allOf,omitempty"` // Schema intersection (all of these)
+	AnyOf []OrderedMap `json:"anyOf,omitempty"` // Union types (any of these schemas)
+	OneOf []OrderedMap `json:"oneOf,omitempty"` // Exclusive union types (exactly one of these)
+	AllOf []OrderedMap `json:"allOf,omitempty"` // Schema intersection (all of these)
 
 	// String validation fields
 	Format    *string `json:"format,omitempty"`    // String format (email, date, uri, etc.)
@@ -562,17 +566,26 @@ type ResponsesTextConfigFormatJSONSchema struct {
 
 // JSONSchemaFromMap builds a ResponsesTextConfigFormatJSONSchema from a raw interface{}
 func JSONSchemaFromMap(v interface{}) *ResponsesTextConfigFormatJSONSchema {
-	m, ok := v.(map[string]interface{})
-	if !ok {
+	var m map[string]interface{}
+	switch src := v.(type) {
+	case map[string]interface{}:
+		m = src
+	case *OrderedMap:
+		if src == nil {
+			return nil
+		}
+		m = src.ToMap() // shallow: nested *OrderedMap values keep their order
+	case OrderedMap:
+		m = src.ToMap()
+	default:
 		return nil
 	}
 	s := &ResponsesTextConfigFormatJSONSchema{}
 	if t, ok := m["type"].(string); ok {
 		s.Type = Ptr(t)
 	}
-	if props, ok := m["properties"].(map[string]interface{}); ok {
-		p := map[string]any(props)
-		s.Properties = &p
+	if props, ok := SafeExtractOrderedMap(m["properties"]); ok {
+		s.Properties = props
 	}
 	if req, ok := m["required"].([]interface{}); ok {
 		strs := make([]string, 0, len(req))
@@ -594,22 +607,19 @@ func JSONSchemaFromMap(v interface{}) *ResponsesTextConfigFormatJSONSchema {
 	if ref, ok := m["$ref"].(string); ok {
 		s.Ref = Ptr(ref)
 	}
-	if defs, ok := m["$defs"].(map[string]interface{}); ok {
-		d := map[string]any(defs)
-		s.Defs = &d
+	if defs, ok := SafeExtractOrderedMap(m["$defs"]); ok {
+		s.Defs = defs
 	}
-	if defs, ok := m["definitions"].(map[string]interface{}); ok {
-		d := map[string]any(defs)
-		s.Definitions = &d
+	if defs, ok := SafeExtractOrderedMap(m["definitions"]); ok {
+		s.Definitions = defs
 	}
-	if items, ok := m["items"].(map[string]interface{}); ok {
-		it := map[string]any(items)
-		s.Items = &it
+	if items, ok := SafeExtractOrderedMap(m["items"]); ok {
+		s.Items = items
 	}
 	if b, ok := m["additionalProperties"].(bool); ok {
 		s.AdditionalProperties = &AdditionalPropertiesStruct{AdditionalPropertiesBool: Ptr(b)}
-	} else if ap, ok := m["additionalProperties"].(map[string]interface{}); ok {
-		s.AdditionalProperties = &AdditionalPropertiesStruct{AdditionalPropertiesMap: OrderedMapFromMap(ap)}
+	} else if ap, ok := SafeExtractOrderedMap(m["additionalProperties"]); ok {
+		s.AdditionalProperties = &AdditionalPropertiesStruct{AdditionalPropertiesMap: ap}
 	}
 	if f, ok := m["format"].(string); ok {
 		s.Format = Ptr(f)
@@ -629,15 +639,15 @@ func JSONSchemaFromMap(v interface{}) *ResponsesTextConfigFormatJSONSchema {
 	if n, ok := m["nullable"].(bool); ok {
 		s.Nullable = Ptr(n)
 	}
-	if extractSliceOfMaps := func(key string) []map[string]any {
+	if extractSliceOfMaps := func(key string) []OrderedMap {
 		raw, ok := m[key].([]interface{})
 		if !ok {
 			return nil
 		}
-		out := make([]map[string]any, 0, len(raw))
+		out := make([]OrderedMap, 0, len(raw))
 		for _, item := range raw {
-			if mp, ok := item.(map[string]interface{}); ok {
-				out = append(out, mp)
+			if om, ok := SafeExtractOrderedMap(item); ok {
+				out = append(out, *om)
 			}
 		}
 		return out
@@ -696,14 +706,14 @@ func (s *ResponsesTextConfigFormatJSONSchema) ToMap() interface{} {
 		return nil
 	}
 	if s.Schema != nil {
-		return *s.Schema
+		return s.Schema
 	}
 	m := make(map[string]interface{})
 	if s.Type != nil {
 		m["type"] = *s.Type
 	}
 	if s.Properties != nil {
-		m["properties"] = *s.Properties
+		m["properties"] = s.Properties
 	}
 	if len(s.Required) > 0 {
 		m["required"] = s.Required
@@ -718,13 +728,13 @@ func (s *ResponsesTextConfigFormatJSONSchema) ToMap() interface{} {
 		m["$ref"] = *s.Ref
 	}
 	if s.Defs != nil {
-		m["$defs"] = *s.Defs
+		m["$defs"] = s.Defs
 	}
 	if s.Definitions != nil {
-		m["definitions"] = *s.Definitions
+		m["definitions"] = s.Definitions
 	}
 	if s.Items != nil {
-		m["items"] = *s.Items
+		m["items"] = s.Items
 	}
 	if s.AdditionalProperties != nil {
 		if s.AdditionalProperties.AdditionalPropertiesBool != nil {

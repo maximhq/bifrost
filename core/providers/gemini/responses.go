@@ -2789,12 +2789,8 @@ func reconstructSchemaFromJSONSchema(jsonSchema *schemas.ResponsesTextConfigForm
 	var schema map[string]interface{}
 
 	if jsonSchema.Schema != nil {
-		// If Schema field is set, use it directly
-		schemaMap, ok := (*jsonSchema.Schema).(map[string]interface{})
-		if !ok {
-			return *jsonSchema.Schema
-		}
-		schema = schemaMap
+		// If Schema field is set, use it directly (order-preserving)
+		schema = jsonSchema.Schema.ToMap()
 	} else {
 		// New format: Schema is spread across individual fields
 		schema = make(map[string]interface{})
