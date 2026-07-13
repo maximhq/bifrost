@@ -1,7 +1,8 @@
 // Package runware implements the Runware provider for Bifrost.
 // Runware exposes a single synchronous endpoint that accepts an array of tasks; this
 // provider supports its image operations (text-to-image, image-to-image, inpainting, outpainting),
-// all of which use the "imageInference" task type.
+// all of which use the "imageInference" task type. It also exposes an OpenAI-compatible LLM
+// API, wired up via the shared OpenAI handlers (chat, streaming, model listing).
 package runware
 
 import (
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/maximhq/bifrost/core/providers/openai"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
@@ -19,7 +21,8 @@ import (
 // RunwareProvider implements the Provider interface for Runware's API.
 type RunwareProvider struct {
 	logger              schemas.Logger        // Logger for provider operations
-	client              *fasthttp.Client      // HTTP client for API requests
+	client              *fasthttp.Client      // HTTP client for unary API requests
+	streamingClient     *fasthttp.Client      // HTTP client for streaming chat completions
 	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
 	sendBackRawRequest  bool                  // Whether to include raw request in BifrostResponse
 	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
@@ -51,9 +54,12 @@ func NewRunwareProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 	}
 	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
 
+	streamingClient := providerUtils.BuildStreamingClient(client)
+
 	return &RunwareProvider{
 		logger:              logger,
 		client:              client,
+		streamingClient:     streamingClient,
 		networkConfig:       config.NetworkConfig,
 		sendBackRawRequest:  config.SendBackRawRequest,
 		sendBackRawResponse: config.SendBackRawResponse,
@@ -65,9 +71,144 @@ func (provider *RunwareProvider) GetProviderKey() schemas.ModelProvider {
 	return schemas.Runware
 }
 
-// ListModels is not supported by the Runware provider.
+// runwareModelEntry embeds schemas.Model and additionally captures Runware's top-level
+// input/output modalities, which schemas.Model nests under Architecture.
+type runwareModelEntry struct {
+	schemas.Model
+	InputModalities  []string `json:"input_modalities,omitempty"`
+	OutputModalities []string `json:"output_modalities,omitempty"`
+}
+
+// runwareModelsResponse is the envelope returned by Runware's /v1/models.
+type runwareModelsResponse struct {
+	Data []runwareModelEntry `json:"data"`
+}
+
+// listModelsByKey fetches Runware's /v1/models and maps the per-model pricing, context, and modality metadata onto the Bifrost model schema.
+func (provider *RunwareProvider) listModelsByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+
+	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/models"))
+	req.Header.SetMethod(http.MethodGet)
+	req.Header.SetContentType("application/json")
+	if keyValue := key.Value.GetValue(); keyValue != "" {
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", keyValue))
+	}
+
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	defer wait()
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	if resp.StatusCode() != fasthttp.StatusOK {
+		return nil, openai.ParseOpenAIError(resp)
+	}
+
+	responseBody := append([]byte(nil), resp.Body()...)
+
+	var runwareResp runwareModelsResponse
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, &runwareResp, nil, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	response := &schemas.BifrostListModelsResponse{
+		Data: make([]schemas.Model, 0, len(runwareResp.Data)),
+	}
+	for i := range runwareResp.Data {
+		model := runwareResp.Data[i].Model
+		if len(runwareResp.Data[i].InputModalities) > 0 || len(runwareResp.Data[i].OutputModalities) > 0 {
+			if model.Architecture == nil {
+				model.Architecture = &schemas.Architecture{}
+			}
+			model.Architecture.InputModalities = runwareResp.Data[i].InputModalities
+			model.Architecture.OutputModalities = runwareResp.Data[i].OutputModalities
+		}
+		response.Data = append(response.Data, model)
+	}
+
+	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+		response.ExtraFields.RawRequest = rawRequest
+	}
+	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+		response.ExtraFields.RawResponse = rawResponse
+	}
+
+	// Runware returns model IDs without the "runware/" prefix; strip it from allowed/blacklist/alias entries before filtering, then re-add it.
+	providerPrefix := string(schemas.Runware) + "/"
+	stripPrefix := func(s string) string {
+		if strings.HasPrefix(strings.ToLower(s), strings.ToLower(providerPrefix)) {
+			return s[len(providerPrefix):]
+		}
+		return s
+	}
+
+	normalizedAllowed := make(schemas.WhiteList, 0, len(key.Models))
+	for _, m := range key.Models {
+		normalizedAllowed = append(normalizedAllowed, stripPrefix(m))
+	}
+	normalizedBlacklist := make(schemas.BlackList, 0, len(key.BlacklistedModels))
+	for _, m := range key.BlacklistedModels {
+		normalizedBlacklist = append(normalizedBlacklist, stripPrefix(m))
+	}
+	normalizedAliases := make(schemas.KeyAliases, len(key.Aliases))
+	for k, v := range key.Aliases {
+		cfg := v
+		cfg.ModelID = stripPrefix(v.ModelID)
+		normalizedAliases[stripPrefix(k)] = cfg
+	}
+
+	pipeline := &providerUtils.ListModelsPipeline{
+		AllowedModels:     normalizedAllowed,
+		BlacklistedModels: normalizedBlacklist,
+		Aliases:           normalizedAliases,
+		Unfiltered:        request.Unfiltered,
+		ProviderKey:       schemas.Runware,
+		MatchFns:          providerUtils.DefaultMatchFns(),
+	}
+
+	if pipeline.ShouldEarlyExit() {
+		response.Data = make([]schemas.Model, 0)
+	} else {
+		included := make(map[string]bool)
+		filteredData := make([]schemas.Model, 0, len(response.Data))
+		for i := range response.Data {
+			rawID := response.Data[i].ID
+			for _, result := range pipeline.FilterModel(rawID) {
+				entry := response.Data[i]
+				entry.ID = providerPrefix + result.ResolvedID
+				if result.AliasValue != "" {
+					entry.Alias = schemas.Ptr(result.AliasValue)
+				} else {
+					entry.Alias = nil
+				}
+				filteredData = append(filteredData, entry)
+				included[strings.ToLower(result.ResolvedID)] = true
+			}
+		}
+		filteredData = append(filteredData, pipeline.BackfillModels(included)...)
+		response.Data = filteredData
+	}
+
+	response.ExtraFields.Latency = latency.Milliseconds()
+
+	return response, nil
+}
+
+// ListModels lists Runware's models via /v1/models, fanning out across the provided keys.
 func (provider *RunwareProvider) ListModels(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.ListModelsRequest, provider.GetProviderKey())
+	return providerUtils.HandleMultipleListModelsRequests(
+		ctx,
+		keys,
+		request,
+		provider.listModelsByKey,
+	)
 }
 
 // TextCompletion is not supported by the Runware provider.
@@ -80,24 +221,78 @@ func (provider *RunwareProvider) TextCompletionStream(ctx *schemas.BifrostContex
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.TextCompletionStreamRequest, provider.GetProviderKey())
 }
 
-// ChatCompletion is not supported by the Runware provider.
+// ChatCompletion performs a chat completion request to Runware's OpenAI-compatible API.
 func (provider *RunwareProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.ChatCompletionRequest, provider.GetProviderKey())
+	var authHeader map[string]string
+	if v := key.Value.GetValue(); v != "" {
+		authHeader = map[string]string{"Authorization": "Bearer " + v}
+	}
+	return openai.HandleOpenAIChatCompletionRequest(
+		ctx,
+		provider.client,
+		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/chat/completions"),
+		request,
+		authHeader,
+		provider.networkConfig.ExtraHeaders,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		provider.GetProviderKey(),
+		nil,
+		nil,
+		nil,
+		provider.logger,
+	)
 }
 
-// ChatCompletionStream is not supported by the Runware provider.
+// ChatCompletionStream performs a streaming chat completion request to Runware's OpenAI-compatible API.
 func (provider *RunwareProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.ChatCompletionStreamRequest, provider.GetProviderKey())
+	var authHeader map[string]string
+	if v := key.Value.GetValue(); v != "" {
+		authHeader = map[string]string{"Authorization": "Bearer " + v}
+	}
+	return openai.HandleOpenAIChatCompletionStreaming(
+		ctx,
+		provider.streamingClient,
+		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/chat/completions"),
+		request,
+		authHeader,
+		provider.networkConfig.ExtraHeaders,
+		provider.networkConfig.StreamIdleTimeoutInSeconds,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		provider.GetProviderKey(),
+		postHookRunner,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		provider.logger,
+		postHookSpanFinalizer,
+	)
 }
 
-// Responses is not supported by the Runware provider.
+// Responses performs a responses request to Runware by translating it into a chat completion.
 func (provider *RunwareProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.ResponsesRequest, provider.GetProviderKey())
+	chatResponse, err := provider.ChatCompletion(ctx, key, request.ToChatRequest())
+	if err != nil {
+		return nil, err
+	}
+
+	return chatResponse.ToBifrostResponsesResponse(), nil
 }
 
-// ResponsesStream is not supported by the Runware provider.
+// ResponsesStream performs a streaming responses request to Runware by translating it into a streaming chat completion.
 func (provider *RunwareProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.ResponsesStreamRequest, provider.GetProviderKey())
+	ctx.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
+	return provider.ChatCompletionStream(
+		ctx,
+		postHookRunner,
+		postHookSpanFinalizer,
+		key,
+		request.ToChatRequest(),
+	)
 }
 
 // Embedding is not supported by the Runware provider.
