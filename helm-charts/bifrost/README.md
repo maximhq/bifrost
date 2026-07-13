@@ -18,6 +18,8 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 - Added `calendar_aligned` rendering for `bifrost.governance.virtualKeys[*].calendar_aligned`. Was in schema but not rendered into config. Now emits `virtual_keys[*].calendar_aligned` in the generated config.
 - Documented `calendar_aligned` in the `bifrost.governance.budgets[*]` example. Was already schema-supported; now shown in the `values.yaml` commented example.
 - Added `bifrost.alerting` for declarative alert channels and rules. Supports `history_retention_days`, `webhook_network` (`allow_http`, `allow_private_network`), `channels[]` (slack, microsoft_teams, pagerduty, webhook), and `rules[]` (CEL-expression-based, governance-scope-aware). Renders into `alerting`.
+- `postgresql.external.port` now accepts a string in addition to an integer, enabling env-variable substitution via `env.VAR_NAME` references when mounting port from a Kubernetes secret. Renders into `postgres_config.port`.
+- `bifrost.mcp.toolGroups[*].id` — optional integer DB ID for an existing MCP tool group. When set, the reconciler updates the group by ID instead of matching by name. Renders into `mcp.tool_groups[*].id`.
 
 ### 2.1.26
 
