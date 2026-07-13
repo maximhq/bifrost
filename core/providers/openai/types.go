@@ -887,6 +887,8 @@ func (resp *OpenAIResponsesRequest) MarshalJSON() ([]byte, error) {
 			Effort:          resp.Reasoning.Effort,
 			GenerateSummary: resp.Reasoning.GenerateSummary,
 			Summary:         resp.Reasoning.Summary,
+			Context:         resp.Reasoning.Context,
+			Mode:            resp.Reasoning.Mode,
 			MaxTokens:       nil, // Always set to nil
 		}
 	}
