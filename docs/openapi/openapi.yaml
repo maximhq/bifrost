@@ -993,6 +993,8 @@ paths:
     $ref: './paths/management/logging.yaml#/logs-dashboard'
   /api/logs/recalculate-cost:
     $ref: './paths/management/logging.yaml#/logs-recalculate-cost'
+  /api/logs/recalculate-cost/status:
+    $ref: './paths/management/logging.yaml#/logs-recalculate-cost-status'
 
   # MCP Logs
   /api/mcp-logs:
