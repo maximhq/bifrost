@@ -13,9 +13,18 @@ func TestConvertToolConfig_RawParametersPassthrough(t *testing.T) {
 	tests := []struct {
 		name string
 		raw  string
+		want string
 	}{
-		{name: "empty object", raw: `{ }`},
-		{name: "populated schema", raw: `{"x-provider-key":{"enabled":true},"type":"object","properties":{"query":{"type":["string","null"]}}}`},
+		{
+			name: "empty object uses Bedrock object fallback",
+			raw:  `{ }`,
+			want: `{"type":"object","properties":{}}`,
+		},
+		{
+			name: "populated schema remains raw",
+			raw:  `{"x-provider-key":{"enabled":true},"type":"object","properties":{"query":{"type":["string","null"]}}}`,
+			want: `{"x-provider-key":{"enabled":true},"type":"object","properties":{"query":{"type":["string","null"]}}}`,
+		},
 	}
 
 	for _, tt := range tests {
@@ -37,8 +46,8 @@ func TestConvertToolConfig_RawParametersPassthrough(t *testing.T) {
 			if cfg == nil || len(cfg.Tools) != 1 || cfg.Tools[0].ToolSpec == nil {
 				t.Fatalf("expected one converted function tool, got %+v", cfg)
 			}
-			if got := string(cfg.Tools[0].ToolSpec.InputSchema.JSON); got != tt.raw {
-				t.Fatalf("raw schema changed during Bedrock conversion:\n got: %s\nwant: %s", got, tt.raw)
+			if got := string(cfg.Tools[0].ToolSpec.InputSchema.JSON); got != tt.want {
+				t.Fatalf("unexpected Bedrock input schema:\n got: %s\nwant: %s", got, tt.want)
 			}
 		})
 	}
