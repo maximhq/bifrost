@@ -26,6 +26,14 @@ func (provider *OpenAIProvider) RealtimeWebSocketURL(key schemas.Key, model stri
 	base := provider.networkConfig.BaseURL
 	base = strings.Replace(base, "https://", "wss://", 1)
 	base = strings.Replace(base, "http://", "ws://", 1)
+	if strings.HasPrefix(key.Value.GetValue(), "ek_") {
+		// Ephemeral client-secret tokens are already bound server-side to a
+		// specific session (type, model, transcription config, etc.) minted
+		// via /v1/realtime/client_secrets. OpenAI rejects a model query param
+		// alongside one for transcription-shaped sessions, so omit it and let
+		// the token's own session take effect.
+		return base + "/v1/realtime"
+	}
 	return base + "/v1/realtime?model=" + url.QueryEscape(model)
 }
 

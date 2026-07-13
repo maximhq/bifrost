@@ -285,6 +285,15 @@ func (h *WSRealtimeHandler) runRealtimeSession(
 		return
 	}
 
+	// When the client authenticated with an ephemeral realtime client-secret token,
+	// dial upstream using that same token instead of bifrost's stored key. Ephemeral
+	// tokens are bound server-side to the session configured when the secret was
+	// minted via /v1/realtime/client_secrets — reusing bifrost's own key here silently
+	// opens a fresh, default-config realtime session instead of resuming that one.
+	if isRealtimeEphemeralToken(token) {
+		key.Value = *schemas.NewSecretVar(token)
+	}
+
 	// Resolve model alias so the provider receives the actual model identifier.
 	model = key.Aliases.Resolve(model)
 
