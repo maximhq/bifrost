@@ -4,16 +4,6 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// compatContextKey is a private context key type to avoid collisions with keys
-// defined by other packages.
-type compatContextKey string
-
-// namespaceToolMapContextKey stores the map from a flattened tool name to its
-// originating namespace name. It is populated by flattenNamespaceTools when
-// namespace-scoped tools are expanded, and consumed by PostLLMHook to re-attach
-// the namespace to the provider's function_call items.
-const namespaceToolMapContextKey compatContextKey = "compat-namespace-tool-map"
-
 // applyParameterConversion rewrites request fields in place for provider compatibility.
 func applyParameterConversion(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) {
 	if req == nil {
@@ -25,7 +15,7 @@ func applyParameterConversion(ctx *schemas.BifrostContext, req *schemas.BifrostR
 		// later fallback that does not flatten (e.g. OpenAI) does not observe a
 		// stale mapping from a previous attempt in PostLLMHook.
 		if ctx != nil {
-			ctx.SetValue(namespaceToolMapContextKey, namespaceByTool)
+			ctx.SetValue(schemas.BifrostContextKeyCompatNamespaceToolMap, namespaceByTool)
 		}
 		disableThinkingWithToolChoiceForResponses(req.ResponsesRequest)
 	}
