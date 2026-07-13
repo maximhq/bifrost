@@ -51,6 +51,21 @@ func ToGeminiChatCompletionRequestWithImageURLSchemes(ctx *schemas.BifrostContex
 			}
 		}
 
+		// Map OpenAI web_search_options to Google Search grounding
+		if bifrostReq.Params.WebSearchOptions != nil {
+			googleSearch := &GoogleSearch{}
+			if filters := bifrostReq.Params.WebSearchOptions.Filters; filters != nil {
+				googleSearch.ExcludeDomains = filters.BlockedDomains
+				if filters.TimeRangeFilter != nil {
+					googleSearch.TimeRangeFilter = &Interval{
+						StartTime: filters.TimeRangeFilter.StartTime,
+						EndTime:   filters.TimeRangeFilter.EndTime,
+					}
+				}
+			}
+			geminiReq.Tools = append(geminiReq.Tools, Tool{GoogleSearch: googleSearch})
+		}
+
 		if bifrostReq.Params.ServiceTier != nil {
 			geminiReq.ServiceTier = mapBifrostServiceTierToGemini(*bifrostReq.Params.ServiceTier)
 		}
@@ -264,10 +279,14 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 			ContentBlocks: contentBlocks,
 		}
 
-		if len(toolCalls) > 0 || len(reasoningDetails) > 0 {
+		// Map Google Search grounding supports to OpenAI url_citation annotations
+		annotations := convertGroundingMetadataToChatAnnotations(candidate.GroundingMetadata)
+
+		if len(toolCalls) > 0 || len(reasoningDetails) > 0 || len(annotations) > 0 {
 			message.ChatAssistantMessage = &schemas.ChatAssistantMessage{
 				ToolCalls:        toolCalls,
 				ReasoningDetails: reasoningDetails,
+				Annotations:      annotations,
 			}
 		}
 
@@ -488,8 +507,15 @@ func (response *GenerateContentResponse) ToBifrostChatCompletionStream(state *Ge
 		}
 	}
 
+	// Map Google Search grounding supports to OpenAI url_citation annotations.
+	// Gemini sends complete groundingMetadata on the finish-reason chunk; read it only
+	// there (matching the Responses path) so re-sends can't drop or duplicate citations.
+	if candidate.FinishReason != "" {
+		delta.Annotations = convertGroundingMetadataToChatAnnotations(candidate.GroundingMetadata)
+	}
+
 	// Check if delta has any content - if not and it's not the last chunk, skip it
-	hasDeltaContent := delta.Role != nil || delta.Content != nil || len(delta.ToolCalls) > 0 || len(delta.ReasoningDetails) > 0
+	hasDeltaContent := delta.Role != nil || delta.Content != nil || len(delta.ToolCalls) > 0 || len(delta.ReasoningDetails) > 0 || len(delta.Annotations) > 0
 	if !hasDeltaContent && !isLastChunk {
 		return nil, nil, false
 	}
@@ -529,6 +555,44 @@ func (response *GenerateContentResponse) ToBifrostChatCompletionStream(state *Ge
 	}
 
 	return streamResponse, nil, isLastChunk
+}
+
+// convertGroundingMetadataToChatAnnotations converts Gemini grounding supports to OpenAI
+// url_citation annotations, one per (support, chunk index) pair so multi-source segments
+// are preserved. Indices are Gemini's byte offsets into the response text, passed through as-is.
+func convertGroundingMetadataToChatAnnotations(metadata *GroundingMetadata) []schemas.ChatAssistantMessageAnnotation {
+	if metadata == nil {
+		return nil
+	}
+	var annotations []schemas.ChatAssistantMessageAnnotation
+	for _, support := range metadata.GroundingSupports {
+		if support.Segment == nil {
+			continue
+		}
+		for _, chunkIdx := range support.GroundingChunkIndices {
+			if chunkIdx < 0 || int(chunkIdx) >= len(metadata.GroundingChunks) {
+				continue
+			}
+			chunk := metadata.GroundingChunks[chunkIdx]
+			if chunk.Web == nil || chunk.Web.URI == "" {
+				continue
+			}
+			annotation := schemas.ChatAssistantMessageAnnotation{
+				Type: "url_citation",
+				URLCitation: schemas.ChatAssistantMessageAnnotationCitation{
+					StartIndex: int(support.Segment.StartIndex),
+					EndIndex:   int(support.Segment.EndIndex),
+					Title:      chunk.Web.Title,
+					URL:        schemas.Ptr(chunk.Web.URI),
+				},
+			}
+			if support.Segment.Text != "" {
+				annotation.URLCitation.Text = schemas.Ptr(support.Segment.Text)
+			}
+			annotations = append(annotations, annotation)
+		}
+	}
+	return annotations
 }
 
 // isErrorFinishReason checks if a finish reason indicates a filtered or error response
