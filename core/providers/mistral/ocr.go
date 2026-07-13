@@ -34,6 +34,7 @@ func ToMistralOCRRequest(req *schemas.BifrostOCRRequest) *MistralOCRRequest {
 
 	if req.Params != nil {
 		mistralReq.IncludeImageBase64 = req.Params.IncludeImageBase64
+		mistralReq.IncludeBlocks = req.Params.IncludeBlocks
 		mistralReq.Pages = req.Params.Pages
 		mistralReq.ImageLimit = req.Params.ImageLimit
 		mistralReq.ImageMinSize = req.Params.ImageMinSize
@@ -87,6 +88,9 @@ func (r *MistralOCRResponse) ToBifrostOCRResponse() *schemas.BifrostOCRResponse 
 					Height: p.Dimensions.Height,
 					Width:  p.Dimensions.Width,
 				}
+			}
+			if len(p.Blocks) > 0 {
+				page.Blocks = p.Blocks
 			}
 			resp.Pages[i] = page
 		}

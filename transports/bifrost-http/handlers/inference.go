@@ -221,6 +221,7 @@ var ocrParamsKnownFields = map[string]bool{
 	"document":                   true,
 	"fallbacks":                  true,
 	"include_image_base64":       true,
+	"include_blocks":             true,
 	"pages":                      true,
 	"image_limit":                true,
 	"image_min_size":             true,

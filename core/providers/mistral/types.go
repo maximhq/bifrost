@@ -154,6 +154,7 @@ type MistralOCRRequest struct {
 	ID                       string                 `json:"id,omitempty"`
 	Document                 MistralOCRDocument     `json:"document"`
 	IncludeImageBase64       *bool                  `json:"include_image_base64,omitempty"`
+	IncludeBlocks            *bool                  `json:"include_blocks,omitempty"`
 	Pages                    []int                  `json:"pages,omitempty"`
 	ImageLimit               *int                   `json:"image_limit,omitempty"`
 	ImageMinSize             *int                   `json:"image_min_size,omitempty"`
@@ -189,6 +190,9 @@ type MistralOCRPage struct {
 	Markdown   string                    `json:"markdown"`
 	Images     []MistralOCRPageImage     `json:"images,omitempty"`
 	Dimensions *MistralOCRPageDimensions `json:"dimensions,omitempty"`
+	// Populated by Mistral only when the request sets include_blocks=true.
+	// Kept opaque so provider-side schema evolution passes through untouched.
+	Blocks []any `json:"blocks,omitempty"`
 }
 
 // MistralOCRUsageInfo represents usage information in Mistral's OCR response.
@@ -199,8 +203,8 @@ type MistralOCRUsageInfo struct {
 
 // MistralOCRResponse represents Mistral's OCR API response.
 type MistralOCRResponse struct {
-	Model              string              `json:"model"`
-	Pages              []MistralOCRPage    `json:"pages"`
+	Model              string               `json:"model"`
+	Pages              []MistralOCRPage     `json:"pages"`
 	UsageInfo          *MistralOCRUsageInfo `json:"usage_info,omitempty"`
-	DocumentAnnotation *string             `json:"document_annotation,omitempty"`
+	DocumentAnnotation *string              `json:"document_annotation,omitempty"`
 }
