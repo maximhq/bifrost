@@ -75,7 +75,9 @@ type OCRPage struct {
 	// Blocks carries provider-native layout blocks (currently Mistral only,
 	// populated when the request sets include_blocks=true). Kept as raw JSON
 	// values so any provider-side schema addition passes through unchanged.
-	Blocks []any `json:"blocks,omitempty"`
+	// Pointer so an explicitly empty `blocks: []` round-trips as [] instead of
+	// being dropped by omitempty — the field's presence is part of the contract.
+	Blocks *[]any `json:"blocks,omitempty"`
 }
 
 // OCRUsageInfo represents usage information from an OCR response.
