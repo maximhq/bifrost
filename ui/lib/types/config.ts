@@ -62,8 +62,11 @@ export interface AliasConfig {
 	api_version?: string;
 	anthropic_version?: string;
 	endpoint?: SecretVar;
-	// Vertex overrides
+	// Shared per-alias project override (Vertex GCP project; Bedrock / Bedrock Mantle
+	// project sent via OpenAI-Project / anthropic-workspace-id). Kept top-level in Go
+	// so the flat project_id key doesn't collide across embedded sub-configs.
 	project_id?: SecretVar;
+	// Vertex overrides
 	project_number?: SecretVar;
 	force_single_region?: boolean;
 	// Bedrock overrides

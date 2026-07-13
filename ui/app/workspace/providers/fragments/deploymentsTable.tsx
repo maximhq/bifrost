@@ -232,6 +232,41 @@ function BedrockSection({ config, onChange, disabled }: ProviderSectionProps) {
 					disabled={disabled}
 				/>
 			</FieldRow>
+			<FieldRow label="Project ID" hint="Scope this deployment's Bedrock Mantle (gpt-*/Gemma) calls to a specific project via the OpenAI-Project header. Leave blank to use the key's project.">
+				<SecretVarField
+					value={config.project_id}
+					onChange={(v) => onChange({ project_id: v })}
+					placeholder="proj_xxxxxxxx or env.BEDROCK_PROJECT_ID"
+					disabled={disabled}
+				/>
+			</FieldRow>
+		</div>
+	);
+}
+
+function BedrockMantleSection({ config, onChange, disabled }: ProviderSectionProps) {
+	return (
+		<div className="space-y-4">
+			<SectionHeader
+				title="Bedrock Mantle overrides"
+				description="Override key-level Bedrock Mantle defaults for this deployment. Leave blank to use the key's settings."
+			/>
+			<FieldRow label="Region">
+				<SecretVarField
+					value={config.region}
+					onChange={(v) => onChange({ region: v })}
+					placeholder="us-east-1 or env.BEDROCK_REGION"
+					disabled={disabled}
+				/>
+			</FieldRow>
+			<FieldRow label="Project ID" hint="Scope this deployment to a specific project via the OpenAI-Project / anthropic-workspace-id header. Leave blank to use the key's project.">
+				<SecretVarField
+					value={config.project_id}
+					onChange={(v) => onChange({ project_id: v })}
+					placeholder="proj_xxxxxxxx or env.BEDROCK_PROJECT_ID"
+					disabled={disabled}
+				/>
+			</FieldRow>
 		</div>
 	);
 }
@@ -265,6 +300,8 @@ function ProviderSection({ providerName, ...props }: ProviderSectionProps & { pr
 			return <VertexSection {...props} />;
 		case "bedrock":
 			return <BedrockSection {...props} />;
+		case "bedrock_mantle":
+			return <BedrockMantleSection {...props} />;
 		case "replicate":
 			return <ReplicateSection {...props} />;
 		default:
