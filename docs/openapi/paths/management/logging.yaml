@@ -857,8 +857,8 @@ logs-recalculate-cost:
     operationId: recalculateLogCosts
     summary: Recalculate log costs
     description: |
-      Recomputes missing costs in batches. Processes logs with missing cost values
-      and updates them based on current pricing data.
+      Starts an asynchronous background job that recalculates log costs in batches.
+      The returned payload is a job status object that can be polled via the status endpoint.
     tags:
       - Logging
     requestBody:
@@ -870,14 +870,65 @@ logs-recalculate-cost:
     security:
       - ManagementBearerAuth: []
     responses:
-      '200':
-        description: Costs recalculated successfully
+      '202':
+        description: Cost recalculation job accepted
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/logging.yaml#/RecalculateCostResponse'
+      '409':
+        description: A recalculation job is already running
         content:
           application/json:
             schema:
               $ref: '../../schemas/management/logging.yaml#/RecalculateCostResponse'
       '400':
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '503':
+        description: Background job runner is not available
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+logs-recalculate-cost-status:
+  get:
+    operationId: getRecalculateCostStatus
+    summary: Get log cost recalculation status
+    description: |
+      Returns the current status of a log cost recalculation job.
+      When `id` is omitted, the current in-flight job is returned, or `idle` when no job is running.
+    tags:
+      - Logging
+    parameters:
+      - name: id
+        in: query
+        description: Optional recalculation job ID to fetch
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Recalculation job status
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/logging.yaml#/RecalculateCostResponse'
+      '404':
+        description: Recalculation job not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+      '503':
+        description: Background job runner is not available
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
