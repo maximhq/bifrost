@@ -73,14 +73,21 @@ func TestChatCompletionStreamUsesContextPathAndExtraParams(t *testing.T) {
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	ctx.SetValue(schemas.BifrostContextKeyURLPath, "/custom/chat")
-	message := "Hello"
+	var content schemas.ChatMessageContent
+	if err := json.Unmarshal([]byte(`[
+		{"type":"text","text":"Describe this media."},
+		{"type":"image_url","image_url":{"url":"https://example.com/image.png","detail":"default","max_long_side_pixel":2048}},
+		{"type":"video_url","video_url":{"url":"mm_file://file_id","detail":"default","fps":1,"max_long_side_pixel":1920}}
+	]`), &content); err != nil {
+		t.Fatalf("failed to decode multimodal content: %v", err)
+	}
 	request := &schemas.BifrostChatRequest{
 		Provider: schemas.Minimax,
 		Model:    "MiniMax-M3",
 		Input: []schemas.ChatMessage{
 			{
 				Role:    schemas.ChatMessageRoleUser,
-				Content: &schemas.ChatMessageContent{ContentStr: &message},
+				Content: &content,
 			},
 		},
 		Params: &schemas.ChatParameters{
@@ -119,6 +126,34 @@ func TestChatCompletionStreamUsesContextPathAndExtraParams(t *testing.T) {
 		thinking, ok := payload["thinking"].(map[string]any)
 		if !ok || thinking["type"] != "disabled" {
 			t.Fatalf("expected thinking parameters in request body, got %#v", payload["thinking"])
+		}
+		messages, ok := payload["messages"].([]any)
+		if !ok || len(messages) != 1 {
+			t.Fatalf("expected one message in request body, got %#v", payload["messages"])
+		}
+		message, ok := messages[0].(map[string]any)
+		if !ok {
+			t.Fatalf("expected message object, got %#v", messages[0])
+		}
+		contentBlocks, ok := message["content"].([]any)
+		if !ok || len(contentBlocks) != 3 {
+			t.Fatalf("expected three content blocks, got %#v", message["content"])
+		}
+		imageBlock, ok := contentBlocks[1].(map[string]any)
+		if !ok {
+			t.Fatalf("expected image content block, got %#v", contentBlocks[1])
+		}
+		imageURL, ok := imageBlock["image_url"].(map[string]any)
+		if !ok || imageURL["url"] != "https://example.com/image.png" || imageURL["detail"] != "default" || imageURL["max_long_side_pixel"] != float64(2048) {
+			t.Fatalf("expected complete image content, got %#v", imageBlock)
+		}
+		videoBlock, ok := contentBlocks[2].(map[string]any)
+		if !ok {
+			t.Fatalf("expected video content block, got %#v", contentBlocks[2])
+		}
+		videoURL, ok := videoBlock["video_url"].(map[string]any)
+		if !ok || videoURL["url"] != "mm_file://file_id" || videoURL["detail"] != "default" || videoURL["fps"] != float64(1) || videoURL["max_long_side_pixel"] != float64(1920) {
+			t.Fatalf("expected complete video content, got %#v", videoBlock)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("streaming request body was not captured")

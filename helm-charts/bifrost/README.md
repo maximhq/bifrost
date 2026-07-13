@@ -454,6 +454,38 @@ cd bifrost/helm-charts/bifrost
 ./scripts/install.sh
 ```
 
+### OpenShift (restricted-v2 SCC)
+
+The default install sets `podSecurityContext.fsGroup: 1000`. OpenShift's
+`restricted-v2` SCC enforces `MustRunAs` against the namespace's allocated
+group range and rejects that value at admission:
+
+```text
+fsGroup: Invalid value: []int64{1000}: 1000 is not an allowed group
+```
+
+To deploy on OpenShift, clear the default `fsGroup` so the SCC can assign an
+in-range UID/GID:
+
+```yaml
+podSecurityContext:
+  # Helm merges maps, so `{}` does NOT clear this — you must use null.
+  fsGroup: null
+  runAsNonRoot: true
+```
+
+The Bifrost image supports arbitrary UIDs with group 0: the data directory is
+owned by group 0 and group-writable at build time, so the restricted-v2 UID
+(with GID 0) can write `config.db` and `logs.db` — no custom SCC or `anyuid` is
+needed.
+
+> **Behavior change:** the entrypoint's ownership repair now runs only as root
+> (uid 0). A non-root container that re-groups the data directory (for example
+> Docker Compose `user: "1000:2000"`) will no longer have its ownership silently
+> rewritten. Mount a volume already writable by the container's GID, or set
+> `BIFROST_SKIP_WRITE_CHECK=1` to boot read-only against external stores (e.g.
+> Postgres) even when `APP_DIR` is not writable.
+
 ## Configuration
 
 ### Image Configuration

@@ -353,7 +353,7 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 			}
 			return true
 		}
-		// Handle virtual key header (x-bf-vk, authorization, x-api-key, x-goog-api-key headers)
+		// Handle virtual key header (x-bf-vk, authorization, x-api-key, x-goog-api-key, api-key headers)
 		if keyStr == string(schemas.BifrostContextKeyVirtualKey) {
 			bifrostCtx.SetValue(schemas.BifrostContextKeyVirtualKey, string(value))
 			return true
@@ -374,6 +374,10 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 			return true
 		}
 		if keyStr == "x-goog-api-key" && strings.HasPrefix(strings.ToLower(string(value)), governance.VirtualKeyPrefix) {
+			bifrostCtx.SetValue(schemas.BifrostContextKeyVirtualKey, string(value))
+			return true
+		}
+		if keyStr == "api-key" && strings.HasPrefix(strings.ToLower(string(value)), governance.VirtualKeyPrefix) {
 			bifrostCtx.SetValue(schemas.BifrostContextKeyVirtualKey, string(value))
 			return true
 		}

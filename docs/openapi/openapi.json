@@ -63058,6 +63058,7 @@
                       "enum": [
                         "text",
                         "image_url",
+                        "video_url",
                         "input_audio",
                         "file",
                         "refusal"
@@ -63082,9 +63083,40 @@
                           "type": "string",
                           "enum": [
                             "low",
+                            "default",
                             "high",
                             "auto"
                           ]
+                        },
+                        "max_long_side_pixel": {
+                          "type": "integer"
+                        }
+                      }
+                    },
+                    "video_url": {
+                      "type": "object",
+                      "required": [
+                        "url"
+                      ],
+                      "properties": {
+                        "url": {
+                          "type": "string"
+                        },
+                        "detail": {
+                          "type": "string",
+                          "enum": [
+                            "low",
+                            "default",
+                            "high"
+                          ]
+                        },
+                        "fps": {
+                          "type": "number",
+                          "minimum": 0.2,
+                          "maximum": 5
+                        },
+                        "max_long_side_pixel": {
+                          "type": "integer"
                         }
                       }
                     },
@@ -67460,6 +67492,7 @@
                       "enum": [
                         "text",
                         "image_url",
+                        "video_url",
                         "input_audio",
                         "file",
                         "refusal"
@@ -67484,9 +67517,40 @@
                           "type": "string",
                           "enum": [
                             "low",
+                            "default",
                             "high",
                             "auto"
                           ]
+                        },
+                        "max_long_side_pixel": {
+                          "type": "integer"
+                        }
+                      }
+                    },
+                    "video_url": {
+                      "type": "object",
+                      "required": [
+                        "url"
+                      ],
+                      "properties": {
+                        "url": {
+                          "type": "string"
+                        },
+                        "detail": {
+                          "type": "string",
+                          "enum": [
+                            "low",
+                            "default",
+                            "high"
+                          ]
+                        },
+                        "fps": {
+                          "type": "number",
+                          "minimum": 0.2,
+                          "maximum": 5
+                        },
+                        "max_long_side_pixel": {
+                          "type": "integer"
                         }
                       }
                     },
