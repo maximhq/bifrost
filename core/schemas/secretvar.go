@@ -1,7 +1,6 @@
 package schemas
 
 import (
-	"bytes"
 	"database/sql/driver"
 	"fmt"
 	"os"
@@ -50,7 +49,8 @@ func parseSecretRef(value string) *SecretVar {
 		val = unquoted
 	}
 	if sonic.Valid([]byte(value)) {
-		if trimmed := bytes.TrimSpace([]byte(val)); len(trimmed) > 0 && trimmed[0] == '{' {
+		valueNode, _ := sonic.Get([]byte(val), "value")
+		if valueNode.Exists() {
 			type secretVarCompat struct {
 				Val        string     `json:"value"`
 				Ref        string     `json:"ref"`
@@ -298,7 +298,8 @@ func (e *SecretVar) UnmarshalJSON(data []byte) error {
 		val = unquoted
 	}
 	if sonic.Valid(data) {
-		if trimmed := bytes.TrimSpace(data); len(trimmed) > 0 && trimmed[0] == '{' {
+		valueNode, _ := sonic.Get(data, "value")
+		if valueNode.Exists() {
 			type secretVarCompat struct {
 				Val        string     `json:"value"`
 				Ref        string     `json:"ref"`
