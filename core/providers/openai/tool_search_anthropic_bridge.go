@@ -56,7 +56,12 @@ func convertAnthropicToolSearchCallToOpenAINative(msg schemas.ResponsesMessage, 
 
 	var discoveredNames []string
 	if msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr != nil {
-		_ = sonic.Unmarshal([]byte(*msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr), &discoveredNames)
+		if err := sonic.Unmarshal([]byte(*msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr), &discoveredNames); err != nil {
+			// Malformed/unexpected output shape -- fall back to the original
+			// item rather than fabricating a "completed, zero results"
+			// tool_search_output, matching the two error paths below.
+			return []schemas.ResponsesMessage{msg}
+		}
 	}
 
 	discovered := make([]schemas.OpenAIToolSearchDiscoveredTool, 0, len(discoveredNames))
