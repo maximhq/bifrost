@@ -82,6 +82,22 @@ func GetProviderVoice(provider schemas.ModelProvider, voiceType string) string {
 		default:
 			return "21m00Tcm4TlvDq8ikWAM"
 		}
+	case schemas.Cartesia:
+		// Cartesia voices are UUIDs. Allow an override via CARTESIA_VOICE_ID for
+		// accounts whose voice library differs; otherwise fall back to public voices.
+		if v := strings.TrimSpace(os.Getenv("CARTESIA_VOICE_ID")); v != "" {
+			return v
+		}
+		switch voiceType {
+		case "primary":
+			return "f786b574-daa5-4673-aa0c-cbe3e8534c02"
+		case "secondary":
+			return "e07c00bc-4134-4eae-9ea4-1a55fb45746b"
+		case "tertiary":
+			return "ef191366-f52f-447a-a398-ed8c0f2943a1"
+		default:
+			return "f786b574-daa5-4673-aa0c-cbe3e8534c02"
+		}
 	default:
 		// Default to OpenAI voices for other providers
 		switch voiceType {

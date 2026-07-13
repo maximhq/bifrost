@@ -1,3 +1,4 @@
+[feat]: add Cartesia text-to-speech provider (Speech via /tts/bytes and SpeechStream via /tts/sse) [@nara-ryoya](https://github.com/nara-ryoya)
 [fix]: zero pooled ChannelMessage references on release to avoid pinning request bodies [@citrocat](https://github.com/citrocat)
 - fix: preserve Gemini file upload MIME types for GenAI file URI completions
 - fix: Gemini video reference fields map to instances [@vojthor](https://github.com/vojthor)

@@ -27,6 +27,19 @@ func DefaultGeminiPCMConfig() PCMConfig {
 	}
 }
 
+// DefaultCartesiaPCMConfig returns the default PCM configuration for Cartesia TTS streaming.
+// The /tts/sse endpoint only supports the raw container, which Bifrost requests with:
+// - Format: signed 16-bit little-endian (pcm_s16le)
+// - Sample rate: 44100 Hz
+// - Channels: 1 (mono)
+func DefaultCartesiaPCMConfig() PCMConfig {
+	return PCMConfig{
+		SampleRate:    44100,
+		NumChannels:   1,
+		BitsPerSample: 16,
+	}
+}
+
 // ConvertPCMToWAV converts raw PCM audio data to WAV format
 // The PCM data is expected to be in signed little-endian format (s16le for 16-bit)
 func ConvertPCMToWAV(pcmData []byte, config PCMConfig) ([]byte, error) {

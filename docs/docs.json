@@ -125,6 +125,7 @@
                   "providers/supported-providers/azure",
                   "providers/supported-providers/bedrock",
                   "providers/supported-providers/bedrock-mantle",
+                  "providers/supported-providers/cartesia",
                   "providers/supported-providers/cerebras",
                   "providers/supported-providers/cohere",
                   "providers/supported-providers/databricks",

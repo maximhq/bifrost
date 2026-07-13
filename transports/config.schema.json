@@ -398,6 +398,9 @@
         "elevenlabs": {
           "$ref": "#/$defs/provider"
         },
+        "cartesia": {
+          "$ref": "#/$defs/provider"
+        },
         "cerebras": {
           "$ref": "#/$defs/provider"
         },
@@ -6117,6 +6120,7 @@
             "gemini",
             "openrouter",
             "elevenlabs",
+            "cartesia",
             "huggingface",
             "nebius",
             "xai",

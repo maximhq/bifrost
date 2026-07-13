@@ -62,6 +62,7 @@ const (
 	Gemini        ModelProvider = "gemini"
 	OpenRouter    ModelProvider = "openrouter"
 	Elevenlabs    ModelProvider = "elevenlabs"
+	Cartesia      ModelProvider = "cartesia"
 	HuggingFace   ModelProvider = "huggingface"
 	Nebius        ModelProvider = "nebius"
 	XAI           ModelProvider = "xai"
@@ -89,6 +90,7 @@ var StandardProviders = []ModelProvider{
 	Azure,
 	Bedrock,
 	BedrockMantle,
+	Cartesia,
 	Cerebras,
 	Cohere,
 	DeepSeek,

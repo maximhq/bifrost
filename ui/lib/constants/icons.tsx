@@ -233,6 +233,30 @@ export const ProviderIcons = {
 		);
 	},
 
+	cartesia: ({ size = "md", className = "" }: IconProps) => {
+		const resolvedSize = resolveSize(size);
+
+		return (
+			<svg
+				width={resolvedSize}
+				height={resolvedSize}
+				xmlns="http://www.w3.org/2000/svg"
+				viewBox="0 0 32 32"
+				className={className}
+				fill="none"
+			>
+				<rect width="32" height="32" rx="7" fill="#0B0F19" />
+				<path
+					d="M22.5 12.4C21.4 11.1 19.8 10.3 18 10.3C14.8 10.3 12.3 12.9 12.3 16C12.3 19.1 14.8 21.7 18 21.7C19.8 21.7 21.4 20.9 22.5 19.6"
+					stroke="#22D3EE"
+					strokeWidth="2.4"
+					strokeLinecap="round"
+					fill="none"
+				/>
+			</svg>
+		);
+	},
+
 	groq: ({ size = "md", className = "" }: IconProps) => {
 		const resolvedSize = resolveSize(size);
 
