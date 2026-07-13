@@ -590,6 +590,7 @@ type ToolFunctionParameters struct {
 // NewRawToolFunctionParameters creates tool parameters backed by validated raw
 // JSON. Providers that serialize ToolFunctionParameters can forward the schema
 // without first decoding it into OrderedMaps and other intermediate values.
+// Provider-specific JSON Schema restrictions remain the provider's responsibility.
 func NewRawToolFunctionParameters(data []byte) (*ToolFunctionParameters, error) {
 	trimmed := bytes.TrimSpace(data)
 	if len(trimmed) == 0 || !json.Valid(trimmed) || trimmed[0] != '{' {
@@ -604,6 +605,23 @@ func NewRawToolFunctionParameters(data []byte) (*ToolFunctionParameters, error) 
 // HasRawJSON reports whether the parameters use the raw passthrough form.
 func (t *ToolFunctionParameters) HasRawJSON() bool {
 	return t != nil && len(t.rawJSON) > 0
+}
+
+// IsExplicitEmptyObject reports whether the parameters were explicitly supplied
+// as an empty JSON object. It inspects raw parameters without decoding them.
+func (t *ToolFunctionParameters) IsExplicitEmptyObject() bool {
+	if t == nil {
+		return false
+	}
+	if len(t.rawJSON) == 0 {
+		return t.explicitEmptyObject
+	}
+
+	trimmed := bytes.TrimSpace(t.rawJSON)
+	return len(trimmed) >= 2 &&
+		trimmed[0] == '{' &&
+		trimmed[len(trimmed)-1] == '}' &&
+		len(bytes.TrimSpace(trimmed[1:len(trimmed)-1])) == 0
 }
 
 // MarshalJSON serializes ToolFunctionParameters while preserving the original

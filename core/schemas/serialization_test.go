@@ -1078,6 +1078,35 @@ func TestToolFunctionParameters_RawJSONValidation(t *testing.T) {
 	}
 }
 
+func TestToolFunctionParameters_IsExplicitEmptyObject(t *testing.T) {
+	rawEmpty, err := NewRawToolFunctionParameters([]byte(`{ }`))
+	require.NoError(t, err)
+	rawPopulated, err := NewRawToolFunctionParameters([]byte(`{"type":"object"}`))
+	require.NoError(t, err)
+
+	var decodedEmpty ToolFunctionParameters
+	require.NoError(t, Unmarshal([]byte(`{}`), &decodedEmpty))
+
+	tests := []struct {
+		name   string
+		params *ToolFunctionParameters
+		want   bool
+	}{
+		{name: "nil", params: nil},
+		{name: "programmatic empty", params: &ToolFunctionParameters{}},
+		{name: "decoded empty", params: &decodedEmpty, want: true},
+		{name: "raw empty", params: rawEmpty, want: true},
+		{name: "raw populated", params: rawPopulated},
+		{name: "typed populated", params: &ToolFunctionParameters{Type: "object"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, tt.params.IsExplicitEmptyObject())
+		})
+	}
+}
+
 func TestToolFunctionParameters_RawJSONDeepCopy(t *testing.T) {
 	params, err := NewRawToolFunctionParameters([]byte(`{"type":"object"}`))
 	require.NoError(t, err)
