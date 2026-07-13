@@ -506,3 +506,69 @@ func TestApplyScopedOverrides_ScopePrecedence(t *testing.T) {
 		})
 	}
 }
+
+// TestPatchPricing_RerankSharedPerQueryOverrideSupersedes verifies that on
+// rerank rows an explicit override of the shared search_context_cost_per_query
+// field supersedes the datasheet input_cost_per_query rate, so pre-existing
+// rerank overrides saved via the shared field keep taking effect.
+func TestPatchPricing_RerankSharedPerQueryOverrideSupersedes(t *testing.T) {
+	base := configstoreTables.TableModelPricing{
+		Model:             "rerank-v3.5",
+		Provider:          "cohere",
+		Mode:              "rerank",
+		InputCostPerQuery: bifrost.Ptr(0.002),
+	}
+
+	patched := patchPricing(base, Options{
+		SearchContextCostPerQuery: bifrost.Ptr(0.01),
+	})
+
+	assert.Nil(t, patched.InputCostPerQuery, "datasheet per-query rate must be superseded by the explicit shared-field override")
+	require.NotNil(t, patched.SearchContextCostPerQuery)
+	assert.InDelta(t, 0.01, *patched.SearchContextCostPerQuery, 1e-12)
+
+	usage := &schemas.BifrostLLMUsage{
+		CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{
+			NumSearchQueries: bifrost.Ptr(1),
+		},
+	}
+	assert.InDelta(t, 0.01, computeRerankCost(&patched, usage, serviceTier{}), 1e-12)
+}
+
+// TestPatchPricing_RerankExplicitInputCostPerQueryOverrideWins verifies the
+// rerank-specific field still wins when the override sets it (alone or
+// alongside the shared field).
+func TestPatchPricing_RerankExplicitInputCostPerQueryOverrideWins(t *testing.T) {
+	base := configstoreTables.TableModelPricing{
+		Model:             "rerank-v3.5",
+		Provider:          "cohere",
+		Mode:              "rerank",
+		InputCostPerQuery: bifrost.Ptr(0.002),
+	}
+
+	patched := patchPricing(base, Options{
+		InputCostPerQuery:         bifrost.Ptr(0.005),
+		SearchContextCostPerQuery: bifrost.Ptr(0.01),
+	})
+
+	require.NotNil(t, patched.InputCostPerQuery)
+	assert.InDelta(t, 0.005, *patched.InputCostPerQuery, 1e-12)
+}
+
+// TestPatchPricing_NonRerankRowsKeepInputCostPerQuery verifies the supersede
+// rule is scoped to rerank rows and does not touch other modes.
+func TestPatchPricing_NonRerankRowsKeepInputCostPerQuery(t *testing.T) {
+	base := configstoreTables.TableModelPricing{
+		Model:             "sonar-pro",
+		Provider:          "perplexity",
+		Mode:              "chat",
+		InputCostPerQuery: bifrost.Ptr(0.002),
+	}
+
+	patched := patchPricing(base, Options{
+		SearchContextCostPerQuery: bifrost.Ptr(0.01),
+	})
+
+	require.NotNil(t, patched.InputCostPerQuery)
+	assert.InDelta(t, 0.002, *patched.InputCostPerQuery, 1e-12)
+}

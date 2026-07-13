@@ -173,9 +173,10 @@ func (response *CohereRerankResponse) ToBifrostRerankResponse(documents []schema
 			}
 		}
 		// Rerank is billed by search units rather than tokens, so usage must be
-		// populated even when no token counts are present.
+		// populated even when no token counts are present. Guard the full chain
+		// so the block stays safe independently of the surrounding checks.
 		var searchUnits *int
-		if response.Meta.BilledUnits != nil && response.Meta.BilledUnits.SearchUnits != nil {
+		if response.Meta != nil && response.Meta.BilledUnits != nil && response.Meta.BilledUnits.SearchUnits != nil {
 			searchUnits = response.Meta.BilledUnits.SearchUnits
 		}
 		if hasTokenUsage || searchUnits != nil {
@@ -185,9 +186,10 @@ func (response *CohereRerankResponse) ToBifrostRerankResponse(documents []schema
 				TotalTokens:      promptTokens + completionTokens,
 			}
 			if searchUnits != nil {
-				bifrostResponse.Usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{
-					NumSearchQueries: schemas.Ptr(*searchUnits),
+				if bifrostResponse.Usage.CompletionTokensDetails == nil {
+					bifrostResponse.Usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{}
 				}
+				bifrostResponse.Usage.CompletionTokensDetails.NumSearchQueries = schemas.Ptr(*searchUnits)
 			}
 		}
 	}

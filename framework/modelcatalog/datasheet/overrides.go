@@ -319,6 +319,7 @@ func patchPricing(pricing configstoreTables.TableModelPricing, override Options)
 		{dst: &patched.OutputCostPerImageAbove4096x4096Pixels, src: override.OutputCostPerImageAbove4096x4096Pixels},
 		{dst: &patched.CacheReadInputImageTokenCost, src: override.CacheReadInputImageTokenCost},
 		{dst: &patched.SearchContextCostPerQuery, src: override.SearchContextCostPerQuery},
+		{dst: &patched.InputCostPerQuery, src: override.InputCostPerQuery},
 		{dst: &patched.CodeInterpreterCostPerSession, src: override.CodeInterpreterCostPerSession},
 		{dst: &patched.OutputCostPerImageLowQuality, src: override.OutputCostPerImageLowQuality},
 		{dst: &patched.OutputCostPerImageMediumQuality, src: override.OutputCostPerImageMediumQuality},
@@ -330,6 +331,15 @@ func patchPricing(pricing configstoreTables.TableModelPricing, override Options)
 		if field.src != nil {
 			*field.dst = field.src
 		}
+	}
+
+	// On rerank rows the shared search_context_cost_per_query and the
+	// rerank-specific input_cost_per_query express the same per-query knob. An
+	// explicit override of the shared field supersedes the datasheet
+	// input_cost_per_query rate (computeRerankCost prefers InputCostPerQuery),
+	// so rerank overrides saved via the shared field keep taking effect.
+	if patched.Mode == "rerank" && override.SearchContextCostPerQuery != nil && override.InputCostPerQuery == nil {
+		patched.InputCostPerQuery = nil
 	}
 	return patched
 }

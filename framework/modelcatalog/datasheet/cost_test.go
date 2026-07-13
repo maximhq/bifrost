@@ -3603,3 +3603,44 @@ func TestTieredCacheCreationRate_PriorityWinsOver200kBand(t *testing.T) {
 	// Non-priority at the same size still uses the standard >200k rate.
 	assert.Equal(t, 0.000002, tieredCacheCreationInputTokenRate(&p, 250000, serviceTier{}))
 }
+
+// TestComputeRerankCost_InputCostPerQuery verifies the rerank-specific
+// per-query rate (input_cost_per_query) is consumed for rerank requests.
+func TestComputeRerankCost_InputCostPerQuery(t *testing.T) {
+	p := configstoreTables.TableModelPricing{
+		InputCostPerToken:  bifrost.Ptr(0.0),
+		OutputCostPerToken: bifrost.Ptr(0.0),
+		InputCostPerQuery:  bifrost.Ptr(0.002),
+	}
+	usage := &schemas.BifrostLLMUsage{
+		CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{
+			NumSearchQueries: bifrost.Ptr(2),
+		},
+	}
+
+	cost := computeRerankCost(&p, usage, serviceTier{})
+
+	assert.InDelta(t, 0.004, cost, 1e-12)
+}
+
+// TestComputeRerankCost_InputCostPerQueryPreferredOverSearchContext verifies
+// the rerank-specific rate wins when both per-query fields are set, while
+// search_context_cost_per_query remains the fallback when it is absent.
+func TestComputeRerankCost_InputCostPerQueryPreferredOverSearchContext(t *testing.T) {
+	usage := &schemas.BifrostLLMUsage{
+		CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{
+			NumSearchQueries: bifrost.Ptr(1),
+		},
+	}
+
+	both := configstoreTables.TableModelPricing{
+		InputCostPerQuery:         bifrost.Ptr(0.002),
+		SearchContextCostPerQuery: bifrost.Ptr(0.01),
+	}
+	assert.InDelta(t, 0.002, computeRerankCost(&both, usage, serviceTier{}), 1e-12)
+
+	fallback := configstoreTables.TableModelPricing{
+		SearchContextCostPerQuery: bifrost.Ptr(0.01),
+	}
+	assert.InDelta(t, 0.01, computeRerankCost(&fallback, usage, serviceTier{}), 1e-12)
+}

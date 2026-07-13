@@ -12,8 +12,8 @@ import (
 // Entry.UnmarshalJSON — per-query rerank pricing
 // ---------------------------------------------------------------------------
 
-// TestEntryUnmarshalInputCostPerQuery verifies that the rerank-mode
-// input_cost_per_query datasheet key is folded onto SearchContextCostPerQuery.
+// TestEntryUnmarshalInputCostPerQuery verifies that the rerank datasheet key
+// input_cost_per_query is parsed into its own first-class pricing option.
 func TestEntryUnmarshalInputCostPerQuery(t *testing.T) {
 	var entry Entry
 	err := sonic.Unmarshal([]byte(`{
@@ -25,31 +25,17 @@ func TestEntryUnmarshalInputCostPerQuery(t *testing.T) {
 	}`), &entry)
 
 	require.NoError(t, err)
-	require.NotNil(t, entry.SearchContextCostPerQuery)
-	assert.InDelta(t, 0.002, *entry.SearchContextCostPerQuery, 1e-9)
+	require.NotNil(t, entry.InputCostPerQuery)
+	assert.InDelta(t, 0.002, *entry.InputCostPerQuery, 1e-9)
+	// The per-query rerank rate stays on its own field and never folds onto
+	// the web-search rate.
+	assert.Nil(t, entry.SearchContextCostPerQuery)
 }
 
-// TestEntryUnmarshalInputCostPerQueryIgnoredForNonRerankModes verifies that
-// input_cost_per_query never attaches to non-rerank entries, so it cannot leak
-// into the web-search pricing path via SearchContextCostPerQuery.
-func TestEntryUnmarshalInputCostPerQueryIgnoredForNonRerankModes(t *testing.T) {
-	for _, mode := range []string{"chat", "embedding", "completion"} {
-		var entry Entry
-		err := sonic.Unmarshal([]byte(`{
-			"provider": "cohere",
-			"mode": "`+mode+`",
-			"input_cost_per_query": 0.002
-		}`), &entry)
-
-		require.NoError(t, err)
-		assert.Nil(t, entry.SearchContextCostPerQuery, "mode %q must not fold input_cost_per_query", mode)
-	}
-}
-
-// TestEntryUnmarshalTieredSearchContextCostTakesPrecedence verifies that an
-// explicit tiered search_context_cost_per_query object wins over
-// input_cost_per_query when both keys are present.
-func TestEntryUnmarshalTieredSearchContextCostTakesPrecedence(t *testing.T) {
+// TestEntryUnmarshalTieredSearchContextCost verifies the tiered
+// search_context_cost_per_query object still collapses onto its single field
+// and is unaffected by input_cost_per_query being present.
+func TestEntryUnmarshalTieredSearchContextCost(t *testing.T) {
 	var entry Entry
 	err := sonic.Unmarshal([]byte(`{
 		"provider": "cohere",
@@ -61,4 +47,26 @@ func TestEntryUnmarshalTieredSearchContextCostTakesPrecedence(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, entry.SearchContextCostPerQuery)
 	assert.InDelta(t, 0.01, *entry.SearchContextCostPerQuery, 1e-9)
+	require.NotNil(t, entry.InputCostPerQuery)
+	assert.InDelta(t, 0.002, *entry.InputCostPerQuery, 1e-9)
+}
+
+// TestEntryPricingRoundTripInputCostPerQuery verifies input_cost_per_query
+// survives the Entry -> TableModelPricing -> Entry conversion round trip.
+func TestEntryPricingRoundTripInputCostPerQuery(t *testing.T) {
+	var entry Entry
+	err := sonic.Unmarshal([]byte(`{
+		"provider": "cohere",
+		"mode": "rerank",
+		"input_cost_per_query": 0.002
+	}`), &entry)
+	require.NoError(t, err)
+
+	pricing := convertEntryToTablePricing("cohere/rerank-v3.5", entry)
+	require.NotNil(t, pricing.InputCostPerQuery)
+	assert.InDelta(t, 0.002, *pricing.InputCostPerQuery, 1e-9)
+
+	roundTripped := convertTablePricingToEntry(&pricing)
+	require.NotNil(t, roundTripped.InputCostPerQuery)
+	assert.InDelta(t, 0.002, *roundTripped.InputCostPerQuery, 1e-9)
 }
