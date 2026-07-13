@@ -156,9 +156,9 @@ Adaptive load balancing ships **pre-tuned** - the scoring weights, thresholds, a
 
 | Setting | Default | Effect |
 |---------|---------|--------|
-| **Provider selection** (`direction_selection_enabled`) | On | Whether the system picks the provider (Level 1). Off ⇒ the request's provider is honored as-is. |
+| **Provider selection** (`direction_selection_enabled`) | On | Whether the system picks the provider (Level 1). A request that already carries a provider keeps it as the primary, but still gets the healthy providers eligible for its model appended as fallbacks behind any it configured. Off ⇒ Level 1 leaves the request's provider and fallback list untouched (key selection is toggled separately). |
 | **Key selection** (`route_selection_enabled`) | On | Whether per-key (Level 2) selection is adaptive. Off ⇒ keys are chosen by static weighted-random (metrics are still tracked). |
-| **Re-route failed providers** (`reroute_failed_directions`) | Off | If a pinned provider's direction is circuit-broken, re-route the request to a healthy provider for the same model. |
+| **Re-route failed providers** (`reroute_failed_directions`) | Off | If a pinned provider's direction is circuit-broken, re-route the request to a healthy provider for the same model. When no healthier provider exists, the pinned provider is kept. |
 | **Prune failed fallbacks** (`prune_failed_fallbacks`) | Off | Drop circuit-broken providers from a request's configured fallback list. |
 
 The two selection switches default **on**; the two failed-direction behaviors are **opt-in**. All four take effect live (no restart) and propagate across the cluster.
@@ -223,6 +223,7 @@ Unlike the API, this block is presence-aware: omitted fields keep their current 
 
 ## Scope & Limitations
 
+- **Pinned requests still get fallbacks**: With provider selection on, a request that pins a provider — even one that configures no fallbacks of its own — receives the healthy providers eligible for its model as a fallback chain, so a failing primary fails over instead of failing fast. To keep a request's provider and fallback list untouched, turn provider selection off (key selection within the provider is governed by its own switch).
 - **Per-node weights**: Each node load-balances on its own observed metrics. The only signal shared across nodes is a rate-limit (TPM) backoff, and only within the same region - there is no global weight consensus or cross-region coordination. This is deliberate: latency and error profiles differ per region, so importing another region's metrics would pollute a node's view of route health.
 - **~5-second adaptation**: Weight and state changes lag live traffic by up to one recompute cycle. Immediate per-request resilience (key rotation and fallback failover) is handled separately and is not subject to this delay.
 - **Optimistic cold start**: A brand-new key or provider enters at full weight and competes at roughly fair share before it has been measured, then self-corrects within a cycle or two.
