@@ -10520,6 +10520,7 @@ func migrationAddSidekiqTable(ctx context.Context, db *gorm.DB, logger schemas.L
 	migrationName := "add_sidekiq_table"
 	logger.Info("[configstore] starting migration %s", migrationName)
 	defer logger.Info("[configstore] finished migration %s", migrationName)
+
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
@@ -10562,12 +10563,25 @@ func migrationAddSidekiqTable(ctx context.Context, db *gorm.DB, logger schemas.L
 			default:
 				// Fall back to GORM for any other dialect so the migration does not
 				// hard-fail on an unsupported backend.
-				return tx.Migrator().CreateTable(&tables.TableSidekiqJob{})
+				if err := tx.Migrator().AutoMigrate(&tables.TableSidekiqJob{}); err != nil {
+					return err
+				}
+				return nil
 			}
 
 			if err := tx.Exec(createTable).Error; err != nil {
 				return err
 			}
+
+			// For existing tables, add new columns that were not present in the
+			// original schema (no-op when the columns already exist).
+			if err := addColumnIfNotExists(tx, logger, &tables.TableSidekiqJob{}, "runner_id"); err != nil {
+				return err
+			}
+			if err := addColumnIfNotExists(tx, logger, &tables.TableSidekiqJob{}, "created_by_user_id"); err != nil {
+				return err
+			}
+
 			// idx_sidekiq_status_updated supports the reaper/recovery scan.
 			if err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_sidekiq_status_updated ON sidekiq (status, updated_at)`).Error; err != nil {
 				return err
@@ -10577,6 +10591,7 @@ func migrationAddSidekiqTable(ctx context.Context, db *gorm.DB, logger schemas.L
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
+			// It is okay to drop the table
 			return tx.Exec(`DROP TABLE IF EXISTS sidekiq`).Error
 		},
 	}})
