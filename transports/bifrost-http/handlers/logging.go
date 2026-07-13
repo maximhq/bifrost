@@ -819,10 +819,10 @@ func calculateBucketSize(start, end *time.Time) int64 {
 		return 30 * 24 * 3600 // Monthly (30 days)
 	case duration >= 90*24*time.Hour: // >= 3 months
 		return 7 * 24 * 3600 // Weekly (7 days)
-	case duration >= 30*24*time.Hour: // >= 1 month
+	case duration > 31*24*time.Hour: // > ~1 month
 		return 3 * 24 * 3600 // 3 days
-	case duration >= 7*24*time.Hour: // >= 7 days
-		return 24 * 3600 // Daily
+	case duration >= 7*24*time.Hour: // >= 7 days, up to ~1 month
+		return 24 * 3600 // Daily (one bar per day)
 	case duration >= 3*24*time.Hour: // >= 3 days
 		return 8 * 3600 // 8 hours
 	case duration >= 24*time.Hour: // >= 24 hours
