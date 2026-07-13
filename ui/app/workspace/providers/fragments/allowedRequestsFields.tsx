@@ -52,6 +52,10 @@ const ProviderEndpoints: Partial<Record<BaseProvider, Partial<Record<RequestType
 		responses_stream: "/v2/chat",
 		embedding: "/v2/embed",
 	},
+	tei: {
+		embedding: "/v1/embeddings",
+		rerank: "/rerank",
+	},
 };
 
 // Helper function to get the appropriate placeholder
@@ -75,6 +79,7 @@ const RequestTypes: Array<{ key: RequestType; label: string }> = [
 	{ key: "responses_cancel", label: "Responses Cancel" },
 	{ key: "responses_input_items", label: "Responses Input Items" },
 	{ key: "embedding", label: "Embedding" },
+	{ key: "rerank", label: "Rerank" },
 	{ key: "speech", label: "Speech" },
 	{ key: "speech_stream", label: "Speech Stream" },
 	{ key: "transcription", label: "Transcription" },

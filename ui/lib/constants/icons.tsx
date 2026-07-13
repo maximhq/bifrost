@@ -707,6 +707,23 @@ export const ProviderIcons = {
 			</svg>
 		);
 	},
+	tei: ({ size = "md", className = "" }: IconProps) => {
+		const resolvedSize = resolveSize(size);
+		return (
+			<svg
+				fill="none"
+				height={resolvedSize}
+				viewBox="0 0 24 24"
+				width={resolvedSize}
+				xmlns="http://www.w3.org/2000/svg"
+				className={className}
+			>
+				<title>TEI</title>
+				<rect x="2" y="3" width="20" height="18" rx="3" fill="#FFD21E" />
+				<path d="M6 8h12M6 12h12M6 16h8" stroke="#3A3B45" strokeLinecap="round" strokeWidth="2" />
+			</svg>
+		);
+	},
 	runway: ({ size = "md", className = "" }: IconProps) => {
 		const resolvedSize = resolveSize(size);
 

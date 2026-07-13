@@ -45,6 +45,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/runware"
 	"github.com/maximhq/bifrost/core/providers/runway"
 	"github.com/maximhq/bifrost/core/providers/sgl"
+	"github.com/maximhq/bifrost/core/providers/tei"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/providers/vertex"
 	"github.com/maximhq/bifrost/core/providers/vllm"
@@ -4285,6 +4286,8 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return replicate.NewReplicateProvider(config, bifrost.logger)
 	case schemas.VLLM:
 		return vllm.NewVLLMProvider(config, bifrost.logger)
+	case schemas.TEI:
+		return tei.NewTEIProvider(config, bifrost.logger)
 	case schemas.Runway:
 		return runway.NewRunwayProvider(config, bifrost.logger)
 	case schemas.Runware:
