@@ -895,8 +895,10 @@ type ResponsesPrompt struct {
 }
 
 type ResponsesParametersReasoning struct {
-	Effort          *string `json:"effort"`                     // "none" | "minimal" | "low" | "medium" | "high" (any value other than "none" will enable reasoning)
+	Context         *string `json:"context,omitempty"`          // "auto" | "current_turn" | "all_turns" (which reasoning items are rendered back to the model on later turns)
+	Effort          *string `json:"effort"`                     // "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" (any value other than "none" will enable reasoning)
 	GenerateSummary *string `json:"generate_summary,omitempty"` // Deprecated: use summary instead
+	Mode            *string `json:"mode,omitempty"`             // "standard" | "pro" (reasoning execution mode)
 	Summary         *string `json:"summary"`                    // "auto" | "concise" | "detailed"
 	MaxTokens       *int    `json:"max_tokens,omitempty"`       // Maximum number of tokens to generate for the reasoning output (required for anthropic)
 }
