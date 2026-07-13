@@ -145,6 +145,7 @@
                   "providers/supported-providers/replicate",
                   "providers/supported-providers/runware",
                   "providers/supported-providers/runway",
+                  "providers/supported-providers/sarvam",
                   "providers/supported-providers/sgl",
                   "providers/supported-providers/vertex",
                   "providers/supported-providers/vllm",
