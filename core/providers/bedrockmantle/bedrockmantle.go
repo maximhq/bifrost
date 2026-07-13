@@ -124,7 +124,7 @@ func (provider *BedrockMantleProvider) listModelsByKey(ctx *schemas.BifrostConte
 
 	// Scope the catalog to the configured project via the OpenAI-Project header (default project
 	// when unset). It is a plain header, so it does not need to be part of the SigV4 SignedHeaders.
-	extraHeaders := bedrock.WithMantleProject(provider.networkConfig.ExtraHeaders, bedrock.MantleOpenAIProjectHeader, resolveProjectID(key))
+	extraHeaders := bedrock.WithMantleProject(provider.networkConfig.ExtraHeaders, bedrock.MantleOpenAIProjectHeader, resolveProjectID(ctx, key))
 	if key.Value.GetValue() == "" {
 		// SigV4: sign the GET and overlay the signed headers; OpenAI's ListModelsByKey only sets
 		// a Bearer header when the key carries a value, so the SigV4 Authorization wins here.
@@ -186,7 +186,7 @@ func (provider *BedrockMantleProvider) ChatCompletion(ctx *schemas.BifrostContex
 				ShouldSendBackRawResponse: provider.sendBackRawResponse,
 			},
 			openai.BearerAuthHeader(key),
-			addAnthropicHeaders(bedrock.WithMantleProject(provider.networkConfig.ExtraHeaders, bedrock.MantleAnthropicProjectHeader, resolveProjectID(key))),
+			addAnthropicHeaders(bedrock.WithMantleProject(provider.networkConfig.ExtraHeaders, bedrock.MantleAnthropicProjectHeader, resolveProjectID(ctx, key))),
 			provider.mantleSigner(ctx, key, url, "application/json", region),
 			provider.logger,
 		)
@@ -199,7 +199,7 @@ func (provider *BedrockMantleProvider) ChatCompletion(ctx *schemas.BifrostContex
 		url,
 		request,
 		openai.BearerAuthHeader(key),
-		bedrock.WithMantleProject(provider.networkConfig.ExtraHeaders, bedrock.MantleOpenAIProjectHeader, resolveProjectID(key)),
+		bedrock.WithMantleProject(provider.networkConfig.ExtraHeaders, bedrock.MantleOpenAIProjectHeader, resolveProjectID(ctx, key)),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
@@ -239,7 +239,7 @@ func (provider *BedrockMantleProvider) ChatCompletionStream(ctx *schemas.Bifrost
 			url,
 			jsonData,
 			openai.BearerAuthHeader(key),
-			addAnthropicHeaders(bedrock.WithMantleProject(provider.networkConfig.ExtraHeaders, bedrock.MantleAnthropicProjectHeader, resolveProjectID(key))),
+			addAnthropicHeaders(bedrock.WithMantleProject(provider.networkConfig.ExtraHeaders, bedrock.MantleAnthropicProjectHeader, resolveProjectID(ctx, key))),
 			provider.networkConfig.StreamIdleTimeoutInSeconds,
 			provider.networkConfig.BetaHeaderOverrides,
 			providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
@@ -256,7 +256,7 @@ func (provider *BedrockMantleProvider) ChatCompletionStream(ctx *schemas.Bifrost
 	url := mantleOpenAIURL(region, schemas.ResolveCanonicalModel(ctx, request.Model), "chat/completions")
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx, provider.mantleStreamingClient, url, request,
-		openai.BearerAuthHeader(key), bedrock.WithMantleProject(provider.networkConfig.ExtraHeaders, bedrock.MantleOpenAIProjectHeader, resolveProjectID(key)),
+		openai.BearerAuthHeader(key), bedrock.WithMantleProject(provider.networkConfig.ExtraHeaders, bedrock.MantleOpenAIProjectHeader, resolveProjectID(ctx, key)),
 		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
@@ -292,7 +292,7 @@ func (provider *BedrockMantleProvider) Responses(ctx *schemas.BifrostContext, ke
 				ShouldSendBackRawResponse: provider.sendBackRawResponse,
 			},
 			openai.BearerAuthHeader(key),
-			addAnthropicHeaders(bedrock.WithMantleProject(provider.networkConfig.ExtraHeaders, bedrock.MantleAnthropicProjectHeader, resolveProjectID(key))),
+			addAnthropicHeaders(bedrock.WithMantleProject(provider.networkConfig.ExtraHeaders, bedrock.MantleAnthropicProjectHeader, resolveProjectID(ctx, key))),
 			provider.mantleSigner(ctx, key, url, "application/json", region),
 			provider.logger,
 		)
@@ -305,7 +305,7 @@ func (provider *BedrockMantleProvider) Responses(ctx *schemas.BifrostContext, ke
 		url,
 		request,
 		openai.BearerAuthHeader(key),
-		bedrock.WithMantleProject(provider.networkConfig.ExtraHeaders, bedrock.MantleOpenAIProjectHeader, resolveProjectID(key)),
+		bedrock.WithMantleProject(provider.networkConfig.ExtraHeaders, bedrock.MantleOpenAIProjectHeader, resolveProjectID(ctx, key)),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
@@ -345,7 +345,7 @@ func (provider *BedrockMantleProvider) ResponsesStream(ctx *schemas.BifrostConte
 			url,
 			jsonData,
 			openai.BearerAuthHeader(key),
-			addAnthropicHeaders(bedrock.WithMantleProject(provider.networkConfig.ExtraHeaders, bedrock.MantleAnthropicProjectHeader, resolveProjectID(key))),
+			addAnthropicHeaders(bedrock.WithMantleProject(provider.networkConfig.ExtraHeaders, bedrock.MantleAnthropicProjectHeader, resolveProjectID(ctx, key))),
 			provider.networkConfig.StreamIdleTimeoutInSeconds,
 			provider.networkConfig.BetaHeaderOverrides,
 			providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
@@ -362,7 +362,7 @@ func (provider *BedrockMantleProvider) ResponsesStream(ctx *schemas.BifrostConte
 	url := mantleOpenAIURL(region, schemas.ResolveCanonicalModel(ctx, request.Model), "responses")
 	return openai.HandleOpenAIResponsesStreaming(
 		ctx, provider.mantleStreamingClient, url, request,
-		openai.BearerAuthHeader(key), bedrock.WithMantleProject(provider.networkConfig.ExtraHeaders, bedrock.MantleOpenAIProjectHeader, resolveProjectID(key)),
+		openai.BearerAuthHeader(key), bedrock.WithMantleProject(provider.networkConfig.ExtraHeaders, bedrock.MantleOpenAIProjectHeader, resolveProjectID(ctx, key)),
 		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
