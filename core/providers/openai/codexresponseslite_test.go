@@ -1,9 +1,10 @@
 package openai
 
 import (
-	"encoding/json"
 	"testing"
 
+	"github.com/bytedance/sonic"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/tidwall/gjson"
 )
@@ -59,7 +60,7 @@ func TestCodexResponsesLiteAdditionalToolsRoundTrip(t *testing.T) {
 	}`)
 
 	var incoming OpenAIResponsesRequest
-	if err := json.Unmarshal(raw, &incoming); err != nil {
+	if err := sonic.Unmarshal(raw, &incoming); err != nil {
 		t.Fatalf("unmarshal Codex request: %v", err)
 	}
 
@@ -68,7 +69,7 @@ func TestCodexResponsesLiteAdditionalToolsRoundTrip(t *testing.T) {
 		bifrostRequest.Input[i] = schemas.DeepCopyResponsesMessage(item)
 	}
 	outgoing := ToOpenAIResponsesRequest(nil, bifrostRequest)
-	encoded, err := json.Marshal(outgoing)
+	encoded, err := providerUtils.MarshalSortedIndent(outgoing, "", "  ")
 	if err != nil {
 		t.Fatalf("marshal forwarded request: %v", err)
 	}
