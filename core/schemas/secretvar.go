@@ -461,6 +461,13 @@ func (e *SecretVar) ShouldPreserveStored() bool {
 	return e.GetValue() == "" || e.IsRedacted()
 }
 
+// IsMaskedPlaceholder reports whether the value is a client-side redaction
+// placeholder that must not overwrite a stored credential. Secret references
+// are intentional updates and are never treated as placeholders.
+func (e *SecretVar) IsMaskedPlaceholder() bool {
+	return e != nil && e.IsRedacted() && !e.IsFromSecret()
+}
+
 // IsSet returns true if the SecretVar has a resolved value or a secret reference.
 // Use instead of GetValue() != "" when checking whether a field was configured,
 // because references may have an empty Val before resolution.
