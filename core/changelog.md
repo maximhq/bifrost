@@ -9,4 +9,4 @@
 - fix: bedrock invoke flow now retains image/tool_use/tool_return content blocks that were previously dropped by the decoder (#5814)
 - fix: inject placeholder text block for document-only messages on Bedrock, which otherwise rejected the request (#5817)
 - fix: retain tool `cache_control` markers through Bedrock Converse invoke requests so prompt caching applies to system blocks and tools (#5811)
-- fix: forward `include_blocks` to Mistral OCR and carry provider-native `pages[].blocks` through the response (thanks [@hugochinchilla](https://github.com/hugochinchilla)!)
+- fix: forward `include_blocks` and `confidence_scores_granularity` to Mistral OCR and carry provider-native `pages[].blocks` through the response (thanks [@hugochinchilla](https://github.com/hugochinchilla)!)

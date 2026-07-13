@@ -16,7 +16,7 @@
 - **Bedrock Invoke Content Retention** — Bedrock's InvokeModel route now correctly decodes Anthropic's type-discriminated image/tool_use/tool_result blocks instead of silently dropping them
 - **Bedrock Document Message Placeholder** — Messages containing a document block without accompanying text no longer get rejected by Bedrock's Converse API
 - **VK Provider Bulk Replace** — Virtual key provider config replacement is now a single bulk operation instead of per-provider round trips, fixing a hot-path slowdown at scale
-- **Mistral OCR Blocks** — Forward `include_blocks` to Mistral OCR (`/v1/ocr`) and carry provider-native `pages[].blocks` through the response (thanks [@hugochinchilla](https://github.com/hugochinchilla)!)
+- **Mistral OCR Blocks** — Forward `include_blocks` and `confidence_scores_granularity` to Mistral OCR (`/v1/ocr`) and carry provider-native `pages[].blocks` through the response (thanks [@hugochinchilla](https://github.com/hugochinchilla)!)
 
 ## 🗄️ Database Migrations
 
