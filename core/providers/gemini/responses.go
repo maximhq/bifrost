@@ -935,6 +935,7 @@ func (state *GeminiResponsesStreamState) flush() {
 	state.TextItemClosed = false
 	state.HasStartedText = false
 	state.HasStartedToolCall = false
+	state.HasEmittedWebSearch = false
 	state.TextBuffer.Reset()
 }
 
