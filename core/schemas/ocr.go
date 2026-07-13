@@ -19,18 +19,19 @@ type OCRDocument struct {
 
 // OCRParameters contains optional parameters for an OCR request.
 type OCRParameters struct {
-	IncludeImageBase64       *bool                  `json:"include_image_base64,omitempty"`
-	IncludeBlocks            *bool                  `json:"include_blocks,omitempty"`
-	Pages                    []int                  `json:"pages,omitempty"`
-	ImageLimit               *int                   `json:"image_limit,omitempty"`
-	ImageMinSize             *int                   `json:"image_min_size,omitempty"`
-	TableFormat              *string                `json:"table_format,omitempty"`
-	ExtractHeader            *bool                  `json:"extract_header,omitempty"`
-	ExtractFooter            *bool                  `json:"extract_footer,omitempty"`
-	BBoxAnnotationFormat     *string                `json:"bbox_annotation_format,omitempty"`
-	DocumentAnnotationFormat *string                `json:"document_annotation_format,omitempty"`
-	DocumentAnnotationPrompt *string                `json:"document_annotation_prompt,omitempty"`
-	ExtraParams              map[string]interface{} `json:"-"`
+	IncludeImageBase64          *bool                  `json:"include_image_base64,omitempty"`
+	IncludeBlocks               *bool                  `json:"include_blocks,omitempty"`
+	Pages                       []int                  `json:"pages,omitempty"`
+	ImageLimit                  *int                   `json:"image_limit,omitempty"`
+	ImageMinSize                *int                   `json:"image_min_size,omitempty"`
+	TableFormat                 *string                `json:"table_format,omitempty"`
+	ExtractHeader               *bool                  `json:"extract_header,omitempty"`
+	ExtractFooter               *bool                  `json:"extract_footer,omitempty"`
+	ConfidenceScoresGranularity *string                `json:"confidence_scores_granularity,omitempty"`
+	BBoxAnnotationFormat        *string                `json:"bbox_annotation_format,omitempty"`
+	DocumentAnnotationFormat    *string                `json:"document_annotation_format,omitempty"`
+	DocumentAnnotationPrompt    *string                `json:"document_annotation_prompt,omitempty"`
+	ExtraParams                 map[string]interface{} `json:"-"`
 }
 
 // BifrostOCRRequest represents a request to perform OCR on a document.

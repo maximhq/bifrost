@@ -51,7 +51,7 @@
 - **API Key Provider Selection** - Fixed provider selection for API keys
 - **Azure Auth Headers** - Pass Azure auth headers in helpers
 - **Stream Delta Schema** - Added `ExtraContent` to `ChatStreamResponseChoiceDelta` (thanks [@nghodkicisco](https://github.com/nghodkicisco)!)
-- **Mistral OCR Blocks** - Forward `include_blocks` to Mistral OCR (`/v1/ocr`) and carry provider-native `pages[].blocks` through the response (thanks [@hugochinchilla](https://github.com/hugochinchilla)!)
+- **Mistral OCR Blocks** - Forward `include_blocks` and `confidence_scores_granularity` to Mistral OCR (`/v1/ocr`) and carry provider-native `pages[].blocks` through the response (thanks [@hugochinchilla](https://github.com/hugochinchilla)!)
 
 ## 🐙 Closed GitHub Issues
 
