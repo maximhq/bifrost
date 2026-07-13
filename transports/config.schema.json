@@ -4611,6 +4611,11 @@
     "mcp_tool_group_config": {
       "type": "object",
       "properties": {
+        "id": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "DB ID of this tool group. When set, the reconciler updates the existing group with this ID rather than matching by name."
+        },
         "name": {
           "type": "string",
           "description": "Tool group name"

@@ -4066,9 +4066,17 @@
               "type": "string"
             },
             "port": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 65535
+              "description": "PostgreSQL port. Accepts an integer (e.g. 5432) or an env.VAR_NAME string for environment-variable substitution.",
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 65535
+                },
+                {
+                  "type": "string"
+                }
+              ]
             },
             "user": {
               "type": "string"
@@ -5671,6 +5679,11 @@
     "mcpToolGroupConfig": {
       "type": "object",
       "properties": {
+        "id": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "DB ID of this tool group. When set, the reconciler updates the existing group with this ID rather than matching by name. Maps to mcp.tool_groups[].id in config.json."
+        },
         "name": {
           "type": "string",
           "description": "Tool group name"
