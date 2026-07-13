@@ -1273,6 +1273,9 @@ func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {
 	if original.Recipient != nil {
 		copy.Recipient = append(json.RawMessage(nil), original.Recipient...)
 	}
+	if original.rawOpaqueItem != nil {
+		copy.rawOpaqueItem = append([]byte(nil), original.rawOpaqueItem...)
+	}
 
 	if original.Content != nil {
 		copy.Content = &ResponsesMessageContent{}

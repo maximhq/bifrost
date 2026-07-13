@@ -232,7 +232,7 @@ func TestResponsesMessageToolCallArguments(t *testing.T) {
 	// Codex's request (which enables the `tool_search` tool). These are the exact
 	// frames that triggered the production "Mismatch type string with value
 	// object" failure. tool_search items are preserved verbatim (see
-	// rawToolSearch), so the item must decode without error and re-encode
+	// rawOpaqueItem), so the item must decode without error and re-encode
 	// byte-identically, object-form arguments included.
 	t.Run("real tool_search_call frames from openai", func(t *testing.T) {
 		items := map[string]string{

@@ -1075,6 +1075,9 @@ const (
 	ResponsesMessageTypeItemReference        ResponsesMessageType = "item_reference"
 	ResponsesMessageTypeRefusal              ResponsesMessageType = "refusal"
 	ResponsesMessageTypeCompaction           ResponsesMessageType = "compaction"
+	// Codex Responses-Lite sends an additional_tools developer item whose
+	// nested tools use the Responses API tool union, not MCP list-tools entries.
+	ResponsesMessageTypeAdditionalTools ResponsesMessageType = "additional_tools"
 	// Codex deferred-tool discovery (tool_search). OpenAI's Responses API
 	// supports these item types natively; Bifrost preserves them verbatim
 	// because its typed schema doesn't model them (the call's `arguments` is a
@@ -1112,43 +1115,41 @@ type ResponsesMessage struct {
 	// gpt-oss models include only reasoning_text content blocks in a message, while other openai models include summaries+encrypted_content
 	*ResponsesReasoning
 
-	// rawToolSearch preserves codex `tool_search_call` / `tool_search_output`
-	// items verbatim. OpenAI's Responses API accepts these natively, but
-	// Bifrost's typed schema doesn't model them (the call's `arguments` is a
-	// JSON object — unlike function_call's string — and the output carries a
-	// `tools` array). Rather than fail to deserialize the whole input array or
-	// drop/mangle these items, we round-trip the original bytes unchanged.
+	// rawOpaqueItem preserves Codex Responses extensions verbatim. The typed
+	// schema cannot represent these without ambiguity: tool_search_call uses
+	// object-form arguments, while additional_tools has a nested Responses tool
+	// union that otherwise decodes as an MCP list-tools result and loses each
+	// tool's type. Round-tripping the original bytes keeps the wire shape intact.
 	// Set by UnmarshalJSON, emitted by MarshalJSON; nil for every other type.
-	rawToolSearch []byte
+	rawOpaqueItem []byte
 }
 
-// isToolSearchItem reports whether t is a codex tool_search item type, which
+// isOpaqueResponsesItem reports whether t is a Codex Responses extension that
 // Bifrost preserves verbatim rather than modelling field-by-field.
-func isToolSearchItem(t string) bool {
-	return t == string(ResponsesMessageTypeToolSearchCall) ||
+func isOpaqueResponsesItem(t string) bool {
+	return t == string(ResponsesMessageTypeAdditionalTools) ||
+		t == string(ResponsesMessageTypeToolSearchCall) ||
 		t == string(ResponsesMessageTypeToolSearchOutput)
 }
 
-// UnmarshalJSON preserves codex tool_search items verbatim (see rawToolSearch)
-// and otherwise normalizes function/tool-call arguments before decoding the rest
-// of the item. OpenAI's Responses API serializes `function_call` `arguments` as
-// a JSON string, but `tool_search_call` items serialize `arguments` as a JSON
-// object — e.g. {} while in_progress and {"query":"...","limit":10} when
-// completed. The embedded ResponsesToolMessage.Arguments field is a *string, so
-// an object value makes a plain decode fail with "Mismatch type string with
-// value object", which silently drops the item mid-stream and hangs streaming
-// clients. We shadow `arguments` as raw JSON, decode everything else as usual,
-// then store the canonical stringified form.
+// UnmarshalJSON preserves opaque Codex Responses items verbatim (see
+// rawOpaqueItem) and otherwise normalizes function/tool-call arguments before
+// decoding the rest of the item. OpenAI's Responses API serializes
+// `function_call` `arguments` as a JSON string, but `tool_search_call` items
+// serialize `arguments` as a JSON object. The embedded
+// ResponsesToolMessage.Arguments field is a *string, so an object value makes a
+// plain decode fail. additional_tools also conflicts with the embedded
+// ResponsesMCPListTools.Tools field, which strips the nested tool discriminators.
 func (m *ResponsesMessage) UnmarshalJSON(data []byte) error {
 	// Clear the receiver first so a reused instance never retains a stale
-	// rawToolSearch (or other fields) from a prior decode — unmarshalling a
-	// non-tool-search payload must not leave preserved bytes that MarshalJSON
+	// rawOpaqueItem (or other fields) from a prior decode — unmarshalling a
+	// regular payload must not leave preserved bytes that MarshalJSON
 	// would then re-emit.
 	*m = ResponsesMessage{}
-	if t := gjson.GetBytes(data, "type").String(); isToolSearchItem(t) {
+	if t := gjson.GetBytes(data, "type").String(); isOpaqueResponsesItem(t) {
 		mt := ResponsesMessageType(t)
 		m.Type = &mt
-		m.rawToolSearch = append([]byte(nil), data...)
+		m.rawOpaqueItem = append([]byte(nil), data...)
 		return nil
 	}
 
@@ -1175,11 +1176,11 @@ func (m *ResponsesMessage) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// MarshalJSON re-emits preserved tool_search items verbatim and defers every
+// MarshalJSON re-emits preserved opaque items verbatim and defers every
 // other item type to the default (sorted-key) struct encoding.
 func (m ResponsesMessage) MarshalJSON() ([]byte, error) {
-	if m.rawToolSearch != nil {
-		return m.rawToolSearch, nil
+	if m.rawOpaqueItem != nil {
+		return m.rawOpaqueItem, nil
 	}
 	type alias ResponsesMessage
 	return MarshalSorted(alias(m))
