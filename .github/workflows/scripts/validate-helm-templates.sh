@@ -54,7 +54,7 @@ test_template() {
 
 # 1. Storage Combinations (9 tests)
 echo ""
-echo -e "${CYAN}📦 1/6 - Testing Storage Combinations (9 tests)...${NC}"
+echo -e "${CYAN}📦 1/7 - Testing Storage Combinations (9 tests)...${NC}"
 echo "---------------------------------------------------"
 
 # config=no, logs=no
@@ -126,7 +126,7 @@ test_template "config=postgres, logs=postgres" \
 
 # 2. Vector Store Combinations (6 tests)
 echo ""
-echo -e "${CYAN}🗄️  2/6 - Testing Vector Store Combinations (6 tests)...${NC}"
+echo -e "${CYAN}🗄️  2/7 - Testing Vector Store Combinations (6 tests)...${NC}"
 echo "--------------------------------------------------------"
 
 # Weaviate
@@ -175,7 +175,7 @@ test_template "sqlite + qdrant" \
 
 # 3. Special Configurations (7 tests)
 echo ""
-echo -e "${CYAN}⚙️  3/6 - Testing Special Configurations (7 tests)...${NC}"
+echo -e "${CYAN}⚙️  3/7 - Testing Special Configurations (7 tests)...${NC}"
 echo "-----------------------------------------------------"
 
 # semantic cache: direct mode (dimension: 1, no provider/keys)
@@ -251,7 +251,7 @@ test_template "production-like config" \
 
 # 4. New Property Rendering (Gap 1-8 tests)
 echo ""
-echo -e "${CYAN}🆕 4/6 - Testing New Property Rendering (Gap 1-8)...${NC}"
+echo -e "${CYAN}🆕 4/7 - Testing New Property Rendering (Gap 1-8)...${NC}"
 echo "-----------------------------------------------------"
 
 # Gap 1+2: Client new properties
@@ -337,7 +337,7 @@ test_template "combined: all new Gap 1-9 fields" \
 
 # 5. Plugin Name Validation
 echo ""
-echo -e "${CYAN}🔌 5/6 - Validating Plugin Names Match Go Registry...${NC}"
+echo -e "${CYAN}🔌 5/7 - Validating Plugin Names Match Go Registry...${NC}"
 echo "------------------------------------------------------"
 
 # Verify semantic cache plugin renders with correct name ("semantic_cache", not "semantic_cache")
@@ -366,7 +366,7 @@ fi
 
 # 6. Custom Plugin Placement and Order Rendering
 echo ""
-echo -e "${CYAN}🔧 6/6 - Validating Custom Plugin placement and order Rendering...${NC}"
+echo -e "${CYAN}🔧 6/7 - Validating Custom Plugin placement and order Rendering...${NC}"
 echo "-------------------------------------------------------------------"
 
 # Test custom plugin renders successfully with placement and order
@@ -414,6 +414,48 @@ if helm template bifrost ./helm-charts/bifrost \
   else
     report_result "$test_name" 1
     echo -e "${YELLOW}  order field not found in rendered output${NC}"
+  fi
+else
+  report_result "$test_name" 1
+  echo -e "${YELLOW}  Error output:${NC}"
+  head -10 /tmp/helm-template-output.yaml | sed 's/^/    /'
+fi
+
+# 7. Security Context Rendering
+echo ""
+echo -e "${CYAN}🔒 7/7 - Validating OpenShift-compatible Security Contexts...${NC}"
+echo "----------------------------------------------------------------"
+
+test_name="default Bifrost pod does not set runAsUser (SCC assigns UID)"
+if helm template bifrost ./helm-charts/bifrost \
+  --set image.tag=v1.0.0 \
+  > /tmp/helm-template-output.yaml 2>&1; then
+  if grep -Eq '^[[:space:]]*runAsUser:' /tmp/helm-template-output.yaml; then
+    report_result "$test_name" 1
+    echo -e "${YELLOW}  runAsUser found in default render (must stay unset so OpenShift can assign a UID)${NC}"
+  else
+    report_result "$test_name" 0
+  fi
+else
+  report_result "$test_name" 1
+  echo -e "${YELLOW}  Error output:${NC}"
+  head -10 /tmp/helm-template-output.yaml | sed 's/^/    /'
+fi
+
+# Postgres mode renders a Deployment (not the sqlite StatefulSet); assert the
+# pinned-UID regression can't sneak in on that code path either.
+test_name="postgres-mode Bifrost pod does not set runAsUser (SCC assigns UID)"
+if helm template bifrost ./helm-charts/bifrost \
+  --set image.tag=v1.0.0 \
+  --set storage.mode=postgres \
+  --set postgresql.enabled=true \
+  --set postgresql.auth.password=testpass \
+  > /tmp/helm-template-output.yaml 2>&1; then
+  if grep -Eq '^[[:space:]]*runAsUser:' /tmp/helm-template-output.yaml; then
+    report_result "$test_name" 1
+    echo -e "${YELLOW}  runAsUser found in postgres render (must stay unset so OpenShift can assign a UID)${NC}"
+  else
+    report_result "$test_name" 0
   fi
 else
   report_result "$test_name" 1

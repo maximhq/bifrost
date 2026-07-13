@@ -8,6 +8,7 @@ import (
 	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
+	openaiProvider "github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/kvstore"
 	"github.com/maximhq/bifrost/plugins/governance"
@@ -58,6 +59,13 @@ func TestResolveRealtimeClientSecretTarget(t *testing.T) {
 			route:   schemas.RealtimeSessionRoute{Path: "/openai/v1/realtime/client_secrets", EndpointType: schemas.RealtimeSessionEndpointClientSecrets, DefaultProvider: schemas.OpenAI},
 			body:    []byte(`{"session":{}}`),
 			wantErr: true,
+		},
+		{
+			name:         "GA transcription session resolves model from nested audio path",
+			route:        schemas.RealtimeSessionRoute{Path: "/v1/realtime/client_secrets", EndpointType: schemas.RealtimeSessionEndpointClientSecrets},
+			body:         []byte(`{"session":{"type":"transcription","audio":{"input":{"transcription":{"model":"openai/gpt-4o-transcribe"}}}}}`),
+			wantProvider: schemas.OpenAI,
+			wantModel:    "gpt-4o-transcribe",
 		},
 	}
 
@@ -158,6 +166,187 @@ func TestResolveRealtimeClientSecretTarget_NormalizesModel(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestGATranscriptionSessionEndToEndThroughFullNormalizationPath drives the
+// full request path: handler-level resolveRealtimeClientSecretTarget, then
+// feeds its output into the OpenAI provider's NormalizeRealtimeClientSecretRequest
+// exactly as CreateRealtimeClientSecret does. Regression test for the bug
+// where GA transcription-shaped sessions (session.type=="transcription",
+// model nested at session.audio.input.transcription.model) 400'd with
+// "session.model or model is required" because extraction only ever checked
+// session.model — confirmed live against real OpenAI before this fix.
+func TestGATranscriptionSessionEndToEndThroughFullNormalizationPath(t *testing.T) {
+	t.Parallel()
+
+	var ctx fasthttp.RequestCtx
+	route := schemas.RealtimeSessionRoute{Path: "/v1/realtime/client_secrets", EndpointType: schemas.RealtimeSessionEndpointClientSecrets}
+	body := []byte(`{"session":{"type":"transcription","audio":{"input":{"format":{"type":"audio/pcm","rate":24000},"transcription":{"model":"openai/whisper-1","language":"en"}}}}}`)
+
+	providerKey, model, handlerBody, err := resolveRealtimeClientSecretTarget(&ctx, &lib.Config{}, route, body)
+	if err != nil {
+		t.Fatalf("resolveRealtimeClientSecretTarget() error = %v", err)
+	}
+	if providerKey != schemas.OpenAI || model != "whisper-1" {
+		t.Fatalf("provider/model = %q/%q, want %q/%q", providerKey, model, schemas.OpenAI, "whisper-1")
+	}
+
+	finalBody, finalModel, bifrostErr := openaiProvider.NormalizeRealtimeClientSecretRequest(handlerBody, schemas.OpenAI, schemas.RealtimeSessionEndpointClientSecrets)
+	if bifrostErr != nil {
+		t.Fatalf("NormalizeRealtimeClientSecretRequest() error = %v", bifrostErr)
+	}
+	if finalModel != "whisper-1" {
+		t.Fatalf("model = %q, want %q", finalModel, "whisper-1")
+	}
+
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(finalBody, &payload); err != nil {
+		t.Fatalf("failed to unmarshal final body: %v", err)
+	}
+	var session map[string]json.RawMessage
+	if err := json.Unmarshal(payload["session"], &session); err != nil {
+		t.Fatalf("failed to unmarshal session: %v", err)
+	}
+	if _, hasModel := session["model"]; hasModel {
+		t.Fatal("transcription-type session must not gain a top-level session.model field")
+	}
+	var audio map[string]json.RawMessage
+	if err := json.Unmarshal(session["audio"], &audio); err != nil {
+		t.Fatalf("failed to unmarshal session.audio: %v", err)
+	}
+	var input map[string]json.RawMessage
+	if err := json.Unmarshal(audio["input"], &input); err != nil {
+		t.Fatalf("failed to unmarshal session.audio.input: %v", err)
+	}
+	var transcription map[string]any
+	if err := json.Unmarshal(input["transcription"], &transcription); err != nil {
+		t.Fatalf("failed to unmarshal session.audio.input.transcription: %v", err)
+	}
+	if transcription["model"] != "whisper-1" {
+		t.Fatalf("session.audio.input.transcription.model = %v, want %q", transcription["model"], "whisper-1")
+	}
+	if transcription["language"] != "en" {
+		t.Fatalf("session.audio.input.transcription.language = %v, want %q (must survive the two-pass normalization)", transcription["language"], "en")
+	}
+	if _, hasFormat := input["format"]; !hasFormat {
+		t.Fatal("session.audio.input.format must survive normalization")
+	}
+}
+
+// TestFullRealtimeSessionWithTranscriptionSiblingEndToEnd is a regression
+// test for a codex-review-caught bug: a full realtime session using the
+// legacy top-level "model" field, with live input-audio transcription
+// enabled as a completely standard sibling feature, was being misclassified
+// as transcription-only by resolveRealtimeClientSecretTarget — the real
+// conversational model was lost entirely. Drives the exact same
+// handler->provider two-pass path as CreateRealtimeClientSecret does.
+func TestFullRealtimeSessionWithTranscriptionSiblingEndToEnd(t *testing.T) {
+	t.Parallel()
+
+	var ctx fasthttp.RequestCtx
+	route := schemas.RealtimeSessionRoute{Path: "/v1/realtime/client_secrets", EndpointType: schemas.RealtimeSessionEndpointClientSecrets}
+	body := []byte(`{"model":"openai/gpt-4o-realtime-preview","session":{"audio":{"input":{"transcription":{"model":"openai/whisper-1"}}}}}`)
+
+	providerKey, model, handlerBody, err := resolveRealtimeClientSecretTarget(&ctx, &lib.Config{}, route, body)
+	if err != nil {
+		t.Fatalf("resolveRealtimeClientSecretTarget() error = %v", err)
+	}
+	if providerKey != schemas.OpenAI || model != "gpt-4o-realtime-preview" {
+		t.Fatalf("provider/model = %q/%q, want %q/%q", providerKey, model, schemas.OpenAI, "gpt-4o-realtime-preview")
+	}
+
+	finalBody, finalModel, bifrostErr := openaiProvider.NormalizeRealtimeClientSecretRequest(handlerBody, schemas.OpenAI, schemas.RealtimeSessionEndpointClientSecrets)
+	if bifrostErr != nil {
+		t.Fatalf("NormalizeRealtimeClientSecretRequest() error = %v", bifrostErr)
+	}
+	if finalModel != "gpt-4o-realtime-preview" {
+		t.Fatalf("final model = %q, want %q", finalModel, "gpt-4o-realtime-preview")
+	}
+
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(finalBody, &payload); err != nil {
+		t.Fatalf("failed to unmarshal final body: %v", err)
+	}
+	var session map[string]json.RawMessage
+	if err := json.Unmarshal(payload["session"], &session); err != nil {
+		t.Fatalf("failed to unmarshal session: %v", err)
+	}
+	var sessionModel string
+	if err := json.Unmarshal(session["model"], &sessionModel); err != nil || sessionModel != "gpt-4o-realtime-preview" {
+		t.Fatalf("session.model = %v, want %q", session["model"], "gpt-4o-realtime-preview")
+	}
+	var sessionType string
+	if err := json.Unmarshal(session["type"], &sessionType); err != nil || sessionType != "realtime" {
+		t.Fatalf("session.type = %v, want %q (must not be reclassified as transcription-only)", session["type"], "realtime")
+	}
+}
+
+// TestRewriteGASessionTranscriptionModelAppliesAliasResolution covers the
+// alias-resolution rewrite path (handleRequest calls this after key selection
+// when key.Aliases.Resolve changes the model) for a GA transcription session,
+// which has no top-level session.model for the generic rewrite to target.
+func TestRewriteGASessionTranscriptionModelAppliesAliasResolution(t *testing.T) {
+	t.Parallel()
+
+	session := map[string]json.RawMessage{
+		"type":  json.RawMessage(`"transcription"`),
+		"audio": json.RawMessage(`{"input":{"transcription":{"model":"whisper-1","language":"en"}}}`),
+	}
+	normalizedModel, err := json.Marshal("gpt-4o-transcribe")
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	rewritten, changed, bifrostErr := rewriteGASessionTranscriptionModel(session, normalizedModel)
+	if bifrostErr != nil {
+		t.Fatalf("rewriteGASessionTranscriptionModel() error = %v", bifrostErr)
+	}
+	if !changed {
+		t.Fatal("expected changed=true for a GA transcription session")
+	}
+
+	var rewrittenSession map[string]json.RawMessage
+	if err := json.Unmarshal(rewritten, &rewrittenSession); err != nil {
+		t.Fatalf("failed to unmarshal rewritten session: %v", err)
+	}
+	var audio map[string]json.RawMessage
+	if err := json.Unmarshal(rewrittenSession["audio"], &audio); err != nil {
+		t.Fatalf("failed to unmarshal audio: %v", err)
+	}
+	var input map[string]json.RawMessage
+	if err := json.Unmarshal(audio["input"], &input); err != nil {
+		t.Fatalf("failed to unmarshal input: %v", err)
+	}
+	var transcription map[string]any
+	if err := json.Unmarshal(input["transcription"], &transcription); err != nil {
+		t.Fatalf("failed to unmarshal transcription: %v", err)
+	}
+	if transcription["model"] != "gpt-4o-transcribe" {
+		t.Fatalf("model = %v, want %q (alias resolution must reach the nested field)", transcription["model"], "gpt-4o-transcribe")
+	}
+	if transcription["language"] != "en" {
+		t.Fatalf("language = %v, want %q", transcription["language"], "en")
+	}
+}
+
+func TestRewriteGASessionTranscriptionModelNoOpForFullRealtimeSession(t *testing.T) {
+	t.Parallel()
+
+	// A full realtime session with no audio.input.transcription at all should
+	// be left untouched (changed=false) — the caller's own session.model path
+	// handles that case.
+	session := map[string]json.RawMessage{
+		"instructions": json.RawMessage(`"be helpful"`),
+	}
+	normalizedModel, _ := json.Marshal("gpt-realtime")
+
+	_, changed, bifrostErr := rewriteGASessionTranscriptionModel(session, normalizedModel)
+	if bifrostErr != nil {
+		t.Fatalf("rewriteGASessionTranscriptionModel() error = %v", bifrostErr)
+	}
+	if changed {
+		t.Fatal("expected changed=false when session has no audio.input.transcription")
 	}
 }
 

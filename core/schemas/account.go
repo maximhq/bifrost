@@ -450,6 +450,15 @@ func IsOpenAIModelFamily(ctx *BifrostContext, model string) bool {
 	return ResolveFamily(ctx, model) == ModelFamilyOpenAI
 }
 
+// IsElevenlabsSoundModelFamily reports whether the current attempt resolves to
+// an ElevenLabs sound-effects (text-to-sound) model. It honors aliases by
+// resolving the canonical model name first, so an alias whose ModelName/ModelID
+// is a sound model is detected the same as a raw model id. See
+// IsAnthropicModelFamily for usage notes.
+func IsElevenlabsSoundModelFamily(ctx *BifrostContext, model string) bool {
+	return IsElevenlabsSoundModel(ResolveCanonicalModel(ctx, model))
+}
+
 // IsMistralModelFamily reports whether the current attempt resolves to the
 // Mistral model family. See IsAnthropicModelFamily for usage notes.
 func IsMistralModelFamily(ctx *BifrostContext, model string) bool {
@@ -662,6 +671,12 @@ type BedrockKeyConfig struct {
 	ExternalID      *SecretVar `json:"external_id,omitempty"`
 	RoleSessionName *SecretVar `json:"session_name,omitempty"`
 
+	// ProjectID scopes the Bedrock Mantle sub-surface (OpenAI-compatible gpt-*/Gemma routing and the
+	// mantle catalog merge in ListModels) to a specific Bedrock project via the "OpenAI-Project"
+	// header. When empty, AWS routes to the account's default project. It has no effect on the
+	// Converse/bedrock-runtime paths, which are not project-scoped.
+	ProjectID *SecretVar `json:"project_id,omitempty"`
+
 	BatchS3Config *BatchS3Config `json:"batch_s3_config,omitempty"` // S3 bucket configuration for batch operations
 }
 
@@ -682,6 +697,12 @@ type BedrockMantleKeyConfig struct {
 	RoleARN         *SecretVar `json:"role_arn,omitempty"`
 	ExternalID      *SecretVar `json:"external_id,omitempty"`
 	RoleSessionName *SecretVar `json:"session_name,omitempty"`
+
+	// ProjectID scopes inference and model listing to a specific Bedrock project. It is sent as the
+	// "OpenAI-Project" header on the OpenAI-compatible surface and the "anthropic-workspace-id"
+	// header on the native-Anthropic (Claude) surface. When empty, AWS routes to the account's
+	// default project.
+	ProjectID *SecretVar `json:"project_id,omitempty"`
 }
 
 // NOTE: To use Bedrock Mantle IAM role authentication, set both AccessKey and SecretKey to empty
