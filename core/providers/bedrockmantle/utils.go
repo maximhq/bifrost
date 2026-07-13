@@ -26,6 +26,16 @@ func addAnthropicHeaders(headers map[string]string) map[string]string {
 	return out
 }
 
+// resolveProjectID returns the Bedrock project configured for this key, or "" when none is set
+// (AWS then routes to the account's default project). The value is sent as the OpenAI-Project or
+// anthropic-workspace-id header depending on the request surface.
+func resolveProjectID(key schemas.Key) string {
+	if key.BedrockMantleKeyConfig != nil && key.BedrockMantleKeyConfig.ProjectID != nil {
+		return key.BedrockMantleKeyConfig.ProjectID.GetValue()
+	}
+	return ""
+}
+
 // parseBedrockRegionAndModel splits a model string that optionally carries an AWS region prefix
 // into its region and bare model ID components.
 // If no region prefix is present the returned region is empty and bareModel equals model.

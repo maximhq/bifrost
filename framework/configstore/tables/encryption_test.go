@@ -184,6 +184,7 @@ func TestTableKey_BedrockFieldsEncryptDecrypt(t *testing.T) {
 			SecretKey: *schemas.NewSecretVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
 			Region:    schemas.NewSecretVar("us-west-2"),
 			ARN:       schemas.NewSecretVar("arn:aws:iam::123456789:role/test"),
+			ProjectID: schemas.NewSecretVar("proj_bedrock123"),
 			BatchS3Config: &schemas.BatchS3Config{
 				Buckets: []schemas.S3BucketConfig{
 					{BucketName: "my-batch-bucket", Prefix: "jobs/", IsDefault: true},
@@ -200,6 +201,7 @@ func TestTableKey_BedrockFieldsEncryptDecrypt(t *testing.T) {
 	assert.NotEqual(t, "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", raw["bedrock_secret_key"])
 	assert.NotEqual(t, "us-west-2", raw["bedrock_region"])
 	assert.NotEqual(t, "arn:aws:iam::123456789:role/test", raw["bedrock_arn"])
+	assert.NotEqual(t, "proj_bedrock123", raw["bedrock_project_id"])
 	rawAliasesVal := raw["aliases_json"]
 	require.NotNil(t, rawAliasesVal, "aliases_json should be present in raw row")
 	var rawAliasesStr string
@@ -224,6 +226,8 @@ func TestTableKey_BedrockFieldsEncryptDecrypt(t *testing.T) {
 	assert.Equal(t, "us-west-2", found.BedrockKeyConfig.Region.GetValue())
 	require.NotNil(t, found.BedrockKeyConfig.ARN)
 	assert.Equal(t, "arn:aws:iam::123456789:role/test", found.BedrockKeyConfig.ARN.GetValue())
+	require.NotNil(t, found.BedrockKeyConfig.ProjectID)
+	assert.Equal(t, "proj_bedrock123", found.BedrockKeyConfig.ProjectID.GetValue())
 	assert.Equal(t, "profile-a", found.Aliases["model-a"].ModelID)
 	require.NotNil(t, found.BedrockKeyConfig.BatchS3Config)
 	require.Len(t, found.BedrockKeyConfig.BatchS3Config.Buckets, 1)
@@ -832,6 +836,39 @@ func TestTableKey_BedrockSessionTokenEncryptDecrypt(t *testing.T) {
 	assert.Equal(t, "us-east-1", found.BedrockKeyConfig.Region.GetValue())
 }
 
+// TestTableKey_BedrockMantleProjectID_RoundTrip verifies the bedrock_mantle_project_id column
+// encrypts, persists, and reconstructs onto BedrockMantleKeyConfig.ProjectID.
+func TestTableKey_BedrockMantleProjectID_RoundTrip(t *testing.T) {
+	db := setupTestDB(t)
+
+	key := &TableKey{
+		Name:       "bedrock-mantle-proj-key",
+		ProviderID: 1,
+		Provider:   "bedrock_mantle",
+		KeyID:      "bedrock-mantle-proj-uuid",
+		Value:      *schemas.NewSecretVar("mantle-val"),
+		BedrockMantleKeyConfig: &schemas.BedrockMantleKeyConfig{
+			AccessKey: *schemas.NewSecretVar("AKIA-MANTLE-PROJ"),
+			SecretKey: *schemas.NewSecretVar("wJalr-MANTLE-PROJ"),
+			Region:    schemas.NewSecretVar("us-east-1"),
+			ProjectID: schemas.NewSecretVar("proj_elvsngya7ixv4dkb26xe"),
+		},
+	}
+
+	require.NoError(t, db.Create(key).Error)
+
+	raw := rawRow(t, db, "config_keys", key.ID)
+	assert.Equal(t, "encrypted", raw["encryption_status"])
+	assert.NotEqual(t, "proj_elvsngya7ixv4dkb26xe", raw["bedrock_mantle_project_id"])
+
+	var found TableKey
+	require.NoError(t, db.First(&found, key.ID).Error)
+	require.NotNil(t, found.BedrockMantleKeyConfig)
+	require.NotNil(t, found.BedrockMantleKeyConfig.ProjectID)
+	assert.Equal(t, "proj_elvsngya7ixv4dkb26xe", found.BedrockMantleKeyConfig.ProjectID.GetValue())
+	assert.Equal(t, "us-east-1", found.BedrockMantleKeyConfig.Region.GetValue())
+}
+
 // ============================================================================
 // MCP — edge cases for connection string / headers combinations
 // ============================================================================
@@ -1176,6 +1213,12 @@ func TestTableKey_AllProviderConfigs_EncryptDecrypt(t *testing.T) {
 			Region:       schemas.NewSecretVar("eu-west-1"),
 			ARN:          schemas.NewSecretVar("arn:aws:bedrock:eu-west-1:123:role"),
 		},
+		BedrockMantleKeyConfig: &schemas.BedrockMantleKeyConfig{
+			AccessKey: *schemas.NewSecretVar("AKIA-MANTLE"),
+			SecretKey: *schemas.NewSecretVar("wJalr-MANTLE"),
+			Region:    schemas.NewSecretVar("us-east-1"),
+			ProjectID: schemas.NewSecretVar("proj_mantle456"),
+		},
 	}
 
 	require.NoError(t, db.Create(key).Error)
@@ -1190,6 +1233,7 @@ func TestTableKey_AllProviderConfigs_EncryptDecrypt(t *testing.T) {
 	assert.NotEqual(t, "us-central1", raw["vertex_region"])
 	assert.NotEqual(t, "eu-west-1", raw["bedrock_region"])
 	assert.NotEqual(t, "arn:aws:bedrock:eu-west-1:123:role", raw["bedrock_arn"])
+	assert.NotEqual(t, "proj_mantle456", raw["bedrock_mantle_project_id"])
 	rawAliasesVal2 := raw["aliases_json"]
 	require.NotNil(t, rawAliasesVal2, "aliases_json should be present in raw row")
 	var rawAliasesStr2 string
@@ -1230,6 +1274,13 @@ func TestTableKey_AllProviderConfigs_EncryptDecrypt(t *testing.T) {
 	assert.Equal(t, "eu-west-1", found.BedrockKeyConfig.Region.GetValue())
 	require.NotNil(t, found.BedrockKeyConfig.ARN)
 	assert.Equal(t, "arn:aws:bedrock:eu-west-1:123:role", found.BedrockKeyConfig.ARN.GetValue())
+
+	require.NotNil(t, found.BedrockMantleKeyConfig)
+	assert.Equal(t, "AKIA-MANTLE", found.BedrockMantleKeyConfig.AccessKey.GetValue())
+	assert.Equal(t, "wJalr-MANTLE", found.BedrockMantleKeyConfig.SecretKey.GetValue())
+	require.NotNil(t, found.BedrockMantleKeyConfig.ProjectID)
+	assert.Equal(t, "proj_mantle456", found.BedrockMantleKeyConfig.ProjectID.GetValue())
+
 	assert.Equal(t, "profile-claude", found.Aliases["claude-3"].ModelID)
 }
 
