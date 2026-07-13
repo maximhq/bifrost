@@ -73,6 +73,49 @@ func (r *OpenAIEmbeddingRequest) SetExtraParams(params map[string]interface{}) {
 	r.EmbeddingParameters.ExtraParams = params
 }
 
+// OpenAIRerankRequest represents an OpenAI-compatible rerank request
+type OpenAIRerankRequest struct {
+	Model           string                   `json:"model"`
+	Query           string                   `json:"query"`
+	Documents       []schemas.RerankDocument `json:"documents"`
+	TopN            *int                     `json:"top_n,omitempty"`
+	MaxTokensPerDoc *int                     `json:"max_tokens_per_doc,omitempty"`
+	Priority        *int                     `json:"priority,omitempty"`
+	ExtraParams     map[string]interface{}   `json:"-"` // Optional: Extra parameters
+}
+
+func (r *OpenAIRerankRequest) GetExtraParams() map[string]interface{} {
+	return r.ExtraParams
+}
+
+// OpenAIRerankResponse represents an OpenAI-compatible rerank response
+type OpenAIRerankResponse struct {
+	ID      string                       `json:"id"`
+	Results []OpenAIRerankResponseResult `json:"results"`
+	Meta    *OpenAIRerankMeta            `json:"meta,omitempty"`
+	Usage   *schemas.BifrostLLMUsage     `json:"usage,omitempty"`
+}
+
+// OpenAIRerankResponseResult represents a single ranked document in a rerank response
+type OpenAIRerankResponseResult struct {
+	Index          int             `json:"index"`
+	RelevanceScore float64         `json:"relevance_score"`
+	Document       json.RawMessage `json:"document,omitempty"`
+}
+
+// OpenAIRerankMeta captures Cohere-style rerank billing/token metadata
+type OpenAIRerankMeta struct {
+	BilledUnits *OpenAIRerankTokenUsage `json:"billed_units,omitempty"`
+	Tokens      *OpenAIRerankTokenUsage `json:"tokens,omitempty"`
+}
+
+// OpenAIRerankTokenUsage represents token/billing counts reported by rerank upstreams
+type OpenAIRerankTokenUsage struct {
+	InputTokens  *int64 `json:"input_tokens,omitempty"`
+	OutputTokens *int64 `json:"output_tokens,omitempty"`
+	SearchUnits  *int64 `json:"search_units,omitempty"`
+}
+
 // OpenAIChatRequest represents an OpenAI chat completion request
 type OpenAIChatRequest struct {
 	Model    string          `json:"model"`

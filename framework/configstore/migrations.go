@@ -441,6 +441,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_sidekiq_kind_status_created_index"}, run: migrationAddSidekiqKindStatusCreatedIndex},
 	{IDs: []string{"add_fast_mode_cache_pricing_columns"}, run: migrationAddFastModeCachePricingColumns},
 	{IDs: []string{"add_inference_geo_multiplier_column"}, run: migrationAddInferenceGeoMultiplierColumn},
+	{IDs: []string{"repair_bare_wildcard_allowed_models"}, run: migrationRepairBareWildcardAllowedModels},
 }
 
 // quoteSQLiteIdentifier quotes a SQLite identifier, escaping any double quotes.
@@ -6442,6 +6443,51 @@ func migrationBackfillAllowedModelsWildcard(ctx context.Context, db *gorm.DB, lo
 	return nil
 }
 
+// migrationRepairBareWildcardAllowedModels repairs governance_virtual_key_provider_configs
+// rows whose allowed_models / blacklisted_models column holds the bare one-character
+// string '*' instead of the JSON array '["*"]'. Such rows abort the GORM json
+// deserializer ("invalid character '*' ...") when the VK is loaded, which poisons the
+// whole provider admin surface (see issue #4318). The repair rewrites the column to the
+// canonical '["*"]' form the serializer:json tag is supposed to produce; the intended
+// value at write time was already the WhiteList ["*"], so the config_hash — computed
+// from the in-memory slice — stays consistent and needs no recomputation.
+func migrationRepairBareWildcardAllowedModels(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "repair_bare_wildcard_allowed_models"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+
+			// Match the documented manual workaround exactly: bare '*' → '["*"]'.
+			// Covers both whitelist columns on the provider config, which share the
+			// serializer:json tag and the same corruption class.
+			for _, column := range []string{"allowed_models", "blacklisted_models"} {
+				res := tx.Model(&tables.TableVirtualKeyProviderConfig{}).
+					Where(column+" = ?", "*").
+					Update(column, `["*"]`)
+				if res.Error != nil {
+					return fmt.Errorf("failed to repair bare wildcard %s: %w", column, res.Error)
+				}
+				if res.RowsAffected > 0 {
+					logger.Info("[configstore] %s: repaired %d rows with bare wildcard %s", migrationName, res.RowsAffected, column)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			// Rollback is a no-op: reverting '["*"]' back to '*' would re-introduce
+			// the value that breaks the deserializer.
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
+	}
+	return nil
+}
+
 // migrationAddMCPClientAllowedExtraHeadersJSONColumn adds the allowed_extra_headers_json column to the mcp_client table
 func migrationAddMCPClientAllowedExtraHeadersJSONColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
 	migrationName := "add_mcp_client_allowed_extra_headers_json_column"
@@ -10428,6 +10474,7 @@ func migrationAddSidekiqTable(ctx context.Context, db *gorm.DB, logger schemas.L
 	migrationName := "add_sidekiq_table"
 	logger.Info("[configstore] starting migration %s", migrationName)
 	defer logger.Info("[configstore] finished migration %s", migrationName)
+
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
@@ -10470,12 +10517,25 @@ func migrationAddSidekiqTable(ctx context.Context, db *gorm.DB, logger schemas.L
 			default:
 				// Fall back to GORM for any other dialect so the migration does not
 				// hard-fail on an unsupported backend.
-				return tx.Migrator().CreateTable(&tables.TableSidekiqJob{})
+				if err := tx.Migrator().AutoMigrate(&tables.TableSidekiqJob{}); err != nil {
+					return err
+				}
+				return nil
 			}
 
 			if err := tx.Exec(createTable).Error; err != nil {
 				return err
 			}
+
+			// For existing tables, add new columns that were not present in the
+			// original schema (no-op when the columns already exist).
+			if err := addColumnIfNotExists(tx, logger, &tables.TableSidekiqJob{}, "runner_id"); err != nil {
+				return err
+			}
+			if err := addColumnIfNotExists(tx, logger, &tables.TableSidekiqJob{}, "created_by_user_id"); err != nil {
+				return err
+			}
+
 			// idx_sidekiq_status_updated supports the reaper/recovery scan.
 			if err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_sidekiq_status_updated ON sidekiq (status, updated_at)`).Error; err != nil {
 				return err
@@ -10485,6 +10545,7 @@ func migrationAddSidekiqTable(ctx context.Context, db *gorm.DB, logger schemas.L
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
+			// It is okay to drop the table
 			return tx.Exec(`DROP TABLE IF EXISTS sidekiq`).Error
 		},
 	}})
