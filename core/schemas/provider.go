@@ -18,6 +18,7 @@ const (
 	DefaultBufferSize                 = 5000
 	DefaultConcurrency                = 1000
 	DefaultStreamBufferSize           = 256
+	DefaultStreamReadBufferSizeKB     = 64 // Default stream read buffer size in KB (64KB)
 	DefaultStreamIdleTimeoutInSeconds = 120 // Idle timeout per stream chunk — if no data for this many seconds, bifrost closes the connection
 	DefaultMaxConnsPerHost            = 5000
 	MaxConnsPerHostUpperBound         = 10000
@@ -60,6 +61,7 @@ type NetworkConfig struct {
 	InsecureSkipVerify             bool              `json:"insecure_skip_verify,omitempty"`           // Disables TLS certificate verification for provider connections
 	CACertPEM                      *SecretVar        `json:"ca_cert_pem,omitempty"`                    // PEM-encoded CA certificate to trust for provider endpoint connections (supports env.*)
 	StreamIdleTimeoutInSeconds     int               `json:"stream_idle_timeout_in_seconds,omitempty"` // Idle timeout per stream chunk (0 = use default 60s)
+	StreamReadBufferSizeKB         int               `json:"stream_read_buffer_size_kb,omitempty"`     // Stream read buffer size in KB (0 = use default 64KB)
 	MaxConnsPerHost                int               `json:"max_conns_per_host,omitempty"`             // Max TCP connections per provider host (default: 5000)
 	EnforceHTTP2                   bool              `json:"enforce_http2,omitempty"`                  // Force HTTP/2 on provider connections (relevant for net/http-based providers like Bedrock)
 	BetaHeaderOverrides            map[string]bool   `json:"beta_header_overrides,omitempty"`          // Override default beta header support per provider (keys are prefixes like "redact-thinking-")
@@ -84,6 +86,7 @@ func (nc *NetworkConfig) UnmarshalJSON(data []byte) error {
 		InsecureSkipVerify             bool              `json:"insecure_skip_verify,omitempty"`
 		CACertPEM                      *SecretVar        `json:"ca_cert_pem,omitempty"`
 		StreamIdleTimeoutInSeconds     int               `json:"stream_idle_timeout_in_seconds,omitempty"`
+		StreamReadBufferSizeKB         int               `json:"stream_read_buffer_size_kb,omitempty"`
 		MaxConnsPerHost                int               `json:"max_conns_per_host,omitempty"`
 		EnforceHTTP2                   bool              `json:"enforce_http2,omitempty"`
 		BetaHeaderOverrides            map[string]bool   `json:"beta_header_overrides,omitempty"`
@@ -103,6 +106,7 @@ func (nc *NetworkConfig) UnmarshalJSON(data []byte) error {
 	nc.InsecureSkipVerify = alias.InsecureSkipVerify
 	nc.CACertPEM = alias.CACertPEM
 	nc.StreamIdleTimeoutInSeconds = alias.StreamIdleTimeoutInSeconds
+	nc.StreamReadBufferSizeKB = alias.StreamReadBufferSizeKB
 	nc.MaxConnsPerHost = alias.MaxConnsPerHost
 	nc.EnforceHTTP2 = alias.EnforceHTTP2
 	nc.BetaHeaderOverrides = alias.BetaHeaderOverrides
@@ -175,6 +179,7 @@ func (nc NetworkConfig) MarshalJSON() ([]byte, error) {
 		InsecureSkipVerify             bool              `json:"insecure_skip_verify,omitempty"`
 		CACertPEM                      string            `json:"ca_cert_pem,omitempty"`
 		StreamIdleTimeoutInSeconds     int               `json:"stream_idle_timeout_in_seconds,omitempty"`
+		StreamReadBufferSizeKB         int               `json:"stream_read_buffer_size_kb,omitempty"`
 		MaxConnsPerHost                int               `json:"max_conns_per_host,omitempty"`
 		EnforceHTTP2                   bool              `json:"enforce_http2,omitempty"`
 		BetaHeaderOverrides            map[string]bool   `json:"beta_header_overrides,omitempty"`
@@ -191,6 +196,7 @@ func (nc NetworkConfig) MarshalJSON() ([]byte, error) {
 		RetryBackoffMax:            int64(nc.RetryBackoffMax / time.Millisecond),
 		InsecureSkipVerify:         nc.InsecureSkipVerify,
 		StreamIdleTimeoutInSeconds: nc.StreamIdleTimeoutInSeconds,
+		StreamReadBufferSizeKB:     nc.StreamReadBufferSizeKB,
 		MaxConnsPerHost:            nc.MaxConnsPerHost,
 		EnforceHTTP2:               nc.EnforceHTTP2,
 		BetaHeaderOverrides:        nc.BetaHeaderOverrides,
@@ -223,6 +229,15 @@ var DefaultNetworkConfig = NetworkConfig{
 	RetryBackoffMax:                DefaultRetryBackoffMax,
 	StreamIdleTimeoutInSeconds:     DefaultStreamIdleTimeoutInSeconds,
 	MaxConnsPerHost:                DefaultMaxConnsPerHost,
+	StreamReadBufferSizeKB:         DefaultStreamReadBufferSizeKB,
+}
+
+// StreamReadBufferSize returns the stream read buffer size in bytes.
+func (nc *NetworkConfig) StreamReadBufferSize() int {
+	if nc.StreamReadBufferSizeKB <= 0 {
+		return DefaultStreamReadBufferSizeKB * 1024
+	}
+	return nc.StreamReadBufferSizeKB * 1024
 }
 
 // ConcurrencyAndBufferSize represents configuration for concurrent operations and buffer sizes.
@@ -579,6 +594,10 @@ func (config *ProviderConfig) CheckAndSetDefaults() {
 		config.NetworkConfig.MaxConnsPerHost = DefaultMaxConnsPerHost
 	} else if config.NetworkConfig.MaxConnsPerHost > MaxConnsPerHostUpperBound {
 		config.NetworkConfig.MaxConnsPerHost = MaxConnsPerHostUpperBound
+	}
+
+	if config.NetworkConfig.StreamReadBufferSizeKB <= 0 {
+		config.NetworkConfig.StreamReadBufferSizeKB = DefaultStreamReadBufferSizeKB
 	}
 
 	// Create a defensive copy of ExtraHeaders to prevent data races

@@ -384,6 +384,7 @@ func (provider *GeminiProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		nil,
 		provider.logger,
 		postHookSpanFinalizer,
+		provider.networkConfig.StreamReadBufferSize(),
 	)
 }
 
@@ -404,6 +405,7 @@ func HandleGeminiChatCompletionStream(
 	postResponseConverter func(*schemas.BifrostChatResponse) *schemas.BifrostChatResponse,
 	logger schemas.Logger,
 	postHookSpanFinalizer func(context.Context),
+	streamReadBufferSize int,
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, streamIdleTimeoutInSeconds)
 	req := fasthttp.AcquireRequest()
@@ -509,7 +511,7 @@ func HandleGeminiChatCompletionStream(
 		var lineReader *bufio.Reader
 		var sseReader providerUtils.SSEDataReader
 		if skipInlineData {
-			lineReader = bufio.NewReaderSize(decompressedReader, 64*1024)
+			lineReader = bufio.NewReaderSize(decompressedReader, streamReadBufferSize)
 		} else {
 			sseReader = providerUtils.GetSSEDataReader(ctx, decompressedReader)
 		}
@@ -896,6 +898,7 @@ func (provider *GeminiProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 		nil,
 		provider.logger,
 		postHookSpanFinalizer,
+		provider.networkConfig.StreamReadBufferSize(),
 	)
 }
 
@@ -916,6 +919,7 @@ func HandleGeminiResponsesStream(
 	postResponseConverter func(*schemas.BifrostResponsesStreamResponse) *schemas.BifrostResponsesStreamResponse,
 	logger schemas.Logger,
 	postHookSpanFinalizer func(context.Context),
+	streamReadBufferSize int,
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, streamIdleTimeoutInSeconds)
 	req := fasthttp.AcquireRequest()
@@ -1028,7 +1032,7 @@ func HandleGeminiResponsesStream(
 		var lineReader *bufio.Reader
 		var sseReader providerUtils.SSEDataReader
 		if skipInlineData {
-			lineReader = bufio.NewReaderSize(decompressedReader, 64*1024)
+			lineReader = bufio.NewReaderSize(decompressedReader, streamReadBufferSize)
 		} else {
 			sseReader = providerUtils.GetSSEDataReader(ctx, decompressedReader)
 		}
