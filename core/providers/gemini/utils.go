@@ -2482,11 +2482,20 @@ func buildOpenAIResponseFormat(responseJsonSchema interface{}, responseSchema *S
 
 	// Try to use responseJsonSchema first
 	if responseJsonSchema != nil {
-		// Use responseJsonSchema directly if it's a map
-		var ok bool
-		schemaMap, ok = responseJsonSchema.(map[string]interface{})
-		if !ok {
-			// If not a map, fall back to json_object mode
+		// The schema may be a plain map or an order-preserving OrderedMap
+		// (e.g. when extracted from a Responses request).
+		switch tv := responseJsonSchema.(type) {
+		case map[string]interface{}:
+			schemaMap = tv
+		case *schemas.OrderedMap:
+			if tv != nil {
+				schemaMap = tv.ToMap() // shallow: nested OrderedMap values keep their order
+			}
+		case schemas.OrderedMap:
+			schemaMap = tv.ToMap()
+		}
+		if schemaMap == nil {
+			// Unsupported shape - fall back to json_object mode
 			return &schemas.ResponsesTextConfig{
 				Format: &schemas.ResponsesTextConfigFormat{
 					Type: "json_object",
@@ -2669,22 +2678,13 @@ func normalizeSchemaForGemini(schema map[string]interface{}) map[string]interfac
 		normalized["items"] = normalizeSchemaValueForGemini(schema["items"])
 	}
 
-	// Recursively normalize anyOf
-	if anyOf, ok := schema["anyOf"].([]interface{}); ok {
-		newAnyOf := make([]interface{}, 0, len(anyOf))
-		for _, item := range anyOf {
-			newAnyOf = append(newAnyOf, normalizeSchemaValueForGemini(item))
+	// Recursively normalize composition fields (anyOf, oneOf, allOf), which may
+	// be []interface{} (JSON-decoded) or []schemas.OrderedMap (typed struct fields).
+	for _, key := range []string{"anyOf", "oneOf", "allOf"} {
+		switch schema[key].(type) {
+		case []interface{}, []schemas.OrderedMap:
+			normalized[key] = normalizeSchemaValueForGemini(schema[key])
 		}
-		normalized["anyOf"] = newAnyOf
-	}
-
-	// Recursively normalize oneOf
-	if oneOf, ok := schema["oneOf"].([]interface{}); ok {
-		newOneOf := make([]interface{}, 0, len(oneOf))
-		for _, item := range oneOf {
-			newOneOf = append(newOneOf, normalizeSchemaValueForGemini(item))
-		}
-		normalized["oneOf"] = newOneOf
 	}
 
 	return normalized
@@ -2695,6 +2695,22 @@ func normalizeSchemaForGemini(schema map[string]interface{}) map[string]interfac
 // pass through unchanged.
 func normalizeSchemaValueForGemini(v interface{}) interface{} {
 	switch tv := v.(type) {
+	case []interface{}:
+		out := make([]interface{}, len(tv))
+		for i, item := range tv {
+			out[i] = normalizeSchemaValueForGemini(item)
+		}
+		return out
+	case []schemas.OrderedMap:
+		out := make([]schemas.OrderedMap, len(tv))
+		for i := range tv {
+			if normalized := normalizeOrderedSchemaForGemini(&tv[i]); normalized != nil {
+				out[i] = *normalized
+			} else {
+				out[i] = tv[i]
+			}
+		}
+		return out
 	case map[string]interface{}:
 		return normalizeSchemaForGemini(tv)
 	case *schemas.OrderedMap:

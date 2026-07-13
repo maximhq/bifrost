@@ -640,17 +640,19 @@ func JSONSchemaFromMap(v interface{}) *ResponsesTextConfigFormatJSONSchema {
 		s.Nullable = Ptr(n)
 	}
 	if extractSliceOfMaps := func(key string) []OrderedMap {
-		raw, ok := m[key].([]interface{})
-		if !ok {
-			return nil
-		}
-		out := make([]OrderedMap, 0, len(raw))
-		for _, item := range raw {
-			if om, ok := SafeExtractOrderedMap(item); ok {
-				out = append(out, *om)
+		switch raw := m[key].(type) {
+		case []interface{}:
+			out := make([]OrderedMap, 0, len(raw))
+			for _, item := range raw {
+				if om, ok := SafeExtractOrderedMap(item); ok {
+					out = append(out, *om)
+				}
 			}
+			return out
+		case []OrderedMap:
+			return raw
 		}
-		return out
+		return nil
 	}; true {
 		if ao := extractSliceOfMaps("anyOf"); len(ao) > 0 {
 			s.AnyOf = ao

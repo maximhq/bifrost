@@ -360,6 +360,8 @@ func cloneAnyValue(value any) any {
 			return *cloned
 		}
 		return typed
+	case []schemas.OrderedMap:
+		return cloneOrderedMapSlice(typed)
 	default:
 		return typed
 	}
