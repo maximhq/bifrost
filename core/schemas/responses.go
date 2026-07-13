@@ -1157,7 +1157,6 @@ func (m *ResponsesMessage) UnmarshalJSON(data []byte) error {
 	if t := gjson.GetBytes(data, "type").String(); isRawPreservedItem(t) {
 		mt := ResponsesMessageType(t)
 		m.Type = &mt
-		m.rawToolSearch = append([]byte(nil), data...)
 		// Also surface `arguments` (a JSON object for tool_search_call) so downstream
 		// consumers that read Arguments keep working; MarshalJSON still re-emits the
 		// preserved bytes verbatim, so this is additive and does not affect round-trip.
