@@ -201,9 +201,8 @@ OCRPage:
       $ref: "#/OCRPageDimensions"
     blocks:
       type: array
-      description: Provider-native layout blocks (present when the request sets include_blocks=true). Currently populated by Mistral; opaque structure preserved verbatim.
-      items:
-        type: object
+      description: Provider-native layout blocks (present when the request sets include_blocks=true, possibly empty). Currently populated by Mistral; opaque structure preserved verbatim, so item schemas are unconstrained.
+      items: {}
     tables:
       type: array
       description: Tables extracted from this page (present when table_format is set)

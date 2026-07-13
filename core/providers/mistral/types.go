@@ -192,7 +192,8 @@ type MistralOCRPage struct {
 	Dimensions *MistralOCRPageDimensions `json:"dimensions,omitempty"`
 	// Populated by Mistral only when the request sets include_blocks=true.
 	// Kept opaque so provider-side schema evolution passes through untouched.
-	Blocks []any `json:"blocks,omitempty"`
+	// Pointer so `blocks: []` (empty but present) survives round-trip.
+	Blocks *[]any `json:"blocks,omitempty"`
 }
 
 // MistralOCRUsageInfo represents usage information in Mistral's OCR response.

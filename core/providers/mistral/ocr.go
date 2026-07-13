@@ -89,9 +89,7 @@ func (r *MistralOCRResponse) ToBifrostOCRResponse() *schemas.BifrostOCRResponse 
 					Width:  p.Dimensions.Width,
 				}
 			}
-			if len(p.Blocks) > 0 {
-				page.Blocks = p.Blocks
-			}
+			page.Blocks = p.Blocks
 			resp.Pages[i] = page
 		}
 	}
