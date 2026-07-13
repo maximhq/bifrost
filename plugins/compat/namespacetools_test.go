@@ -98,7 +98,7 @@ func TestApplyParameterConversion_StoresNamespaceMap(t *testing.T) {
 
 	applyParameterConversion(ctx, req)
 
-	stored, ok := ctx.Value(namespaceToolMapContextKey).(map[string]string)
+	stored, ok := ctx.Value(schemas.BifrostContextKeyCompatNamespaceToolMap).(map[string]string)
 	if !ok {
 		t.Fatalf("namespace map not stored in context")
 	}
