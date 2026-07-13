@@ -322,7 +322,7 @@ func TestToBifrostOCRResponse(t *testing.T) {
 					{
 						Index:    0,
 						Markdown: "Page with blocks",
-						Blocks: []any{
+						Blocks: &[]any{
 							map[string]any{
 								"type": "text",
 								"text": "Hello",
@@ -339,11 +339,49 @@ func TestToBifrostOCRResponse(t *testing.T) {
 			validate: func(t *testing.T, result *schemas.BifrostOCRResponse) {
 				require.NotNil(t, result)
 				require.Len(t, result.Pages, 1)
-				require.Len(t, result.Pages[0].Blocks, 2)
-				first, ok := result.Pages[0].Blocks[0].(map[string]any)
+				require.NotNil(t, result.Pages[0].Blocks)
+				require.Len(t, *result.Pages[0].Blocks, 2)
+				first, ok := (*result.Pages[0].Blocks)[0].(map[string]any)
 				require.True(t, ok)
 				assert.Equal(t, "text", first["type"])
 				assert.Equal(t, "Hello", first["text"])
+			},
+		},
+		{
+			// Regression: `blocks: []` from Mistral is a distinct state from an
+			// absent field, and must not collapse into nil via omitempty.
+			name: "response with explicitly empty blocks preserves presence",
+			input: &MistralOCRResponse{
+				Model: "mistral-ocr-latest",
+				Pages: []MistralOCRPage{
+					{Index: 0, Markdown: "Page with empty blocks", Blocks: &[]any{}},
+				},
+			},
+			validate: func(t *testing.T, result *schemas.BifrostOCRResponse) {
+				require.NotNil(t, result)
+				require.Len(t, result.Pages, 1)
+				require.NotNil(t, result.Pages[0].Blocks, "empty blocks must survive as non-nil pointer")
+				assert.Len(t, *result.Pages[0].Blocks, 0)
+
+				out, err := sonic.Marshal(result.Pages[0])
+				require.NoError(t, err)
+				assert.Contains(t, string(out), `"blocks":[]`, "empty blocks must serialize as [], not be omitted")
+			},
+		},
+		{
+			name: "response with absent blocks stays absent",
+			input: &MistralOCRResponse{
+				Model: "mistral-ocr-latest",
+				Pages: []MistralOCRPage{{Index: 0, Markdown: "Page without blocks"}},
+			},
+			validate: func(t *testing.T, result *schemas.BifrostOCRResponse) {
+				require.NotNil(t, result)
+				require.Len(t, result.Pages, 1)
+				assert.Nil(t, result.Pages[0].Blocks)
+
+				out, err := sonic.Marshal(result.Pages[0])
+				require.NoError(t, err)
+				assert.NotContains(t, string(out), `"blocks"`, "absent blocks must not appear in output")
 			},
 		},
 		{
