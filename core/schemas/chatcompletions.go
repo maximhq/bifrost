@@ -596,6 +596,10 @@ func NewRawToolFunctionParameters(data []byte) (*ToolFunctionParameters, error) 
 	if len(trimmed) == 0 || !json.Valid(trimmed) || trimmed[0] != '{' {
 		return nil, fmt.Errorf("invalid tool function parameters JSON")
 	}
+	if schemaType := gjson.GetBytes(trimmed, "type"); schemaType.Exists() &&
+		(schemaType.Type != gjson.String || schemaType.String() != "object") {
+		return nil, fmt.Errorf("tool function parameters schema type must be object")
+	}
 
 	return &ToolFunctionParameters{
 		rawJSON: append(json.RawMessage(nil), trimmed...),

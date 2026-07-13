@@ -15,7 +15,7 @@ func TestConvertToolConfig_RawParametersPassthrough(t *testing.T) {
 		raw  string
 	}{
 		{name: "empty object", raw: `{ }`},
-		{name: "populated schema", raw: `{"x-provider-key":{"enabled":true},"type":["object","null"],"properties":{"query":{"type":"string"}}}`},
+		{name: "populated schema", raw: `{"x-provider-key":{"enabled":true},"type":"object","properties":{"query":{"type":["string","null"]}}}`},
 	}
 
 	for _, tt := range tests {

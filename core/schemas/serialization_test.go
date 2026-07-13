@@ -1024,7 +1024,7 @@ func TestToolFunctionParameters_ExplicitObjectSchemaPreserved(t *testing.T) {
 }
 
 func TestToolFunctionParameters_RawJSONPassthrough(t *testing.T) {
-	raw := []byte(`{"x-provider-key":{"enabled":true},"type":["object","null"],"properties":{"query":{"type":"string"}}}`)
+	raw := []byte(`{"x-provider-key":{"enabled":true},"type":"object","properties":{"query":{"type":["string","null"]}}}`)
 	params, err := NewRawToolFunctionParameters(raw)
 	require.NoError(t, err)
 	require.True(t, params.HasRawJSON())
@@ -1036,7 +1036,7 @@ func TestToolFunctionParameters_RawJSONPassthrough(t *testing.T) {
 
 	marshaled, err := Marshal(params)
 	require.NoError(t, err)
-	assert.Equal(t, `{"x-provider-key":{"enabled":true},"type":["object","null"],"properties":{"query":{"type":"string"}}}`, string(marshaled))
+	assert.Equal(t, `{"x-provider-key":{"enabled":true},"type":"object","properties":{"query":{"type":["string","null"]}}}`, string(marshaled))
 
 	normalized, err := Marshal(params.Normalized())
 	require.NoError(t, err)
@@ -1057,9 +1057,15 @@ func TestToolFunctionParameters_RawJSONValidation(t *testing.T) {
 		{name: "number", input: `42`, wantErr: true},
 		{name: "string", input: `"object"`, wantErr: true},
 		{name: "boolean", input: `true`, wantErr: true},
+		{name: "string schema", input: `{"type":"string"}`, wantErr: true},
+		{name: "array schema", input: `{"type":"array"}`, wantErr: true},
+		{name: "union schema", input: `{"type":["object","null"]}`, wantErr: true},
+		{name: "non-string schema type", input: `{"type":42}`, wantErr: true},
 		{name: "empty object", input: `{}`},
 		{name: "object schema", input: `{"type":"object","properties":{}}`},
 		{name: "object with whitespace", input: `  {"type":"object"}  `},
+		{name: "reference schema", input: `{"$ref":"#/$defs/arguments"}`},
+		{name: "composition schema", input: `{"allOf":[{"type":"object"}]}`},
 	}
 
 	for _, tt := range tests {
