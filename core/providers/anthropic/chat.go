@@ -682,9 +682,10 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 			for i < len(messages) && messages[i].Role == schemas.ChatMessageRoleTool {
 				toolMsg := messages[i]
 				if toolMsg.ChatToolMessage != nil && toolMsg.ChatToolMessage.ToolCallID != nil {
+					sanitizedToolUseID := providerUtils.SanitizeAnthropicToolUseID(*toolMsg.ChatToolMessage.ToolCallID)
 					toolResult := AnthropicContentBlock{
 						Type:      AnthropicContentBlockTypeToolResult,
-						ToolUseID: toolMsg.ChatToolMessage.ToolCallID,
+						ToolUseID: &sanitizedToolUseID,
 					}
 
 					// Convert tool result content
@@ -783,7 +784,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 				for _, toolCall := range msg.ChatAssistantMessage.ToolCalls {
 					toolUse := AnthropicContentBlock{
 						Type: AnthropicContentBlockTypeToolUse,
-						ID:   toolCall.ID,
+						ID:   providerUtils.SanitizeAnthropicToolUseIDPtr(toolCall.ID),
 						Name: toolCall.Function.Name,
 					}
 
@@ -1033,6 +1034,13 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 			PromptTokensDetails: promptTokensDetails,
 			CompletionTokens:    response.Usage.OutputTokens,
 		}
+		// Forward web search request count so server-tool use is billed.
+		if response.Usage.ServerToolUse != nil && response.Usage.ServerToolUse.WebSearchRequests > 0 {
+			n := response.Usage.ServerToolUse.WebSearchRequests
+			bifrostResponse.Usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{
+				NumSearchQueries: &n,
+			}
+		}
 		bifrostResponse.Usage.TotalTokens = bifrostResponse.Usage.PromptTokens + bifrostResponse.Usage.CompletionTokens
 		// Forward service tier from usage to response
 		if response.Usage.ServiceTier != nil {
@@ -1042,6 +1050,10 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 		// Forward the speed actually served (fast mode) — drives fast-mode billing.
 		if response.Usage.Speed != nil {
 			bifrostResponse.Speed = response.Usage.Speed
+		}
+		// Forward the inference geography served — drives the data-residency multiplier.
+		if response.Usage.InferenceGeo != nil {
+			bifrostResponse.InferenceGeo = response.Usage.InferenceGeo
 		}
 	}
 
@@ -1169,7 +1181,7 @@ func ToAnthropicChatResponse(bifrostResp *schemas.BifrostChatResponse) *Anthropi
 
 				content = append(content, AnthropicContentBlock{
 					Type:  AnthropicContentBlockTypeToolUse,
-					ID:    toolCall.ID,
+					ID:    providerUtils.SanitizeAnthropicToolUseIDPtr(toolCall.ID),
 					Name:  toolCall.Function.Name,
 					Input: inputRaw,
 				})
@@ -1581,7 +1593,7 @@ func ToAnthropicChatStreamResponse(bifrostResp *schemas.BifrostChatResponse) str
 					streamResp.Index = &choice.Index
 					streamResp.ContentBlock = &AnthropicContentBlock{
 						Type: AnthropicContentBlockTypeToolUse,
-						ID:   toolCall.ID,
+						ID:   providerUtils.SanitizeAnthropicToolUseIDPtr(toolCall.ID),
 						Name: toolCall.Function.Name,
 					}
 				} else if toolCall.Function.Arguments != "" {

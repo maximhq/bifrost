@@ -157,6 +157,124 @@ func TestBuildResponsesMessageAccumulatesReasoningSummary(t *testing.T) {
 	}
 }
 
+// TestBuildResponsesMessageAccumulatesAnnotations verifies that streamed
+// output_text.annotation.added events (citations) are folded into the
+// accumulated message. Providers emit these during a streamed responses call
+// (e.g. Anthropic citations_delta -> convertAnthropicCitationToAnnotation) and
+// the non-stream path preserves them on
+// ResponsesOutputMessageContentText.Annotations, so the accumulated message
+// (which feeds logging, observability, and cache) must too.
+func TestBuildResponsesMessageAccumulatesAnnotations(t *testing.T) {
+	acc := testResponsesAccumulator(t)
+	ci := 0
+	itemID := "msg_1"
+	chunks := []*ResponsesStreamChunk{
+		{
+			ChunkIndex: 0,
+			StreamResponse: &schemas.BifrostResponsesStreamResponse{
+				Type: schemas.ResponsesStreamResponseTypeOutputItemAdded,
+				Item: &schemas.ResponsesMessage{ID: schemas.Ptr(itemID)},
+			},
+		},
+		{
+			ChunkIndex: 1,
+			StreamResponse: &schemas.BifrostResponsesStreamResponse{
+				Type:         schemas.ResponsesStreamResponseTypeOutputTextDelta,
+				Delta:        schemas.Ptr("The capital of France is Paris."),
+				ContentIndex: &ci,
+			},
+		},
+		{
+			ChunkIndex: 2,
+			StreamResponse: &schemas.BifrostResponsesStreamResponse{
+				Type:         schemas.ResponsesStreamResponseTypeOutputTextAnnotationAdded,
+				ItemID:       schemas.Ptr(itemID),
+				ContentIndex: &ci,
+				Annotation: &schemas.ResponsesOutputMessageContentTextAnnotation{
+					Type:  "url_citation",
+					URL:   schemas.Ptr("https://example.com/paris"),
+					Title: schemas.Ptr("Paris"),
+				},
+			},
+		},
+	}
+
+	msgs := acc.buildCompleteMessageFromResponsesStreamChunks(chunks)
+	if len(msgs) != 1 {
+		t.Fatalf("want 1 message, got %d", len(msgs))
+	}
+	if msgs[0].Content == nil || len(msgs[0].Content.ContentBlocks) == 0 {
+		t.Fatalf("want a content block, got %+v", msgs[0].Content)
+	}
+	block := msgs[0].Content.ContentBlocks[0]
+	// Text delta must still be preserved alongside the annotation.
+	if block.Text == nil || *block.Text != "The capital of France is Paris." {
+		t.Fatalf("text not preserved: %+v", block.Text)
+	}
+	if block.ResponsesOutputMessageContentText == nil {
+		t.Fatal("want ResponsesOutputMessageContentText, got nil")
+	}
+	ann := block.ResponsesOutputMessageContentText.Annotations
+	if len(ann) != 1 {
+		t.Fatalf("want 1 annotation, got %d", len(ann))
+	}
+	if ann[0].Type != "url_citation" || ann[0].URL == nil || *ann[0].URL != "https://example.com/paris" {
+		t.Fatalf("annotation not preserved: %+v", ann[0])
+	}
+
+	// Idempotent under the multi-plugin rebuild (this build runs once per plugin
+	// post-hook): a second build over the same chunks must yield the same single
+	// annotation, not a doubled one.
+	msgs2 := acc.buildCompleteMessageFromResponsesStreamChunks(chunks)
+	if len(msgs2) != 1 || msgs2[0].Content == nil || len(msgs2[0].Content.ContentBlocks) == 0 ||
+		msgs2[0].Content.ContentBlocks[0].ResponsesOutputMessageContentText == nil ||
+		len(msgs2[0].Content.ContentBlocks[0].ResponsesOutputMessageContentText.Annotations) != 1 {
+		t.Fatalf("second build not idempotent: %+v", msgs2)
+	}
+}
+
+// TestBuildResponsesMessageAccumulatesAnnotationsWithoutItemID covers the
+// fallback path used by providers that emit output_text.annotation.added
+// without an ItemID (e.g. Cohere): the annotation attaches to the most recent
+// message, mirroring how text deltas without an ItemID are routed.
+func TestBuildResponsesMessageAccumulatesAnnotationsWithoutItemID(t *testing.T) {
+	acc := testResponsesAccumulator(t)
+	ci := 0
+	chunks := []*ResponsesStreamChunk{
+		{
+			ChunkIndex: 0,
+			StreamResponse: &schemas.BifrostResponsesStreamResponse{
+				Type:         schemas.ResponsesStreamResponseTypeOutputTextDelta,
+				Delta:        schemas.Ptr("Grounded answer."),
+				ContentIndex: &ci,
+			},
+		},
+		{
+			ChunkIndex: 1,
+			StreamResponse: &schemas.BifrostResponsesStreamResponse{
+				Type:         schemas.ResponsesStreamResponseTypeOutputTextAnnotationAdded,
+				ContentIndex: &ci, // no ItemID -> route to the most recent message
+				Annotation: &schemas.ResponsesOutputMessageContentTextAnnotation{
+					Type: "url_citation",
+					URL:  schemas.Ptr("https://example.org/source"),
+				},
+			},
+		},
+	}
+
+	msgs := acc.buildCompleteMessageFromResponsesStreamChunks(chunks)
+	if len(msgs) != 1 || msgs[0].Content == nil || len(msgs[0].Content.ContentBlocks) == 0 {
+		t.Fatalf("unexpected message shape: %+v", msgs)
+	}
+	block := msgs[0].Content.ContentBlocks[0]
+	if block.ResponsesOutputMessageContentText == nil || len(block.ResponsesOutputMessageContentText.Annotations) != 1 {
+		t.Fatalf("want 1 annotation on the last message, got %+v", block.ResponsesOutputMessageContentText)
+	}
+	if got := block.ResponsesOutputMessageContentText.Annotations[0].URL; got == nil || *got != "https://example.org/source" {
+		t.Fatalf("annotation URL not preserved: %+v", got)
+	}
+}
+
 // TestForceCleanupStreamAccumulatorReapsRegardlessOfRefcount is the Tier-1 leak
 // guard: it reproduces a stream that ended without its per-plugin refcount being
 // driven to zero (e.g. a client abort, or multiple plugins that each Create but

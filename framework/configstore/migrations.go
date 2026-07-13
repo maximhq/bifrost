@@ -439,6 +439,9 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_vertex_force_single_region_column"}, run: migrationAddVertexForceSingleRegionColumn},
 	{IDs: []string{"add_sidekiq_table"}, run: migrationAddSidekiqTable},
 	{IDs: []string{"add_sidekiq_kind_status_created_index"}, run: migrationAddSidekiqKindStatusCreatedIndex},
+	{IDs: []string{"add_fast_mode_cache_pricing_columns"}, run: migrationAddFastModeCachePricingColumns},
+	{IDs: []string{"add_inference_geo_multiplier_column"}, run: migrationAddInferenceGeoMultiplierColumn},
+	{IDs: []string{"repair_bare_wildcard_allowed_models"}, run: migrationRepairBareWildcardAllowedModels},
 }
 
 // quoteSQLiteIdentifier quotes a SQLite identifier, escaping any double quotes.
@@ -6440,6 +6443,51 @@ func migrationBackfillAllowedModelsWildcard(ctx context.Context, db *gorm.DB, lo
 	return nil
 }
 
+// migrationRepairBareWildcardAllowedModels repairs governance_virtual_key_provider_configs
+// rows whose allowed_models / blacklisted_models column holds the bare one-character
+// string '*' instead of the JSON array '["*"]'. Such rows abort the GORM json
+// deserializer ("invalid character '*' ...") when the VK is loaded, which poisons the
+// whole provider admin surface (see issue #4318). The repair rewrites the column to the
+// canonical '["*"]' form the serializer:json tag is supposed to produce; the intended
+// value at write time was already the WhiteList ["*"], so the config_hash — computed
+// from the in-memory slice — stays consistent and needs no recomputation.
+func migrationRepairBareWildcardAllowedModels(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "repair_bare_wildcard_allowed_models"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+
+			// Match the documented manual workaround exactly: bare '*' → '["*"]'.
+			// Covers both whitelist columns on the provider config, which share the
+			// serializer:json tag and the same corruption class.
+			for _, column := range []string{"allowed_models", "blacklisted_models"} {
+				res := tx.Model(&tables.TableVirtualKeyProviderConfig{}).
+					Where(column+" = ?", "*").
+					Update(column, `["*"]`)
+				if res.Error != nil {
+					return fmt.Errorf("failed to repair bare wildcard %s: %w", column, res.Error)
+				}
+				if res.RowsAffected > 0 {
+					logger.Info("[configstore] %s: repaired %d rows with bare wildcard %s", migrationName, res.RowsAffected, column)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			// Rollback is a no-op: reverting '["*"]' back to '*' would re-introduce
+			// the value that breaks the deserializer.
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
+	}
+	return nil
+}
+
 // migrationAddMCPClientAllowedExtraHeadersJSONColumn adds the allowed_extra_headers_json column to the mcp_client table
 func migrationAddMCPClientAllowedExtraHeadersJSONColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
 	migrationName := "add_mcp_client_allowed_extra_headers_json_column"
@@ -7796,6 +7844,82 @@ func migrationAddFastModePricingColumns(ctx context.Context, db *gorm.DB, logger
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running fast mode pricing columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddFastModeCachePricingColumns adds fast-mode cache pricing columns
+// for Anthropic (speed:"fast"). Caching multipliers stack on the fast base input
+// rate, so cache tokens need dedicated fast rates instead of the standard ones.
+func migrationAddFastModeCachePricingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_fast_mode_cache_pricing_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	columns := []string{
+		"cache_creation_input_token_cost_fast",
+		"cache_creation_input_token_cost_above_1hr_fast",
+		"cache_read_input_token_cost_fast",
+	}
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range columns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to add column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range columns {
+				if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to drop column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running fast mode cache pricing columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddInferenceGeoMultiplierColumn adds the inference_geo_us_multiplier
+// column for Anthropic data residency (inference_geo:"us" applies a 1.1x
+// multiplier stacking on top of all token/cache costs).
+func migrationAddInferenceGeoMultiplierColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_inference_geo_multiplier_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	columns := []string{
+		"inference_geo_us_multiplier",
+	}
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range columns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to add column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range columns {
+				if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to drop column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running inference geo multiplier column migration: %s", err.Error())
 	}
 	return nil
 }
@@ -10350,6 +10474,7 @@ func migrationAddSidekiqTable(ctx context.Context, db *gorm.DB, logger schemas.L
 	migrationName := "add_sidekiq_table"
 	logger.Info("[configstore] starting migration %s", migrationName)
 	defer logger.Info("[configstore] finished migration %s", migrationName)
+
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
@@ -10360,42 +10485,57 @@ func migrationAddSidekiqTable(ctx context.Context, db *gorm.DB, logger schemas.L
 			case "postgres":
 				createTable = `
 					CREATE TABLE IF NOT EXISTS sidekiq (
-						id           TEXT PRIMARY KEY,
-						kind         TEXT NOT NULL,
-						status       TEXT NOT NULL DEFAULT 'pending',
-						runner_id    TEXT,
-						metadata     TEXT DEFAULT '{}',
-						attempts     INTEGER NOT NULL DEFAULT 0,
-						last_error   TEXT,
-						created_at   TIMESTAMPTZ NOT NULL,
-						updated_at   TIMESTAMPTZ NOT NULL,
-						started_at   TIMESTAMPTZ,
-						completed_at TIMESTAMPTZ
+						id                  TEXT PRIMARY KEY,
+						kind                TEXT NOT NULL,
+						status              TEXT NOT NULL DEFAULT 'pending',
+						runner_id           TEXT,
+						metadata            TEXT DEFAULT '{}',
+						attempts            INTEGER NOT NULL DEFAULT 0,
+						last_error          TEXT,
+						created_at          TIMESTAMPTZ NOT NULL,
+						updated_at          TIMESTAMPTZ NOT NULL,
+						started_at          TIMESTAMPTZ,
+						created_by_user_id  VARCHAR(255),
+						completed_at        TIMESTAMPTZ
 					)`
 			case "sqlite":
 				createTable = `
 					CREATE TABLE IF NOT EXISTS sidekiq (
-						id           TEXT PRIMARY KEY,
-						kind         TEXT NOT NULL,
-						status       TEXT NOT NULL DEFAULT 'pending',
-						runner_id    TEXT,
-						metadata     TEXT DEFAULT '{}',
-						attempts     INTEGER NOT NULL DEFAULT 0,
-						last_error   TEXT,
-						created_at   DATETIME NOT NULL,
-						updated_at   DATETIME NOT NULL,
-						started_at   DATETIME,
-						completed_at DATETIME
+						id                  TEXT PRIMARY KEY,
+						kind                TEXT NOT NULL,
+						status              TEXT NOT NULL DEFAULT 'pending',
+						runner_id           TEXT,
+						metadata            TEXT DEFAULT '{}',
+						attempts            INTEGER NOT NULL DEFAULT 0,
+						last_error          TEXT,
+						created_at          DATETIME NOT NULL,
+						updated_at          DATETIME NOT NULL,
+						started_at          DATETIME,
+						created_by_user_id  VARCHAR(255),
+						completed_at        DATETIME
 					)`
 			default:
 				// Fall back to GORM for any other dialect so the migration does not
 				// hard-fail on an unsupported backend.
-				return tx.Migrator().CreateTable(&tables.TableSidekiqJob{})
+				if err := tx.Migrator().AutoMigrate(&tables.TableSidekiqJob{}); err != nil {
+					return err
+				}
+				return nil
 			}
 
 			if err := tx.Exec(createTable).Error; err != nil {
 				return err
 			}
+
+			// For existing tables, add new columns that were not present in the
+			// original schema (no-op when the columns already exist).
+			if err := addColumnIfNotExists(tx, logger, &tables.TableSidekiqJob{}, "runner_id"); err != nil {
+				return err
+			}
+			if err := addColumnIfNotExists(tx, logger, &tables.TableSidekiqJob{}, "created_by_user_id"); err != nil {
+				return err
+			}
+
 			// idx_sidekiq_status_updated supports the reaper/recovery scan.
 			if err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_sidekiq_status_updated ON sidekiq (status, updated_at)`).Error; err != nil {
 				return err
@@ -10405,6 +10545,7 @@ func migrationAddSidekiqTable(ctx context.Context, db *gorm.DB, logger schemas.L
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
+			// It is okay to drop the table
 			return tx.Exec(`DROP TABLE IF EXISTS sidekiq`).Error
 		},
 	}})
