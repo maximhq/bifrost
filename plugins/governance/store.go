@@ -402,6 +402,12 @@ func (gs *LocalGovernanceStore) SetRateLimitDBBaseline(rateLimitID string, token
 	gs.LastDBUsagesRateLimitsRequestsMu.Unlock()
 }
 
+// maxRequestTimeResetAttempts bounds how many times a Bump* usage loop defers
+// to the shared reset path before falling back to an inline reset. A converging
+// target needs exactly one attempt; the bound exists so a non-converging target
+// (issue #4851 class) can never spin a request-path goroutine at 100% CPU.
+const maxRequestTimeResetAttempts = 3
+
 // BumpBudgetUsage atomically increments CurrentUsage on the budget identified
 // by budgetID and, as a side effect, zeros CurrentUsage / advances LastReset
 // when the rolling ResetDuration has elapsed. Uses sync.Map.CompareAndSwap so
@@ -413,6 +419,7 @@ func (gs *LocalGovernanceStore) SetRateLimitDBBaseline(rateLimitID string, token
 // Update*BudgetUsageInMemory wrappers) rather than doing a plain
 // Load → clone → mutate → Store, which races.
 func (gs *LocalGovernanceStore) BumpBudgetUsage(ctx context.Context, budgetID string, cost float64) error {
+	resetAttempts := 0
 	for {
 		raw, exists := gs.budgets.Load(budgetID)
 		if !exists || raw == nil {
@@ -422,11 +429,29 @@ func (gs *LocalGovernanceStore) BumpBudgetUsage(ctx context.Context, budgetID st
 		if !ok || old == nil {
 			return nil
 		}
-		if gs.budgetResetTarget(old, time.Now()) != nil {
+		target := gs.budgetResetTarget(old, time.Now())
+		if target != nil && resetAttempts < maxRequestTimeResetAttempts {
+			resetAttempts++
 			gs.ResetExpiredBudgetsInMemory(ctx, false, budgetID)
 			continue
 		}
 		clone := *old
+		if target != nil {
+			// The reset target is still due after maxRequestTimeResetAttempts
+			// shared-path resets, so it is not converging (issue #4851 class:
+			// a target function bug or bad duration slipped past validation).
+			// Reset inline in the clone so this loop always terminates,
+			// zeroing the LastDB baseline exactly like
+			// resetExpiredBudgetFromSnapshot so DB delta folding stays
+			// consistent. Only the reset hook (DB persistence of LastReset)
+			// is skipped on the request path.
+			gs.logger.Error("budget %s reset target not converging after %d resets; applying inline reset to avoid request-path spin", budgetID, resetAttempts)
+			clone.CurrentUsage = 0
+			clone.LastReset = *target
+			gs.LastDBUsagesBudgetsMu.Lock()
+			gs.LastDBUsagesBudgets[budgetID] = 0
+			gs.LastDBUsagesBudgetsMu.Unlock()
+		}
 		clone.CurrentUsage += cost
 		if gs.budgets.CompareAndSwap(budgetID, raw, &clone) {
 			return nil
@@ -441,6 +466,7 @@ func (gs *LocalGovernanceStore) BumpBudgetUsage(ctx context.Context, budgetID st
 // contract as BumpBudgetUsage — no increment is ever dropped under
 // concurrent callers. No-op when the rate limit is absent.
 func (gs *LocalGovernanceStore) BumpRateLimitUsage(ctx context.Context, rateLimitID string, tokensUsed int64, shouldUpdateTokens, shouldUpdateRequests bool) error {
+	resetAttempts := 0
 	for {
 		raw, exists := gs.rateLimits.Load(rateLimitID)
 		if !exists || raw == nil {
@@ -450,11 +476,38 @@ func (gs *LocalGovernanceStore) BumpRateLimitUsage(ctx context.Context, rateLimi
 		if !ok || old == nil {
 			return nil
 		}
-		if tokenNewLastReset, requestNewLastReset := gs.rateLimitResetTargets(old, time.Now()); tokenNewLastReset != nil || requestNewLastReset != nil {
+		tokenNewLastReset, requestNewLastReset := gs.rateLimitResetTargets(old, time.Now())
+		if (tokenNewLastReset != nil || requestNewLastReset != nil) && resetAttempts < maxRequestTimeResetAttempts {
+			resetAttempts++
 			gs.ResetExpiredRateLimitsInMemory(ctx, false, rateLimitID)
 			continue
 		}
 		clone := *old
+		if tokenNewLastReset != nil || requestNewLastReset != nil {
+			// The reset target is still due after maxRequestTimeResetAttempts
+			// shared-path resets, so it is not converging (issue #4851 class:
+			// a target function bug or bad duration slipped past validation).
+			// Reset inline in the clone so this loop always terminates,
+			// zeroing the LastDB baselines exactly like
+			// resetExpiredRateLimitFromSnapshot so DB delta folding stays
+			// consistent. Only the reset hook (DB persistence of LastReset)
+			// is skipped on the request path.
+			gs.logger.Error("rate limit %s reset target not converging after %d resets; applying inline reset to avoid request-path spin", rateLimitID, resetAttempts)
+			if tokenNewLastReset != nil {
+				clone.TokenCurrentUsage = 0
+				clone.TokenLastReset = *tokenNewLastReset
+				gs.LastDBUsagesRateLimitsTokensMu.Lock()
+				gs.LastDBUsagesTokensRateLimits[rateLimitID] = 0
+				gs.LastDBUsagesRateLimitsTokensMu.Unlock()
+			}
+			if requestNewLastReset != nil {
+				clone.RequestCurrentUsage = 0
+				clone.RequestLastReset = *requestNewLastReset
+				gs.LastDBUsagesRateLimitsRequestsMu.Lock()
+				gs.LastDBUsagesRequestsRateLimits[rateLimitID] = 0
+				gs.LastDBUsagesRateLimitsRequestsMu.Unlock()
+			}
+		}
 		if shouldUpdateTokens {
 			clone.TokenCurrentUsage += tokensUsed
 		}
@@ -1798,6 +1851,12 @@ func (gs *LocalGovernanceStore) budgetResetTarget(budget *configstoreTables.Tabl
 		gs.logger.Error("invalid budget reset duration %s: %v", budget.ResetDuration, err)
 		return nil
 	}
+	// A non-positive duration would be perpetually due, spinning BumpBudgetUsage
+	// forever (issue #4851 class); treat it as invalid, same as unparseable.
+	if duration <= 0 {
+		gs.logger.Error("non-positive budget reset duration %s: budget will not auto-reset", budget.ResetDuration)
+		return nil
+	}
 	if now.Sub(budget.LastReset) >= duration {
 		return &now
 	}
@@ -1882,6 +1941,12 @@ func (gs *LocalGovernanceStore) rateLimitResetTarget(resetDuration *string, cale
 	duration, err := configstoreTables.ParseDuration(*resetDuration)
 	if err != nil {
 		gs.logger.Error("invalid rate limit reset duration %s: %v", *resetDuration, err)
+		return nil
+	}
+	// A non-positive duration would be perpetually due, spinning BumpRateLimitUsage
+	// forever (issue #4851 class); treat it as invalid, same as unparseable.
+	if duration <= 0 {
+		gs.logger.Error("non-positive rate limit reset duration %s: counter will not auto-reset", *resetDuration)
 		return nil
 	}
 	if now.Sub(lastReset) >= duration {
