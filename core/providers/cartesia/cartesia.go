@@ -360,15 +360,21 @@ func (provider *CartesiaProvider) SpeechStream(ctx *schemas.BifrostContext, post
 			}
 		}
 
-		// Truncation guard: a stream that ended (EOF) without Cartesia's terminal
-		// "done" event AND without delivering a single audio chunk is not a valid
-		// empty response — it is a truncated/aborted stream. Surface it as an error
-		// instead of emitting a successful done chunk with no audio. Note: a stream
-		// that delivered some chunks before an early EOF is still treated as success,
-		// matching the codebase-wide convention for other providers.
-		if !sawDone && chunkIndex < 0 && ctx.Err() == nil {
+		// Truncation guard: a successful Cartesia /tts/sse stream is ALWAYS terminated
+		// by an explicit "done" event (done:true is documented as the final event in
+		// the stream). So reaching EOF without having seen "done" means the stream was
+		// truncated/aborted mid-generation — even if some audio chunks were already
+		// delivered, the audio is incomplete. Surface it as an error instead of
+		// emitting a successful done chunk over partial/empty audio. (This differs from
+		// raw-binary TTS like ElevenLabs, which has no terminal marker and treats EOF
+		// as normal completion.)
+		if !sawDone && ctx.Err() == nil {
 			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-			be := providerUtils.NewBifrostOperationError("cartesia stream ended before any audio was received", io.ErrUnexpectedEOF)
+			msg := "cartesia stream ended before the terminal done event (truncated audio)"
+			if chunkIndex < 0 {
+				msg = "cartesia stream ended before any audio was received"
+			}
+			be := providerUtils.NewBifrostOperationError(msg, io.ErrUnexpectedEOF)
 			providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, be, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency), responseChan, provider.logger, postHookSpanFinalizer)
 			return
 		}
