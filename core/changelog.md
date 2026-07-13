@@ -1,3 +1,4 @@
+- [fix]: mistral custom providers enforce allowed_requests on all endpoints [@georg-wolflein](https://github.com/georg-wolflein)
 - [fix]: mistral custom providers can override request paths for all endpoints [@georg-wolflein](https://github.com/georg-wolflein)
 - [fix]: allow mistral as a base_provider_type for custom providers [@georg-wolflein](https://github.com/georg-wolflein)
 [fix]: warn callers not to truncate the `#t=` temp-token fragment on MCP inline-auth links [@MarcusPeng](https://github.com/MarcusPeng)
