@@ -154,6 +154,7 @@ jobs:
           egress-policy: block
           allowed-endpoints: >
             api.anthropic.com:443
+            api.cartesia.ai:443
             api.cerebras.ai:443
             api.cohere.ai:443
             api.elevenlabs.io:443

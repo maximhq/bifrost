@@ -9,8 +9,8 @@ import (
 // cartesiaVersion is the required Cartesia-Version header value.
 const cartesiaVersion = "2026-03-01"
 
-// pcmS16le is the default PCM encoding used for wav/raw containers.
-var pcmS16le = "pcm_s16le"
+// pcmS16leEncoding is the default PCM encoding used for wav/raw containers.
+const pcmS16leEncoding = "pcm_s16le"
 
 // cartesiaFormatSpec is the resolved container/encoding/sample-rate for a
 // given Bifrost ResponseFormat string.
@@ -21,12 +21,14 @@ type cartesiaFormatSpec struct {
 }
 
 // bifrostToCartesiaFormat maps Bifrost ResponseFormat -> Cartesia output_format.
+// Each spec gets its own encoding pointer via schemas.Ptr so no two output
+// formats share a backing string across concurrent requests.
 var bifrostToCartesiaFormat = map[string]cartesiaFormatSpec{
 	"":    {container: "mp3", encoding: nil, sampleRate: 44100},
 	"mp3": {container: "mp3", encoding: nil, sampleRate: 44100},
-	"wav": {container: "wav", encoding: &pcmS16le, sampleRate: 44100},
-	"pcm": {container: "raw", encoding: &pcmS16le, sampleRate: 44100},
-	"raw": {container: "raw", encoding: &pcmS16le, sampleRate: 44100},
+	"wav": {container: "wav", encoding: schemas.Ptr(pcmS16leEncoding), sampleRate: 44100},
+	"pcm": {container: "raw", encoding: schemas.Ptr(pcmS16leEncoding), sampleRate: 44100},
+	"raw": {container: "raw", encoding: schemas.Ptr(pcmS16leEncoding), sampleRate: 44100},
 }
 
 // resolveCartesiaOutputFormat maps a Bifrost ResponseFormat string to a Cartesia
@@ -49,7 +51,7 @@ func resolveCartesiaOutputFormat(responseFormat string, forStreaming bool, extra
 	// Streaming constraint: /tts/sse only supports container "raw".
 	if forStreaming && out.Container != "raw" {
 		out.Container = "raw"
-		out.Encoding = &pcmS16le
+		out.Encoding = schemas.Ptr(pcmS16leEncoding)
 		out.BitRate = nil
 	}
 

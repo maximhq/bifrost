@@ -309,7 +309,19 @@ func (provider *CartesiaProvider) SpeechStream(ctx *schemas.BifrostContext, post
 			switch evt.Type {
 			case "error":
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-				be := providerUtils.NewBifrostOperationError("cartesia stream error: "+evt.Error, nil)
+				// SSE error events carry structured fields (title/message) for
+				// Cartesia-Version 2026-03-01+; fall back to the legacy "error" field.
+				streamErrMsg := evt.Message
+				if streamErrMsg == "" {
+					streamErrMsg = evt.Title
+				}
+				if streamErrMsg == "" {
+					streamErrMsg = evt.Error
+				}
+				if streamErrMsg == "" {
+					streamErrMsg = "unknown error"
+				}
+				be := providerUtils.NewBifrostOperationError("cartesia stream error: "+streamErrMsg, nil)
 				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, be, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency), responseChan, provider.logger, postHookSpanFinalizer)
 				return
 
@@ -346,6 +358,19 @@ func (provider *CartesiaProvider) SpeechStream(ctx *schemas.BifrostContext, post
 			if sawDone {
 				break
 			}
+		}
+
+		// Truncation guard: a stream that ended (EOF) without Cartesia's terminal
+		// "done" event AND without delivering a single audio chunk is not a valid
+		// empty response — it is a truncated/aborted stream. Surface it as an error
+		// instead of emitting a successful done chunk with no audio. Note: a stream
+		// that delivered some chunks before an early EOF is still treated as success,
+		// matching the codebase-wide convention for other providers.
+		if !sawDone && chunkIndex < 0 && ctx.Err() == nil {
+			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+			be := providerUtils.NewBifrostOperationError("cartesia stream ended before any audio was received", io.ErrUnexpectedEOF)
+			providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, be, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency), responseChan, provider.logger, postHookSpanFinalizer)
+			return
 		}
 
 		// Send final done response after the stream terminates (done event or EOF).
