@@ -41,6 +41,7 @@ func ToMistralOCRRequest(req *schemas.BifrostOCRRequest) *MistralOCRRequest {
 		mistralReq.TableFormat = req.Params.TableFormat
 		mistralReq.ExtractHeader = req.Params.ExtractHeader
 		mistralReq.ExtractFooter = req.Params.ExtractFooter
+		mistralReq.ConfidenceScoresGranularity = req.Params.ConfidenceScoresGranularity
 		mistralReq.BBoxAnnotationFormat = req.Params.BBoxAnnotationFormat
 		mistralReq.DocumentAnnotationFormat = req.Params.DocumentAnnotationFormat
 		mistralReq.DocumentAnnotationPrompt = req.Params.DocumentAnnotationPrompt

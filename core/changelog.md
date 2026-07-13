@@ -1,1 +1,1 @@
-- fix: forward `include_blocks` to Mistral OCR and carry provider-native `pages[].blocks` through the response [@hugochinchilla](https://github.com/hugochinchilla)
+- fix: forward `include_blocks` and `confidence_scores_granularity` to Mistral OCR and carry provider-native `pages[].blocks` through the response [@hugochinchilla](https://github.com/hugochinchilla)

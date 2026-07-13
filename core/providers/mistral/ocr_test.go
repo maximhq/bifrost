@@ -89,17 +89,18 @@ func TestToMistralOCRRequest(t *testing.T) {
 					DocumentURL: schemas.Ptr("https://example.com/doc.pdf"),
 				},
 				Params: &schemas.OCRParameters{
-					IncludeImageBase64:       schemas.Ptr(true),
-					IncludeBlocks:            schemas.Ptr(true),
-					Pages:                    []int{0, 1, 2},
-					ImageLimit:               schemas.Ptr(10),
-					ImageMinSize:             schemas.Ptr(100),
-					TableFormat:              schemas.Ptr("html"),
-					ExtractHeader:            schemas.Ptr(true),
-					ExtractFooter:            schemas.Ptr(false),
-					BBoxAnnotationFormat:     schemas.Ptr("json"),
-					DocumentAnnotationFormat: schemas.Ptr("markdown"),
-					DocumentAnnotationPrompt: schemas.Ptr("Summarize this document"),
+					IncludeImageBase64:          schemas.Ptr(true),
+					IncludeBlocks:               schemas.Ptr(true),
+					Pages:                       []int{0, 1, 2},
+					ImageLimit:                  schemas.Ptr(10),
+					ImageMinSize:                schemas.Ptr(100),
+					TableFormat:                 schemas.Ptr("html"),
+					ExtractHeader:               schemas.Ptr(true),
+					ExtractFooter:               schemas.Ptr(false),
+					ConfidenceScoresGranularity: schemas.Ptr("block"),
+					BBoxAnnotationFormat:        schemas.Ptr("json"),
+					DocumentAnnotationFormat:    schemas.Ptr("markdown"),
+					DocumentAnnotationPrompt:    schemas.Ptr("Summarize this document"),
 				},
 			},
 			validate: func(t *testing.T, result *MistralOCRRequest) {
@@ -123,6 +124,8 @@ func TestToMistralOCRRequest(t *testing.T) {
 				assert.True(t, *result.ExtractHeader)
 				require.NotNil(t, result.ExtractFooter)
 				assert.False(t, *result.ExtractFooter)
+				require.NotNil(t, result.ConfidenceScoresGranularity)
+				assert.Equal(t, "block", *result.ConfidenceScoresGranularity)
 				require.NotNil(t, result.BBoxAnnotationFormat)
 				assert.Equal(t, "json", *result.BBoxAnnotationFormat)
 				require.NotNil(t, result.DocumentAnnotationFormat)
@@ -151,6 +154,7 @@ func TestToMistralOCRRequest(t *testing.T) {
 				assert.Nil(t, result.TableFormat)
 				assert.Nil(t, result.ExtractHeader)
 				assert.Nil(t, result.ExtractFooter)
+				assert.Nil(t, result.ConfidenceScoresGranularity)
 				assert.Nil(t, result.BBoxAnnotationFormat)
 				assert.Nil(t, result.DocumentAnnotationFormat)
 				assert.Nil(t, result.DocumentAnnotationPrompt)
