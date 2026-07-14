@@ -2099,7 +2099,9 @@ func (s *RDBLogStore) GetModelRankings(ctx context.Context, filters SearchFilter
 		SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success_count,
 		SUM(total_tokens) as total_tokens,
 		COALESCE(SUM(cost), 0) as total_cost,
-		AVG(latency) as avg_latency
+		AVG(latency) as avg_latency,
+		COALESCE(SUM(CASE WHEN status = 'success' AND latency > 0 THEN completion_tokens ELSE 0 END), 0) as tp_completion_tokens,
+		COALESCE(SUM(CASE WHEN status = 'success' AND latency > 0 THEN latency ELSE 0 END), 0) as tp_latency_ms
 	`
 	// Only the current-period query scans canonical_name; keeping it out of the
 	// shared clause spares the previous-period query a discarded aggregate.
@@ -2112,14 +2114,16 @@ func (s *RDBLogStore) GetModelRankings(ctx context.Context, filters SearchFilter
 	currentQuery = currentQuery.Where("model IS NOT NULL AND model != ''")
 
 	var currentResults []struct {
-		Model         string          `gorm:"column:model"`
-		CanonicalName sql.NullString  `gorm:"column:canonical_name"`
-		Provider      string          `gorm:"column:provider"`
-		TotalRequests int64           `gorm:"column:total_requests"`
-		SuccessCount  int64           `gorm:"column:success_count"`
-		TotalTokens   sql.NullInt64   `gorm:"column:total_tokens"`
-		TotalCost     sql.NullFloat64 `gorm:"column:total_cost"`
-		AvgLatency    sql.NullFloat64 `gorm:"column:avg_latency"`
+		Model              string          `gorm:"column:model"`
+		CanonicalName      sql.NullString  `gorm:"column:canonical_name"`
+		Provider           string          `gorm:"column:provider"`
+		TotalRequests      int64           `gorm:"column:total_requests"`
+		SuccessCount       int64           `gorm:"column:success_count"`
+		TotalTokens        sql.NullInt64   `gorm:"column:total_tokens"`
+		TotalCost          sql.NullFloat64 `gorm:"column:total_cost"`
+		AvgLatency         sql.NullFloat64 `gorm:"column:avg_latency"`
+		TPCompletionTokens int64           `gorm:"column:tp_completion_tokens"`
+		TPLatencyMs        float64         `gorm:"column:tp_latency_ms"`
 	}
 
 	if err := currentQuery.
@@ -2165,13 +2169,15 @@ func (s *RDBLogStore) GetModelRankings(ctx context.Context, filters SearchFilter
 		}
 
 		var prevResults []struct {
-			Model         string          `gorm:"column:model"`
-			Provider      string          `gorm:"column:provider"`
-			TotalRequests int64           `gorm:"column:total_requests"`
-			SuccessCount  int64           `gorm:"column:success_count"`
-			TotalTokens   sql.NullInt64   `gorm:"column:total_tokens"`
-			TotalCost     sql.NullFloat64 `gorm:"column:total_cost"`
-			AvgLatency    sql.NullFloat64 `gorm:"column:avg_latency"`
+			Model              string          `gorm:"column:model"`
+			Provider           string          `gorm:"column:provider"`
+			TotalRequests      int64           `gorm:"column:total_requests"`
+			SuccessCount       int64           `gorm:"column:success_count"`
+			TotalTokens        sql.NullInt64   `gorm:"column:total_tokens"`
+			TotalCost          sql.NullFloat64 `gorm:"column:total_cost"`
+			AvgLatency         sql.NullFloat64 `gorm:"column:avg_latency"`
+			TPCompletionTokens int64           `gorm:"column:tp_completion_tokens"`
+			TPLatencyMs        float64         `gorm:"column:tp_latency_ms"`
 		}
 
 		if err := prevQuery.
@@ -2190,6 +2196,7 @@ func (s *RDBLogStore) GetModelRankings(ctx context.Context, filters SearchFilter
 				TotalTokens:   r.TotalTokens.Int64,
 				TotalCost:     r.TotalCost.Float64,
 				AvgLatency:    r.AvgLatency.Float64,
+				Throughput:    tokensPerSecond(r.TPCompletionTokens, r.TPLatencyMs),
 			}
 		}
 	}
@@ -2205,6 +2212,7 @@ func (s *RDBLogStore) GetModelRankings(ctx context.Context, filters SearchFilter
 			TotalTokens:   r.TotalTokens.Int64,
 			TotalCost:     r.TotalCost.Float64,
 			AvgLatency:    r.AvgLatency.Float64,
+			Throughput:    tokensPerSecond(r.TPCompletionTokens, r.TPLatencyMs),
 		}
 		if r.CanonicalName.Valid {
 			entry.CanonicalModelName = &r.CanonicalName.String
@@ -2222,6 +2230,9 @@ func (s *RDBLogStore) GetModelRankings(ctx context.Context, filters SearchFilter
 			trend.CostTrend = pctChange(prev.TotalCost, r.TotalCost.Float64)
 			if prev.AvgLatency > 0 {
 				trend.LatencyTrend = pctChange(prev.AvgLatency, r.AvgLatency.Float64)
+			}
+			if prev.Throughput > 0 {
+				trend.ThroughputTrend = pctChange(prev.Throughput, entry.Throughput)
 			}
 		}
 

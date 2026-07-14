@@ -1751,14 +1751,16 @@ func (s *RDBLogStore) getDimensionLatencyHistogramFromMatView(ctx context.Contex
 // comparison to the previous period of equal duration from mv_logs_hourly.
 func (s *RDBLogStore) getModelRankingsFromMatView(ctx context.Context, filters SearchFilters) (*ModelRankingResult, error) {
 	var results []struct {
-		Model         string         `gorm:"column:model"`
-		CanonicalName sql.NullString `gorm:"column:canonical_name"`
-		Provider      string         `gorm:"column:provider"`
-		Total         int64          `gorm:"column:total"`
-		SuccessCount  int64          `gorm:"column:success_count"`
-		AvgLatency    float64        `gorm:"column:avg_lat"`
-		TotalTokens   int64          `gorm:"column:total_tkns"`
-		TotalCost     float64        `gorm:"column:total_cost"`
+		Model              string         `gorm:"column:model"`
+		CanonicalName      sql.NullString `gorm:"column:canonical_name"`
+		Provider           string         `gorm:"column:provider"`
+		Total              int64          `gorm:"column:total"`
+		SuccessCount       int64          `gorm:"column:success_count"`
+		AvgLatency         float64        `gorm:"column:avg_lat"`
+		TotalTokens        int64          `gorm:"column:total_tkns"`
+		TotalCost          float64        `gorm:"column:total_cost"`
+		TPCompletionTokens int64          `gorm:"column:tp_completion_tokens"`
+		TPLatencyMs        float64        `gorm:"column:tp_latency_ms"`
 	}
 	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, filters)
@@ -1770,7 +1772,9 @@ func (s *RDBLogStore) getModelRankingsFromMatView(ctx context.Context, filters S
 		SUM(success_count) AS success_count,
 		CASE WHEN SUM(count) > 0 THEN SUM(avg_latency * count) / SUM(count) ELSE 0 END AS avg_lat,
 		SUM(total_tokens) AS total_tkns,
-		SUM(total_cost) AS total_cost
+		SUM(total_cost) AS total_cost,
+		COALESCE(SUM(CASE WHEN status = 'success' THEN throughput_completion_tokens ELSE 0 END), 0) AS tp_completion_tokens,
+		COALESCE(SUM(CASE WHEN status = 'success' THEN throughput_latency_ms ELSE 0 END), 0) AS tp_latency_ms
 	`).Group("model, provider").
 		Order("total DESC").
 		Find(&results).Error; err != nil {
@@ -1779,12 +1783,14 @@ func (s *RDBLogStore) getModelRankingsFromMatView(ctx context.Context, filters S
 
 	// Previous period for trend (same duration, ending just before current start)
 	type prevRow struct {
-		Model       string  `gorm:"column:model"`
-		Provider    string  `gorm:"column:provider"`
-		Total       int64   `gorm:"column:total"`
-		AvgLatency  float64 `gorm:"column:avg_lat"`
-		TotalTokens int64   `gorm:"column:total_tkns"`
-		TotalCost   float64 `gorm:"column:total_cost"`
+		Model              string  `gorm:"column:model"`
+		Provider           string  `gorm:"column:provider"`
+		Total              int64   `gorm:"column:total"`
+		AvgLatency         float64 `gorm:"column:avg_lat"`
+		TotalTokens        int64   `gorm:"column:total_tkns"`
+		TotalCost          float64 `gorm:"column:total_cost"`
+		TPCompletionTokens int64   `gorm:"column:tp_completion_tokens"`
+		TPLatencyMs        float64 `gorm:"column:tp_latency_ms"`
 	}
 	var prevResults []prevRow
 	if filters.StartTime != nil && filters.EndTime != nil {
@@ -1813,7 +1819,9 @@ func (s *RDBLogStore) getModelRankingsFromMatView(ctx context.Context, filters S
 			SUM(count) AS total,
 			CASE WHEN SUM(count) > 0 THEN SUM(avg_latency * count) / SUM(count) ELSE 0 END AS avg_lat,
 			SUM(total_tokens) AS total_tkns,
-			SUM(total_cost) AS total_cost
+			SUM(total_cost) AS total_cost,
+			COALESCE(SUM(CASE WHEN status = 'success' THEN throughput_completion_tokens ELSE 0 END), 0) AS tp_completion_tokens,
+			COALESCE(SUM(CASE WHEN status = 'success' THEN throughput_latency_ms ELSE 0 END), 0) AS tp_latency_ms
 		`).Group("model, provider").Find(&prevResults).Error; err != nil {
 			return nil, fmt.Errorf("failed to get previous period rankings: %w", err)
 		}
@@ -1840,6 +1848,7 @@ func (s *RDBLogStore) getModelRankingsFromMatView(ctx context.Context, filters S
 			TotalTokens:   r.TotalTokens,
 			TotalCost:     r.TotalCost,
 			AvgLatency:    r.AvgLatency,
+			Throughput:    tokensPerSecond(r.TPCompletionTokens, r.TPLatencyMs),
 		}
 		if r.CanonicalName.Valid {
 			entry.CanonicalModelName = &r.CanonicalName.String
@@ -1853,6 +1862,7 @@ func (s *RDBLogStore) getModelRankingsFromMatView(ctx context.Context, filters S
 				TokensTrend:       trendPct(float64(r.TotalTokens), float64(prev.TotalTokens)),
 				CostTrend:         trendPct(r.TotalCost, prev.TotalCost),
 				LatencyTrend:      trendPct(r.AvgLatency, prev.AvgLatency),
+				ThroughputTrend:   trendPct(entry.Throughput, tokensPerSecond(prev.TPCompletionTokens, prev.TPLatencyMs)),
 			}
 		}
 		rankings = append(rankings, mrt)
