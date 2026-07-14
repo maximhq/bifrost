@@ -423,7 +423,7 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 								}
 							}
 
-							if responseCount > 100 {
+							if responseCount > maxToolCallStreamChunks(testConfig.Provider) {
 								goto toolStreamComplete
 							}
 
