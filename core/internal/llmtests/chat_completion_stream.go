@@ -210,24 +210,7 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 				responseCount++
 
 				// Safety check to prevent infinite loops in case of issues
-				maxChunks := 500
-				if testConfig.Provider == schemas.Sarvam {
-					// Sarvam's own docs confirm reasoning is on by default and its
-					// tokens count toward the completion budget; documented workaround
-					// is "increase max_tokens, or disable reasoning with
-					// reasoning_effort=None". Verified live against sarvam-105b: a
-					// single response for this long-form prompt streamed ~1400 total
-					// chunks (reasoning_content + content). reasoning_effort:"low"
-					// barely reduces this, and the literal string "none" is rejected
-					// outright by Sarvam's API (400: "Input should be 'low', 'medium'
-					// or 'high'") - only a JSON null reliably disables it, which
-					// Bifrost's typed ChatParameters.Reasoning.Effort (*string,
-					// omitempty) can't emit. So raise the cap here instead of skipping
-					// the scenario - this still guards against genuine infinite loops,
-					// just with headroom for Sarvam's verbose default reasoning.
-					maxChunks = 3000
-				}
-				if responseCount > maxChunks {
+				if responseCount > sarvamAdjustedMaxChunks(testConfig.Provider, 500) {
 					t.Fatal("Received too many streaming chunks, something might be wrong")
 				}
 
@@ -423,7 +406,7 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 								}
 							}
 
-							if responseCount > maxToolCallStreamChunks(testConfig.Provider) {
+							if responseCount > sarvamAdjustedMaxChunks(testConfig.Provider, 500) {
 								goto toolStreamComplete
 							}
 
