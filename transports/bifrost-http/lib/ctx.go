@@ -552,10 +552,11 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 			}
 			return true
 		}
-		// Add passthrough extra params header support
+		// Passthrough extra params supports an optional per-request boolean override.
+		// Invalid values deliberately leave the policy unresolved for provider selection.
 		if keyStr == "x-bf-passthrough-extra-params" {
-			if valueStr := string(value); valueStr == "true" {
-				bifrostCtx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+			if b, err := strconv.ParseBool(string(value)); err == nil {
+				bifrostCtx.SetValue(schemas.BifrostContextKeyPassthroughExtraParamsOverride, b)
 			}
 			return true
 		}

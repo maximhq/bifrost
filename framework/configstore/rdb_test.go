@@ -2313,3 +2313,43 @@ func TestUpsertModelParametersBatch_SQLite(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, got, 3)
 }
+
+func TestRDBConfigStore_ProviderPassthroughExtraParamsRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	cases := []struct {
+		name  string
+		value *bool
+	}{
+		{name: "omitted"},
+		{name: "disabled", value: schemas.Ptr(false)},
+		{name: "enabled", value: schemas.Ptr(true)},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			provider := schemas.ModelProvider(tt.name)
+			require.NoError(t, store.AddProvider(ctx, provider, ProviderConfig{
+				PassthroughExtraParams: tt.value,
+			}))
+
+			got, err := store.GetProviderConfig(ctx, provider)
+			require.NoError(t, err)
+			if tt.value == nil {
+				assert.Nil(t, got.PassthroughExtraParams)
+				return
+			}
+			require.NotNil(t, got.PassthroughExtraParams)
+			assert.Equal(t, *tt.value, *got.PassthroughExtraParams)
+
+			got.SendBackRawRequest = true
+			require.NoError(t, store.UpdateProvider(ctx, provider, *got))
+
+			updated, err := store.GetProviderConfig(ctx, provider)
+			require.NoError(t, err)
+			require.NotNil(t, updated.PassthroughExtraParams)
+			assert.Equal(t, *tt.value, *updated.PassthroughExtraParams)
+		})
+	}
+}

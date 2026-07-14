@@ -6349,7 +6349,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		if cfg := config.CustomProviderConfig; cfg != nil && cfg.BaseProviderType != "" {
 			baseProvider = cfg.BaseProviderType
 		}
-		req.Context.SetValue(schemas.BifrostContextKeyIsCustomProvider, !IsStandardProvider(baseProvider))
+		resolvePassthroughExtraParams(req.Context, config, baseProvider, req.RequestType)
 
 		// Disable Anthropic raw-body passthrough when this attempt's provider isn't Anthropic-native (e.g. Bedrock).
 		clearAnthropicPassthroughForNonNativeProvider(req.Context, baseProvider)

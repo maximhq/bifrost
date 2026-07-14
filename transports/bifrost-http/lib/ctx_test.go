@@ -98,6 +98,35 @@ func TestConvertToBifrostContext_SecondCallReturnsSameSharedContext(t *testing.T
 	}
 }
 
+func TestConvertToBifrostContext_PassthroughExtraParamsOverride(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		header    string
+		want      bool
+		wantValue bool
+	}{
+		{name: "true", header: "true", want: true, wantValue: true},
+		{name: "false", header: "false", want: false, wantValue: true},
+		{name: "invalid", header: "not-a-bool", wantValue: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.Set("x-bf-passthrough-extra-params", tt.header)
+
+			bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
+			defer cancel()
+
+			got, ok := bifrostCtx.Value(schemas.BifrostContextKeyPassthroughExtraParamsOverride).(bool)
+			if ok != tt.wantValue || (ok && got != tt.want) {
+				t.Fatalf("override = (%t, %t), want (%t, %t)", got, ok, tt.want, tt.wantValue)
+			}
+			if effective := bifrostCtx.Value(schemas.BifrostContextKeyPassthroughExtraParams); effective != nil {
+				t.Fatalf("effective policy must remain unresolved in HTTP context, got %#v", effective)
+			}
+		})
+	}
+}
+
 // TestConvertToBifrostContext_StarAllowlistSecurityHeadersBlocked verifies that
 // even with a "*" allowlist (allow all), the hardcoded security denylist in
 // ConvertToBifrostContext still blocks security-sensitive headers.

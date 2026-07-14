@@ -106,6 +106,40 @@ func TestToOpenAIChatRequest_PreservesN(t *testing.T) {
 	}
 }
 
+func TestToOpenAIChatRequest_CustomProviderUsesEffectivePassthroughPolicy(t *testing.T) {
+	cacheKey := "provider-cache-key"
+	request := &schemas.BifrostChatRequest{
+		Provider: schemas.ModelProvider("custom-openai-compatible"),
+		Model:    "custom-model",
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser}},
+		Params:   &schemas.ChatParameters{PromptCacheKey: &cacheKey},
+	}
+
+	for _, tt := range []struct {
+		name string
+		pass bool
+	}{
+		{name: "false filters provider-specific fields", pass: false},
+		{name: "true preserves provider-specific fields", pass: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, tt.pass)
+
+			result := ToOpenAIChatRequest(ctx, request)
+			if result == nil {
+				t.Fatal("expected request")
+			}
+			if tt.pass && (result.PromptCacheKey == nil || *result.PromptCacheKey != cacheKey) {
+				t.Fatalf("prompt_cache_key = %#v, want %q", result.PromptCacheKey, cacheKey)
+			}
+			if !tt.pass && result.PromptCacheKey != nil {
+				t.Fatalf("prompt_cache_key should be filtered, got %#v", result.PromptCacheKey)
+			}
+		})
+	}
+}
+
 func TestToOpenAIChatRequest_NormalizesReasoningEffort(t *testing.T) {
 	// DeepSeek is configured as a custom OpenAI-compatible provider, which registers
 	// itself so ParseModelString can strip its prefix from "deepseek/deepseek-v4-pro".

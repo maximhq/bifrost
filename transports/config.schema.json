@@ -4057,6 +4057,10 @@
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
         },
+        "passthrough_extra_params": {
+          "type": ["boolean", "null"],
+          "description": "Whether extra request parameters are forwarded to the provider (null uses the provider default)"
+        },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
         }
@@ -4095,6 +4099,10 @@
         "store_raw_request_response": {
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
+        },
+        "passthrough_extra_params": {
+          "type": ["boolean", "null"],
+          "description": "Whether extra request parameters are forwarded to the provider (null uses the provider default)"
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
@@ -4135,6 +4143,10 @@
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
         },
+        "passthrough_extra_params": {
+          "type": ["boolean", "null"],
+          "description": "Whether extra request parameters are forwarded to the provider (null uses the provider default)"
+        },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
         }
@@ -4173,6 +4185,10 @@
         "store_raw_request_response": {
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
+        },
+        "passthrough_extra_params": {
+          "type": ["boolean", "null"],
+          "description": "Whether extra request parameters are forwarded to the provider (null uses the provider default)"
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
@@ -4213,6 +4229,10 @@
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
         },
+        "passthrough_extra_params": {
+          "type": ["boolean", "null"],
+          "description": "Whether extra request parameters are forwarded to the provider (null uses the provider default)"
+        },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
         }
@@ -4251,6 +4271,10 @@
         "store_raw_request_response": {
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
+        },
+        "passthrough_extra_params": {
+          "type": ["boolean", "null"],
+          "description": "Whether extra request parameters are forwarded to the provider (null uses the provider default)"
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
@@ -4291,6 +4315,10 @@
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
         },
+        "passthrough_extra_params": {
+          "type": ["boolean", "null"],
+          "description": "Whether extra request parameters are forwarded to the provider (null uses the provider default)"
+        },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
         }
@@ -4330,6 +4358,10 @@
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
         },
+        "passthrough_extra_params": {
+          "type": ["boolean", "null"],
+          "description": "Whether extra request parameters are forwarded to the provider (null uses the provider default)"
+        },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
         }
@@ -4367,6 +4399,10 @@
         "store_raw_request_response": {
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
+        },
+        "passthrough_extra_params": {
+          "type": ["boolean", "null"],
+          "description": "Whether extra request parameters are forwarded to the provider (null uses the provider default)"
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"

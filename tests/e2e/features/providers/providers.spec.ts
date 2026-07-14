@@ -696,6 +696,31 @@ test.describe("Network Configuration", () => {
     await expect(providersPage.page.getByLabel(/Max Backoff/i)).toBeVisible();
   });
 
+  test("should save and reopen the passthrough extra parameters switch", async ({
+    providersPage,
+  }) => {
+    await providersPage.selectConfigTab("network");
+
+    const passthroughSwitch = providersPage.getPassthroughExtraParamsSwitch();
+    const originalValue =
+      (await passthroughSwitch.getAttribute("data-state")) === "checked";
+
+    await passthroughSwitch.click();
+    await providersPage.saveNetworkConfig();
+
+    await providersPage.goto();
+    await providersPage.selectProvider("openai");
+    await providersPage.selectConfigTab("network");
+
+    const reopenedSwitch = providersPage.getPassthroughExtraParamsSwitch();
+    expect((await reopenedSwitch.getAttribute("data-state")) === "checked").toBe(
+      !originalValue,
+    );
+
+    await reopenedSwitch.click();
+    await providersPage.saveNetworkConfig();
+  });
+
   test("should update timeout value", async ({ providersPage }) => {
     await providersPage.selectConfigTab("network");
 

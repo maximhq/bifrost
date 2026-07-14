@@ -445,6 +445,7 @@ type ProviderConfig struct {
 	SendBackRawRequest       bool                              `json:"send_back_raw_request"`                 // Include raw request in BifrostResponse
 	SendBackRawResponse      bool                              `json:"send_back_raw_response"`                // Include raw response in BifrostResponse
 	StoreRawRequestResponse  bool                              `json:"store_raw_request_response"`            // Capture raw request/response for internal logging only; strip from API responses returned to clients
+	PassthroughExtraParams   *bool                             `json:"passthrough_extra_params,omitempty"`    // Whether extra request parameters are forwarded to the provider (nil uses provider default)
 	CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`      // Custom provider configuration
 	OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"`               // OpenAI-specific configuration
 	ConfigHash               string                            `json:"config_hash,omitempty"`                 // Hash of config.json version, used for change detection
@@ -459,12 +460,18 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 	if p.NetworkConfig != nil {
 		redactedNetworkConfig = p.NetworkConfig.Redacted()
 	}
+	var passthroughExtraParams *bool
+	if p.PassthroughExtraParams != nil {
+		value := *p.PassthroughExtraParams
+		passthroughExtraParams = &value
+	}
 	redactedConfig := ProviderConfig{
 		NetworkConfig:            redactedNetworkConfig,
 		ConcurrencyAndBufferSize: p.ConcurrencyAndBufferSize,
 		SendBackRawRequest:       p.SendBackRawRequest,
 		SendBackRawResponse:      p.SendBackRawResponse,
 		StoreRawRequestResponse:  p.StoreRawRequestResponse,
+		PassthroughExtraParams:   passthroughExtraParams,
 		CustomProviderConfig:     p.CustomProviderConfig,
 		OpenAIConfig:             p.OpenAIConfig,
 		ConfigHash:               p.ConfigHash,
@@ -706,6 +713,11 @@ func (p *ProviderConfig) GenerateConfigHash(providerName string) (string, error)
 	// Hash StoreRawRequestResponse
 	if p.StoreRawRequestResponse {
 		hash.Write([]byte("storeRawRequestResponse"))
+	}
+	// Hash PassthroughExtraParams, preserving nil/false/true as distinct configurations.
+	if p.PassthroughExtraParams != nil {
+		hash.Write([]byte("passthroughExtraParams"))
+		hash.Write([]byte(strconv.FormatBool(*p.PassthroughExtraParams)))
 	}
 
 	return hex.EncodeToString(hash.Sum(nil)), nil

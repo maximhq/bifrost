@@ -84,7 +84,7 @@ func (provider *DeepSeekProvider) ListModels(ctx *schemas.BifrostContext, keys [
 // It formats the request, sends it to DeepSeek, and processes the response.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
 func (provider *DeepSeekProvider) TextCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (*schemas.BifrostTextCompletionResponse, *schemas.BifrostError) {
-	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+
 	return openai.HandleOpenAITextCompletionRequest(
 		ctx,
 		provider.client,
@@ -105,7 +105,7 @@ func (provider *DeepSeekProvider) TextCompletion(ctx *schemas.BifrostContext, ke
 // It formats the request, sends it to DeepSeek, and processes the response.
 // Returns a channel of BifrostStreamChunk objects or an error if the request fails.
 func (provider *DeepSeekProvider) TextCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+
 	return openai.HandleOpenAITextCompletionStreaming(
 		ctx,
 		provider.streamingClient,
@@ -128,7 +128,7 @@ func (provider *DeepSeekProvider) TextCompletionStream(ctx *schemas.BifrostConte
 
 // ChatCompletion performs a chat completion request to the DeepSeek API.
 func (provider *DeepSeekProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
-	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
 		provider.client,
@@ -151,7 +151,7 @@ func (provider *DeepSeekProvider) ChatCompletion(ctx *schemas.BifrostContext, ke
 // Uses DeepSeek's OpenAI-compatible streaming format.
 // Returns a channel containing BifrostStreamChunk objects representing the stream or an error if the request fails.
 func (provider *DeepSeekProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
 		provider.streamingClient,

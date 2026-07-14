@@ -17,7 +17,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { useEffect } from "react";
 import { useForm, type Resolver } from "react-hook-form";
 import { toast } from "sonner";
-import { buildProviderUpdatePayload } from "../views/utils";
+import { buildProviderUpdatePayload, resolvePassthroughExtraParams } from "../views/utils";
 
 interface NetworkFormFragmentProps {
 	provider: ModelProvider;
@@ -89,6 +89,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 				enforce_http2: provider.network_config?.enforce_http2 ?? DefaultNetworkConfig.enforce_http2,
 				allow_private_network: provider.network_config?.allow_private_network ?? DefaultNetworkConfig.allow_private_network,
 			},
+			passthrough_extra_params: resolvePassthroughExtraParams(provider),
 		},
 	});
 
@@ -125,6 +126,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 				enforce_http2: data.network_config?.enforce_http2 ?? DefaultNetworkConfig.enforce_http2,
 				allow_private_network: data.network_config?.allow_private_network ?? DefaultNetworkConfig.allow_private_network,
 			},
+			passthrough_extra_params: data.passthrough_extra_params,
 		});
 		updateProvider(updatedProvider)
 			.unwrap()
@@ -158,8 +160,9 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 				enforce_http2: provider.network_config?.enforce_http2 ?? DefaultNetworkConfig.enforce_http2,
 				allow_private_network: provider.network_config?.allow_private_network ?? DefaultNetworkConfig.allow_private_network,
 			},
+			passthrough_extra_params: resolvePassthroughExtraParams(provider),
 		});
-	}, [form, provider.name, provider.network_config]);
+	}, [form, provider.name, provider.network_config, provider.passthrough_extra_params]);
 
 	const baseURLRequired = isCustomProvider;
 	const hideBaseURL = provider.name === "vllm" || provider.name === "ollama" || provider.name === "sgl";
@@ -405,6 +408,26 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 											onCheckedChange={field.onChange}
 											disabled={!hasUpdateProviderAccess}
 											data-testid="network-config-enforce-http2"
+										/>
+									</FormControl>
+								</FormItem>
+							)}
+						/>
+						<FormField
+							control={form.control}
+							name="passthrough_extra_params"
+							render={({ field }) => (
+								<FormItem className="flex flex-row items-center justify-between">
+									<div className="space-y-0.5">
+										<FormLabel>Passthrough Extra Parameters</FormLabel>
+										<FormDescription>Forward request parameters that Bifrost does not explicitly model to this provider.</FormDescription>
+									</div>
+									<FormControl>
+										<Switch
+											checked={field.value}
+											onCheckedChange={field.onChange}
+											disabled={!hasUpdateProviderAccess}
+											data-testid="network-config-passthrough-extra-params"
 										/>
 									</FormControl>
 								</FormItem>

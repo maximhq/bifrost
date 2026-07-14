@@ -2767,3 +2767,34 @@ func TestFullMigration_UpgradeFromPreDumpErrorsSchema(t *testing.T) {
 	assert.NotEmpty(t, gotHash)
 	assert.NotEqual(t, "stale-hash", gotHash, "config_hash should have been recomputed by the chain")
 }
+
+func TestMigrationAddPassthroughExtraParamsColumnIsNullableAndIdempotent(t *testing.T) {
+	for _, ndb := range forEachProviderMigrationDB(t, "passthrough_extra_params") {
+		t.Run(ndb.name, func(t *testing.T) {
+			db := ndb.db
+			ctx := context.Background()
+			now := time.Now()
+			require.NoError(t, db.Exec(`
+				INSERT INTO config_providers (name, config_hash, created_at, updated_at, encryption_status)
+				VALUES (?, ?, ?, ?, ?)
+			`, "existing-provider", "existing-hash", now, now, "plain_text").Error)
+
+			require.False(t, db.Migrator().HasColumn(&tables.TableProvider{}, "passthrough_extra_params"))
+			require.NoError(t, migrationAddPassthroughExtraParamsColumn(ctx, db, testMigrationLogger))
+			require.True(t, db.Migrator().HasColumn(&tables.TableProvider{}, "passthrough_extra_params"))
+
+			var existing tables.TableProvider
+			require.NoError(t, db.Where("name = ?", "existing-provider").First(&existing).Error)
+			assert.Nil(t, existing.PassthroughExtraParams, "migration must not backfill a provider default")
+
+			require.NoError(t, migrationAddPassthroughExtraParamsColumn(ctx, db, testMigrationLogger))
+
+			require.NoError(t, db.Model(&tables.TableProvider{}).
+				Where("name = ?", "existing-provider").
+				Update("passthrough_extra_params", false).Error)
+			require.NoError(t, db.Where("name = ?", "existing-provider").First(&existing).Error)
+			require.NotNil(t, existing.PassthroughExtraParams)
+			assert.False(t, *existing.PassthroughExtraParams)
+		})
+	}
+}

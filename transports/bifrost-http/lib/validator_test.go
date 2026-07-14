@@ -1595,3 +1595,29 @@ func TestValidateConfigSchema_BedrockKeyConfig_MissingRegion(t *testing.T) {
 // Guardrails tests are skipped for the public schema as guardrails_config
 // is an enterprise feature with a different schema structure.
 // Enterprise-specific tests should be added to the enterprise test suite.
+
+func TestValidateConfigSchema_PassthroughExtraParamsNullable(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		value string
+	}{
+		{name: "omitted", value: ""},
+		{name: "null", value: `"passthrough_extra_params": null,`},
+		{name: "false", value: `"passthrough_extra_params": false,`},
+		{name: "true", value: `"passthrough_extra_params": true,`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			config := `{
+				"providers": {
+					"openai": {
+						` + tt.value + `
+						"keys": [{"name": "default", "value": "sk-test", "weight": 1, "models": ["gpt-4"]}]
+					}
+				}
+			}`
+			if err := ValidateConfigSchema([]byte(config), loadLocalSchema(t)); err != nil {
+				t.Fatalf("expected %s passthrough_extra_params to validate: %v", tt.name, err)
+			}
+		})
+	}
+}
