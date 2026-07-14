@@ -1248,6 +1248,7 @@ func testGigaChatChatCompletionStreamFinalizesLargeResponsePassthrough(t *testin
 	provider := newTestGigaChatChatProvider(t, server.URL)
 	ctx := testBifrostContext()
 	ctx.SetValue(schemas.BifrostContextKeyLargePayloadMode, true)
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 
 	var finalizerCalls atomic.Int32
 	stream, bifrostErr := provider.ChatCompletionStream(ctx, testGigaChatPostHookRunner, func(context.Context) {
