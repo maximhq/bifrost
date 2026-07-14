@@ -826,6 +826,60 @@ func TestListModelDetails_UnfilteredIgnoresKeys(t *testing.T) {
 	}
 }
 
+func TestListModelDetails_IncludesPricing(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	h := providerHandlerForTest(
+		schemas.OpenAI,
+		[]schemas.Key{{ID: "key-a"}},
+		[]string{"gpt-4o"},
+		[]string{"gpt-4o"},
+	)
+	h.inMemoryStore.ModelCatalog = modelCatalogForPricingJSON(t, []byte(`{
+		"gpt-4o": {
+			"provider": "openai",
+			"mode": "chat",
+			"input_cost_per_token": 0.0000025,
+			"output_cost_per_token": 0.00001,
+			"cache_creation_input_token_cost": 0.000003125,
+			"cache_read_input_token_cost": 0.00000025,
+			"max_input_tokens": 128000,
+			"max_output_tokens": 16384
+		}
+	}`))
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.SetRequestURI("/api/models/details?provider=openai&limit=100")
+
+	h.listModelDetails(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+
+	var resp ListModelDetailsResponse
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	if resp.Total != 1 || len(resp.Models) != 1 {
+		t.Fatalf("expected one model, got %#v", resp.Models)
+	}
+	if resp.Models[0].InputCostPerToken == nil || *resp.Models[0].InputCostPerToken != 0.0000025 {
+		t.Fatalf("expected input cost 0.0000025, got %#v", resp.Models[0].InputCostPerToken)
+	}
+	if resp.Models[0].OutputCostPerToken == nil || *resp.Models[0].OutputCostPerToken != 0.00001 {
+		t.Fatalf("expected output cost 0.00001, got %#v", resp.Models[0].OutputCostPerToken)
+	}
+	if resp.Models[0].CacheWriteCost == nil || *resp.Models[0].CacheWriteCost != 0.000003125 {
+		t.Fatalf("expected cache write cost 0.000003125, got %#v", resp.Models[0].CacheWriteCost)
+	}
+	if resp.Models[0].CacheReadCost == nil || *resp.Models[0].CacheReadCost != 0.00000025 {
+		t.Fatalf("expected cache read cost 0.00000025, got %#v", resp.Models[0].CacheReadCost)
+	}
+}
+
 // --- VK-based filtering tests ---
 
 // TestParseVKValueFromRequest verifies that the VK value is extracted from each

@@ -24,6 +24,7 @@ import (
 	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/logstore"
 	dynamicPlugins "github.com/maximhq/bifrost/framework/plugins"
+	"github.com/maximhq/bifrost/framework/sidekiq"
 	"github.com/maximhq/bifrost/framework/temptoken"
 	"github.com/maximhq/bifrost/framework/tracing"
 	"github.com/maximhq/bifrost/plugins/governance"
@@ -178,6 +179,9 @@ type BifrostHTTPServer struct {
 	// access-profile-managed VKs). Optional; wired at server init when available,
 	// otherwise left nil so the quota endpoint reads the VK's own budget rows.
 	ExternalQuotaBudgetResolver handlers.ExternalQuotaBudgetResolver
+
+	SidekiqRunner         *sidekiq.Runner
+	SidekiqDispatcherStop func()
 
 	wsPool *bfws.Pool
 }
@@ -1433,6 +1437,12 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 		if resolverProvider, ok := callbacks.(LogRedactionMappingResolverProvider); ok {
 			loggingHandler.SetLogRedactionMappingResolver(resolverProvider.GetLogRedactionMappingResolver())
 		}
+		// Wire the sidekiq runner so cost recalculation runs as a durable background
+		// job. Registering the handler here (before RecoverIncomplete) lets a job
+		// interrupted by a restart resume on boot.
+		if s.SidekiqRunner != nil && s.Config != nil && s.Config.ConfigStore != nil {
+			loggingHandler.SetSidekiqBackend(s.SidekiqRunner, s.Config.ConfigStore)
+		}
 		govLogManager = loggerPlugin.GetPluginLogManager()
 	}
 	var governanceHandler *handlers.GovernanceHandler
@@ -1698,7 +1708,6 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	s.Ctx, s.cancel = schemas.NewBifrostContextWithCancel(ctx)
 	handlers.SetVersion(s.Version)
 	configDir := GetDefaultConfigDir(s.AppDir)
-
 	// Ensure app directory exists
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
 		return fmt.Errorf("failed to create app directory %s: %v", configDir, err)
@@ -1892,6 +1901,11 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		semanticCachePlugin.SetEmbeddingRequestExecutor(s.Client.EmbeddingRequest)
 	}
 
+	// Initialize Sidekiq runner for background jobs
+	if s.Config != nil && s.Config.ConfigStore != nil {
+		s.SidekiqRunner = sidekiq.New(s.Config.ConfigStore, logger, 4, "")
+	}
+
 	// Register routes
 	err = s.RegisterAPIRoutes(s.Ctx, s, apiMiddlewares...)
 	if err != nil {
@@ -1962,6 +1976,14 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	})
 	// Register UI handler
 	s.RegisterUIRoutes()
+
+	// Start the Sidekiq dispatcher: on every node it periodically claims pending and
+	// stale (orphaned) jobs, with an atomic claim guaranteeing exactly one node runs
+	// each job. Subsumes startup recovery of jobs left behind by a crash or restart.
+	if s.SidekiqRunner != nil {
+		s.SidekiqDispatcherStop = s.SidekiqRunner.StartDispatcher(sidekiq.DispatchInterval, sidekiq.StaleAfter)
+	}
+
 	// Checking if config has server config and use it to set read buffer size
 	logger.Debug("server read buffer size: %d", s.Config.ServerConfig.ReadBufferSize)
 	// Create fasthttp server instance
@@ -2048,6 +2070,14 @@ func (s *BifrostHTTPServer) Start() error {
 				logger.Info("stopping oauth2 sweep worker...")
 				s.OAuth2SweepWorker.stop()
 				s.OAuth2SweepWorker = nil
+			}
+			if s.SidekiqDispatcherStop != nil {
+				logger.Info("stopping sidekiq dispatcher...")
+				s.SidekiqDispatcherStop()
+			}
+			if s.SidekiqRunner != nil {
+				logger.Info("stopping sidekiq runner...")
+				s.SidekiqRunner.Shutdown()
 			}
 			if s.devPprofHandler != nil {
 				logger.Info("stopping dev pprof handler...")

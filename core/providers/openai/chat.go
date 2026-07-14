@@ -136,6 +136,9 @@ func (req *OpenAIChatRequest) filterOpenAISpecificParameters(capModel string) {
 	if req.ChatParameters.PromptCacheRetention != nil {
 		req.ChatParameters.PromptCacheRetention = nil
 	}
+	if req.ChatParameters.PromptCacheOptions != nil {
+		req.ChatParameters.PromptCacheOptions = nil
+	}
 	if req.ChatParameters.Verbosity != nil {
 		req.ChatParameters.Verbosity = nil
 	}

@@ -107,6 +107,12 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			}
 		}
 
+		// OpenAI accepts role only on message input items.
+		if (message.Type != nil && *message.Type != schemas.ResponsesMessageTypeMessage) ||
+			(message.Type == nil && message.ResponsesReasoning != nil) {
+			message.Role = nil
+		}
+
 		if message.ResponsesReasoning != nil {
 			isGptOss := strings.Contains(capModel, "gpt-oss")
 			isReasoning := isOpenAIReasoningModel(capModel)
@@ -148,8 +154,6 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 				// Clone the embedded pointer to avoid mutating the original input
 				reasoningCopy := *message.ResponsesReasoning
 				message.ResponsesReasoning = &reasoningCopy
-				// OpenAI's Responses API does not accept 'role' on reasoning items
-				message.Role = nil
 				// Strip cross-provider encrypted content that non-reasoning models cannot decrypt.
 				// Reasoning models (o1/o3/o4/GPT-5) may use EncryptedContent for multi-turn state.
 				// Compaction items always carry encrypted_content and must never be stripped.
@@ -438,6 +442,7 @@ type OpenAICompactionRequest struct {
 	PreviousResponseID   *string                     `json:"previous_response_id,omitempty"`
 	PromptCacheKey       *string                     `json:"prompt_cache_key,omitempty"`
 	PromptCacheRetention *string                     `json:"prompt_cache_retention,omitempty"`
+	PromptCacheOptions   *schemas.PromptCacheOptions `json:"prompt_cache_options,omitempty"`
 	ServiceTier          *schemas.BifrostServiceTier `json:"service_tier,omitempty"`
 	ExtraParams          map[string]interface{}      `json:"-"`
 }
@@ -478,6 +483,7 @@ func ToOpenAICompactionRequest(ctx *schemas.BifrostContext, req *schemas.Bifrost
 		PreviousResponseID:   req.PreviousResponseID,
 		PromptCacheKey:       req.PromptCacheKey,
 		PromptCacheRetention: req.PromptCacheRetention,
+		PromptCacheOptions:   req.PromptCacheOptions,
 		ServiceTier:          req.ServiceTier,
 		ExtraParams:          req.ExtraParams,
 	}
@@ -520,6 +526,7 @@ func (r *OpenAICompactionRequest) ToBifrostCompactionRequest(ctx *schemas.Bifros
 		PreviousResponseID:   r.PreviousResponseID,
 		PromptCacheKey:       r.PromptCacheKey,
 		PromptCacheRetention: r.PromptCacheRetention,
+		PromptCacheOptions:   r.PromptCacheOptions,
 		ServiceTier:          r.ServiceTier,
 		ExtraParams:          r.ExtraParams,
 	}

@@ -1905,6 +1905,94 @@ func TestMigrationBackfillAllowedModelsWildcard(t *testing.T) {
 	assert.NotEmpty(t, keyHash, "key config_hash should be recomputed")
 }
 
+// TestProviderConfigWildcardRoundTrip verifies the current write path persists a
+// WhiteList/BlackList wildcard as the JSON array '["*"]' (never the bare byte '*')
+// and reads it back intact — the round-trip that issue #4318's corrupted rows broke.
+func TestProviderConfigWildcardRoundTrip(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&tables.TableVirtualKeyProviderConfig{}))
+
+	pc := tables.TableVirtualKeyProviderConfig{
+		VirtualKeyID:      "vk-roundtrip",
+		Provider:          "zai",
+		AllowedModels:     schemas.WhiteList{"*"},
+		BlacklistedModels: schemas.BlackList{"*"},
+	}
+	require.NoError(t, db.Create(&pc).Error)
+
+	// Raw column bytes must be the JSON array, not the bare character.
+	var allowedRaw, blacklistedRaw string
+	require.NoError(t, db.Table("governance_virtual_key_provider_configs").
+		Select("allowed_models").Where("virtual_key_id = ?", "vk-roundtrip").Scan(&allowedRaw).Error)
+	require.NoError(t, db.Table("governance_virtual_key_provider_configs").
+		Select("blacklisted_models").Where("virtual_key_id = ?", "vk-roundtrip").Scan(&blacklistedRaw).Error)
+	assert.Equal(t, `["*"]`, allowedRaw)
+	assert.Equal(t, `["*"]`, blacklistedRaw)
+
+	// Model read must deserialize cleanly back to the wildcard slice.
+	var got tables.TableVirtualKeyProviderConfig
+	require.NoError(t, db.Where("virtual_key_id = ?", "vk-roundtrip").First(&got).Error)
+	assert.True(t, got.AllowedModels.IsUnrestricted())
+	assert.True(t, got.BlacklistedModels.IsBlockAll())
+}
+
+// TestMigrationRepairBareWildcardAllowedModels verifies the repair migration heals
+// legacy rows whose allowed_models / blacklisted_models column holds the bare byte
+// '*' (issue #4318). Without the repair, loading such a row aborts the GORM json
+// deserializer and poisons the provider admin surface.
+func TestMigrationRepairBareWildcardAllowedModels(t *testing.T) {
+	_, db := setupFullMigrationDB(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	// Clear migration tracking so it runs again against the seeded rows.
+	db.Exec(`DELETE FROM migrations WHERE id = 'repair_bare_wildcard_allowed_models'`)
+
+	err := db.Exec(`INSERT INTO governance_virtual_keys (id, name, value, is_active, encryption_status, created_at, updated_at)
+		VALUES ('vk-bare-1', 'bare-vk', 'vk-val', true, 'plain_text', ?, ?)`, now, now).Error
+	require.NoError(t, err)
+
+	// Row A: corrupted allowed_models, valid blacklisted_models.
+	err = db.Exec(`INSERT INTO governance_virtual_key_provider_configs (virtual_key_id, provider, allowed_models, blacklisted_models, allow_all_keys)
+		VALUES ('vk-bare-1', 'zai', '*', '[]', true)`).Error
+	require.NoError(t, err)
+	// Row B: valid allowed_models, corrupted blacklisted_models.
+	err = db.Exec(`INSERT INTO governance_virtual_key_provider_configs (virtual_key_id, provider, allowed_models, blacklisted_models, allow_all_keys)
+		VALUES ('vk-bare-1', 'openai', '["*"]', '*', true)`).Error
+	require.NoError(t, err)
+
+	// Pre-condition: the bare '*' rows cannot be loaded through the GORM model.
+	var pre []tables.TableVirtualKeyProviderConfig
+	preErr := db.Where("virtual_key_id = ?", "vk-bare-1").Find(&pre).Error
+	require.Error(t, preErr, "bare '*' rows should fail to deserialize before repair")
+
+	require.NoError(t, migrationRepairBareWildcardAllowedModels(ctx, db, testMigrationLogger))
+
+	// Both columns are now canonical JSON arrays.
+	var allowedA, blacklistedB string
+	require.NoError(t, db.Table("governance_virtual_key_provider_configs").
+		Select("allowed_models").Where("virtual_key_id = ? AND provider = ?", "vk-bare-1", "zai").Scan(&allowedA).Error)
+	require.NoError(t, db.Table("governance_virtual_key_provider_configs").
+		Select("blacklisted_models").Where("virtual_key_id = ? AND provider = ?", "vk-bare-1", "openai").Scan(&blacklistedB).Error)
+	assert.Equal(t, `["*"]`, allowedA, "bare '*' allowed_models should be repaired to wildcard array")
+	assert.Equal(t, `["*"]`, blacklistedB, "bare '*' blacklisted_models should be repaired to wildcard array")
+
+	// Post-condition: the rows now load cleanly through the GORM model.
+	var post []tables.TableVirtualKeyProviderConfig
+	require.NoError(t, db.Where("virtual_key_id = ?", "vk-bare-1").Find(&post).Error,
+		"repaired rows should deserialize without error")
+	require.Len(t, post, 2)
+	byProvider := map[string]tables.TableVirtualKeyProviderConfig{}
+	for _, pc := range post {
+		byProvider[pc.Provider] = pc
+	}
+	assert.True(t, byProvider["zai"].AllowedModels.IsUnrestricted(), "repaired allowed_models should be unrestricted")
+	assert.True(t, byProvider["openai"].BlacklistedModels.IsBlockAll(), "repaired blacklisted_models should block all")
+}
+
 func TestMigrationRemoveServerPrefixFromMCPTools(t *testing.T) {
 	_, db := setupFullMigrationDB(t)
 	ctx := context.Background()

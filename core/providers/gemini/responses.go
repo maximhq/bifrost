@@ -935,6 +935,7 @@ func (state *GeminiResponsesStreamState) flush() {
 	state.TextItemClosed = false
 	state.HasStartedText = false
 	state.HasStartedToolCall = false
+	state.HasEmittedWebSearch = false
 	state.TextBuffer.Reset()
 }
 
@@ -2281,10 +2282,10 @@ func convertGeminiFileDataToContentBlock(fileData *FileData) *schemas.ResponsesM
 		return nil
 	}
 
+	// Preserve the caller's MIME as-is; do NOT fabricate a default. A wrong default
+	// (application/pdf) on a non-PDF file propagates to the outgoing request and makes
+	// Gemini reject it with INVALID_ARGUMENT. An empty MIME lets Gemini use the stored type.
 	mimeType := fileData.MIMEType
-	if mimeType == "" {
-		mimeType = "application/pdf"
-	}
 
 	// Handle images
 	if isImageMimeType(mimeType) {
@@ -2304,8 +2305,10 @@ func convertGeminiFileDataToContentBlock(fileData *FileData) *schemas.ResponsesM
 		},
 	}
 
-	// Set FileType if available
-	block.ResponsesInputMessageContentBlockFile.FileType = &mimeType
+	// Only carry a MIME type when the caller actually provided one.
+	if mimeType != "" {
+		block.ResponsesInputMessageContentBlockFile.FileType = &mimeType
+	}
 
 	return block
 }
@@ -3525,19 +3528,12 @@ func convertContentBlockToGeminiPart(block schemas.ResponsesMessageContentBlock,
 
 			// Handle FileURL (URI-based file)
 			if fileBlock.FileURL != nil {
-				mimeType := "application/pdf"
+				// Only set MIMEType when the caller provided one
+				fileData := &FileData{FileURI: *fileBlock.FileURL}
 				if fileBlock.FileType != nil {
-					mimeType = *fileBlock.FileType
+					fileData.MIMEType = *fileBlock.FileType
 				}
-
-				part := &Part{
-					FileData: &FileData{
-						MIMEType: mimeType,
-						FileURI:  *fileBlock.FileURL,
-					},
-				}
-
-				return part, nil
+				return &Part{FileData: fileData}, nil
 			}
 
 			// Handle FileData (inline file data)

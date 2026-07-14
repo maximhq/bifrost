@@ -1,6 +1,5 @@
 import {
 	ArrowUpRight,
-	Bell,
 	BookOpenText,
 	BookUser,
 	Boxes,
@@ -37,6 +36,7 @@ import {
 	Settings2Icon,
 	ShieldCheck,
 	Shuffle,
+	Siren,
 	SlidersHorizontal,
 	Telescope,
 	ToolCase,
@@ -776,7 +776,7 @@ export default function AppSidebar() {
 			{
 				title: "Alerting",
 				url: "/workspace/alerting",
-				icon: Bell,
+				icon: Siren,
 				description: "Manage alert channels, rules, and history",
 				hasAccess: hasAlertingAccess,
 				subItems: [
@@ -1492,7 +1492,7 @@ export default function AppSidebar() {
 									</a>
 								))}
 							<ThemeToggle />
-							{IS_ENTERPRISE && userInfo && (userInfo.name || userInfo.email) ? (
+							{IS_ENTERPRISE && userInfo ? (
 								<Popover open={userPopoverOpen} onOpenChange={setUserPopoverOpen}>
 									<PopoverTrigger asChild>
 										<button
@@ -1506,7 +1506,7 @@ export default function AppSidebar() {
 									<PopoverContent side="top" align="start" className="w-56 p-0">
 										<div className="flex flex-col">
 											<div className="px-4 py-3">
-												<p className="text-sm font-medium">{userInfo.name || userInfo.email || "User"}</p>
+												<p className="text-sm font-medium">{userInfo.name || userInfo.email || userInfo.preferred_username || "User"}</p>
 											</div>
 											<Separator />
 											<button

@@ -150,6 +150,7 @@ type BifrostCompactionRequest struct {
 	PreviousResponseID   *string                `json:"previous_response_id,omitempty"`
 	PromptCacheKey       *string                `json:"prompt_cache_key,omitempty"`
 	PromptCacheRetention *string                `json:"prompt_cache_retention,omitempty"`
+	PromptCacheOptions   *PromptCacheOptions    `json:"prompt_cache_options,omitempty"`
 	ServiceTier          *BifrostServiceTier    `json:"service_tier,omitempty"`
 	Fallbacks            []Fallback             `json:"fallbacks,omitempty"`
 	ExtraParams          map[string]interface{} `json:"-"`
@@ -225,15 +226,17 @@ type BifrostResponsesResponse struct {
 	Prompt               *ResponsesPrompt                    `json:"prompt,omitempty"` // Reference to a prompt template and variables
 	PromptCacheKey       *string                             `json:"prompt_cache_key"` // Prompt cache key
 	PromptCacheRetention *string                             `json:"prompt_cache_retention,omitempty"`
+	PromptCacheOptions   *PromptCacheOptions                 `json:"prompt_cache_options,omitempty"` // Prompt-caching options applied to the response (OpenAI gpt-5.6+)
 	PresencePenalty      *float64                            `json:"presence_penalty,omitempty"`
 	FrequencyPenalty     *float64                            `json:"frequency_penalty,omitempty"`
 	Reasoning            *ResponsesParametersReasoning       `json:"reasoning"`         // Configuration options for reasoning models
 	SafetyIdentifier     *string                             `json:"safety_identifier"` // Safety identifier
 	ServiceTier          *BifrostServiceTier                 `json:"service_tier"`
-	Speed                *string                             `json:"speed,omitempty"`       // "fast" | "standard" — speed actually served (Anthropic fast mode); drives fast-mode billing
-	Diagnostics          *CacheDiagnostics                   `json:"diagnostics,omitempty"` // Anthropic cache diagnostics (cache-diagnosis-2026-04-07); first prompt-cache prefix divergence point
-	Container            *ResponsesResponseContainer         `json:"container,omitempty"`   // Code-execution sandbox container (Anthropic surfaces it on the response / final streaming message_delta). The neutral per-call id also lives on ResponsesCodeInterpreterToolCall.ContainerID.
-	Status               *string                             `json:"status,omitempty"`      // completed, failed, in_progress, cancelled, queued, or incomplete
+	Speed                *string                             `json:"speed,omitempty"`         // "fast" | "standard" — speed actually served (Anthropic fast mode); drives fast-mode billing
+	InferenceGeo         *string                             `json:"inference_geo,omitempty"` // "us" | "global" — inference geography served (Anthropic data residency); drives the 1.1x US multiplier
+	Diagnostics          *CacheDiagnostics                   `json:"diagnostics,omitempty"`   // Anthropic cache diagnostics (cache-diagnosis-2026-04-07); first prompt-cache prefix divergence point
+	Container            *ResponsesResponseContainer         `json:"container,omitempty"`     // Code-execution sandbox container (Anthropic surfaces it on the response / final streaming message_delta). The neutral per-call id also lives on ResponsesCodeInterpreterToolCall.ContainerID.
+	Status               *string                             `json:"status,omitempty"`        // completed, failed, in_progress, cancelled, queued, or incomplete
 	StreamOptions        *ResponsesStreamOptions             `json:"stream_options,omitempty"`
 	StopReason           *string                             `json:"stop_reason,omitempty"` // Not in OpenAI's spec, but sent by other providers
 	Store                *bool                               `json:"store,omitempty"`
@@ -339,6 +342,7 @@ func (resp *BifrostResponsesResponse) WithDefaults() *BifrostResponsesResponse {
 	result.PreviousResponseID = resp.PreviousResponseID
 	result.PromptCacheKey = resp.PromptCacheKey
 	result.PromptCacheRetention = resp.PromptCacheRetention
+	result.PromptCacheOptions = resp.PromptCacheOptions
 	result.SafetyIdentifier = resp.SafetyIdentifier
 	result.MaxToolCalls = resp.MaxToolCalls
 	result.Instructions = resp.Instructions
@@ -467,6 +471,21 @@ func orDefault[T any](src *T, defaultVal T) *T {
 	return Ptr(defaultVal)
 }
 
+// PromptCacheOptions is the request-wide prompt-caching configuration OpenAI
+// added with the gpt-5.6 family (echoed back on the response). Mode is
+// "implicit" or "explicit"; TTL is the minimum breakpoint lifetime (currently
+// "30m"). Values are passed through untouched.
+type PromptCacheOptions struct {
+	Mode *string `json:"mode,omitempty"`
+	TTL  *string `json:"ttl,omitempty"`
+}
+
+// PromptCacheBreakpoint marks the end of a cacheable prompt prefix on a content
+// block (OpenAI gpt-5.6+). Only "explicit" is valid for Mode.
+type PromptCacheBreakpoint struct {
+	Mode *string `json:"mode,omitempty"`
+}
+
 type ResponsesParameters struct {
 	Background           *bool                         `json:"background,omitempty"`
 	Conversation         *string                       `json:"conversation,omitempty"`
@@ -479,8 +498,9 @@ type ResponsesParameters struct {
 	PreviousResponseID   *string                       `json:"previous_response_id,omitempty"`
 	PromptCacheKey       *string                       `json:"prompt_cache_key,omitempty"` // Prompt cache key
 	PromptCacheRetention *string                       `json:"prompt_cache_retention,omitempty"`
-	Reasoning            *ResponsesParametersReasoning `json:"reasoning,omitempty"`         // Configuration options for reasoning models
-	SafetyIdentifier     *string                       `json:"safety_identifier,omitempty"` // Safety identifier
+	PromptCacheOptions   *PromptCacheOptions           `json:"prompt_cache_options,omitempty"` // Request-wide prompt cache options (OpenAI gpt-5.6+)
+	Reasoning            *ResponsesParametersReasoning `json:"reasoning,omitempty"`            // Configuration options for reasoning models
+	SafetyIdentifier     *string                       `json:"safety_identifier,omitempty"`    // Safety identifier
 	ServiceTier          *BifrostServiceTier           `json:"service_tier,omitempty"`
 	StreamOptions        *ResponsesStreamOptions       `json:"stream_options,omitempty"`
 	Store                *bool                         `json:"store,omitempty"`
@@ -875,8 +895,10 @@ type ResponsesPrompt struct {
 }
 
 type ResponsesParametersReasoning struct {
-	Effort          *string `json:"effort"`                     // "none" | "minimal" | "low" | "medium" | "high" (any value other than "none" will enable reasoning)
+	Context         *string `json:"context,omitempty"`          // "auto" | "current_turn" | "all_turns" (which reasoning items are rendered back to the model on later turns)
+	Effort          *string `json:"effort"`                     // "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" (any value other than "none" will enable reasoning)
 	GenerateSummary *string `json:"generate_summary,omitempty"` // Deprecated: use summary instead
+	Mode            *string `json:"mode,omitempty"`             // "standard" | "pro" (reasoning execution mode)
 	Summary         *string `json:"summary"`                    // "auto" | "concise" | "detailed"
 	MaxTokens       *int    `json:"max_tokens,omitempty"`       // Maximum number of tokens to generate for the reasoning output (required for anthropic)
 }
@@ -965,6 +987,7 @@ func (d *ResponsesResponseInputTokens) UnmarshalJSON(data []byte) error {
 		CachedWriteTokens       int                          `json:"cached_write_tokens"`
 		CachedWriteTokenDetails *ChatCachedWriteTokenDetails `json:"cached_write_token_details"`
 		CachedTokens            *int                         `json:"cached_tokens"`
+		CacheWriteTokens        *int                         `json:"cache_write_tokens"`
 	}
 	if err := Unmarshal(data, &raw); err != nil {
 		return err
@@ -978,6 +1001,10 @@ func (d *ResponsesResponseInputTokens) UnmarshalJSON(data []byte) error {
 	// OpenAI spec providers send just cached_tokens, not separate read and write tokens and we handle them as read tokens in pricing calculations.
 	if raw.CachedTokens != nil && raw.CachedReadTokens == 0 && raw.CachedWriteTokens == 0 {
 		d.CachedReadTokens = *raw.CachedTokens
+	}
+	// OpenAI's Responses API reports cache writes under cache_write_tokens (distinct from Bifrost's cached_write_tokens).
+	if raw.CacheWriteTokens != nil && d.CachedWriteTokens == 0 {
+		d.CachedWriteTokens = *raw.CacheWriteTokens
 	}
 	return nil
 }
@@ -994,6 +1021,9 @@ func (d ResponsesResponseInputTokens) MarshalJSON() ([]byte, error) {
 		CachedWriteTokens       int                          `json:"cached_write_tokens"`
 		CachedWriteTokenDetails *ChatCachedWriteTokenDetails `json:"cached_write_token_details,omitempty"`
 		CachedTokens            int                          `json:"cached_tokens"`
+		// OpenAI's field name for cache writes (mirrors cached_tokens for reads) so the
+		// OpenAI SDK — which reads cache_write_tokens, not cached_write_tokens — finds it.
+		CacheWriteTokens int `json:"cache_write_tokens"`
 	}
 	return MarshalSorted(raw{
 		TextTokens:              d.TextTokens,
@@ -1003,6 +1033,7 @@ func (d ResponsesResponseInputTokens) MarshalJSON() ([]byte, error) {
 		CachedWriteTokens:       d.CachedWriteTokens,
 		CachedWriteTokenDetails: d.CachedWriteTokenDetails,
 		CachedTokens:            d.CachedReadTokens,
+		CacheWriteTokens:        d.CachedWriteTokens,
 	})
 }
 
@@ -1046,13 +1077,16 @@ const (
 	ResponsesMessageTypeItemReference        ResponsesMessageType = "item_reference"
 	ResponsesMessageTypeRefusal              ResponsesMessageType = "refusal"
 	ResponsesMessageTypeCompaction           ResponsesMessageType = "compaction"
-	// Codex deferred-tool discovery (tool_search). OpenAI's Responses API
-	// supports these item types natively; Bifrost preserves them verbatim
-	// because its typed schema doesn't model them (the call's `arguments` is a
-	// JSON object — unlike function_call's string — and the output carries a
-	// `tools` array). See ResponsesMessage's (Un)MarshalJSON.
+	// Codex deferred-tool discovery (tool_search) and code-mode tool
+	// declarations (additional_tools). OpenAI's Responses API supports these
+	// item types natively; Bifrost preserves them verbatim because its typed
+	// schema doesn't model them (tool_search_call's `arguments` is a JSON
+	// object — unlike function_call's string — and tool_search_output /
+	// additional_tools carry `tools` arrays whose entries don't fit any typed
+	// tool shape). See ResponsesMessage's (Un)MarshalJSON.
 	ResponsesMessageTypeToolSearchCall   ResponsesMessageType = "tool_search_call"
 	ResponsesMessageTypeToolSearchOutput ResponsesMessageType = "tool_search_output"
+	ResponsesMessageTypeAdditionalTools  ResponsesMessageType = "additional_tools"
 	ResponsesMessageTypeAdvisorCall      ResponsesMessageType = "advisor_call" // Anthropic advisor server tool (server_tool_use + advisor_tool_result)
 )
 
@@ -1083,43 +1117,53 @@ type ResponsesMessage struct {
 	// gpt-oss models include only reasoning_text content blocks in a message, while other openai models include summaries+encrypted_content
 	*ResponsesReasoning
 
-	// rawToolSearch preserves codex `tool_search_call` / `tool_search_output`
-	// items verbatim. OpenAI's Responses API accepts these natively, but
-	// Bifrost's typed schema doesn't model them (the call's `arguments` is a
-	// JSON object — unlike function_call's string — and the output carries a
-	// `tools` array). Rather than fail to deserialize the whole input array or
-	// drop/mangle these items, we round-trip the original bytes unchanged.
+	// rawPreserved preserves codex `tool_search_call` / `tool_search_output` /
+	// `additional_tools` items verbatim. OpenAI's Responses API accepts these
+	// natively, but Bifrost's typed schema doesn't model them:
+	// tool_search_call's `arguments` is a JSON object — unlike function_call's
+	// string — and tool_search_output / additional_tools carry `tools` arrays
+	// whose entries (per-entry `type` discriminators, function parameters,
+	// nested namespace tool lists) don't fit any typed tool shape; a typed
+	// decode promotes them into the embedded mcp_list_tools fields and strips
+	// required fields. Rather than fail to deserialize the whole input array
+	// or drop/mangle these items, we round-trip the original bytes unchanged.
 	// Set by UnmarshalJSON, emitted by MarshalJSON; nil for every other type.
-	rawToolSearch []byte
+	rawPreserved []byte
 }
 
-// isToolSearchItem reports whether t is a codex tool_search item type, which
-// Bifrost preserves verbatim rather than modelling field-by-field.
-func isToolSearchItem(t string) bool {
+// isRawPreservedItem reports whether t is an item type that Bifrost preserves
+// verbatim rather than modelling field-by-field (see rawPreserved).
+func isRawPreservedItem(t string) bool {
 	return t == string(ResponsesMessageTypeToolSearchCall) ||
-		t == string(ResponsesMessageTypeToolSearchOutput)
+		t == string(ResponsesMessageTypeToolSearchOutput) ||
+		t == string(ResponsesMessageTypeAdditionalTools)
 }
 
-// UnmarshalJSON preserves codex tool_search items verbatim (see rawToolSearch)
-// and otherwise normalizes function/tool-call arguments before decoding the rest
-// of the item. OpenAI's Responses API serializes `function_call` `arguments` as
-// a JSON string, but `tool_search_call` items serialize `arguments` as a JSON
-// object — e.g. {} while in_progress and {"query":"...","limit":10} when
-// completed. The embedded ResponsesToolMessage.Arguments field is a *string, so
-// an object value makes a plain decode fail with "Mismatch type string with
-// value object", which silently drops the item mid-stream and hangs streaming
-// clients. We shadow `arguments` as raw JSON, decode everything else as usual,
-// then store the canonical stringified form.
+// UnmarshalJSON preserves codex tool_search/additional_tools items verbatim
+// (see rawPreserved) and otherwise normalizes function/tool-call arguments
+// before decoding the rest of the item. OpenAI's Responses API serializes
+// `function_call` `arguments` as a JSON string, but `tool_search_call` items
+// serialize `arguments` as a JSON object — e.g. {} while in_progress and
+// {"query":"...","limit":10} when completed. The embedded
+// ResponsesToolMessage.Arguments field is a *string, so an object value makes
+// a plain decode fail with "Mismatch type string with value object", which
+// silently drops the item mid-stream and hangs streaming clients. We shadow
+// `arguments` as raw JSON, decode everything else as usual, then store the
+// canonical stringified form.
 func (m *ResponsesMessage) UnmarshalJSON(data []byte) error {
 	// Clear the receiver first so a reused instance never retains a stale
-	// rawToolSearch (or other fields) from a prior decode — unmarshalling a
-	// non-tool-search payload must not leave preserved bytes that MarshalJSON
+	// rawPreserved (or other fields) from a prior decode — unmarshalling a
+	// non-preserved payload must not leave preserved bytes that MarshalJSON
 	// would then re-emit.
 	*m = ResponsesMessage{}
-	if t := gjson.GetBytes(data, "type").String(); isToolSearchItem(t) {
+	if t := gjson.GetBytes(data, "type").String(); isRawPreservedItem(t) {
 		mt := ResponsesMessageType(t)
 		m.Type = &mt
-		m.rawToolSearch = append([]byte(nil), data...)
+		// Also surface `arguments` (a JSON object for tool_search_call) so downstream
+		// consumers that read Arguments keep working; MarshalJSON still re-emits the
+		// preserved bytes verbatim, so this is additive and does not affect round-trip.
+		m.setToolArguments(json.RawMessage(gjson.GetBytes(data, "arguments").Raw))
+		m.rawPreserved = append([]byte(nil), data...)
 		return nil
 	}
 
@@ -1135,22 +1179,32 @@ func (m *ResponsesMessage) UnmarshalJSON(data []byte) error {
 		return err
 	}
 
-	if len(aux.Arguments) > 0 && string(aux.Arguments) != "null" {
-		args := responsesToolArgumentsToString(aux.Arguments)
-		if m.ResponsesToolMessage == nil {
-			m.ResponsesToolMessage = &ResponsesToolMessage{}
-		}
-		m.Arguments = &args
-	}
+	m.setToolArguments(aux.Arguments)
 
 	return nil
 }
 
+// setToolArguments normalizes a raw tool-call `arguments` value and records it on
+// the message when present and non-null, initializing the tool-message wrapper as
+// needed. Shared by the tool_search and function/tool-call decode paths so their
+// null handling can't drift apart.
+func (m *ResponsesMessage) setToolArguments(raw json.RawMessage) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return
+	}
+	args := responsesToolArgumentsToString(raw)
+	if m.ResponsesToolMessage == nil {
+		m.ResponsesToolMessage = &ResponsesToolMessage{}
+	}
+	m.Arguments = &args
+}
+
 // MarshalJSON re-emits preserved tool_search items verbatim and defers every
 // other item type to the default (sorted-key) struct encoding.
+
 func (m ResponsesMessage) MarshalJSON() ([]byte, error) {
-	if m.rawToolSearch != nil {
-		return m.rawToolSearch, nil
+	if m.rawPreserved != nil {
+		return m.rawPreserved, nil
 	}
 	type alias ResponsesMessage
 	return MarshalSorted(alias(m))
@@ -1267,6 +1321,9 @@ type ResponsesMessageContentBlock struct {
 	// Not in OpenAI's schemas, but sent by a few providers (Anthropic, Bedrock are some of them)
 	CacheControl *CacheControl `json:"cache_control,omitempty"`
 	Citations    *Citations    `json:"citations,omitempty"`
+
+	// PromptCacheBreakpoint marks an explicit prompt-cache breakpoint on this block (OpenAI gpt-5.6+).
+	PromptCacheBreakpoint *PromptCacheBreakpoint `json:"prompt_cache_breakpoint,omitempty"`
 }
 
 type ResponsesOutputMessageContentCompaction struct {
@@ -1366,6 +1423,9 @@ type ResponsesToolMessage struct {
 	// Anthropic advisor-specific (advisor_call): carries the advisor_tool_result payload
 	*ResponsesAdvisorCall
 
+	// Anthropic tool_search-specific (tool_search_call): carries the discovered tool references
+	*ResponsesToolSearchCall
+
 	// Anthropic web-fetch-specific (web_fetch_call): carries the web_fetch_tool_result payload
 	*ResponsesWebFetchCall
 
@@ -1383,6 +1443,14 @@ type ResponsesAdvisorCall struct {
 	EncryptedContent *string `json:"advisor_encrypted_content,omitempty"` // advisor_redacted_result variant
 	ErrorCode        *string `json:"advisor_error_code,omitempty"`        // advisor_tool_result_error variant
 	StopReason       *string `json:"advisor_stop_reason,omitempty"`       // present when max_tokens is set on the tool
+}
+
+// ResponsesToolSearchCall carries the payload of an Anthropic server-side
+// tool_search (server_tool_use + tool_search_tool_result). ToolReferences holds
+// the names of the deferred tools the search discovered (from the result block's
+// tool_references); the model then emits a normal tool_use to call one of them.
+type ResponsesToolSearchCall struct {
+	ToolReferences []string `json:"tool_references,omitempty"` // names of discovered (deferred) tools
 }
 
 // ResponsesWebFetchCall carries the Anthropic web_fetch_tool_result payload

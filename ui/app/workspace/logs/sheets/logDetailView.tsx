@@ -238,6 +238,8 @@ const getResponsesRole = (msg: ResponsesMessage): MessageRole => {
 		msg.type &&
 		(msg.type.endsWith("_call") ||
 			msg.type.endsWith("_call_output") ||
+			msg.type === "tool_search_output" ||
+			msg.type === "additional_tools" ||
 			msg.type === "mcp_list_tools" ||
 			msg.type === "mcp_approval_request" ||
 			msg.type === "mcp_approval_responses")
@@ -261,6 +263,37 @@ const isReasoningResponsesMessage = (m: ResponsesMessage): boolean => m.type ===
 // Streaming providers can emit a single logical assistant turn (or reasoning
 // item) as many small messages. Collapse adjacent ones so the UI shows one
 // bubble per turn instead of N "1 line" bubbles.
+// Expands namespace tool declarations into their callable children
+// (`namespace.tool` names), leaving plain declarations untouched.
+const flattenDeclaredTools = (tools: any[]): any[] =>
+	tools.flatMap((tool) =>
+		tool?.type === "namespace" && Array.isArray(tool.tools)
+			? (tool.tools as any[]).map((nested) => ({ ...nested, name: `${tool.name ?? "namespace"}.${nested?.name ?? ""}` }))
+			: [tool],
+	);
+
+// Later declarations of the same tool replace earlier ones — a conversation
+// history can carry multiple `additional_tools` items, each a point-in-time
+// update, so the effective tool set is last-write-wins by name. Unnamed
+// declarations are kept as-is.
+const dedupeDeclaredTools = (tools: any[]): any[] => {
+	const byName = new Map<string, number>();
+	const out: any[] = [];
+	for (const tool of tools) {
+		const name = tool?.name ?? tool?.function?.name;
+		if (typeof name === "string" && name) {
+			const idx = byName.get(name);
+			if (idx !== undefined) {
+				out[idx] = tool;
+				continue;
+			}
+			byName.set(name, out.length);
+		}
+		out.push(tool);
+	}
+	return out;
+};
+
 const coalesceResponsesMessages = (msgs: ResponsesMessage[]): ResponsesMessage[] => {
 	const out: ResponsesMessage[] = [];
 	for (const m of msgs) {
@@ -621,10 +654,18 @@ export function LogDetailView({
 			})
 		: null;
 
+	// Tools can also be declared inside Responses input items instead of the
+	// top-level tools param (codex code-mode models send an `additional_tools`
+	// input item with the tool definitions, including namespace groupings).
+	const inputDeclaredToolEntries = (log.responses_input_history ?? [])
+		.filter((m) => m.type === "additional_tools" && Array.isArray(m.tools))
+		.flatMap((m) => m.tools as any[]);
+	const inputDeclaredTools = flattenDeclaredTools(inputDeclaredToolEntries);
+	const declaredTools = dedupeDeclaredTools([...flattenDeclaredTools((log.params?.tools as any[]) ?? []), ...inputDeclaredTools]);
 	let toolsParameter = null;
-	if (log.params?.tools) {
+	if (declaredTools.length) {
 		try {
-			toolsParameter = JSON.stringify(log.params.tools, null, 2);
+			toolsParameter = JSON.stringify(declaredTools, null, 2);
 		} catch {}
 	}
 
@@ -743,7 +784,7 @@ export function LogDetailView({
 							{log.routing_rule && (
 								<Link
 									to="/workspace/logs"
-									search={{ routing_rule_ids: [log.routing_rule.id] }}
+									search={(prev) => ({ ...prev, offset: 0, selected_log: "", routing_rule_ids: [log.routing_rule!.id] })}
 									data-testid="logdetails-header-routing-rule-link"
 								>
 									<Badge variant="outline" className="bg-card text-muted-foreground rounded-sm px-2 py-0.5 font-normal hover:underline">
@@ -813,7 +854,7 @@ export function LogDetailView({
 								<div className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">Rule</div>
 								<Link
 									to="/workspace/logs"
-									search={{ routing_rule_ids: [log.routing_rule.id] }}
+									search={(prev) => ({ ...prev, offset: 0, selected_log: "", routing_rule_ids: [log.routing_rule!.id] })}
 									className="truncate text-[13px] font-medium text-blue-600 hover:underline dark:text-blue-400"
 									data-testid="logdetails-header-rule-link"
 								>
@@ -826,7 +867,7 @@ export function LogDetailView({
 								<div className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">Key</div>
 								<Link
 									to="/workspace/logs"
-									search={{ selected_key_ids: [log.selected_key_id] }}
+									search={(prev) => ({ ...prev, offset: 0, selected_log: "", selected_key_ids: [log.selected_key_id] })}
 									className="truncate font-mono text-[13px] text-blue-600 hover:underline dark:text-blue-400"
 									data-testid="logdetails-header-selected-key-link"
 								>
@@ -901,7 +942,7 @@ export function LogDetailView({
 					) : (
 						<HeroStat
 							label="Tools available"
-							value={(log.params?.tools?.length ?? 0).toString()}
+							value={declaredTools.length.toString()}
 							sub={(log.params as any)?.tool_choice != null ? `choice: ${formatToolChoice((log.params as any).tool_choice)}` : ""}
 						/>
 					)}
@@ -1026,7 +1067,7 @@ export function LogDetailView({
 									value={
 										<Link
 											to="/workspace/logs"
-											search={{ selected_key_ids: [log.selected_key_id] }}
+											search={(prev) => ({ ...prev, offset: 0, selected_log: "", selected_key_ids: [log.selected_key_id] })}
 											className="text-blue-600 hover:underline dark:text-blue-400"
 											data-testid="logdetails-selected-key-link"
 										>
@@ -1070,7 +1111,7 @@ export function LogDetailView({
 												<Link
 													key={t.id}
 													to="/workspace/logs"
-													search={{ team_ids: [t.id] }}
+													search={(prev) => ({ ...prev, offset: 0, selected_log: "", team_ids: [t.id] })}
 													className="text-blue-600 hover:underline dark:text-blue-400"
 													data-testid={`logdetails-team-link-${t.id}`}
 												>
@@ -1095,7 +1136,7 @@ export function LogDetailView({
 												<Link
 													key={c.id}
 													to="/workspace/logs"
-													search={{ customer_ids: [c.id] }}
+													search={(prev) => ({ ...prev, offset: 0, selected_log: "", customer_ids: [c.id] })}
 													className="text-blue-600 hover:underline dark:text-blue-400"
 													data-testid={`logdetails-customer-link-${c.id}`}
 												>
@@ -1120,7 +1161,7 @@ export function LogDetailView({
 												<Link
 													key={b.id}
 													to="/workspace/logs"
-													search={{ business_unit_ids: [b.id] }}
+													search={(prev) => ({ ...prev, offset: 0, selected_log: "", business_unit_ids: [b.id] })}
 													className="text-blue-600 hover:underline dark:text-blue-400"
 													data-testid={`logdetails-business-unit-link-${b.id}`}
 												>
@@ -1141,7 +1182,7 @@ export function LogDetailView({
 											<TooltipTrigger asChild>
 												<Link
 													to="/workspace/logs"
-													search={{ user_ids: [log.user_id] }}
+													search={(prev) => ({ ...prev, offset: 0, selected_log: "", user_ids: [log.user_id] })}
 													className={`block min-w-0 cursor-pointer text-sm font-normal break-all text-blue-600 underline-offset-2 hover:underline dark:text-blue-400${log.user_name ? "" : " font-mono"}`}
 													data-testid="logdetails-user-link"
 												>
@@ -1201,7 +1242,7 @@ export function LogDetailView({
 									value={
 										<Link
 											to="/workspace/logs"
-											search={{ routing_rule_ids: [log.routing_rule.id] }}
+											search={(prev) => ({ ...prev, offset: 0, selected_log: "", routing_rule_ids: [log.routing_rule!.id] })}
 											className="text-blue-600 hover:underline dark:text-blue-400"
 											data-testid="logdetails-routing-rule-link"
 										>
@@ -1614,9 +1655,9 @@ export function LogDetailView({
 					{showTabs && !isPassthrough && !log.list_models_output && (
 						<TabsTrigger value="tools" className="px-3">
 							Tools
-							{log.params?.tools?.length ? (
+							{declaredTools.length ? (
 								<span className="bg-background text-muted-foreground ml-1.5 rounded-sm border px-2 py-0.5 text-[10px] tabular-nums">
-									{log.params.tools.length}
+									{declaredTools.length}
 								</span>
 							) : null}
 						</TabsTrigger>
@@ -2065,7 +2106,14 @@ export function LogDetailView({
 												? msg.name
 												: msg.type === "function_call_output" && msg.call_id
 													? msg.call_id
-													: msg.type || undefined;
+													: Array.isArray(msg.tools)
+														? (() => {
+																const callable = flattenDeclaredTools(msg.tools).length;
+																return callable !== msg.tools.length
+																	? `${msg.type} · ${msg.tools.length} declarations · ${callable} callable tools`
+																	: `${msg.type} · ${msg.tools.length} tool${msg.tools.length === 1 ? "" : "s"}`;
+															})()
+														: msg.type || undefined;
 									}
 									const usePlainText = role === "user" || role === "assistant";
 									return (
@@ -2113,6 +2161,10 @@ export function LogDetailView({
 													text={typeof msg.output === "string" ? msg.output : JSON.stringify(msg.output, null, 2)}
 													preview={3}
 												/>
+											) : Array.isArray(msg.tools) && msg.tools.length > 0 ? (
+												<CollapsibleCode text={JSON.stringify(msg.tools, null, 2)} preview={3} />
+											) : Array.isArray(msg.tools) ? (
+												<div className="text-muted-foreground text-[12px] italic">No tools declared</div>
 											) : (
 												<div className="text-muted-foreground text-[12px] italic">No content</div>
 											)}
@@ -2240,7 +2292,14 @@ export function LogDetailView({
 					{toolsParameter ? (
 						<div className="bg-card rounded-sm border p-5">
 							<div className="text-muted-foreground mb-3 text-[12px]">
-								{log.params?.tools?.length ?? 0} tools exposed to the model
+								{declaredTools.length} tools exposed to the model
+								{inputDeclaredTools.length ? (
+									<>
+										{" "}
+										· {inputDeclaredTools.length} via input items
+										{inputDeclaredTools.length !== inputDeclaredToolEntries.length ? " (namespaces expanded)" : ""}
+									</>
+								) : null}
 								{(log.params as any)?.tool_choice != null ? (
 									<>
 										{" "}
@@ -2250,8 +2309,8 @@ export function LogDetailView({
 								) : null}
 							</div>
 							<div className="grid grid-cols-1 gap-2 md:grid-cols-2">
-								{(log.params?.tools as any[]).map((tool, i) => {
-									const name = tool?.function?.name ?? tool?.name ?? `tool_${i}`;
+								{declaredTools.map((tool, i) => {
+									const name = tool?.name ?? tool?.function?.name ?? `tool_${i}`;
 									const description = tool?.function?.description ?? tool?.description ?? "";
 									const schema = tool?.function?.parameters ?? tool?.input_schema ?? tool?.parameters ?? null;
 									const schemaJson = schema != null ? JSON.stringify(schema, null, 2) : "";

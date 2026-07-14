@@ -336,6 +336,23 @@ func (t *Tracer) PopulateLLMResponseAttributes(ctx *schemas.BifrostContext, hand
 	for k, v := range PopulateErrorAttributes(err) {
 		span.SetAttribute(k, v)
 	}
+
+	// Enrichment dimensions derivable only post-response, attached here so every
+	// connector reads them from one place (see core/schemas EnrichmentDims):
+	//   - alias: the originally requested model when it differs from the resolved
+	//     model (an alias was matched or a fallback swapped the model).
+	//   - routing_engine_used: the comma-joined set of routing engines that handled
+	//     the request; the context list is only complete once routing has run.
+	if resp != nil {
+		ef := resp.GetExtraFields()
+		if ef.ResolvedModelUsed != "" && ef.ResolvedModelUsed != ef.OriginalModelRequested && ef.OriginalModelRequested != "" {
+			span.SetAttribute(schemas.AttrBifrostAlias, ef.OriginalModelRequested)
+		}
+	}
+	if engines, ok := ctx.Value(schemas.BifrostContextKeyRoutingEnginesUsed).([]string); ok && len(engines) > 0 {
+		span.SetAttribute(schemas.AttrBifrostRoutingEngineUsed, strings.Join(engines, ","))
+	}
+
 	// Populate cost attribute using pricing manager
 	if t.pricingManager != nil && resp != nil {
 		cost := t.pricingManager.CalculateCost(resp, modelcatalog.PricingLookupScopesFromContext(ctx, string(resp.GetExtraFields().Provider)))
@@ -457,6 +474,14 @@ func (t *Tracer) ResumeStream(traceID string) {
 		return
 	}
 	t.accumulator.ResumeStream(traceID)
+}
+
+// ClearPausedStreamBuffer drops chunks buffered while traceID is paused.
+func (t *Tracer) ClearPausedStreamBuffer(traceID string) error {
+	if traceID == "" || t.accumulator == nil {
+		return nil
+	}
+	return t.accumulator.ClearPausedStreamBuffer(traceID)
 }
 
 // EndStream terminates the streaming response. Any buffered chunks are flushed

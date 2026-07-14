@@ -192,15 +192,23 @@ export default function LogsPage() {
 	// Helper to update filters in URL
 	const setFilters = useCallback(
 		(newFilters: LogFilters) => {
-			// Mark time range as user-modified only if start_time or end_time actually changed
-			const timeChanged = newFilters.start_time !== filters.start_time || newFilters.end_time !== filters.end_time;
+			// The sidebar/header only manage dimension filters, never the time range: in
+			// period mode `newFilters` carries no start/end, so only touch time when an
+			// explicit range is actually provided — otherwise we'd wipe the active period/range.
+			const hasExplicitTime = !!newFilters.start_time && !!newFilters.end_time;
+			const timeChanged =
+				hasExplicitTime && (newFilters.start_time !== filters.start_time || newFilters.end_time !== filters.end_time);
 			if (timeChanged) {
 				userModifiedTimeRange.current = true;
 			}
 
 			setUrlState({
-				// Clear the period whenever an absolute range is applied via setFilters
-				...(timeChanged && { period: "" }),
+				// Clear the period and apply the absolute range only when an explicit one is provided
+				...(timeChanged && {
+					period: "",
+					start_time: dateUtils.toUnixTimestamp(new Date(newFilters.start_time!)),
+					end_time: dateUtils.toUnixTimestamp(new Date(newFilters.end_time!)),
+				}),
 				parent_request_id: newFilters.parent_request_id || "",
 				providers: newFilters.providers || [],
 				models: newFilters.models || [],
@@ -217,8 +225,6 @@ export default function LogsPage() {
 				customer_ids: newFilters.customer_ids || [],
 				business_unit_ids: newFilters.business_unit_ids || [],
 				content_search: newFilters.content_search || "",
-				start_time: newFilters.start_time ? dateUtils.toUnixTimestamp(new Date(newFilters.start_time)) : undefined,
-				end_time: newFilters.end_time ? dateUtils.toUnixTimestamp(new Date(newFilters.end_time)) : undefined,
 				missing_cost_only: newFilters.missing_cost_only ?? false,
 				cache_hit_types: newFilters.cache_hit_types || [],
 				metadata_filters: newFilters.metadata_filters ? JSON.stringify(newFilters.metadata_filters) : "",
@@ -628,6 +634,7 @@ export default function LogsPage() {
 								onPollToggle={handlePollToggle}
 								period={period}
 								onPeriodChange={handlePeriodChange}
+								totalLogs={totalItems}
 								columnEntries={columnEntries}
 								columnLabels={COLUMN_LABELS}
 								onToggleColumnVisibility={toggleColumnVisibility}

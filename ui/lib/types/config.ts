@@ -62,8 +62,11 @@ export interface AliasConfig {
 	api_version?: string;
 	anthropic_version?: string;
 	endpoint?: SecretVar;
-	// Vertex overrides
+	// Shared per-alias project override (Vertex GCP project; Bedrock / Bedrock Mantle
+	// project sent via OpenAI-Project / anthropic-workspace-id). Kept top-level in Go
+	// so the flat project_id key doesn't collide across embedded sub-configs.
 	project_id?: SecretVar;
+	// Vertex overrides
 	project_number?: SecretVar;
 	force_single_region?: boolean;
 	// Bedrock overrides
@@ -123,6 +126,7 @@ export interface BedrockKeyConfig {
 	session_token?: SecretVar;
 	region?: SecretVar;
 	arn?: SecretVar;
+	project_id?: SecretVar;
 	batch_s3_config?: BatchS3Config;
 }
 
@@ -133,6 +137,7 @@ export const DefaultBedrockKeyConfig: BedrockKeyConfig = {
 	session_token: undefined as unknown as SecretVar,
 	region: { value: "us-east-1", ref: "" },
 	arn: { value: "", ref: "" },
+	project_id: { value: "", ref: "" },
 	batch_s3_config: undefined as unknown as BatchS3Config,
 } as const satisfies Required<BedrockKeyConfig>;
 
@@ -145,6 +150,7 @@ export interface BedrockMantleKeyConfig {
 	role_arn?: SecretVar;
 	external_id?: SecretVar;
 	session_name?: SecretVar;
+	project_id?: SecretVar;
 }
 
 // Default BedrockMantleKeyConfig
@@ -156,6 +162,7 @@ export const DefaultBedrockMantleKeyConfig: BedrockMantleKeyConfig = {
 	role_arn: undefined as unknown as SecretVar,
 	external_id: undefined as unknown as SecretVar,
 	session_name: undefined as unknown as SecretVar,
+	project_id: undefined as unknown as SecretVar,
 } as const satisfies Required<BedrockMantleKeyConfig>;
 
 // VLLMKeyConfig matching Go's schemas.VLLMKeyConfig
@@ -459,9 +466,9 @@ export interface UpdateProviderRequest {
 	openai_config?: OpenAIConfig;
 }
 
-export interface CreateProviderKeyRequest extends ModelProviderKey { }
+export interface CreateProviderKeyRequest extends ModelProviderKey {}
 
-export interface UpdateProviderKeyRequest extends ModelProviderKey { }
+export interface UpdateProviderKeyRequest extends ModelProviderKey {}
 
 export interface ListProviderKeysResponse {
 	keys: ModelProviderKey[];

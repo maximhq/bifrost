@@ -38,6 +38,9 @@ const (
 
 // AddSpan adds a span to the trace in a thread-safe manner
 func (t *Trace) AddSpan(span *Span) {
+	if t == nil || span == nil {
+		return
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.Spans = append(t.Spans, span)
@@ -45,9 +48,15 @@ func (t *Trace) AddSpan(span *Span) {
 
 // GetSpan retrieves a span by ID
 func (t *Trace) GetSpan(spanID string) *Span {
+	if t == nil || spanID == "" {
+		return nil
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	for _, span := range t.Spans {
+		if span == nil {
+			continue
+		}
 		if span.SpanID == spanID {
 			return span
 		}
@@ -311,7 +320,7 @@ type Span struct {
 
 // SetAttribute sets an attribute on the span in a thread-safe manner
 func (s *Span) SetAttribute(key string, value any) {
-	if value == nil {
+	if s == nil || value == nil {
 		return
 	}
 	s.mu.Lock()
@@ -357,6 +366,9 @@ func (s *Span) snapshotForExport() *Span {
 
 // AddEvent adds an event to the span in a thread-safe manner
 func (s *Span) AddEvent(event SpanEvent) {
+	if s == nil {
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.Events = append(s.Events, event)
@@ -364,6 +376,9 @@ func (s *Span) AddEvent(event SpanEvent) {
 
 // End marks the span as complete with the given status
 func (s *Span) End(status SpanStatus, statusMsg string) {
+	if s == nil {
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.EndTime = time.Now()
@@ -708,6 +723,8 @@ const (
 	AttrBifrostUserName            = "bifrost.user.name"
 	AttrBifrostRetries             = "bifrost.retries"
 	AttrBifrostFallbackIndex       = "bifrost.fallback_index"
+	AttrBifrostAlias               = "bifrost.alias"                // original requested model when it differs from the resolved model
+	AttrBifrostRoutingEngineUsed   = "bifrost.routing_engine_used"  // comma-joined routing engines that handled the request
 	AttrBifrostStopSequencesJoined = "bifrost.request.stop_sequences"
 
 	// OTel general semconv (no gen_ai prefix). Emitted alongside the legacy

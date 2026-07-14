@@ -588,6 +588,43 @@ func TestToOpenAIChatRequest_CachingDeterminism(t *testing.T) {
 	}
 }
 
+func TestToOpenAIChatRequest_PromptCacheOptions(t *testing.T) {
+	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	defer cancel()
+
+	mode := "explicit"
+	ttl := "30m"
+	userContent := "hello"
+	mkReq := func(provider schemas.ModelProvider, model string) *schemas.BifrostChatRequest {
+		return &schemas.BifrostChatRequest{
+			Provider: provider,
+			Model:    model,
+			Input: []schemas.ChatMessage{{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: &userContent},
+			}},
+			Params: &schemas.ChatParameters{
+				PromptCacheOptions: &schemas.PromptCacheOptions{Mode: &mode, TTL: &ttl},
+			},
+		}
+	}
+
+	// OpenAI keeps the OpenAI-native field.
+	openai := ToOpenAIChatRequest(ctx, mkReq(schemas.OpenAI, "gpt-5.6"))
+	if openai == nil || openai.ChatParameters.PromptCacheOptions == nil {
+		t.Fatal("expected prompt_cache_options preserved for OpenAI")
+	}
+	if *openai.ChatParameters.PromptCacheOptions.Mode != mode || *openai.ChatParameters.PromptCacheOptions.TTL != ttl {
+		t.Fatalf("unexpected options: %#v", openai.ChatParameters.PromptCacheOptions)
+	}
+
+	// A non-OpenAI OpenAI-compatible provider strips it.
+	fw := ToOpenAIChatRequest(ctx, mkReq(schemas.Fireworks, "accounts/fireworks/models/deepseek-v3p2"))
+	if fw == nil || fw.ChatParameters.PromptCacheOptions != nil {
+		t.Fatalf("expected prompt_cache_options stripped for Fireworks, got %#v", fw.ChatParameters.PromptCacheOptions)
+	}
+}
+
 func TestToOpenAIChatRequest_FireworksPreservesReasoningAndCacheIsolation(t *testing.T) {
 	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
 	defer cancel()
@@ -1364,4 +1401,73 @@ func TestToOpenAIChatRequest_PreservesShortToolCallIDsContainingSeparator(t *tes
 	if *result.Messages[1].ChatToolMessage.ToolCallID != "search_ts_a" {
 		t.Errorf("short tool_call_id must be preserved, got %q", *result.Messages[1].ChatToolMessage.ToolCallID)
 	}
+}
+
+func TestOpenAIChatRequest_StripsCitationTextFromAnnotations(t *testing.T) {
+	req := &OpenAIChatRequest{
+		Model:    "gpt-4o",
+		Provider: schemas.OpenAI,
+		Messages: []OpenAIMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("who won?")}},
+			{
+				Role:    schemas.ChatMessageRoleAssistant,
+				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Spain won Euro 2024.")},
+				OpenAIChatAssistantMessage: &OpenAIChatAssistantMessage{
+					Annotations: []schemas.ChatAssistantMessageAnnotation{
+						{
+							Type: "url_citation",
+							URLCitation: schemas.ChatAssistantMessageAnnotationCitation{
+								StartIndex: 0,
+								EndIndex:   20,
+								Title:      "uefa.com",
+								URL:        schemas.Ptr("https://example.com/spain"),
+								Text:       schemas.Ptr("Spain won Euro 2024."),
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	wireBody, err := json.Marshal(req)
+	require.NoError(t, err)
+	s := string(wireBody)
+
+	require.Contains(t, s, `"url":"https://example.com/spain"`, "annotation url must survive")
+	require.Contains(t, s, `"title":"uefa.com"`, "annotation title must survive")
+	require.NotContains(t, s, `"text"`, "Bifrost-extension citation text must not reach the OpenAI wire")
+
+	// Original request must not be mutated
+	require.NotNil(t, req.Messages[1].OpenAIChatAssistantMessage.Annotations[0].URLCitation.Text)
+}
+
+func TestOpenAIChatRequest_StripsWebSearchOptionsFilters(t *testing.T) {
+	req := &OpenAIChatRequest{
+		Model:    "gpt-4o-search-preview",
+		Provider: schemas.OpenAI,
+		Messages: []OpenAIMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("who won?")}},
+		},
+		ChatParameters: schemas.ChatParameters{
+			WebSearchOptions: &schemas.ChatWebSearchOptions{
+				SearchContextSize: schemas.Ptr("high"),
+				Filters: &schemas.ChatWebSearchOptionsFilters{
+					BlockedDomains: []string{"pinterest.com"},
+				},
+			},
+		},
+	}
+
+	wireBody, err := json.Marshal(req)
+	require.NoError(t, err)
+	s := string(wireBody)
+
+	require.Contains(t, s, `"web_search_options"`, "web_search_options must survive for OpenAI")
+	require.Contains(t, s, `"search_context_size":"high"`, "native fields must survive")
+	require.NotContains(t, s, `"filters"`, "Bifrost-extension filters must not reach the OpenAI wire")
+	require.NotContains(t, s, "pinterest.com", "filter contents must not reach the OpenAI wire")
+
+	// Original request must not be mutated
+	require.NotNil(t, req.ChatParameters.WebSearchOptions.Filters)
 }

@@ -113,6 +113,7 @@ const BedrockKeyConfigSchema = z
 		external_id: z.string().optional(),
 		session_name: z.string().optional(),
 		arn: z.string().optional(),
+		project_id: z.string().optional(),
 		batch_s3_config: BatchS3ConfigSchema.optional(),
 	})
 	.refine(
@@ -150,6 +151,7 @@ const BedrockMantleKeyConfigSchema = z
 		role_arn: z.string().optional(),
 		external_id: z.string().optional(),
 		session_name: z.string().optional(),
+		project_id: z.string().optional(),
 	})
 	.refine(
 		(data) => {

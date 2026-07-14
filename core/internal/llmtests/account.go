@@ -187,6 +187,7 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 		schemas.Runway,
 		schemas.Runware,
 		schemas.Fireworks,
+		schemas.Sarvam,
 		ProviderOpenAICustom,
 	}, nil
 }
@@ -486,6 +487,15 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 		return []schemas.Key{
 			{
 				Value:          *schemas.NewSecretVar("env.CEREBRAS_API_KEY"),
+				Models:         []string{"*"},
+				Weight:         1.0,
+				UseForBatchAPI: bifrost.Ptr(true),
+			},
+		}, nil
+	case schemas.Sarvam:
+		return []schemas.Key{
+			{
+				Value:          *schemas.NewSecretVar("env.SARVAM_API_KEY"),
 				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),

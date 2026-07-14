@@ -43,6 +43,18 @@ func (a *Accumulator) ResumeStream(traceID string) {
 	sa.Resume()
 }
 
+// ClearPausedStreamBuffer drops chunks buffered while a stream is paused.
+func (a *Accumulator) ClearPausedStreamBuffer(traceID string) error {
+	if traceID == "" {
+		return fmt.Errorf("trace ID is empty")
+	}
+	v, ok := a.streamAccumulators.Load(traceID)
+	if !ok {
+		return fmt.Errorf("stream accumulator not found")
+	}
+	return v.(*StreamAccumulator).ClearPausedBuffer()
+}
+
 // EndStream is the Tracer-level entry point for terminating a stream.
 // Any buffered chunks are flushed first; then if err is non-nil it is delivered
 // as a terminal error chunk. After EndStream, further provider chunks are dropped.
@@ -220,6 +232,27 @@ func (sa *StreamAccumulator) Resume() {
 	if sa.gateCond != nil {
 		sa.gateCond.Broadcast()
 	}
+}
+
+// ClearPausedBuffer removes replay chunks captured while the gate is paused.
+// If a terminal chunk was among the dropped chunks, delivering a replacement
+// terminal becomes the caller's responsibility.
+func (sa *StreamAccumulator) ClearPausedBuffer() error {
+	sa.mu.Lock()
+	defer sa.mu.Unlock()
+	if sa.gateState != StreamStatePaused {
+		return fmt.Errorf("stream gate is not paused")
+	}
+	sa.gateReplayBuf = nil
+	sa.gateReplayBufBytes = 0
+	// A terminal chunk buffered while paused no longer exists; keeping the
+	// pending-terminal marker would make the flusher end the gate on resume
+	// and silently drop the caller's replacement terminal chunk.
+	sa.gatePendingTerminal = false
+	if sa.gateCond != nil {
+		sa.gateCond.Broadcast()
+	}
+	return nil
 }
 
 // End transitions the gate to Ended. Any buffered chunks are flushed by the

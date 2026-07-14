@@ -571,6 +571,10 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			if key.BedrockKeyConfig.RoleSessionName != nil {
 				bedrockConfig.RoleSessionName = key.BedrockKeyConfig.RoleSessionName.Redacted()
 			}
+			// Mantle project ID is an identifier, not a credential — surface it in plaintext.
+			if key.BedrockKeyConfig.ProjectID != nil {
+				bedrockConfig.ProjectID = key.BedrockKeyConfig.ProjectID
+			}
 			// Add back s3 config
 			if key.BedrockKeyConfig.BatchS3Config != nil {
 				bedrockConfig.BatchS3Config = key.BedrockKeyConfig.BatchS3Config
@@ -597,6 +601,10 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			}
 			if key.BedrockMantleKeyConfig.RoleSessionName != nil {
 				mantleConfig.RoleSessionName = key.BedrockMantleKeyConfig.RoleSessionName.Redacted()
+			}
+			// Project ID is an identifier, not a credential — surface it in plaintext.
+			if key.BedrockMantleKeyConfig.ProjectID != nil {
+				mantleConfig.ProjectID = key.BedrockMantleKeyConfig.ProjectID
 			}
 			redactedConfig.Keys[i].BedrockMantleKeyConfig = mantleConfig
 		}
