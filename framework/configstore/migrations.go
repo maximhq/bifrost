@@ -446,6 +446,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_inference_geo_multiplier_column"}, run: migrationAddInferenceGeoMultiplierColumn},
 	{IDs: []string{"repair_bare_wildcard_allowed_models"}, run: migrationRepairBareWildcardAllowedModels},
 	{IDs: []string{"add_bedrock_project_id_columns"}, run: migrationAddBedrockProjectIDColumns},
+	{IDs: []string{"add_dual_credential_conflict_behavior_column"}, run: migrationAddDualCredentialConflictBehaviorColumn},
 }
 
 // quoteSQLiteIdentifier quotes a SQLite identifier, escaping any double quotes.
@@ -5391,6 +5392,36 @@ func migrationAddEnforceAuthOnInferenceColumn(ctx context.Context, db *gorm.DB, 
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running enforce auth on inference column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddDualCredentialConflictBehaviorColumn adds the dual_credential_conflict_behavior
+// column to the config_client table. The column is added with its gorm-defined
+// NOT NULL default ('prefer_idp'), so existing rows retain the pre-feature behavior.
+func migrationAddDualCredentialConflictBehaviorColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_dual_credential_conflict_behavior_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, "dual_credential_conflict_behavior"); err != nil {
+				return err
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "dual_credential_conflict_behavior"); err != nil {
+				return err
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running dual credential conflict behavior column migration: %s", err.Error())
 	}
 	return nil
 }

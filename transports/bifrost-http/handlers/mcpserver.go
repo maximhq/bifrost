@@ -643,11 +643,9 @@ func (h *MCPServerHandler) getMCPServerForRequest(ctx *fasthttp.RequestCtx) (*mc
 	if h.identityResolver != nil &&
 		(authMode == tables.MCPServerAuthModeHeaders || authMode == tables.MCPServerAuthModeBoth) {
 		if userID, _ := ctx.UserValue(schemas.BifrostContextKeyUserID).(string); userID != "" {
-			// The user identity is the sole credential; reject a stray virtual key
-			// header so it is not also attributed to the request.
-			if headerVK := getVKFromRequest(ctx); headerVK != "" {
-				return nil, fmt.Errorf("conflicting credentials: a user token and a virtual key header were both provided; send only one")
-			}
+			// Dual-credential conflict (IDP token + VK) is handled upstream in the SCIM
+			// InferenceMiddleware before identity is stamped, respecting the operator's
+			// dual_credential_conflict_behavior config. No check needed here.
 			vkID, err := h.identityResolver.ResolveUserVirtualKey(ctx, userID)
 			if err != nil {
 				return nil, err
