@@ -2506,7 +2506,7 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 						contentBlock.Signature = schemas.Ptr("")
 						// Preserve signature if present
 						if bifrostResp.Item.ResponsesReasoning != nil && bifrostResp.Item.ResponsesReasoning.EncryptedContent != nil && *bifrostResp.Item.ResponsesReasoning.EncryptedContent != "" {
-							contentBlock.Data = bifrostResp.Item.ResponsesReasoning.EncryptedContent
+							contentBlock.Data = wrapRedactedThinkingDataForEgress(bifrostResp.ExtraFields.Provider, bifrostResp.Item.ID, bifrostResp.Item.ResponsesReasoning.EncryptedContent)
 							// When signature is present but thinking content is empty, use redacted_thinking
 							if contentBlock.Thinking != nil && *contentBlock.Thinking == "" {
 								contentBlock.Type = AnthropicContentBlockTypeRedactedThinking
@@ -2523,7 +2523,7 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 							// Check if there's encrypted content for redacted_thinking
 							if bifrostResp.Item.ResponsesReasoning.EncryptedContent != nil && *bifrostResp.Item.ResponsesReasoning.EncryptedContent != "" {
 								contentBlock.Type = AnthropicContentBlockTypeRedactedThinking
-								contentBlock.Data = bifrostResp.Item.ResponsesReasoning.EncryptedContent
+								contentBlock.Data = wrapRedactedThinkingDataForEgress(bifrostResp.ExtraFields.Provider, bifrostResp.Item.ID, bifrostResp.Item.ResponsesReasoning.EncryptedContent)
 							}
 						} else {
 							// Regular function call - check if ContentIndex is 0 and thinking might be enabled
@@ -3926,7 +3926,7 @@ func ToAnthropicResponsesResponse(ctx *schemas.BifrostContext, bifrostResp *sche
 	// Convert output messages to Anthropic content blocks using the new conversion method
 	var contentBlocks []AnthropicContentBlock
 	if bifrostResp.Output != nil {
-		anthropicMessages, _ := ConvertBifrostMessagesToAnthropicMessages(ctx, bifrostResp.Output, false, "", "")
+		anthropicMessages, _ := convertBifrostMessagesToAnthropicMessages(ctx, bifrostResp.Output, false, "", "", bifrostResp.ExtraFields.Provider)
 		// Extract content blocks from the converted messages
 		for _, msg := range anthropicMessages {
 			if msg.Content.ContentBlocks != nil {
@@ -4038,6 +4038,15 @@ func ConvertAnthropicMessagesToBifrostMessages(ctx *schemas.BifrostContext, anth
 // This is the main conversion method from Bifrost to Anthropic - handles all message types and returns messages + system content.
 // provider and model are used to gate mid-conversation system message support (Anthropic + Opus 4.8+ only).
 func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifrostMessages []schemas.ResponsesMessage, isRequestMessage bool, provider schemas.ModelProvider, model string) ([]AnthropicMessage, *AnthropicContent) {
+	return convertBifrostMessagesToAnthropicMessages(ctx, bifrostMessages, isRequestMessage, provider, model, "")
+}
+
+// convertBifrostMessagesToAnthropicMessages is the implementation behind
+// ConvertBifrostMessagesToAnthropicMessages. sourceProvider carries the provenance of the
+// messages (the provider that actually produced them) when converting a response back to
+// Anthropic format for the client; it is empty on the request path, where the provider
+// argument carries destination semantics instead.
+func convertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifrostMessages []schemas.ResponsesMessage, isRequestMessage bool, provider schemas.ModelProvider, model string, sourceProvider schemas.ModelProvider) ([]AnthropicMessage, *AnthropicContent) {
 	// If only a single system message is present, convert it user message (since openai allows it)
 	if len(bifrostMessages) == 1 && bifrostMessages[0].Role != nil && (*bifrostMessages[0].Role == schemas.ResponsesInputMessageRoleSystem || *bifrostMessages[0].Role == schemas.ResponsesInputMessageRoleDeveloper) {
 		if systemContent := convertBifrostMessageToAnthropicSystemContent(&bifrostMessages[0]); systemContent != nil {
@@ -4299,7 +4308,7 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 			flushPendingToolResults()
 
 			// Handle reasoning as thinking content
-			reasoningBlocks := convertBifrostReasoningToAnthropicThinking(&msg)
+			reasoningBlocks := convertBifrostReasoningToAnthropicThinking(&msg, isRequestMessage, sourceProvider)
 			pendingReasoningContentBlocks = append(pendingReasoningContentBlocks, reasoningBlocks...)
 
 		case schemas.ResponsesMessageTypeFunctionCall:
@@ -4915,7 +4924,7 @@ func convertAnthropicContentBlocksToResponsesMessagesGrouped(contentBlocks []Ant
 			// Handle redacted thinking (encrypted content)
 			if block.Data != nil {
 				bifrostMsg := schemas.ResponsesMessage{
-					ID:   schemas.Ptr("rs_" + providerUtils.GetRandomString(50)),
+					ID:   schemas.Ptr(redactedThinkingReplayItemID(*block.Data)),
 					Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
 					ResponsesReasoning: &schemas.ResponsesReasoning{
 						Summary:          []schemas.ResponsesReasoningSummary{},
@@ -5233,7 +5242,7 @@ func convertAnthropicContentBlocksToResponsesMessages(ctx *schemas.BifrostContex
 		case AnthropicContentBlockTypeRedactedThinking:
 			if block.Data != nil {
 				bifrostMsg := schemas.ResponsesMessage{
-					ID:   schemas.Ptr("rs_" + providerUtils.GetRandomString(50)),
+					ID:   schemas.Ptr(redactedThinkingReplayItemID(*block.Data)),
 					Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
 					ResponsesReasoning: &schemas.ResponsesReasoning{
 						Summary:          []schemas.ResponsesReasoningSummary{},
@@ -5683,8 +5692,12 @@ func convertBifrostMessageToAnthropicMessage(msg *schemas.ResponsesMessage, pend
 	return &anthropicMsg
 }
 
-// convertBifrostReasoningToAnthropicThinking converts a Bifrost reasoning message to Anthropic thinking blocks
-func convertBifrostReasoningToAnthropicThinking(msg *schemas.ResponsesMessage) []AnthropicContentBlock {
+// convertBifrostReasoningToAnthropicThinking converts a Bifrost reasoning message to Anthropic thinking blocks.
+// isRequestMessage and sourceProvider mirror the enclosing conversion: on the request path
+// (Anthropic-bound), redacted blocks carrying a Bifrost envelope with another provider's
+// ciphertext are dropped rather than forwarded to Claude; on the response path, OpenAI-origin
+// encrypted reasoning is wrapped in an envelope so the item id survives the id-less block.
+func convertBifrostReasoningToAnthropicThinking(msg *schemas.ResponsesMessage, isRequestMessage bool, sourceProvider schemas.ModelProvider) []AnthropicContentBlock {
 	var thinkingBlocks []AnthropicContentBlock
 
 	if msg.Content != nil && msg.Content.ContentBlocks != nil {
@@ -5705,30 +5718,72 @@ func convertBifrostReasoningToAnthropicThinking(msg *schemas.ResponsesMessage) [
 			}
 		}
 	} else if msg.ResponsesReasoning != nil {
-		// Redacted-only reasoning items carry an EMPTY (non-nil) summary list next
-		// to encrypted_content, in both the streaming and non-streaming converters,
-		// so gate on the list having entries rather than on nil: a nil-check sends
-		// such items through the summary loop, emits nothing, and drops the
-		// encrypted payload from the replayed request.
-		if len(msg.ResponsesReasoning.Summary) > 0 {
-			for _, reasoningContent := range msg.ResponsesReasoning.Summary {
-				thinkingBlock := AnthropicContentBlock{
-					Type:      AnthropicContentBlockTypeThinking,
-					Thinking:  &reasoningContent.Text,
-					Signature: schemas.Ptr(""), // required by the Agent SDK; converted reasoning has no signature
-				}
-				thinkingBlocks = append(thinkingBlocks, thinkingBlock)
-			}
-		} else if msg.ResponsesReasoning.EncryptedContent != nil && *msg.ResponsesReasoning.EncryptedContent != "" {
+		// Summary blocks and encrypted state are emitted independently: an OpenAI item
+		// can carry both (reasoning summaries enabled next to encrypted_content), and an
+		// if/else would lose the (item_id, ciphertext) pair. Redacted-only items carry an
+		// empty (non-nil) summary list, so the loop below emits nothing for them and the
+		// encrypted branch preserves the payload.
+		for _, reasoningContent := range msg.ResponsesReasoning.Summary {
 			thinkingBlock := AnthropicContentBlock{
-				Type: AnthropicContentBlockTypeRedactedThinking,
-				Data: msg.ResponsesReasoning.EncryptedContent,
+				Type:      AnthropicContentBlockTypeThinking,
+				Thinking:  &reasoningContent.Text,
+				Signature: schemas.Ptr(""), // required by the Agent SDK; converted reasoning has no signature
 			}
 			thinkingBlocks = append(thinkingBlocks, thinkingBlock)
+		}
+		// Encrypted state is emitted IN ADDITION to any summary blocks: an OpenAI item
+		// can carry both (e.g. reasoning summaries enabled next to encrypted_content),
+		// and an if/else here would lose the (item_id, ciphertext) pair. Redacted-only
+		// items carry an empty (non-nil) summary list, which the loop above skips.
+		if msg.ResponsesReasoning.EncryptedContent != nil && *msg.ResponsesReasoning.EncryptedContent != "" {
+			data := msg.ResponsesReasoning.EncryptedContent
+			emit := true
+			if isRequestMessage {
+				// Anthropic-bound request: an envelope carries another provider's
+				// ciphertext, which Claude cannot decrypt. Drop the block instead of
+				// forwarding it. Native Anthropic data never unwraps and passes
+				// through byte-identically.
+				if envProvider, _, _, ok := providerUtils.UnwrapEncryptedReasoning(*data); ok && envProvider != string(schemas.Anthropic) {
+					emit = false
+				}
+			} else {
+				data = wrapRedactedThinkingDataForEgress(sourceProvider, msg.ID, data)
+			}
+			if emit {
+				thinkingBlocks = append(thinkingBlocks, AnthropicContentBlock{
+					Type: AnthropicContentBlockTypeRedactedThinking,
+					Data: data,
+				})
+			}
 		}
 	}
 
 	return thinkingBlocks
+}
+
+// wrapRedactedThinkingDataForEgress returns the data payload for a redacted_thinking block
+// emitted to an Anthropic-format client. OpenAI validates encrypted reasoning against the
+// exact item id it was issued with, but the redacted_thinking block schema has no id field,
+// so for OpenAI-origin items carrying an id the ciphertext is wrapped in a Bifrost envelope
+// that preserves the id for replay. Everything else passes through unchanged.
+func wrapRedactedThinkingDataForEgress(sourceProvider schemas.ModelProvider, itemID *string, encryptedContent *string) *string {
+	if sourceProvider == schemas.OpenAI && itemID != nil && *itemID != "" &&
+		encryptedContent != nil && *encryptedContent != "" {
+		return schemas.Ptr(providerUtils.WrapEncryptedReasoning(string(schemas.OpenAI), *itemID, *encryptedContent))
+	}
+	return encryptedContent
+}
+
+// redactedThinkingReplayItemID returns the reasoning item id for a replayed
+// redacted_thinking block: when data is a Bifrost envelope it restores the original
+// provider item id so OpenAI's encrypted-content/item-id check passes (the envelope
+// itself stays in EncryptedContent so the final destination-provider conversion decides
+// how to decode it), otherwise raw data keeps today's behavior of a fresh random id.
+func redactedThinkingReplayItemID(data string) string {
+	if _, originalID, _, ok := providerUtils.UnwrapEncryptedReasoning(data); ok {
+		return originalID
+	}
+	return "rs_" + providerUtils.GetRandomString(50)
 }
 
 // convertBifrostFunctionCallToAnthropicToolUse converts a Bifrost function call to Anthropic tool use

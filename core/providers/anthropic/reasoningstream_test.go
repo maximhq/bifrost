@@ -117,7 +117,7 @@ func TestConvertBifrostReasoning_SignaturePresent(t *testing.T) {
 		},
 	}
 
-	blocks := convertBifrostReasoningToAnthropicThinking(msg)
+	blocks := convertBifrostReasoningToAnthropicThinking(msg, false, schemas.OpenAI)
 	if len(blocks) != 1 {
 		t.Fatalf("expected 1 thinking block, got %d", len(blocks))
 	}

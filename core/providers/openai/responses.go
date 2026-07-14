@@ -161,6 +161,28 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 				if !isReasoning && !isCompactionMessage {
 					message.ResponsesReasoning.EncryptedContent = nil
 				}
+				// Deferred decoding of the Bifrost redacted-thinking envelope: history
+				// replayed through the Anthropic surface carries OpenAI encrypted reasoning
+				// as an envelope holding the original item id and ciphertext (the Anthropic
+				// block schema has no id field). This converter is shared by
+				// OpenAI-compatible providers (Azure, OpenRouter, ...) and fallback
+				// preparation reuses the same input while changing only provider/model, so
+				// only a request bound for OpenAI itself may see the raw ciphertext and id;
+				// for any other destination the envelope item is dropped rather than
+				// leaking another endpoint's ciphertext. Raw payloads never unwrap and are
+				// sent as-is. message and reasoningCopy are provider-local copies, so the
+				// shared neutral request is not mutated.
+				if message.ResponsesReasoning.EncryptedContent != nil {
+					if envProvider, itemID, payload, ok := utils.UnwrapEncryptedReasoning(*message.ResponsesReasoning.EncryptedContent); ok {
+						if bifrostReq.Provider != schemas.OpenAI || envProvider != string(schemas.OpenAI) {
+							continue
+						}
+						message.ResponsesReasoning.EncryptedContent = schemas.Ptr(payload)
+						// The item id was normally restored from the envelope at ingress;
+						// re-assert it here since the ciphertext is only valid under it.
+						message.ID = schemas.Ptr(itemID)
+					}
+				}
 				// OpenAI types reasoning.content as an array of reasoning_text blocks, so a
 				// string value is rejected ("expected an array ... got a string"). Replayed
 				// reasoning items can arrive with content as a string (e.g. an empty "" round-tripped
