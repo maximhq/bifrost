@@ -1358,7 +1358,8 @@ type ChatMCPServer struct {
 
 // ChatInputImage represents image data in a message.
 type ChatInputImage struct {
-	URL    string  `json:"url"`
+	URL    string  `json:"url,omitempty"`
+	FileID *string `json:"file_id,omitempty"` // Reference to an uploaded file (in place of URL)
 	Detail *string `json:"detail,omitempty"`
 }
 
