@@ -267,9 +267,17 @@ func RunSpeechSynthesisStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost,
 				return
 			}
 
-			// Test streaming with HD model and very long text
+			// Test streaming with HD model and very long text.
+			// Deepgram's speak endpoint hard-rejects input over 2000 characters
+			// (unlike the other providers exercised here), so it gets fewer
+			// sentences to stay under that limit while still exercising
+			// multi-chunk streaming.
+			sentenceCount := 20
+			if testConfig.Provider == schemas.Deepgram {
+				sentenceCount = 18
+			}
 			finalText := ""
-			for i := 1; i <= 20; i++ {
+			for i := 1; i <= sentenceCount; i++ {
 				finalText += strings.Replace("This is sentence number %d in a very long text for testing streaming speech synthesis with the HD model. ", "%d", string(rune('0'+i%10)), -1)
 			}
 
