@@ -5720,9 +5720,53 @@
           "items": {
             "type": "string"
           }
+        },
+        "model_budgets": {
+          "type": "array",
+          "description": "Per-model budgets scoped to this provider. On copy/sync to a user each entry becomes a user-scoped model config (model_name + this provider) enforced on the generated virtual keys.",
+          "items": {
+            "$ref": "#/$defs/access_profile_model_budget"
+          }
         }
       },
       "required": ["provider_name"],
+      "additionalProperties": false
+    },
+    "access_profile_model_budget": {
+      "type": "object",
+      "properties": {
+        "model_name": {
+          "type": "string",
+          "description": "The model this budget applies to"
+        },
+        "budgets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/access_profile_model_budget_line"
+          }
+        }
+      },
+      "required": ["model_name"],
+      "additionalProperties": false
+    },
+    "access_profile_model_budget_line": {
+      "type": "object",
+      "description": "Budget line for an access-profile model budget. Restricted to id/max_limit/reset_duration: calendar alignment is set on the parent access profile, so the deprecated per-line calendar_aligned of budget_line is not accepted here.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Budget ID"
+        },
+        "max_limit": {
+          "type": "number",
+          "description": "Maximum spend limit in USD"
+        },
+        "reset_duration": {
+          "type": "string",
+          "description": "Reset window, e.g. \"1M\", \"1h\""
+        }
+      },
+      "required": ["id", "max_limit", "reset_duration"],
       "additionalProperties": false
     },
     "access_profile_mcp_tool_group": {

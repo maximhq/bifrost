@@ -2134,7 +2134,7 @@ func TestLoadConfig_AuthCodeTTLAboveMaxFailsBoot(t *testing.T) {
 	})
 
 	ctx := context.Background()
-	config, err := LoadConfig(ctx, tempDir)
+	config, err := LoadConfig(ctx, tempDir, nil)
 	if config != nil {
 		defer config.Close(ctx)
 	}
@@ -8231,7 +8231,7 @@ func TestSQLite_Provider_NewProviderFromFile(t *testing.T) {
 
 	// Load config - this should create the provider in the DB
 	ctx := context.Background()
-	config, err := LoadConfig(ctx, tempDir)
+	config, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
@@ -8269,7 +8269,7 @@ func TestSQLite_Provider_HashMatch_DBPreserved(t *testing.T) {
 
 	// First load - creates provider in DB
 	ctx := context.Background()
-	config1, err := LoadConfig(ctx, tempDir)
+	config1, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("First LoadConfig failed: %v", err)
 	}
@@ -8280,7 +8280,7 @@ func TestSQLite_Provider_HashMatch_DBPreserved(t *testing.T) {
 	config1.Close(ctx)
 
 	// Second load with same config.json - should preserve DB config
-	config2, err := LoadConfig(ctx, tempDir)
+	config2, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
@@ -8312,7 +8312,7 @@ func TestSQLite_Provider_HashMismatch_FileSync(t *testing.T) {
 
 	// First load
 	ctx := context.Background()
-	config1, err := LoadConfig(ctx, tempDir)
+	config1, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("First LoadConfig failed: %v", err)
 	}
@@ -8330,7 +8330,7 @@ func TestSQLite_Provider_HashMismatch_FileSync(t *testing.T) {
 	createConfigFile(t, tempDir, configData2)
 
 	// Second load with modified config.json - should sync from file
-	config2, err := LoadConfig(ctx, tempDir)
+	config2, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
@@ -8364,7 +8364,7 @@ func TestSQLite_Provider_DBOnlyProvider_Preserved(t *testing.T) {
 
 	// First load
 	ctx := context.Background()
-	config1, err := LoadConfig(ctx, tempDir)
+	config1, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("First LoadConfig failed: %v", err)
 	}
@@ -8396,7 +8396,7 @@ func TestSQLite_Provider_DBOnlyProvider_Preserved(t *testing.T) {
 	config1.Close(ctx)
 
 	// Second load with same config.json (no Anthropic) - should preserve DB-added provider
-	config2, err := LoadConfig(ctx, tempDir)
+	config2, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
@@ -8427,7 +8427,7 @@ func TestSQLite_SourceOfTruthConfigJSON_ProviderAndKeysPruned(t *testing.T) {
 	createConfigFile(t, tempDir, configData)
 
 	ctx := context.Background()
-	config1, err := LoadConfig(ctx, tempDir)
+	config1, err := LoadConfig(ctx, tempDir, nil)
 	require.NoError(t, err)
 
 	existingProviders, err := config1.ConfigStore.GetProvidersConfig(ctx)
@@ -8455,7 +8455,7 @@ func TestSQLite_SourceOfTruthConfigJSON_ProviderAndKeysPruned(t *testing.T) {
 	configData.SourceOfTruth = SourceOfTruthConfigJSON
 	createConfigFile(t, tempDir, configData)
 
-	config2, err := LoadConfig(ctx, tempDir)
+	config2, err := LoadConfig(ctx, tempDir, nil)
 	require.NoError(t, err)
 	defer config2.Close(ctx)
 
@@ -8482,7 +8482,7 @@ func TestSQLite_Provider_RoundTrip(t *testing.T) {
 
 	// First load
 	ctx := context.Background()
-	config1, err := LoadConfig(ctx, tempDir)
+	config1, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("First LoadConfig failed: %v", err)
 	}
@@ -8502,7 +8502,7 @@ func TestSQLite_Provider_RoundTrip(t *testing.T) {
 	config1.Close(ctx)
 
 	// Second load with same config.json - should preserve DB changes since hash matches
-	config2, err := LoadConfig(ctx, tempDir)
+	config2, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
@@ -8544,7 +8544,7 @@ func TestSQLite_Key_NewKeyFromFile(t *testing.T) {
 
 	// Load config
 	ctx := context.Background()
-	config, err := LoadConfig(ctx, tempDir)
+	config, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
@@ -8579,7 +8579,7 @@ func TestSQLite_Key_HashMatch_DBKeyPreserved(t *testing.T) {
 
 	// First load
 	ctx := context.Background()
-	config1, err := LoadConfig(ctx, tempDir)
+	config1, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("First LoadConfig failed: %v", err)
 	}
@@ -8590,7 +8590,7 @@ func TestSQLite_Key_HashMatch_DBKeyPreserved(t *testing.T) {
 	config1.Close(ctx)
 
 	// Second load with same config
-	config2, err := LoadConfig(ctx, tempDir)
+	config2, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
@@ -8629,7 +8629,7 @@ func TestSQLite_Key_DashboardAddedKey_Preserved(t *testing.T) {
 
 	// First load
 	ctx := context.Background()
-	config1, err := LoadConfig(ctx, tempDir)
+	config1, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("First LoadConfig failed: %v", err)
 	}
@@ -8651,7 +8651,7 @@ func TestSQLite_Key_DashboardAddedKey_Preserved(t *testing.T) {
 	config1.Close(ctx)
 
 	// Second load with same config.json (still has only file-key)
-	config2, err := LoadConfig(ctx, tempDir)
+	config2, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
@@ -8696,7 +8696,7 @@ func TestSQLite_Key_KeyValueChange_Detected(t *testing.T) {
 
 	// First load
 	ctx := context.Background()
-	config1, err := LoadConfig(ctx, tempDir)
+	config1, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("First LoadConfig failed: %v", err)
 	}
@@ -8721,7 +8721,7 @@ func TestSQLite_Key_KeyValueChange_Detected(t *testing.T) {
 	createConfigFile(t, tempDir, configData2)
 
 	// Second load with modified config
-	config2, err := LoadConfig(ctx, tempDir)
+	config2, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
@@ -8756,7 +8756,7 @@ func TestSQLite_Key_MultipleKeys_MergeLogic(t *testing.T) {
 
 	// First load
 	ctx := context.Background()
-	config1, err := LoadConfig(ctx, tempDir)
+	config1, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("First LoadConfig failed: %v", err)
 	}
@@ -8783,7 +8783,7 @@ func TestSQLite_Key_MultipleKeys_MergeLogic(t *testing.T) {
 	config1.Close(ctx)
 
 	// Second load with same config.json (still has key-1 and key-2)
-	config2, err := LoadConfig(ctx, tempDir)
+	config2, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
@@ -8826,7 +8826,7 @@ func TestSQLite_VirtualKey_NewFromFile(t *testing.T) {
 
 	// Load config
 	ctx := context.Background()
-	config, err := LoadConfig(ctx, tempDir)
+	config, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
@@ -8866,7 +8866,7 @@ func TestSQLite_VirtualKey_HashMatch_DBPreserved(t *testing.T) {
 
 	// First load
 	ctx := context.Background()
-	config1, err := LoadConfig(ctx, tempDir)
+	config1, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("First LoadConfig failed: %v", err)
 	}
@@ -8877,7 +8877,7 @@ func TestSQLite_VirtualKey_HashMatch_DBPreserved(t *testing.T) {
 	config1.Close(ctx)
 
 	// Second load with same config.json
-	config2, err := LoadConfig(ctx, tempDir)
+	config2, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
@@ -8907,7 +8907,7 @@ func TestSQLite_VirtualKey_HashMismatch_FileSync(t *testing.T) {
 
 	// First load
 	ctx := context.Background()
-	config1, err := LoadConfig(ctx, tempDir)
+	config1, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("First LoadConfig failed: %v", err)
 	}
@@ -8934,7 +8934,7 @@ func TestSQLite_VirtualKey_HashMismatch_FileSync(t *testing.T) {
 	createConfigFile(t, tempDir, configData2)
 
 	// Second load with modified config
-	config2, err := LoadConfig(ctx, tempDir)
+	config2, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
@@ -8969,7 +8969,7 @@ func TestSQLite_VirtualKey_DBOnlyVK_Preserved(t *testing.T) {
 
 	// First load
 	ctx := context.Background()
-	config1, err := LoadConfig(ctx, tempDir)
+	config1, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("First LoadConfig failed: %v", err)
 	}
@@ -8991,7 +8991,7 @@ func TestSQLite_VirtualKey_DBOnlyVK_Preserved(t *testing.T) {
 	config1.Close(ctx)
 
 	// Second load with same config.json (only has vk-file)
-	config2, err := LoadConfig(ctx, tempDir)
+	config2, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
@@ -9044,7 +9044,7 @@ func TestSQLite_VirtualKey_WithProviderConfigs(t *testing.T) {
 
 	// Load config
 	ctx := context.Background()
-	config, err := LoadConfig(ctx, tempDir)
+	config, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
@@ -9105,7 +9105,7 @@ func TestSQLite_VirtualKey_MergePath_WithProviderConfigs(t *testing.T) {
 
 	// First load - bootstrap path
 	ctx := context.Background()
-	config1, err := LoadConfig(ctx, tempDir)
+	config1, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("First LoadConfig failed: %v", err)
 	}
@@ -9136,7 +9136,7 @@ func TestSQLite_VirtualKey_MergePath_WithProviderConfigs(t *testing.T) {
 	createConfigFile(t, tempDir, configData2)
 
 	// Second load - merge path (this is where the bug is)
-	config2, err := LoadConfig(ctx, tempDir)
+	config2, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
@@ -9207,7 +9207,7 @@ func TestSQLite_VirtualKey_MergePath_WithProviderConfigKeys(t *testing.T) {
 
 	// First load - bootstrap path (creates provider with key in DB)
 	ctx := context.Background()
-	config1, err := LoadConfig(ctx, tempDir)
+	config1, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("First LoadConfig failed: %v", err)
 	}
@@ -9252,7 +9252,7 @@ func TestSQLite_VirtualKey_MergePath_WithProviderConfigKeys(t *testing.T) {
 	// Second load - merge path
 	// BEFORE FIX: This would fail because GORM tries to INSERT the key again
 	// AFTER FIX: CreateVirtualKeyProviderConfig uses Append() to associate existing keys
-	config2, err := LoadConfig(ctx, tempDir)
+	config2, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
@@ -9398,7 +9398,7 @@ func TestSQLite_VKProviderConfig_NewConfig(t *testing.T) {
 
 	// Load config
 	ctx := context.Background()
-	config, err := LoadConfig(ctx, tempDir)
+	config, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
@@ -9465,7 +9465,7 @@ func TestSQLite_VKProviderConfig_KeyIDsWildcardFlipsAllowAllKeys(t *testing.T) {
 	configData1.SourceOfTruth = SourceOfTruthConfigJSON
 	createConfigFile(t, tempDir, configData1)
 
-	config1, err := LoadConfig(ctx, tempDir)
+	config1, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("First LoadConfig failed: %v", err)
 	}
@@ -9499,7 +9499,7 @@ func TestSQLite_VKProviderConfig_KeyIDsWildcardFlipsAllowAllKeys(t *testing.T) {
 	configData2.SourceOfTruth = SourceOfTruthConfigJSON
 	createConfigFile(t, tempDir, configData2)
 
-	config2, err := LoadConfig(ctx, tempDir)
+	config2, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
@@ -9557,7 +9557,7 @@ func TestSQLite_VKProviderConfig_KeyReference(t *testing.T) {
 
 	// Load config
 	ctx := context.Background()
-	config, err := LoadConfig(ctx, tempDir)
+	config, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
@@ -9864,7 +9864,7 @@ func TestSQLite_FullLifecycle_InitialLoad(t *testing.T) {
 
 	// Load config
 	ctx := context.Background()
-	config, err := LoadConfig(ctx, tempDir)
+	config, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
@@ -9923,7 +9923,7 @@ func TestSQLite_FullLifecycle_SecondLoadNoChanges(t *testing.T) {
 
 	// First load
 	ctx := context.Background()
-	config1, err := LoadConfig(ctx, tempDir)
+	config1, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("First LoadConfig failed: %v", err)
 	}
@@ -9936,7 +9936,7 @@ func TestSQLite_FullLifecycle_SecondLoadNoChanges(t *testing.T) {
 	config1.Close(ctx)
 
 	// Second load with same config.json
-	config2, err := LoadConfig(ctx, tempDir)
+	config2, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
@@ -9978,7 +9978,7 @@ func TestSQLite_FullLifecycle_FileChange_Selective(t *testing.T) {
 
 	// First load
 	ctx := context.Background()
-	config1, err := LoadConfig(ctx, tempDir)
+	config1, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("First LoadConfig failed: %v", err)
 	}
@@ -10011,7 +10011,7 @@ func TestSQLite_FullLifecycle_FileChange_Selective(t *testing.T) {
 	createConfigFile(t, tempDir, configData2)
 
 	// Second load
-	config2, err := LoadConfig(ctx, tempDir)
+	config2, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
@@ -10067,7 +10067,7 @@ func TestSQLite_FullLifecycle_DashboardEdits_ThenFileUnchanged(t *testing.T) {
 
 	// First load
 	ctx := context.Background()
-	config1, err := LoadConfig(ctx, tempDir)
+	config1, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("First LoadConfig failed: %v", err)
 	}
@@ -10105,7 +10105,7 @@ func TestSQLite_FullLifecycle_DashboardEdits_ThenFileUnchanged(t *testing.T) {
 	config1.Close(ctx)
 
 	// Second load with SAME config.json (unchanged)
-	config2, err := LoadConfig(ctx, tempDir)
+	config2, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
@@ -10324,7 +10324,7 @@ func TestSQLite_VirtualKey_WithMCPConfigs(t *testing.T) {
 	createConfigFile(t, tempDir, configData)
 
 	// First load - creates VK
-	config1, err := LoadConfig(ctx, tempDir)
+	config1, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("First LoadConfig failed: %v", err)
 	}
@@ -10413,7 +10413,7 @@ func TestSQLite_VKMCPConfig_Reconciliation(t *testing.T) {
 	createConfigFile(t, tempDir, configData)
 
 	// First load
-	config1, err := LoadConfig(ctx, tempDir)
+	config1, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("First LoadConfig failed: %v", err)
 	}
@@ -10490,7 +10490,7 @@ func TestSQLite_VKMCPConfig_Reconciliation(t *testing.T) {
 	createConfigFile(t, tempDir, configData2)
 
 	// Second load - should trigger reconciliation
-	config2, err := LoadConfig(ctx, tempDir)
+	config2, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
@@ -10587,7 +10587,7 @@ func TestSQLite_VirtualKey_DashboardProviderConfig_DeletedOnFileChange(t *testin
 	createConfigFile(t, tempDir, configData)
 
 	// Step 2: First load - bootstrap path
-	config1, err := LoadConfig(ctx, tempDir)
+	config1, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("First LoadConfig failed: %v", err)
 	}
@@ -10651,7 +10651,7 @@ func TestSQLite_VirtualKey_DashboardProviderConfig_DeletedOnFileChange(t *testin
 	createConfigFile(t, tempDir, configData2)
 
 	// Step 5: Second load - merge path with hash mismatch
-	config2, err := LoadConfig(ctx, tempDir)
+	config2, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
@@ -10735,7 +10735,7 @@ func TestSQLite_VirtualKey_DashboardMCPConfig_DeletedOnFileChange(t *testing.T) 
 	createConfigFile(t, tempDir, configData)
 
 	// Step 2: First load - bootstrap path
-	config1, err := LoadConfig(ctx, tempDir)
+	config1, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("First LoadConfig failed: %v", err)
 	}
@@ -10826,7 +10826,7 @@ func TestSQLite_VirtualKey_DashboardMCPConfig_DeletedOnFileChange(t *testing.T) 
 	createConfigFile(t, tempDir, configData2)
 
 	// Step 5: Second load - merge path with hash mismatch
-	config2, err := LoadConfig(ctx, tempDir)
+	config2, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
@@ -10905,7 +10905,7 @@ func TestSQLite_VKMCPConfig_AddRemove(t *testing.T) {
 	createConfigFile(t, tempDir, configData)
 
 	// First load
-	config1, err := LoadConfig(ctx, tempDir)
+	config1, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("First LoadConfig failed: %v", err)
 	}
@@ -10944,7 +10944,7 @@ func TestSQLite_VKMCPConfig_AddRemove(t *testing.T) {
 	createConfigFile(t, tempDir, configData2)
 
 	// Second load - should add MCP configs
-	config2, err := LoadConfig(ctx, tempDir)
+	config2, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
@@ -10976,7 +10976,7 @@ func TestSQLite_VKMCPConfig_AddRemove(t *testing.T) {
 	createConfigFile(t, tempDir, configData3)
 
 	// Third load - mcpClient2 config should be DELETED (file is source of truth)
-	config3, err := LoadConfig(ctx, tempDir)
+	config3, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("Third LoadConfig failed: %v", err)
 	}
@@ -11027,7 +11027,7 @@ func TestSQLite_VKMCPConfig_UpdateTools(t *testing.T) {
 	createConfigFile(t, tempDir, configData)
 
 	// First load
-	config1, err := LoadConfig(ctx, tempDir)
+	config1, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("First LoadConfig failed: %v", err)
 	}
@@ -11077,7 +11077,7 @@ func TestSQLite_VKMCPConfig_UpdateTools(t *testing.T) {
 	createConfigFile(t, tempDir, configData2)
 
 	// Second load - should update tools
-	config2, err := LoadConfig(ctx, tempDir)
+	config2, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
@@ -11121,7 +11121,7 @@ func TestSQLite_VK_ProviderAndMCPConfigs_Combined(t *testing.T) {
 	createConfigFile(t, tempDir, configData)
 
 	// First load to set up DB
-	config1, err := LoadConfig(ctx, tempDir)
+	config1, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("First LoadConfig failed: %v", err)
 	}
@@ -11159,7 +11159,7 @@ func TestSQLite_VK_ProviderAndMCPConfigs_Combined(t *testing.T) {
 	createConfigFile(t, tempDir, configData2)
 
 	// Load config
-	config2, err := LoadConfig(ctx, tempDir)
+	config2, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
@@ -11254,7 +11254,7 @@ func TestSQLite_VKMCPConfig_MCPClientNameResolution(t *testing.T) {
 	createConfigFile(t, tempDir, configData)
 
 	// First load to set up MCP clients in DB
-	config1, err := LoadConfig(ctx, tempDir)
+	config1, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("First LoadConfig failed: %v", err)
 	}
@@ -11349,7 +11349,7 @@ func TestSQLite_VKMCPConfig_MCPClientNameResolution(t *testing.T) {
 	}
 
 	// Load config - this should resolve mcp_client_name to MCPClientID
-	config2, err := LoadConfig(ctx, tempDir)
+	config2, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("LoadConfig with mcp_client_name failed: %v", err)
 	}
@@ -11468,7 +11468,7 @@ func TestSQLite_VKMCPConfig_MCPClientNameNotFound(t *testing.T) {
 	}
 
 	// Load config - should not fail, but should skip the unresolvable MCP config
-	config, err := LoadConfig(ctx, tempDir)
+	config, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("LoadConfig should not fail when MCP client name is not found: %v", err)
 	}
@@ -12223,7 +12223,7 @@ func TestSQLite_Budget_NewFromFile(t *testing.T) {
 	createConfigFile(t, tempDir, configData)
 
 	ctx := context.Background()
-	config, err := LoadConfig(ctx, tempDir)
+	config, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
@@ -12275,7 +12275,7 @@ func TestLoadConfig_Governance_FirstImportUsesMergeIDHandling(t *testing.T) {
 	createConfigFile(t, tempDir, configData)
 
 	ctx := context.Background()
-	config, err := LoadConfig(ctx, tempDir)
+	config, err := LoadConfig(ctx, tempDir, nil)
 	require.NoError(t, err)
 	defer config.Close(ctx)
 
@@ -12350,7 +12350,7 @@ func TestSQLite_Budget_HashMatch_DBPreserved(t *testing.T) {
 	createConfigFile(t, tempDir, configData)
 
 	ctx := context.Background()
-	config1, err := LoadConfig(ctx, tempDir)
+	config1, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("First LoadConfig failed: %v", err)
 	}
@@ -12361,7 +12361,7 @@ func TestSQLite_Budget_HashMatch_DBPreserved(t *testing.T) {
 	config1.Close(ctx)
 
 	// Second load - same config
-	config2, err := LoadConfig(ctx, tempDir)
+	config2, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
@@ -12389,7 +12389,7 @@ func TestSQLite_Budget_HashMismatch_FileSync(t *testing.T) {
 	createConfigFile(t, tempDir, configData)
 
 	ctx := context.Background()
-	config1, err := LoadConfig(ctx, tempDir)
+	config1, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("First LoadConfig failed: %v", err)
 	}
@@ -12400,7 +12400,7 @@ func TestSQLite_Budget_HashMismatch_FileSync(t *testing.T) {
 	createConfigFile(t, tempDir, configData)
 
 	// Second load - should sync from file
-	config2, err := LoadConfig(ctx, tempDir)
+	config2, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
@@ -12428,7 +12428,7 @@ func TestSQLite_Budget_DBOnly_Preserved(t *testing.T) {
 	createConfigFile(t, tempDir, configData)
 
 	ctx := context.Background()
-	config1, err := LoadConfig(ctx, tempDir)
+	config1, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("First LoadConfig failed: %v", err)
 	}
@@ -12445,7 +12445,7 @@ func TestSQLite_Budget_DBOnly_Preserved(t *testing.T) {
 	config1.Close(ctx)
 
 	// Reload - dashboard budget should be preserved
-	config2, err := LoadConfig(ctx, tempDir)
+	config2, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
@@ -12579,7 +12579,7 @@ func TestSQLite_RateLimit_NewFromFile(t *testing.T) {
 	createConfigFile(t, tempDir, configData)
 
 	ctx := context.Background()
-	config, err := LoadConfig(ctx, tempDir)
+	config, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
@@ -12617,7 +12617,7 @@ func TestSQLite_RateLimit_HashMismatch_FileSync(t *testing.T) {
 	createConfigFile(t, tempDir, configData)
 
 	ctx := context.Background()
-	config1, err := LoadConfig(ctx, tempDir)
+	config1, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("First LoadConfig failed: %v", err)
 	}
@@ -12629,7 +12629,7 @@ func TestSQLite_RateLimit_HashMismatch_FileSync(t *testing.T) {
 	createConfigFile(t, tempDir, configData)
 
 	// Second load
-	config2, err := LoadConfig(ctx, tempDir)
+	config2, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
@@ -12757,7 +12757,7 @@ func TestSQLite_Customer_NewFromFile(t *testing.T) {
 	createConfigFile(t, tempDir, configData)
 
 	ctx := context.Background()
-	config, err := LoadConfig(ctx, tempDir)
+	config, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
@@ -12791,7 +12791,7 @@ func TestSQLite_Customer_HashMismatch_FileSync(t *testing.T) {
 	createConfigFile(t, tempDir, configData)
 
 	ctx := context.Background()
-	config1, err := LoadConfig(ctx, tempDir)
+	config1, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("First LoadConfig failed: %v", err)
 	}
@@ -12801,7 +12801,7 @@ func TestSQLite_Customer_HashMismatch_FileSync(t *testing.T) {
 	configData.Governance.Customers[0].Name = "Updated Customer"
 	createConfigFile(t, tempDir, configData)
 
-	config2, err := LoadConfig(ctx, tempDir)
+	config2, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
@@ -12932,7 +12932,7 @@ func TestSQLite_Team_NewFromFile(t *testing.T) {
 	createConfigFile(t, tempDir, configData)
 
 	ctx := context.Background()
-	config, err := LoadConfig(ctx, tempDir)
+	config, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
@@ -12967,7 +12967,7 @@ func TestSQLite_Team_HashMismatch_FileSync(t *testing.T) {
 	createConfigFile(t, tempDir, configData)
 
 	ctx := context.Background()
-	config1, err := LoadConfig(ctx, tempDir)
+	config1, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("First LoadConfig failed: %v", err)
 	}
@@ -12977,7 +12977,7 @@ func TestSQLite_Team_HashMismatch_FileSync(t *testing.T) {
 	configData.Governance.Teams[0].Name = "Updated Team"
 	createConfigFile(t, tempDir, configData)
 
-	config2, err := LoadConfig(ctx, tempDir)
+	config2, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
@@ -13885,7 +13885,7 @@ func TestSQLite_Governance_FullReconciliation(t *testing.T) {
 	createConfigFile(t, tempDir, configData)
 
 	ctx := context.Background()
-	config1, err := LoadConfig(ctx, tempDir)
+	config1, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("First LoadConfig failed: %v", err)
 	}
@@ -13915,7 +13915,7 @@ func TestSQLite_Governance_FullReconciliation(t *testing.T) {
 	createConfigFile(t, tempDir, configData)
 
 	// Reload and verify all entities are updated
-	config2, err := LoadConfig(ctx, tempDir)
+	config2, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
@@ -13950,7 +13950,7 @@ func TestSQLite_Governance_DBOnly_AllPreserved(t *testing.T) {
 	createConfigFile(t, tempDir, configData)
 
 	ctx := context.Background()
-	config1, err := LoadConfig(ctx, tempDir)
+	config1, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("First LoadConfig failed: %v", err)
 	}
@@ -13986,7 +13986,7 @@ func TestSQLite_Governance_DBOnly_AllPreserved(t *testing.T) {
 	config1.Close(ctx)
 
 	// Reload - all dashboard entities should be preserved
-	config2, err := LoadConfig(ctx, tempDir)
+	config2, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
@@ -14033,7 +14033,7 @@ func TestSQLite_SourceOfTruthConfigJSON_BulkEntityPruning(t *testing.T) {
 	}
 	createConfigFile(t, tempDir, configData)
 
-	config1, err := LoadConfig(ctx, tempDir)
+	config1, err := LoadConfig(ctx, tempDir, nil)
 	require.NoError(t, err)
 
 	dbProviders, err := config1.ConfigStore.GetProvidersConfig(ctx)
@@ -14072,7 +14072,7 @@ func TestSQLite_SourceOfTruthConfigJSON_BulkEntityPruning(t *testing.T) {
 	configData.SourceOfTruth = SourceOfTruthConfigJSON
 	createConfigFile(t, tempDir, configData)
 
-	config2, err := LoadConfig(ctx, tempDir)
+	config2, err := LoadConfig(ctx, tempDir, nil)
 	require.NoError(t, err)
 	defer config2.Close(ctx)
 
@@ -14409,7 +14409,7 @@ func TestSQLite_Governance_PricingOverrides_Reconciliation(t *testing.T) {
 	ctx := context.Background()
 
 	// First load: pricing override should be created in the DB
-	config1, err := LoadConfig(ctx, tempDir)
+	config1, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("First LoadConfig failed: %v", err)
 	}
@@ -14430,7 +14430,7 @@ func TestSQLite_Governance_PricingOverrides_Reconciliation(t *testing.T) {
 	config1.Close(ctx)
 
 	// Second load (unchanged config): should NOT fail with duplicate key error
-	config2, err := LoadConfig(ctx, tempDir)
+	config2, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed (duplicate key bug): %v", err)
 	}
@@ -14448,7 +14448,7 @@ func TestSQLite_Governance_PricingOverrides_Reconciliation(t *testing.T) {
 	configData.Governance.PricingOverrides[0].Pattern = "gpt-4o"
 	createConfigFile(t, tempDir, configData)
 
-	config3, err := LoadConfig(ctx, tempDir)
+	config3, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("Third LoadConfig failed: %v", err)
 	}
@@ -15366,7 +15366,7 @@ func TestKeyWeight_ZeroPreserved(t *testing.T) {
 	configData := makeConfigDataWithProvidersAndDir(providers, tempDir)
 	createConfigFile(t, tempDir, configData)
 
-	config, err := LoadConfig(context.Background(), tempDir)
+	config, err := LoadConfig(context.Background(), tempDir, nil)
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
@@ -15403,7 +15403,7 @@ func TestKeyWeight_DefaultToOneWhenNotSet(t *testing.T) {
 	configData := makeConfigDataWithProvidersAndDir(providers, tempDir)
 	createConfigFile(t, tempDir, configData)
 
-	config, err := LoadConfig(context.Background(), tempDir)
+	config, err := LoadConfig(context.Background(), tempDir, nil)
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
@@ -15439,7 +15439,7 @@ func TestSQLite_Key_WeightZero_RoundTrip(t *testing.T) {
 	ctx := context.Background()
 
 	// First load - creates DB entries
-	config1, err := LoadConfig(ctx, tempDir)
+	config1, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("First LoadConfig failed: %v", err)
 	}
@@ -15450,7 +15450,7 @@ func TestSQLite_Key_WeightZero_RoundTrip(t *testing.T) {
 	config1.Close(ctx)
 
 	// Second load - reads from DB
-	config2, err := LoadConfig(ctx, tempDir)
+	config2, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
@@ -15496,7 +15496,7 @@ func TestVKProviderConfig_WeightZeroPreserved(t *testing.T) {
 	createConfigFile(t, tempDir, configData)
 
 	ctx := context.Background()
-	config, err := LoadConfig(ctx, tempDir)
+	config, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
@@ -15558,7 +15558,7 @@ func TestSQLite_VKProviderConfig_WeightZero_RoundTrip(t *testing.T) {
 	ctx := context.Background()
 
 	// First load
-	config1, err := LoadConfig(ctx, tempDir)
+	config1, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("First LoadConfig failed: %v", err)
 	}
@@ -15576,7 +15576,7 @@ func TestSQLite_VKProviderConfig_WeightZero_RoundTrip(t *testing.T) {
 	config1.Close(ctx)
 
 	// Second load from DB
-	config2, err := LoadConfig(ctx, tempDir)
+	config2, err := LoadConfig(ctx, tempDir, nil)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
@@ -15753,7 +15753,7 @@ func TestSQLite_Key_EnabledChange_Detected(t *testing.T) {
 
 	// First load
 	createConfigFile(t, tempDir, initialConfig)
-	config1, err := LoadConfig(context.Background(), tempDir)
+	config1, err := LoadConfig(context.Background(), tempDir, nil)
 	if err != nil {
 		t.Fatalf("First LoadConfig failed: %v", err)
 	}
@@ -15784,7 +15784,7 @@ func TestSQLite_Key_EnabledChange_Detected(t *testing.T) {
 
 	// Second load with changed Enabled value
 	createConfigFile(t, tempDir, updatedConfig)
-	config2, err := LoadConfig(context.Background(), tempDir)
+	config2, err := LoadConfig(context.Background(), tempDir, nil)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
@@ -15924,7 +15924,7 @@ func TestSQLite_Key_UseForBatchAPIChange_Detected(t *testing.T) {
 
 	// First load
 	createConfigFile(t, tempDir, initialConfig)
-	config1, err := LoadConfig(context.Background(), tempDir)
+	config1, err := LoadConfig(context.Background(), tempDir, nil)
 	if err != nil {
 		t.Fatalf("First LoadConfig failed: %v", err)
 	}
@@ -15953,7 +15953,7 @@ func TestSQLite_Key_UseForBatchAPIChange_Detected(t *testing.T) {
 
 	// Second load with changed UseForBatchAPI value
 	createConfigFile(t, tempDir, updatedConfig)
-	config2, err := LoadConfig(context.Background(), tempDir)
+	config2, err := LoadConfig(context.Background(), tempDir, nil)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
@@ -16407,7 +16407,7 @@ func TestProviderHashComparison_VertexProviderFullLifecycle(t *testing.T) {
 	}, tempDir)
 
 	createConfigFile(t, tempDir, initialConfig)
-	config1, err := LoadConfig(context.Background(), tempDir)
+	config1, err := LoadConfig(context.Background(), tempDir, nil)
 	if err != nil {
 		t.Fatalf("First LoadConfig failed: %v", err)
 	}
@@ -16443,7 +16443,7 @@ func TestProviderHashComparison_VertexProviderFullLifecycle(t *testing.T) {
 	}, tempDir)
 
 	createConfigFile(t, tempDir, updatedConfig)
-	config2, err := LoadConfig(context.Background(), tempDir)
+	config2, err := LoadConfig(context.Background(), tempDir, nil)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
@@ -16457,7 +16457,7 @@ func TestProviderHashComparison_VertexProviderFullLifecycle(t *testing.T) {
 	}
 
 	// Phase 3: Same config again - should not trigger update (hash matches)
-	config3, err := LoadConfig(context.Background(), tempDir)
+	config3, err := LoadConfig(context.Background(), tempDir, nil)
 	if err != nil {
 		t.Fatalf("Third LoadConfig failed: %v", err)
 	}
@@ -16495,7 +16495,7 @@ func TestProviderHashComparison_VertexNewProviderFromConfig(t *testing.T) {
 	}, tempDir)
 
 	createConfigFile(t, tempDir, configData)
-	config, err := LoadConfig(context.Background(), tempDir)
+	config, err := LoadConfig(context.Background(), tempDir, nil)
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
@@ -16545,7 +16545,7 @@ func TestProviderHashComparison_VertexDBValuePreservedWhenHashMatches(t *testing
 	}, tempDir)
 
 	createConfigFile(t, tempDir, configData)
-	config1, err := LoadConfig(context.Background(), tempDir)
+	config1, err := LoadConfig(context.Background(), tempDir, nil)
 	if err != nil {
 		t.Fatalf("First LoadConfig failed: %v", err)
 	}
@@ -16558,7 +16558,7 @@ func TestProviderHashComparison_VertexDBValuePreservedWhenHashMatches(t *testing
 	config1.Close(context.Background())
 
 	// Reload with same config file - DB value should be preserved since hash matches
-	config2, err := LoadConfig(context.Background(), tempDir)
+	config2, err := LoadConfig(context.Background(), tempDir, nil)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
@@ -16602,7 +16602,7 @@ func TestProviderHashComparison_VertexConfigChangedInFile(t *testing.T) {
 	}, tempDir)
 
 	createConfigFile(t, tempDir, initialConfig)
-	config1, err := LoadConfig(context.Background(), tempDir)
+	config1, err := LoadConfig(context.Background(), tempDir, nil)
 	if err != nil {
 		t.Fatalf("First LoadConfig failed: %v", err)
 	}
@@ -16627,7 +16627,7 @@ func TestProviderHashComparison_VertexConfigChangedInFile(t *testing.T) {
 	}, tempDir)
 
 	createConfigFile(t, tempDir, updatedConfig)
-	config2, err := LoadConfig(context.Background(), tempDir)
+	config2, err := LoadConfig(context.Background(), tempDir, nil)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
@@ -18457,7 +18457,7 @@ func TestLoadConfig_GovernanceAuthConfig_PersistsFromFirstImport(t *testing.T) {
 	}
 	createConfigFile(t, tempDir, configData)
 
-	config1, err := LoadConfig(ctx, tempDir)
+	config1, err := LoadConfig(ctx, tempDir, nil)
 	require.NoError(t, err)
 	storedAuth, err := config1.ConfigStore.GetAuthConfig(ctx)
 	require.NoError(t, err)
@@ -18470,7 +18470,7 @@ func TestLoadConfig_GovernanceAuthConfig_PersistsFromFirstImport(t *testing.T) {
 	configData.Governance = nil
 	createConfigFile(t, tempDir, configData)
 
-	config2, err := LoadConfig(ctx, tempDir)
+	config2, err := LoadConfig(ctx, tempDir, nil)
 	require.NoError(t, err)
 	defer config2.Close(ctx)
 	require.NotNil(t, config2.GovernanceConfig)
@@ -18910,7 +18910,7 @@ func TestLoadConfig_NoConfigFile_FreshStart(t *testing.T) {
 	tempDir := createTempDir(t)
 	ctx := context.Background()
 
-	config, err := LoadConfig(ctx, tempDir)
+	config, err := LoadConfig(ctx, tempDir, nil)
 	require.NoError(t, err)
 	require.NotNil(t, config)
 	defer config.Close(ctx)
@@ -18957,7 +18957,7 @@ func TestLoadConfig_NoConfigFile_ExistingDB(t *testing.T) {
 	}
 	createConfigFile(t, tempDir, configData)
 
-	config1, err := LoadConfig(ctx, tempDir)
+	config1, err := LoadConfig(ctx, tempDir, nil)
 	require.NoError(t, err)
 	require.NotNil(t, config1)
 
@@ -18971,7 +18971,7 @@ func TestLoadConfig_NoConfigFile_ExistingDB(t *testing.T) {
 	require.NoError(t, os.Remove(filepath.Join(tempDir, "config.json")))
 
 	// Second run: no config.json, but DB has data
-	config2, err := LoadConfig(ctx, tempDir)
+	config2, err := LoadConfig(ctx, tempDir, nil)
 	require.NoError(t, err)
 	require.NotNil(t, config2)
 	defer config2.Close(ctx)
@@ -19029,7 +19029,7 @@ func TestLoadConfig_FullConfigFile_FreshDB(t *testing.T) {
 
 	createConfigFile(t, tempDir, configData)
 
-	config, err := LoadConfig(ctx, tempDir)
+	config, err := LoadConfig(ctx, tempDir, nil)
 	require.NoError(t, err)
 	require.NotNil(t, config)
 	defer config.Close(ctx)
@@ -19068,7 +19068,7 @@ func TestLoadConfig_PartialConfigFile_OnlyProviders(t *testing.T) {
 
 	createConfigFile(t, tempDir, configData)
 
-	config, err := LoadConfig(ctx, tempDir)
+	config, err := LoadConfig(ctx, tempDir, nil)
 	require.NoError(t, err)
 	require.NotNil(t, config)
 	defer config.Close(ctx)
@@ -19104,7 +19104,7 @@ func TestLoadConfig_PartialConfigFile_OnlyClient(t *testing.T) {
 
 	createConfigFile(t, tempDir, configData)
 
-	config, err := LoadConfig(ctx, tempDir)
+	config, err := LoadConfig(ctx, tempDir, nil)
 	require.NoError(t, err)
 	require.NotNil(t, config)
 	defer config.Close(ctx)
@@ -19135,7 +19135,7 @@ func TestLoadConfig_PartialConfigFile_OnlyGovernance(t *testing.T) {
 
 	createConfigFile(t, tempDir, configData)
 
-	config, err := LoadConfig(ctx, tempDir)
+	config, err := LoadConfig(ctx, tempDir, nil)
 	require.NoError(t, err)
 	require.NotNil(t, config)
 	defer config.Close(ctx)
@@ -19163,7 +19163,7 @@ func TestLoadConfig_PartialConfigFile_OnlyPlugins(t *testing.T) {
 
 	createConfigFile(t, tempDir, configData)
 
-	config, err := LoadConfig(ctx, tempDir)
+	config, err := LoadConfig(ctx, tempDir, nil)
 	require.NoError(t, err)
 	require.NotNil(t, config)
 	defer config.Close(ctx)
@@ -19191,7 +19191,7 @@ func TestLoadConfig_PartialConfigFile_OnlyMCP(t *testing.T) {
 
 	createConfigFile(t, tempDir, configData)
 
-	config, err := LoadConfig(ctx, tempDir)
+	config, err := LoadConfig(ctx, tempDir, nil)
 	require.NoError(t, err)
 	require.NotNil(t, config)
 	defer config.Close(ctx)
@@ -19225,7 +19225,7 @@ func TestLoadConfig_PartialConfigFile_ClientAndProviders(t *testing.T) {
 
 	createConfigFile(t, tempDir, configData)
 
-	config, err := LoadConfig(ctx, tempDir)
+	config, err := LoadConfig(ctx, tempDir, nil)
 	require.NoError(t, err)
 	require.NotNil(t, config)
 	defer config.Close(ctx)
@@ -19252,7 +19252,7 @@ func TestLoadConfig_ConfigFile_NoConfigStoreSection(t *testing.T) {
 	}
 	createConfigFile(t, tempDir, configData)
 
-	config, err := LoadConfig(ctx, tempDir)
+	config, err := LoadConfig(ctx, tempDir, nil)
 	require.NoError(t, err)
 	require.NotNil(t, config)
 	defer config.Close(ctx)
@@ -19282,7 +19282,7 @@ func TestLoadConfig_ConfigFile_ConfigStoreDisabled(t *testing.T) {
 	}
 	createConfigFile(t, tempDir, configData)
 
-	config, err := LoadConfig(ctx, tempDir)
+	config, err := LoadConfig(ctx, tempDir, nil)
 	require.NoError(t, err)
 	require.NotNil(t, config)
 	defer config.Close(ctx)
@@ -19309,7 +19309,7 @@ func TestLoadConfig_NoConfigFile_SecondRun(t *testing.T) {
 	}
 
 	// First run: no config.json -> auto-detect and create defaults
-	config1, err := LoadConfig(ctx, tempDir)
+	config1, err := LoadConfig(ctx, tempDir, nil)
 	require.NoError(t, err)
 	require.NotNil(t, config1)
 
@@ -19324,7 +19324,7 @@ func TestLoadConfig_NoConfigFile_SecondRun(t *testing.T) {
 	config1.Close(ctx)
 
 	// Second run: still no config.json -> should load from DB
-	config2, err := LoadConfig(ctx, tempDir)
+	config2, err := LoadConfig(ctx, tempDir, nil)
 	require.NoError(t, err)
 	require.NotNil(t, config2)
 	defer config2.Close(ctx)
@@ -19363,7 +19363,7 @@ func TestLoadConfig_PartialConfigFile_WithExistingDB(t *testing.T) {
 	configData1 := makeConfigDataFullWithDir(nil, providers1, governance1, tempDir)
 	createConfigFile(t, tempDir, configData1)
 
-	config1, err := LoadConfig(ctx, tempDir)
+	config1, err := LoadConfig(ctx, tempDir, nil)
 	require.NoError(t, err)
 	require.Len(t, config1.Providers, 2, "Should have 2 providers from first load")
 	require.NotNil(t, config1.GovernanceConfig)
@@ -19381,7 +19381,7 @@ func TestLoadConfig_PartialConfigFile_WithExistingDB(t *testing.T) {
 	// Note: no governance section in this config.json
 	createConfigFile(t, tempDir, configData2)
 
-	config2, err := LoadConfig(ctx, tempDir)
+	config2, err := LoadConfig(ctx, tempDir, nil)
 	require.NoError(t, err)
 	require.NotNil(t, config2)
 	defer config2.Close(ctx)
@@ -19407,7 +19407,7 @@ func TestLoadConfig_WebSocket_Defaults(t *testing.T) {
 		configData := makeMinimalConfigData(tempDir)
 		createConfigFile(t, tempDir, configData)
 
-		config, err := LoadConfig(ctx, tempDir)
+		config, err := LoadConfig(ctx, tempDir, nil)
 		require.NoError(t, err)
 		require.NotNil(t, config)
 		defer config.Close(ctx)
@@ -19423,7 +19423,7 @@ func TestLoadConfig_DefaultClientConfig_Values(t *testing.T) {
 	ctx := context.Background()
 
 	// No config.json -> defaults applied
-	config, err := LoadConfig(ctx, tempDir)
+	config, err := LoadConfig(ctx, tempDir, nil)
 	require.NoError(t, err)
 	require.NotNil(t, config)
 	defer config.Close(ctx)
@@ -19448,7 +19448,7 @@ func TestLoadConfig_PartialClientConfig_DefaultsFillGaps(t *testing.T) {
 
 	createConfigFile(t, tempDir, configData)
 
-	config, err := LoadConfig(ctx, tempDir)
+	config, err := LoadConfig(ctx, tempDir, nil)
 	require.NoError(t, err)
 	require.NotNil(t, config)
 	defer config.Close(ctx)
@@ -19805,7 +19805,7 @@ func TestVersionField_DefaultBehavior(t *testing.T) {
 	}
 	createConfigFile(t, tempDir, cd)
 
-	config, err := LoadConfig(ctx, tempDir)
+	config, err := LoadConfig(ctx, tempDir, nil)
 	require.NoError(t, err)
 	require.NotNil(t, config)
 	defer config.Close(ctx)
@@ -19834,7 +19834,7 @@ func TestVersionField_Version1_AppliesCompat(t *testing.T) {
 	}
 	createConfigFile(t, tempDir, cd)
 
-	config, err := LoadConfig(ctx, tempDir)
+	config, err := LoadConfig(ctx, tempDir, nil)
 	require.NoError(t, err)
 	require.NotNil(t, config)
 	defer config.Close(ctx)
@@ -19861,7 +19861,7 @@ func TestVersionField_Version2_NoCompat(t *testing.T) {
 	}
 	createConfigFile(t, tempDir, cd)
 
-	config, err := LoadConfig(ctx, tempDir)
+	config, err := LoadConfig(ctx, tempDir, nil)
 	require.NoError(t, err)
 	require.NotNil(t, config)
 	defer config.Close(ctx)

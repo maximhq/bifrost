@@ -483,6 +483,10 @@ type Config struct {
 
 	configPath string
 
+	// vkPruneProtector, when set via WithVirtualKeyPruneProtector, returns the
+	// virtual key IDs that config.json source-of-truth pruning must never delete
+	vkPruneProtector VirtualKeyPruneProtector
+
 	// Stores
 	ConfigStore configstore.ConfigStore
 	VectorStore vectorstore.VectorStore
@@ -771,15 +775,16 @@ func registerFeatureFlags(_ context.Context) error {
 //   - Case conversion for provider names (e.g., "OpenAI" -> "openai")
 //   - In-memory storage for ultra-fast access during request processing
 //   - Graceful handling of missing config files
-func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
+func LoadConfig(ctx context.Context, configDirPath string, vkPruneProtector VirtualKeyPruneProtector) (*Config, error) {
 	configFilePath := filepath.Join(configDirPath, "config.json")
 	configDBPath := filepath.Join(configDirPath, "config.db")
 	logsDBPath := filepath.Join(configDirPath, "logs.db")
 	// Initialize config
 	config := &Config{
-		configPath: configFilePath,
-		Providers:  make(map[schemas.ModelProvider]configstore.ProviderConfig),
-		LLMPlugins: atomic.Pointer[[]schemas.LLMPlugin]{},
+		configPath:       configFilePath,
+		Providers:        make(map[schemas.ModelProvider]configstore.ProviderConfig),
+		LLMPlugins:       atomic.Pointer[[]schemas.LLMPlugin]{},
+		vkPruneProtector: vkPruneProtector,
 	}
 	// Register feature flags before any file/DB-driven init so the
 	// registry is populated even when config.json is absent. initFeatureFlags
@@ -2601,6 +2606,14 @@ func mergeComplexityAnalyzerConfigFromFile(current, fileConfig *configstore.Comp
 	return configstore.MergeComplexityAnalyzerConfigByHashes(base, fileConfig)
 }
 
+// VirtualKeyPruneProtector returns the set of virtual key IDs that config.json
+// source-of-truth pruning must never delete — e.g. the per-user keys minted by
+// enterprise access profiles, which can never appear in config.json and would
+// otherwise be wiped on every restart. Enterprise builds pass one to LoadConfig
+// so the OSS prune can honor runtime-managed keys without OSS depending on
+// enterprise schema.
+type VirtualKeyPruneProtector func(ctx context.Context, store configstore.ConfigStore) (map[string]bool, error)
+
 // pruneGovernanceConfigToFile removes DB-only governance rows for file-present collections.
 func pruneGovernanceConfigToFile(ctx context.Context, config *Config, configData *ConfigData) {
 	if config.ConfigStore == nil || config.GovernanceConfig == nil || configData.Governance == nil {
@@ -2608,6 +2621,104 @@ func pruneGovernanceConfigToFile(ctx context.Context, config *Config, configData
 	}
 	logger.Debug("source_of_truth=config.json: pruning governance rows not present in config file")
 	err := config.ConfigStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+		// Resolve VKs that must survive pruning even though they are absent from
+		// config.json — currently the per-user keys minted by enterprise access
+		// profiles. Without this, every restart deletes them.
+		var protectedVKIDs map[string]bool
+		if config.vkPruneProtector != nil {
+			ids, protErr := config.vkPruneProtector(ctx, config.ConfigStore)
+			if protErr != nil {
+				return fmt.Errorf("failed to resolve prune-protected virtual keys: %w", protErr)
+			}
+			protectedVKIDs = ids
+		}
+		// Also protect a protected VK's DB-only dependents so the sibling passes
+		// below don't strip them (silently dropping enforcement after restart).
+		// GetGovernanceConfig doesn't preload owner .Budgets, so collect the
+		// protected owner IDs and scan the flat Budgets slice by owner FK; rate
+		// limits are read directly from their scalar *ID columns.
+		protectedBudgetIDs := make(map[string]bool)
+		protectedRateLimitIDs := make(map[string]bool)
+		protectedModelConfigIDs := make(map[string]bool)
+		protectedProviderConfigIDs := make(map[uint]bool)
+		protectedTeamIDs := make(map[string]bool)
+		protectedCustomerIDs := make(map[string]bool)
+		protectedUserIDs := make(map[string]bool)
+		if len(protectedVKIDs) > 0 {
+			protectRateLimit := func(id *string) {
+				if id != nil && *id != "" {
+					protectedRateLimitIDs[*id] = true
+				}
+			}
+			for _, vk := range config.GovernanceConfig.VirtualKeys {
+				if !protectedVKIDs[vk.ID] {
+					continue
+				}
+				protectRateLimit(vk.RateLimitID)
+				for _, pc := range vk.ProviderConfigs {
+					protectedProviderConfigIDs[pc.ID] = true
+					protectRateLimit(pc.RateLimitID)
+				}
+				// Protect the VK's inherited team/customer from deletion too.
+				if vk.TeamID != nil && *vk.TeamID != "" {
+					protectedTeamIDs[*vk.TeamID] = true
+				}
+				if vk.CustomerID != nil && *vk.CustomerID != "" {
+					protectedCustomerIDs[*vk.CustomerID] = true
+				}
+				// AP model_budgets become scope=user model configs keyed by the VK
+				// owner, so track that user to protect them below.
+				if vk.CreatedByUserID != nil && *vk.CreatedByUserID != "" {
+					protectedUserIDs[*vk.CreatedByUserID] = true
+				}
+			}
+			for _, mc := range config.GovernanceConfig.ModelConfigs {
+				// Protect model configs scoped to a protected VK or AP user.
+				switch {
+				case mc.Scope == configstoreTables.ModelConfigScopeVirtualKey && mc.ScopeID != nil && protectedVKIDs[*mc.ScopeID]:
+				case mc.Scope == configstoreTables.ModelConfigScopeUser && mc.ScopeID != nil && protectedUserIDs[*mc.ScopeID]:
+				default:
+					continue
+				}
+				protectedModelConfigIDs[mc.ID] = true
+				protectRateLimit(mc.RateLimitID)
+			}
+			// Protect inherited teams' rate limits and fold in their parent
+			// customer (before the customers walk below).
+			for _, team := range config.GovernanceConfig.Teams {
+				if !protectedTeamIDs[team.ID] {
+					continue
+				}
+				protectRateLimit(team.RateLimitID)
+				if team.CustomerID != nil && *team.CustomerID != "" {
+					protectedCustomerIDs[*team.CustomerID] = true
+				}
+			}
+			for _, customer := range config.GovernanceConfig.Customers {
+				if !protectedCustomerIDs[customer.ID] {
+					continue
+				}
+				protectRateLimit(customer.RateLimitID)
+			}
+			// A budget has one owner FK; protect it when that owner is protected.
+			for _, b := range config.GovernanceConfig.Budgets {
+				if b.ID == "" {
+					continue
+				}
+				switch {
+				case b.VirtualKeyID != nil && protectedVKIDs[*b.VirtualKeyID]:
+					protectedBudgetIDs[b.ID] = true
+				case b.ProviderConfigID != nil && protectedProviderConfigIDs[*b.ProviderConfigID]:
+					protectedBudgetIDs[b.ID] = true
+				case b.ModelConfigID != nil && protectedModelConfigIDs[*b.ModelConfigID]:
+					protectedBudgetIDs[b.ID] = true
+				case b.TeamID != nil && protectedTeamIDs[*b.TeamID]:
+					protectedBudgetIDs[b.ID] = true
+				case b.CustomerID != nil && protectedCustomerIDs[*b.CustomerID]:
+					protectedBudgetIDs[b.ID] = true
+				}
+			}
+		}
 		if configData.governanceSectionPresent("virtual_keys") {
 			keep := make(map[string]bool, len(configData.Governance.VirtualKeys))
 			for i := range configData.Governance.VirtualKeys {
@@ -2623,10 +2734,11 @@ func pruneGovernanceConfigToFile(ctx context.Context, config *Config, configData
 				}
 			}
 			for _, existing := range config.GovernanceConfig.VirtualKeys {
-				if existing.ID != "" && !keep[existing.ID] {
-					if err := config.ConfigStore.DeleteVirtualKey(ctx, existing.ID, tx); err != nil {
-						return fmt.Errorf("failed to delete virtual key %s: %w", existing.ID, err)
-					}
+				if existing.ID == "" || keep[existing.ID] || protectedVKIDs[existing.ID] {
+					continue
+				}
+				if err := config.ConfigStore.DeleteVirtualKey(ctx, existing.ID, tx); err != nil {
+					return fmt.Errorf("failed to delete virtual key %s: %w", existing.ID, err)
 				}
 			}
 			config.GovernanceConfig.VirtualKeys = configData.Governance.VirtualKeys
@@ -2665,7 +2777,7 @@ func pruneGovernanceConfigToFile(ctx context.Context, config *Config, configData
 				keep[row.ID] = true
 			}
 			for _, existing := range config.GovernanceConfig.ModelConfigs {
-				if existing.ID != "" && !keep[existing.ID] {
+				if existing.ID != "" && !keep[existing.ID] && !protectedModelConfigIDs[existing.ID] {
 					if err := config.ConfigStore.DeleteModelConfig(ctx, existing.ID, tx); err != nil {
 						return fmt.Errorf("failed to delete model config %s: %w", existing.ID, err)
 					}
@@ -2679,7 +2791,7 @@ func pruneGovernanceConfigToFile(ctx context.Context, config *Config, configData
 				keep[row.ID] = true
 			}
 			for _, existing := range config.GovernanceConfig.Teams {
-				if existing.ID != "" && !keep[existing.ID] {
+				if existing.ID != "" && !keep[existing.ID] && !protectedTeamIDs[existing.ID] {
 					if err := config.ConfigStore.DeleteTeam(ctx, existing.ID, tx); err != nil {
 						return fmt.Errorf("failed to delete team %s: %w", existing.ID, err)
 					}
@@ -2693,7 +2805,7 @@ func pruneGovernanceConfigToFile(ctx context.Context, config *Config, configData
 				keep[row.ID] = true
 			}
 			for _, existing := range config.GovernanceConfig.Customers {
-				if existing.ID != "" && !keep[existing.ID] {
+				if existing.ID != "" && !keep[existing.ID] && !protectedCustomerIDs[existing.ID] {
 					if err := config.ConfigStore.DeleteCustomer(ctx, existing.ID, tx); err != nil {
 						return fmt.Errorf("failed to delete customer %s: %w", existing.ID, err)
 					}
@@ -2725,7 +2837,7 @@ func pruneGovernanceConfigToFile(ctx context.Context, config *Config, configData
 				keep[row.ID] = true
 			}
 			for _, existing := range config.GovernanceConfig.Budgets {
-				if existing.ID != "" && !keep[existing.ID] {
+				if existing.ID != "" && !keep[existing.ID] && !protectedBudgetIDs[existing.ID] {
 					if err := config.ConfigStore.DeleteBudget(ctx, existing.ID, tx); err != nil {
 						return fmt.Errorf("failed to delete budget %s: %w", existing.ID, err)
 					}
@@ -2739,7 +2851,7 @@ func pruneGovernanceConfigToFile(ctx context.Context, config *Config, configData
 				keep[row.ID] = true
 			}
 			for _, existing := range config.GovernanceConfig.RateLimits {
-				if existing.ID != "" && !keep[existing.ID] {
+				if existing.ID != "" && !keep[existing.ID] && !protectedRateLimitIDs[existing.ID] {
 					if err := config.ConfigStore.DeleteRateLimit(ctx, existing.ID, tx); err != nil {
 						return fmt.Errorf("failed to delete rate limit %s: %w", existing.ID, err)
 					}

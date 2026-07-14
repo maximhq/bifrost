@@ -530,6 +530,47 @@ func TestSchemaGovernanceModelConfigs(t *testing.T) {
 	})
 }
 
+// TestSchemaAccessProfileModelBudgets pins the restricted budget-line contract for
+// access-profile model_budgets. These budgets must accept only id/max_limit/reset_duration
+// and reject calendar_aligned (alignment is set on the parent access profile), matching the
+// Helm values.schema.json shape for bifrost.accessProfiles[*].provider_configs[*].model_budgets.
+func TestSchemaAccessProfileModelBudgets(t *testing.T) {
+	compiled := compileSchema(t)
+
+	tests := []struct {
+		name      string
+		config    string
+		wantError bool
+	}{
+		{
+			name: "model_budgets with id/max_limit/reset_duration is valid",
+			config: `{"access_profiles":[{"name":"ap1","provider_configs":[{"provider_name":"openai","model_budgets":[{"model_name":"gpt-4o","budgets":[{"id":"b1","max_limit":50,"reset_duration":"1M"}]}]}]}]}`,
+		},
+		{
+			name:      "model_budgets budget with calendar_aligned is rejected",
+			config:    `{"access_profiles":[{"name":"ap1","provider_configs":[{"provider_name":"openai","model_budgets":[{"model_name":"gpt-4o","budgets":[{"id":"b1","max_limit":50,"reset_duration":"1M","calendar_aligned":true}]}]}]}]}`,
+			wantError: true,
+		},
+		{
+			name:      "model_budgets budget missing required max_limit is rejected",
+			config:    `{"access_profiles":[{"name":"ap1","provider_configs":[{"provider_name":"openai","model_budgets":[{"model_name":"gpt-4o","budgets":[{"id":"b1","reset_duration":"1M"}]}]}]}]}`,
+			wantError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateConfig(t, compiled, tt.config)
+			if tt.wantError && err == nil {
+				t.Errorf("expected validation error, got none")
+			}
+			if !tt.wantError && err != nil {
+				t.Errorf("expected valid config, got: %v", err)
+			}
+		})
+	}
+}
+
 // loadSchema reads and parses config.schema.json into a generic map.
 func loadSchema(t *testing.T) map[string]interface{} {
 	t.Helper()

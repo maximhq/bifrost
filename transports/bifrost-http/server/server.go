@@ -1713,7 +1713,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		return fmt.Errorf("failed to create app directory %s: %v", configDir, err)
 	}
 	// Initialize high-performance configuration store with dedicated database
-	s.Config, err = lib.LoadConfig(ctx, configDir)
+	s.Config, err = lib.LoadConfig(ctx, configDir, nil)
 	if err != nil {
 		return fmt.Errorf("failed to load config %v", err)
 	}
