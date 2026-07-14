@@ -1,26 +1,26 @@
 ---
 title: "DeepSeek"
-description: "DeepSeek API conversion guide - OpenAI-compatible format, chat, streaming, tool calling, reasoning, and beta text completions"
+description: "DeepSeek API conversion guide - Anthropic-compatible chat and responses, OpenAI-compatible beta text completions, streaming, tool calling, and reasoning"
 icon: "d"
 ---
 
 ## Overview
 
-DeepSeek is an **OpenAI-compatible provider** with a dedicated Bifrost provider implementation for DeepSeek's endpoint layout. Bifrost uses the shared OpenAI-compatible request and response converters, while preserving DeepSeek-specific extra parameters and routing text completions to the beta FIM endpoint. Key characteristics:
+DeepSeek is a provider with a dedicated Bifrost provider implementation that mixes two upstream API layouts: Chat Completions and the Responses API are sent to DeepSeek's **Anthropic-compatible** endpoint, while Text Completions still use DeepSeek's **OpenAI-compatible** beta FIM endpoint. Key characteristics:
 
-- **OpenAI-compatible chat** - Chat Completions use `/chat/completions`
-- **Streaming support** - Server-Sent Events for chat and text completions
-- **Tool calling** - Function tools are passed through using the OpenAI-compatible schema
-- **Reasoning support** - Reasoning parameters and DeepSeek extra parameters are forwarded
-- **Responses API** - Supported by converting Responses requests to Chat Completions internally
-- **Beta text completions** - Text/FIM completions use DeepSeek's `/beta/completions` endpoint
+- **Anthropic-compatible chat** - Chat Completions use `/anthropic/v1/messages`, authenticated with `x-api-key`
+- **Anthropic-compatible Responses API** - Responses requests are sent natively to `/anthropic/v1/messages` (no internal conversion to Chat Completions)
+- **Streaming support** - Server-Sent Events for chat, responses, and text completions
+- **Tool calling** - Function tools are converted using the shared Anthropic request/response converters
+- **Reasoning support** - Reasoning/thinking parameters are mapped through the Anthropic converters
+- **Beta text completions** - Text/FIM completions still use DeepSeek's OpenAI-compatible `/beta/completions` endpoint
 
 ### Supported Operations
 
 | Operation | Non-Streaming | Streaming | Endpoint |
 |-----------|---------------|-----------|----------|
-| Chat Completions | ✅ | ✅ | `/chat/completions` |
-| Responses API | ✅ | ✅ | `/chat/completions` |
+| Chat Completions | ✅ | ✅ | `/anthropic/v1/messages` |
+| Responses API | ✅ | ✅ | `/anthropic/v1/messages` |
 | Text Completions | ✅ | ✅ | `/beta/completions` |
 | List Models | ✅ | - | `/models` |
 | Embeddings | ❌ | ❌ | - |
@@ -97,44 +97,29 @@ case schemas.DeepSeek:
 
 ## Request Parameters
 
-DeepSeek supports OpenAI-compatible chat completion parameters. For the full parameter reference and message conversion behavior, see [OpenAI Chat Completions](/providers/supported-providers/openai#1-chat-completions).
+DeepSeek Chat Completions are sent to DeepSeek's Anthropic-compatible endpoint (`/anthropic/v1/messages`), authenticated with the `x-api-key` header instead of a bearer token. Requests and responses are built using the shared Anthropic converters. For the full parameter reference and message conversion behavior, see [Anthropic Chat Completions](/providers/supported-providers/anthropic#1-chat-completions).
 
-### Filtered Parameters
+### Authentication
 
-Removed for DeepSeek compatibility:
-- `prediction` - OpenAI-specific predicted output
-- `prompt_cache_key` - OpenAI-specific prompt cache key
-- `prompt_cache_retention` - OpenAI-specific prompt cache retention
-- `verbosity` - Anthropic-specific
-- `store` - OpenAI-specific response storage
-- `web_search_options` - OpenAI-specific web search options
+Unlike DeepSeek's OpenAI-compatible endpoints (which use `Authorization: Bearer`), the Anthropic-compatible endpoint is authenticated with `x-api-key: <key>`. Bifrost sets this header automatically from the configured provider key.
 
 ### Reasoning Parameter
 
-DeepSeek delegates through `ToOpenAIChatRequest` with provider-specific compatibility handling. Reasoning effort is normalized using the OpenAI-compatible provider convention, and DeepSeek V4 models preserve `reasoning.effort: "max"` when requested.
-
-Assistant-message `reasoning` details are stripped before sending follow-up messages because DeepSeek rejects `reasoning_details` in assistant messages.
+Reasoning/thinking parameters are mapped through the Anthropic converters (`reasoning` → `thinking`), the same as the [Anthropic provider](/providers/supported-providers/anthropic#1-chat-completions).
 
 ### Extra Parameters
 
-DeepSeek enables passthrough extra parameters for chat and text completion requests. Provider-specific options such as DeepSeek thinking controls can be sent through `extra_params` without being dropped by Bifrost.
+Provider-specific options can still be sent through `extra_params`.
 
-DeepSeek supports standard OpenAI message types, tools, responses, and streaming formats. For details on message handling, tool conversion, responses, and streaming, refer to [OpenAI Chat Completions](/providers/supported-providers/openai#1-chat-completions).
+DeepSeek supports Anthropic-style message types, tools, responses, and streaming formats via `/anthropic/v1/messages`. For details on message handling, tool conversion, responses, and streaming, refer to [Anthropic Chat Completions](/providers/supported-providers/anthropic#1-chat-completions).
 
 ---
 
 # 2. Responses API
 
-Bifrost converts Responses API format to Chat Completions internally, then converts the response back:
+Responses requests are sent natively to DeepSeek's Anthropic-compatible endpoint at `/anthropic/v1/messages` — there is no internal conversion to Chat Completions. Both non-streaming and streaming Responses requests build an Anthropic-format request body directly from the `BifrostResponsesRequest` and convert the response back to Bifrost's Responses format.
 
-```
-BifrostResponsesRequest
-  → ToChatRequest()
-  → ChatCompletion
-  → ToBifrostResponsesResponse()
-```
-
-Same parameter support as Chat Completions with response format differences (output items instead of message content). Streaming Responses requests are also routed through Chat Completions streaming.
+Same parameter support as Chat Completions with response format differences (output items instead of message content).
 
 ---
 
@@ -200,16 +185,16 @@ Lists available models from DeepSeek through `/models`.
 **Code**: `TextCompletion` and `TextCompletionStream` use `/beta/completions`
 </Accordion>
 
-<Accordion title="User Field Size Limit">
+<Accordion title="User Field Size Limit (Text Completions)">
 **Severity**: Low
 **Behavior**: User field > 64 characters is silently dropped
 **Impact**: Longer user identifiers are lost
-**Code**: `SanitizeUserField` enforces 64-char max in the shared OpenAI converter
+**Code**: `SanitizeUserField` enforces 64-char max in the shared OpenAI converter, still used for Text Completions
 </Accordion>
 
-<Accordion title="Reasoning Details in Assistant Messages">
+<Accordion title="Mixed Endpoint Compatibility">
 **Severity**: Medium
-**Behavior**: Assistant-message `reasoning` details are removed before forwarding follow-up chat messages
-**Impact**: Prevents DeepSeek request failures when previous assistant turns contain reasoning metadata
-**Code**: `stripReasoningDetails` applies to DeepSeek in `ToOpenAIChatRequest`
+**Behavior**: Chat Completions and the Responses API are sent to DeepSeek's Anthropic-compatible endpoint (`/anthropic/v1/messages`, authenticated with `x-api-key`), while Text Completions still use the OpenAI-compatible beta endpoint (`/beta/completions`, authenticated with a bearer token)
+**Impact**: The two operation families follow different upstream contracts; parameters and behavior documented for the [OpenAI provider](/providers/supported-providers/openai) no longer apply to DeepSeek Chat Completions or Responses — refer to the [Anthropic provider](/providers/supported-providers/anthropic) docs for those instead
+**Code**: `ChatCompletion`, `ChatCompletionStream`, `Responses`, and `ResponsesStream` in `core/providers/deepseek/deepseek.go` delegate to the `anthropic` package; `TextCompletion` and `TextCompletionStream` still delegate to the `openai` package
 </Accordion>
