@@ -14,6 +14,20 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+// maxToolCallStreamChunks returns the infinite-loop safety cap for tool-call
+// streaming scenarios. Sarvam's default-on, verbose reasoning can emit far
+// more chunks than other providers before the final tool-call deltas arrive
+// (~1400+ observed live for a long-form prompt elsewhere in this package -
+// see chat_completion_stream.go/responses_stream.go); the generic 500-chunk
+// cap can cut the loop before tool-call arguments finish accumulating,
+// yielding a false "incomplete tool call" failure rather than a real bug.
+func maxToolCallStreamChunks(provider schemas.ModelProvider) int {
+	if provider == schemas.Sarvam {
+		return 3000
+	}
+	return 500
+}
+
 // StreamingToolCallAccumulator accumulates tool call fragments from streaming responses
 type StreamingToolCallAccumulator struct {
 	// For Chat Completions: map of tool call index -> accumulated tool call
@@ -305,7 +319,7 @@ func RunToolCallsStreamingTest(t *testing.T, client *bifrost.Bifrost, ctx contex
 				}
 			}
 
-			if responseCount > 500 {
+			if responseCount > maxToolCallStreamChunks(testConfig.Provider) {
 				break
 			}
 		}
@@ -513,7 +527,7 @@ func RunToolCallsStreamingTest(t *testing.T, client *bifrost.Bifrost, ctx contex
 						}
 
 						// Safety check to prevent infinite loops
-						if responseCount > 500 {
+						if responseCount > maxToolCallStreamChunks(testConfig.Provider) {
 							return ResponsesStreamValidationResult{
 								Passed: false,
 								Errors: []string{"❌ Received too many streaming chunks, something might be wrong"},

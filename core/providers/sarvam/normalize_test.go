@@ -221,6 +221,30 @@ func TestNormalizeReasoningEffort(t *testing.T) {
 		}
 	})
 
+	t.Run(`"none" with MaxTokens also clears MaxTokens, not just Effort`, func(t *testing.T) {
+		// Regression test: core/providers/openai/chat.go's own
+		// normalizeReasoningEffort infers a fresh Effort from MaxTokens
+		// whenever Effort is nil - clearing only Effort here and leaving a
+		// caller-supplied MaxTokens budget in place would let that generic
+		// mapping silently recreate the exact effort this function is
+		// supposed to drop. Caught in review before merge.
+		effort := "none"
+		maxTokens := 2048
+		req := &schemas.BifrostChatRequest{
+			Input: []schemas.ChatMessage{},
+			Params: &schemas.ChatParameters{
+				Reasoning: &schemas.ChatReasoning{Effort: &effort, MaxTokens: &maxTokens},
+			},
+		}
+		got := normalizeReasoningEffort(req)
+		if got.Params.Reasoning.Effort != nil {
+			t.Errorf("expected Effort to be cleared, got %v", *got.Params.Reasoning.Effort)
+		}
+		if got.Params.Reasoning.MaxTokens != nil {
+			t.Errorf("expected MaxTokens to also be cleared, got %v", *got.Params.Reasoning.MaxTokens)
+		}
+	})
+
 	t.Run(`"None" (mixed case) is also cleared`, func(t *testing.T) {
 		req := newReq(strPtr("None"))
 		got := normalizeReasoningEffort(req)

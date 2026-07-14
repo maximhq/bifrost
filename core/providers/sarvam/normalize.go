@@ -54,6 +54,12 @@ func normalizeReasoningEffort(request *schemas.BifrostChatRequest) *schemas.Bifr
 	normalizedParams := *request.Params
 	normalizedReasoning := *request.Params.Reasoning
 	normalizedReasoning.Effort = nil
+	// Also clear MaxTokens: core/providers/openai/chat.go's
+	// normalizeReasoningEffort infers a fresh Effort from MaxTokens whenever
+	// Effort is nil, so leaving a caller-supplied MaxTokens budget in place
+	// would silently recreate the exact effort this function just dropped.
+	// Sarvam doesn't support a token-budget style reasoning control anyway.
+	normalizedReasoning.MaxTokens = nil
 	normalizedParams.Reasoning = &normalizedReasoning
 	normalized.Params = &normalizedParams
 
