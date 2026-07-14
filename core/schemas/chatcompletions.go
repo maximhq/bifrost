@@ -220,7 +220,7 @@ type ChatParameters struct {
 	Tools                []ChatTool            `json:"tools,omitempty"`              // Tools to use
 	User                 *string               `json:"user,omitempty"`               // User identifier for tracking
 	Verbosity            *string               `json:"verbosity,omitempty"`          // "low" | "medium" | "high"
-	WebSearchOptions     *ChatWebSearchOptions `json:"web_search_options,omitempty"` // Web search options (OpenAI only)
+	WebSearchOptions     *ChatWebSearchOptions `json:"web_search_options,omitempty"` // Web search options (OpenAI; mapped to Google Search grounding on Gemini)
 
 	// Anthropic-native knobs promoted to the neutral layer. These pass through
 	// typed to Anthropic-family providers (honored/stripped per ProviderFeatures
@@ -313,10 +313,22 @@ type ChatPrediction struct {
 	Content interface{} `json:"content"` // String or array of content parts
 }
 
-// ChatWebSearchOptions represents web search options for chat completions (OpenAI only).
+// ChatWebSearchOptions represents web search options for chat completions.
 type ChatWebSearchOptions struct {
 	SearchContextSize *string                           `json:"search_context_size,omitempty"` // "low" | "medium" | "high"
 	UserLocation      *ChatWebSearchOptionsUserLocation `json:"user_location,omitempty"`
+	Filters           *ChatWebSearchOptionsFilters      `json:"filters,omitempty"` // Bifrost extension; stripped on the OpenAI wire
+}
+
+// ChatWebSearchOptionsFilters represents search filters; mirrors ResponsesToolWebSearchFilters.
+type ChatWebSearchOptionsFilters struct {
+	AllowedDomains []string `json:"allowed_domains,omitempty"`
+	BlockedDomains []string `json:"blocked_domains,omitempty"`
+
+	// Gemini only
+	// Filter search results to a specific time range.
+	// If users set a start time, they must set an end time (and vice versa).
+	TimeRangeFilter *Interval `json:"time_range_filter,omitempty"`
 }
 
 // ChatWebSearchOptionsUserLocation represents user location for web search.
@@ -1440,6 +1452,7 @@ type ChatAssistantMessageAnnotationCitation struct {
 	EndIndex   int          `json:"end_index"`
 	Title      string       `json:"title"`
 	URL        *string      `json:"url,omitempty"`
+	Text       *string      `json:"text,omitempty"` // Cited text snippet (Bifrost extension; stripped on the OpenAI wire)
 	Sources    *interface{} `json:"sources,omitempty"`
 	Type       *string      `json:"type,omitempty"`
 }
@@ -1552,13 +1565,15 @@ type ChatStreamResponseChoice struct {
 
 // ChatStreamResponseChoiceDelta represents a delta in the stream response
 type ChatStreamResponseChoiceDelta struct {
-	Role             *string                        `json:"role,omitempty"`      // Only in the first chunk
-	Content          *string                        `json:"content,omitempty"`   // May be empty string or null
-	Refusal          *string                        `json:"refusal,omitempty"`   // Refusal content if any
-	Audio            *ChatAudioMessageAudio         `json:"audio,omitempty"`     // Audio data if any
-	Reasoning        *string                        `json:"reasoning,omitempty"` // May be empty string or null
-	ReasoningDetails []ChatReasoningDetails         `json:"reasoning_details,omitempty"`
-	ToolCalls        []ChatAssistantMessageToolCall `json:"tool_calls,omitempty"` // If tool calls used (supports incremental updates)
+	Role             *string                          `json:"role,omitempty"`      // Only in the first chunk
+	Content          *string                          `json:"content,omitempty"`   // May be empty string or null
+	Refusal          *string                          `json:"refusal,omitempty"`   // Refusal content if any
+	Audio            *ChatAudioMessageAudio           `json:"audio,omitempty"`     // Audio data if any
+	Reasoning        *string                          `json:"reasoning,omitempty"` // May be empty string or null
+	ReasoningDetails []ChatReasoningDetails           `json:"reasoning_details,omitempty"`
+	Annotations      []ChatAssistantMessageAnnotation `json:"annotations,omitempty"`   // URL citations from web search
+	ToolCalls        []ChatAssistantMessageToolCall   `json:"tool_calls,omitempty"`    // If tool calls used (supports incremental updates)
+	ExtraContent     json.RawMessage                  `json:"extra_content,omitempty"` // Provider-specific metadata (e.g. Gemini thought markers, thought_signature)
 }
 
 // UnmarshalJSON implements custom unmarshalling for ChatStreamResponseChoiceDelta.

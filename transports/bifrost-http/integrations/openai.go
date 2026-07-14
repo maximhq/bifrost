@@ -3330,6 +3330,20 @@ func parseTranscriptionMultipartRequest(ctx *fasthttp.RequestCtx, req interface{
 		transcriptionReq.Stream = &stream
 	}
 
+	if temperatureValues := form.Value["temperature"]; len(temperatureValues) > 0 && temperatureValues[0] != "" {
+		temperature, err := strconv.ParseFloat(temperatureValues[0], 64)
+		if err != nil {
+			return errors.New("invalid temperature value")
+		}
+		transcriptionReq.TranscriptionParameters.Temperature = &temperature
+	}
+
+	// The SDK sends repeated "timestamp_granularities[]" fields for the array
+	// (verified against the openai-python client's actual multipart encoding).
+	if granularityValues := form.Value["timestamp_granularities[]"]; len(granularityValues) > 0 {
+		transcriptionReq.TranscriptionParameters.TimestampGranularities = granularityValues
+	}
+
 	// chunking_strategy is OpenAI-specific (required by diarization models). It is a
 	// Union["auto", server_vad object], so decode object-shaped values and pass
 	// plain strings (e.g. "auto") through verbatim via ExtraParams passthrough.
@@ -3343,6 +3357,33 @@ func parseTranscriptionMultipartRequest(ctx *fasthttp.RequestCtx, req interface{
 			transcriptionReq.ExtraParams["chunking_strategy"] = obj
 		} else {
 			transcriptionReq.ExtraParams["chunking_strategy"] = raw
+		}
+	}
+
+	// Any remaining multipart fields aren't part of OpenAI's own transcription
+	// schema, but provider-specific parameters (e.g. ElevenLabs' diarize,
+	// num_speakers, timestamps_granularity, sent via the SDK's extra_body) are
+	// still passed as plain multipart form fields. Without this, they'd be
+	// silently dropped instead of reaching ToElevenlabsTranscriptionRequest's
+	// ExtraParams lookups.
+	knownTranscriptionFields := map[string]bool{
+		"model": true, "file": true, "language": true, "prompt": true,
+		"response_format": true, "stream": true, "chunking_strategy": true,
+		"temperature": true, "timestamp_granularities[]": true,
+	}
+	for key, values := range form.Value {
+		if knownTranscriptionFields[key] || len(values) == 0 || values[0] == "" {
+			continue
+		}
+		if transcriptionReq.ExtraParams == nil {
+			transcriptionReq.ExtraParams = map[string]interface{}{}
+		}
+		raw := values[0]
+		var decoded interface{}
+		if err := json.Unmarshal([]byte(raw), &decoded); err == nil {
+			transcriptionReq.ExtraParams[key] = decoded
+		} else {
+			transcriptionReq.ExtraParams[key] = raw
 		}
 	}
 

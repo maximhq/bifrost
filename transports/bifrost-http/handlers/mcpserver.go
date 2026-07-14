@@ -425,10 +425,14 @@ func (h *MCPServerHandler) syncServer(server *server.MCPServer, availableTools [
 						url = authReq.SubmitURL
 						action = "submit the required headers"
 					}
-					return mcp.NewToolResultError(fmt.Sprintf(
+					message := fmt.Sprintf(
 						"Authentication required for %s. Open this URL to %s: %s",
 						authReq.MCPClientName, action, url,
-					)), nil
+					)
+					if schemas.MCPAuthURLHasTempTokenFragment(url) {
+						message += schemas.MCPAuthTempTokenReminder
+					}
+					return mcp.NewToolResultError(message), nil
 				}
 				return mcp.NewToolResultError(fmt.Sprintf("Tool execution failed: %v", bifrost.GetErrorMessage(err))), nil
 			}

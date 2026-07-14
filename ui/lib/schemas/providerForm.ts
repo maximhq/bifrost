@@ -89,6 +89,7 @@ const VertexKeyConfigSchema = z.object({
 		.refine((value) => !value || isValidVertexAuthCredentials(value), {
 			message: "Auth Credentials must be a valid JSON object or env.VAR format when provided",
 		}),
+	force_single_region: z.boolean().optional(),
 });
 
 // S3 bucket configuration for Bedrock batch operations
@@ -112,6 +113,7 @@ const BedrockKeyConfigSchema = z
 		external_id: z.string().optional(),
 		session_name: z.string().optional(),
 		arn: z.string().optional(),
+		project_id: z.string().optional(),
 		batch_s3_config: BatchS3ConfigSchema.optional(),
 	})
 	.refine(
@@ -149,6 +151,7 @@ const BedrockMantleKeyConfigSchema = z
 		role_arn: z.string().optional(),
 		external_id: z.string().optional(),
 		session_name: z.string().optional(),
+		project_id: z.string().optional(),
 	})
 	.refine(
 		(data) => {

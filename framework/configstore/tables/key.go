@@ -40,10 +40,11 @@ type TableKey struct {
 	AzureScopesJSON   *string            `gorm:"column:azure_scopes;type:text" json:"-"` // JSON serialized []string
 
 	// Vertex config fields (embedded)
-	VertexProjectID       *schemas.SecretVar `gorm:"type:text" json:"vertex_project_id,omitempty"`
-	VertexProjectNumber   *schemas.SecretVar `gorm:"type:text" json:"vertex_project_number,omitempty"`
-	VertexRegion          *schemas.SecretVar `gorm:"type:text" json:"vertex_region,omitempty"`
-	VertexAuthCredentials *schemas.SecretVar `gorm:"type:text" json:"vertex_auth_credentials,omitempty"`
+	VertexProjectID         *schemas.SecretVar `gorm:"type:text" json:"vertex_project_id,omitempty"`
+	VertexProjectNumber     *schemas.SecretVar `gorm:"type:text" json:"vertex_project_number,omitempty"`
+	VertexRegion            *schemas.SecretVar `gorm:"type:text" json:"vertex_region,omitempty"`
+	VertexAuthCredentials   *schemas.SecretVar `gorm:"type:text" json:"vertex_auth_credentials,omitempty"`
+	VertexForceSingleRegion *bool              `gorm:"column:vertex_force_single_region" json:"vertex_force_single_region,omitempty"`
 
 	// Bedrock config fields (embedded)
 	BedrockAccessKey         *schemas.SecretVar `gorm:"type:text" json:"bedrock_access_key,omitempty"`
@@ -54,6 +55,7 @@ type TableKey struct {
 	BedrockRoleARN           *schemas.SecretVar `gorm:"type:text" json:"bedrock_role_arn,omitempty"`
 	BedrockExternalID        *schemas.SecretVar `gorm:"type:text" json:"bedrock_external_id,omitempty"`
 	BedrockRoleSessionName   *schemas.SecretVar `gorm:"type:text" json:"bedrock_role_session_name,omitempty"`
+	BedrockProjectID         *schemas.SecretVar `gorm:"type:text" json:"bedrock_project_id,omitempty"`
 	BedrockBatchS3ConfigJSON *string            `gorm:"type:text" json:"-"` // JSON serialized schemas.BatchS3Config
 
 	// Bedrock Mantle config fields (embedded)
@@ -64,6 +66,7 @@ type TableKey struct {
 	BedrockMantleRoleARN         *schemas.SecretVar `gorm:"type:text" json:"bedrock_mantle_role_arn,omitempty"`
 	BedrockMantleExternalID      *schemas.SecretVar `gorm:"type:text" json:"bedrock_mantle_external_id,omitempty"`
 	BedrockMantleRoleSessionName *schemas.SecretVar `gorm:"type:text" json:"bedrock_mantle_role_session_name,omitempty"`
+	BedrockMantleProjectID       *schemas.SecretVar `gorm:"type:text" json:"bedrock_mantle_project_id,omitempty"`
 
 	// VLLM config fields (embedded)
 	VLLMUrl       *schemas.SecretVar `gorm:"type:text" json:"vllm_url,omitempty"`
@@ -205,11 +208,14 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		} else {
 			k.VertexAuthCredentials = nil
 		}
+		fsr := k.VertexKeyConfig.ForceSingleRegion
+		k.VertexForceSingleRegion = &fsr
 	} else {
 		k.VertexProjectID = nil
 		k.VertexProjectNumber = nil
 		k.VertexRegion = nil
 		k.VertexAuthCredentials = nil
+		k.VertexForceSingleRegion = nil
 	}
 	if k.BedrockKeyConfig != nil {
 		if k.BedrockKeyConfig.AccessKey.IsSet() {
@@ -263,6 +269,12 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		} else {
 			k.BedrockRoleSessionName = nil
 		}
+		if k.BedrockKeyConfig.ProjectID != nil {
+			pid := *k.BedrockKeyConfig.ProjectID
+			k.BedrockProjectID = &pid
+		} else {
+			k.BedrockProjectID = nil
+		}
 		if k.BedrockKeyConfig.BatchS3Config != nil {
 			data, err := sonic.Marshal(k.BedrockKeyConfig.BatchS3Config)
 			if err != nil {
@@ -282,6 +294,7 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		k.BedrockRoleARN = nil
 		k.BedrockExternalID = nil
 		k.BedrockRoleSessionName = nil
+		k.BedrockProjectID = nil
 		k.BedrockBatchS3ConfigJSON = nil
 	}
 
@@ -329,6 +342,12 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		} else {
 			k.BedrockMantleRoleSessionName = nil
 		}
+		if k.BedrockMantleKeyConfig.ProjectID != nil {
+			pid := *k.BedrockMantleKeyConfig.ProjectID
+			k.BedrockMantleProjectID = &pid
+		} else {
+			k.BedrockMantleProjectID = nil
+		}
 	} else {
 		k.BedrockMantleAccessKey = nil
 		k.BedrockMantleSecretKey = nil
@@ -337,6 +356,7 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		k.BedrockMantleRoleARN = nil
 		k.BedrockMantleExternalID = nil
 		k.BedrockMantleRoleSessionName = nil
+		k.BedrockMantleProjectID = nil
 	}
 
 	if k.Aliases != nil {
@@ -457,6 +477,9 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		if err := encryptSecretVarPtr(&k.BedrockRoleSessionName); err != nil {
 			return fmt.Errorf("failed to encrypt bedrock role session name: %w", err)
 		}
+		if err := encryptSecretVarPtr(&k.BedrockProjectID); err != nil {
+			return fmt.Errorf("failed to encrypt bedrock project id: %w", err)
+		}
 		if err := encryptString(k.BedrockBatchS3ConfigJSON); err != nil {
 			return fmt.Errorf("failed to encrypt bedrock batch s3 config: %w", err)
 		}
@@ -481,6 +504,9 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		}
 		if err := encryptSecretVarPtr(&k.BedrockMantleRoleSessionName); err != nil {
 			return fmt.Errorf("failed to encrypt bedrock mantle role session name: %w", err)
+		}
+		if err := encryptSecretVarPtr(&k.BedrockMantleProjectID); err != nil {
+			return fmt.Errorf("failed to encrypt bedrock mantle project id: %w", err)
 		}
 		// Aliases
 		if err := encryptString(k.AliasesJSON); err != nil {
@@ -563,6 +589,9 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		if err := decryptSecretVarPtr(&k.BedrockRoleSessionName); err != nil {
 			return fmt.Errorf("failed to decrypt bedrock role session name: %w", err)
 		}
+		if err := decryptSecretVarPtr(&k.BedrockProjectID); err != nil {
+			return fmt.Errorf("failed to decrypt bedrock project id: %w", err)
+		}
 		if err := decryptString(k.BedrockBatchS3ConfigJSON); err != nil {
 			return fmt.Errorf("failed to decrypt bedrock batch s3 config: %w", err)
 		}
@@ -587,6 +616,9 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		}
 		if err := decryptSecretVarPtr(&k.BedrockMantleRoleSessionName); err != nil {
 			return fmt.Errorf("failed to decrypt bedrock mantle role session name: %w", err)
+		}
+		if err := decryptSecretVarPtr(&k.BedrockMantleProjectID); err != nil {
+			return fmt.Errorf("failed to decrypt bedrock mantle project id: %w", err)
 		}
 		// Aliases
 		if err := decryptString(k.AliasesJSON); err != nil {
@@ -647,7 +679,7 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		k.AzureKeyConfig = azureConfig
 	}
 	// Reconstruct Vertex config if fields are present
-	if k.VertexProjectID != nil || k.VertexProjectNumber != nil || k.VertexRegion != nil || k.VertexAuthCredentials != nil {
+	if k.VertexProjectID != nil || k.VertexProjectNumber != nil || k.VertexRegion != nil || k.VertexAuthCredentials != nil || k.VertexForceSingleRegion != nil {
 		config := &schemas.VertexKeyConfig{}
 
 		if k.VertexProjectID != nil {
@@ -664,10 +696,13 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		if k.VertexAuthCredentials != nil {
 			config.AuthCredentials = *k.VertexAuthCredentials
 		}
+		if k.VertexForceSingleRegion != nil {
+			config.ForceSingleRegion = *k.VertexForceSingleRegion
+		}
 		k.VertexKeyConfig = config
 	}
 	// Reconstruct Bedrock config if fields are present
-	if k.BedrockAccessKey != nil || k.BedrockSecretKey != nil || k.BedrockSessionToken != nil || k.BedrockRegion != nil || k.BedrockARN != nil || k.BedrockRoleARN != nil || k.BedrockExternalID != nil || k.BedrockRoleSessionName != nil || (k.BedrockBatchS3ConfigJSON != nil && *k.BedrockBatchS3ConfigJSON != "") {
+	if k.BedrockAccessKey != nil || k.BedrockSecretKey != nil || k.BedrockSessionToken != nil || k.BedrockRegion != nil || k.BedrockARN != nil || k.BedrockRoleARN != nil || k.BedrockExternalID != nil || k.BedrockRoleSessionName != nil || k.BedrockProjectID != nil || (k.BedrockBatchS3ConfigJSON != nil && *k.BedrockBatchS3ConfigJSON != "") {
 		bedrockConfig := &schemas.BedrockKeyConfig{}
 
 		if k.BedrockAccessKey != nil {
@@ -680,6 +715,7 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		bedrockConfig.RoleARN = k.BedrockRoleARN
 		bedrockConfig.ExternalID = k.BedrockExternalID
 		bedrockConfig.RoleSessionName = k.BedrockRoleSessionName
+		bedrockConfig.ProjectID = k.BedrockProjectID
 
 		if k.BedrockSecretKey != nil {
 			bedrockConfig.SecretKey = *k.BedrockSecretKey
@@ -696,7 +732,7 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		k.BedrockKeyConfig = bedrockConfig
 	}
 	// Reconstruct Bedrock Mantle config if fields are present
-	if k.BedrockMantleAccessKey != nil || k.BedrockMantleSecretKey != nil || k.BedrockMantleSessionToken != nil || k.BedrockMantleRegion != nil || k.BedrockMantleRoleARN != nil || k.BedrockMantleExternalID != nil || k.BedrockMantleRoleSessionName != nil {
+	if k.BedrockMantleAccessKey != nil || k.BedrockMantleSecretKey != nil || k.BedrockMantleSessionToken != nil || k.BedrockMantleRegion != nil || k.BedrockMantleRoleARN != nil || k.BedrockMantleExternalID != nil || k.BedrockMantleRoleSessionName != nil || k.BedrockMantleProjectID != nil {
 		mantleConfig := &schemas.BedrockMantleKeyConfig{}
 		if k.BedrockMantleAccessKey != nil {
 			mantleConfig.AccessKey = *k.BedrockMantleAccessKey
@@ -709,6 +745,7 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		mantleConfig.RoleARN = k.BedrockMantleRoleARN
 		mantleConfig.ExternalID = k.BedrockMantleExternalID
 		mantleConfig.RoleSessionName = k.BedrockMantleRoleSessionName
+		mantleConfig.ProjectID = k.BedrockMantleProjectID
 		k.BedrockMantleKeyConfig = mantleConfig
 	}
 	// Reconstruct Aliases

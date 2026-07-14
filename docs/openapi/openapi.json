@@ -37127,6 +37127,22 @@
                           "max_output_tokens": {
                             "type": "integer"
                           },
+                          "input_cost_per_token": {
+                            "type": "number",
+                            "format": "double"
+                          },
+                          "output_cost_per_token": {
+                            "type": "number",
+                            "format": "double"
+                          },
+                          "cache_creation_input_token_cost": {
+                            "type": "number",
+                            "format": "double"
+                          },
+                          "cache_read_input_token_cost": {
+                            "type": "number",
+                            "format": "double"
+                          },
                           "architecture": {
                             "type": "object",
                             "properties": {
@@ -37151,6 +37167,12 @@
                                   "type": "string"
                                 }
                               }
+                            }
+                          },
+                          "additional_attributes": {
+                            "type": "object",
+                            "additionalProperties": {
+                              "type": "string"
                             }
                           },
                           "accessible_by_keys": {
@@ -56093,7 +56115,7 @@
       "post": {
         "operationId": "recalculateLogCosts",
         "summary": "Recalculate log costs",
-        "description": "Recomputes missing costs in batches. Processes logs with missing cost values\nand updates them based on current pricing data.\n",
+        "description": "Starts an asynchronous background job that recalculates log costs in batches.\nThe returned payload is a job status object that can be polled via the status endpoint.\n",
         "tags": [
           "Logging"
         ],
@@ -56113,8 +56135,18 @@
           }
         ],
         "responses": {
-          "200": {
-            "description": "Costs recalculated successfully",
+          "202": {
+            "description": "Cost recalculation job accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecalculateCostResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A recalculation job is already running",
             "content": {
               "application/json": {
                 "schema": {
@@ -56129,6 +56161,83 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Background job runner is not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/logs/recalculate-cost/status": {
+      "get": {
+        "operationId": "getRecalculateCostStatus",
+        "summary": "Get log cost recalculation status",
+        "description": "Returns the current status of a log cost recalculation job.\nWhen `id` is omitted, the current in-flight job is returned, or `idle` when no job is running.\n",
+        "tags": [
+          "Logging"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "query",
+            "description": "Optional recalculation job ID to fetch",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Recalculation job status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecalculateCostResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Recalculation job not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Background job runner is not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementErrorResponse"
                 }
               }
             }
@@ -61818,7 +61927,8 @@
           "nebius",
           "xai",
           "runway",
-          "fireworks"
+          "fireworks",
+          "sarvam"
         ]
       },
       "Fallback": {
@@ -77846,6 +77956,24 @@
           "raw_response": {
             "type": "string"
           },
+          "redaction_mapping": {
+            "type": "object",
+            "properties": {
+              "input": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                }
+              },
+              "output": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Phase-scoped placeholder-to-original-value mappings for reversible redactions. Present only on log detail responses when the caller has `Logs:Reveal`."
+          },
           "created_at": {
             "type": "string",
             "format": "date-time"
@@ -78891,19 +79019,53 @@
       },
       "RecalculateCostResponse": {
         "type": "object",
-        "description": "Recalculate cost response",
+        "description": "Recalculate cost job status",
         "properties": {
-          "total_matched": {
-            "type": "integer"
+          "id": {
+            "type": "string",
+            "description": "Background job ID"
+          },
+          "status": {
+            "type": "string",
+            "description": "Current job status"
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Total matching logs queued for recalculation"
+          },
+          "processed": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Logs processed so far"
           },
           "updated": {
-            "type": "integer"
+            "type": "integer",
+            "format": "int64",
+            "description": "Logs updated with new costs"
           },
           "skipped": {
-            "type": "integer"
+            "type": "integer",
+            "format": "int64",
+            "description": "Logs skipped during processing"
           },
-          "remaining": {
-            "type": "integer"
+          "message": {
+            "type": "string",
+            "description": "Optional progress message"
+          },
+          "last_error": {
+            "type": "string",
+            "description": "Last error encountered by the job"
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Job start time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Last status update time"
           }
         }
       },

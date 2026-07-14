@@ -6,7 +6,7 @@ require (
 	cloud.google.com/go v0.123.0
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.20.0
 	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.13.1
-	github.com/andybalholm/brotli v1.2.1
+	github.com/andybalholm/brotli v1.2.2
 	github.com/aws/aws-sdk-go-v2 v1.42.0
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.10
 	github.com/aws/aws-sdk-go-v2/config v1.32.11
@@ -67,7 +67,7 @@ require (
 	github.com/savsgio/gotils v0.0.0-20250408102913-196191ec6287 // indirect
 	github.com/spf13/cast v1.10.0 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
-	github.com/tidwall/pretty v1.2.0 // indirect
+	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/wk8/go-ordered-map/v2 v2.1.8 // indirect
