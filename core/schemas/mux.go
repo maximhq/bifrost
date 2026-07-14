@@ -2248,7 +2248,16 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 		if state.Model != nil {
 			response.Model = *state.Model
 		}
-		var allOutput []ResponsesMessage
+		// Collect every output item alongside its streamed output_index, then sort
+		// ascending so response.completed.Output matches the order clients already
+		// saw via output_item.added — otherwise a client that reconciles the
+		// terminal snapshot against streamed output_index values (e.g. attaching
+		// late-arriving status) can pair the wrong item with the wrong index.
+		type outputEntry struct {
+			outputIndex int
+			msg         ResponsesMessage
+		}
+		var outputEntries []outputEntry
 
 		if state.ReasoningItemAdded {
 			statusFinal := terminalStatus
@@ -2273,7 +2282,7 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 			if itemID != "" {
 				reasoningMsg.ID = &itemID
 			}
-			allOutput = append(allOutput, reasoningMsg)
+			outputEntries = append(outputEntries, outputEntry{outputIndex: state.ReasoningOutputIndex, msg: reasoningMsg})
 		}
 
 		if state.TextItemAdded {
@@ -2304,24 +2313,10 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 			if itemID != "" {
 				msg.ID = &itemID
 			}
-			allOutput = append(allOutput, msg)
+			outputEntries = append(outputEntries, outputEntry{outputIndex: 0, msg: msg})
 		}
 
-		// Collect tool call IDs sorted by outputIndex for deterministic order
-		type toolCallEntry struct {
-			toolCallID  string
-			outputIndex int
-		}
-		var toolCallEntries []toolCallEntry
 		for toolCallID, outputIndex := range state.ToolCallOutputIndices {
-			toolCallEntries = append(toolCallEntries, toolCallEntry{toolCallID: toolCallID, outputIndex: outputIndex})
-		}
-		sort.Slice(toolCallEntries, func(i, j int) bool {
-			return toolCallEntries[i].outputIndex < toolCallEntries[j].outputIndex
-		})
-
-		for _, entry := range toolCallEntries {
-			toolCallID := entry.toolCallID
 			statusFinal := terminalStatus
 			messageType := ResponsesMessageTypeFunctionCall
 			callName, hasName := state.ToolCallNames[toolCallID]
@@ -2343,10 +2338,18 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 			if itemID != "" {
 				fcMsg.ID = &itemID
 			}
-			allOutput = append(allOutput, fcMsg)
+			outputEntries = append(outputEntries, outputEntry{outputIndex: outputIndex, msg: fcMsg})
 		}
 
-		if len(allOutput) > 0 {
+		sort.Slice(outputEntries, func(i, j int) bool {
+			return outputEntries[i].outputIndex < outputEntries[j].outputIndex
+		})
+
+		if len(outputEntries) > 0 {
+			allOutput := make([]ResponsesMessage, len(outputEntries))
+			for i, entry := range outputEntries {
+				allOutput[i] = entry.msg
+			}
 			response.Output = allOutput
 		}
 
