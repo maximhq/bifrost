@@ -29,8 +29,10 @@ export const ModelPlaceholders = {
 	anthropic: "e.g. claude-3-haiku, claude-2.1",
 	azure: "e.g. gpt-4, gpt-35-turbo (must match alias keys)",
 	bedrock: "e.g. claude-v2, titan-text-express-v1, ai21-j2-mid",
+	bedrock_mantle: "e.g. anthropic.claude-opus-4-8, openai.gpt-oss-120b",
 	cerebras: "e.g. cerebras-2, cerebras-2-vision",
 	cohere: "e.g. command-r, command-r-plus",
+	deepseek: "e.g. deepseek-v4-flash, deepseek-v4-pro",
 	gemini: "e.g. gemini-1.5-pro, gemini-1.5-flash",
 	groq: "e.g. llama3-70b-8192, mixtral-8x7b-32768",
 	huggingface: "e.g. sambanova/meta-llama/Llama-3.1-8B-Instruct, nebius/Qwen/Qwen3-Embedding-8B",
@@ -52,14 +54,17 @@ export const ModelPlaceholders = {
 	runway: "e.g. gen4_turbo_image_to_video, gen3a_turbo_image_to_video",
 	runware: "e.g. runware:100@1, runware:101@1",
 	fireworks: "e.g. accounts/fireworks/models/deepseek-v3p2",
+	sarvam: "e.g. sarvam-30b, sarvam-105b",
 };
 
 export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
 	anthropic: true,
 	azure: true,
 	bedrock: true,
+	bedrock_mantle: true,
 	cerebras: true,
 	cohere: true,
+	deepseek: true,
 	gemini: true,
 	groq: true,
 	huggingface: true,
@@ -81,6 +86,7 @@ export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
 	runware: true,
 	vllm: false,
 	fireworks: true,
+	sarvam: true,
 };
 
 export const DefaultNetworkConfig = {
@@ -120,6 +126,10 @@ export const PROVIDER_SUPPORTED_REQUESTS: Record<BaseProvider, string[]> = {
 		"chat_completion_stream",
 		"responses",
 		"responses_stream",
+		"responses_retrieve",
+		"responses_delete",
+		"responses_cancel",
+		"responses_input_items",
 		"embedding",
 		"speech",
 		"speech_stream",

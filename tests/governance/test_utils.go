@@ -212,7 +212,7 @@ type CreateVirtualKeyRequest struct {
 	IsActive        *bool                   `json:"is_active,omitempty"`
 	TeamID          *string                 `json:"team_id,omitempty"`
 	CustomerID      *string                 `json:"customer_id,omitempty"`
-	Budget          *BudgetRequest          `json:"budget,omitempty"`
+	Budgets         []BudgetRequest         `json:"budgets,omitempty"`
 	RateLimit       *CreateRateLimitRequest `json:"rate_limit,omitempty"`
 	ProviderConfigs []ProviderConfigRequest `json:"provider_configs,omitempty"`
 }
@@ -224,7 +224,7 @@ type ProviderConfigRequest struct {
 	Weight        *float64                `json:"weight,omitempty"`
 	AllowedModels []string                `json:"allowed_models,omitempty"`
 	KeyIDs        []string                `json:"key_ids,omitempty"`
-	Budget        *BudgetRequest          `json:"budget,omitempty"`
+	Budgets       []BudgetRequest         `json:"budgets,omitempty"`
 	RateLimit     *CreateRateLimitRequest `json:"rate_limit,omitempty"`
 }
 
@@ -248,8 +248,8 @@ type CreateTeamRequest struct {
 
 // CreateCustomerRequest represents a request to create a customer
 type CreateCustomerRequest struct {
-	Name   string         `json:"name"`
-	Budget *BudgetRequest `json:"budget,omitempty"`
+	Name    string          `json:"name"`
+	Budgets []BudgetRequest `json:"budgets,omitempty"`
 }
 
 // UpdateBudgetRequest represents a request to update a budget
@@ -271,7 +271,7 @@ type UpdateVirtualKeyRequest struct {
 	Name            *string                 `json:"name,omitempty"`
 	TeamID          *string                 `json:"team_id,omitempty"`
 	CustomerID      *string                 `json:"customer_id,omitempty"`
-	Budget          *UpdateBudgetRequest    `json:"budget,omitempty"`
+	Budgets         []BudgetRequest         `json:"budgets,omitempty"`
 	RateLimit       *CreateRateLimitRequest `json:"rate_limit,omitempty"`
 	IsActive        *bool                   `json:"is_active,omitempty"`
 	ProviderConfigs []ProviderConfigRequest `json:"provider_configs,omitempty"`
@@ -289,8 +289,8 @@ type UpdateTeamRequest struct {
 
 // UpdateCustomerRequest represents a request to update a customer
 type UpdateCustomerRequest struct {
-	Name   *string              `json:"name,omitempty"`
-	Budget *UpdateBudgetRequest `json:"budget,omitempty"`
+	Name    *string         `json:"name,omitempty"`
+	Budgets []BudgetRequest `json:"budgets,omitempty"`
 }
 
 // ChatCompletionRequest represents an OpenAI-compatible chat completion request
@@ -548,4 +548,71 @@ func ParseDuration(duration string) (time.Duration, error) {
 	default:
 		return time.ParseDuration(duration)
 	}
+}
+
+// ListItemsFromResponse extracts a paginated list field (e.g. "virtual_keys",
+// "teams", "customers", "budgets", "rate_limits") from a list-endpoint
+// response. The governance list endpoints return arrays plus pagination
+// metadata (count/limit/offset/total_count), not maps keyed by id/value.
+func ListItemsFromResponse(t *testing.T, body map[string]interface{}, field string) []map[string]interface{} {
+	t.Helper()
+	raw, ok := body[field]
+	if !ok || raw == nil {
+		return nil
+	}
+	list, ok := raw.([]interface{})
+	if !ok {
+		t.Fatalf("expected %q to be a list in response, got %T", field, raw)
+	}
+	items := make([]map[string]interface{}, 0, len(list))
+	for _, entry := range list {
+		if item, ok := entry.(map[string]interface{}); ok {
+			items = append(items, item)
+		}
+	}
+	return items
+}
+
+// FindListItem returns the first item in the named list field whose key
+// equals value, or nil when absent. Typical keys: "value" for virtual keys,
+// "id" for teams, customers, budgets and rate limits.
+func FindListItem(t *testing.T, body map[string]interface{}, field, key, value string) map[string]interface{} {
+	t.Helper()
+	for _, item := range ListItemsFromResponse(t, body, field) {
+		if got, ok := item[key].(string); ok && got == value {
+			return item
+		}
+	}
+	return nil
+}
+
+// FirstBudgetID returns the ID of the first embedded budget on a governance
+// entity or provider config (VK, team, customer, provider config), or ""
+// when it has none. Entities moved from a singular budget_id field to a
+// budgets array; the legacy budget_id JSON field is no longer populated.
+func FirstBudgetID(item map[string]interface{}) string {
+	budgets, ok := item["budgets"].([]interface{})
+	if !ok || len(budgets) == 0 {
+		return ""
+	}
+	b, ok := budgets[0].(map[string]interface{})
+	if !ok {
+		return ""
+	}
+	id, _ := b["id"].(string)
+	return id
+}
+
+// defaultProviderConfigs returns the minimal provider config for test VKs.
+// Governance is deny-by-default: a VK with no provider configs blocks every
+// provider, so tests that exercise budgets/rate limits (not provider
+// filtering) must attach at least one allowed provider.
+func defaultProviderConfigs() []ProviderConfigRequest {
+	weight := 1.0
+	return []ProviderConfigRequest{{
+		Provider:      "openai",
+		Weight:        &weight,
+		AllowedModels: []string{"*"},
+		KeyIDs:        []string{"*"},
+	}}
 }

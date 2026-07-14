@@ -660,6 +660,192 @@ func TestGetLastAudioAndTranscriptionChunksSafe(t *testing.T) {
 	}
 }
 
+func TestProcessStreamingResponsePreservesTerminalResponsesUsageWhenChunkIndexIsReused(t *testing.T) {
+	logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)
+	accumulator := NewAccumulator(nil, logger)
+
+	requestID := "test-responses-terminal-usage-reused-index"
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	ctx.SetValue(schemas.BifrostContextKeyAccumulatorID, requestID)
+
+	priorChunks := []*ResponsesStreamChunk{
+		{
+			ChunkIndex: 0,
+			Timestamp:  time.Now(),
+			StreamResponse: &schemas.BifrostResponsesStreamResponse{
+				Type: schemas.ResponsesStreamResponseTypeCreated,
+				Response: &schemas.BifrostResponsesResponse{
+					ID: bifrost.Ptr("resp_terminal_usage"),
+				},
+			},
+		},
+		{
+			ChunkIndex: 7,
+			Timestamp:  time.Now(),
+			StreamResponse: &schemas.BifrostResponsesStreamResponse{
+				Type:  schemas.ResponsesStreamResponseTypeOutputTextDelta,
+				Delta: bifrost.Ptr("partial"),
+			},
+		},
+		{
+			ChunkIndex: 7,
+			Timestamp:  time.Now(),
+			StreamResponse: &schemas.BifrostResponsesStreamResponse{
+				Type:  schemas.ResponsesStreamResponseTypeOutputTextDelta,
+				Delta: bifrost.Ptr("duplicate index ignored"),
+			},
+		},
+	}
+	for _, chunk := range priorChunks {
+		if err := accumulator.addResponsesStreamChunk(requestID, chunk, false); err != nil {
+			t.Fatalf("addResponsesStreamChunk() error = %v", err)
+		}
+	}
+
+	response := &schemas.BifrostResponse{
+		ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+			Type:           schemas.ResponsesStreamResponseTypeCompleted,
+			SequenceNumber: 0,
+			Response: &schemas.BifrostResponsesResponse{
+				ID: bifrost.Ptr("resp_terminal_usage"),
+				Usage: &schemas.ResponsesResponseUsage{
+					InputTokens:  31,
+					OutputTokens: 17,
+					TotalTokens:  48,
+				},
+			},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType:            schemas.ResponsesStreamRequest,
+				Provider:               schemas.OpenAI,
+				OriginalModelRequested: "gpt-4o-mini",
+				ChunkIndex:             0,
+			},
+		},
+	}
+
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+
+	processed, err := accumulator.ProcessStreamingResponse(ctx, response, nil)
+	if err != nil {
+		t.Fatalf("ProcessStreamingResponse() error = %v", err)
+	}
+	assertTokenUsage := func(t *testing.T, processed *ProcessedStreamResponse) {
+		t.Helper()
+		if processed == nil {
+			t.Fatal("expected processed response, got nil")
+		}
+		if processed.Data == nil || processed.Data.TokenUsage == nil {
+			t.Fatal("expected terminal response.completed usage to be accumulated")
+		}
+		if processed.Data.TokenUsage.PromptTokens != 31 {
+			t.Fatalf("expected prompt tokens 31, got %d", processed.Data.TokenUsage.PromptTokens)
+		}
+		if processed.Data.TokenUsage.CompletionTokens != 17 {
+			t.Fatalf("expected completion tokens 17, got %d", processed.Data.TokenUsage.CompletionTokens)
+		}
+		if processed.Data.TokenUsage.TotalTokens != 48 {
+			t.Fatalf("expected total tokens 48, got %d", processed.Data.TokenUsage.TotalTokens)
+		}
+	}
+	assertTokenUsage(t, processed)
+
+	processedAgain, err := accumulator.ProcessStreamingResponse(ctx, response, nil)
+	if err != nil {
+		t.Fatalf("second ProcessStreamingResponse() error = %v", err)
+	}
+	assertTokenUsage(t, processedAgain)
+
+	streamAccumulator := accumulator.getOrCreateStreamAccumulator(requestID)
+	streamAccumulator.mu.Lock()
+	defer streamAccumulator.mu.Unlock()
+	completedChunks := 0
+	for _, chunk := range streamAccumulator.ResponsesStreamChunks {
+		if chunk.StreamResponse != nil && chunk.StreamResponse.Type == schemas.ResponsesStreamResponseTypeCompleted {
+			completedChunks++
+		}
+	}
+	if completedChunks != 1 {
+		t.Fatalf("expected exactly one terminal response.completed chunk after duplicate processing, got %d", completedChunks)
+	}
+}
+
+// On a monotonic stream the terminal chunk arrives with a unique highest index, so
+// the first delivery is stored as-is — the reservation must still be seeded then,
+// or a second plugin delivering the same terminal chunk (logging + maxim both call
+// ProcessStreamingChunk with the final result) mints a fresh index and the chunk is
+// double-appended into the persisted raw log.
+func TestProcessStreamingResponseDedupesDuplicateTerminalChunkWithUniqueIndex(t *testing.T) {
+	logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)
+	accumulator := NewAccumulator(nil, logger)
+
+	requestID := "test-responses-terminal-monotonic-duplicate"
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	ctx.SetValue(schemas.BifrostContextKeyAccumulatorID, requestID)
+
+	for i := 0; i < 3; i++ {
+		chunk := &ResponsesStreamChunk{
+			ChunkIndex: i,
+			Timestamp:  time.Now(),
+			StreamResponse: &schemas.BifrostResponsesStreamResponse{
+				Type:  schemas.ResponsesStreamResponseTypeOutputTextDelta,
+				Delta: bifrost.Ptr("chunk"),
+			},
+		}
+		if err := accumulator.addResponsesStreamChunk(requestID, chunk, false); err != nil {
+			t.Fatalf("addResponsesStreamChunk() error = %v", err)
+		}
+	}
+
+	response := &schemas.BifrostResponse{
+		ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+			Type:           schemas.ResponsesStreamResponseTypeCompleted,
+			SequenceNumber: 3,
+			Response: &schemas.BifrostResponsesResponse{
+				ID: bifrost.Ptr("resp_monotonic_terminal"),
+				Usage: &schemas.ResponsesResponseUsage{
+					InputTokens:  11,
+					OutputTokens: 7,
+					TotalTokens:  18,
+				},
+			},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType:            schemas.ResponsesStreamRequest,
+				Provider:               schemas.OpenAI,
+				OriginalModelRequested: "gpt-4o-mini",
+				ChunkIndex:             3,
+			},
+		},
+	}
+
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+
+	for call := 1; call <= 2; call++ {
+		processed, err := accumulator.ProcessStreamingResponse(ctx, response, nil)
+		if err != nil {
+			t.Fatalf("ProcessStreamingResponse() call %d error = %v", call, err)
+		}
+		if processed == nil || processed.Data == nil || processed.Data.TokenUsage == nil || processed.Data.TokenUsage.TotalTokens != 18 {
+			t.Fatalf("call %d: expected terminal usage 18 total tokens, got %+v", call, processed)
+		}
+	}
+
+	streamAccumulator := accumulator.getOrCreateStreamAccumulator(requestID)
+	streamAccumulator.mu.Lock()
+	defer streamAccumulator.mu.Unlock()
+	completedChunks := 0
+	for _, chunk := range streamAccumulator.ResponsesStreamChunks {
+		if chunk.StreamResponse != nil && chunk.StreamResponse.Type == schemas.ResponsesStreamResponseTypeCompleted {
+			completedChunks++
+		}
+	}
+	if completedChunks != 1 {
+		t.Fatalf("expected exactly one terminal chunk after duplicate delivery of a unique-index final chunk, got %d", completedChunks)
+	}
+	if got := len(streamAccumulator.ResponsesStreamChunks); got != 4 {
+		t.Fatalf("expected 4 stored chunks (3 deltas + 1 terminal), got %d", got)
+	}
+}
+
 func TestProcessStreamingResponseSupportsWebSocketResponsesRequest(t *testing.T) {
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)
 	accumulator := NewAccumulator(nil, logger)
@@ -722,5 +908,106 @@ func TestProcessStreamingResponseSupportsWebSocketResponsesRequest(t *testing.T)
 	}
 	if processed.Data.TokenUsage.TotalTokens != 19 {
 		t.Fatalf("expected total tokens 19, got %d", processed.Data.TokenUsage.TotalTokens)
+	}
+}
+
+// newChatChunkResponse builds a chat streaming chunk mirroring what the
+// OpenAI-compatible provider handler emits (content in the delta, an optional
+// finish_reason on the choice, an optional usage block, and a chunk index).
+func newChatChunkResponse(idx int, content string, finishReason *string, usage *schemas.BifrostLLMUsage) *schemas.BifrostResponse {
+	delta := &schemas.ChatStreamResponseChoiceDelta{}
+	if content != "" {
+		delta.Content = bifrost.Ptr(content)
+	}
+	return &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{
+			ID:     "msg_finish",
+			Object: "chat.completion.chunk",
+			Choices: []schemas.BifrostResponseChoice{{
+				ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{Delta: delta},
+				FinishReason:             finishReason,
+			}},
+			Usage: usage,
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.ChatCompletionStreamRequest,
+				Provider:    schemas.OpenAI,
+				ChunkIndex:  idx,
+			},
+		},
+	}
+}
+
+// TestChatStreamingFinishReasonForwardedOnContentChunk covers providers that
+// send finish_reason together with the final content delta. The provider
+// forwards that terminal chunk as-is and then appends a synthetic tail chunk
+// (higher index) whose finish_reason is nil to avoid a duplicate client-facing
+// emission. The accumulated response must still keep the finish_reason rather
+// than reading nil from the max-index tail chunk.
+func TestChatStreamingFinishReasonForwardedOnContentChunk(t *testing.T) {
+	logger := bifrost.NewDefaultLogger(schemas.LogLevelError)
+	accumulator := NewAccumulator(nil, logger)
+
+	requestID := "finish-glued-request"
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	ctx.SetValue(schemas.BifrostContextKeyAccumulatorID, requestID)
+
+	stop := "stop"
+	usage := &schemas.BifrostLLMUsage{PromptTokens: 10, CompletionTokens: 2, TotalTokens: 12}
+
+	if _, err := accumulator.processChatStreamingResponse(ctx, newChatChunkResponse(0, "Hello", nil, nil), nil); err != nil {
+		t.Fatalf("chunk 0: %v", err)
+	}
+	// Terminal content chunk carries the finish_reason.
+	if _, err := accumulator.processChatStreamingResponse(ctx, newChatChunkResponse(1, " world", &stop, nil), nil); err != nil {
+		t.Fatalf("chunk 1: %v", err)
+	}
+	// Synthetic tail chunk: empty delta, nil finish_reason, usage, final chunk.
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+	processed, err := accumulator.processChatStreamingResponse(ctx, newChatChunkResponse(2, "", nil, usage), nil)
+	if err != nil {
+		t.Fatalf("final chunk: %v", err)
+	}
+	if processed == nil || processed.Data == nil {
+		t.Fatal("expected accumulated data on final chunk")
+	}
+	if processed.Data.FinishReason == nil {
+		t.Fatal("finish_reason was dropped from the accumulated response")
+	}
+	if *processed.Data.FinishReason != "stop" {
+		t.Fatalf("accumulated finish_reason = %q, want %q", *processed.Data.FinishReason, "stop")
+	}
+}
+
+// TestChatStreamingFinishReasonOnTerminalChunk is the standard OpenAI shape: the
+// finish_reason arrives on the terminal (highest-index) chunk. This guards
+// against the fallback over-reaching and changing the common path.
+func TestChatStreamingFinishReasonOnTerminalChunk(t *testing.T) {
+	logger := bifrost.NewDefaultLogger(schemas.LogLevelError)
+	accumulator := NewAccumulator(nil, logger)
+
+	requestID := "finish-tail-request"
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	ctx.SetValue(schemas.BifrostContextKeyAccumulatorID, requestID)
+
+	stop := "stop"
+	usage := &schemas.BifrostLLMUsage{PromptTokens: 10, CompletionTokens: 2, TotalTokens: 12}
+
+	if _, err := accumulator.processChatStreamingResponse(ctx, newChatChunkResponse(0, "Hello", nil, nil), nil); err != nil {
+		t.Fatalf("chunk 0: %v", err)
+	}
+	if _, err := accumulator.processChatStreamingResponse(ctx, newChatChunkResponse(1, " world", nil, nil), nil); err != nil {
+		t.Fatalf("chunk 1: %v", err)
+	}
+	// Terminal chunk carries the finish_reason and usage.
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+	processed, err := accumulator.processChatStreamingResponse(ctx, newChatChunkResponse(2, "", &stop, usage), nil)
+	if err != nil {
+		t.Fatalf("final chunk: %v", err)
+	}
+	if processed == nil || processed.Data == nil || processed.Data.FinishReason == nil {
+		t.Fatal("expected finish_reason on the accumulated response")
+	}
+	if *processed.Data.FinishReason != "stop" {
+		t.Fatalf("accumulated finish_reason = %q, want %q", *processed.Data.FinishReason, "stop")
 	}
 }

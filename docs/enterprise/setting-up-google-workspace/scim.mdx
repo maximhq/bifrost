@@ -1,0 +1,136 @@
+---
+title: "Setup SCIM"
+description: "Enable real-time user and group provisioning from Google Workspace to Bifrost Enterprise."
+---
+
+SCIM keeps Bifrost in sync with Google Workspace in real time - new users are provisioned, deactivated accounts are suspended, and group memberships are updated without waiting for the next background sync cycle.
+
+<Note>
+  Complete [SSO using OIDC](./oidc) before setting up SCIM. The Google Workspace OIDC integration provides the OAuth credentials and Directory API access that SCIM provisioning builds on.
+</Note>
+
+---
+
+## How Google Workspace provisioning works
+
+Google Workspace does not natively push SCIM to external endpoints. Instead, Bifrost uses two complementary mechanisms:
+
+| Method | Trigger | Use case |
+| --- | --- | --- |
+| **Directory API background sync** | Every 24 hours | Reconciles all users, roles, and group memberships |
+| **OIDC session refresh** | Every 15 minutes | Detects deactivated users between syncs |
+
+The Directory API sync is configured as part of the [OIDC setup](./oidc#step-3-create-a-service-account-for-directory-api-access-optional) - no additional steps are required here if you already configured a service account.
+
+---
+
+## Step 1: Verify Directory API access is configured
+
+<Steps>
+
+<Step title="Confirm the service account is set up">
+
+The Directory API sync requires a Google Cloud service account with domain-wide delegation, configured in Steps 3 and 4 of the [OIDC guide](./oidc#step-3-create-a-service-account-for-directory-api-access-optional).
+
+If you skipped that section, return to the OIDC guide and complete it before continuing.
+
+</Step>
+
+<Step title="Confirm the scopes are authorized">
+
+In the [Google Admin Console](https://admin.google.com), go to **Security → Access and data control → API controls → Manage Domain Wide Delegation**.
+
+Verify the service account's Unique ID is listed with all three scopes:
+
+```
+https://www.googleapis.com/auth/admin.directory.user.readonly
+https://www.googleapis.com/auth/admin.directory.group.readonly
+https://www.googleapis.com/auth/admin.directory.group.member.readonly
+```
+
+<Frame caption="Domain-Wide Delegation - verify the service account has the three Directory API scopes authorized.">
+  <img src="/media/user-provisioning/gws-domain-wide-delegation.png" alt="Google Admin Console Domain-Wide Delegation page showing the service account entry with scopes" />
+</Frame>
+
+</Step>
+
+</Steps>
+
+---
+
+## Step 2: Configure sync scope in Bifrost
+
+<Steps>
+
+<Step title="Open your Google Workspace provider">
+
+In your Bifrost dashboard, go to **Governance** → **User Provisioning** and open your configured Google Workspace provider.
+
+</Step>
+
+<Step title="Set group and team mappings">
+
+To control which Google Workspace groups are synced as Bifrost teams, configure **Attribute-to-Team Mappings** in the provider settings:
+
+- Use `*` as the value to sync the group `displayName` directly as the team name
+- Use a specific group name to map a single group to a named Bifrost team
+
+<Frame caption="Attribute Mapping - map Google Workspace group memberships to Bifrost teams using the groups claim.">
+  <img src="/media/user-provisioning/gws-scope-for-oauth-client.png" alt="Bifrost attribute mapping showing groups claim mapped to Bifrost teams" />
+</Frame>
+
+</Step>
+
+</Steps>
+
+---
+
+## Step 3: Trigger and verify sync
+
+<Steps>
+
+<Step title="Run a manual import">
+
+To sync users immediately without waiting for the 24-hour cycle, go to **Governance** → **User Provisioning** → **Import Users**.
+
+Filter by a Google Workspace group, click **Preview**, and confirm the expected users appear.
+
+Click **Import** to bring them into Bifrost with the roles assigned by your attribute mappings.
+
+<Frame caption="Import Users - preview users from a Google Workspace group before importing them into Bifrost.">
+  <img src="/media/user-provisioning/gws-connection-status.png" alt="Bifrost Import Users screen showing a preview of users from a Google Workspace group" />
+</Frame>
+
+</Step>
+
+<Step title="Verify in Bifrost">
+
+After the sync or import:
+
+- Go to **Governance** → **Users** to see provisioned users and their assigned roles
+- Go to **Governance** → **Teams** to see teams populated from Google Workspace groups
+- Go to **Governance** → **Business Units** to see business units resolved from group or attribute mappings
+
+</Step>
+
+</Steps>
+
+---
+
+## How sync works
+
+**OIDC provisioning** - users are provisioned in Bifrost on their first successful login. Role and team assignments are derived from the JWT claims at login time.
+
+**Background reconciliation** - every 24 hours, Bifrost reconciles all users in the directory against the current state in Google Workspace. This catches deactivations, group membership changes, and new users who have not yet logged in.
+
+**Session refresh** - every 15 minutes, Bifrost attempts to refresh active OIDC sessions. If a user's Google account has been suspended or deleted, their Bifrost session is terminated at the next refresh cycle.
+
+---
+
+## Troubleshooting
+
+**Users not appearing in Import Preview** - confirm the service account has the three Directory API scopes authorized in Domain-Wide Delegation. Check that the `adminEmail` is a Super Admin or has the **User Management Admin** role.
+
+**Group memberships not syncing** - verify `GroupMember.Read.All` scope is included in Domain-Wide Delegation. Groups must be assigned to the Bifrost application in the Google Admin Console for the `groups` claim to appear in the token.
+
+**Sync completes but roles are wrong** - review your **Attribute-to-Role Mappings** in the provider settings. Use **Discover Claims** to inspect the live claims and confirm the group names match your mapping values exactly.

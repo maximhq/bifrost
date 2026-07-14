@@ -11,9 +11,9 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
-	"github.com/tidwall/gjson"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 )
 
 func TestExtractTypesFromValue(t *testing.T) {
@@ -2172,7 +2172,10 @@ func TestGetRequestBodyForResponses_RawBodyStripsFallbacks(t *testing.T) {
 		RawRequestBody: rawBody,
 	}
 
-	result, bifrostErr := getRequestBodyForResponses(ctx, request, false, nil, false, false)
+	result, bifrostErr := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
+		Provider:    schemas.Anthropic,
+		IsStreaming: false,
+	})
 	if bifrostErr != nil {
 		t.Fatalf("unexpected error: %v", bifrostErr)
 	}
@@ -2274,6 +2277,10 @@ func TestSupportsAdaptiveThinking(t *testing.T) {
 		{"claude-opus-4.6-20250514", true},
 		{"claude-sonnet-4-6-20250514", true},
 		{"claude-sonnet-4.6-20250514", true},
+		// Sonnet 5+: adaptive is the only thinking-on mode.
+		{"claude-sonnet-5", true},
+		{"claude-sonnet-5-20260101", true},
+		{"global.anthropic.claude-sonnet-5", true},
 		// Fable/Mythos family: adaptive thinking is always on.
 		{"claude-fable-5", true},
 		{"claude-mythos-5", true},
@@ -2328,8 +2335,43 @@ func TestIsFableFamily(t *testing.T) {
 	}
 }
 
+// TestIsSonnet5Plus pins the Sonnet 5 predicate. Sonnet 5 adopts the Opus 4.7+
+// request surface (adaptive-only thinking, temperature/top_p/top_k removed). The
+// "sonnet-5" substring must NOT match "sonnet-4-5" or "3-5-sonnet".
+func TestIsSonnet5Plus(t *testing.T) {
+	tests := []struct {
+		model    string
+		expected bool
+	}{
+		{"claude-sonnet-5", true},
+		{"claude-sonnet-5-20260101", true},
+		{"Claude-Sonnet-5", true},
+		{"global.anthropic.claude-sonnet-5", true},
+		{"anthropic.claude-sonnet-5-v1", true},
+		{"claude-sonnet-5@20260101", true},
+		// Must NOT match older Sonnets or other families.
+		{"claude-sonnet-4-5", false},
+		{"claude-sonnet-4-5-20250929", false},
+		{"claude-sonnet-4-6", false},
+		{"claude-3-5-sonnet-20241022", false},
+		{"claude-opus-4-8", false},
+		{"claude-fable-5", false},
+		{"claude-haiku-4-5", false},
+		{"", false},
+		{"some-non-claude-model", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			if got := IsSonnet5Plus(tt.model); got != tt.expected {
+				t.Errorf("IsSonnet5Plus(%q) = %v, want %v", tt.model, got, tt.expected)
+			}
+		})
+	}
+}
+
 // TestIsAdaptiveOnlyThinkingModel covers the union gate used for the thinking
-// and sampling-parameter surfaces: Opus 4.7+ OR the Fable/Mythos family.
+// and sampling-parameter surfaces: Opus 4.7+ OR Sonnet 5+ OR the Fable/Mythos family.
 func TestIsAdaptiveOnlyThinkingModel(t *testing.T) {
 	tests := []struct {
 		model    string
@@ -2339,6 +2381,10 @@ func TestIsAdaptiveOnlyThinkingModel(t *testing.T) {
 		{"claude-opus-4-8", true},
 		{"claude-opus-4-7", true},
 		{"claude-opus-4.8-20260601", true},
+		// Sonnet 5+.
+		{"claude-sonnet-5", true},
+		{"claude-sonnet-5-20260101", true},
+		{"global.anthropic.claude-sonnet-5", true},
 		// Fable/Mythos.
 		{"claude-fable-5", true},
 		{"claude-mythos-5", true},
@@ -2346,6 +2392,9 @@ func TestIsAdaptiveOnlyThinkingModel(t *testing.T) {
 		// Adaptive-capable but NOT adaptive-only (budget_tokens still accepted).
 		{"claude-opus-4-6", false},
 		{"claude-sonnet-4-6", false},
+		// Sonnet 4.5 must NOT match the "sonnet-5" substring gate.
+		{"claude-sonnet-4-5", false},
+		{"claude-sonnet-4-5-20250929", false},
 		// Other.
 		{"claude-opus-4-5", false},
 		{"claude-haiku-4-5", false},
@@ -2449,7 +2498,7 @@ func TestSupportsFastMode(t *testing.T) {
 
 // TestSupportsEffortParameter pins the helper against the explicit doc list
 // at https://platform.claude.com/docs/en/build-with-claude/effort:
-// "Mythos Preview, Opus 4.8, Opus 4.7, Opus 4.6, Sonnet 4.6, Opus 4.5".
+// "Mythos Preview, Opus 4.8, Opus 4.7, Opus 4.6, Sonnet 5, Sonnet 4.6, Opus 4.5".
 func TestSupportsEffortParameter(t *testing.T) {
 	tests := []struct {
 		model    string
@@ -2468,6 +2517,9 @@ func TestSupportsEffortParameter(t *testing.T) {
 		{"claude-opus-4.6-20250514", true},
 		{"claude-sonnet-4-6", true},
 		{"claude-sonnet-4.6-20250514", true},
+		{"claude-sonnet-5", true},
+		{"claude-sonnet-5-20260101", true},
+		{"global.anthropic.claude-sonnet-5", true},
 		{"claude-opus-4-5", true},
 		{"claude-opus-4.5-20251101", true},
 		{"claude-opus-4-5-20251101", true},
@@ -2543,6 +2595,15 @@ func TestStripUnsupportedAnthropicFields_EffortGating(t *testing.T) {
 		{
 			name:  "sonnet 4.6 keeps effort",
 			model: "claude-sonnet-4-6",
+			req: &AnthropicMessageRequest{
+				OutputConfig: &AnthropicOutputConfig{Effort: &highEffort},
+			},
+			wantEffort: &highEffort,
+			wantOCNil:  false,
+		},
+		{
+			name:  "sonnet 5 keeps effort",
+			model: "claude-sonnet-5",
 			req: &AnthropicMessageRequest{
 				OutputConfig: &AnthropicOutputConfig{Effort: &highEffort},
 			},
@@ -2644,6 +2705,13 @@ func TestStripUnsupportedFieldsFromRawBody_EffortGating(t *testing.T) {
 			name:           "sonnet 4.6 keeps effort",
 			model:          "claude-sonnet-4-6",
 			body:           `{"model":"claude-sonnet-4-6","output_config":{"effort":"medium"}}`,
+			wantHasEffort:  true,
+			wantHasOCField: true,
+		},
+		{
+			name:           "sonnet 5 keeps effort",
+			model:          "claude-sonnet-5",
+			body:           `{"model":"claude-sonnet-5","output_config":{"effort":"medium"}}`,
 			wantHasEffort:  true,
 			wantHasOCField: true,
 		},
@@ -2937,6 +3005,10 @@ func TestComputerUseGeneration(t *testing.T) {
 		{"claude-opus-4-6", ComputerUseGen20251124},
 		{"claude-sonnet-4-6", ComputerUseGen20251124},
 		{"claude-sonnet-4.6", ComputerUseGen20251124},
+		// Sonnet 5+ uses the new generation (same tool surface as Sonnet 4.6).
+		{"claude-sonnet-5", ComputerUseGen20251124},
+		{"claude-sonnet-5-20260101", ComputerUseGen20251124},
+		{"global.anthropic.claude-sonnet-5", ComputerUseGen20251124},
 		{"claude-opus-4-5", ComputerUseGen20251124},
 		{"claude-opus-4-5-20251101", ComputerUseGen20251124},
 		// Fable/Mythos family uses the new generation, like Opus 4.8.
@@ -3401,5 +3473,244 @@ func TestStripEmptyThinkingBlocks(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestFastMode_StreamingForwardsSpeed verifies the per-event message_delta
+// converter surfaces the served speed on the emitted chunk (client-facing usage
+// visibility). NOTE: billing reads the terminal response.completed chunk, not
+// message_delta — that end-to-end billing contract is covered by
+// TestResponsesStream_TerminalChunkCarriesServedModifiers.
+func TestFastMode_StreamingForwardsSpeed(t *testing.T) {
+	ctx := schemas.NewBifrostContext(nil, time.Time{})
+	ctx.SetValue(schemas.BifrostContextKeyIntegrationType, "anthropic")
+	state := AcquireAnthropicResponsesStreamState()
+	defer ReleaseAnthropicResponsesStreamState(state)
+
+	// Final usage arrives on message_delta: speed:"fast" + 5m cache-creation tokens.
+	raw := `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":2,"output_tokens":135,"cache_creation_input_tokens":44667,"cache_creation":{"ephemeral_5m_input_tokens":44667,"ephemeral_1h_input_tokens":0},"speed":"fast"}}`
+	var chunk AnthropicStreamEvent
+	if err := sonic.Unmarshal([]byte(raw), &chunk); err != nil {
+		t.Fatalf("unmarshal event: %v", err)
+	}
+
+	responses, bErr, _ := chunk.ToBifrostResponsesStream(ctx, 0, state)
+	if bErr != nil {
+		t.Fatalf("ToBifrostResponsesStream error: %v", bErr)
+	}
+
+	var sawUsage bool
+	for _, r := range responses {
+		if r.Response == nil || r.Response.Usage == nil {
+			continue
+		}
+		sawUsage = true
+		if r.Response.Speed == nil || *r.Response.Speed != "fast" {
+			t.Fatalf("streamed message_delta did not forward speed=fast; got %v", r.Response.Speed)
+		}
+		// Cache-creation tokens must survive so the fast cache rate applies.
+		if r.Response.Usage.InputTokensDetails == nil ||
+			r.Response.Usage.InputTokensDetails.CachedWriteTokens != 44667 {
+			t.Fatalf("cache-creation tokens not carried onto streamed usage")
+		}
+	}
+	if !sawUsage {
+		t.Fatalf("no usage-bearing response emitted from message_delta")
+	}
+}
+
+// TestAccumulateResponsesUsage_BillsWebSearch verifies the streaming Responses
+// usage accumulator carries server-tool web search counts onto both the response
+// usage and the mirrored billed usage. The terminal chunk overwrites
+// Response.Usage with this accumulator, so without this the per-event search count
+// is lost and web search goes unbilled on streamed Responses requests.
+func TestAccumulateResponsesUsage_BillsWebSearch(t *testing.T) {
+	usage := &schemas.ResponsesResponseUsage{}
+	billed := &schemas.BifrostLLMUsage{}
+	accumulateAnthropicResponsesUsage(usage, billed, &AnthropicUsage{
+		InputTokens:   105,
+		OutputTokens:  6039,
+		ServerToolUse: &AnthropicServerToolUseUsage{WebSearchRequests: 2},
+	})
+
+	if usage.OutputTokensDetails == nil || usage.OutputTokensDetails.NumSearchQueries == nil {
+		t.Fatal("response usage NumSearchQueries not set")
+	}
+	if got := *usage.OutputTokensDetails.NumSearchQueries; got != 2 {
+		t.Fatalf("response usage NumSearchQueries = %d, want 2", got)
+	}
+	if billed.CompletionTokensDetails == nil || billed.CompletionTokensDetails.NumSearchQueries == nil {
+		t.Fatal("billed usage NumSearchQueries not set")
+	}
+	if got := *billed.CompletionTokensDetails.NumSearchQueries; got != 2 {
+		t.Fatalf("billed usage NumSearchQueries = %d, want 2", got)
+	}
+}
+
+// TestToBifrostChatResponse_ForwardsWebSearchAndInferenceGeo verifies the chat
+// converter surfaces server-tool web search counts (so they bill at
+// search_context_cost_per_query) and forwards the served inference geography (so
+// the data-residency multiplier applies) alongside fast-mode speed.
+func TestToBifrostChatResponse_ForwardsWebSearchAndInferenceGeo(t *testing.T) {
+	response := &AnthropicMessageResponse{
+		ID:    "msg_ws",
+		Type:  "message",
+		Role:  "assistant",
+		Model: "claude-opus-4-8",
+		Content: []AnthropicContentBlock{
+			{Type: AnthropicContentBlockTypeText, Text: schemas.Ptr("hi")},
+		},
+		StopReason: AnthropicStopReasonEndTurn,
+		Usage: &AnthropicUsage{
+			InputTokens:   105,
+			OutputTokens:  6039,
+			ServerToolUse: &AnthropicServerToolUseUsage{WebSearchRequests: 3},
+			InferenceGeo:  schemas.Ptr("us"),
+			Speed:         schemas.Ptr("fast"),
+		},
+	}
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+
+	result := response.ToBifrostChatResponse(ctx)
+	if result == nil || result.Usage == nil {
+		t.Fatal("expected non-nil result with usage")
+	}
+	if result.Usage.CompletionTokensDetails == nil || result.Usage.CompletionTokensDetails.NumSearchQueries == nil {
+		t.Fatal("web search request count not forwarded to chat usage")
+	}
+	if got := *result.Usage.CompletionTokensDetails.NumSearchQueries; got != 3 {
+		t.Fatalf("chat usage NumSearchQueries = %d, want 3", got)
+	}
+	if result.InferenceGeo == nil || *result.InferenceGeo != "us" {
+		t.Fatalf("inference_geo not forwarded; got %v", result.InferenceGeo)
+	}
+	if result.Speed == nil || *result.Speed != "fast" {
+		t.Fatalf("speed not forwarded; got %v", result.Speed)
+	}
+}
+
+// TestToBifrostResponsesResponse_ForwardsInferenceGeo verifies the non-streaming
+// Responses converter forwards the served inference geography for data-residency
+// billing (parity with the streaming message_delta path).
+func TestToBifrostResponsesResponse_ForwardsInferenceGeo(t *testing.T) {
+	response := &AnthropicMessageResponse{
+		ID:    "msg_geo",
+		Type:  "message",
+		Role:  "assistant",
+		Model: "claude-opus-4-8",
+		Content: []AnthropicContentBlock{
+			{Type: AnthropicContentBlockTypeText, Text: schemas.Ptr("hi")},
+		},
+		StopReason: AnthropicStopReasonEndTurn,
+		Usage: &AnthropicUsage{
+			InputTokens:  10,
+			OutputTokens: 5,
+			InferenceGeo: schemas.Ptr("us"),
+		},
+	}
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+
+	result := response.ToBifrostResponsesResponse(ctx)
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.InferenceGeo == nil || *result.InferenceGeo != "us" {
+		t.Fatalf("inference_geo not forwarded; got %v", result.InferenceGeo)
+	}
+}
+
+// TestResponsesStream_TerminalChunkCarriesServedModifiers pins the streaming
+// Responses BILLING contract. Billing (framework/streaming/responses.go) prices
+// the terminal response.completed chunk — whose builder starts fresh with no
+// Speed/InferenceGeo/Usage. So the handler must (a) accumulate usage across events
+// and (b) re-apply the served fast mode + data residency captured from earlier
+// events onto that terminal chunk. This replays message_start → message_delta →
+// message_stop through the real converters + accumulator and reproduces the
+// handler's capture/apply, asserting the billed chunk carries speed=fast,
+// inference_geo=us, the web-search count, and the cache-creation tokens. Without
+// the re-apply, speed/geo silently fall back to standard/non-US rates.
+func TestResponsesStream_TerminalChunkCarriesServedModifiers(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	ctx.SetValue(schemas.BifrostContextKeyIntegrationType, "anthropic")
+	state := AcquireAnthropicResponsesStreamState()
+	defer ReleaseAnthropicResponsesStreamState(state)
+
+	usage := &schemas.ResponsesResponseUsage{}
+	billed := &schemas.BifrostLLMUsage{}
+	var servedSpeed, servedInferenceGeo *string
+
+	events := []string{
+		`{"type":"message_start","message":{"id":"msg_1","model":"claude-opus-4-8","usage":{"input_tokens":2,"cache_creation_input_tokens":44667,"cache_creation":{"ephemeral_5m_input_tokens":44667}}}}`,
+		`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":2,"output_tokens":135,"cache_creation_input_tokens":44667,"cache_creation":{"ephemeral_5m_input_tokens":44667},"server_tool_use":{"web_search_requests":4},"speed":"fast","inference_geo":"us"}}`,
+		`{"type":"message_stop"}`,
+	}
+
+	var finalResp *schemas.BifrostResponsesResponse
+	for _, raw := range events {
+		var event AnthropicStreamEvent
+		if err := sonic.Unmarshal([]byte(raw), &event); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		// Handler step 1: extract usage (top-level or nested), accumulate, capture
+		// served modifiers — unconditionally, mirroring HandleAnthropicResponsesStream.
+		var usageToProcess *AnthropicUsage
+		if event.Usage != nil {
+			usageToProcess = event.Usage
+		} else if event.Message != nil && event.Message.Usage != nil {
+			usageToProcess = event.Message.Usage
+		}
+		if usageToProcess != nil {
+			accumulateAnthropicResponsesUsage(usage, billed, usageToProcess)
+			if usageToProcess.Speed != nil {
+				servedSpeed = usageToProcess.Speed
+			}
+			if usageToProcess.InferenceGeo != nil {
+				servedInferenceGeo = usageToProcess.InferenceGeo
+			}
+		}
+		// Handler step 2: convert + on the terminal chunk, attach usage and re-apply
+		// the captured served modifiers.
+		responses, bErr, isLastChunk := event.ToBifrostResponsesStream(ctx, 0, state)
+		if bErr != nil {
+			t.Fatalf("ToBifrostResponsesStream: %v", bErr)
+		}
+		if isLastChunk && len(responses) > 0 {
+			r := responses[len(responses)-1]
+			if r.Response == nil {
+				r.Response = &schemas.BifrostResponsesResponse{}
+			}
+			// Contract precondition: response.completed starts fresh (no served fields).
+			if r.Response.Speed != nil || r.Response.InferenceGeo != nil {
+				t.Fatal("expected fresh response.completed with no served modifiers")
+			}
+			r.Response.Usage = usage
+			if servedSpeed != nil {
+				r.Response.Speed = servedSpeed
+			}
+			if servedInferenceGeo != nil {
+				r.Response.InferenceGeo = servedInferenceGeo
+			}
+			finalResp = r.Response
+		}
+	}
+
+	if finalResp == nil {
+		t.Fatal("no terminal (isLastChunk) response produced")
+	}
+	if finalResp.Speed == nil || *finalResp.Speed != "fast" {
+		t.Fatalf("terminal billed chunk missing speed=fast; got %v", finalResp.Speed)
+	}
+	if finalResp.InferenceGeo == nil || *finalResp.InferenceGeo != "us" {
+		t.Fatalf("terminal billed chunk missing inference_geo=us; got %v", finalResp.InferenceGeo)
+	}
+	if finalResp.Usage == nil || finalResp.Usage.OutputTokensDetails == nil ||
+		finalResp.Usage.OutputTokensDetails.NumSearchQueries == nil ||
+		*finalResp.Usage.OutputTokensDetails.NumSearchQueries != 4 {
+		t.Fatal("terminal billed chunk missing web search count")
+	}
+	if finalResp.Usage.InputTokensDetails == nil || finalResp.Usage.InputTokensDetails.CachedWriteTokens != 44667 {
+		t.Fatal("terminal billed chunk missing cache-creation tokens")
 	}
 }

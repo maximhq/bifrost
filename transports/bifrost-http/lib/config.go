@@ -491,6 +491,15 @@ type Config struct {
 	LogsStoreConfig *logstore.Config
 	ObjectStore     objectstore.ObjectStore
 
+	// oauth2SigningKey caches the immutable OAuth2 signing key used to sign and
+	// verify Bifrost-issued /mcp JWTs. The key is created once via an idempotent
+	// insert and never rotated, so it is identical across nodes and immutable for
+	// the process lifetime. Caching it here lets the JWKS, token-issuance, and
+	// JWT-verify paths share a single load — sparing each a DB read + private-key
+	// decrypt per request — through one invalidation point. See
+	// GetOAuth2SigningKey.
+	oauth2SigningKey atomic.Pointer[configstoreTables.OAuth2SigningKey]
+
 	// In-memory storage
 	ServerConfig     *ServerConfig
 	ClientConfig     *configstore.ClientConfig
@@ -798,10 +807,10 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 		if err := json.Unmarshal(data, &schema); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal schema: %w", err)
 		}
-		if schema["$schema"] != "https://www.getbifrost.ai/schema" {
+		if schemaURL, ok := schema["$schema"].(string); !ok || strings.TrimSpace(schemaURL) == "" {
 			yellowColor := "\033[33m"
 			resetColor := "\033[0m"
-			message := fmt.Sprintf("config file %s does not include \"$schema\":\"https://www.getbifrost.ai/schema\". Use our official schema file to avoid unexpected behavior.", absConfigFilePath)
+			message := fmt.Sprintf("config file %s does not include a \"$schema\" location. Set it to %q or your mirrored schema location to enable IDE validation.", absConfigFilePath, DefaultConfigSchemaURL)
 			boxWidth := 100
 			contentWidth := boxWidth - 4
 			words := strings.Fields(message)
@@ -830,7 +839,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 			}
 			fmt.Printf("%s╚%s╝%s\n", yellowColor, strings.Repeat("═", boxWidth-2), resetColor)
 			fmt.Println("")
-			logger.Warn("config file %s does not include \"$schema\":\"https://www.getbifrost.ai/schema\". Use our official schema file to avoid unexpected behavior.", absConfigFilePath)
+			logger.Warn("config file %s does not include a \"$schema\" location", absConfigFilePath)
 		}
 		// Parse config data
 		if err := json.Unmarshal(data, &configData); err != nil {
@@ -868,6 +877,12 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	}
 	// 4. Client config (store → file → defaults)
 	loadClientConfig(ctx, config, &configData)
+	// Reject an out-of-range client config (e.g. auth_code_ttl above the cap)
+	// loudly at startup instead of silently correcting it, so in-memory, core,
+	// and DB state cannot diverge.
+	if err := validateClientConfig(config.ClientConfig); err != nil {
+		return nil, err
+	}
 	config.SetHeaderMatcher(NewHeaderMatcher(config.ClientConfig.HeaderFilterConfig))
 	// 5. Providers (store → file → auto-detect)
 	if err := loadProviders(ctx, config, &configData); err != nil {
@@ -1075,6 +1090,23 @@ func applyClientConfigDefaults(cc *configstore.ClientConfig) {
 	if cc.EnableLogging == nil {
 		cc.EnableLogging = new(true)
 	}
+}
+
+// validateClientConfig checks invariants on a fully-merged client config that
+// must hold regardless of the source (config.json, DB, or defaults). It returns
+// an error rather than silently correcting a value so an out-of-range setting
+// fails loudly at startup instead of diverging in-memory state from what the
+// operator wrote — and stays wrong (re-warned, unpersisted) on every restart.
+func validateClientConfig(cc *configstore.ClientConfig) error {
+	// The /api/config handler rejects an over-max auth_code_ttl, but config.json
+	// and any DB row written before the cap existed bypass that path. Fail fast
+	// here, the point where every config source converges, so a leaked one-time
+	// code can never be minted with a lifetime above the ceiling. A zero/omitted
+	// value is valid — it resolves to the default at issuance.
+	if oc := cc.OAuth2ServerConfig; oc != nil && oc.AuthCodeTTL > configstoreTables.MaxAuthCodeTTL {
+		return fmt.Errorf("oauth2_server_config.auth_code_ttl %d exceeds the maximum of %d seconds (15 minutes)", oc.AuthCodeTTL, configstoreTables.MaxAuthCodeTTL)
+	}
+	return nil
 }
 
 // sanitizeMCPExternalOAuthURLs validates the MCP external OAuth URL overrides
@@ -1450,21 +1482,22 @@ func mergeProviderKeys(provider schemas.ModelProvider, fileKeys, dbKeys []schema
 			} else {
 				// No stored hash (legacy) - fall back to generating fresh hash
 				dbKeyHash, err := configstore.GenerateKeyHash(schemas.Key{
-					Name:               dbKey.Name,
-					Value:              dbKey.Value,
-					Models:             dbKey.Models,
-					BlacklistedModels:  dbKey.BlacklistedModels,
-					Weight:             dbKey.Weight,
-					AzureKeyConfig:     dbKey.AzureKeyConfig,
-					VertexKeyConfig:    dbKey.VertexKeyConfig,
-					BedrockKeyConfig:   dbKey.BedrockKeyConfig,
-					ReplicateKeyConfig: dbKey.ReplicateKeyConfig,
-					Aliases:            dbKey.Aliases,
-					VLLMKeyConfig:      dbKey.VLLMKeyConfig,
-					OllamaKeyConfig:    dbKey.OllamaKeyConfig,
-					SGLKeyConfig:       dbKey.SGLKeyConfig,
-					Enabled:            dbKey.Enabled,
-					UseForBatchAPI:     dbKey.UseForBatchAPI,
+					Name:                   dbKey.Name,
+					Value:                  dbKey.Value,
+					Models:                 dbKey.Models,
+					BlacklistedModels:      dbKey.BlacklistedModels,
+					Weight:                 dbKey.Weight,
+					AzureKeyConfig:         dbKey.AzureKeyConfig,
+					VertexKeyConfig:        dbKey.VertexKeyConfig,
+					BedrockKeyConfig:       dbKey.BedrockKeyConfig,
+					BedrockMantleKeyConfig: dbKey.BedrockMantleKeyConfig,
+					ReplicateKeyConfig:     dbKey.ReplicateKeyConfig,
+					Aliases:                dbKey.Aliases,
+					VLLMKeyConfig:          dbKey.VLLMKeyConfig,
+					OllamaKeyConfig:        dbKey.OllamaKeyConfig,
+					SGLKeyConfig:           dbKey.SGLKeyConfig,
+					Enabled:                dbKey.Enabled,
+					UseForBatchAPI:         dbKey.UseForBatchAPI,
 				})
 				if err != nil {
 					logger.Warn("failed to generate key hash for db key %s (%s): %v, falling back to name comparison", dbKey.Name, provider, err)
@@ -1531,21 +1564,22 @@ func reconcileProviderKeys(provider schemas.ModelProvider, fileKeys, dbKeys []sc
 			} else {
 				// No stored hash (legacy) - fall back to generating fresh hash for comparison
 				dbKeyHash, err := configstore.GenerateKeyHash(schemas.Key{
-					Name:               dbKey.Name,
-					Value:              dbKey.Value,
-					Models:             dbKey.Models,
-					BlacklistedModels:  dbKey.BlacklistedModels,
-					Weight:             dbKey.Weight,
-					AzureKeyConfig:     dbKey.AzureKeyConfig,
-					VertexKeyConfig:    dbKey.VertexKeyConfig,
-					BedrockKeyConfig:   dbKey.BedrockKeyConfig,
-					ReplicateKeyConfig: dbKey.ReplicateKeyConfig,
-					Aliases:            dbKey.Aliases,
-					VLLMKeyConfig:      dbKey.VLLMKeyConfig,
-					OllamaKeyConfig:    dbKey.OllamaKeyConfig,
-					SGLKeyConfig:       dbKey.SGLKeyConfig,
-					Enabled:            dbKey.Enabled,
-					UseForBatchAPI:     dbKey.UseForBatchAPI,
+					Name:                   dbKey.Name,
+					Value:                  dbKey.Value,
+					Models:                 dbKey.Models,
+					BlacklistedModels:      dbKey.BlacklistedModels,
+					Weight:                 dbKey.Weight,
+					AzureKeyConfig:         dbKey.AzureKeyConfig,
+					VertexKeyConfig:        dbKey.VertexKeyConfig,
+					BedrockKeyConfig:       dbKey.BedrockKeyConfig,
+					BedrockMantleKeyConfig: dbKey.BedrockMantleKeyConfig,
+					ReplicateKeyConfig:     dbKey.ReplicateKeyConfig,
+					Aliases:                dbKey.Aliases,
+					VLLMKeyConfig:          dbKey.VLLMKeyConfig,
+					OllamaKeyConfig:        dbKey.OllamaKeyConfig,
+					SGLKeyConfig:           dbKey.SGLKeyConfig,
+					Enabled:                dbKey.Enabled,
+					UseForBatchAPI:         dbKey.UseForBatchAPI,
 				})
 				if err != nil {
 					logger.Warn("failed to generate key hash for db key %s (%s): %v", dbKey.Name, provider, err)
@@ -1789,6 +1823,12 @@ func mcpClientConfigToTable(clientConfig *schemas.MCPClientConfig) (configstoreT
 			clientConfig.ToolSyncInterval.String(),
 		)
 	}
+	if clientConfig.ToolExecutionTimeout < 0 {
+		return configstoreTables.TableMCPClient{}, fmt.Errorf(
+			"tool_execution_timeout must be >= 0, got %q",
+			clientConfig.ToolExecutionTimeout.String(),
+		)
+	}
 	authType := string(clientConfig.AuthType)
 	if authType == "" {
 		authType = string(schemas.MCPAuthTypeHeaders)
@@ -1808,6 +1848,7 @@ func mcpClientConfigToTable(clientConfig *schemas.MCPClientConfig) (configstoreT
 		AllowedExtraHeaders:       clientConfig.AllowedExtraHeaders,
 		IsPingAvailable:           clientConfig.IsPingAvailable,
 		ToolSyncInterval:          int(clientConfig.ToolSyncInterval / time.Second),
+		ToolExecutionTimeout:      int(math.Ceil(clientConfig.ToolExecutionTimeout.Seconds())),
 		ToolPricing:               clientConfig.ToolPricing,
 		AllowOnAllVirtualKeys:     clientConfig.AllowOnAllVirtualKeys,
 		Disabled:                  clientConfig.Disabled,
@@ -1937,19 +1978,22 @@ func loadGovernanceConfig(ctx context.Context, config *Config, configData *Confi
 	// Merging config
 	if governanceConfig != nil {
 		config.GovernanceConfig = governanceConfig
-		// Merge with config file if present
-		if configData.Governance != nil {
-			mergeGovernanceConfig(ctx, config, configData, governanceConfig)
-		}
 	} else if configData.Governance != nil {
-		// No governance config in store, use config file
+		// No governance config in store, merge config file against an empty snapshot
+		// so first import follows the same ID normalization and persistence path.
 		logger.Debug("no governance config found in store, processing from config file")
-		config.GovernanceConfig = configData.Governance
-		createGovernanceConfigInStore(ctx, config)
+		governanceConfig = &configstore.GovernanceConfig{
+			AuthConfig: configData.Governance.AuthConfig,
+		}
+		config.GovernanceConfig = governanceConfig
 		// Pricing overrides are loaded into ModelCatalog after initFrameworkConfig,
 		// once ModelCatalog is initialized.
 	} else {
 		logger.Debug("no governance config in store or config file")
+	}
+
+	if governanceConfig != nil && configData.Governance != nil {
+		mergeGovernanceConfig(ctx, config, configData, governanceConfig)
 	}
 }
 
@@ -2248,26 +2292,18 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 				if forceFileSync || existingVirtualKey.ConfigHash != fileVKHash {
 					logger.Debug("config hash mismatch for virtual key %s, syncing from config file", existingVirtualKey.ID)
 					configData.Governance.VirtualKeys[i].ConfigHash = fileVKHash
-					// This is added for backward compatibility with existing configs
-					if configData.Governance.VirtualKeys[i].Value == "" && existingVirtualKey.Value != "" {
+					// Preserve stored value when config doesn't supply one
+					if configData.Governance.VirtualKeys[i].Value.ShouldPreserveStored() && existingVirtualKey.Value.IsSet() {
 						configData.Governance.VirtualKeys[i].Value = existingVirtualKey.Value
 					}
-					// Process environment variable for virtual key value
-					if strings.HasPrefix(configData.Governance.VirtualKeys[i].Value, "env.") {
-						// Resolving the environment variable value
-						envValue, err := envutils.ProcessEnvValue(configData.Governance.VirtualKeys[i].Value)
-						if err != nil {
-							logger.Warn("failed to process environment variable for virtual key %s: %v", newVirtualKey.ID, err)
-							continue
-						}
-						configData.Governance.VirtualKeys[i].Value = envValue
+					resolvedVal := configData.Governance.VirtualKeys[i].Value.GetValue()
+					if resolvedVal == "" && configData.Governance.VirtualKeys[i].Value.IsFromSecret() {
+						logger.Warn("virtual key %s: env/vault ref %q could not be resolved, skipping update", newVirtualKey.ID, configData.Governance.VirtualKeys[i].Value.GetRawRef())
+						break
 					}
-					// If the virtual key value is not a valid virtual key, we will generate a new one
-					if !strings.HasPrefix(configData.Governance.VirtualKeys[i].Value, governance.VirtualKeyPrefix) {
-						if configData.Governance.VirtualKeys[i].Value != "" {
-							logger.Warn("virtual key %s has a value in the config file that does not have %s prefix. We are generating a new one for you.", newVirtualKey.ID, governance.VirtualKeyPrefix)
-						}
-						configData.Governance.VirtualKeys[i].Value = governance.GenerateVirtualKey()
+					if !strings.HasPrefix(resolvedVal, governance.VirtualKeyPrefix) {
+						logger.Warn("virtual key %s has a value in the config file that does not have %s prefix. We are generating a new one for you.", newVirtualKey.ID, governance.VirtualKeyPrefix)
+						configData.Governance.VirtualKeys[i].Value = *schemas.NewSecretVar(governance.GenerateVirtualKey())
 					}
 					// Resolve MCP client names to IDs for config file mcp_configs
 					configData.Governance.VirtualKeys[i].MCPConfigs = resolveMCPConfigClientIDs(
@@ -2285,22 +2321,14 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 			if configData.Governance.VirtualKeys[i].ID == "" {
 				configData.Governance.VirtualKeys[i].ID = uuid.NewString()
 			}
-			// if the virtual key value is env.VIRTUAL_KEY_VALUE, then we will need to resolve the environment variable
-			// Process environment variable for virtual key value
-			if strings.HasPrefix(configData.Governance.VirtualKeys[i].Value, "env.") {
-				// Resolving the environment variable value
-				envValue, err := envutils.ProcessEnvValue(configData.Governance.VirtualKeys[i].Value)
-				if err != nil {
-					logger.Warn("failed to process environment variable for virtual key %s: %v", newVirtualKey.ID, err)
-					continue
-				}
-				configData.Governance.VirtualKeys[i].Value = envValue
+			resolvedVal := configData.Governance.VirtualKeys[i].Value.GetValue()
+			if resolvedVal == "" && configData.Governance.VirtualKeys[i].Value.IsFromSecret() {
+				logger.Warn("virtual key %s: env/vault ref %q could not be resolved, skipping", newVirtualKey.ID, configData.Governance.VirtualKeys[i].Value.GetRawRef())
+				continue
 			}
-			if !strings.HasPrefix(configData.Governance.VirtualKeys[i].Value, governance.VirtualKeyPrefix) {
-				if configData.Governance.VirtualKeys[i].Value != "" {
-					logger.Warn("virtual key %s has a value in the config file that does not have %s prefix. We are generating a new one for you.", newVirtualKey.ID, governance.VirtualKeyPrefix)
-				}
-				configData.Governance.VirtualKeys[i].Value = governance.GenerateVirtualKey()
+			if !strings.HasPrefix(resolvedVal, governance.VirtualKeyPrefix) {
+				logger.Warn("virtual key %s has a value in the config file that does not have %s prefix. We are generating a new one for you.", newVirtualKey.ID, governance.VirtualKeyPrefix)
+				configData.Governance.VirtualKeys[i].Value = *schemas.NewSecretVar(governance.GenerateVirtualKey())
 			}
 			// Resolve MCP client names to IDs for config file mcp_configs
 			configData.Governance.VirtualKeys[i].MCPConfigs = resolveMCPConfigClientIDs(
@@ -3351,287 +3379,6 @@ func validateRateLimitLinkOwnership(tx *gorm.DB, rateLimitID *string, ownerType,
 	return nil
 }
 
-// createGovernanceConfigInStore creates governance config in store from config file
-func createGovernanceConfigInStore(ctx context.Context, config *Config) {
-	if config.ConfigStore == nil {
-		logger.Debug("createGovernanceConfigInStore: ConfigStore is nil, skipping")
-		return
-	}
-	logger.Debug("createGovernanceConfigInStore: creating %d budgets, %d rate_limits, %d virtual_keys, %d routing_rules",
-		len(config.GovernanceConfig.Budgets),
-		len(config.GovernanceConfig.RateLimits),
-		len(config.GovernanceConfig.VirtualKeys),
-		len(config.GovernanceConfig.RoutingRules))
-	if err := config.ConfigStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
-		createBudget := func(budget *configstoreTables.TableBudget) error {
-			budgetHash, err := configstore.GenerateBudgetHash(*budget)
-			if err != nil {
-				logger.Warn("failed to generate budget hash for %s: %v", budget.ID, err)
-			} else {
-				budget.ConfigHash = budgetHash
-			}
-			if err := config.ConfigStore.CreateBudget(ctx, budget, tx); err != nil {
-				return fmt.Errorf("failed to create budget %s: %w", budget.ID, err)
-			}
-			return nil
-		}
-
-		// Owner-scoped budgets require owner rows to exist first:
-		// - team_id -> governance_teams
-		// - virtual_key_id -> governance_virtual_keys
-		// - provider_config_id -> governance_virtual_key_provider_configs
-		pendingTeamBudgets := make([]*configstoreTables.TableBudget, 0)
-		pendingVirtualKeyBudgets := make([]*configstoreTables.TableBudget, 0)
-		pendingProviderConfigBudgets := make([]*configstoreTables.TableBudget, 0)
-		for i := range config.GovernanceConfig.Budgets {
-			budget := &config.GovernanceConfig.Budgets[i]
-			if budget.TeamID != nil {
-				pendingTeamBudgets = append(pendingTeamBudgets, budget)
-				continue
-			}
-			if budget.VirtualKeyID != nil {
-				pendingVirtualKeyBudgets = append(pendingVirtualKeyBudgets, budget)
-				continue
-			}
-			if budget.ProviderConfigID != nil {
-				pendingProviderConfigBudgets = append(pendingProviderConfigBudgets, budget)
-				continue
-			}
-			if err := createBudget(budget); err != nil {
-				return err
-			}
-		}
-
-		for i := range config.GovernanceConfig.RateLimits {
-			rateLimit := &config.GovernanceConfig.RateLimits[i]
-			rlHash, err := configstore.GenerateRateLimitHash(*rateLimit)
-			if err != nil {
-				logger.Warn("failed to generate rate limit hash for %s: %v", rateLimit.ID, err)
-			} else {
-				rateLimit.ConfigHash = rlHash
-			}
-			if err := config.ConfigStore.CreateRateLimit(ctx, rateLimit, tx); err != nil {
-				return fmt.Errorf("failed to create rate limit %s: %w", rateLimit.ID, err)
-			}
-		}
-		for i := range config.GovernanceConfig.Providers {
-			provider := &config.GovernanceConfig.Providers[i]
-			if provider.Name == "" {
-				continue
-			}
-			if err := validateProviderGovernanceOwnership(tx, *provider); err != nil {
-				return err
-			}
-			updates := map[string]interface{}{
-				"budget_id":     provider.BudgetID,
-				"rate_limit_id": provider.RateLimitID,
-			}
-			result := tx.Model(&configstoreTables.TableProvider{}).
-				Where("name = ?", provider.Name).
-				Select("budget_id", "rate_limit_id").
-				Updates(updates)
-			if result.Error != nil {
-				return fmt.Errorf("failed to apply provider governance config for %s: %w", provider.Name, result.Error)
-			}
-			if result.RowsAffected == 0 {
-				return fmt.Errorf("failed to apply provider governance config for %s: no provider row found", provider.Name)
-			}
-		}
-
-		for i := range config.GovernanceConfig.Customers {
-			customer := &config.GovernanceConfig.Customers[i]
-			customerHash, err := configstore.GenerateCustomerHash(*customer)
-			if err != nil {
-				logger.Warn("failed to generate customer hash for %s: %v", customer.ID, err)
-			} else {
-				customer.ConfigHash = customerHash
-			}
-			// Work on a copy so the live GovernanceConfig entry keeps its Budgets
-			// slice — in-memory reads after boot must not see a nil slice.
-			inlineBudgets := customer.Budgets
-			customerRow := *customer
-			customerRow.Budgets = nil
-			if err := config.ConfigStore.CreateCustomer(ctx, &customerRow, tx); err != nil {
-				return fmt.Errorf("failed to create customer %s: %w", customer.ID, err)
-			}
-			for j := range inlineBudgets {
-				cid := customer.ID
-				inlineBudgets[j].CustomerID = &cid
-				if err := config.ConfigStore.CreateBudget(ctx, &inlineBudgets[j], tx); err != nil {
-					return fmt.Errorf("failed to create budget %s for customer %s: %w", inlineBudgets[j].ID, customer.ID, err)
-				}
-			}
-			if customer.BudgetID != nil {
-				if err := linkCustomerBudgetID(tx, customer.ID, *customer.BudgetID, false); err != nil {
-					return fmt.Errorf("failed to link budget %s to customer %s: %w", *customer.BudgetID, customer.ID, err)
-				}
-			}
-		}
-
-		for i := range config.GovernanceConfig.Teams {
-			team := &config.GovernanceConfig.Teams[i]
-			teamHash, err := configstore.GenerateTeamHash(*team)
-			if err != nil {
-				logger.Warn("failed to generate team hash for %s: %v", team.ID, err)
-			} else {
-				team.ConfigHash = teamHash
-			}
-			if err := config.ConfigStore.CreateTeam(ctx, team, tx); err != nil {
-				return fmt.Errorf("failed to create team %s: %w", team.ID, err)
-			}
-		}
-
-		for _, budget := range pendingTeamBudgets {
-			if err := createBudget(budget); err != nil {
-				return err
-			}
-		}
-
-		for i := range config.GovernanceConfig.RoutingRules {
-			rule := &config.GovernanceConfig.RoutingRules[i]
-			ruleHash, err := configstore.GenerateRoutingRuleHash(*rule)
-			if err != nil {
-				logger.Warn("failed to generate routing rule hash for %s: %v", rule.ID, err)
-			} else {
-				rule.ConfigHash = ruleHash
-			}
-			if err := config.ConfigStore.CreateRoutingRule(ctx, rule, tx); err != nil {
-				return fmt.Errorf("failed to create routing rule %s: %w", rule.ID, err)
-			}
-		}
-
-		for i := range config.GovernanceConfig.VirtualKeys {
-			virtualKey := &config.GovernanceConfig.VirtualKeys[i]
-			logger.Debug("creating virtual key: id=%s, name=%s, value=%s", virtualKey.ID, virtualKey.Name, virtualKey.Value)
-			vkHash, err := configstore.GenerateVirtualKeyHash(*virtualKey)
-			if err != nil {
-				logger.Warn("failed to generate virtual key hash for %s: %v", virtualKey.ID, err)
-			} else {
-				virtualKey.ConfigHash = vkHash
-			}
-			providerConfigs := virtualKey.ProviderConfigs
-			mcpConfigs := virtualKey.MCPConfigs
-			virtualKey.ProviderConfigs = nil
-			virtualKey.MCPConfigs = nil
-
-			if virtualKey.ID == "" {
-				virtualKey.ID = uuid.NewString()
-			}
-
-			if err := config.ConfigStore.CreateVirtualKey(ctx, virtualKey, tx); err != nil {
-				logger.Error("failed to create virtual key %s: %v", virtualKey.ID, err)
-				return fmt.Errorf("failed to create virtual key %s: %w", virtualKey.ID, err)
-			}
-			logger.Debug("created virtual key %s successfully", virtualKey.ID)
-
-			for _, pc := range providerConfigs {
-				pc.VirtualKeyID = virtualKey.ID
-				logger.Debug("creating provider config for VK %s: provider=%s, keys=%d", virtualKey.ID, pc.Provider, len(pc.Keys))
-				if err := config.ConfigStore.CreateVirtualKeyProviderConfig(ctx, &pc, tx); err != nil {
-					logger.Error("failed to create provider config for virtual key %s: %v", virtualKey.ID, err)
-					return fmt.Errorf("failed to create provider config for virtual key %s: %w", virtualKey.ID, err)
-				}
-			}
-
-			// Resolve MCP client names to IDs for config file mcp_configs
-			mcpConfigs = resolveMCPConfigClientIDs(ctx, config.ConfigStore, mcpConfigs, virtualKey.ID)
-
-			for _, mc := range mcpConfigs {
-				mc.VirtualKeyID = virtualKey.ID
-				if err := config.ConfigStore.CreateVirtualKeyMCPConfig(ctx, &mc, tx); err != nil {
-					return fmt.Errorf("failed to create MCP config for virtual key %s: %w", virtualKey.ID, err)
-				}
-			}
-
-			virtualKey.ProviderConfigs = providerConfigs
-			virtualKey.MCPConfigs = mcpConfigs
-		}
-
-		// Create virtual-key-owned budgets after virtual keys exist.
-		for _, budget := range pendingVirtualKeyBudgets {
-			if err := createBudget(budget); err != nil {
-				return err
-			}
-		}
-
-		// Create provider-config-owned budgets after virtual key provider configs exist.
-		for _, budget := range pendingProviderConfigBudgets {
-			if err := createBudget(budget); err != nil {
-				return err
-			}
-		}
-
-		// Create model configs last: scope=virtual_key configs reference a virtual key by
-		// scope_id, and CreateModelConfig now locks that owner row and rejects a missing one
-		// (ErrNotFound), so the owning virtual keys must already exist. Budgets referenced via
-		// BudgetIDs are likewise all created by this point.
-		for i := range config.GovernanceConfig.ModelConfigs {
-			modelConfig := &config.GovernanceConfig.ModelConfigs[i]
-			if err := validateModelConfigGovernanceOwnership(tx, *modelConfig); err != nil {
-				return err
-			}
-			modelConfigHash, err := configstore.GenerateModelConfigHash(*modelConfig)
-			if err != nil {
-				logger.Warn("failed to generate model config hash for %s: %v", modelConfig.ID, err)
-			} else {
-				modelConfig.ConfigHash = modelConfigHash
-			}
-			if err := config.ConfigStore.CreateModelConfig(ctx, modelConfig, tx); err != nil {
-				return fmt.Errorf("failed to create model config %s: %w", modelConfig.ID, err)
-			}
-			if len(modelConfig.BudgetIDs) > 0 {
-				if err := linkModelConfigBudgets(tx, modelConfig.ID, modelConfig.BudgetIDs); err != nil {
-					return err
-				}
-			}
-		}
-
-		// Create pricing overrides after virtual keys so that scoped overrides referencing
-		// a virtual key ID are inserted after the VK row exists.
-		for i := range config.GovernanceConfig.PricingOverrides {
-			override := &config.GovernanceConfig.PricingOverrides[i]
-			if len(override.RequestTypes) > 0 {
-				b, err := json.Marshal(override.RequestTypes)
-				if err != nil {
-					return fmt.Errorf("failed to serialize request_types for pricing override %s: %w", override.ID, err)
-				}
-				override.RequestTypesJSON = string(b)
-			} else {
-				override.RequestTypesJSON = "[]"
-			}
-			overrideHash, err := configstore.GeneratePricingOverrideHash(*override)
-			if err != nil {
-				return fmt.Errorf("failed to generate pricing override hash for %s: %w", override.ID, err)
-			}
-			override.ConfigHash = overrideHash
-			if err := config.ConfigStore.CreatePricingOverride(ctx, override, tx); err != nil {
-				return fmt.Errorf("failed to create pricing override %s: %w", override.ID, err)
-			}
-		}
-
-		if config.GovernanceConfig.ComplexityAnalyzerConfig != nil {
-			normalized, err := complexity.ValidateAndNormalize(config.GovernanceConfig.ComplexityAnalyzerConfig)
-			if err != nil {
-				logger.Warn("invalid complexity analyzer config in config file: %v", err)
-			} else if normalized != nil {
-				fileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(normalized)
-				if err != nil {
-					return fmt.Errorf("failed to generate complexity analyzer config hashes: %w", err)
-				}
-				normalized.ConfigHashes = fileHashes
-				config.GovernanceConfig.ComplexityAnalyzerConfig = normalized
-				if err := config.ConfigStore.UpdateComplexityAnalyzerConfig(ctx, normalized, tx); err != nil {
-					return fmt.Errorf("failed to create complexity analyzer config: %w", err)
-				}
-			}
-		}
-
-		return nil
-	}); err != nil {
-		logger.Warn("failed to update governance config: %v", err)
-	}
-}
-
 // isBcryptHash checks if a string looks like a bcrypt hash
 func isBcryptHash(s string) bool {
 	return strings.HasPrefix(s, "$2a$") ||
@@ -4161,7 +3908,7 @@ func ResolveFrameworkPricingConfig(
 	// Hash the file-resolved values; skip if nothing valid survived Phase 1.
 	fileHash := ""
 	fileHasHashableMCPConfig := (fileMCPLibraryURL != nil && !skipMCPLibraryURLBackfill) || fileMCPLibrarySyncSeconds != nil
-	if fileConfig != nil && fileConfig.Pricing != nil && !skipURLBackfill && (filePricingURL != nil || fileSyncSeconds != nil || fileHasHashableMCPConfig) {
+	if fileConfig != nil && fileConfig.Pricing != nil && !skipURLBackfill && (filePricingURL != nil || (fileModelParametersURL != nil && !skipModelParamsURLBackfill) || fileSyncSeconds != nil || fileHasHashableMCPConfig) {
 		var h string
 		var err error
 		if fileHasHashableMCPConfig {
@@ -4203,7 +3950,12 @@ func ResolveFrameworkPricingConfig(
 			needsDBUpdate = true
 		}
 		if dbConfig.ModelParametersURL != nil && *dbConfig.ModelParametersURL != "" {
-			resolvedModelParametersURL = dbConfig.ModelParametersURL
+			if fileChanged && fileModelParametersURL != nil && !skipModelParamsURLBackfill {
+				logger.Info("model_parameters_url from config.json overrides DB (file hash changed) — updating DB")
+				needsDBUpdate = true
+			} else {
+				resolvedModelParametersURL = dbConfig.ModelParametersURL
+			}
 		} else if !skipModelParamsURLBackfill {
 			needsDBUpdate = true
 		}
@@ -4608,29 +4360,6 @@ func (c *Config) GetRawConfigString() string {
 	return string(data)
 }
 
-// processEnvValue checks and replaces environment variable references in configuration values.
-// Returns the processed value and the environment variable name if it was an env reference.
-// Supports the "env.VARIABLE_NAME" syntax for referencing environment variables.
-// This enables secure configuration management without hardcoding sensitive values.
-//
-// Examples:
-//   - "env.OPENAI_API_KEY" -> actual value from OPENAI_API_KEY environment variable
-//   - "sk-1234567890" -> returned as-is (no env prefix)
-func (c *Config) processEnvValue(value string) (string, string, error) {
-	v := strings.TrimSpace(value)
-	if !strings.HasPrefix(v, "env.") {
-		return value, "", nil // do not trim non-env values
-	}
-	envKey := strings.TrimSpace(strings.TrimPrefix(v, "env."))
-	if envKey == "" {
-		return "", "", fmt.Errorf("environment variable name missing in %q", value)
-	}
-	if envValue, ok := os.LookupEnv(envKey); ok {
-		return envValue, envKey, nil
-	}
-	return "", envKey, fmt.Errorf("environment variable %s not found", envKey)
-}
-
 // GetProviderConfigRaw retrieves the raw, unredacted provider configuration from memory.
 // This method is for internal use only, particularly by the account implementation.
 //
@@ -4680,6 +4409,13 @@ func (c *Config) GetMCPExternalClientURL() string {
 // Lock-free via atomic pointer; safe for concurrent reads from hot paths.
 func (c *Config) GetHeaderMatcher() *HeaderMatcher {
 	return c.headerMatcher.Load()
+}
+
+func (c *Config) GetModelCatalog() *modelcatalog.ModelCatalog {
+	if c == nil {
+		return nil
+	}
+	return c.ModelCatalog
 }
 
 // SetHeaderMatcher atomically stores a new precompiled header matcher.
@@ -5871,6 +5607,17 @@ func (c *Config) GetAllKeys() ([]configstoreTables.TableKey, error) {
 				cfg.SessionToken = cfg.SessionToken.Redacted()
 				configStoreKey.BedrockKeyConfig = &cfg
 			}
+			if key.BedrockMantleKeyConfig != nil {
+				cfg := *key.BedrockMantleKeyConfig // safe copy
+				cfg.AccessKey = *cfg.AccessKey.Redacted()
+				cfg.SecretKey = *cfg.SecretKey.Redacted()
+				cfg.SessionToken = cfg.SessionToken.Redacted()
+				cfg.Region = cfg.Region.Redacted()
+				cfg.RoleARN = cfg.RoleARN.Redacted()
+				cfg.ExternalID = cfg.ExternalID.Redacted()
+				cfg.RoleSessionName = cfg.RoleSessionName.Redacted()
+				configStoreKey.BedrockMantleKeyConfig = &cfg
+			}
 			if key.VertexKeyConfig != nil {
 				cfg := *key.VertexKeyConfig // safe copy
 				cfg.ProjectID = *cfg.ProjectID.Redacted()
@@ -6064,6 +5811,7 @@ func (c *Config) UpdateMCPClient(ctx context.Context, id string, updatedConfig *
 	c.MCPConfig.ClientConfigs[configIndex].ToolPricing = updatedConfig.ToolPricing
 	c.MCPConfig.ClientConfigs[configIndex].IsPingAvailable = updatedConfig.IsPingAvailable
 	c.MCPConfig.ClientConfigs[configIndex].ToolSyncInterval = updatedConfig.ToolSyncInterval
+	c.MCPConfig.ClientConfigs[configIndex].ToolExecutionTimeout = updatedConfig.ToolExecutionTimeout
 	c.MCPConfig.ClientConfigs[configIndex].AllowOnAllVirtualKeys = updatedConfig.AllowOnAllVirtualKeys
 	c.MCPConfig.ClientConfigs[configIndex].Disabled = updatedConfig.Disabled
 	c.MCPConfig.ClientConfigs[configIndex].PerUserHeaderKeys = updatedConfig.PerUserHeaderKeys
@@ -6299,6 +6047,27 @@ func (c *Config) RedactMCPClientConfig(config *schemas.MCPClientConfig) *schemas
 	return &configCopy
 }
 
+// GetOAuth2SigningKey returns the OAuth2 signing key, loading it from the
+// config store on first use and caching it for the process lifetime. The key is
+// immutable once created (see the oauth2SigningKey field), so a process-lifetime
+// cache is safe and lets the JWKS, token-issuance, and JWT-verify paths share a
+// single load — skipping a DB read + private-key decrypt per request. Returns an
+// error when no config store is wired.
+func (c *Config) GetOAuth2SigningKey(ctx context.Context) (*configstoreTables.OAuth2SigningKey, error) {
+	if k := c.oauth2SigningKey.Load(); k != nil {
+		return k, nil
+	}
+	if c.ConfigStore == nil {
+		return nil, fmt.Errorf("config store unavailable")
+	}
+	k, err := c.ConfigStore.GetOAuth2SigningKey(ctx)
+	if err != nil {
+		return nil, err
+	}
+	c.oauth2SigningKey.Store(k)
+	return k, nil
+}
+
 // autoDetectProviders automatically detects common environment variables and sets up providers
 // when no configuration file exists. This enables zero-config startup when users have set
 // standard environment variables like OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.
@@ -6324,7 +6093,7 @@ func (c *Config) autoDetectProviders(ctx context.Context) {
 
 	for provider, envVars := range providerEnvVars {
 		for _, envVar := range envVars {
-			if apiKey := os.Getenv(envVar); apiKey != "" {
+			if os.Getenv(envVar) != "" {
 				// Generate a unique ID for the auto-detected key
 				keyID := uuid.NewString()
 				// Create default provider configuration
@@ -6333,7 +6102,7 @@ func (c *Config) autoDetectProviders(ctx context.Context) {
 						{
 							ID:     keyID,
 							Name:   fmt.Sprintf("%s_auto_detected", envVar),
-							Value:  *schemas.NewSecretVar(apiKey),
+							Value:  *schemas.NewSecretVar("env." + envVar),
 							Models: schemas.WhiteList{"*"},
 							Weight: 1.0,
 						},

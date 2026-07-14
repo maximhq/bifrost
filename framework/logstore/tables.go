@@ -196,17 +196,21 @@ type Log struct {
 	StopReason              *string   `gorm:"type:varchar(50);index:idx_logs_stop_reason" json:"stop_reason,omitempty"`                   // Why the model stopped: "stop", "length", "content_filter", "tool_calls", etc.
 	ErrorDetails            string    `gorm:"type:text" json:"-"`                                                                         // JSON serialized *schemas.BifrostError
 	Stream                  bool      `gorm:"default:false" json:"stream"`                                                                // true if this was a streaming response
-	ContentSummary          string    `gorm:"type:text" json:"content_summary,omitempty"` // Last user message preview; UI log-list display fallback when payload fields are offloaded to object storage
-	RawRequest              string    `gorm:"type:text" json:"raw_request"`                         // Populated when `send-back-raw-request` is on
-	RawResponse             string    `gorm:"type:text" json:"raw_response"`                        // Populated when `send-back-raw-response` is on
-	PassthroughRequestBody  string    `gorm:"type:text" json:"passthrough_request_body,omitempty"`  // Raw body for passthrough requests (UTF-8)
-	PassthroughResponseBody string    `gorm:"type:text" json:"passthrough_response_body,omitempty"` // Raw body for passthrough responses (UTF-8)
-	RoutingEngineLogs       string    `gorm:"type:text" json:"routing_engine_logs,omitempty"`       // Formatted routing engine decision logs
-	PluginLogs              string    `gorm:"type:text" json:"plugin_logs,omitempty"`               // JSON serialized plugin log entries grouped by plugin name
-	Metadata                *string   `gorm:"type:text" json:"-"`                                   // JSON serialized map[string]interface{}
+	ContentSummary          string    `gorm:"type:text" json:"content_summary,omitempty"`                                                 // Last user message preview; UI log-list display fallback when payload fields are offloaded to object storage
+	RawRequest              string    `gorm:"type:text" json:"raw_request"`                                                               // Populated when `send-back-raw-request` is on
+	RawResponse             string    `gorm:"type:text" json:"raw_response"`                                                              // Populated when `send-back-raw-response` is on
+	PassthroughRequestBody  string    `gorm:"type:text" json:"passthrough_request_body,omitempty"`                                        // Raw body for passthrough requests (UTF-8)
+	PassthroughResponseBody string    `gorm:"type:text" json:"passthrough_response_body,omitempty"`                                       // Raw body for passthrough responses (UTF-8)
+	RoutingEngineLogs       string    `gorm:"type:text" json:"routing_engine_logs,omitempty"`                                             // Formatted routing engine decision logs
+	PluginLogs              string    `gorm:"type:text" json:"plugin_logs,omitempty"`                                                     // JSON serialized plugin log entries grouped by plugin name
+	Metadata                *string   `gorm:"type:text" json:"-"`                                                                         // JSON serialized map[string]interface{}
 	IsLargePayloadRequest   bool      `gorm:"default:false" json:"is_large_payload_request"`
 	IsLargePayloadResponse  bool      `gorm:"default:false" json:"is_large_payload_response"`
 	HasObject               bool      `gorm:"default:false" json:"-"` // True when payload is stored in object storage
+
+	RedactionData          *schemas.RedactionData        `gorm:"-" json:"-"`                           // Transient guardrail redaction data consumed by enterprise logstore wrappers
+	RedactionMapping       string                        `gorm:"type:text" json:"-"`                   // Reversible redaction mapping (encrypted when an encryption key is set), written by enterprise logstore wrappers; deleted with the row
+	RevealRedactionMapping *schemas.RedactionMapsByPhase `gorm:"-" json:"redaction_mapping,omitempty"` // Virtual field populated only on permitted log-detail reads
 
 	// Cluster governance fields - attached by the logging plugin when running in a cluster
 	// so that leaders can recover disconnected node usage from the logs table.
@@ -914,6 +918,26 @@ func (l *Log) DeserializeFields() error {
 		l.RoutingEnginesUsed = []string{}
 	}
 
+	// Hybrid log store offloads token_usage to object storage but keeps denormalized
+	// prompt/completion/total/cached columns in the DB for analytics. Rebuild the virtual
+	// field so list APIs and the UI can render tokens without hydrating from S3 —
+	// same role content_summary plays for message previews. Only the cached-read detail
+	// is denormalized; richer details (e.g. completion_tokens_details) live solely in the
+	// offloaded payload and are restored on detail reads that hydrate from object storage.
+	if l.TokenUsage == "" && l.TokenUsageParsed == nil && (l.PromptTokens != 0 || l.CompletionTokens != 0 || l.TotalTokens != 0) {
+		usage := &schemas.BifrostLLMUsage{
+			PromptTokens:     l.PromptTokens,
+			CompletionTokens: l.CompletionTokens,
+			TotalTokens:      l.TotalTokens,
+		}
+		if l.CachedReadTokens != 0 {
+			usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{
+				CachedReadTokens: l.CachedReadTokens,
+			}
+		}
+		l.TokenUsageParsed = usage
+	}
+
 	return nil
 }
 
@@ -1329,6 +1353,7 @@ type HistogramBucket struct {
 	Count     int64     `json:"count"`
 	Success   int64     `json:"success"`
 	Error     int64     `json:"error"`
+	Cancelled int64     `json:"cancelled"`
 }
 
 // HistogramResult represents the histogram query result
@@ -1368,9 +1393,10 @@ type CostHistogramResult struct {
 
 // ModelUsageStats represents usage statistics for a single model
 type ModelUsageStats struct {
-	Total   int64 `json:"total"`
-	Success int64 `json:"success"`
-	Error   int64 `json:"error"`
+	Total     int64 `json:"total"`
+	Success   int64 `json:"success"`
+	Error     int64 `json:"error"`
+	Cancelled int64 `json:"cancelled"`
 }
 
 // ModelHistogramBucket represents a single time bucket for model usage
@@ -1581,14 +1607,15 @@ type MCPTopToolsResult struct {
 
 // ModelRankingEntry represents aggregated stats for a single model over a time period.
 type ModelRankingEntry struct {
-	Model         string  `json:"model"`
-	Provider      string  `json:"provider"`
-	TotalRequests int64   `json:"total_requests"`
-	SuccessCount  int64   `json:"success_count"`
-	SuccessRate   float64 `json:"success_rate"`
-	TotalTokens   int64   `json:"total_tokens"`
-	TotalCost     float64 `json:"total_cost"`
-	AvgLatency    float64 `json:"avg_latency"`
+	Model              string  `json:"model"`
+	CanonicalModelName *string `json:"canonical_model_name,omitempty"`
+	Provider           string  `json:"provider"`
+	TotalRequests      int64   `json:"total_requests"`
+	SuccessCount       int64   `json:"success_count"`
+	SuccessRate        float64 `json:"success_rate"`
+	TotalTokens        int64   `json:"total_tokens"`
+	TotalCost          float64 `json:"total_cost"`
+	AvgLatency         float64 `json:"avg_latency"`
 }
 
 // ModelRankingTrend represents the percentage change compared to the previous period.

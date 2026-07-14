@@ -1510,13 +1510,67 @@ func FinalizeBedrockStream(state *BedrockResponsesStreamState, sequenceNumber in
 		}
 	}
 
+	// Set Status/IncompleteDetails and the terminal event type per OpenAI's
+	// Responses-API contract, matching the non-streaming switch above so
+	// unmapped reasons leave Status unset on both paths.
+	terminalEventType := schemas.ResponsesStreamResponseTypeCompleted
+	if response.StopReason != nil {
+		switch *response.StopReason {
+		case string(schemas.BifrostFinishReasonLength):
+			terminalEventType = schemas.ResponsesStreamResponseTypeIncomplete
+			response.Status = schemas.Ptr(schemas.ResponsesResponseStatusIncomplete)
+			response.IncompleteDetails = &schemas.ResponsesResponseIncompleteDetails{
+				Reason: schemas.ResponsesResponseIncompleteReasonMaxOutputTokens,
+			}
+		case string(schemas.BifrostFinishReasonStop), string(schemas.BifrostFinishReasonToolCalls):
+			if response.Status == nil {
+				response.Status = schemas.Ptr(schemas.ResponsesResponseStatusCompleted)
+			}
+		}
+	}
+
 	responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-		Type:           schemas.ResponsesStreamResponseTypeCompleted,
+		Type:           terminalEventType,
 		SequenceNumber: sequenceNumber + len(responses),
 		Response:       response,
 	})
 
 	return responses
+}
+
+// buildBedrockTokenUsage maps Responses usage to Bedrock usage. Cached tokens are folded
+// into InputTokens upstream, so they are copied into the cache fields and subtracted back
+// out of InputTokens. Shared by the streaming and non-streaming converters to keep them in sync.
+func buildBedrockTokenUsage(usage *schemas.ResponsesResponseUsage) *BedrockTokenUsage {
+	if usage == nil {
+		return nil
+	}
+	out := &BedrockTokenUsage{
+		InputTokens:  usage.InputTokens,
+		OutputTokens: usage.OutputTokens,
+		TotalTokens:  usage.TotalTokens,
+	}
+	if usage.InputTokensDetails != nil {
+		if usage.InputTokensDetails.CachedReadTokens > 0 {
+			out.CacheReadInputTokens = usage.InputTokensDetails.CachedReadTokens
+			out.InputTokens -= usage.InputTokensDetails.CachedReadTokens
+		}
+		if usage.InputTokensDetails.CachedWriteTokens > 0 {
+			out.CacheWriteInputTokens = usage.InputTokensDetails.CachedWriteTokens
+			if d := usage.InputTokensDetails.CachedWriteTokenDetails; d != nil {
+				var cacheDetails []BedrockCacheWriteDetails
+				if d.CachedWriteTokens5m > 0 {
+					cacheDetails = append(cacheDetails, BedrockCacheWriteDetails{InputTokens: d.CachedWriteTokens5m, TTL: BedrockCacheWriteTTL5m})
+				}
+				if d.CachedWriteTokens1h > 0 {
+					cacheDetails = append(cacheDetails, BedrockCacheWriteDetails{InputTokens: d.CachedWriteTokens1h, TTL: BedrockCacheWriteTTL1h})
+				}
+				out.CacheDetails = &cacheDetails
+			}
+			out.InputTokens -= usage.InputTokensDetails.CachedWriteTokens
+		}
+	}
+	return out
 }
 
 // ToBedrockConverseStreamResponse converts a Bifrost Responses stream response to Bedrock streaming format
@@ -1719,12 +1773,20 @@ func ToBedrockConverseStreamResponse(bifrostResp *schemas.BifrostResponsesStream
 	case schemas.ResponsesStreamResponseTypeOutputTextDone,
 		schemas.ResponsesStreamResponseTypeContentPartDone,
 		schemas.ResponsesStreamResponseTypeReasoningSummaryTextDone:
-		// Content block done - Bedrock doesn't have explicit done events, so we skip them
+		// Content block done - the contentBlockStop is emitted on OutputItemDone,
+		// matching the invoke path
 		return nil, nil
 
 	case schemas.ResponsesStreamResponseTypeOutputItemDone:
-		// Item done - Bedrock doesn't have explicit done events, so we skip them
-		return nil, nil
+		// Item done - emit contentBlockStop. Bedrock terminates every content block
+		// with a contentBlockStop event carrying the block's index; consumers that
+		// assemble the message on block boundaries never finalize a block without it.
+		contentBlockIndex := 0
+		if bifrostResp.ContentIndex != nil {
+			contentBlockIndex = *bifrostResp.ContentIndex
+		}
+		event.ContentBlockIndex = &contentBlockIndex
+		event.ContentBlockStop = true
 
 	case schemas.ResponsesStreamResponseTypeCompleted:
 		// Message stop - always set stopReason
@@ -1735,12 +1797,8 @@ func ToBedrockConverseStreamResponse(bifrostResp *schemas.BifrostResponsesStream
 		event.StopReason = &stopReason
 
 		// Add usage if available
-		if bifrostResp.Response != nil && bifrostResp.Response.Usage != nil {
-			event.Usage = &BedrockTokenUsage{
-				InputTokens:  bifrostResp.Response.Usage.InputTokens,
-				OutputTokens: bifrostResp.Response.Usage.OutputTokens,
-				TotalTokens:  bifrostResp.Response.Usage.TotalTokens,
-			}
+		if bifrostResp.Response != nil {
+			event.Usage = buildBedrockTokenUsage(bifrostResp.Response.Usage)
 		}
 
 		// Restore guardrail trace from provider extra fields
@@ -1815,6 +1873,17 @@ func (event *BedrockStreamEvent) ToEncodedEvents() []BedrockEncodedEvent {
 				ContentBlockIndex *int                      `json:"contentBlockIndex"`
 			}{
 				Delta:             event.Delta,
+				ContentBlockIndex: event.ContentBlockIndex,
+			},
+		})
+	}
+
+	if event.ContentBlockStop {
+		events = append(events, BedrockEncodedEvent{
+			EventType: "contentBlockStop",
+			Payload: struct {
+				ContentBlockIndex *int `json:"contentBlockIndex"`
+			}{
 				ContentBlockIndex: event.ContentBlockIndex,
 			},
 		})
@@ -1980,7 +2049,9 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest(ctx *schemas.Bi
 			reasoningConfig, ok = request.AdditionalModelRequestFields.Get("reasoning_config")
 		}
 		if ok {
-			if reasoningConfigMap, ok := reasoningConfig.(map[string]interface{}); ok {
+			// May arrive as *OrderedMap (HTTP unmarshal) or map[string]interface{} (in-process)
+			if reasoningConfigOrderedMap, ok := schemas.SafeExtractOrderedMap(reasoningConfig); ok && reasoningConfigOrderedMap != nil {
+				reasoningConfigMap := reasoningConfigOrderedMap.ToMap()
 				if typeStr, ok := schemas.SafeExtractString(reasoningConfigMap["type"]); ok {
 					if typeStr == "enabled" || typeStr == "adaptive" {
 						var summary *string
@@ -2046,7 +2117,8 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest(ctx *schemas.Bi
 
 		// Handle Nova reasoningConfig format (camelCase)
 		if novaReasoningConfig, ok := request.AdditionalModelRequestFields.Get("reasoningConfig"); ok {
-			if novaReasoningConfigMap, ok := novaReasoningConfig.(map[string]interface{}); ok {
+			if novaReasoningConfigOrderedMap, ok := schemas.SafeExtractOrderedMap(novaReasoningConfig); ok && novaReasoningConfigOrderedMap != nil {
+				novaReasoningConfigMap := novaReasoningConfigOrderedMap.ToMap()
 				if typeStr, ok := schemas.SafeExtractString(novaReasoningConfigMap["type"]); ok {
 					if typeStr == "enabled" {
 						// Extract maxReasoningEffort from Nova format
@@ -2665,6 +2737,19 @@ func (response *BedrockConverseResponse) ToBifrostResponsesResponse(ctx *schemas
 			}
 		}
 		bifrostResp.StopReason = &stopReason
+		// Surface truncation via Status + IncompleteDetails per OpenAI's
+		// Responses-API contract; without these, truncations are silent.
+		switch stopReason {
+		case string(schemas.BifrostFinishReasonLength):
+			bifrostResp.Status = schemas.Ptr(schemas.ResponsesResponseStatusIncomplete)
+			bifrostResp.IncompleteDetails = &schemas.ResponsesResponseIncompleteDetails{
+				Reason: schemas.ResponsesResponseIncompleteReasonMaxOutputTokens,
+			}
+		case string(schemas.BifrostFinishReasonStop), string(schemas.BifrostFinishReasonToolCalls):
+			if bifrostResp.Status == nil {
+				bifrostResp.Status = schemas.Ptr(schemas.ResponsesResponseStatusCompleted)
+			}
+		}
 	}
 
 	if response.Trace != nil {
@@ -2731,37 +2816,8 @@ func ToBedrockConverseResponse(bifrostResp *schemas.BifrostResponsesResponse) (*
 	bedrockResp.StopReason = stopReason
 
 	// Convert usage stats
-	if bifrostResp.Usage != nil {
-		bedrockResp.Usage.InputTokens = bifrostResp.Usage.InputTokens
-		bedrockResp.Usage.OutputTokens = bifrostResp.Usage.OutputTokens
-		bedrockResp.Usage.TotalTokens = bifrostResp.Usage.TotalTokens
-
-		if bifrostResp.Usage.InputTokensDetails != nil {
-			if bifrostResp.Usage.InputTokensDetails.CachedReadTokens > 0 {
-				bedrockResp.Usage.CacheReadInputTokens = bifrostResp.Usage.InputTokensDetails.CachedReadTokens
-				bedrockResp.Usage.InputTokens = bedrockResp.Usage.InputTokens - bifrostResp.Usage.InputTokensDetails.CachedReadTokens
-			}
-			if bifrostResp.Usage.InputTokensDetails.CachedWriteTokens > 0 {
-				bedrockResp.Usage.CacheWriteInputTokens = bifrostResp.Usage.InputTokensDetails.CachedWriteTokens
-				if bifrostResp.Usage.InputTokensDetails.CachedWriteTokenDetails != nil {
-					var cacheDetails []BedrockCacheWriteDetails
-					if bifrostResp.Usage.InputTokensDetails.CachedWriteTokenDetails.CachedWriteTokens5m > 0 {
-						cacheDetails = append(cacheDetails, BedrockCacheWriteDetails{
-							InputTokens: bifrostResp.Usage.InputTokensDetails.CachedWriteTokenDetails.CachedWriteTokens5m,
-							TTL:         BedrockCacheWriteTTL5m,
-						})
-					}
-					if bifrostResp.Usage.InputTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h > 0 {
-						cacheDetails = append(cacheDetails, BedrockCacheWriteDetails{
-							InputTokens: bifrostResp.Usage.InputTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h,
-							TTL:         BedrockCacheWriteTTL1h,
-						})
-					}
-					bedrockResp.Usage.CacheDetails = &cacheDetails
-				}
-				bedrockResp.Usage.InputTokens = bedrockResp.Usage.InputTokens - bifrostResp.Usage.InputTokensDetails.CachedWriteTokens
-			}
-		}
+	if bedrockUsage := buildBedrockTokenUsage(bifrostResp.Usage); bedrockUsage != nil {
+		bedrockResp.Usage = bedrockUsage
 	}
 
 	// Set metrics

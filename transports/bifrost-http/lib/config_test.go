@@ -425,6 +425,63 @@ func NewMockConfigStore() *MockConfigStore {
 func (m *MockConfigStore) RefreshConnectionPool(ctx context.Context) error {
 	return nil
 }
+func (m *MockConfigStore) GetOAuth2SigningKey(ctx context.Context) (*tables.OAuth2SigningKey, error) {
+	return &tables.OAuth2SigningKey{}, nil
+}
+func (m *MockConfigStore) CreateOAuth2Client(ctx context.Context, client *tables.TableOAuth2Client) error {
+	return nil
+}
+func (m *MockConfigStore) GetOAuth2ClientByClientID(ctx context.Context, clientID string) (*tables.TableOAuth2Client, error) {
+	return nil, configstore.ErrNotFound
+}
+func (m *MockConfigStore) CreateOAuth2AuthorizeRequest(ctx context.Context, req *tables.TableOAuth2AuthorizeRequest) error {
+	return nil
+}
+func (m *MockConfigStore) GetOAuth2AuthorizeRequestByID(ctx context.Context, id string) (*tables.TableOAuth2AuthorizeRequest, error) {
+	return nil, configstore.ErrNotFound
+}
+func (m *MockConfigStore) GetOAuth2AuthorizeRequestByCodeHash(ctx context.Context, codeHash string) (*tables.TableOAuth2AuthorizeRequest, error) {
+	return nil, configstore.ErrNotFound
+}
+func (m *MockConfigStore) ConsentOAuth2AuthorizeRequest(ctx context.Context, req *tables.TableOAuth2AuthorizeRequest) error {
+	return nil
+}
+func (m *MockConfigStore) SweepExpiredOAuth2AuthorizeRequests(ctx context.Context) error {
+	return nil
+}
+func (m *MockConfigStore) GetOAuth2RefreshTokenByHash(ctx context.Context, hash string) (*tables.TableOAuth2RefreshToken, error) {
+	return nil, configstore.ErrNotFound
+}
+func (m *MockConfigStore) ConsumeOAuth2AuthorizeRequest(ctx context.Context, requestID string, rt *tables.TableOAuth2RefreshToken) error {
+	return nil
+}
+func (m *MockConfigStore) RotateOAuth2RefreshToken(ctx context.Context, oldID string, newRT *tables.TableOAuth2RefreshToken) error {
+	return nil
+}
+func (m *MockConfigStore) GetOAuth2RefreshTokenByHashAny(ctx context.Context, hash string) (*tables.TableOAuth2RefreshToken, error) {
+	return nil, configstore.ErrNotFound
+}
+func (m *MockConfigStore) RevokeOAuth2RefreshTokensByFamilyID(ctx context.Context, familyID string) error {
+	return nil
+}
+func (m *MockConfigStore) RevokeOAuth2RefreshTokensByMode(ctx context.Context, bfMode string) error {
+	return nil
+}
+func (m *MockConfigStore) SweepOAuth2RefreshTokens(ctx context.Context, revokedOlderThan time.Duration) (int64, error) {
+	return 0, nil
+}
+func (m *MockConfigStore) SweepOrphanedOAuth2Clients(ctx context.Context, registeredOlderThan time.Duration) (int64, error) {
+	return 0, nil
+}
+func (m *MockConfigStore) ListOAuth2Sessions(ctx context.Context, params configstore.OAuth2SessionsQueryParams) ([]configstore.OAuth2SessionRow, int64, error) {
+	return nil, 0, nil
+}
+func (m *MockConfigStore) GetOAuth2SessionByID(ctx context.Context, id string) (*tables.TableOAuth2RefreshToken, error) {
+	return nil, configstore.ErrNotFound
+}
+func (m *MockConfigStore) RevokeOAuth2Session(ctx context.Context, id string) error {
+	return nil
+}
 func (m *MockConfigStore) Ping(ctx context.Context) error                 { return nil }
 func (m *MockConfigStore) EncryptPlaintextRows(ctx context.Context) error { return nil }
 func (m *MockConfigStore) Close(ctx context.Context) error                { return nil }
@@ -1100,6 +1157,10 @@ func (m *MockConfigStore) UpsertModelPrices(ctx context.Context, pricing *tables
 	return nil
 }
 
+func (m *MockConfigStore) UpsertModelPricesBatch(ctx context.Context, pricing []tables.TableModelPricing, tx ...*gorm.DB) error {
+	return nil
+}
+
 func (m *MockConfigStore) DeleteModelPrices(ctx context.Context, tx ...*gorm.DB) error {
 	return nil
 }
@@ -1143,6 +1204,10 @@ func (m *MockConfigStore) GetModelParametersByModel(ctx context.Context, model s
 }
 
 func (m *MockConfigStore) UpsertModelParameters(ctx context.Context, params *tables.TableModelParameters, tx ...*gorm.DB) error {
+	return nil
+}
+
+func (m *MockConfigStore) UpsertModelParametersBatch(ctx context.Context, params []tables.TableModelParameters, tx ...*gorm.DB) error {
 	return nil
 }
 
@@ -1486,6 +1551,47 @@ func (m *MockConfigStore) UpdateRoutingRule(ctx context.Context, rule *tables.Ta
 
 func (m *MockConfigStore) DeleteRoutingRule(ctx context.Context, id string, tx ...*gorm.DB) error {
 	return nil
+}
+
+// Sidekiq
+func (m *MockConfigStore) CreateSidekiqJob(ctx context.Context, job *tables.TableSidekiqJob) error {
+	return nil
+}
+
+func (m *MockConfigStore) GetSidekiqJob(ctx context.Context, id string) (*tables.TableSidekiqJob, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) ClaimSidekiqJob(ctx context.Context, id, runnerID string, staleBefore time.Time) (bool, error) {
+	return false, nil
+}
+
+func (m *MockConfigStore) HeartbeatSidekiqJob(ctx context.Context, id, runnerID string) (bool, error) {
+	return false, nil
+}
+
+func (m *MockConfigStore) CompleteSidekiqJob(ctx context.Context, id, runnerID, metadata string) error {
+	return nil
+}
+
+func (m *MockConfigStore) UpdateSidekiqJobProgress(ctx context.Context, id, runnerID, metadata string) error {
+	return nil
+}
+
+func (m *MockConfigStore) FailSidekiqJob(ctx context.Context, id, runnerID, metadata, lastErr string) error {
+	return nil
+}
+
+func (m *MockConfigStore) ListClaimableSidekiqJobs(ctx context.Context, staleBefore time.Time) ([]tables.TableSidekiqJob, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) GetInFlightSidekiqJobByKind(ctx context.Context, kind string) (*tables.TableSidekiqJob, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) MarkStaleSidekiqJobsFailed(ctx context.Context, staleBefore time.Time) (int64, error) {
+	return 0, nil
 }
 
 func TestMergeGovernanceConfig_SyncsComplexityAnalyzerConfig(t *testing.T) {
@@ -1980,6 +2086,62 @@ func createConfigFile(t *testing.T, dir string, data *ConfigData) {
 	}
 }
 
+// TestValidateClientConfig_AuthCodeTTL covers the load-time invariant check that
+// backs the "fail loudly instead of silently clamp" behavior: an auth_code_ttl
+// above the cap is rejected, while nil/zero/in-range/at-cap values pass.
+func TestValidateClientConfig_AuthCodeTTL(t *testing.T) {
+	oauth := func(ttl int) *configstore.ClientConfig {
+		return &configstore.ClientConfig{OAuth2ServerConfig: &tables.OAuth2ServerConfig{AuthCodeTTL: ttl}}
+	}
+	tests := []struct {
+		name    string
+		cc      *configstore.ClientConfig
+		wantErr bool
+	}{
+		{"no oauth config", &configstore.ClientConfig{}, false},
+		{"zero ttl resolves to default at issuance", oauth(0), false},
+		{"in-range ttl", oauth(300), false},
+		{"exactly at cap", oauth(tables.MaxAuthCodeTTL), false},
+		{"one over cap", oauth(tables.MaxAuthCodeTTL + 1), true},
+		{"far over cap", oauth(5000), true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateClientConfig(tc.cc)
+			if tc.wantErr {
+				require.Error(t, err)
+				require.Contains(t, err.Error(), "auth_code_ttl")
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+// TestLoadConfig_AuthCodeTTLAboveMaxFailsBoot verifies an over-cap auth_code_ttl
+// in config.json makes LoadConfig fail rather than silently clamping the value.
+func TestLoadConfig_AuthCodeTTLAboveMaxFailsBoot(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	createConfigFile(t, tempDir, &ConfigData{
+		Client: &configstore.ClientConfig{
+			MCPServerAuthMode: tables.MCPServerAuthModeOAuth,
+			OAuth2ServerConfig: &tables.OAuth2ServerConfig{
+				AuthCodeTTL:    5000,
+				AccessTokenTTL: tables.DefaultAccessTokenTTL,
+			},
+		},
+	})
+
+	ctx := context.Background()
+	config, err := LoadConfig(ctx, tempDir)
+	if config != nil {
+		defer config.Close(ctx)
+	}
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "auth_code_ttl")
+}
+
 // TestConfigDataSourceOfTruthDefaultsToSplit verifies omitted source_of_truth uses split mode.
 func TestConfigDataSourceOfTruthDefaultsToSplit(t *testing.T) {
 	var configData ConfigData
@@ -2211,7 +2373,7 @@ func makeVirtualKey(id, name, value string) tables.TableVirtualKey {
 		ID:          id,
 		Name:        name,
 		Description: "Test virtual key",
-		Value:       value,
+		Value:       *schemas.NewSecretVar(value),
 		IsActive:    schemas.Ptr(true),
 	}
 }
@@ -2222,7 +2384,7 @@ func makeVirtualKeyWithTeam(id, name, value, teamID string) tables.TableVirtualK
 		ID:          id,
 		Name:        name,
 		Description: "Test virtual key with team",
-		Value:       value,
+		Value:       *schemas.NewSecretVar(value),
 		IsActive:    schemas.Ptr(true),
 		TeamID:      &teamID,
 	}
@@ -2234,7 +2396,7 @@ func makeVirtualKeyWithCustomer(id, name, value, customerID string) tables.Table
 		ID:          id,
 		Name:        name,
 		Description: "Test virtual key with customer",
-		Value:       value,
+		Value:       *schemas.NewSecretVar(value),
 		IsActive:    schemas.Ptr(true),
 		CustomerID:  &customerID,
 	}
@@ -2246,7 +2408,7 @@ func makeVirtualKeyWithProviderConfigs(id, name, value string, providerConfigs [
 		ID:              id,
 		Name:            name,
 		Description:     "Test virtual key with provider configs",
-		Value:           value,
+		Value:           *schemas.NewSecretVar(value),
 		IsActive:        schemas.Ptr(true),
 		ProviderConfigs: providerConfigs,
 	}
@@ -3278,7 +3440,53 @@ func TestGenerateKeyHash(t *testing.T) {
 		t.Error("Expected different hash for keys with different BedrockKeyConfig region")
 	}
 
-	t.Log("✓ Key hash generation works correctly for all fields including Azure, Vertex, and Bedrock configs")
+	// BedrockMantleKeyConfig should produce different hash
+	key9 := schemas.Key{
+		ID:     "key-1",
+		Name:   "test-key",
+		Value:  *schemas.NewSecretVar("sk-123"),
+		Models: []string{"gpt-4", "gpt-3.5-turbo"},
+		Weight: 1.5,
+		BedrockMantleKeyConfig: &schemas.BedrockMantleKeyConfig{
+			AccessKey: *schemas.NewSecretVar("AKIAIOSFODNN7EXAMPLE"),
+			SecretKey: *schemas.NewSecretVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
+			Region:    schemas.NewSecretVar(region),
+		},
+	}
+
+	hash9, err := configstore.GenerateKeyHash(key9)
+	if err != nil {
+		t.Fatalf("Failed to generate hash: %v", err)
+	}
+
+	if hash1 == hash9 {
+		t.Error("Expected different hash for keys with BedrockMantleKeyConfig")
+	}
+
+	// Different BedrockMantleKeyConfig should produce different hash
+	key9b := schemas.Key{
+		ID:     "key-1",
+		Name:   "test-key",
+		Value:  *schemas.NewSecretVar("sk-123"),
+		Models: []string{"gpt-4", "gpt-3.5-turbo"},
+		Weight: 1.5,
+		BedrockMantleKeyConfig: &schemas.BedrockMantleKeyConfig{
+			AccessKey: *schemas.NewSecretVar("AKIAIOSFODNN7EXAMPLE"),
+			SecretKey: *schemas.NewSecretVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
+			Region:    schemas.NewSecretVar(differentRegion), // Different region
+		},
+	}
+
+	hash9b, err := configstore.GenerateKeyHash(key9b)
+	if err != nil {
+		t.Fatalf("Failed to generate hash: %v", err)
+	}
+
+	if hash9 == hash9b {
+		t.Error("Expected different hash for keys with different BedrockMantleKeyConfig region")
+	}
+
+	t.Log("✓ Key hash generation works correctly for all fields including Azure, Vertex, Bedrock, and Bedrock Mantle configs")
 }
 
 // TestProviderHashComparison_MatchingHash tests that DB config is kept when hashes match
@@ -7105,7 +7313,7 @@ func TestGenerateVirtualKeyHash(t *testing.T) {
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "Test virtual key",
-		Value:       "vk_abc123",
+		Value:       *schemas.NewSecretVar("vk_abc123"),
 		IsActive:    schemas.Ptr(true),
 		TeamID:      &teamID,
 	}
@@ -7125,7 +7333,7 @@ func TestGenerateVirtualKeyHash(t *testing.T) {
 		ID:          "different-id", // Different ID - should be skipped
 		Name:        "test-vk",
 		Description: "Test virtual key",
-		Value:       "vk_abc123",
+		Value:       *schemas.NewSecretVar("vk_abc123"),
 		IsActive:    schemas.Ptr(true),
 		TeamID:      &teamID,
 	}
@@ -7144,7 +7352,7 @@ func TestGenerateVirtualKeyHash(t *testing.T) {
 		ID:          "vk-1",
 		Name:        "different-name", // Different name
 		Description: "Test virtual key",
-		Value:       "vk_abc123",
+		Value:       *schemas.NewSecretVar("vk_abc123"),
 		IsActive:    schemas.Ptr(true),
 		TeamID:      &teamID,
 	}
@@ -7163,7 +7371,7 @@ func TestGenerateVirtualKeyHash(t *testing.T) {
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "Test virtual key",
-		Value:       "vk_different", // Different value
+		Value:       *schemas.NewSecretVar("vk_different"), // Different value
 		IsActive:    schemas.Ptr(true),
 		TeamID:      &teamID,
 	}
@@ -7182,7 +7390,7 @@ func TestGenerateVirtualKeyHash(t *testing.T) {
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "Test virtual key",
-		Value:       "vk_abc123",
+		Value:       *schemas.NewSecretVar("vk_abc123"),
 		IsActive:    schemas.Ptr(false), // Different IsActive
 		TeamID:      &teamID,
 	}
@@ -7196,13 +7404,46 @@ func TestGenerateVirtualKeyHash(t *testing.T) {
 		t.Error("Expected different hash for virtual keys with different IsActive")
 	}
 
+	// Setting ExpiresAt should produce a different hash; nil ExpiresAt keeps the original hash
+	expiry := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
+	vkExpiring := tables.TableVirtualKey{
+		ID:          "vk-1",
+		Name:        "test-vk",
+		Description: "Test virtual key",
+		Value:       *schemas.NewSecretVar("vk_abc123"),
+		IsActive:    schemas.Ptr(true),
+		TeamID:      &teamID,
+		ExpiresAt:   &expiry,
+	}
+
+	hashExpiring, err := configstore.GenerateVirtualKeyHash(vkExpiring)
+	if err != nil {
+		t.Fatalf("Failed to generate hash: %v", err)
+	}
+
+	if hash1 == hashExpiring {
+		t.Error("Expected different hash for virtual keys with ExpiresAt set")
+	}
+
+	// Different expiry timestamps should produce different hashes
+	laterExpiry := expiry.Add(time.Hour)
+	vkExpiring.ExpiresAt = &laterExpiry
+	hashLaterExpiry, err := configstore.GenerateVirtualKeyHash(vkExpiring)
+	if err != nil {
+		t.Fatalf("Failed to generate hash: %v", err)
+	}
+
+	if hashExpiring == hashLaterExpiry {
+		t.Error("Expected different hash for virtual keys with different ExpiresAt")
+	}
+
 	// Different TeamID should produce different hash
 	differentTeamID := "team-2"
 	vk6 := tables.TableVirtualKey{
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "Test virtual key",
-		Value:       "vk_abc123",
+		Value:       *schemas.NewSecretVar("vk_abc123"),
 		IsActive:    schemas.Ptr(true),
 		TeamID:      &differentTeamID, // Different TeamID
 	}
@@ -7221,7 +7462,7 @@ func TestGenerateVirtualKeyHash(t *testing.T) {
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "Different description", // Different description
-		Value:       "vk_abc123",
+		Value:       *schemas.NewSecretVar("vk_abc123"),
 		IsActive:    schemas.Ptr(true),
 		TeamID:      &teamID,
 	}
@@ -7241,7 +7482,7 @@ func TestGenerateVirtualKeyHash(t *testing.T) {
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "Test virtual key",
-		Value:       "vk_abc123",
+		Value:       *schemas.NewSecretVar("vk_abc123"),
 		IsActive:    schemas.Ptr(true),
 		TeamID:      &teamID,
 		CustomerID:  &customerID, // CustomerID set
@@ -7262,7 +7503,7 @@ func TestGenerateVirtualKeyHash(t *testing.T) {
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "Test virtual key",
-		Value:       "vk_abc123",
+		Value:       *schemas.NewSecretVar("vk_abc123"),
 		IsActive:    schemas.Ptr(true),
 		TeamID:      &teamID,
 		CustomerID:  &differentCustomerID, // Different CustomerID
@@ -7283,7 +7524,7 @@ func TestGenerateVirtualKeyHash(t *testing.T) {
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "Test virtual key",
-		Value:       "vk_abc123",
+		Value:       *schemas.NewSecretVar("vk_abc123"),
 		IsActive:    schemas.Ptr(true),
 		TeamID:      &teamID,
 		RateLimitID: &rateLimitID, // RateLimitID set
@@ -7304,7 +7545,7 @@ func TestGenerateVirtualKeyHash(t *testing.T) {
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "Test virtual key",
-		Value:       "vk_abc123",
+		Value:       *schemas.NewSecretVar("vk_abc123"),
 		IsActive:    schemas.Ptr(true),
 		TeamID:      &teamID,
 		RateLimitID: &differentRateLimitID, // Different RateLimitID
@@ -7331,7 +7572,7 @@ func TestGenerateVirtualKeyHash_WithProviderConfigs(t *testing.T) {
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "Test virtual key",
-		Value:       "vk_abc123",
+		Value:       *schemas.NewSecretVar("vk_abc123"),
 		IsActive:    schemas.Ptr(true),
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
@@ -7363,7 +7604,7 @@ func TestGenerateVirtualKeyHash_WithProviderConfigs(t *testing.T) {
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "Test virtual key",
-		Value:       "vk_abc123",
+		Value:       *schemas.NewSecretVar("vk_abc123"),
 		IsActive:    schemas.Ptr(true),
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
@@ -7391,7 +7632,7 @@ func TestGenerateVirtualKeyHash_WithProviderConfigs(t *testing.T) {
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "Test virtual key",
-		Value:       "vk_abc123",
+		Value:       *schemas.NewSecretVar("vk_abc123"),
 		IsActive:    schemas.Ptr(true),
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
@@ -7428,7 +7669,7 @@ func TestGenerateVirtualKeyHash_AllowAllKeysAndBlacklistedModels(t *testing.T) {
 		return tables.TableVirtualKey{
 			ID:       "vk-1",
 			Name:     "test-vk",
-			Value:    "vk_abc123",
+			Value:    *schemas.NewSecretVar("vk_abc123"),
 			IsActive: schemas.Ptr(true),
 			ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 				{
@@ -7496,7 +7737,7 @@ func TestGenerateVirtualKeyHash_WithMCPConfigs(t *testing.T) {
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "Test virtual key",
-		Value:       "vk_abc123",
+		Value:       *schemas.NewSecretVar("vk_abc123"),
 		IsActive:    schemas.Ptr(true),
 		MCPConfigs: []tables.TableVirtualKeyMCPConfig{
 			{
@@ -7522,7 +7763,7 @@ func TestGenerateVirtualKeyHash_WithMCPConfigs(t *testing.T) {
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "Test virtual key",
-		Value:       "vk_abc123",
+		Value:       *schemas.NewSecretVar("vk_abc123"),
 		IsActive:    schemas.Ptr(true),
 		MCPConfigs: []tables.TableVirtualKeyMCPConfig{
 			{
@@ -7548,7 +7789,7 @@ func TestGenerateVirtualKeyHash_WithMCPConfigs(t *testing.T) {
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "Test virtual key",
-		Value:       "vk_abc123",
+		Value:       *schemas.NewSecretVar("vk_abc123"),
 		IsActive:    schemas.Ptr(true),
 		MCPConfigs: []tables.TableVirtualKeyMCPConfig{
 			{
@@ -7579,7 +7820,7 @@ func TestVirtualKeyHashComparison_MatchingHash(t *testing.T) {
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "Test virtual key",
-		Value:       "vk_abc123",
+		Value:       *schemas.NewSecretVar("vk_abc123"),
 		IsActive:    schemas.Ptr(true),
 		TeamID:      &teamID,
 	}
@@ -7596,7 +7837,7 @@ func TestVirtualKeyHashComparison_MatchingHash(t *testing.T) {
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "Test virtual key",
-		Value:       "vk_abc123",
+		Value:       *schemas.NewSecretVar("vk_abc123"),
 		IsActive:    schemas.Ptr(true),
 		TeamID:      &dbTeamID,
 		ConfigHash:  fileHash, // Same hash as file
@@ -7629,7 +7870,7 @@ func TestVirtualKeyHashComparison_DifferentHash(t *testing.T) {
 		ID:          "vk-1",
 		Name:        "old-name", // Old name
 		Description: "Old description",
-		Value:       "vk_abc123",
+		Value:       *schemas.NewSecretVar("vk_abc123"),
 		IsActive:    schemas.Ptr(true),
 		TeamID:      &teamID,
 	}
@@ -7646,7 +7887,7 @@ func TestVirtualKeyHashComparison_DifferentHash(t *testing.T) {
 		ID:          "vk-1",
 		Name:        "new-name", // Updated name
 		Description: "New description",
-		Value:       "vk_abc123",
+		Value:       *schemas.NewSecretVar("vk_abc123"),
 		IsActive:    schemas.Ptr(true),
 		TeamID:      &fileTeamID,
 	}
@@ -7677,7 +7918,7 @@ func TestVirtualKeyHashComparison_VirtualKeyOnlyInDB(t *testing.T) {
 		ID:          "vk-dashboard",
 		Name:        "dashboard-vk",
 		Description: "Added via dashboard",
-		Value:       "vk_dashboard123",
+		Value:       *schemas.NewSecretVar("vk_dashboard123"),
 		IsActive:    schemas.Ptr(true),
 		CustomerID:  &customerID,
 		RateLimitID: &rateLimitID,
@@ -7695,7 +7936,7 @@ func TestVirtualKeyHashComparison_VirtualKeyOnlyInDB(t *testing.T) {
 			ID:          "vk-file",
 			Name:        "file-vk",
 			Description: "From config.json",
-			Value:       "vk_file123",
+			Value:       *schemas.NewSecretVar("vk_file123"),
 			IsActive:    schemas.Ptr(true),
 		},
 	}
@@ -7725,7 +7966,7 @@ func TestVirtualKeyHashComparison_NewVirtualKey(t *testing.T) {
 		ID:          "vk-new",
 		Name:        "new-vk",
 		Description: "New virtual key from config.json",
-		Value:       "vk_new123",
+		Value:       *schemas.NewSecretVar("vk_new123"),
 		IsActive:    schemas.Ptr(true),
 		TeamID:      &teamID,
 	}
@@ -7767,7 +8008,7 @@ func TestVirtualKeyHashComparison_OptionalFieldsPresence(t *testing.T) {
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "",
-		Value:       "vk_abc123",
+		Value:       *schemas.NewSecretVar("vk_abc123"),
 		IsActive:    schemas.Ptr(true),
 	}
 
@@ -7782,7 +8023,7 @@ func TestVirtualKeyHashComparison_OptionalFieldsPresence(t *testing.T) {
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "",
-		Value:       "vk_abc123",
+		Value:       *schemas.NewSecretVar("vk_abc123"),
 		IsActive:    schemas.Ptr(true),
 		TeamID:      &teamID,
 	}
@@ -7802,7 +8043,7 @@ func TestVirtualKeyHashComparison_OptionalFieldsPresence(t *testing.T) {
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "",
-		Value:       "vk_abc123",
+		Value:       *schemas.NewSecretVar("vk_abc123"),
 		IsActive:    schemas.Ptr(true),
 		CustomerID:  &customerID,
 	}
@@ -7826,7 +8067,7 @@ func TestVirtualKeyHashComparison_OptionalFieldsPresence(t *testing.T) {
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "",
-		Value:       "vk_abc123",
+		Value:       *schemas.NewSecretVar("vk_abc123"),
 		IsActive:    schemas.Ptr(true),
 		RateLimitID: &rateLimitID,
 	}
@@ -7852,7 +8093,7 @@ func TestVirtualKeyHashComparison_FieldValueChanges(t *testing.T) {
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "Base description",
-		Value:       "vk_abc123",
+		Value:       *schemas.NewSecretVar("vk_abc123"),
 		IsActive:    schemas.Ptr(true),
 		TeamID:      &teamID,
 	}
@@ -7915,7 +8156,7 @@ func TestVirtualKeyHashComparison_RoundTrip(t *testing.T) {
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "Test virtual key",
-		Value:       "vk_abc123",
+		Value:       *schemas.NewSecretVar("vk_abc123"),
 		IsActive:    schemas.Ptr(true),
 		TeamID:      &teamID,
 		RateLimitID: &rateLimitID,
@@ -7945,7 +8186,7 @@ func TestVirtualKeyHashComparison_RoundTrip(t *testing.T) {
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "Test virtual key",
-		Value:       "vk_abc123",
+		Value:       *schemas.NewSecretVar("vk_abc123"),
 		IsActive:    schemas.Ptr(true),
 		TeamID:      &reloadTeamID,
 		RateLimitID: &reloadRateLimitID,
@@ -8685,7 +8926,7 @@ func TestSQLite_VirtualKey_HashMismatch_FileSync(t *testing.T) {
 			ID:          "vk-1",
 			Name:        "modified-name",
 			Description: "Modified description",
-			Value:       "vk_test123",
+			Value:       *schemas.NewSecretVar("vk_test123"),
 			IsActive:    schemas.Ptr(true),
 		},
 	}
@@ -8738,7 +8979,7 @@ func TestSQLite_VirtualKey_DBOnlyVK_Preserved(t *testing.T) {
 		ID:          "vk-dashboard",
 		Name:        "dashboard-vk",
 		Description: "Added via dashboard",
-		Value:       "vk_dashboard456",
+		Value:       *schemas.NewSecretVar("vk_dashboard456"),
 		IsActive:    schemas.Ptr(true),
 	}
 	dashboardHash, _ := configstore.GenerateVirtualKeyHash(dashboardVK)
@@ -8787,7 +9028,7 @@ func TestSQLite_VirtualKey_WithProviderConfigs(t *testing.T) {
 			ID:          "vk-1",
 			Name:        "test-vk",
 			Description: "VK with provider configs",
-			Value:       "vk_test123",
+			Value:       *schemas.NewSecretVar("vk_test123"),
 			IsActive:    schemas.Ptr(true),
 			ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 				{
@@ -8825,7 +9066,7 @@ func TestSQLite_VirtualKey_WithProviderConfigs(t *testing.T) {
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "VK with provider configs",
-		Value:       "vk_test123",
+		Value:       *schemas.NewSecretVar("vk_test123"),
 		IsActive:    schemas.Ptr(true),
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
@@ -8880,7 +9121,7 @@ func TestSQLite_VirtualKey_MergePath_WithProviderConfigs(t *testing.T) {
 			ID:          "vk-2",
 			Name:        "vk-with-providers",
 			Description: "VK with provider configs added via merge",
-			Value:       "vk_providers456",
+			Value:       *schemas.NewSecretVar("vk_providers456"),
 			IsActive:    schemas.Ptr(true),
 			ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 				{
@@ -8993,7 +9234,7 @@ func TestSQLite_VirtualKey_MergePath_WithProviderConfigKeys(t *testing.T) {
 			ID:          "vk-2",
 			Name:        "vk-with-provider-keys",
 			Description: "VK with provider configs referencing keys",
-			Value:       "vk_keys456",
+			Value:       *schemas.NewSecretVar("vk_keys456"),
 			IsActive:    schemas.Ptr(true),
 			ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 				{
@@ -9051,7 +9292,7 @@ func TestSQLite_VirtualKey_ProviderConfigKeyIDs(t *testing.T) {
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "Test",
-		Value:       "vk_test123",
+		Value:       *schemas.NewSecretVar("vk_test123"),
 		IsActive:    schemas.Ptr(true),
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
@@ -9068,7 +9309,7 @@ func TestSQLite_VirtualKey_ProviderConfigKeyIDs(t *testing.T) {
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "Test",
-		Value:       "vk_test123",
+		Value:       *schemas.NewSecretVar("vk_test123"),
 		IsActive:    schemas.Ptr(true),
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
@@ -9100,7 +9341,7 @@ func TestSQLite_VirtualKey_ProviderConfigKeyIDs(t *testing.T) {
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "Test",
-		Value:       "vk_test123",
+		Value:       *schemas.NewSecretVar("vk_test123"),
 		IsActive:    schemas.Ptr(true),
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
@@ -9141,7 +9382,7 @@ func TestSQLite_VKProviderConfig_NewConfig(t *testing.T) {
 			ID:          "vk-1",
 			Name:        "vk-with-provider-config",
 			Description: "VK with provider configs",
-			Value:       "vk_test123",
+			Value:       *schemas.NewSecretVar("vk_test123"),
 			IsActive:    schemas.Ptr(true),
 			ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 				{
@@ -9208,7 +9449,7 @@ func TestSQLite_VKProviderConfig_KeyIDsWildcardFlipsAllowAllKeys(t *testing.T) {
 		{
 			ID:       "vk-1",
 			Name:     "wildcard-vk",
-			Value:    "vk_test123",
+			Value:    *schemas.NewSecretVar("vk_test123"),
 			IsActive: schemas.Ptr(true),
 			ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 				{
@@ -9242,7 +9483,7 @@ func TestSQLite_VKProviderConfig_KeyIDsWildcardFlipsAllowAllKeys(t *testing.T) {
 		{
 			ID:       "vk-1",
 			Name:     "wildcard-vk",
-			Value:    "vk_test123",
+			Value:    *schemas.NewSecretVar("vk_test123"),
 			IsActive: schemas.Ptr(true),
 			ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 				{
@@ -9299,7 +9540,7 @@ func TestSQLite_VKProviderConfig_KeyReference(t *testing.T) {
 			ID:          "vk-1",
 			Name:        "vk-with-provider-ref",
 			Description: "VK with provider config",
-			Value:       "vk_test123",
+			Value:       *schemas.NewSecretVar("vk_test123"),
 			IsActive:    schemas.Ptr(true),
 			ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 				{
@@ -9351,7 +9592,7 @@ func TestSQLite_VKProviderConfig_HashChangesOnKeyIDChange(t *testing.T) {
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "Test",
-		Value:       "vk_test123",
+		Value:       *schemas.NewSecretVar("vk_test123"),
 		IsActive:    schemas.Ptr(true),
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
@@ -9369,7 +9610,7 @@ func TestSQLite_VKProviderConfig_HashChangesOnKeyIDChange(t *testing.T) {
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "Test",
-		Value:       "vk_test123",
+		Value:       *schemas.NewSecretVar("vk_test123"),
 		IsActive:    schemas.Ptr(true),
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
@@ -9401,7 +9642,7 @@ func TestSQLite_VKProviderConfig_HashChangesOnKeyIDChange(t *testing.T) {
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "Test",
-		Value:       "vk_test123",
+		Value:       *schemas.NewSecretVar("vk_test123"),
 		IsActive:    schemas.Ptr(true),
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
@@ -9434,7 +9675,7 @@ func TestSQLite_VKProviderConfig_WeightAndAllowedModels(t *testing.T) {
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "Test",
-		Value:       "vk_test123",
+		Value:       *schemas.NewSecretVar("vk_test123"),
 		IsActive:    schemas.Ptr(true),
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
@@ -9450,7 +9691,7 @@ func TestSQLite_VKProviderConfig_WeightAndAllowedModels(t *testing.T) {
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "Test",
-		Value:       "vk_test123",
+		Value:       *schemas.NewSecretVar("vk_test123"),
 		IsActive:    schemas.Ptr(true),
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
@@ -9466,7 +9707,7 @@ func TestSQLite_VKProviderConfig_WeightAndAllowedModels(t *testing.T) {
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "Test",
-		Value:       "vk_test123",
+		Value:       *schemas.NewSecretVar("vk_test123"),
 		IsActive:    schemas.Ptr(true),
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
@@ -9509,7 +9750,7 @@ func TestSQLite_VKProviderConfig_WeightAndAllowedModels(t *testing.T) {
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "Test",
-		Value:       "vk_test123",
+		Value:       *schemas.NewSecretVar("vk_test123"),
 		IsActive:    schemas.Ptr(true),
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
@@ -9597,7 +9838,7 @@ func TestSQLite_FullLifecycle_InitialLoad(t *testing.T) {
 				ID:          "vk-1",
 				Name:        "test-vk-1",
 				Description: "Test virtual key 1",
-				Value:       "vk_test123",
+				Value:       *schemas.NewSecretVar("vk_test123"),
 				IsActive:    schemas.Ptr(true),
 				RateLimitID: &rateLimitID,
 				ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
@@ -9612,7 +9853,7 @@ func TestSQLite_FullLifecycle_InitialLoad(t *testing.T) {
 				ID:          "vk-2",
 				Name:        "test-vk-2",
 				Description: "Test virtual key 2",
-				Value:       "vk_test456",
+				Value:       *schemas.NewSecretVar("vk_test456"),
 				IsActive:    schemas.Ptr(true),
 			},
 		},
@@ -9852,7 +10093,7 @@ func TestSQLite_FullLifecycle_DashboardEdits_ThenFileUnchanged(t *testing.T) {
 		ID:          "vk-dashboard",
 		Name:        "dashboard-vk",
 		Description: "Added via dashboard",
-		Value:       "vk_dashboard456",
+		Value:       *schemas.NewSecretVar("vk_dashboard456"),
 		IsActive:    schemas.Ptr(true),
 	}
 	dashboardHash, _ := configstore.GenerateVirtualKeyHash(dashboardVK)
@@ -9915,7 +10156,7 @@ func TestGenerateVirtualKeyHash_MCPConfigChanges(t *testing.T) {
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "Test",
-		Value:       "vk_test123",
+		Value:       *schemas.NewSecretVar("vk_test123"),
 		IsActive:    schemas.Ptr(true),
 	}
 
@@ -9924,7 +10165,7 @@ func TestGenerateVirtualKeyHash_MCPConfigChanges(t *testing.T) {
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "Test",
-		Value:       "vk_test123",
+		Value:       *schemas.NewSecretVar("vk_test123"),
 		IsActive:    schemas.Ptr(true),
 		MCPConfigs: []tables.TableVirtualKeyMCPConfig{
 			{
@@ -9939,7 +10180,7 @@ func TestGenerateVirtualKeyHash_MCPConfigChanges(t *testing.T) {
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "Test",
-		Value:       "vk_test123",
+		Value:       *schemas.NewSecretVar("vk_test123"),
 		IsActive:    schemas.Ptr(true),
 		MCPConfigs: []tables.TableVirtualKeyMCPConfig{
 			{
@@ -9954,7 +10195,7 @@ func TestGenerateVirtualKeyHash_MCPConfigChanges(t *testing.T) {
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "Test",
-		Value:       "vk_test123",
+		Value:       *schemas.NewSecretVar("vk_test123"),
 		IsActive:    schemas.Ptr(true),
 		MCPConfigs: []tables.TableVirtualKeyMCPConfig{
 			{
@@ -9969,7 +10210,7 @@ func TestGenerateVirtualKeyHash_MCPConfigChanges(t *testing.T) {
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "Test",
-		Value:       "vk_test123",
+		Value:       *schemas.NewSecretVar("vk_test123"),
 		IsActive:    schemas.Ptr(true),
 		MCPConfigs: []tables.TableVirtualKeyMCPConfig{
 			{
@@ -10033,7 +10274,7 @@ func TestGenerateVirtualKeyHash_MCPConfigChanges(t *testing.T) {
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "Test",
-		Value:       "vk_test123",
+		Value:       *schemas.NewSecretVar("vk_test123"),
 		IsActive:    schemas.Ptr(true),
 		MCPConfigs: []tables.TableVirtualKeyMCPConfig{
 			{
@@ -10074,7 +10315,7 @@ func TestSQLite_VirtualKey_WithMCPConfigs(t *testing.T) {
 			ID:          "vk-1",
 			Name:        "test-vk",
 			Description: "VK with MCP config",
-			Value:       "vk_test123",
+			Value:       *schemas.NewSecretVar("vk_test123"),
 			IsActive:    schemas.Ptr(true),
 		},
 	}
@@ -10163,7 +10404,7 @@ func TestSQLite_VKMCPConfig_Reconciliation(t *testing.T) {
 			ID:          "vk-1",
 			Name:        "test-vk",
 			Description: "VK for MCP reconciliation test",
-			Value:       "vk_test123",
+			Value:       *schemas.NewSecretVar("vk_test123"),
 			IsActive:    schemas.Ptr(true),
 		},
 	}
@@ -10234,7 +10475,7 @@ func TestSQLite_VKMCPConfig_Reconciliation(t *testing.T) {
 			ID:          "vk-1",
 			Name:        "test-vk",
 			Description: "VK for MCP reconciliation test",
-			Value:       "vk_test123",
+			Value:       *schemas.NewSecretVar("vk_test123"),
 			IsActive:    schemas.Ptr(true),
 			MCPConfigs: []tables.TableVirtualKeyMCPConfig{
 				{
@@ -10330,7 +10571,7 @@ func TestSQLite_VirtualKey_DashboardProviderConfig_DeletedOnFileChange(t *testin
 			ID:          "vk-1",
 			Name:        "test-vk",
 			Description: "VK for dashboard provider config preservation test",
-			Value:       "vk_test123",
+			Value:       *schemas.NewSecretVar("vk_test123"),
 			IsActive:    schemas.Ptr(true),
 			ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 				{
@@ -10394,7 +10635,7 @@ func TestSQLite_VirtualKey_DashboardProviderConfig_DeletedOnFileChange(t *testin
 			ID:          "vk-1",
 			Name:        "test-vk",
 			Description: "VK for dashboard provider config preservation test",
-			Value:       "vk_test123",
+			Value:       *schemas.NewSecretVar("vk_test123"),
 			IsActive:    schemas.Ptr(true),
 			ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 				{
@@ -10485,7 +10726,7 @@ func TestSQLite_VirtualKey_DashboardMCPConfig_DeletedOnFileChange(t *testing.T) 
 			ID:          "vk-1",
 			Name:        "test-vk",
 			Description: "VK for dashboard MCP config preservation test",
-			Value:       "vk_test123",
+			Value:       *schemas.NewSecretVar("vk_test123"),
 			IsActive:    schemas.Ptr(true),
 		},
 	}
@@ -10570,7 +10811,7 @@ func TestSQLite_VirtualKey_DashboardMCPConfig_DeletedOnFileChange(t *testing.T) 
 			ID:          "vk-1",
 			Name:        "test-vk",
 			Description: "VK for dashboard MCP config preservation test",
-			Value:       "vk_test123",
+			Value:       *schemas.NewSecretVar("vk_test123"),
 			IsActive:    schemas.Ptr(true),
 			MCPConfigs: []tables.TableVirtualKeyMCPConfig{
 				{
@@ -10655,7 +10896,7 @@ func TestSQLite_VKMCPConfig_AddRemove(t *testing.T) {
 			ID:          "vk-1",
 			Name:        "test-vk",
 			Description: "VK for add/remove test",
-			Value:       "vk_test123",
+			Value:       *schemas.NewSecretVar("vk_test123"),
 			IsActive:    schemas.Ptr(true),
 		},
 	}
@@ -10691,7 +10932,7 @@ func TestSQLite_VKMCPConfig_AddRemove(t *testing.T) {
 			ID:          "vk-1",
 			Name:        "test-vk",
 			Description: "VK for add/remove test",
-			Value:       "vk_test123",
+			Value:       *schemas.NewSecretVar("vk_test123"),
 			IsActive:    schemas.Ptr(true),
 			MCPConfigs: []tables.TableVirtualKeyMCPConfig{
 				{MCPClientID: mcpClient1.ID, ToolsToExecute: []string{"tool1"}},
@@ -10723,7 +10964,7 @@ func TestSQLite_VKMCPConfig_AddRemove(t *testing.T) {
 			ID:          "vk-1",
 			Name:        "test-vk",
 			Description: "VK for add/remove test",
-			Value:       "vk_test123",
+			Value:       *schemas.NewSecretVar("vk_test123"),
 			IsActive:    schemas.Ptr(true),
 			MCPConfigs: []tables.TableVirtualKeyMCPConfig{
 				{MCPClientID: mcpClient1.ID, ToolsToExecute: []string{"tool1"}},
@@ -10800,7 +11041,7 @@ func TestSQLite_VKMCPConfig_UpdateTools(t *testing.T) {
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "Test",
-		Value:       "vk_test123",
+		Value:       *schemas.NewSecretVar("vk_test123"),
 		IsActive:    schemas.Ptr(true),
 		MCPConfigs: []tables.TableVirtualKeyMCPConfig{
 			{MCPClientID: mcpClient.ID, ToolsToExecute: []string{"tool1", "tool2"}},
@@ -10825,7 +11066,7 @@ func TestSQLite_VKMCPConfig_UpdateTools(t *testing.T) {
 			ID:          "vk-1",
 			Name:        "test-vk",
 			Description: "Test",
-			Value:       "vk_test123",
+			Value:       *schemas.NewSecretVar("vk_test123"),
 			IsActive:    schemas.Ptr(true),
 			MCPConfigs: []tables.TableVirtualKeyMCPConfig{
 				{MCPClientID: mcpClient.ID, ToolsToExecute: []string{"tool3", "tool4", "tool5"}}, // Different tools
@@ -10897,7 +11138,7 @@ func TestSQLite_VK_ProviderAndMCPConfigs_Combined(t *testing.T) {
 			ID:          "vk-1",
 			Name:        "combined-vk",
 			Description: "VK with both provider and MCP configs",
-			Value:       "vk_combined123",
+			Value:       *schemas.NewSecretVar("vk_combined123"),
 			IsActive:    schemas.Ptr(true),
 			ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 				{
@@ -11318,7 +11559,7 @@ func TestGenerateVirtualKeyHash_StableProviderConfigOrdering(t *testing.T) {
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "Test virtual key",
-		Value:       "vk_abc123",
+		Value:       *schemas.NewSecretVar("vk_abc123"),
 		IsActive:    schemas.Ptr(true),
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
@@ -11350,7 +11591,7 @@ func TestGenerateVirtualKeyHash_StableProviderConfigOrdering(t *testing.T) {
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "Test virtual key",
-		Value:       "vk_abc123",
+		Value:       *schemas.NewSecretVar("vk_abc123"),
 		IsActive:    schemas.Ptr(true),
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
@@ -11382,7 +11623,7 @@ func TestGenerateVirtualKeyHash_StableProviderConfigOrdering(t *testing.T) {
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "Test virtual key",
-		Value:       "vk_abc123",
+		Value:       *schemas.NewSecretVar("vk_abc123"),
 		IsActive:    schemas.Ptr(true),
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
@@ -11442,7 +11683,7 @@ func TestGenerateVirtualKeyHash_StableAllowedModelsOrdering(t *testing.T) {
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "Test virtual key",
-		Value:       "vk_abc123",
+		Value:       *schemas.NewSecretVar("vk_abc123"),
 		IsActive:    schemas.Ptr(true),
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
@@ -11460,7 +11701,7 @@ func TestGenerateVirtualKeyHash_StableAllowedModelsOrdering(t *testing.T) {
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "Test virtual key",
-		Value:       "vk_abc123",
+		Value:       *schemas.NewSecretVar("vk_abc123"),
 		IsActive:    schemas.Ptr(true),
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
@@ -11478,7 +11719,7 @@ func TestGenerateVirtualKeyHash_StableAllowedModelsOrdering(t *testing.T) {
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "Test virtual key",
-		Value:       "vk_abc123",
+		Value:       *schemas.NewSecretVar("vk_abc123"),
 		IsActive:    schemas.Ptr(true),
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
@@ -11524,7 +11765,7 @@ func TestGenerateVirtualKeyHash_StableKeyIDsOrdering(t *testing.T) {
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "Test virtual key",
-		Value:       "vk_abc123",
+		Value:       *schemas.NewSecretVar("vk_abc123"),
 		IsActive:    schemas.Ptr(true),
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
@@ -11547,7 +11788,7 @@ func TestGenerateVirtualKeyHash_StableKeyIDsOrdering(t *testing.T) {
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "Test virtual key",
-		Value:       "vk_abc123",
+		Value:       *schemas.NewSecretVar("vk_abc123"),
 		IsActive:    schemas.Ptr(true),
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
@@ -11570,7 +11811,7 @@ func TestGenerateVirtualKeyHash_StableKeyIDsOrdering(t *testing.T) {
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "Test virtual key",
-		Value:       "vk_abc123",
+		Value:       *schemas.NewSecretVar("vk_abc123"),
 		IsActive:    schemas.Ptr(true),
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
@@ -11621,7 +11862,7 @@ func TestGenerateVirtualKeyHash_StableMCPConfigOrdering(t *testing.T) {
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "Test virtual key",
-		Value:       "vk_abc123",
+		Value:       *schemas.NewSecretVar("vk_abc123"),
 		IsActive:    schemas.Ptr(true),
 		MCPConfigs: []tables.TableVirtualKeyMCPConfig{
 			{
@@ -11650,7 +11891,7 @@ func TestGenerateVirtualKeyHash_StableMCPConfigOrdering(t *testing.T) {
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "Test virtual key",
-		Value:       "vk_abc123",
+		Value:       *schemas.NewSecretVar("vk_abc123"),
 		IsActive:    schemas.Ptr(true),
 		MCPConfigs: []tables.TableVirtualKeyMCPConfig{
 			{
@@ -11679,7 +11920,7 @@ func TestGenerateVirtualKeyHash_StableMCPConfigOrdering(t *testing.T) {
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "Test virtual key",
-		Value:       "vk_abc123",
+		Value:       *schemas.NewSecretVar("vk_abc123"),
 		IsActive:    schemas.Ptr(true),
 		MCPConfigs: []tables.TableVirtualKeyMCPConfig{
 			{
@@ -11736,7 +11977,7 @@ func TestGenerateVirtualKeyHash_StableToolsToExecuteOrdering(t *testing.T) {
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "Test virtual key",
-		Value:       "vk_abc123",
+		Value:       *schemas.NewSecretVar("vk_abc123"),
 		IsActive:    schemas.Ptr(true),
 		MCPConfigs: []tables.TableVirtualKeyMCPConfig{
 			{
@@ -11753,7 +11994,7 @@ func TestGenerateVirtualKeyHash_StableToolsToExecuteOrdering(t *testing.T) {
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "Test virtual key",
-		Value:       "vk_abc123",
+		Value:       *schemas.NewSecretVar("vk_abc123"),
 		IsActive:    schemas.Ptr(true),
 		MCPConfigs: []tables.TableVirtualKeyMCPConfig{
 			{
@@ -11770,7 +12011,7 @@ func TestGenerateVirtualKeyHash_StableToolsToExecuteOrdering(t *testing.T) {
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "Test virtual key",
-		Value:       "vk_abc123",
+		Value:       *schemas.NewSecretVar("vk_abc123"),
 		IsActive:    schemas.Ptr(true),
 		MCPConfigs: []tables.TableVirtualKeyMCPConfig{
 			{
@@ -11815,7 +12056,7 @@ func TestGenerateVirtualKeyHash_StableCombinedOrdering(t *testing.T) {
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "Test virtual key",
-		Value:       "vk_abc123",
+		Value:       *schemas.NewSecretVar("vk_abc123"),
 		IsActive:    schemas.Ptr(true),
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
@@ -11857,7 +12098,7 @@ func TestGenerateVirtualKeyHash_StableCombinedOrdering(t *testing.T) {
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "Test virtual key",
-		Value:       "vk_abc123",
+		Value:       *schemas.NewSecretVar("vk_abc123"),
 		IsActive:    schemas.Ptr(true),
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
@@ -12009,6 +12250,90 @@ func TestSQLite_Budget_NewFromFile(t *testing.T) {
 	}
 
 	t.Log("✓ New budget from file added to DB with hash")
+}
+
+func TestLoadConfig_Governance_FirstImportUsesMergeIDHandling(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+
+	configData := makeConfigDataWithProvidersAndDir(nil, tempDir)
+	configData.Governance = &configstore.GovernanceConfig{
+		Customers: []tables.TableCustomer{
+			{ID: "customer-explicit", Name: "Explicit Customer"},
+			{Name: "Generated Customer"},
+		},
+		Teams: []tables.TableTeam{
+			{ID: "team-explicit", Name: "Explicit Team"},
+			{Name: "Generated Team"},
+		},
+		VirtualKeys: []tables.TableVirtualKey{
+			{ID: "vk-explicit", Name: "Explicit VK", Value: *schemas.NewSecretVar("sk-bf-explicit")},
+			{Name: "Generated VK"},
+		},
+		ComplexityAnalyzerConfig: testFileComplexityAnalyzerConfig(),
+	}
+	createConfigFile(t, tempDir, configData)
+
+	ctx := context.Background()
+	config, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	defer config.Close(ctx)
+
+	govConfig, err := config.ConfigStore.GetGovernanceConfig(ctx)
+	require.NoError(t, err)
+	require.Len(t, govConfig.Customers, 2)
+	require.Len(t, govConfig.Teams, 2)
+	require.Len(t, govConfig.VirtualKeys, 2)
+
+	var explicitCustomer, generatedCustomer *tables.TableCustomer
+	for i := range govConfig.Customers {
+		switch govConfig.Customers[i].Name {
+		case "Explicit Customer":
+			explicitCustomer = &govConfig.Customers[i]
+		case "Generated Customer":
+			generatedCustomer = &govConfig.Customers[i]
+		}
+	}
+	require.NotNil(t, explicitCustomer)
+	require.Equal(t, "customer-explicit", explicitCustomer.ID)
+	require.NotNil(t, generatedCustomer)
+	_, err = uuid.Parse(generatedCustomer.ID)
+	require.NoError(t, err)
+
+	var explicitTeam, generatedTeam *tables.TableTeam
+	for i := range govConfig.Teams {
+		switch govConfig.Teams[i].Name {
+		case "Explicit Team":
+			explicitTeam = &govConfig.Teams[i]
+		case "Generated Team":
+			generatedTeam = &govConfig.Teams[i]
+		}
+	}
+	require.NotNil(t, explicitTeam)
+	require.Equal(t, "team-explicit", explicitTeam.ID)
+	require.NotNil(t, generatedTeam)
+	_, err = uuid.Parse(generatedTeam.ID)
+	require.NoError(t, err)
+
+	var explicitVK, generatedVK *tables.TableVirtualKey
+	for i := range govConfig.VirtualKeys {
+		switch govConfig.VirtualKeys[i].Name {
+		case "Explicit VK":
+			explicitVK = &govConfig.VirtualKeys[i]
+		case "Generated VK":
+			generatedVK = &govConfig.VirtualKeys[i]
+		}
+	}
+	require.NotNil(t, explicitVK)
+	require.Equal(t, "vk-explicit", explicitVK.ID)
+	require.Equal(t, "sk-bf-explicit", explicitVK.Value.GetValue())
+	require.NotNil(t, generatedVK)
+	_, err = uuid.Parse(generatedVK.ID)
+	require.NoError(t, err)
+	require.True(t, strings.HasPrefix(generatedVK.Value.GetValue(), "sk-bf-"))
+	require.NotNil(t, config.GovernanceConfig.ComplexityAnalyzerConfig)
+	require.NotNil(t, govConfig.ComplexityAnalyzerConfig)
+	require.Equal(t, govConfig.ComplexityAnalyzerConfig, config.GovernanceConfig.ComplexityAnalyzerConfig)
 }
 
 // TestSQLite_Budget_HashMatch_DBPreserved tests DB budget preserved when hash matches
@@ -14027,7 +14352,7 @@ func TestUpdateGovernanceConfigInStore_RejectsSharedGovernanceIDs(t *testing.T) 
 		require.NoError(t, cfg.ConfigStore.CreateVirtualKey(ctx, &tables.TableVirtualKey{
 			ID:       "vk-rl-owner",
 			Name:     "vk-rl-owner",
-			Value:    "vk-rl-owner-value",
+			Value:    *schemas.NewSecretVar("vk-rl-owner-value"),
 			IsActive: schemas.Ptr(true),
 		}))
 		require.NoError(t, cfg.ConfigStore.CreateVirtualKeyProviderConfig(ctx, &tables.TableVirtualKeyProviderConfig{
@@ -15157,7 +15482,7 @@ func TestVKProviderConfig_WeightZeroPreserved(t *testing.T) {
 	vk := tables.TableVirtualKey{
 		ID:       "vk-zero-weight",
 		Name:     "test-vk",
-		Value:    "vk_test123",
+		Value:    *schemas.NewSecretVar("vk_test123"),
 		IsActive: schemas.Ptr(true),
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
@@ -15215,7 +15540,7 @@ func TestSQLite_VKProviderConfig_WeightZero_RoundTrip(t *testing.T) {
 		{
 			ID:       "vk-zero-weight",
 			Name:     "test-vk",
-			Value:    "vk_abc123",
+			Value:    *schemas.NewSecretVar("vk_abc123"),
 			IsActive: schemas.Ptr(true),
 			ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 				{
@@ -16749,7 +17074,9 @@ func getSchemaTypeMappings() []schemaTypeMapping {
 var enterpriseSchemaPaths = map[string]bool{
 	"$schema":                    true,
 	"access_profiles":            true,
+	"alerting":                   true,
 	"audit_logs":                 true,
+	"circuit_breaker_config":     true,
 	"cluster_config":             true,
 	"scim_config":                true,
 	"load_balancer_config":       true,
@@ -16872,6 +17199,7 @@ var excludedSchemaFields = map[string]map[string]bool{
 	},
 	"governance": {
 		"business_units": true, // Enterprise feature; not in OSS GovernanceConfig
+		"roles":          true, // Enterprise RBAC role bootstrap; not in OSS GovernanceConfig
 	},
 	"auth_config": {
 		"disable_auth_on_inference": true, // Deprecated and ignored; kept in schema for backward-compatible config.json validation. Use enforce_auth_on_inference.
@@ -17143,7 +17471,9 @@ func TestConfigSchemaSyncTopLevel(t *testing.T) {
 	enterpriseSchemaFields := map[string]bool{
 		"$schema":                    true,
 		"access_profiles":            true,
+		"alerting":                   true,
 		"audit_logs":                 true,
+		"circuit_breaker_config":     true,
 		"cluster_config":             true,
 		"scim_config":                true,
 		"load_balancer_config":       true,
@@ -17304,6 +17634,90 @@ func TestResolveFrameworkPricingConfig(t *testing.T) {
 		require.Equal(t, newFileURL, *normalizedModelCatalog.PricingURL)
 		require.Equal(t, defaultModelParamsURL, *normalizedModelCatalog.ModelParametersURL)
 		require.Equal(t, newFileSyncSeconds, *normalizedModelCatalog.PricingSyncInterval)
+	})
+
+	t.Run("model_parameters_url from file overrides db when file changes", func(t *testing.T) {
+		// DB has a stale model_parameters_url from an earlier startup; config.json
+		// now points it elsewhere. File wins, mirroring pricing_url.
+		staleModelParamsURL := "https://stale.example.com/model-parameters.json"
+		newModelParamsURL := "https://new-file.example.com/model-parameters.json"
+		storedHash, err := configstore.GenerateFrameworkConfigHash(&fileURL, &staleModelParamsURL, &fileSyncSeconds)
+		require.NoError(t, err)
+		dbConfig := &tables.TableFrameworkConfig{
+			ID:                  11,
+			PricingURL:          &fileURL,
+			ModelParametersURL:  &staleModelParamsURL,
+			PricingSyncInterval: &fileSyncSeconds,
+			ConfigHash:          storedHash, // hash of OLD file values
+		}
+		fileConfig := &framework.FrameworkConfig{
+			Pricing: &modelcatalog.Config{
+				PricingURL:          &fileURL,           // unchanged
+				ModelParametersURL:  &newModelParamsURL, // changed
+				PricingSyncInterval: &fileSyncSeconds,   // unchanged
+			},
+		}
+
+		normalizedTable, normalizedModelCatalog, needsDBUpdate := ResolveFrameworkPricingConfig(dbConfig, fileConfig)
+		require.True(t, needsDBUpdate)
+		require.Equal(t, newModelParamsURL, *normalizedTable.ModelParametersURL)
+		require.Equal(t, newModelParamsURL, *normalizedModelCatalog.ModelParametersURL)
+	})
+
+	t.Run("model_parameters_url alone triggers hash and overrides db", func(t *testing.T) {
+		// config.json sets only model_parameters_url (no pricing_url). The file
+		// hash must still be computed so a changed model_parameters_url is detected.
+		staleModelParamsURL := "https://stale.example.com/model-parameters.json"
+		newModelParamsURL := "https://new-file.example.com/model-parameters.json"
+		storedHash, err := configstore.GenerateFrameworkConfigHash(nil, &staleModelParamsURL, nil)
+		require.NoError(t, err)
+		dbConfig := &tables.TableFrameworkConfig{
+			ID:                 12,
+			PricingURL:         &dbURL,
+			ModelParametersURL: &staleModelParamsURL,
+			ConfigHash:         storedHash, // hash of OLD file values
+		}
+		fileConfig := &framework.FrameworkConfig{
+			Pricing: &modelcatalog.Config{
+				ModelParametersURL: &newModelParamsURL,
+			},
+		}
+
+		normalizedTable, _, needsDBUpdate := ResolveFrameworkPricingConfig(dbConfig, fileConfig)
+		require.True(t, needsDBUpdate)
+		require.Equal(t, newModelParamsURL, *normalizedTable.ModelParametersURL)
+	})
+
+	t.Run("unresolved env model_parameters_url does not overwrite db when another field changes", func(t *testing.T) {
+		// model_parameters_url is an unresolved env.* literal while pricing_url
+		// changes in the same restart, so fileChanged is true. The stale literal
+		// must not be persisted over a valid DB value — skip guard preserves it.
+		rawModelParams := "env.BIFROST_TEST_MODEL_PARAMS_URL_NONEXISTENT_XYZ"
+		prev, existed := os.LookupEnv("BIFROST_TEST_MODEL_PARAMS_URL_NONEXISTENT_XYZ")
+		os.Unsetenv("BIFROST_TEST_MODEL_PARAMS_URL_NONEXISTENT_XYZ")
+		t.Cleanup(func() {
+			if existed {
+				os.Setenv("BIFROST_TEST_MODEL_PARAMS_URL_NONEXISTENT_XYZ", prev)
+			}
+		})
+		validDBModelParams := "https://db.example.com/model-parameters.json"
+		dbConfig := &tables.TableFrameworkConfig{
+			ID:                  13,
+			PricingURL:          &dbURL,
+			ModelParametersURL:  &validDBModelParams,
+			PricingSyncInterval: &dbSyncSeconds,
+			ConfigHash:          "stale-hash", // force fileChanged via the pricing_url diff
+		}
+		fileConfig := &framework.FrameworkConfig{
+			Pricing: &modelcatalog.Config{
+				PricingURL:         &fileURL, // changed vs DB
+				ModelParametersURL: &rawModelParams,
+			},
+		}
+
+		normalizedTable, normalizedModelCatalog, _ := ResolveFrameworkPricingConfig(dbConfig, fileConfig)
+		require.Equal(t, validDBModelParams, *normalizedTable.ModelParametersURL)
+		require.Equal(t, validDBModelParams, *normalizedModelCatalog.ModelParametersURL)
 	})
 
 	t.Run("fallback to file when db fields are missing", func(t *testing.T) {
@@ -18028,6 +18442,44 @@ func TestLoadAuthConfigFromFile_PasswordHashing(t *testing.T) {
 	})
 }
 
+func TestLoadConfig_GovernanceAuthConfig_PersistsFromFirstImport(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	ctx := context.Background()
+
+	configData := makeConfigDataWithProvidersAndDir(nil, tempDir)
+	configData.Governance = &configstore.GovernanceConfig{
+		AuthConfig: &configstore.AuthConfig{
+			AdminUserName: schemas.NewSecretVar("nested-admin"),
+			AdminPassword: schemas.NewSecretVar("nested-password"),
+			IsEnabled:     true,
+		},
+	}
+	createConfigFile(t, tempDir, configData)
+
+	config1, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	storedAuth, err := config1.ConfigStore.GetAuthConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, storedAuth)
+	require.Equal(t, "nested-admin", storedAuth.AdminUserName.GetValue())
+	require.True(t, isBcryptHash(storedAuth.AdminPassword.GetValue()))
+	require.True(t, storedAuth.IsEnabled)
+	config1.Close(ctx)
+
+	configData.Governance = nil
+	createConfigFile(t, tempDir, configData)
+
+	config2, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	defer config2.Close(ctx)
+	require.NotNil(t, config2.GovernanceConfig)
+	require.NotNil(t, config2.GovernanceConfig.AuthConfig)
+	require.Equal(t, "nested-admin", config2.GovernanceConfig.AuthConfig.AdminUserName.GetValue())
+	require.True(t, isBcryptHash(config2.GovernanceConfig.AuthConfig.AdminPassword.GetValue()))
+	require.True(t, config2.GovernanceConfig.AuthConfig.IsEnabled)
+}
+
 // =============================================================================
 // AddProvider Tests
 // =============================================================================
@@ -18303,11 +18755,11 @@ func TestSQLite_GetVirtualKeysPaginated(t *testing.T) {
 	}
 
 	vks := []tables.TableVirtualKey{
-		{ID: "vk-1", Name: "alpha-key", Value: "val-1", IsActive: schemas.Ptr(true), TeamID: &team1},
-		{ID: "vk-2", Name: "beta-key", Value: "val-2", IsActive: schemas.Ptr(true), TeamID: &team2},
-		{ID: "vk-3", Name: "alpha-test", Value: "val-3", IsActive: schemas.Ptr(true), CustomerID: &cust1},
-		{ID: "vk-4", Name: "gamma-key", Value: "val-4", IsActive: schemas.Ptr(true), CustomerID: &cust2},
-		{ID: "vk-5", Name: "delta-key", Value: "val-5", IsActive: schemas.Ptr(true), TeamID: &team1},
+		{ID: "vk-1", Name: "alpha-key", Value: *schemas.NewSecretVar("val-1"), IsActive: schemas.Ptr(true), TeamID: &team1},
+		{ID: "vk-2", Name: "beta-key", Value: *schemas.NewSecretVar("val-2"), IsActive: schemas.Ptr(true), TeamID: &team2},
+		{ID: "vk-3", Name: "alpha-test", Value: *schemas.NewSecretVar("val-3"), IsActive: schemas.Ptr(true), CustomerID: &cust1},
+		{ID: "vk-4", Name: "gamma-key", Value: *schemas.NewSecretVar("val-4"), IsActive: schemas.Ptr(true), CustomerID: &cust2},
+		{ID: "vk-5", Name: "delta-key", Value: *schemas.NewSecretVar("val-5"), IsActive: schemas.Ptr(true), TeamID: &team1},
 	}
 	for i := range vks {
 		err := store.CreateVirtualKey(ctx, &vks[i])

@@ -60,7 +60,7 @@ type BifrostImageGenerationResponse struct {
 	*ImageGenerationResponseParameters
 
 	Usage       *ImageUsage                `json:"usage,omitempty"`
-	ExtraFields BifrostResponseExtraFields `json:"extra_fields,omitempty"`
+	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
 }
 
 // BackfillParams populates response fields from the original request that are needed
@@ -68,11 +68,12 @@ type BifrostImageGenerationResponse struct {
 // - NumInputImages on ImageUsage (count of input images from the request)
 // - Size on ImageGenerationResponseParameters (from request params if not in response)
 // - Quality (low, medium, high, auto) only
+// - AspectRatio on ImageGenerationResponseParameters (from request params if not in response)
 func (r *BifrostImageGenerationResponse) BackfillParams(req *BifrostRequest) {
 	if r == nil || req == nil {
 		return
 	}
-	numInputImages, size, quality := getNumInputImagesSizeAndQualityFromRequest(req)
+	numInputImages, size, quality, aspectRatio := getNumInputImagesSizeQualityAndAspectRatioFromRequest(req)
 
 	// Backfill Model from whichever inner request carries it. Some provider APIs
 	// (notably OpenAI /v1/images/*) omit model in the response body.
@@ -110,29 +111,22 @@ func (r *BifrostImageGenerationResponse) BackfillParams(req *BifrostRequest) {
 		}
 		r.ImageGenerationResponseParameters.Quality = quality
 	}
+
+	// Backfill AspectRatio if not already present from provider response
+	if aspectRatio != "" && (r.ImageGenerationResponseParameters == nil || r.ImageGenerationResponseParameters.AspectRatio == "") {
+		if r.ImageGenerationResponseParameters == nil {
+			r.ImageGenerationResponseParameters = &ImageGenerationResponseParameters{}
+		}
+		r.ImageGenerationResponseParameters.AspectRatio = aspectRatio
+	}
 }
 
-// getModelFromRequest extracts the model from any image-related request.
-func getModelFromRequest(req *BifrostRequest) string {
+// getNumInputImagesSizeQualityAndAspectRatioFromRequest extracts request params for cost
+// calculation and logging. Quality is only returned when it is one of low, medium, high, auto.
+// AspectRatio is only carried by image generation requests.
+func getNumInputImagesSizeQualityAndAspectRatioFromRequest(req *BifrostRequest) (numInputImages int, size string, quality string, aspectRatio string) {
 	if req == nil {
-		return ""
-	}
-	switch {
-	case req.ImageGenerationRequest != nil:
-		return req.ImageGenerationRequest.Model
-	case req.ImageEditRequest != nil:
-		return req.ImageEditRequest.Model
-	case req.ImageVariationRequest != nil:
-		return req.ImageVariationRequest.Model
-	}
-	return ""
-}
-
-// getNumInputImagesSizeAndQualityFromRequest extracts request params for cost calculation.
-// Quality is only returned when it is one of low, medium, high, auto.
-func getNumInputImagesSizeAndQualityFromRequest(req *BifrostRequest) (numInputImages int, size string, quality string) {
-	if req == nil {
-		return 0, "", ""
+		return 0, "", "", ""
 	}
 
 	switch {
@@ -145,6 +139,9 @@ func getNumInputImagesSizeAndQualityFromRequest(req *BifrostRequest) (numInputIm
 			}
 			if p.Quality != nil {
 				quality = normalizeImageQuality(*p.Quality)
+			}
+			if p.AspectRatio != nil {
+				aspectRatio = *p.AspectRatio
 			}
 		}
 	case req.ImageEditRequest != nil:
@@ -168,7 +165,7 @@ func getNumInputImagesSizeAndQualityFromRequest(req *BifrostRequest) (numInputIm
 			size = *req.ImageVariationRequest.Params.Size
 		}
 	}
-	return numInputImages, size, quality
+	return numInputImages, size, quality, aspectRatio
 }
 
 // normalizeImageQuality returns the quality string only if it is supported by gpt-image-1.5 (low, medium, high, auto).
@@ -187,6 +184,7 @@ type ImageGenerationResponseParameters struct {
 	OutputFormat  string    `json:"output_format,omitempty"`
 	Quality       string    `json:"quality,omitempty"`
 	Size          string    `json:"size,omitempty"`
+	AspectRatio   string    `json:"aspect_ratio,omitempty"`
 	FinishReasons []*string `json:"finish_reasons,omitempty"`
 	Seeds         []int     `json:"seeds,omitempty"`
 }
@@ -204,7 +202,7 @@ type ImageUsage struct {
 	TotalTokens         int                `json:"total_tokens,omitempty"`
 	OutputTokens        int                `json:"output_tokens,omitempty"` // Always image tokens unless OutputTokensDetails is not nil
 	OutputTokensDetails *ImageTokenDetails `json:"output_tokens_details,omitempty"`
-	NumInputImages      int                `json:"num_input_images,omitempty"` // Number of input images from the request (populated by Bifrost)
+	NumInputImages      int                `json:"-"` // Number of input images from the request (populated by Bifrost)
 }
 
 type ImageTokenDetails struct {
@@ -244,6 +242,7 @@ type BifrostImageGenerationStreamResponse struct {
 	URL               string                     `json:"url,omitempty"`
 	CreatedAt         int64                      `json:"created_at,omitempty"`
 	Size              string                     `json:"size,omitempty"`
+	AspectRatio       string                     `json:"aspect_ratio,omitempty"`
 	Quality           string                     `json:"quality,omitempty"`
 	Background        string                     `json:"background,omitempty"`
 	OutputFormat      string                     `json:"output_format,omitempty"`
@@ -252,7 +251,7 @@ type BifrostImageGenerationStreamResponse struct {
 	Error             *BifrostError              `json:"error,omitempty"`
 	RawRequest        string                     `json:"-"`
 	RawResponse       string                     `json:"-"`
-	ExtraFields       BifrostResponseExtraFields `json:"extra_fields,omitempty"`
+	ExtraFields       BifrostResponseExtraFields `json:"extra_fields"`
 }
 
 // BackfillParams populates response fields from the original request that are needed
@@ -260,8 +259,9 @@ type BifrostImageGenerationStreamResponse struct {
 // - NumInputImages on ImageUsage (count of input images from the request)
 // - Size on ImageGenerationResponseParameters (from request params if not in response)
 // - Quality (low, medium, high, auto) only
+// - AspectRatio on ImageGenerationResponseParameters (from request params if not in response)
 func (r *BifrostImageGenerationStreamResponse) BackfillParams(req *BifrostRequest) {
-	numInputImages, size, quality := getNumInputImagesSizeAndQualityFromRequest(req)
+	numInputImages, size, quality, aspectRatio := getNumInputImagesSizeQualityAndAspectRatioFromRequest(req)
 
 	// Backfill NumInputImages
 	if numInputImages > 0 {
@@ -279,6 +279,11 @@ func (r *BifrostImageGenerationStreamResponse) BackfillParams(req *BifrostReques
 	// Backfill Quality if not already present (only low, medium, high, auto)
 	if quality != "" && r.Quality == "" {
 		r.Quality = quality
+	}
+
+	// Backfill AspectRatio if not already present from provider response
+	if aspectRatio != "" && r.AspectRatio == "" {
+		r.AspectRatio = aspectRatio
 	}
 }
 

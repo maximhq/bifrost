@@ -13,7 +13,6 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
-	"gorm.io/gorm"
 )
 
 const (
@@ -51,22 +50,21 @@ func (s *Store) SyncFromURL(ctx context.Context) error {
 	}
 
 	if s.configStore != nil {
-		err = s.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
-			seen := make(map[string]struct{})
-			for modelKey, entry := range pricingData {
-				pricing := convertEntryToTablePricing(modelKey, entry)
-				key := makeKey(pricing.Model, pricing.Provider, pricing.Mode)
-				if _, ok := seen[key]; ok {
-					continue
-				}
-				seen[key] = struct{}{}
-				if err := s.configStore.UpsertModelPrices(ctx, &pricing, tx); err != nil {
-					return fmt.Errorf("failed to create pricing record for model %s: %w", pricing.Model, err)
-				}
+		// Dedup by (model, provider, mode) before the write: the batched upsert
+		// below issues multi-row ON CONFLICT statements, and PostgreSQL rejects a
+		// statement whose VALUES list hits the same conflict target twice.
+		records := make([]configstoreTables.TableModelPricing, 0, len(pricingData))
+		seen := make(map[string]struct{}, len(pricingData))
+		for modelKey, entry := range pricingData {
+			pricing := convertEntryToTablePricing(modelKey, entry)
+			key := makeKey(pricing.Model, pricing.Provider, pricing.Mode)
+			if _, ok := seen[key]; ok {
+				continue
 			}
-			return nil
-		})
-		if err != nil {
+			seen[key] = struct{}{}
+			records = append(records, pricing)
+		}
+		if err := s.configStore.UpsertModelPricesBatch(ctx, records); err != nil {
 			return fmt.Errorf("failed to sync pricing data to database: %w", err)
 		}
 

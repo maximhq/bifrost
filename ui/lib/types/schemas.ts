@@ -116,6 +116,7 @@ export const vertexKeyConfigSchema = z
 		project_number: secretVarSchema.optional(),
 		region: secretVarSchema.optional(),
 		auth_credentials: secretVarSchema.optional(),
+		force_single_region: z.boolean().optional(),
 	})
 	.refine((data) => isSecretVarSet(data.project_id), {
 		message: "Project ID is required",
@@ -162,6 +163,7 @@ export const bedrockKeyConfigSchema = z
 		external_id: secretVarSchema.optional(),
 		session_name: secretVarSchema.optional(),
 		arn: secretVarSchema.optional(),
+		project_id: secretVarSchema.optional(),
 		batch_s3_config: batchS3ConfigSchema.optional(),
 	})
 	.refine(
@@ -184,6 +186,42 @@ export const bedrockKeyConfigSchema = z
 			const hasAccessKey = isSecretVarSet(data.access_key);
 			const hasSecretKey = isSecretVarSet(data.secret_key);
 			if (!hasAccessKey && !hasSecretKey) return true;
+			return hasAccessKey && hasSecretKey;
+		},
+		{
+			message: "Both Access Key and Secret Key are required for explicit credentials",
+			path: ["access_key"],
+		},
+	);
+
+// Bedrock Mantle key config schema (SigV4 credentials; no ARN / batch S3 config)
+export const bedrockMantleKeyConfigSchema = z
+	.object({
+		_auth_type: z.enum(["iam_role", "explicit", "api_key"]).optional(),
+		access_key: secretVarSchema.optional(),
+		secret_key: secretVarSchema.optional(),
+		session_token: secretVarSchema.optional(),
+		region: secretVarSchema.optional(),
+		role_arn: secretVarSchema.optional(),
+		external_id: secretVarSchema.optional(),
+		session_name: secretVarSchema.optional(),
+		project_id: secretVarSchema.optional(),
+	})
+	.refine((data) => isSecretVarSet(data.region), {
+		message: "Region is required",
+		path: ["region"],
+	})
+	.refine(
+		(data) => {
+			// Explicit auth must carry both keys; a region-only config fails at request time.
+			if (data._auth_type === "explicit") {
+				return isSecretVarSet(data.access_key) && isSecretVarSet(data.secret_key);
+			}
+			// If either access_key or secret_key is set, both must be set.
+			const hasAccessKey = isSecretVarSet(data.access_key);
+			const hasSecretKey = isSecretVarSet(data.secret_key);
+			// IAM-role path: both keys empty is valid, but a lone session token cannot sign SigV4.
+			if (!hasAccessKey && !hasSecretKey) return !isSecretVarSet(data.session_token);
 			return hasAccessKey && hasSecretKey;
 		},
 		{
@@ -255,9 +293,11 @@ const aliasConfigObjectSchema = z.object({
 	api_version: z.string().optional(),
 	anthropic_version: z.string().optional(),
 	endpoint: secretVarSchema.optional(),
-	// Vertex overrides
+	// Shared per-alias project override (Vertex / Bedrock / Bedrock Mantle)
 	project_id: secretVarSchema.optional(),
+	// Vertex overrides
 	project_number: secretVarSchema.optional(),
+	force_single_region: z.boolean().optional(),
 	// Bedrock overrides
 	inference_profile_arn: secretVarSchema.optional(),
 	// Replicate overrides
@@ -302,6 +342,7 @@ export const modelProviderKeySchema = z
 		azure_key_config: azureKeyConfigSchema.optional(),
 		vertex_key_config: vertexKeyConfigSchema.optional(),
 		bedrock_key_config: bedrockKeyConfigSchema.optional(),
+		bedrock_mantle_key_config: bedrockMantleKeyConfigSchema.optional(),
 		vllm_key_config: vllmKeyConfigSchema.optional(),
 		replicate_key_config: replicateKeyConfigSchema.optional(),
 		ollama_key_config: ollamaKeyConfigSchema.optional(),
@@ -313,6 +354,14 @@ export const modelProviderKeySchema = z
 		(data) => {
 			// Providers with dedicated config that never need a top-level API key
 			if (data.vllm_key_config || data.replicate_key_config || data.ollama_key_config || data.sgl_key_config) {
+				return true;
+			}
+			// Bedrock Mantle authenticates via SigV4 (its key config) or a Bearer key — only require
+			// a top-level API key when the user explicitly chose the api_key auth method.
+			if (data.bedrock_mantle_key_config) {
+				if (data.bedrock_mantle_key_config._auth_type === "api_key") {
+					return isSecretVarSet(data.value);
+				}
 				return true;
 			}
 			// Azure requires API key only when using api_key auth
@@ -547,6 +596,10 @@ export const allowedRequestsSchema = z.object({
 	chat_completion_stream: z.boolean(),
 	responses: z.boolean(),
 	responses_stream: z.boolean(),
+	responses_retrieve: z.boolean().optional(),
+	responses_delete: z.boolean().optional(),
+	responses_cancel: z.boolean().optional(),
+	responses_input_items: z.boolean().optional(),
 	embedding: z.boolean(),
 	speech: z.boolean(),
 	speech_stream: z.boolean(),
@@ -1080,6 +1133,7 @@ export const mcpClientUpdateSchema = z.object({
 		),
 	tool_pricing: z.record(z.string(), z.number().min(0, "Cost must be non-negative")).optional(),
 	tool_sync_interval: z.number().optional(), // -1 = disabled, 0 = use global, >0 = custom interval in minutes
+	tool_execution_timeout: z.number().int().min(0).optional(), // 0 = use global, >0 = per-server timeout in seconds
 	allowed_extra_headers: z
 		.array(z.string())
 		.optional()

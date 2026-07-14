@@ -3,6 +3,7 @@ package openai
 import (
 	"strings"
 
+	"github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -40,12 +41,46 @@ func ConvertBifrostMessagesToOpenAIMessages(messages []schemas.ChatMessage) []Op
 			Content:         message.Content,
 			ChatToolMessage: message.ChatToolMessage,
 		}
+		// Strip provider reasoning signatures (e.g. Gemini thoughtSignatures embedded in
+		// call_id as "<baseID>_ts_<sig>") from the tool result's tool_call_id, but only when it
+		// exceeds OpenAI's limit — shorter IDs are left intact so distinct upstream IDs are
+		// preserved. Clone first — ChatToolMessage is shared with the caller's input.
+		if message.ChatToolMessage != nil && message.ChatToolMessage.ToolCallID != nil &&
+			len(*message.ChatToolMessage.ToolCallID) > MaxToolCallIDLength {
+			if stripped := utils.StripThoughtSignature(*message.ChatToolMessage.ToolCallID); stripped != *message.ChatToolMessage.ToolCallID {
+				toolMsgCopy := *message.ChatToolMessage
+				toolMsgCopy.ToolCallID = &stripped
+				openaiMessages[i].ChatToolMessage = &toolMsgCopy
+			}
+		}
 		if message.ChatAssistantMessage != nil {
+			// Strip the same embedded signature from over-long assistant tool call IDs. Clone the
+			// slice only when a strip is actually needed so the caller's input is never mutated.
+			toolCalls := message.ChatAssistantMessage.ToolCalls
+			needsStrip := false
+			for j := range toolCalls {
+				if toolCalls[j].ID != nil && len(*toolCalls[j].ID) > MaxToolCallIDLength &&
+					strings.Contains(*toolCalls[j].ID, utils.ThoughtSignatureSeparator) {
+					needsStrip = true
+					break
+				}
+			}
+			if needsStrip {
+				cloned := make([]schemas.ChatAssistantMessageToolCall, len(toolCalls))
+				copy(cloned, toolCalls)
+				for j := range cloned {
+					if cloned[j].ID != nil && len(*cloned[j].ID) > MaxToolCallIDLength {
+						stripped := utils.StripThoughtSignature(*cloned[j].ID)
+						cloned[j].ID = &stripped
+					}
+				}
+				toolCalls = cloned
+			}
 			openaiMessages[i].OpenAIChatAssistantMessage = &OpenAIChatAssistantMessage{
 				Refusal:     message.ChatAssistantMessage.Refusal,
 				Reasoning:   message.ChatAssistantMessage.Reasoning,
 				Annotations: message.ChatAssistantMessage.Annotations,
-				ToolCalls:   message.ChatAssistantMessage.ToolCalls,
+				ToolCalls:   toolCalls,
 			}
 		}
 	}
@@ -127,22 +162,27 @@ func supportsOpenAIXHighReasoningEffort(model string) bool {
 	return strings.HasPrefix(modelLower, "gpt-5.2") ||
 		strings.HasPrefix(modelLower, "gpt-5.3-codex") ||
 		strings.HasPrefix(modelLower, "gpt-5.4") ||
-		strings.HasPrefix(modelLower, "gpt-5.5")
+		strings.HasPrefix(modelLower, "gpt-5.5") ||
+		strings.HasPrefix(modelLower, "gpt-5.6")
 }
 
-// supportsMaxReasoningEffort reports models that natively accept "max" effort (e.g. DeepSeek V4, GLM-5.2).
+// supportsMaxReasoningEffort reports models that natively accept "max" effort (e.g. GPT-5.6, DeepSeek V4, GLM-5.2).
 func supportsMaxReasoningEffort(model string) bool {
 	_, parsedModel := schemas.ParseModelString(model, schemas.OpenAI)
 	if parsedModel != "" {
 		model = parsedModel
 	}
 	modelLower := strings.ToLower(model)
-	return strings.HasPrefix(modelLower, "deepseek-v4") ||
+	return strings.HasPrefix(modelLower, "gpt-5.6") ||
+		strings.HasPrefix(modelLower, "deepseek-v4") ||
 		strings.HasPrefix(modelLower, "glm-5.2")
 }
 
 // MaxUserFieldLength for OpenAI enforces a 64 character maximum on the user field
 const MaxUserFieldLength = 64
+
+// MaxToolCallIDLength is OpenAI's 64 character maximum on tool call IDs (call_id / input[].id).
+const MaxToolCallIDLength = 64
 
 // SanitizeUserField returns nil if user exceeds MaxUserFieldLength, otherwise returns the original value
 func SanitizeUserField(user *string) *string {

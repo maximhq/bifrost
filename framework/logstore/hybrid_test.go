@@ -9,8 +9,10 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/objectstore"
+	"github.com/maximhq/bifrost/framework/queryscope"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 type hybridTestLogger struct{}
@@ -50,6 +52,27 @@ func waitForUploads(t *testing.T, done func() bool) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("timed out waiting for upload state")
+}
+
+func TestHybridScopedDBDelegatesToInnerRDBStore(t *testing.T) {
+	hybrid, _, _ := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+
+	scoped, ok := interface{}(hybrid).(scopedDBLogStore)
+	require.True(t, ok, "hybrid logstore should preserve the RDB ScopedDB surface")
+
+	called := false
+	scope := queryscope.QueryScope(func(db *gorm.DB) *gorm.DB {
+		called = true
+		return db.Where("status = ?", "success")
+	})
+	ctx := queryscope.WithQueryScope(context.Background(), scope)
+
+	got := scoped.ScopedDB(ctx)
+	require.NotNil(t, got)
+	stmt := got.Session(&gorm.Session{DryRun: true}).Table("logs").Find(&struct{}{}).Statement
+	assert.True(t, called, "ScopedDB should invoke the scope from ctx")
+	assert.Contains(t, stmt.SQL.String(), "status = ?")
 }
 
 func TestHybrid_CreateAndFindByID(t *testing.T) {
@@ -719,6 +742,54 @@ func TestHybrid_ResponsesInputHistoryPreservesLastUserMessage(t *testing.T) {
 	found, err := hybrid.FindByID(ctx, "resp-1")
 	require.NoError(t, err)
 	require.Len(t, found.ResponsesInputHistoryParsed, 2, "full responses history should be hydrated from S3")
+}
+
+func TestHybrid_TokenUsageSummaryForListPreview(t *testing.T) {
+	// token_usage is offloaded to object storage and cleared from the DB row. The
+	// denormalized prompt/completion/total columns must remain so list queries can
+	// rebuild token_usage for the UI without hydrating from S3 (same pattern as
+	// content_summary for message previews).
+	hybrid, inner, objStore := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+
+	entry := &Log{
+		ID:        "chat-tokens-1",
+		Timestamp: time.Now().UTC(),
+		Provider:  "openai",
+		Model:     "gpt-4",
+		Status:    "success",
+		Object:    "chat.completion",
+		TokenUsageParsed: &schemas.BifrostLLMUsage{
+			PromptTokens:     120,
+			CompletionTokens: 45,
+			TotalTokens:      165,
+		},
+	}
+	require.NoError(t, entry.SerializeFields())
+	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
+	waitForUploads(t, func() bool { return objStore.Len() == 1 })
+
+	dbLog, err := inner.FindByID(ctx, "chat-tokens-1")
+	require.NoError(t, err)
+	assert.Empty(t, dbLog.TokenUsage, "token_usage should be offloaded to object storage")
+	assert.Equal(t, 120, dbLog.PromptTokens)
+	assert.Equal(t, 45, dbLog.CompletionTokens)
+	assert.Equal(t, 165, dbLog.TotalTokens)
+
+	result, err := hybrid.SearchLogs(ctx, SearchFilters{}, PaginationOptions{Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, result.Logs, 1)
+	listLog := result.Logs[0]
+	require.NotNil(t, listLog.TokenUsageParsed, "list query should rebuild token_usage from denormalized columns")
+	assert.Equal(t, 120, listLog.TokenUsageParsed.PromptTokens)
+	assert.Equal(t, 45, listLog.TokenUsageParsed.CompletionTokens)
+	assert.Equal(t, 165, listLog.TokenUsageParsed.TotalTokens)
+
+	found, err := hybrid.FindByID(ctx, "chat-tokens-1")
+	require.NoError(t, err)
+	require.NotNil(t, found.TokenUsageParsed, "detail view should hydrate full token_usage from S3")
+	assert.Equal(t, 165, found.TokenUsageParsed.TotalTokens)
 }
 
 func TestHybrid_SpeechInputSummaryForListPreview(t *testing.T) {

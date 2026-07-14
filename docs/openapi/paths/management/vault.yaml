@@ -1,0 +1,41 @@
+flush-cache:
+  post:
+    operationId: flushVaultCache
+    summary: Flush vault secret cache
+    description: |
+      Clears the in-memory vault secret cache so the next resolution of every
+      `vault.<path>` reference re-fetches from the configured backend (AWS Secrets
+      Manager, GCP Secret Manager, or HashiCorp Vault).
+
+      Use this after rotating a secret when you cannot wait for the hourly
+      background refresh. In a clustered deployment the flush is broadcast to all
+      peer nodes automatically — you only need to call this on one node.
+
+      Returns `400` if vault integration is not enabled.
+    tags:
+      - Vault
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Vault cache flushed successfully
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                message:
+                  type: string
+                  example: vault cache flushed
+      '400':
+        description: Vault is not enabled
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                error:
+                  type: string
+                  example: vault is not enabled
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'

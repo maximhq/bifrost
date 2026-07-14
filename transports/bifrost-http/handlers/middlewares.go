@@ -150,6 +150,10 @@ func (c *CorsMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 					if traceID, ok := ctx.UserValue(schemas.BifrostContextKeyTraceID).(string); ok && traceID != "" {
 						logBuilder = logBuilder.Str("trace_id", traceID)
 					}
+					// Emit the request ID alongside trace_id
+					if requestID := string(ctx.Request.Header.Peek("x-request-id")); requestID != "" {
+						logBuilder = logBuilder.Str("request_id", requestID)
+					}
 					if cfg.dumpErrorsInConsoleLogs {
 						if statusCode >= 400 && !ctx.Response.IsBodyStream() {
 							if body := ctx.Response.Body(); len(body) > 0 {
@@ -916,6 +920,11 @@ func (m *AuthMiddleware) APIMiddleware() schemas.BifrostHTTPMiddleware {
 		// credentials securely. Management endpoints under /api/skills (without
 		// /serve/) remain authenticated.
 		"/api/skills/serve/",
+		// OAuth2 discovery endpoints (RFC 8414 AS metadata, RFC 9728 protected
+		// resource metadata, RFC 7517 JWKS) must be reachable without auth so
+		// clients can bootstrap the flow. Each handler still gates availability
+		// behind discoveryEnabled() and serves 404 when OAuth mode is off.
+		"/.well-known/",
 	}
 	return m.middleware(func(authConfig *configstore.AuthConfig, url string) bool {
 		if slices.Contains(systemWhitelistedRoutes, url) ||
@@ -1206,6 +1215,10 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 			inheritedTraceID := tracing.ExtractParentID(&ctx.Request.Header)
 			// Create trace in store - only ID returned (trace data stays in store)
 			traceID := tracer.CreateTrace(inheritedTraceID, requestID)
+			// Surface correlation IDs back to the caller so a request can be pivoted
+			// into its logs (Loki) and trace (Tempo) in Grafana and similar stacks.
+			ctx.Response.Header.Set("x-request-id", requestID)
+			ctx.Response.Header.Set("x-bifrost-trace-id", traceID)
 			// Store dimensions and session ID at the trace level (not as span
 			// attributes) so connectors like BigQuery can export them without
 			// changing the OTEL/Datadog span payloads.

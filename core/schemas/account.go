@@ -124,25 +124,26 @@ func (bl BlackList) Validate() error {
 // Key represents an API key and its associated configuration for a provider.
 // It contains the key value, supported models, and a weight for load balancing.
 type Key struct {
-	ID                 string              `json:"id"`                             // The unique identifier for the key (used by bifrost to identify the key)
-	Name               string              `json:"name"`                           // The name of the key (used by users to identify the key, not used by bifrost)
-	Value              SecretVar              `json:"value"`                          // The actual API key value
-	Models             WhiteList           `json:"models"`                         // List of models this key can access
-	BlacklistedModels  BlackList           `json:"blacklisted_models"`             // List of models this key cannot access
-	Weight             float64             `json:"weight"`                         // Weight for load balancing between multiple keys
-	Aliases            KeyAliases          `json:"aliases,omitempty"`              // Mapping of model identifiers to inference profiles
-	AzureKeyConfig     *AzureKeyConfig     `json:"azure_key_config,omitempty"`     // Azure-specific key configuration
-	VertexKeyConfig    *VertexKeyConfig    `json:"vertex_key_config,omitempty"`    // Vertex-specific key configuration
-	BedrockKeyConfig   *BedrockKeyConfig   `json:"bedrock_key_config,omitempty"`   // AWS Bedrock-specific key configuration
-	VLLMKeyConfig      *VLLMKeyConfig      `json:"vllm_key_config,omitempty"`      // vLLM-specific key configuration
-	ReplicateKeyConfig *ReplicateKeyConfig `json:"replicate_key_config,omitempty"` // Replicate-specific key configuration
-	OllamaKeyConfig    *OllamaKeyConfig    `json:"ollama_key_config,omitempty"`    // Ollama-specific key configuration
-	SGLKeyConfig       *SGLKeyConfig       `json:"sgl_key_config,omitempty"`       // SGLang-specific key configuration
-	Enabled            *bool               `json:"enabled,omitempty"`              // Whether the key is active (default:true)
-	UseForBatchAPI     *bool               `json:"use_for_batch_api,omitempty"`    // Whether this key can be used for batch API operations (default:false for new keys, migrated keys default to true)
-	ConfigHash         string              `json:"config_hash,omitempty"`          // Hash of config.json version, used for change detection
-	Status             KeyStatusType       `json:"status,omitempty"`               // Status of key
-	Description        string              `json:"description,omitempty"`          // Description of key
+	ID                     string                  `json:"id"`                                  // The unique identifier for the key (used by bifrost to identify the key)
+	Name                   string                  `json:"name"`                                // The name of the key (used by users to identify the key, not used by bifrost)
+	Value                  SecretVar               `json:"value"`                               // The actual API key value
+	Models                 WhiteList               `json:"models"`                              // List of models this key can access
+	BlacklistedModels      BlackList               `json:"blacklisted_models"`                  // List of models this key cannot access
+	Weight                 float64                 `json:"weight"`                              // Weight for load balancing between multiple keys
+	Aliases                KeyAliases              `json:"aliases,omitempty"`                   // Mapping of model identifiers to inference profiles
+	AzureKeyConfig         *AzureKeyConfig         `json:"azure_key_config,omitempty"`          // Azure-specific key configuration
+	VertexKeyConfig        *VertexKeyConfig        `json:"vertex_key_config,omitempty"`         // Vertex-specific key configuration
+	BedrockKeyConfig       *BedrockKeyConfig       `json:"bedrock_key_config,omitempty"`        // AWS Bedrock-specific key configuration
+	BedrockMantleKeyConfig *BedrockMantleKeyConfig `json:"bedrock_mantle_key_config,omitempty"` // Bedrock Mantle-specific key configuration
+	VLLMKeyConfig          *VLLMKeyConfig          `json:"vllm_key_config,omitempty"`           // vLLM-specific key configuration
+	ReplicateKeyConfig     *ReplicateKeyConfig     `json:"replicate_key_config,omitempty"`      // Replicate-specific key configuration
+	OllamaKeyConfig        *OllamaKeyConfig        `json:"ollama_key_config,omitempty"`         // Ollama-specific key configuration
+	SGLKeyConfig           *SGLKeyConfig           `json:"sgl_key_config,omitempty"`            // SGLang-specific key configuration
+	Enabled                *bool                   `json:"enabled,omitempty"`                   // Whether the key is active (default:true)
+	UseForBatchAPI         *bool                   `json:"use_for_batch_api,omitempty"`         // Whether this key can be used for batch API operations (default:false for new keys, migrated keys default to true)
+	ConfigHash             string                  `json:"config_hash,omitempty"`               // Hash of config.json version, used for change detection
+	Status                 KeyStatusType           `json:"status,omitempty"`                    // Status of key
+	Description            string                  `json:"description,omitempty"`               // Description of key
 }
 
 // ModelFamily is a typed enum identifying the underlying model family of an alias target.
@@ -182,15 +183,23 @@ func (mf *ModelFamily) IsValid() bool {
 // AzureAliasCfg holds Azure-specific overrides that apply to a single alias.
 // Each field, when non-nil, overrides the corresponding key-level default.
 type AzureAliasCfg struct {
-	APIVersion       *string `json:"api_version,omitempty"`       // overrides the Azure OpenAI api-version query param for this alias
-	AnthropicVersion *string `json:"anthropic_version,omitempty"` // overrides the anthropic-version header for Claude-on-Azure deployments
+	APIVersion       *string    `json:"api_version,omitempty"`       // overrides the Azure OpenAI api-version query param for this alias
+	AnthropicVersion *string    `json:"anthropic_version,omitempty"` // overrides the anthropic-version header for Claude-on-Azure deployments
 	Endpoint         *SecretVar `json:"endpoint,omitempty"`          // overrides AzureKeyConfig.Endpoint for this alias — lets one credential span deployments on multiple Azure resources
 }
 
 // VertexAliasCfg holds Vertex-specific overrides that apply to a single alias.
+//
+// Deprecated for ProjectID: the per-alias project override now lives on the
+// shared top-level AliasConfig.ProjectID field (see below), so one alias key can
+// scope any provider (Vertex, Bedrock, Bedrock Mantle) to a project without a
+// JSON field-name collision between the embedded sub-configs. ProjectID is kept
+// here only so Go code that constructs VertexAliasCfg directly keeps compiling;
+// the Vertex resolver reads AliasConfig.ProjectID first and falls back to this.
 type VertexAliasCfg struct {
-	ProjectID     *SecretVar `json:"project_id,omitempty"`
-	ProjectNumber *SecretVar `json:"project_number,omitempty"`
+	ProjectID         *SecretVar `json:"-"` // superseded by AliasConfig.ProjectID; not (de)serialized to avoid colliding with the top-level project_id
+	ProjectNumber     *SecretVar `json:"project_number,omitempty"`
+	ForceSingleRegion *bool      `json:"force_single_region,omitempty"`
 }
 
 // BedrockAliasCfg holds Bedrock-specific overrides that apply to a single alias.
@@ -213,7 +222,14 @@ type AliasConfig struct {
 	ModelName   *string      `json:"model_name,omitempty"`   // canonical model name used for pricing, logging, and 2nd-tier family routing
 	ModelFamily *ModelFamily `json:"model_family,omitempty"` // 1st-tier family routing enum
 	Description string       `json:"description,omitempty"`  // description of the alias for users to understand its purpose (not used by bifrost)
-	Region      *SecretVar      `json:"region,omitempty"`
+	Region      *SecretVar   `json:"region,omitempty"`
+	// ProjectID is a per-alias project override shared across providers (like Region).
+	// Vertex uses it as the GCP project; Bedrock and Bedrock Mantle use it as the
+	// AWS project sent via the OpenAI-Project / anthropic-workspace-id header. Kept
+	// top-level (rather than inside each provider sub-config) so the flat "project_id"
+	// JSON key does not collide between embedded sub-configs — Go/sonic silently drop
+	// a field name shared by multiple same-depth anonymous structs.
+	ProjectID *SecretVar `json:"project_id,omitempty"`
 
 	*AzureAliasCfg
 	*VertexAliasCfg
@@ -230,6 +246,7 @@ func (ac AliasConfig) isLegacyShape() bool {
 		ac.ModelFamily == nil &&
 		ac.Description == "" &&
 		ac.Region == nil &&
+		ac.ProjectID == nil &&
 		ac.AzureAliasCfg == nil &&
 		ac.VertexAliasCfg == nil &&
 		ac.BedrockAliasCfg == nil &&
@@ -241,6 +258,14 @@ func (ac AliasConfig) isLegacyShape() bool {
 // change on the wire. When any other field is populated, the full object is
 // emitted.
 func (ac AliasConfig) MarshalJSON() ([]byte, error) {
+	// The deprecated VertexAliasCfg.ProjectID is json:"-" (it would otherwise collide
+	// with the top-level project_id on the wire). Promote it to the shared top-level
+	// ProjectID before serializing so Go-constructed aliases that set only the legacy
+	// field don't lose their project on a save/export round-trip (or drop it from the
+	// config hash). Value receiver: this mutates only the local copy, not the caller's.
+	if ac.ProjectID == nil && ac.VertexAliasCfg != nil && ac.VertexAliasCfg.ProjectID != nil {
+		ac.ProjectID = ac.VertexAliasCfg.ProjectID
+	}
 	if ac.isLegacyShape() {
 		return Marshal(ac.ModelID)
 	}
@@ -381,6 +406,8 @@ func ResolveFamily(ctx *BifrostContext, fallbackModel string) ModelFamily {
 		switch {
 		case IsAnthropicModel(s):
 			return ModelFamilyAnthropic
+		case IsOpenAIModel(s):
+			return ModelFamilyOpenAI
 		case IsMistralModel(s):
 			return ModelFamilyMistral
 		// Imagen and Veo are checked before Gemini as a defensive ordering:
@@ -440,6 +467,19 @@ func ResolveCanonicalModel(ctx *BifrostContext, fallbackModel string) string {
 // used when no alias is resolved in ctx — typically request.Model.
 func IsAnthropicModelFamily(ctx *BifrostContext, model string) bool {
 	return ResolveFamily(ctx, model) == ModelFamilyAnthropic
+}
+
+func IsOpenAIModelFamily(ctx *BifrostContext, model string) bool {
+	return ResolveFamily(ctx, model) == ModelFamilyOpenAI
+}
+
+// IsElevenlabsSoundModelFamily reports whether the current attempt resolves to
+// an ElevenLabs sound-effects (text-to-sound) model. It honors aliases by
+// resolving the canonical model name first, so an alias whose ModelName/ModelID
+// is a sound model is detected the same as a raw model id. See
+// IsAnthropicModelFamily for usage notes.
+func IsElevenlabsSoundModelFamily(ctx *BifrostContext, model string) bool {
+	return IsElevenlabsSoundModel(ResolveCanonicalModel(ctx, model))
 }
 
 // IsMistralModelFamily reports whether the current attempt resolves to the
@@ -608,10 +648,10 @@ const (
 type AzureKeyConfig struct {
 	Endpoint SecretVar `json:"endpoint"` // Azure service endpoint URL
 
-	ClientID     *SecretVar  `json:"client_id,omitempty"`     // Azure client ID for authentication
-	ClientSecret *SecretVar  `json:"client_secret,omitempty"` // Azure client secret for authentication
-	TenantID     *SecretVar  `json:"tenant_id,omitempty"`     // Azure tenant ID for authentication
-	Scopes       []string `json:"scopes,omitempty"`
+	ClientID     *SecretVar `json:"client_id,omitempty"`     // Azure client ID for authentication
+	ClientSecret *SecretVar `json:"client_secret,omitempty"` // Azure client secret for authentication
+	TenantID     *SecretVar `json:"tenant_id,omitempty"`     // Azure tenant ID for authentication
+	Scopes       []string   `json:"scopes,omitempty"`
 }
 
 // VertexKeyConfig represents the Vertex-specific configuration.
@@ -621,6 +661,9 @@ type VertexKeyConfig struct {
 	ProjectNumber   SecretVar `json:"project_number"`
 	Region          SecretVar `json:"region"`
 	AuthCredentials SecretVar `json:"auth_credentials"`
+	// ForceSingleRegion pins requests to the configured region and disables automatic promotion of
+	// multi-region-only models to a multi-region pool endpoint (e.g. for provisioned throughput).
+	ForceSingleRegion bool `json:"force_single_region,omitempty"`
 }
 
 // NOTE: To use Vertex IAM role authentication, set AuthCredentials to empty string.
@@ -651,18 +694,49 @@ type BedrockKeyConfig struct {
 	ExternalID      *SecretVar `json:"external_id,omitempty"`
 	RoleSessionName *SecretVar `json:"session_name,omitempty"`
 
+	// ProjectID scopes the Bedrock Mantle sub-surface (OpenAI-compatible gpt-*/Gemma routing and the
+	// mantle catalog merge in ListModels) to a specific Bedrock project via the "OpenAI-Project"
+	// header. When empty, AWS routes to the account's default project. It has no effect on the
+	// Converse/bedrock-runtime paths, which are not project-scoped.
+	ProjectID *SecretVar `json:"project_id,omitempty"`
+
 	BatchS3Config *BatchS3Config `json:"batch_s3_config,omitempty"` // S3 bucket configuration for batch operations
 }
 
 // NOTE: To use Bedrock IAM role authentication, set both AccessKey and SecretKey to empty strings.
 // To use Bedrock API Key authentication, set Value in Key struct instead.
 
+// BedrockMantleKeyConfig represents the Bedrock Mantle-specific configuration. Mantle serves
+// Claude (native-Anthropic Messages), OpenAI-compatible, and Gemma models on the
+// bedrock-mantle.{region}.api.aws host. It carries only the credentials and region the mantle
+// endpoints use; it intentionally omits the inference-profile ARN and batch S3 config, which
+// apply only to the Converse/bedrock-runtime surface.
+type BedrockMantleKeyConfig struct {
+	AccessKey    SecretVar  `json:"access_key,omitempty"`    // AWS access key for SigV4 authentication
+	SecretKey    SecretVar  `json:"secret_key,omitempty"`    // AWS secret access key for SigV4 authentication
+	SessionToken *SecretVar `json:"session_token,omitempty"` // AWS session token for temporary credentials
+	Region       *SecretVar `json:"region,omitempty"`        // AWS region used to build the bedrock-mantle endpoint host
+	// IAM role for STS AssumeRole
+	RoleARN         *SecretVar `json:"role_arn,omitempty"`
+	ExternalID      *SecretVar `json:"external_id,omitempty"`
+	RoleSessionName *SecretVar `json:"session_name,omitempty"`
+
+	// ProjectID scopes inference and model listing to a specific Bedrock project. It is sent as the
+	// "OpenAI-Project" header on the OpenAI-compatible surface and the "anthropic-workspace-id"
+	// header on the native-Anthropic (Claude) surface. When empty, AWS routes to the account's
+	// default project.
+	ProjectID *SecretVar `json:"project_id,omitempty"`
+}
+
+// NOTE: To use Bedrock Mantle IAM role authentication, set both AccessKey and SecretKey to empty
+// strings. To use Bedrock Mantle API Key authentication, set Value in the Key struct instead.
+
 // VLLMKeyConfig represents the vLLM-specific key configuration.
 // It allows each key to target a different vLLM server URL and model name,
 // enabling per-key routing and round-robin load balancing across multiple vLLM instances.
 type VLLMKeyConfig struct {
 	URL       SecretVar `json:"url"`        // VLLM server base URL (required, supports env. prefix)
-	ModelName string `json:"model_name"` // Exact model name served on this VLLM instance (used for key selection)
+	ModelName string    `json:"model_name"` // Exact model name served on this VLLM instance (used for key selection)
 }
 
 // ReplicateKeyConfig represents the Replicate-specific key configuration.

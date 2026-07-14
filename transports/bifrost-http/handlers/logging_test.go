@@ -5,10 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/queryscope"
+	"github.com/maximhq/bifrost/framework/sidekiq"
 	loggingplugin "github.com/maximhq/bifrost/plugins/logging"
 	"github.com/valyala/fasthttp"
 	"gorm.io/gorm"
@@ -148,10 +152,151 @@ func TestGetDashboard(t *testing.T) {
 	}
 }
 
+func TestRecalculateLogCostsResolvesPeriodFilter(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	mgr := &dashboardLogManager{}
+	store := newFakeSidekiqStore()
+	runner := sidekiq.New(store, &mockLogger{}, 1, "")
+	h := &LoggingHandler{logManager: mgr}
+	h.SetSidekiqBackend(runner, store)
+
+	var req fasthttp.Request
+	req.Header.SetMethod(fasthttp.MethodPost)
+	req.SetRequestURI("/api/logs/recalculate-cost")
+	req.Header.SetContentType("application/json")
+	req.SetBodyString(`{"filters":{"period":"1h"}}`)
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Init(&req, &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 12345}, nil)
+
+	h.recalculateLogCosts(ctx)
+
+	// The job is enqueued for background processing, so the endpoint returns 202.
+	if got := ctx.Response.StatusCode(); got != fasthttp.StatusAccepted {
+		t.Fatalf("expected status 202, got %d: %s", got, string(ctx.Response.Body()))
+	}
+	// The period must be resolved into an explicit window before the job is built.
+	filters := mgr.lastRecalculateFilters
+	if filters.StartTime == nil || filters.EndTime == nil {
+		t.Fatalf("expected period to resolve start/end, got start=%v end=%v", filters.StartTime, filters.EndTime)
+	}
+	if !filters.EndTime.After(*filters.StartTime) {
+		t.Fatalf("expected end_time after start_time, got start=%s end=%s", filters.StartTime, filters.EndTime)
+	}
+	if store.createdCount() != 1 {
+		t.Fatalf("expected exactly one job to be enqueued, got %d", store.createdCount())
+	}
+}
+
+func TestRecalculateLogCostsRejectsDuplicateJob(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	mgr := &dashboardLogManager{}
+	store := newFakeSidekiqStore()
+	// Seed an in-flight job so the endpoint should refuse to start a second one.
+	store.inFlight = &tables.TableSidekiqJob{
+		ID:       "logs_recalculate_cost_existing",
+		Kind:     loggingplugin.CostRecalcJobKind,
+		Status:   tables.SidekiqStatusRunning,
+		Metadata: "{}",
+	}
+	runner := sidekiq.New(store, &mockLogger{}, 1, "")
+	h := &LoggingHandler{logManager: mgr}
+	h.SetSidekiqBackend(runner, store)
+
+	var req fasthttp.Request
+	req.Header.SetMethod(fasthttp.MethodPost)
+	req.SetRequestURI("/api/logs/recalculate-cost")
+	req.Header.SetContentType("application/json")
+	req.SetBodyString(`{"filters":{"period":"1h"}}`)
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Init(&req, &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 12345}, nil)
+
+	h.recalculateLogCosts(ctx)
+
+	if got := ctx.Response.StatusCode(); got != fasthttp.StatusConflict {
+		t.Fatalf("expected status 409, got %d: %s", got, string(ctx.Response.Body()))
+	}
+	if store.createdCount() != 0 {
+		t.Fatalf("expected no new job to be enqueued, got %d", store.createdCount())
+	}
+}
+
+// fakeSidekiqStore implements both sidekiq.Store (for the runner) and
+// handlers.SidekiqJobStore (for the endpoints), backed by an in-memory map.
+type fakeSidekiqStore struct {
+	mu       sync.Mutex
+	jobs     map[string]*tables.TableSidekiqJob
+	created  int
+	inFlight *tables.TableSidekiqJob
+}
+
+func newFakeSidekiqStore() *fakeSidekiqStore {
+	return &fakeSidekiqStore{jobs: make(map[string]*tables.TableSidekiqJob)}
+}
+
+func (s *fakeSidekiqStore) createdCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.created
+}
+
+func (s *fakeSidekiqStore) CreateSidekiqJob(ctx context.Context, job *tables.TableSidekiqJob) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.created++
+	copy := *job
+	s.jobs[job.ID] = &copy
+	return nil
+}
+
+func (s *fakeSidekiqStore) GetSidekiqJob(ctx context.Context, id string) (*tables.TableSidekiqJob, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if job, ok := s.jobs[id]; ok {
+		copy := *job
+		return &copy, nil
+	}
+	return nil, nil
+}
+
+func (s *fakeSidekiqStore) GetInFlightSidekiqJobByKind(ctx context.Context, kind string) (*tables.TableSidekiqJob, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.inFlight != nil && s.inFlight.Kind == kind {
+		copy := *s.inFlight
+		return &copy, nil
+	}
+	return nil, nil
+}
+
+func (s *fakeSidekiqStore) ClaimSidekiqJob(ctx context.Context, id, runnerID string, staleBefore time.Time) (bool, error) {
+	return true, nil
+}
+func (s *fakeSidekiqStore) HeartbeatSidekiqJob(ctx context.Context, id, runnerID string) (bool, error) {
+	return true, nil
+}
+func (s *fakeSidekiqStore) UpdateSidekiqJobProgress(ctx context.Context, id, runnerID, metadata string) error {
+	return nil
+}
+func (s *fakeSidekiqStore) CompleteSidekiqJob(ctx context.Context, id, runnerID, metadata string) error {
+	return nil
+}
+func (s *fakeSidekiqStore) FailSidekiqJob(ctx context.Context, id, runnerID, metadata, lastErr string) error {
+	return nil
+}
+func (s *fakeSidekiqStore) ListClaimableSidekiqJobs(ctx context.Context, staleBefore time.Time) ([]tables.TableSidekiqJob, error) {
+	return nil, nil
+}
+
 type dashboardLogManager struct {
-	failStats      bool
-	lastLLMFilters logstore.SearchFilters
-	lastMCPFilters logstore.MCPToolLogSearchFilters
+	failStats              bool
+	lastLLMFilters         logstore.SearchFilters
+	lastMCPFilters         logstore.MCPToolLogSearchFilters
+	lastRecalculateFilters logstore.SearchFilters
+	lastRecalculateContext chan context.Context
 }
 
 func (m *dashboardLogManager) GetLog(ctx context.Context, id string) (*logstore.Log, error) {
@@ -252,7 +397,22 @@ func (m *dashboardLogManager) GetDimensionLatencyHistogram(ctx context.Context, 
 func (m *dashboardLogManager) DeleteLog(ctx context.Context, id string) error     { return nil }
 func (m *dashboardLogManager) DeleteLogs(ctx context.Context, ids []string) error { return nil }
 func (m *dashboardLogManager) RecalculateCosts(ctx context.Context, filters *logstore.SearchFilters, limit int) (*loggingplugin.RecalculateCostResult, error) {
+	m.lastRecalculateFilters = *filters
+	return &loggingplugin.RecalculateCostResult{}, nil
+}
+func (m *dashboardLogManager) RecalculateCostsWithProgress(ctx context.Context, filters *logstore.SearchFilters, limit int, progress func(loggingplugin.RecalculateCostProgress)) (*loggingplugin.RecalculateCostResult, error) {
+	m.lastRecalculateFilters = *filters
+	if m.lastRecalculateContext != nil {
+		m.lastRecalculateContext <- ctx
+	}
 	return nil, nil
+}
+func (m *dashboardLogManager) BuildCostRecalcJobMeta(ctx context.Context, filters logstore.SearchFilters, missingCostOnly bool) (string, error) {
+	m.lastRecalculateFilters = filters
+	return "{}", nil
+}
+func (m *dashboardLogManager) RunCostRecalcJob(ctx context.Context, metaJSON string, checkpoint func(string) error) (string, error) {
+	return metaJSON, nil
 }
 func (m *dashboardLogManager) GetMCPToolLog(ctx context.Context, id string) (*logstore.MCPToolLog, error) {
 	return nil, nil

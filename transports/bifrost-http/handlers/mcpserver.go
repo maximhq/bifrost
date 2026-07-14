@@ -35,6 +35,14 @@ type MCPToolManager interface {
 	ExecuteResponsesMCPTool(ctx context.Context, toolCall *schemas.ResponsesToolMessage) (*schemas.ResponsesMessage, *schemas.BifrostError)
 }
 
+// VirtualKeyCache resolves a virtual key by its row ID from an in-memory cache,
+// letting the JWT auth path avoid a per-request database read. Satisfied by the
+// governance plugin's in-memory store. Optional: when nil (or a cache miss), the
+// handler falls back to the config store.
+type VirtualKeyCache interface {
+	GetVirtualKeyByID(ctx context.Context, vkID string) (*tables.TableVirtualKey, bool)
+}
+
 // MCPServerHandler manages HTTP requests for MCP server operations
 // It implements the MCP protocol over HTTP streaming (SSE) for MCP clients
 type MCPServerHandler struct {
@@ -42,11 +50,40 @@ type MCPServerHandler struct {
 	globalMCPServer *server.MCPServer
 	vkMCPServers    map[string]*server.MCPServer // Map of vk value -> mcp server
 	config          *lib.Config
-	mu              sync.RWMutex
+	// identityResolver scopes a user-mode /mcp request to the user's own tools by
+	// resolving a representative virtual key. Optional: when nil, user-mode
+	// requests fall back to the global server.
+	identityResolver OAuth2IdentityResolver
+	// vkCache serves by-ID virtual key lookups on the JWT auth path from the
+	// governance in-memory store, avoiding a per-request DB read. Optional: a nil
+	// cache or a miss falls back to the config store. See getVirtualKeyByID.
+	vkCache VirtualKeyCache
+	mu      sync.RWMutex
+}
+
+// getVirtualKeyByID resolves a virtual key by its row ID for the JWT auth path,
+// preferring the governance in-memory cache and falling back to the config store
+// on a miss (e.g. a key created since the cache last refreshed) or when no cache
+// is wired. The active-state check is left to the caller, matching both sources
+// (neither filters inactive keys by ID).
+func (h *MCPServerHandler) getVirtualKeyByID(ctx context.Context, vkID string) (*tables.TableVirtualKey, error) {
+	if h.vkCache != nil {
+		if vk, ok := h.vkCache.GetVirtualKeyByID(ctx, vkID); ok && vk != nil {
+			return vk, nil
+		}
+	}
+	if h.config.ConfigStore == nil {
+		return nil, fmt.Errorf("virtual key not found or inactive")
+	}
+	vk, err := h.config.ConfigStore.GetVirtualKey(ctx, vkID)
+	if err != nil || vk == nil {
+		return nil, fmt.Errorf("virtual key not found or inactive")
+	}
+	return vk, nil
 }
 
 // NewMCPServerHandler creates a new MCP server handler instance
-func NewMCPServerHandler(ctx context.Context, config *lib.Config, toolManager MCPToolManager) (*MCPServerHandler, error) {
+func NewMCPServerHandler(ctx context.Context, config *lib.Config, toolManager MCPToolManager, identityResolver OAuth2IdentityResolver, vkCache VirtualKeyCache) (*MCPServerHandler, error) {
 	if config == nil {
 		return nil, fmt.Errorf("config is required")
 	}
@@ -62,10 +99,12 @@ func NewMCPServerHandler(ctx context.Context, config *lib.Config, toolManager MC
 	)
 
 	handler := &MCPServerHandler{
-		toolManager:     toolManager,
-		globalMCPServer: globalMCPServer,
-		config:          config,
-		vkMCPServers:    make(map[string]*server.MCPServer),
+		toolManager:      toolManager,
+		globalMCPServer:  globalMCPServer,
+		config:           config,
+		vkMCPServers:     make(map[string]*server.MCPServer),
+		identityResolver: identityResolver,
+		vkCache:          vkCache,
 	}
 
 	// Register per-request tool filter so x-bf-mcp-include-clients and x-bf-mcp-include-tools are respected on tools/list
@@ -78,35 +117,48 @@ func NewMCPServerHandler(ctx context.Context, config *lib.Config, toolManager MC
 		return nil, fmt.Errorf("failed to sync all MCP servers: %w", err)
 	}
 
+	// Warm the signing-key cache when OAuth discovery is enabled: this creates the
+	// key if absent and populates the cache, so the first JWKS/issuance/verify
+	// request need not pay the load. This is the single startup warm path for both
+	// OSS and enterprise. Best-effort — the verify path lazily loads it on a miss —
+	// but a failure is logged since a persistent one means OAuth cannot work.
+	if config.ClientConfig.IsMCPOAuthDiscoveryEnabled() {
+		if _, err := handler.config.GetOAuth2SigningKey(ctx); err != nil {
+			logger.Warn("mcp: failed to warm oauth2 signing key: %v", err)
+		}
+	}
+
 	return handler, nil
 }
 
-// RegisterRoutes registers the MCP server route
+// RegisterRoutes registers the MCP server routes.
 func (h *MCPServerHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
 	// MCP server endpoint - supports both POST (JSON-RPC) and GET (SSE)
 	r.POST("/mcp", lib.ChainMiddlewares(h.handleMCPServer, middlewares...))
 	r.GET("/mcp", lib.ChainMiddlewares(h.handleMCPServerSSE, middlewares...))
-	// Bifrost is NOT an OAuth authorization server — auth is via the
-	// x-bf-vk / x-bf-mcp-session-id headers or upstream SSO. Claude Code's
-	// MCP client may proactively POST `/register` (RFC 7591 DCR) on
-	// `claude mcp add` and log "SDK auth failed: ..." when the probe fails,
-	// even though the underlying `/mcp` connection works fine. That warning
-	// is a known Claude Code bug — see
-	// https://github.com/anthropics/claude-code/issues/46640 — and is safe
-	// to ignore. We intentionally do NOT implement an OAuth stub.
 }
 
 func (h *MCPServerHandler) handleMCPServer(ctx *fasthttp.RequestCtx) {
-	mcpServer, err := h.getMCPServerForRequest(ctx)
+	authResult, err := h.getMCPServerForRequest(ctx)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusUnauthorized, err.Error())
 		return
 	}
 
-	// Convert context
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.config)
 	bifrostCtx.SetValue(schemas.BifrostContextKeyIsMCPGateway, true)
 	defer cancel()
+
+	// Inject JWT identity into BifrostContext so downstream resolvers
+	// (per-user OAuth, governance, tool-group filtering) see the same context
+	// keys as header-based auth paths.
+	if authResult.jwtClaims != nil {
+		if injErr := injectJWTContext(bifrostCtx, authResult.jwtClaims, authResult.jwtVK); injErr != nil {
+			SendError(ctx, fasthttp.StatusUnauthorized, injErr.Error())
+			return
+		}
+	}
+	mcpServer := authResult.mcpServer
 
 	// Use mcp-go server to handle the request
 	// HandleMessage processes JSON-RPC messages and returns appropriate responses
@@ -132,12 +184,11 @@ func (h *MCPServerHandler) handleMCPServer(ctx *fasthttp.RequestCtx) {
 
 // handleMCPServerSSE handles GET requests for MCP Server-Sent Events streaming
 func (h *MCPServerHandler) handleMCPServerSSE(ctx *fasthttp.RequestCtx) {
-	_, err := h.getMCPServerForRequest(ctx)
+	authResult, err := h.getMCPServerForRequest(ctx)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusUnauthorized, err.Error())
 		return
 	}
-
 	// Signal to transport-plugin and tracing middlewares that this is a streaming
 	// response. Without this, fasthttpResponseToHTTPResponse calls ctx.Response.Body()
 	// during post-hook processing, which materializes the SSE body stream and
@@ -165,6 +216,14 @@ func (h *MCPServerHandler) handleMCPServerSSE(ctx *fasthttp.RequestCtx) {
 	// Convert context
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.config)
 	bifrostCtx.SetValue(schemas.BifrostContextKeyIsMCPGateway, true)
+
+	if authResult.jwtClaims != nil {
+		if injErr := injectJWTContext(bifrostCtx, authResult.jwtClaims, authResult.jwtVK); injErr != nil {
+			cancel()
+			SendError(ctx, fasthttp.StatusUnauthorized, injErr.Error())
+			return
+		}
+	}
 
 	// Use SSEStreamReader to bypass fasthttp's internal pipe batching
 	reader := lib.NewSSEStreamReader()
@@ -289,7 +348,7 @@ func (h *MCPServerHandler) SyncAllMCPServers(ctx context.Context) error {
 func (h *MCPServerHandler) SyncVKMCPServer(vk *tables.TableVirtualKey) *server.MCPServer {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	vkServer, ok := h.vkMCPServers[vk.Value]
+	vkServer, ok := h.vkMCPServers[vk.Value.GetValue()]
 	if !ok {
 		// Add new server
 		vkServer = server.NewMCPServer(
@@ -298,11 +357,11 @@ func (h *MCPServerHandler) SyncVKMCPServer(vk *tables.TableVirtualKey) *server.M
 			server.WithToolCapabilities(true),
 		)
 		server.WithToolFilter(h.makeIncludeClientsFilter())(vkServer)
-		h.vkMCPServers[vk.Value] = vkServer
+		h.vkMCPServers[vk.Value.GetValue()] = vkServer
 	}
 	availableTools, toolFilter := h.fetchToolsForVK(vk)
 	h.syncServer(vkServer, availableTools, toolFilter)
-	h.vkMCPServers[vk.Value] = vkServer
+	h.vkMCPServers[vk.Value.GetValue()] = vkServer
 	logger.Debug("Synced MCP server for virtual key '%s' with %d tools", vk.Name, len(availableTools))
 	return vkServer
 }
@@ -366,10 +425,14 @@ func (h *MCPServerHandler) syncServer(server *server.MCPServer, availableTools [
 						url = authReq.SubmitURL
 						action = "submit the required headers"
 					}
-					return mcp.NewToolResultError(fmt.Sprintf(
+					message := fmt.Sprintf(
 						"Authentication required for %s. Open this URL to %s: %s",
 						authReq.MCPClientName, action, url,
-					)), nil
+					)
+					if schemas.MCPAuthURLHasTempTokenFragment(url) {
+						message += schemas.MCPAuthTempTokenReminder
+					}
+					return mcp.NewToolResultError(message), nil
 				}
 				return mcp.NewToolResultError(fmt.Sprintf("Tool execution failed: %v", bifrost.GetErrorMessage(err))), nil
 			}
@@ -546,33 +609,251 @@ func (h *MCPServerHandler) makeIncludeClientsFilter() server.ToolFilterFunc {
 
 // Utility methods
 
-func (h *MCPServerHandler) getMCPServerForRequest(ctx *fasthttp.RequestCtx) (*server.MCPServer, error) {
+// mcpAuthResult carries the outcome of /mcp request authentication.
+type mcpAuthResult struct {
+	mcpServer *server.MCPServer
+	jwtClaims *jwtMCPClaims           // non-nil when authenticated via JWT
+	jwtVK     *tables.TableVirtualKey // non-nil when jwt bf_mode=vk
+}
+
+// getMCPServerForRequest authenticates the /mcp request and returns the
+// appropriate scoped MCP server alongside any JWT claims that must be injected
+// into the BifrostContext after it is created.
+//
+// Authentication priority:
+//  1. JWT Bearer token (when MCPServerAuthMode is both or oauth)
+//  2. VK / header credentials (when MCPServerAuthMode is headers or both)
+//  3. Anonymous access (when EnforceAuthOnInference is false)
+//
+// When MCPServerAuthMode is oauth (strict), header credentials are rejected.
+func (h *MCPServerHandler) getMCPServerForRequest(ctx *fasthttp.RequestCtx) (*mcpAuthResult, error) {
 	h.config.Mu.RLock()
-	enforceVK := h.config.ClientConfig.EnforceAuthOnInference
+	enforceAuth := h.config.ClientConfig.EnforceAuthOnInference
+	authMode := h.config.ClientConfig.MCPServerAuthMode
 	h.config.Mu.RUnlock()
 
+	discoveryEnabled := authMode == tables.MCPServerAuthModeBoth || authMode == tables.MCPServerAuthModeOAuth
+
+	// --- Pre-authenticated user path ---
+	// An upstream auth layer that authenticated the caller as a user stamps the
+	// user id onto the request context. In headers/both modes, scope the request
+	// to that user's virtual key — the same representative-VK scoping a user-mode
+	// token gets — so a user authenticated by a bearer token is treated like a
+	// virtual key. oauth-strict accepts only Bifrost-issued tokens and is excluded.
+	if h.identityResolver != nil &&
+		(authMode == tables.MCPServerAuthModeHeaders || authMode == tables.MCPServerAuthModeBoth) {
+		if userID, _ := ctx.UserValue(schemas.BifrostContextKeyUserID).(string); userID != "" {
+			// The user identity is the sole credential; reject a stray virtual key
+			// header so it is not also attributed to the request.
+			if headerVK := getVKFromRequest(ctx); headerVK != "" {
+				return nil, fmt.Errorf("conflicting credentials: a user token and a virtual key header were both provided; send only one")
+			}
+			vkID, err := h.identityResolver.ResolveUserVirtualKey(ctx, userID)
+			if err != nil {
+				return nil, err
+			}
+			if vkID == "" {
+				return nil, fmt.Errorf("no MCP access grant for the authenticated user")
+			}
+			vk, err := h.getVirtualKeyByID(ctx, vkID)
+			if err != nil {
+				return nil, err
+			}
+			if !vk.IsActiveValue() {
+				return nil, fmt.Errorf("virtual key is inactive")
+			}
+			vkServer, err := h.ensureVKMCPServerByValue(ctx, vk.Value.GetValue())
+			if err != nil {
+				return nil, err
+			}
+			return &mcpAuthResult{mcpServer: vkServer}, nil
+		}
+	}
+
+	// --- JWT path ---
+	if rawJWT := extractBearerJWT(ctx); rawJWT != "" && discoveryEnabled {
+		// An OAuth token is the sole identity for the request. Reject when a
+		// header-based virtual key (x-bf-vk / x-api-key / x-goog-api-key / Bearer vk) is also
+		// presented: mixing credential sources is ambiguous, and for user- and
+		// session-mode tokens — which carry no virtual key — a stray header VK
+		// would otherwise leak onto the context and be attributed to the request.
+		if headerVK := getVKFromRequest(ctx); headerVK != "" {
+			ctx.Response.Header.Set("WWW-Authenticate", wwwAuthenticateValue(ctx, h.config))
+			return nil, fmt.Errorf("conflicting credentials: an OAuth token and a virtual key header were both provided; send only the OAuth token")
+		}
+
+		// Load the signing key (cached for the process lifetime). A failure here is
+		// an infrastructure fault — the config store or key is unavailable — not a
+		// bad token. Log the detail for operators and return a clean message so it
+		// is never mislabeled as the client's token being invalid.
+		signingKey, err := h.config.GetOAuth2SigningKey(ctx)
+		if err != nil {
+			logger.Error("mcp: failed to load oauth2 signing key for jwt verification: %v", err)
+			ctx.Response.Header.Set("WWW-Authenticate", wwwAuthenticateValue(ctx, h.config))
+			return nil, fmt.Errorf("signing key unavailable")
+		}
+		claims, err := verifyMCPJWT(ctx, rawJWT, h.config, signingKey)
+		if err != nil {
+			if discoveryEnabled {
+				ctx.Response.Header.Set("WWW-Authenticate", wwwAuthenticateValue(ctx, h.config))
+			}
+			// Forward verifyMCPJWT's error verbatim: it already labels a genuine
+			// token failure ("invalid token: ...") precisely, while its config
+			// faults ("signing key unavailable", ...) must not be mislabeled as
+			// the client's token being bad.
+			return nil, err
+		}
+
+		// For user-mode JWTs, if a dashboard session is present on the request
+		// (BifrostContextKeyUserID, set by the auth middleware) it must match
+		// bf_sub — a mismatch means the session and the token disagree on
+		// identity. Its absence is not fatal: the JWT itself proves identity, and
+		// initiating a new upstream per-user flow is verified later at the
+		// session-bearing UI step (flowStart → canAccessUserFlow).
+		if schemas.MCPAuthMode(claims.BfMode) == schemas.MCPAuthModeUser {
+			sessionUserID, _ := ctx.UserValue(schemas.BifrostContextKeyUserID).(string)
+			if sessionUserID != "" && sessionUserID != claims.Subject {
+				ctx.Response.Header.Set("WWW-Authenticate", wwwAuthenticateValue(ctx, h.config))
+				return nil, fmt.Errorf("session user does not match the authenticated token")
+			}
+		}
+
+		// Session-mode tokens carry no verified identity. When the operator
+		// requires authentication (EnforceAuthOnInference=true), session-mode
+		// JWT requests are rejected — the session itself is not deleted, but
+		// this endpoint becomes inaccessible until the client re-authenticates
+		// with a VK or user-mode token.
+		if schemas.MCPAuthMode(claims.BfMode) == schemas.MCPAuthModeSession && enforceAuth {
+			ctx.Response.Header.Set("WWW-Authenticate", wwwAuthenticateValue(ctx, h.config))
+			return nil, fmt.Errorf("authentication required; session-mode tokens are not accepted when authentication is enforced - re-authenticate with a virtual key or user identity")
+		}
+
+		res := &mcpAuthResult{jwtClaims: claims}
+
+		// For vk mode, look up the VK by ID to get the scoped server and value.
+		if schemas.MCPAuthMode(claims.BfMode) == schemas.MCPAuthModeVK {
+			// Live virtual-key identity cutoff: when virtual-key identity has been
+			// disabled, reject vk-mode tokens at request time rather than waiting
+			// for the access token to expire and its refresh to be denied. The
+			// DisableVKIdentity flag is read first so the common (flag-off) path
+			// stays a single lock-guarded bool — IsUserModeAvailable is consulted
+			// only when the flag is set. Gated identically to the refresh cutoff and
+			// the consent flow's availableModes so it can never fire where vk is
+			// still an offered authentication path.
+			if oauth2ServerCfg(h.config).DisableVKIdentity &&
+				h.identityResolver != nil && h.identityResolver.IsUserModeAvailable() {
+				ctx.Response.Header.Set("WWW-Authenticate", wwwAuthenticateValue(ctx, h.config))
+				return nil, fmt.Errorf("virtual-key identity is no longer accepted; re-authenticate")
+			}
+			vk, err := h.getVirtualKeyByID(ctx, claims.Subject)
+			if err != nil {
+				return nil, err
+			}
+			if !vk.IsActiveValue() {
+				return nil, fmt.Errorf("virtual key is inactive")
+			}
+			res.jwtVK = vk
+			vkServer, serverErr := h.ensureVKMCPServerByValue(ctx, vk.Value.GetValue())
+			if serverErr != nil {
+				return nil, serverErr
+			}
+			res.mcpServer = vkServer
+		} else if scopedServer, scopedErr := h.userScopedServer(ctx, claims); scopedErr != nil {
+			return nil, scopedErr
+		} else if scopedServer != nil {
+			res.mcpServer = scopedServer
+		} else {
+			res.mcpServer = h.globalMCPServer
+		}
+		return res, nil
+	}
+
+	// --- oauth strict mode: reject non-JWT requests ---
+	if authMode == tables.MCPServerAuthModeOAuth {
+		ctx.Response.Header.Set("WWW-Authenticate", wwwAuthenticateValue(ctx, h.config))
+		return nil, fmt.Errorf("this server requires OAuth JWT authentication; header credentials are not accepted in oauth mode")
+	}
+
+	// --- VK / header credential path ---
 	vk := getVKFromRequest(ctx)
 
 	// EnforceAuth=false: anonymous access to the global (un-scoped) MCP server
 	// is allowed in dev mode. EnforceAuth=true: VK header is mandatory.
-	if !enforceVK && vk == "" {
-		return h.globalMCPServer, nil
+	if !enforceAuth && vk == "" {
+		// Anonymous access allowed in dev mode.
+		return &mcpAuthResult{mcpServer: h.globalMCPServer}, nil
 	}
 
 	if vk == "" {
-		return nil, fmt.Errorf("virtual key required to access mcp server; set one of x-bf-vk, Authorization: Bearer <vk>, or x-api-key in your MCP client config")
+		if discoveryEnabled {
+			ctx.Response.Header.Set("WWW-Authenticate", wwwAuthenticateValue(ctx, h.config))
+		}
+		return nil, fmt.Errorf("virtual key required to access mcp server; set one of x-bf-vk, Authorization: Bearer <vk>, x-api-key, or x-goog-api-key in your MCP client config")
 	}
 
-	// Fast path: a per-VK server already exists in the cache.
+	vkServer, err := h.ensureVKMCPServerByValue(ctx, vk)
+	if err != nil {
+		return nil, err
+	}
+	return &mcpAuthResult{mcpServer: vkServer}, nil
+}
+
+// userScopedServer returns a per-VK MCP server scoped to a user-mode token's
+// own tools, or nil (with nil error) when no scoping applies — no resolver, a
+// non-user-mode token, or a user with no virtual key — so the caller falls back
+// to the global server.
+//
+// User-mode tokens carry a user identity but no virtual key of their own. The
+// resolver maps the user to a representative virtual key (any one of the user's
+// equivalent keys), letting this reuse the per-VK scoped server instead of
+// serving the global (unscoped) one. Session-mode tokens have no identity to
+// scope by and return nil here.
+func (h *MCPServerHandler) userScopedServer(ctx *fasthttp.RequestCtx, claims *jwtMCPClaims) (*server.MCPServer, error) {
+	if h.identityResolver == nil || h.config.ConfigStore == nil {
+		return nil, nil
+	}
+	if schemas.MCPAuthMode(claims.BfMode) != schemas.MCPAuthModeUser {
+		return nil, nil
+	}
+	// Reject deleted or deactivated users at request time, mirroring the vk-mode
+	// IsActiveValue() cutoff, rather than letting an already-issued access token
+	// keep working until it expires. Placed before the no-virtual-key early
+	// return below so a removed user cannot fall through to the global server.
+	if active, err := h.identityResolver.IsUserActive(ctx, claims.Subject); err != nil {
+		return nil, fmt.Errorf("failed to verify user: %w", err)
+	} else if !active {
+		return nil, fmt.Errorf("user is no longer active")
+	}
+	vkID, err := h.identityResolver.ResolveUserVirtualKey(ctx, claims.Subject)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve virtual key for user: %w", err)
+	}
+	if vkID == "" {
+		return nil, nil
+	}
+	// Mirror the vk-mode branch: resolve the representative VK by ID to get its
+	// value and active state, then reuse the shared per-VK server cache.
+	vk, err := h.getVirtualKeyByID(ctx, vkID)
+	if err != nil {
+		return nil, err
+	}
+	if !vk.IsActiveValue() {
+		return nil, fmt.Errorf("virtual key is inactive")
+	}
+	return h.ensureVKMCPServerByValue(ctx, vk.Value.GetValue())
+}
+
+// ensureVKMCPServerByValue returns the per-VK server from cache or creates it.
+func (h *MCPServerHandler) ensureVKMCPServerByValue(ctx context.Context, vkValue string) (*server.MCPServer, error) {
 	h.mu.RLock()
-	vkServer, ok := h.vkMCPServers[vk]
+	s, ok := h.vkMCPServers[vkValue]
 	h.mu.RUnlock()
+	// Fast path: a per-VK server already exists in the cache.
 	if ok {
-		return vkServer, nil
+		return s, nil
 	}
-
 	// Slow path: build the per-VK server lazily on first use.
-	return h.ensureVKMCPServer(ctx, vk)
+	return h.ensureVKMCPServer(ctx, vkValue)
 }
 
 // ensureVKMCPServer lazily builds and caches the MCP server for a virtual key on
@@ -588,12 +869,29 @@ func (h *MCPServerHandler) ensureVKMCPServer(ctx context.Context, vkValue string
 	if err != nil || vk == nil {
 		return nil, fmt.Errorf("virtual key not found")
 	}
+	// GetVirtualKeyByValue does not filter inactive keys, so fail closed here:
+	// a deactivated key must not yield (or cache) a usable MCP server. This is
+	// the single chokepoint for both the header path and the JWT vk path.
+	if !vk.IsActiveValue() {
+		return nil, fmt.Errorf("virtual key is inactive")
+	}
 	// SyncVKMCPServer creates (or refreshes) and caches the server under the
 	// handler write lock, returning the live server so a concurrent
 	// SyncAllMCPServers cannot wipe the map out from under us before we read it.
 	return h.SyncVKMCPServer(vk), nil
 }
 
+// getVKFromRequest extracts a virtual key from the request headers, checking
+// each supported header in priority order and returning the first match:
+//  1. x-bf-vk        — taken verbatim (no prefix check)
+//  2. Authorization  — "Bearer <vk>", where <vk> must start with the VK prefix
+//  3. x-api-key      — must start with the VK prefix
+//  4. x-goog-api-key — must start with the VK prefix
+//
+// The prefix gate (governance.VirtualKeyPrefix) on the latter three lets real
+// provider credentials pass through untouched, so only Bifrost virtual keys are
+// picked up here. This header set mirrors the inference path, keeping MCP and
+// inference at parity. Returns "" when no header carries a virtual key.
 func getVKFromRequest(ctx *fasthttp.RequestCtx) string {
 	if value := strings.TrimSpace(string(ctx.Request.Header.Peek(string(schemas.BifrostContextKeyVirtualKey)))); value != "" {
 		return value
@@ -612,6 +910,12 @@ func getVKFromRequest(ctx *fasthttp.RequestCtx) string {
 	if apiKey := strings.TrimSpace(string(ctx.Request.Header.Peek("x-api-key"))); apiKey != "" {
 		if strings.HasPrefix(strings.ToLower(apiKey), governance.VirtualKeyPrefix) {
 			return apiKey
+		}
+	}
+
+	if googAPIKey := strings.TrimSpace(string(ctx.Request.Header.Peek("x-goog-api-key"))); googAPIKey != "" {
+		if strings.HasPrefix(strings.ToLower(googAPIKey), governance.VirtualKeyPrefix) {
+			return googAPIKey
 		}
 	}
 

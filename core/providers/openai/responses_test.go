@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -2017,4 +2018,140 @@ func TestToOpenAIResponsesRequest_OpenRouterServerToolsPreserved(t *testing.T) {
 			t.Fatalf("expected openrouter: tools to be stripped for OpenAI, got %+v", result.Tools)
 		}
 	})
+}
+
+// Reverse-direction guard for the Responses path: a Gemini thoughtSignature embedded in
+// call_id ("<baseID>_ts_<sig>") must be stripped to the base ID before reaching OpenAI,
+// which rejects input[].id over 64 chars. The call and its output strip identically so
+// they still pair, and the caller's input is left intact.
+func TestToOpenAIResponsesRequest_StripsThoughtSignatureFromCallID(t *testing.T) {
+	// "_ts_" is the separator used by the native Gemini converters to embed signatures.
+	embeddedID := "search_ts_" + strings.Repeat("A", 6000)
+
+	req := &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o",
+		Input: []schemas.ResponsesMessage{
+			{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID:    schemas.Ptr(embeddedID),
+					Name:      schemas.Ptr("search"),
+					Arguments: schemas.Ptr("{}"),
+				},
+			},
+			{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: schemas.Ptr(embeddedID),
+					Output: &schemas.ResponsesToolMessageOutputStruct{
+						ResponsesToolCallOutputStr: schemas.Ptr("result"),
+					},
+				},
+			},
+		},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	defer cancel()
+	result := ToOpenAIResponsesRequest(ctx, req)
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+
+	out := result.Input.OpenAIResponsesRequestInputArray
+	callID := *out[0].ResponsesToolMessage.CallID
+	outputCallID := *out[1].ResponsesToolMessage.CallID
+
+	if callID != "search" {
+		t.Errorf("function_call id: got %q, want %q", callID, "search")
+	}
+	if len(callID) > 64 {
+		t.Errorf("function_call id exceeds OpenAI's 64-char limit: %d chars", len(callID))
+	}
+	if outputCallID != callID {
+		t.Errorf("function_call_output id %q must match function_call id %q", outputCallID, callID)
+	}
+
+	// The caller's history must be untouched so a later Gemini turn can recover the signature.
+	if *req.Input[0].ResponsesToolMessage.CallID != embeddedID {
+		t.Error("original function_call call_id was mutated")
+	}
+	if *req.Input[1].ResponsesToolMessage.CallID != embeddedID {
+		t.Error("original function_call_output call_id was mutated")
+	}
+}
+
+func TestToOpenAIResponsesRequest_OmitsRoleFromNonMessageInputItems(t *testing.T) {
+	assistant := schemas.ResponsesInputMessageRoleAssistant
+	user := schemas.ResponsesInputMessageRoleUser
+	messageType := schemas.ResponsesMessageTypeMessage
+	functionCallType := schemas.ResponsesMessageTypeFunctionCall
+	req := &schemas.BifrostResponsesRequest{
+		Model: "gpt-4o",
+		Input: []schemas.ResponsesMessage{
+			{
+				Type:    &messageType,
+				Role:    &user,
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+			},
+			{
+				Type: &functionCallType,
+				Role: &assistant,
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID:    schemas.Ptr("call_123"),
+					Name:      schemas.Ptr("search"),
+					Arguments: schemas.Ptr(`{"query":"bifrost"}`),
+				},
+			},
+		},
+	}
+
+	converted := ToOpenAIResponsesRequest(nil, req)
+	if converted == nil {
+		t.Fatal("ToOpenAIResponsesRequest returned nil")
+	}
+	wire, err := sonic.Marshal(converted)
+	if err != nil {
+		t.Fatalf("marshal wire request: %v", err)
+	}
+
+	var payload struct {
+		Input []json.RawMessage `json:"input"`
+	}
+	if err := sonic.Unmarshal(wire, &payload); err != nil {
+		t.Fatalf("unmarshal wire request: %v", err)
+	}
+
+	items := make(map[string]map[string]json.RawMessage, len(payload.Input))
+	for _, raw := range payload.Input {
+		var item map[string]json.RawMessage
+		if err := sonic.Unmarshal(raw, &item); err != nil {
+			t.Fatalf("unmarshal input item: %v", err)
+		}
+		var itemType string
+		if err := sonic.Unmarshal(item["type"], &itemType); err != nil {
+			t.Fatalf("unmarshal input item type: %v", err)
+		}
+		items[itemType] = item
+	}
+
+	message := items["message"]
+	var messageRole string
+	if err := sonic.Unmarshal(message["role"], &messageRole); err != nil || messageRole != "user" {
+		t.Errorf("message role: got %q, want %q (err=%v)", messageRole, "user", err)
+	}
+	functionCall := items["function_call"]
+	if _, ok := functionCall["role"]; ok {
+		t.Error("function_call role present in wire request")
+	}
+	for field, want := range map[string]string{"call_id": "call_123", "name": "search", "arguments": `{"query":"bifrost"}`} {
+		var got string
+		if err := sonic.Unmarshal(functionCall[field], &got); err != nil || got != want {
+			t.Errorf("function_call %s: got %q, want %q (err=%v)", field, got, want, err)
+		}
+	}
+	if req.Input[0].Role == nil || req.Input[1].Role == nil {
+		t.Error("original input roles were mutated")
+	}
 }

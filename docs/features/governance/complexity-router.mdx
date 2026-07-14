@@ -6,14 +6,14 @@ icon: "sliders"
 
 ## Overview
 
-The Complexity Router analyzes each incoming request and assigns it one of four tiers - **Simple**, **Medium**, **Complex**, or **Reasoning** - based on the content of the latest user message, conversation history, and system prompt. The result is exposed as a flat string variable (`complexity_tier`) in Bifrost's CEL routing engine, so you can write routing rules like:
+The Complexity Router analyzes incoming requests and assigns a tier - **Simple**, **Medium**, **Complex**, or **Reasoning** - when the latest user message contains a clear complexity signal. The result is exposed as a flat string variable (`complexity_tier`) in Bifrost's CEL routing engine, so you can write routing rules like:
 
 ```cel
 complexity_tier == "REASONING"
 complexity_tier in ["COMPLEX", "REASONING"]
 ```
 
-This lets you route simple greetings to a fast, cheap model and deep reasoning tasks to a frontier model — automatically, with no changes to your application code. The algorithm is fast and deterministic: it runs entirely in-process using pre-compiled keyword matching, adds less than 1 ms to request latency, and makes zero external calls.
+This lets you route simple greetings to a fast, cheap model and deep reasoning tasks to a frontier model — automatically, with no changes to your application code. When the latest user message does not match a configured signal, Bifrost leaves `complexity_tier` unknown and keeps the request on its existing routing path instead of guessing. The algorithm is fast and deterministic: it runs entirely in-process using pre-compiled literal and stemmed keyword matching, adds less than 1 ms to request latency, and makes zero external calls.
 
 ![Complexity Router Configuration](../../media/architecture-complexity-router.png)
 
@@ -23,40 +23,32 @@ This lets you route simple greetings to a fast, cheap model and deep reasoning t
 
 ### Scoring dimensions
 
-Every request produces a score between 0.0 and 1.0. The analyzer starts with a weighted score across five dimensions detected by scanning the last user message:
+Classified requests produce a score between 0.0 and 1.0. The analyzer starts with a weighted score across five dimensions detected by scanning the last user message:
 
 | Dimension | Weight | What it measures |
 |---|---|---|
 | Code presence | 30% | Code, debugging, and programming artifacts |
 | Reasoning markers | 25% | Analytical and multi-step reasoning language |
 | Technical terms | 25% | Architecture, infra, and operational terminology |
-| Token count | 10% | Prompt length (longer → higher score) |
-| Simple indicators | −5% | Greetings, trivial queries (dampener, subtracted) |
+| Word count | 10% | Prompt length measured by whitespace-delimited words, used only after a signal or continuation is detected |
+| Simple indicators | -5% | Greetings, definitions, translation requests, and other straightforward asks |
 
-The simple indicators dimension subtracts from the score - it acts as a dampener, not a floor. This means a short, conversational prompt like "hi, how are you?" can reach a near-zero score even if it technically contains other weak signals. The dampener is reduced to near-zero when the prompt is long (≥30 words) or contains two or more other strong signals, so it does not suppress genuinely complex requests.
+Simple indicators are a small downward nudge, not an override. A simple-only request can classify as **Simple** with a `0.00` score, while a request that also has strong code, technical, or reasoning signals can still rise into a higher tier.
 
 ### System prompt contribution
 
-The system prompt is scanned for code, technical, and simple signals, and its contribution is weighted at **25% of the user-message signal** for those three dimensions. This provides soft lexical context — for example, a system prompt describing a coding assistant nudges code scores up — but it never drives the token count, reasoning markers, or tier override.
+When the latest user message already has a code, technical, or reasoning signal, the system prompt is scanned for code and technical signals. Its contribution is weighted at **25% of the user-message signal** for those dimensions. This provides soft lexical context — for example, a system prompt describing a coding assistant nudges code scores up — but it never creates a classification by itself.
 
 ### Conversation context blending
 
-For multi-turn conversations, the score blends the current message with history from up to the last 10 user turns (recency-weighted: earlier turns count less):
+For multi-turn conversations, prior context is used only when the latest user message has its own code, technical, or reasoning signal, or when the latest message is a configured continuation phrase such as "do it", "try again", "continue", or "go ahead" and the prior-context score is at least 0.20. In those cases, the score blends the current message with history from up to the last 10 user turns (recency-weighted: earlier turns count less):
 
 - **Default blend:** 60% last message + 40% conversation history
-- **Referential follow-up blend:** 35% last message + 65% conversation history
+- **Continuation blend:** 35% last message + 65% conversation history
 
-A message is treated as a referential follow-up when it is short (≤6 words), contains phrases like "do it", "retry", "continue", or "go ahead", and the conversation history has a meaningful complexity score. In that case, the follow-up inherits most of its score from prior context rather than being classified as Simple on its own.
+An explicit continuation phrase inherits most of its score from prior context rather than being classified on its own. A low-signal latest message that is not an explicit continuation does not inherit old context; `complexity_tier` remains unknown and routing falls through to the original model.
 
 The final score is `max(last_message_score, weighted_blend)` — the current message always sets a floor.
-
-### Output complexity floor
-
-Some requests are hard not because the reasoning is especially deep, but because the output being asked for is broad or exhaustive. Prompts like "list every AWS service and explain each one with examples" can receive a built-in score floor even when the normal weighted score is only moderate.
-
-The analyzer looks for internal markers such as exhaustive enumeration ("list every", "all possible"), comprehensiveness cues ("comprehensive", "in detail"), and elaboration asks ("explain each", "with examples"). Limiting qualifiers like "briefly", "top 5", or "keep it short" reduce this boost.
-
-This output-complexity floor is built in — it is not currently exposed as a user-configurable keyword list.
 
 ### Reasoning override
 
@@ -175,7 +167,7 @@ curl -X POST http://localhost:8080/api/governance/complexity-analyzer-config/res
 | `keywords.code_keywords` | string[] | Yes | built-in defaults | Signals for code/debugging/programming requests |
 | `keywords.reasoning_keywords` | string[] | Yes | built-in defaults | Strong reasoning triggers — matches can force the Reasoning tier |
 | `keywords.technical_keywords` | string[] | Yes | built-in defaults | Architecture/infra/operations signals |
-| `keywords.simple_keywords` | string[] | Yes | built-in defaults | Phrases that dampen the complexity score |
+| `keywords.simple_keywords` | string[] | Yes | built-in defaults | Phrases that slightly reduce complexity and classify straightforward requests |
 
 <Note>
 Each keyword list requires at least one entry. Keywords are normalized to lowercase and deduplicated on save. Changes are hot-reloaded with no restart required.
@@ -193,7 +185,7 @@ When `governance.complexity_analyzer_config` is present in `config.json`, the de
 Each list controls a different part of the scoring signal. Understanding what they do helps you tune routing for your domain.
 
 <Note>
-The default keyword lists are tuned for common request patterns and are a good starting point for most deployments. For domain-specific traffic, add or remove keywords based on the prompts your users actually send so the tiers match your routing strategy.
+The default keyword lists are tuned for common request patterns and are a good starting point for most deployments. For domain-specific traffic, add or remove keywords based on the prompts your users actually send so the tiers match your routing strategy. Bifrost stores and displays the exact keywords you configure; internally, normal word-based keywords and phrases also match common word forms, such as `debug`, `debugging`, and `debugged`. Punctuation-heavy terms such as `ci/cd` still use literal matching.
 </Note>
 
 <Tabs group="complexity-keywords">
@@ -211,7 +203,7 @@ Type a keyword or phrase and press **Enter** to add it. Click the × on any tag 
 | **Code keywords** | Each match contributes to the Code dimension (30% weight) | Add domain-specific tooling, frameworks, or file types your users frequently mention |
 | **Reasoning keywords** | Strong triggers — two or more matches, or one match alongside strong code/technical signals, forces the Reasoning tier regardless of score | Narrow this list to the phrases that truly demand your most capable model. The default list is intentionally conservative. |
 | **Technical keywords** | Each match contributes to the Technical dimension (25% weight) | Add industry-specific jargon (e.g. "SOC 2", "HIPAA", "proration") relevant to your product |
-| **Simple keywords** | Each match subtracts from the score (dampener) | Add domain-specific phrases that signal trivial intent in your app context |
+| **Simple keywords** | Each match slightly reduces the score and can classify straightforward requests as Simple | Add domain-specific phrases that signal trivial intent in your app context |
 
 <Warning>
 The **reasoning keywords** list gates the tier-override path, not just scoring. Adding broad terms like "explain" or "analyze" will push many requests to Reasoning. Prefer specific multi-word phrases like "step by step" or "root cause analysis".
@@ -351,11 +343,11 @@ Test complexity routing with a single team before enabling it globally:
 
 ## Observability
 
-Complexity analysis is recorded in the routing log for every request where analysis ran. In the log detail view, look at the **Routing Decision Logs** section backed by `routing_engine_logs`.
+Complexity analysis is recorded in the routing log for every request where analysis ran and produced a tier. In the log detail view, look at the **Routing Decision Logs** section backed by `routing_engine_logs`.
 
 ![Routing Logs with Complexity Tier](../../media/ui-routing-logs-complexity.png)
 
-You will see log lines like `Complexity: tier=REASONING score=0.38 words=25`. Logs use the emitted uppercase tier string, while the UI displays the same tier as normal-case text. This lets you audit how traffic is being distributed and spot mis-classifications to tune thresholds or keyword lists.
+You will see log lines like `Complexity: tier=REASONING score=0.38 words=25`. If no configured complexity signal matches the latest user message, the routing log records that complexity analysis was skipped and routing continues on the existing path. This lets you audit how traffic is being distributed and spot mis-classifications to tune thresholds or keyword lists.
 
 ---
 
@@ -363,9 +355,9 @@ You will see log lines like `Complexity: tier=REASONING score=0.38 words=25`. Lo
 
 ### Rule not matching when complexity_tier is set
 
-If the routing rule uses `complexity_tier` and the request is not matching, make sure the request contains analyzable user text. A system prompt by itself is not enough — the analyzer needs a text-bearing user prompt to classify.
+If the routing rule uses `complexity_tier` and the request is not matching, make sure the latest user message contains analyzable user text and at least one configured signal. A system prompt by itself is not enough — the analyzer needs a text-bearing user prompt to classify.
 
-If analysis is unavailable (for example the body could not be parsed, or the user content is not text-only), `complexity_tier` is treated as **unknown** by the CEL evaluator. The rule does not match and evaluation falls through to the next rule. This is intentional: complexity rules silently degrade rather than blocking requests.
+If analysis is unavailable (for example the body could not be parsed, the user content is not text-only, or no configured complexity signal matches the latest user message), the complexity-dependent rule does not match and evaluation falls through to the next rule. This is intentional: complexity rules silently degrade rather than blocking requests.
 
 ### Which request types are supported
 

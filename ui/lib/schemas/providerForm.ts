@@ -89,6 +89,7 @@ const VertexKeyConfigSchema = z.object({
 		.refine((value) => !value || isValidVertexAuthCredentials(value), {
 			message: "Auth Credentials must be a valid JSON object or env.VAR format when provided",
 		}),
+	force_single_region: z.boolean().optional(),
 });
 
 // S3 bucket configuration for Bedrock batch operations
@@ -112,6 +113,7 @@ const BedrockKeyConfigSchema = z
 		external_id: z.string().optional(),
 		session_name: z.string().optional(),
 		arn: z.string().optional(),
+		project_id: z.string().optional(),
 		batch_s3_config: BatchS3ConfigSchema.optional(),
 	})
 	.refine(
@@ -140,6 +142,37 @@ const BedrockKeyConfigSchema = z
 		},
 	);
 
+const BedrockMantleKeyConfigSchema = z
+	.object({
+		access_key: z.string(),
+		secret_key: z.string(),
+		session_token: z.string().optional(),
+		region: z.string().min(1, "Region is required for Bedrock Mantle keys"),
+		role_arn: z.string().optional(),
+		external_id: z.string().optional(),
+		session_name: z.string().optional(),
+		project_id: z.string().optional(),
+	})
+	.refine(
+		(data) => {
+			const accessKey = data.access_key?.trim() || "";
+			const secretKey = data.secret_key?.trim() || "";
+			const bothEmpty = accessKey === "" && secretKey === "";
+			const bothProvided = accessKey !== "" && secretKey !== "";
+			// A session token alone cannot sign SigV4 requests; reject it without both keys.
+			const sessionToken = data.session_token?.trim() || "";
+			if (bothEmpty && sessionToken !== "") {
+				return false;
+			}
+			// Either both empty (IAM role auth) or both provided (explicit credentials)
+			return bothEmpty || bothProvided;
+		},
+		{
+			message: "For Bedrock Mantle: either provide both Access Key and Secret Key, or leave both empty for IAM role authentication",
+			path: ["access_key"],
+		},
+	);
+
 const ReplicateKeyConfigSchema = z.object({
 	use_deployments_endpoint: z.boolean(),
 });
@@ -157,6 +190,7 @@ const KeySchema = z.object({
 	azure_key_config: AzureKeyConfigSchema.optional(),
 	vertex_key_config: VertexKeyConfigSchema.optional(),
 	bedrock_key_config: BedrockKeyConfigSchema.optional(),
+	bedrock_mantle_key_config: BedrockMantleKeyConfigSchema.optional(),
 	replicate_key_config: ReplicateKeyConfigSchema.optional(),
 	use_for_batch_api: z.boolean().optional(),
 });

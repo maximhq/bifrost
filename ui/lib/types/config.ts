@@ -62,9 +62,13 @@ export interface AliasConfig {
 	api_version?: string;
 	anthropic_version?: string;
 	endpoint?: SecretVar;
-	// Vertex overrides
+	// Shared per-alias project override (Vertex GCP project; Bedrock / Bedrock Mantle
+	// project sent via OpenAI-Project / anthropic-workspace-id). Kept top-level in Go
+	// so the flat project_id key doesn't collide across embedded sub-configs.
 	project_id?: SecretVar;
+	// Vertex overrides
 	project_number?: SecretVar;
+	force_single_region?: boolean;
 	// Bedrock overrides
 	inference_profile_arn?: SecretVar;
 	// Replicate overrides
@@ -94,6 +98,7 @@ export interface VertexKeyConfig {
 	project_number?: SecretVar;
 	region: SecretVar;
 	auth_credentials?: SecretVar;
+	force_single_region?: boolean;
 }
 
 export const DefaultVertexKeyConfig: VertexKeyConfig = {
@@ -101,6 +106,7 @@ export const DefaultVertexKeyConfig: VertexKeyConfig = {
 	project_number: { value: "", ref: "" },
 	region: { value: "", ref: "" },
 	auth_credentials: { value: "", ref: "" },
+	force_single_region: false,
 } as const satisfies Required<VertexKeyConfig>;
 
 export interface S3BucketConfig {
@@ -120,6 +126,7 @@ export interface BedrockKeyConfig {
 	session_token?: SecretVar;
 	region?: SecretVar;
 	arn?: SecretVar;
+	project_id?: SecretVar;
 	batch_s3_config?: BatchS3Config;
 }
 
@@ -130,8 +137,33 @@ export const DefaultBedrockKeyConfig: BedrockKeyConfig = {
 	session_token: undefined as unknown as SecretVar,
 	region: { value: "us-east-1", ref: "" },
 	arn: { value: "", ref: "" },
+	project_id: { value: "", ref: "" },
 	batch_s3_config: undefined as unknown as BatchS3Config,
 } as const satisfies Required<BedrockKeyConfig>;
+
+// BedrockMantleKeyConfig matching Go's schemas.BedrockMantleKeyConfig
+export interface BedrockMantleKeyConfig {
+	access_key?: SecretVar;
+	secret_key?: SecretVar;
+	session_token?: SecretVar;
+	region?: SecretVar;
+	role_arn?: SecretVar;
+	external_id?: SecretVar;
+	session_name?: SecretVar;
+	project_id?: SecretVar;
+}
+
+// Default BedrockMantleKeyConfig
+export const DefaultBedrockMantleKeyConfig: BedrockMantleKeyConfig = {
+	access_key: { value: "", ref: "" },
+	secret_key: { value: "", ref: "" },
+	session_token: undefined as unknown as SecretVar,
+	region: { value: "us-east-1", ref: "" },
+	role_arn: undefined as unknown as SecretVar,
+	external_id: undefined as unknown as SecretVar,
+	session_name: undefined as unknown as SecretVar,
+	project_id: undefined as unknown as SecretVar,
+} as const satisfies Required<BedrockMantleKeyConfig>;
 
 // VLLMKeyConfig matching Go's schemas.VLLMKeyConfig
 export interface VLLMKeyConfig {
@@ -189,6 +221,7 @@ export interface ModelProviderKey {
 	azure_key_config?: AzureKeyConfig;
 	vertex_key_config?: VertexKeyConfig;
 	bedrock_key_config?: BedrockKeyConfig;
+	bedrock_mantle_key_config?: BedrockMantleKeyConfig;
 	vllm_key_config?: VLLMKeyConfig;
 	replicate_key_config?: ReplicateKeyConfig;
 	ollama_key_config?: OllamaKeyConfig;
@@ -257,6 +290,10 @@ export type RequestType =
 	| "chat_completion_stream"
 	| "responses"
 	| "responses_stream"
+	| "responses_retrieve"
+	| "responses_delete"
+	| "responses_cancel"
+	| "responses_input_items"
 	| "embedding"
 	| "rerank"
 	| "speech"
@@ -308,6 +345,10 @@ export interface AllowedRequests {
 	chat_completion_stream: boolean;
 	responses: boolean;
 	responses_stream: boolean;
+	responses_retrieve?: boolean;
+	responses_delete?: boolean;
+	responses_cancel?: boolean;
+	responses_input_items?: boolean;
 	embedding: boolean;
 	speech: boolean;
 	speech_stream: boolean;
@@ -558,6 +599,13 @@ export interface CoreConfig {
 	routing_chain_max_depth: number;
 	header_filter_config?: GlobalHeaderFilterConfig;
 	mcp_external_client_url?: SecretVar;
+	mcp_server_auth_mode?: "headers" | "both" | "oauth";
+	oauth2_server_config?: {
+		issuer_url?: SecretVar;
+		auth_code_ttl?: number;
+		access_token_ttl?: number;
+		disable_vk_identity?: boolean;
+	};
 }
 
 export const DefaultCoreConfig: CoreConfig = {

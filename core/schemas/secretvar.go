@@ -39,16 +39,25 @@ func inferSecretType(ref string) SecretType {
 	return SecretTypePlainText
 }
 
-// NewSecretVar creates a new SecretVar from a string.
-func NewSecretVar(value string) *SecretVar {
+// parseSecretRef classifies value and returns a *SecretVar with SecretType and ref
+// populated but Val unresolved — no vault HTTP calls, no env lookups.
+// For JSON-encoded SecretVars the raw "value" field is preserved in Val unchanged.
+// Adding a new secret type only requires updating this function.
+func parseSecretRef(value string) *SecretVar {
 	val := value
 	if unquoted, err := strconv.Unquote(value); err == nil {
 		val = unquoted
 	}
-	// If it's a valid JSON object following the SecretVar schema, unmarshal it
 	if sonic.Valid([]byte(value)) {
 		valueNode, _ := sonic.Get([]byte(val), "value")
-		if valueNode.Exists() {
+		refNode, _ := sonic.Get([]byte(val), "ref")
+		typeNode, _ := sonic.Get([]byte(val), "type")
+		envVarNode, _ := sonic.Get([]byte(val), "env_var")
+		fromEnvNode, _ := sonic.Get([]byte(val), "from_env")
+		isSecretVarJSON := valueNode.Exists() ||
+			(refNode.Exists() && typeNode.Exists()) ||
+			(envVarNode.Exists() && fromEnvNode.Exists())
+		if isSecretVarJSON {
 			type secretVarCompat struct {
 				Val        string     `json:"value"`
 				Ref        string     `json:"ref"`
@@ -76,55 +85,52 @@ func NewSecretVar(value string) *SecretVar {
 					}
 					e.ref = ref
 					e.SecretType = SecretTypeEnv
-					if envValue, ok := os.LookupEnv(strings.TrimPrefix(ref, "env.")); ok {
-						e.Val = envValue
-					} else {
-						e.Val = ""
-					}
-					return e
 				} else if strings.HasPrefix(raw.Val, "env.") && raw.Val == raw.EnvVar {
 					// Legacy format: value == env_var == "env.XXX"
 					e.ref = raw.EnvVar
 					e.SecretType = SecretTypeEnv
-					e.Val = ""
-					if envValue, ok := os.LookupEnv(strings.TrimPrefix(raw.EnvVar, "env.")); ok {
-						e.Val = envValue
-					}
-					return e
-				}
-				// Resolve references
-				if e.SecretType == SecretTypeVault {
-					e.Val = ""
-					if vaultValue, ok := LookupVault(e.ref); ok {
-						e.Val = vaultValue
-					}
-				}
-				if e.SecretType == SecretTypeEnv {
-					if envValue, ok := os.LookupEnv(e.EnvKey()); ok {
-						e.Val = envValue
-					} else {
-						e.Val = ""
-					}
+				} else {
+					// Plain text JSON object ({value, ...} with no type/ref/from_env).
+					e.SecretType = SecretTypePlainText
 				}
 				return e
 			}
 		}
 	}
 	if strings.HasPrefix(val, "vault.") {
-		e := &SecretVar{ref: val, SecretType: SecretTypeVault}
-		if vaultValue, ok := LookupVault(val); ok {
+		return &SecretVar{ref: val, SecretType: SecretTypeVault}
+	}
+	if strings.HasPrefix(val, "env.") {
+		return &SecretVar{ref: val, SecretType: SecretTypeEnv}
+	}
+	return &SecretVar{Val: val, SecretType: SecretTypePlainText}
+}
+
+// IsSecretRef reports whether value is a secret reference (env.* or vault.* prefix,
+// or a JSON-encoded SecretVar with an env/vault type) without resolving it.
+// Use this instead of NewSecretVar(...).IsFromSecret() when resolution side-effects
+// (vault HTTP calls, env lookups) must be avoided.
+func IsSecretRef(value string) bool {
+	return parseSecretRef(value).IsFromSecret()
+}
+
+// NewSecretVar creates a new SecretVar from a string.
+func NewSecretVar(value string) *SecretVar {
+	e := parseSecretRef(value)
+	switch e.SecretType {
+	case SecretTypeVault:
+		e.Val = ""
+		if vaultValue, ok := LookupVault(e.ref); ok {
 			e.Val = vaultValue
 		}
-		return e
-	}
-	if envKey, ok := strings.CutPrefix(val, "env."); ok {
-		e := &SecretVar{ref: val, SecretType: SecretTypeEnv}
-		if envValue, ok := os.LookupEnv(envKey); ok {
+	case SecretTypeEnv:
+		if envValue, ok := os.LookupEnv(e.EnvKey()); ok {
 			e.Val = envValue
+		} else {
+			e.Val = ""
 		}
-		return e
 	}
-	return &SecretVar{Val: val}
+	return e
 }
 
 // GetRawRef returns the full secret reference string including prefix
@@ -300,7 +306,14 @@ func (e *SecretVar) UnmarshalJSON(data []byte) error {
 	}
 	if sonic.Valid(data) {
 		valueNode, _ := sonic.Get(data, "value")
-		if valueNode.Exists() {
+		refNode, _ := sonic.Get(data, "ref")
+		typeNode, _ := sonic.Get(data, "type")
+		envVarNode, _ := sonic.Get(data, "env_var")
+		fromEnvNode, _ := sonic.Get(data, "from_env")
+		isSecretVarJSON := valueNode.Exists() ||
+			(refNode.Exists() && typeNode.Exists()) ||
+			(envVarNode.Exists() && fromEnvNode.Exists())
+		if isSecretVarJSON {
 			type secretVarCompat struct {
 				Val        string     `json:"value"`
 				Ref        string     `json:"ref"`
@@ -357,6 +370,9 @@ func (e *SecretVar) UnmarshalJSON(data []byte) error {
 					} else {
 						e.Val = ""
 					}
+				}
+				if e.SecretType == "" {
+					e.SecretType = SecretTypePlainText
 				}
 				return nil
 			}
@@ -458,6 +474,13 @@ func (e *SecretVar) ShouldPreserveStored() bool {
 		return false
 	}
 	return e.GetValue() == "" || e.IsRedacted()
+}
+
+// IsMaskedPlaceholder reports whether the value is a client-side redaction
+// placeholder that must not overwrite a stored credential. Secret references
+// are intentional updates and are never treated as placeholders.
+func (e *SecretVar) IsMaskedPlaceholder() bool {
+	return e != nil && e.IsRedacted() && !e.IsFromSecret()
 }
 
 // IsSet returns true if the SecretVar has a resolved value or a secret reference.

@@ -1167,6 +1167,7 @@ func TestTriggerMigrations_FreshDB(t *testing.T) {
 	for _, table := range criticalTables {
 		assert.True(t, migrator.HasTable(table), "table should exist: %T", table)
 	}
+	assert.True(t, migrator.HasColumn(&tables.TableModelPricing{}, "is_deprecated"), "model pricing is_deprecated column should exist")
 }
 
 func TestTriggerMigrations_Idempotent(t *testing.T) {
@@ -1249,7 +1250,7 @@ func TestFullMigration_VirtualKeyCRUD(t *testing.T) {
 	vk := &tables.TableVirtualKey{
 		ID:        "vk-test-001",
 		Name:      "test-virtual-key",
-		Value:     "vk-secret-value-12345",
+		Value:     *schemas.NewSecretVar("vk-secret-value-12345"),
 		IsActive:  bifrost.Ptr(true),
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -1265,7 +1266,7 @@ func TestFullMigration_VirtualKeyCRUD(t *testing.T) {
 
 	assert.Equal(t, "vk-test-001", vks[0].ID)
 	assert.Equal(t, "test-virtual-key", vks[0].Name)
-	assert.Equal(t, "vk-secret-value-12345", vks[0].Value) // AfterFind decrypts
+	assert.Equal(t, "vk-secret-value-12345", vks[0].Value.GetValue()) // AfterFind decrypts
 	assert.True(t, vks[0].IsActiveValue())
 
 	// Verify encryption at raw DB level
@@ -1395,7 +1396,7 @@ func TestFullMigration_EncryptPlaintextRows(t *testing.T) {
 	var vk tables.TableVirtualKey
 	err = db.Where("id = ?", "vk-plain-1").First(&vk).Error
 	require.NoError(t, err)
-	assert.Equal(t, "vk-plain-secret", vk.Value)
+	assert.Equal(t, "vk-plain-secret", vk.Value.Val)
 }
 
 func TestFullMigration_EndToEnd(t *testing.T) {
@@ -1437,7 +1438,7 @@ func TestFullMigration_EndToEnd(t *testing.T) {
 		{"vk-2", "vk-beta", "vk-beta-secret"},
 	} {
 		err := store.CreateVirtualKey(ctx, &tables.TableVirtualKey{
-			ID: vk.id, Name: vk.name, Value: vk.value,
+			ID: vk.id, Name: vk.name, Value: *schemas.NewSecretVar(vk.value),
 			IsActive: bifrost.Ptr(true), CreatedAt: now, UpdatedAt: now,
 		})
 		require.NoError(t, err, "CreateVirtualKey %s", vk.name)
@@ -1901,6 +1902,94 @@ func TestMigrationBackfillAllowedModelsWildcard(t *testing.T) {
 	err = db.Table("config_keys").Select("config_hash").Where("key_id = ?", "emk-1").Scan(&keyHash).Error
 	require.NoError(t, err)
 	assert.NotEmpty(t, keyHash, "key config_hash should be recomputed")
+}
+
+// TestProviderConfigWildcardRoundTrip verifies the current write path persists a
+// WhiteList/BlackList wildcard as the JSON array '["*"]' (never the bare byte '*')
+// and reads it back intact — the round-trip that issue #4318's corrupted rows broke.
+func TestProviderConfigWildcardRoundTrip(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&tables.TableVirtualKeyProviderConfig{}))
+
+	pc := tables.TableVirtualKeyProviderConfig{
+		VirtualKeyID:      "vk-roundtrip",
+		Provider:          "zai",
+		AllowedModels:     schemas.WhiteList{"*"},
+		BlacklistedModels: schemas.BlackList{"*"},
+	}
+	require.NoError(t, db.Create(&pc).Error)
+
+	// Raw column bytes must be the JSON array, not the bare character.
+	var allowedRaw, blacklistedRaw string
+	require.NoError(t, db.Table("governance_virtual_key_provider_configs").
+		Select("allowed_models").Where("virtual_key_id = ?", "vk-roundtrip").Scan(&allowedRaw).Error)
+	require.NoError(t, db.Table("governance_virtual_key_provider_configs").
+		Select("blacklisted_models").Where("virtual_key_id = ?", "vk-roundtrip").Scan(&blacklistedRaw).Error)
+	assert.Equal(t, `["*"]`, allowedRaw)
+	assert.Equal(t, `["*"]`, blacklistedRaw)
+
+	// Model read must deserialize cleanly back to the wildcard slice.
+	var got tables.TableVirtualKeyProviderConfig
+	require.NoError(t, db.Where("virtual_key_id = ?", "vk-roundtrip").First(&got).Error)
+	assert.True(t, got.AllowedModels.IsUnrestricted())
+	assert.True(t, got.BlacklistedModels.IsBlockAll())
+}
+
+// TestMigrationRepairBareWildcardAllowedModels verifies the repair migration heals
+// legacy rows whose allowed_models / blacklisted_models column holds the bare byte
+// '*' (issue #4318). Without the repair, loading such a row aborts the GORM json
+// deserializer and poisons the provider admin surface.
+func TestMigrationRepairBareWildcardAllowedModels(t *testing.T) {
+	_, db := setupFullMigrationDB(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	// Clear migration tracking so it runs again against the seeded rows.
+	db.Exec(`DELETE FROM migrations WHERE id = 'repair_bare_wildcard_allowed_models'`)
+
+	err := db.Exec(`INSERT INTO governance_virtual_keys (id, name, value, is_active, encryption_status, created_at, updated_at)
+		VALUES ('vk-bare-1', 'bare-vk', 'vk-val', true, 'plain_text', ?, ?)`, now, now).Error
+	require.NoError(t, err)
+
+	// Row A: corrupted allowed_models, valid blacklisted_models.
+	err = db.Exec(`INSERT INTO governance_virtual_key_provider_configs (virtual_key_id, provider, allowed_models, blacklisted_models, allow_all_keys)
+		VALUES ('vk-bare-1', 'zai', '*', '[]', true)`).Error
+	require.NoError(t, err)
+	// Row B: valid allowed_models, corrupted blacklisted_models.
+	err = db.Exec(`INSERT INTO governance_virtual_key_provider_configs (virtual_key_id, provider, allowed_models, blacklisted_models, allow_all_keys)
+		VALUES ('vk-bare-1', 'openai', '["*"]', '*', true)`).Error
+	require.NoError(t, err)
+
+	// Pre-condition: the bare '*' rows cannot be loaded through the GORM model.
+	var pre []tables.TableVirtualKeyProviderConfig
+	preErr := db.Where("virtual_key_id = ?", "vk-bare-1").Find(&pre).Error
+	require.Error(t, preErr, "bare '*' rows should fail to deserialize before repair")
+
+	require.NoError(t, migrationRepairBareWildcardAllowedModels(ctx, db, testMigrationLogger))
+
+	// Both columns are now canonical JSON arrays.
+	var allowedA, blacklistedB string
+	require.NoError(t, db.Table("governance_virtual_key_provider_configs").
+		Select("allowed_models").Where("virtual_key_id = ? AND provider = ?", "vk-bare-1", "zai").Scan(&allowedA).Error)
+	require.NoError(t, db.Table("governance_virtual_key_provider_configs").
+		Select("blacklisted_models").Where("virtual_key_id = ? AND provider = ?", "vk-bare-1", "openai").Scan(&blacklistedB).Error)
+	assert.Equal(t, `["*"]`, allowedA, "bare '*' allowed_models should be repaired to wildcard array")
+	assert.Equal(t, `["*"]`, blacklistedB, "bare '*' blacklisted_models should be repaired to wildcard array")
+
+	// Post-condition: the rows now load cleanly through the GORM model.
+	var post []tables.TableVirtualKeyProviderConfig
+	require.NoError(t, db.Where("virtual_key_id = ?", "vk-bare-1").Find(&post).Error,
+		"repaired rows should deserialize without error")
+	require.Len(t, post, 2)
+	byProvider := map[string]tables.TableVirtualKeyProviderConfig{}
+	for _, pc := range post {
+		byProvider[pc.Provider] = pc
+	}
+	assert.True(t, byProvider["zai"].AllowedModels.IsUnrestricted(), "repaired allowed_models should be unrestricted")
+	assert.True(t, byProvider["openai"].BlacklistedModels.IsBlockAll(), "repaired blacklisted_models should block all")
 }
 
 func TestMigrationRemoveServerPrefixFromMCPTools(t *testing.T) {
@@ -2599,4 +2688,82 @@ func TestMigrationMigrateProviderGovernanceToModelConfigs(t *testing.T) {
 		Where("scope = ? AND model_name = ? AND provider = ?", tables.ModelConfigScopeGlobal, tables.ModelConfigAllModels, "openai").
 		Count(&count).Error)
 	assert.Equal(t, int64(1), count, "re-run must not duplicate the wildcard config")
+}
+
+// TestMigrationRefreshConfigHash_ColumnAheadOfTable is the focused regression test
+// for issue #4797: the config-hash recompute must not fail when the
+// TableClientConfig struct declares a column the physical table does not have yet.
+//
+// On upgrade from a pre-1.6 schema, config_client lacks dump_errors_in_console_logs
+// (added by a later migration step). The old recompute derived its SELECT projection
+// from the struct, so it named the missing column and failed with 42703 on Postgres
+// (or "no such column" on SQLite). The fix intersects the struct columns with the
+// live table columns before selecting.
+func TestMigrationRefreshConfigHash_ColumnAheadOfTable(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	// Create config_client with the full current schema, then seed a row before
+	// dropping the column (GORM's struct-derived INSERT would fail once the column
+	// is gone). PrometheusLabels / AllowedOrigins exercise the AfterFind path the
+	// recompute depends on to compute the hash.
+	require.NoError(t, db.AutoMigrate(&tables.TableClientConfig{}))
+	seed := &tables.TableClientConfig{
+		ConfigHash:       "stale-hash",
+		PrometheusLabels: []string{"team", "env"},
+		AllowedOrigins:   []string{"https://example.com"},
+	}
+	require.NoError(t, db.Create(seed).Error)
+
+	// Simulate the pre-1.6 table: struct is ahead of the applied DDL.
+	require.NoError(t, db.Migrator().DropColumn(&tables.TableClientConfig{}, "dump_errors_in_console_logs"))
+	require.False(t, db.Migrator().HasColumn(&tables.TableClientConfig{}, "dump_errors_in_console_logs"),
+		"precondition: dump_errors_in_console_logs must be absent to reproduce the bug")
+
+	// Pre-fix this returned the 42703 / "no such column" error; post-fix the
+	// projection skips the absent column and the recompute succeeds.
+	require.NoError(t, migrationRefreshConfigHashAfterMCPExternalServerURLRemoval(ctx, db, testMigrationLogger))
+
+	// The stale hash was recomputed. Read via raw SQL to avoid the same
+	// struct-vs-table drift on the read path.
+	var gotHash string
+	require.NoError(t, db.Raw("SELECT config_hash FROM config_client WHERE id = ?", seed.ID).Scan(&gotHash).Error)
+	assert.NotEmpty(t, gotHash, "config_hash should have been recomputed")
+	assert.NotEqual(t, "stale-hash", gotHash, "config_hash should differ from the seeded stale value")
+}
+
+// TestFullMigration_UpgradeFromPreDumpErrorsSchema runs the entire ordered chain
+// against a config_client that predates dump_errors_in_console_logs, reproducing
+// the real upgrade path from issue #4797.
+//
+// A fresh triggerMigrations run cannot reproduce the bug because init's CreateTable
+// builds config_client from the current struct (with the column). We instead
+// pre-create the table and drop the column so the chain hits the recompute step
+// (which runs before add_dump_errors_in_console_logs_column) while the column is
+// still missing.
+func TestFullMigration_UpgradeFromPreDumpErrorsSchema(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	require.NoError(t, db.AutoMigrate(&tables.TableClientConfig{}))
+	seed := &tables.TableClientConfig{
+		ConfigHash:       "stale-hash",
+		PrometheusLabels: []string{"team"},
+	}
+	require.NoError(t, db.Create(seed).Error)
+	require.NoError(t, db.Migrator().DropColumn(&tables.TableClientConfig{}, "dump_errors_in_console_logs"))
+	require.False(t, db.Migrator().HasColumn(&tables.TableClientConfig{}, "dump_errors_in_console_logs"))
+
+	// The full chain must complete: init skips CreateTable (table exists), the
+	// recompute runs against the column-less table, and add_dump_errors re-adds it.
+	require.NoError(t, triggerMigrations(ctx, db, testMigrationLogger),
+		"full migration chain should complete on a pre-dump-errors config_client")
+
+	assert.True(t, db.Migrator().HasColumn(&tables.TableClientConfig{}, "dump_errors_in_console_logs"),
+		"chain should have re-added dump_errors_in_console_logs")
+
+	var gotHash string
+	require.NoError(t, db.Raw("SELECT config_hash FROM config_client WHERE id = ?", seed.ID).Scan(&gotHash).Error)
+	assert.NotEmpty(t, gotHash)
+	assert.NotEqual(t, "stale-hash", gotHash, "config_hash should have been recomputed by the chain")
 }

@@ -1,0 +1,1329 @@
+{
+  "info": {
+    "name": "Bifrost V1 - MCP Auth",
+    "description": "Validates inbound /mcp authentication across the three server auth modes (headers | both | oauth), driven by the auth_mode env-var set per boot config. The runner boots a fresh server per mode with two pre-seeded virtual keys (one active, one inactive) and an upstream MCP client. Core guarantees: (1) in headers mode every virtual-key credential connects exactly as before and the OAuth discovery surface is invisible (404); (2) both mode keeps every header-credential outcome identical and only ADDS JWT acceptance + discovery; (3) oauth mode rejects header credentials outright; (4) an inactive virtual key never connects, in any mode; (5) discovery documents are spec-shaped when served.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "base_url", "value": "http://localhost:8090", "type": "string" },
+    { "key": "auth_mode", "value": "headers", "type": "string" },
+    { "key": "vk_value", "value": "sk-bf-mcp-test-key", "type": "string" },
+    { "key": "vk_inactive_value", "value": "sk-bf-mcp-inactive-key", "type": "string" },
+    { "key": "mcp_issuer", "value": "http://localhost:8090", "type": "string" }
+  ],
+  "item": [
+    {
+      "name": "Discovery gating",
+      "item": [
+        {
+          "name": "Protected resource metadata",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var mode = String(pm.variables.get('auth_mode') || '');",
+                  "var code = pm.response.code;",
+                  "if (mode === 'headers') {",
+                  "  pm.test('PRM is hidden in headers mode (404)', function () {",
+                  "    pm.expect(code, pm.response.text()).to.equal(404);",
+                  "  });",
+                  "  return;",
+                  "}",
+                  "pm.test('PRM is served (200)', function () { pm.expect(code).to.equal(200); });",
+                  "var b = pm.response.json();",
+                  "var issuer = pm.variables.get('mcp_issuer');",
+                  "pm.test('resource is the /mcp URL (RFC 9728)', function () {",
+                  "  pm.expect(b.resource).to.equal(issuer + '/mcp');",
+                  "});",
+                  "pm.test('authorization_servers lists this issuer', function () {",
+                  "  pm.expect(b.authorization_servers).to.include(issuer);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/.well-known/oauth-protected-resource",
+              "host": ["{{base_url}}"],
+              "path": [".well-known", "oauth-protected-resource"]
+            }
+          }
+        },
+        {
+          "name": "Authorization server metadata",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var mode = String(pm.variables.get('auth_mode') || '');",
+                  "var code = pm.response.code;",
+                  "if (mode === 'headers') {",
+                  "  pm.test('AS metadata is hidden in headers mode (404)', function () {",
+                  "    pm.expect(code, pm.response.text()).to.equal(404);",
+                  "  });",
+                  "  return;",
+                  "}",
+                  "pm.test('AS metadata is served (200)', function () { pm.expect(code).to.equal(200); });",
+                  "var b = pm.response.json();",
+                  "var issuer = pm.variables.get('mcp_issuer');",
+                  "pm.test('issuer + endpoints are present', function () {",
+                  "  pm.expect(b.issuer).to.equal(issuer);",
+                  "  pm.expect(b.authorization_endpoint).to.equal(issuer + '/oauth2/authorize');",
+                  "  pm.expect(b.token_endpoint).to.equal(issuer + '/oauth2/token');",
+                  "  pm.expect(b.registration_endpoint).to.equal(issuer + '/oauth2/register');",
+                  "  pm.expect(b.jwks_uri).to.equal(issuer + '/.well-known/jwks.json');",
+                  "});",
+                  "pm.test('advertises code grant, PKCE S256, public clients', function () {",
+                  "  pm.expect(b.response_types_supported).to.include('code');",
+                  "  pm.expect(b.grant_types_supported).to.include('authorization_code');",
+                  "  pm.expect(b.grant_types_supported).to.include('refresh_token');",
+                  "  pm.expect(b.code_challenge_methods_supported).to.include('S256');",
+                  "  pm.expect(b.token_endpoint_auth_methods_supported).to.include('none');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/.well-known/oauth-authorization-server",
+              "host": ["{{base_url}}"],
+              "path": [".well-known", "oauth-authorization-server"]
+            }
+          }
+        },
+        {
+          "name": "JWKS",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var mode = String(pm.variables.get('auth_mode') || '');",
+                  "var code = pm.response.code;",
+                  "if (mode === 'headers') {",
+                  "  pm.test('JWKS is hidden in headers mode (404)', function () {",
+                  "    pm.expect(code, pm.response.text()).to.equal(404);",
+                  "  });",
+                  "  return;",
+                  "}",
+                  "pm.test('JWKS is served (200)', function () { pm.expect(code).to.equal(200); });",
+                  "var b = pm.response.json();",
+                  "pm.test('exposes one RS256 signing key', function () {",
+                  "  pm.expect(b.keys).to.be.an('array').with.lengthOf(1);",
+                  "  var k = b.keys[0];",
+                  "  pm.expect(k.kty).to.equal('RSA');",
+                  "  pm.expect(k.alg).to.equal('RS256');",
+                  "  pm.expect(k.use).to.equal('sig');",
+                  "  pm.expect(k.kid).to.be.a('string').and.not.empty;",
+                  "  pm.expect(k.n).to.be.a('string').and.not.empty;",
+                  "  pm.expect(k.e).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/.well-known/jwks.json",
+              "host": ["{{base_url}}"],
+              "path": [".well-known", "jwks.json"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "MCP connect matrix",
+      "description": "POST a JSON-RPC initialize to /mcp with each credential. The auth gate runs on every /mcp request, so initialize alone proves accept/reject. Accepted is asserted as 'not 401'; rejected is asserted as exactly 401 (with WWW-Authenticate where discovery is enabled).",
+      "item": [
+        {
+          "name": "Virtual key via x-bf-vk",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var mode = String(pm.variables.get('auth_mode') || '');",
+                  "var code = pm.response.code;",
+                  "if (mode === 'oauth') {",
+                  "  pm.test('header VK is rejected in oauth-strict mode (401)', function () {",
+                  "    pm.expect(code, pm.response.text()).to.equal(401);",
+                  "  });",
+                  "  pm.test('401 advertises the protected-resource metadata', function () {",
+                  "    pm.expect(pm.response.headers.get('WWW-Authenticate')).to.be.a('string');",
+                  "  });",
+                  "} else {",
+                  "  pm.test('header VK connects (not 401) — unchanged legacy behavior', function () {",
+                  "    pm.expect(code, pm.response.text()).to.not.equal(401);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/json, text/event-stream" },
+              { "key": "x-bf-vk", "value": "{{vk_value}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-03-26\",\"capabilities\":{},\"clientInfo\":{\"name\":\"newman-mcp-auth\",\"version\":\"1.0.0\"}}}"
+            },
+            "url": { "raw": "{{base_url}}/mcp", "host": ["{{base_url}}"], "path": ["mcp"] }
+          }
+        },
+        {
+          "name": "Virtual key via Authorization Bearer",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var mode = String(pm.variables.get('auth_mode') || '');",
+                  "var code = pm.response.code;",
+                  "if (mode === 'oauth') {",
+                  "  pm.test('Bearer VK is rejected in oauth-strict mode (401)', function () {",
+                  "    pm.expect(code, pm.response.text()).to.equal(401);",
+                  "  });",
+                  "} else {",
+                  "  pm.test('Bearer VK connects (not 401) — unchanged legacy behavior', function () {",
+                  "    pm.expect(code, pm.response.text()).to.not.equal(401);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/json, text/event-stream" },
+              { "key": "Authorization", "value": "Bearer {{vk_value}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-03-26\",\"capabilities\":{},\"clientInfo\":{\"name\":\"newman-mcp-auth\",\"version\":\"1.0.0\"}}}"
+            },
+            "url": { "raw": "{{base_url}}/mcp", "host": ["{{base_url}}"], "path": ["mcp"] }
+          }
+        },
+        {
+          "name": "Virtual key via x-api-key",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var mode = String(pm.variables.get('auth_mode') || '');",
+                  "var code = pm.response.code;",
+                  "if (mode === 'oauth') {",
+                  "  pm.test('x-api-key VK is rejected in oauth-strict mode (401)', function () {",
+                  "    pm.expect(code, pm.response.text()).to.equal(401);",
+                  "  });",
+                  "} else {",
+                  "  pm.test('x-api-key VK connects (not 401) — unchanged legacy behavior', function () {",
+                  "    pm.expect(code, pm.response.text()).to.not.equal(401);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/json, text/event-stream" },
+              { "key": "x-api-key", "value": "{{vk_value}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-03-26\",\"capabilities\":{},\"clientInfo\":{\"name\":\"newman-mcp-auth\",\"version\":\"1.0.0\"}}}"
+            },
+            "url": { "raw": "{{base_url}}/mcp", "host": ["{{base_url}}"], "path": ["mcp"] }
+          }
+        },
+        {
+          "name": "No credentials (anonymous)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// enforce_auth_on_inference is off in the boot config, so anonymous /mcp",
+                  "// access falls back to the global server in headers/both. oauth-strict",
+                  "// still requires a JWT.",
+                  "var mode = String(pm.variables.get('auth_mode') || '');",
+                  "var code = pm.response.code;",
+                  "if (mode === 'oauth') {",
+                  "  pm.test('anonymous is rejected in oauth-strict mode (401)', function () {",
+                  "    pm.expect(code, pm.response.text()).to.equal(401);",
+                  "  });",
+                  "  pm.test('401 advertises the protected-resource metadata', function () {",
+                  "    pm.expect(pm.response.headers.get('WWW-Authenticate')).to.be.a('string');",
+                  "  });",
+                  "} else {",
+                  "  pm.test('anonymous connects when auth is not enforced (not 401)', function () {",
+                  "    pm.expect(code, pm.response.text()).to.not.equal(401);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/json, text/event-stream" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-03-26\",\"capabilities\":{},\"clientInfo\":{\"name\":\"newman-mcp-auth\",\"version\":\"1.0.0\"}}}"
+            },
+            "url": { "raw": "{{base_url}}/mcp", "host": ["{{base_url}}"], "path": ["mcp"] }
+          }
+        },
+        {
+          "name": "Inactive virtual key via x-bf-vk",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A deactivated key must never connect, in any mode: headers/both reject",
+                  "// it at the shared key-lookup chokepoint, oauth-strict rejects the header",
+                  "// credential outright.",
+                  "var code = pm.response.code;",
+                  "pm.test('inactive virtual key is rejected (401)', function () {",
+                  "  pm.expect(code, pm.response.text()).to.equal(401);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/json, text/event-stream" },
+              { "key": "x-bf-vk", "value": "{{vk_inactive_value}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-03-26\",\"capabilities\":{},\"clientInfo\":{\"name\":\"newman-mcp-auth\",\"version\":\"1.0.0\"}}}"
+            },
+            "url": { "raw": "{{base_url}}/mcp", "host": ["{{base_url}}"], "path": ["mcp"] }
+          }
+        },
+        {
+          "name": "Opaque bearer token (not a Bifrost JWT)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A JWT-shaped bearer that is not a real issued token. In headers mode the",
+                  "// JWT path is off, so this is not treated as a credential and falls back to",
+                  "// anonymous (auth not enforced). In both/oauth the token is verified and",
+                  "// fails, yielding 401 with WWW-Authenticate.",
+                  "var mode = String(pm.variables.get('auth_mode') || '');",
+                  "var code = pm.response.code;",
+                  "if (mode === 'headers') {",
+                  "  pm.test('JWT-shaped bearer is ignored in headers mode (not 401)', function () {",
+                  "    pm.expect(code, pm.response.text()).to.not.equal(401);",
+                  "  });",
+                  "} else {",
+                  "  pm.test('invalid JWT is rejected (401)', function () {",
+                  "    pm.expect(code, pm.response.text()).to.equal(401);",
+                  "  });",
+                  "  pm.test('401 advertises the protected-resource metadata', function () {",
+                  "    pm.expect(pm.response.headers.get('WWW-Authenticate')).to.be.a('string');",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/json, text/event-stream" },
+              { "key": "Authorization", "value": "Bearer eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJmYWtlIn0.bm90LWEtcmVhbC1zaWduYXR1cmU" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-03-26\",\"capabilities\":{},\"clientInfo\":{\"name\":\"newman-mcp-auth\",\"version\":\"1.0.0\"}}}"
+            },
+            "url": { "raw": "{{base_url}}/mcp", "host": ["{{base_url}}"], "path": ["mcp"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Config validation",
+      "description": "The /api/config endpoint guards the OAuth knobs. These PUTs are rejected (400) so they cause no state change, and the round-trip GET confirms the boot mode is persisted. Order-independent and safe to run before any runtime flip.",
+      "item": [
+        {
+          "name": "Invalid mcp_server_auth_mode is rejected",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('unknown auth mode is rejected (400)', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include('mcp_server_auth_mode');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"client_config\":{\"log_retention_days\":30,\"mcp_server_auth_mode\":\"bogus\"}}"
+            },
+            "url": { "raw": "{{base_url}}/api/config", "host": ["{{base_url}}"], "path": ["api", "config"] }
+          }
+        },
+        {
+          "name": "oauth2_server_config rejected when mode is headers",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Explicit mode=headers in the payload makes the effective mode headers",
+                  "// regardless of the boot mode, so the guard fires uniformly. The request",
+                  "// fails validation, so it never changes the running mode.",
+                  "pm.test('oauth2_server_config with headers mode is rejected (400)', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include('oauth2_server_config');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"client_config\":{\"log_retention_days\":30,\"mcp_server_auth_mode\":\"headers\",\"oauth2_server_config\":{\"issuer_url\":{\"value\":\"{{mcp_issuer}}\"},\"auth_code_ttl\":600,\"access_token_ttl\":600}}}"
+            },
+            "url": { "raw": "{{base_url}}/api/config", "host": ["{{base_url}}"], "path": ["api", "config"] }
+          }
+        },
+        {
+          "name": "Config round-trips the boot auth mode",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var mode = String(pm.variables.get('auth_mode') || '');",
+                  "pm.test('config readable (200)', function () { pm.expect(pm.response.code).to.equal(200); });",
+                  "var cc = pm.response.json().client_config || {};",
+                  "pm.test('mcp_server_auth_mode round-trips the boot mode', function () {",
+                  "  pm.expect(cc.mcp_server_auth_mode).to.equal(mode);",
+                  "});",
+                  "if (mode !== 'headers') {",
+                  "  pm.test('oauth2_server_config is persisted in both/oauth', function () {",
+                  "    pm.expect(cc.oauth2_server_config, JSON.stringify(cc.oauth2_server_config)).to.not.equal(undefined);",
+                  "    pm.expect(cc.oauth2_server_config).to.not.equal(null);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{base_url}}/api/config", "host": ["{{base_url}}"], "path": ["api", "config"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Full OAuth flow (virtual-key identity)",
+      "description": "End-to-end issuance over HTTP: dynamic client registration, authorize (PKCE S256), consent bound to a virtual key, token exchange, connect to /mcp with the issued JWT, then refresh rotation and stolen-token family revocation. Runs only where issuance is enabled (both/oauth); in headers mode the steps are skipped. The consent API is reachable directly because admin auth is off in the boot config; the temp-token credential path is covered separately.",
+      "item": [
+        {
+          "name": "Register client (DCR)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var mode = String(pm.variables.get('auth_mode') || '');",
+                  "if (mode === 'headers') { pm.test('issuance flow runs in both/oauth modes', function () { pm.expect(true).to.be.true; }); return; }",
+                  "pm.test('client registered (201)', function () { pm.expect(pm.response.code).to.equal(201); });",
+                  "var b = pm.response.json();",
+                  "pm.collectionVariables.set('client_id', b.client_id);",
+                  "pm.test('public client defaults', function () {",
+                  "  pm.expect(b.client_id).to.be.a('string').and.not.empty;",
+                  "  pm.expect(b.token_endpoint_auth_method).to.equal('none');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"client_name\":\"newman-flow-client\",\"redirect_uris\":[\"http://127.0.0.1:9999/cb\"],\"grant_types\":[\"authorization_code\",\"refresh_token\"]}"
+            },
+            "url": { "raw": "{{base_url}}/oauth2/register", "host": ["{{base_url}}"], "path": ["oauth2", "register"] }
+          }
+        },
+        {
+          "name": "Authorize (PKCE S256)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Fresh PKCE pair per flow. challenge = base64url(sha256(verifier)).",
+                  "var verifier = CryptoJS.lib.WordArray.random(32).toString(CryptoJS.enc.Hex);",
+                  "var challenge = CryptoJS.enc.Base64.stringify(CryptoJS.SHA256(verifier))",
+                  "  .replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, '');",
+                  "pm.collectionVariables.set('code_verifier', verifier);",
+                  "pm.collectionVariables.set('code_challenge', challenge);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var mode = String(pm.variables.get('auth_mode') || '');",
+                  "if (mode === 'headers') { pm.test('issuance flow runs in both/oauth modes', function () { pm.expect(true).to.be.true; }); return; }",
+                  "pm.test('authorize redirects to consent (302)', function () { pm.expect(pm.response.code).to.equal(302); });",
+                  "var loc = pm.response.headers.get('Location') || '';",
+                  "pm.test('redirect targets the consent page', function () { pm.expect(loc).to.include('/oauth/consent'); });",
+                  "var flow = loc.match(/[?&]flow=([^&#]+)/);",
+                  "pm.expect(flow, 'flow id in redirect').to.not.equal(null);",
+                  "pm.collectionVariables.set('flow_id', decodeURIComponent(flow[1]));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/oauth2/authorize?response_type=code&client_id={{client_id}}&redirect_uri=http://127.0.0.1:9999/cb&code_challenge={{code_challenge}}&code_challenge_method=S256&resource={{mcp_issuer}}/mcp&state=xyz&scope=mcp",
+              "host": ["{{base_url}}"],
+              "path": ["oauth2", "authorize"],
+              "query": [
+                { "key": "response_type", "value": "code" },
+                { "key": "client_id", "value": "{{client_id}}" },
+                { "key": "redirect_uri", "value": "http://127.0.0.1:9999/cb" },
+                { "key": "code_challenge", "value": "{{code_challenge}}" },
+                { "key": "code_challenge_method", "value": "S256" },
+                { "key": "resource", "value": "{{mcp_issuer}}/mcp" },
+                { "key": "state", "value": "xyz" },
+                { "key": "scope", "value": "mcp" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Consent as virtual key",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var mode = String(pm.variables.get('auth_mode') || '');",
+                  "if (mode === 'headers') { pm.test('issuance flow runs in both/oauth modes', function () { pm.expect(true).to.be.true; }); return; }",
+                  "pm.test('consent succeeds (200)', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var url = pm.response.json().redirect_url || '';",
+                  "var m = url.match(/[?&]code=([^&]+)/);",
+                  "pm.expect(m, 'authorization code in redirect_url').to.not.equal(null);",
+                  "pm.collectionVariables.set('auth_code', decodeURIComponent(m[1]));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"mode\":\"vk\",\"value\":\"{{vk_value}}\"}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/oauth2/consent/flows/{{flow_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "oauth2", "consent", "flows", "{{flow_id}}"]
+            }
+          }
+        },
+        {
+          "name": "Token exchange (authorization_code)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var mode = String(pm.variables.get('auth_mode') || '');",
+                  "if (mode === 'headers') { pm.test('issuance flow runs in both/oauth modes', function () { pm.expect(true).to.be.true; }); return; }",
+                  "pm.test('token issued (200)', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var b = pm.response.json();",
+                  "pm.test('bearer access + refresh returned', function () {",
+                  "  pm.expect(b.token_type).to.equal('Bearer');",
+                  "  pm.expect(b.access_token).to.be.a('string').and.not.empty;",
+                  "  pm.expect(b.refresh_token).to.be.a('string').and.not.empty;",
+                  "});",
+                  "pm.test('expires_in reflects the configured access_token_ttl', function () {",
+                  "  pm.expect(b.expires_in).to.equal(600);",
+                  "});",
+                  "pm.collectionVariables.set('access_token', b.access_token);",
+                  "pm.collectionVariables.set('refresh_token', b.refresh_token);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/x-www-form-urlencoded" }],
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                { "key": "grant_type", "value": "authorization_code" },
+                { "key": "code", "value": "{{auth_code}}" },
+                { "key": "code_verifier", "value": "{{code_verifier}}" },
+                { "key": "client_id", "value": "{{client_id}}" },
+                { "key": "redirect_uri", "value": "http://127.0.0.1:9999/cb" },
+                { "key": "resource", "value": "{{mcp_issuer}}/mcp" }
+              ]
+            },
+            "url": { "raw": "{{base_url}}/oauth2/token", "host": ["{{base_url}}"], "path": ["oauth2", "token"] }
+          }
+        },
+        {
+          "name": "Connect to /mcp with issued JWT",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var mode = String(pm.variables.get('auth_mode') || '');",
+                  "if (mode === 'headers') { pm.test('issuance flow runs in both/oauth modes', function () { pm.expect(true).to.be.true; }); return; }",
+                  "pm.test('issued JWT connects to /mcp (not 401)', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.not.equal(401);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/json, text/event-stream" },
+              { "key": "Authorization", "value": "Bearer {{access_token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-03-26\",\"capabilities\":{},\"clientInfo\":{\"name\":\"newman-mcp-auth\",\"version\":\"1.0.0\"}}}"
+            },
+            "url": { "raw": "{{base_url}}/mcp", "host": ["{{base_url}}"], "path": ["mcp"] }
+          }
+        },
+        {
+          "name": "Refresh rotation",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var mode = String(pm.variables.get('auth_mode') || '');",
+                  "if (mode === 'headers') { pm.test('issuance flow runs in both/oauth modes', function () { pm.expect(true).to.be.true; }); return; }",
+                  "pm.test('refresh succeeds (200)', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var b = pm.response.json();",
+                  "pm.test('rotation returns a new refresh token', function () {",
+                  "  pm.expect(b.refresh_token).to.be.a('string').and.not.empty;",
+                  "  pm.expect(b.refresh_token).to.not.equal(pm.collectionVariables.get('refresh_token'));",
+                  "});",
+                  "// Keep the prior (now-rotated) refresh token to prove replay revokes the family.",
+                  "pm.collectionVariables.set('old_refresh_token', pm.collectionVariables.get('refresh_token'));",
+                  "pm.collectionVariables.set('refresh_token', b.refresh_token);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/x-www-form-urlencoded" }],
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                { "key": "grant_type", "value": "refresh_token" },
+                { "key": "refresh_token", "value": "{{refresh_token}}" },
+                { "key": "client_id", "value": "{{client_id}}" }
+              ]
+            },
+            "url": { "raw": "{{base_url}}/oauth2/token", "host": ["{{base_url}}"], "path": ["oauth2", "token"] }
+          }
+        },
+        {
+          "name": "Replay rotated refresh token",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var mode = String(pm.variables.get('auth_mode') || '');",
+                  "if (mode === 'headers') { pm.test('issuance flow runs in both/oauth modes', function () { pm.expect(true).to.be.true; }); return; }",
+                  "pm.test('replaying a rotated refresh token is rejected (400)', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include('invalid_grant');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/x-www-form-urlencoded" }],
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                { "key": "grant_type", "value": "refresh_token" },
+                { "key": "refresh_token", "value": "{{old_refresh_token}}" },
+                { "key": "client_id", "value": "{{client_id}}" }
+              ]
+            },
+            "url": { "raw": "{{base_url}}/oauth2/token", "host": ["{{base_url}}"], "path": ["oauth2", "token"] }
+          }
+        },
+        {
+          "name": "Family revoked after replay",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var mode = String(pm.variables.get('auth_mode') || '');",
+                  "if (mode === 'headers') { pm.test('issuance flow runs in both/oauth modes', function () { pm.expect(true).to.be.true; }); return; }",
+                  "// The replay tripped stolen-token detection, so the latest (legitimate)",
+                  "// refresh token in the same family is now revoked too.",
+                  "pm.test('post-replay the live refresh token is also revoked (400)', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include('invalid_grant');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/x-www-form-urlencoded" }],
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                { "key": "grant_type", "value": "refresh_token" },
+                { "key": "refresh_token", "value": "{{refresh_token}}" },
+                { "key": "client_id", "value": "{{client_id}}" }
+              ]
+            },
+            "url": { "raw": "{{base_url}}/oauth2/token", "host": ["{{base_url}}"], "path": ["oauth2", "token"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Revocation window",
+      "description": "Revoking a grant stops the refresh token immediately, but the already-issued short-lived access token keeps working on /mcp until it expires. Runs a fresh grant (both/oauth only), revokes it via the management API, then asserts both halves of the documented window.",
+      "item": [
+        {
+          "name": "Fresh authorize for revocation test",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var verifier = CryptoJS.lib.WordArray.random(32).toString(CryptoJS.enc.Hex);",
+                  "var challenge = CryptoJS.enc.Base64.stringify(CryptoJS.SHA256(verifier))",
+                  "  .replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, '');",
+                  "pm.collectionVariables.set('rev_verifier', verifier);",
+                  "pm.collectionVariables.set('rev_challenge', challenge);",
+                  "var mode = String(pm.variables.get('auth_mode') || '');",
+                  "if (mode === 'headers') { return; }",
+                  "// Snapshot the active grant ids BEFORE this flow creates a new one, so the",
+                  "// new grant is isolated later by set-difference rather than by list order.",
+                  "pm.sendRequest({ url: pm.variables.get('base_url') + '/api/oauth2/sessions', method: 'GET' }, function (err, res) {",
+                  "  var ids = [];",
+                  "  if (!err && res && res.code === 200) { ids = (res.json().sessions || []).map(function (s) { return s.id; }); }",
+                  "  pm.collectionVariables.set('rev_pre_ids', JSON.stringify(ids));",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var mode = String(pm.variables.get('auth_mode') || '');",
+                  "if (mode === 'headers') { pm.test('revocation window runs in both/oauth modes', function () { pm.expect(true).to.be.true; }); return; }",
+                  "pm.test('authorize redirects (302)', function () { pm.expect(pm.response.code).to.equal(302); });",
+                  "var loc = pm.response.headers.get('Location') || '';",
+                  "var flow = loc.match(/[?&]flow=([^&#]+)/);",
+                  "pm.expect(flow, 'flow id').to.not.equal(null);",
+                  "pm.collectionVariables.set('rev_flow_id', decodeURIComponent(flow[1]));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/oauth2/authorize?response_type=code&client_id={{client_id}}&redirect_uri=http://127.0.0.1:9999/cb&code_challenge={{rev_challenge}}&code_challenge_method=S256&resource={{mcp_issuer}}/mcp&state=rev&scope=mcp",
+              "host": ["{{base_url}}"],
+              "path": ["oauth2", "authorize"],
+              "query": [
+                { "key": "response_type", "value": "code" },
+                { "key": "client_id", "value": "{{client_id}}" },
+                { "key": "redirect_uri", "value": "http://127.0.0.1:9999/cb" },
+                { "key": "code_challenge", "value": "{{rev_challenge}}" },
+                { "key": "code_challenge_method", "value": "S256" },
+                { "key": "resource", "value": "{{mcp_issuer}}/mcp" },
+                { "key": "state", "value": "rev" },
+                { "key": "scope", "value": "mcp" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Consent + token for revocation test",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var mode = String(pm.variables.get('auth_mode') || '');",
+                  "if (mode === 'headers') { pm.test('revocation window runs in both/oauth modes', function () { pm.expect(true).to.be.true; }); return; }",
+                  "pm.test('consent succeeds (200)', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var url = pm.response.json().redirect_url || '';",
+                  "var m = url.match(/[?&]code=([^&]+)/);",
+                  "pm.expect(m, 'code').to.not.equal(null);",
+                  "pm.collectionVariables.set('rev_code', decodeURIComponent(m[1]));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\"mode\":\"vk\",\"value\":\"{{vk_value}}\"}" },
+            "url": {
+              "raw": "{{base_url}}/api/oauth2/consent/flows/{{rev_flow_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "oauth2", "consent", "flows", "{{rev_flow_id}}"]
+            }
+          }
+        },
+        {
+          "name": "Exchange code for revocation test",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var mode = String(pm.variables.get('auth_mode') || '');",
+                  "if (mode === 'headers') { pm.test('revocation window runs in both/oauth modes', function () { pm.expect(true).to.be.true; }); return; }",
+                  "pm.test('token issued (200)', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var b = pm.response.json();",
+                  "pm.collectionVariables.set('rev_access_token', b.access_token);",
+                  "pm.collectionVariables.set('rev_refresh_token', b.refresh_token);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/x-www-form-urlencoded" }],
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                { "key": "grant_type", "value": "authorization_code" },
+                { "key": "code", "value": "{{rev_code}}" },
+                { "key": "code_verifier", "value": "{{rev_verifier}}" },
+                { "key": "client_id", "value": "{{client_id}}" },
+                { "key": "redirect_uri", "value": "http://127.0.0.1:9999/cb" },
+                { "key": "resource", "value": "{{mcp_issuer}}/mcp" }
+              ]
+            },
+            "url": { "raw": "{{base_url}}/oauth2/token", "host": ["{{base_url}}"], "path": ["oauth2", "token"] }
+          }
+        },
+        {
+          "name": "List grants and pick the new one",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var mode = String(pm.variables.get('auth_mode') || '');",
+                  "if (mode === 'headers') { pm.test('revocation window runs in both/oauth modes', function () { pm.expect(true).to.be.true; }); return; }",
+                  "pm.test('grants list returns (200)', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var sessions = (pm.response.json().sessions) || [];",
+                  "var pre = JSON.parse(pm.collectionVariables.get('rev_pre_ids') || '[]');",
+                  "// Isolate the grant created by this flow as the one absent from the",
+                  "// pre-flow snapshot — independent of list ordering or other grants.",
+                  "var fresh = sessions.filter(function (s) { return pre.indexOf(s.id) === -1; });",
+                  "pm.test('exactly one new grant was created by this flow', function () {",
+                  "  pm.expect(fresh.length, JSON.stringify(fresh)).to.equal(1);",
+                  "});",
+                  "if (fresh.length === 1) { pm.collectionVariables.set('rev_grant_id', fresh[0].id); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{base_url}}/api/oauth2/sessions", "host": ["{{base_url}}"], "path": ["api", "oauth2", "sessions"] }
+          }
+        },
+        {
+          "name": "Revoke the grant",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var mode = String(pm.variables.get('auth_mode') || '');",
+                  "if (mode === 'headers') { pm.test('revocation window runs in both/oauth modes', function () { pm.expect(true).to.be.true; }); return; }",
+                  "pm.test('grant revoked (204)', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(204); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/oauth2/sessions/{{rev_grant_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "oauth2", "sessions", "{{rev_grant_id}}"]
+            }
+          }
+        },
+        {
+          "name": "Refresh after revoke is rejected",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var mode = String(pm.variables.get('auth_mode') || '');",
+                  "if (mode === 'headers') { pm.test('revocation window runs in both/oauth modes', function () { pm.expect(true).to.be.true; }); return; }",
+                  "pm.test('refresh after revoke is rejected (400)', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include('invalid_grant');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/x-www-form-urlencoded" }],
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                { "key": "grant_type", "value": "refresh_token" },
+                { "key": "refresh_token", "value": "{{rev_refresh_token}}" },
+                { "key": "client_id", "value": "{{client_id}}" }
+              ]
+            },
+            "url": { "raw": "{{base_url}}/oauth2/token", "host": ["{{base_url}}"], "path": ["oauth2", "token"] }
+          }
+        },
+        {
+          "name": "Issued access token still connects within the window",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var mode = String(pm.variables.get('auth_mode') || '');",
+                  "if (mode === 'headers') { pm.test('revocation window runs in both/oauth modes', function () { pm.expect(true).to.be.true; }); return; }",
+                  "// The short-lived access token is a stateless JWT, so it keeps working",
+                  "// until exp even though the refresh token is revoked — the documented window.",
+                  "pm.test('already-issued access token still connects (not 401)', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.not.equal(401);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/json, text/event-stream" },
+              { "key": "Authorization", "value": "Bearer {{rev_access_token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-03-26\",\"capabilities\":{},\"clientInfo\":{\"name\":\"newman-mcp-auth\",\"version\":\"1.0.0\"}}}"
+            },
+            "url": { "raw": "{{base_url}}/mcp", "host": ["{{base_url}}"], "path": ["mcp"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Full OAuth flow (session identity)",
+      "description": "Session-mode issuance: the consent server mints an opaque session identity (never client-asserted), the token connects to /mcp, and then enabling enforce_auth_on_inference at runtime makes that same session token unacceptable. Runs only where issuance is enabled (both/oauth) and reuses the client registered by the virtual-key flow. The enforce flip is the last meaningful step in the boot, so it does not affect earlier folders.",
+      "item": [
+        {
+          "name": "Authorize for session flow",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var verifier = CryptoJS.lib.WordArray.random(32).toString(CryptoJS.enc.Hex);",
+                  "var challenge = CryptoJS.enc.Base64.stringify(CryptoJS.SHA256(verifier))",
+                  "  .replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, '');",
+                  "pm.collectionVariables.set('sess_verifier', verifier);",
+                  "pm.collectionVariables.set('sess_challenge', challenge);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var mode = String(pm.variables.get('auth_mode') || '');",
+                  "if (mode === 'headers') { pm.test('session flow runs in both/oauth modes', function () { pm.expect(true).to.be.true; }); return; }",
+                  "pm.test('authorize redirects (302)', function () { pm.expect(pm.response.code).to.equal(302); });",
+                  "var loc = pm.response.headers.get('Location') || '';",
+                  "var flow = loc.match(/[?&]flow=([^&#]+)/);",
+                  "pm.expect(flow, 'flow id').to.not.equal(null);",
+                  "pm.collectionVariables.set('sess_flow_id', decodeURIComponent(flow[1]));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/oauth2/authorize?response_type=code&client_id={{client_id}}&redirect_uri=http://127.0.0.1:9999/cb&code_challenge={{sess_challenge}}&code_challenge_method=S256&resource={{mcp_issuer}}/mcp&state=sess&scope=mcp",
+              "host": ["{{base_url}}"],
+              "path": ["oauth2", "authorize"],
+              "query": [
+                { "key": "response_type", "value": "code" },
+                { "key": "client_id", "value": "{{client_id}}" },
+                { "key": "redirect_uri", "value": "http://127.0.0.1:9999/cb" },
+                { "key": "code_challenge", "value": "{{sess_challenge}}" },
+                { "key": "code_challenge_method", "value": "S256" },
+                { "key": "resource", "value": "{{mcp_issuer}}/mcp" },
+                { "key": "state", "value": "sess" },
+                { "key": "scope", "value": "mcp" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Consent as session",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var mode = String(pm.variables.get('auth_mode') || '');",
+                  "if (mode === 'headers') { pm.test('session flow runs in both/oauth modes', function () { pm.expect(true).to.be.true; }); return; }",
+                  "pm.test('consent succeeds (200)', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var url = pm.response.json().redirect_url || '';",
+                  "var m = url.match(/[?&]code=([^&]+)/);",
+                  "pm.expect(m, 'code').to.not.equal(null);",
+                  "pm.collectionVariables.set('sess_code', decodeURIComponent(m[1]));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\"mode\":\"session\"}" },
+            "url": {
+              "raw": "{{base_url}}/api/oauth2/consent/flows/{{sess_flow_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "oauth2", "consent", "flows", "{{sess_flow_id}}"]
+            }
+          }
+        },
+        {
+          "name": "Token exchange for session flow",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var mode = String(pm.variables.get('auth_mode') || '');",
+                  "if (mode === 'headers') { pm.test('session flow runs in both/oauth modes', function () { pm.expect(true).to.be.true; }); return; }",
+                  "pm.test('token issued (200)', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.collectionVariables.set('sess_access_token', pm.response.json().access_token);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/x-www-form-urlencoded" }],
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                { "key": "grant_type", "value": "authorization_code" },
+                { "key": "code", "value": "{{sess_code}}" },
+                { "key": "code_verifier", "value": "{{sess_verifier}}" },
+                { "key": "client_id", "value": "{{client_id}}" },
+                { "key": "redirect_uri", "value": "http://127.0.0.1:9999/cb" },
+                { "key": "resource", "value": "{{mcp_issuer}}/mcp" }
+              ]
+            },
+            "url": { "raw": "{{base_url}}/oauth2/token", "host": ["{{base_url}}"], "path": ["oauth2", "token"] }
+          }
+        },
+        {
+          "name": "Session JWT connects while auth is not enforced",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var mode = String(pm.variables.get('auth_mode') || '');",
+                  "if (mode === 'headers') { pm.test('session flow runs in both/oauth modes', function () { pm.expect(true).to.be.true; }); return; }",
+                  "pm.test('session-mode JWT connects (not 401)', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.not.equal(401);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/json, text/event-stream" },
+              { "key": "Authorization", "value": "Bearer {{sess_access_token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-03-26\",\"capabilities\":{},\"clientInfo\":{\"name\":\"newman-mcp-auth\",\"version\":\"1.0.0\"}}}"
+            },
+            "url": { "raw": "{{base_url}}/mcp", "host": ["{{base_url}}"], "path": ["mcp"] }
+          }
+        },
+        {
+          "name": "Enable enforce_auth_on_inference",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var mode = String(pm.variables.get('auth_mode') || '');",
+                  "if (mode === 'headers') { pm.test('session flow runs in both/oauth modes', function () { pm.expect(true).to.be.true; }); return; }",
+                  "pm.test('enforce_auth enabled (2xx)', function () { pm.expect(pm.response.code, pm.response.text()).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"client_config\":{\"log_retention_days\":30,\"enforce_auth_on_inference\":true}}"
+            },
+            "url": { "raw": "{{base_url}}/api/config", "host": ["{{base_url}}"], "path": ["api", "config"] }
+          }
+        },
+        {
+          "name": "Session JWT rejected once auth is enforced",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var mode = String(pm.variables.get('auth_mode') || '');",
+                  "if (mode === 'headers') { pm.test('session flow runs in both/oauth modes', function () { pm.expect(true).to.be.true; }); return; }",
+                  "pm.test('session-mode JWT is rejected when auth is enforced (401)', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(401);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/json, text/event-stream" },
+              { "key": "Authorization", "value": "Bearer {{sess_access_token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-03-26\",\"capabilities\":{},\"clientInfo\":{\"name\":\"newman-mcp-auth\",\"version\":\"1.0.0\"}}}"
+            },
+            "url": { "raw": "{{base_url}}/mcp", "host": ["{{base_url}}"], "path": ["mcp"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Runtime config flip (headers to both)",
+      "description": "Proves the legacy-to-mixed upgrade at runtime: starting from headers mode, PUT /api/config to switch to both, then confirm discovery comes alive AND a header-VK /mcp connect still works (no regression). Runs only in the headers boot; in both/oauth boots it is a no-op. The PUT is a minimal partial — only the fields under test plus log_retention_days, which the endpoint validates unconditionally.",
+      "item": [
+        {
+          "name": "Flip mcp_server_auth_mode to both",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var mode = String(pm.variables.get('auth_mode') || '');",
+                  "if (mode !== 'headers') { pm.test('runtime flip is exercised from the headers boot', function () { pm.expect(true).to.be.true; }); return; }",
+                  "pm.test('config update accepted (2xx)', function () { pm.expect(pm.response.code, pm.response.text()).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"client_config\":{\"log_retention_days\":30,\"mcp_server_auth_mode\":\"both\",\"oauth2_server_config\":{\"issuer_url\":{\"value\":\"{{mcp_issuer}}\"},\"auth_code_ttl\":600,\"access_token_ttl\":600}}}"
+            },
+            "url": { "raw": "{{base_url}}/api/config", "host": ["{{base_url}}"], "path": ["api", "config"] }
+          }
+        },
+        {
+          "name": "Discovery is now live after the flip",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var mode = String(pm.variables.get('auth_mode') || '');",
+                  "if (mode !== 'headers') { pm.test('runtime flip is exercised from the headers boot', function () { pm.expect(true).to.be.true; }); return; }",
+                  "pm.test('protected-resource metadata is now served (200)', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/.well-known/oauth-protected-resource",
+              "host": ["{{base_url}}"],
+              "path": [".well-known", "oauth-protected-resource"]
+            }
+          }
+        },
+        {
+          "name": "Header VK still connects after the flip",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var mode = String(pm.variables.get('auth_mode') || '');",
+                  "if (mode !== 'headers') { pm.test('runtime flip is exercised from the headers boot', function () { pm.expect(true).to.be.true; }); return; }",
+                  "pm.test('header VK connect is unaffected by the upgrade (not 401)', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.not.equal(401);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/json, text/event-stream" },
+              { "key": "x-bf-vk", "value": "{{vk_value}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-03-26\",\"capabilities\":{},\"clientInfo\":{\"name\":\"newman-mcp-auth\",\"version\":\"1.0.0\"}}}"
+            },
+            "url": { "raw": "{{base_url}}/mcp", "host": ["{{base_url}}"], "path": ["mcp"] }
+          }
+        }
+      ]
+    }
+  ]
+}

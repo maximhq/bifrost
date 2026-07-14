@@ -1,7 +1,13 @@
 import FullPageLoader from "@/components/fullPageLoader";
 import { ProviderNames } from "@/lib/constants/logs";
-import { useGetModelsQuery, useGetProvidersQuery, useLazyGetLogsModelHistogramQuery, useLazyGetLogsStatsQuery } from "@/lib/store";
-import { KnownProvider } from "@/lib/types/config";
+import {
+	useGetModelsQuery,
+	useGetProvidersQuery,
+	useLazyGetLogsModelHistogramQuery,
+	useLazyGetLogsStatsQuery,
+	useLazyGetProviderKeysQuery,
+} from "@/lib/store";
+import { KnownProvider, ModelProviderKey } from "@/lib/types/config";
 import { LogStats } from "@/lib/types/logs";
 import { useEffect, useMemo, useState } from "react";
 import { ModelCatalogEmptyState } from "./modelCatalogEmptyState";
@@ -9,6 +15,37 @@ import ModelCatalogTable, { ModelCatalogRow } from "./modelCatalogTable";
 
 interface OverviewTabProps {
 	hasAccess: boolean;
+}
+
+function buildAliasDisplayMap(keys: ModelProviderKey[]) {
+	const displayByValue = new Map<string, string[]>();
+
+	for (const key of keys) {
+		for (const [aliasName, rawConfig] of Object.entries(key.aliases ?? {})) {
+			const config = rawConfig as unknown;
+			const modelValues =
+				typeof config === "string"
+					? [config]
+					: typeof config === "object" && config !== null
+						? [(config as { model_id?: string }).model_id, (config as { model_name?: string }).model_name].filter(
+								(value): value is string => Boolean(value),
+							)
+						: [];
+
+			for (const modelValue of modelValues) {
+				const aliases = displayByValue.get(modelValue) ?? [];
+				if (!aliases.includes(aliasName)) {
+					displayByValue.set(modelValue, [...aliases, aliasName]);
+				}
+			}
+		}
+	}
+
+	return displayByValue;
+}
+
+function getDisplayModels(models: string[], displayByValue: Map<string, string[]>) {
+	return models.flatMap((model) => displayByValue.get(model) ?? [model]);
 }
 
 export default function OverviewTab({ hasAccess }: OverviewTabProps) {
@@ -28,6 +65,7 @@ export default function OverviewTab({ hasAccess }: OverviewTabProps) {
 	const [triggerGlobalStats, { data: globalStats }] = useLazyGetLogsStatsQuery();
 	const [triggerStats] = useLazyGetLogsStatsQuery();
 	const [triggerModelHistogram] = useLazyGetLogsModelHistogramQuery();
+	const [triggerProviderKeys] = useLazyGetProviderKeysQuery();
 
 	useEffect(() => {
 		if (!hasAccess) return;
@@ -79,12 +117,19 @@ export default function OverviewTab({ hasAccess }: OverviewTabProps) {
 		const monthAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
 
 		Promise.all(
-			providers.map((p) =>
-				triggerModelHistogram({ filters: { providers: [p.name], start_time: monthAgo, end_time: now } })
-					.unwrap()
-					.then((data): [string, string[]] => [p.name, data.models ?? []])
-					.catch((): [string, string[]] => [p.name, []]),
-			),
+			providers.map(async (p): Promise<[string, string[]]> => {
+				const [models, keys] = await Promise.all([
+					triggerModelHistogram({ filters: { providers: [p.name], start_time: monthAgo, end_time: now } })
+						.unwrap()
+						.then((data) => data.models ?? [])
+						.catch(() => []),
+					triggerProviderKeys(p.name)
+						.unwrap()
+						.catch(() => []),
+				]);
+
+				return [p.name, getDisplayModels(models, buildAliasDisplayMap(keys))];
+			}),
 		).then((results) => {
 			if (!cancelled) {
 				setModelsUsedMap(new Map(results));
@@ -94,7 +139,7 @@ export default function OverviewTab({ hasAccess }: OverviewTabProps) {
 		return () => {
 			cancelled = true;
 		};
-	}, [providers, triggerModelHistogram]);
+	}, [providers, triggerModelHistogram, triggerProviderKeys]);
 
 	const rows: ModelCatalogRow[] = useMemo(() => {
 		if (!providers) return [];

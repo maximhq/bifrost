@@ -55,8 +55,13 @@ func (s *Store) CalculateCostForUsage(usage *schemas.BifrostLLMUsage, provider s
 		return usage.Cost.TotalCost
 	}
 
+	// Apply the served tier (fast mode / data residency) carried on the usage so
+	// cancelled/failed fast or US-residency streams keep their multiplier.
+	input := costInput{usage: usage}
+	input.tier = tierFromResponse(nil, usage.Speed, usage.InferenceGeo)
+
 	return s.computeCostFromInput(
-		costInput{usage: usage},
+		input,
 		schemas.RoutingInfo{Provider: provider, Model: model},
 		normalizeStreamRequestType(requestType),
 		lookupScopes,
@@ -225,18 +230,18 @@ func extractCostInput(result *schemas.BifrostResponse) costInput {
 
 	case result.ChatResponse != nil && result.ChatResponse.Usage != nil:
 		input.usage = result.ChatResponse.Usage
-		input.tier = tierFromResponse(result.ChatResponse.ServiceTier, result.ChatResponse.Speed)
+		input.tier = tierFromResponse(result.ChatResponse.ServiceTier, result.ChatResponse.Speed, result.ChatResponse.InferenceGeo)
 
 	case result.ResponsesResponse != nil && result.ResponsesResponse.Usage != nil:
 		input.usage = responsesUsageToBifrostUsage(result.ResponsesResponse.Usage)
-		input.tier = tierFromResponse(result.ResponsesResponse.ServiceTier, result.ResponsesResponse.Speed)
+		input.tier = tierFromResponse(result.ResponsesResponse.ServiceTier, result.ResponsesResponse.Speed, result.ResponsesResponse.InferenceGeo)
 
 	case result.CompactionResponse != nil && result.CompactionResponse.Usage != nil:
 		input.usage = responsesUsageToBifrostUsage(result.CompactionResponse.Usage)
 
 	case result.ResponsesStreamResponse != nil && result.ResponsesStreamResponse.Response != nil && result.ResponsesStreamResponse.Response.Usage != nil:
 		input.usage = responsesUsageToBifrostUsage(result.ResponsesStreamResponse.Response.Usage)
-		input.tier = tierFromResponse(result.ResponsesStreamResponse.Response.ServiceTier, result.ResponsesStreamResponse.Response.Speed)
+		input.tier = tierFromResponse(result.ResponsesStreamResponse.Response.ServiceTier, result.ResponsesStreamResponse.Response.Speed, result.ResponsesStreamResponse.Response.InferenceGeo)
 
 	case result.EmbeddingResponse != nil && result.EmbeddingResponse.Usage != nil:
 		input.usage = result.EmbeddingResponse.Usage
@@ -373,7 +378,12 @@ func extractTranscriptionUsage(u *schemas.TranscriptionUsage) (*schemas.BifrostL
 		}
 	}
 
-	return usage, u.Seconds, audioTokenDetails
+	var audioSeconds *int
+	if u.Seconds != nil {
+		audioSeconds = new(int(*u.Seconds))
+	}
+
+	return usage, audioSeconds, audioTokenDetails
 }
 
 // ---------------------------------------------------------------------------
@@ -386,7 +396,6 @@ func computeTextCost(pricing *configstoreTables.TableModelPricing, usage *schema
 		return 0
 	}
 
-	totalTokens := usage.TotalTokens
 	promptTokens := usage.PromptTokens
 	completionTokens := usage.CompletionTokens
 
@@ -402,11 +411,15 @@ func computeTextCost(pricing *configstoreTables.TableModelPricing, usage *schema
 		}
 	}
 
-	inputRate := tieredInputRate(pricing, totalTokens, tier)
-	outputRate := tieredOutputRate(pricing, totalTokens, tier)
-	cacheReadInputRate := tieredCacheReadInputTokenRate(pricing, totalTokens, tier)
-	cacheCreationInputRate := tieredCacheCreationInputTokenRate(pricing, totalTokens, tier)
-	cacheCreationInputAbove1hrInputRate := tieredCacheCreationInputAbove1hrTokenRate(pricing, totalTokens, tier)
+	// Long-context pricing tiers are selected by input context size. Once
+	// selected, the tier's input/cache/output rates apply to their respective
+	// billed token categories for the request.
+	tierTokens := promptTokens
+	inputRate := tieredInputRate(pricing, tierTokens, tier)
+	outputRate := tieredOutputRate(pricing, tierTokens, tier)
+	cacheReadInputRate := tieredCacheReadInputTokenRate(pricing, tierTokens, tier)
+	cacheCreationInputRate := tieredCacheCreationInputTokenRate(pricing, tierTokens, tier)
+	cacheCreationInputAbove1hrInputRate := tieredCacheCreationInputAbove1hrTokenRate(pricing, tierTokens, tier)
 
 	// Clamp cached token counts to avoid negative billing on malformed provider payloads
 	if cachedReadTokens > promptTokens {
@@ -475,7 +488,15 @@ func computeTextCost(pricing *configstoreTables.TableModelPricing, usage *schema
 		searchCost = float64(*usage.CompletionTokensDetails.NumSearchQueries) * *pricing.SearchContextCostPerQuery
 	}
 
-	return inputCost + outputCost + audioCost + searchCost
+	// Data residency (Anthropic inference_geo:"us") scales all token/cache costs
+	// by a flat multiplier; the per-search fee is not a token category, so it is
+	// excluded.
+	tokenCost := inputCost + outputCost + audioCost
+	if tier.inferenceGeoUS && pricing.InferenceGeoUSMultiplier != nil {
+		tokenCost *= *pricing.InferenceGeoUSMultiplier
+	}
+
+	return tokenCost + searchCost
 }
 
 // computeEmbeddingCost handles embedding requests (input-only).
@@ -483,7 +504,7 @@ func computeEmbeddingCost(pricing *configstoreTables.TableModelPricing, usage *s
 	if usage == nil {
 		return 0
 	}
-	return float64(usage.PromptTokens) * tieredInputRate(pricing, usage.TotalTokens, tier)
+	return float64(usage.PromptTokens) * tieredInputRate(pricing, usage.PromptTokens, tier)
 }
 
 // computeRerankCost handles rerank requests.
@@ -491,8 +512,9 @@ func computeRerankCost(pricing *configstoreTables.TableModelPricing, usage *sche
 	if usage == nil {
 		return 0
 	}
-	inputCost := float64(usage.PromptTokens) * tieredInputRate(pricing, usage.TotalTokens, tier)
-	outputCost := float64(usage.CompletionTokens) * tieredOutputRate(pricing, usage.TotalTokens, tier)
+	tierTokens := usage.PromptTokens
+	inputCost := float64(usage.PromptTokens) * tieredInputRate(pricing, tierTokens, tier)
+	outputCost := float64(usage.CompletionTokens) * tieredOutputRate(pricing, tierTokens, tier)
 
 	searchCost := 0.0
 	if pricing.SearchContextCostPerQuery != nil && usage.CompletionTokensDetails != nil && usage.CompletionTokensDetails.NumSearchQueries != nil {
@@ -511,7 +533,7 @@ func computeRerankCost(pricing *configstoreTables.TableModelPricing, usage *sche
 // since TTS providers report their billable unit in that field.
 // Output falls back to per-second duration when no audio token rate is configured.
 func computeSpeechCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, audioSeconds *int, audioTextInputChars int, tier serviceTier) float64 {
-	totalTokens := safeTotalTokens(usage)
+	tierTokens := inputTierTokens(usage)
 
 	// Input: per-character rate takes precedence for TTS/audio models
 	inputCost := 0.0
@@ -519,14 +541,14 @@ func computeSpeechCost(pricing *configstoreTables.TableModelPricing, usage *sche
 		if pricing.InputCostPerCharacter != nil {
 			inputCost = float64(audioTextInputChars) * *pricing.InputCostPerCharacter
 		} else {
-			inputCost = float64(audioTextInputChars) * tieredInputRate(pricing, totalTokens, tier)
+			inputCost = float64(audioTextInputChars) * tieredInputRate(pricing, tierTokens, tier)
 		}
 	} else if usage != nil && usage.PromptTokens > 0 {
-		inputCost = float64(usage.PromptTokens) * tieredInputRate(pricing, totalTokens, tier)
+		inputCost = float64(usage.PromptTokens) * tieredInputRate(pricing, tierTokens, tier)
 	}
 
 	// Output: audio tokens first, then per-second fallback
-	outputCost := computeAudioOutputCost(pricing, usage, audioSeconds, totalTokens, tier)
+	outputCost := computeAudioOutputCost(pricing, usage, audioSeconds, tierTokens, tier)
 
 	return inputCost + outputCost
 }
@@ -535,15 +557,15 @@ func computeSpeechCost(pricing *configstoreTables.TableModelPricing, usage *sche
 // Input is audio, output is text (CompletionTokens).
 // Input and output are calculated independently — tokens first, then per-second fallback.
 func computeTranscriptionCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, audioSeconds *int, audioTokenDetails *schemas.TranscriptionUsageInputTokenDetails, tier serviceTier) float64 {
-	totalTokens := safeTotalTokens(usage)
+	tierTokens := inputTierTokens(usage)
 
 	// Input: audio tokens/details first, then per-second fallback
-	inputCost := computeAudioInputCost(pricing, usage, audioSeconds, audioTokenDetails, totalTokens, tier)
+	inputCost := computeAudioInputCost(pricing, usage, audioSeconds, audioTokenDetails, tierTokens, tier)
 
 	// Output: text tokens
 	outputCost := 0.0
 	if usage != nil && usage.CompletionTokens > 0 {
-		outputCost = float64(usage.CompletionTokens) * tieredOutputRate(pricing, totalTokens, tier)
+		outputCost = float64(usage.CompletionTokens) * tieredOutputRate(pricing, tierTokens, tier)
 	}
 
 	return inputCost + outputCost
@@ -600,10 +622,10 @@ func computeImageCost(pricing *configstoreTables.TableModelPricing, imageUsage *
 		return 0
 	}
 
-	totalTokens := imageUsage.TotalTokens
+	tierTokens := imageInputTierTokens(imageUsage)
 	pixels := parseImagePixels(imageSize)
-	inputCost := computeImageInputCost(pricing, imageUsage, totalTokens, pixels, tier)
-	outputCost := computeImageOutputCost(pricing, imageUsage, totalTokens, pixels, imageQuality, tier)
+	inputCost := computeImageInputCost(pricing, imageUsage, tierTokens, pixels, tier)
+	outputCost := computeImageOutputCost(pricing, imageUsage, tierTokens, pixels, imageQuality, tier)
 
 	return inputCost + outputCost
 }
@@ -720,14 +742,14 @@ func computeImageOutputCost(pricing *configstoreTables.TableModelPricing, imageU
 // computeVideoCost handles video generation requests.
 // Input and output are calculated independently — tokens first, then per-second fallback.
 func computeVideoCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, videoSeconds *int, tier serviceTier) float64 {
-	totalTokens := safeTotalTokens(usage)
+	tierTokens := inputTierTokens(usage)
 
 	// Input: text prompt tokens first, then per-second fallback
 	inputCost := 0.0
 	if usage != nil && usage.PromptTokens > 0 {
-		inputCost = float64(usage.PromptTokens) * tieredInputRate(pricing, totalTokens, tier)
+		inputCost = float64(usage.PromptTokens) * tieredInputRate(pricing, tierTokens, tier)
 	} else if videoSeconds != nil && *videoSeconds > 0 {
-		if rate := tieredVideoInputPerSecondRate(pricing, totalTokens); rate > 0 {
+		if rate := tieredVideoInputPerSecondRate(pricing, tierTokens); rate > 0 {
 			inputCost = float64(*videoSeconds) * rate
 		}
 	}
@@ -735,7 +757,7 @@ func computeVideoCost(pricing *configstoreTables.TableModelPricing, usage *schem
 	// Output: completion tokens first, then per-second fallback
 	outputCost := 0.0
 	if usage != nil && usage.CompletionTokens > 0 {
-		outputCost = float64(usage.CompletionTokens) * tieredOutputRate(pricing, totalTokens, tier)
+		outputCost = float64(usage.CompletionTokens) * tieredOutputRate(pricing, tierTokens, tier)
 	} else if videoSeconds != nil && *videoSeconds > 0 {
 		if pricing.OutputCostPerVideoPerSecond != nil {
 			outputCost = float64(*videoSeconds) * *pricing.OutputCostPerVideoPerSecond
@@ -773,7 +795,7 @@ func computeOCRCost(pricing *configstoreTables.TableModelPricing, ocrProcessedPa
 // (fast mode). speed == "fast" means fast mode was actually served — the
 // provider echoes the served speed, so stripped/fell-back requests report
 // "standard" and bill at standard rates.
-func tierFromResponse(s *schemas.BifrostServiceTier, speed *string) serviceTier {
+func tierFromResponse(s *schemas.BifrostServiceTier, speed *string, inferenceGeo *string) serviceTier {
 	var tier serviceTier
 	if s != nil {
 		switch *s {
@@ -784,6 +806,7 @@ func tierFromResponse(s *schemas.BifrostServiceTier, speed *string) serviceTier 
 		}
 	}
 	tier.isFast = speed != nil && *speed == "fast"
+	tier.inferenceGeoUS = inferenceGeo != nil && strings.EqualFold(*inferenceGeo, "us")
 	return tier
 }
 
@@ -795,8 +818,13 @@ func tieredInputRate(pricing *configstoreTables.TableModelPricing, totalTokens i
 	if tier.isFast && pricing.InputCostPerTokenFast != nil {
 		return *pricing.InputCostPerTokenFast
 	}
-	if tier.isFlex && pricing.InputCostPerTokenFlex != nil {
-		return *pricing.InputCostPerTokenFlex
+	if tier.isFlex {
+		if totalTokens > TokenTierAbove272K && pricing.InputCostPerTokenFlexAbove272kTokens != nil {
+			return *pricing.InputCostPerTokenFlexAbove272kTokens
+		}
+		if pricing.InputCostPerTokenFlex != nil {
+			return *pricing.InputCostPerTokenFlex
+		}
 	}
 	if totalTokens > TokenTierAbove272K {
 		if tier.isPriority && pricing.InputCostPerTokenAbove272kTokensPriority != nil {
@@ -834,8 +862,13 @@ func tieredOutputRate(pricing *configstoreTables.TableModelPricing, totalTokens 
 	if tier.isFast && pricing.OutputCostPerTokenFast != nil {
 		return *pricing.OutputCostPerTokenFast
 	}
-	if tier.isFlex && pricing.OutputCostPerTokenFlex != nil {
-		return *pricing.OutputCostPerTokenFlex
+	if tier.isFlex {
+		if totalTokens > TokenTierAbove272K && pricing.OutputCostPerTokenFlexAbove272kTokens != nil {
+			return *pricing.OutputCostPerTokenFlexAbove272kTokens
+		}
+		if pricing.OutputCostPerTokenFlex != nil {
+			return *pricing.OutputCostPerTokenFlex
+		}
 	}
 	if totalTokens > TokenTierAbove272K {
 		if tier.isPriority && pricing.OutputCostPerTokenAbove272kTokensPriority != nil {
@@ -933,8 +966,17 @@ func tieredAudioTokenOutputRate(pricing *configstoreTables.TableModelPricing, to
 }
 
 func tieredCacheReadInputTokenRate(pricing *configstoreTables.TableModelPricing, totalTokens int, tier serviceTier) float64 {
-	if tier.isFlex && pricing.CacheReadInputTokenCostFlex != nil {
-		return *pricing.CacheReadInputTokenCostFlex
+	// Fast mode (Anthropic) is a flat rate across the full context window.
+	if tier.isFast && pricing.CacheReadInputTokenCostFast != nil {
+		return *pricing.CacheReadInputTokenCostFast
+	}
+	if tier.isFlex {
+		if totalTokens > TokenTierAbove272K && pricing.CacheReadInputTokenCostFlexAbove272kTokens != nil {
+			return *pricing.CacheReadInputTokenCostFlexAbove272kTokens
+		}
+		if pricing.CacheReadInputTokenCostFlex != nil {
+			return *pricing.CacheReadInputTokenCostFlex
+		}
 	}
 	if totalTokens > TokenTierAbove272K {
 		if tier.isPriority && pricing.CacheReadInputTokenCostAbove272kTokensPriority != nil {
@@ -961,10 +1003,32 @@ func tieredCacheReadInputTokenRate(pricing *configstoreTables.TableModelPricing,
 	return tieredInputRate(pricing, totalTokens, tier)
 }
 
-// Note: flex tier is not checked here because cache creation is not a concept in
-// OpenAI's pricing model (the only provider that uses flex tier). Only cache read
-// has a flex-specific rate.
+// OpenAI introduced cache-write (cache-creation) pricing with gpt-5.6, tiered by
+// service tier (flex/priority) and by the 272k context window; Anthropic uses the
+// flat fast rate. Precedence mirrors tieredCacheReadInputTokenRate.
 func tieredCacheCreationInputTokenRate(pricing *configstoreTables.TableModelPricing, totalTokens int, tier serviceTier) float64 {
+	// Fast mode (Anthropic) is a flat rate across the full context window.
+	if tier.isFast && pricing.CacheCreationInputTokenCostFast != nil {
+		return *pricing.CacheCreationInputTokenCostFast
+	}
+	if tier.isFlex {
+		if totalTokens > TokenTierAbove272K && pricing.CacheCreationInputTokenCostFlexAbove272kTokens != nil {
+			return *pricing.CacheCreationInputTokenCostFlexAbove272kTokens
+		}
+		if pricing.CacheCreationInputTokenCostFlex != nil {
+			return *pricing.CacheCreationInputTokenCostFlex
+		}
+	}
+	// Priority has no long context: OpenAI does not offer priority >272k, and billing
+	// uses the served tier (response.service_tier), so an actual-priority request is
+	// always ≤272k. Its cache-write rate is flat, so it takes precedence over the
+	// standard context tiers below (which would otherwise capture the 200k–272k band).
+	if tier.isPriority && pricing.CacheCreationInputTokenCostPriority != nil {
+		return *pricing.CacheCreationInputTokenCostPriority
+	}
+	if totalTokens > TokenTierAbove272K && pricing.CacheCreationInputTokenCostAbove272kTokens != nil {
+		return *pricing.CacheCreationInputTokenCostAbove272kTokens
+	}
 	if totalTokens > TokenTierAbove200K && pricing.CacheCreationInputTokenCostAbove200kTokens != nil {
 		return *pricing.CacheCreationInputTokenCostAbove200kTokens
 	}
@@ -975,6 +1039,10 @@ func tieredCacheCreationInputTokenRate(pricing *configstoreTables.TableModelPric
 }
 
 func tieredCacheCreationInputAbove1hrTokenRate(pricing *configstoreTables.TableModelPricing, totalTokens int, tier serviceTier) float64 {
+	// Fast mode (Anthropic) is a flat rate across the full context window.
+	if tier.isFast && pricing.CacheCreationInputTokenCostAbove1hrFast != nil {
+		return *pricing.CacheCreationInputTokenCostAbove1hrFast
+	}
 	if totalTokens > TokenTierAbove200K && pricing.CacheCreationInputTokenCostAbove1hrAbove200kTokens != nil {
 		return *pricing.CacheCreationInputTokenCostAbove1hrAbove200kTokens
 	}
@@ -984,11 +1052,42 @@ func tieredCacheCreationInputAbove1hrTokenRate(pricing *configstoreTables.TableM
 	return tieredCacheCreationInputTokenRate(pricing, totalTokens, tier)
 }
 
-func safeTotalTokens(usage *schemas.BifrostLLMUsage) int {
+func inputTierTokens(usage *schemas.BifrostLLMUsage) int {
 	if usage == nil {
 		return 0
 	}
-	return usage.TotalTokens
+	return usage.PromptTokens
+}
+
+func imageInputTierTokens(usage *schemas.ImageUsage) int {
+	if usage == nil {
+		return 0
+	}
+	if usage.InputTokensDetails != nil {
+		return usage.InputTokensDetails.TextTokens + usage.InputTokensDetails.ImageTokens
+	}
+	if usage.InputTokens > 0 {
+		return usage.InputTokens
+	}
+
+	// Some older/provider-specific image adapters only report TotalTokens.
+	// Derive input from total-output when output is known, but do not treat a
+	// bare total as input: total includes generated output tokens.
+	outputTokens := imageOutputTokens(usage)
+	if usage.TotalTokens > outputTokens {
+		return usage.TotalTokens - outputTokens
+	}
+	return 0
+}
+
+func imageOutputTokens(usage *schemas.ImageUsage) int {
+	if usage == nil {
+		return 0
+	}
+	if usage.OutputTokensDetails != nil {
+		return usage.OutputTokensDetails.TextTokens + usage.OutputTokensDetails.ImageTokens
+	}
+	return usage.OutputTokens
 }
 
 // parseImagePixels parses a size string like "1024x1024" into total pixel count.
@@ -1096,7 +1195,8 @@ func (s *Store) resolvePricing(routingInfo schemas.RoutingInfo, requestType sche
 //
 //   - Gemini: retries under the "vertex" provider, then falls back to chat mode for Responses requests.
 //   - Vertex: strips the "provider/model" prefix and retries, then falls back to chat mode for Responses requests.
-//   - Bedrock: prepends the "anthropic." namespace for Claude models, then falls back to chat mode for Responses requests.
+//   - Bedrock: prepends the vendor namespace ("anthropic.", "openai.", "google.", "xai.") inferred from the model family, then falls back to chat mode for Responses requests.
+//   - Bedrock Mantle: folded onto the "bedrock" provider up front (datasheet rows for all Bedrock variants are stored there), so it shares every Bedrock fallback.
 //   - All providers: for Responses/ResponsesStream requests, retries the lookup in chat mode.
 //   - All providers: for ImageEdit/ImageVariation requests, retries the lookup in image-generation mode.
 //
@@ -1115,6 +1215,13 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 	defer s.mu.RUnlock()
 
 	mode := normalizeRequestType(requestType)
+
+	// Datasheet rows for all Bedrock variants are stored under the "bedrock"
+	// provider (normalizeProvider folds bedrock_* onto "bedrock"), so
+	// bedrock_mantle lookups run entirely against "bedrock".
+	if provider == string(schemas.BedrockMantle) {
+		provider = string(schemas.Bedrock)
+	}
 
 	pricing, ok := s.pricingData[makeKey(model, provider, mode)]
 	if ok {
@@ -1161,10 +1268,24 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 	}
 
 	if provider == string(schemas.Bedrock) {
-		// If model is claude without "anthropic." prefix, try with "anthropic." prefix
-		if !strings.Contains(model, "anthropic.") && schemas.IsAnthropicModel(model) {
-			s.logger.Debug("primary lookup failed, trying with anthropic. prefix for the same model")
-			pricing, ok = s.pricingData[makeKey("anthropic."+model, provider, mode)]
+		// Bedrock model IDs carry a vendor namespace ("anthropic.claude-*",
+		// "openai.gpt-oss-*", "google.gemma-*", "xai.grok-*"). When the caller
+		// sends the bare model name, retry with the namespace inferred from
+		// the model family.
+		var vendorPrefix string
+		switch {
+		case !strings.Contains(model, "anthropic.") && schemas.IsAnthropicModel(model):
+			vendorPrefix = "anthropic."
+		case !strings.Contains(model, "openai.") && schemas.IsOpenAIModel(model):
+			vendorPrefix = "openai."
+		case !strings.Contains(model, "google.") && (schemas.IsGemmaModel(model) || schemas.IsGeminiModel(model)):
+			vendorPrefix = "google."
+		case !strings.Contains(model, "xai.") && schemas.IsGrokModel(model):
+			vendorPrefix = "xai."
+		}
+		if vendorPrefix != "" {
+			s.logger.Debug("primary lookup failed, trying with %s prefix for the same model", vendorPrefix)
+			pricing, ok = s.pricingData[makeKey(vendorPrefix+model, provider, mode)]
 			if ok {
 				return &pricing, true
 			}
@@ -1172,7 +1293,7 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 			// Lookup in chat if responses not found
 			if requestType == schemas.ResponsesRequest || requestType == schemas.ResponsesStreamRequest || requestType == schemas.WebSocketResponsesRequest || requestType == schemas.RealtimeRequest || requestType == schemas.CompactionRequest {
 				s.logger.Debug("secondary lookup failed, trying chat provider for the same model in chat completion")
-				pricing, ok = s.pricingData[makeKey("anthropic."+model, provider, normalizeRequestType(schemas.ChatCompletionRequest))]
+				pricing, ok = s.pricingData[makeKey(vendorPrefix+model, provider, normalizeRequestType(schemas.ChatCompletionRequest))]
 				if ok {
 					return &pricing, true
 				}
@@ -1350,7 +1471,7 @@ func passthroughUsageToCostInput(su *schemas.BifrostPassthroughUsage) costInput 
 	if su.LLMUsage != nil {
 		input.usage = su.LLMUsage
 	}
-	input.tier = tierFromResponse(su.ServiceTier, su.Speed)
+	input.tier = tierFromResponse(su.ServiceTier, su.Speed, su.InferenceGeo)
 	if su.ImageUsage != nil {
 		input.imageUsage = su.ImageUsage
 		input.imageSize = su.ImageSize

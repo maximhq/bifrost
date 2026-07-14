@@ -429,7 +429,23 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_customer_name_unique_constraint_dedup", "add_customer_name_unique_constraint_index"}, run: migrationAddCustomerNameUniqueConstraint},
 	{IDs: []string{"null_legacy_customer_budget_id_refs"}, run: migrationNullLegacyCustomerBudgetID},
 	{IDs: []string{"add_skills_repo_tables"}, run: migrationAddSkillsRepoTables},
+	{IDs: []string{"add_oauth2_server_tables"}, run: migrationAddOAuth2ServerTables},
+	{IDs: []string{"add_oauth2_issuance_tables"}, run: migrationAddOAuth2IssuanceTables},
 	{IDs: []string{"add_dump_errors_in_console_logs_column"}, run: migrationAddDumpErrorsInConsoleLogsColumn},
+	{IDs: []string{"add_bedrock_mantle_key_columns"}, run: migrationAddBedrockMantleKeyColumns},
+	{IDs: []string{"add_model_pricing_is_deprecated_column"}, run: migrationAddModelPricingIsDeprecatedColumn},
+	{IDs: []string{"add_mcp_client_tool_execution_timeout_column"}, run: migrationAddMCPClientToolExecutionTimeoutColumn},
+	{IDs: []string{"add_virtual_key_expires_at_column"}, run: migrationAddVirtualKeyExpiresAtColumn},
+	{IDs: []string{"add_fast_mode_cache_pricing_columns"}, run: migrationAddFastModeCachePricingColumns},
+	{IDs: []string{"add_inference_geo_multiplier_column"}, run: migrationAddInferenceGeoMultiplierColumn},
+	{IDs: []string{"add_flex_and_cache_creation_272k_pricing_columns"}, run: migrationAddFlexAndCacheCreation272kPricingColumns},
+	{IDs: []string{"add_vertex_force_single_region_column"}, run: migrationAddVertexForceSingleRegionColumn},
+	{IDs: []string{"add_sidekiq_table"}, run: migrationAddSidekiqTable},
+	{IDs: []string{"add_sidekiq_kind_status_created_index"}, run: migrationAddSidekiqKindStatusCreatedIndex},
+	{IDs: []string{"add_fast_mode_cache_pricing_columns"}, run: migrationAddFastModeCachePricingColumns},
+	{IDs: []string{"add_inference_geo_multiplier_column"}, run: migrationAddInferenceGeoMultiplierColumn},
+	{IDs: []string{"repair_bare_wildcard_allowed_models"}, run: migrationRepairBareWildcardAllowedModels},
+	{IDs: []string{"add_bedrock_project_id_columns"}, run: migrationAddBedrockProjectIDColumns},
 }
 
 // quoteSQLiteIdentifier quotes a SQLite identifier, escaping any double quotes.
@@ -1110,6 +1126,86 @@ func migrationAddVirtualKeyProviderConfigTable(ctx context.Context, db *gorm.DB,
 }
 
 // migrationAddAllowedOriginsJSONColumn adds the allowed_origins_json column to the client config table
+// migrationAddBedrockMantleKeyColumns adds the bedrock_mantle_* SigV4 credential columns to the
+// config_keys table for the standalone bedrock_mantle provider.
+func migrationAddBedrockMantleKeyColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_bedrock_mantle_key_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	cols := []string{
+		"bedrock_mantle_access_key",
+		"bedrock_mantle_secret_key",
+		"bedrock_mantle_session_token",
+		"bedrock_mantle_region",
+		"bedrock_mantle_role_arn",
+		"bedrock_mantle_external_id",
+		"bedrock_mantle_role_session_name",
+	}
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, col := range cols {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableKey{}, col); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, col := range cols {
+				if err := dropColumnIfExists(tx, logger, &tables.TableKey{}, col); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running db migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddBedrockProjectIDColumns adds the bedrock_project_id and bedrock_mantle_project_id
+// columns to the config_keys table. These scope Bedrock Mantle inference / model listing to a
+// specific Bedrock project via the OpenAI-Project / anthropic-workspace-id header.
+func migrationAddBedrockProjectIDColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_bedrock_project_id_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	cols := []string{
+		"bedrock_project_id",
+		"bedrock_mantle_project_id",
+	}
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, col := range cols {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableKey{}, col); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, col := range cols {
+				if err := dropColumnIfExists(tx, logger, &tables.TableKey{}, col); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running db migration: %s", err.Error())
+	}
+	return nil
+}
+
 func migrationAddAllowedOriginsJSONColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
 	migrationName := "add_allowed_origins_json_column"
 	logger.Info("[configstore] starting migration %s", migrationName)
@@ -6389,6 +6485,51 @@ func migrationBackfillAllowedModelsWildcard(ctx context.Context, db *gorm.DB, lo
 	return nil
 }
 
+// migrationRepairBareWildcardAllowedModels repairs governance_virtual_key_provider_configs
+// rows whose allowed_models / blacklisted_models column holds the bare one-character
+// string '*' instead of the JSON array '["*"]'. Such rows abort the GORM json
+// deserializer ("invalid character '*' ...") when the VK is loaded, which poisons the
+// whole provider admin surface (see issue #4318). The repair rewrites the column to the
+// canonical '["*"]' form the serializer:json tag is supposed to produce; the intended
+// value at write time was already the WhiteList ["*"], so the config_hash — computed
+// from the in-memory slice — stays consistent and needs no recomputation.
+func migrationRepairBareWildcardAllowedModels(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "repair_bare_wildcard_allowed_models"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+
+			// Match the documented manual workaround exactly: bare '*' → '["*"]'.
+			// Covers both whitelist columns on the provider config, which share the
+			// serializer:json tag and the same corruption class.
+			for _, column := range []string{"allowed_models", "blacklisted_models"} {
+				res := tx.Model(&tables.TableVirtualKeyProviderConfig{}).
+					Where(column+" = ?", "*").
+					Update(column, `["*"]`)
+				if res.Error != nil {
+					return fmt.Errorf("failed to repair bare wildcard %s: %w", column, res.Error)
+				}
+				if res.RowsAffected > 0 {
+					logger.Info("[configstore] %s: repaired %d rows with bare wildcard %s", migrationName, res.RowsAffected, column)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			// Rollback is a no-op: reverting '["*"]' back to '*' would re-introduce
+			// the value that breaks the deserializer.
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
+	}
+	return nil
+}
+
 // migrationAddMCPClientAllowedExtraHeadersJSONColumn adds the allowed_extra_headers_json column to the mcp_client table
 func migrationAddMCPClientAllowedExtraHeadersJSONColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
 	migrationName := "add_mcp_client_allowed_extra_headers_json_column"
@@ -7749,6 +7890,125 @@ func migrationAddFastModePricingColumns(ctx context.Context, db *gorm.DB, logger
 	return nil
 }
 
+// migrationAddFastModeCachePricingColumns adds fast-mode cache pricing columns
+// for Anthropic (speed:"fast"). Caching multipliers stack on the fast base input
+// rate, so cache tokens need dedicated fast rates instead of the standard ones.
+func migrationAddFastModeCachePricingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_fast_mode_cache_pricing_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	columns := []string{
+		"cache_creation_input_token_cost_fast",
+		"cache_creation_input_token_cost_above_1hr_fast",
+		"cache_read_input_token_cost_fast",
+	}
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range columns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to add column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range columns {
+				if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to drop column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running fast mode cache pricing columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddInferenceGeoMultiplierColumn adds the inference_geo_us_multiplier
+// column for Anthropic data residency (inference_geo:"us" applies a 1.1x
+// multiplier stacking on top of all token/cache costs).
+func migrationAddInferenceGeoMultiplierColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_inference_geo_multiplier_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	columns := []string{
+		"inference_geo_us_multiplier",
+	}
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range columns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to add column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range columns {
+				if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to drop column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running inference geo multiplier column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddFlexAndCacheCreation272kPricingColumns adds the flex 272k-tier
+// rates and the OpenAI cache-write (cache-creation) tiered rates introduced with
+// gpt-5.6 (flex, priority, and the 272k context tier).
+func migrationAddFlexAndCacheCreation272kPricingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_flex_and_cache_creation_272k_pricing_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	columns := []string{
+		"input_cost_per_token_flex_above_272k_tokens",
+		"output_cost_per_token_flex_above_272k_tokens",
+		"cache_read_input_token_cost_flex_above_272k_tokens",
+		"cache_creation_input_token_cost_above_272k_tokens",
+		"cache_creation_input_token_cost_flex",
+		"cache_creation_input_token_cost_flex_above_272k_tokens",
+		"cache_creation_input_token_cost_priority",
+	}
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range columns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to add column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range columns {
+				if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to drop column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running flex and cache creation 272k pricing columns migration: %s", err.Error())
+	}
+	return nil
+}
+
 // migrationAddWhitelistedRoutesJSONColumn adds the whitelisted_routes_json column to the config_client table
 func migrationAddWhitelistedRoutesJSONColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
 	migrationName := "add_whitelisted_routes_json_column"
@@ -8884,24 +9144,51 @@ func migrationRefreshConfigHashAfterMCPExternalServerURLRemoval(ctx context.Cont
 			// Gating on the legacy column would make ordering brittle: any
 			// reordering that drops the column before this runs would silently
 			// turn the refresh into a no-op and leave stale hashes behind.
-			// Read via an explicit, schema-derived column projection rather
-			// than GORM's default Find (SELECT *). Earlier migrations in this
-			// same run add and drop config_client columns; reusing a cached
-			// SELECT * plan whose projection has since drifted is what trips
-			// PostgreSQL's "cached plan must not change result type"
-			// (SQLSTATE 0A000) — an error that is unrecoverable inside a
-			// migration's transaction. An explicit column list is a distinct,
-			// previously-uncached query: it prepares fresh against the current
-			// schema and has a fixed result type. Same class of guard as
-			// migrate_calendar_aligned. The projection is derived from the
-			// TableClientConfig schema so it cannot drift from the struct.
+			// Read via an explicit column projection rather than GORM's default
+			// Find (SELECT *). Earlier migrations in this same run add and drop
+			// config_client columns; reusing a cached SELECT * plan whose
+			// projection has since drifted is what trips PostgreSQL's "cached
+			// plan must not change result type" (SQLSTATE 0A000), an error that
+			// is unrecoverable inside a migration's transaction. An explicit
+			// column list is a distinct, previously-uncached query: it prepares
+			// fresh against the current schema and has a fixed result type. Same
+			// class of guard as migrate_calendar_aligned.
+			//
+			// Derive the projection from the LIVE table columns intersected with
+			// the struct, not from the struct alone. TableClientConfig can be
+			// ahead of applied DDL: a declared column (e.g.
+			// dump_errors_in_console_logs, added by a later migration step) does
+			// not exist yet on upgrade, and naming a missing column in the SELECT
+			// fails with 42703. Intersecting with the columns that physically
+			// exist makes that impossible for any current or future column. Keep
+			// the read on .Find (not a raw Scan) so the AfterFind hook still
+			// deserializes the *_json columns into the virtual fields the hash
+			// depends on; a raw Scan bypasses AfterFind and would corrupt them.
+			existingCols, err := mg.ColumnTypes(&tables.TableClientConfig{})
+			if err != nil {
+				return fmt.Errorf("inspect config_client columns for hash recompute: %w", err)
+			}
+			present := make(map[string]struct{}, len(existingCols))
+			for _, ct := range existingCols {
+				present[ct.Name()] = struct{}{}
+			}
 			schemaStmt := &gorm.Statement{DB: tx}
 			if err := schemaStmt.Parse(&tables.TableClientConfig{}); err != nil {
 				return fmt.Errorf("parse config_client schema for hash recompute: %w", err)
 			}
+			projection := make([]string, 0, len(schemaStmt.Schema.DBNames))
+			for _, name := range schemaStmt.Schema.DBNames {
+				if _, ok := present[name]; ok {
+					projection = append(projection, name)
+				}
+			}
+			if len(projection) == 0 {
+				logger.Info("[configstore] %s: no columns in common between config_client and TableClientConfig, skipping hash recompute", migrationName)
+				return nil
+			}
 			var clientConfigs []tables.TableClientConfig
 			if err := tx.Model(&tables.TableClientConfig{}).
-				Select(schemaStmt.Schema.DBNames).
+				Select(projection).
 				Find(&clientConfigs).Error; err != nil {
 				return fmt.Errorf("fetch client configs for hash recompute: %w", err)
 			}
@@ -9585,6 +9872,36 @@ func migrationAddAdditionalAttributesToPricing(ctx context.Context, db *gorm.DB,
 	return nil
 }
 
+// migrationAddModelPricingIsDeprecatedColumn adds is_deprecated to
+// governance_model_pricing so synced datasheets can mark models that should
+// remain listable but are no longer recommended for new use.
+func migrationAddModelPricingIsDeprecatedColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_model_pricing_is_deprecated_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableModelPricing{}, "IsDeprecated"); err != nil {
+				return fmt.Errorf("failed to add is_deprecated column: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, "IsDeprecated"); err != nil {
+				return fmt.Errorf("failed to drop is_deprecated column: %w", err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_model_pricing_is_deprecated_column migration: %s", err.Error())
+	}
+	return nil
+}
+
 // migrationAddCustomerCalendarAlignedColumn adds calendar_aligned to governance_customers
 // so customer-level calendar alignment can be persisted. No backfill is needed: the
 // legacy per-budget/per-rate-limit calendar_aligned columns were dropped by
@@ -10067,4 +10384,297 @@ func migrationAddCustomerNameUniqueConstraint(ctx context.Context, db *gorm.DB, 
 			return tx.Exec("DROP INDEX IF EXISTS " + idxName).Error
 		},
 	})
+}
+
+func migrationAddOAuth2ServerTables(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_oauth2_server_tables"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{
+		{
+			ID: migrationName,
+			Migrate: func(tx *gorm.DB) error {
+				tx = tx.WithContext(ctx)
+				mg := tx.Migrator()
+				if !mg.HasColumn(&tables.TableClientConfig{}, "mcp_server_auth_mode") {
+					if err := mg.AddColumn(&tables.TableClientConfig{}, "MCPServerAuthMode"); err != nil {
+						return fmt.Errorf("add mcp_server_auth_mode column: %w", err)
+					}
+				}
+				if !mg.HasColumn(&tables.TableClientConfig{}, "oauth2_server_config_json") {
+					if err := mg.AddColumn(&tables.TableClientConfig{}, "OAuth2ServerConfigJSON"); err != nil {
+						return fmt.Errorf("add oauth2_server_config_json column: %w", err)
+					}
+				}
+				return nil
+			},
+			Rollback: func(tx *gorm.DB) error {
+				tx = tx.WithContext(ctx)
+				mg := tx.Migrator()
+				if mg.HasColumn(&tables.TableClientConfig{}, "oauth2_server_config_json") {
+					if err := mg.DropColumn(&tables.TableClientConfig{}, "OAuth2ServerConfigJSON"); err != nil {
+						return fmt.Errorf("drop oauth2_server_config_json column: %w", err)
+					}
+				}
+				if mg.HasColumn(&tables.TableClientConfig{}, "mcp_server_auth_mode") {
+					if err := mg.DropColumn(&tables.TableClientConfig{}, "MCPServerAuthMode"); err != nil {
+						return fmt.Errorf("drop mcp_server_auth_mode column: %w", err)
+					}
+				}
+				return nil
+			},
+		},
+	})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running db migration %s: %w", migrationName, err)
+	}
+	return nil
+}
+
+func migrationAddOAuth2IssuanceTables(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_oauth2_issuance_tables"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if !mg.HasTable(&tables.TableOAuth2Client{}) {
+				if err := mg.CreateTable(&tables.TableOAuth2Client{}); err != nil {
+					return fmt.Errorf("create oauth2_clients table: %w", err)
+				}
+			}
+			if !mg.HasTable(&tables.TableOAuth2AuthorizeRequest{}) {
+				if err := mg.CreateTable(&tables.TableOAuth2AuthorizeRequest{}); err != nil {
+					return fmt.Errorf("create oauth2_authorize_requests table: %w", err)
+				}
+			}
+			if !mg.HasTable(&tables.TableOAuth2RefreshToken{}) {
+				if err := mg.CreateTable(&tables.TableOAuth2RefreshToken{}); err != nil {
+					return fmt.Errorf("create oauth2_refresh_tokens table: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			// Drop in reverse creation order.
+			if mg.HasTable(&tables.TableOAuth2RefreshToken{}) {
+				if err := mg.DropTable(&tables.TableOAuth2RefreshToken{}); err != nil {
+					return fmt.Errorf("drop oauth2_refresh_tokens table: %w", err)
+				}
+			}
+			if mg.HasTable(&tables.TableOAuth2AuthorizeRequest{}) {
+				if err := mg.DropTable(&tables.TableOAuth2AuthorizeRequest{}); err != nil {
+					return fmt.Errorf("drop oauth2_authorize_requests table: %w", err)
+				}
+			}
+			if mg.HasTable(&tables.TableOAuth2Client{}) {
+				if err := mg.DropTable(&tables.TableOAuth2Client{}); err != nil {
+					return fmt.Errorf("drop oauth2_clients table: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running db migration %s: %w", migrationName, err)
+	}
+	return nil
+}
+
+func migrationAddMCPClientToolExecutionTimeoutColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_client_tool_execution_timeout_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return addColumnIfNotExists(tx, logger, &tables.TableMCPClient{}, "tool_execution_timeout")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return dropColumnIfExists(tx, logger, &tables.TableMCPClient{}, "tool_execution_timeout")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddVirtualKeyExpiresAtColumn adds nullable expires_at to governance_virtual_keys.
+// No index: expiry is checked in-memory from the already-loaded VK, never queried by column.
+func migrationAddVirtualKeyExpiresAtColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_virtual_key_expires_at_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return addColumnIfNotExists(tx, logger, &tables.TableVirtualKey{}, "expires_at")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return dropColumnIfExists(tx, logger, &tables.TableVirtualKey{}, "expires_at")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddVertexForceSingleRegionColumn adds the vertex_force_single_region column to the key table.
+// Existing keys default to false (NULL), preserving the current multi-region promotion behaviour.
+func migrationAddVertexForceSingleRegionColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_vertex_force_single_region_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return addColumnIfNotExists(tx, logger, &tables.TableKey{}, "vertex_force_single_region")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return dropColumnIfExists(tx, logger, &tables.TableKey{}, "vertex_force_single_region")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddSidekiqTable creates the generic `sidekiq` background-job table. Uses raw SQL
+// (not GORM auto-DDL) so the schema is explicit and stable across GORM versions.
+// Idempotent via CREATE TABLE IF NOT EXISTS; covers postgres and sqlite dialects.
+func migrationAddSidekiqTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_sidekiq_table"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+
+			var createTable string
+			switch tx.Dialector.Name() {
+			case "postgres":
+				createTable = `
+					CREATE TABLE IF NOT EXISTS sidekiq (
+						id                  TEXT PRIMARY KEY,
+						kind                TEXT NOT NULL,
+						status              TEXT NOT NULL DEFAULT 'pending',
+						runner_id           TEXT,
+						metadata            TEXT DEFAULT '{}',
+						attempts            INTEGER NOT NULL DEFAULT 0,
+						last_error          TEXT,
+						created_at          TIMESTAMPTZ NOT NULL,
+						updated_at          TIMESTAMPTZ NOT NULL,
+						started_at          TIMESTAMPTZ,
+						created_by_user_id  VARCHAR(255),
+						completed_at        TIMESTAMPTZ
+					)`
+			case "sqlite":
+				createTable = `
+					CREATE TABLE IF NOT EXISTS sidekiq (
+						id                  TEXT PRIMARY KEY,
+						kind                TEXT NOT NULL,
+						status              TEXT NOT NULL DEFAULT 'pending',
+						runner_id           TEXT,
+						metadata            TEXT DEFAULT '{}',
+						attempts            INTEGER NOT NULL DEFAULT 0,
+						last_error          TEXT,
+						created_at          DATETIME NOT NULL,
+						updated_at          DATETIME NOT NULL,
+						started_at          DATETIME,
+						created_by_user_id  VARCHAR(255),
+						completed_at        DATETIME
+					)`
+			default:
+				// Fall back to GORM for any other dialect so the migration does not
+				// hard-fail on an unsupported backend.
+				if err := tx.Migrator().AutoMigrate(&tables.TableSidekiqJob{}); err != nil {
+					return err
+				}
+				return nil
+			}
+
+			if err := tx.Exec(createTable).Error; err != nil {
+				return err
+			}
+
+			// For existing tables, add new columns that were not present in the
+			// original schema (no-op when the columns already exist).
+			if err := addColumnIfNotExists(tx, logger, &tables.TableSidekiqJob{}, "runner_id"); err != nil {
+				return err
+			}
+			if err := addColumnIfNotExists(tx, logger, &tables.TableSidekiqJob{}, "created_by_user_id"); err != nil {
+				return err
+			}
+
+			// idx_sidekiq_status_updated supports the reaper/recovery scan.
+			if err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_sidekiq_status_updated ON sidekiq (status, updated_at)`).Error; err != nil {
+				return err
+			}
+			// idx_sidekiq_runner supports fencing lookups by runner_id.
+			return tx.Exec(`CREATE INDEX IF NOT EXISTS idx_sidekiq_runner ON sidekiq (runner_id)`).Error
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			// It is okay to drop the table
+			return tx.Exec(`DROP TABLE IF EXISTS sidekiq`).Error
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddSidekiqKindStatusCreatedIndex adds a composite index on
+// (kind, status, created_at) so GetInFlightSidekiqJobByKind — which filters by
+// kind + status and orders by created_at DESC — can seek instead of doing a
+// filtered full scan plus sort as the table accumulates historical jobs.
+// Idempotent via CREATE INDEX IF NOT EXISTS; works for postgres and sqlite.
+//
+// The index is built non-transactionally (UseTransaction=false) with CREATE
+// INDEX CONCURRENTLY on postgres so it does not take a ShareLock that blocks
+// concurrent writes to the sidekiq table for the duration of the build. SQLite
+// does not support CONCURRENTLY, so it uses the plain form there.
+func migrationAddSidekiqKindStatusCreatedIndex(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_sidekiq_kind_status_created_index"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	noTxOpts := *migrator.DefaultOptions
+	noTxOpts.UseTransaction = false
+	if err := RunSingleMigration(ctx, &noTxOpts, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			// SQLite does not support CONCURRENTLY; use the plain form there.
+			var stmt string
+			if tx.Dialector.Name() == "sqlite" {
+				stmt = "CREATE INDEX IF NOT EXISTS idx_sidekiq_kind_status_created ON sidekiq (kind, status, created_at)"
+			} else {
+				stmt = "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_sidekiq_kind_status_created ON sidekiq (kind, status, created_at)"
+			}
+			return tx.Exec(stmt).Error
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return tx.Exec(`DROP INDEX IF EXISTS idx_sidekiq_kind_status_created`).Error
+		},
+	}); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
 }

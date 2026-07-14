@@ -29,6 +29,8 @@ const (
 	governanceRejectedContextKey schemas.BifrostContextKey = "bf-governance-rejected"
 
 	VirtualKeyPrefix = "sk-bf-"
+
+	noComplexitySignalLog = "Complexity analysis skipped: no configured complexity signal matched the latest user message; continuing with existing routing path"
 )
 
 // Config is the configuration for the governance plugin
@@ -700,6 +702,13 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 			}
 
 			result := analyzer.Analyze(input)
+			if result == nil {
+				if p.logger != nil {
+					p.logger.Debug("[Governance] %s", noComplexitySignalLog)
+				}
+				ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelDebug, noComplexitySignalLog)
+				return nil
+			}
 			if p.logger != nil {
 				p.logger.Debug(
 					"[Governance] Complexity analysis details: tier=%s score=%.2f words=%d",
@@ -1195,7 +1204,7 @@ func (p *GovernancePlugin) PreRequestHook(ctx *schemas.BifrostContext, req *sche
 	if virtualKeyValue != "" {
 		var ok bool
 		virtualKey, ok = p.store.GetVirtualKey(ctx, virtualKeyValue)
-		if !ok || virtualKey == nil || !virtualKey.IsActiveValue() {
+		if !ok || virtualKey == nil || !virtualKey.IsActiveValue() || virtualKey.IsExpiredAt(time.Now().UTC()) {
 			return nil
 		}
 	}
@@ -1431,7 +1440,7 @@ func (p *GovernancePlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.
 	// This runs independently of EvaluateGovernanceRequest to enforce execution-time allow-list.
 	if virtualKeyValue != "" {
 		vk, ok := p.store.GetVirtualKey(ctx, virtualKeyValue)
-		if !ok || vk == nil || !vk.IsActiveValue() {
+		if !ok || vk == nil {
 			// VK became invalid after initial check - fail closed for security
 			ctx.SetValue(governanceRejectedContextKey, true)
 			return req, &schemas.MCPPluginShortCircuit{Error: &schemas.BifrostError{
@@ -1439,6 +1448,26 @@ func (p *GovernancePlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.
 				StatusCode: bifrost.Ptr(403),
 				Error: &schemas.ErrorField{
 					Message: "Virtual key not found",
+				},
+			}}, nil
+		}
+		if !vk.IsActiveValue() {
+			ctx.SetValue(governanceRejectedContextKey, true)
+			return req, &schemas.MCPPluginShortCircuit{Error: &schemas.BifrostError{
+				Type:       bifrost.Ptr(string(DecisionVirtualKeyBlocked)),
+				StatusCode: bifrost.Ptr(403),
+				Error: &schemas.ErrorField{
+					Message: "Virtual key is inactive",
+				},
+			}}, nil
+		}
+		if vk.IsExpiredAt(time.Now().UTC()) {
+			ctx.SetValue(governanceRejectedContextKey, true)
+			return req, &schemas.MCPPluginShortCircuit{Error: &schemas.BifrostError{
+				Type:       bifrost.Ptr(string(DecisionVirtualKeyBlocked)),
+				StatusCode: bifrost.Ptr(403),
+				Error: &schemas.ErrorField{
+					Message: "Virtual key has expired",
 				},
 			}}, nil
 		}

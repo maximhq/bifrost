@@ -240,7 +240,7 @@ func (h *ProviderHandler) getProvider(ctx *fasthttp.RequestCtx) {
 func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 	var payload providerCreatePayload
 	if err := sonic.Unmarshal(ctx.PostBody(), &payload); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid JSON: %v", err))
+		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
 		return
 	}
 	// Validate provider
@@ -385,7 +385,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	}{}
 
 	if err := sonic.Unmarshal(ctx.PostBody(), &payload); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid JSON: %v", err))
+		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
 		return
 	}
 
@@ -624,6 +624,7 @@ func (h *ProviderHandler) listKeys(ctx *fasthttp.RequestCtx) {
 type ModelResponse struct {
 	Name             string   `json:"name"`
 	Provider         string   `json:"provider"`
+	IsDeprecated     bool     `json:"is_deprecated,omitempty"`
 	AccessibleByKeys []string `json:"accessible_by_keys,omitempty"`
 }
 
@@ -640,7 +641,12 @@ type ModelDetailsResponse struct {
 	ContextLength        *int                  `json:"context_length,omitempty"`
 	MaxInputTokens       *int                  `json:"max_input_tokens,omitempty"`
 	MaxOutputTokens      *int                  `json:"max_output_tokens,omitempty"`
+	InputCostPerToken    *float64              `json:"input_cost_per_token,omitempty"`
+	OutputCostPerToken   *float64              `json:"output_cost_per_token,omitempty"`
+	CacheWriteCost       *float64              `json:"cache_creation_input_token_cost,omitempty"`
+	CacheReadCost        *float64              `json:"cache_read_input_token_cost,omitempty"`
 	Architecture         *schemas.Architecture `json:"architecture,omitempty"`
+	IsDeprecated         bool                  `json:"is_deprecated,omitempty"`
 	AdditionalAttributes map[string]string     `json:"additional_attributes,omitempty"`
 	AccessibleByKeys     []string              `json:"accessible_by_keys,omitempty"`
 }
@@ -694,8 +700,9 @@ func (h *ProviderHandler) listModels(ctx *fasthttp.RequestCtx) {
 	responseModels := make([]ModelResponse, 0, len(allModels))
 	for _, model := range allModels {
 		entry := ModelResponse{
-			Name:     model.Name,
-			Provider: string(model.Provider),
+			Name:         model.Name,
+			Provider:     string(model.Provider),
+			IsDeprecated: h.isModelDeprecated(model.Name, model.Provider),
 		}
 		if len(model.AccessibleByKeys) > 0 {
 			entry.AccessibleByKeys = model.AccessibleByKeys
@@ -754,7 +761,12 @@ func (h *ProviderHandler) listModelDetails(ctx *fasthttp.RequestCtx) {
 			details.ContextLength = capabilities.ContextLength
 			details.MaxInputTokens = capabilities.MaxInputTokens
 			details.MaxOutputTokens = capabilities.MaxOutputTokens
+			details.InputCostPerToken = capabilities.InputCostPerToken
+			details.OutputCostPerToken = capabilities.OutputCostPerToken
+			details.CacheWriteCost = capabilities.CacheCreationInputTokenCost
+			details.CacheReadCost = capabilities.CacheReadInputTokenCost
 			details.Architecture = capabilities.Architecture
+			details.IsDeprecated = capabilities.IsDeprecated
 			details.AdditionalAttributes = capabilities.AdditionalAttributes
 		}
 		responseModels = append(responseModels, details)
@@ -764,6 +776,15 @@ func (h *ProviderHandler) listModelDetails(ctx *fasthttp.RequestCtx) {
 		Models: responseModels,
 		Total:  total,
 	})
+}
+
+func (h *ProviderHandler) isModelDeprecated(model string, provider schemas.ModelProvider) bool {
+	modelCatalog := h.inMemoryStore.ModelCatalog
+	if modelCatalog == nil {
+		return false
+	}
+	capabilities := modelCatalog.GetModelCapabilityEntryForModel(model, provider)
+	return capabilities != nil && capabilities.IsDeprecated
 }
 
 // parseModelListQuery normalizes the management model-list query string and resolves
@@ -1261,7 +1282,7 @@ func validateRetryBackoff(networkConfig *schemas.NetworkConfig) error {
 func (h *ProviderHandler) upsertModelCatalogEntries(ctx *fasthttp.RequestCtx) {
 	var payload []ModelPricingAttributesEntry
 	if err := sonic.Unmarshal(ctx.PostBody(), &payload); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid JSON: %v", err))
+		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
 		return
 	}
 	for i := range payload {

@@ -57,6 +57,25 @@ type ElevenlabsPronunciationDictionaryLocator struct {
 	VersionID                 *string `json:"version_id,omitempty"`
 }
 
+// SOUND EFFECTS TYPES
+
+// ElevenlabsSoundGenerationRequest is the request body for POST /v1/sound-generation.
+// output_format is sent as a query parameter (see buildBaseSpeechRequestURL), not here.
+type ElevenlabsSoundGenerationRequest struct {
+	Text            string                 `json:"text"`
+	ModelID         string                 `json:"model_id"`
+	DurationSeconds *float64               `json:"duration_seconds,omitempty"`
+	Loop            *bool                  `json:"loop,omitempty"`
+	PromptInfluence *float64               `json:"prompt_influence,omitempty"`
+	ExtraParams     map[string]interface{} `json:"-"`
+}
+
+// GetExtraParams implements providerUtils.RequestBodyWithExtraParams so unknown
+// caller-supplied fields are merged into the outgoing JSON body.
+func (r *ElevenlabsSoundGenerationRequest) GetExtraParams() map[string]interface{} {
+	return r.ExtraParams
+}
+
 // TRANSCRIPTION TYPES
 type ElevenlabsTranscriptionRequest struct {
 	ModelID               string                           `json:"model_id"`

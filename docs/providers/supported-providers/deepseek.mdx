@@ -1,0 +1,215 @@
+---
+title: "DeepSeek"
+description: "DeepSeek API conversion guide - OpenAI-compatible format, chat, streaming, tool calling, reasoning, and beta text completions"
+icon: "d"
+---
+
+## Overview
+
+DeepSeek is an **OpenAI-compatible provider** with a dedicated Bifrost provider implementation for DeepSeek's endpoint layout. Bifrost uses the shared OpenAI-compatible request and response converters, while preserving DeepSeek-specific extra parameters and routing text completions to the beta FIM endpoint. Key characteristics:
+
+- **OpenAI-compatible chat** - Chat Completions use `/chat/completions`
+- **Streaming support** - Server-Sent Events for chat and text completions
+- **Tool calling** - Function tools are passed through using the OpenAI-compatible schema
+- **Reasoning support** - Reasoning parameters and DeepSeek extra parameters are forwarded
+- **Responses API** - Supported by converting Responses requests to Chat Completions internally
+- **Beta text completions** - Text/FIM completions use DeepSeek's `/beta/completions` endpoint
+
+### Supported Operations
+
+| Operation | Non-Streaming | Streaming | Endpoint |
+|-----------|---------------|-----------|----------|
+| Chat Completions | ✅ | ✅ | `/chat/completions` |
+| Responses API | ✅ | ✅ | `/chat/completions` |
+| Text Completions | ✅ | ✅ | `/beta/completions` |
+| List Models | ✅ | - | `/models` |
+| Embeddings | ❌ | ❌ | - |
+| Image Generation | ❌ | ❌ | - |
+| Speech (TTS) | ❌ | ❌ | - |
+| Transcriptions (STT) | ❌ | ❌ | - |
+| Files | ❌ | ❌ | - |
+| Batch | ❌ | ❌ | - |
+
+<Note>
+**Unsupported Operations** (❌): Embeddings, Image Generation, Speech, Transcriptions, Files, Batch, cached content, containers, token counting, compaction, OCR, rerank, video, and passthrough are not supported by the upstream DeepSeek API through this provider. These return `UnsupportedOperationError`.
+</Note>
+
+## Setup & Configuration
+
+Configure DeepSeek as a provider.
+
+<Tabs>
+<Tab title="Web UI">
+
+![DeepSeek provider dashboard](../../media/provider-dashboard-deepseek.png)
+
+1. Navigate to **Models** > **Model Providers**. Look for **DeepSeek** under **Configured Providers**. If it is missing, click on **Add New Provider** and select **DeepSeek**.
+2. Click **Add Key** or edit an existing key.
+3. Set a name for your key.
+4. Paste your API key directly or use an environment variable (for example, `env.DEEPSEEK_API_KEY`).
+5. Set **Allowed Models** to **All Models** (default) or the specific model allowlist you want this key to serve.
+6. Save the provider configuration.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "deepseek": {
+      "keys": [
+        {
+          "name": "deepseek-key-1",
+          "value": "env.DEEPSEEK_API_KEY",
+          "models": [
+            "*"
+          ],
+          "weight": 1.0
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="API">
+Refer to the API documentation for [Provider Keys Management](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider).
+</Tab>
+<Tab title="Go SDK">
+
+```go
+case schemas.DeepSeek:
+    return []schemas.Key{{
+        Name:   "deepseek-key-1",
+        Value:  *schemas.NewSecretVar("env.DEEPSEEK_API_KEY"),
+        Models: []string{"*"},
+        Weight: 1.0,
+    }}, nil
+```
+
+</Tab>
+</Tabs>
+
+---
+
+# 1. Chat Completions
+
+## Request Parameters
+
+DeepSeek supports OpenAI-compatible chat completion parameters. For the full parameter reference and message conversion behavior, see [OpenAI Chat Completions](/providers/supported-providers/openai#1-chat-completions).
+
+### Filtered Parameters
+
+Removed for DeepSeek compatibility:
+- `prediction` - OpenAI-specific predicted output
+- `prompt_cache_key` - OpenAI-specific prompt cache key
+- `prompt_cache_retention` - OpenAI-specific prompt cache retention
+- `verbosity` - Anthropic-specific
+- `store` - OpenAI-specific response storage
+- `web_search_options` - OpenAI-specific web search options
+
+### Reasoning Parameter
+
+DeepSeek delegates through `ToOpenAIChatRequest` with provider-specific compatibility handling. Reasoning effort is normalized using the OpenAI-compatible provider convention, and DeepSeek V4 models preserve `reasoning.effort: "max"` when requested.
+
+Assistant-message `reasoning` details are stripped before sending follow-up messages because DeepSeek rejects `reasoning_details` in assistant messages.
+
+### Extra Parameters
+
+DeepSeek enables passthrough extra parameters for chat and text completion requests. Provider-specific options such as DeepSeek thinking controls can be sent through `extra_params` without being dropped by Bifrost.
+
+DeepSeek supports standard OpenAI message types, tools, responses, and streaming formats. For details on message handling, tool conversion, responses, and streaming, refer to [OpenAI Chat Completions](/providers/supported-providers/openai#1-chat-completions).
+
+---
+
+# 2. Responses API
+
+Bifrost converts Responses API format to Chat Completions internally, then converts the response back:
+
+```
+BifrostResponsesRequest
+  → ToChatRequest()
+  → ChatCompletion
+  → ToBifrostResponsesResponse()
+```
+
+Same parameter support as Chat Completions with response format differences (output items instead of message content). Streaming Responses requests are also routed through Chat Completions streaming.
+
+---
+
+# 3. Text Completions
+
+DeepSeek supports beta text/FIM completions through `/beta/completions`:
+
+| Parameter | Mapping |
+|-----------|---------|
+| `prompt` | Sent as-is |
+| `max_tokens` | max_tokens |
+| `temperature` | temperature |
+| `top_p` | top_p |
+| `stop` | stop sequences |
+| `extra_params` | Passed through to DeepSeek |
+
+Response returns `choices[].text` with completion text.
+
+---
+
+# 4. Text Completions Streaming
+
+Streaming text completions use DeepSeek's OpenAI-compatible SSE format on `/beta/completions`.
+
+---
+
+# 5. List Models
+
+Lists available models from DeepSeek through `/models`.
+
+---
+
+## Unsupported Features
+
+| Feature | Reason |
+|---------|--------|
+| Embedding | Not offered by DeepSeek API through this provider |
+| Image Generation | Not offered by DeepSeek API through this provider |
+| Speech/TTS | Not offered by DeepSeek API through this provider |
+| Transcription/STT | Not offered by DeepSeek API through this provider |
+| Batch Operations | Not offered by DeepSeek API through this provider |
+| File Management | Not offered by DeepSeek API through this provider |
+| Cached Content | Only Gemini and Vertex AI support cached content in Bifrost |
+| Container Management | Not offered by DeepSeek API through this provider |
+| Token Counting | Not offered by DeepSeek API through this provider |
+| Rerank/OCR/Video | Not offered by DeepSeek API through this provider |
+
+---
+
+## Caveats
+
+<Accordion title="Default Base URL">
+**Severity**: Low
+**Behavior**: DeepSeek defaults to `https://api.deepseek.com`
+**Impact**: Custom DeepSeek-compatible deployments must override `network_config.base_url`
+**Code**: `NewDeepSeekProvider` sets the default base URL when no provider-level base URL is configured
+</Accordion>
+
+<Accordion title="Beta Text Completion Endpoint">
+**Severity**: Medium
+**Behavior**: Text completions are routed to `/beta/completions`
+**Impact**: FIM/text completion behavior follows DeepSeek's beta API contract and may differ from standard OpenAI `/completions`
+**Code**: `TextCompletion` and `TextCompletionStream` use `/beta/completions`
+</Accordion>
+
+<Accordion title="User Field Size Limit">
+**Severity**: Low
+**Behavior**: User field > 64 characters is silently dropped
+**Impact**: Longer user identifiers are lost
+**Code**: `SanitizeUserField` enforces 64-char max in the shared OpenAI converter
+</Accordion>
+
+<Accordion title="Reasoning Details in Assistant Messages">
+**Severity**: Medium
+**Behavior**: Assistant-message `reasoning` details are removed before forwarding follow-up chat messages
+**Impact**: Prevents DeepSeek request failures when previous assistant turns contain reasoning metadata
+**Code**: `stripReasoningDetails` applies to DeepSeek in `ToOpenAIChatRequest`
+</Accordion>

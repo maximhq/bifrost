@@ -577,3 +577,33 @@ func TestBuildBaseURL(t *testing.T) {
 		})
 	}
 }
+
+// A virtual key presented via Azure's native "api-key" header (used by the
+// Azure OpenAI SDK on passthrough) must be captured into the context so
+// governance/logging attribute the call to the VK, not the base key.
+func TestConvertToBifrostContext_VirtualKeyFromAzureAPIKeyHeader(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("api-key", "sk-bf-azure-passthrough-vk")
+
+	bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
+	defer cancel()
+
+	vk, ok := bifrostCtx.Value(schemas.BifrostContextKeyVirtualKey).(string)
+	if !ok || vk != "sk-bf-azure-passthrough-vk" {
+		t.Fatalf("virtual key = %#v, want %q", bifrostCtx.Value(schemas.BifrostContextKeyVirtualKey), "sk-bf-azure-passthrough-vk")
+	}
+}
+
+// A real (non-VK) provider key in the "api-key" header must not be misread as
+// a virtual key — only the sk-bf- prefix promotes it.
+func TestConvertToBifrostContext_APIKeyHeaderNonVirtualKeyIgnored(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("api-key", "real-azure-api-key")
+
+	bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
+	defer cancel()
+
+	if got := bifrostCtx.Value(schemas.BifrostContextKeyVirtualKey); got != nil {
+		t.Fatalf("virtual key should not be set from a non-VK api-key value, got %#v", got)
+	}
+}

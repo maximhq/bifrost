@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -105,6 +106,20 @@ func lookupScopeNameResolver(scope string) (ScopeNameResolver, bool) {
 	return fn, ok
 }
 
+// ExternalQuotaBudgetResolver returns budgets that govern a VK but whose usage is
+// tracked OUTSIDE the VK's own budget rows
+type ExternalQuotaBudgetResolver func(ctx context.Context, vk *configstoreTables.TableVirtualKey) (*ExternalQuotaBudgetResult, error)
+
+// ExternalQuotaBudgetResult is what an external resolver returns for a VK whose
+// authoritative usage lives outside its own budget rows.
+type ExternalQuotaBudgetResult struct {
+	// Budgets replaces the VK's own budget rows in the quota response.
+	Budgets []configstoreTables.TableBudget
+	// UsageUserID, when non-empty, scopes the per_model_usage query to this user id
+	// instead of the VK id.
+	UsageUserID string
+}
+
 type GovernanceHandler struct {
 	configStore       configstore.ConfigStore
 	governanceManager GovernanceManager
@@ -112,15 +127,22 @@ type GovernanceHandler struct {
 	// endpoint's model_usage breakdown. Optional: nil when the logging plugin is
 	// not enabled, in which case the breakdown is simply omitted.
 	logManager logging.LogManager
+	// externalQuotaBudgetResolver, when non-nil, supplies budgets that govern a VK
+	// but whose usage lives outside the VK's own budget rows (enterprise
+	// access-profile-managed VKs). Injected at construction; nil on OSS builds.
+	externalQuotaBudgetResolver ExternalQuotaBudgetResolver
 }
 
 // NewGovernanceHandler creates a new governance handler instance.
 // logManager is optional (may be nil); when supplied it powers the quota
 // endpoint's per-budget actual per-model usage breakdown.
+// externalQuotaBudgetResolver is optional (may be nil); when supplied the quota
+// endpoint uses it to resolve budgets/usage for VKs whose authoritative usage
+// is tracked outside their own budget rows.
 // Side effect: ensures the default virtual_key scope-name resolver is
 // registered against the supplied configStore, so resolveModelConfigScopeName
 // can render VK names for OSS-only builds without further wiring.
-func NewGovernanceHandler(manager GovernanceManager, configStore configstore.ConfigStore, logManager logging.LogManager) (*GovernanceHandler, error) {
+func NewGovernanceHandler(manager GovernanceManager, configStore configstore.ConfigStore, logManager logging.LogManager, externalQuotaBudgetResolver ExternalQuotaBudgetResolver) (*GovernanceHandler, error) {
 	if manager == nil {
 		return nil, fmt.Errorf("governance manager is required")
 	}
@@ -135,9 +157,10 @@ func NewGovernanceHandler(manager GovernanceManager, configStore configstore.Con
 		return vk.Name, true
 	})
 	return &GovernanceHandler{
-		governanceManager: manager,
-		configStore:       configStore,
-		logManager:        logManager,
+		governanceManager:           manager,
+		configStore:                 configStore,
+		logManager:                  logManager,
+		externalQuotaBudgetResolver: externalQuotaBudgetResolver,
 	}, nil
 }
 
@@ -164,6 +187,7 @@ type CreateVirtualKeyRequest struct {
 	RateLimit       *CreateRateLimitRequest `json:"rate_limit,omitempty"`
 	IsActive        *bool                   `json:"is_active,omitempty"`
 	CalendarAligned bool                    `json:"calendar_aligned,omitempty"` // When true, all budgets reset at clean calendar boundaries
+	ExpiresAt       *time.Time              `json:"expires_at,omitempty"`       // Optional expiry; nil means never expires
 }
 
 // UpdateVirtualKeyRequest represents the request body for updating a virtual key
@@ -192,6 +216,7 @@ type UpdateVirtualKeyRequest struct {
 	IsActive         *bool                        `json:"is_active,omitempty"`
 	CalendarAligned  *bool                        `json:"calendar_aligned,omitempty"` // When true, all budgets reset at clean calendar boundaries
 	ResetBudgetUsage *bool                        `json:"reset_budget_usage,omitempty"`
+	ExpiresAt        *string                      `json:"expires_at,omitempty"` // RFC3339 timestamp sets a new expiry, "" clears it, omitted leaves it unchanged
 }
 
 var errVirtualKeyDualAssociation = errors.New("VirtualKey cannot be attached to both Team and Customer")
@@ -446,8 +471,8 @@ func (h *GovernanceHandler) reconcileModelConfigBudgets(ctx context.Context, tx 
 		if b.MaxLimit < 0 {
 			return &badRequestError{err: fmt.Errorf("budget max_limit cannot be negative: %.2f", b.MaxLimit)}
 		}
-		if _, err := configstoreTables.ParseDuration(b.ResetDuration); err != nil {
-			return &badRequestError{err: fmt.Errorf("invalid reset duration format: %s", b.ResetDuration)}
+		if d, err := configstoreTables.ParseDuration(b.ResetDuration); err != nil || d <= 0 {
+			return &badRequestError{err: fmt.Errorf("invalid reset duration (must be a positive duration): %s", b.ResetDuration)}
 		}
 		if seenDurations[b.ResetDuration] {
 			return &badRequestError{err: fmt.Errorf("duplicate reset_duration in budgets: %s", b.ResetDuration)}
@@ -514,8 +539,8 @@ func (h *GovernanceHandler) reconcileCustomerBudgets(ctx context.Context, tx *go
 		if b.MaxLimit < 0 {
 			return &badRequestError{err: fmt.Errorf("budget max_limit cannot be negative: %.2f", b.MaxLimit)}
 		}
-		if _, err := configstoreTables.ParseDuration(b.ResetDuration); err != nil {
-			return &badRequestError{err: fmt.Errorf("invalid reset duration format: %s", b.ResetDuration)}
+		if d, err := configstoreTables.ParseDuration(b.ResetDuration); err != nil || d <= 0 {
+			return &badRequestError{err: fmt.Errorf("invalid reset duration (must be a positive duration): %s", b.ResetDuration)}
 		}
 		if seenDurations[b.ResetDuration] {
 			return &badRequestError{err: fmt.Errorf("duplicate reset_duration in budgets: %s", b.ResetDuration)}
@@ -1051,7 +1076,7 @@ func (h *GovernanceHandler) updateComplexityAnalyzerConfig(ctx *fasthttp.Request
 	decoder := json.NewDecoder(bytes.NewReader(ctx.PostBody()))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&payload); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid request format: %v", err))
+		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
 		return
 	}
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
@@ -1259,8 +1284,8 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 				SendError(ctx, 400, fmt.Sprintf("Budget max_limit cannot be negative: %.2f", b.MaxLimit))
 				return
 			}
-			if _, err := configstoreTables.ParseDuration(b.ResetDuration); err != nil {
-				SendError(ctx, 400, fmt.Sprintf("Invalid reset duration format: %s", b.ResetDuration))
+			if d, err := configstoreTables.ParseDuration(b.ResetDuration); err != nil || d <= 0 {
+				SendError(ctx, 400, fmt.Sprintf("Invalid reset duration (must be a positive duration): %s", b.ResetDuration))
 				return
 			}
 			if seenDurations[b.ResetDuration] {
@@ -1268,6 +1293,14 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 				return
 			}
 			seenDurations[b.ResetDuration] = true
+		}
+	}
+	// Validate expires_at: must be in the future if provided
+	if req.ExpiresAt != nil {
+		now := time.Now().UTC()
+		if !req.ExpiresAt.After(now) {
+			SendError(ctx, 400, "expires_at must be a future timestamp")
+			return
 		}
 	}
 	// Set defaults: nil means "use DB default (true)"
@@ -1290,12 +1323,13 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 		vk = configstoreTables.TableVirtualKey{
 			ID:              uuid.NewString(),
 			Name:            req.Name,
-			Value:           governance.GenerateVirtualKey(),
+			Value:           *schemas.NewSecretVar(governance.GenerateVirtualKey()),
 			Description:     req.Description,
 			TeamID:          req.TeamID,
 			CustomerID:      req.CustomerID,
 			IsActive:        isActive,
 			CalendarAligned: req.CalendarAligned,
+			ExpiresAt:       req.ExpiresAt,
 		}
 		if err := h.configStore.CreateVirtualKey(ctx, &vk, tx); err != nil {
 			return err
@@ -1494,6 +1528,20 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, "VirtualKey cannot be attached to both Team and Customer")
 		return
 	}
+	// Parse expires_at when provided: a timestamp must be in the future, "" clears the expiry.
+	var newExpiresAt *time.Time
+	if req.ExpiresAt != nil && *req.ExpiresAt != "" {
+		parsed, err := time.Parse(time.RFC3339, *req.ExpiresAt)
+		if err != nil {
+			SendError(ctx, 400, "expires_at must be an RFC3339 timestamp")
+			return
+		}
+		if !parsed.After(time.Now().UTC()) {
+			SendError(ctx, 400, "expires_at must be a future timestamp")
+			return
+		}
+		newExpiresAt = &parsed
+	}
 	vk, err := h.configStore.GetVirtualKey(ctx, vkID)
 	if err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
@@ -1549,6 +1597,9 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 		}
 		if req.IsActive != nil {
 			vk.IsActive = req.IsActive
+		}
+		if req.ExpiresAt != nil {
+			vk.ExpiresAt = newExpiresAt
 		}
 		if req.CalendarAligned != nil {
 			vk.CalendarAligned = *req.CalendarAligned
@@ -1903,9 +1954,9 @@ func (h *GovernanceHandler) rotateVirtualKeyByID(ctx context.Context, vkID strin
 	if err != nil {
 		return nil, err
 	}
-	oldValue := vk.Value
-	vk.Value = governance.GenerateVirtualKey()
-	if vk.Value == oldValue {
+	oldValue := vk.Value.GetValue()
+	vk.Value = *schemas.NewSecretVar(governance.GenerateVirtualKey())
+	if vk.Value.GetValue() == oldValue {
 		return nil, fmt.Errorf("generated virtual key matched existing value")
 	}
 	if err := h.configStore.UpdateVirtualKey(ctx, vk); err != nil {
@@ -2141,8 +2192,8 @@ func (h *GovernanceHandler) createTeam(ctx *fasthttp.RequestCtx) {
 			if b.MaxLimit < 0 {
 				return &badRequestError{err: fmt.Errorf("budget max_limit cannot be negative: %.2f", b.MaxLimit)}
 			}
-			if _, err := configstoreTables.ParseDuration(b.ResetDuration); err != nil {
-				return &badRequestError{err: fmt.Errorf("invalid reset duration format: %s", b.ResetDuration)}
+			if d, err := configstoreTables.ParseDuration(b.ResetDuration); err != nil || d <= 0 {
+				return &badRequestError{err: fmt.Errorf("invalid reset duration (must be a positive duration): %s", b.ResetDuration)}
 			}
 			if seenDurations[b.ResetDuration] {
 				return &badRequestError{err: fmt.Errorf("duplicate reset_duration in budgets: %s", b.ResetDuration)}
@@ -2193,7 +2244,13 @@ func (h *GovernanceHandler) createTeam(ctx *fasthttp.RequestCtx) {
 
 // getTeam handles GET /api/governance/teams/{team_id} - Get a specific team
 func (h *GovernanceHandler) getTeam(ctx *fasthttp.RequestCtx) {
-	teamID := ctx.UserValue("team_id").(string)
+	// The router matches on the raw (percent-encoded) path, so SCIM/IdP-synced team
+	// IDs containing spaces or other URL-sensitive characters arrive still encoded.
+	teamID, err := url.PathUnescape(ctx.UserValue("team_id").(string))
+	if err != nil {
+		SendError(ctx, 400, "Invalid team ID encoding")
+		return
+	}
 	team, err := h.configStore.GetTeam(ctx, teamID)
 	if err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
@@ -2210,7 +2267,13 @@ func (h *GovernanceHandler) getTeam(ctx *fasthttp.RequestCtx) {
 
 // updateTeam handles PUT /api/governance/teams/{team_id} - Update a team
 func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
-	teamID := ctx.UserValue("team_id").(string)
+	// The router matches on the raw (percent-encoded) path, so SCIM/IdP-synced team
+	// IDs containing spaces or other URL-sensitive characters arrive still encoded.
+	teamID, err := url.PathUnescape(ctx.UserValue("team_id").(string))
+	if err != nil {
+		SendError(ctx, 400, "Invalid team ID encoding")
+		return
+	}
 
 	var req UpdateTeamRequest
 	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
@@ -2265,8 +2328,8 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 				if b.MaxLimit < 0 {
 					return &badRequestError{err: fmt.Errorf("budget max_limit cannot be negative: %.2f", b.MaxLimit)}
 				}
-				if _, err := configstoreTables.ParseDuration(b.ResetDuration); err != nil {
-					return &badRequestError{err: fmt.Errorf("invalid reset duration format: %s", b.ResetDuration)}
+				if d, err := configstoreTables.ParseDuration(b.ResetDuration); err != nil || d <= 0 {
+					return &badRequestError{err: fmt.Errorf("invalid reset duration (must be a positive duration): %s", b.ResetDuration)}
 				}
 				if seenDurations[b.ResetDuration] {
 					return &badRequestError{err: fmt.Errorf("duplicate reset_duration in budgets: %s", b.ResetDuration)}
@@ -2448,7 +2511,13 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 
 // deleteTeam handles DELETE /api/governance/teams/{team_id} - Delete a team
 func (h *GovernanceHandler) deleteTeam(ctx *fasthttp.RequestCtx) {
-	teamID := ctx.UserValue("team_id").(string)
+	// The router matches on the raw (percent-encoded) path, so SCIM/IdP-synced team
+	// IDs containing spaces or other URL-sensitive characters arrive still encoded.
+	teamID, err := url.PathUnescape(ctx.UserValue("team_id").(string))
+	if err != nil {
+		SendError(ctx, 400, "Invalid team ID encoding")
+		return
+	}
 	team, err := h.configStore.GetTeam(ctx, teamID)
 	if err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
@@ -2880,8 +2949,8 @@ func validateRateLimit(rateLimit *configstoreTables.TableRateLimit) error {
 		if rateLimit.TokenResetDuration == nil {
 			return fmt.Errorf("rate limit token reset duration is required")
 		}
-		if _, err := configstoreTables.ParseDuration(*rateLimit.TokenResetDuration); err != nil {
-			return fmt.Errorf("invalid rate limit token reset duration format: %s", *rateLimit.TokenResetDuration)
+		if d, err := configstoreTables.ParseDuration(*rateLimit.TokenResetDuration); err != nil || d <= 0 {
+			return fmt.Errorf("invalid rate limit token reset duration (must be a positive duration): %s", *rateLimit.TokenResetDuration)
 		}
 	}
 	if rateLimit.RequestMaxLimit != nil && (*rateLimit.RequestMaxLimit < 0 || *rateLimit.RequestMaxLimit == 0) {
@@ -2892,8 +2961,8 @@ func validateRateLimit(rateLimit *configstoreTables.TableRateLimit) error {
 		if rateLimit.RequestResetDuration == nil {
 			return fmt.Errorf("rate limit request reset duration is required")
 		}
-		if _, err := configstoreTables.ParseDuration(*rateLimit.RequestResetDuration); err != nil {
-			return fmt.Errorf("invalid rate limit request reset duration format: %s", *rateLimit.RequestResetDuration)
+		if d, err := configstoreTables.ParseDuration(*rateLimit.RequestResetDuration); err != nil || d <= 0 {
+			return fmt.Errorf("invalid rate limit request reset duration (must be a positive duration): %s", *rateLimit.RequestResetDuration)
 		}
 	}
 	return nil
@@ -2923,8 +2992,8 @@ func validateBudget(budget *configstoreTables.TableBudget) error {
 	if budget.ResetDuration == "" {
 		return fmt.Errorf("budget reset duration is required")
 	}
-	if _, err := configstoreTables.ParseDuration(budget.ResetDuration); err != nil {
-		return fmt.Errorf("invalid budget reset duration format: %s", budget.ResetDuration)
+	if d, err := configstoreTables.ParseDuration(budget.ResetDuration); err != nil || d <= 0 {
+		return fmt.Errorf("invalid budget reset duration (must be a positive duration): %s", budget.ResetDuration)
 	}
 	return nil
 }
@@ -3209,8 +3278,8 @@ func (h *GovernanceHandler) createModelConfig(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, 400, fmt.Sprintf("Budget max_limit cannot be negative: %.2f", req.Budgets[i].MaxLimit))
 			return
 		}
-		if _, err := configstoreTables.ParseDuration(req.Budgets[i].ResetDuration); err != nil {
-			SendError(ctx, 400, fmt.Sprintf("Invalid reset duration format: %s", req.Budgets[i].ResetDuration))
+		if d, err := configstoreTables.ParseDuration(req.Budgets[i].ResetDuration); err != nil || d <= 0 {
+			SendError(ctx, 400, fmt.Sprintf("Invalid reset duration (must be a positive duration): %s", req.Budgets[i].ResetDuration))
 			return
 		}
 		if seenDurations[req.Budgets[i].ResetDuration] {
@@ -3514,7 +3583,11 @@ func (h *GovernanceHandler) getProviderGovernance(ctx *fasthttp.RequestCtx) {
 
 // updateProviderGovernance handles PUT /api/governance/providers/{provider_name} - Update provider governance
 func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
-	providerName := ctx.UserValue("provider_name").(string)
+	providerName, err := url.PathUnescape(ctx.UserValue("provider_name").(string))
+	if err != nil {
+		SendError(ctx, 400, "Invalid provider name encoding")
+		return
+	}
 	var req UpdateProviderGovernanceRequest
 	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
 		SendError(ctx, 400, "Invalid JSON")
@@ -3756,7 +3829,11 @@ func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
 // deleteProviderGovernance handles DELETE /api/governance/providers/{provider_name} - removes
 // provider-level governance by deleting the all-models model config for that provider.
 func (h *GovernanceHandler) deleteProviderGovernance(ctx *fasthttp.RequestCtx) {
-	providerName := ctx.UserValue("provider_name").(string)
+	providerName, err := url.PathUnescape(ctx.UserValue("provider_name").(string))
+	if err != nil {
+		SendError(ctx, 400, "Invalid provider name encoding")
+		return
+	}
 	mc, err := h.configStore.GetModelConfig(ctx, configstoreTables.ModelConfigScopeGlobal, nil, configstoreTables.ModelConfigAllModels, &providerName)
 	if err != nil {
 		if err == configstore.ErrNotFound {
@@ -4648,29 +4725,28 @@ type quotaBudget struct {
 	Models []quotaModelSpend `json:"per_model_usage"`
 }
 
-// buildVKBudgetsWithUsage wraps each hydrated VK budget with its per-model actual usage,
-// queried from request logs over that budget's current cycle [last_reset, now]. Per-budget
-// because a VK's budgets can have independent reset cycles (e.g. daily + monthly). When
-// logging is disabled (logManager == nil) the budgets are returned with an empty models list
-// — that is the only case where per_model_usage is empty. A log-store query failure instead
-// returns an error so the endpoint fails closed (500) rather than reporting empty usage that
-// callers cannot distinguish from "logging disabled". Callers must hydrate vk.Budgets (via
-// collectVKModelUsage) before calling this.
-func (h *GovernanceHandler) buildVKBudgetsWithUsage(ctx context.Context, vk *configstoreTables.TableVirtualKey, now time.Time) ([]quotaBudget, error) {
-	out := make([]quotaBudget, 0, len(vk.Budgets))
-	for i := range vk.Budgets {
-		b := &vk.Budgets[i]
+// buildBudgetsWithUsage wraps each budget with its per-model actual usage, queried from
+// request logs over that budget's current cycle
+func (h *GovernanceHandler) buildBudgetsWithUsage(ctx context.Context, vkID, usageUserID string, budgets []configstoreTables.TableBudget, now time.Time) ([]quotaBudget, error) {
+	out := make([]quotaBudget, 0, len(budgets))
+	for i := range budgets {
+		b := &budgets[i]
 		entry := quotaBudget{TableBudget: *b, Models: []quotaModelSpend{}}
 		if h.logManager != nil {
 			start := b.LastReset
 			if b.CreatedAt.After(start) {
 				start = b.CreatedAt
 			}
-			ranking, err := h.logManager.GetModelRankings(ctx, &logstore.SearchFilters{
-				VirtualKeyIDs: []string{vk.ID},
-				StartTime:     &start,
-				EndTime:       &now,
-			})
+			filters := &logstore.SearchFilters{
+				StartTime: &start,
+				EndTime:   &now,
+			}
+			if usageUserID != "" {
+				filters.UserIDs = []string{usageUserID}
+			} else {
+				filters.VirtualKeyIDs = []string{vkID}
+			}
+			ranking, err := h.logManager.GetModelRankings(ctx, filters)
 			if err != nil {
 				logger.Error("failed to load per-model usage for VK quota (budget %s): %v", b.ID, err)
 				return nil, err
@@ -4704,7 +4780,7 @@ func (h *GovernanceHandler) getVirtualKeyQuota(ctx *fasthttp.RequestCtx) {
 		vkValue = *v
 	}
 	if vkValue == "" {
-		SendError(ctx, 401, "Missing virtual key. Provide it via x-bf-vk header, Authorization Bearer, x-api-key, or x-goog-api-key header.")
+		SendError(ctx, 401, "Missing virtual key. Provide it via x-bf-vk header, Authorization Bearer, x-api-key, x-goog-api-key, or api-key header.")
 		return
 	}
 
@@ -4728,9 +4804,23 @@ func (h *GovernanceHandler) getVirtualKeyQuota(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	budgetRows := vk.Budgets
+	usageUserID := ""
+	if resolve := h.externalQuotaBudgetResolver; resolve != nil {
+		ext, err := resolve(ctx, vk)
+		if err != nil {
+			SendError(ctx, 500, "Failed to load access-profile usage")
+			return
+		}
+		if ext != nil {
+			budgetRows = ext.Budgets
+			usageUserID = ext.UsageUserID
+		}
+	}
+
 	// Each budget carries its actual per-model spend (from request logs) for the current
 	// cycle. Must run after collectVKModelUsage, which hydrates vk.Budgets.
-	budgets, err := h.buildVKBudgetsWithUsage(ctx, vk, time.Now())
+	budgets, err := h.buildBudgetsWithUsage(ctx, vk.ID, usageUserID, budgetRows, time.Now())
 	if err != nil {
 		SendError(ctx, 500, "Failed to load per-model usage")
 		return

@@ -22,7 +22,7 @@ import { getErrorMessage, useDeleteMCPClientMutation, useReconnectMCPClientMutat
 import { MCPClient } from "@/lib/types/mcp";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Link } from "@tanstack/react-router";
-import { Box, ChevronLeft, ChevronRight, Loader2, MoreHorizontal, PencilIcon, Plus, RefreshCcw, Search, Trash2 } from "lucide-react";
+import { Box, ChevronLeft, ChevronRight, Loader2, MoreHorizontal, PencilIcon, Plus, RefreshCcw, Search, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import MCPClientSheet from "./mcpClientSheet";
 import { MCPServersEmptyState } from "./mcpServersEmptyState";
@@ -125,7 +125,11 @@ interface MCPClientsTableProps {
 	refetch?: () => void;
 	search: string;
 	debouncedSearch: string;
+	server: string;
+	/** Whether any sidebar facet filter (connection/auth/code-mode/status) is active. */
+	filtersActive?: boolean;
 	onSearchChange: (value: string) => void;
+	onServerFilterClear: () => void;
 	offset: number;
 	limit: number;
 	onOffsetChange: (offset: number) => void;
@@ -137,7 +141,10 @@ export default function MCPClientsTable({
 	refetch,
 	search,
 	debouncedSearch,
+	server,
+	filtersActive = false,
 	onSearchChange,
+	onServerFilterClear,
 	offset,
 	limit,
 	onOffsetChange,
@@ -286,7 +293,7 @@ export default function MCPClientsTable({
 		}
 	};
 
-	const hasActiveFilters = debouncedSearch;
+	const hasActiveFilters = Boolean(debouncedSearch) || Boolean(server) || filtersActive;
 
 	// True empty state: no servers at all (not just filtered to zero)
 	if (totalCount === 0 && !hasActiveFilters) {
@@ -372,23 +379,35 @@ export default function MCPClientsTable({
 						data-testid="mcp-clients-search-input"
 					/>
 				</div>
+				{server && (
+					<Button
+						variant="outline"
+						size="sm"
+						className="h-8 gap-2"
+						onClick={onServerFilterClear}
+						data-testid="mcp-client-server-filter-clear-btn"
+					>
+						Server filter
+						<X className="size-3" />
+					</Button>
+				)}
 			</div>
 
 			<div className="flex grow flex-col overflow-auto">
 				<div className="mb-2 grow overflow-auto rounded-sm border">
-					<Table data-testid="mcp-clients-table">
+					<Table data-testid="mcp-clients-table" className="w-full min-w-[1516px] table-fixed">
 						<TableHeader className="sticky top-0">
 							<TableRow className="bg-muted/50">
-								<TableHead className="font-semibold">Name</TableHead>
-								<TableHead className="font-semibold">Connection Type</TableHead>
-								<TableHead className="font-semibold">Auth Type</TableHead>
-								<TableHead className="font-semibold">Auth Scope</TableHead>
-								<TableHead className="font-semibold">Code Mode</TableHead>
-								<TableHead className="font-semibold">VK Access</TableHead>
-								<TableHead className="font-semibold">Enabled Tools</TableHead>
-								<TableHead className="font-semibold">Auto-execute Tools</TableHead>
-								<TableHead className="font-semibold">State</TableHead>
-								<TableHead className="font-semibold">Status</TableHead>
+								<TableHead className="w-[260px] font-semibold">Name</TableHead>
+								<TableHead className="w-[150px] font-semibold">Connection Type</TableHead>
+								<TableHead className="w-[150px] font-semibold">Auth Type</TableHead>
+								<TableHead className="w-[140px] font-semibold">Auth Scope</TableHead>
+								<TableHead className="w-[120px] font-semibold">Code Mode</TableHead>
+								<TableHead className="w-[120px] font-semibold">VK Access</TableHead>
+								<TableHead className="w-[130px] font-semibold">Enabled Tools</TableHead>
+								<TableHead className="w-[160px] font-semibold">Auto-execute Tools</TableHead>
+								<TableHead className="w-[140px] font-semibold">State</TableHead>
+								<TableHead className="w-[90px] font-semibold">Status</TableHead>
 								<TableHead className={`bg-muted/50 sticky right-0 z-10 w-14 text-right ${PIN_SHADOW_RIGHT}`}></TableHead>
 							</TableRow>
 						</TableHeader>
@@ -419,7 +438,11 @@ export default function MCPClientsTable({
 											: 0;
 									return (
 										<TableRow key={c.config.client_id} className="group hover:bg-muted/50 transition-colors">
-											<TableCell className="font-medium">{c.config.name}</TableCell>
+											<TableCell className="font-medium">
+												<div className="truncate" title={c.config.name}>
+													{c.config.name}
+												</div>
+											</TableCell>
 											<TableCell data-testid="mcp-client-connection-type">
 												<Badge variant="outline" className="font-mono">
 													{getConnectionTypeDisplay(c.config.connection_type)}

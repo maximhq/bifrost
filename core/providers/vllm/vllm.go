@@ -129,7 +129,7 @@ func (provider *VLLMProvider) TextCompletion(ctx *schemas.BifrostContext, key sc
 		provider.client,
 		baseURL+providerUtils.GetPathFromContext(ctx, "/v1/completions"),
 		request,
-		key,
+		openai.BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
 		provider.GetProviderKey(),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
@@ -147,16 +147,12 @@ func (provider *VLLMProvider) TextCompletionStream(ctx *schemas.BifrostContext, 
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	var authHeader map[string]string
-	if key.Value.GetValue() != "" {
-		authHeader = map[string]string{"Authorization": "Bearer " + key.Value.GetValue()}
-	}
 	return openai.HandleOpenAITextCompletionStreaming(
 		ctx,
 		provider.streamingClient,
 		baseURL+providerUtils.GetPathFromContext(ctx, "/v1/completions"),
 		request,
-		authHeader,
+		openai.BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
 		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
@@ -183,12 +179,13 @@ func (provider *VLLMProvider) ChatCompletion(ctx *schemas.BifrostContext, key sc
 		provider.client,
 		baseURL+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
 		request,
-		key,
+		openai.BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
 		HandleVLLMResponse,
+		nil,
 		nil,
 		provider.logger,
 	)
@@ -201,16 +198,12 @@ func (provider *VLLMProvider) ChatCompletionStream(ctx *schemas.BifrostContext, 
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	var authHeader map[string]string
-	if key.Value.GetValue() != "" {
-		authHeader = map[string]string{"Authorization": "Bearer " + key.Value.GetValue()}
-	}
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
 		provider.streamingClient,
 		baseURL+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
 		request,
-		authHeader,
+		openai.BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
 		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
@@ -219,6 +212,7 @@ func (provider *VLLMProvider) ChatCompletionStream(ctx *schemas.BifrostContext, 
 		postHookRunner,
 		nil,
 		HandleVLLMResponse,
+		nil,
 		nil,
 		nil,
 		nil,
@@ -238,7 +232,7 @@ func (provider *VLLMProvider) Embedding(ctx *schemas.BifrostContext, key schemas
 		provider.client,
 		baseURL+providerUtils.GetPathFromContext(ctx, "/v1/embeddings"),
 		request,
-		key,
+		openai.BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
 		provider.GetProviderKey(),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
@@ -322,7 +316,7 @@ func (provider *VLLMProvider) callVLLMRerankEndpoint(
 	statusCode := resp.StatusCode()
 	if statusCode != fasthttp.StatusOK {
 		rawErrBody := append([]byte(nil), resp.Body()...)
-		return nil, nil, nil, rawErrBody, statusCode, latency, openai.ParseOpenAIError(resp)
+		return nil, nil, nil, rawErrBody, statusCode, latency, providerUtils.SetErrorLatency(openai.ParseOpenAIError(resp), latency)
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
@@ -373,7 +367,7 @@ func (provider *VLLMProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Ke
 		latency += fallbackLatency
 	}
 	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, responseBody, sendBackRawRequest, sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, responseBody, sendBackRawRequest, sendBackRawResponse, latency)
 	}
 
 	returnDocuments := request.Params != nil && request.Params.ReturnDocuments != nil && *request.Params.ReturnDocuments
@@ -386,6 +380,7 @@ func (provider *VLLMProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Ke
 			responseBody,
 			sendBackRawRequest,
 			sendBackRawResponse,
+			latency,
 		)
 	}
 
@@ -426,6 +421,7 @@ func (provider *VLLMProvider) Transcription(ctx *schemas.BifrostContext, key sch
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,
+		nil,
 		provider.GetProviderKey(),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		HandleVLLMResponse,
@@ -489,22 +485,23 @@ func (provider *VLLMProvider) TranscriptionStream(ctx *schemas.BifrostContext, p
 		startTime := time.Now()
 		// Make the request
 		err := provider.streamingClient.Do(req, resp)
+		latency := time.Since(startTime)
 		if err != nil {
 			defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 			if errors.Is(err, context.Canceled) {
-				return nil, &schemas.BifrostError{
+				return nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
 					IsBifrostError: false,
 					Error: &schemas.ErrorField{
 						Type:    schemas.Ptr(schemas.RequestCancelled),
 						Message: schemas.ErrRequestCancelled,
 						Error:   err,
 					},
-				}
+				}, latency)
 			}
 			if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
-				return nil, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err)
+				return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), latency)
 			}
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err)
+			return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err), latency)
 		}
 
 		// Store provider response headers in context before status check so error responses also forward them
@@ -513,8 +510,10 @@ func (provider *VLLMProvider) TranscriptionStream(ctx *schemas.BifrostContext, p
 		// Check for HTTP errors
 		if resp.StatusCode() != fasthttp.StatusOK {
 			defer providerUtils.ReleaseStreamingResponse(ctx, resp)
-			return nil, openai.ParseOpenAIError(resp)
+			return nil, providerUtils.SetErrorLatency(openai.ParseOpenAIError(resp), latency)
 		}
+
+		providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)
 
 		// Large payload streaming passthrough — pipe raw upstream SSE to client
 		if providerUtils.SetupStreamingPassthrough(ctx, resp) {
@@ -525,8 +524,6 @@ func (provider *VLLMProvider) TranscriptionStream(ctx *schemas.BifrostContext, p
 
 		// Create response channel
 		responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
-
-		providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)
 
 		// Start streaming in a goroutine
 		go func() {
@@ -592,7 +589,7 @@ func (provider *VLLMProvider) TranscriptionStream(ctx *schemas.BifrostContext, p
 				_, _, bifrostErr = HandleVLLMResponse(dataBytes, &response, nil, false, false)
 				if bifrostErr != nil {
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, body.Bytes(), dataBytes, false, providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)), responseChan, logger, postHookSpanFinalizer)
+					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, body.Bytes(), dataBytes, false, providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse), latency), responseChan, logger, postHookSpanFinalizer)
 					return
 				}
 

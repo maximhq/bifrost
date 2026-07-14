@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/url"
@@ -267,6 +268,19 @@ func AzureEndpointPreHook(handlerStore lib.HandlerStore) func(ctx *fasthttp.Requ
 
 		return nil
 	}
+}
+
+// openAIResponsesWireConverter maps a Bifrost responses payload to the OpenAI wire JSON shape.
+func openAIResponsesWireConverter(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesResponse) (interface{}, error) {
+	if resp != nil && resp.ExtraFields.Provider == schemas.OpenAI {
+		if resp.ExtraFields.RawResponse != nil {
+			return resp.ExtraFields.RawResponse, nil
+		}
+	}
+	if resp == nil {
+		return nil, nil
+	}
+	return resp.WithDefaults(), nil
 }
 
 // CreateOpenAIRouteConfigs creates route configurations for OpenAI endpoints.
@@ -704,14 +718,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				}
 				return nil, errors.New("invalid request type")
 			},
-			ResponsesResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesResponse) (interface{}, error) {
-				if resp.ExtraFields.Provider == schemas.OpenAI {
-					if resp.ExtraFields.RawResponse != nil {
-						return resp.ExtraFields.RawResponse, nil
-					}
-				}
-				return resp.WithDefaults(), nil
-			},
+			ResponsesResponseConverter: openAIResponsesWireConverter,
 			AsyncResponsesResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.AsyncJobResponse, responsesResponseConverter ResponsesResponseConverter) (interface{}, map[string]string, error) {
 				bifrostResponse := &schemas.BifrostResponsesResponse{
 					ID:     &resp.ID,
@@ -793,6 +800,136 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 					}
 				}
 				return resp, nil
+			},
+			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+				return err
+			},
+		})
+	}
+
+	// Responses lifecycle: GET retrieve
+	for _, path := range []string{
+		"/v1/responses/{response_id}",
+		"/responses/{response_id}",
+		"/openai/responses/{response_id}",
+	} {
+		routes = append(routes, RouteConfig{
+			Type:   RouteConfigTypeOpenAI,
+			Path:   pathPrefix + path,
+			Method: "GET",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.ResponsesRetrieveRequest
+			},
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
+				return &schemas.BifrostResponsesRetrieveRequest{}
+			},
+			PreCallback: extractResponsesLifecycleFromPath(handlerStore),
+			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
+				if rr, ok := req.(*schemas.BifrostResponsesRetrieveRequest); ok {
+					return &schemas.BifrostRequest{
+						RequestType:              schemas.ResponsesRetrieveRequest,
+						ResponsesRetrieveRequest: rr,
+					}, nil
+				}
+				return nil, errors.New("invalid responses retrieve request")
+			},
+			ResponsesResponseConverter: openAIResponsesWireConverter,
+			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+				return err
+			},
+		})
+	}
+
+	// Responses lifecycle: DELETE
+	for _, path := range []string{
+		"/v1/responses/{response_id}",
+		"/responses/{response_id}",
+		"/openai/responses/{response_id}",
+	} {
+		routes = append(routes, RouteConfig{
+			Type:   RouteConfigTypeOpenAI,
+			Path:   pathPrefix + path,
+			Method: "DELETE",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.ResponsesDeleteRequest
+			},
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
+				return &schemas.BifrostResponsesDeleteRequest{}
+			},
+			PreCallback: extractResponsesLifecycleFromPath(handlerStore),
+			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
+				if dr, ok := req.(*schemas.BifrostResponsesDeleteRequest); ok {
+					return &schemas.BifrostRequest{
+						RequestType:            schemas.ResponsesDeleteRequest,
+						ResponsesDeleteRequest: dr,
+					}, nil
+				}
+				return nil, errors.New("invalid responses delete request")
+			},
+			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+				return err
+			},
+		})
+	}
+
+	// Responses lifecycle: POST cancel
+	for _, path := range []string{
+		"/v1/responses/{response_id}/cancel",
+		"/responses/{response_id}/cancel",
+		"/openai/responses/{response_id}/cancel",
+	} {
+		routes = append(routes, RouteConfig{
+			Type:   RouteConfigTypeOpenAI,
+			Path:   pathPrefix + path,
+			Method: "POST",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.ResponsesCancelRequest
+			},
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
+				return &schemas.BifrostResponsesCancelRequest{}
+			},
+			PreCallback: extractResponsesLifecycleFromPath(handlerStore),
+			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
+				if cr, ok := req.(*schemas.BifrostResponsesCancelRequest); ok {
+					return &schemas.BifrostRequest{
+						RequestType:            schemas.ResponsesCancelRequest,
+						ResponsesCancelRequest: cr,
+					}, nil
+				}
+				return nil, errors.New("invalid responses cancel request")
+			},
+			ResponsesResponseConverter: openAIResponsesWireConverter,
+			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+				return err
+			},
+		})
+	}
+
+	// Responses lifecycle: GET input_items
+	for _, path := range []string{
+		"/v1/responses/{response_id}/input_items",
+		"/responses/{response_id}/input_items",
+		"/openai/responses/{response_id}/input_items",
+	} {
+		routes = append(routes, RouteConfig{
+			Type:   RouteConfigTypeOpenAI,
+			Path:   pathPrefix + path,
+			Method: "GET",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.ResponsesInputItemsRequest
+			},
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
+				return &schemas.BifrostResponsesInputItemsRequest{}
+			},
+			PreCallback: extractResponsesLifecycleFromPath(handlerStore),
+			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
+				if ir, ok := req.(*schemas.BifrostResponsesInputItemsRequest); ok {
+					return &schemas.BifrostRequest{
+						RequestType:                schemas.ResponsesInputItemsRequest,
+						ResponsesInputItemsRequest: ir,
+					}, nil
+				}
+				return nil, errors.New("invalid responses input items request")
 			},
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return err
@@ -2311,6 +2448,82 @@ func extractFileIDFromPath(_ lib.HandlerStore) PreRequestCallback {
 	}
 }
 
+// extractResponsesLifecycleFromPath fills response_id, provider, and query-derived fields for Responses lifecycle routes.
+func extractResponsesLifecycleFromPath(_ lib.HandlerStore) PreRequestCallback {
+	return func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
+		rid := ctx.UserValue("response_id")
+		if rid == nil {
+			return errors.New("response_id is required")
+		}
+		idStr, ok := rid.(string)
+		if !ok || idStr == "" {
+			return errors.New("response_id must be a non-empty string")
+		}
+		provider := schemas.ModelProvider(string(ctx.QueryArgs().Peek("provider")))
+		if provider == "" {
+			if isAzureSDKRequest(ctx) {
+				provider = schemas.Azure
+			} else {
+				provider = schemas.OpenAI
+			}
+		}
+		switch r := req.(type) {
+		case *schemas.BifrostResponsesRetrieveRequest:
+			r.ResponseID = idStr
+			r.Provider = provider
+			ctx.QueryArgs().VisitAll(func(key, value []byte) {
+				switch string(key) {
+				case "include":
+					r.Include = append(r.Include, string(value))
+				}
+			})
+			if raw := ctx.QueryArgs().Peek("starting_after"); len(raw) > 0 {
+				n, err := strconv.Atoi(string(raw))
+				if err != nil {
+					return fmt.Errorf("starting_after must be an integer")
+				}
+				r.StartingAfter = schemas.Ptr(n)
+			}
+			if raw := ctx.QueryArgs().Peek("include_obfuscation"); len(raw) > 0 {
+				b, err := strconv.ParseBool(string(raw))
+				if err != nil {
+					return fmt.Errorf("include_obfuscation must be a boolean")
+				}
+				r.IncludeObfuscation = &b
+			}
+		case *schemas.BifrostResponsesDeleteRequest:
+			r.ResponseID = idStr
+			r.Provider = provider
+		case *schemas.BifrostResponsesCancelRequest:
+			r.ResponseID = idStr
+			r.Provider = provider
+		case *schemas.BifrostResponsesInputItemsRequest:
+			r.ResponseID = idStr
+			r.Provider = provider
+			ctx.QueryArgs().VisitAll(func(key, value []byte) {
+				switch string(key) {
+				case "after":
+					r.After = string(value)
+				case "include":
+					r.Include = append(r.Include, string(value))
+				case "order":
+					r.Order = string(value)
+				}
+			})
+			if raw := ctx.QueryArgs().Peek("limit"); len(raw) > 0 {
+				n, err := strconv.Atoi(string(raw))
+				if err != nil {
+					return fmt.Errorf("limit must be an integer")
+				}
+				r.Limit = schemas.Ptr(n)
+			}
+		default:
+			return errors.New("invalid request type for responses lifecycle path")
+		}
+		return nil
+	}
+}
+
 // parseOpenAIFileUploadMultipartRequest parses multipart/form-data for file upload requests
 func parseOpenAIFileUploadMultipartRequest(ctx *fasthttp.RequestCtx, req interface{}) error {
 	uploadReq, ok := req.(*schemas.BifrostFileUploadRequest)
@@ -2352,6 +2565,12 @@ func parseOpenAIFileUploadMultipartRequest(ctx *fasthttp.RequestCtx, req interfa
 
 	uploadReq.File = fileData
 	uploadReq.Filename = fileHeader.Filename
+
+	if contentTypeValues := form.Value["content_type"]; len(contentTypeValues) > 0 && contentTypeValues[0] != "" {
+		uploadReq.ContentType = &contentTypeValues[0]
+	} else if partContentType := strings.TrimSpace(fileHeader.Header.Get("Content-Type")); partContentType != "" {
+		uploadReq.ContentType = &partContentType
+	}
 
 	// Extract provider from extra_body (form field)
 	if providerValues := form.Value["provider"]; len(providerValues) > 0 && providerValues[0] != "" {
@@ -3109,6 +3328,63 @@ func parseTranscriptionMultipartRequest(ctx *fasthttp.RequestCtx, req interface{
 			return errors.New("invalid stream value")
 		}
 		transcriptionReq.Stream = &stream
+	}
+
+	if temperatureValues := form.Value["temperature"]; len(temperatureValues) > 0 && temperatureValues[0] != "" {
+		temperature, err := strconv.ParseFloat(temperatureValues[0], 64)
+		if err != nil {
+			return errors.New("invalid temperature value")
+		}
+		transcriptionReq.TranscriptionParameters.Temperature = &temperature
+	}
+
+	// The SDK sends repeated "timestamp_granularities[]" fields for the array
+	// (verified against the openai-python client's actual multipart encoding).
+	if granularityValues := form.Value["timestamp_granularities[]"]; len(granularityValues) > 0 {
+		transcriptionReq.TranscriptionParameters.TimestampGranularities = granularityValues
+	}
+
+	// chunking_strategy is OpenAI-specific (required by diarization models). It is a
+	// Union["auto", server_vad object], so decode object-shaped values and pass
+	// plain strings (e.g. "auto") through verbatim via ExtraParams passthrough.
+	if csValues := form.Value["chunking_strategy"]; len(csValues) > 0 && csValues[0] != "" {
+		raw := csValues[0]
+		if transcriptionReq.ExtraParams == nil {
+			transcriptionReq.ExtraParams = map[string]interface{}{}
+		}
+		var obj map[string]interface{}
+		if err := json.Unmarshal([]byte(raw), &obj); err == nil {
+			transcriptionReq.ExtraParams["chunking_strategy"] = obj
+		} else {
+			transcriptionReq.ExtraParams["chunking_strategy"] = raw
+		}
+	}
+
+	// Any remaining multipart fields aren't part of OpenAI's own transcription
+	// schema, but provider-specific parameters (e.g. ElevenLabs' diarize,
+	// num_speakers, timestamps_granularity, sent via the SDK's extra_body) are
+	// still passed as plain multipart form fields. Without this, they'd be
+	// silently dropped instead of reaching ToElevenlabsTranscriptionRequest's
+	// ExtraParams lookups.
+	knownTranscriptionFields := map[string]bool{
+		"model": true, "file": true, "language": true, "prompt": true,
+		"response_format": true, "stream": true, "chunking_strategy": true,
+		"temperature": true, "timestamp_granularities[]": true,
+	}
+	for key, values := range form.Value {
+		if knownTranscriptionFields[key] || len(values) == 0 || values[0] == "" {
+			continue
+		}
+		if transcriptionReq.ExtraParams == nil {
+			transcriptionReq.ExtraParams = map[string]interface{}{}
+		}
+		raw := values[0]
+		var decoded interface{}
+		if err := json.Unmarshal([]byte(raw), &decoded); err == nil {
+			transcriptionReq.ExtraParams[key] = decoded
+		} else {
+			transcriptionReq.ExtraParams[key] = raw
+		}
 	}
 
 	return nil

@@ -1302,6 +1302,11 @@ append_dynamic_columns_postgres() {
     echo "UPDATE config_client SET allow_per_request_raw_override = false WHERE id = 1;" >> "$output_file"
   fi
 
+  # config_client.dump_errors_in_console_logs (added in v1.6.0)
+  if column_exists_postgres "config_client" "dump_errors_in_console_logs"; then
+    echo "UPDATE config_client SET dump_errors_in_console_logs = false WHERE id = 1;" >> "$output_file"
+  fi
+
   # governance_virtual_key_provider_configs.allow_all_keys (added in v1.5.0)
   # vk-migration-test-1 has a key in the join table, so old behavior was restricted to that key -> allow_all_keys=false
   # vk-migration-test-2 has no key rows, so old "empty=allow-all" semantics -> allow_all_keys=true
@@ -2415,6 +2420,11 @@ append_dynamic_columns_sqlite() {
     # config_client.allow_per_request_raw_override (added in v1.5.0)
     if column_exists_sqlite "$config_db" "config_client" "allow_per_request_raw_override"; then
       echo "UPDATE config_client SET allow_per_request_raw_override = 0 WHERE id = 1;" >> "$output_file"
+    fi
+
+    # config_client.dump_errors_in_console_logs (added in v1.6.0)
+    if column_exists_sqlite "$config_db" "config_client" "dump_errors_in_console_logs"; then
+      echo "UPDATE config_client SET dump_errors_in_console_logs = 0 WHERE id = 1;" >> "$output_file"
     fi
   fi
 

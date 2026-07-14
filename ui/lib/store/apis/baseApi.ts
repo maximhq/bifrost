@@ -191,8 +191,12 @@ export const baseApi = createApi({
 		"FeatureFlags",
 		"ComplexityAnalyzerConfig",
 		"Skills",
+		"OAuth2Grants",
 		"CircuitBreakerPolicies",
 		"CircuitBreakerState",
+		"AlertChannels",
+		"AlertRules",
+		"AlertHistory",
 	],
 	endpoints: () => ({}),
 });

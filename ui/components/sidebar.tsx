@@ -15,12 +15,15 @@ import {
 	ShieldHalf,
 	FlaskConical,
 	FolderGit,
+	Gavel,
 	Globe,
+	History,
 	KeyRound,
 	Landmark,
 	LayoutGrid,
 	LogOut,
 	Logs,
+	Megaphone,
 	Network,
 	PanelLeftClose,
 	PanelLeftOpen,
@@ -33,6 +36,7 @@ import {
 	Settings2Icon,
 	ShieldCheck,
 	Shuffle,
+	Siren,
 	SlidersHorizontal,
 	Telescope,
 	ToolCase,
@@ -42,6 +46,8 @@ import {
 	Users,
 	Wallet,
 	WalletCards,
+	CircuitBoard,
+	GitCompareArrows,
 } from "lucide-react";
 
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -272,15 +278,14 @@ const SidebarItemView = ({
 
 	const isHighlighted = !hasSubItems && highlightedUrl === item.url;
 
-	const buttonClassName = `group/nav-item relative h-7.5 cursor-pointer rounded-sm border px-3 transition-all duration-200 ${
-		isHighlighted
-			? "bg-sidebar-accent text-accent-foreground border-primary/20"
-			: isActive || isAnySubItemActive
-				? "bg-sidebar-accent text-primary border-primary/20"
-				: item.hasAccess
-					? "hover:bg-sidebar-accent hover:text-accent-foreground border-transparent text-slate-500 dark:text-zinc-400"
-					: "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
-	} `;
+	const buttonClassName = `group/nav-item relative h-7.5 cursor-pointer rounded-sm border px-3 transition-all duration-200 ${isHighlighted
+		? "bg-sidebar-accent text-accent-foreground border-primary/20"
+		: isActive || isAnySubItemActive
+			? "bg-sidebar-accent text-primary border-primary/20"
+			: item.hasAccess
+				? "hover:bg-sidebar-accent hover:text-accent-foreground border-transparent text-slate-500 dark:text-zinc-400"
+				: "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
+		} `;
 
 	const innerContent = (
 		<div className="flex w-full items-center justify-between">
@@ -320,7 +325,12 @@ const SidebarItemView = ({
 	let menuButton: React.ReactNode;
 	if (hasSubItems) {
 		menuButton = (
-			<SidebarMenuButton tooltip={isSidebarCollapsed ? undefined : item.title} className={buttonClassName} onClick={handleClick}>
+			<SidebarMenuButton
+				tooltip={isSidebarCollapsed ? undefined : item.title}
+				className={buttonClassName}
+				onClick={handleClick}
+				data-testid={`sidebar-item-btn-${slug(item.title)}`}
+			>
 				{innerContent}
 			</SidebarMenuButton>
 		);
@@ -436,15 +446,14 @@ const SidebarItemView = ({
 						const isSubItemActive = subItem.queryParam ? pathname === subItem.url : isRouteMatch(subItem.url);
 						const isSubItemHighlighted = highlightedUrl ? subItemHref.startsWith(highlightedUrl) : false;
 						const SubItemIcon = subItem.icon;
-						const subItemClassName = `group/nav-item h-7 cursor-pointer rounded-sm px-2 transition-all duration-200 ${
-							isSubItemHighlighted
-								? "bg-sidebar-accent text-accent-foreground"
-								: isSubItemActive
-									? "bg-sidebar-accent text-primary font-medium"
-									: subItem.hasAccess === false
-										? "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
-										: "hover:bg-sidebar-accent hover:text-accent-foreground text-slate-500 dark:text-zinc-400"
-						}`;
+						const subItemClassName = `group/nav-item h-7 cursor-pointer rounded-sm px-2 transition-all duration-200 ${isSubItemHighlighted
+							? "bg-sidebar-accent text-accent-foreground"
+							: isSubItemActive
+								? "bg-sidebar-accent text-primary font-medium"
+								: subItem.hasAccess === false
+									? "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
+									: "hover:bg-sidebar-accent hover:text-accent-foreground text-slate-500 dark:text-zinc-400"
+							}`;
 						const subInner = (
 							<div className="flex w-full items-center gap-2">
 								{SubItemIcon && <SubItemIcon className={`h-3.5 w-3.5 ${isSubItemActive ? "text-primary" : "text-muted-foreground"}`} />}
@@ -464,12 +473,21 @@ const SidebarItemView = ({
 						return (
 							<SidebarMenuSubItem key={subItem.title}>
 								{subItem.hasAccess === false ? (
-									<SidebarMenuSubButton data-nav-url={subItemHref} className={subItemClassName}>
+									<SidebarMenuSubButton
+										data-nav-url={subItemHref}
+										data-testid={`sidebar-subitem-disabled-${slug(subItem.title)}`}
+										className={subItemClassName}
+									>
 										{subInner}
 									</SidebarMenuSubButton>
 								) : (
 									<SidebarMenuSubButton asChild className={subItemClassName}>
-										<Link to={subItemHref as any} preload="intent" data-nav-url={subItemHref}>
+										<Link
+											to={subItemHref as any}
+											preload="intent"
+											data-nav-url={subItemHref}
+											data-testid={`sidebar-subitem-link-${slug(subItem.title)}`}
+										>
 											{subInner}
 										</Link>
 									</SidebarMenuSubButton>
@@ -543,6 +561,9 @@ export default function AppSidebar() {
 	});
 	const hasLogsAccess = useRbac(RbacResource.Logs, RbacOperation.View);
 	const hasObservabilityAccess = useRbac(RbacResource.Observability, RbacOperation.View);
+	// Alerting is currently surfaced under the existing governance permission
+	// until enterprise alerting gets its own RBAC resource.
+	const hasAlertingAccess = useRbac(RbacResource.Governance, RbacOperation.View);
 	const hasDashboardAccess = useRbac(RbacResource.Dashboard, RbacOperation.View);
 	const hasModelProvidersAccess = useRbac(RbacResource.ModelProvider, RbacOperation.View);
 	const hasMCPGatewayAccess = useRbac(RbacResource.MCPGateway, RbacOperation.View);
@@ -667,9 +688,16 @@ export default function AppSidebar() {
 					{
 						title: "Complexity Router",
 						url: "/workspace/complexity-router",
-						icon: Settings2Icon,
+						icon: GitCompareArrows,
 						description: "Complexity tier routing",
 						hasAccess: hasRoutingRulesAccess,
+					},
+					{
+						title: "Circuit Breaker",
+						url: "/workspace/circuit-breaker",
+						icon: CircuitBoard,
+						description: "Automatic fallback when primary endpoints fail",
+						hasAccess: hasCircuitBreakerAccess,
 					},
 					{
 						title: "Pricing Overrides",
@@ -684,13 +712,6 @@ export default function AppSidebar() {
 						icon: Settings,
 						description: "Model and routing configuration",
 						hasAccess: hasSettingsAccess,
-					},
-					{
-						title: "Circuit Breaker",
-						url: "/workspace/circuit-breaker",
-						icon: ShieldHalf,
-						description: "Automatic fallback when primary endpoints fail",
-						hasAccess: hasCircuitBreakerAccess,
 					},
 				],
 			},
@@ -730,6 +751,13 @@ export default function AppSidebar() {
 						hasAccess: hasMCPGatewayAccess,
 					},
 					{
+						title: "OAuth Grants",
+						url: "/workspace/oauth-grants",
+						icon: ShieldCheck,
+						description: "Downstream OAuth grants",
+						hasAccess: hasMCPGatewayAccess,
+					},
+					{
 						title: "MCP Settings",
 						url: "/workspace/mcp-settings",
 						icon: Settings,
@@ -744,6 +772,36 @@ export default function AppSidebar() {
 				icon: Puzzle,
 				description: "Manage custom plugins",
 				hasAccess: hasPluginsAccess,
+			},
+			{
+				title: "Alerting",
+				url: "/workspace/alerting",
+				icon: Siren,
+				description: "Manage alert channels, rules, and history",
+				hasAccess: hasAlertingAccess,
+				subItems: [
+					{
+						title: "Channels",
+						url: "/workspace/alerting/channels",
+						icon: Megaphone,
+						description: "Configure notification channels",
+						hasAccess: hasAlertingAccess,
+					},
+					{
+						title: "Rules",
+						url: "/workspace/alerting/rules",
+						icon: Gavel,
+						description: "Define alerting rules",
+						hasAccess: hasAlertingAccess,
+					},
+					{
+						title: "History",
+						url: "/workspace/alerting/history",
+						icon: History,
+						description: "Review alert delivery history",
+						hasAccess: hasAlertingAccess,
+					},
+				],
 			},
 			{
 				title: "Governance",
@@ -872,21 +930,21 @@ export default function AppSidebar() {
 			},
 			...(isDbConnected
 				? [
-						{
-							title: "Prompt Repository",
-							url: "/workspace/prompt-repo",
-							icon: FolderGit,
-							description: "Prompt repository",
-							hasAccess: hasPromptRepositoryAccess,
-						},
-						{
-							title: "Skills Repository",
-							url: "/workspace/skills-repo",
-							icon: BookOpenText,
-							description: "Skills repository",
-							hasAccess: hasSkillsRepositoryAccess,
-						},
-					]
+					{
+						title: "Prompt Repository",
+						url: "/workspace/prompt-repo",
+						icon: FolderGit,
+						description: "Prompt repository",
+						hasAccess: hasPromptRepositoryAccess,
+					},
+					{
+						title: "Skills Repository",
+						url: "/workspace/skills-repo",
+						icon: BookOpenText,
+						description: "Skills repository",
+						hasAccess: hasSkillsRepositoryAccess,
+					},
+				]
 				: []),
 			{
 				title: "Evals",
@@ -933,14 +991,14 @@ export default function AppSidebar() {
 					},
 					...(IS_ENTERPRISE
 						? [
-								{
-									title: "Proxy",
-									url: "/workspace/config/proxy",
-									icon: Globe,
-									description: "Proxy configuration",
-									hasAccess: hasSettingsAccess,
-								},
-							]
+							{
+								title: "Proxy",
+								url: "/workspace/config/proxy",
+								icon: Globe,
+								description: "Proxy configuration",
+								hasAccess: hasSettingsAccess,
+							},
+						]
 						: []),
 					{
 						title: "API Keys",
@@ -970,6 +1028,7 @@ export default function AppSidebar() {
 			hasLogsAccess,
 			hasAPIKeyAccess,
 			hasObservabilityAccess,
+			hasAlertingAccess,
 			hasDashboardAccess,
 			hasModelProvidersAccess,
 			hasMCPGatewayAccess,
@@ -1433,7 +1492,7 @@ export default function AppSidebar() {
 									</a>
 								))}
 							<ThemeToggle />
-							{IS_ENTERPRISE && userInfo && (userInfo.name || userInfo.email) ? (
+							{IS_ENTERPRISE && userInfo ? (
 								<Popover open={userPopoverOpen} onOpenChange={setUserPopoverOpen}>
 									<PopoverTrigger asChild>
 										<button
@@ -1447,7 +1506,7 @@ export default function AppSidebar() {
 									<PopoverContent side="top" align="start" className="w-56 p-0">
 										<div className="flex flex-col">
 											<div className="px-4 py-3">
-												<p className="text-sm font-medium">{userInfo.name || userInfo.email || "User"}</p>
+												<p className="text-sm font-medium">{userInfo.name || userInfo.email || userInfo.preferred_username || "User"}</p>
 											</div>
 											<Separator />
 											<button

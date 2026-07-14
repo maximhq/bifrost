@@ -8,12 +8,12 @@ import NumberFlow from "@number-flow/react";
 import { memo, useCallback, useMemo, useState } from "react";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import {
+	displayModelLabel,
 	formatFullTimestamp,
 	formatTimestamp,
 	getModelColor,
 	OTHER_SERIES_COLOR,
 	OTHER_SERIES_KEY,
-	OTHER_SERIES_LABEL,
 	pickTopSeries,
 } from "../utils/chartUtils";
 import { ChartCard } from "./charts/chartCard";
@@ -37,15 +37,8 @@ function formatLatency(ms: number): string {
 	return `${ms.toFixed(0)}ms`;
 }
 
-const UNNAMED_MODEL_LABEL = "(unnamed)";
-
-function displayModelLabel(model: string): string {
-	if (model === OTHER_SERIES_KEY) return OTHER_SERIES_LABEL;
-	return model === "" ? UNNAMED_MODEL_LABEL : model;
-}
-
 // Tooltip for the usage share chart
-function UsageShareTooltip({ active, payload, models }: any) {
+function UsageShareTooltip({ active, payload, models, modelLabels }: any) {
 	if (!active || !payload || !payload.length) return null;
 	const data = payload[0]?.payload;
 	if (!data) return null;
@@ -64,7 +57,7 @@ function UsageShareTooltip({ active, payload, models }: any) {
 							<span className="flex items-center gap-1.5">
 								<span className="h-2 w-2 rounded-full" style={{ backgroundColor: isOther ? OTHER_SERIES_COLOR : getModelColor(idx) }} />
 								<span className={`max-w-[140px] truncate text-zinc-600 dark:text-zinc-400${isUnnamed ? " italic" : ""}`}>
-									{displayModelLabel(model)}
+									{displayModelLabel(model, modelLabels)}
 								</span>
 							</span>
 							<span className="font-medium">{val.toLocaleString()}</span>
@@ -81,12 +74,14 @@ function TopModelsChart({
 	modelData,
 	loadingModels,
 	rankingsData,
+	modelLabels,
 	startTime,
 	endTime,
 }: {
 	modelData: ModelHistogramResponse | null;
 	loadingModels: boolean;
 	rankingsData: ModelRankingsResponse | null;
+	modelLabels: Record<string, string>;
 	startTime: number;
 	endTime: number;
 }) {
@@ -190,7 +185,10 @@ function TopModelsChart({
 									domain={[0, (dataMax: number) => Math.max(dataMax, 1)]}
 									allowDataOverflow={false}
 								/>
-								<Tooltip content={<UsageShareTooltip models={displayModels} />} cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }} />
+								<Tooltip
+									content={<UsageShareTooltip models={displayModels} modelLabels={modelLabels} />}
+									cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }}
+								/>
 								{displayModels.map((model, idx) => (
 									<Bar
 										key={model}
@@ -218,7 +216,7 @@ function TopModelsChart({
 							<div key={m.model} className="flex items-center gap-2 text-sm">
 								<span className="text-muted-foreground w-4 text-right text-xs">{idx + 1}.</span>
 								<span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: getModelColor(m.colorIdx) }} />
-								<span className="min-w-0 flex-1 truncate font-medium">{m.model}</span>
+								<span className="min-w-0 flex-1 truncate font-medium">{displayModelLabel(m.model, modelLabels)}</span>
 								<span className="shrink-0 text-right text-xs tabular-nums">
 									<span className="font-medium">{formatNumber(m.total)}</span>
 									<span className="text-muted-foreground ml-1">{m.pct.toFixed(1)}%</span>
@@ -257,6 +255,14 @@ function ModelRankingsTabImpl({ rankingsData, loading, modelData, loadingModels,
 		});
 	}, [rankingsData, sortField, sortOrder]);
 
+	const modelLabels = useMemo(() => {
+		const labels: Record<string, string> = {};
+		for (const r of rankingsData?.rankings ?? []) {
+			if (r.canonical_model_name) labels[r.model] = r.canonical_model_name;
+		}
+		return labels;
+	}, [rankingsData]);
+
 	return (
 		<div className="flex flex-col gap-4">
 			{/* Top Models chart */}
@@ -264,6 +270,7 @@ function ModelRankingsTabImpl({ rankingsData, loading, modelData, loadingModels,
 				modelData={modelData}
 				loadingModels={loadingModels}
 				rankingsData={rankingsData}
+				modelLabels={modelLabels}
 				startTime={startTime}
 				endTime={endTime}
 			/>
@@ -342,7 +349,10 @@ function ModelRankingsTabImpl({ rankingsData, loading, modelData, loadingModels,
 											) : (
 												<span className="text-muted-foreground shrink-0 text-xs">{entry.provider}</span>
 											)}
-											<span className="font-medium">{entry.model}</span>
+											<span className="font-medium">{displayModelLabel(entry.model, modelLabels)}</span>
+											{entry.canonical_model_name && entry.canonical_model_name !== entry.model && (
+												<span className="text-muted-foreground truncate font-mono text-xs">{entry.model}</span>
+											)}
 										</div>
 									</TableCell>
 									<TableCell className="text-right">

@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/internal/llmtests"
@@ -389,6 +390,62 @@ func TestMissingThoughtSignatureUsesBypassSentinel(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(encoded), `"thoughtSignature":"skip_thought_signature_validator"`)
 	assert.NotContains(t, string(encoded), `"thoughtSignature":"c2tpcF90aG91Z2h0X3NpZ25hdHVyZV92YWxpZGF0b3I="`)
+}
+
+func TestGeminiChatCompletionRejectsGCSImageURL(t *testing.T) {
+	_, err := gemini.ToGeminiChatCompletionRequest(nil, &schemas.BifrostChatRequest{
+		Model: "gemini-3-flash-preview",
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{
+					ContentBlocks: []schemas.ChatContentBlock{
+						{
+							Type: schemas.ChatContentBlockTypeText,
+							Text: schemas.Ptr("Describe this image."),
+						},
+						{
+							Type: schemas.ChatContentBlockTypeImage,
+							ImageURLStruct: &schemas.ChatInputImage{
+								URL: "gs://my-bucket/xxx.png",
+							},
+						},
+					},
+				},
+			},
+		},
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `URL scheme "gs" is not allowed`)
+}
+
+func TestGeminiResponsesRejectsGCSImageURL(t *testing.T) {
+	_, err := gemini.ToGeminiResponsesRequest(nil, &schemas.BifrostResponsesRequest{
+		Model: "gemini-3-flash-preview",
+		Input: []schemas.ResponsesMessage{
+			{
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{
+						{
+							Type: schemas.ResponsesInputMessageContentBlockTypeText,
+							Text: schemas.Ptr("Describe this image."),
+						},
+						{
+							Type: schemas.ResponsesInputMessageContentBlockTypeImage,
+							ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{
+								ImageURL: schemas.Ptr("gs://my-bucket/xxx.png"),
+							},
+						},
+					},
+				},
+			},
+		},
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `URL scheme "gs" is not allowed`)
 }
 
 func TestEmbeddedThoughtSignatureDoesNotUseBypassSentinel(t *testing.T) {
@@ -3409,6 +3466,7 @@ func TestThinkingBudgetValidation_Chat(t *testing.T) {
 		wantDisabled bool   // budget=0: expect IncludeThoughts=false
 		wantDynamic  bool   // budget=-1: expect ThinkingBudget=-1
 		wantBudget   *int32 // expected ThinkingBudget value when no error
+		wantNoConfig bool
 	}{
 		// gemini-2.5-pro: valid range [128, 32768]
 		{
@@ -3495,10 +3553,16 @@ func TestThinkingBudgetValidation_Chat(t *testing.T) {
 
 		// Special values — exempt from range checks on any model.
 		{
-			name:         "budget_zero_disables_thinking",
-			model:        "gemini-2.5-pro",
+			name:         "flash_budget_zero_disables_thinking",
+			model:        "gemini-2.5-flash",
 			budget:       0,
 			wantDisabled: true,
+		},
+		{
+			name:         "pro_budget_zero_omits_thinking_config",
+			model:        "gemini-2.5-pro",
+			budget:       0,
+			wantNoConfig: true,
 		},
 		{
 			name:        "budget_minus_one_dynamic",
@@ -3529,6 +3593,10 @@ func TestThinkingBudgetValidation_Chat(t *testing.T) {
 
 			require.NoError(t, err)
 			require.NotNil(t, result)
+			if tt.wantNoConfig {
+				assert.Nil(t, result.GenerationConfig.ThinkingConfig)
+				return
+			}
 			require.NotNil(t, result.GenerationConfig.ThinkingConfig, "ThinkingConfig should be set")
 
 			tc := result.GenerationConfig.ThinkingConfig
@@ -3559,6 +3627,7 @@ func TestThinkingBudgetValidation_Responses(t *testing.T) {
 		wantDisabled bool
 		wantDynamic  bool
 		wantBudget   *int32
+		wantNoConfig bool
 	}{
 		// gemini-2.5-pro
 		{
@@ -3602,6 +3671,12 @@ func TestThinkingBudgetValidation_Responses(t *testing.T) {
 			wantDisabled: true,
 		},
 		{
+			name:         "pro_budget_zero_omits_thinking_config",
+			model:        "gemini-2.5-pro",
+			budget:       0,
+			wantNoConfig: true,
+		},
+		{
 			name:        "budget_minus_one_dynamic",
 			model:       "gemini-2.5-pro",
 			budget:      -1,
@@ -3629,6 +3704,10 @@ func TestThinkingBudgetValidation_Responses(t *testing.T) {
 
 			require.NoError(t, err)
 			require.NotNil(t, result)
+			if tt.wantNoConfig {
+				assert.Nil(t, result.GenerationConfig.ThinkingConfig)
+				return
+			}
 			require.NotNil(t, result.GenerationConfig.ThinkingConfig, "ThinkingConfig should be set")
 
 			tc := result.GenerationConfig.ThinkingConfig
@@ -3646,6 +3725,25 @@ func TestThinkingBudgetValidation_Responses(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestThinkingBudgetZeroUnsupportedForProResponses(t *testing.T) {
+	effortNone := "none"
+
+	req := &schemas.BifrostResponsesRequest{
+		Model: "gemini-2.5-pro",
+		Params: &schemas.ResponsesParameters{
+			Reasoning: &schemas.ResponsesParametersReasoning{
+				Effort: &effortNone,
+			},
+		},
+	}
+
+	result, err := gemini.ToGeminiResponsesRequest(nil, req)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Nil(t, result.GenerationConfig.ThinkingConfig)
 }
 
 // TestThinkingBudgetEffortUsesModelRange verifies that effort-based budget
@@ -4258,4 +4356,267 @@ func TestImagenImageSizeCasing(t *testing.T) {
 			assert.Equal(t, tt.wantImageSize, *imagenReq.Parameters.SampleImageSize, "Imagen imageSize must be uppercase")
 		})
 	}
+}
+
+// TestGeminiImageGenerationAspectRatio verifies the explicit aspect_ratio branch on the
+// Gemini :generateContent path: aspect_ratio alone sets the ratio with no imageSize, and
+// aspect_ratio overrides the ratio derived from size.
+func TestGeminiImageGenerationAspectRatio(t *testing.T) {
+	t.Run("aspect_ratio_only", func(t *testing.T) {
+		bifrostReq := &schemas.BifrostImageGenerationRequest{
+			Provider: schemas.Gemini,
+			Model:    "gemini-3.1-flash-image-preview",
+			Input:    &schemas.ImageGenerationInput{Prompt: "test"},
+			Params:   &schemas.ImageGenerationParameters{AspectRatio: schemas.Ptr("16:9")},
+		}
+		outReq := gemini.ToGeminiImageGenerationRequest(bifrostReq)
+		require.NotNil(t, outReq)
+		require.NotNil(t, outReq.GenerationConfig.ImageConfig, "ImageConfig must be set from aspect_ratio alone")
+		assert.Equal(t, "16:9", outReq.GenerationConfig.ImageConfig.AspectRatio)
+		assert.Equal(t, "", outReq.GenerationConfig.ImageConfig.ImageSize, "imageSize must be empty when only aspect_ratio is set")
+	})
+
+	t.Run("aspect_ratio_overrides_size", func(t *testing.T) {
+		bifrostReq := &schemas.BifrostImageGenerationRequest{
+			Provider: schemas.Gemini,
+			Model:    "gemini-3.1-flash-image-preview",
+			Input:    &schemas.ImageGenerationInput{Prompt: "test"},
+			Params: &schemas.ImageGenerationParameters{
+				Size:        schemas.Ptr("1024x1024"),
+				AspectRatio: schemas.Ptr("16:9"),
+			},
+		}
+		outReq := gemini.ToGeminiImageGenerationRequest(bifrostReq)
+		require.NotNil(t, outReq)
+		require.NotNil(t, outReq.GenerationConfig.ImageConfig)
+		assert.Equal(t, "16:9", outReq.GenerationConfig.ImageConfig.AspectRatio, "explicit aspect_ratio must override size-derived ratio")
+		assert.Equal(t, "1K", outReq.GenerationConfig.ImageConfig.ImageSize, "imageSize stays derived from size")
+	})
+}
+
+// TestImagenImageGenerationAspectRatio verifies the explicit aspect_ratio branch on the
+// Imagen :predict path.
+func TestImagenImageGenerationAspectRatio(t *testing.T) {
+	t.Run("aspect_ratio_only", func(t *testing.T) {
+		bifrostReq := &schemas.BifrostImageGenerationRequest{
+			Provider: schemas.Gemini,
+			Model:    "imagen-4.0-generate-preview-05-20",
+			Input:    &schemas.ImageGenerationInput{Prompt: "test"},
+			Params:   &schemas.ImageGenerationParameters{AspectRatio: schemas.Ptr("16:9")},
+		}
+		imagenReq := gemini.ToImagenImageGenerationRequest(bifrostReq)
+		require.NotNil(t, imagenReq)
+		require.NotNil(t, imagenReq.Parameters.AspectRatio, "AspectRatio must be set from aspect_ratio alone")
+		assert.Equal(t, "16:9", *imagenReq.Parameters.AspectRatio)
+		assert.Nil(t, imagenReq.Parameters.SampleImageSize, "SampleImageSize must be nil when only aspect_ratio is set")
+	})
+
+	t.Run("aspect_ratio_overrides_size", func(t *testing.T) {
+		bifrostReq := &schemas.BifrostImageGenerationRequest{
+			Provider: schemas.Gemini,
+			Model:    "imagen-4.0-generate-preview-05-20",
+			Input:    &schemas.ImageGenerationInput{Prompt: "test"},
+			Params: &schemas.ImageGenerationParameters{
+				Size:        schemas.Ptr("1024x1024"),
+				AspectRatio: schemas.Ptr("16:9"),
+			},
+		}
+		imagenReq := gemini.ToImagenImageGenerationRequest(bifrostReq)
+		require.NotNil(t, imagenReq)
+		require.NotNil(t, imagenReq.Parameters.AspectRatio)
+		assert.Equal(t, "16:9", *imagenReq.Parameters.AspectRatio, "explicit aspect_ratio must override size-derived ratio")
+		require.NotNil(t, imagenReq.Parameters.SampleImageSize)
+		assert.Equal(t, "1K", *imagenReq.Parameters.SampleImageSize, "SampleImageSize stays derived from size")
+	})
+}
+
+// TestImagenImageEditSizeRoundtrip mirrors TestImagenImageSizeCasing for the Imagen edit path:
+// a Size on the edit request derives both SampleImageSize and AspectRatio.
+func TestImagenImageEditSizeRoundtrip(t *testing.T) {
+	// minimal 1x1 PNG for inline image data
+	pngPixel, _ := base64.StdEncoding.DecodeString(
+		"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+	)
+
+	bifrostReq := &schemas.BifrostImageEditRequest{
+		Provider: schemas.Gemini,
+		Model:    "imagen-3.0-capability-001",
+		Input: &schemas.ImageEditInput{
+			Prompt: "make it pop",
+			Images: []schemas.ImageInput{{Image: pngPixel}},
+		},
+		Params: &schemas.ImageEditParameters{Size: schemas.Ptr("2048x2048")},
+	}
+
+	imagenReq := gemini.ToImagenImageEditRequest(bifrostReq)
+	require.NotNil(t, imagenReq)
+	require.NotNil(t, imagenReq.Parameters.SampleImageSize, "SampleImageSize must be derived from Size on edit path")
+	assert.Equal(t, "2K", *imagenReq.Parameters.SampleImageSize)
+	require.NotNil(t, imagenReq.Parameters.AspectRatio, "AspectRatio must be derived from Size on edit path")
+	assert.Equal(t, "1:1", *imagenReq.Parameters.AspectRatio)
+}
+
+func TestWebSearchOptionsMapsToGoogleSearchTool(t *testing.T) {
+	baseReq := func(params *schemas.ChatParameters) *schemas.BifrostChatRequest {
+		return &schemas.BifrostChatRequest{
+			Model: "gemini-2.5-flash",
+			Input: []schemas.ChatMessage{
+				{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("who won the euro 2024?")}},
+			},
+			Params: params,
+		}
+	}
+
+	t.Run("web_search_options adds googleSearch tool", func(t *testing.T) {
+		result, err := gemini.ToGeminiChatCompletionRequest(nil, baseReq(&schemas.ChatParameters{
+			WebSearchOptions: &schemas.ChatWebSearchOptions{},
+		}))
+		require.NoError(t, err)
+		require.Len(t, result.Tools, 1)
+		assert.NotNil(t, result.Tools[0].GoogleSearch)
+	})
+
+	t.Run("appends alongside function tools", func(t *testing.T) {
+		result, err := gemini.ToGeminiChatCompletionRequest(nil, baseReq(&schemas.ChatParameters{
+			WebSearchOptions: &schemas.ChatWebSearchOptions{SearchContextSize: schemas.Ptr("high")},
+			Tools: []schemas.ChatTool{
+				{
+					Type: schemas.ChatToolTypeFunction,
+					Function: &schemas.ChatToolFunction{
+						Name:       "get_weather",
+						Parameters: &schemas.ToolFunctionParameters{Type: "object"},
+					},
+				},
+			},
+		}))
+		require.NoError(t, err)
+		require.Len(t, result.Tools, 2)
+		assert.NotEmpty(t, result.Tools[0].FunctionDeclarations)
+		assert.NotNil(t, result.Tools[1].GoogleSearch)
+	})
+
+	t.Run("filters map to excludeDomains and timeRangeFilter", func(t *testing.T) {
+		start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+		end := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+		result, err := gemini.ToGeminiChatCompletionRequest(nil, baseReq(&schemas.ChatParameters{
+			WebSearchOptions: &schemas.ChatWebSearchOptions{
+				Filters: &schemas.ChatWebSearchOptionsFilters{
+					AllowedDomains:  []string{"uefa.com"}, // no Gemini equivalent — dropped
+					BlockedDomains:  []string{"pinterest.com", "reddit.com"},
+					TimeRangeFilter: &schemas.Interval{StartTime: start, EndTime: end},
+				},
+			},
+		}))
+		require.NoError(t, err)
+		require.Len(t, result.Tools, 1)
+		require.NotNil(t, result.Tools[0].GoogleSearch)
+		assert.Equal(t, []string{"pinterest.com", "reddit.com"}, result.Tools[0].GoogleSearch.ExcludeDomains)
+		require.NotNil(t, result.Tools[0].GoogleSearch.TimeRangeFilter)
+		assert.Equal(t, start, result.Tools[0].GoogleSearch.TimeRangeFilter.StartTime)
+		assert.Equal(t, end, result.Tools[0].GoogleSearch.TimeRangeFilter.EndTime)
+	})
+
+	t.Run("absent web_search_options adds no tool", func(t *testing.T) {
+		result, err := gemini.ToGeminiChatCompletionRequest(nil, baseReq(&schemas.ChatParameters{}))
+		require.NoError(t, err)
+		assert.Empty(t, result.Tools)
+	})
+}
+
+func TestGroundingMetadataToChatAnnotations(t *testing.T) {
+	groundingMetadata := &gemini.GroundingMetadata{
+		WebSearchQueries: []string{"euro 2024 winner"},
+		GroundingChunks: []*gemini.GroundingChunk{
+			{Web: &gemini.GroundingChunkWeb{URI: "https://example.com/spain", Title: "uefa.com"}},
+			{Web: &gemini.GroundingChunkWeb{URI: "https://example.com/final", Title: "wikipedia.org"}},
+			{RetrievedContext: &gemini.GroundingChunkRetrievedContext{URI: "ctx://ignored"}}, // no Web — skipped
+		},
+		GroundingSupports: []*gemini.GroundingSupport{
+			{
+				Segment:               &gemini.Segment{StartIndex: 0, EndIndex: 34, Text: "Spain won Euro 2024"},
+				GroundingChunkIndices: []int32{0},
+			},
+			{
+				Segment:               &gemini.Segment{StartIndex: 35, EndIndex: 80, Text: "beating England 2-1 in the final"},
+				GroundingChunkIndices: []int32{0, 1, 2, 99}, // 2 has no Web, 99 out of range
+			},
+			{
+				GroundingChunkIndices: []int32{1}, // no segment — skipped
+			},
+		},
+	}
+
+	response := &gemini.GenerateContentResponse{
+		ResponseID:   "grounding-test",
+		ModelVersion: "gemini-2.5-flash",
+		Candidates: []*gemini.Candidate{
+			{
+				FinishReason:      gemini.FinishReasonStop,
+				GroundingMetadata: groundingMetadata,
+				Content: &gemini.Content{
+					Role:  string(gemini.RoleModel),
+					Parts: []*gemini.Part{{Text: "Spain won Euro 2024, beating England 2-1 in the final."}},
+				},
+			},
+		},
+		UsageMetadata: &gemini.GenerateContentResponseUsageMetadata{TotalTokenCount: 10},
+	}
+
+	t.Run("non-stream", func(t *testing.T) {
+		bifrostResp := response.ToBifrostChatResponse()
+		require.Len(t, bifrostResp.Choices, 1)
+		message := bifrostResp.Choices[0].ChatNonStreamResponseChoice.Message
+		require.NotNil(t, message.ChatAssistantMessage)
+
+		annotations := message.ChatAssistantMessage.Annotations
+		require.Len(t, annotations, 3, "one annotation per valid (support, chunk) pair")
+		for _, annotation := range annotations {
+			assert.Equal(t, "url_citation", annotation.Type)
+		}
+		assert.Equal(t, 0, annotations[0].URLCitation.StartIndex)
+		assert.Equal(t, 34, annotations[0].URLCitation.EndIndex)
+		assert.Equal(t, "uefa.com", annotations[0].URLCitation.Title)
+		require.NotNil(t, annotations[0].URLCitation.URL)
+		assert.Equal(t, "https://example.com/spain", *annotations[0].URLCitation.URL)
+		require.NotNil(t, annotations[0].URLCitation.Text)
+		assert.Equal(t, "Spain won Euro 2024", *annotations[0].URLCitation.Text)
+		// Second support fans out to both web chunks
+		assert.Equal(t, 35, annotations[1].URLCitation.StartIndex)
+		assert.Equal(t, "https://example.com/spain", *annotations[1].URLCitation.URL)
+		assert.Equal(t, "https://example.com/final", *annotations[2].URLCitation.URL)
+		assert.Equal(t, "wikipedia.org", annotations[2].URLCitation.Title)
+	})
+
+	t.Run("stream emits annotations on the finish-reason chunk", func(t *testing.T) {
+		state := gemini.NewGeminiStreamState()
+		bifrostResp, bifrostErr, isLast := response.ToBifrostChatCompletionStream(state)
+		require.Nil(t, bifrostErr)
+		assert.True(t, isLast)
+		require.Len(t, bifrostResp.Choices, 1)
+		delta := bifrostResp.Choices[0].ChatStreamResponseChoice.Delta
+		require.Len(t, delta.Annotations, 3)
+		assert.Equal(t, "url_citation", delta.Annotations[0].Type)
+		assert.Equal(t, "https://example.com/spain", *delta.Annotations[0].URLCitation.URL)
+	})
+
+	t.Run("stream ignores grounding before the finish chunk", func(t *testing.T) {
+		intermediate := &gemini.GenerateContentResponse{
+			ResponseID:   "grounding-intermediate",
+			ModelVersion: "gemini-2.5-flash",
+			Candidates: []*gemini.Candidate{
+				{
+					GroundingMetadata: groundingMetadata,
+					Content: &gemini.Content{
+						Role:  string(gemini.RoleModel),
+						Parts: []*gemini.Part{{Text: "Spain won"}},
+					},
+				},
+			},
+		}
+		bifrostResp, bifrostErr, isLast := intermediate.ToBifrostChatCompletionStream(gemini.NewGeminiStreamState())
+		require.Nil(t, bifrostErr)
+		assert.False(t, isLast)
+		require.Len(t, bifrostResp.Choices, 1)
+		assert.Empty(t, bifrostResp.Choices[0].ChatStreamResponseChoice.Delta.Annotations)
+	})
 }

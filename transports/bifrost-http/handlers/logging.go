@@ -14,10 +14,12 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/fasthttp/router"
+	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/queryscope"
+	"github.com/maximhq/bifrost/framework/sidekiq"
 	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
@@ -26,9 +28,10 @@ import (
 
 // LoggingHandler manages HTTP requests for logging operations
 type LoggingHandler struct {
-	logManager          logging.LogManager
-	redactedKeysManager RedactedKeysManager
-	config              *lib.Config
+	logManager                  logging.LogManager
+	redactedKeysManager         RedactedKeysManager
+	config                      *lib.Config
+	logRedactionMappingResolver LogRedactionMappingResolver
 
 	// filterDataCache memoizes /api/logs/filterdata response bodies. Filter
 	// dropdowns don't need request-fresh data and the underlying matview-backed
@@ -36,6 +39,33 @@ type LoggingHandler struct {
 	// (every page load fires this) into one DB roundtrip.
 	filterDataCache    filterDataCache
 	mcpFilterDataCache filterDataCache
+
+	// sidekiqRunner runs the background cost-recalculation job; sidekiqStore reads
+	// job rows for status/dedup. Both are nil until SetSidekiqBackend wires them,
+	// in which case the recalculate-cost endpoints return 503.
+	sidekiqRunner *sidekiq.Runner
+	sidekiqStore  SidekiqJobStore
+}
+
+// SidekiqJobStore is the narrow read surface the recalculate-cost endpoints need
+// from the job store: fetch a job by id, and find the in-flight job of a kind for
+// deduplication. configstore.ConfigStore satisfies this.
+type SidekiqJobStore interface {
+	GetSidekiqJob(ctx context.Context, id string) (*tables.TableSidekiqJob, error)
+	GetInFlightSidekiqJobByKind(ctx context.Context, kind string) (*tables.TableSidekiqJob, error)
+}
+
+// SetSidekiqBackend wires the sidekiq runner and job store, and registers the
+// cost-recalculation handler. It must be called during startup, before the runner
+// recovers incomplete jobs, so a recovered job finds its handler.
+func (h *LoggingHandler) SetSidekiqBackend(runner *sidekiq.Runner, store SidekiqJobStore) {
+	h.sidekiqRunner = runner
+	h.sidekiqStore = store
+	runner.Register(logging.CostRecalcJobKind, func(ctx context.Context, job tables.TableSidekiqJob, progress sidekiq.ProgressFunc) (string, error) {
+		return h.logManager.RunCostRecalcJob(ctx, job.Metadata, func(meta string) error {
+			return progress(meta)
+		})
+	})
 }
 
 // Keep session log page size in one place so the session sheet limit is easy to tune later.
@@ -203,6 +233,14 @@ type RedactedKeysManager interface {
 	GetAllRedactedRoutingRules(ctx context.Context, ids []string) []tables.TableRoutingRule
 }
 
+// LogRedactionMappingResolver optionally exposes decoded redaction mappings on log-detail responses.
+type LogRedactionMappingResolver interface {
+	// ResolveLogRedactionMapping returns phase-scoped placeholder-to-original mappings when the caller may reveal them.
+	// Implementations should return nil, nil when the caller is not authorized or no mapping is available.
+	// Errors are treated as reveal-data failures only; the base log detail response is still served.
+	ResolveLogRedactionMapping(ctx *fasthttp.RequestCtx, log *logstore.Log) (*schemas.RedactionMapsByPhase, error)
+}
+
 // NewLoggingHandler creates a new logging handler instance
 func NewLoggingHandler(logManager logging.LogManager, redactedKeysManager RedactedKeysManager, config *lib.Config) *LoggingHandler {
 	return &LoggingHandler{
@@ -210,6 +248,11 @@ func NewLoggingHandler(logManager logging.LogManager, redactedKeysManager Redact
 		redactedKeysManager: redactedKeysManager,
 		config:              config,
 	}
+}
+
+// SetLogRedactionMappingResolver wires the optional resolver used by Enterprise log-detail reads.
+func (h *LoggingHandler) SetLogRedactionMappingResolver(resolver LogRedactionMappingResolver) {
+	h.logRedactionMappingResolver = resolver
 }
 
 func (h *LoggingHandler) shouldHideDeletedVirtualKeysInFilters() bool {
@@ -246,6 +289,7 @@ func (h *LoggingHandler) RegisterRoutes(r *router.Router, middlewares ...schemas
 	r.GET("/api/logs/dashboard", lib.ChainMiddlewares(h.getDashboard, middlewares...))
 	r.DELETE("/api/logs", lib.ChainMiddlewares(h.deleteLogs, middlewares...))
 	r.POST("/api/logs/recalculate-cost", lib.ChainMiddlewares(h.recalculateLogCosts, middlewares...))
+	r.GET("/api/logs/recalculate-cost/status", lib.ChainMiddlewares(h.getRecalculateCostStatus, middlewares...))
 
 	// MCP Tool Log retrieval with filtering, search, and pagination
 	r.GET("/api/mcp-logs", lib.ChainMiddlewares(h.getMCPLogs, middlewares...))
@@ -602,6 +646,15 @@ func (h *LoggingHandler) getLogByID(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	if h.logRedactionMappingResolver != nil && log.RedactionMapping != "" {
+		mapping, err := h.logRedactionMappingResolver.ResolveLogRedactionMapping(ctx, log)
+		if err != nil {
+			logger.Error("failed to resolve redaction mapping for log %s: %v", id, err)
+		} else if mapping != nil && mapping.HasReplacements() {
+			log.RevealRedactionMapping = mapping
+		}
+	}
+
 	// Assemble virtual key, selected key, and routing rule objects (gorm:"-" fields not
 	// populated by GetLog) so the detail view receives the same structure as the list endpoint.
 	if log.SelectedKeyID != "" && log.SelectedKeyName != "" {
@@ -766,10 +819,10 @@ func calculateBucketSize(start, end *time.Time) int64 {
 		return 30 * 24 * 3600 // Monthly (30 days)
 	case duration >= 90*24*time.Hour: // >= 3 months
 		return 7 * 24 * 3600 // Weekly (7 days)
-	case duration >= 30*24*time.Hour: // >= 1 month
+	case duration > 31*24*time.Hour: // > ~1 month
 		return 3 * 24 * 3600 // 3 days
-	case duration >= 7*24*time.Hour: // >= 7 days
-		return 24 * 3600 // Daily
+	case duration >= 7*24*time.Hour: // >= 7 days, up to ~1 month
+		return 24 * 3600 // Daily (one bar per day)
 	case duration >= 3*24*time.Hour: // >= 3 days
 		return 8 * 3600 // 8 hours
 	case duration >= 24*time.Hour: // >= 24 hours
@@ -1659,8 +1712,17 @@ func (h *LoggingHandler) deleteLogs(ctx *fasthttp.RequestCtx) {
 	})
 }
 
-// recalculateLogCosts handles POST /api/logs/recalculate-cost - recompute missing costs in batches
+// recalculateLogCosts handles POST /api/logs/recalculate-cost. It enqueues a
+// background sidekiq job that recomputes costs for logs in the current window and
+// filters, then returns 202 with the job status. Only one recalculation runs at a
+// time: if one is already in flight it returns 409 with that job's status so the
+// caller can attach to it. It returns 503 when the background runner is unavailable.
 func (h *LoggingHandler) recalculateLogCosts(ctx *fasthttp.RequestCtx) {
+	if h.sidekiqRunner == nil || h.sidekiqStore == nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "Background job runner is not available")
+		return
+	}
+
 	var payload recalculateCostRequest
 	body := ctx.PostBody()
 	if len(body) > 0 {
@@ -1670,28 +1732,127 @@ func (h *LoggingHandler) recalculateLogCosts(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
-	limit := 200
-	if payload.Limit != nil {
-		limit = *payload.Limit
+	filters := payload.Filters.SearchFilters
+	if payload.Filters.Period != "" {
+		if start, end := ResolvePeriod(payload.Filters.Period); start != nil {
+			filters.StartTime = start
+			filters.EndTime = end
+		}
 	}
-	if limit <= 0 {
-		limit = 200
-	}
-	if limit > 1000 {
-		limit = 1000
-	}
+	// MissingCostOnly is driven by the request payload:
+	//   true  -> only logs that currently have no cost are recalculated
+	//   false -> every log matching the filters/time window is recalculated
+	missingCostOnly := filters.MissingCostOnly
 
-	filters := payload.Filters
-	filters.MissingCostOnly = true
-
-	result, err := h.logManager.RecalculateCosts(ctx, &filters, limit)
-	if err != nil {
-		logger.Error("failed to recalculate log costs: %v", err)
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to recalculate costs: %v", err))
+	// Enforce a single in-flight recalculation. If one exists, return it so the
+	// caller polls that job instead of starting a duplicate.
+	if existing, err := h.sidekiqStore.GetInFlightSidekiqJobByKind(ctx, logging.CostRecalcJobKind); err != nil {
+		logger.Error("failed to check in-flight recalculate-cost job: %v", err)
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to check running jobs")
+		return
+	} else if existing != nil {
+		ctx.SetStatusCode(fasthttp.StatusConflict)
+		SendJSON(ctx, recalcJobStatusFromRow(existing))
 		return
 	}
 
-	SendJSON(ctx, result)
+	metaJSON, err := h.logManager.BuildCostRecalcJobMeta(ctx, filters, missingCostOnly)
+	if err != nil {
+		logger.Error("failed to prepare recalculate-cost job: %v", err)
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to prepare recalculation: %v", err))
+		return
+	}
+
+	jobID := uuid.NewString()
+	createdBy, _ := ctx.UserValue(schemas.BifrostContextKeyUserID).(string)
+	if err := h.sidekiqRunner.Enqueue(ctx, jobID, logging.CostRecalcJobKind, metaJSON, createdBy); err != nil {
+		logger.Error("failed to enqueue recalculate-cost job: %v", err)
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to start recalculation: %v", err))
+		return
+	}
+
+	ctx.SetStatusCode(fasthttp.StatusAccepted)
+	if job, err := h.sidekiqStore.GetSidekiqJob(ctx, jobID); err == nil && job != nil {
+		SendJSON(ctx, recalcJobStatusFromRow(job))
+		return
+	}
+	SendJSON(ctx, recalcJobStatus{ID: jobID, Status: tables.SidekiqStatusPending})
+}
+
+// getRecalculateCostStatus handles GET /api/logs/recalculate-cost/status. With an
+// ?id= it returns that job; otherwise it returns the most recent in-flight job, or
+// an "idle" status when none is running.
+func (h *LoggingHandler) getRecalculateCostStatus(ctx *fasthttp.RequestCtx) {
+	if h.sidekiqStore == nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "Background job runner is not available")
+		return
+	}
+
+	if id := strings.TrimSpace(string(ctx.QueryArgs().Peek("id"))); id != "" {
+		job, err := h.sidekiqStore.GetSidekiqJob(ctx, id)
+		if err != nil {
+			logger.Error("failed to fetch recalculate-cost job %s: %v", id, err)
+			SendError(ctx, fasthttp.StatusInternalServerError, "Failed to fetch job status")
+			return
+		}
+		if job == nil {
+			SendError(ctx, fasthttp.StatusNotFound, "Job not found")
+			return
+		}
+		SendJSON(ctx, recalcJobStatusFromRow(job))
+		return
+	}
+
+	job, err := h.sidekiqStore.GetInFlightSidekiqJobByKind(ctx, logging.CostRecalcJobKind)
+	if err != nil {
+		logger.Error("failed to fetch in-flight recalculate-cost job: %v", err)
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to fetch job status")
+		return
+	}
+	if job == nil {
+		SendJSON(ctx, recalcJobStatus{Status: "idle"})
+		return
+	}
+	SendJSON(ctx, recalcJobStatusFromRow(job))
+}
+
+// recalcJobStatus is the API view of a cost-recalculation job: the durable sidekiq
+// row fields the UI needs plus the progress counters decoded from the job metadata.
+type recalcJobStatus struct {
+	ID        string     `json:"id,omitempty"`
+	Status    string     `json:"status"`
+	Total     int64      `json:"total"`
+	Processed int        `json:"processed"`
+	Updated   int        `json:"updated"`
+	Skipped   int        `json:"skipped"`
+	Message   string     `json:"message,omitempty"`
+	LastError string     `json:"last_error,omitempty"`
+	StartedAt *time.Time `json:"started_at,omitempty"`
+	UpdatedAt *time.Time `json:"updated_at,omitempty"`
+}
+
+// recalcJobStatusFromRow projects a sidekiq job row into the API status, decoding
+// the progress counters from the job metadata (best effort).
+func recalcJobStatusFromRow(job *tables.TableSidekiqJob) recalcJobStatus {
+	updatedAt := job.UpdatedAt
+	status := recalcJobStatus{
+		ID:        job.ID,
+		Status:    job.Status,
+		LastError: job.LastError,
+		StartedAt: job.StartedAt,
+		UpdatedAt: &updatedAt,
+	}
+	if job.Metadata != "" {
+		var meta logging.CostRecalcJobMeta
+		if err := sonic.Unmarshal([]byte(job.Metadata), &meta); err == nil {
+			status.Total = meta.Total
+			status.Processed = meta.Processed
+			status.Updated = meta.Updated
+			status.Skipped = meta.Skipped
+			status.Message = meta.Message
+		}
+	}
+	return status
 }
 
 // Helper functions
@@ -1823,8 +1984,13 @@ func parseMetadataFilters(ctx *fasthttp.RequestCtx, filters *logstore.SearchFilt
 }
 
 type recalculateCostRequest struct {
-	Filters logstore.SearchFilters `json:"filters"`
+	Filters recalculateCostFilters `json:"filters"`
 	Limit   *int                   `json:"limit,omitempty"`
+}
+
+type recalculateCostFilters struct {
+	logstore.SearchFilters
+	Period string `json:"period,omitempty"`
 }
 
 // parseMCPFiltersAndPagination parses MCP tool log filters and pagination from query parameters.
