@@ -643,7 +643,7 @@ func HandleOpenAITextCompletionStreaming(
 							// vLLM/sglang rarely include an explicit status_code field in the
 							// chunk) — same #5040 pattern as the Responses-stream path.
 							if bifrostErr.StatusCode == nil {
-								bifrostErr.StatusCode = new(StatusCodeForResponsesStreamErrorCode(bifrostErr.Error.Code))
+								bifrostErr.StatusCode = new(StatusCodeForResponsesStreamErrorCode(bifrostErr.Error.Code, bifrostErr.Error.Type))
 							}
 							ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 							providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, &bifrostErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency), responseChan, logger, postHookSpanFinalizer)
@@ -1219,7 +1219,7 @@ func HandleOpenAIChatCompletionStreaming(
 						// vLLM/sglang rarely include an explicit status_code field in the
 						// chunk) — same #5040 pattern as the Responses-stream path.
 						if bifrostErr.StatusCode == nil {
-							bifrostErr.StatusCode = new(StatusCodeForResponsesStreamErrorCode(bifrostErr.Error.Code))
+							bifrostErr.StatusCode = new(StatusCodeForResponsesStreamErrorCode(bifrostErr.Error.Code, bifrostErr.Error.Type))
 						}
 						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 						providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, &bifrostErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency), responseChan, logger, postHookSpanFinalizer)
@@ -1945,7 +1945,7 @@ func HandleOpenAIResponsesStreaming(
 							bifrostErr.Error.Code = schemas.Ptr(response.Response.Error.Code)
 						}
 					}
-					bifrostErr.StatusCode = new(StatusCodeForResponsesStreamErrorCode(bifrostErr.Error.Code))
+					bifrostErr.StatusCode = new(StatusCodeForResponsesStreamErrorCode(bifrostErr.Error.Code, bifrostErr.Error.Type))
 
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, []byte(jsonData), sendBackRawRequest, sendBackRawResponse, latency), responseChan, logger, postHookSpanFinalizer)
@@ -1964,7 +1964,7 @@ func HandleOpenAIResponsesStreaming(
 						bifrostErr.Error.Message = response.Response.Error.Message
 						bifrostErr.Error.Code = &response.Response.Error.Code
 					}
-					bifrostErr.StatusCode = new(StatusCodeForResponsesStreamErrorCode(bifrostErr.Error.Code))
+					bifrostErr.StatusCode = new(StatusCodeForResponsesStreamErrorCode(bifrostErr.Error.Code, bifrostErr.Error.Type))
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, []byte(jsonData), sendBackRawRequest, sendBackRawResponse, latency), responseChan, logger, postHookSpanFinalizer)
 					return
@@ -2522,7 +2522,7 @@ func HandleOpenAISpeechStreamRequest(
 						// vLLM/sglang rarely include an explicit status_code field in the
 						// chunk) — same #5040 pattern as the Responses-stream path.
 						if bifrostErr.StatusCode == nil {
-							bifrostErr.StatusCode = new(StatusCodeForResponsesStreamErrorCode(bifrostErr.Error.Code))
+							bifrostErr.StatusCode = new(StatusCodeForResponsesStreamErrorCode(bifrostErr.Error.Code, bifrostErr.Error.Type))
 						}
 						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 						providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, &bifrostErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency), responseChan, logger, postHookSpanFinalizer)
@@ -3044,7 +3044,7 @@ func HandleOpenAITranscriptionStreamRequest(
 							// vLLM/sglang rarely include an explicit status_code field in the
 							// chunk) — same #5040 pattern as the Responses-stream path.
 							if bifrostErrVal.StatusCode == nil {
-								bifrostErrVal.StatusCode = new(StatusCodeForResponsesStreamErrorCode(bifrostErrVal.Error.Code))
+								bifrostErrVal.StatusCode = new(StatusCodeForResponsesStreamErrorCode(bifrostErrVal.Error.Code, bifrostErrVal.Error.Type))
 							}
 							ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 							respBody := append([]byte(nil), resp.Body()...)
@@ -3483,7 +3483,7 @@ func HandleOpenAIImageGenerationStreaming(
 						// vLLM/sglang rarely include an explicit status_code field in the
 						// chunk) — same #5040 pattern as the Responses-stream path.
 						if bifrostErr.StatusCode == nil {
-							bifrostErr.StatusCode = new(StatusCodeForResponsesStreamErrorCode(bifrostErr.Error.Code))
+							bifrostErr.StatusCode = new(StatusCodeForResponsesStreamErrorCode(bifrostErr.Error.Code, bifrostErr.Error.Type))
 						}
 						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 						providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, &bifrostErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency), responseChan, logger, postHookSpanFinalizer)
@@ -4976,7 +4976,7 @@ func HandleOpenAIImageEditStreamRequest(
 						// vLLM/sglang rarely include an explicit status_code field in the
 						// chunk) — same #5040 pattern as the Responses-stream path.
 						if bifrostErr.StatusCode == nil {
-							bifrostErr.StatusCode = new(StatusCodeForResponsesStreamErrorCode(bifrostErr.Error.Code))
+							bifrostErr.StatusCode = new(StatusCodeForResponsesStreamErrorCode(bifrostErr.Error.Code, bifrostErr.Error.Type))
 						}
 						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 						providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, &bifrostErr, nil, nil, sendBackRawRequest, sendBackRawResponse, latency), responseChan, logger, postHookSpanFinalizer)

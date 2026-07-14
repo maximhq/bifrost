@@ -59,13 +59,22 @@ var responsesStreamErrorCodeStatus = map[string]int{
 
 // StatusCodeForResponsesStreamErrorCode returns the canonical HTTP status for
 // an OpenAI Responses API streaming error/response.failed event's error code,
-// falling back to 500 for unrecognized or absent codes.
-func StatusCodeForResponsesStreamErrorCode(code *string) int {
-	if code == nil {
-		return fasthttp.StatusInternalServerError
+// falling back to errType (the canonical schemas.ErrorType* value) when code
+// is nil/unrecognized -- some OpenAI-compatible backends only populate
+// error.type on an in-body SSE error, not error.code (Found via greptile
+// review: passing only .Error.Code left .Error.Type-only errors like
+// context_length_exceeded misclassified as a generic 500). Falls back to 500
+// only when neither is recognized.
+func StatusCodeForResponsesStreamErrorCode(code *string, errType *string) int {
+	if code != nil {
+		if status, ok := responsesStreamErrorCodeStatus[*code]; ok {
+			return status
+		}
 	}
-	if status, ok := responsesStreamErrorCodeStatus[*code]; ok {
-		return status
+	if errType != nil {
+		if status, ok := responsesStreamErrorCodeStatus[*errType]; ok {
+			return status
+		}
 	}
 	return fasthttp.StatusInternalServerError
 }
