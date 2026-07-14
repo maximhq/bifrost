@@ -3951,6 +3951,7 @@
               "properties": {
                 "credentials": {
                   "type": "string",
+                  "pattern": "\\S",
                   "description": "GigaChat authorization key for OAuth token exchange (can use env. prefix)"
                 },
                 "scope": {
@@ -3959,14 +3960,17 @@
                 },
                 "user": {
                   "type": "string",
+                  "pattern": "\\S",
                   "description": "GigaChat username for password auth mode (can use env. prefix)"
                 },
                 "password": {
                   "type": "string",
+                  "pattern": "\\S",
                   "description": "GigaChat password for password auth mode (can use env. prefix)"
                 },
                 "access_token": {
                   "type": "string",
+                  "pattern": "\\S",
                   "description": "Pre-obtained GigaChat bearer access token (can use env. prefix)"
                 },
                 "auth_url": {
@@ -3979,10 +3983,12 @@
                 },
                 "cert_file": {
                   "type": "string",
+                  "pattern": "\\S",
                   "description": "Client certificate file for GigaChat mTLS. Complete client certificate material can be used with or without bearer auth."
                 },
                 "key_file": {
                   "type": "string",
+                  "pattern": "\\S",
                   "description": "Client private key file for GigaChat mTLS. Must be configured with cert_file."
                 },
                 "ca_bundle_file": {
@@ -4001,7 +4007,13 @@
           },
           "anyOf": [
             {
-              "required": ["value"]
+              "required": ["value"],
+              "properties": {
+                "value": {
+                  "type": "string",
+                  "pattern": "\\S"
+                }
+              }
             },
             {
               "required": ["gigachat_key_config"],

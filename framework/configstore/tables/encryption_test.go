@@ -1296,6 +1296,16 @@ func TestTableKey_AllProviderConfigs_EncryptDecrypt(t *testing.T) {
 	require.NotNil(t, found.BedrockKeyConfig.ARN)
 	assert.Equal(t, "arn:aws:bedrock:eu-west-1:123:role", found.BedrockKeyConfig.ARN.GetValue())
 
+	require.NotNil(t, found.GigaChatKeyConfig)
+	require.NotNil(t, found.GigaChatKeyConfig.Credentials)
+	assert.Equal(t, "gigachat-credentials", found.GigaChatKeyConfig.Credentials.GetValue())
+	assert.Equal(t, schemas.DefaultGigaChatScope, found.GigaChatKeyConfig.Scope)
+	assert.Equal(t, "https://api.giga.chat", found.GigaChatKeyConfig.BaseURL)
+	assert.Equal(t, "https://ngw.devices.sberbank.ru:9443/api/v2/oauth", found.GigaChatKeyConfig.AuthURL)
+	assert.Equal(t, "/secure/client.pem", found.GigaChatKeyConfig.CertFile)
+	assert.Equal(t, "/secure/client.key", found.GigaChatKeyConfig.KeyFile)
+	assert.Equal(t, "/secure/ca.pem", found.GigaChatKeyConfig.CABundleFile)
+
 	require.NotNil(t, found.BedrockMantleKeyConfig)
 	assert.Equal(t, "AKIA-MANTLE", found.BedrockMantleKeyConfig.AccessKey.GetValue())
 	assert.Equal(t, "wJalr-MANTLE", found.BedrockMantleKeyConfig.SecretKey.GetValue())

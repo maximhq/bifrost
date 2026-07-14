@@ -1,6 +1,7 @@
 package lib
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1759,6 +1760,48 @@ func TestValidateConfigSchema_GigaChatKeyConfig_MissingKeyFile(t *testing.T) {
 	err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t))
 	if err == nil {
 		t.Error("expected config missing 'key_file' in GigaChat key config to fail validation")
+	}
+}
+
+func TestValidateConfigSchema_GigaChatKeyConfig_RejectsBlankAuthMaterial(t *testing.T) {
+	tests := []struct {
+		name    string
+		keyJSON string
+	}{
+		{name: "empty value", keyJSON: `"value": ""`},
+		{name: "whitespace value", keyJSON: `"value": "   "`},
+		{name: "empty credentials", keyJSON: `"gigachat_key_config": {"credentials": ""}`},
+		{name: "whitespace credentials", keyJSON: `"gigachat_key_config": {"credentials": "   "}`},
+		{name: "empty access token", keyJSON: `"gigachat_key_config": {"access_token": ""}`},
+		{name: "whitespace access token", keyJSON: `"gigachat_key_config": {"access_token": "   "}`},
+		{name: "empty user", keyJSON: `"gigachat_key_config": {"user": "", "password": "secret"}`},
+		{name: "whitespace user", keyJSON: `"gigachat_key_config": {"user": "   ", "password": "secret"}`},
+		{name: "empty password", keyJSON: `"gigachat_key_config": {"user": "user", "password": ""}`},
+		{name: "whitespace password", keyJSON: `"gigachat_key_config": {"user": "user", "password": "   "}`},
+		{name: "empty cert file", keyJSON: `"gigachat_key_config": {"cert_file": "", "key_file": "/secure/client.key"}`},
+		{name: "whitespace cert file", keyJSON: `"gigachat_key_config": {"cert_file": "   ", "key_file": "/secure/client.key"}`},
+		{name: "empty key file", keyJSON: `"gigachat_key_config": {"cert_file": "/secure/client.pem", "key_file": ""}`},
+		{name: "whitespace key file", keyJSON: `"gigachat_key_config": {"cert_file": "/secure/client.pem", "key_file": "   "}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			invalidConfig := fmt.Sprintf(`{
+				"providers": {
+					"gigachat": {
+						"keys": [{
+							"name": "gigachat-key",
+							"weight": 1.0,
+							%s
+						}]
+					}
+				}
+			}`, tt.keyJSON)
+
+			if err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t)); err == nil {
+				t.Fatalf("expected blank GigaChat auth material to fail validation: %s", invalidConfig)
+			}
+		})
 	}
 }
 
