@@ -621,7 +621,13 @@ func TestHandleProviderRequest_OCROperationNotAllowed(t *testing.T) {
 // Test that transientServerStatusCodes are properly defined.
 // These are upstream-side failures unrelated to the credential — the same key is retried.
 func TestTransientServerStatusCodes(t *testing.T) {
-	expected := []int{500, 502, 503, 504}
+	// 408 (Request Timeout) is included: a timeout isn't credential-bound, so
+	// it's retried with the same key like the 5xx set. Added after Bedrock's
+	// ModelTimeoutException/RequestTimeoutException started normalizing to a
+	// deterministic 408 (previously these fell through as raw passthrough
+	// statuses); without this, Bedrock timeouts stopped retrying. Found via
+	// greptile review on the error-normalization PR.
+	expected := []int{408, 500, 502, 503, 504}
 	for _, code := range expected {
 		if !transientServerStatusCodes[code] {
 			t.Errorf("status code %d should be in transientServerStatusCodes", code)

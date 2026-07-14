@@ -29,6 +29,12 @@ const (
 // retried with the *same* key (a different credential gains nothing against a flaky
 // server). Distinct from perKeyFailureStatusCodes which trigger key rotation.
 var transientServerStatusCodes = map[int]bool{
+	408: true, // Request Timeout — a timeout isn't credential-bound, so retry the
+	// same key (matches Bedrock's ModelTimeoutException/RequestTimeoutException,
+	// which normalize to 408; previously these fell through as raw passthrough
+	// statuses that happened to already be transient/5xx-ish, so this is a
+	// distinct code needed since Stage 1 normalization started assigning it
+	// deterministically. Found via greptile review on the error-normalization PR).
 	500: true, // Internal Server Error
 	502: true, // Bad Gateway
 	503: true, // Service Unavailable

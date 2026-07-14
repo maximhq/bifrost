@@ -81,3 +81,36 @@ func TestParseOpenAIError_DefaultStatusCodeFallsBackWithStatusNumber(t *testing.
 		t.Fatalf("expected fallback message with default status, got %q", errResp.Error.Message)
 	}
 }
+
+// TestStatusCodeForResponsesStreamErrorCode_CanonicalTypesCoverage is a
+// regression test (found via greptile review): responsesStreamErrorCodeStatus
+// previously only covered a handful of literal OpenAI codes, so a canonical
+// schemas.ErrorType* value like context_length_exceeded or
+// content_policy_violation fell through to the generic 500 fallback,
+// misrepresenting a client-side error as a retryable server failure.
+func TestStatusCodeForResponsesStreamErrorCode_CanonicalTypesCoverage(t *testing.T) {
+	tests := []struct {
+		code           string
+		expectedStatus int
+	}{
+		{schemas.ErrorTypeInvalidRequest, fasthttp.StatusBadRequest},
+		{schemas.ErrorTypeContextLengthExceeded, fasthttp.StatusBadRequest},
+		{schemas.ErrorTypeContentPolicyViolation, fasthttp.StatusBadRequest},
+		{schemas.ErrorTypeAuthentication, fasthttp.StatusUnauthorized},
+		{schemas.ErrorTypePermissionDenied, fasthttp.StatusForbidden},
+		{schemas.ErrorTypeNotFound, fasthttp.StatusNotFound},
+		{schemas.ErrorTypeUnprocessableEntity, fasthttp.StatusUnprocessableEntity},
+		{schemas.ErrorTypeRequestTimeout, fasthttp.StatusRequestTimeout},
+		{schemas.ErrorTypeServiceUnavailable, fasthttp.StatusServiceUnavailable},
+		{schemas.ErrorTypeBadGateway, fasthttp.StatusBadGateway},
+	}
+	for _, tt := range tests {
+		t.Run(tt.code, func(t *testing.T) {
+			code := tt.code
+			status := StatusCodeForResponsesStreamErrorCode(&code)
+			if status != tt.expectedStatus {
+				t.Errorf("expected status %d for code %q, got %d (would have been misclassified as a retryable server error if still falling back to 500)", tt.expectedStatus, tt.code, status)
+			}
+		})
+	}
+}

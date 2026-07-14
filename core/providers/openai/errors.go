@@ -40,6 +40,21 @@ var responsesStreamErrorCodeStatus = map[string]int{
 	"image_file_not_found":             fasthttp.StatusNotFound,
 	"vector_store_timeout":             fasthttp.StatusGatewayTimeout,
 	schemas.ErrorTypeServerError:       fasthttp.StatusInternalServerError,
+	// Remaining canonical schemas.ErrorType* vocabulary (core/schemas/bifrost.go)
+	// this table is meant to fully cover -- missing entries previously fell
+	// through to the generic 500 fallback below, making a client-side error
+	// (e.g. context_length_exceeded) look like a retryable server failure.
+	// Found via greptile review on the error-normalization PR.
+	schemas.ErrorTypeInvalidRequest:         fasthttp.StatusBadRequest,
+	schemas.ErrorTypeContextLengthExceeded:  fasthttp.StatusBadRequest,
+	schemas.ErrorTypeContentPolicyViolation: fasthttp.StatusBadRequest,
+	schemas.ErrorTypeAuthentication:         fasthttp.StatusUnauthorized,
+	schemas.ErrorTypePermissionDenied:       fasthttp.StatusForbidden,
+	schemas.ErrorTypeNotFound:               fasthttp.StatusNotFound,
+	schemas.ErrorTypeUnprocessableEntity:    fasthttp.StatusUnprocessableEntity,
+	schemas.ErrorTypeRequestTimeout:         fasthttp.StatusRequestTimeout,
+	schemas.ErrorTypeServiceUnavailable:     fasthttp.StatusServiceUnavailable,
+	schemas.ErrorTypeBadGateway:             fasthttp.StatusBadGateway,
 }
 
 // StatusCodeForResponsesStreamErrorCode returns the canonical HTTP status for

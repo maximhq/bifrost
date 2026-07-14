@@ -384,3 +384,29 @@ func TestParseBedrockHTTPError_UnrecognizedExceptionPreservesRealStatusCode(t *t
 	require.NotNil(t, bifrostErr.Error.Type)
 	assert.Equal(t, "server_error", *bifrostErr.Error.Type, "canonical type still falls back to server_error for unrecognized values — only the status must be preserved")
 }
+
+// TestParseBedrockHTTPError_TimeoutExceptionsNormalizeTo408 is a regression
+// test (found via greptile review): ModelTimeoutException and
+// RequestTimeoutException normalize to a deterministic HTTP 408
+// (request_timeout), and 408 must be present in core/utils.go's
+// transientServerStatusCodes (verified separately in
+// core.TestTransientServerStatusCodes) or these Bedrock timeouts would stop
+// being retried by the internal retry engine.
+func TestParseBedrockHTTPError_TimeoutExceptionsNormalizeTo408(t *testing.T) {
+	for _, exceptionType := range []string{"ModelTimeoutException", "RequestTimeoutException"} {
+		t.Run(exceptionType, func(t *testing.T) {
+			headers := http.Header{}
+			headers.Set("X-Amzn-Errortype", exceptionType)
+			body := []byte(`{"message":"the model took too long to respond"}`)
+
+			bifrostErr := parseBedrockHTTPError(http.StatusGatewayTimeout, headers, body)
+
+			require.NotNil(t, bifrostErr)
+			require.NotNil(t, bifrostErr.StatusCode)
+			assert.Equal(t, http.StatusRequestTimeout, *bifrostErr.StatusCode, "%s must normalize to 408, which core/utils.go treats as transient/retryable", exceptionType)
+			require.NotNil(t, bifrostErr.Error)
+			require.NotNil(t, bifrostErr.Error.Type)
+			assert.Equal(t, "request_timeout", *bifrostErr.Error.Type)
+		})
+	}
+}
