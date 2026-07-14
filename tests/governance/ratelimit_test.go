@@ -20,7 +20,8 @@ func TestVirtualKeyTokenRateLimit(t *testing.T) {
 		Method: "POST",
 		Path:   "/api/governance/virtual-keys",
 		Body: CreateVirtualKeyRequest{
-			Name: vkName,
+			Name:            vkName,
+			ProviderConfigs: defaultProviderConfigs(),
 			RateLimit: &CreateRateLimitRequest{
 				TokenMaxLimit:      &tokenLimit,
 				TokenResetDuration: &tokenResetDuration,
@@ -93,7 +94,8 @@ func TestVirtualKeyRequestRateLimit(t *testing.T) {
 		Method: "POST",
 		Path:   "/api/governance/virtual-keys",
 		Body: CreateVirtualKeyRequest{
-			Name: vkName,
+			Name:            vkName,
+			ProviderConfigs: defaultProviderConfigs(),
 			RateLimit: &CreateRateLimitRequest{
 				RequestMaxLimit:      &requestLimit,
 				RequestResetDuration: &requestResetDuration,
@@ -373,8 +375,10 @@ func TestMultipleProvidersSeparateRateLimits(t *testing.T) {
 		Path:   "/api/governance/virtual-keys?from_memory=true",
 	})
 
-	virtualKeysMap := getDataResp.Body["virtual_keys"].(map[string]interface{})
-	vkData := virtualKeysMap[vkValue].(map[string]interface{})
+	vkData := FindListItem(t, getDataResp.Body, "virtual_keys", "value", vkValue)
+	if vkData == nil {
+		t.Fatalf("VK %s not found in virtual keys list", vkValue)
+	}
 
 	providerConfigs, _ := vkData["provider_configs"].([]interface{})
 	if len(providerConfigs) != 2 {
@@ -443,8 +447,10 @@ func TestProviderAndVKRateLimitTogether(t *testing.T) {
 		t.Fatalf("Failed to get governance data: status %d", getDataResp.StatusCode)
 	}
 
-	virtualKeysMap := getDataResp.Body["virtual_keys"].(map[string]interface{})
-	vkData := virtualKeysMap[vkValue].(map[string]interface{})
+	vkData := FindListItem(t, getDataResp.Body, "virtual_keys", "value", vkValue)
+	if vkData == nil {
+		t.Fatalf("VK %s not found in virtual keys list", vkValue)
+	}
 
 	// Check VK has rate limit
 	vkRateLimitID, _ := vkData["rate_limit_id"].(string)
@@ -476,7 +482,8 @@ func TestRateLimitInMemorySync(t *testing.T) {
 		Method: "POST",
 		Path:   "/api/governance/virtual-keys",
 		Body: CreateVirtualKeyRequest{
-			Name: vkName,
+			Name:            vkName,
+			ProviderConfigs: defaultProviderConfigs(),
 			RateLimit: &CreateRateLimitRequest{
 				TokenMaxLimit:      &initialTokenLimit,
 				TokenResetDuration: &tokenResetDuration,
@@ -506,8 +513,10 @@ func TestRateLimitInMemorySync(t *testing.T) {
 		t.Fatalf("Failed to get governance data: status %d", getDataResp.StatusCode)
 	}
 
-	virtualKeysMap := getDataResp.Body["virtual_keys"].(map[string]interface{})
-	vkData := virtualKeysMap[vkValue].(map[string]interface{})
+	vkData := FindListItem(t, getDataResp.Body, "virtual_keys", "value", vkValue)
+	if vkData == nil {
+		t.Fatalf("VK %s not found in virtual keys list", vkValue)
+	}
 	rateLimitID, _ := vkData["rate_limit_id"].(string)
 
 	if rateLimitID == "" {
@@ -545,8 +554,10 @@ func TestRateLimitInMemorySync(t *testing.T) {
 		t.Fatalf("Failed to get governance data after update: status %d", getDataResp2.StatusCode)
 	}
 
-	virtualKeysMap2 := getDataResp2.Body["virtual_keys"].(map[string]interface{})
-	vkData2 := virtualKeysMap2[vkValue].(map[string]interface{})
+	vkData2 := FindListItem(t, getDataResp2.Body, "virtual_keys", "value", vkValue)
+	if vkData2 == nil {
+		t.Fatalf("VK %s not found in virtual keys list after update", vkValue)
+	}
 
 	// Verify VK still has rate limit configured
 	rateLimitID2, _ := vkData2["rate_limit_id"].(string)
@@ -565,10 +576,9 @@ func TestRateLimitInMemorySync(t *testing.T) {
 		Path:   "/api/governance/rate-limits?from_memory=true",
 	})
 
-	rateLimitsMap2 := getRateLimitsResp2.Body["rate_limits"].(map[string]interface{})
-	rateLimit2, ok := rateLimitsMap2[rateLimitID2].(map[string]interface{})
-	if !ok {
-		t.Fatalf("Rate limit not found in RateLimits map")
+	rateLimit2 := FindListItem(t, getRateLimitsResp2.Body, "rate_limits", "id", rateLimitID2)
+	if rateLimit2 == nil {
+		t.Fatalf("Rate limit not found in RateLimits list")
 	}
 
 	// Check TokenMaxLimit was updated
@@ -617,7 +627,8 @@ func TestRateLimitTokenAndRequestTogether(t *testing.T) {
 		Method: "POST",
 		Path:   "/api/governance/virtual-keys",
 		Body: CreateVirtualKeyRequest{
-			Name: vkName,
+			Name:            vkName,
+			ProviderConfigs: defaultProviderConfigs(),
 			RateLimit: &CreateRateLimitRequest{
 				TokenMaxLimit:        &tokenLimit,
 				TokenResetDuration:   &tokenResetDuration,
@@ -690,7 +701,8 @@ func TestRateLimitUsageTrackedInMemory(t *testing.T) {
 		Method: "POST",
 		Path:   "/api/governance/virtual-keys",
 		Body: CreateVirtualKeyRequest{
-			Name: vkName,
+			Name:            vkName,
+			ProviderConfigs: defaultProviderConfigs(),
 			RateLimit: &CreateRateLimitRequest{
 				TokenMaxLimit:        &tokenLimit,
 				TokenResetDuration:   &tokenResetDuration,
@@ -718,8 +730,10 @@ func TestRateLimitUsageTrackedInMemory(t *testing.T) {
 		Path:   "/api/governance/virtual-keys?from_memory=true",
 	})
 
-	virtualKeysMap1 := getDataResp1.Body["virtual_keys"].(map[string]interface{})
-	vkData1 := virtualKeysMap1[vkValue].(map[string]interface{})
+	vkData1 := FindListItem(t, getDataResp1.Body, "virtual_keys", "value", vkValue)
+	if vkData1 == nil {
+		t.Fatalf("VK %s not found in virtual keys list", vkValue)
+	}
 	rateLimitID1, _ := vkData1["rate_limit_id"].(string)
 
 	initialTokenUsage := 0.0
@@ -731,10 +745,9 @@ func TestRateLimitUsageTrackedInMemory(t *testing.T) {
 		Path:   "/api/governance/rate-limits?from_memory=true",
 	})
 
-	rateLimitsMap1 := getRateLimitsResp1.Body["rate_limits"].(map[string]interface{})
-	rateLimit1, ok := rateLimitsMap1[rateLimitID1].(map[string]interface{})
-	if !ok {
-		t.Fatalf("Rate limit not found in RateLimits map")
+	rateLimit1 := FindListItem(t, getRateLimitsResp1.Body, "rate_limits", "id", rateLimitID1)
+	if rateLimit1 == nil {
+		t.Fatalf("Rate limit not found in RateLimits list")
 	}
 
 	if tokenUsage, ok := rateLimit1["token_current_usage"].(float64); ok {
@@ -775,8 +788,10 @@ func TestRateLimitUsageTrackedInMemory(t *testing.T) {
 		Path:   "/api/governance/virtual-keys?from_memory=true",
 	})
 
-	virtualKeysMap2 := getDataResp2.Body["virtual_keys"].(map[string]interface{})
-	vkData2 := virtualKeysMap2[vkValue].(map[string]interface{})
+	vkData2 := FindListItem(t, getDataResp2.Body, "virtual_keys", "value", vkValue)
+	if vkData2 == nil {
+		t.Fatalf("VK %s not found in virtual keys list after request", vkValue)
+	}
 	rateLimitID2, _ := vkData2["rate_limit_id"].(string)
 
 	// Get rate limit from main RateLimits map
@@ -785,10 +800,9 @@ func TestRateLimitUsageTrackedInMemory(t *testing.T) {
 		Path:   "/api/governance/rate-limits?from_memory=true",
 	})
 
-	rateLimitsMap2 := getRateLimitsResp2.Body["rate_limits"].(map[string]interface{})
-	rateLimit2, ok := rateLimitsMap2[rateLimitID2].(map[string]interface{})
-	if !ok {
-		t.Fatalf("Rate limit not found in RateLimits map after request")
+	rateLimit2 := FindListItem(t, getRateLimitsResp2.Body, "rate_limits", "id", rateLimitID2)
+	if rateLimit2 == nil {
+		t.Fatalf("Rate limit not found in RateLimits list after request")
 	}
 
 	// Check that token usage increased
@@ -891,8 +905,10 @@ func TestProviderLevelRateLimitUsageTracking(t *testing.T) {
 		Path:   "/api/governance/virtual-keys?from_memory=true",
 	})
 
-	virtualKeysMap1 := getDataResp1.Body["virtual_keys"].(map[string]interface{})
-	vkData1 := virtualKeysMap1[vkValue].(map[string]interface{})
+	vkData1 := FindListItem(t, getDataResp1.Body, "virtual_keys", "value", vkValue)
+	if vkData1 == nil {
+		t.Fatalf("VK %s not found in virtual keys list", vkValue)
+	}
 
 	providerConfigs1, ok := vkData1["provider_configs"].([]interface{})
 	if !ok {
@@ -934,8 +950,10 @@ func TestProviderLevelRateLimitUsageTracking(t *testing.T) {
 		Path:   "/api/governance/virtual-keys?from_memory=true",
 	})
 
-	virtualKeysMap2 := getDataResp2.Body["virtual_keys"].(map[string]interface{})
-	vkData2 := virtualKeysMap2[vkValue].(map[string]interface{})
+	vkData2 := FindListItem(t, getDataResp2.Body, "virtual_keys", "value", vkValue)
+	if vkData2 == nil {
+		t.Fatalf("VK %s not found in virtual keys list after request", vkValue)
+	}
 
 	providerConfigs2, ok := vkData2["provider_configs"].([]interface{})
 	if !ok {
@@ -951,8 +969,6 @@ func TestProviderLevelRateLimitUsageTracking(t *testing.T) {
 		Method: "GET",
 		Path:   "/api/governance/rate-limits?from_memory=true",
 	})
-
-	rateLimitsMap2 := getRateLimitsResp2.Body["rate_limits"].(map[string]interface{})
 
 	for i, providerConfig := range providerConfigs2 {
 		config, ok := providerConfig.(map[string]interface{})
@@ -971,9 +987,9 @@ func TestProviderLevelRateLimitUsageTracking(t *testing.T) {
 			continue
 		}
 
-		rateLimit, ok := rateLimitsMap2[rateLimitID].(map[string]interface{})
-		if !ok {
-			t.Logf("Provider %s: No rate limit found in RateLimits map", provider)
+		rateLimit := FindListItem(t, getRateLimitsResp2.Body, "rate_limits", "id", rateLimitID)
+		if rateLimit == nil {
+			t.Logf("Provider %s: No rate limit found in RateLimits list", provider)
 			continue
 		}
 
