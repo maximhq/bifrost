@@ -2,4 +2,4 @@
 - fix: add guards against invalid rate-limit reset timeouts
 - fix: calendar-based alignment qualifier for budget periods
 - fix: attribute passthrough virtual keys sent via Azure api-key header (thanks [@eyeveil](https://github.com/eyeveil)!)
-- chore: upgraded core to v1.6.4 and framework to v1.4.4
+- chore: upgraded core to v1.7.1 and framework to v1.5.1
