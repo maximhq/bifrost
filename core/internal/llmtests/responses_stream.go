@@ -250,7 +250,14 @@ func RunResponsesStreamTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 						responseCount++
 
 						// Safety check to prevent infinite loops
-						if responseCount > 500 {
+						maxChunks := 500
+						if testConfig.Provider == schemas.Sarvam {
+							// Sarvam's default-on reasoning generates far more chunks than
+							// other providers for long-form prompts; see the matching
+							// comment in RunChatCompletionStreamTest (chat_completion_stream.go).
+							maxChunks = 3000
+						}
+						if responseCount > maxChunks {
 							return ResponsesStreamValidationResult{
 								Passed: false,
 								Errors: []string{"❌ Received too many streaming chunks, something might be wrong"},
@@ -835,7 +842,15 @@ func RunResponsesStreamTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 						}
 
 						// Safety check to prevent infinite loops
-						if responseCount > 300 {
+						maxLifecycleChunks := 300
+						if testConfig.Provider == schemas.Sarvam {
+							// Sarvam's default-on reasoning generates far more chunks than
+							// other providers before terminal lifecycle events arrive; see
+							// the matching comment in RunChatCompletionStreamTest
+							// (chat_completion_stream.go).
+							maxLifecycleChunks = 3000
+						}
+						if responseCount > maxLifecycleChunks {
 							goto lifecycleComplete
 						}
 
