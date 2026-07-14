@@ -1864,7 +1864,9 @@ func (gs *LocalGovernanceStore) budgetResetTarget(budget *configstoreTables.Tabl
 }
 
 // resetExpiredBudgetFromSnapshot applies the local side effects for an expired budget snapshot.
-func (gs *LocalGovernanceStore) resetExpiredBudgetFromSnapshot(ctx context.Context, budget *configstoreTables.TableBudget, now time.Time, refreshReferences bool) *configstoreTables.TableBudget {
+// Owner reference refresh is NOT done here; ResetExpiredBudgetsInMemory batches it
+// once per sweep so a sweep costs O(owners + resets) instead of O(owners x resets).
+func (gs *LocalGovernanceStore) resetExpiredBudgetFromSnapshot(ctx context.Context, budget *configstoreTables.TableBudget, now time.Time) *configstoreTables.TableBudget {
 	newLastReset := gs.budgetResetTarget(budget, now)
 	if newLastReset == nil {
 		return nil
@@ -1877,9 +1879,6 @@ func (gs *LocalGovernanceStore) resetExpiredBudgetFromSnapshot(ctx context.Conte
 	gs.LastDBUsagesBudgetsMu.Lock()
 	gs.LastDBUsagesBudgets[resetBudget.ID] = 0
 	gs.LastDBUsagesBudgetsMu.Unlock()
-	if refreshReferences {
-		gs.updateBudgetReferences(ctx, resetBudget)
-	}
 	gs.logger.Debug(fmt.Sprintf("Reset budget %s (was %.2f, reset to 0)", resetBudget.ID, oldUsage))
 	return resetBudget
 }
@@ -1897,7 +1896,7 @@ func (gs *LocalGovernanceStore) ResetExpiredBudgetsInMemory(ctx context.Context,
 		if !ok || budget == nil {
 			return
 		}
-		if resetBudget := gs.resetExpiredBudgetFromSnapshot(ctx, budget, now, refreshReferences); resetBudget != nil {
+		if resetBudget := gs.resetExpiredBudgetFromSnapshot(ctx, budget, now); resetBudget != nil {
 			resetBudgets = append(resetBudgets, resetBudget)
 		}
 	}
@@ -1912,6 +1911,9 @@ func (gs *LocalGovernanceStore) ResetExpiredBudgetsInMemory(ctx context.Context,
 				resetOne(value)
 			}
 		}
+	}
+	if refreshReferences {
+		gs.updateBudgetReferences(ctx, resetBudgets)
 	}
 	if len(resetBudgets) > 0 {
 		if onBudgetsReset := gs.getBudgetsResetHook(); onBudgetsReset != nil {
@@ -1965,7 +1967,9 @@ func (gs *LocalGovernanceStore) rateLimitResetTargets(rateLimit *configstoreTabl
 }
 
 // resetExpiredRateLimitFromSnapshot applies the local side effects for an expired rate-limit snapshot.
-func (gs *LocalGovernanceStore) resetExpiredRateLimitFromSnapshot(ctx context.Context, rateLimit *configstoreTables.TableRateLimit, now time.Time, refreshReferences bool) *configstoreTables.TableRateLimit {
+// Owner reference refresh is NOT done here; ResetExpiredRateLimitsInMemory batches it
+// once per sweep so a sweep costs O(owners + resets) instead of O(owners x resets).
+func (gs *LocalGovernanceStore) resetExpiredRateLimitFromSnapshot(ctx context.Context, rateLimit *configstoreTables.TableRateLimit, now time.Time) *configstoreTables.TableRateLimit {
 	tokenNewLastReset, requestNewLastReset := gs.rateLimitResetTargets(rateLimit, now)
 	if tokenNewLastReset == nil && requestNewLastReset == nil {
 		return nil
@@ -1984,9 +1988,6 @@ func (gs *LocalGovernanceStore) resetExpiredRateLimitFromSnapshot(ctx context.Co
 		gs.LastDBUsagesRequestsRateLimits[resetRateLimit.ID] = 0
 		gs.LastDBUsagesRateLimitsRequestsMu.Unlock()
 	}
-	if refreshReferences {
-		gs.updateRateLimitReferences(ctx, resetRateLimit)
-	}
 	return resetRateLimit
 }
 
@@ -2003,7 +2004,7 @@ func (gs *LocalGovernanceStore) ResetExpiredRateLimitsInMemory(ctx context.Conte
 		if !ok || rateLimit == nil {
 			return
 		}
-		if resetRateLimit := gs.resetExpiredRateLimitFromSnapshot(ctx, rateLimit, now, refreshReferences); resetRateLimit != nil {
+		if resetRateLimit := gs.resetExpiredRateLimitFromSnapshot(ctx, rateLimit, now); resetRateLimit != nil {
 			resetRateLimits = append(resetRateLimits, resetRateLimit)
 		}
 	}
@@ -2018,6 +2019,9 @@ func (gs *LocalGovernanceStore) ResetExpiredRateLimitsInMemory(ctx context.Conte
 				resetOne(value)
 			}
 		}
+	}
+	if refreshReferences {
+		gs.updateRateLimitReferences(ctx, resetRateLimits)
 	}
 	if len(resetRateLimits) > 0 {
 		if onRateLimitsReset := gs.getRateLimitsResetHook(); onRateLimitsReset != nil {
@@ -3733,134 +3737,215 @@ func (gs *LocalGovernanceStore) DeleteProviderInMemory(ctx context.Context, prov
 
 // Helper functions
 
-// updateBudgetReferences updates all VKs, teams, customers, and provider configs that reference a reset budget
-func (gs *LocalGovernanceStore) updateBudgetReferences(ctx context.Context, resetBudget *configstoreTables.TableBudget) {
-	budgetID := resetBudget.ID
-	// Update VKs that reference this budget
+// updateBudgetReferences updates all VKs, teams, customers, and provider configs
+// that reference any of the reset budgets. It makes ONE pass over each owner map
+// regardless of how many budgets reset, and clones an owner only after a match,
+// so a background sweep costs O(owners + resets) instead of O(owners x resets)
+// with a clone per owner per reset. Essential at large key counts; the contract
+// is pinned by TestBackgroundResetReferenceRefreshScales.
+func (gs *LocalGovernanceStore) updateBudgetReferences(ctx context.Context, resetBudgets []*configstoreTables.TableBudget) {
+	if len(resetBudgets) == 0 {
+		return
+	}
+	resets := make(map[string]*configstoreTables.TableBudget, len(resetBudgets))
+	for _, b := range resetBudgets {
+		if b != nil {
+			resets[b.ID] = b
+		}
+	}
+	// Update VKs that reference these budgets
 	gs.virtualKeys.Range(func(key, value interface{}) bool {
 		vk, ok := value.(*configstoreTables.TableVirtualKey)
 		if !ok || vk == nil {
 			return true // continue
 		}
-		needsUpdate := false
-		clone := *vk
-
-		// Check VK-level budgets
-		for i, b := range clone.Budgets {
-			if b.ID == budgetID {
-				clone.Budgets[i] = *resetBudget
-				needsUpdate = true
+		vkMatch := false
+		for i := range vk.Budgets {
+			if resets[vk.Budgets[i].ID] != nil {
+				vkMatch = true
+				break
 			}
 		}
-		// Check provider config budgets
-		if vk.ProviderConfigs != nil {
-			for i := range clone.ProviderConfigs {
-				for j, b := range clone.ProviderConfigs[i].Budgets {
-					if b.ID == budgetID {
-						clone.ProviderConfigs[i].Budgets[j] = *resetBudget
-						needsUpdate = true
-					}
+		pcMatch := false
+		for i := range vk.ProviderConfigs {
+			for j := range vk.ProviderConfigs[i].Budgets {
+				if resets[vk.ProviderConfigs[i].Budgets[j].ID] != nil {
+					pcMatch = true
+					break
+				}
+			}
+			if pcMatch {
+				break
+			}
+		}
+		if !vkMatch && !pcMatch {
+			return true // continue
+		}
+		clone := *vk
+		if vkMatch {
+			clone.Budgets = append([]configstoreTables.TableBudget(nil), vk.Budgets...)
+			for i := range clone.Budgets {
+				if b := resets[clone.Budgets[i].ID]; b != nil {
+					clone.Budgets[i] = *b
 				}
 			}
 		}
-		if needsUpdate {
-			gs.storeVirtualKey(key.(string), &clone)
+		if pcMatch {
+			clone.ProviderConfigs = append([]configstoreTables.TableVirtualKeyProviderConfig(nil), vk.ProviderConfigs...)
+			for i := range clone.ProviderConfigs {
+				matched := false
+				for j := range clone.ProviderConfigs[i].Budgets {
+					if resets[clone.ProviderConfigs[i].Budgets[j].ID] != nil {
+						matched = true
+						break
+					}
+				}
+				if !matched {
+					continue
+				}
+				budgets := append([]configstoreTables.TableBudget(nil), clone.ProviderConfigs[i].Budgets...)
+				for j := range budgets {
+					if b := resets[budgets[j].ID]; b != nil {
+						budgets[j] = *b
+					}
+				}
+				clone.ProviderConfigs[i].Budgets = budgets
+			}
 		}
+		gs.storeVirtualKey(key.(string), &clone)
 		return true // continue
 	})
-	// Update teams that reference this budget
+	// Update teams that reference these budgets
 	gs.teams.Range(func(key, value interface{}) bool {
 		team, ok := value.(*configstoreTables.TableTeam)
 		if !ok || team == nil {
 			return true // continue
 		}
+		matched := false
 		for i := range team.Budgets {
-			if team.Budgets[i].ID == budgetID {
-				clone := *team
-				clone.Budgets = append([]configstoreTables.TableBudget(nil), team.Budgets...)
-				clone.Budgets[i] = *resetBudget
-				gs.teams.Store(key, &clone)
+			if resets[team.Budgets[i].ID] != nil {
+				matched = true
 				break
 			}
 		}
+		if !matched {
+			return true // continue
+		}
+		clone := *team
+		clone.Budgets = append([]configstoreTables.TableBudget(nil), team.Budgets...)
+		for i := range clone.Budgets {
+			if b := resets[clone.Budgets[i].ID]; b != nil {
+				clone.Budgets[i] = *b
+			}
+		}
+		gs.teams.Store(key, &clone)
 		return true // continue
 	})
-	// Update customers that own this budget
+	// Update customers that own these budgets
 	gs.customers.Range(func(key, value interface{}) bool {
 		customer, ok := value.(*configstoreTables.TableCustomer)
 		if !ok || customer == nil {
 			return true // continue
 		}
-		for i, b := range customer.Budgets {
-			if b.ID == budgetID {
-				clone := *customer
-				clone.Budgets = make([]configstoreTables.TableBudget, len(customer.Budgets))
-				copy(clone.Budgets, customer.Budgets)
-				clone.Budgets[i] = *resetBudget
-				gs.customers.Store(key, &clone)
+		matched := false
+		for i := range customer.Budgets {
+			if resets[customer.Budgets[i].ID] != nil {
+				matched = true
 				break
 			}
 		}
+		if !matched {
+			return true // continue
+		}
+		clone := *customer
+		clone.Budgets = append([]configstoreTables.TableBudget(nil), customer.Budgets...)
+		for i := range clone.Budgets {
+			if b := resets[clone.Budgets[i].ID]; b != nil {
+				clone.Budgets[i] = *b
+			}
+		}
+		gs.customers.Store(key, &clone)
 		return true // continue
 	})
 }
 
-// updateRateLimitReferences updates all VKs, teams, customers, users and provider configs that reference a reset rate limit
-func (gs *LocalGovernanceStore) updateRateLimitReferences(ctx context.Context, resetRateLimit *configstoreTables.TableRateLimit) {
-	rateLimitID := resetRateLimit.ID
-	// Update VKs that reference this rate limit
+// updateRateLimitReferences updates all VKs, teams, customers and provider configs
+// that reference any of the reset rate limits. It makes ONE pass over each owner
+// map regardless of how many rate limits reset, and clones an owner only after a
+// match, so a background sweep costs O(owners + resets) instead of
+// O(owners x resets) with a clone per owner per reset. Essential at large key
+// counts; the contract is pinned by TestBackgroundResetReferenceRefreshScales.
+func (gs *LocalGovernanceStore) updateRateLimitReferences(ctx context.Context, resetRateLimits []*configstoreTables.TableRateLimit) {
+	if len(resetRateLimits) == 0 {
+		return
+	}
+	resets := make(map[string]*configstoreTables.TableRateLimit, len(resetRateLimits))
+	for _, rl := range resetRateLimits {
+		if rl != nil {
+			resets[rl.ID] = rl
+		}
+	}
+	// Update VKs that reference these rate limits
 	gs.virtualKeys.Range(func(key, value interface{}) bool {
 		vk, ok := value.(*configstoreTables.TableVirtualKey)
 		if !ok || vk == nil {
 			return true // continue
 		}
-		needsUpdate := false
-		clone := *vk
-
-		// Check VK-level rate limit
-		if vk.RateLimitID != nil && *vk.RateLimitID == rateLimitID {
-			clone.RateLimit = resetRateLimit
-			needsUpdate = true
+		vkMatch := vk.RateLimitID != nil && resets[*vk.RateLimitID] != nil
+		pcMatch := false
+		for i := range vk.ProviderConfigs {
+			if id := vk.ProviderConfigs[i].RateLimitID; id != nil && resets[*id] != nil {
+				pcMatch = true
+				break
+			}
 		}
-
-		// Check provider config rate limits
-		if vk.ProviderConfigs != nil {
-			for i, pc := range clone.ProviderConfigs {
-				if pc.RateLimitID != nil && *pc.RateLimitID == rateLimitID {
-					clone.ProviderConfigs[i].RateLimit = resetRateLimit
-					needsUpdate = true
+		if !vkMatch && !pcMatch {
+			return true // continue
+		}
+		clone := *vk
+		if vkMatch {
+			clone.RateLimit = resets[*vk.RateLimitID]
+		}
+		if pcMatch {
+			clone.ProviderConfigs = append([]configstoreTables.TableVirtualKeyProviderConfig(nil), vk.ProviderConfigs...)
+			for i := range clone.ProviderConfigs {
+				if id := clone.ProviderConfigs[i].RateLimitID; id != nil {
+					if rl := resets[*id]; rl != nil {
+						clone.ProviderConfigs[i].RateLimit = rl
+					}
 				}
 			}
 		}
-
-		if needsUpdate {
-			gs.storeVirtualKey(key.(string), &clone)
-		}
+		gs.storeVirtualKey(key.(string), &clone)
 		return true // continue
 	})
-	// Update teams that reference this rate limit
+	// Update teams that reference these rate limits
 	gs.teams.Range(func(key, value interface{}) bool {
 		team, ok := value.(*configstoreTables.TableTeam)
 		if !ok || team == nil {
 			return true // continue
 		}
-		if team.RateLimitID != nil && *team.RateLimitID == rateLimitID {
-			clone := *team
-			clone.RateLimit = resetRateLimit
-			gs.teams.Store(key, &clone)
+		if team.RateLimitID != nil {
+			if rl := resets[*team.RateLimitID]; rl != nil {
+				clone := *team
+				clone.RateLimit = rl
+				gs.teams.Store(key, &clone)
+			}
 		}
 		return true // continue
 	})
-	// Update customers that reference this rate limit
+	// Update customers that reference these rate limits
 	gs.customers.Range(func(key, value interface{}) bool {
 		customer, ok := value.(*configstoreTables.TableCustomer)
 		if !ok || customer == nil {
 			return true // continue
 		}
-		if customer.RateLimitID != nil && *customer.RateLimitID == rateLimitID {
-			clone := *customer
-			clone.RateLimit = resetRateLimit
-			gs.customers.Store(key, &clone)
+		if customer.RateLimitID != nil {
+			if rl := resets[*customer.RateLimitID]; rl != nil {
+				clone := *customer
+				clone.RateLimit = rl
+				gs.customers.Store(key, &clone)
+			}
 		}
 		return true // continue
 	})
