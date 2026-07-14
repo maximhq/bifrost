@@ -1075,6 +1075,12 @@ bifrost:
     #     - provider_name: "openai"
     #       all_models_allowed: false
     #       allowed_models: ["gpt-4o", "gpt-4o-mini"]
+    #       model_budgets:               # Per-model spend caps enforced on the generated virtual keys
+    #         - model_name: "gpt-4o"
+    #           budgets:
+    #             - id: "ap-gpt4o-budget-1"
+    #               max_limit: 50
+    #               reset_duration: "1M"
     #   mcp_tool_groups:
     #     - tool_group_id: 1
     #   mcp_servers:
