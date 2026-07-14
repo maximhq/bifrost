@@ -757,6 +757,10 @@ func DeepCopyChatMessage(original ChatMessage) ChatMessage {
 					copyURL := *annotation.URLCitation.URL
 					copyAnnotation.URLCitation.URL = &copyURL
 				}
+				if annotation.URLCitation.Text != nil {
+					copyText := *annotation.URLCitation.Text
+					copyAnnotation.URLCitation.Text = &copyText
+				}
 				if annotation.URLCitation.Sources != nil {
 					copySources := *annotation.URLCitation.Sources
 					copyAnnotation.URLCitation.Sources = &copySources
@@ -790,6 +794,9 @@ func DeepCopyChatMessage(original ChatMessage) ChatMessage {
 				if toolCall.Function.Name != nil {
 					copyName := *toolCall.Function.Name
 					copyToolCall.Function.Name = &copyName
+				}
+				if len(toolCall.ExtraContent) > 0 {
+					copyToolCall.ExtraContent = append(json.RawMessage(nil), toolCall.ExtraContent...)
 				}
 				copy.ChatAssistantMessage.ToolCalls[i] = copyToolCall
 			}
@@ -1647,6 +1654,13 @@ func isOpenAIReasoningModel(model string) bool {
 		return false
 	}
 	return len(name) == 2 || name[2] == '-'
+}
+
+// IsElevenlabsSoundModel checks if the model targets ElevenLabs' text-to-sound
+// effects API (POST /v1/sound-generation, e.g. "eleven_text_to_sound_v2")
+// rather than text-to-speech. These models are not tied to a voice.
+func IsElevenlabsSoundModel(model string) bool {
+	return strings.Contains(model, "eleven_text_to_sound")
 }
 
 // BedrockModelSupportsCachePoints reports whether the Bedrock model supports

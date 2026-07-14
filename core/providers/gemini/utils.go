@@ -1981,16 +1981,12 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage, allowedImage
 					} else if block.File != nil {
 						// Handle file blocks - use FileURL if available (uploaded file)
 						if block.File.FileURL != nil && *block.File.FileURL != "" {
-							mimeType := "application/pdf"
+							// Only set MIMEType when the caller actually provided one
+							fileData := &FileData{FileURI: *block.File.FileURL}
 							if block.File.FileType != nil {
-								mimeType = *block.File.FileType
+								fileData.MIMEType = *block.File.FileType
 							}
-							parts = append(parts, &Part{
-								FileData: &FileData{
-									FileURI:  *block.File.FileURL,
-									MIMEType: mimeType,
-								},
-							})
+							parts = append(parts, &Part{FileData: fileData})
 						} else if block.File.FileData != nil {
 							// Inline file data - convert to InlineData (Blob)
 							fileData := *block.File.FileData

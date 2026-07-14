@@ -102,6 +102,27 @@ func deepCopyChatStreamDelta(original *schemas.ChatStreamResponseChoiceDelta) *s
 		}
 	}
 
+	// Deep copy Annotations slice
+	if original.Annotations != nil {
+		copy.Annotations = make([]schemas.ChatAssistantMessageAnnotation, len(original.Annotations))
+		for i, annotation := range original.Annotations {
+			copyAnnotation := annotation
+			if annotation.URLCitation.URL != nil {
+				copyURL := *annotation.URLCitation.URL
+				copyAnnotation.URLCitation.URL = &copyURL
+			}
+			if annotation.URLCitation.Text != nil {
+				copyText := *annotation.URLCitation.Text
+				copyAnnotation.URLCitation.Text = &copyText
+			}
+			if annotation.URLCitation.Type != nil {
+				copyType := *annotation.URLCitation.Type
+				copyAnnotation.URLCitation.Type = &copyType
+			}
+			copy.Annotations[i] = copyAnnotation
+		}
+	}
+
 	// Deep copy Audio
 	if original.Audio != nil {
 		copy.Audio = &schemas.ChatAudioMessageAudio{
@@ -133,6 +154,7 @@ func (a *Accumulator) buildCompleteMessageFromChatStreamChunks(chunks []*ChatStr
 	var audioDataBuilder strings.Builder
 	var audioTranscriptBuilder strings.Builder
 	hasContent, hasRefusal, hasReasoning := false, false, false
+	var annotations []schemas.ChatAssistantMessageAnnotation
 
 	// Reasoning details builders keyed by detail index
 	type rdAccum struct {
@@ -210,6 +232,8 @@ func (a *Accumulator) buildCompleteMessageFromChatStreamChunks(chunks []*ChatStr
 				acc.id = &idCopy
 			}
 		}
+		// Collect annotations (arrive whole per chunk, not incrementally)
+		annotations = append(annotations, chunk.Delta.Annotations...)
 		// Handle audio data
 		if chunk.Delta.Audio != nil {
 			if completeMessage.ChatAssistantMessage == nil {
@@ -324,6 +348,14 @@ func (a *Accumulator) buildCompleteMessageFromChatStreamChunks(chunks []*ChatStr
 		}
 	}
 
+	// Finalize annotations
+	if len(annotations) > 0 {
+		if completeMessage.ChatAssistantMessage == nil {
+			completeMessage.ChatAssistantMessage = &schemas.ChatAssistantMessage{}
+		}
+		completeMessage.ChatAssistantMessage.Annotations = annotations
+	}
+
 	// Finalize audio
 	if completeMessage.ChatAssistantMessage != nil && completeMessage.ChatAssistantMessage.Audio != nil {
 		completeMessage.ChatAssistantMessage.Audio.Data = audioDataBuilder.String()
@@ -428,6 +460,14 @@ func (a *Accumulator) processAccumulatedChatStreamingChunks(requestID string, re
 			data.Cost = lastChunk.Cost
 		}
 		data.FinishReason = lastChunk.FinishReason
+	}
+	// The highest-index chunk can carry a nil finish_reason (a usage-only chunk,
+	// or the synthetic terminal chunk the OpenAI-compatible handler appends after
+	// forwarding finish_reason on a content chunk). Fall back to the newest chunk
+	// that actually carries one so the accumulated response used for logging and
+	// plugins keeps it.
+	if data.FinishReason == nil {
+		data.FinishReason = accumulator.getChatFinishReasonLocked()
 	}
 	// Merge LogProbs from all chunks
 	if len(accumulator.ChatStreamChunks) > 0 {

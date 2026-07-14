@@ -1746,6 +1746,9 @@ func TestGetVirtualKeyQuota_MissingHeaderReturns401(t *testing.T) {
 	if ctx.Response.StatusCode() != 401 {
 		t.Fatalf("expected status 401, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
 	}
+	if !strings.Contains(string(ctx.Response.Body()), "api-key header") {
+		t.Fatalf("expected missing VK message to include api-key header, got %s", string(ctx.Response.Body()))
+	}
 	if store.quotaCalls != 0 {
 		t.Fatalf("expected store not queried without a VK, got %d calls", store.quotaCalls)
 	}

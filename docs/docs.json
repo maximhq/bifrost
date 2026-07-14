@@ -154,6 +154,7 @@
                   "providers/supported-providers/replicate",
                   "providers/supported-providers/runware",
                   "providers/supported-providers/runway",
+                  "providers/supported-providers/sarvam",
                   "providers/supported-providers/sgl",
                   "providers/supported-providers/vertex",
                   "providers/supported-providers/vllm",
@@ -313,14 +314,23 @@
                 "icon": "road-barrier",
                 "pages": [
                   "enterprise/guardrails",
-                  "enterprise/guardrails/secrets-detection",
-                  "enterprise/guardrails/custom-regex",
-                  "integrations/guardrails/aws-bedrock",
-                  "integrations/guardrails/azure-content-safety",
-                  "integrations/guardrails/google-model-armor",
-                  "integrations/guardrails/crowdstrike-aidr",
-                  "integrations/guardrails/grayswan",
-                  "integrations/guardrails/patronus-ai"
+                  "enterprise/guardrails/redaction",
+                  {
+                    "group": "Providers",
+                    "icon": "shield-check",
+                    "pages": [
+                      "enterprise/guardrails/secrets-detection",
+                      "enterprise/guardrails/custom-regex",
+                      "integrations/guardrails/presidio",
+                      "integrations/guardrails/azure-language-pii",
+                      "integrations/guardrails/aws-bedrock",
+                      "integrations/guardrails/azure-content-safety",
+                      "integrations/guardrails/google-model-armor",
+                      "integrations/guardrails/crowdstrike-aidr",
+                      "integrations/guardrails/grayswan",
+                      "integrations/guardrails/patronus-ai"
+                    ]
+                  }
                 ]
               },
               "enterprise/audit-logs",
@@ -521,6 +531,8 @@
             "pages": [
               "enterprise/guardrails/secrets-detection",
               "enterprise/guardrails/custom-regex",
+              "integrations/guardrails/presidio",
+              "integrations/guardrails/azure-language-pii",
               "integrations/guardrails/aws-bedrock",
               "integrations/guardrails/azure-content-safety",
               "integrations/guardrails/google-model-armor",
@@ -537,7 +549,9 @@
               "features/observability/maxim",
               "features/observability/otel",
               "features/observability/prometheus",
-              "features/observability/kafka"
+              "features/observability/kafka",
+              "features/observability/bigquery",
+              "features/observability/pubsub"
             ]
           },
           {
@@ -700,6 +714,7 @@
             "icon": "rocket",
             "pages": [
               "changelogs/v2.0.0-prerelease1",
+              "changelogs/v1.6.4",
               "changelogs/v1.6.3",
               "changelogs/v1.6.2",
               {
@@ -895,6 +910,7 @@
             "icon": "building",
             "pages": [
               "changelogs/ent-v2.0.0-prerelease1",
+              "changelogs/ent-v1.5.4",
               "changelogs/ent-v1.5.3",
               "changelogs/ent-v1.5.2",
               "changelogs/ent-v1.5.1",
@@ -987,6 +1003,7 @@
             "item": "Helm",
             "icon": "box",
             "pages": [
+              "changelogs/helm-v2.1.27",
               "changelogs/helm-v2.1.26",
               "changelogs/helm-v2.1.25",
               "changelogs/helm-v2.1.24",

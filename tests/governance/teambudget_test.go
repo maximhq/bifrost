@@ -41,12 +41,13 @@ func TestTeamBudgetExceededWithMultipleVKs(t *testing.T) {
 			Method: "POST",
 			Path:   "/api/governance/virtual-keys",
 			Body: CreateVirtualKeyRequest{
-				Name:   "test-vk-" + generateRandomID(),
-				TeamID: &teamID,
-				Budget: &BudgetRequest{
+				Name:            "test-vk-" + generateRandomID(),
+				ProviderConfigs: defaultProviderConfigs(),
+				TeamID:          &teamID,
+				Budgets: []BudgetRequest{{
 					MaxLimit:      1.0, // High VK budget so team is the limiting factor
 					ResetDuration: "1h",
-				},
+				}},
 			},
 		})
 

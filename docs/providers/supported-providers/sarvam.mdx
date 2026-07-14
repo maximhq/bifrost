@@ -1,0 +1,207 @@
+---
+title: "Sarvam AI"
+description: "Sarvam AI conversion guide - OpenAI-compatible chat plus Indic text-to-speech (Bulbul) and speech-to-text (Saaras/Saarika) with custom mapping"
+icon: "s"
+---
+
+## Overview
+
+Sarvam AI is a voice and LLM provider focused on Indian languages (10 Indic languages + English). Bifrost supports both its text and voice workloads:
+- **OpenAI-compatible chat** - Chat completions delegate to the shared OpenAI implementation (base URL only differs)
+- **Text-to-Speech (Bulbul)** - Custom mapping; Sarvam returns base64-encoded audio in a JSON `audios[]` array rather than raw binary
+- **Speech-to-Text (Saaras/Saarika)** - Custom mapping; multipart upload with Sarvam-specific response fields (`transcript`, `timestamps`, `diarized_transcript`)
+- **Dual authentication** - Chat uses `Authorization: Bearer`; voice endpoints use the `api-subscription-key` header
+
+### Supported Operations
+
+| Operation | Non-Streaming | Streaming | Endpoint |
+|-----------|---------------|-----------|----------|
+| Chat Completions | ✅ | ✅ | `/v1/chat/completions` |
+| Responses API | ✅ | ✅ | `/v1/chat/completions` |
+| Speech (TTS) | ✅ | ✅ | `/text-to-speech`, `/text-to-speech/stream` |
+| Transcription (STT) | ✅ | ❌ | `/speech-to-text` |
+| List Models | ✅ | - | `/v1/models` |
+| Text Completions | ❌ | ❌ | - |
+| Embeddings | ❌ | ❌ | - |
+
+<Note>
+**Unsupported Operations** (❌): Text Completions, Embeddings, Images, Files, Batch, and streaming transcription are not offered by the upstream Sarvam API. These return `UnsupportedOperationError`.
+</Note>
+
+## Setup & Configuration
+
+Configure Sarvam AI as a provider. The same API key works for both chat and voice.
+
+<Tabs>
+<Tab title="Web UI">
+
+1. Navigate to **Models** > **Model Providers**. Look for **Sarvam AI** under **Configured Providers**. If it is missing, click on **Add New Provider** and select **Sarvam AI**.
+2. Click **Add Key** or edit an existing key.
+3. Set a name for your key.
+4. Paste your API key directly or use an environment variable (for example, `env.SARVAM_API_KEY`).
+5. Set **Allowed Models** to **All Models** (default) or the specific model allowlist you want this key to serve.
+6. Save the provider configuration.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "sarvam": {
+      "keys": [
+        {
+          "name": "sarvam-key-1",
+          "value": "env.SARVAM_API_KEY",
+          "models": [
+            "*"
+          ],
+          "weight": 1.0
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="API">
+Refer to the API documentation for [Provider Keys Management](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider).
+</Tab>
+<Tab title="Go SDK">
+
+```go
+case schemas.Sarvam:
+    return []schemas.Key{{
+        Name:   "sarvam-key-1",
+        Value:  *schemas.NewSecretVar("env.SARVAM_API_KEY"),
+        Models: []string{"*"},
+        Weight: 1.0,
+    }}, nil
+```
+
+</Tab>
+</Tabs>
+
+---
+
+# 1. Chat Completions
+
+Sarvam's chat completions endpoint is OpenAI-compatible, so Bifrost delegates to the shared OpenAI implementation. For full parameter reference, message handling, tool conversion, and streaming behavior, see [OpenAI Chat Completions](/providers/supported-providers/openai#1-chat-completions).
+
+Available chat models include `sarvam-30b` and `sarvam-105b`.
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "sarvam/sarvam-30b",
+    "messages": [{"role": "user", "content": "Namaste!"}]
+  }'
+```
+
+---
+
+# 2. Responses API
+
+Bifrost converts the Responses API format to Chat Completions internally, then converts the response back:
+
+```
+BifrostResponsesRequest
+  → ToChatRequest()
+  → ChatCompletion
+  → ToBifrostResponsesResponse()
+```
+
+Same parameter support as Chat Completions with response format differences (output items instead of message content).
+
+---
+
+# 3. Speech (Text-to-Speech, Bulbul)
+
+Sarvam's TTS endpoint is **not** OpenAI-compatible: it returns JSON with base64-encoded audio in an `audios[]` array, which Bifrost decodes into raw audio bytes.
+
+### Parameter Mapping
+
+| Bifrost field | Sarvam field | Notes |
+|---------------|--------------|-------|
+| `input` | `text` | Text to synthesize (required) |
+| `voice` | `speaker` | e.g. `anushka` (v2), `shubh` (v3) |
+| `speed` | `pace` | Playback speed |
+| `language_code` | `target_language_code` | BCP-47 Indic code, e.g. `hi-IN` (**required**) |
+
+Sarvam-specific fields are read from `ExtraParams`: `pitch`, `loudness`, `temperature`, `speech_sample_rate`, `output_audio_codec`, `enable_preprocessing`, `dict_id`, `enable_cached_responses`.
+
+```bash
+curl -X POST http://localhost:8080/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "sarvam/bulbul:v2",
+    "input": "Namaste, aap kaise hain?",
+    "voice": "anushka",
+    "target_language_code": "hi-IN"
+  }' --output speech.wav
+```
+
+<Note>
+`target_language_code` is required by Sarvam. Pass it as `language_code` or as an extra field; without it the request is rejected.
+</Note>
+
+---
+
+# 4. Transcription (Speech-to-Text, Saaras/Saarika)
+
+Sarvam's STT endpoint accepts a multipart audio upload and returns a custom response shape that Bifrost maps onto its standard transcription format.
+
+### Response Mapping
+
+| Sarvam field | Bifrost field | Notes |
+|--------------|---------------|-------|
+| `transcript` | `text` | Transcribed text |
+| `language_code` | `language` | Detected BCP-47 language |
+| `timestamps` (parallel arrays) | `words[]` | Flattened into per-word `{word, start, end}` |
+| `diarized_transcript.entries` | diarized segments | Speaker-attributed segments |
+
+Request fields `mode` and `input_audio_codec` are read from `ExtraParams`; `language` maps to Sarvam's `language_code`.
+
+<Note>
+`timestamps` and `diarized_transcript` are only returned by Sarvam's **Batch** speech-to-text API; the synchronous `/speech-to-text` endpoint used here returns `transcript` and `language_code`. Bifrost maps `words`/diarized segments when present, so the standard path typically populates only `text` and `language`.
+</Note>
+
+```bash
+curl -X POST http://localhost:8080/v1/audio/transcriptions \
+  -F "model=sarvam/saaras:v3" \
+  -F "file=@speech.wav"
+```
+
+---
+
+## Authentication
+
+Sarvam uses different authentication for chat and voice, but the **same API key** works for both:
+
+- **Chat / Responses**: `Authorization: Bearer <key>`
+- **Speech / Transcription**: `api-subscription-key: <key>`
+
+Bifrost applies the correct header per operation automatically.
+
+## Configuration
+
+**HTTP Settings:**
+- **Base URL**: `https://api.sarvam.ai` (default)
+- **Chat endpoint**: `/v1/chat/completions`
+- **Voice endpoints**: `/text-to-speech`, `/speech-to-text`
+
+## Caveats
+
+<Accordion title="Voice is not OpenAI-compatible">
+**Severity**: Low
+**Behavior**: TTS returns base64 JSON (not raw audio) and STT returns Indic-specific fields.
+**Impact**: Handled by Bifrost's custom mapping; no action needed by callers beyond passing `target_language_code` for TTS.
+</Accordion>
+
+<Accordion title="No streaming for voice">
+**Severity**: Low
+**Behavior**: Speech and transcription streaming are not offered by Sarvam.
+**Impact**: `SpeechStream` / `TranscriptionStream` return `UnsupportedOperationError`.
+</Accordion>
