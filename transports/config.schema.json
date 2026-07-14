@@ -6152,6 +6152,17 @@
             "type": "string"
           }
         },
+        "params_config": {
+          "type": "object",
+          "description": "Provider-specific parameter serialization options for custom providers",
+          "properties": {
+            "preserve_cache_control": {
+              "type": "boolean",
+              "description": "Preserve cache_control fields when serializing requests for compatible custom providers"
+            }
+          },
+          "additionalProperties": false
+        },
         "allowed_requests": {
           "type": "object",
           "description": "Allowed request types for the custom provider",

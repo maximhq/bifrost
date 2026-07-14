@@ -323,6 +323,35 @@ When a full URL (with scheme and host) is provided in `request_path_overrides`, 
 
 In this example, instead of using OpenAI's default `/v1/chat/completions` path, requests will be sent to `https://custom-endpoint.example.com/api/v2/chat`.
 
+### Provider Params Config
+
+The `params_config` field enables opt-in serialization behavior for custom providers that extend a standard provider protocol.
+
+For OpenAI-compatible custom providers, you can preserve `cache_control` on chat message content blocks and tools:
+
+```json
+{
+    "custom-llm": {
+        "keys": [{ "name": "custom-llm-key-1", "value": "env.PROVIDER_API_KEY", "models": ["*"], "weight": 1.0 }],
+        "network_config": {
+            "base_url": "https://your-openai-compatible-endpoint.com"
+        },
+        "custom_provider_config": {
+            "base_provider_type": "openai",
+            "params_config": {
+                "preserve_cache_control": true
+            },
+            "allowed_requests": {
+                "chat_completion": true,
+                "chat_completion_stream": true
+            }
+        }
+    }
+}
+```
+
+By default, the OpenAI serializer strips `cache_control` for official OpenAI compatibility. Enable `preserve_cache_control` only for OpenAI-compatible custom providers whose upstream API accepts this field, such as providers that support prompt caching through content block breakpoints.
+
 ### TLS for Self-Signed or Internal Certificates
 
 When connecting to providers with HTTPS endpoints that use self-signed certificates or internal CAs (e.g., air-gapped environments, internal services), you can configure TLS in `network_config`:

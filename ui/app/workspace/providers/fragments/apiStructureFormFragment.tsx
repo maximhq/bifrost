@@ -58,6 +58,9 @@ export function ApiStructureFormFragment({ provider }: Props) {
 				ocr_stream: provider.custom_provider_config?.allowed_requests?.ocr_stream ?? true,
 			},
 			request_path_overrides: provider.custom_provider_config?.request_path_overrides ?? undefined,
+			params_config: {
+				preserve_cache_control: provider.custom_provider_config?.params_config?.preserve_cache_control ?? false,
+			},
 		},
 	});
 
@@ -78,6 +81,10 @@ export function ApiStructureFormFragment({ provider }: Props) {
 					is_key_less: data.is_key_less ?? false,
 					allowed_requests: data.allowed_requests,
 					request_path_overrides: cleanPathOverrides(data.request_path_overrides),
+					params_config:
+						data.base_provider_type === "openai" && data.params_config?.preserve_cache_control
+							? { preserve_cache_control: true }
+							: undefined,
 				},
 			}),
 		)
@@ -97,6 +104,7 @@ export function ApiStructureFormFragment({ provider }: Props) {
 		() => provider.custom_provider_config?.base_provider_type === "bedrock",
 		[provider.custom_provider_config?.base_provider_type],
 	);
+	const baseProviderType = form.watch("base_provider_type") as BaseProvider;
 
 	return (
 		<Form {...form}>
@@ -155,12 +163,38 @@ export function ApiStructureFormFragment({ provider }: Props) {
 					)}
 				</div>
 
+				{baseProviderType === "openai" && (
+					<FormField
+						control={form.control}
+						name="params_config.preserve_cache_control"
+						render={({ field }) => (
+							<FormItem>
+								<div className="flex items-center justify-between space-x-2 rounded-lg border p-3">
+									<div className="space-y-0.5">
+										<label htmlFor="preserve-cache-control" className="text-sm font-medium">
+											Preserve Cache Control
+										</label>
+										<p className="text-muted-foreground text-sm">
+											Preserve content block cache_control fields for OpenAI-compatible custom providers that support prompt caching.
+										</p>
+									</div>
+									<Switch
+										id="preserve-cache-control"
+										size="md"
+										checked={field.value ?? false}
+										onCheckedChange={field.onChange}
+										disabled={!hasUpdateProviderAccess}
+										data-testid="custom-provider-preserve-cache-control-switch"
+									/>
+								</div>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+				)}
+
 				{/* Allowed Requests Configuration */}
-				<AllowedRequestsFields
-					control={form.control}
-					providerType={form.watch("base_provider_type") as BaseProvider}
-					disabled={!hasUpdateProviderAccess}
-				/>
+				<AllowedRequestsFields control={form.control} providerType={baseProviderType} disabled={!hasUpdateProviderAccess} />
 
 				{/* Form Actions */}
 				<div className="flex justify-end gap-2 py-2">

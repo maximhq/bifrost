@@ -626,12 +626,17 @@ export const allowedRequestsSchema = z.object({
 });
 
 // Custom provider config schema
+export const customProviderParamsConfigSchema = z.strictObject({
+	preserve_cache_control: z.boolean().optional(),
+});
+
 export const customProviderConfigSchema = z
 	.object({
 		base_provider_type: knownProviderSchema,
 		is_key_less: z.boolean().optional(),
 		allowed_requests: allowedRequestsSchema.optional(),
 		request_path_overrides: z.record(z.string(), z.string().optional()).optional(),
+		params_config: customProviderParamsConfigSchema.optional(),
 	})
 	.refine(
 		(data) => {
@@ -653,6 +658,7 @@ export const formCustomProviderConfigSchema = z
 		is_key_less: z.boolean().optional(),
 		allowed_requests: allowedRequestsSchema.optional(),
 		request_path_overrides: z.record(z.string(), z.string().optional()).optional(),
+		params_config: customProviderParamsConfigSchema.optional(),
 	})
 	.refine(
 		(data) => {

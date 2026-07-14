@@ -2,7 +2,11 @@ package openai
 
 import (
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/bytedance/sonic"
@@ -10,6 +14,19 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/require"
 )
+
+type noopTestLogger struct{}
+
+func (noopTestLogger) Debug(string, ...any)                   {}
+func (noopTestLogger) Info(string, ...any)                    {}
+func (noopTestLogger) Warn(string, ...any)                    {}
+func (noopTestLogger) Error(string, ...any)                   {}
+func (noopTestLogger) Fatal(string, ...any)                   {}
+func (noopTestLogger) SetLevel(schemas.LogLevel)              {}
+func (noopTestLogger) SetOutputType(schemas.LoggerOutputType) {}
+func (noopTestLogger) LogHTTPRequest(schemas.LogLevel, string) schemas.LogEventBuilder {
+	return schemas.NoopLogEvent
+}
 
 func TestToOpenAIChatRequest_ToolNormalization(t *testing.T) {
 	// Create tool parameters with keys in non-alphabetical order:
@@ -1134,12 +1151,13 @@ func TestApplyXAICompatibility(t *testing.T) {
 	}
 }
 
-// TestToOpenAIChatRequest_CacheControl_OpenRouterOnly verifies that
+// TestToOpenAIChatRequest_CacheControlPreservation verifies that
 // Anthropic-style cache_control breakpoints on message content blocks and on
 // tools survive marshalling only when the originating provider is OpenRouter
-// (which forwards them to the underlying Claude/Gemini model). For OpenAI and
-// other OpenAI-format providers, cache_control is still stripped.
-func TestToOpenAIChatRequest_CacheControl_OpenRouterOnly(t *testing.T) {
+// (which forwards them to the underlying Claude/Gemini model), or when a
+// custom provider explicitly opts in. For OpenAI and other OpenAI-format
+// providers, cache_control is still stripped by default.
+func TestToOpenAIChatRequest_CacheControlPreservation(t *testing.T) {
 	makeReq := func(provider schemas.ModelProvider) *schemas.BifrostChatRequest {
 		return &schemas.BifrostChatRequest{
 			Provider: provider,
@@ -1181,13 +1199,16 @@ func TestToOpenAIChatRequest_CacheControl_OpenRouterOnly(t *testing.T) {
 	}
 
 	tests := []struct {
-		name     string
-		provider schemas.ModelProvider
-		wantKept bool
+		name                 string
+		provider             schemas.ModelProvider
+		preserveCacheControl bool
+		wantKept             bool
 	}{
 		{name: "openrouter preserves cache_control", provider: schemas.OpenRouter, wantKept: true},
+		{name: "custom provider opt-in preserves cache_control", provider: schemas.ModelProvider("dashscope"), preserveCacheControl: true, wantKept: true},
 		{name: "openai strips cache_control", provider: schemas.OpenAI, wantKept: false},
 		{name: "gemini strips cache_control", provider: schemas.Gemini, wantKept: false},
+		{name: "custom provider strips cache_control by default", provider: schemas.ModelProvider("dashscope"), wantKept: false},
 	}
 
 	for _, tt := range tests {
@@ -1197,13 +1218,14 @@ func TestToOpenAIChatRequest_CacheControl_OpenRouterOnly(t *testing.T) {
 
 			result := ToOpenAIChatRequest(ctx, makeReq(tt.provider))
 			require.NotNil(t, result)
+			result.PreserveCacheControl = tt.preserveCacheControl
 
 			wireBody, err := json.Marshal(result)
 			require.NoError(t, err)
 			s := string(wireBody)
 
 			if tt.wantKept {
-				require.Contains(t, s, "cache_control", "cache_control must be preserved for OpenRouter: %s", s)
+				require.Contains(t, s, "cache_control", "cache_control must be preserved: %s", s)
 				// Both the content-block breakpoint and the tool breakpoint must survive.
 				require.Equal(t, 2, strings.Count(s, "cache_control"), "expected cache_control on both content block and tool: %s", s)
 			} else {
@@ -1363,6 +1385,210 @@ func TestToOpenAIChatRequest_PreservesShortToolCallIDsContainingSeparator(t *tes
 	}
 	if *result.Messages[1].ChatToolMessage.ToolCallID != "search_ts_a" {
 		t.Errorf("short tool_call_id must be preserved, got %q", *result.Messages[1].ChatToolMessage.ToolCallID)
+	}
+}
+
+func TestOpenAIProvider_ApplyCustomProviderParamsConfig_PreservesCacheControl(t *testing.T) {
+	provider := &OpenAIProvider{
+		customProviderConfig: &schemas.CustomProviderConfig{
+			BaseProviderType: schemas.OpenAI,
+			ParamsConfig: &schemas.CustomProviderParamsConfig{
+				PreserveCacheControl: true,
+			},
+		},
+	}
+
+	req := provider.applyCustomProviderParamsConfig(&OpenAIChatRequest{})
+	require.NotNil(t, req)
+	require.True(t, req.PreserveCacheControl)
+}
+
+func TestOpenAIProvider_ChatCompletion_CustomProviderParamsConfigPreservesCacheControl(t *testing.T) {
+	tests := []struct {
+		name        string
+		description string
+		config      *schemas.CustomProviderParamsConfig
+		wantKept    bool
+	}{
+		{
+			name:        "custom provider opt-in preserves cache_control",
+			description: "Guards providers such as DashScope that expose an OpenAI-compatible endpoint but support provider-specific prompt-cache markers.",
+			config: &schemas.CustomProviderParamsConfig{
+				PreserveCacheControl: true,
+			},
+			wantKept: true,
+		},
+		{
+			name:        "custom provider strips cache_control by default",
+			description: "Documents the backward-compatible default: unknown custom OpenAI providers continue to receive plain OpenAI-compatible payloads unless explicitly opted in.",
+			config:      nil,
+			wantKept:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Log(tt.description)
+
+			var capturedBody []byte
+			var capturedBodyMu sync.Mutex
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				require.Equal(t, "/v1/chat/completions", r.URL.Path)
+				body, err := io.ReadAll(r.Body)
+				require.NoError(t, err)
+				capturedBodyMu.Lock()
+				capturedBody = body
+				capturedBodyMu.Unlock()
+
+				w.Header().Set("Content-Type", "application/json")
+				_, err = w.Write([]byte(`{"id":"chatcmpl-test","object":"chat.completion","created":0,"model":"kimi-k2","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
+				require.NoError(t, err)
+			}))
+			defer server.Close()
+
+			provider := NewOpenAIProvider(&schemas.ProviderConfig{
+				NetworkConfig: schemas.NetworkConfig{
+					BaseURL: server.URL,
+				},
+				CustomProviderConfig: &schemas.CustomProviderConfig{
+					CustomProviderKey: "dashscope",
+					BaseProviderType:  schemas.OpenAI,
+					ParamsConfig:      tt.config,
+				},
+			}, noopTestLogger{})
+			t.Cleanup(provider.Shutdown)
+
+			ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+			defer cancel()
+
+			response, bifrostErr := provider.ChatCompletion(ctx, schemas.Key{Value: schemas.SecretVar{Val: "test-key"}}, &schemas.BifrostChatRequest{
+				Provider: schemas.ModelProvider("dashscope"),
+				Model:    "kimi-k2",
+				Input: []schemas.ChatMessage{
+					{
+						Role: schemas.ChatMessageRoleUser,
+						Content: &schemas.ChatMessageContent{
+							ContentBlocks: []schemas.ChatContentBlock{
+								{
+									Type:         schemas.ChatContentBlockTypeText,
+									Text:         schemas.Ptr("long cacheable prompt"),
+									CacheControl: &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral},
+								},
+							},
+						},
+					},
+				},
+			})
+			require.Nil(t, bifrostErr)
+			require.NotNil(t, response)
+
+			capturedBodyMu.Lock()
+			body := string(capturedBody)
+			capturedBodyMu.Unlock()
+			if tt.wantKept {
+				require.Contains(t, body, "cache_control")
+				return
+			}
+			require.NotContains(t, body, "cache_control")
+		})
+	}
+}
+
+func TestOpenAIProvider_ChatCompletionStream_CustomProviderParamsConfigPreservesCacheControl(t *testing.T) {
+	tests := []struct {
+		name        string
+		description string
+		config      *schemas.CustomProviderParamsConfig
+		wantKept    bool
+	}{
+		{
+			name:        "custom provider opt-in preserves cache_control",
+			description: "Covers the streaming path because it uses a separate request conversion hook from non-streaming chat completions.",
+			config: &schemas.CustomProviderParamsConfig{
+				PreserveCacheControl: true,
+			},
+			wantKept: true,
+		},
+		{
+			name:        "custom provider strips cache_control by default",
+			description: "Ensures the streaming path keeps the same default stripping behavior as non-streaming requests when params_config is unset.",
+			config:      nil,
+			wantKept:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Log(tt.description)
+
+			var capturedBody []byte
+			var capturedBodyMu sync.Mutex
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				require.Equal(t, "/v1/chat/completions", r.URL.Path)
+				body, err := io.ReadAll(r.Body)
+				require.NoError(t, err)
+				capturedBodyMu.Lock()
+				capturedBody = body
+				capturedBodyMu.Unlock()
+
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, err = w.Write([]byte("data: {\"id\":\"chatcmpl-test\",\"object\":\"chat.completion.chunk\",\"created\":0,\"model\":\"kimi-k2\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"ok\"},\"finish_reason\":null}]}\n\n"))
+				require.NoError(t, err)
+				_, err = w.Write([]byte("data: [DONE]\n\n"))
+				require.NoError(t, err)
+			}))
+			defer server.Close()
+
+			provider := NewOpenAIProvider(&schemas.ProviderConfig{
+				NetworkConfig: schemas.NetworkConfig{
+					BaseURL: server.URL,
+				},
+				CustomProviderConfig: &schemas.CustomProviderConfig{
+					CustomProviderKey: "dashscope",
+					BaseProviderType:  schemas.OpenAI,
+					ParamsConfig:      tt.config,
+				},
+			}, noopTestLogger{})
+			t.Cleanup(provider.Shutdown)
+
+			ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+			defer cancel()
+
+			noOpPostHookRunner := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+				return result, err
+			}
+			stream, bifrostErr := provider.ChatCompletionStream(ctx, noOpPostHookRunner, nil, schemas.Key{Value: schemas.SecretVar{Val: "test-key"}}, &schemas.BifrostChatRequest{
+				Provider: schemas.ModelProvider("dashscope"),
+				Model:    "kimi-k2",
+				Input: []schemas.ChatMessage{
+					{
+						Role: schemas.ChatMessageRoleUser,
+						Content: &schemas.ChatMessageContent{
+							ContentBlocks: []schemas.ChatContentBlock{
+								{
+									Type:         schemas.ChatContentBlockTypeText,
+									Text:         schemas.Ptr("long cacheable prompt"),
+									CacheControl: &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral},
+								},
+							},
+						},
+					},
+				},
+			})
+			require.Nil(t, bifrostErr)
+			require.NotNil(t, stream)
+			for range stream {
+			}
+
+			capturedBodyMu.Lock()
+			body := string(capturedBody)
+			capturedBodyMu.Unlock()
+			if tt.wantKept {
+				require.Contains(t, body, "cache_control")
+				return
+			}
+			require.NotContains(t, body, "cache_control")
+		})
 	}
 }
 

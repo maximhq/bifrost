@@ -1,5 +1,6 @@
 [fix]: warn callers not to truncate the `#t=` temp-token fragment on MCP inline-auth links [@MarcusPeng](https://github.com/MarcusPeng)
 [fix]: zero pooled ChannelMessage references on release to avoid pinning request bodies [@citrocat](https://github.com/citrocat)
+- [feat]: add opt-in cache_control config for custom OpenAI providers [@GreyKa-x](https://github.com/GreyKa-x)
 - fix: preserve Gemini file upload MIME types for GenAI file URI completions
 - fix: Gemini video reference fields map to instances [@vojthor](https://github.com/vojthor)
 - fix: accept object-valued tool-call arguments (e.g. tool_search_call) on the Responses API streaming path
