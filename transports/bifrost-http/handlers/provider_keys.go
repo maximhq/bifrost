@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"strings"
 
 	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
@@ -479,42 +480,55 @@ func (h *ProviderHandler) mergeUpdatedKey(oldRawKey, updateKey schemas.Key) (sch
 		}
 	}
 
-	if updateKey.GigaChatKeyConfig != nil && oldRedactedKey.GigaChatKeyConfig != nil && oldRawKey.GigaChatKeyConfig != nil {
-		mergeGigaChatKeyConfigSecrets(updateKey.GigaChatKeyConfig, oldRedactedKey.GigaChatKeyConfig, oldRawKey.GigaChatKeyConfig, mergedKey.GigaChatKeyConfig)
+	if mergedKey.GigaChatKeyConfig != nil {
+		var credentials, user, password, accessToken *schemas.SecretVar
+		var certFile, keyFile, caBundleFile string
+		if oldRawKey.GigaChatKeyConfig != nil {
+			credentials = oldRawKey.GigaChatKeyConfig.Credentials
+			user = oldRawKey.GigaChatKeyConfig.User
+			password = oldRawKey.GigaChatKeyConfig.Password
+			accessToken = oldRawKey.GigaChatKeyConfig.AccessToken
+			certFile = oldRawKey.GigaChatKeyConfig.CertFile
+			keyFile = oldRawKey.GigaChatKeyConfig.KeyFile
+			caBundleFile = oldRawKey.GigaChatKeyConfig.CABundleFile
+		}
+		for _, item := range []struct {
+			incoming *schemas.SecretVar
+			stored   *schemas.SecretVar
+			field    string
+		}{
+			{mergedKey.GigaChatKeyConfig.Credentials, credentials, "gigachat_key_config.credentials"},
+			{mergedKey.GigaChatKeyConfig.User, user, "gigachat_key_config.user"},
+			{mergedKey.GigaChatKeyConfig.Password, password, "gigachat_key_config.password"},
+			{mergedKey.GigaChatKeyConfig.AccessToken, accessToken, "gigachat_key_config.access_token"},
+		} {
+			if err := preserve(item.incoming, item.stored, item.field); err != nil {
+				return schemas.Key{}, err
+			}
+		}
+		for _, item := range []struct {
+			incoming *string
+			stored   string
+			field    string
+		}{
+			{&mergedKey.GigaChatKeyConfig.CertFile, certFile, "gigachat_key_config.cert_file"},
+			{&mergedKey.GigaChatKeyConfig.KeyFile, keyFile, "gigachat_key_config.key_file"},
+			{&mergedKey.GigaChatKeyConfig.CABundleFile, caBundleFile, "gigachat_key_config.ca_bundle_file"},
+		} {
+			if *item.incoming != "<REDACTED>" {
+				continue
+			}
+			if strings.TrimSpace(item.stored) == "" {
+				return schemas.Key{}, fmt.Errorf("masked preview cannot be used for %s without a stored value", item.field)
+			}
+			*item.incoming = item.stored
+		}
 	}
 
 	mergedKey.ConfigHash = oldRawKey.ConfigHash
 	mergedKey.Status = oldRawKey.Status
 
 	return mergedKey, nil
-}
-
-func mergeGigaChatKeyConfigSecrets(updateConfig, oldRedactedConfig, oldRawConfig, mergedConfig *schemas.GigaChatKeyConfig) {
-	if updateConfig.Credentials != nil && oldRedactedConfig.Credentials != nil &&
-		updateConfig.Credentials.IsRedacted() && updateConfig.Credentials.Equals(oldRedactedConfig.Credentials) {
-		mergedConfig.Credentials = oldRawConfig.Credentials
-	}
-	if updateConfig.User != nil && oldRedactedConfig.User != nil &&
-		updateConfig.User.IsRedacted() && updateConfig.User.Equals(oldRedactedConfig.User) {
-		mergedConfig.User = oldRawConfig.User
-	}
-	if updateConfig.Password != nil && oldRedactedConfig.Password != nil &&
-		updateConfig.Password.IsRedacted() && updateConfig.Password.Equals(oldRedactedConfig.Password) {
-		mergedConfig.Password = oldRawConfig.Password
-	}
-	if updateConfig.AccessToken != nil && oldRedactedConfig.AccessToken != nil &&
-		updateConfig.AccessToken.IsRedacted() && updateConfig.AccessToken.Equals(oldRedactedConfig.AccessToken) {
-		mergedConfig.AccessToken = oldRawConfig.AccessToken
-	}
-	if updateConfig.CertFile == oldRedactedConfig.CertFile && updateConfig.CertFile == "<REDACTED>" {
-		mergedConfig.CertFile = oldRawConfig.CertFile
-	}
-	if updateConfig.KeyFile == oldRedactedConfig.KeyFile && updateConfig.KeyFile == "<REDACTED>" {
-		mergedConfig.KeyFile = oldRawConfig.KeyFile
-	}
-	if updateConfig.CABundleFile == oldRedactedConfig.CABundleFile && updateConfig.CABundleFile == "<REDACTED>" {
-		mergedConfig.CABundleFile = oldRawConfig.CABundleFile
-	}
 }
 
 func getKeyIDFromCtx(ctx *fasthttp.RequestCtx) (string, error) {
