@@ -118,6 +118,79 @@ func TestOpenAIErrorNormalization_E2E_StreamingIssue5040(t *testing.T) {
 	}
 }
 
+// TestOpenAIErrorNormalization_E2E_ResponsesStreamTypeOnlyFallback is a
+// regression test (found via greptile review): the Responses-stream
+// `response.failed`/`error` branches only ever copied `.code`/`.message`
+// from the nested error, never `.type`, so a backend emitting only
+// `error.type` (no `error.code`) on an in-body SSE error fell through to
+// the generic 500 fallback in StatusCodeForResponsesStreamErrorCode instead
+// of correctly resolving via the Error.Type fallback path.
+func TestOpenAIErrorNormalization_E2E_ResponsesStreamTypeOnlyFallback(t *testing.T) {
+	tests := []struct {
+		name           string
+		sseBody        string
+		expectedStatus int
+		expectedType   string
+	}{
+		{
+			name:           "mid-stream error event with only type (no code) resolves via Error.Type fallback",
+			sseBody:        "data: {\"type\":\"error\",\"sequence_number\":1,\"error\":{\"type\":\"context_length_exceeded\",\"message\":\"maximum context length exceeded\"}}\n\n",
+			expectedStatus: 400,
+			expectedType:   "context_length_exceeded",
+		},
+		{
+			name:           "mid-stream response.failed event with only type (no code) resolves via Error.Type fallback",
+			sseBody:        "data: {\"type\":\"response.failed\",\"sequence_number\":1,\"response\":{\"error\":{\"type\":\"content_policy_violation\",\"message\":\"content policy violation\"}}}\n\n",
+			expectedStatus: 400,
+			expectedType:   "content_policy_violation",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := llmtests.NewMockErrorServer(200, tt.sseBody, "text/event-stream")
+			defer server.Close()
+
+			provider := openai.NewOpenAIProvider(&schemas.ProviderConfig{
+				NetworkConfig: schemas.NetworkConfig{
+					BaseURL:             server.URL,
+					AllowPrivateNetwork: true,
+				},
+			}, &llmtests.NoOpTestLogger{})
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			defer ctx.Cancel()
+
+			postHookRunner := func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+				return result, err
+			}
+
+			s := "hi"
+			responseChan, initErr := provider.ResponsesStream(ctx, postHookRunner, func(context.Context) {}, schemas.Key{}, &schemas.BifrostResponsesRequest{
+				Provider: schemas.OpenAI,
+				Model:    "gpt-4o",
+				Input:    []schemas.ResponsesMessage{{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: &s}}},
+			})
+			require.Nil(t, initErr)
+			require.NotNil(t, responseChan)
+
+			var gotErr *schemas.BifrostError
+			for chunk := range responseChan {
+				if chunk.BifrostError != nil {
+					gotErr = chunk.BifrostError
+					break
+				}
+			}
+
+			require.NotNil(t, gotErr, "expected a BifrostError chunk from the mock SSE error stream")
+			require.NotNil(t, gotErr.Error.Type, "Error.Type must be populated from the nested error.type field")
+			require.Equal(t, tt.expectedType, *gotErr.Error.Type)
+			require.NotNil(t, gotErr.StatusCode, "StatusCode must resolve via the Error.Type fallback, not default to nil/500")
+			require.Equal(t, tt.expectedStatus, *gotErr.StatusCode)
+		})
+	}
+}
+
 // Regression test for the same #5040-pattern bug found in the Chat Completions
 // streaming path (HandleOpenAIChatCompletionStreaming) — the shared streaming
 // handler reused by all 19 OpenAI-compatible providers (vLLM, sglang, Ollama,

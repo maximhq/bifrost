@@ -1936,6 +1936,9 @@ func HandleOpenAIResponsesStreaming(
 						if response.Error.Code != "" && (bifrostErr.Error.Code == nil || *bifrostErr.Error.Code == "") {
 							bifrostErr.Error.Code = &response.Error.Code
 						}
+						if response.Error.Type != "" && bifrostErr.Error.Type == nil {
+							bifrostErr.Error.Type = &response.Error.Type
+						}
 					}
 					if response.Response != nil && response.Response.Error != nil {
 						if response.Response.Error.Message != "" && bifrostErr.Error.Message == "" {
@@ -1943,6 +1946,9 @@ func HandleOpenAIResponsesStreaming(
 						}
 						if response.Response.Error.Code != "" && (bifrostErr.Error.Code == nil || *bifrostErr.Error.Code == "") {
 							bifrostErr.Error.Code = schemas.Ptr(response.Response.Error.Code)
+						}
+						if response.Response.Error.Type != "" && bifrostErr.Error.Type == nil {
+							bifrostErr.Error.Type = schemas.Ptr(response.Response.Error.Type)
 						}
 					}
 					bifrostErr.StatusCode = new(StatusCodeForResponsesStreamErrorCode(bifrostErr.Error.Code, bifrostErr.Error.Type))
@@ -1963,6 +1969,9 @@ func HandleOpenAIResponsesStreaming(
 					if response.Response != nil && response.Response.Error != nil {
 						bifrostErr.Error.Message = response.Response.Error.Message
 						bifrostErr.Error.Code = &response.Response.Error.Code
+						if response.Response.Error.Type != "" {
+							bifrostErr.Error.Type = &response.Response.Error.Type
+						}
 					}
 					bifrostErr.StatusCode = new(StatusCodeForResponsesStreamErrorCode(bifrostErr.Error.Code, bifrostErr.Error.Type))
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
