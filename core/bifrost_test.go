@@ -638,6 +638,32 @@ func TestTransientServerStatusCodes(t *testing.T) {
 	}
 }
 
+// Test that isTransientServerStatus scopes the 529 (Anthropic "overloaded")
+// exception to Anthropic only, and still honors the base
+// transientServerStatusCodes map for every provider.
+func TestIsTransientServerStatus_AnthropicOverloadedException(t *testing.T) {
+	if !isTransientServerStatus(schemas.Anthropic, 529) {
+		t.Error("Anthropic + 529 should be treated as transient (real native overloaded_error status)")
+	}
+	if isTransientServerStatus(schemas.OpenAI, 529) {
+		t.Error("OpenAI + 529 should NOT be transient — the 529 exception is scoped to Anthropic only")
+	}
+	if isTransientServerStatus(schemas.Bedrock, 529) {
+		t.Error("Bedrock + 529 should NOT be transient — the 529 exception is scoped to Anthropic only")
+	}
+	for _, code := range []int{500, 502, 503, 504} {
+		if !isTransientServerStatus(schemas.Anthropic, code) {
+			t.Errorf("Anthropic + %d should still be transient via the base transientServerStatusCodes map", code)
+		}
+		if !isTransientServerStatus(schemas.OpenAI, code) {
+			t.Errorf("OpenAI + %d should still be transient via the base transientServerStatusCodes map", code)
+		}
+	}
+	if isTransientServerStatus(schemas.Anthropic, 429) {
+		t.Error("Anthropic + 429 should NOT be transient — 429 is a per-key failure, not a server-transient one")
+	}
+}
+
 // Test that perKeyFailureStatusCodes are properly defined.
 // These are credential/account-bound failures — rotate to the next key instead of retrying
 // the same one.

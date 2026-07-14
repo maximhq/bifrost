@@ -251,6 +251,18 @@ func newBedrockStreamException(providerName, excType string, payload []byte) *sc
 	}
 	if fwdType != "" {
 		streamErr.Type = &fwdType
+		// Stage 1 (normalize-to-OpenAI): set the canonical vocabulary on
+		// .Error.Type so Stage 2 route translators (ToAnthropicChatCompletionError,
+		// etc.) can render this correctly on non-Bedrock routes — mirrors
+		// parseBedrockHTTPError's fix for the non-streaming path. Deliberately
+		// does NOT touch .StatusCode here: the retryableBedrockExceptions
+		// assignment below is a carefully-tuned internal retry-gate hint (see
+		// this function's doc comment — e.g. modelTimeoutException maps to
+		// the gate-recognized 504 even though AWS's real status is 408), not
+		// the client-facing status, and must not be overwritten by the
+		// canonical status this normalizer would otherwise produce.
+		canonicalType, _, _ := normalizeBedrockErrorType(fwdType)
+		streamErr.Error.Type = &canonicalType
 	}
 	if statusCode, ok := retryableBedrockExceptions[excType]; ok {
 		sc := statusCode

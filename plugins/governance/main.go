@@ -1089,9 +1089,17 @@ func (p *GovernancePlugin) EvaluateGovernanceRequest(ctx *schemas.BifrostContext
 
 	case DecisionVirtualKeyNotFound, DecisionVirtualKeyBlocked, DecisionModelBlocked, DecisionProviderBlocked:
 		return result, &schemas.BifrostError{
+			// Type carries the specific governance decision (internal/logging
+			// consumers, ExtraFields-style detail); Error.Type carries the
+			// OpenAI-canonical vocabulary so per-route Stage 2 translators
+			// (e.g. ToAnthropicChatCompletionError) can render this correctly
+			// instead of falling back to a generic api_error — governance has
+			// no OpenAI-native equivalent, so this maps to the
+			// no_openai_equivalent governance_blocked key.
 			Type:       new(string(result.Decision)),
 			StatusCode: new(403),
 			Error: &schemas.ErrorField{
+				Type:    new(schemas.ErrorTypeGovernanceBlocked),
 				Message: result.Reason,
 			},
 		}
@@ -1101,15 +1109,29 @@ func (p *GovernancePlugin) EvaluateGovernanceRequest(ctx *schemas.BifrostContext
 			Type:       new(string(result.Decision)),
 			StatusCode: new(429),
 			Error: &schemas.ErrorField{
+				Type:    new(schemas.ErrorTypeRateLimitExceeded),
 				Message: result.Reason,
 			},
 		}
 
 	case DecisionBudgetExceeded:
 		return result, &schemas.BifrostError{
-			Type:       new(string(result.Decision)),
+			Type: new(string(result.Decision)),
+			// Deliberately 402, NOT 429, despite insufficient_quota's canonical
+			// mapping being 429 elsewhere in this design (see error.yaml). This
+			// status code is not just a client-facing signal — core/bifrost.go's
+			// retry engine reads it directly: 401/402/403 mark a key as a
+			// PERMANENT failure (deadKeyIDs, never retried again this request),
+			// while 429 is treated as TRANSIENT (may retry once other keys are
+			// exhausted, since a rate-limited key can recover quota). A
+			// governance budget-exceeded decision is deterministic — it will
+			// never resolve by retrying — so 429 here would make Bifrost waste
+			// retry attempts on a condition that can't succeed. Found via codex
+			// review; Error.Type still carries the correct canonical vocabulary
+			// for Stage 2 route translation regardless of this status code.
 			StatusCode: new(402),
 			Error: &schemas.ErrorField{
+				Type:    new(schemas.ErrorTypeInsufficientQuota),
 				Message: result.Reason,
 			},
 		}
@@ -1119,6 +1141,7 @@ func (p *GovernancePlugin) EvaluateGovernanceRequest(ctx *schemas.BifrostContext
 			Type:       new(string(result.Decision)),
 			StatusCode: new(403),
 			Error: &schemas.ErrorField{
+				Type:    new(schemas.ErrorTypeGovernanceBlocked),
 				Message: result.Reason,
 			},
 		}
@@ -1128,6 +1151,7 @@ func (p *GovernancePlugin) EvaluateGovernanceRequest(ctx *schemas.BifrostContext
 		return result, &schemas.BifrostError{
 			Type: new(string(result.Decision)),
 			Error: &schemas.ErrorField{
+				Type:    new(schemas.ErrorTypeGovernanceBlocked),
 				Message: "Governance decision error",
 			},
 		}

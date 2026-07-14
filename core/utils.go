@@ -35,6 +35,29 @@ var transientServerStatusCodes = map[int]bool{
 	504: true, // Gateway Timeout
 }
 
+// anthropicOverloadedStatusCode mirrors
+// core/providers/anthropic/errors.go's AnthropicOverloadedStatusCode (not
+// imported directly to avoid a core<->providers/anthropic dependency here).
+const anthropicOverloadedStatusCode = 529
+
+// isTransientServerStatus reports whether statusCode should be retried with
+// the same key for the given provider. 529 (Anthropic's real, non-standard
+// "overloaded" status) is deliberately NOT in transientServerStatusCodes
+// globally — adding it there would affect every provider, and 529 isn't a
+// registered status any other provider uses. It's scoped to Anthropic only
+// here so the retry engine still treats it as transient (matching the old
+// behavior from when Stage 1 used to canonicalize 529 into 503), while the
+// client still receives the real 529 Anthropic sent
+// (core/providers/anthropic/errors.go preserves it verbatim so
+// anthropic-python's status-code-based SDK dispatch raises OverloadedError
+// instead of a generic InternalServerError).
+func isTransientServerStatus(providerKey schemas.ModelProvider, statusCode int) bool {
+	if transientServerStatusCodes[statusCode] {
+		return true
+	}
+	return providerKey == schemas.Anthropic && statusCode == anthropicOverloadedStatusCode
+}
+
 // perKeyFailureStatusCodes are failures bound to the specific key/account rather than
 // the request. On these, executeRequestWithRetries rotates to the next available key
 // (if any) instead of retrying the same key. Request-bound 4xx (400/404/422/...) are

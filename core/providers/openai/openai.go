@@ -638,6 +638,13 @@ func HandleOpenAITextCompletionStreaming(
 					var bifrostErr schemas.BifrostError
 					if err := sonic.UnmarshalString(jsonData, &bifrostErr); err == nil {
 						if bifrostErr.Error != nil && bifrostErr.Error.Message != "" {
+							// In-body errors on an HTTP-200 SSE stream carry no HTTP status
+							// of their own (self-hosted OpenAI-compatible backends like
+							// vLLM/sglang rarely include an explicit status_code field in the
+							// chunk) — same #5040 pattern as the Responses-stream path.
+							if bifrostErr.StatusCode == nil {
+								bifrostErr.StatusCode = new(StatusCodeForResponsesStreamErrorCode(bifrostErr.Error.Code))
+							}
 							ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 							providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, &bifrostErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency), responseChan, logger, postHookSpanFinalizer)
 							return
@@ -1207,6 +1214,13 @@ func HandleOpenAIChatCompletionStreaming(
 				var bifrostErr schemas.BifrostError
 				if err := sonic.UnmarshalString(jsonData, &bifrostErr); err == nil {
 					if bifrostErr.Error != nil && bifrostErr.Error.Message != "" {
+						// In-body errors on an HTTP-200 SSE stream carry no HTTP status
+						// of their own (self-hosted OpenAI-compatible backends like
+						// vLLM/sglang rarely include an explicit status_code field in the
+						// chunk) — same #5040 pattern as the Responses-stream path.
+						if bifrostErr.StatusCode == nil {
+							bifrostErr.StatusCode = new(StatusCodeForResponsesStreamErrorCode(bifrostErr.Error.Code))
+						}
 						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 						providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, &bifrostErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency), responseChan, logger, postHookSpanFinalizer)
 						return
@@ -1931,6 +1945,7 @@ func HandleOpenAIResponsesStreaming(
 							bifrostErr.Error.Code = schemas.Ptr(response.Response.Error.Code)
 						}
 					}
+					bifrostErr.StatusCode = new(StatusCodeForResponsesStreamErrorCode(bifrostErr.Error.Code))
 
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, []byte(jsonData), sendBackRawRequest, sendBackRawResponse, latency), responseChan, logger, postHookSpanFinalizer)
@@ -1949,6 +1964,7 @@ func HandleOpenAIResponsesStreaming(
 						bifrostErr.Error.Message = response.Response.Error.Message
 						bifrostErr.Error.Code = &response.Response.Error.Code
 					}
+					bifrostErr.StatusCode = new(StatusCodeForResponsesStreamErrorCode(bifrostErr.Error.Code))
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, []byte(jsonData), sendBackRawRequest, sendBackRawResponse, latency), responseChan, logger, postHookSpanFinalizer)
 					return
@@ -2501,6 +2517,13 @@ func HandleOpenAISpeechStreamRequest(
 				var bifrostErr schemas.BifrostError
 				if err := sonic.UnmarshalString(jsonData, &bifrostErr); err == nil {
 					if bifrostErr.Error != nil && bifrostErr.Error.Message != "" {
+						// In-body errors on an HTTP-200 SSE stream carry no HTTP status
+						// of their own (self-hosted OpenAI-compatible backends like
+						// vLLM/sglang rarely include an explicit status_code field in the
+						// chunk) — same #5040 pattern as the Responses-stream path.
+						if bifrostErr.StatusCode == nil {
+							bifrostErr.StatusCode = new(StatusCodeForResponsesStreamErrorCode(bifrostErr.Error.Code))
+						}
 						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 						providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, &bifrostErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency), responseChan, logger, postHookSpanFinalizer)
 						return
@@ -3016,6 +3039,13 @@ func HandleOpenAITranscriptionStreamRequest(
 					var bifrostErrVal schemas.BifrostError
 					if err := sonic.UnmarshalString(jsonData, &bifrostErrVal); err == nil {
 						if bifrostErrVal.Error != nil && bifrostErrVal.Error.Message != "" {
+							// In-body errors on an HTTP-200 SSE stream carry no HTTP status
+							// of their own (self-hosted OpenAI-compatible backends like
+							// vLLM/sglang rarely include an explicit status_code field in the
+							// chunk) — same #5040 pattern as the Responses-stream path.
+							if bifrostErrVal.StatusCode == nil {
+								bifrostErrVal.StatusCode = new(StatusCodeForResponsesStreamErrorCode(bifrostErrVal.Error.Code))
+							}
 							ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 							respBody := append([]byte(nil), resp.Body()...)
 							providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, &bifrostErrVal, body.Bytes(), respBody, false, sendBackRawResponse, latency), responseChan, logger, postHookSpanFinalizer)
@@ -3448,6 +3478,13 @@ func HandleOpenAIImageGenerationStreaming(
 				var bifrostErr schemas.BifrostError
 				if err := sonic.UnmarshalString(jsonData, &bifrostErr); err == nil {
 					if bifrostErr.Error != nil && bifrostErr.Error.Message != "" {
+						// In-body errors on an HTTP-200 SSE stream carry no HTTP status
+						// of their own (self-hosted OpenAI-compatible backends like
+						// vLLM/sglang rarely include an explicit status_code field in the
+						// chunk) — same #5040 pattern as the Responses-stream path.
+						if bifrostErr.StatusCode == nil {
+							bifrostErr.StatusCode = new(StatusCodeForResponsesStreamErrorCode(bifrostErr.Error.Code))
+						}
 						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 						providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, &bifrostErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency), responseChan, logger, postHookSpanFinalizer)
 						return
@@ -4934,6 +4971,13 @@ func HandleOpenAIImageEditStreamRequest(
 				var bifrostErr schemas.BifrostError
 				if err := sonic.UnmarshalString(jsonData, &bifrostErr); err == nil {
 					if bifrostErr.Error != nil && bifrostErr.Error.Message != "" {
+						// In-body errors on an HTTP-200 SSE stream carry no HTTP status
+						// of their own (self-hosted OpenAI-compatible backends like
+						// vLLM/sglang rarely include an explicit status_code field in the
+						// chunk) — same #5040 pattern as the Responses-stream path.
+						if bifrostErr.StatusCode == nil {
+							bifrostErr.StatusCode = new(StatusCodeForResponsesStreamErrorCode(bifrostErr.Error.Code))
+						}
 						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 						providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, &bifrostErr, nil, nil, sendBackRawRequest, sendBackRawResponse, latency), responseChan, logger, postHookSpanFinalizer)
 						return
