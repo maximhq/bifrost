@@ -683,6 +683,15 @@ type ConfigStore interface {
 	UpdateWebhookEndpoint(ctx context.Context, endpoint *tables.TableWebhookEndpoint) error
 	DeleteWebhookEndpoint(ctx context.Context, id string) error
 	RotateWebhookEndpointSecret(ctx context.Context, id string) (*tables.TableWebhookEndpoint, error)
+	RecordWebhookEndpointSuccess(ctx context.Context, id string) error
+	RecordWebhookEndpointFailure(ctx context.Context, id string) (int, error)
+
+	// Webhook Jobs - in-flight webhook delivery work queue
+	CreateWebhookJob(ctx context.Context, job *tables.TableWebhookJob) error
+	ListDueWebhookJobs(ctx context.Context, limit int) ([]tables.TableWebhookJob, error)
+	ClaimWebhookJob(ctx context.Context, id, runnerID string, leaseUntil time.Time) (bool, error)
+	RescheduleWebhookJob(ctx context.Context, id, runnerID string, leaseUntil, nextAttemptAt time.Time) error
+	DeleteWebhookJob(ctx context.Context, id, runnerID string, leaseUntil time.Time) error
 
 	// DB returns the underlying database connection.
 	DB() *gorm.DB

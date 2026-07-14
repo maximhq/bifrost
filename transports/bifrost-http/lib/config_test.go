@@ -1622,6 +1622,38 @@ func (m *MockConfigStore) RotateWebhookEndpointSecret(ctx context.Context, id st
 	return nil, configstore.ErrNotFound
 }
 
+func (m *MockConfigStore) RecordWebhookEndpointSuccess(ctx context.Context, id string) error {
+	return nil
+}
+
+func (m *MockConfigStore) RecordWebhookEndpointFailure(ctx context.Context, id string) (int, error) {
+	return 0, nil
+}
+
+func (m *MockConfigStore) DisableWebhookEndpoint(ctx context.Context, id string) error {
+	return nil
+}
+
+func (m *MockConfigStore) CreateWebhookJob(ctx context.Context, job *tables.TableWebhookJob) error {
+	return nil
+}
+
+func (m *MockConfigStore) ListDueWebhookJobs(ctx context.Context, limit int) ([]tables.TableWebhookJob, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) ClaimWebhookJob(ctx context.Context, id, runnerID string, leaseUntil time.Time) (bool, error) {
+	return false, nil
+}
+
+func (m *MockConfigStore) RescheduleWebhookJob(ctx context.Context, id, runnerID string, leaseUntil, nextAttemptAt time.Time) error {
+	return nil
+}
+
+func (m *MockConfigStore) DeleteWebhookJob(ctx context.Context, id, runnerID string, leaseUntil time.Time) error {
+	return nil
+}
+
 func TestMergeGovernanceConfig_SyncsComplexityAnalyzerConfig(t *testing.T) {
 	initTestLogger()
 
