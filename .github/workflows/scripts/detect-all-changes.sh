@@ -346,6 +346,95 @@ if [ "$DOCKER_TAG_EXISTS" = "false" ]; then
 fi
 
 
+# Validate that every bifrost module package imported by transports exists in
+# the tag pinned by its version file. `go mod tidy` silently falls back to
+# @latest when the pinned release lacks an imported package, so catch
+# version-file drift here with a clear error instead of mid-release.
+if [ "$BIFROST_HTTP_NEEDS_RELEASE" = "true" ] || [ "$DOCKER_NEEDS_RELEASE" = "true" ]; then
+  echo ""
+  echo "🔒 Validating transports imports against pinned version tags..."
+  IMPORT_VALIDATION_FAILED="false"
+  while IFS= read -r pkg; do
+    subpath="${pkg#github.com/maximhq/bifrost/}"
+    top="${subpath%%/*}"
+    case "$top" in
+      core)
+        # Skip modules being released in this run - their tag is cut from HEAD
+        [ "$CORE_NEEDS_RELEASE" = "true" ] && continue
+        pinned_tag="core/v${CORE_VERSION}"
+        bump_hint="core/version"
+        ;;
+      framework)
+        [ "$FRAMEWORK_NEEDS_RELEASE" = "true" ] && continue
+        pinned_tag="framework/v${FRAMEWORK_VERSION}"
+        bump_hint="framework/version"
+        ;;
+      plugins)
+        plugin_name=$(echo "$subpath" | cut -d'/' -f2)
+        [ -f "plugins/${plugin_name}/version" ] || continue
+        plugin_skip="false"
+        for changed_plugin in ${PLUGIN_CHANGES[@]+"${PLUGIN_CHANGES[@]}"}; do
+          [ "$changed_plugin" = "$plugin_name" ] && plugin_skip="true"
+        done
+        [ "$plugin_skip" = "true" ] && continue
+        pinned_tag="plugins/${plugin_name}/v$(tr -d '\n\r' < "plugins/${plugin_name}/version")"
+        bump_hint="plugins/${plugin_name}/version"
+        ;;
+      *)
+        continue
+        ;;
+    esac
+    # Tag missing entirely is handled by the release-needed checks above
+    git rev-parse --verify "$pinned_tag" >/dev/null 2>&1 || continue
+    if ! git cat-file -e "${pinned_tag}:${subpath}" 2>/dev/null; then
+      echo "::error::transports imports ${pkg}, but pinned tag ${pinned_tag} does not contain ${subpath}. Bump ${bump_hint} so a release containing it is cut before bifrost-http."
+      IMPORT_VALIDATION_FAILED="true"
+    fi
+  done < <(grep -rhoE '"github\.com/maximhq/bifrost/(core|framework|plugins)[^"]*"' transports --include="*.go" | tr -d '"' | sort -u)
+  # Verify every pinned plugin release was built against the pinned core and
+  # framework versions. go mod edit -require is only a minimum: a plugin tag
+  # requiring a higher core/framework silently wins MVS and drags transports
+  # off the version-file versions.
+  echo "🔒 Validating pinned plugin releases against pinned core/framework..."
+  for plugin_dir in plugins/*/; do
+    plugin_name=$(basename "$plugin_dir")
+    [ -f "${plugin_dir}version" ] || continue
+    grep -q "github.com/maximhq/bifrost/plugins/${plugin_name} " transports/go.mod || continue
+
+    plugin_skip="false"
+    for changed_plugin in ${PLUGIN_CHANGES[@]+"${PLUGIN_CHANGES[@]}"}; do
+      [ "$changed_plugin" = "$plugin_name" ] && plugin_skip="true"
+    done
+    # Plugins re-released this run are rebuilt against the version files
+    [ "$plugin_skip" = "true" ] && continue
+
+    plugin_version=$(tr -d '\n\r' < "${plugin_dir}version")
+    plugin_tag="plugins/${plugin_name}/v${plugin_version}"
+    git rev-parse --verify "$plugin_tag" >/dev/null 2>&1 || continue
+    plugin_gomod=$(git show "${plugin_tag}:plugins/${plugin_name}/go.mod" 2>/dev/null) || continue
+
+    for dep in core framework; do
+      if [ "$dep" = "core" ]; then
+        pinned_dep_version="v${CORE_VERSION}"
+      else
+        pinned_dep_version="v${FRAMEWORK_VERSION}"
+      fi
+      required_dep_version=$(echo "$plugin_gomod" | grep -oE "github\.com/maximhq/bifrost/${dep} v[^ /]+" | awk '{print $2}' | head -1)
+      [ -n "$required_dep_version" ] || continue
+      if [ "$required_dep_version" != "$pinned_dep_version" ] && \
+         [ "$(printf '%s\n' "$pinned_dep_version" "$required_dep_version" | sort -V | tail -1)" = "$required_dep_version" ]; then
+        echo "::error::${plugin_tag} requires ${dep} ${required_dep_version}, which is higher than pinned ${dep} ${pinned_dep_version} from the version file. MVS will override the pin - bump plugins/${plugin_name}/version so it is re-released against ${dep} ${pinned_dep_version}."
+        IMPORT_VALIDATION_FAILED="true"
+      fi
+    done
+  done
+
+  if [ "$IMPORT_VALIDATION_FAILED" = "true" ]; then
+    exit 1
+  fi
+  echo "   ✅ All transports imports exist in pinned version tags"
+fi
+
 # Convert plugin array to JSON (compact format)
 if [ ${#PLUGIN_CHANGES[@]} -eq 0 ]; then
   CHANGED_PLUGINS_JSON="[]"

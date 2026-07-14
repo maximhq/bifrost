@@ -60,7 +60,7 @@ while IFS= read -r plugin_line; do
     echo "   📦 $plugin_name: $current_version (from transport go.mod)"
     PLUGIN_VERSIONS["$plugin_name"]="$current_version"
   fi
-done < <(grep "github.com/maximhq/bifrost/plugins/" go.mod)
+done < <(grep "github.com/maximhq/bifrost/plugins/" go.mod | sed 's|//.*||')
 cd ..
 
 echo "🔧 Using versions:"
@@ -103,6 +103,26 @@ go mod edit -require="github.com/maximhq/bifrost/framework@$FRAMEWORK_VERSION"
 # Re-normalize before tidy in case any edit reintroduced a toolchain line
 go mod edit -go=1.26.4 -toolchain=none
 go mod tidy
+
+# go mod tidy silently upgrades a pinned module to @latest when the pinned
+# release lacks an imported package - assert every version-file pin survived.
+echo "🔒 Verifying pinned versions survived go mod tidy..."
+verify_pinned_version() {
+  local module_path="$1" expected="$2" actual
+  actual=$(go list -m -f '{{.Version}}' "$module_path" 2>/dev/null || echo "<missing>")
+  if [ "$actual" != "$expected" ]; then
+    echo "::error::$module_path resolved to $actual, expected $expected from version file. go mod tidy escaped the pin - the pinned release is likely missing a package imported by transports."
+    exit 1
+  fi
+}
+verify_pinned_version "github.com/maximhq/bifrost/core" "$CORE_VERSION"
+verify_pinned_version "github.com/maximhq/bifrost/framework" "$FRAMEWORK_VERSION"
+for plugin_name in "${!PLUGIN_VERSIONS[@]}"; do
+  if grep -q "github.com/maximhq/bifrost/plugins/$plugin_name " go.mod; then
+    verify_pinned_version "github.com/maximhq/bifrost/plugins/$plugin_name" "${PLUGIN_VERSIONS[$plugin_name]}"
+  fi
+done
+echo "✅ All pinned versions intact"
 
 cd ..
 
