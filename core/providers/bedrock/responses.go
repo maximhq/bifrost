@@ -1791,8 +1791,12 @@ func ToBedrockConverseStreamResponse(bifrostResp *schemas.BifrostResponsesStream
 	case schemas.ResponsesStreamResponseTypeCompleted:
 		// Message stop - always set stopReason
 		stopReason := "end_turn"
-		if bifrostResp.Response != nil && bifrostResp.Response.IncompleteDetails != nil {
-			stopReason = bifrostResp.Response.IncompleteDetails.Reason
+		if bifrostResp.Response != nil {
+			if bifrostResp.Response.StopReason != nil {
+				stopReason = convertBifrostToBedrockStopReason(*bifrostResp.Response.StopReason)
+			} else if bifrostResp.Response.IncompleteDetails != nil {
+				stopReason = bifrostResp.Response.IncompleteDetails.Reason
+			}
 		}
 		event.StopReason = &stopReason
 
