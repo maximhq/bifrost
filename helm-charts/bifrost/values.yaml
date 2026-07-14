@@ -1166,6 +1166,7 @@ bifrost:
   # Rendered directly as top-level `alerting` in config.json.
   # alerting:
   #   history_retention_days: 365   # Days to retain alert history (0 = no pruning)
+  #   evaluation_interval_seconds: 60 # Use 5-10s for one-minute reset windows
   #   webhook_network:
   #     allow_http: false            # Allow http (not just https) webhook URLs
   #     allow_private_network: false # Allow webhooks targeting private/loopback addresses

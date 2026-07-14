@@ -3306,6 +3306,12 @@
               "default": 365,
               "description": "Days to retain alert history (0 = no pruning)"
             },
+            "evaluation_interval_seconds": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 60,
+              "description": "Interval in seconds between alert rule evaluations; use 5 to 10 seconds for one-minute governance reset windows"
+            },
             "webhook_network": {
               "type": "object",
               "description": "Outbound URL validation controls for webhook-based alert channels",
