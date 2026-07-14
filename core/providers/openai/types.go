@@ -312,6 +312,13 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 		processedTools = req.Tools
 	}
 
+	// Normalize an empty tool slice to nil so "tools" is omitted entirely rather
+	// than serialized as "tools": []. Strict OpenAI-compatible backends (e.g.
+	// vLLM >= 0.20) reject an empty tools array with a 400. See issue #5179.
+	if len(processedTools) == 0 {
+		processedTools = nil
+	}
+
 	// Aux struct:
 	// - Alias embeds all original fields
 	// - Messages shadows the embedded Messages field to use processed messages

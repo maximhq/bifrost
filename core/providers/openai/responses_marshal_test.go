@@ -1095,3 +1095,38 @@ func TestOpenAICompactionRequest_MarshalJSON_Input(t *testing.T) {
 		})
 	}
 }
+
+// TestOpenAIResponsesRequest_MarshalJSON_AllToolsFilteredOmitsToolsField locks in
+// the fix for issue #5179: when every tool is dropped by filterUnsupportedTools
+// (here an x_search tool on a non-xAI provider), the wire must omit "tools"
+// entirely rather than serialize it as "tools": []. Strict OpenAI-compatible
+// backends (e.g. vLLM >= 0.20) reject an empty tools array with a 400.
+func TestOpenAIResponsesRequest_MarshalJSON_AllToolsFilteredOmitsToolsField(t *testing.T) {
+	ctx := &schemas.BifrostContext{}
+	bifrostReq := &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o",
+		Input: []schemas.ResponsesMessage{
+			{
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+			},
+		},
+		Params: &schemas.ResponsesParameters{
+			// x_search is only supported for xAI; on OpenAI filterUnsupportedTools
+			// drops it, leaving zero tools after filtering.
+			Tools: []schemas.ResponsesTool{
+				{Type: schemas.ResponsesToolTypeXSearch, Name: schemas.Ptr("x_search")},
+			},
+		},
+	}
+
+	jsonBytes, err := ToOpenAIResponsesRequest(ctx, bifrostReq).MarshalJSON()
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	raw := string(jsonBytes)
+	if strings.Contains(raw, `"tools"`) {
+		t.Errorf("wire must omit tools when all tools are filtered out; raw=%s", raw)
+	}
+}

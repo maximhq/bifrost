@@ -424,7 +424,14 @@ func (resp *OpenAIResponsesRequest) filterUnsupportedTools() {
 			}
 		}
 	}
-	resp.Tools = filteredTools
+	// Normalize an empty result to nil so the field is omitted entirely rather
+	// than serialized as "tools": []. Strict OpenAI-compatible backends (e.g.
+	// vLLM >= 0.20) reject an empty tools array with a 400. See issue #5179.
+	if len(filteredTools) == 0 {
+		resp.Tools = nil
+	} else {
+		resp.Tools = filteredTools
+	}
 
 	// If every tool was stripped, a leftover tool_choice would cause a 400 from
 	// the upstream ("tool_choice must be specified with tools").
