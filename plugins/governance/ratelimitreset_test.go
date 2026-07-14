@@ -213,6 +213,57 @@ func TestBudgetResetConvergesForCalendarAlignedSubDayDuration(t *testing.T) {
 	}
 }
 
+// TestNonPositiveDurationsAreNeverDue covers the second spin route of issue
+// #4851: "0s" and negative durations parse successfully, and on the rolling
+// path now.Sub(lastReset) >= duration is then true on every check, making the
+// reset target perpetually due. Such durations must be treated as invalid
+// (never due), and BumpRateLimitUsage/BumpBudgetUsage must still terminate
+// and apply the increment.
+func TestNonPositiveDurationsAreNeverDue(t *testing.T) {
+	ctx := context.Background()
+	for _, duration := range []string{"0s", "-5m"} {
+		t.Run(duration, func(t *testing.T) {
+			store := newStandaloneStoreForResetBenchmark()
+			d := duration
+
+			rateLimitID := "non-positive-duration-rate-limit-" + duration
+			rateLimit := buildRateLimit(rateLimitID, 1_000_000, 1_000_000)
+			rateLimit.TokenResetDuration = &d
+			rateLimit.RequestResetDuration = &d
+			rateLimit.TokenLastReset = time.Now().Add(-time.Hour)
+			rateLimit.RequestLastReset = time.Now().Add(-time.Hour)
+			store.rateLimits.Store(rateLimitID, rateLimit)
+
+			tokenTarget, requestTarget := store.rateLimitResetTargets(rateLimit, time.Now())
+			if tokenTarget != nil || requestTarget != nil {
+				t.Fatalf("non-positive duration %q must never be due (token=%v request=%v): a due target here spins BumpRateLimitUsage forever (issue #4851)", duration, tokenTarget, requestTarget)
+			}
+			if err := store.BumpRateLimitUsage(ctx, rateLimitID, 7, true, true); err != nil {
+				t.Fatal(err)
+			}
+			bumped := store.LoadRateLimit(ctx, rateLimitID)
+			if bumped.TokenCurrentUsage != 7 || bumped.RequestCurrentUsage != 1 {
+				t.Fatalf("expected usage 7/1 after bump, got %d/%d", bumped.TokenCurrentUsage, bumped.RequestCurrentUsage)
+			}
+
+			budgetID := "non-positive-duration-budget-" + duration
+			budget := buildBudgetWithUsage(budgetID, 100, 5, duration)
+			budget.LastReset = time.Now().Add(-time.Hour)
+			store.budgets.Store(budgetID, budget)
+
+			if target := store.budgetResetTarget(budget, time.Now()); target != nil {
+				t.Fatalf("non-positive duration %q must never be due (%v): a due target here spins BumpBudgetUsage forever (issue #4851)", duration, target)
+			}
+			if err := store.BumpBudgetUsage(ctx, budgetID, 1.5); err != nil {
+				t.Fatal(err)
+			}
+			if bumpedBudget := store.LoadBudget(ctx, budgetID); bumpedBudget.CurrentUsage != 6.5 {
+				t.Fatalf("expected budget usage 6.5 after bump, got %f", bumpedBudget.CurrentUsage)
+			}
+		})
+	}
+}
+
 // TestBumpRateLimitUsageCalendarAlignedSubDayDurationTerminates guards the
 // same defect end to end: BumpRateLimitUsage must return and apply the
 // increment. On microsecond-resolution clocks (darwin) the broken loop can
