@@ -154,6 +154,137 @@ func TestBackgroundRateLimitResetRefreshesReferences(t *testing.T) {
 	}
 }
 
+// TestRateLimitResetConvergesForCalendarAlignedSubDayDuration reproduces
+// issue #4851: an owner with calendar_aligned=true stamps IsCalendarAligned
+// onto a rate limit whose reset durations are sub-day ("1m"), for which
+// GetCalendarPeriodStart has no calendar boundary and returns now. The reset
+// target is then "due" again immediately after every reset, so the
+// reset-then-recheck loop in BumpRateLimitUsage never reaches its exit
+// condition and pins one postHookWorker goroutine per request at 100% CPU
+// on nanosecond-resolution clocks (Linux). This test asserts the exit
+// condition directly, which is deterministic on every platform: after one
+// reset, the reset target must no longer be due.
+func TestRateLimitResetConvergesForCalendarAlignedSubDayDuration(t *testing.T) {
+	ctx := context.Background()
+	store := newStandaloneStoreForResetBenchmark()
+	rateLimitID := "calendar-aligned-subday-converge-rate-limit"
+	rateLimit := buildRateLimit(rateLimitID, 1_000_000, 1_000_000) // "1m" durations
+	rateLimit.IsCalendarAligned = true
+	rateLimit.TokenLastReset = time.Now().Add(-2 * time.Minute)
+	rateLimit.RequestLastReset = time.Now().Add(-2 * time.Minute)
+	store.rateLimits.Store(rateLimitID, rateLimit)
+
+	tokenTarget, requestTarget := store.rateLimitResetTargets(rateLimit, time.Now())
+	if tokenTarget == nil && requestTarget == nil {
+		t.Fatal("expected expired rate limit to be due for reset before the first reset")
+	}
+	if reset := store.ResetExpiredRateLimitsInMemory(ctx, false, rateLimitID); len(reset) != 1 {
+		t.Fatalf("expected one rate limit reset, got %d", len(reset))
+	}
+
+	tokenTarget, requestTarget = store.rateLimitResetTargets(store.LoadRateLimit(ctx, rateLimitID), time.Now())
+	if tokenTarget != nil || requestTarget != nil {
+		t.Fatalf("reset target still due immediately after reset (token=%v request=%v): BumpRateLimitUsage would spin forever (issue #4851)", tokenTarget, requestTarget)
+	}
+}
+
+// TestBudgetResetConvergesForCalendarAlignedSubDayDuration covers the same
+// defect on the budget path: a calendar-aligned owner with a sub-day budget
+// reset duration ("5h") must not be due for reset again immediately after
+// resetting, or BumpBudgetUsage spins forever.
+func TestBudgetResetConvergesForCalendarAlignedSubDayDuration(t *testing.T) {
+	ctx := context.Background()
+	store := newStandaloneStoreForResetBenchmark()
+	budgetID := "calendar-aligned-subday-converge-budget"
+	budget := buildBudgetWithUsage(budgetID, 100, 42, "5h")
+	budget.IsCalendarAligned = true
+	budget.LastReset = time.Now().Add(-6 * time.Hour)
+	store.budgets.Store(budgetID, budget)
+
+	if store.budgetResetTarget(budget, time.Now()) == nil {
+		t.Fatal("expected expired budget to be due for reset before the first reset")
+	}
+	if reset := store.ResetExpiredBudgetsInMemory(ctx, false, budgetID); len(reset) != 1 {
+		t.Fatalf("expected one budget reset, got %d", len(reset))
+	}
+
+	if target := store.budgetResetTarget(store.LoadBudget(ctx, budgetID), time.Now()); target != nil {
+		t.Fatalf("reset target still due immediately after reset (%v): BumpBudgetUsage would spin forever (issue #4851)", target)
+	}
+}
+
+// TestBumpRateLimitUsageCalendarAlignedSubDayDurationTerminates guards the
+// same defect end to end: BumpRateLimitUsage must return and apply the
+// increment. On microsecond-resolution clocks (darwin) the broken loop can
+// exit by luck when two consecutive time.Now() calls land on the same wall
+// tick, so the convergence test above is the deterministic reproduction;
+// this one catches the hang on nanosecond-resolution clocks (Linux CI).
+func TestBumpRateLimitUsageCalendarAlignedSubDayDurationTerminates(t *testing.T) {
+	ctx := context.Background()
+	store := newStandaloneStoreForResetBenchmark()
+	rateLimitID := "calendar-aligned-subday-rate-limit"
+	rateLimit := buildRateLimit(rateLimitID, 1_000_000, 1_000_000) // "1m" durations
+	rateLimit.IsCalendarAligned = true
+	store.rateLimits.Store(rateLimitID, rateLimit)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- store.BumpRateLimitUsage(ctx, rateLimitID, 10, true, true)
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("BumpRateLimitUsage did not return within 5s: infinite request-time reset loop on calendar-aligned sub-day duration (issue #4851)")
+	}
+
+	bumped := store.LoadRateLimit(ctx, rateLimitID)
+	if bumped == nil {
+		t.Fatal("expected rate limit to remain loaded")
+	}
+	if bumped.TokenCurrentUsage != 10 {
+		t.Fatalf("expected token usage 10 after bump, got %d", bumped.TokenCurrentUsage)
+	}
+	if bumped.RequestCurrentUsage != 1 {
+		t.Fatalf("expected request usage 1 after bump, got %d", bumped.RequestCurrentUsage)
+	}
+}
+
+// TestBumpBudgetUsageCalendarAlignedSubDayDurationTerminates covers the same
+// defect on the budget path: calendar-aligned owner with a sub-day budget
+// reset duration ("5h") must not spin BumpBudgetUsage forever.
+func TestBumpBudgetUsageCalendarAlignedSubDayDurationTerminates(t *testing.T) {
+	ctx := context.Background()
+	store := newStandaloneStoreForResetBenchmark()
+	budgetID := "calendar-aligned-subday-budget"
+	budget := buildBudgetWithUsage(budgetID, 100, 0, "5h")
+	budget.IsCalendarAligned = true
+	store.budgets.Store(budgetID, budget)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- store.BumpBudgetUsage(ctx, budgetID, 2.5)
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("BumpBudgetUsage did not return within 5s: infinite request-time reset loop on calendar-aligned sub-day duration (issue #4851)")
+	}
+
+	bumped := store.LoadBudget(ctx, budgetID)
+	if bumped == nil {
+		t.Fatal("expected budget to remain loaded")
+	}
+	if bumped.CurrentUsage != 2.5 {
+		t.Fatalf("expected budget usage 2.5 after bump, got %f", bumped.CurrentUsage)
+	}
+}
+
 // newStandaloneStoreForResetBenchmark creates an in-memory-only store so benchmark
 // profiles isolate sync.Map/reference-update CPU rather than DB IO.
 func newStandaloneStoreForResetBenchmark() *LocalGovernanceStore {

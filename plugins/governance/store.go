@@ -1785,7 +1785,8 @@ func (gs *LocalGovernanceStore) budgetResetTarget(budget *configstoreTables.Tabl
 	if budget == nil || budget.ResetDuration == "" {
 		return nil
 	}
-	if budget.IsCalendarAligned {
+	// Sub-day durations have no calendar boundary; see rateLimitResetTarget.
+	if budget.IsCalendarAligned && configstoreTables.IsCalendarAlignableDuration(budget.ResetDuration) {
 		currentPeriodStart := configstoreTables.GetCalendarPeriodStart(budget.ResetDuration, now)
 		if currentPeriodStart.After(budget.LastReset) {
 			return &currentPeriodStart
@@ -1862,11 +1863,16 @@ func (gs *LocalGovernanceStore) ResetExpiredBudgetsInMemory(ctx context.Context,
 }
 
 // rateLimitResetTarget returns the LastReset value to write when a rate-limit counter is expired.
+// Calendar alignment only applies to durations with a calendar boundary (d/w/M/Y);
+// sub-day durations fall back to rolling-window semantics even when the owner is
+// calendar-aligned, mirroring the handler-side snap logic. Without this guard
+// GetCalendarPeriodStart returns now for sub-day durations, making the reset
+// target perpetually due and spinning BumpRateLimitUsage forever (issue #4851).
 func (gs *LocalGovernanceStore) rateLimitResetTarget(resetDuration *string, calendarAligned bool, lastReset time.Time, now time.Time) *time.Time {
 	if resetDuration == nil {
 		return nil
 	}
-	if calendarAligned {
+	if calendarAligned && configstoreTables.IsCalendarAlignableDuration(*resetDuration) {
 		period := configstoreTables.GetCalendarPeriodStart(*resetDuration, now)
 		if period.After(lastReset) {
 			return &period
