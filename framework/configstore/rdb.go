@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -7375,4 +7376,170 @@ func (s *RDBConfigStore) GetOAuth2SessionByID(ctx context.Context, id string) (*
 		return nil, fmt.Errorf("get oauth2 session: %w", err)
 	}
 	return &rt, nil
+}
+
+// generateWebhookSecret returns a new signing secret in the Standard Webhooks
+// format: "whsec_" + base64 of 32 random bytes.
+func generateWebhookSecret() (string, error) {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("failed to generate webhook secret: %w", err)
+	}
+	return "whsec_" + base64.StdEncoding.EncodeToString(buf), nil
+}
+
+// GetWebhookEndpoints returns all registered webhook endpoints.
+func (s *RDBConfigStore) GetWebhookEndpoints(ctx context.Context) ([]tables.TableWebhookEndpoint, error) {
+	var endpoints []tables.TableWebhookEndpoint
+	if err := s.DB().WithContext(ctx).Order("created_at ASC").Find(&endpoints).Error; err != nil {
+		return nil, err
+	}
+	return endpoints, nil
+}
+
+// GetWebhookEndpointByID retrieves a webhook endpoint by its ID.
+func (s *RDBConfigStore) GetWebhookEndpointByID(ctx context.Context, id string) (*tables.TableWebhookEndpoint, error) {
+	var endpoint tables.TableWebhookEndpoint
+	if err := s.DB().WithContext(ctx).Where("id = ?", id).First(&endpoint).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return &endpoint, nil
+}
+
+// GetWebhookEndpointByName retrieves a webhook endpoint by its unique name.
+func (s *RDBConfigStore) GetWebhookEndpointByName(ctx context.Context, name string) (*tables.TableWebhookEndpoint, error) {
+	var endpoint tables.TableWebhookEndpoint
+	if err := s.DB().WithContext(ctx).Where("name = ?", name).First(&endpoint).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return &endpoint, nil
+}
+
+// CreateWebhookEndpoint persists a new webhook endpoint. Callers are expected
+// to run endpoint.Validate() on user-supplied input first. When no signing
+// secret is supplied one is generated server-side; in both cases
+// endpoint.Secret holds the plaintext value after return so the caller can
+// surface it exactly once — reads through the store return it encrypted-at-rest
+// and API responses never include it.
+func (s *RDBConfigStore) CreateWebhookEndpoint(ctx context.Context, endpoint *tables.TableWebhookEndpoint) error {
+	if endpoint == nil {
+		return fmt.Errorf("webhook endpoint cannot be nil")
+	}
+	if endpoint.ID == "" {
+		endpoint.ID = uuid.NewString()
+	}
+	if endpoint.Secret != nil && endpoint.Secret.IsFromSecret() && endpoint.Secret.GetValue() == "" {
+		// The admin API never accepts a secret (always server-generated); the
+		// only caller-supplied secret is a config.json literal or env/vault
+		// reference. A reference that resolved to nothing must never be
+		// persisted — deliveries would sign with an empty key — so fail here
+		// and let config load surface it as a warn-and-skip.
+		return fmt.Errorf("webhook secret reference did not resolve to a value")
+	}
+	if endpoint.Secret == nil || endpoint.Secret.GetValue() == "" {
+		secret, err := generateWebhookSecret()
+		if err != nil {
+			return err
+		}
+		endpoint.Secret = &schemas.SecretVar{Val: secret}
+	}
+	// BeforeSave encrypts Secret/HeadersJSON and stamps EncryptionStatus in
+	// place. Persist a shallow copy so those mutations never land on the
+	// caller's struct: the caller keeps the plaintext Secret to surface once,
+	// and a failed create leaves nothing half-encrypted for a retry to
+	// re-encrypt. Reference fields (Secret pointer, Headers map) are only ever
+	// reassigned by the hook, never mutated through, so the shallow copy is safe.
+	persist := *endpoint
+	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var existing tables.TableWebhookEndpoint
+		if err := tx.Where("name = ?", endpoint.Name).First(&existing).Error; err == nil {
+			return fmt.Errorf("webhook endpoint with name %q %w", endpoint.Name, ErrAlreadyExists)
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+		return s.parseGormError(tx.Create(&persist).Error)
+	})
+}
+
+// UpdateWebhookEndpoint updates an endpoint's caller-editable fields. Callers
+// are expected to run endpoint.Validate() on user-supplied input first.
+// Signing secrets are never modified here — use RotateWebhookEndpointSecret.
+// Changing the URL resets the consecutive-failure counter; re-enabling a
+// disabled endpoint does not — only a successful delivery clears the streak.
+func (s *RDBConfigStore) UpdateWebhookEndpoint(ctx context.Context, endpoint *tables.TableWebhookEndpoint) error {
+	if endpoint == nil {
+		return fmt.Errorf("webhook endpoint cannot be nil")
+	}
+	return s.DB().Transaction(func(tx *gorm.DB) error {
+		var existing tables.TableWebhookEndpoint
+		if err := dbForUpdate(tx.WithContext(ctx)).Where("id = ?", endpoint.ID).First(&existing).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrNotFound
+			}
+			return err
+		}
+		if endpoint.URL != existing.URL {
+			existing.ConsecutiveFailures = 0
+		}
+		existing.Name = endpoint.Name
+		existing.URL = endpoint.URL
+		existing.Events = endpoint.Events
+		existing.Headers = endpoint.Headers
+		existing.IncludeResponse = endpoint.IncludeResponse
+		existing.AllowPrivateNetwork = endpoint.AllowPrivateNetwork
+		existing.Disabled = endpoint.Disabled
+		existing.MaxRetries = endpoint.MaxRetries
+		existing.RetryBackoffInitialSeconds = endpoint.RetryBackoffInitialSeconds
+		existing.RetryBackoffMaxSeconds = endpoint.RetryBackoffMaxSeconds
+		existing.AttemptTimeoutSeconds = endpoint.AttemptTimeoutSeconds
+		existing.MaxResponsePayloadKBs = endpoint.MaxResponsePayloadKBs
+		existing.MaxConcurrentDeliveries = endpoint.MaxConcurrentDeliveries
+		existing.ConfigHash = endpoint.ConfigHash
+		return s.parseGormError(tx.WithContext(ctx).Save(&existing).Error)
+	})
+}
+
+// DeleteWebhookEndpoint removes a webhook endpoint by ID.
+func (s *RDBConfigStore) DeleteWebhookEndpoint(ctx context.Context, id string) error {
+	result := s.DB().WithContext(ctx).Where("id = ?", id).Delete(&tables.TableWebhookEndpoint{})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// RotateWebhookEndpointSecret replaces the endpoint's signing secret with a
+// freshly generated one, effective immediately — deliveries attempted after
+// the rotation sign only with the new secret. The returned endpoint carries
+// the new secret in plaintext so the caller can surface it exactly once.
+func (s *RDBConfigStore) RotateWebhookEndpointSecret(ctx context.Context, id string) (*tables.TableWebhookEndpoint, error) {
+	newSecret, err := generateWebhookSecret()
+	if err != nil {
+		return nil, err
+	}
+	var rotated tables.TableWebhookEndpoint
+	err = s.DB().Transaction(func(tx *gorm.DB) error {
+		if err := dbForUpdate(tx.WithContext(ctx)).Where("id = ?", id).First(&rotated).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrNotFound
+			}
+			return err
+		}
+		rotated.Secret = &schemas.SecretVar{Val: newSecret}
+		return s.parseGormError(tx.WithContext(ctx).Save(&rotated).Error)
+	})
+	if err != nil {
+		return nil, err
+	}
+	rotated.Secret = &schemas.SecretVar{Val: newSecret}
+	return &rotated, nil
 }

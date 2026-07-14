@@ -675,6 +675,15 @@ type ConfigStore interface {
 	GetInFlightSidekiqJobByKind(ctx context.Context, kind string) (*tables.TableSidekiqJob, error)
 	MarkStaleSidekiqJobsFailed(ctx context.Context, staleBefore time.Time) (int64, error)
 
+	// Webhook Endpoints
+	GetWebhookEndpoints(ctx context.Context) ([]tables.TableWebhookEndpoint, error)
+	GetWebhookEndpointByID(ctx context.Context, id string) (*tables.TableWebhookEndpoint, error)
+	GetWebhookEndpointByName(ctx context.Context, name string) (*tables.TableWebhookEndpoint, error)
+	CreateWebhookEndpoint(ctx context.Context, endpoint *tables.TableWebhookEndpoint) error
+	UpdateWebhookEndpoint(ctx context.Context, endpoint *tables.TableWebhookEndpoint) error
+	DeleteWebhookEndpoint(ctx context.Context, id string) error
+	RotateWebhookEndpointSecret(ctx context.Context, id string) (*tables.TableWebhookEndpoint, error)
+
 	// DB returns the underlying database connection.
 	DB() *gorm.DB
 
