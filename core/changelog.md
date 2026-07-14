@@ -1,6 +1,5 @@
+- fix: finalize GigaChat Chat Completions and Responses streams across normal and large-response passthrough paths [@krakenalt](https://github.com/krakenalt)
 - fix: cache GigaChat TLS clients without hot-path certificate file reads [@krakenalt](https://github.com/krakenalt)
-- fix: finalize GigaChat passthrough response stream lifecycle [@krakenalt](https://github.com/krakenalt)
-- fix: finalize GigaChat response streams through stream gate [@krakenalt](https://github.com/krakenalt)
 - feat: add Sarvam AI provider with chat, text-to-speech, and speech-to-text support (thanks [@Purvi09](https://github.com/Purvi09)!)
 - feat: add ElevenLabs sound effects (text-to-sound) support (thanks [@SecretSun](https://github.com/SecretSun)!)
 - feat: add `ProjectID` to Bedrock and Bedrock Mantle key configs with per-alias overrides for Bedrock, Bedrock Mantle, and Vertex

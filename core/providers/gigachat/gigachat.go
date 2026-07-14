@@ -206,7 +206,7 @@ func (provider *GigaChatProvider) chatCompletionStream(
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 	providerName := provider.GetProviderKey()
 
-	return openaiProvider.HandleOpenAIChatCompletionStreaming(
+	responseChan, bifrostErr := openaiProvider.HandleOpenAIChatCompletionStreaming(
 		ctx,
 		client,
 		buildGigaChatRequestURL(ctx, resolveBaseURL(key, provider.networkConfig), gigaChatAPIVersionV1, "/chat/completions", provider.customProviderConfig, schemas.ChatCompletionStreamRequest),
@@ -231,6 +231,16 @@ func (provider *GigaChatProvider) chatCompletionStream(
 		provider.logger,
 		postHookSpanFinalizer,
 	)
+	if bifrostErr == nil {
+		if isPassthrough, _ := ctx.Value(schemas.BifrostContextKeyLargeResponseMode).(bool); isPassthrough {
+			// The OpenAI-compatible helper transfers resp ownership to the
+			// LargeResponseReader but returns before its streaming goroutine and
+			// finalizer defer are installed. Finalize the GigaChat lifecycle here;
+			// the transport still closes the reader and releases resp.
+			providerUtils.EnsureStreamFinalizerCalled(ctx, postHookSpanFinalizer)
+		}
+	}
+	return responseChan, bifrostErr
 }
 
 func ensureGigaChatContext(ctx *schemas.BifrostContext) *schemas.BifrostContext {
