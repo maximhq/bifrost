@@ -191,9 +191,8 @@ type MistralOCRPage struct {
 	Markdown   string                    `json:"markdown"`
 	Images     []MistralOCRPageImage     `json:"images,omitempty"`
 	Dimensions *MistralOCRPageDimensions `json:"dimensions,omitempty"`
-	// Populated by Mistral only when the request sets include_blocks=true.
-	// Kept opaque so provider-side schema evolution passes through untouched.
-	// Pointer so `blocks: []` (empty but present) survives round-trip.
+	// Present only when the request sets include_blocks=true; pointer so an
+	// explicitly empty `blocks: []` isn't dropped by omitempty.
 	Blocks *[]any `json:"blocks,omitempty"`
 }
 
