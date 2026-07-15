@@ -159,11 +159,15 @@ flowchart TB
 
 ## Streaming Output Guardrails
 
-When an output guardrail is used with a streaming response, Bifrost accumulates the response until the model is done generating it, then checks the full response. If the response passes, Bifrost sends it to the client. If a guardrail blocks or changes the response, Bifrost applies that result instead.
+Streaming delivery depends on what the matched output guardrails can do:
 
-This adds time before the client receives output: Bifrost waits for response generation and guardrail evaluation to finish. The added wait depends on the model's generation time and the configured guardrail profiles.
+- Detect-only and logs-only rules observe the stream without delaying client delivery.
+- Runtime redaction checks buffered text segments and releases the resulting safe text as the response is generated.
+- If any matched rule can block, Bifrost holds the complete stream until generation and guardrail evaluation finish. If `stream_replay_event_interval_ms` is positive, an allowed stream is replayed with that delay between buffered events; otherwise, it is delivered immediately. A blocked stream returns the guardrail intervention instead.
 
-Input guardrails check the request before Bifrost sends it to the LLM provider.
+Replay pacing is disabled by default. The dashboard initializes the event interval to `25` milliseconds when pacing is enabled, while `0` sends all buffered events immediately. If multiple matched block-capable rules configure different intervals, Bifrost uses the largest value. This behavior applies to streaming Chat Completions, Text Completions, and Responses API requests.
+
+Input guardrails still check the request before Bifrost sends it to the LLM provider.
 
 <Note>
   Gray Swan is a tool-call-specific exception. Text-only streams are delivered directly to the client and are not sent to Cygnal. See [Gray Swan Cygnal](/integrations/guardrails/grayswan#streaming-output-and-tool-calls) for the full behavior.
@@ -353,26 +357,28 @@ curl -X DELETE http://localhost:8080/api/guardrails/rules/1
 <Tab title="Helm">
 
 ```yaml
-guardrails_config:
-  guardrail_rules:
-    - id: 1
-      name: "Block PII in Prompts"
-      description: "Prevent PII from being sent to LLM providers"
-      enabled: true
-      cel_expression: "request.messages.exists(m, m.role == 'user')"
-      apply_to: "input"
-      sampling_rate: 100
-      timeout: 5000
-      provider_config_ids: [1, 2]
-    - id: 2
-      name: "Content Filter for Responses"
-      description: "Filter harmful content from LLM responses"
-      enabled: true
-      cel_expression: "true"
-      apply_to: "output"
-      sampling_rate: 100
-      timeout: 3000
-      provider_config_ids: [2]
+bifrost:
+  guardrails:
+    rules:
+      - id: 1
+        name: "Block PII in Prompts"
+        description: "Prevent PII from being sent to LLM providers"
+        enabled: true
+        cel_expression: "request.messages.exists(m, m.role == 'user')"
+        apply_to: "input"
+        sampling_rate: 100
+        timeout: 5000
+        provider_config_ids: [1, 2]
+      - id: 2
+        name: "Content Filter for Responses"
+        description: "Filter harmful content from LLM responses"
+        enabled: true
+        cel_expression: "true"
+        apply_to: "output"
+        sampling_rate: 100
+        timeout: 3000
+        stream_replay_event_interval_ms: 25
+        provider_config_ids: [2]
 ```
 
 </Tab>
@@ -664,96 +670,97 @@ curl -X DELETE http://localhost:8080/api/guardrails/bedrock \
 <Tab title="Helm">
 
 ```yaml
-guardrails_config:
-  guardrail_providers:
-    - id: 1
-      provider_name: "secrets"
-      policy_name: "Block Leaked Credentials"
-      enabled: true
-      config:
-        ignored_secret_keywords:
-          - "example"
-          - "dummy"
-    - id: 2
-      provider_name: "regex"
-      policy_name: "PII Detection"
-      enabled: true
-      config:
-        patterns:
-          - pattern: "\\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}\\b"
-            description: "Email address"
-            flags: "i"
-          - pattern: "\\b\\d{3}-\\d{2}-\\d{4}\\b"
-            description: "US Social Security Number"
-    - id: 3
-      provider_name: "bedrock"
-      policy_name: "PII Detection Profile"
-      enabled: true
-      config:
-        guardrail_arn: "arn:aws:bedrock:us-east-1:123456789:guardrail/abc123"
-        guardrail_version: "1"
-        region: "us-east-1"
-        # AWS Authentication (choose one method):
-        # Option 1: Explicit credentials
-        access_key: "env.AWS_ACCESS_KEY_ID"
-        secret_key: "env.AWS_SECRET_ACCESS_KEY"
-        # Option 2: IAM Role - omit access_key and secret_key
-        # (Bifrost will use IAM credentials from the environment)
-    - id: 4
-      provider_name: "azure"
-      policy_name: "Content Safety Profile"
-      enabled: true
-      config:
-        endpoint: "https://your-resource.cognitiveservices.azure.com/"
-        api_key: "env.AZURE_CONTENT_SAFETY_API_KEY"
-        analyze_enabled: true
-        analyze_severity_threshold: "medium"
-        jailbreak_shield_enabled: true
-    - id: 5
-      provider_name: "model-armor"
-      policy_name: "Google Model Armor Production"
-      enabled: true
-      timeout: 30
-      config:
-        auth_type: "default_credential"
-        project_id: "env.GCP_PROJECT_ID"
-        location: "env.GCP_LOCATION"
-        template_id: "env.GMA_TEMPLATE_ID"
-    - id: 6
-      provider_name: "crowdstrike-aidr"
-      policy_name: "CrowdStrike AIDR Production"
-      enabled: true
-      timeout: 30
-      config:
-        api_key: "env.CS_AIDR_TOKEN"
-        base_url: "env.CS_AIDR_BASE_URL"
-        app_id: "bifrost-production"
-        collector_instance_id: "prod-us-east-1"
-    - id: 7
-      provider_name: "grayswan"
-      policy_name: "Custom Safety Rules"
-      enabled: true
-      config:
-        api_key: "env.GRAYSWAN_API_KEY"
-        violation_threshold: 0.5
-        reasoning_mode: "hybrid"
-        rules:
-          no_pii: "Do not allow personally identifiable information"
-          professional_tone: "Ensure responses maintain a professional tone"
-    - id: 8
-      provider_name: "patronus-ai"
-      policy_name: "Patronus Quality Checks"
-      enabled: true
-      config:
-        api_key: "env.PATRONUS_API_KEY"
-        base_url: "https://api.patronus.ai"
-        evaluators:
-          - evaluator: "pii"
-            explain_strategy: "on-fail"
-          - evaluator: "judge"
-            criteria: "patronus:is-concise"
-            explain_strategy: "on-fail"
-        capture: "none"
+bifrost:
+  guardrails:
+    providers:
+      - id: 1
+        provider_name: "secrets"
+        policy_name: "Block Leaked Credentials"
+        enabled: true
+        config:
+          ignored_secret_keywords:
+            - "example"
+            - "dummy"
+      - id: 2
+        provider_name: "regex"
+        policy_name: "PII Detection"
+        enabled: true
+        config:
+          patterns:
+            - pattern: "\\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}\\b"
+              description: "Email address"
+              flags: "i"
+            - pattern: "\\b\\d{3}-\\d{2}-\\d{4}\\b"
+              description: "US Social Security Number"
+      - id: 3
+        provider_name: "bedrock"
+        policy_name: "PII Detection Profile"
+        enabled: true
+        config:
+          guardrail_arn: "arn:aws:bedrock:us-east-1:123456789:guardrail/abc123"
+          guardrail_version: "1"
+          region: "us-east-1"
+          # AWS Authentication (choose one method):
+          # Option 1: Explicit credentials
+          access_key: "env.AWS_ACCESS_KEY_ID"
+          secret_key: "env.AWS_SECRET_ACCESS_KEY"
+          # Option 2: IAM Role - omit access_key and secret_key
+          # (Bifrost will use IAM credentials from the environment)
+      - id: 4
+        provider_name: "azure"
+        policy_name: "Content Safety Profile"
+        enabled: true
+        config:
+          endpoint: "https://your-resource.cognitiveservices.azure.com/"
+          api_key: "env.AZURE_CONTENT_SAFETY_API_KEY"
+          analyze_enabled: true
+          analyze_severity_threshold: "medium"
+          jailbreak_shield_enabled: true
+      - id: 5
+        provider_name: "model-armor"
+        policy_name: "Google Model Armor Production"
+        enabled: true
+        timeout: 30
+        config:
+          auth_type: "default_credential"
+          project_id: "env.GCP_PROJECT_ID"
+          location: "env.GCP_LOCATION"
+          template_id: "env.GMA_TEMPLATE_ID"
+      - id: 6
+        provider_name: "crowdstrike-aidr"
+        policy_name: "CrowdStrike AIDR Production"
+        enabled: true
+        timeout: 30
+        config:
+          api_key: "env.CS_AIDR_TOKEN"
+          base_url: "env.CS_AIDR_BASE_URL"
+          app_id: "bifrost-production"
+          collector_instance_id: "prod-us-east-1"
+      - id: 7
+        provider_name: "grayswan"
+        policy_name: "Custom Safety Rules"
+        enabled: true
+        config:
+          api_key: "env.GRAYSWAN_API_KEY"
+          violation_threshold: 0.5
+          reasoning_mode: "hybrid"
+          rules:
+            no_pii: "Do not allow personally identifiable information"
+            professional_tone: "Ensure responses maintain a professional tone"
+      - id: 8
+        provider_name: "patronus-ai"
+        policy_name: "Patronus Quality Checks"
+        enabled: true
+        config:
+          api_key: "env.PATRONUS_API_KEY"
+          base_url: "https://api.patronus.ai"
+          evaluators:
+            - evaluator: "pii"
+              explain_strategy: "on-fail"
+            - evaluator: "judge"
+              criteria: "patronus:is-concise"
+              explain_strategy: "on-fail"
+          capture: "none"
 ```
 
 </Tab>
