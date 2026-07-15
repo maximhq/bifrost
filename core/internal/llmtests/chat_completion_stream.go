@@ -406,8 +406,19 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 								}
 							}
 
+							// Enforced as an explicit failure, not a silent goto to the
+							// completion label: toolCallDetected can already be true from
+							// an early chunk, so falling through to the normal completion
+							// checks would let a runaway/incomplete stream still pass.
 							if responseCount > sarvamAdjustedMaxChunks(testConfig.Provider, 500) {
-								goto toolStreamComplete
+								return ChatStreamValidationResult{
+									Passed:           false,
+									Errors:           []string{fmt.Sprintf("❌ Received too many streaming chunks (over %d), something might be wrong", sarvamAdjustedMaxChunks(testConfig.Provider, 500))},
+									ReceivedData:     responseCount > 0,
+									StreamErrors:     streamErrors,
+									ToolCallDetected: toolCallDetected,
+									ResponseCount:    responseCount,
+								}
 							}
 
 						case <-streamCtx.Done():
