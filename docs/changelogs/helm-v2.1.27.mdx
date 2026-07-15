@@ -5,6 +5,10 @@ description: "Helm v2.1.27 changelog - 2026-07-09"
 
 <Update label="Bifrost Helm" description="v2.1.27">
 
+<Warning>
+**Known issue - use v2.1.28 instead.** This version dropped `runAsUser: 1000` from the default security contexts. With any image before v1.6.4 (including the chart's default), kubelet cannot verify `runAsNonRoot: true` against the image's non-numeric `USER appuser`, and pods fail with `CreateContainerConfigError: container has runAsNonRoot and image has non-numeric user (appuser)`. If you must stay on v2.1.27, set `podSecurityContext.runAsUser: 1000` and `securityContext.runAsUser: 1000` in your values, or use image v1.6.4+. On OpenShift (restricted-v2), v2.1.27 works as-is since the SCC injects a numeric UID; pair it with image v1.6.4+ and `podSecurityContext.fsGroup: null`.
+</Warning>
+
 ## Changelog
 
 - `bifrost.schemaUrl` — override the generated `config.json` `$schema` location for isolated or air-gapped deployments. Accepts an HTTP(S) URL, `file://` URL, or filesystem path. When set, the value is also exported as `BIFROST_SCHEMA_URL` in the pod; when empty (default), the env var is not injected and the public schema URL is used. Renders into `$schema`.

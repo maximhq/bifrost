@@ -13,7 +13,7 @@ complexity_tier == "REASONING"
 complexity_tier in ["COMPLEX", "REASONING"]
 ```
 
-This lets you route simple greetings to a fast, cheap model and deep reasoning tasks to a frontier model — automatically, with no changes to your application code. When the latest user message does not match a configured signal, Bifrost leaves `complexity_tier` unknown and keeps the request on its existing routing path instead of guessing. The algorithm is fast and deterministic: it runs entirely in-process using pre-compiled keyword matching, adds less than 1 ms to request latency, and makes zero external calls.
+This lets you route simple greetings to a fast, cheap model and deep reasoning tasks to a frontier model — automatically, with no changes to your application code. When the latest user message does not match a configured signal, Bifrost leaves `complexity_tier` unknown and keeps the request on its existing routing path instead of guessing. The algorithm is fast and deterministic: it runs entirely in-process using pre-compiled literal and stemmed keyword matching, adds less than 1 ms to request latency, and makes zero external calls.
 
 ![Complexity Router Configuration](../../media/architecture-complexity-router.png)
 
@@ -30,7 +30,7 @@ Classified requests produce a score between 0.0 and 1.0. The analyzer starts wit
 | Code presence | 30% | Code, debugging, and programming artifacts |
 | Reasoning markers | 25% | Analytical and multi-step reasoning language |
 | Technical terms | 25% | Architecture, infra, and operational terminology |
-| Token count | 10% | Prompt length, used only after a signal or continuation is detected |
+| Word count | 10% | Prompt length measured by whitespace-delimited words, used only after a signal or continuation is detected |
 | Simple indicators | -5% | Greetings, definitions, translation requests, and other straightforward asks |
 
 Simple indicators are a small downward nudge, not an override. A simple-only request can classify as **Simple** with a `0.00` score, while a request that also has strong code, technical, or reasoning signals can still rise into a higher tier.
@@ -41,7 +41,7 @@ When the latest user message already has a code, technical, or reasoning signal,
 
 ### Conversation context blending
 
-For multi-turn conversations, prior context is used only when the latest user message has its own code, technical, or reasoning signal, or when the latest message is an explicit continuation phrase such as "do it", "retry", "continue", or "go ahead". In those cases, the score blends the current message with history from up to the last 10 user turns (recency-weighted: earlier turns count less):
+For multi-turn conversations, prior context is used only when the latest user message has its own code, technical, or reasoning signal, or when the latest message is a configured continuation phrase such as "do it", "try again", "continue", or "go ahead" and the prior-context score is at least 0.20. In those cases, the score blends the current message with history from up to the last 10 user turns (recency-weighted: earlier turns count less):
 
 - **Default blend:** 60% last message + 40% conversation history
 - **Continuation blend:** 35% last message + 65% conversation history

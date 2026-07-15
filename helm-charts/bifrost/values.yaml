@@ -57,13 +57,20 @@ deploymentLabels: {}
 podAnnotations: {}
 podLabels: {}
 
-# Pod-level security context. Defaults chown freshly provisioned PVCs (fsGroup)
-# and forbid running as root, which vanilla Kubernetes needs for restrictive
-# storage classes. On OpenShift (restricted-v2), set `podSecurityContext.fsGroup: null`
-# (Helm merges maps, so `{}` would keep this default) — the image supports
-# arbitrary UIDs with group 0, so no custom SCC is needed.
+# Pod-level security context. Defaults pin UID 1000 and chown freshly
+# provisioned PVCs (fsGroup), which vanilla Kubernetes needs for restrictive
+# storage classes. runAsUser is also required by kubelet to verify
+# runAsNonRoot against images whose USER is non-numeric (bifrost images
+# before v1.6.4 use `USER appuser`).
+# On OpenShift (restricted-v2), unset the UID pins so the SCC can assign an
+# arbitrary UID: set `podSecurityContext.runAsUser: null`,
+# `podSecurityContext.fsGroup: null`, and `securityContext.runAsUser: null`
+# (Helm merges maps, so explicit `null` is required; `{}` keeps these
+# defaults). The image supports arbitrary UIDs with group 0, so no custom
+# SCC is needed.
 podSecurityContext:
   fsGroup: 1000
+  runAsUser: 1000
   runAsNonRoot: true
 
 securityContext:
@@ -71,6 +78,7 @@ securityContext:
     drop:
       - ALL
   readOnlyRootFilesystem: false
+  runAsUser: 1000
   runAsNonRoot: true
 
 service:
@@ -421,6 +429,7 @@ bifrost:
   #         region: "us-east-1"
   #         access_key: "env.AWS_ACCESS_KEY_ID"
   #         secret_key: "env.AWS_SECRET_ACCESS_KEY"
+  #         project_id: ""  # Optional: Bedrock project ID scoping inference and model listing (can use env. prefix)
   #
   # # AWS Bedrock Mantle example (requires bedrock_mantle_key_config)
   # bedrock_mantle:
@@ -432,6 +441,7 @@ bifrost:
   #         region: "us-east-1"                     # Required
   #         access_key: "env.AWS_ACCESS_KEY_ID"
   #         secret_key: "env.AWS_SECRET_ACCESS_KEY"
+  #         project_id: ""                          # Optional: Bedrock project ID sent as the OpenAI-Project header (can use env. prefix)
   #         # session_token: "env.AWS_SESSION_TOKEN"
   #         # role_arn: ""                          # For AssumeRole
   #         # external_id: ""
