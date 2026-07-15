@@ -448,6 +448,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_bedrock_project_id_columns"}, run: migrationAddBedrockProjectIDColumns},
 	{IDs: []string{"add_webhook_endpoints_table"}, run: migrationAddWebhookEndpointsTable},
 	{IDs: []string{"add_webhook_jobs_table"}, run: migrationAddWebhookJobsTable},
+	{IDs: []string{"add_webhook_config_client_column"}, run: migrationAddWebhookConfigClientColumn},
 }
 
 // quoteSQLiteIdentifier quotes a SQLite identifier, escaping any double quotes.
@@ -10705,6 +10706,41 @@ func migrationAddWebhookEndpointsTable(ctx context.Context, db *gorm.DB, logger 
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running webhook endpoints table migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddWebhookConfigClientColumn adds the webhook_config_json column
+// to config_client.
+func migrationAddWebhookConfigClientColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_webhook_config_client_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if !mg.HasColumn(&tables.TableClientConfig{}, "webhook_config_json") {
+				if err := mg.AddColumn(&tables.TableClientConfig{}, "WebhookConfigJSON"); err != nil {
+					return fmt.Errorf("add webhook_config_json column: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if mg.HasColumn(&tables.TableClientConfig{}, "webhook_config_json") {
+				if err := mg.DropColumn(&tables.TableClientConfig{}, "WebhookConfigJSON"); err != nil {
+					return fmt.Errorf("drop webhook_config_json column: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running webhook config client column migration: %s", err.Error())
 	}
 	return nil
 }
