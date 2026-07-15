@@ -227,6 +227,7 @@
               "features/compat-plugin",
               "features/keys-management",
               "features/async-inference",
+              "features/webhooks",
               {
                 "group": "Governance",
                 "icon": "user-lock",
