@@ -811,6 +811,232 @@ func TestToBifrostResponsesStreamResponse_ToolCallsOnlyInCompletedOutput(t *test
 	}
 }
 
+func TestToBifrostResponsesStreamResponse_ReasoningDeltaHasOutputItemAdded(t *testing.T) {
+	state := AcquireChatToResponsesStreamState()
+	defer ReleaseChatToResponsesStreamState(state)
+
+	role := string(ChatMessageRoleAssistant)
+	stopFinish := string(BifrostFinishReasonStop)
+	reasoningChunk1 := "Let me think"
+	reasoningChunk2 := " about this."
+
+	var all []*BifrostResponsesStreamResponse
+
+	all = append(all, (&BifrostChatResponse{
+		ID:    "chatcmpl-test",
+		Model: "test-model",
+		Choices: []BifrostResponseChoice{
+			{
+				ChatStreamResponseChoice: &ChatStreamResponseChoice{
+					Delta: &ChatStreamResponseChoiceDelta{Role: &role},
+				},
+			},
+		},
+	}).ToBifrostResponsesStreamResponse(state)...)
+
+	all = append(all, (&BifrostChatResponse{
+		ID:    "chatcmpl-test",
+		Model: "test-model",
+		Choices: []BifrostResponseChoice{
+			{
+				ChatStreamResponseChoice: &ChatStreamResponseChoice{
+					Delta: &ChatStreamResponseChoiceDelta{Reasoning: &reasoningChunk1},
+				},
+			},
+		},
+	}).ToBifrostResponsesStreamResponse(state)...)
+
+	all = append(all, (&BifrostChatResponse{
+		ID:    "chatcmpl-test",
+		Model: "test-model",
+		Choices: []BifrostResponseChoice{
+			{
+				FinishReason: &stopFinish,
+				ChatStreamResponseChoice: &ChatStreamResponseChoice{
+					Delta: &ChatStreamResponseChoiceDelta{Reasoning: &reasoningChunk2},
+				},
+			},
+		},
+	}).ToBifrostResponsesStreamResponse(state)...)
+
+	// The critical invariant this bug (#5169) violated: a
+	// reasoning_summary_text.delta must never appear before the matching
+	// output_item.added for that same item/output-index, and every delta's
+	// ItemID must resolve to the item that opened it.
+	var addedItemID, addedType string
+	var addedOutputIndex int
+	sawAdded := false
+	for _, evt := range all {
+		if evt == nil {
+			continue
+		}
+		if evt.Type == ResponsesStreamResponseTypeOutputItemAdded && evt.Item != nil &&
+			evt.Item.Type != nil && *evt.Item.Type == ResponsesMessageTypeReasoning {
+			sawAdded = true
+			if evt.Item.ID != nil {
+				addedItemID = *evt.Item.ID
+			}
+			addedType = string(*evt.Item.Type)
+			if evt.OutputIndex != nil {
+				addedOutputIndex = *evt.OutputIndex
+			}
+		}
+		if evt.Type == ResponsesStreamResponseTypeReasoningSummaryTextDelta {
+			if !sawAdded {
+				t.Fatal("reasoning_summary_text.delta emitted before output_item.added for the reasoning item")
+			}
+			if evt.ItemID == nil || *evt.ItemID != addedItemID {
+				t.Fatalf("reasoning delta ItemID %v does not match the reasoning item's added ID %q", evt.ItemID, addedItemID)
+			}
+			if evt.OutputIndex == nil || *evt.OutputIndex != addedOutputIndex {
+				t.Fatalf("reasoning delta OutputIndex %v does not match the reasoning item's added OutputIndex %d", evt.OutputIndex, addedOutputIndex)
+			}
+		}
+	}
+	if !sawAdded {
+		t.Fatal("expected output_item.added for the reasoning item")
+	}
+	if addedType != string(ResponsesMessageTypeReasoning) {
+		t.Fatalf("expected reasoning item type, got %q", addedType)
+	}
+	if addedOutputIndex == 0 {
+		t.Fatal("reasoning item must not reuse output index 0 (reserved for the text/message item)")
+	}
+
+	// Reasoning item must also be closed via output_item.done before stream end.
+	sawDone := false
+	for _, evt := range all {
+		if evt != nil && evt.Type == ResponsesStreamResponseTypeOutputItemDone && evt.Item != nil &&
+			evt.Item.Type != nil && *evt.Item.Type == ResponsesMessageTypeReasoning {
+			sawDone = true
+		}
+	}
+	if !sawDone {
+		t.Fatal("expected output_item.done closing the reasoning item")
+	}
+
+	var completed *BifrostResponsesStreamResponse
+	for _, evt := range all {
+		if evt != nil && evt.Type == ResponsesStreamResponseTypeCompleted {
+			completed = evt
+		}
+	}
+	if completed == nil || completed.Response == nil {
+		t.Fatal("expected response.completed event")
+	}
+	foundReasoningInOutput := false
+	for _, item := range completed.Response.Output {
+		if item.Type != nil && *item.Type == ResponsesMessageTypeReasoning {
+			foundReasoningInOutput = true
+			if item.Content == nil || len(item.Content.ContentBlocks) != 1 || item.Content.ContentBlocks[0].Text == nil {
+				t.Fatal("expected reasoning output item to carry accumulated reasoning text")
+			}
+			if got := *item.Content.ContentBlocks[0].Text; got != reasoningChunk1+reasoningChunk2 {
+				t.Fatalf("expected accumulated reasoning text %q, got %q", reasoningChunk1+reasoningChunk2, got)
+			}
+		}
+	}
+	if !foundReasoningInOutput {
+		t.Fatal("expected a reasoning item in response.completed Output")
+	}
+}
+
+func TestToBifrostResponsesStreamResponse_ReasoningClosedBeforeToolCallOpens(t *testing.T) {
+	state := AcquireChatToResponsesStreamState()
+	defer ReleaseChatToResponsesStreamState(state)
+
+	role := string(ChatMessageRoleAssistant)
+	toolCallsFinish := string(BifrostFinishReasonToolCalls)
+	reasoningText := "I should call the weather tool."
+	funcName := "get_weather"
+	toolCallID := "call_after_reasoning"
+
+	var all []*BifrostResponsesStreamResponse
+
+	all = append(all, (&BifrostChatResponse{
+		ID:    "chatcmpl-test",
+		Model: "test-model",
+		Choices: []BifrostResponseChoice{
+			{
+				ChatStreamResponseChoice: &ChatStreamResponseChoice{
+					Delta: &ChatStreamResponseChoiceDelta{Role: &role},
+				},
+			},
+		},
+	}).ToBifrostResponsesStreamResponse(state)...)
+
+	all = append(all, (&BifrostChatResponse{
+		ID:    "chatcmpl-test",
+		Model: "test-model",
+		Choices: []BifrostResponseChoice{
+			{
+				ChatStreamResponseChoice: &ChatStreamResponseChoice{
+					Delta: &ChatStreamResponseChoiceDelta{Reasoning: &reasoningText},
+				},
+			},
+		},
+	}).ToBifrostResponsesStreamResponse(state)...)
+
+	all = append(all, (&BifrostChatResponse{
+		ID:    "chatcmpl-test",
+		Model: "test-model",
+		Choices: []BifrostResponseChoice{
+			{
+				ChatStreamResponseChoice: &ChatStreamResponseChoice{
+					Delta: &ChatStreamResponseChoiceDelta{
+						ToolCalls: []ChatAssistantMessageToolCall{
+							{
+								Index:    0,
+								ID:       &toolCallID,
+								Function: ChatAssistantMessageToolCallFunction{Name: &funcName, Arguments: `{"city":"Paris"}`},
+							},
+						},
+					},
+				},
+			},
+		},
+	}).ToBifrostResponsesStreamResponse(state)...)
+
+	all = append(all, (&BifrostChatResponse{
+		ID:    "chatcmpl-test",
+		Model: "test-model",
+		Choices: []BifrostResponseChoice{
+			{
+				FinishReason: &toolCallsFinish,
+				ChatStreamResponseChoice: &ChatStreamResponseChoice{
+					Delta: &ChatStreamResponseChoiceDelta{},
+				},
+			},
+		},
+	}).ToBifrostResponsesStreamResponse(state)...)
+
+	// The reasoning item's output_item.done must appear before the tool
+	// call's output_item.added - i.e. no two content blocks open at once.
+	reasoningDoneSeq, toolCallAddedSeq := -1, -1
+	for _, evt := range all {
+		if evt == nil {
+			continue
+		}
+		if evt.Type == ResponsesStreamResponseTypeOutputItemDone && evt.Item != nil &&
+			evt.Item.Type != nil && *evt.Item.Type == ResponsesMessageTypeReasoning {
+			reasoningDoneSeq = evt.SequenceNumber
+		}
+		if evt.Type == ResponsesStreamResponseTypeOutputItemAdded && evt.Item != nil &&
+			evt.Item.Type != nil && *evt.Item.Type == ResponsesMessageTypeFunctionCall {
+			toolCallAddedSeq = evt.SequenceNumber
+		}
+	}
+	if reasoningDoneSeq == -1 {
+		t.Fatal("expected reasoning item to be closed")
+	}
+	if toolCallAddedSeq == -1 {
+		t.Fatal("expected tool call output_item.added")
+	}
+	if reasoningDoneSeq >= toolCallAddedSeq {
+		t.Fatalf("expected reasoning item to close (seq %d) before the tool call opens (seq %d)", reasoningDoneSeq, toolCallAddedSeq)
+	}
+}
+
 func TestToBifrostResponsesStreamResponse_MapsLengthToIncompleteEvent(t *testing.T) {
 	state := AcquireChatToResponsesStreamState()
 	defer ReleaseChatToResponsesStreamState(state)
