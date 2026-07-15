@@ -14,7 +14,7 @@ import (
 // tool_search mapping doc:
 // memory/anthropicschema/gen/fix-execution/expanded-coverage/tool-search-cross-provider-mapping.md
 //
-// These must go through ResponsesMessage's rawToolSearch preservation path
+// These must go through ResponsesMessage's rawPreserved preservation path
 // (only settable from within this package) rather than the struct's normal
 // exported fields: tool_search_call.arguments is a JSON OBJECT on the wire
 // (unlike function_call's JSON string) — building it via the plain
@@ -22,7 +22,7 @@ import (
 // it as a string when MarshalJSON runs the default path.
 
 // openAIToolSearchCallWire is the wire shape OpenAI expects for a
-// tool_search_call item — see isToolSearchItem's doc comment for why
+// tool_search_call item — see isRawPreservedItem's doc comment for why
 // arguments is an object here, unlike function_call.
 type openAIToolSearchCallWire struct {
 	Type      ResponsesMessageType `json:"type"`
@@ -58,8 +58,8 @@ func NewOpenAIToolSearchCallItem(callID string, argumentsJSON string) (Responses
 		return ResponsesMessage{}, err
 	}
 	return ResponsesMessage{
-		Type:          Ptr(ResponsesMessageTypeToolSearchCall),
-		rawToolSearch: raw,
+		Type:         Ptr(ResponsesMessageTypeToolSearchCall),
+		rawPreserved: raw,
 	}, nil
 }
 
@@ -121,7 +121,7 @@ func NewOpenAIToolSearchOutputItem(callID string, discovered []OpenAIToolSearchD
 		return ResponsesMessage{}, err
 	}
 	return ResponsesMessage{
-		Type:          Ptr(ResponsesMessageTypeToolSearchOutput),
-		rawToolSearch: raw,
+		Type:         Ptr(ResponsesMessageTypeToolSearchOutput),
+		rawPreserved: raw,
 	}, nil
 }

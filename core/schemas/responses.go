@@ -1094,7 +1094,7 @@ const (
 	// Deliberately distinct from ResponsesMessageTypeToolSearchCall/ToolSearchOutput
 	// above, which are Codex/OpenAI's client-executed tool_search meta-tool (different
 	// shape: arguments is a search query object, execution:"client", no server-side
-	// results). Reusing that type string would collide with isToolSearchItem's raw-byte
+	// results). Reusing that type string would collide with isRawPreservedItem's raw-byte
 	// preservation path and misrepresent Anthropic's server-completed search as a
 	// client-side call to any Responses API consumer.
 	ResponsesMessageTypeAnthropicToolSearchCall ResponsesMessageType = "tool_search_tool_call"

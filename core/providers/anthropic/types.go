@@ -938,13 +938,13 @@ const (
 	// content.type for a failed tool_search_tool_result (carries ErrorCode/ErrorMessage).
 	AnthropicContentBlockTypeToolSearchToolResultError AnthropicContentBlockType = "tool_search_tool_result_error"
 	AnthropicContentBlockTypeToolReference             AnthropicContentBlockType = "tool_reference"
-	AnthropicContentBlockTypeContainerUpload                   AnthropicContentBlockType = "container_upload"
-	AnthropicContentBlockTypeAdvisorToolResult                 AnthropicContentBlockType = "advisor_tool_result"
-	AnthropicContentBlockTypeMCPToolUse                        AnthropicContentBlockType = "mcp_tool_use"
-	AnthropicContentBlockTypeMCPToolResult                     AnthropicContentBlockType = "mcp_tool_result"
-	AnthropicContentBlockTypeThinking                          AnthropicContentBlockType = "thinking"
-	AnthropicContentBlockTypeRedactedThinking                  AnthropicContentBlockType = "redacted_thinking"
-	AnthropicContentBlockTypeCompaction                        AnthropicContentBlockType = "compaction"
+	AnthropicContentBlockTypeContainerUpload           AnthropicContentBlockType = "container_upload"
+	AnthropicContentBlockTypeAdvisorToolResult         AnthropicContentBlockType = "advisor_tool_result"
+	AnthropicContentBlockTypeMCPToolUse                AnthropicContentBlockType = "mcp_tool_use"
+	AnthropicContentBlockTypeMCPToolResult             AnthropicContentBlockType = "mcp_tool_result"
+	AnthropicContentBlockTypeThinking                  AnthropicContentBlockType = "thinking"
+	AnthropicContentBlockTypeRedactedThinking          AnthropicContentBlockType = "redacted_thinking"
+	AnthropicContentBlockTypeCompaction                AnthropicContentBlockType = "compaction"
 
 	// code_execution inner result-content discriminators (the "content" object on
 	// a *_code_execution_tool_result block; ContentObj.Type carries these).

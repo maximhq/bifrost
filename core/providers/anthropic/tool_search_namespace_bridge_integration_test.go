@@ -243,9 +243,9 @@ func TestToolSearchNamespaceBridge_ResponseEgress(t *testing.T) {
 		Model: "claude-opus-4-8",
 		Content: []AnthropicContentBlock{
 			{
-				Type: AnthropicContentBlockTypeServerToolUse,
-				ID:   schemas.Ptr("srvtoolu_bm25_1"),
-				Name: schemas.Ptr("tool_search_tool_bm25"),
+				Type:  AnthropicContentBlockTypeServerToolUse,
+				ID:    schemas.Ptr("srvtoolu_bm25_1"),
+				Name:  schemas.Ptr("tool_search_tool_bm25"),
 				Input: json.RawMessage(`{"query":"weather lookup"}`),
 			},
 			{
@@ -328,9 +328,9 @@ func TestToolSearchNamespaceBridge_ResponseEgress_InactiveWhenNotDeclared(t *tes
 		Model: "claude-opus-4-8",
 		Content: []AnthropicContentBlock{
 			{
-				Type: AnthropicContentBlockTypeServerToolUse,
-				ID:   schemas.Ptr("srvtoolu_bm25_1"),
-				Name: schemas.Ptr("tool_search_tool_bm25"),
+				Type:  AnthropicContentBlockTypeServerToolUse,
+				ID:    schemas.Ptr("srvtoolu_bm25_1"),
+				Name:  schemas.Ptr("tool_search_tool_bm25"),
 				Input: json.RawMessage(`{"query":"weather lookup"}`),
 			},
 			{
