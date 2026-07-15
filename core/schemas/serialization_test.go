@@ -1159,10 +1159,10 @@ func TestNetworkConfig_HTTP2PingInterval(t *testing.T) {
 	assert.Equal(t, 45, decoded.HTTP2PingIntervalInSeconds, "http2_ping_interval_in_seconds should round-trip")
 	assert.Contains(t, string(data), `"http2_ping_interval_in_seconds":45`)
 
-	// enforce_http2 set + interval unset -> filled with the default
+	// enforce_http2 set + interval unset -> left at zero (pings are opt-in, off by default)
 	cfgDefault := &ProviderConfig{NetworkConfig: NetworkConfig{EnforceHTTP2: true}}
 	cfgDefault.CheckAndSetDefaults()
-	assert.Equal(t, DefaultHTTP2PingIntervalInSeconds, cfgDefault.NetworkConfig.HTTP2PingIntervalInSeconds)
+	assert.Equal(t, 0, cfgDefault.NetworkConfig.HTTP2PingIntervalInSeconds)
 
 	// explicit interval is preserved
 	cfgExplicit := &ProviderConfig{NetworkConfig: NetworkConfig{EnforceHTTP2: true, HTTP2PingIntervalInSeconds: 5}}
