@@ -28,7 +28,11 @@ An **alert rule** defines a CEL expression over governance metrics and the chann
 
 ## CEL expressions
 
-Rules use [CEL](https://github.com/google/cel-spec) expressions evaluated against the [CEL variables](/enterprise/alerting/overview#cel-variables) populated from governance snapshots. Supported operators are `==`, `!=`, `>`, `<`, `>=`, and `<=`. Expressions can be combined using `&&` (and) and `||` (or).
+Rules use [CEL](https://github.com/google/cel-spec) expressions evaluated against the [CEL variables](/enterprise/alerting/overview#cel-variables) populated from governance snapshots. Commonly used operators include `==`, `!=`, `>`, `<`, `>=`, and `<=`, combined using `&&` (and) and `||` (or). The engine accepts any expression from the standard CEL function library as long as it evaluates to a boolean, including arithmetic, ternary (`?:`), `in`, and string functions like `.contains()`.
+
+<Note>
+The [Web UI](#creating-a-rule) condition builder only exposes six fields — `budget_usage_percent`, `budget_spent`, `rate_limit_request_usage_percent`, `rate_limit_token_usage_percent`, `request_usage`, and `token_usage` — with a fixed set of comparison operators. For the `budget_limit`/`request_limit`/`token_limit` variables, `scope_type`/`scope_id`/`target_type`/`target_id`, or any expression the builder doesn't support, write the `cel_expression` directly via the [API](#creating-a-rule) or [config.json](#configjson).
+</Note>
 
 ### Budget examples
 
@@ -122,14 +126,29 @@ Channels can add their own [per-channel cooldown](/enterprise/alerting/alert-cha
 <Tabs group="setup-method">
 <Tab title="Web UI">
 
-1. Open **Alerting** in the Bifrost dashboard, go to the **Rules** tab, and click **Add Rule**.
-2. Enter a **Rule Name** and optional **Description**.
-3. Choose a **Scope Type** and select the **Scope** entity.
-4. Optionally set a **Target Type** of `budget` and select a specific budget.
-5. Build the **CEL Expression** using the rule builder.
-6. Select one or more **Notification Channels**.
-7. Optionally set a **Cooldown**.
-8. Click **Create Rule**.
+Open **Alerting** in the Bifrost dashboard, go to the **Rules** tab, and click **Add Rule**.
+
+<Frame>
+  <img src="/media/alerting/alerting-rules-list.png" alt="Alert Rules list showing rule name, scope, and condition columns" />
+</Frame>
+
+1. Enter a **Rule Name** and optional **Description**.
+2. Choose a **Scope Type** and select the **Scope** entity (Virtual Key, Team, or Customer).
+3. Set **Evaluate On** to `Any Budget`, or choose a specific budget to target it directly.
+4. Select one or more **Channels** to notify.
+
+<Frame>
+  <img src="/media/alerting/alerting-create-rule.png" alt="Create Alert Rule dialog showing name, scope type, evaluate on, and channel fields" />
+</Frame>
+
+5. Build the **Condition** with the rule builder - add individual conditions or nested rule groups, and combine them with `AND` / `OR`. The field dropdown offers six metrics: **Budget Used %**, **Budget Spent ($)**, **Request Limit Used %**, **Token Limit Used %**, **Request Usage**, and **Token Usage**. For absolute limits (`budget_limit`, `request_limit`, `token_limit`) or other CEL expressions the builder doesn't expose, use the [API](#creating-a-rule) or [config.json](#configjson) tab instead.
+
+<Frame>
+  <img src="/media/alerting/alerting-create-rule-condition.png" alt="Alert rule condition builder with AND/OR operators and Add Rule / Add Rule Group controls" />
+</Frame>
+
+6. Optionally set a **Cooldown**.
+7. Click **Create Rule**.
 
 </Tab>
 <Tab title="API">
