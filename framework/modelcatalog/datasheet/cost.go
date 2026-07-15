@@ -516,9 +516,16 @@ func computeRerankCost(pricing *configstoreTables.TableModelPricing, usage *sche
 	inputCost := float64(usage.PromptTokens) * tieredInputRate(pricing, tierTokens, tier)
 	outputCost := float64(usage.CompletionTokens) * tieredOutputRate(pricing, tierTokens, tier)
 
+	// Rerank entries carry their per-query rate as input_cost_per_query;
+	// search_context_cost_per_query remains the fallback for entries and
+	// overrides that still use the shared web-search field.
+	perQueryRate := pricing.SearchContextCostPerQuery
+	if pricing.InputCostPerQuery != nil {
+		perQueryRate = pricing.InputCostPerQuery
+	}
 	searchCost := 0.0
-	if pricing.SearchContextCostPerQuery != nil && usage.CompletionTokensDetails != nil && usage.CompletionTokensDetails.NumSearchQueries != nil {
-		searchCost = float64(*usage.CompletionTokensDetails.NumSearchQueries) * *pricing.SearchContextCostPerQuery
+	if perQueryRate != nil && usage.CompletionTokensDetails != nil && usage.CompletionTokensDetails.NumSearchQueries != nil {
+		searchCost = float64(*usage.CompletionTokensDetails.NumSearchQueries) * *perQueryRate
 	}
 
 	return inputCost + outputCost + searchCost
