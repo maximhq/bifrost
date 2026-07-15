@@ -1524,6 +1524,10 @@ type ChatToResponsesStreamState struct {
 	TextItemClosed        bool              // Whether text item has been closed
 	TextItemHasContent    bool              // Whether text item has received any content deltas
 	TextBuffer            strings.Builder   // Accumulated text deltas for output_text.done/content_part.done
+	ReasoningItemAdded    bool              // Whether the reasoning item has been added
+	ReasoningItemClosed   bool              // Whether the reasoning item has been closed
+	ReasoningOutputIndex  int               // Output index assigned to the reasoning item
+	ReasoningBuffer       strings.Builder   // Accumulated reasoning deltas for reasoning_summary_text.done
 	CurrentOutputIndex    int               // Current output index counter
 	ToolCallOutputIndices map[string]int    // Maps tool call ID to output index
 	SequenceNumber        int               // Monotonic sequence number across all chunks
@@ -1547,6 +1551,10 @@ var chatToResponsesStreamStatePool = sync.Pool{
 			TextItemClosed:        false,
 			TextItemHasContent:    false,
 			TextBuffer:            strings.Builder{},
+			ReasoningItemAdded:    false,
+			ReasoningItemClosed:   false,
+			ReasoningOutputIndex:  0,
+			ReasoningBuffer:       strings.Builder{},
 		}
 	},
 }
@@ -1592,6 +1600,10 @@ func AcquireChatToResponsesStreamState() *ChatToResponsesStreamState {
 	state.TextItemClosed = false
 	state.TextItemHasContent = false
 	state.TextBuffer = strings.Builder{}
+	state.ReasoningItemAdded = false
+	state.ReasoningItemClosed = false
+	state.ReasoningOutputIndex = 0
+	state.ReasoningBuffer = strings.Builder{}
 	state.SequenceNumber = 0
 	return state
 }
@@ -1626,6 +1638,10 @@ func ReleaseChatToResponsesStreamState(state *ChatToResponsesStreamState) {
 		state.TextItemClosed = false
 		state.TextItemHasContent = false
 		state.TextBuffer = strings.Builder{}
+		state.ReasoningItemAdded = false
+		state.ReasoningItemClosed = false
+		state.ReasoningOutputIndex = 0
+		state.ReasoningBuffer = strings.Builder{}
 		state.SequenceNumber = 0
 		chatToResponsesStreamStatePool.Put(state)
 	}
@@ -1954,13 +1970,65 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 	}
 
 	if delta.Reasoning != nil && *delta.Reasoning != "" {
-		// Reasoning/thought content delta (for models that support reasoning)
+		// Reasoning/thought content delta (for models that support reasoning).
+		// The reasoning item gets its own output_item.added (type "reasoning"),
+		// mirroring the text-item pattern above, so downstream converters that
+		// key content-block bookkeeping off Item.ID (e.g. the Anthropic SSE
+		// converter's reverseStreamItemKey) see a start event before any delta
+		// — without it, deltas fell back to an "oi:<index>" key that never
+		// matched the text item's Item.ID key, leaving Anthropic clients with
+		// a content_block_delta for a block whose content_block_start was
+		// never emitted (crashes the official SDK's streaming accumulator).
+		if !state.ReasoningItemAdded {
+			outputIndex := state.CurrentOutputIndex
+			if outputIndex == 0 {
+				outputIndex = 1 // Skip 0 — reserved for the text item
+			}
+			state.CurrentOutputIndex = outputIndex + 1
+			state.ReasoningOutputIndex = outputIndex
+
+			var itemID string
+			if state.MessageID == nil {
+				itemID = fmt.Sprintf("reasoning_item_%d", outputIndex)
+			} else {
+				itemID = fmt.Sprintf("msg_%s_reasoning_item_%d", *state.MessageID, outputIndex)
+			}
+			state.ItemIDs["reasoning"] = itemID
+
+			reasoningType := ResponsesMessageTypeReasoning
+			role := ResponsesInputMessageRoleAssistant
+			item := &ResponsesMessage{
+				ID:   &itemID,
+				Type: &reasoningType,
+				Role: &role,
+				ResponsesReasoning: &ResponsesReasoning{
+					Summary: []ResponsesReasoningSummary{},
+				},
+			}
+
+			responses = append(responses, &BifrostResponsesStreamResponse{
+				Type:           ResponsesStreamResponseTypeOutputItemAdded,
+				SequenceNumber: state.SequenceNumber,
+				OutputIndex:    Ptr(outputIndex),
+				Item:           item,
+				ExtraFields:    cr.ExtraFields,
+			})
+			state.SequenceNumber++
+			state.ReasoningItemAdded = true
+		}
+
+		itemID := state.ItemIDs["reasoning"]
+		state.ReasoningBuffer.WriteString(*delta.Reasoning)
+
 		response := &BifrostResponsesStreamResponse{
 			Type:           ResponsesStreamResponseTypeReasoningSummaryTextDelta,
 			SequenceNumber: state.SequenceNumber,
-			OutputIndex:    Ptr(0),
+			OutputIndex:    Ptr(state.ReasoningOutputIndex),
 			Delta:          delta.Reasoning,
 			ExtraFields:    cr.ExtraFields,
+		}
+		if itemID != "" {
+			response.ItemID = &itemID
 		}
 		responses = append(responses, response)
 		state.SequenceNumber++
@@ -2058,6 +2126,53 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 			state.TextItemClosed = true
 		}
 
+		// Close reasoning item if still open, mirroring the text-item close above
+		if state.ReasoningItemAdded && !state.ReasoningItemClosed {
+			outputIndex := state.ReasoningOutputIndex
+			itemID := state.ItemIDs["reasoning"]
+			finalReasoning := state.ReasoningBuffer.String()
+
+			responses = append(responses, &BifrostResponsesStreamResponse{
+				Type:           ResponsesStreamResponseTypeReasoningSummaryTextDone,
+				SequenceNumber: state.SequenceNumber,
+				OutputIndex:    Ptr(outputIndex),
+				ItemID:         &itemID,
+				Text:           &finalReasoning,
+				ExtraFields:    cr.ExtraFields,
+			})
+			state.SequenceNumber++
+
+			// Emit output_item.done
+			statusFinal := terminalStatus
+			reasoningType := ResponsesMessageTypeReasoning
+			role := ResponsesInputMessageRoleAssistant
+			doneReasoningItem := &ResponsesMessage{
+				Type:   &reasoningType,
+				Role:   &role,
+				Status: &statusFinal,
+				ResponsesReasoning: &ResponsesReasoning{
+					Summary: []ResponsesReasoningSummary{
+						{
+							Type: ResponsesReasoningContentBlockTypeSummaryText,
+							Text: finalReasoning,
+						},
+					},
+				},
+			}
+			if itemID != "" {
+				doneReasoningItem.ID = &itemID
+			}
+			responses = append(responses, &BifrostResponsesStreamResponse{
+				Type:           ResponsesStreamResponseTypeOutputItemDone,
+				SequenceNumber: state.SequenceNumber,
+				OutputIndex:    Ptr(outputIndex),
+				Item:           doneReasoningItem,
+				ExtraFields:    cr.ExtraFields,
+			})
+			state.SequenceNumber++
+			state.ReasoningItemClosed = true
+		}
+
 		// Close any open tool call items and emit function_call_arguments.done
 		for toolCallID, args := range state.ToolArgumentBuffers {
 			if args != "" {
@@ -2133,7 +2248,42 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 		if state.Model != nil {
 			response.Model = *state.Model
 		}
-		var allOutput []ResponsesMessage
+		// Collect every output item alongside its streamed output_index, then sort
+		// ascending so response.completed.Output matches the order clients already
+		// saw via output_item.added — otherwise a client that reconciles the
+		// terminal snapshot against streamed output_index values (e.g. attaching
+		// late-arriving status) can pair the wrong item with the wrong index.
+		type outputEntry struct {
+			outputIndex int
+			msg         ResponsesMessage
+		}
+		var outputEntries []outputEntry
+
+		if state.ReasoningItemAdded {
+			statusFinal := terminalStatus
+			reasoningType := ResponsesMessageTypeReasoning
+			role := ResponsesInputMessageRoleAssistant
+			finalReasoning := state.ReasoningBuffer.String()
+			itemID := state.ItemIDs["reasoning"]
+
+			reasoningMsg := ResponsesMessage{
+				Type:   &reasoningType,
+				Role:   &role,
+				Status: &statusFinal,
+				ResponsesReasoning: &ResponsesReasoning{
+					Summary: []ResponsesReasoningSummary{
+						{
+							Type: ResponsesReasoningContentBlockTypeSummaryText,
+							Text: finalReasoning,
+						},
+					},
+				},
+			}
+			if itemID != "" {
+				reasoningMsg.ID = &itemID
+			}
+			outputEntries = append(outputEntries, outputEntry{outputIndex: state.ReasoningOutputIndex, msg: reasoningMsg})
+		}
 
 		if state.TextItemAdded {
 			statusFinal := terminalStatus
@@ -2163,24 +2313,10 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 			if itemID != "" {
 				msg.ID = &itemID
 			}
-			allOutput = append(allOutput, msg)
+			outputEntries = append(outputEntries, outputEntry{outputIndex: 0, msg: msg})
 		}
 
-		// Collect tool call IDs sorted by outputIndex for deterministic order
-		type toolCallEntry struct {
-			toolCallID  string
-			outputIndex int
-		}
-		var toolCallEntries []toolCallEntry
 		for toolCallID, outputIndex := range state.ToolCallOutputIndices {
-			toolCallEntries = append(toolCallEntries, toolCallEntry{toolCallID: toolCallID, outputIndex: outputIndex})
-		}
-		sort.Slice(toolCallEntries, func(i, j int) bool {
-			return toolCallEntries[i].outputIndex < toolCallEntries[j].outputIndex
-		})
-
-		for _, entry := range toolCallEntries {
-			toolCallID := entry.toolCallID
 			statusFinal := terminalStatus
 			messageType := ResponsesMessageTypeFunctionCall
 			callName, hasName := state.ToolCallNames[toolCallID]
@@ -2202,10 +2338,18 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 			if itemID != "" {
 				fcMsg.ID = &itemID
 			}
-			allOutput = append(allOutput, fcMsg)
+			outputEntries = append(outputEntries, outputEntry{outputIndex: outputIndex, msg: fcMsg})
 		}
 
-		if len(allOutput) > 0 {
+		sort.Slice(outputEntries, func(i, j int) bool {
+			return outputEntries[i].outputIndex < outputEntries[j].outputIndex
+		})
+
+		if len(outputEntries) > 0 {
+			allOutput := make([]ResponsesMessage, len(outputEntries))
+			for i, entry := range outputEntries {
+				allOutput[i] = entry.msg
+			}
 			response.Output = allOutput
 		}
 

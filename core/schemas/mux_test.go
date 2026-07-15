@@ -477,6 +477,88 @@ func TestToBifrostResponsesStreamResponse_PopulatesFinalDoneTextAndCompletedOutp
 	}
 }
 
+// TestToBifrostResponsesStreamResponse_CompletedOutputOrderMatchesOutputIndex
+// guards against reordering response.completed.Output relative to the
+// output_index values already streamed via output_item.added: the text item
+// always claims output_index 0 (even for a reasoning-only-so-far response, an
+// empty placeholder message is opened on the first reasoning delta so the
+// envelope is never fully empty), so reasoning is always deferred to
+// output_index 1+. Output must list items in that same output_index order — a
+// client that reconciles the terminal snapshot against streamed output_index
+// (e.g. to attach late status) would otherwise pair the wrong item with the
+// wrong index.
+func TestToBifrostResponsesStreamResponse_CompletedOutputOrderMatchesOutputIndex(t *testing.T) {
+	state := AcquireChatToResponsesStreamState()
+	defer ReleaseChatToResponsesStreamState(state)
+
+	role := string(ChatMessageRoleAssistant)
+	reasoning := "thinking..."
+	content := "the answer"
+	stop := string(BifrostFinishReasonStop)
+
+	makeChunk := func(role *string, reasoning *string, content *string, finishReason *string) *BifrostChatResponse {
+		return &BifrostChatResponse{
+			ID:    "chatcmpl-test",
+			Model: "test-model",
+			Choices: []BifrostResponseChoice{
+				{
+					FinishReason: finishReason,
+					ChatStreamResponseChoice: &ChatStreamResponseChoice{
+						Delta: &ChatStreamResponseChoiceDelta{
+							Role:      role,
+							Reasoning: reasoning,
+							Content:   content,
+						},
+					},
+				},
+			},
+		}
+	}
+
+	var all []*BifrostResponsesStreamResponse
+	all = append(all, makeChunk(&role, nil, nil, nil).ToBifrostResponsesStreamResponse(state)...)
+	all = append(all, makeChunk(nil, &reasoning, nil, nil).ToBifrostResponsesStreamResponse(state)...)
+	all = append(all, makeChunk(nil, nil, &content, nil).ToBifrostResponsesStreamResponse(state)...)
+	all = append(all, makeChunk(nil, nil, nil, &stop).ToBifrostResponsesStreamResponse(state)...)
+
+	// Text streamed at output_index 0, reasoning deferred to output_index 1
+	// (mirrors the "skip 0" reservation tool calls already use for text).
+	var reasoningAddedIndex, textAddedIndex *int
+	for _, evt := range all {
+		if evt == nil || evt.Type != ResponsesStreamResponseTypeOutputItemAdded || evt.Item == nil || evt.Item.Type == nil {
+			continue
+		}
+		switch *evt.Item.Type {
+		case ResponsesMessageTypeReasoning:
+			reasoningAddedIndex = evt.OutputIndex
+		case ResponsesMessageTypeMessage:
+			textAddedIndex = evt.OutputIndex
+		}
+	}
+	if reasoningAddedIndex == nil || textAddedIndex == nil {
+		t.Fatal("expected both a reasoning and a text output_item.added event")
+	}
+	if *textAddedIndex >= *reasoningAddedIndex {
+		t.Fatalf("expected text output_index (%d) < reasoning output_index (%d)", *textAddedIndex, *reasoningAddedIndex)
+	}
+
+	var completed *BifrostResponsesStreamResponse
+	for _, evt := range all {
+		if evt != nil && evt.Type == ResponsesStreamResponseTypeCompleted {
+			completed = evt
+		}
+	}
+	if completed == nil || completed.Response == nil || len(completed.Response.Output) != 2 {
+		t.Fatal("expected response.completed with two output messages")
+	}
+	if completed.Response.Output[0].Type == nil || *completed.Response.Output[0].Type != ResponsesMessageTypeMessage {
+		t.Fatalf("expected Output[0] to be the text item (matching its lower output_index), got %v", completed.Response.Output[0].Type)
+	}
+	if completed.Response.Output[1].Type == nil || *completed.Response.Output[1].Type != ResponsesMessageTypeReasoning {
+		t.Fatalf("expected Output[1] to be the reasoning item (matching its higher output_index), got %v", completed.Response.Output[1].Type)
+	}
+}
+
 func TestToBifrostResponsesResponse_MapsLengthToIncomplete(t *testing.T) {
 	length := string(BifrostFinishReasonLength)
 	resp := (&BifrostChatResponse{

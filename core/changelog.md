@@ -1,3 +1,4 @@
+- fix: emit output_item.added for reasoning deltas on the Chat-Completions-fallback streaming path so the Anthropic-compat SSE converter opens a matching content_block_start before any thinking_delta (closes #5169)
 - feat: add Sarvam AI provider with chat, text-to-speech, and speech-to-text support (thanks [@Purvi09](https://github.com/Purvi09)!)
 - feat: add ElevenLabs sound effects (text-to-sound) support (thanks [@SecretSun](https://github.com/SecretSun)!)
 - feat: add `ProjectID` to Bedrock and Bedrock Mantle key configs with per-alias overrides for Bedrock, Bedrock Mantle, and Vertex
