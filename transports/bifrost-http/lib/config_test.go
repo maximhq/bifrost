@@ -1600,6 +1600,10 @@ func (m *MockConfigStore) GetWebhookEndpoints(ctx context.Context) ([]tables.Tab
 	return nil, nil
 }
 
+func (m *MockConfigStore) GetWebhookEndpointsPaginated(ctx context.Context, params configstore.WebhookEndpointsQueryParams) ([]tables.TableWebhookEndpoint, int64, error) {
+	return nil, 0, nil
+}
+
 func (m *MockConfigStore) GetWebhookEndpointByID(ctx context.Context, id string) (*tables.TableWebhookEndpoint, error) {
 	return nil, configstore.ErrNotFound
 }

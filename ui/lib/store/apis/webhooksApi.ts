@@ -1,6 +1,7 @@
 import {
 	GetWebhookDeliveriesParams,
 	GetWebhookDeliveriesResponse,
+	GetWebhookEndpointsParams,
 	GetWebhookEndpointsResponse,
 	RedeliverWebhookResponse,
 	TestWebhookEndpointResponse,
@@ -11,10 +12,24 @@ import {
 } from "@/lib/types/webhooks";
 import { baseApi } from "./baseApi";
 
+// Shapes list params for the wire: empty values are dropped and the events
+// filter is CSV-joined after sorting, so cache keys stay canonical regardless
+// of selection order.
+const buildWebhookEndpointsListParams = (params?: GetWebhookEndpointsParams): Record<string, string | number | boolean> => {
+	const out: Record<string, string | number | boolean> = {};
+	if (!params) return out;
+	if (params.search) out.search = params.search;
+	if (params.events?.length) out.event = [...params.events].sort().join(",");
+	if (params.disabled !== undefined) out.disabled = params.disabled;
+	if (params.limit !== undefined) out.limit = params.limit;
+	if (params.offset !== undefined) out.offset = params.offset;
+	return out;
+};
+
 export const webhooksApi = baseApi.injectEndpoints({
 	endpoints: (builder) => ({
-		getWebhookEndpoints: builder.query<GetWebhookEndpointsResponse, void>({
-			query: () => ({ url: "/webhooks" }),
+		getWebhookEndpoints: builder.query<GetWebhookEndpointsResponse, GetWebhookEndpointsParams | void>({
+			query: (params) => ({ url: "/webhooks", params: buildWebhookEndpointsListParams(params ?? undefined) }),
 			providesTags: ["WebhookEndpoints"],
 		}),
 
