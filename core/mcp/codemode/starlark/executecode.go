@@ -547,9 +547,14 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 			return nil, fmt.Errorf("%s", after)
 		}
 
-		resultStr := formatResultForLog(rawResult)
+		// The raw tool response is already returned to the caller as the tool's
+		// return value (createToolResponseMessage below), which the model sees.
+		// Appending it to the execution logs too would surface the same payload
+		// a second time in the model-visible output, doubling token cost and
+		// defeating code mode's data-reduction purpose. Keep it as a server-side
+		// debug trace instead.
 		logToolName := strings.ReplaceAll(effectiveToolName, "-", "_")
-		appendLog(fmt.Sprintf("[TOOL] %s.%s raw response: %s", clientName, logToolName, resultStr))
+		s.logger.Debug("%s [TOOL] %s.%s raw response: %s", codemcp.CodeModeLogPrefix, clientName, logToolName, formatResultForLog(rawResult))
 
 		return &schemas.BifrostMCPResponse{
 			ChatMessage: createToolResponseMessage(toolCallReq, rawResult),
