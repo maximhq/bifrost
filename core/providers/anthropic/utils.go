@@ -3353,3 +3353,22 @@ func IsClaudeCodeRequest(ctx *schemas.BifrostContext) bool {
 	}
 	return false
 }
+
+// IsAnthropicNativeSurface reports whether the inbound request arrived via
+// Bifrost's own Anthropic-shaped gateway routes (/anthropic/v1/messages and
+// its langchain/litellm aliases — anything registered as
+// integrations.RouteConfigTypeAnthropic, set on ctx by the router at request
+// entry). Callers on this surface are using a real Anthropic-compatible SDK
+// and expect Anthropic's own (opaque, model-dependent) defaults — Bifrost
+// must not silently substitute its own default for a field the caller left
+// unset. Every other surface (OpenAI-compat, GenAI, Bedrock-native, direct Go
+// SDK usage) has no equivalent "caller didn't set this Anthropic-only field"
+// signal, so the implicit default there is intentional and unaffected by
+// this check.
+func IsAnthropicNativeSurface(ctx *schemas.BifrostContext) bool {
+	if ctx == nil {
+		return false
+	}
+	integrationType, _ := ctx.Value(schemas.BifrostContextKeyIntegrationType).(string)
+	return integrationType == "anthropic"
+}

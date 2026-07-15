@@ -1312,6 +1312,53 @@ func MergeExtraParamsIntoJSON(jsonBody []byte, extraParams map[string]interface{
 	return indented.Bytes(), nil
 }
 
+// bifrostInternalOnlyExtraParamKeys lists ExtraParams keys that exist purely to
+// round-trip state between Bifrost's own inbound/outbound converters (e.g.
+// anthropic.ToBifrostResponsesRequest -> anthropic/bedrock outbound converters)
+// and were never meant to reach a provider's wire body directly. The converters
+// that understand a given key are responsible for consuming it and stripping it
+// from their own request struct's ExtraParams; this list is the last-resort
+// safety net for CheckContextAndGetRequestBody's generic passthrough merge, which
+// blindly forwards whatever ExtraParams survive onto any provider that didn't
+// know to strip them (e.g. an Anthropic-native request that falls back to an
+// unrelated OpenAI-compatible provider with ExtraParams passthrough enabled).
+var bifrostInternalOnlyExtraParamKeys = []string{
+	"thinking_display",
+}
+
+// stripBifrostInternalOnlyExtraParams returns extraParams with any
+// bifrostInternalOnlyExtraParamKeys removed. Returns a fresh copy rather than
+// mutating in place: extraParams commonly aliases the request's canonical
+// Params.ExtraParams map (most provider converters assign it directly, e.g.
+// `req.ExtraParams = bifrostReq.Params.ExtraParams`), and that same map is
+// shared across fallback attempts (core/bifrost.go's prepareFallbackRequest
+// does a shallow copy that keeps the same *Params pointer) — mutating it here
+// would silently drop the key for a later fallback attempt that might still
+// need it (e.g. a subsequent Anthropic-family fallback).
+func stripBifrostInternalOnlyExtraParams(extraParams map[string]interface{}) map[string]interface{} {
+	if len(extraParams) == 0 {
+		return extraParams
+	}
+	hasInternalKey := false
+	for _, key := range bifrostInternalOnlyExtraParamKeys {
+		if _, exists := extraParams[key]; exists {
+			hasInternalKey = true
+			break
+		}
+	}
+	if !hasInternalKey {
+		return extraParams
+	}
+	filtered := make(map[string]interface{}, len(extraParams))
+	for k, v := range extraParams {
+		filtered[k] = v
+	}
+	for _, key := range bifrostInternalOnlyExtraParamKeys {
+		delete(filtered, key)
+	}
+	return filtered
+}
+
 // CheckContextAndGetRequestBody checks if the raw request body should be used, and returns it if it exists.
 func CheckContextAndGetRequestBody(ctx context.Context, request RequestBodyGetter, requestConverter RequestBodyConverter) ([]byte, *schemas.BifrostError) {
 	if IsLargePayloadPassthroughEnabled(ctx) {
@@ -1335,6 +1382,7 @@ func CheckContextAndGetRequestBody(ctx context.Context, request RequestBodyGette
 		// Merge ExtraParams into the JSON if passthrough is enabled
 		if ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) != nil && ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) == true {
 			extraParams := convertedBody.GetExtraParams()
+			extraParams = stripBifrostInternalOnlyExtraParams(extraParams)
 			if len(extraParams) > 0 {
 				// Use order-preserving merge to avoid destroying key ordering in
 				// tool schemas and other order-sensitive JSON structures.

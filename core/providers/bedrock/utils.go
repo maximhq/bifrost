@@ -421,7 +421,12 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 					}
 					if bifrostReq.Params.Reasoning.Display != nil {
 						thinkingConfig["display"] = *bifrostReq.Params.Reasoning.Display
-					} else if anthropic.IsAdaptiveOnlyThinkingModel(capModel) {
+					} else if anthropic.IsAdaptiveOnlyThinkingModel(capModel) && !anthropic.IsAnthropicNativeSurface(ctx) {
+						// Not reachable from the Anthropic-native surface today
+						// (that surface always converts through the Responses
+						// path, never BifrostChatRequest) — gated anyway for
+						// parity/defense-in-depth with the Responses-side fix,
+						// see bedrock/responses.go and anthropic/chat.go.
 						thinkingConfig["display"] = "summarized"
 					}
 					bedrockReq.AdditionalModelRequestFields.Set("thinking", thinkingConfig)
@@ -493,7 +498,16 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 	}
 	// Add extra parameters
 	if len(bifrostReq.Params.ExtraParams) > 0 {
-		bedrockReq.ExtraParams = bifrostReq.Params.ExtraParams
+		// Clone rather than alias bifrostReq.Params.ExtraParams: applyBedrockExtraParams
+		// deletes several keys from this map in place, and the map is shared
+		// across fallback attempts (core/bifrost.go's prepareFallbackRequest
+		// shallow-copies BifrostChatRequest, keeping the same *Params pointer) —
+		// mutating it here would silently drop those keys for a later fallback
+		// attempt that still needs them.
+		bedrockReq.ExtraParams = make(map[string]interface{}, len(bifrostReq.Params.ExtraParams))
+		for k, v := range bifrostReq.Params.ExtraParams {
+			bedrockReq.ExtraParams[k] = v
+		}
 		applyBedrockExtraParams(bedrockReq.ExtraParams, bedrockReq)
 		if len(bedrockReq.ExtraParams) == 0 {
 			bedrockReq.ExtraParams = nil
