@@ -381,6 +381,16 @@ func TestWebhookHandlerTestDelivery(t *testing.T) {
 	handler.testWebhookEndpoint(missingCtx)
 	assert.Equal(t, fasthttp.StatusNotFound, missingCtx.Response.StatusCode())
 
+	// A disabled endpoint cannot be test-fired.
+	disabledBody := fmt.Sprintf(`{"name":"test-fire-disabled","url":%q,"events":["async_job.completed"],"allow_private_network":true,"disabled":true}`, receiver.URL)
+	disabledCreateCtx := newWebhookRequestCtx(disabledBody, nil)
+	handler.createWebhookEndpoint(disabledCreateCtx)
+	require.Equal(t, fasthttp.StatusCreated, disabledCreateCtx.Response.StatusCode())
+	disabledID := decodeJSONResponse(t, disabledCreateCtx)["endpoint"].(map[string]any)["id"].(string)
+	disabledCtx := newWebhookRequestCtx("", map[string]string{"id": disabledID})
+	handler.testWebhookEndpoint(disabledCtx)
+	assert.Equal(t, fasthttp.StatusBadRequest, disabledCtx.Response.StatusCode())
+
 	_ = config
 }
 
