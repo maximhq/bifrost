@@ -244,7 +244,7 @@ func (provider *VLLMProvider) Embedding(ctx *schemas.BifrostContext, key schemas
 
 // Responses performs a responses request to vLLM's API (via chat completion).
 func (provider *VLLMProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
-	chatResponse, err := provider.ChatCompletion(ctx, key, request.ToChatRequest())
+	chatResponse, err := provider.ChatCompletion(ctx, key, request.ToChatRequest(provider.logger))
 	if err != nil {
 		return nil, err
 	}
@@ -260,7 +260,7 @@ func (provider *VLLMProvider) ResponsesStream(ctx *schemas.BifrostContext, postH
 		postHookRunner,
 		postHookSpanFinalizer,
 		key,
-		request.ToChatRequest(),
+		request.ToChatRequest(provider.logger),
 	)
 }
 

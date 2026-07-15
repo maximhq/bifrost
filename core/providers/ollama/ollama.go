@@ -230,7 +230,7 @@ func (provider *OllamaProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 
 // Responses performs a responses request to the Ollama API.
 func (provider *OllamaProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
-	chatResponse, err := provider.ChatCompletion(ctx, key, request.ToChatRequest())
+	chatResponse, err := provider.ChatCompletion(ctx, key, request.ToChatRequest(provider.logger))
 	if err != nil {
 		return nil, err
 	}
@@ -248,7 +248,7 @@ func (provider *OllamaProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 		postHookRunner,
 		postHookSpanFinalizer,
 		key,
-		request.ToChatRequest(),
+		request.ToChatRequest(provider.logger),
 	)
 }
 

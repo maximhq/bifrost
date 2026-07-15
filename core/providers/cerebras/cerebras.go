@@ -172,7 +172,7 @@ func (provider *CerebrasProvider) ChatCompletionStream(ctx *schemas.BifrostConte
 }
 
 func (provider *CerebrasProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
-	chatResponse, err := provider.ChatCompletion(ctx, key, request.ToChatRequest())
+	chatResponse, err := provider.ChatCompletion(ctx, key, request.ToChatRequest(provider.logger))
 	if err != nil {
 		return nil, err
 	}
@@ -190,7 +190,7 @@ func (provider *CerebrasProvider) ResponsesStream(ctx *schemas.BifrostContext, p
 		postHookRunner,
 		postHookSpanFinalizer,
 		key,
-		request.ToChatRequest(),
+		request.ToChatRequest(provider.logger),
 	)
 }
 

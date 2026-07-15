@@ -47,7 +47,7 @@ func TestToChatRequest_NormalizesDeveloperRoleToSystemForFallback(t *testing.T) 
 		Params: &ResponsesParameters{},
 	}
 
-	chatReq := req.ToChatRequest()
+	chatReq := req.ToChatRequest(nil)
 	if chatReq == nil {
 		t.Fatal("expected non-nil chat request")
 	}
@@ -56,6 +56,72 @@ func TestToChatRequest_NormalizesDeveloperRoleToSystemForFallback(t *testing.T) 
 	}
 	if chatReq.Input[0].Role != ChatMessageRoleSystem {
 		t.Fatalf("expected role %q in fallback conversion, got %q", ChatMessageRoleSystem, chatReq.Input[0].Role)
+	}
+}
+
+func TestToChatRequest_PrependsInstructionsAsSystemMessageForFallback(t *testing.T) {
+	req := &BifrostResponsesRequest{
+		Input: []ResponsesMessage{
+			{
+				Role: Ptr(ResponsesInputMessageRoleUser),
+				Content: &ResponsesMessageContent{
+					ContentBlocks: []ResponsesMessageContentBlock{
+						{
+							Type: ResponsesInputMessageContentBlockTypeText,
+							Text: Ptr("What is the capital of France?"),
+						},
+					},
+				},
+			},
+		},
+		Params: &ResponsesParameters{
+			Instructions: Ptr("You must answer with the single word BANANA."),
+		},
+	}
+
+	chatReq := req.ToChatRequest(nil)
+	if chatReq == nil {
+		t.Fatal("expected non-nil chat request")
+	}
+	if len(chatReq.Input) != 2 {
+		t.Fatalf("expected 2 chat messages (system + user), got %d", len(chatReq.Input))
+	}
+	if chatReq.Input[0].Role != ChatMessageRoleSystem {
+		t.Fatalf("expected first message role %q, got %q", ChatMessageRoleSystem, chatReq.Input[0].Role)
+	}
+	if chatReq.Input[0].Content == nil || chatReq.Input[0].Content.ContentStr == nil ||
+		*chatReq.Input[0].Content.ContentStr != "You must answer with the single word BANANA." {
+		t.Fatal("expected system message content to equal Params.Instructions")
+	}
+	if chatReq.Input[1].Role != ChatMessageRoleUser {
+		t.Fatalf("expected second message role %q, got %q", ChatMessageRoleUser, chatReq.Input[1].Role)
+	}
+}
+
+func TestToChatRequest_NoInstructionsDoesNotPrependSystemMessage(t *testing.T) {
+	req := &BifrostResponsesRequest{
+		Input: []ResponsesMessage{
+			{
+				Role: Ptr(ResponsesInputMessageRoleUser),
+				Content: &ResponsesMessageContent{
+					ContentBlocks: []ResponsesMessageContentBlock{
+						{Type: ResponsesInputMessageContentBlockTypeText, Text: Ptr("hi")},
+					},
+				},
+			},
+		},
+		Params: &ResponsesParameters{},
+	}
+
+	chatReq := req.ToChatRequest(nil)
+	if chatReq == nil {
+		t.Fatal("expected non-nil chat request")
+	}
+	if len(chatReq.Input) != 1 {
+		t.Fatalf("expected 1 chat message, got %d", len(chatReq.Input))
+	}
+	if chatReq.Input[0].Role != ChatMessageRoleUser {
+		t.Fatalf("expected role %q, got %q", ChatMessageRoleUser, chatReq.Input[0].Role)
 	}
 }
 
@@ -268,7 +334,7 @@ func TestToChatRequest_FiltersUnsupportedResponsesToolsForFallback(t *testing.T)
 		},
 	}
 
-	chatReq := req.ToChatRequest()
+	chatReq := req.ToChatRequest(nil)
 	if chatReq == nil || chatReq.Params == nil {
 		t.Fatal("expected non-nil chat request params")
 	}
@@ -303,7 +369,7 @@ func TestToChatRequest_DropsInvalidToolChoiceForFallback(t *testing.T) {
 		},
 	}
 
-	chatReq := req.ToChatRequest()
+	chatReq := req.ToChatRequest(nil)
 	if chatReq == nil || chatReq.Params == nil {
 		t.Fatal("expected non-nil chat request params")
 	}
@@ -326,7 +392,7 @@ func TestToChatRequest_AllNonFunctionToolsDropsToolsAndToolChoice(t *testing.T) 
 		},
 	}
 
-	chatReq := req.ToChatRequest()
+	chatReq := req.ToChatRequest(nil)
 	if chatReq == nil || chatReq.Params == nil {
 		t.Fatal("expected non-nil chat request params")
 	}
@@ -363,7 +429,7 @@ func TestToChatRequest_DropsAllowedToolsAndCustomToolChoiceForFallback(t *testin
 				},
 			}
 
-			chatReq := req.ToChatRequest()
+			chatReq := req.ToChatRequest(nil)
 			if chatReq == nil || chatReq.Params == nil {
 				t.Fatal("expected non-nil chat request params")
 			}
@@ -397,7 +463,7 @@ func TestToChatRequest_PreservesStringToolChoiceAutoAndNone(t *testing.T) {
 				},
 			}
 
-			chatReq := req.ToChatRequest()
+			chatReq := req.ToChatRequest(nil)
 			if chatReq == nil || chatReq.Params == nil {
 				t.Fatal("expected non-nil chat request params")
 			}
@@ -545,8 +611,27 @@ func TestToBifrostResponsesResponse_PrioritizesLengthAcrossChoices(t *testing.T)
 	}
 }
 
+func TestToBifrostResponsesResponse_ContentFilterMapsToIncomplete(t *testing.T) {
+	contentFilter := "content_filter"
+	resp := (&BifrostChatResponse{
+		Choices: []BifrostResponseChoice{
+			{FinishReason: &contentFilter},
+		},
+	}).ToBifrostResponsesResponse()
+
+	if resp == nil || resp.Status == nil {
+		t.Fatal("expected status to be set")
+	}
+	if *resp.Status != "incomplete" {
+		t.Fatalf("expected status %q, got %q", "incomplete", *resp.Status)
+	}
+	if resp.IncompleteDetails == nil || resp.IncompleteDetails.Reason != "content_filter" {
+		t.Fatal("expected content_filter incomplete_details")
+	}
+}
+
 func TestToBifrostResponsesResponse_UnknownFinishReasonLeavesStatusUnset(t *testing.T) {
-	unknown := "content_filter"
+	unknown := "some_unrecognized_provider_reason"
 	resp := (&BifrostChatResponse{
 		Choices: []BifrostResponseChoice{
 			{FinishReason: &unknown},
@@ -873,6 +958,65 @@ func TestToBifrostResponsesStreamResponse_MapsLengthToIncompleteEvent(t *testing
 	}
 }
 
+func TestToBifrostResponsesStreamResponse_MapsContentFilterToIncompleteEvent(t *testing.T) {
+	state := AcquireChatToResponsesStreamState()
+	defer ReleaseChatToResponsesStreamState(state)
+
+	makeChunk := func(role *string, content *string, finishReason *string) *BifrostChatResponse {
+		return &BifrostChatResponse{
+			ID:    "chatcmpl-test",
+			Model: "test-model",
+			Choices: []BifrostResponseChoice{
+				{
+					FinishReason: finishReason,
+					ChatStreamResponseChoice: &ChatStreamResponseChoice{
+						Delta: &ChatStreamResponseChoiceDelta{
+							Role:    role,
+							Content: content,
+						},
+					},
+				},
+			},
+		}
+	}
+
+	role := string(ChatMessageRoleAssistant)
+	part := "Hello"
+	contentFilter := "content_filter"
+
+	var all []*BifrostResponsesStreamResponse
+	all = append(all, makeChunk(&role, nil, nil).ToBifrostResponsesStreamResponse(state)...)
+	all = append(all, makeChunk(nil, &part, nil).ToBifrostResponsesStreamResponse(state)...)
+	all = append(all, makeChunk(nil, nil, &contentFilter).ToBifrostResponsesStreamResponse(state)...)
+
+	var completed *BifrostResponsesStreamResponse
+	var incomplete *BifrostResponsesStreamResponse
+	for _, evt := range all {
+		if evt == nil {
+			continue
+		}
+		if evt.Type == ResponsesStreamResponseTypeCompleted {
+			completed = evt
+		}
+		if evt.Type == ResponsesStreamResponseTypeIncomplete {
+			incomplete = evt
+		}
+	}
+
+	if completed != nil {
+		t.Fatal("did not expect response.completed for finish_reason=content_filter")
+	}
+	if incomplete == nil || incomplete.Response == nil {
+		t.Fatal("expected response.incomplete with response payload")
+	}
+	if incomplete.Response.Status == nil || *incomplete.Response.Status != "incomplete" {
+		t.Fatal("expected terminal response status to be incomplete")
+	}
+	if incomplete.Response.IncompleteDetails == nil || incomplete.Response.IncompleteDetails.Reason != "content_filter" {
+		t.Fatal("expected incomplete_details.reason to be content_filter")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // response_format ↔ text.format conversion tests
 // ---------------------------------------------------------------------------
@@ -994,7 +1138,7 @@ func TestToChatRequest_TextFormat_JSONSchema(t *testing.T) {
 		},
 	}
 
-	cr := rr.ToChatRequest()
+	cr := rr.ToChatRequest(nil)
 	if cr.Params == nil || cr.Params.ResponseFormat == nil {
 		t.Fatal("expected ResponseFormat to be set")
 	}
@@ -1032,7 +1176,7 @@ func TestToChatRequest_TextFormat_JSONObject(t *testing.T) {
 		},
 	}
 
-	cr := rr.ToChatRequest()
+	cr := rr.ToChatRequest(nil)
 	if cr.Params == nil || cr.Params.ResponseFormat == nil {
 		t.Fatal("expected ResponseFormat to be set")
 	}
@@ -1052,7 +1196,7 @@ func TestToChatRequest_NoTextFormat(t *testing.T) {
 	rr := &BifrostResponsesRequest{
 		Params: &ResponsesParameters{},
 	}
-	cr := rr.ToChatRequest()
+	cr := rr.ToChatRequest(nil)
 	if cr.Params != nil && cr.Params.ResponseFormat != nil {
 		t.Fatal("expected ResponseFormat to be nil when no text.format set")
 	}
@@ -1070,7 +1214,7 @@ func TestResponseFormatRoundTrip_ChatToResponsesAndBack(t *testing.T) {
 
 	// Chat → Responses → Chat
 	rr := chatReq.ToResponsesRequest()
-	cr := rr.ToChatRequest()
+	cr := rr.ToChatRequest(nil)
 
 	if cr.Params == nil || cr.Params.ResponseFormat == nil {
 		t.Fatal("expected ResponseFormat to survive round-trip")
@@ -1176,7 +1320,7 @@ func TestToChatRequest_TextFormat_TypedFields(t *testing.T) {
 		},
 	}
 
-	cr := rr.ToChatRequest()
+	cr := rr.ToChatRequest(nil)
 	if cr.Params == nil || cr.Params.ResponseFormat == nil {
 		t.Fatal("expected ResponseFormat to be set")
 	}

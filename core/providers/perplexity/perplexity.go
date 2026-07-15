@@ -229,7 +229,7 @@ func (provider *PerplexityProvider) ChatCompletionStream(ctx *schemas.BifrostCon
 // OpenAI-compatible handler; sonar-* models not supported on responses fall back to /chat/completions.
 func (provider *PerplexityProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 	if !isPerplexityResponsesSupported(schemas.ResolveCanonicalModel(ctx, request.Model)) {
-		chatResponse, err := provider.ChatCompletion(ctx, key, request.ToChatRequest())
+		chatResponse, err := provider.ChatCompletion(ctx, key, request.ToChatRequest(provider.logger))
 		if err != nil {
 			return nil, err
 		}
@@ -264,7 +264,7 @@ func (provider *PerplexityProvider) ResponsesStream(ctx *schemas.BifrostContext,
 			postHookRunner,
 			postHookSpanFinalizer,
 			key,
-			request.ToChatRequest(),
+			request.ToChatRequest(provider.logger),
 		)
 	}
 
