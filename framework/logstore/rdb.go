@@ -1019,11 +1019,13 @@ func (s *RDBLogStore) GetStats(ctx context.Context, filters SearchFilters) (*Sea
 	if totalCount > 0 {
 		// Single query for all terminal-request stats: counts, latency, tokens, cost
 		var result struct {
-			CompletedCount sql.NullInt64   `gorm:"column:completed_count"`
-			SuccessCount   sql.NullInt64   `gorm:"column:success_count"`
-			AvgLatency     sql.NullFloat64 `gorm:"column:avg_latency"`
-			TotalTokens    sql.NullInt64   `gorm:"column:total_tokens"`
-			TotalCost      sql.NullFloat64 `gorm:"column:total_cost"`
+			CompletedCount   sql.NullInt64   `gorm:"column:completed_count"`
+			SuccessCount     sql.NullInt64   `gorm:"column:success_count"`
+			AvgLatency       sql.NullFloat64 `gorm:"column:avg_latency"`
+			TotalTokens      sql.NullInt64   `gorm:"column:total_tokens"`
+			PromptTokens     sql.NullInt64   `gorm:"column:prompt_tokens"`
+			CompletionTokens sql.NullInt64   `gorm:"column:completion_tokens"`
+			TotalCost        sql.NullFloat64 `gorm:"column:total_cost"`
 		}
 
 		statsQuery := s.ScopedDB(ctx).Model(&Log{})
@@ -1035,6 +1037,8 @@ func (s *RDBLogStore) GetStats(ctx context.Context, filters SearchFilters) (*Sea
 			SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success_count,
 			AVG(latency) as avg_latency,
 			SUM(total_tokens) as total_tokens,
+			SUM(prompt_tokens) as prompt_tokens,
+			SUM(completion_tokens) as completion_tokens,
 			SUM(cost) as total_cost
 		`).Scan(&result).Error; err != nil {
 			return nil, err
@@ -1049,6 +1053,12 @@ func (s *RDBLogStore) GetStats(ctx context.Context, filters SearchFilters) (*Sea
 			}
 			if result.TotalTokens.Valid {
 				stats.TotalTokens = result.TotalTokens.Int64
+			}
+			if result.PromptTokens.Valid {
+				stats.PromptTokens = result.PromptTokens.Int64
+			}
+			if result.CompletionTokens.Valid {
+				stats.CompletionTokens = result.CompletionTokens.Int64
 			}
 			if result.TotalCost.Valid {
 				stats.TotalCost = result.TotalCost.Float64

@@ -116,6 +116,8 @@ type SearchStats struct {
 	UserFacingTotalRequests   int64   `json:"user_facing_total_requests"`              // Count of root requests (fallback_index = 0) used as denominator for UserFacingSuccessRate
 	AverageLatency            float64 `json:"average_latency"`                         // Average latency in milliseconds
 	TotalTokens               int64   `json:"total_tokens"`                            // Total tokens used
+	PromptTokens              int64   `json:"prompt_tokens"`                           // Input tokens used
+	CompletionTokens          int64   `json:"completion_tokens"`                       // Output tokens used
 	TotalCost                 float64 `json:"total_cost"`                              // Total cost in dollars
 	CacheHitRateTotalRequests *int64  `json:"cache_hit_rate_total_requests,omitempty"` // Completed requests used as local-cache hit-rate denominator
 	DirectCacheHits           *int64  `json:"direct_cache_hits,omitempty"`             // Number of direct (exact) semantic cache hits
