@@ -945,6 +945,12 @@ bifrost:
       #   - attribute: "department"
       #     value: "platform"
       #     business_unit: "Platform"
+      # # SCIM inbound provisioning (Enterprise): the IdP pushes users/groups to Bifrost's SCIM 2.0 endpoint.
+      # claimScimAttributes:                         # per-claim SCIM interpretation
+      #   groups:
+      #     attributeType: "group"                   # "user" (SCIM User attribute) or "group" (match SCIM Group)
+      #     attributeValue: "displayName"
+      # provisioningToken: "env.SCIM_PROVISIONING_TOKEN"  # bearer token the IdP presents; generate: openssl rand -base64 32 | tr '+/' '-_' | tr -d '='
       #
       # Entra (Azure AD) configuration:
       # tenantId: ""
@@ -965,6 +971,12 @@ bifrost:
       #     value: "<group-object-id>"
       #     team: "platform-team"
       # attributeBusinessUnitMappings: []
+      # # SCIM inbound provisioning (Enterprise): the IdP pushes users/groups to Bifrost's SCIM 2.0 endpoint.
+      # claimScimAttributes:                         # per-claim SCIM interpretation
+      #   groups:
+      #     attributeType: "group"                   # "user" (SCIM User attribute) or "group" (match SCIM Group)
+      #     attributeValue: "displayName"
+      # provisioningToken: "env.SCIM_PROVISIONING_TOKEN"  # bearer token the IdP presents; generate: openssl rand -base64 32 | tr '+/' '-_' | tr -d '='
       #
       # Keycloak configuration:
       # serverUrl: "https://keycloak.company.com"  # base URL, must NOT include /realms/{realm}
@@ -1025,6 +1037,12 @@ bifrost:
       # attributeRoleMappings: []
       # attributeTeamMappings: []
       # attributeBusinessUnitMappings: []
+      # # SCIM inbound provisioning (Enterprise): the IdP pushes users/groups to Bifrost's SCIM 2.0 endpoint.
+      # claimScimAttributes:                         # per-claim SCIM interpretation
+      #   groups:
+      #     attributeType: "group"                   # "user" (SCIM User attribute) or "group" (match SCIM Group)
+      #     attributeValue: "displayName"
+      # provisioningToken: "env.SCIM_PROVISIONING_TOKEN"  # bearer token the IdP presents; generate: openssl rand -base64 32 | tr '+/' '-_' | tr -d '='
 
   # Load balancer configuration for intelligent request routing
   loadBalancer:
