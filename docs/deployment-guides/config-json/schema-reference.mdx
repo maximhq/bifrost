@@ -23,6 +23,7 @@ This page is a concise reference for every top-level key in `config.json`. Click
 | `client` | object | Worker pool, logging, CORS, auth enforcement, header filtering, MCP, compat shims | [Client](/deployment-guides/config-json/client) |
 | `providers` | object | LLM provider API keys, network settings, concurrency | [Providers](/deployment-guides/config-json/providers) |
 | `governance` | object | Admin auth, virtual keys, budgets, rate limits, routing rules, customers, teams | [Governance](/deployment-guides/config-json/governance) |
+| `alerting` | object | Alert channels, CEL-based rules, history retention, and webhook network controls *(enterprise only)* | [Alerting](/deployment-guides/config-json/alerting) |
 | `guardrails_config` | object | Content moderation providers and CEL-based rules *(enterprise only)* | [Guardrails](/deployment-guides/config-json/guardrails) |
 | `access_profiles` | array | Access profile templates for enterprise RBAC/governance controls *(enterprise only)* | [Enterprise Governance](/enterprise/advanced-governance) |
 | `cluster_config` | object | Cluster mode settings: gossip, peers, and auto-discovery backends *(enterprise only)* | [Cluster](/deployment-guides/config-json/cluster) |
@@ -142,6 +143,14 @@ Full documentation: [Governance](/deployment-guides/config-json/governance).
 Enterprise-only. Two sub-keys: `guardrail_providers` (array) and `guardrail_rules` (array).
 
 Full documentation: [Guardrails](/deployment-guides/config-json/guardrails).
+
+---
+
+## `alerting`
+
+Enterprise-only. Supports `channels` (array), `rules` (array), `history_retention_days`, `evaluation_interval_seconds`, and `webhook_network`.
+
+Full documentation: [Alerting](/deployment-guides/config-json/alerting).
 
 ---
 

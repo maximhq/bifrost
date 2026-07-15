@@ -333,6 +333,16 @@
                   }
                 ]
               },
+              {
+                "group": "Alerting",
+                "icon": "bell",
+                "pages": [
+                  "enterprise/alerting/overview",
+                  "enterprise/alerting/alert-rules",
+                  "enterprise/alerting/alert-channels",
+                  "enterprise/alerting/alert-history"
+                ]
+              },
               "enterprise/audit-logs",
               "enterprise/secret-management",
               "enterprise/log-exports",
@@ -594,6 +604,7 @@
                   "deployment-guides/helm/storage",
                   "deployment-guides/helm/plugins",
                   "deployment-guides/helm/governance",
+                  "deployment-guides/helm/alerting",
                   "deployment-guides/helm/guardrails",
                   "deployment-guides/helm/secret-management",
                   "deployment-guides/helm/cluster",
@@ -612,6 +623,7 @@
                   "deployment-guides/config-json/storage",
                   "deployment-guides/config-json/plugins",
                   "deployment-guides/config-json/governance",
+                  "deployment-guides/config-json/alerting",
                   "deployment-guides/config-json/cluster",
                   "deployment-guides/config-json/guardrails",
                   "deployment-guides/config-json/secret-management"
