@@ -236,6 +236,63 @@ func TestToResponsesMessages_EmitsReasoningMessageBeforeTextContent(t *testing.T
 	}
 }
 
+func TestToResponsesMessages_PreservesVideoContent(t *testing.T) {
+	detail := "default"
+	fps := 1.0
+	maxLongSidePixel := 1920
+	video := &ChatInputVideo{
+		URL:              "mm_file://file_id",
+		Detail:           &detail,
+		FPS:              &fps,
+		MaxLongSidePixel: &maxLongSidePixel,
+	}
+	cm := &ChatMessage{
+		Role: ChatMessageRoleUser,
+		Content: &ChatMessageContent{
+			ContentBlocks: []ChatContentBlock{{
+				Type:           ChatContentBlockTypeVideo,
+				VideoURLStruct: video,
+			}},
+		},
+	}
+
+	responsesMessages := cm.ToResponsesMessages()
+	if len(responsesMessages) != 1 || responsesMessages[0].Content == nil || len(responsesMessages[0].Content.ContentBlocks) != 1 {
+		t.Fatalf("expected one Responses message with one content block, got %#v", responsesMessages)
+	}
+	responseBlock := responsesMessages[0].Content.ContentBlocks[0]
+	if responseBlock.Type != ResponsesInputMessageContentBlockTypeVideo {
+		t.Fatalf("expected input_video block, got %q", responseBlock.Type)
+	}
+	if responseBlock.ResponsesInputMessageContentBlockVideo == nil || responseBlock.VideoURL == nil {
+		t.Fatal("expected video content to be preserved")
+	}
+	if responseBlock.VideoURL.URL != video.URL || responseBlock.VideoURL.Detail == nil || *responseBlock.VideoURL.Detail != detail || responseBlock.VideoURL.FPS == nil || *responseBlock.VideoURL.FPS != fps || responseBlock.VideoURL.MaxLongSidePixel == nil || *responseBlock.VideoURL.MaxLongSidePixel != maxLongSidePixel {
+		t.Fatalf("expected complete video content, got %#v", responseBlock.VideoURL)
+	}
+	wireBlock, err := json.Marshal(responseBlock)
+	if err != nil {
+		t.Fatalf("failed to marshal video content: %v", err)
+	}
+	var wirePayload map[string]any
+	if err := json.Unmarshal(wireBlock, &wirePayload); err != nil {
+		t.Fatalf("failed to decode marshaled video content: %v", err)
+	}
+	videoPayload, ok := wirePayload["video_url"].(map[string]any)
+	if !ok || videoPayload["url"] != video.URL || videoPayload["detail"] != detail || videoPayload["fps"] != fps || videoPayload["max_long_side_pixel"] != float64(maxLongSidePixel) {
+		t.Fatalf("expected video wire payload, got %#v", wirePayload["video_url"])
+	}
+
+	chatMessages := ToChatMessages(responsesMessages)
+	if len(chatMessages) != 1 || chatMessages[0].Content == nil || len(chatMessages[0].Content.ContentBlocks) != 1 {
+		t.Fatalf("expected one Chat message with one content block, got %#v", chatMessages)
+	}
+	chatBlock := chatMessages[0].Content.ContentBlocks[0]
+	if chatBlock.Type != ChatContentBlockTypeVideo || chatBlock.VideoURLStruct == nil || chatBlock.VideoURLStruct.URL != video.URL {
+		t.Fatalf("expected video content round-trip, got %#v", chatBlock)
+	}
+}
+
 func TestToChatRequest_FiltersUnsupportedResponsesToolsForFallback(t *testing.T) {
 	validName := "valid_tool"
 	invalidName := "  "
