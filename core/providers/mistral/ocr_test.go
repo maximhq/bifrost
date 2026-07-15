@@ -352,11 +352,6 @@ func TestToBifrostOCRResponse(t *testing.T) {
 			},
 		},
 		{
-			// End-to-end regression for the shape reported in the field
-			// (top_left_x/top_left_y/bottom_right_x/bottom_right_y/content/type).
-			// Simulates the actual wire path: Mistral JSON → MistralOCRResponse →
-			// BifrostOCRResponse → JSON to client, and checks that block content
-			// (not just presence) survives the round-trip.
 			name: "populated blocks survive full JSON round-trip",
 			input: func() *MistralOCRResponse {
 				mistralJSON := []byte(`{
@@ -389,8 +384,6 @@ func TestToBifrostOCRResponse(t *testing.T) {
 			},
 		},
 		{
-			// Regression: `blocks: []` from Mistral is a distinct state from an
-			// absent field, and must not collapse into nil via omitempty.
 			name: "response with explicitly empty blocks preserves presence",
 			input: &MistralOCRResponse{
 				Model: "mistral-ocr-latest",

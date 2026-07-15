@@ -73,11 +73,9 @@ type OCRPage struct {
 	Markdown   string             `json:"markdown"`
 	Images     []OCRPageImage     `json:"images,omitempty"`
 	Dimensions *OCRPageDimensions `json:"dimensions,omitempty"`
-	// Blocks carries provider-native layout blocks (currently Mistral only,
-	// populated when the request sets include_blocks=true). Kept as raw JSON
-	// values so any provider-side schema addition passes through unchanged.
-	// Pointer so an explicitly empty `blocks: []` round-trips as [] instead of
-	// being dropped by omitempty — the field's presence is part of the contract.
+	// Provider-native layout blocks, present when the request sets
+	// include_blocks=true; pointer so an explicitly empty `blocks: []`
+	// isn't dropped by omitempty.
 	Blocks *[]any `json:"blocks,omitempty"`
 }
 
