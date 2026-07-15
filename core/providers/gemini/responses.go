@@ -1268,6 +1268,13 @@ func processGeminiThoughtPart(part *Part, state *GeminiResponsesStreamState, seq
 		responses = append(responses, closeResponses...)
 	}
 
+	// A collected signature ends a signed segment: a following thought part
+	// starts a fresh reasoning item so every signed segment stays replayable
+	// with its own signature.
+	if state.ReasoningOutputIndex >= 0 && state.ReasoningSignature != "" {
+		responses = append(responses, closeGeminiReasoningItem(state, sequenceNumber+len(responses))...)
+	}
+
 	// Open a reasoning item on the first thought part, reuse it afterwards
 	if state.ReasoningOutputIndex < 0 {
 		outputIndex := state.nextOutputIndex()

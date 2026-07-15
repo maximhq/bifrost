@@ -584,3 +584,72 @@ func TestGeminiNonStreamThoughtPartKeepsSignature(t *testing.T) {
 	require.NotNil(t, reasoningItems[0].ResponsesReasoning.EncryptedContent)
 	assert.Equal(t, wantSignature, *reasoningItems[0].ResponsesReasoning.EncryptedContent)
 }
+
+// TestGeminiResponsesStreamMultipleSignedThoughtSegments verifies that when
+// consecutive thought parts each carry their own thoughtSignature, every
+// signed segment gets its own reasoning item with its own signature, so each
+// one stays replayable. A collected signature ends the segment; the next
+// thought part opens a fresh item.
+func TestGeminiResponsesStreamMultipleSignedThoughtSegments(t *testing.T) {
+	sigA := []byte("sig-segment-a")
+	sigB := []byte("sig-segment-b")
+	chunks := []*GenerateContentResponse{
+		{
+			ResponseID:   "resp-segments",
+			ModelVersion: "gemini-2.5-flash",
+			Candidates: []*Candidate{{
+				Content: &Content{
+					Role:  "model",
+					Parts: []*Part{{Text: "First segment.", Thought: true, ThoughtSignature: sigA}},
+				},
+			}},
+		},
+		{
+			ResponseID:   "resp-segments",
+			ModelVersion: "gemini-2.5-flash",
+			Candidates: []*Candidate{{
+				Content: &Content{
+					Role:  "model",
+					Parts: []*Part{{Text: "Second segment.", Thought: true, ThoughtSignature: sigB}},
+				},
+			}},
+		},
+		{
+			ResponseID:   "resp-segments",
+			ModelVersion: "gemini-2.5-flash",
+			Candidates:   []*Candidate{{FinishReason: FinishReasonStop}},
+			UsageMetadata: &GenerateContentResponseUsageMetadata{
+				PromptTokenCount:     4,
+				CandidatesTokenCount: 6,
+				TotalTokenCount:      10,
+			},
+		},
+	}
+
+	state := &GeminiResponsesStreamState{}
+	state.flush()
+	responses := driveResponsesStream(t, state, chunks)
+
+	completed := findCompletedEvent(t, responses)
+	reasoningItems := itemsOfType(completed.Output, schemas.ResponsesMessageTypeReasoning)
+	require.Len(t, reasoningItems, 2, "each signed thought segment must keep its own reasoning item")
+
+	require.NotNil(t, reasoningItems[0].ResponsesReasoning)
+	require.Len(t, reasoningItems[0].ResponsesReasoning.Summary, 1)
+	assert.Equal(t, "First segment.", reasoningItems[0].ResponsesReasoning.Summary[0].Text)
+	require.NotNil(t, reasoningItems[0].ResponsesReasoning.EncryptedContent)
+	assert.Equal(t, base64.StdEncoding.EncodeToString(sigA), *reasoningItems[0].ResponsesReasoning.EncryptedContent)
+
+	require.NotNil(t, reasoningItems[1].ResponsesReasoning)
+	require.Len(t, reasoningItems[1].ResponsesReasoning.Summary, 1)
+	assert.Equal(t, "Second segment.", reasoningItems[1].ResponsesReasoning.Summary[0].Text)
+	require.NotNil(t, reasoningItems[1].ResponsesReasoning.EncryptedContent)
+	assert.Equal(t, base64.StdEncoding.EncodeToString(sigB), *reasoningItems[1].ResponsesReasoning.EncryptedContent)
+
+	// An unsigned run followed by one signed part still folds into one item.
+	state.flush()
+	single := driveResponsesStream(t, state, thinkingStreamChunks([]byte("sig-tail")))
+	singleCompleted := findCompletedEvent(t, single)
+	require.Len(t, itemsOfType(singleCompleted.Output, schemas.ResponsesMessageTypeReasoning), 1,
+		"unsigned thoughts followed by one signed part must stay a single reasoning item")
+}
