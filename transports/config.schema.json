@@ -4057,6 +4057,11 @@
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
         },
+        "list_models_refresh_interval_sec": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "Periodic background refresh interval (in seconds) for this provider's live list-models cache. 0 or omitted disables periodic refresh (reactive-only, on provider/key add-update); minimum 30 when enabled."
+        },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
         }
@@ -4095,6 +4100,11 @@
         "store_raw_request_response": {
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
+        },
+        "list_models_refresh_interval_sec": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "Periodic background refresh interval (in seconds) for this provider's live list-models cache. 0 or omitted disables periodic refresh (reactive-only, on provider/key add-update); minimum 30 when enabled."
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
@@ -4174,6 +4184,11 @@
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
         },
+        "list_models_refresh_interval_sec": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "Periodic background refresh interval (in seconds) for this provider's live list-models cache. 0 or omitted disables periodic refresh (reactive-only, on provider/key add-update); minimum 30 when enabled."
+        },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
         }
@@ -4212,6 +4227,11 @@
         "store_raw_request_response": {
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
+        },
+        "list_models_refresh_interval_sec": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "Periodic background refresh interval (in seconds) for this provider's live list-models cache. 0 or omitted disables periodic refresh (reactive-only, on provider/key add-update); minimum 30 when enabled."
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
@@ -4252,6 +4272,11 @@
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
         },
+        "list_models_refresh_interval_sec": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "Periodic background refresh interval (in seconds) for this provider's live list-models cache. 0 or omitted disables periodic refresh (reactive-only, on provider/key add-update); minimum 30 when enabled."
+        },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
         }
@@ -4290,6 +4315,11 @@
         "store_raw_request_response": {
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
+        },
+        "list_models_refresh_interval_sec": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "Periodic background refresh interval (in seconds) for this provider's live list-models cache. 0 or omitted disables periodic refresh (reactive-only, on provider/key add-update); minimum 30 when enabled."
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
@@ -4330,6 +4360,11 @@
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
         },
+        "list_models_refresh_interval_sec": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "Periodic background refresh interval (in seconds) for this provider's live list-models cache. 0 or omitted disables periodic refresh (reactive-only, on provider/key add-update); minimum 30 when enabled."
+        },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
         }
@@ -4367,6 +4402,11 @@
         "store_raw_request_response": {
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
+        },
+        "list_models_refresh_interval_sec": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "Periodic background refresh interval (in seconds) for this provider's live list-models cache. 0 or omitted disables periodic refresh (reactive-only, on provider/key add-update); minimum 30 when enabled."
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"

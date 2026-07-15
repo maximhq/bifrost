@@ -666,9 +666,15 @@ func (s *BifrostHTTPServer) ReloadProvider(ctx context.Context, provider schemas
 	// entries (for keys removed in this update) before refetching per-key.
 	s.Config.ModelCatalog.SetKeyConfigForProvider(provider, inMemoryKeys)
 	s.Config.ModelCatalog.InvalidateLiveProvider(provider)
+	// (Re)apply the provider's periodic refresh schedule — covers both add
+	// (new schedule) and update (interval changed or removed).
+	s.Config.ModelCatalog.SetLiveRefreshInterval(provider, updatedProvider.ListModelsRefreshIntervalSec)
 	if hasNoKeys {
 		logger.Warn("model discovery skipped for provider %s: no keys configured", provider)
 	} else {
+		// RefreshLiveModelsForProvider guards itself against the periodic
+		// ticker (marks in-flight for its whole duration, including the
+		// per-key fan-out), so no extra wrapping is needed here.
 		s.RefreshLiveModelsForProvider(ctx, provider, inMemoryKeys)
 	}
 	return updatedProvider, nil
@@ -696,6 +702,7 @@ func (s *BifrostHTTPServer) RemoveProvider(ctx context.Context, provider schemas
 	}
 	s.Config.ModelCatalog.InvalidateLiveProvider(provider)
 	s.Config.ModelCatalog.RemoveKeyConfigForProvider(provider)
+	s.Config.ModelCatalog.RemoveLiveRefreshConfig(provider)
 
 	return nil
 }
@@ -720,10 +727,20 @@ func (s *BifrostHTTPServer) OnKeyAdded(ctx context.Context, provider schemas.Mod
 	// Skip the fetch for a disabled key — core rejects list-models calls
 	// scoped to a disabled key's ID, so it would just fail and fall back
 	// onto the (usually empty, for custom providers) static datasheet.
-	if !keyEnabled(key) {
-		return nil
+	if keyEnabled(key) {
+		// Guard against the periodic ticker starting a concurrent
+		// provider-wide refresh while this single-key fetch is in flight —
+		// same overlap RefreshLiveModelsForProvider guards against itself.
+		s.Config.ModelCatalog.MarkLiveRefreshInFlight(provider)
+		s.FetchAndStoreLiveForKey(ctx, provider, keyID)
+		s.Config.ModelCatalog.NoteLiveRefreshCompleted(provider)
+	} else {
+		// For keyless providers keyID is the shared "" sentinel: if this is
+		// the provider's first key and it's added disabled, drop whatever
+		// entry the zero-key keyless fetch (RefreshLiveModelsForProvider) may
+		// have already populated there so it doesn't linger indefinitely.
+		s.Config.ModelCatalog.InvalidateLive(provider, keyID)
 	}
-	s.FetchAndStoreLiveForKey(ctx, provider, keyID)
 	return nil
 }
 
@@ -749,7 +766,9 @@ func (s *BifrostHTTPServer) OnKeyUpdated(ctx context.Context, provider schemas.M
 	if !keyEnabled(key) {
 		return nil
 	}
+	s.Config.ModelCatalog.MarkLiveRefreshInFlight(provider)
 	s.FetchAndStoreLiveForKey(ctx, provider, keyID)
+	s.Config.ModelCatalog.NoteLiveRefreshCompleted(provider)
 	return nil
 }
 
@@ -980,18 +999,45 @@ func (s *BifrostHTTPServer) UpdateSyncConfig(ctx context.Context) error {
 }
 
 // RefreshLiveModelsForProvider runs filtered + unfiltered list-models for the
-// provider, fanning out per key in parallel so the live cache ends up with
-// per-(provider, keyID) entries. Keyless providers cache under the "" sentinel.
+// provider, fanning out per enabled key in parallel so the live cache ends up
+// with per-(provider, keyID) entries. Disabled keys are skipped entirely — a
+// key the operator turned off should not be queried for model discovery.
+// Keyless providers cache under the "" sentinel.
 //
 // Callers are responsible for invalidating stale entries first when keys
 // have been removed from the provider's set.
+//
+// Every caller (boot seeding, ReloadProvider, and the periodic ticker itself)
+// goes through this one function, so the in-flight guard lives here rather
+// than at each call site — a caller that forgets to wrap its own call can no
+// longer race the ticker into a duplicate provider-wide fetch. No-op if the
+// provider has no periodic schedule.
 func (s *BifrostHTTPServer) RefreshLiveModelsForProvider(ctx context.Context, provider schemas.ModelProvider, keys []schemas.Key) {
+	s.Config.ModelCatalog.MarkLiveRefreshInFlight(provider)
+	defer s.Config.ModelCatalog.NoteLiveRefreshCompleted(provider)
+
+	hadAnyKeys := len(keys) > 0
+	enabledKeys := make([]schemas.Key, 0, len(keys))
+	for _, key := range keys {
+		if keyEnabled(key) {
+			enabledKeys = append(enabledKeys, key)
+		}
+	}
+	keys = enabledKeys
 	if len(keys) == 0 {
 		// Empty key slice + non-keyless provider would write under the "" sentinel
 		// reserved for keyless providers — colliding with the keyless namespace and
 		// triggering an unauthenticated fetch for a provider that requires a key.
 		if !isKeylessProvider(provider, s.Config) {
-			logger.Warn("model discovery skipped for provider %s: no keys configured", provider)
+			logger.Warn("model discovery skipped for provider %s: no enabled keys configured", provider)
+			return
+		}
+		if hadAnyKeys {
+			// A keyless provider (e.g. Ollama/SGL) can still have a key record
+			// for its server URL. If it had one and it's now disabled, respect
+			// that — don't fall through to the "" sentinel fetch, which would
+			// keep polling a provider the operator explicitly turned off.
+			logger.Warn("model discovery skipped for provider %s: all keys disabled", provider)
 			return
 		}
 		s.FetchAndStoreLiveForKey(ctx, provider, "")
@@ -1819,6 +1865,23 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 			snapshot[provider] = providerConfig.Keys
 		}
 		s.Config.ModelCatalog.ReplaceKeyConfig(snapshot)
+
+		// Wire the periodic live-models refresher: the composer's background
+		// ticker calls back into RefreshLiveModelsForProvider (with the
+		// provider's current enabled keys) for any provider whose configured
+		// list_models_refresh_interval_sec has elapsed. Registered once, here,
+		// since it needs s.Client which doesn't exist until this point.
+		s.Config.ModelCatalog.SetLiveRefreshHook(func(hookCtx context.Context, provider schemas.ModelProvider) {
+			keys, err := s.Config.GetProviderKeysRaw(provider)
+			if err != nil {
+				logger.Warn("periodic live-models refresh skipped for provider %s: %v", provider, err)
+				return
+			}
+			s.RefreshLiveModelsForProvider(hookCtx, provider, keys)
+		})
+		for provider, providerConfig := range s.Config.Providers {
+			s.Config.ModelCatalog.SetLiveRefreshInterval(provider, providerConfig.ListModelsRefreshIntervalSec)
+		}
 
 		var wg sync.WaitGroup
 		for provider, providerConfig := range s.Config.Providers {

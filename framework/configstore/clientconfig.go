@@ -450,7 +450,19 @@ type ProviderConfig struct {
 	ConfigHash               string                            `json:"config_hash,omitempty"`                 // Hash of config.json version, used for change detection
 	Status                   string                            `json:"status,omitempty"`                      // Model discovery status for keyless providers
 	Description              string                            `json:"description,omitempty"`                 // Model discovery error message for keyless providers
+
+	// ListModelsRefreshIntervalSec, when set and > 0, enables a periodic background
+	// refresh of this provider's live list-models cache in addition to the existing
+	// reactive refresh on provider/key add-update. nil or <= 0 keeps the pre-existing
+	// reactive-only behavior.
+	ListModelsRefreshIntervalSec *int64 `json:"list_models_refresh_interval_sec,omitempty"`
 }
+
+// MinListModelsRefreshIntervalSec is the smallest accepted positive value for
+// ProviderConfig.ListModelsRefreshIntervalSec, shared by every entry point
+// that can set it (HTTP API, UI, and config.json loading) so the floor can't
+// be bypassed via one path while enforced on another.
+const MinListModelsRefreshIntervalSec = 30
 
 // Redacted returns a redacted copy of the provider configuration.
 func (p *ProviderConfig) Redacted() *ProviderConfig {
@@ -460,16 +472,17 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 		redactedNetworkConfig = p.NetworkConfig.Redacted()
 	}
 	redactedConfig := ProviderConfig{
-		NetworkConfig:            redactedNetworkConfig,
-		ConcurrencyAndBufferSize: p.ConcurrencyAndBufferSize,
-		SendBackRawRequest:       p.SendBackRawRequest,
-		SendBackRawResponse:      p.SendBackRawResponse,
-		StoreRawRequestResponse:  p.StoreRawRequestResponse,
-		CustomProviderConfig:     p.CustomProviderConfig,
-		OpenAIConfig:             p.OpenAIConfig,
-		ConfigHash:               p.ConfigHash,
-		Status:                   p.Status,
-		Description:              p.Description,
+		NetworkConfig:                redactedNetworkConfig,
+		ConcurrencyAndBufferSize:     p.ConcurrencyAndBufferSize,
+		SendBackRawRequest:           p.SendBackRawRequest,
+		SendBackRawResponse:          p.SendBackRawResponse,
+		StoreRawRequestResponse:      p.StoreRawRequestResponse,
+		CustomProviderConfig:         p.CustomProviderConfig,
+		OpenAIConfig:                 p.OpenAIConfig,
+		ConfigHash:                   p.ConfigHash,
+		Status:                       p.Status,
+		Description:                  p.Description,
+		ListModelsRefreshIntervalSec: p.ListModelsRefreshIntervalSec,
 	}
 
 	if p.ProxyConfig != nil {
@@ -706,6 +719,11 @@ func (p *ProviderConfig) GenerateConfigHash(providerName string) (string, error)
 	// Hash StoreRawRequestResponse
 	if p.StoreRawRequestResponse {
 		hash.Write([]byte("storeRawRequestResponse"))
+	}
+
+	// Hash ListModelsRefreshIntervalSec
+	if p.ListModelsRefreshIntervalSec != nil {
+		hash.Write([]byte(fmt.Sprintf("listModelsRefreshIntervalSec:%d", *p.ListModelsRefreshIntervalSec)))
 	}
 
 	return hex.EncodeToString(hash.Sum(nil)), nil

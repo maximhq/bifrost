@@ -1344,3 +1344,108 @@ func TestListModels_KeyBlacklistIsCaseInsensitive(t *testing.T) {
 		}
 	}
 }
+
+func ptrInt64ForTest(v int64) *int64 { return &v }
+
+// TestValidateListModelsRefreshInterval locks in the accepted range: nil,
+// zero, and negative all mean "disabled" and are accepted; any positive
+// value below the shared configstore.MinListModelsRefreshIntervalSec floor
+// is rejected so a misconfigured provider can't poll itself into the ground.
+func TestValidateListModelsRefreshInterval(t *testing.T) {
+	cases := []struct {
+		name    string
+		v       *int64
+		wantErr bool
+	}{
+		{"nil disables, accepted", nil, false},
+		{"zero disables, accepted", ptrInt64ForTest(0), false},
+		{"negative disables, accepted", ptrInt64ForTest(-5), false},
+		{"below floor rejected", ptrInt64ForTest(1), true},
+		{"just below floor rejected", ptrInt64ForTest(configstore.MinListModelsRefreshIntervalSec - 1), true},
+		{"at floor accepted", ptrInt64ForTest(configstore.MinListModelsRefreshIntervalSec), false},
+		{"above floor accepted", ptrInt64ForTest(3600), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateListModelsRefreshInterval(tc.v)
+			if tc.wantErr && err == nil {
+				t.Fatalf("expected an error, got nil")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("expected no error, got: %v", err)
+			}
+		})
+	}
+}
+
+// TestUpdateProvider_RejectsBelowFloorRefreshInterval verifies the HTTP layer
+// short-circuits with 400 before touching the config store when
+// list_models_refresh_interval_sec is a positive value below the floor.
+func TestUpdateProvider_RejectsBelowFloorRefreshInterval(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+
+	h := &ProviderHandler{
+		inMemoryStore: &lib.Config{
+			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+				schemas.OpenAI: {Keys: []schemas.Key{{ID: "k1", Weight: 1}}},
+			},
+		},
+		modelsManager: &mockModelsManager{},
+	}
+
+	body := []byte(`{
+		"network_config": {},
+		"concurrency_and_buffer_size": {"concurrency": 10, "buffer_size": 100},
+		"list_models_refresh_interval_sec": 5
+	}`)
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fasthttp.MethodPut)
+	ctx.Request.SetRequestURI("/api/providers/openai")
+	ctx.Request.SetBody(body)
+	ctx.SetUserValue("provider", string(schemas.OpenAI))
+
+	h.updateProvider(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	if !strings.Contains(string(ctx.Response.Body()), "list_models_refresh_interval_sec") {
+		t.Fatalf("expected error to mention list_models_refresh_interval_sec, got: %s", ctx.Response.Body())
+	}
+}
+
+// TestResolveListModelsRefreshInterval locks in updateProvider's three-way
+// PUT semantics for this field, which a bare *int64 can't express on its
+// own: omitted (nil, not explicitNull) preserves the old value; explicit
+// JSON null clears it; an explicit value always wins.
+func TestResolveListModelsRefreshInterval(t *testing.T) {
+	old := ptrInt64ForTest(60)
+	newVal := ptrInt64ForTest(120)
+
+	cases := []struct {
+		name        string
+		old         *int64
+		payload     *int64
+		explicitNil bool
+		want        *int64
+	}{
+		{"omitted preserves old value", old, nil, false, old},
+		{"omitted with no prior value stays nil", nil, nil, false, nil},
+		{"explicit null clears even when old was set", old, nil, true, nil},
+		{"explicit value overrides old value", old, newVal, false, newVal},
+		{"explicit value wins even if explicitNull is also (incorrectly) set", old, newVal, true, newVal},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := resolveListModelsRefreshInterval(tc.old, tc.payload, tc.explicitNil)
+			if (got == nil) != (tc.want == nil) {
+				t.Fatalf("expected nil=%v, got nil=%v (value=%v)", tc.want == nil, got == nil, got)
+			}
+			if got != nil && tc.want != nil && *got != *tc.want {
+				t.Fatalf("expected %d, got %d", *tc.want, *got)
+			}
+		})
+	}
+}

@@ -1345,6 +1345,21 @@ func syncAuthoritativeProvidersInStore(
 	})
 }
 
+// clampListModelsRefreshInterval enforces the same floor the HTTP API/UI
+// validate (configstore.MinListModelsRefreshIntervalSec) on config.json
+// values, which bypass that handler-level check entirely. A sub-minimum
+// positive value is disabled rather than silently honored, since letting it
+// through would allow config.json to configure unexpectedly aggressive
+// background list-models polling that the API rejects.
+func clampListModelsRefreshInterval(cfg *configstore.ProviderConfig, provider schemas.ModelProvider) {
+	v := cfg.ListModelsRefreshIntervalSec
+	if v != nil && *v > 0 && *v < configstore.MinListModelsRefreshIntervalSec {
+		logger.Warn("list_models_refresh_interval_sec=%d for provider %s is below the %d-second minimum; disabling periodic refresh for this provider",
+			*v, provider, configstore.MinListModelsRefreshIntervalSec)
+		cfg.ListModelsRefreshIntervalSec = nil
+	}
+}
+
 // processProvider processes a single provider configuration from config file
 func processProvider(
 	_ *Config,
@@ -1357,6 +1372,7 @@ func processProvider(
 	if err := ValidateCustomProvider(providerCfgInFile, provider); err != nil {
 		return err
 	}
+	clampListModelsRefreshInterval(&providerCfgInFile, provider)
 
 	baseProvider := provider
 	if providerCfgInFile.CustomProviderConfig != nil && providerCfgInFile.CustomProviderConfig.BaseProviderType != "" {
@@ -1395,6 +1411,7 @@ func processAuthoritativeProvider(
 	if err := ValidateCustomProvider(providerCfgInFile, provider); err != nil {
 		logger.Warn("invalid custom provider config for %s (writing through): %v", provider, err)
 	}
+	clampListModelsRefreshInterval(&providerCfgInFile, provider)
 	baseProvider := provider
 	if providerCfgInFile.CustomProviderConfig != nil && providerCfgInFile.CustomProviderConfig.BaseProviderType != "" {
 		baseProvider = providerCfgInFile.CustomProviderConfig.BaseProviderType
@@ -1416,6 +1433,12 @@ func processAuthoritativeProvider(
 		providerCfgInFile.Keys = mergeProviderKeys(provider, providerCfgInFile.Keys, existingCfg.Keys)
 		providerCfgInFile.Status = existingCfg.Status
 		providerCfgInFile.Description = existingCfg.Description
+		// list_models_refresh_interval_sec is a UI/API-managed opt-in setting,
+		// not typically declared in config.json — preserve the DB value when
+		// the file doesn't declare it, matching Status/Description above.
+		if providerCfgInFile.ListModelsRefreshIntervalSec == nil {
+			providerCfgInFile.ListModelsRefreshIntervalSec = existingCfg.ListModelsRefreshIntervalSec
+		}
 	}
 	providers[provider] = providerCfgInFile
 }
@@ -1438,6 +1461,13 @@ func mergeProviderWithHash(
 		logger.Debug("config hash mismatch for provider %s, syncing from config file", provider)
 		mergedKeys := mergeProviderKeys(provider, providerCfgInFile.Keys, existingCfg.Keys)
 		providerCfgInFile.Keys = mergedKeys
+		// list_models_refresh_interval_sec is a UI/API-managed opt-in setting,
+		// not typically declared in config.json — an unrelated file edit (any
+		// field change triggers this hash-mismatch branch) must not silently
+		// wipe it. Preserve the DB value when the file doesn't declare it.
+		if providerCfgInFile.ListModelsRefreshIntervalSec == nil {
+			providerCfgInFile.ListModelsRefreshIntervalSec = existingCfg.ListModelsRefreshIntervalSec
+		}
 		providersInConfigStore[provider] = providerCfgInFile
 	} else {
 		// Provider hash matches - but still check individual keys

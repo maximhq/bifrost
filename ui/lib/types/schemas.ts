@@ -820,6 +820,14 @@ export const performanceFormSchema = z.object({
 			message: "Concurrency must be less than or equal to buffer size",
 			path: ["concurrency"],
 		}),
+	// Periodic live list-models cache refresh interval, in seconds. 0/undefined
+	// disables it (reactive-only refresh, the default); otherwise must be >= 30s.
+	list_models_refresh_interval_sec: z
+		.number({ error: "Refresh interval must be a number" })
+		.refine((v) => v === 0 || v >= 30, {
+			message: "Refresh interval must be 0 (disabled) or at least 30 seconds",
+		})
+		.optional(),
 });
 
 // Debugging tab (raw request/response toggles)

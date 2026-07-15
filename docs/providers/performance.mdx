@@ -500,6 +500,23 @@ per_node_value = total_value / number_of_nodes
 
 ---
 
+## Periodic Model List Refresh
+
+Separately from throughput tuning, each provider also has an optional `list_models_refresh_interval_sec` setting (Performance tab in the UI, or `list_models_refresh_interval_sec` in `config.json`) that periodically re-fetches the provider's live model list in the background - useful for self-hosted providers like Ollama or vLLM where models are added/removed on the backend directly. `0` or omitted (the default) keeps the existing reactive-only behavior: the model list still refreshes whenever the provider or its keys are added/updated, just not on a timer. Minimum `30` seconds when enabled; disabled keys are skipped by the periodic refresh.
+
+```json
+{
+  "providers": {
+    "ollama": {
+      "keys": [{ "name": "ollama-local", "value": "", "models": ["*"], "weight": 1.0, "ollama_key_config": { "url": "http://localhost:11434" } }],
+      "list_models_refresh_interval_sec": 60
+    }
+  }
+}
+```
+
+---
+
 ## Related Documentation
 
 - **[Provider Configuration](../quickstart/gateway/provider-configuration)** - Complete provider setup guide
