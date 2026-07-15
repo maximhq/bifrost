@@ -1247,6 +1247,10 @@
     {
       "source": "/enterprise/getting-started",
       "destination": "/enterprise/overview"
+    },
+    {
+      "source": "/alerting/:slug*",
+      "destination": "/enterprise/alerting/:slug*"
     }
   ],
   "footer": {

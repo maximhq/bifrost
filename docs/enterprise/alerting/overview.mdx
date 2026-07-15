@@ -11,6 +11,12 @@ keywords: ["alerting", "alerts", "notifications", "monitoring", "slack", "pagerd
 
 Every evaluation and delivery attempt is recorded in [alert history](/enterprise/alerting/alert-history) so you can audit what fired, what was skipped by cooldowns, and what failed to deliver.
 
+Open **Alerting** in the Bifrost dashboard to manage rules, channels, and history.
+
+<Frame>
+  <img src="/media/alerting/alerting-rules-list.png" alt="Alert Rules list in the Bifrost dashboard showing rule name, scope, and condition columns" />
+</Frame>
+
 ### Key features
 
 | Feature | Description |
@@ -55,23 +61,24 @@ Each rule's CEL expression can reference the following variables, which are popu
 | --- | --- | --- |
 | `budget_usage_percent` | `double` | Percentage of the budget consumed (`budget_spent / budget_limit * 100`). |
 | `budget_spent` | `double` | Absolute dollars spent against the budget. |
-| `budget_limit` | `double` | Budget maximum limit in dollars. |
 | `rate_limit_request_usage_percent` | `double` | Percentage of the request rate limit consumed. |
 | `request_usage` | `int` | Absolute request count consumed. |
-| `request_limit` | `int` | Request rate limit maximum. |
 | `rate_limit_token_usage_percent` | `double` | Percentage of the token rate limit consumed. |
 | `token_usage` | `int` | Absolute token count consumed. |
-| `token_limit` | `int` | Token rate limit maximum. |
 | `scope_type` | `string` | The rule's scope type (`virtual_key`, `team`, or `customer`). |
 | `scope_id` | `string` | The rule's scope ID. |
 | `target_type` | `string` | The target type (`"budget"`) if the rule targets a specific budget; empty string otherwise. |
 | `target_id` | `string` | The target budget ID if the rule targets a specific budget; empty string otherwise. |
 
 <Note>
+It's advisable to set `scope_type`, `scope_id`, and `target_type`/`target_id` through the UI's **Scope Type**, **Scope ID**, and **Evaluate On** fields or through `config.json` rather than the condition builder.
+</Note>
+
+<Note>
 When a rule does not target a specific budget, the engine evaluates the expression once per budget in the scope. Each evaluation receives the `target_type` and `target_id` for that budget along with its `budget_spent` and `budget_limit`. Rate limit variables (`request_usage`, `token_usage`, and their limits) are populated from the scope's highest-utilization rate limits.
 </Note>
 
-Supported operators are `==`, `!=`, `>`, `<`, `>=`, and `<=`. See [Alert Rules](/enterprise/alerting/alert-rules) for CEL expression examples.
+Commonly used operators include `==`, `!=`, `>`, `<`, `>=`, and `<=`, combinable with `&&` and `||`. The engine places no restriction beyond that on the standard CEL function library — arithmetic, ternary (`?:`), `in`, and string functions like `.contains()`, `.matches()`, and `size()` are all valid as long as the expression evaluates to a boolean. See [Alert Rules](/enterprise/alerting/alert-rules) for CEL expression examples.
 
 ---
 

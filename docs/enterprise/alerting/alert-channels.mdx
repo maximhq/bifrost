@@ -163,11 +163,22 @@ Enabling `allow_http` or `allow_private_network` weakens TLS or SSRF protections
 <Tabs group="setup-method">
 <Tab title="Web UI">
 
-1. Open **Alerting** in the Bifrost dashboard, go to the **Channels** tab, and click **Add Channel**.
-2. Enter a **Channel Name** and select a **Channel Type**.
+Open **Alerting** in the Bifrost dashboard, go to the **Channels** tab, and click **Add Channel**.
+
+<Frame>
+  <img src="/media/alerting/alerting-channels-list.png" alt="Alert Channels list showing name, type, cooldown, and status columns" />
+</Frame>
+
+1. Enter a **Channel Name** and optional **Description**.
+2. Select a **Channel Type**: Slack, Microsoft Teams, PagerDuty, or Webhook.
 3. Provide the type-specific configuration (webhook URL, routing key, etc.).
-4. Optionally set a **Cooldown** and, for webhooks, **Custom Headers**.
-5. Click **Add Channel**.
+4. Optionally set a **Channel Cooldown** and, for webhooks, **Custom Headers**.
+
+<Frame>
+  <img src="/media/alerting/alerting-create-channel.png" alt="Create Alert Channel dialog showing name, channel type, and Slack webhook URL fields" />
+</Frame>
+
+5. Click **Create Channel**.
 
 </Tab>
 <Tab title="API">
