@@ -521,7 +521,7 @@ func TestToBifrostResponsesStreamResponse_CompletedOutputOrderMatchesOutputIndex
 	all = append(all, makeChunk(nil, nil, &content, nil).ToBifrostResponsesStreamResponse(state)...)
 	all = append(all, makeChunk(nil, nil, nil, &stop).ToBifrostResponsesStreamResponse(state)...)
 
-	// Reasoning streamed at output_index 0, text deferred to output_index 1
+	// Text streamed at output_index 0, reasoning deferred to output_index 1
 	// (mirrors the "skip 0" reservation tool calls already use for text).
 	var reasoningAddedIndex, textAddedIndex *int
 	for _, evt := range all {
