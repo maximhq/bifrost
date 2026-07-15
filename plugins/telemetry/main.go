@@ -32,6 +32,8 @@ const (
 	startTimeKey         schemas.BifrostContextKey = "bf-prom-start-time"
 	activeRequestTypeKey schemas.BifrostContextKey = "bf-prom-active-req-type"
 	mcpStartTimeKey      schemas.BifrostContextKey = "bf-prom-mcp-start-time"
+	mcpClientNameKey     schemas.BifrostContextKey = "bf-prom-mcp-client-name"
+	mcpToolNameKey       schemas.BifrostContextKey = "bf-prom-mcp-tool-name"
 )
 
 // PushGatewayConfig holds the configuration for pushing metrics to a Prometheus Push Gateway.
@@ -319,7 +321,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 	var filteredCustomLabels []string
 	if len(config.CustomLabels) > 0 {
 		for _, label := range config.CustomLabels {
-			if !containsLabel(defaultBifrostLabels, label) && !containsLabel(defaultHTTPLabels, label) {
+			if !containsLabel(defaultBifrostLabels, label) && !containsLabel(defaultHTTPLabels, label) && !containsLabel(defaultMCPLabelNames, label) {
 				filteredCustomLabels = append(filteredCustomLabels, label)
 			} else {
 				logger.Info("custom label %s is already a default label, it will be ignored", label)
