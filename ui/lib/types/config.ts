@@ -397,6 +397,7 @@ export interface ModelProviderConfig {
 	store_raw_request_response?: boolean;
 	custom_provider_config?: CustomProviderConfig;
 	openai_config?: OpenAIConfig;
+	passthrough_extra_params?: boolean;
 	status?: "unknown" | "success" | "list_models_failed";
 	description?: string;
 }
@@ -425,6 +426,7 @@ export interface AddProviderRequest {
 	store_raw_request_response?: boolean;
 	custom_provider_config?: CustomProviderConfig;
 	openai_config?: OpenAIConfig;
+	passthrough_extra_params?: boolean;
 }
 
 // UpdateProviderRequest matching Go's UpdateProviderRequest
@@ -437,6 +439,7 @@ export interface UpdateProviderRequest {
 	store_raw_request_response?: boolean;
 	custom_provider_config?: CustomProviderConfig;
 	openai_config?: OpenAIConfig;
+	passthrough_extra_params?: boolean;
 }
 
 export interface CreateProviderKeyRequest extends ModelProviderKey {}

@@ -111,7 +111,7 @@ func TestRequestWithSettableExtraParams_AllOpenAIRequestTypes(t *testing.T) {
 	}
 }
 
-func TestExtraParamsRequiresPassthroughHeader(t *testing.T) {
+func TestExtraParamsExtractedIndependentOfPolicy(t *testing.T) {
 	handlerStore := &mockHandlerStore{}
 	routes := CreateOpenAIRouteConfigs("/openai", handlerStore)
 
@@ -136,61 +136,19 @@ func TestExtraParamsRequiresPassthroughHeader(t *testing.T) {
 		}
 	}`)
 
-	t.Run("extra_params NOT extracted without passthrough header", func(t *testing.T) {
+	for _, passthrough := range []bool{false, true} {
 		req := chatRoute.GetRequestTypeInstance(context.Background())
-		err := sonic.Unmarshal(rawBody, req)
-		require.NoError(t, err)
+		require.NoError(t, sonic.Unmarshal(rawBody, req))
 
 		bifrostCtx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
-		// Header not set -- simulate router logic
-		if bifrostCtx.Value(schemas.BifrostContextKeyPassthroughExtraParams) == true {
-			if rws, ok := req.(RequestWithSettableExtraParams); ok {
-				var wrapper struct {
-					ExtraParams map[string]interface{} `json:"extra_params"`
-				}
-				if err := sonic.Unmarshal(rawBody, &wrapper); err == nil && len(wrapper.ExtraParams) > 0 {
-					rws.SetExtraParams(wrapper.ExtraParams)
-				}
-				_ = rws
-			}
-		}
-
-		openaiReq, ok := req.(*openai.OpenAIChatRequest)
-		require.True(t, ok)
-		assert.Empty(t, openaiReq.ChatParameters.ExtraParams,
-			"ExtraParams should be empty when passthrough header is not set")
-	})
-
-	t.Run("extra_params extracted with passthrough header", func(t *testing.T) {
-		req := chatRoute.GetRequestTypeInstance(context.Background())
-		err := sonic.Unmarshal(rawBody, req)
-		require.NoError(t, err)
-
-		bifrostCtx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
-		bifrostCtx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
-
-		if bifrostCtx.Value(schemas.BifrostContextKeyPassthroughExtraParams) == true {
-			if rws, ok := req.(RequestWithSettableExtraParams); ok {
-				var wrapper struct {
-					ExtraParams map[string]interface{} `json:"extra_params"`
-				}
-				if err := sonic.Unmarshal(rawBody, &wrapper); err == nil && len(wrapper.ExtraParams) > 0 {
-					rws.SetExtraParams(wrapper.ExtraParams)
-				}
-			}
-		}
+		bifrostCtx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, passthrough)
+		retainExtraParamsFromRawBody(req, rawBody)
 
 		openaiReq, ok := req.(*openai.OpenAIChatRequest)
 		require.True(t, ok)
 		require.Contains(t, openaiReq.ChatParameters.ExtraParams, "guardrailConfig",
-			"guardrailConfig should be in ExtraParams when passthrough header is set")
-
-		gc, ok := openaiReq.ChatParameters.ExtraParams["guardrailConfig"].(map[string]interface{})
-		require.True(t, ok)
-		assert.Equal(t, "my-guardrail", gc["guardrailIdentifier"])
-		assert.Equal(t, "1", gc["guardrailVersion"])
-		assert.Equal(t, "disabled", gc["trace"])
-	})
+			"extra_params must be retained before the provider policy is resolved")
+	}
 }
 
 func TestExtraParamsPassthrough_NestedStructures(t *testing.T) {

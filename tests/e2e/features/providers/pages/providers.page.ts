@@ -493,6 +493,13 @@ export class ProvidersPage extends BasePage {
   }
 
   /**
+   * Get the Network-tab switch that controls forwarding unmodeled parameters.
+   */
+  getPassthroughExtraParamsSwitch(): Locator {
+    return this.page.getByTestId('network-config-passthrough-extra-params')
+  }
+
+  /**
    * Save debugging configuration and wait for success toast
    */
   async saveDebuggingConfig(): Promise<void> {

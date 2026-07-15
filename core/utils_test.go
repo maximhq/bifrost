@@ -273,3 +273,54 @@ func TestIsPrivateIP(t *testing.T) {
 	}
 }
 
+func TestResolvePassthroughExtraParams(t *testing.T) {
+	trueValue, falseValue := true, false
+	tests := []struct {
+		name        string
+		override    *bool
+		config      *bool
+		provider    schemas.ModelProvider
+		requestType schemas.RequestType
+		want        bool
+	}{
+		{name: "generic default", provider: schemas.OpenAI, requestType: schemas.ChatCompletionRequest, want: false},
+		{name: "vllm default", provider: schemas.VLLM, requestType: schemas.ChatCompletionRequest, want: true},
+		{name: "sgl default", provider: schemas.SGL, requestType: schemas.ChatCompletionRequest, want: true},
+		{name: "deepseek default", provider: schemas.DeepSeek, requestType: schemas.ChatCompletionRequest, want: true},
+		{name: "image generation default", provider: schemas.OpenAI, requestType: schemas.ImageGenerationRequest, want: true},
+		{name: "explicit false beats provider default", config: &falseValue, provider: schemas.DeepSeek, requestType: schemas.ChatCompletionRequest, want: false},
+		{name: "explicit true enables generic provider", config: &trueValue, provider: schemas.OpenAI, requestType: schemas.ChatCompletionRequest, want: true},
+		{name: "header false beats explicit true", override: &falseValue, config: &trueValue, provider: schemas.VLLM, requestType: schemas.ChatCompletionRequest, want: false},
+		{name: "header true beats explicit false", override: &trueValue, config: &falseValue, provider: schemas.OpenAI, requestType: schemas.ChatCompletionRequest, want: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+			if tt.override != nil {
+				ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParamsOverride, *tt.override)
+			}
+
+			got := resolvePassthroughExtraParams(ctx, &schemas.ProviderConfig{PassthroughExtraParams: tt.config}, tt.provider, tt.requestType)
+			if got != tt.want {
+				t.Fatalf("resolved policy = %t, want %t", got, tt.want)
+			}
+			if effective, ok := ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams).(bool); !ok || effective != tt.want {
+				t.Fatalf("effective context policy = (%t, %t), want (%t, true)", effective, ok, tt.want)
+			}
+		})
+	}
+}
+
+func TestResolvePassthroughExtraParams_OverwritesPriorAttempt(t *testing.T) {
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	resolvePassthroughExtraParams(ctx, &schemas.ProviderConfig{}, schemas.DeepSeek, schemas.ChatCompletionRequest)
+	if got, _ := ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams).(bool); !got {
+		t.Fatal("DeepSeek default should enable passthrough")
+	}
+
+	resolvePassthroughExtraParams(ctx, &schemas.ProviderConfig{}, schemas.OpenAI, schemas.ChatCompletionRequest)
+	if got, ok := ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams).(bool); !ok || got {
+		t.Fatalf("effective policy after fallback = (%t, %t), want (false, true)", got, ok)
+	}
+}

@@ -86,8 +86,7 @@ func TestChatCompletion_ExtraParamsForwardedAutomatically(t *testing.T) {
 		},
 	}
 
-	// Intentionally do NOT set BifrostContextKeyPassthroughExtraParams — the provider
-	// should set it automatically.
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
 	hello := "Hello"

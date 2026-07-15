@@ -377,6 +377,8 @@ func ClearContextForInternalRequest(ctx *schemas.BifrostContext) {
 	ctx.ClearValue(schemas.BifrostContextKeyLargeResponseMode)
 	ctx.ClearValue(schemas.BifrostContextKeyExtraHeaders)
 	ctx.ClearValue(schemas.BifrostContextKeyURLPath)
+	ctx.ClearValue(schemas.BifrostContextKeyPassthroughExtraParamsOverride)
+	ctx.ClearValue(schemas.BifrostContextKeyPassthroughExtraParams)
 }
 
 var supportedBaseProvidersSet = func() map[schemas.ModelProvider]struct{} {
@@ -406,6 +408,36 @@ var standardProvidersSet = func() map[schemas.ModelProvider]struct{} {
 func IsStandardProvider(providerKey schemas.ModelProvider) bool {
 	_, ok := standardProvidersSet[providerKey]
 	return ok
+}
+
+// resolvePassthroughExtraParams resolves and records the converter policy for one
+// provider attempt. Request overrides are intentionally stored separately from the
+// effective value so each fallback can recompute its own policy.
+func resolvePassthroughExtraParams(ctx *schemas.BifrostContext, config *schemas.ProviderConfig, baseProvider schemas.ModelProvider, requestType schemas.RequestType) bool {
+	if ctx != nil {
+		if override, ok := ctx.Value(schemas.BifrostContextKeyPassthroughExtraParamsOverride).(bool); ok {
+			ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, override)
+			return override
+		}
+	}
+
+	if config != nil && config.PassthroughExtraParams != nil {
+		effective := *config.PassthroughExtraParams
+		if ctx != nil {
+			ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, effective)
+		}
+		return effective
+	}
+
+	effective := baseProvider == schemas.VLLM ||
+		baseProvider == schemas.SGL ||
+		baseProvider == schemas.DeepSeek ||
+		requestType == schemas.ImageGenerationRequest ||
+		requestType == schemas.ImageGenerationStreamRequest
+	if ctx != nil {
+		ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, effective)
+	}
+	return effective
 }
 
 // IsStreamRequestType returns true if the given request type is a stream request.

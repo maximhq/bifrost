@@ -19924,3 +19924,25 @@ func TestLoadPlugins_OtelPluginSpanFilterPassthrough(t *testing.T) {
 	require.True(t, ok, "plugin_span_filter.plugins should be an array")
 	require.ElementsMatch(t, []any{"logging", "compat"}, plugins)
 }
+
+func TestGenerateProviderConfigHashDistinguishesPassthroughExtraParamsStates(t *testing.T) {
+	hashes := make(map[string]string)
+	for _, tt := range []struct {
+		name  string
+		value *bool
+	}{
+		{name: "nil"},
+		{name: "false", value: schemas.Ptr(false)},
+		{name: "true", value: schemas.Ptr(true)},
+	} {
+		hash, err := (&configstore.ProviderConfig{
+			PassthroughExtraParams: tt.value,
+		}).GenerateConfigHash("openai")
+		require.NoError(t, err)
+		hashes[tt.name] = hash
+	}
+
+	if hashes["nil"] == hashes["false"] || hashes["nil"] == hashes["true"] || hashes["false"] == hashes["true"] {
+		t.Fatalf("expected nil, false, and true passthrough values to hash differently: %#v", hashes)
+	}
+}

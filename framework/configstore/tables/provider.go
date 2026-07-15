@@ -25,6 +25,7 @@ type TableProvider struct {
 	SendBackRawRequest       bool      `json:"send_back_raw_request"`
 	SendBackRawResponse      bool      `json:"send_back_raw_response"`
 	StoreRawRequestResponse  bool      `json:"store_raw_request_response"`
+	PassthroughExtraParams   *bool     `gorm:"type:boolean" json:"passthrough_extra_params,omitempty"`
 	CreatedAt                time.Time `gorm:"index;not null" json:"created_at"`
 	UpdatedAt                time.Time `gorm:"index;not null" json:"updated_at"`
 

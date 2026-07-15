@@ -112,8 +112,7 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		openaiReq.ChatParameters.Prediction = prediction
 		return openaiReq
 	default:
-		// Check if provider is a custom provider
-		if isCustomProvider, ok := ctx.Value(schemas.BifrostContextKeyIsCustomProvider).(bool); ok && isCustomProvider {
+		if passthroughExtraParams, _ := ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams).(bool); passthroughExtraParams {
 			return openaiReq
 		}
 		openaiReq.filterOpenAISpecificParameters(capModel)

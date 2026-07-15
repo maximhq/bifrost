@@ -228,3 +228,27 @@ func TestProviderConfig_Redacted_FullJSONHasNoLeakedEnvSecrets(t *testing.T) {
 			"env var reference %q missing from redacted JSON output", ref)
 	}
 }
+
+func TestProviderConfigRedactedPreservesPassthroughExtraParams(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		value *bool
+	}{
+		{name: "nil"},
+		{name: "false", value: schemas.Ptr(false)},
+		{name: "true", value: schemas.Ptr(true)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			config := ProviderConfig{PassthroughExtraParams: tt.value}
+			redacted := config.Redacted()
+
+			if tt.value == nil {
+				assert.Nil(t, redacted.PassthroughExtraParams)
+				return
+			}
+			require.NotNil(t, redacted.PassthroughExtraParams)
+			assert.Equal(t, *tt.value, *redacted.PassthroughExtraParams)
+			assert.NotSame(t, config.PassthroughExtraParams, redacted.PassthroughExtraParams)
+		})
+	}
+}

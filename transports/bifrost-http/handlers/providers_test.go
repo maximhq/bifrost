@@ -102,7 +102,8 @@ func TestAddProvider_ReloadsRuntimeEvenWhenModelDiscoveryIsSkipped(t *testing.T)
 	}
 
 	body, err := sonic.Marshal(providerCreatePayload{
-		Provider: "mock-openai",
+		Provider:               "mock-openai",
+		PassthroughExtraParams: schemas.Ptr(true),
 		CustomProviderConfig: &schemas.CustomProviderConfig{
 			BaseProviderType: schemas.OpenAI,
 			IsKeyLess:        true,
@@ -125,8 +126,12 @@ func TestAddProvider_ReloadsRuntimeEvenWhenModelDiscoveryIsSkipped(t *testing.T)
 	if len(modelsManager.reloadCalls) != 1 || modelsManager.reloadCalls[0] != "mock-openai" {
 		t.Fatalf("expected provider reload for mock-openai, got %#v", modelsManager.reloadCalls)
 	}
-	if _, exists := h.inMemoryStore.Providers["mock-openai"]; !exists {
+	stored, exists := h.inMemoryStore.Providers["mock-openai"]
+	if !exists {
 		t.Fatalf("expected provider to be added to in-memory store")
+	}
+	if stored.PassthroughExtraParams == nil || !*stored.PassthroughExtraParams {
+		t.Fatalf("expected provider POST to preserve passthrough_extra_params=true, got %#v", stored.PassthroughExtraParams)
 	}
 }
 
@@ -1342,5 +1347,33 @@ func TestListModels_KeyBlacklistIsCaseInsensitive(t *testing.T) {
 		if strings.EqualFold(m.Name, "gpt-3.5-turbo") {
 			t.Fatalf("gpt-3.5-turbo should be blocked by blacklist, got %v", resp.Models)
 		}
+	}
+}
+
+func TestProviderResponsePreservesPassthroughExtraParams(t *testing.T) {
+	handler := &ProviderHandler{}
+	for _, tt := range []struct {
+		name  string
+		value *bool
+	}{
+		{name: "nil"},
+		{name: "false", value: schemas.Ptr(false)},
+		{name: "true", value: schemas.Ptr(true)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			response := handler.getProviderResponseFromConfig(schemas.OpenAI, configstore.ProviderConfig{
+				PassthroughExtraParams: tt.value,
+			}, ProviderStatusActive)
+
+			if tt.value == nil {
+				if response.PassthroughExtraParams != nil {
+					t.Fatalf("expected nil passthrough_extra_params, got %v", *response.PassthroughExtraParams)
+				}
+				return
+			}
+			if response.PassthroughExtraParams == nil || *response.PassthroughExtraParams != *tt.value {
+				t.Fatalf("expected passthrough_extra_params=%v, got %#v", *tt.value, response.PassthroughExtraParams)
+			}
+		})
 	}
 }

@@ -800,6 +800,7 @@ export const proxyOnlyFormSchema = z.object({
 
 // Network-only form schema for the NetworkFormFragment
 export const networkOnlyFormSchema = z.object({
+	passthrough_extra_params: z.boolean(),
 	network_config: networkFormConfigSchema.optional(),
 });
 

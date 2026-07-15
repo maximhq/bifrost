@@ -89,6 +89,22 @@ type RequestWithSettableExtraParams interface {
 	SetExtraParams(params map[string]interface{})
 }
 
+// retainExtraParamsFromRawBody preserves provider-specific fields until the
+// selected provider resolves whether they may be merged into its request.
+func retainExtraParamsFromRawBody(req interface{}, rawBody []byte) {
+	rws, ok := req.(RequestWithSettableExtraParams)
+	if !ok || len(rawBody) == 0 {
+		return
+	}
+
+	var wrapper struct {
+		ExtraParams map[string]interface{} `json:"extra_params"`
+	}
+	if err := sonic.Unmarshal(rawBody, &wrapper); err == nil && len(wrapper.ExtraParams) > 0 {
+		rws.SetExtraParams(wrapper.ExtraParams)
+	}
+}
+
 // BatchRequest wraps a Bifrost batch request with its type information.
 type BatchRequest struct {
 	Type            schemas.RequestType
@@ -730,25 +746,13 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 				}
 			}
 
-			// Extract the "extra_params" JSON key when passthrough is
-			// explicitly enabled via x-bf-passthrough-extra-params: true.
-			// Provider-specific fields (e.g. Bedrock guardrailConfig)
-			// must be nested under "extra_params" in the request body.
-			// Runs after both RequestParser and default JSON paths.
-			if !isLargePayload && bifrostCtx.Value(schemas.BifrostContextKeyPassthroughExtraParams) == true {
-				if rws, ok := req.(RequestWithSettableExtraParams); ok {
-					if rawBody == nil {
-						rawBody = ctx.Request.Body()
-					}
-					if len(rawBody) > 0 {
-						var wrapper struct {
-							ExtraParams map[string]interface{} `json:"extra_params"`
-						}
-						if err := sonic.Unmarshal(rawBody, &wrapper); err == nil && len(wrapper.ExtraParams) > 0 {
-							rws.SetExtraParams(wrapper.ExtraParams)
-						}
-					}
+			// Retain "extra_params" for every eligible parsed request. Provider selection
+			// resolves whether converters may merge the retained values later.
+			if !isLargePayload {
+				if rawBody == nil {
+					rawBody = ctx.Request.Body()
 				}
+				retainExtraParamsFromRawBody(req, rawBody)
 			}
 		}
 
