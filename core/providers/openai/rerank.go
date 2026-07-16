@@ -15,9 +15,13 @@ func ToOpenAIRerankRequest(request *schemas.BifrostRerankRequest) *OpenAIRerankR
 	}
 
 	converted := &OpenAIRerankRequest{
-		Model:     request.Model,
-		Query:     request.Query,
-		Documents: request.Documents,
+		Model: request.Model,
+		Query: request.Query,
+		// Most OpenAI-compatible rerank servers (e.g. llama.cpp, vLLM) only accept
+		// a plain string array for "documents". Only fall back to the structured
+		// {text,id,meta} object form when a document actually carries an id/meta,
+		// since the bare-string form can't preserve those.
+		Documents: formatOpenAIRerankDocuments(request.Documents),
 	}
 	if request.Params != nil {
 		converted.TopN = request.Params.TopN
@@ -26,6 +30,22 @@ func ToOpenAIRerankRequest(request *schemas.BifrostRerankRequest) *OpenAIRerankR
 		converted.ExtraParams = request.Params.ExtraParams
 	}
 	return converted
+}
+
+// formatOpenAIRerankDocuments converts Bifrost rerank documents into the wire
+// shape most OpenAI-compatible rerank servers expect: a bare string when the
+// document has no id/meta, otherwise a {text,id,meta} object so that data
+// isn't silently dropped.
+func formatOpenAIRerankDocuments(documents []schemas.RerankDocument) []interface{} {
+	formatted := make([]interface{}, len(documents))
+	for i, doc := range documents {
+		if doc.ID == nil && len(doc.Meta) == 0 {
+			formatted[i] = doc.Text
+		} else {
+			formatted[i] = doc
+		}
+	}
+	return formatted
 }
 
 // ToBifrostRerankResponse converts an OpenAI-compatible rerank response to Bifrost format

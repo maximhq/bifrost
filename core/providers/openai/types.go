@@ -75,13 +75,15 @@ func (r *OpenAIEmbeddingRequest) SetExtraParams(params map[string]interface{}) {
 
 // OpenAIRerankRequest represents an OpenAI-compatible rerank request
 type OpenAIRerankRequest struct {
-	Model           string                   `json:"model"`
-	Query           string                   `json:"query"`
-	Documents       []schemas.RerankDocument `json:"documents"`
-	TopN            *int                     `json:"top_n,omitempty"`
-	MaxTokensPerDoc *int                     `json:"max_tokens_per_doc,omitempty"`
-	Priority        *int                     `json:"priority,omitempty"`
-	ExtraParams     map[string]interface{}   `json:"-"` // Optional: Extra parameters
+	Model    string `json:"model"`
+	Query    string `json:"query"`
+	// Documents holds either bare strings or {text,id,meta} objects per entry -
+	// see formatOpenAIRerankDocuments.
+	Documents       []interface{}          `json:"documents"`
+	TopN            *int                   `json:"top_n,omitempty"`
+	MaxTokensPerDoc *int                   `json:"max_tokens_per_doc,omitempty"`
+	Priority        *int                   `json:"priority,omitempty"`
+	ExtraParams     map[string]interface{} `json:"-"` // Optional: Extra parameters
 }
 
 func (r *OpenAIRerankRequest) GetExtraParams() map[string]interface{} {

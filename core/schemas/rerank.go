@@ -7,6 +7,28 @@ type RerankDocument struct {
 	Meta map[string]interface{} `json:"meta,omitempty"`
 }
 
+// UnmarshalJSON allows a rerank document to be provided either as a bare
+// string (the format most providers, e.g. Cohere v2, expect) or as an
+// object with text/id/meta fields (the structured format some earlier
+// reranking APIs used).
+func (d *RerankDocument) UnmarshalJSON(data []byte) error {
+	var text string
+	if err := Unmarshal(data, &text); err == nil {
+		d.Text = text
+		d.ID = nil
+		d.Meta = nil
+		return nil
+	}
+
+	type rerankDocumentAlias RerankDocument
+	var alias rerankDocumentAlias
+	if err := Unmarshal(data, &alias); err != nil {
+		return err
+	}
+	*d = RerankDocument(alias)
+	return nil
+}
+
 // RerankParameters contains optional parameters for a rerank request.
 type RerankParameters struct {
 	TopN            *int                   `json:"top_n,omitempty"`
