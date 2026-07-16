@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -320,43 +321,80 @@ func (provider *GeminiProvider) downloadBatchResultsFile(ctx context.Context, ke
 		return nil, nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
 	}
 
-	// Parse JSONL content - each line is a separate JSON object
-	// Use streaming parser to avoid string conversion and collect parse errors
-	results := make([]schemas.BatchResultItem, 0)
+	results, parseErrors := parseGeminiBatchResultsJSONL(body, provider.logger.Warn)
+	return results, parseErrors, nil
+}
 
+func parseGeminiBatchResultsJSONL(body []byte, warnf func(string, ...any)) ([]schemas.BatchResultItem, []schemas.BatchError) {
+	results := make([]schemas.BatchResultItem, 0)
+	lineIndex := 0
 	parseResult := providerUtils.ParseJSONL(body, func(line []byte) error {
+		sourceIndex := lineIndex
+		lineIndex++
+
 		var resultLine GeminiBatchFileResultLine
 		if err := sonic.Unmarshal(line, &resultLine); err != nil {
-			provider.logger.Warn("gemini batch results file parse error: " + err.Error())
+			if warnf != nil {
+				warnf("gemini batch results file parse error: %s", strconv.QuoteToASCII(err.Error()))
+			}
 			return err
 		}
 
-		customID := resultLine.Key
-		if customID == "" {
-			customID = fmt.Sprintf("request-%d", len(results))
-		}
-
-		resultItem := schemas.BatchResultItem{
-			CustomID: customID,
-		}
-
-		if resultLine.Error != nil {
-			resultItem.Error = &schemas.BatchResultError{
-				Code:    fmt.Sprintf("%d", resultLine.Error.Code),
-				Message: resultLine.Error.Message,
+		resultItem, err := geminiFileResultToBatchResultItem(resultLine, fmt.Sprintf("request-%d", sourceIndex))
+		if err != nil {
+			if warnf != nil {
+				warnf("gemini batch results file response parse error: %s", strconv.QuoteToASCII(err.Error()))
 			}
-		} else if resultLine.Response != nil {
-			resultItem.Response = &schemas.BatchResultResponse{
-				StatusCode: 200,
-				Body:       geminiGenerateContentToBatchResultBody(resultLine.Response),
-			}
+			return err
 		}
-
 		results = append(results, resultItem)
 		return nil
 	})
 
-	return results, parseResult.Errors, nil
+	return results, parseResult.Errors
+}
+
+func geminiFileResultToBatchResultItem(resultLine GeminiBatchFileResultLine, fallbackID string) (schemas.BatchResultItem, error) {
+	customID := resultLine.CustomID
+	if customID == "" {
+		customID = resultLine.Key
+	}
+	if customID == "" {
+		customID = fallbackID
+	}
+	item := schemas.BatchResultItem{CustomID: customID}
+	if resultLine.Error != nil {
+		item.Error = &schemas.BatchResultError{
+			Code:    fmt.Sprintf("%d", resultLine.Error.Code),
+			Message: resultLine.Error.Message,
+		}
+		return item, nil
+	}
+	if len(resultLine.Response) == 0 || strings.TrimSpace(string(resultLine.Response)) == "null" {
+		return schemas.BatchResultItem{}, fmt.Errorf("gemini batch result line has neither response nor error")
+	}
+
+	var envelope GeminiFileResponseLine
+	if err := sonic.Unmarshal(resultLine.Response, &envelope); err != nil {
+		return item, err
+	}
+	if envelope.StatusCode != 0 || envelope.Body != nil {
+		item.Response = &schemas.BatchResultResponse{
+			StatusCode: envelope.StatusCode,
+			Body:       normalizeBatchBody(envelope.Body),
+		}
+		return item, nil
+	}
+
+	var native GenerateContentResponse
+	if err := sonic.Unmarshal(resultLine.Response, &native); err != nil {
+		return item, err
+	}
+	item.Response = &schemas.BatchResultResponse{
+		StatusCode: http.StatusOK,
+		Body:       geminiGenerateContentToBatchResultBody(&native),
+	}
+	return item, nil
 }
 
 // geminiBatchOutput extracts the batch output (a responses file name or inline responses)
@@ -406,11 +444,21 @@ func geminiGenerateContentToBatchResultBody(resp *GenerateContentResponse) map[s
 		body["finish_reason"] = string(candidate.FinishReason)
 	}
 	if resp.UsageMetadata != nil {
-		body["usage"] = map[string]interface{}{
+		usage := map[string]interface{}{
 			"prompt_tokens":     resp.UsageMetadata.PromptTokenCount,
 			"completion_tokens": resp.UsageMetadata.CandidatesTokenCount,
 			"total_tokens":      resp.UsageMetadata.TotalTokenCount,
 		}
+		// Surface cached input tokens in OpenAI's shape so batch accounting can
+		// apply the cache-read discount. Like OpenAI's prompt_tokens, Gemini's
+		// PromptTokenCount already includes these, so this is a breakdown of
+		// prompt_tokens rather than an addition to it.
+		if resp.UsageMetadata.CachedContentTokenCount > 0 {
+			usage["prompt_tokens_details"] = map[string]interface{}{
+				"cached_tokens": resp.UsageMetadata.CachedContentTokenCount,
+			}
+		}
+		body["usage"] = usage
 	}
 	return body
 }
@@ -437,6 +485,37 @@ func geminiInlineResponseToBatchResultItem(inlineResp GeminiInlinedResponse, cus
 		}
 	}
 	return resultItem
+}
+
+// normalizeBatchBody converts camelCase usage keys (promptTokens, completionTokens,
+// totalTokens) to snake_case as expected by the batch accounting pricing code.
+func normalizeBatchBody(body map[string]interface{}) map[string]interface{} {
+	if body == nil {
+		return nil
+	}
+	out := make(map[string]interface{}, len(body))
+	for k, v := range body {
+		out[k] = v
+	}
+	if raw, ok := body["usage"]; ok {
+		if usage, ok := raw.(map[string]interface{}); ok {
+			normalized := make(map[string]interface{}, len(usage))
+			for k, v := range usage {
+				switch k {
+				case "promptTokens":
+					normalized["prompt_tokens"] = v
+				case "completionTokens":
+					normalized["completion_tokens"] = v
+				case "totalTokens":
+					normalized["total_tokens"] = v
+				default:
+					normalized[k] = v
+				}
+			}
+			out["usage"] = normalized
+		}
+	}
+	return out
 }
 
 // extractGeminiUsageMetadata extracts usage metadata (as ints) from Gemini response
