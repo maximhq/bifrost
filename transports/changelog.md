@@ -56,10 +56,6 @@
 - **Config Store Migrations** - Cleaned up the sidekiq table creation migration
 - **Dashboard Sidebar** - Removed unused sidebar icon imports that broke the UI build
 
-## 🔧 Maintenance
-
-- **Dependency Fixes** - Added the missing direct `google/uuid` dependency to the logging plugin and bumped framework to v1.5.2 across all modules
-
 ## 🐙 Closed GitHub Issues
 
 - [#2347](https://github.com/maximhq/bifrost/issues/2347) - MCP tool ordering is non-deterministic, breaking prefix-based prompt caching
