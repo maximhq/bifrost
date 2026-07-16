@@ -6,6 +6,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/sjson"
 )
 
 // ToOpenAIRerankRequest converts a Bifrost rerank request to OpenAI-compatible format
@@ -15,13 +16,9 @@ func ToOpenAIRerankRequest(request *schemas.BifrostRerankRequest) *OpenAIRerankR
 	}
 
 	converted := &OpenAIRerankRequest{
-		Model: request.Model,
-		Query: request.Query,
-		// Most OpenAI-compatible rerank servers (e.g. llama.cpp, vLLM) only accept
-		// a plain string array for "documents". Only fall back to the structured
-		// {text,id,meta} object form when a document actually carries an id/meta,
-		// since the bare-string form can't preserve those.
-		Documents: formatOpenAIRerankDocuments(request.Documents),
+		Model:     request.Model,
+		Query:     request.Query,
+		Documents: request.Documents,
 	}
 	if request.Params != nil {
 		converted.TopN = request.Params.TopN
@@ -32,14 +29,46 @@ func ToOpenAIRerankRequest(request *schemas.BifrostRerankRequest) *OpenAIRerankR
 	return converted
 }
 
+// MarshalJSON serializes "documents" into the shape most OpenAI-compatible
+// rerank servers expect: a plain string array when none of the documents
+// carry an id/meta, otherwise a uniform array of {text,id,meta} objects.
+// The array is never a mix of strings and objects, since some strict
+// string-array upstreams (e.g. llama.cpp) reject a "documents" array
+// containing any non-string element.
+func (r *OpenAIRerankRequest) MarshalJSON() ([]byte, error) {
+	if r == nil {
+		return []byte("null"), nil
+	}
+	type Alias OpenAIRerankRequest
+	data, err := schemas.Marshal((*Alias)(r))
+	if err != nil {
+		return nil, err
+	}
+	docsJSON, err := schemas.Marshal(formatOpenAIRerankDocuments(r.Documents))
+	if err != nil {
+		return nil, err
+	}
+	return sjson.SetRawBytes(data, "documents", docsJSON)
+}
+
 // formatOpenAIRerankDocuments converts Bifrost rerank documents into the wire
-// shape most OpenAI-compatible rerank servers expect: a bare string when the
-// document has no id/meta, otherwise a {text,id,meta} object so that data
-// isn't silently dropped.
+// shape most OpenAI-compatible rerank servers expect: bare strings when none
+// of the documents carry an id/meta, otherwise structured {text,id,meta}
+// objects for all of them so id/meta isn't silently dropped. The decision is
+// made array-wide (never a mix of strings and objects) since strict
+// string-array upstreams reject a "documents" array containing any
+// non-string element.
 func formatOpenAIRerankDocuments(documents []schemas.RerankDocument) []interface{} {
+	allPlain := true
+	for _, doc := range documents {
+		if doc.ID != nil || len(doc.Meta) > 0 {
+			allPlain = false
+			break
+		}
+	}
 	formatted := make([]interface{}, len(documents))
 	for i, doc := range documents {
-		if doc.ID == nil && len(doc.Meta) == 0 {
+		if allPlain {
 			formatted[i] = doc.Text
 		} else {
 			formatted[i] = doc

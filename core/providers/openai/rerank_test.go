@@ -479,9 +479,12 @@ func TestCustomOpenAIRerankSendsStringArrayToLlamaCppStyleUpstream(t *testing.T)
 	}
 }
 
-// TestCustomOpenAIRerankPreservesIDAndMetaAsObject ensures documents that
-// carry an id or metadata still round-trip as structured objects, since the
-// bare-string wire form can't carry that data.
+// TestCustomOpenAIRerankPreservesIDAndMetaAsObject ensures that once any
+// document in the request carries an id or metadata, the whole "documents"
+// array is sent as structured objects (never a mix of strings and objects),
+// since the bare-string wire form can't carry that data and some strict
+// string-array upstreams reject a "documents" array containing any
+// non-string element.
 func TestCustomOpenAIRerankPreservesIDAndMetaAsObject(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
@@ -497,9 +500,12 @@ func TestCustomOpenAIRerankPreservesIDAndMetaAsObject(t *testing.T) {
 		if len(payload.Documents) != 2 {
 			t.Fatalf("expected 2 documents, got %d", len(payload.Documents))
 		}
-		var plain string
-		if err := json.Unmarshal(payload.Documents[0], &plain); err != nil {
-			t.Fatalf("expected first document to be a bare string, got %s: %v", payload.Documents[0], err)
+		var first map[string]interface{}
+		if err := json.Unmarshal(payload.Documents[0], &first); err != nil {
+			t.Fatalf("expected first document to be an object (uniform with second), got %s: %v", payload.Documents[0], err)
+		}
+		if first["text"] != "plain document" {
+			t.Fatalf("expected first document text to be preserved, got %#v", first)
 		}
 		var withID map[string]interface{}
 		if err := json.Unmarshal(payload.Documents[1], &withID); err != nil {
