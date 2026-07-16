@@ -463,6 +463,11 @@
               "type": "boolean",
               "description": "Require auth (VK, API key, or user token) on inference endpoints"
             },
+            "dualCredentialConflictBehavior": {
+              "type": "string",
+              "enum": ["error", "prefer_vk", "prefer_idp"],
+              "description": "Behavior when an inference request presents both an IDP access token and a virtual key (x-bf-vk). 'error' rejects with 400; 'prefer_vk' drops the IDP token and uses the VK; 'prefer_idp' (default) uses the IDP token for identity."
+            },
             "enforceSCIMAuth": {
               "type": "boolean",
               "description": "Deprecated: use enforceAuthOnInference"
