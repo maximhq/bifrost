@@ -126,7 +126,6 @@ func bareModelLower(model string) string {
 	return strings.ToLower(model)
 }
 
-
 func ConvertOpenAIMessagesToBifrostMessages(messages []OpenAIMessage) []schemas.ChatMessage {
 	bifrostMessages := make([]schemas.ChatMessage, len(messages))
 	for i, message := range messages {
@@ -140,6 +139,7 @@ func ConvertOpenAIMessagesToBifrostMessages(messages []OpenAIMessage) []schemas.
 			// Callers replay assistant reasoning under any of three keys. Normalize them
 			// onto Reasoning so downstream provider logic sees replayed reasoning
 			// regardless of spelling — DeepSeek in particular gates thinking on it.
+			reasoningDetails := message.OpenAIChatAssistantMessage.ReasoningDetails
 			reasoning := message.OpenAIChatAssistantMessage.Reasoning
 			if reasoning == nil {
 				reasoning = message.OpenAIChatAssistantMessage.ReasoningAlias
@@ -152,10 +152,22 @@ func ConvertOpenAIMessagesToBifrostMessages(messages []OpenAIMessage) []schemas.
 					}
 				}
 			}
+			// Plain-text reasoning replay (no structured reasoning_details) still needs to
+			// reach signature-aware downstream converters (e.g. Anthropic's thinking blocks),
+			// so synthesize a single reasoning.text entry from it.
+			if len(reasoningDetails) == 0 && reasoning != nil {
+				reasoningDetails = []schemas.ChatReasoningDetails{
+					{
+						Index: 0,
+						Type:  schemas.BifrostReasoningDetailsTypeText,
+						Text:  reasoning,
+					},
+				}
+			}
 			bifrostMessages[i].ChatAssistantMessage = &schemas.ChatAssistantMessage{
 				Refusal:          message.OpenAIChatAssistantMessage.Refusal,
 				Reasoning:        reasoning,
-				ReasoningDetails: message.OpenAIChatAssistantMessage.ReasoningDetails,
+				ReasoningDetails: reasoningDetails,
 				Annotations:      message.OpenAIChatAssistantMessage.Annotations,
 				ToolCalls:        message.OpenAIChatAssistantMessage.ToolCalls,
 			}
@@ -223,10 +235,11 @@ func ConvertBifrostMessagesToOpenAIMessages(messages []schemas.ChatMessage) []Op
 				toolCalls = cloned
 			}
 			openaiMessages[i].OpenAIChatAssistantMessage = &OpenAIChatAssistantMessage{
-				Refusal:     message.ChatAssistantMessage.Refusal,
-				Reasoning:   message.ChatAssistantMessage.Reasoning,
-				Annotations: message.ChatAssistantMessage.Annotations,
-				ToolCalls:   toolCalls,
+				Refusal:          message.ChatAssistantMessage.Refusal,
+				Reasoning:        message.ChatAssistantMessage.Reasoning,
+				ReasoningDetails: message.ChatAssistantMessage.ReasoningDetails,
+				Annotations:      message.ChatAssistantMessage.Annotations,
+				ToolCalls:        toolCalls,
 			}
 		}
 	}

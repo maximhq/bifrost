@@ -225,6 +225,7 @@ func (req *OpenAIChatRequest) stripReasoningDetails() {
 			continue
 		}
 		assistantMessage.Reasoning = nil
+		assistantMessage.ReasoningDetails = nil
 	}
 }
 
