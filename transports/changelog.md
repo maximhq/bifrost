@@ -1,0 +1,1 @@
+[feat]: add `--migrate-only` (run database migrations and exit, for one-shot migration jobs) and `--no-migrate` (skip migrations on startup, failing fast if any are pending) flags so multi-pod deployments can apply migrations out of band instead of racing on startup; also exposed as `BIFROST_MIGRATE_ONLY` / `BIFROST_NO_MIGRATE` env vars in the Docker image

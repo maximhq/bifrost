@@ -1,0 +1,1 @@
+[feat]: add process-wide skip-startup-migrations switch (`migrator.SetSkipStartupMigrations`) honored by configstore, logstore, and ClickHouse migration triggers; SQL stores fail fast when migrations are pending and the switch is set
