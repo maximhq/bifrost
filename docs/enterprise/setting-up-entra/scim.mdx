@@ -60,6 +60,56 @@ Copy both values now - you will need them in [Step 2](#step-2-configure-entra-pr
 
 ---
 
+### Alternative: seed the token declaratively (Helm / config.json)
+
+If you manage Bifrost with Helm or a static `config.json` (GitOps), you can seed the **Provisioning Token** yourself instead of generating it in the dashboard.
+
+<Steps>
+
+<Step title="Generate a token">
+
+```bash
+openssl rand -base64 32 | tr '+/' '-_' | tr -d '='
+```
+
+This produces a URL-safe token in the same format Bifrost mints internally.
+
+</Step>
+
+<Step title="Add it to your SCIM config">
+
+Helm `values.yaml`:
+
+```yaml
+bifrost:
+  scim:
+    enabled: true
+    provider: "entra"
+    config:
+      tenantId: "..."
+      clientId: "..."
+      clientSecret: "env.ENTRA_CLIENT_SECRET"
+      provisioningToken: "env.SCIM_PROVISIONING_TOKEN"   # or the literal token
+      claimScimAttributes:                                # per-claim SCIM interpretation
+        groups:
+          attributeType: "group"        # "user" (SCIM User attribute) or "group" (match SCIM Group)
+          attributeValue: "displayName"
+```
+
+The same keys (`provisioningToken`, `claimScimAttributes`) apply directly under `scim_config.config` in a raw `config.json`.
+
+</Step>
+
+</Steps>
+
+<Warning>
+  Keep the token in a Kubernetes Secret and reference it with the `env.` prefix — never commit the literal value. Rotating the token in the dashboard invalidates any value seeded here.
+</Warning>
+
+Then use this token as the **Secret Token** and your deployment's SCIM endpoint as the **Tenant URL** in [Step 2](#step-2-configure-entra-provisioning) below.
+
+---
+
 ## Step 2: Configure Entra provisioning
 
 <Steps>
