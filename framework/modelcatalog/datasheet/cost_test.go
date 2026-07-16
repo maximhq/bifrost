@@ -4127,3 +4127,276 @@ func TestCalculateCostForUsage_NoServerSideFallback_Unchanged(t *testing.T) {
 	assert.InDelta(t, 38*(10.0/1_000_000)+345*(50.0/1_000_000),
 		s.CalculateCostForUsage(usage, schemas.Anthropic, "claude-fable-5", schemas.ResponsesRequest, nil), 1e-12)
 }
+
+func TestCalculateCostForUsage_BatchResultsUsesBatchRates(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-4o-mini", "openai", "chat"): {
+			Model:                     "gpt-4o-mini",
+			Provider:                  "openai",
+			Mode:                      "chat",
+			InputCostPerToken:         bifrost.Ptr(0.000010),
+			OutputCostPerToken:        bifrost.Ptr(0.000020),
+			InputCostPerTokenBatches:  bifrost.Ptr(0.000005),
+			OutputCostPerTokenBatches: bifrost.Ptr(0.000010),
+		},
+	})
+
+	cost := s.CalculateCostForUsage(&schemas.BifrostLLMUsage{
+		PromptTokens:     100,
+		CompletionTokens: 20,
+		TotalTokens:      120,
+	}, schemas.OpenAI, "gpt-4o-mini", schemas.BatchResultsRequest, nil)
+
+	assert.InDelta(t, 0.0007, cost, 1e-12)
+}
+
+func TestCalculateCostForUsage_BatchCacheRatesStackWithBatchDiscount(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("claude-batch", "anthropic", "chat"): {
+			Model:                               "claude-batch",
+			Provider:                            "anthropic",
+			Mode:                                "chat",
+			InputCostPerToken:                   bifrost.Ptr(0.000003),
+			OutputCostPerToken:                  bifrost.Ptr(0.000015),
+			InputCostPerTokenBatches:            bifrost.Ptr(0.0000015),
+			OutputCostPerTokenBatches:           bifrost.Ptr(0.0000075),
+			CacheReadInputTokenCost:             bifrost.Ptr(0.0000003),
+			CacheCreationInputTokenCost:         bifrost.Ptr(0.00000375),
+			CacheCreationInputTokenCostAbove1hr: bifrost.Ptr(0.000006),
+		},
+	})
+
+	details := s.CalculateBatchCostDetailsForUsage(&schemas.BifrostLLMUsage{
+		PromptTokens:     1000,
+		CompletionTokens: 100,
+		TotalTokens:      1100,
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+			CachedReadTokens:  400,
+			CachedWriteTokens: 300,
+			CachedWriteTokenDetails: &schemas.ChatCachedWriteTokenDetails{
+				CachedWriteTokens5m: 200,
+				CachedWriteTokens1h: 100,
+			},
+		},
+	}, schemas.Anthropic, "claude-batch", schemas.ChatCompletionRequest, nil)
+	cost, priced := details.Cost, details.Priced
+
+	require.True(t, priced)
+	// Batch ratio is 0.5. Input: 300*1.5e-6 + 400*0.15e-6 +
+	// 200*1.875e-6 + 100*3e-6. Output: 100*7.5e-6.
+	assert.InDelta(t, 0.001935, cost, 1e-12)
+}
+
+func TestCalculateCostForUsage_BatchAbove200kTierScalesWithBatchDiscount(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-5.x-batch", "openai", "chat"): {
+			Model:                                  "gpt-5.x-batch",
+			Provider:                               "openai",
+			Mode:                                   "chat",
+			InputCostPerToken:                      bifrost.Ptr(0.000002),
+			OutputCostPerToken:                     bifrost.Ptr(0.000008),
+			InputCostPerTokenBatches:               bifrost.Ptr(0.000001),
+			OutputCostPerTokenBatches:              bifrost.Ptr(0.000004),
+			InputCostPerTokenAbove200kTokens:       bifrost.Ptr(0.000003),
+			OutputCostPerTokenAbove200kTokens:      bifrost.Ptr(0.000012),
+			CacheReadInputTokenCost:                bifrost.Ptr(0.0000005),
+			CacheReadInputTokenCostAbove200kTokens: bifrost.Ptr(0.00000075),
+		},
+	})
+
+	details := s.CalculateBatchCostDetailsForUsage(&schemas.BifrostLLMUsage{
+		PromptTokens:     250_000,
+		CompletionTokens: 1_000,
+		TotalTokens:      251_000,
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+			CachedReadTokens: 50_000,
+		},
+	}, schemas.OpenAI, "gpt-5.x-batch", schemas.ChatCompletionRequest, nil)
+	cost, priced := details.Cost, details.Priced
+
+	require.True(t, priced)
+	// batchRatio is 0.5. Above-200k tier applies (250k prompt tokens):
+	// non-cached input: 200_000 * (3e-6 * 0.5) = 0.3
+	// cached read:       50_000 * (0.75e-6 * 0.5) = 0.01875
+	// output:             1_000 * (12e-6 * 0.5) = 0.006
+	assert.InDelta(t, 0.32475, cost, 1e-12)
+}
+
+func TestCalculateCostForUsage_BatchEmbeddingUsesEmbeddingPricingMode(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("text-embedding-batch", "openai", "embedding"): {
+			Model:                    "text-embedding-batch",
+			Provider:                 "openai",
+			Mode:                     "embedding",
+			InputCostPerTokenBatches: bifrost.Ptr(0.00000001),
+		},
+	})
+
+	details := s.CalculateBatchCostDetailsForUsage(&schemas.BifrostLLMUsage{
+		PromptTokens: 1000,
+		TotalTokens:  1000,
+	}, schemas.OpenAI, "text-embedding-batch", schemas.EmbeddingRequest, nil)
+	cost, priced := details.Cost, details.Priced
+	require.True(t, priced)
+	assert.InDelta(t, 0.00001, cost, 1e-12)
+}
+
+// TestCalculateBatchCostDetailsForUsage_DefaultsRateAndReportsIt exercises
+// CalculateBatchCostDetailsForUsage directly (not through CalculateCostForUsage)
+// to confirm the reported InputCostPerTokenBatches/OutputCostPerTokenBatches
+// carry the defaulted rate — accounting.go persists these into the aggregate
+// log's model_breakdown, so a nil here would silently lose the rate that was
+// actually charged.
+func TestCalculateBatchCostDetailsForUsage_DefaultsRateAndReportsIt(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-4o-mini", "openai", "chat"): chatPricing(0.000010, 0.000020),
+	})
+
+	details := s.CalculateBatchCostDetailsForUsage(&schemas.BifrostLLMUsage{
+		PromptTokens:     100,
+		CompletionTokens: 20,
+		TotalTokens:      120,
+	}, schemas.OpenAI, "gpt-4o-mini", schemas.BatchResultsRequest, nil)
+
+	require.True(t, details.Priced)
+	assert.InDelta(t, 0.0007, details.Cost, 1e-12)
+	require.NotNil(t, details.InputCostPerTokenBatches)
+	assert.InDelta(t, 0.000005, *details.InputCostPerTokenBatches, 1e-12)
+	require.NotNil(t, details.OutputCostPerTokenBatches)
+	assert.InDelta(t, 0.000010, *details.OutputCostPerTokenBatches, 1e-12)
+}
+
+// TestCalculateCostForUsage_BatchResultsDefaultsToHalfStandardRate covers a
+// model with standard chat pricing but no batch-specific rate: rather than
+// refusing to price (the old behavior), it prices at defaultBatchPricingRatio
+// of the standard rate. 0.000010/2=0.000005 and 0.000020/2=0.000010 are the
+// exact rates TestCalculateCostForUsage_BatchResultsUsesBatchRates sets
+// explicitly, so the two tests land on the identical cost by construction.
+func TestCalculateCostForUsage_BatchResultsDefaultsToHalfStandardRate(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-4o-mini", "openai", "chat"): chatPricing(0.000010, 0.000020),
+	})
+
+	cost := s.CalculateCostForUsage(&schemas.BifrostLLMUsage{
+		PromptTokens:     100,
+		CompletionTokens: 20,
+		TotalTokens:      120,
+	}, schemas.OpenAI, "gpt-4o-mini", schemas.BatchResultsRequest, nil)
+
+	assert.InDelta(t, 0.0007, cost, 1e-12)
+}
+
+// TestCalculateCostForUsage_BatchResultsUnpricedWithNoStandardRateEither
+// covers a model with no pricing at all — nothing to default 50% of, so it
+// must still refuse rather than silently pricing at zero.
+func TestCalculateCostForUsage_BatchResultsUnpricedWithNoStandardRateEither(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{})
+
+	cost := s.CalculateCostForUsage(&schemas.BifrostLLMUsage{
+		PromptTokens:     100,
+		CompletionTokens: 20,
+		TotalTokens:      120,
+	}, schemas.OpenAI, "gpt-4o-mini", schemas.BatchResultsRequest, nil)
+
+	assert.Equal(t, 0.0, cost)
+}
+
+// TestCalculateCostForUsage_BatchResults_CostPerRequestSurcharge covers the
+// BatchResultsRequest branch in computeCostFromInput: it must fall through to
+// the shared flat per-request surcharge like every other request type, not
+// return early and skip it.
+func TestCalculateCostForUsage_BatchResults_CostPerRequestSurcharge(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-4o-mini", "openai", "chat"): {
+			Model:                     "gpt-4o-mini",
+			Provider:                  "openai",
+			Mode:                      "chat",
+			InputCostPerToken:         bifrost.Ptr(0.000010),
+			OutputCostPerToken:        bifrost.Ptr(0.000020),
+			InputCostPerTokenBatches:  bifrost.Ptr(0.000005),
+			OutputCostPerTokenBatches: bifrost.Ptr(0.000010),
+			CostPerRequest:            bifrost.Ptr(0.01),
+		},
+	})
+
+	cost := s.CalculateCostForUsage(&schemas.BifrostLLMUsage{
+		PromptTokens:     100,
+		CompletionTokens: 20,
+		TotalTokens:      120,
+	}, schemas.OpenAI, "gpt-4o-mini", schemas.BatchResultsRequest, nil)
+
+	// Token cost matches TestCalculateCostForUsage_BatchResultsUsesBatchRates
+	// (0.0007) plus the flat per-request surcharge.
+	assert.InDelta(t, 0.0007+0.01, cost, 1e-12)
+}
+
+// TestCalculateCostForUsage_BatchResults_InferenceGeoUSMultiplier covers the
+// same branch applying the data-residency multiplier: batch pricing and US
+// data residency are independent axes, so a batch result carrying
+// inference_geo:"us" must still scale token/cache costs by the multiplier.
+func TestCalculateCostForUsage_BatchResults_InferenceGeoUSMultiplier(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("claude-batch", "anthropic", "chat"): {
+			Model:                     "claude-batch",
+			Provider:                  "anthropic",
+			Mode:                      "chat",
+			InputCostPerToken:         bifrost.Ptr(0.000003),
+			OutputCostPerToken:        bifrost.Ptr(0.000015),
+			InputCostPerTokenBatches:  bifrost.Ptr(0.0000015),
+			OutputCostPerTokenBatches: bifrost.Ptr(0.0000075),
+			InferenceGeoUSMultiplier:  bifrost.Ptr(1.1),
+		},
+	})
+
+	baseCost := 1000*0.0000015 + 100*0.0000075
+
+	withUS := s.CalculateCostForUsage(&schemas.BifrostLLMUsage{
+		PromptTokens:     1000,
+		CompletionTokens: 100,
+		TotalTokens:      1100,
+		InferenceGeo:     bifrost.Ptr("us"),
+	}, schemas.Anthropic, "claude-batch", schemas.BatchResultsRequest, nil)
+	assert.InDelta(t, baseCost*1.1, withUS, 1e-12)
+
+	without := s.CalculateCostForUsage(&schemas.BifrostLLMUsage{
+		PromptTokens:     1000,
+		CompletionTokens: 100,
+		TotalTokens:      1100,
+	}, schemas.Anthropic, "claude-batch", schemas.BatchResultsRequest, nil)
+	assert.InDelta(t, baseCost, without, 1e-12)
+}
+
+// TestCalculateBatchCostDetailsForUsage_CostPerRequestSurcharge covers the
+// real batch-settlement entry point (used by batchaccounting.summarizeResults
+// and the recalculate-costs path, unlike CalculateCostForUsage's batch branch
+// which only handles bare billed-usage on a failed retrieve). It must apply
+// the same flat per-request surcharge CalculateCostForUsage does, so the two
+// entry points never disagree on the cost of identical usage against the
+// identical pricing row.
+func TestCalculateBatchCostDetailsForUsage_CostPerRequestSurcharge(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-4o-mini", "openai", "chat"): {
+			Model:                     "gpt-4o-mini",
+			Provider:                  "openai",
+			Mode:                      "chat",
+			InputCostPerToken:         bifrost.Ptr(0.000010),
+			OutputCostPerToken:        bifrost.Ptr(0.000020),
+			InputCostPerTokenBatches:  bifrost.Ptr(0.000005),
+			OutputCostPerTokenBatches: bifrost.Ptr(0.000010),
+			CostPerRequest:            bifrost.Ptr(0.01),
+		},
+	})
+
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens:     100,
+		CompletionTokens: 20,
+		TotalTokens:      120,
+	}
+
+	details := s.CalculateBatchCostDetailsForUsage(usage, schemas.OpenAI, "gpt-4o-mini", schemas.BatchResultsRequest, nil)
+	require.True(t, details.Priced)
+
+	viaUsage := s.CalculateCostForUsage(usage, schemas.OpenAI, "gpt-4o-mini", schemas.BatchResultsRequest, nil)
+	assert.InDelta(t, viaUsage, details.Cost, 1e-12)
+	assert.InDelta(t, 0.0007+0.01, details.Cost, 1e-12)
+}
