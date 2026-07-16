@@ -228,6 +228,9 @@ false
 {{- if hasKey .Values.bifrost.client "enforceAuthOnInference" }}
 {{- $_ := set $client "enforce_auth_on_inference" .Values.bifrost.client.enforceAuthOnInference }}
 {{- end }}
+{{- if .Values.bifrost.client.dualCredentialConflictBehavior }}
+{{- $_ := set $client "dual_credential_conflict_behavior" .Values.bifrost.client.dualCredentialConflictBehavior }}
+{{- end }}
 {{- if hasKey .Values.bifrost.client "enforceGovernanceHeader" }}
 {{- $_ := set $client "enforce_governance_header" .Values.bifrost.client.enforceGovernanceHeader }}
 {{- end }}
