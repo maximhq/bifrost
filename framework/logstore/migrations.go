@@ -282,9 +282,11 @@ func areThereAnyPendingMigrations(ctx context.Context, db *gorm.DB, logger schem
 	if err != nil {
 		logger.Warn("[logstore] migration preflight failed; acquiring migration lock and running migrations: %v", err)
 	}
-	logger.Info("[logstore] pending migrations")
-	for _, id := range pending {
-		logger.Info("[logstore] migration : %s", id)
+	if len(pending) > 0 {
+		logger.Info("[logstore] pending migrations")
+		for _, id := range pending {
+			logger.Info("[logstore] migration : %s", id)
+		}
 	}
 	return err != nil || len(pending) > 0
 }

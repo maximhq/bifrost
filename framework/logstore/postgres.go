@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/migrator"
 	"github.com/maximhq/bifrost/framework/postgresconn"
 
 	"gorm.io/gorm"
@@ -153,11 +154,10 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 	logger.Info("logstore: runtime connection pool ready")
 	d := &RDBLogStore{db: db, logger: logger}
 
-	// Run all index builds sequentially in a single goroutine to prevent
-	// deadlocks from concurrent CREATE INDEX CONCURRENTLY on the same table.
-	// Each function is idempotent and acquires its own advisory lock for
-	// cross-node serialization. Running in a goroutine avoids blocking pod startup.
-	go func() {
+	// Run all index builds sequentially to prevent deadlocks from concurrent
+	// CREATE INDEX CONCURRENTLY on the same table. Each function is idempotent
+	// and the advisory lock serializes builds across cluster nodes.
+	runIndexMaintenance := func() {
 		if db.Dialector.Name() != "postgres" {
 			return
 		}
@@ -165,6 +165,7 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 		lock, err := acquireIndexLock(context.Background(), db, logger)
 		if err != nil {
 			// Lock is taken by another node, so we will skip the index build
+			logger.Warn(fmt.Sprintf("logstore: skipping index maintenance, could not acquire index lock: %s", err))
 			return
 		}
 		defer lock.release(context.Background())
@@ -192,7 +193,24 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 		} else {
 			logger.Info("logstore: performance indexes are ready")
 		}
-	}()
+	}
+
+	switch {
+	case migrator.MigrateOnly():
+		// One-shot migration job owns index maintenance: run it synchronously
+		// so the process doesn't exit mid-CREATE INDEX CONCURRENTLY (a killed
+		// build leaves an INVALID index behind for the next run to rebuild).
+		logger.Info("logstore: running index maintenance synchronously (--migrate-only)")
+		runIndexMaintenance()
+	case migrator.SkipStartupMigrations():
+		// Server pods started with --no-migrate leave index maintenance to the
+		// out-of-band --migrate-only job.
+		logger.Info("logstore: --no-migrate set; skipping index maintenance (owned by the --migrate-only job)")
+	default:
+		// Default single-process mode: build in the background so index work
+		// never blocks startup.
+		go runIndexMaintenance()
+	}
 
 	// Create materialized views and start periodic refresh for dashboard queries.
 	go func() {

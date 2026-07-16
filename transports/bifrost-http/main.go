@@ -165,6 +165,7 @@ func main() {
 		migrator.SetSkipStartupMigrations(true)
 	}
 	if migrateOnly {
+		migrator.SetMigrateOnly(true)
 		t := time.Now()
 		if err := server.RunMigrations(ctx); err != nil {
 			logger.Error("migration run failed: %v", err)
