@@ -35,8 +35,12 @@ By default, every Bifrost pod applies database schema migrations at startup. On 
 
 For multi-replica deployments, apply migrations out of band instead:
 
-1. **Run migrations as a one-shot Job** using the `--migrate-only` flag (or the `BIFROST_MIGRATE_ONLY=1` environment variable). The pod applies all pending migrations and exits.
-2. **Start server pods with `--no-migrate`** (or `BIFROST_NO_MIGRATE=1`). They skip migrations entirely and fail fast with a clear error if the schema is not current.
+1. **Run migrations as a one-shot Job** using the `--migrate-only` flag (or the `BIFROST_MIGRATE_ONLY=1` environment variable). The pod applies all pending migrations, runs logstore index maintenance (GIN/performance index builds, dashboard backfill) synchronously, and exits.
+2. **Start server pods with `--no-migrate`** (or `BIFROST_NO_MIGRATE=1`). They skip migrations and index maintenance entirely and fail fast with a clear error if the schema is not current.
+
+<Warning>
+Avoid setting `activeDeadlineSeconds` on the migration Job (or set it generously). Index builds use `CREATE INDEX CONCURRENTLY`; killing the Job mid-build leaves an `INVALID` index that the next run has to drop and rebuild.
+</Warning>
 
 ```yaml
 apiVersion: batch/v1
