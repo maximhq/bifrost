@@ -1,8 +1,10 @@
 package vertex
 
 import (
+	"reflect"
 	"testing"
 
+	"github.com/maximhq/bifrost/core/providers/gemini"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -51,6 +53,36 @@ func TestGetVertexAPIHost(t *testing.T) {
 				t.Fatalf("expected %q, got %q", tt.expected, actual)
 			}
 		})
+	}
+}
+
+func TestVertexGeminiImageURLSchemesAllowGCS(t *testing.T) {
+	result, err := gemini.ToGeminiChatCompletionRequestWithImageURLSchemes(nil, &schemas.BifrostChatRequest{
+		Model: "gemini-3-flash-preview",
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{
+					ContentBlocks: []schemas.ChatContentBlock{
+						{
+							Type: schemas.ChatContentBlockTypeImage,
+							ImageURLStruct: &schemas.ChatInputImage{
+								URL: "gs://my-bucket/xxx.png",
+							},
+						},
+					},
+				},
+			},
+		},
+	}, geminiImageURLSchemes...)
+	if err != nil {
+		t.Fatalf("expected Vertex Gemini schemes to allow gs:// image URLs, got: %v", err)
+	}
+	if len(result.Contents) != 1 || len(result.Contents[0].Parts) != 1 || result.Contents[0].Parts[0].FileData == nil {
+		t.Fatalf("expected one fileData part, got %#v", result.Contents)
+	}
+	if result.Contents[0].Parts[0].FileData.FileURI != "gs://my-bucket/xxx.png" {
+		t.Fatalf("expected gs:// fileUri, got %q", result.Contents[0].Parts[0].FileData.FileURI)
 	}
 }
 
@@ -178,10 +210,11 @@ func TestGetVertexModelAwareAPIHost(t *testing.T) {
 	})
 
 	tests := []struct {
-		name     string
-		region   string
-		model    string
-		expected string
+		name              string
+		region            string
+		model             string
+		forceSingleRegion bool
+		expected          string
 	}{
 		{
 			name:     "global endpoint ignores model flag",
@@ -243,13 +276,27 @@ func TestGetVertexModelAwareAPIHost(t *testing.T) {
 			model:    "claude-sonnet-4-5",
 			expected: "us-central1-aiplatform.googleapis.com",
 		},
+		{
+			name:              "force single region skips us pool promotion for flagged model",
+			region:            "us-east5",
+			model:             "claude-opus-4-7",
+			forceSingleRegion: true,
+			expected:          "us-east5-aiplatform.googleapis.com",
+		},
+		{
+			name:              "force single region skips eu pool promotion for flagged model",
+			region:            "europe-west1",
+			model:             "claude-opus-4-7",
+			forceSingleRegion: true,
+			expected:          "europe-west1-aiplatform.googleapis.com",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			actual := getVertexModelAwareAPIHost(tt.region, tt.model)
+			actual := getVertexModelAwareAPIHost(tt.region, tt.model, tt.forceSingleRegion, nil)
 			if actual != tt.expected {
 				t.Fatalf("expected %q, got %q", tt.expected, actual)
 			}
@@ -267,10 +314,11 @@ func TestGetVertexModelAwarePublisherModelURL(t *testing.T) {
 	})
 
 	tests := []struct {
-		name     string
-		region   string
-		model    string
-		expected string
+		name              string
+		region            string
+		model             string
+		forceSingleRegion bool
+		expected          string
 	}{
 		{
 			name:     "us multi-region flagged model gets rep host URL",
@@ -308,13 +356,20 @@ func TestGetVertexModelAwarePublisherModelURL(t *testing.T) {
 			model:    "claude-3-5-sonnet",
 			expected: "https://us-central1-aiplatform.googleapis.com/v1/projects/project-123/locations/us-central1/publishers/anthropic/models/claude-3-5-sonnet:rawPredict",
 		},
+		{
+			name:              "force single region keeps flagged model on requested region host and path",
+			region:            "us-east5",
+			model:             "claude-opus-4-7",
+			forceSingleRegion: true,
+			expected:          "https://us-east5-aiplatform.googleapis.com/v1/projects/project-123/locations/us-east5/publishers/anthropic/models/claude-opus-4-7:rawPredict",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			actual := getVertexModelAwarePublisherModelURL(tt.region, "v1", "project-123", "anthropic", tt.model, ":rawPredict")
+			actual := getVertexModelAwarePublisherModelURL(tt.region, "v1", "project-123", "anthropic", tt.model, ":rawPredict", tt.forceSingleRegion, nil)
 			if actual != tt.expected {
 				t.Fatalf("expected %q, got %q", tt.expected, actual)
 			}
@@ -352,5 +407,223 @@ func TestVertexRegionToPool(t *testing.T) {
 				t.Fatalf("expected %q, got %q", tt.expectedPool, pool)
 			}
 		})
+	}
+}
+
+// TestResolveVertexProjectID_AliasOverride verifies the per-alias ProjectID
+// override lets one Vertex credential serve deployments across distinct GCP
+// projects.
+func TestResolveVertexProjectID_AliasOverride(t *testing.T) {
+	keyProject := "key-level-project"
+	aliasProject := "alias-level-project"
+	key := schemas.Key{
+		VertexKeyConfig: &schemas.VertexKeyConfig{
+			ProjectID: *schemas.NewSecretVar(keyProject),
+		},
+	}
+
+	if got := resolveVertexProjectID(nil, key); got != keyProject {
+		t.Errorf("nil ctx: got %q, want key-level %q", got, keyProject)
+	}
+
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	if got := resolveVertexProjectID(ctx, key); got != keyProject {
+		t.Errorf("empty ctx: got %q, want key-level %q", got, keyProject)
+	}
+
+	ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{
+		Key: "best-claude",
+		Config: &schemas.AliasConfig{
+			ModelID: "claude-sonnet-4-5",
+			VertexAliasCfg: &schemas.VertexAliasCfg{
+				ProjectID: schemas.NewSecretVar(aliasProject),
+			},
+		},
+	})
+	if got := resolveVertexProjectID(ctx, key); got != aliasProject {
+		t.Errorf("alias override should win: got %q, want %q", got, aliasProject)
+	}
+
+	// Empty alias ProjectID falls through to key-level.
+	ctx2 := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	ctx2.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{
+		Key: "x",
+		Config: &schemas.AliasConfig{
+			ModelID: "x",
+			VertexAliasCfg: &schemas.VertexAliasCfg{
+				ProjectID: schemas.NewSecretVar(""),
+			},
+		},
+	})
+	if got := resolveVertexProjectID(ctx2, key); got != keyProject {
+		t.Errorf("empty alias ProjectID should fall through: got %q, want %q", got, keyProject)
+	}
+}
+
+// TestResolveVertexRegion_AliasOverride verifies the top-level
+// AliasConfig.Region override for Vertex.
+func TestResolveVertexRegion_AliasOverride(t *testing.T) {
+	keyRegion := "us-central1"
+	aliasRegion := "us-east5"
+	key := schemas.Key{
+		VertexKeyConfig: &schemas.VertexKeyConfig{
+			Region: *schemas.NewSecretVar(keyRegion),
+		},
+	}
+
+	if got := resolveVertexRegion(nil, key); got != keyRegion {
+		t.Errorf("nil ctx: got %q, want %q", got, keyRegion)
+	}
+
+	ctx0 := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	if got := resolveVertexRegion(ctx0, key); got != keyRegion {
+		t.Errorf("empty ctx: got %q, want key-level %q", got, keyRegion)
+	}
+
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{
+		Key: "best-claude",
+		Config: &schemas.AliasConfig{
+			ModelID: "claude-sonnet-4-5",
+			Region:  schemas.NewSecretVar(aliasRegion),
+		},
+	})
+	if got := resolveVertexRegion(ctx, key); got != aliasRegion {
+		t.Errorf("alias Region should win: got %q, want %q", got, aliasRegion)
+	}
+
+	ctx2 := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	ctx2.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{
+		Key: "x",
+		Config: &schemas.AliasConfig{
+			ModelID: "x",
+			Region:  schemas.NewSecretVar(""),
+		},
+	})
+	if got := resolveVertexRegion(ctx2, key); got != keyRegion {
+		t.Errorf("empty alias Region should fall through: got %q, want %q", got, keyRegion)
+	}
+}
+
+// TestResolveVertexProjectNumber_AliasOverride mirrors the ProjectID test.
+func TestResolveVertexProjectNumber_AliasOverride(t *testing.T) {
+	keyNumber := "111111"
+	aliasNumber := "222222"
+	key := schemas.Key{
+		VertexKeyConfig: &schemas.VertexKeyConfig{
+			ProjectNumber: *schemas.NewSecretVar(keyNumber),
+		},
+	}
+
+	if got := resolveVertexProjectNumber(nil, key); got != keyNumber {
+		t.Errorf("nil ctx: got %q, want %q", got, keyNumber)
+	}
+
+	ctx0 := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	if got := resolveVertexProjectNumber(ctx0, key); got != keyNumber {
+		t.Errorf("empty ctx: got %q, want key-level %q", got, keyNumber)
+	}
+
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{
+		Key: "x",
+		Config: &schemas.AliasConfig{
+			ModelID: "x",
+			VertexAliasCfg: &schemas.VertexAliasCfg{
+				ProjectNumber: schemas.NewSecretVar(aliasNumber),
+			},
+		},
+	})
+	if got := resolveVertexProjectNumber(ctx, key); got != aliasNumber {
+		t.Errorf("alias ProjectNumber should win: got %q, want %q", got, aliasNumber)
+	}
+
+	ctx2 := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	ctx2.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{
+		Key: "x",
+		Config: &schemas.AliasConfig{
+			ModelID: "x",
+			VertexAliasCfg: &schemas.VertexAliasCfg{
+				ProjectNumber: schemas.NewSecretVar(""),
+			},
+		},
+	})
+	if got := resolveVertexProjectNumber(ctx2, key); got != keyNumber {
+		t.Errorf("empty alias ProjectNumber should fall through: got %q, want %q", got, keyNumber)
+	}
+}
+
+// TestResolveVertexForceSingleRegion_AliasOverride verifies the per-alias
+// VertexAliasCfg.ForceSingleRegion (*bool) override: an explicit alias-level
+// value wins over the key-level bool — including an alias false overriding a key
+// true — while a nil alias value falls through to the key-level bool.
+func TestResolveVertexForceSingleRegion_AliasOverride(t *testing.T) {
+	keyForceTrue := schemas.Key{
+		VertexKeyConfig: &schemas.VertexKeyConfig{ForceSingleRegion: true},
+	}
+	keyForceFalse := schemas.Key{
+		VertexKeyConfig: &schemas.VertexKeyConfig{ForceSingleRegion: false},
+	}
+
+	// nil ctx uses the key-level value.
+	if got := resolveVertexForceSingleRegion(nil, keyForceTrue); !got {
+		t.Errorf("nil ctx: got %v, want key-level true", got)
+	}
+
+	// empty ctx (no resolved alias) uses the key-level value.
+	ctx0 := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	if got := resolveVertexForceSingleRegion(ctx0, keyForceFalse); got {
+		t.Errorf("empty ctx: got %v, want key-level false", got)
+	}
+
+	// Alias-level true overrides key-level false.
+	ctxTrue := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	ctxTrue.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{
+		Key: "best-claude",
+		Config: &schemas.AliasConfig{
+			ModelID:        "claude-opus-4-7",
+			VertexAliasCfg: &schemas.VertexAliasCfg{ForceSingleRegion: schemas.Ptr(true)},
+		},
+	})
+	if got := resolveVertexForceSingleRegion(ctxTrue, keyForceFalse); !got {
+		t.Errorf("alias true should win over key false: got %v, want true", got)
+	}
+
+	// Alias-level false overrides key-level true (explicit set beats nil).
+	ctxFalse := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	ctxFalse.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{
+		Key: "best-claude",
+		Config: &schemas.AliasConfig{
+			ModelID:        "claude-opus-4-7",
+			VertexAliasCfg: &schemas.VertexAliasCfg{ForceSingleRegion: schemas.Ptr(false)},
+		},
+	})
+	if got := resolveVertexForceSingleRegion(ctxFalse, keyForceTrue); got {
+		t.Errorf("alias false should win over key true: got %v, want false", got)
+	}
+
+	// Alias present but ForceSingleRegion nil falls through to the key-level value.
+	ctxNil := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	ctxNil.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{
+		Key: "best-claude",
+		Config: &schemas.AliasConfig{
+			ModelID:        "claude-opus-4-7",
+			VertexAliasCfg: &schemas.VertexAliasCfg{ForceSingleRegion: nil},
+		},
+	})
+	if got := resolveVertexForceSingleRegion(ctxNil, keyForceTrue); !got {
+		t.Errorf("nil alias value should fall through to key true: got %v, want true", got)
+	}
+}
+
+// TestGeminiImageURLSchemesContract pins the exact allowlist that Vertex passes
+// into the Gemini converter. vertex.go reuses geminiImageURLSchemes across
+// ChatCompletion / ChatCompletionStream / Responses / ResponsesStream / CountTokens,
+// so a regression that drops "gs" (or accidentally adds e.g. "file") is caught
+// here without having to drive each provider entrypoint end-to-end.
+func TestGeminiImageURLSchemesContract(t *testing.T) {
+	want := []string{"http", "https", "gs"}
+	if !reflect.DeepEqual(geminiImageURLSchemes, want) {
+		t.Fatalf("geminiImageURLSchemes = %v, want %v", geminiImageURLSchemes, want)
 	}
 }

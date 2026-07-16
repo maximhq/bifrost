@@ -532,7 +532,78 @@ func TestConvertToBifrostContext_DirectKey_EnvPrefixNotResolved(t *testing.T) {
 	if key.Value.GetValue() != "env.SOME_SECRET" {
 		t.Errorf("direct key value = %q, want literal %q (must not resolve env vars)", key.Value.GetValue(), "env.SOME_SECRET")
 	}
-	if key.Value.IsFromEnv() {
-		t.Error("direct key must not be marked as from-env")
+	if key.Value.IsFromSecret() {
+		t.Error("direct key must not be marked as from-secret")
+	}
+}
+
+func TestBuildBaseURL(t *testing.T) {
+	const host = "bifrost.example.com"
+	tests := []struct {
+		name     string
+		external string
+		host     string
+		xfProto  string
+		xbfProto string
+		want     string
+	}{
+		{name: "defaults to http", host: host, want: "http://" + host},
+		{name: "x-forwarded-proto https", host: host, xfProto: "https", want: "https://" + host},
+		{name: "x-forwarded-proto comma list", host: host, xfProto: "https, http", want: "https://" + host},
+		{name: "x-forwarded-proto uppercase", host: host, xfProto: "HTTPS", want: "https://" + host},
+		{name: "x-bf-forwarded-proto https", host: host, xbfProto: "https", want: "https://" + host},
+		{name: "x-bf-forwarded-proto uppercase trimmed", host: host, xbfProto: " HTTPS ", want: "https://" + host},
+		{name: "x-bf-forwarded-proto comma list", host: host, xbfProto: "https, http", want: "https://" + host},
+		{name: "x-bf-forwarded-proto http stays http", host: host, xbfProto: "http", want: "http://" + host},
+		{name: "external override wins", external: "https://proxy.example.com", host: host, xfProto: "http", want: "https://proxy.example.com"},
+		{name: "external override trailing slash trimmed", external: "https://proxy.example.com/", host: host, want: "https://proxy.example.com"},
+		{name: "invalid external falls back to inference", external: "not-a-url", host: host, xbfProto: "https", want: "https://" + host},
+		{name: "empty host yields empty", host: "", xbfProto: "https", want: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.SetHost(tt.host)
+			if tt.xfProto != "" {
+				ctx.Request.Header.Set("X-Forwarded-Proto", tt.xfProto)
+			}
+			if tt.xbfProto != "" {
+				ctx.Request.Header.Set("x-bf-forwarded-proto", tt.xbfProto)
+			}
+			if got := BuildBaseURL(ctx, tt.external); got != tt.want {
+				t.Fatalf("BuildBaseURL() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// A virtual key presented via Azure's native "api-key" header (used by the
+// Azure OpenAI SDK on passthrough) must be captured into the context so
+// governance/logging attribute the call to the VK, not the base key.
+func TestConvertToBifrostContext_VirtualKeyFromAzureAPIKeyHeader(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("api-key", "sk-bf-azure-passthrough-vk")
+
+	bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
+	defer cancel()
+
+	vk, ok := bifrostCtx.Value(schemas.BifrostContextKeyVirtualKey).(string)
+	if !ok || vk != "sk-bf-azure-passthrough-vk" {
+		t.Fatalf("virtual key = %#v, want %q", bifrostCtx.Value(schemas.BifrostContextKeyVirtualKey), "sk-bf-azure-passthrough-vk")
+	}
+}
+
+// A real (non-VK) provider key in the "api-key" header must not be misread as
+// a virtual key — only the sk-bf- prefix promotes it.
+func TestConvertToBifrostContext_APIKeyHeaderNonVirtualKeyIgnored(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("api-key", "real-azure-api-key")
+
+	bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
+	defer cancel()
+
+	if got := bifrostCtx.Value(schemas.BifrostContextKeyVirtualKey); got != nil {
+		t.Fatalf("virtual key should not be set from a non-VK api-key value, got %#v", got)
 	}
 }

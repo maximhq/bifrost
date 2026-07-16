@@ -25,14 +25,15 @@ export enum RbacResource {
 	RBAC = "RBAC",
 	Governance = "Governance",
 	RoutingRules = "RoutingRules",
-	PIIRedactor = "PIIRedactor",
 	PromptRepository = "PromptRepository",
 	PromptDeploymentStrategy = "PromptDeploymentStrategy",
+	SkillsRepository = "SkillsRepository",
 	AccessProfiles = "AccessProfiles",
 	APIKeys = "APIKeys",
 	Inference = "Inference",
 	Metrics = "Metrics",
 	FeatureFlags = "FeatureFlags",
+	CircuitBreaker = "CircuitBreaker",
 }
 
 // RBAC Operation Names (must match backend definitions)
@@ -42,6 +43,7 @@ export enum RbacOperation {
 	Create = "Create",
 	Update = "Update",
 	Delete = "Delete",
+	Reveal = "Reveal",
 	Download = "Download",
 }
 

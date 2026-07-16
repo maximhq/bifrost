@@ -5,7 +5,6 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
-import checker from "vite-plugin-checker";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isEnterpriseBuild = fs.existsSync(path.join(__dirname, "app", "enterprise"));
@@ -28,11 +27,6 @@ export default defineConfig({
 		}),
 		react(),
 		tailwindcss(),
-		checker({
-			typescript: true,
-			// Show errors as a Vite overlay during dev AND fail `vite build` on type errors.
-			enableBuild: true,
-		}),
 	],
 	resolve: {
 		// Enterprise UI source is symlinked into ./app/enterprise; preserving symlinks

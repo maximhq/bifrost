@@ -40,7 +40,7 @@ type PushGatewayConfig struct {
 	// Enabled controls whether pushing metrics to the Push Gateway is active
 	Enabled bool `json:"enabled"`
 	// PushGatewayURL is the URL of the Prometheus Push Gateway (e.g., http://pushgateway:9091). Supports env.VAR_NAME.
-	PushGatewayURL *schemas.EnvVar `json:"push_gateway_url"`
+	PushGatewayURL *schemas.SecretVar `json:"push_gateway_url"`
 	// JobName is the job label for pushed metrics (default: "bifrost")
 	JobName string `json:"job_name"`
 	// InstanceID is the instance label for grouping metrics. If empty, hostname is used.
@@ -53,13 +53,13 @@ type PushGatewayConfig struct {
 
 // BasicAuthConfig holds basic authentication credentials for the Push Gateway
 type BasicAuthConfig struct {
-	Username *schemas.EnvVar `json:"username"`
-	Password *schemas.EnvVar `json:"password"`
+	Username *schemas.SecretVar `json:"username"`
+	Password *schemas.SecretVar `json:"password"`
 }
 
-// MarshalForStorage serializes Config to JSON with *EnvVar fields as plain strings
+// MarshalForStorage serializes Config to JSON with *SecretVar fields as plain strings
 // ("env.VAR_NAME" or the literal value) for database/config-file persistence.
-// For HTTP API responses use json.Marshal directly so clients receive full EnvVar objects.
+// For HTTP API responses use json.Marshal directly so clients receive full SecretVar objects.
 func (c *Config) MarshalForStorage() ([]byte, error) {
 	type basicAuthStorage struct {
 		Username string `json:"username,omitempty"`
@@ -85,15 +85,15 @@ func (c *Config) MarshalForStorage() ([]byte, error) {
 	if c.PushGateway != nil {
 		pgw := &pushGatewayStorage{
 			Enabled:        c.PushGateway.Enabled,
-			PushGatewayURL: schemas.EnvVarAsString(c.PushGateway.PushGatewayURL),
+			PushGatewayURL: schemas.SecretVarAsString(c.PushGateway.PushGatewayURL),
 			JobName:        c.PushGateway.JobName,
 			InstanceID:     c.PushGateway.InstanceID,
 			PushInterval:   c.PushGateway.PushInterval,
 		}
 		if c.PushGateway.BasicAuth != nil {
 			pgw.BasicAuth = &basicAuthStorage{
-				Username: schemas.EnvVarAsString(c.PushGateway.BasicAuth.Username),
-				Password: schemas.EnvVarAsString(c.PushGateway.BasicAuth.Password),
+				Username: schemas.SecretVarAsString(c.PushGateway.BasicAuth.Username),
+				Password: schemas.SecretVarAsString(c.PushGateway.BasicAuth.Password),
 			}
 		}
 		storage.PushGateway = pgw
@@ -101,7 +101,7 @@ func (c *Config) MarshalForStorage() ([]byte, error) {
 	return sonic.Marshal(storage)
 }
 
-// Redacted returns a copy of the config with sensitive EnvVar fields redacted for API responses.
+// Redacted returns a copy of the config with sensitive SecretVar fields redacted for API responses.
 // PushGatewayURL is not a secret and is returned unchanged so the UI can display and re-submit
 // it without failing URL validation. For env var references on that field, only the resolved
 // value is hidden; the env_var name is preserved. Basic auth credentials are masked.
@@ -127,8 +127,8 @@ func (c *Config) Redacted() *Config {
 // hideResolvedEnvValue returns v unchanged for literal values (URLs are not secrets).
 // For env var references it zeroes out the resolved Val so the actual env content is
 // not leaked in API responses, while keeping the env_var name for round-trip edits.
-func hideResolvedEnvValue(v *schemas.EnvVar) *schemas.EnvVar {
-	if v == nil || !v.IsFromEnv() {
+func hideResolvedEnvValue(v *schemas.SecretVar) *schemas.SecretVar {
+	if v == nil || !v.IsFromSecret() {
 		return v
 	}
 	return v.Redacted()
@@ -227,6 +227,31 @@ var (
 )
 
 // Init creates a new PrometheusPlugin with initialized metrics.
+// defaultBifrostLabelNames is the canonical set of Prometheus labels attached to
+// bifrost.* metrics. It is a package var (not an Init local) so the connector-
+// parity conformance test can assert it against the shared enrichment registry
+// (core/schemas). Metric-tier dimensions only — no high-cardinality (user, arrays).
+var defaultBifrostLabelNames = []string{
+	"provider",
+	"model",
+	"alias",
+	"method",
+	"virtual_key_id",
+	"virtual_key_name",
+	"routing_engine_used",
+	"routing_rule_id",
+	"routing_rule_name",
+	"selected_key_id",
+	"selected_key_name",
+	"fallback_index",
+	"team_id",
+	"team_name",
+	"customer_id",
+	"customer_name",
+	"business_unit_id",
+	"business_unit_name",
+}
+
 func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger schemas.Logger) (*PrometheusPlugin, error) {
 	if config == nil {
 		return nil, fmt.Errorf("config is required")
@@ -257,24 +282,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 	}
 
 	defaultHTTPLabels := []string{"path", "method", "status"}
-	defaultBifrostLabels := []string{
-		"provider",
-		"model",
-		"alias",
-		"method",
-		"virtual_key_id",
-		"virtual_key_name",
-		"routing_engine_used",
-		"routing_rule_id",
-		"routing_rule_name",
-		"selected_key_id",
-		"selected_key_name",
-		"fallback_index",
-		"team_id",
-		"team_name",
-		"customer_id",
-		"customer_name",
-	}
+	defaultBifrostLabels := append([]string(nil), defaultBifrostLabelNames...)
 
 	var filteredCustomLabels []string
 	if len(config.CustomLabels) > 0 {
@@ -613,6 +621,11 @@ func (p *PrometheusPlugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostCont
 	return chunk, nil
 }
 
+// PreRequestHook implements schemas.LLMPlugin (no-op — required for plugin indexing).
+func (p *PrometheusPlugin) PreRequestHook(_ *schemas.BifrostContext, _ *schemas.BifrostRequest) error {
+	return nil
+}
+
 // PreLLMHook records the start time of the request in the context.
 // This time is used later in PostLLMHook to calculate request duration.
 func (p *PrometheusPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
@@ -702,6 +715,8 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	teamName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceTeamName)
 	customerID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceCustomerID)
 	customerName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceCustomerName)
+	businessUnitID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceBusinessUnitID)
+	businessUnitName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceBusinessUnitName)
 
 	// Extract ALL context values BEFORE spawning the goroutine.
 	labelValues := map[string]string{
@@ -721,6 +736,8 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		"team_name":           teamName,
 		"customer_id":         customerID,
 		"customer_name":       customerName,
+		"business_unit_id":    businessUnitID,
+		"business_unit_name":  businessUnitName,
 	}
 
 	// Get all custom prometheus labels from context BEFORE the goroutine.
@@ -886,6 +903,17 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 				if result.TranscriptionStreamResponse.Usage.OutputTokens != nil {
 					outputTokens = *result.TranscriptionStreamResponse.Usage.OutputTokens
 				}
+			case result.CompactionResponse != nil && result.CompactionResponse.Usage != nil:
+				if u := result.CompactionResponse.Usage.ToBifrostLLMUsage(); u != nil {
+					inputTokens = u.PromptTokens
+					outputTokens = u.CompletionTokens
+				}
+			case result.ImageGenerationResponse != nil && result.ImageGenerationResponse.Usage != nil:
+				inputTokens = result.ImageGenerationResponse.Usage.InputTokens
+				outputTokens = result.ImageGenerationResponse.Usage.OutputTokens
+			case result.PassthroughResponse != nil && result.PassthroughResponse.PassthroughUsage != nil && result.PassthroughResponse.PassthroughUsage.LLMUsage != nil:
+				inputTokens = result.PassthroughResponse.PassthroughUsage.LLMUsage.PromptTokens
+				outputTokens = result.PassthroughResponse.PassthroughUsage.LLMUsage.CompletionTokens
 			}
 
 			p.InputTokensTotal.WithLabelValues(promLabelValues...).Add(float64(inputTokens))

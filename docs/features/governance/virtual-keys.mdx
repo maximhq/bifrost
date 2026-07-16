@@ -13,6 +13,7 @@ Virtual Keys are the primary governance entity in Bifrost. Users and application
 - `Authorization` - Authorization header, eg. `Bearer sk-bf-*` (OpenAI style)
 - `x-api-key` - API key header, eg. `sk-bf-*` (Anthropic style)
 - `x-goog-api-key` - API key header, eg. `sk-bf-*` (Google Gemini style)
+- `api-key` - API key header, eg. `sk-bf-*` (Azure OpenAI style)
 
 <Note>Old virtual keys(without `sk-bf-*` prefix) are only supported by `x-bf-vk` header.</Note>
 
@@ -47,6 +48,8 @@ Virtual Keys are the primary governance entity in Bifrost. Users and application
 **Associations:**
 - **Team**: Assign to existing team (mutually exclusive with customer)
 - **Customer**: Assign to existing customer (mutually exclusive with team)
+
+**Expiry** (optional): Pick **Never**, a preset (30 min to 7 days), or a custom date and time. See [Key Expiry](#key-expiry).
 
 3. Click **Create Virtual Key**
 
@@ -533,6 +536,104 @@ curl -X PUT http://localhost:8080/api/config \
 </Tabs>
 
 When the governance header is enforced, the request will be rejected if the `x-bf-vk` header is not present.
+
+### Key Expiry
+
+Virtual keys can optionally carry an expiry timestamp. Once the expiry passes, requests using the key are rejected with a `403` and the reason `Virtual key has expired` — the key is not deleted or deactivated, so it stays visible for auditing and can be restored at any time.
+
+- **No expiry by default** — keys without `expires_at` never expire.
+- **Fail closed** — both LLM inference and MCP tool execution are blocked once the key expires.
+- **Inactive wins** — a key that is both inactive and expired is rejected as inactive.
+- **Restore anytime** — extend the expiry to a future timestamp or clear it; access resumes immediately.
+
+<Tabs group="config-method">
+<Tab title="Web UI">
+
+1. Go to **Virtual Keys** and create or edit a key
+2. In the **Expiry** section, pick **Never**, a preset (**30 min**, **1 hour**, **24 hours**, **7 days**), or choose a custom date and time from the calendar
+
+![Virtual Key Expiry Picker](../../media/ui-virtual-key-expiry.png)
+
+Expired keys show an **Expired** badge in the virtual keys table.
+
+</Tab>
+<Tab title="API">
+
+**Create with expiry:**
+```bash
+curl -X POST http://localhost:8080/api/governance/virtual-keys \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Contractor API Key",
+    "provider_configs": [
+      {
+        "provider": "openai",
+        "allowed_models": ["gpt-4o-mini"],
+        "key_ids": ["*"]
+      }
+    ],
+    "expires_at": "2026-08-01T00:00:00Z"
+  }'
+```
+
+**Set or extend expiry on an existing key:**
+```bash
+curl -X PUT http://localhost:8080/api/governance/virtual-keys/{vk_id} \
+  -H "Content-Type: application/json" \
+  -d '{"expires_at": "2026-09-01T00:00:00Z"}'
+```
+
+**Clear expiry (key never expires again):**
+```bash
+curl -X PUT http://localhost:8080/api/governance/virtual-keys/{vk_id} \
+  -H "Content-Type: application/json" \
+  -d '{"expires_at": ""}'
+```
+
+Timestamps must be RFC3339 and in the future; otherwise the API returns `400`. On update, omitting `expires_at` leaves the current expiry unchanged.
+
+**Expired key rejection:**
+```json
+{
+  "type": "virtual_key_blocked",
+  "status_code": 403,
+  "error": {
+    "message": "Virtual key has expired"
+  }
+}
+```
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "governance": {
+    "virtual_keys": [
+      {
+        "id": "vk-contractor",
+        "name": "Contractor API Key",
+        "value": "sk-bf-*",
+        "provider_configs": [
+          {
+            "provider": "openai",
+            "allowed_models": ["gpt-4o-mini"],
+            "key_ids": ["*"]
+          }
+        ],
+        "expires_at": "2026-08-01T00:00:00Z"
+      }
+    ]
+  }
+}
+```
+
+<Note>
+For config-managed virtual keys the file is the source of truth: removing `expires_at` from the file clears the expiry on the next sync.
+</Note>
+
+</Tab>
+</Tabs>
 
 ### Authentication and Virtual Keys
 

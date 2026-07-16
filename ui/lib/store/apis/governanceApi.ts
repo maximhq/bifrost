@@ -39,6 +39,7 @@ import {
 	UpdateVirtualKeyRequest,
 	VirtualKey,
 } from "@/lib/types/governance";
+import { AnalyzerConfig } from "@/lib/types/complexityRouter";
 import { baseApi } from "./baseApi";
 
 type PricingOverrideQueryArgs = {
@@ -144,7 +145,7 @@ export const governanceApi = baseApi.injectEndpoints({
 		}),
 
 		getTeam: builder.query<{ team: Team }, string>({
-			query: (teamId) => `/governance/teams/${teamId}`,
+			query: (teamId) => `/governance/teams/${encodeURIComponent(teamId)}`,
 			providesTags: (result, error, teamId) => [{ type: "Teams", id: teamId }],
 		}),
 
@@ -179,7 +180,7 @@ export const governanceApi = baseApi.injectEndpoints({
 
 		updateTeam: builder.mutation<{ message: string; team: Team }, { teamId: string; data: UpdateTeamRequest }>({
 			query: ({ teamId, data }) => ({
-				url: `/governance/teams/${teamId}`,
+				url: `/governance/teams/${encodeURIComponent(teamId)}`,
 				method: "PUT",
 				body: data,
 			}),
@@ -212,7 +213,7 @@ export const governanceApi = baseApi.injectEndpoints({
 
 		deleteTeam: builder.mutation<{ message: string }, string>({
 			query: (teamId) => ({
-				url: `/governance/teams/${teamId}`,
+				url: `/governance/teams/${encodeURIComponent(teamId)}`,
 				method: "DELETE",
 			}),
 			async onQueryStarted(teamId, { dispatch, getState, queryFulfilled }) {
@@ -825,6 +826,32 @@ export const governanceApi = baseApi.injectEndpoints({
 				}
 			},
 		}),
+
+		// Complexity Analyzer Config
+		getComplexityAnalyzerConfig: builder.query<AnalyzerConfig, void>({
+			query: () => ({
+				url: "/governance/complexity-analyzer-config",
+				method: "GET",
+			}),
+			providesTags: ["ComplexityAnalyzerConfig"],
+		}),
+
+		updateComplexityAnalyzerConfig: builder.mutation<AnalyzerConfig, AnalyzerConfig>({
+			query: (data) => ({
+				url: "/governance/complexity-analyzer-config",
+				method: "PUT",
+				body: data,
+			}),
+			invalidatesTags: ["ComplexityAnalyzerConfig"],
+		}),
+
+		resetComplexityAnalyzerConfig: builder.mutation<AnalyzerConfig, void>({
+			query: () => ({
+				url: "/governance/complexity-analyzer-config/reset",
+				method: "POST",
+			}),
+			invalidatesTags: ["ComplexityAnalyzerConfig"],
+		}),
 	}),
 });
 
@@ -887,6 +914,11 @@ export const {
 	useGetProviderGovernanceQuery,
 	useUpdateProviderGovernanceMutation,
 	useDeleteProviderGovernanceMutation,
+
+	// Complexity Analyzer Config
+	useGetComplexityAnalyzerConfigQuery,
+	useUpdateComplexityAnalyzerConfigMutation,
+	useResetComplexityAnalyzerConfigMutation,
 
 	// Lazy queries
 	useLazyGetVirtualKeysQuery,

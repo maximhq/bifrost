@@ -39,16 +39,10 @@ export default function MCPRegistryOAuthCallbackPage() {
 
 	return (
 		<div className="mx-auto flex min-h-[60vh] w-full max-w-xl items-center justify-center p-6">
-			<div className="w-full rounded-lg border bg-card p-8 text-center shadow-sm">
-				<h1 className="text-xl font-semibold">
-					{status === "success" ? "Authorization complete" : "Authorization failed"}
-				</h1>
-				{error && <p className="mt-2 text-sm text-destructive">{error}</p>}
-				<p className="mt-4 text-sm text-muted-foreground">
-					{closeAttempted
-						? "You can close this tab."
-						: "This window can be closed."}
-				</p>
+			<div className="bg-card w-full rounded-lg border p-8 text-center shadow-sm">
+				<h1 className="text-xl font-semibold">{status === "success" ? "Authorization complete" : "Authorization failed"}</h1>
+				{error && <p className="text-destructive mt-2 text-sm">{error}</p>}
+				<p className="text-muted-foreground mt-4 text-sm">{closeAttempted ? "You can close this tab." : "This window can be closed."}</p>
 				<div className="mt-6">
 					<Button asChild variant="outline" data-testid="mcp-callback-back-button">
 						<Link to="/workspace/mcp-registry">Back to MCP registry</Link>

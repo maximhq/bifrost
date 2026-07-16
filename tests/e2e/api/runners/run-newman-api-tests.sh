@@ -66,6 +66,10 @@ DB_CONFIG_PATH=""
 SEED_ENV_PATH="${BIFROST_E2E_SEED_ENV:-}"
 EXPECTED_PATH="${BIFROST_E2E_SEED_EXPECTED:-}"
 EXTRA_COLLECTIONS=()
+BASE_URL="${BIFROST_E2E_BASE_URL:-${BIFROST_BASE_URL:-http://localhost:8080}}"
+ADMIN_USERNAME="${BIFROST_E2E_ADMIN_USERNAME:-admin}"
+ADMIN_PASSWORD="${BIFROST_E2E_ADMIN_PASSWORD:-Bifrost-E2E-Admin-Pass1!}"
+ADMIN_AUTH_HEADER="Bearer $(printf '%s:%s' "$ADMIN_USERNAME" "$ADMIN_PASSWORD" | base64 | tr -d '\n')"
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -164,7 +168,7 @@ while [[ $# -gt 0 ]]; do
             echo "                      (default: ./config.json; also reads BIFROST_CONFIG_PATH env)"
             echo "  --extra-collection <p>"
             echo "                      Merge an additional Postman collection into this API run."
-            echo "                      Intended for enterprise-only API e2e coverage from another repo."
+            echo "                      Intended for API e2e coverage maintained in another repo."
             echo "  --seed-env <p>      Load generated seed dotenv values and pass them to Newman."
             echo "  --expected <p>      Load generated DAC expected-manifest JSON for assertions."
             echo "  --help              Show this help message"
@@ -222,8 +226,10 @@ fi
 
 echo -e "Configuration:"
 echo -e "  Collection: ${YELLOW}$COLLECTION${NC}"
+echo -e "  Base URL:   ${YELLOW}$BASE_URL${NC}"
 echo -e "  Reports:    ${YELLOW}$REPORT_DIR${NC}"
 echo -e "  Verbose:    ${YELLOW}$([ -n "$VERBOSE" ] && echo "enabled" || echo "disabled")${NC}"
+echo -e "  Auth Pass:  ${YELLOW}enabled (username: $ADMIN_USERNAME)${NC}"
 if [ ${#EXTRA_COLLECTIONS[@]} -gt 0 ]; then
     echo -e "  Extensions: ${YELLOW}${EXTRA_COLLECTIONS[*]}${NC}"
 fi
@@ -267,6 +273,7 @@ fi
 HTTP_SERVER_DIR="$BIFROST_ROOT/examples/mcps/http-no-ping-server"
 HTTP_SERVER_BIN="$HTTP_SERVER_DIR/http-server"
 HTTP_SERVER_PID=""
+AUTH_ENABLED_BY_RUN=""
 
 start_http_mcp_server() {
     # Skip if something is already listening on 3001
@@ -312,8 +319,20 @@ stop_http_mcp_server() {
     fi
 }
 
-# Register teardown so the server is stopped even if the script exits early
-trap stop_http_mcp_server EXIT
+cleanup() {
+    if [ "$AUTH_ENABLED_BY_RUN" = "1" ]; then
+        echo "Restoring dashboard auth to disabled..."
+        BIFROST_E2E_AUTH_HEADER="$ADMIN_AUTH_HEADER" \
+        BIFROST_E2E_BASE_URL="$BASE_URL" \
+        BIFROST_E2E_ADMIN_USERNAME="$ADMIN_USERNAME" \
+        BIFROST_E2E_ADMIN_PASSWORD="$ADMIN_PASSWORD" \
+            node "$SCRIPT_DIR/set-auth-config.mjs" disable >/dev/null 2>&1 || true
+    fi
+    stop_http_mcp_server
+}
+
+# Register teardown so auth and the server are restored even if the script exits early
+trap cleanup EXIT
 
 echo "Setting up MCP test servers..."
 start_http_mcp_server
@@ -350,8 +369,10 @@ if [ -n "$DB_VERIFY" ]; then
     export NODE_PATH="$API_DIR/node_modules${NODE_PATH:+:$NODE_PATH}"
 fi
 
-# Build Newman command
-cmd=(newman run "$COLLECTION" --timeout-script 120000 --timeout 900000 -r "$REPORTERS")
+# Build shared Newman arguments. The collection and reporter export paths are
+# supplied per pass so the unauthenticated and authenticated runs keep separate
+# reports while using identical environment/config inputs.
+newman_args=(--timeout-script 120000 --timeout 900000 -r "$REPORTERS" --env-var "base_url=$BASE_URL")
 
 # Parsed seed env entries live here, not in the runner's shell namespace.
 # Decoupling the data keyspace from the script's own variables (PATH, COLLECTION,
@@ -392,7 +413,7 @@ add_env_var_if_set() {
     local name="$1"
     local value="${seed_env_values[$name]:-}"
     if [ -n "$value" ]; then
-        cmd+=(--env-var "$name=$value")
+        newman_args+=(--env-var "$name=$value")
     fi
 }
 
@@ -423,33 +444,39 @@ if [ -n "$EXPECTED_PATH" ]; then
         exit 1
     fi
     EXPECTED_JSON="$(node -e 'const fs=require("fs"); const p=process.argv[1]; process.stdout.write(JSON.stringify(JSON.parse(fs.readFileSync(p,"utf8"))));' "$EXPECTED_PATH")"
-    cmd+=(--env-var "e2e_seed_expected=$EXPECTED_JSON")
+    newman_args+=(--env-var "e2e_seed_expected=$EXPECTED_JSON")
 fi
 
 # Override plugin_path with resolved absolute path so Create Plugin / Get Plugin use the built .so
 # env-var takes precedence over collection variables in Newman's resolution order
 if [ -n "$PLUGIN_PATH_ABS" ]; then
-    cmd+=(--env-var "plugin_path=$PLUGIN_PATH_ABS")
-fi
-
-if [[ "$REPORTERS" == *"htmlextra"* ]]; then
-    cmd+=(--reporter-htmlextra-export "$REPORT_DIR/report.html")
-    cmd+=(--reporter-htmlextra-title "Bifrost API Management & Health")
-    cmd+=(--reporter-htmlextra-darkTheme)
-fi
-
-if [[ "$REPORTERS" == *"json"* ]]; then
-    cmd+=(--reporter-json-export "$REPORT_DIR/report.json")
+    newman_args+=(--env-var "plugin_path=$PLUGIN_PATH_ABS")
 fi
 
 if [ -n "$DB_VERIFY" ]; then
-    [ -n "$DB_URL" ]      && cmd+=(--reporter-dbverify-db-url "$DB_URL")
-    [ -n "$LOGS_DB_URL" ] && cmd+=(--reporter-dbverify-logs-db-url "$LOGS_DB_URL")
-    [ -n "$DB_CONFIG_PATH" ] && cmd+=(--reporter-dbverify-config "$DB_CONFIG_PATH")
+    [ -n "$DB_URL" ]      && newman_args+=(--reporter-dbverify-db-url "$DB_URL")
+    [ -n "$LOGS_DB_URL" ] && newman_args+=(--reporter-dbverify-logs-db-url "$LOGS_DB_URL")
+    [ -n "$DB_CONFIG_PATH" ] && newman_args+=(--reporter-dbverify-config "$DB_CONFIG_PATH")
 fi
 
-[ -n "$VERBOSE" ] && cmd+=("$VERBOSE")
-[ -n "$BAIL" ] && cmd+=("$BAIL")
+[ -n "$VERBOSE" ] && newman_args+=("$VERBOSE")
+[ -n "$BAIL" ] && newman_args+=("$BAIL")
+
+build_newman_cmd() {
+    local collection_path="$1"
+    local report_suffix="$2"
+    cmd=(newman run "$collection_path" "${newman_args[@]}")
+
+    if [[ "$REPORTERS" == *"htmlextra"* ]]; then
+        cmd+=(--reporter-htmlextra-export "$REPORT_DIR/report${report_suffix}.html")
+        cmd+=(--reporter-htmlextra-title "Bifrost API Management & Health${report_suffix}")
+        cmd+=(--reporter-htmlextra-darkTheme)
+    fi
+
+    if [[ "$REPORTERS" == *"json"* ]]; then
+        cmd+=(--reporter-json-export "$REPORT_DIR/report${report_suffix}.json")
+    fi
+}
 
 # Run Newman and save output to log file while displaying to console (using tee)
 LOG_FILE="$LOG_DIR/api-management.log"
@@ -461,10 +488,86 @@ else
     echo "[setup] plugin_path not resolved (build may have failed)" | tee "$LOG_FILE"
 fi
 
-set +e
-"${cmd[@]}" 2>&1 | tee -a "$LOG_FILE"
-EXIT_CODE=${PIPESTATUS[0]}
-set -e
+run_newman_pass() {
+    local label="$1"
+    local collection_path="$2"
+    local report_suffix="$3"
+    local with_auth="$4"
+
+    echo "" | tee -a "$LOG_FILE"
+    echo -e "${GREEN}${label}${NC}" | tee -a "$LOG_FILE"
+
+    build_newman_cmd "$collection_path" "$report_suffix"
+    if [ "$with_auth" = "1" ]; then
+        cmd+=(--env-var "admin_auth_header=$ADMIN_AUTH_HEADER")
+        cmd+=(--env-var "admin_username=$ADMIN_USERNAME")
+        cmd+=(--env-var "admin_password=$ADMIN_PASSWORD")
+    fi
+
+    set +e
+    "${cmd[@]}" 2>&1 | tee -a "$LOG_FILE"
+    local pass_exit=${PIPESTATUS[0]}
+    set -e
+    return $pass_exit
+}
+
+run_newman_pass "Running unauthenticated API management tests..." "$COLLECTION" "" ""
+EXIT_CODE=$?
+
+AUTH_COLLECTION="$REPORT_DIR/api-management-auth.postman_collection.json"
+if [ $EXIT_CODE -eq 0 ]; then
+    echo "" | tee -a "$LOG_FILE"
+    echo -e "${GREEN}Enabling dashboard auth for authenticated API management tests...${NC}" | tee -a "$LOG_FILE"
+    set +e
+    BIFROST_E2E_BASE_URL="$BASE_URL" \
+    BIFROST_E2E_ADMIN_USERNAME="$ADMIN_USERNAME" \
+    BIFROST_E2E_ADMIN_PASSWORD="$ADMIN_PASSWORD" \
+        node "$SCRIPT_DIR/set-auth-config.mjs" enable 2>&1 | tee -a "$LOG_FILE"
+    AUTH_SETUP_EXIT=${PIPESTATUS[0]}
+    set -e
+    if [ $AUTH_SETUP_EXIT -ne 0 ]; then
+        EXIT_CODE=$AUTH_SETUP_EXIT
+    else
+        AUTH_ENABLED_BY_RUN="1"
+        node "$SCRIPT_DIR/add-auth-header.mjs" "$COLLECTION" "$AUTH_COLLECTION"
+        run_newman_pass "Running authenticated API management tests..." "$AUTH_COLLECTION" "-auth" "1"
+        EXIT_CODE=$?
+    fi
+fi
+
+if [ $EXIT_CODE -eq 0 ] && [ "${BIFROST_E2E_SKIP_OBSERVABILITY:-0}" != "1" ]; then
+    echo "" | tee -a "$LOG_FILE"
+    echo -e "${GREEN}Running authenticated local OTEL and Prometheus observability checks...${NC}" | tee -a "$LOG_FILE"
+    set +e
+    BIFROST_E2E_BASE_URL="$BASE_URL" \
+    BIFROST_E2E_AUTH_HEADER="$ADMIN_AUTH_HEADER" \
+        node "$SCRIPT_DIR/run-observability-local.mjs" 2>&1 | tee -a "$LOG_FILE"
+    OBS_EXIT_CODE=${PIPESTATUS[0]}
+    set -e
+    if [ $OBS_EXIT_CODE -ne 0 ]; then
+        EXIT_CODE=$OBS_EXIT_CODE
+    fi
+elif [ $EXIT_CODE -eq 0 ]; then
+    echo "" | tee -a "$LOG_FILE"
+    echo -e "${YELLOW}Skipping local OTEL and Prometheus observability checks (BIFROST_E2E_SKIP_OBSERVABILITY=1).${NC}" | tee -a "$LOG_FILE"
+fi
+
+if [ "$AUTH_ENABLED_BY_RUN" = "1" ]; then
+    echo "" | tee -a "$LOG_FILE"
+    echo -e "${GREEN}Restoring dashboard auth to disabled...${NC}" | tee -a "$LOG_FILE"
+    set +e
+    BIFROST_E2E_AUTH_HEADER="$ADMIN_AUTH_HEADER" \
+    BIFROST_E2E_BASE_URL="$BASE_URL" \
+    BIFROST_E2E_ADMIN_USERNAME="$ADMIN_USERNAME" \
+    BIFROST_E2E_ADMIN_PASSWORD="$ADMIN_PASSWORD" \
+        node "$SCRIPT_DIR/set-auth-config.mjs" disable 2>&1 | tee -a "$LOG_FILE"
+    AUTH_RESTORE_EXIT=${PIPESTATUS[0]}
+    set -e
+    AUTH_ENABLED_BY_RUN=""
+    if [ $EXIT_CODE -eq 0 ] && [ $AUTH_RESTORE_EXIT -ne 0 ]; then
+        EXIT_CODE=$AUTH_RESTORE_EXIT
+    fi
+fi
 
 echo ""
 if [ $EXIT_CODE -eq 0 ]; then
@@ -480,6 +583,7 @@ if [[ "$REPORTERS" == *"htmlextra"* ]] || [[ "$REPORTERS" == *"json"* ]]; then
 fi
 if [[ "$REPORTERS" == *"htmlextra"* ]]; then
     echo -e "HTML report: ${YELLOW}$REPORT_DIR/report.html${NC}"
+    [ -f "$REPORT_DIR/report-auth.html" ] && echo -e "Auth HTML report: ${YELLOW}$REPORT_DIR/report-auth.html${NC}"
 fi
 echo -e "Log saved to: ${YELLOW}$LOG_FILE${NC}"
 

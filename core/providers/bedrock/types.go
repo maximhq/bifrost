@@ -241,6 +241,7 @@ const (
 // BedrockCachePoint represents a cache point for the content block
 type BedrockCachePoint struct {
 	Type BedrockCachePointType `json:"type"`
+	TTL  *string               `json:"ttl,omitempty"` // "5m" | "1h"; omitted = Bedrock default (5m)
 }
 
 // BedrockImageSource represents image content
@@ -759,6 +760,11 @@ type BedrockStreamEvent struct {
 
 	// Start field for tool use events
 	Start *BedrockContentBlockStart `json:"start,omitempty"` // For contentBlockStart events
+
+	// Marker for contentBlockStop events. The wire payload of contentBlockStop carries
+	// only contentBlockIndex, so the flat union needs an explicit flag to represent it.
+	// Never serialized directly: ToEncodedEvents builds the payload from ContentBlockIndex.
+	ContentBlockStop bool `json:"-"`
 
 	// Metadata and usage (can appear at top level)
 	Usage   *BedrockTokenUsage      `json:"usage,omitempty"`   // Usage information

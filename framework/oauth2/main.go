@@ -527,8 +527,8 @@ func (p *OAuth2Provider) InitiateOAuthFlow(ctx context.Context, config *schemas.
 	expiresAt := time.Now().Add(15 * time.Minute)
 	oauthConfigRecord := &tables.TableOauthConfig{
 		ID:              oauthConfigID,
-		ClientID:        schemas.NewEnvVar(clientID), // May be from dynamic registration
-		ClientSecret:    schemas.NewEnvVar(clientSecret),
+		ClientID:        schemas.NewSecretVar(clientID), // May be from dynamic registration
+		ClientSecret:    schemas.NewSecretVar(clientSecret),
 		AuthorizeURL:    authorizeURL,
 		TokenURL:        tokenURL,
 		RegistrationURL: registrationURL,
@@ -549,7 +549,7 @@ func (p *OAuth2Provider) InitiateOAuthFlow(ctx context.Context, config *schemas.
 
 	// Resolve env var reference to actual value for use in the authorize URL.
 	// The reference ("env.MY_VAR") is stored in DB; the resolved value is sent to the provider.
-	resolvedClientID := schemas.NewEnvVar(clientID).GetValue()
+	resolvedClientID := schemas.NewSecretVar(clientID).GetValue()
 
 	// Build authorize URL with PKCE (using dynamically registered or user-provided client_id)
 	authURL := p.buildAuthorizeURLWithPKCE(

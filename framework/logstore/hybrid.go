@@ -11,6 +11,7 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/objectstore"
+	"gorm.io/gorm"
 )
 
 const (
@@ -51,6 +52,10 @@ type HybridLogStore struct {
 	pendingBytes   atomic.Int64
 	// excludedPayloadFields is the set of payload field names (DB column names) that must NOT be offloaded to object storage and must remain in the DB.
 	excludedPayloadFields map[string]struct{}
+}
+
+type scopedDBLogStore interface {
+	ScopedDB(context.Context) *gorm.DB
 }
 
 // newHybridLogStore creates a HybridLogStore wrapping the given inner store.
@@ -248,10 +253,25 @@ func prepareDBEntry(dbEntry *Log, excluded map[string]struct{}) {
 		lastUserMessage, _ = sonic.MarshalString(dbEntry.InputHistoryParsed[idx : idx+1])
 	}
 
+	// Responses API requests carry their history in responses_input_history
+	// rather than input_history. Preserve the last user message there too, so
+	// the log list can render a preview instead of "-" once the full history is
+	// offloaded to object storage. Only needed when there is no chat input
+	// history (a request is either chat- or responses-shaped, never both).
+	var lastUserResponsesMessage string
+	if idx < 0 {
+		if responsesIdx := findLastUserResponsesMessageIndex(dbEntry.ResponsesInputHistoryParsed); responsesIdx >= 0 {
+			lastUserResponsesMessage, _ = sonic.MarshalString(dbEntry.ResponsesInputHistoryParsed[responsesIdx : responsesIdx+1])
+		}
+	}
+
 	ClearPayloadFiltered(dbEntry, excluded)
 
 	if _, hasInputHistoryExclusion := excluded["input_history"]; !hasInputHistoryExclusion {
 		dbEntry.InputHistory = sanitizeJSONForJSONB(lastUserMessage)
+	}
+	if _, hasResponsesInputHistoryExclusion := excluded["responses_input_history"]; !hasResponsesInputHistoryExclusion {
+		dbEntry.ResponsesInputHistory = sanitizeJSONForJSONB(lastUserResponsesMessage)
 	}
 }
 
@@ -517,6 +537,16 @@ func (h *HybridLogStore) DroppedUploads() int64 {
 }
 
 // --- Delegated methods (pass through to inner store unchanged) ---
+
+// ScopedDB exposes the underlying RDB query surface when hybrid mode wraps a
+// Postgres/SQLite logstore. Enterprise logstore extensions use this for their
+// own logstore-owned tables, such as alert history.
+func (h *HybridLogStore) ScopedDB(ctx context.Context) *gorm.DB {
+	if scoped, ok := h.inner.(scopedDBLogStore); ok {
+		return scoped.ScopedDB(ctx)
+	}
+	return nil
+}
 
 // Ping delegates to the inner store's health check.
 func (h *HybridLogStore) Ping(ctx context.Context) error {

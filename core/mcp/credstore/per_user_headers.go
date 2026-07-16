@@ -88,9 +88,18 @@ func (r *perUserHeadersResolver) buildAuthRequiredError(ctx *schemas.BifrostCont
 		// can't accidentally start flow rows with empty identity columns.
 		return fmt.Errorf("per-user headers auth-required flow requires an identity")
 	}
+	// No identity gate here (see per_user_oauth.go for the rationale). For
+	// user-mode flows the submission is verified at the cookie-bearing UI step
+	// (flowSubmit → canAccessUserFlow requires the dashboard user to match
+	// flow.UserID, and user-mode flows mint no shareable temp token); the flow
+	// row created here grants nothing on its own.
 	initiation, err := r.provider.InitiateUserSubmissionFlow(ctx, mode, identity, config.ID, baseURL)
 	if err != nil {
 		return fmt.Errorf("failed to initiate per-user headers submission flow for %s: %w", config.Name, err)
+	}
+	message := fmt.Sprintf("Authentication required for %s. Visit %s to submit the required headers.", config.Name, initiation.FrontendURL)
+	if schemas.MCPAuthURLHasTempTokenFragment(initiation.FrontendURL) {
+		message += schemas.MCPAuthTempTokenReminder
 	}
 	return &schemas.MCPAuthRequiredError{
 		Kind:               schemas.MCPAuthRequiredKindHeaders,
@@ -103,7 +112,7 @@ func (r *perUserHeadersResolver) buildAuthRequiredError(ctx *schemas.BifrostCont
 		// Include the URL in the message so plain-text clients (curl, basic
 		// SDK wrappers) that don't parse extra_fields still get an actionable
 		// hint. Matches per_user_oauth.go's behavior.
-		Message: fmt.Sprintf("Authentication required for %s. Visit %s to submit the required headers.", config.Name, initiation.FrontendURL),
+		Message: message,
 	}
 }
 

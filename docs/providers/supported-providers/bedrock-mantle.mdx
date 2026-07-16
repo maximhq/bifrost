@@ -1,0 +1,166 @@
+---
+title: "AWS Bedrock Mantle"
+description: "AWS Bedrock Mantle provider - a single endpoint serving Claude (native Anthropic Messages) and OpenAI-family / Gemma models (OpenAI-compatible), with AWS SigV4 or API-key auth"
+icon: "aws"
+---
+
+## Overview
+
+**Bedrock Mantle** is a single AWS endpoint, served on the `bedrock-mantle.{region}.api.aws` host, that exposes a broad model catalog through two surfaces:
+
+- **Native Anthropic Messages API** (`/anthropic/v1/messages`) for Claude models.
+- **OpenAI-compatible API** (`/v1/...` or `/openai/v1/...`) for OpenAI-family (`gpt-*`), Gemma, and other open models.
+
+Bifrost dispatches each request to the correct surface automatically based on the model family — you address the provider the same way regardless: `bedrock_mantle/<model>`.
+
+<Note>
+Bedrock Mantle is distinct from the [Bedrock](./bedrock) provider, which uses the Converse / InvokeModel APIs on `bedrock-runtime`. Mantle is its own provider with its own credentials block (`bedrock_mantle_key_config`).
+</Note>
+
+### Model IDs
+
+Mantle model IDs are sent **verbatim** to the endpoint and differ from the Converse IDs used by the Bedrock provider — there is **no cross-region prefix** (`global.`/`us.`) and **no version suffix** (`-v1:0`):
+
+| Surface | Format | Examples |
+| --- | --- | --- |
+| Native Anthropic (Claude) | `anthropic.{model}` | `anthropic.claude-opus-4-8`, `anthropic.claude-haiku-4-5` |
+| OpenAI-compatible | `openai.{model}` / `google.{model}` / … | `openai.gpt-oss-120b`, `openai.gpt-5.5`, `google.gemma-4-31b` |
+
+You can discover the exact IDs your account serves with a **list-models** request (the `/v1/models` catalog). An optional leading `region/` prefix may be used to address a specific region per request (e.g. `bedrock_mantle/us-west-2/anthropic.claude-opus-4-8`).
+
+### Supported Operations
+
+| Operation | Supported |
+| --- | --- |
+| Chat Completions (+ streaming) | ✅ |
+| Responses API (+ streaming) | ✅ |
+| Tool calling (+ streaming) | ✅ |
+| Vision (image input, Claude) | ✅ |
+| Reasoning / extended thinking (Claude) | ✅ |
+| Structured outputs | ✅ |
+| Prompt caching (Claude) | ✅ |
+| List models | ✅ |
+| Text completion, embeddings, batch, files, images, audio, count tokens, rerank | ❌ |
+
+For Claude models, request/response handling (beta headers, cache control, reasoning, message conversion) follows the same rules as the [Bedrock provider's Anthropic behavior](./bedrock) — refer to that page for the deep parameter mapping.
+
+---
+
+## Setup & Configuration
+
+Bedrock Mantle authenticates with **AWS SigV4** (the `bedrock-mantle` signing service) or an optional **Bearer API key**. A `region` is **required** on the key config (there is no default).
+
+### 1. SigV4 — Explicit Credentials
+
+<CodeGroup>
+```json config.json
+{
+  "providers": {
+    "bedrock_mantle": {
+      "keys": [
+        {
+          "name": "mantle-static",
+          "value": "",
+          "models": ["*"],
+          "weight": 1.0,
+          "bedrock_mantle_key_config": {
+            "region": "us-east-1",
+            "access_key": "env.AWS_ACCESS_KEY_ID",
+            "secret_key": "env.AWS_SECRET_ACCESS_KEY",
+            "session_token": "env.AWS_SESSION_TOKEN"
+          }
+        }
+      ]
+    }
+  }
+}
+```
+</CodeGroup>
+
+`session_token` is optional (only needed for temporary credentials).
+
+### 2. SigV4 — Inherited AWS Credentials / IAM Role
+
+Leave `access_key` and `secret_key` empty and Bifrost inherits credentials from the AWS SDK default chain — IRSA (IAM Roles for Service Accounts), EC2 instance profile, or `AWS_*` environment variables. Only `region` is required.
+
+<CodeGroup>
+```json config.json
+{
+  "providers": {
+    "bedrock_mantle": {
+      "keys": [
+        {
+          "name": "mantle-iam",
+          "value": "",
+          "models": ["*"],
+          "weight": 1.0,
+          "bedrock_mantle_key_config": {
+            "region": "us-east-1"
+          }
+        }
+      ]
+    }
+  }
+}
+```
+</CodeGroup>
+
+To assume an IAM role before requests (works with both explicit and inherited credentials), add `role_arn` (and optionally `external_id` / `session_name`):
+
+<CodeGroup>
+```json config.json
+{
+  "bedrock_mantle_key_config": {
+    "region": "us-west-2",
+    "role_arn": "env.AWS_ROLE_ARN",
+    "external_id": "env.AWS_EXTERNAL_ID",
+    "session_name": "bifrost-session"
+  }
+}
+```
+</CodeGroup>
+
+### 3. API Key (Bearer)
+
+Alternatively, authenticate with a Bedrock Mantle API key sent as a Bearer token. Set the top-level key `value` and leave the SigV4 credentials empty (`region` is still required):
+
+<CodeGroup>
+```json config.json
+{
+  "providers": {
+    "bedrock_mantle": {
+      "keys": [
+        {
+          "name": "mantle-api-key",
+          "value": "env.BEDROCK_MANTLE_API_KEY",
+          "models": ["*"],
+          "weight": 1.0,
+          "bedrock_mantle_key_config": {
+            "region": "us-east-1"
+          }
+        }
+      ]
+    }
+  }
+}
+```
+</CodeGroup>
+
+---
+
+## Usage
+
+Address models with the `bedrock_mantle/` prefix:
+
+<CodeGroup>
+```bash cURL
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "bedrock_mantle/anthropic.claude-opus-4-8",
+    "messages": [{ "role": "user", "content": "Hello!" }]
+  }'
+```
+</CodeGroup>
+
+Both surfaces are addressed identically — `bedrock_mantle/anthropic.claude-opus-4-8` (native Anthropic) and `bedrock_mantle/openai.gpt-oss-120b` (OpenAI-compatible) — Bifrost routes each to the right API.

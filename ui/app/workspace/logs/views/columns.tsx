@@ -1,5 +1,4 @@
 import { formatCost, formatLatency } from "@/app/workspace/dashboard/utils/chartUtils";
-import { formatCompactNumber } from "@/lib/utils/numbers";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
@@ -7,6 +6,7 @@ import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { getProviderLabel, ProviderName, RequestTypeColors, RequestTypeLabels, Status, StatusBarColors } from "@/lib/constants/logs";
 import { ChatMessageContent, LogEntry, ResponsesMessageContentBlock } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
+import { formatCompactNumber } from "@/lib/utils/numbers";
 import { ColumnDef } from "@tanstack/react-table";
 import { format, formatDistanceToNow } from "date-fns";
 import { ArrowUpDown, MoreHorizontal, Trash2 } from "lucide-react";
@@ -178,7 +178,7 @@ export function LogMessageCell({ log, contentClassName = "max-w-full" }: { log: 
 				</span>
 			)}
 			{realtimeMessages &&
-			(realtimeMessages.tool || realtimeMessages.user || realtimeMessages.assistantToolCall || realtimeMessages.assistant) ? (
+				(realtimeMessages.tool || realtimeMessages.user || realtimeMessages.assistantToolCall || realtimeMessages.assistant) ? (
 				<div className={cn(contentClassName, "font-mono text-sm font-normal leading-5")}>
 					{realtimeMessages.tool ? <div className="truncate">Tool Result: {realtimeMessages.tool}</div> : null}
 					{realtimeMessages.user ? <div className="truncate">User: {realtimeMessages.user}</div> : null}
@@ -195,6 +195,53 @@ export function LogMessageCell({ log, contentClassName = "max-w-full" }: { log: 
 							: "-")}
 				</div>
 			)}
+		</div>
+	);
+}
+
+const MAX_ATTRIBUTION_LINES = 1;
+
+// AttributionCell resolves an attribution value using a plural-first fallback:
+// plural names -> singular name -> plural ids -> singular id. When a plural
+// (array) source is used, values render one per line, capped at
+// MAX_ATTRIBUTION_LINES with a "+N more" indicator for the remainder.
+function AttributionCell({
+	names,
+	name,
+	ids,
+	id,
+}: {
+	names?: string[];
+	name?: string | null;
+	ids?: string[];
+	id?: string | null;
+}) {
+	let values: string[] = [];
+	if (Array.isArray(names) && names.filter(Boolean).length > 0) {
+		values = names.filter(Boolean);
+	} else if (name) {
+		values = [name];
+	} else if (Array.isArray(ids) && ids.filter(Boolean).length > 0) {
+		values = ids.filter(Boolean);
+	} else if (id) {
+		values = [id];
+	}
+
+	if (values.length === 0) {
+		return <div className="max-w-[180px] truncate font-mono text-xs">-</div>;
+	}
+
+	const visible = values.slice(0, MAX_ATTRIBUTION_LINES);
+	const remaining = values.length - visible.length;
+
+	return (
+		<div className="flex max-w-[180px] flex-col gap-0.5 font-mono text-xs leading-tight" title={values.join("\n")}>
+			{visible.map((value, index) => (
+				<span key={index} className="truncate">
+					{value}
+				</span>
+			))}
+			{remaining > 0 && <span className="text-muted-foreground">+{remaining} more</span>}
 		</div>
 	);
 }
@@ -367,6 +414,66 @@ export const createColumns = (
 		},
 	];
 
+	const attributionColumns: ColumnDef<LogEntry>[] = [
+		{
+			id: "virtual_key",
+			header: "Virtual Key",
+			size: 170,
+			cell: ({ row }) => <AttributionCell name={row.original.virtual_key_name} id={row.original.virtual_key_id} />,
+		},
+		{
+			id: "routing_rule",
+			header: "Routing Rule",
+			size: 170,
+			cell: ({ row }) => <AttributionCell name={row.original.routing_rule_name} id={row.original.routing_rule_id} />,
+		},
+		{
+			id: "team",
+			header: "Team",
+			size: 150,
+			cell: ({ row }) => (
+				<AttributionCell
+					names={row.original.team_names}
+					name={row.original.team_name}
+					ids={row.original.team_ids}
+					id={row.original.team_id}
+				/>
+			),
+		},
+		{
+			id: "customer",
+			header: "Customer",
+			size: 150,
+			cell: ({ row }) => (
+				<AttributionCell
+					names={row.original.customer_names}
+					name={row.original.customer_name}
+					ids={row.original.customer_ids}
+					id={row.original.customer_id}
+				/>
+			),
+		},
+		{
+			id: "user",
+			header: "User",
+			size: 150,
+			cell: ({ row }) => <AttributionCell name={row.original.user_name} id={row.original.user_id} />,
+		},
+		{
+			id: "business_unit",
+			header: "Business Unit",
+			size: 150,
+			cell: ({ row }) => (
+				<AttributionCell
+					names={row.original.business_unit_names}
+					name={row.original.business_unit_name}
+					ids={row.original.business_unit_ids}
+					id={row.original.business_unit_id}
+				/>
+			),
+		},
+	];
+
 	const metadataColumns: ColumnDef<LogEntry>[] = metadataKeys.map((key) => ({
 		id: `metadata_${key}`,
 		header: key.charAt(0).toUpperCase() + key.slice(1),
@@ -379,21 +486,21 @@ export const createColumns = (
 
 	const actionsColumn: ColumnDef<LogEntry>[] = hasDeleteAccess
 		? [
-				{
-					id: "actions",
-					header: "",
-					size: 56,
-					cell: ({ row }) => {
-						const log = row.original;
-						return (
-							<div className="flex justify-center">
-								<LogActionsMenu log={log} onDelete={onDelete} />
-							</div>
-						);
-					},
+			{
+				id: "actions",
+				header: "",
+				size: 56,
+				cell: ({ row }) => {
+					const log = row.original;
+					return (
+						<div className="flex justify-center">
+							<LogActionsMenu log={log} onDelete={onDelete} />
+						</div>
+					);
 				},
-			]
+			},
+		]
 		: [];
 
-	return [...baseColumns, ...metadataColumns, ...actionsColumn];
+	return [...baseColumns, ...attributionColumns, ...metadataColumns, ...actionsColumn];
 };

@@ -73,6 +73,49 @@ func (r *OpenAIEmbeddingRequest) SetExtraParams(params map[string]interface{}) {
 	r.EmbeddingParameters.ExtraParams = params
 }
 
+// OpenAIRerankRequest represents an OpenAI-compatible rerank request
+type OpenAIRerankRequest struct {
+	Model           string                   `json:"model"`
+	Query           string                   `json:"query"`
+	Documents       []schemas.RerankDocument `json:"documents"`
+	TopN            *int                     `json:"top_n,omitempty"`
+	MaxTokensPerDoc *int                     `json:"max_tokens_per_doc,omitempty"`
+	Priority        *int                     `json:"priority,omitempty"`
+	ExtraParams     map[string]interface{}   `json:"-"` // Optional: Extra parameters
+}
+
+func (r *OpenAIRerankRequest) GetExtraParams() map[string]interface{} {
+	return r.ExtraParams
+}
+
+// OpenAIRerankResponse represents an OpenAI-compatible rerank response
+type OpenAIRerankResponse struct {
+	ID      string                       `json:"id"`
+	Results []OpenAIRerankResponseResult `json:"results"`
+	Meta    *OpenAIRerankMeta            `json:"meta,omitempty"`
+	Usage   *schemas.BifrostLLMUsage     `json:"usage,omitempty"`
+}
+
+// OpenAIRerankResponseResult represents a single ranked document in a rerank response
+type OpenAIRerankResponseResult struct {
+	Index          int             `json:"index"`
+	RelevanceScore float64         `json:"relevance_score"`
+	Document       json.RawMessage `json:"document,omitempty"`
+}
+
+// OpenAIRerankMeta captures Cohere-style rerank billing/token metadata
+type OpenAIRerankMeta struct {
+	BilledUnits *OpenAIRerankTokenUsage `json:"billed_units,omitempty"`
+	Tokens      *OpenAIRerankTokenUsage `json:"tokens,omitempty"`
+}
+
+// OpenAIRerankTokenUsage represents token/billing counts reported by rerank upstreams
+type OpenAIRerankTokenUsage struct {
+	InputTokens  *int64 `json:"input_tokens,omitempty"`
+	OutputTokens *int64 `json:"output_tokens,omitempty"`
+	SearchUnits  *int64 `json:"search_units,omitempty"`
+}
+
 // OpenAIChatRequest represents an OpenAI chat completion request
 type OpenAIChatRequest struct {
 	Model    string          `json:"model"`
@@ -87,6 +130,10 @@ type OpenAIChatRequest struct {
 	// NOTE: MaxCompletionTokens is a new replacement for max_tokens but some providers still use max_tokens.
 	// This Field is populated only for such providers and is NOT to be used externally.
 	MaxTokens *int `json:"max_tokens,omitempty"`
+
+	// Provider is the originating provider, used for provider-specific marshalling
+	// (e.g. preserving cache_control for OpenRouter). Not serialized to wire.
+	Provider schemas.ModelProvider `json:"-"`
 
 	// Bifrost specific field (only parsed when converting from Provider -> Bifrost request)
 	Fallbacks   []string               `json:"fallbacks,omitempty"`
@@ -134,10 +181,17 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 	}
 	type Alias OpenAIChatRequest
 
+	// OpenRouter forwards Anthropic-style cache_control breakpoints to the
+	// underlying model, so we must preserve cache_control (on content blocks
+	// and tools) when targeting OpenRouter. Everything else (citations,
+	// file types, Anthropic server tools, Anthropic-only tool flags) is still
+	// stripped — OpenRouter is otherwise an OpenAI-format endpoint.
+	keepCacheControl := req.Provider == schemas.OpenRouter
+
 	// First pass: check if we need to modify any messages
 	needsCopy := false
 	for _, msg := range req.Messages {
-		if hasFieldsToStripInChatMessage(msg) {
+		if hasFieldsToStripInChatMessage(msg, keepCacheControl) {
 			needsCopy = true
 			break
 		}
@@ -148,7 +202,7 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 	if needsCopy {
 		processedMessages = make([]OpenAIMessage, len(req.Messages))
 		for i, msg := range req.Messages {
-			if !hasFieldsToStripInChatMessage(msg) {
+			if !hasFieldsToStripInChatMessage(msg, keepCacheControl) {
 				// No modification needed, use original
 				processedMessages[i] = msg
 				continue
@@ -157,15 +211,39 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 			// Copy message
 			processedMessages[i] = msg
 
+			// Strip the Bifrost-extension citation text from assistant annotations
+			if msg.OpenAIChatAssistantMessage != nil {
+				needsAnnotationStrip := false
+				for _, annotation := range msg.OpenAIChatAssistantMessage.Annotations {
+					if annotation.URLCitation.Text != nil {
+						needsAnnotationStrip = true
+						break
+					}
+				}
+				if needsAnnotationStrip {
+					assistantCopy := *msg.OpenAIChatAssistantMessage
+					assistantCopy.Annotations = make([]schemas.ChatAssistantMessageAnnotation, len(msg.OpenAIChatAssistantMessage.Annotations))
+					for j, annotation := range msg.OpenAIChatAssistantMessage.Annotations {
+						annotationCopy := annotation
+						annotationCopy.URLCitation.Text = nil
+						assistantCopy.Annotations[j] = annotationCopy
+					}
+					processedMessages[i].OpenAIChatAssistantMessage = &assistantCopy
+				}
+			}
+
 			// Strip CacheControl and FileType from content blocks if needed
 			if msg.Content != nil && msg.Content.ContentBlocks != nil {
 				contentCopy := *msg.Content
 				contentCopy.ContentBlocks = make([]schemas.ChatContentBlock, len(msg.Content.ContentBlocks))
 				for j, block := range msg.Content.ContentBlocks {
-					needsBlockCopy := block.CacheControl != nil || block.Citations != nil || (block.File != nil && block.File.FileType != nil)
+					stripBlockCacheControl := block.CacheControl != nil && !keepCacheControl
+					needsBlockCopy := stripBlockCacheControl || block.Citations != nil || (block.File != nil && (block.File.FileType != nil || block.File.FileURL != nil))
 					if needsBlockCopy {
 						blockCopy := block
-						blockCopy.CacheControl = nil
+						if stripBlockCacheControl {
+							blockCopy.CacheControl = nil
+						}
 						blockCopy.Citations = nil
 						// Strip FileType and FileURL from file block
 						if blockCopy.File != nil && (blockCopy.File.FileType != nil || blockCopy.File.FileURL != nil) {
@@ -197,7 +275,8 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 	if len(req.Tools) > 0 {
 		needsToolChange := false
 		for _, tool := range req.Tools {
-			if tool.CacheControl != nil || isAnthropicServerToolShape(tool) || hasAnthropicOnlyToolFlags(tool) {
+			stripToolCacheControl := tool.CacheControl != nil && !keepCacheControl
+			if stripToolCacheControl || isAnthropicServerToolShape(tool) || hasAnthropicOnlyToolFlags(tool) {
 				needsToolChange = true
 				break
 			}
@@ -211,12 +290,15 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 				if isAnthropicServerToolShape(tool) {
 					continue
 				}
-				if tool.CacheControl == nil && !hasAnthropicOnlyToolFlags(tool) {
+				stripToolCacheControl := tool.CacheControl != nil && !keepCacheControl
+				if !stripToolCacheControl && !hasAnthropicOnlyToolFlags(tool) {
 					processedTools = append(processedTools, tool)
 					continue
 				}
 				toolCopy := tool
-				toolCopy.CacheControl = nil
+				if stripToolCacheControl {
+					toolCopy.CacheControl = nil
+				}
 				toolCopy.DeferLoading = nil
 				toolCopy.AllowedCallers = nil
 				toolCopy.InputExamples = nil
@@ -246,6 +328,8 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 		// Shadow the embedded "reasoning" field and omit it
 		Reasoning       *schemas.ChatReasoning `json:"reasoning,omitempty"`
 		ReasoningEffort *string                `json:"reasoning_effort,omitempty"`
+		// Shadow the embedded "web_search_options" field to strip the Bifrost-extension filters
+		WebSearchOptions *schemas.ChatWebSearchOptions `json:"web_search_options,omitempty"`
 	}{
 		Alias:    (*Alias)(req),
 		Messages: processedMessages,
@@ -256,6 +340,15 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 
 	if req.Reasoning != nil && req.Reasoning.Effort != nil {
 		aux.ReasoningEffort = req.Reasoning.Effort
+	}
+
+	if req.ChatParameters.WebSearchOptions != nil {
+		aux.WebSearchOptions = req.ChatParameters.WebSearchOptions
+		if aux.WebSearchOptions.Filters != nil {
+			optionsCopy := *req.ChatParameters.WebSearchOptions
+			optionsCopy.Filters = nil
+			aux.WebSearchOptions = &optionsCopy
+		}
 	}
 
 	return providerUtils.MarshalSorted(aux)
@@ -557,7 +650,8 @@ func hasAnthropicOnlyResponsesToolFlags(t schemas.ResponsesTool) bool {
 	return t.DeferLoading != nil ||
 		len(t.AllowedCallers) > 0 ||
 		len(t.InputExamples) > 0 ||
-		t.EagerInputStreaming != nil
+		t.EagerInputStreaming != nil ||
+		(t.ResponsesToolCodeInterpreter != nil && t.ResponsesToolCodeInterpreter.Version != nil)
 }
 
 // isAnthropicOnlyResponsesToolType reports whether the tool type exists only
@@ -575,16 +669,23 @@ func isAnthropicOnlyResponsesToolType(t schemas.ResponsesTool) bool {
 		t.Type == schemas.ResponsesToolTypeMemory
 }
 
-func hasFieldsToStripInChatMessage(msg OpenAIMessage) bool {
+func hasFieldsToStripInChatMessage(msg OpenAIMessage, keepCacheControl bool) bool {
 	if msg.Content != nil && msg.Content.ContentBlocks != nil {
 		for _, block := range msg.Content.ContentBlocks {
-			if block.CacheControl != nil {
+			if block.CacheControl != nil && !keepCacheControl {
 				return true
 			}
 			if block.Citations != nil {
 				return true
 			}
 			if block.File != nil && (block.File.FileType != nil || block.File.FileURL != nil) {
+				return true
+			}
+		}
+	}
+	if msg.OpenAIChatAssistantMessage != nil {
+		for _, annotation := range msg.OpenAIChatAssistantMessage.Annotations {
+			if annotation.URLCitation.Text != nil {
 				return true
 			}
 		}
@@ -786,6 +887,11 @@ func (resp *OpenAIResponsesRequest) MarshalJSON() ([]byte, error) {
 				toolCopy.AllowedCallers = nil
 				toolCopy.InputExamples = nil
 				toolCopy.EagerInputStreaming = nil
+				if toolCopy.ResponsesToolCodeInterpreter != nil && toolCopy.ResponsesToolCodeInterpreter.Version != nil {
+					ciCopy := *toolCopy.ResponsesToolCodeInterpreter
+					ciCopy.Version = nil
+					toolCopy.ResponsesToolCodeInterpreter = &ciCopy
+				}
 				processedTools = append(processedTools, toolCopy)
 			}
 		} else {
@@ -820,6 +926,8 @@ func (resp *OpenAIResponsesRequest) MarshalJSON() ([]byte, error) {
 			Effort:          resp.Reasoning.Effort,
 			GenerateSummary: resp.Reasoning.GenerateSummary,
 			Summary:         resp.Reasoning.Summary,
+			Context:         resp.Reasoning.Context,
+			Mode:            resp.Reasoning.Mode,
 			MaxTokens:       nil, // Always set to nil
 		}
 	}

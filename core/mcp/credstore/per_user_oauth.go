@@ -57,9 +57,20 @@ func (r *perUserOAuthResolver) ConnectionHeaders(ctx *schemas.BifrostContext, co
 		if redirectURI == "" {
 			return nil, fmt.Errorf("per-user OAuth requires a redirect URI but none is available in context")
 		}
+		// No identity gate here. A user-mode caller (e.g. an MCP client presenting
+		// only a Bearer JWT) carries no dashboard session at tool-call time. The
+		// flow row records the caller's identity (flow.UserID = bf_sub); the binding
+		// is verified at the cookie-bearing UI step (flowStart → canAccessUserFlow)
+		// before the upstream authorize URL — which carries the single-use state — is
+		// ever revealed, and the callback binds the token to the flow's recorded
+		// identity. So initiating the flow here grants nothing on its own.
 		flowInitiation, sessionID, flowErr := r.provider.InitiateUserOAuthFlow(ctx, *config.OauthConfigID, config.ID, redirectURI, mode)
 		if flowErr != nil {
 			return nil, fmt.Errorf("failed to initiate per-user OAuth flow for %s: %w", config.Name, flowErr)
+		}
+		message := fmt.Sprintf("Authentication required for %s. Visit %s to connect your account.", config.Name, flowInitiation.AuthorizeURL)
+		if schemas.MCPAuthURLHasTempTokenFragment(flowInitiation.AuthorizeURL) {
+			message += schemas.MCPAuthTempTokenReminder
 		}
 		return nil, &schemas.MCPAuthRequiredError{
 			Kind:          schemas.MCPAuthRequiredKindOAuth,
@@ -73,7 +84,7 @@ func (r *perUserOAuthResolver) ConnectionHeaders(ctx *schemas.BifrostContext, co
 			// to them. The URL is already exposed via
 			// extra_fields.mcp_auth_required.authorize_url, so embedding it
 			// here doesn't widen the surface.
-			Message: fmt.Sprintf("Authentication required for %s. Visit %s to connect your account.", config.Name, flowInitiation.AuthorizeURL),
+			Message: message,
 		}
 	}
 

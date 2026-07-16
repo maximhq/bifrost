@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/bytedance/sonic"
+	"github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -76,6 +78,64 @@ func TestToAnthropicChatRequest_PreservesPropertyOrder(t *testing.T) {
 		if keys[i] != k {
 			t.Errorf("property %d: expected %q, got %q (full order: %v)", i, k, keys[i], keys)
 		}
+	}
+}
+
+func TestToAnthropicChatRequest_OpenAICompatibleFileIDUsesFileSource(t *testing.T) {
+	body := `{
+		"model": "anthropic/claude-sonnet-4-5-20250929",
+		"messages": [{
+			"role": "user",
+			"content": [
+				{"type": "text", "text": "Read the attached PDF."},
+				{
+					"type": "file",
+					"file": {
+						"file_id": "file_abc123",
+						"filename": "tiny.pdf",
+						"format": "application/pdf"
+					}
+				}
+			]
+		}]
+	}`
+
+	var openAIReq openai.OpenAIChatRequest
+	if err := sonic.Unmarshal([]byte(body), &openAIReq); err != nil {
+		t.Fatalf("unmarshal OpenAI-compatible request: %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	bifrostReq := openAIReq.ToBifrostChatRequest(ctx)
+	result, err := ToAnthropicChatRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("convert to Anthropic request: %v", err)
+	}
+
+	if len(result.Messages) != 1 {
+		t.Fatalf("expected one message, got %d", len(result.Messages))
+	}
+	blocks := result.Messages[0].Content.ContentBlocks
+	if len(blocks) != 2 {
+		t.Fatalf("expected two content blocks, got %d", len(blocks))
+	}
+
+	documentBlock := blocks[1]
+	if documentBlock.Type != AnthropicContentBlockTypeDocument {
+		t.Fatalf("expected document block, got %q", documentBlock.Type)
+	}
+	if documentBlock.Title == nil || *documentBlock.Title != "tiny.pdf" {
+		t.Fatalf("expected document title tiny.pdf, got %v", documentBlock.Title)
+	}
+	if documentBlock.Source == nil || documentBlock.Source.SourceObj == nil {
+		t.Fatalf("expected document source object, got %#v", documentBlock.Source)
+	}
+	source := documentBlock.Source.SourceObj
+	if source.Type != "file" {
+		t.Fatalf("expected source type file, got %q", source.Type)
+	}
+	if source.FileID == nil || *source.FileID != "file_abc123" {
+		t.Fatalf("expected source file_id file_abc123, got %v", source.FileID)
 	}
 }
 
@@ -1302,5 +1362,329 @@ func TestToAnthropicChatRequest_MidConversationSystem_NotOnOpus47(t *testing.T) 
 		if msg.Role == AnthropicMessageRoleSystem {
 			t.Errorf("msg[%d] has role system — should not appear for Opus 4.7", i)
 		}
+	}
+}
+
+// TestToBifrostChatCompletionStream_NoArgToolFlushesEmptyObject covers the
+// "no-arg tool" case (e.g. tools whose Go input type is `struct{}` and whose
+// JSON schema is `{}`). Anthropic emits content_block_start followed
+// immediately by content_block_stop with no input_json_delta in between. The
+// converter must flush a synthetic `arguments: "{}"` on stop so OpenAI clients
+// can unmarshal the accumulated arguments as valid JSON.
+func TestToBifrostChatCompletionStream_NoArgToolFlushesEmptyObject(t *testing.T) {
+	state := NewAnthropicStreamState()
+
+	idx := 0
+	toolID := "toolu_no_args"
+	toolName := "response_start"
+
+	start := &AnthropicStreamEvent{
+		Type:  AnthropicStreamEventTypeContentBlockStart,
+		Index: &idx,
+		ContentBlock: &AnthropicContentBlock{
+			Type: AnthropicContentBlockTypeToolUse,
+			ID:   &toolID,
+			Name: &toolName,
+		},
+	}
+	startResp, bErr, isLast := start.ToBifrostChatCompletionStream(nil, "", state)
+	if bErr != nil {
+		t.Fatalf("unexpected error on start: %v", bErr)
+	}
+	if isLast {
+		t.Fatal("expected non-terminal chunk on start")
+	}
+	if startResp == nil || len(startResp.Choices) != 1 {
+		t.Fatalf("expected one choice on start, got %#v", startResp)
+	}
+	startDelta := startResp.Choices[0].ChatStreamResponseChoice.Delta
+	if startDelta == nil || len(startDelta.ToolCalls) != 1 {
+		t.Fatalf("expected one tool call on start, got %#v", startDelta)
+	}
+	startTC := startDelta.ToolCalls[0]
+	if startTC.Type == nil || *startTC.Type != string(schemas.ChatToolTypeFunction) {
+		t.Fatalf("expected type=function on start, got %#v", startTC.Type)
+	}
+	if startTC.ID == nil || *startTC.ID != toolID {
+		t.Fatalf("expected id %q on start, got %#v", toolID, startTC.ID)
+	}
+	if startTC.Function.Name == nil || *startTC.Function.Name != toolName {
+		t.Fatalf("expected name %q on start, got %#v", toolName, startTC.Function.Name)
+	}
+	if startTC.Function.Arguments != "" {
+		t.Fatalf("expected empty initial arguments, got %q", startTC.Function.Arguments)
+	}
+
+	stop := &AnthropicStreamEvent{
+		Type:  AnthropicStreamEventTypeContentBlockStop,
+		Index: &idx,
+	}
+	stopResp, bErr, isLast := stop.ToBifrostChatCompletionStream(nil, "", state)
+	if bErr != nil {
+		t.Fatalf("unexpected error on stop: %v", bErr)
+	}
+	if isLast {
+		t.Fatal("expected non-terminal chunk on stop")
+	}
+	if stopResp == nil || len(stopResp.Choices) != 1 {
+		t.Fatalf("expected one choice on stop flush, got %#v", stopResp)
+	}
+	stopDelta := stopResp.Choices[0].ChatStreamResponseChoice.Delta
+	if stopDelta == nil || len(stopDelta.ToolCalls) != 1 {
+		t.Fatalf("expected one tool call on stop flush, got %#v", stopDelta)
+	}
+	stopTC := stopDelta.ToolCalls[0]
+	if stopTC.Type != nil {
+		t.Errorf("expected type to be nil on stop-flush continuation, got %q", *stopTC.Type)
+	}
+	if stopTC.Function.Arguments != "{}" {
+		t.Fatalf("expected flushed arguments \"{}\", got %q", stopTC.Function.Arguments)
+	}
+
+	accumulated := startTC.Function.Arguments + stopTC.Function.Arguments
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(accumulated), &parsed); err != nil {
+		t.Fatalf("accumulated arguments %q did not parse as JSON: %v", accumulated, err)
+	}
+	if len(parsed) != 0 {
+		t.Errorf("expected empty JSON object, got %#v", parsed)
+	}
+
+	// A defensive duplicate stop event must not re-emit a flush chunk.
+	dupResp, _, _ := stop.ToBifrostChatCompletionStream(nil, "", state)
+	if dupResp != nil {
+		t.Errorf("duplicate stop should not re-flush, got %#v", dupResp)
+	}
+}
+
+// TestToBifrostChatCompletionStream_EmptyPartialJSONSuppressedBeforeArgs
+// guards two things at once: (1) the spurious empty partial_json marker that
+// Anthropic emits right after content_block_start is suppressed (returns
+// nil response); (2) once real non-empty input_json_delta chunks arrive, the
+// subsequent content_block_stop must NOT emit a synthetic "{}" flush —
+// otherwise concatenation would yield malformed JSON like `{"x":1}{}`.
+func TestToBifrostChatCompletionStream_EmptyPartialJSONSuppressedBeforeArgs(t *testing.T) {
+	state := NewAnthropicStreamState()
+
+	idx := 0
+	toolID := "toolu_real_args"
+	toolName := "get_thing"
+	empty := ""
+	frag1 := `{"x":`
+	frag2 := `1}`
+
+	start := &AnthropicStreamEvent{
+		Type:  AnthropicStreamEventTypeContentBlockStart,
+		Index: &idx,
+		ContentBlock: &AnthropicContentBlock{
+			Type: AnthropicContentBlockTypeToolUse,
+			ID:   &toolID,
+			Name: &toolName,
+		},
+	}
+	startResp, _, _ := start.ToBifrostChatCompletionStream(nil, "", state)
+	if startResp == nil {
+		t.Fatal("expected a response on start")
+	}
+	accumulated := startResp.Choices[0].ChatStreamResponseChoice.Delta.ToolCalls[0].Function.Arguments
+
+	emptyDelta := &AnthropicStreamEvent{
+		Type:  AnthropicStreamEventTypeContentBlockDelta,
+		Index: &idx,
+		Delta: &AnthropicStreamDelta{
+			Type:        AnthropicStreamDeltaTypeInputJSON,
+			PartialJSON: &empty,
+		},
+	}
+	resp, bErr, isLast := emptyDelta.ToBifrostChatCompletionStream(nil, "", state)
+	if bErr != nil {
+		t.Fatalf("unexpected error on empty delta: %v", bErr)
+	}
+	if isLast {
+		t.Fatal("expected non-terminal chunk on empty delta")
+	}
+	if resp != nil {
+		t.Fatalf("expected empty partial_json to be suppressed, got %#v", resp)
+	}
+
+	for _, frag := range []*string{&frag1, &frag2} {
+		ev := &AnthropicStreamEvent{
+			Type:  AnthropicStreamEventTypeContentBlockDelta,
+			Index: &idx,
+			Delta: &AnthropicStreamDelta{
+				Type:        AnthropicStreamDeltaTypeInputJSON,
+				PartialJSON: frag,
+			},
+		}
+		r, _, _ := ev.ToBifrostChatCompletionStream(nil, "", state)
+		if r == nil {
+			t.Fatalf("expected response for fragment %q", *frag)
+		}
+		tc := r.Choices[0].ChatStreamResponseChoice.Delta.ToolCalls[0]
+		if tc.Type != nil {
+			t.Errorf("expected type to be nil on continuation chunk for fragment %q, got %q", *frag, *tc.Type)
+		}
+		accumulated += tc.Function.Arguments
+	}
+
+	stop := &AnthropicStreamEvent{
+		Type:  AnthropicStreamEventTypeContentBlockStop,
+		Index: &idx,
+	}
+	stopResp, _, _ := stop.ToBifrostChatCompletionStream(nil, "", state)
+	if stopResp != nil {
+		t.Fatalf("expected no flush on stop when args were streamed, got %#v", stopResp)
+	}
+
+	var parsed struct {
+		X int `json:"x"`
+	}
+	if err := json.Unmarshal([]byte(accumulated), &parsed); err != nil {
+		t.Fatalf("accumulated arguments %q did not parse as JSON: %v", accumulated, err)
+	}
+	if parsed.X != 1 {
+		t.Errorf("expected {\"x\":1}, got %#v", parsed)
+	}
+}
+
+// TestToBifrostChatCompletionStream_ContinuationOmitsTypeField is the
+// regression guard for issue #3443: only the initial tool_call setup chunk
+// should carry `function.type`; continuation chunks must not re-declare it,
+// because strict OpenAI Chat Completions stream parsers treat a repeated
+// `type` field on a continuation as a fresh tool-call declaration.
+func TestToBifrostChatCompletionStream_ContinuationOmitsTypeField(t *testing.T) {
+	state := NewAnthropicStreamState()
+
+	idx := 0
+	toolID := "toolu_type_check"
+	toolName := "noop"
+	frag := `{"a":1}`
+
+	start := &AnthropicStreamEvent{
+		Type:  AnthropicStreamEventTypeContentBlockStart,
+		Index: &idx,
+		ContentBlock: &AnthropicContentBlock{
+			Type: AnthropicContentBlockTypeToolUse,
+			ID:   &toolID,
+			Name: &toolName,
+		},
+	}
+	startResp, _, _ := start.ToBifrostChatCompletionStream(nil, "", state)
+	if startResp == nil {
+		t.Fatal("expected response on start")
+	}
+	startTC := startResp.Choices[0].ChatStreamResponseChoice.Delta.ToolCalls[0]
+	if startTC.Type == nil || *startTC.Type != string(schemas.ChatToolTypeFunction) {
+		t.Fatalf("expected start chunk to carry type=function, got %#v", startTC.Type)
+	}
+
+	delta := &AnthropicStreamEvent{
+		Type:  AnthropicStreamEventTypeContentBlockDelta,
+		Index: &idx,
+		Delta: &AnthropicStreamDelta{
+			Type:        AnthropicStreamDeltaTypeInputJSON,
+			PartialJSON: &frag,
+		},
+	}
+	deltaResp, _, _ := delta.ToBifrostChatCompletionStream(nil, "", state)
+	if deltaResp == nil {
+		t.Fatal("expected response on continuation delta")
+	}
+	contTC := deltaResp.Choices[0].ChatStreamResponseChoice.Delta.ToolCalls[0]
+	if contTC.Type != nil {
+		t.Errorf("expected continuation chunk to omit type, got %q", *contTC.Type)
+	}
+}
+
+// TestToBifrostChatCompletionStream_MixedToolBlocks interleaves a no-arg tool
+// and a real-args tool across two content_block indices. Ensures the
+// per-content-block sawArgsDelta tracking flushes "{}" for the no-arg block
+// and not for the real-args block.
+func TestToBifrostChatCompletionStream_MixedToolBlocks(t *testing.T) {
+	state := NewAnthropicStreamState()
+
+	noArgIdx := 0
+	argIdx := 1
+	noArgID := "toolu_no_args"
+	argID := "toolu_args"
+	noArgName := "response_start"
+	argName := "get_thing"
+	frag := `{"y":2}`
+
+	events := []*AnthropicStreamEvent{
+		{
+			Type:  AnthropicStreamEventTypeContentBlockStart,
+			Index: &noArgIdx,
+			ContentBlock: &AnthropicContentBlock{
+				Type: AnthropicContentBlockTypeToolUse,
+				ID:   &noArgID,
+				Name: &noArgName,
+			},
+		},
+		{
+			Type:  AnthropicStreamEventTypeContentBlockStart,
+			Index: &argIdx,
+			ContentBlock: &AnthropicContentBlock{
+				Type: AnthropicContentBlockTypeToolUse,
+				ID:   &argID,
+				Name: &argName,
+			},
+		},
+		{
+			Type:  AnthropicStreamEventTypeContentBlockDelta,
+			Index: &argIdx,
+			Delta: &AnthropicStreamDelta{
+				Type:        AnthropicStreamDeltaTypeInputJSON,
+				PartialJSON: &frag,
+			},
+		},
+	}
+
+	args := map[int]string{noArgIdx: "", argIdx: ""}
+	for _, ev := range events {
+		r, _, _ := ev.ToBifrostChatCompletionStream(nil, "", state)
+		if r == nil {
+			continue
+		}
+		tcs := r.Choices[0].ChatStreamResponseChoice.Delta.ToolCalls
+		if len(tcs) != 1 {
+			continue
+		}
+		// Each tool call carries its own assistant-message index; map back via
+		// the state we already populated by content-block index.
+		for cbIdx, callIdx := range state.contentBlockToToolCallIdx {
+			if uint16(callIdx) == tcs[0].Index {
+				args[cbIdx] += tcs[0].Function.Arguments
+				break
+			}
+		}
+	}
+
+	// Stop the no-arg block first; expect a "{}" flush.
+	stopNoArg := &AnthropicStreamEvent{
+		Type:  AnthropicStreamEventTypeContentBlockStop,
+		Index: &noArgIdx,
+	}
+	r, _, _ := stopNoArg.ToBifrostChatCompletionStream(nil, "", state)
+	if r == nil {
+		t.Fatal("expected flush on stop for no-arg block")
+	}
+	args[noArgIdx] += r.Choices[0].ChatStreamResponseChoice.Delta.ToolCalls[0].Function.Arguments
+
+	// Stop the args block; expect no flush.
+	stopArg := &AnthropicStreamEvent{
+		Type:  AnthropicStreamEventTypeContentBlockStop,
+		Index: &argIdx,
+	}
+	r, _, _ = stopArg.ToBifrostChatCompletionStream(nil, "", state)
+	if r != nil {
+		t.Fatalf("expected no flush on stop for args block, got %#v", r)
+	}
+
+	if args[noArgIdx] != "{}" {
+		t.Errorf("no-arg accumulated arguments = %q, want \"{}\"", args[noArgIdx])
+	}
+	if args[argIdx] != `{"y":2}` {
+		t.Errorf("args accumulated arguments = %q, want %q", args[argIdx], `{"y":2}`)
 	}
 }

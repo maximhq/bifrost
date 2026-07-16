@@ -10,6 +10,9 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
+	"github.com/maximhq/bifrost/framework/streaming"
 )
 
 type testLogger struct{}
@@ -180,6 +183,526 @@ func TestPostLLMHookStreamingErrorPreservesHeaderMetadata(t *testing.T) {
 	}
 	if got := logEntry.MetadataParsed["environment"]; got != "staging" {
 		t.Fatalf("expected dimension metadata staging, got %#v", got)
+	}
+}
+
+// TestPostLLMHookCancelledStreamLogsCost verifies #3357 at the logging layer: a
+// streaming request cancelled mid-flight (result==nil) whose error carries the
+// partial usage the provider already processed (BifrostError.ExtraFields.BilledUsage)
+// must produce a log row with status="cancelled", the consumed tokens, AND an
+// accurate cost computed from the datasheet rates.
+func TestPostLLMHookCancelledStreamLogsCost(t *testing.T) {
+	store := newTestStore(t)
+
+	// Pricing manager loaded from the committed datasheet testdata via an
+	// offline file:// URL (no network).
+	abs, err := filepath.Abs("../../framework/modelcatalog/datasheet/testdata/pricing.json")
+	if err != nil {
+		t.Fatalf("resolve testdata path: %v", err)
+	}
+	ds := datasheet.New(nil, testLogger{}, datasheet.Config{URL: "file://" + abs})
+	if err := ds.LoadFromURLIntoMemory(context.Background()); err != nil {
+		t.Fatalf("load pricing datasheet: %v", err)
+	}
+	pricingManager := modelcatalog.NewTestCatalogWithDatasheet(ds)
+
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, pricingManager, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-cancel-cost")
+
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionStreamRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o",
+			Params:   &schemas.ChatParameters{},
+		},
+	}
+	if _, _, err = plugin.PreLLMHook(ctx, req); err != nil {
+		t.Fatalf("PreLLMHook() error = %v", err)
+	}
+
+	const promptTokens, completionTokens = 100, 50
+	statusCode := 499 // client closed request (mid-stream cancel)
+	bifrostErr := &schemas.BifrostError{
+		IsBifrostError: true,
+		StatusCode:     &statusCode,
+		Error:          &schemas.ErrorField{Message: "client disconnected"},
+		ExtraFields: schemas.BifrostErrorExtraFields{
+			RequestType:            schemas.ChatCompletionStreamRequest,
+			Provider:               schemas.OpenAI,
+			OriginalModelRequested: "gpt-4o",
+			ResolvedModelUsed:      "gpt-4o",
+			// Provider processed these tokens before the client disconnected.
+			BilledUsage: &schemas.BifrostLLMUsage{
+				PromptTokens:     promptTokens,
+				CompletionTokens: completionTokens,
+				TotalTokens:      promptTokens + completionTokens,
+			},
+		},
+	}
+	if _, _, err = plugin.PostLLMHook(ctx, nil, bifrostErr); err != nil {
+		t.Fatalf("PostLLMHook() error = %v", err)
+	}
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+
+	entry, err := store.FindByID(context.Background(), "req-cancel-cost")
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if entry.Status != "cancelled" {
+		t.Fatalf("expected cancelled status, got %q", entry.Status)
+	}
+	if entry.TokenUsageParsed == nil {
+		t.Fatalf("expected token usage recorded from BilledUsage on the cancel path")
+	}
+	if entry.TotalTokens != promptTokens+completionTokens {
+		t.Fatalf("expected total_tokens %d, got %d", promptTokens+completionTokens, entry.TotalTokens)
+	}
+	if entry.Cost == nil {
+		t.Fatalf("expected a cost to be logged for a cancelled request that consumed tokens (#3357)")
+	}
+	// gpt-4o testdata rates: input 2.5e-6/token, output 1e-5/token.
+	want := float64(promptTokens)*2.5e-6 + float64(completionTokens)*1e-5
+	if diff := *entry.Cost - want; diff < -1e-9 || diff > 1e-9 {
+		t.Fatalf("logged cost %v does not match datasheet-computed cost %v", *entry.Cost, want)
+	}
+}
+
+func TestPostLLMHookContextTimeoutLogsCancelledStatus(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-context-timeout")
+
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o",
+			Params:   &schemas.ChatParameters{},
+		},
+	}
+	if _, _, err = plugin.PreLLMHook(ctx, req); err != nil {
+		t.Fatalf("PreLLMHook() error = %v", err)
+	}
+
+	statusCode := 504
+	bifrostErr := &schemas.BifrostError{
+		IsBifrostError: true,
+		StatusCode:     &statusCode,
+		Error: &schemas.ErrorField{
+			Message: "Request timed out by context: context deadline exceeded",
+			Type:    schemas.Ptr(schemas.RequestTimedOut),
+		},
+		ExtraFields: schemas.BifrostErrorExtraFields{
+			RequestType:            schemas.ChatCompletionRequest,
+			Provider:               schemas.OpenAI,
+			OriginalModelRequested: "gpt-4o",
+			ResolvedModelUsed:      "gpt-4o",
+		},
+	}
+	if _, _, err = plugin.PostLLMHook(ctx, nil, bifrostErr); err != nil {
+		t.Fatalf("PostLLMHook() error = %v", err)
+	}
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+
+	entry, err := store.FindByID(context.Background(), "req-context-timeout")
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if entry.Status != "cancelled" {
+		t.Fatalf("expected cancelled status, got %q", entry.Status)
+	}
+}
+
+func TestPostLLMHookProviderTimeoutRemainsErrorStatus(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-provider-timeout")
+
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o",
+			Params:   &schemas.ChatParameters{},
+		},
+	}
+	if _, _, err = plugin.PreLLMHook(ctx, req); err != nil {
+		t.Fatalf("PreLLMHook() error = %v", err)
+	}
+
+	statusCode := 504
+	bifrostErr := &schemas.BifrostError{
+		IsBifrostError: true,
+		StatusCode:     &statusCode,
+		Error: &schemas.ErrorField{
+			Message: schemas.ErrProviderRequestTimedOut,
+			Type:    schemas.Ptr(schemas.RequestTimedOut),
+		},
+		ExtraFields: schemas.BifrostErrorExtraFields{
+			RequestType:            schemas.ChatCompletionRequest,
+			Provider:               schemas.OpenAI,
+			OriginalModelRequested: "gpt-4o",
+			ResolvedModelUsed:      "gpt-4o",
+		},
+	}
+	if _, _, err = plugin.PostLLMHook(ctx, nil, bifrostErr); err != nil {
+		t.Fatalf("PostLLMHook() error = %v", err)
+	}
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+
+	entry, err := store.FindByID(context.Background(), "req-provider-timeout")
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if entry.Status != "error" {
+		t.Fatalf("expected error status, got %q", entry.Status)
+	}
+}
+
+func TestLogStatusForErrorDoesNotTreatGenericDeadlineMessageAsCancelled(t *testing.T) {
+	statusCode := 504
+	bifrostErr := &schemas.BifrostError{
+		IsBifrostError: true,
+		StatusCode:     &statusCode,
+		Error: &schemas.ErrorField{
+			Message: "provider request hit project deadline exceeded limit",
+			Type:    schemas.Ptr(schemas.RequestTimedOut),
+		},
+	}
+
+	if got := logStatusForError(bifrostErr); got != "error" {
+		t.Fatalf("expected generic provider deadline message to remain error, got %q", got)
+	}
+}
+
+func TestApplyStreamingOutputToEntryPreservesAccumulatorCancelledStatus(t *testing.T) {
+	plugin := &LoggerPlugin{}
+	entry := &logstore.Log{}
+	statusCode := 499
+	streamResponse := &streaming.ProcessedStreamResponse{
+		Data: &streaming.AccumulatedData{
+			ErrorDetails: &schemas.BifrostError{
+				IsBifrostError: true,
+				StatusCode:     &statusCode,
+				Error: &schemas.ErrorField{
+					Message: "Request cancelled: client disconnected",
+					Type:    schemas.Ptr(schemas.RequestCancelled),
+				},
+			},
+			Latency: 42,
+		},
+	}
+
+	plugin.applyStreamingOutputToEntry(entry, streamResponse, false, true)
+	if entry.Status != "cancelled" {
+		t.Fatalf("expected initial cancelled status, got %q", entry.Status)
+	}
+	if entry.ErrorDetailsParsed == nil {
+		t.Fatalf("expected parsed error details to be set")
+	}
+	if err := entry.SerializeFields(); err != nil {
+		t.Fatalf("SerializeFields() error: %v", err)
+	}
+	if entry.ErrorDetails == "" {
+		t.Fatalf("expected serialized error details after SerializeFields")
+	}
+
+	// Match the downstream Path B re-derivation in PostLLMHook. If
+	// ErrorDetailsParsed is missing, this collapses accumulator-originated
+	// cancellations back to "error".
+	if entry.ErrorDetailsParsed != nil {
+		entry.Status = logStatusForError(entry.ErrorDetailsParsed)
+	}
+	if entry.Status != "cancelled" {
+		t.Fatalf("expected downstream reclassification to preserve cancelled status, got %q", entry.Status)
+	}
+}
+
+// newTestPricingManager builds a ModelCatalog backed by the committed pricing
+// testdata via an offline file:// URL (no network).
+func newTestPricingManager(t *testing.T) *modelcatalog.ModelCatalog {
+	t.Helper()
+	abs, err := filepath.Abs("../../framework/modelcatalog/datasheet/testdata/pricing.json")
+	if err != nil {
+		t.Fatalf("resolve testdata path: %v", err)
+	}
+	ds := datasheet.New(nil, testLogger{}, datasheet.Config{URL: "file://" + abs})
+	if err := ds.LoadFromURLIntoMemory(context.Background()); err != nil {
+		t.Fatalf("load pricing datasheet: %v", err)
+	}
+	return modelcatalog.NewTestCatalogWithDatasheet(ds)
+}
+
+// TestApplyErrorBillingFromBilledUsage_ComputesCostWhenTokensAlreadyParsed guards
+// the case where stream accumulation already captured token usage on a failed
+// request but no cost was computed: cost must still be backfilled, and the
+// already-parsed token counters must be left untouched (not double-applied).
+func TestApplyErrorBillingFromBilledUsage_ComputesCostWhenTokensAlreadyParsed(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, newTestPricingManager(t), nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	const promptTokens, completionTokens = 100, 50
+	entry := &logstore.Log{
+		Provider:         string(schemas.OpenAI),
+		Model:            "gpt-4o",
+		PromptTokens:     promptTokens,
+		CompletionTokens: completionTokens,
+		TotalTokens:      promptTokens + completionTokens,
+		TokenUsageParsed: &schemas.BifrostLLMUsage{
+			PromptTokens:     promptTokens,
+			CompletionTokens: completionTokens,
+			TotalTokens:      promptTokens + completionTokens,
+		},
+	}
+	billed := entry.TokenUsageParsed
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	plugin.applyErrorBillingFromBilledUsage(ctx, entry, billed, schemas.ChatCompletionStreamRequest)
+
+	if entry.Cost == nil {
+		t.Fatal("expected cost to be computed even though token usage was already parsed")
+	}
+	// gpt-4o testdata rates: input 2.5e-6/token, output 1e-5/token.
+	want := float64(promptTokens)*2.5e-6 + float64(completionTokens)*1e-5
+	if diff := *entry.Cost - want; diff < -1e-9 || diff > 1e-9 {
+		t.Fatalf("cost %v does not match datasheet-computed %v", *entry.Cost, want)
+	}
+	if entry.PromptTokens != promptTokens || entry.TotalTokens != promptTokens+completionTokens {
+		t.Fatalf("token counters mutated: prompt=%d total=%d", entry.PromptTokens, entry.TotalTokens)
+	}
+}
+
+// TestApplyErrorBillingFromBilledUsage_FillsTokensAndCostWhenUnparsed pins the
+// original behaviour: when no usage was captured yet, both tokens and cost are
+// backfilled from BilledUsage.
+func TestApplyErrorBillingFromBilledUsage_FillsTokensAndCostWhenUnparsed(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, newTestPricingManager(t), nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	const promptTokens, completionTokens = 100, 50
+	entry := &logstore.Log{Provider: string(schemas.OpenAI), Model: "gpt-4o"}
+	billed := &schemas.BifrostLLMUsage{
+		PromptTokens:     promptTokens,
+		CompletionTokens: completionTokens,
+		TotalTokens:      promptTokens + completionTokens,
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	plugin.applyErrorBillingFromBilledUsage(ctx, entry, billed, schemas.ChatCompletionStreamRequest)
+
+	if entry.TokenUsageParsed == nil || entry.TotalTokens != promptTokens+completionTokens {
+		t.Fatalf("expected tokens backfilled, got %+v", entry.TokenUsageParsed)
+	}
+	if entry.Cost == nil {
+		t.Fatal("expected cost computed on the unparsed path")
+	}
+}
+
+func TestRecalculateCostsProcessesAllBatches(t *testing.T) {
+	store := newTestStore(t)
+	plugin := &LoggerPlugin{
+		store:          store,
+		pricingManager: newTestPricingManager(t),
+		logger:         testLogger{},
+	}
+
+	now := time.Now().UTC()
+	for i := range 5 {
+		if err := store.Create(context.Background(), testRecalculateCostLog(
+			"req-recalc-batch-"+string(rune('a'+i)),
+			now.Add(time.Duration(i)*time.Second),
+			100+i,
+			50,
+		)); err != nil {
+			t.Fatalf("Create() error = %v", err)
+		}
+	}
+
+	result, err := plugin.RecalculateCosts(context.Background(), logstore.SearchFilters{}, 2)
+	if err != nil {
+		t.Fatalf("RecalculateCosts() error = %v", err)
+	}
+	if result.TotalMatched != 5 || result.Updated != 5 || result.Skipped != 0 || result.Remaining != 0 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+
+	for _, id := range []string{"req-recalc-batch-a", "req-recalc-batch-b", "req-recalc-batch-c", "req-recalc-batch-d", "req-recalc-batch-e"} {
+		entry, err := store.FindByID(context.Background(), id)
+		if err != nil {
+			t.Fatalf("FindByID(%s) error = %v", id, err)
+		}
+		if entry.Cost == nil || *entry.Cost <= 0 {
+			t.Fatalf("expected positive cost for %s, got %v", id, entry.Cost)
+		}
+	}
+}
+
+func TestRecalculateCostsSkipsUnresolvableRowsAndContinues(t *testing.T) {
+	store := newTestStore(t)
+	plugin := &LoggerPlugin{
+		store:          store,
+		pricingManager: newTestPricingManager(t),
+		logger:         testLogger{},
+	}
+
+	now := time.Now().UTC()
+	if err := store.Create(context.Background(), &logstore.Log{
+		ID:        "req-recalc-skip",
+		Timestamp: now,
+		Object:    string(schemas.ChatCompletionRequest),
+		Provider:  string(schemas.OpenAI),
+		Model:     "gpt-4o",
+		Status:    "success",
+	}); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	for i := range 3 {
+		if err := store.Create(context.Background(), testRecalculateCostLog(
+			"req-recalc-continue-"+string(rune('a'+i)),
+			now.Add(time.Duration(i+1)*time.Second),
+			100+i,
+			50,
+		)); err != nil {
+			t.Fatalf("Create() error = %v", err)
+		}
+	}
+
+	result, err := plugin.RecalculateCosts(context.Background(), logstore.SearchFilters{}, 2)
+	if err != nil {
+		t.Fatalf("RecalculateCosts() error = %v", err)
+	}
+	if result.TotalMatched != 4 || result.Updated != 3 || result.Skipped != 1 || result.Remaining != 1 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+
+	skipped, err := store.FindByID(context.Background(), "req-recalc-skip")
+	if err != nil {
+		t.Fatalf("FindByID(req-recalc-skip) error = %v", err)
+	}
+	if skipped.Cost != nil {
+		t.Fatalf("expected skipped row cost to remain nil, got %v", skipped.Cost)
+	}
+	for _, id := range []string{"req-recalc-continue-a", "req-recalc-continue-b", "req-recalc-continue-c"} {
+		entry, err := store.FindByID(context.Background(), id)
+		if err != nil {
+			t.Fatalf("FindByID(%s) error = %v", id, err)
+		}
+		if entry.Cost == nil || *entry.Cost <= 0 {
+			t.Fatalf("expected positive cost for %s, got %v", id, entry.Cost)
+		}
+	}
+}
+
+func TestRecalculateCostsDoesNotWriteZeroForUnresolvedPricing(t *testing.T) {
+	store := newTestStore(t)
+	plugin := &LoggerPlugin{
+		store:          store,
+		pricingManager: newTestPricingManager(t),
+		logger:         testLogger{},
+	}
+
+	entry := testRecalculateCostLog("req-recalc-unpriced", time.Now().UTC(), 100, 50)
+	entry.Model = "unknown-model"
+	if err := store.Create(context.Background(), entry); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	result, err := plugin.RecalculateCosts(context.Background(), logstore.SearchFilters{}, 2)
+	if err != nil {
+		t.Fatalf("RecalculateCosts() error = %v", err)
+	}
+	if result.TotalMatched != 1 || result.Updated != 0 || result.Skipped != 1 || result.Remaining != 1 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+
+	logEntry, err := store.FindByID(context.Background(), "req-recalc-unpriced")
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if logEntry.Cost != nil {
+		t.Fatalf("expected unresolved pricing to leave cost nil, got %v", *logEntry.Cost)
+	}
+}
+
+func TestRecalculateCostsNormalizesProviderObjectForPricing(t *testing.T) {
+	store := newTestStore(t)
+	plugin := &LoggerPlugin{
+		store:          store,
+		pricingManager: newTestPricingManager(t),
+		logger:         testLogger{},
+	}
+
+	entry := testRecalculateCostLog("req-recalc-provider-object", time.Now().UTC(), 100, 50)
+	entry.Object = "chat.completion"
+	zeroCost := 0.0
+	entry.Cost = &zeroCost
+	if err := store.Create(context.Background(), entry); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	result, err := plugin.RecalculateCosts(context.Background(), logstore.SearchFilters{}, 2)
+	if err != nil {
+		t.Fatalf("RecalculateCosts() error = %v", err)
+	}
+	if result.TotalMatched != 1 || result.Updated != 1 || result.Skipped != 0 || result.Remaining != 0 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+
+	logEntry, err := store.FindByID(context.Background(), "req-recalc-provider-object")
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if logEntry.Cost == nil || *logEntry.Cost <= 0 {
+		t.Fatalf("expected legacy provider object to recalculate positive cost, got %v", logEntry.Cost)
+	}
+}
+
+func testRecalculateCostLog(id string, timestamp time.Time, promptTokens int, completionTokens int) *logstore.Log {
+	totalTokens := promptTokens + completionTokens
+	return &logstore.Log{
+		ID:               id,
+		Timestamp:        timestamp,
+		Object:           string(schemas.ChatCompletionRequest),
+		Provider:         string(schemas.OpenAI),
+		Model:            "gpt-4o",
+		Status:           "success",
+		PromptTokens:     promptTokens,
+		CompletionTokens: completionTokens,
+		TotalTokens:      totalTokens,
+		TokenUsageParsed: &schemas.BifrostLLMUsage{
+			PromptTokens:     promptTokens,
+			CompletionTokens: completionTokens,
+			TotalTokens:      totalTokens,
+		},
 	}
 }
 
@@ -379,6 +902,76 @@ func TestCleanupStalePendingMCPLogsPersistsErrorFallback(t *testing.T) {
 	}
 	if !strings.Contains(logEntry.ErrorDetailsParsed.Error.Message, "pending log TTL") {
 		t.Fatalf("expected stale MCP timeout message, got %q", logEntry.ErrorDetailsParsed.Error.Message)
+	}
+}
+
+// TestActiveStreamSurvivesCleanup is the regression test for the prod issue where
+// streaming requests running longer than the pending TTL had their in-memory
+// pending entry evicted mid-flight (causing the final log row to be lost and a
+// per-chunk "no pending log data found" warning). An entry whose CreatedAt is
+// older than the TTL but whose LastActivity is recent must NOT be reaped.
+func TestActiveStreamSurvivesCleanup(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if cleanupErr := plugin.Cleanup(); cleanupErr != nil {
+			t.Errorf("Cleanup() error = %v", cleanupErr)
+		}
+	})
+
+	oldCreatedAt := time.Now().Add(-pendingLogTTL - time.Minute)
+	pending := &PendingLogData{
+		RequestID:   "req-active-stream",
+		Timestamp:   oldCreatedAt,
+		Status:      "processing",
+		InitialData: &InitialLogData{Object: "chat.completion.chunk"},
+		CreatedAt:   oldCreatedAt,
+	}
+	// Simulate a chunk that arrived just now: request started long ago but is
+	// still actively streaming.
+	pending.LastActivity.Store(time.Now().UnixNano())
+	plugin.pendingLogsEntries.Store("req-active-stream", pending)
+
+	plugin.cleanupStalePendingLogs()
+
+	if _, ok := plugin.pendingLogsEntries.Load("req-active-stream"); !ok {
+		t.Fatal("expected actively-streaming pending entry to survive cleanup")
+	}
+}
+
+// TestIdlePendingEntryEvicted verifies the reaper still removes genuinely dead
+// requests: an entry whose CreatedAt AND LastActivity are both older than the
+// TTL (no chunk activity for the whole idle window) must be deleted.
+func TestIdlePendingEntryEvicted(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if cleanupErr := plugin.Cleanup(); cleanupErr != nil {
+			t.Errorf("Cleanup() error = %v", cleanupErr)
+		}
+	})
+
+	stale := time.Now().Add(-pendingLogTTL - time.Minute)
+	pending := &PendingLogData{
+		RequestID:   "req-idle",
+		Timestamp:   stale,
+		Status:      "processing",
+		InitialData: &InitialLogData{Object: "chat.completion.chunk"},
+		CreatedAt:   stale,
+	}
+	pending.LastActivity.Store(stale.UnixNano())
+	plugin.pendingLogsEntries.Store("req-idle", pending)
+
+	plugin.cleanupStalePendingLogs()
+
+	if _, ok := plugin.pendingLogsEntries.Load("req-idle"); ok {
+		t.Fatal("expected idle pending entry to be evicted by cleanup")
 	}
 }
 

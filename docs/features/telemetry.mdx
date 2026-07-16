@@ -70,7 +70,7 @@ Base Labels:
 - `method`: Request type (`chat`, `text`, `embedding`, `speech`, `transcription`)
 - `virtual_key_id`: Virtual key ID
 - `virtual_key_name`: Virtual key name
-- `routing_engine_used`: Comma-separated routing engines used (`routing-rule`, `governance`, `loadbalancing`, `model-catalog`)
+- `routing_engine_used`: Comma-separated routing engines used (`routing-rule`, `governance`, `loadbalancing`, `model-catalog`, `core`). `core` is emitted when the Bifrost orchestrator itself makes a routing decision — i.e. a fallback transition or a retry transition.
 - `routing_rule_id`: Routing rule ID that matched the request
 - `routing_rule_name`: Routing rule name that matched the request
 - `selected_key_id`: ID of the key that successfully served the request (empty string `""` on final errors)

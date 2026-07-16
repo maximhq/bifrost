@@ -359,14 +359,20 @@ logs-histogram:
     parameters:
       - $ref: '#/_histogram-parameters/providers'
       - $ref: '#/_histogram-parameters/models'
+      - $ref: '#/_histogram-parameters/aliases'
       - $ref: '#/_histogram-parameters/status'
       - $ref: '#/_histogram-parameters/objects'
       - $ref: '#/_histogram-parameters/selected_key_ids'
       - $ref: '#/_histogram-parameters/virtual_key_ids'
+      - $ref: '#/_histogram-parameters/team_ids'
+      - $ref: '#/_histogram-parameters/customer_ids'
+      - $ref: '#/_histogram-parameters/user_ids'
+      - $ref: '#/_histogram-parameters/business_unit_ids'
       - $ref: '#/_histogram-parameters/routing_rule_ids'
       - $ref: '#/_histogram-parameters/routing_engine_used'
       - $ref: '#/_histogram-parameters/start_time'
       - $ref: '#/_histogram-parameters/end_time'
+      - $ref: '#/_histogram-parameters/period'
       - $ref: '#/_histogram-parameters/min_latency'
       - $ref: '#/_histogram-parameters/max_latency'
       - $ref: '#/_histogram-parameters/min_tokens'
@@ -374,6 +380,10 @@ logs-histogram:
       - $ref: '#/_histogram-parameters/min_cost'
       - $ref: '#/_histogram-parameters/max_cost'
       - $ref: '#/_histogram-parameters/missing_cost_only'
+      - $ref: '#/_histogram-parameters/stop_reasons'
+      - $ref: '#/_histogram-parameters/cache_hit_types'
+      - $ref: '#/_histogram-parameters/parent_request_id'
+      - $ref: '#/_histogram-parameters/metadata_key'
       - $ref: '#/_histogram-parameters/content_search'
     security:
       - ManagementBearerAuth: []
@@ -683,6 +693,12 @@ _histogram-parameters:
     description: Comma-separated list of models to filter by
     schema:
       type: string
+  aliases:
+    name: aliases
+    in: query
+    description: Comma-separated list of model aliases to filter by
+    schema:
+      type: string
   status:
     name: status
     in: query
@@ -705,6 +721,30 @@ _histogram-parameters:
     name: virtual_key_ids
     in: query
     description: Comma-separated list of virtual key IDs to filter by
+    schema:
+      type: string
+  team_ids:
+    name: team_ids
+    in: query
+    description: Comma-separated list of team IDs to filter by
+    schema:
+      type: string
+  customer_ids:
+    name: customer_ids
+    in: query
+    description: Comma-separated list of customer IDs to filter by
+    schema:
+      type: string
+  user_ids:
+    name: user_ids
+    in: query
+    description: Comma-separated list of user IDs to filter by
+    schema:
+      type: string
+  business_unit_ids:
+    name: business_unit_ids
+    in: query
+    description: Comma-separated list of business unit IDs to filter by
     schema:
       type: string
   routing_rule_ids:
@@ -733,6 +773,12 @@ _histogram-parameters:
     schema:
       type: string
       format: date-time
+  period:
+    name: period
+    in: query
+    description: Relative time period filter
+    schema:
+      type: string
   min_latency:
     name: min_latency
     in: query
@@ -775,6 +821,30 @@ _histogram-parameters:
     description: Only show logs with missing cost
     schema:
       type: boolean
+  stop_reasons:
+    name: stop_reasons
+    in: query
+    description: Comma-separated list of stop reasons to filter by
+    schema:
+      type: string
+  cache_hit_types:
+    name: cache_hit_types
+    in: query
+    description: Comma-separated list of cache hit types to filter by
+    schema:
+      type: string
+  parent_request_id:
+    name: parent_request_id
+    in: query
+    description: Parent request ID to filter by
+    schema:
+      type: string
+  metadata_key:
+    name: metadata_<key>
+    in: query
+    description: Metadata filter where <key> is the metadata key to match
+    schema:
+      type: string
   content_search:
     name: content_search
     in: query
@@ -787,8 +857,8 @@ logs-recalculate-cost:
     operationId: recalculateLogCosts
     summary: Recalculate log costs
     description: |
-      Recomputes missing costs in batches. Processes logs with missing cost values
-      and updates them based on current pricing data.
+      Starts an asynchronous background job that recalculates log costs in batches.
+      The returned payload is a job status object that can be polled via the status endpoint.
     tags:
       - Logging
     requestBody:
@@ -800,14 +870,65 @@ logs-recalculate-cost:
     security:
       - ManagementBearerAuth: []
     responses:
-      '200':
-        description: Costs recalculated successfully
+      '202':
+        description: Cost recalculation job accepted
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/logging.yaml#/RecalculateCostResponse'
+      '409':
+        description: A recalculation job is already running
         content:
           application/json:
             schema:
               $ref: '../../schemas/management/logging.yaml#/RecalculateCostResponse'
       '400':
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '503':
+        description: Background job runner is not available
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+logs-recalculate-cost-status:
+  get:
+    operationId: getRecalculateCostStatus
+    summary: Get log cost recalculation status
+    description: |
+      Returns the current status of a log cost recalculation job.
+      When `id` is omitted, the current in-flight job is returned, or `idle` when no job is running.
+    tags:
+      - Logging
+    parameters:
+      - name: id
+        in: query
+        description: Optional recalculation job ID to fetch
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Recalculation job status
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/logging.yaml#/RecalculateCostResponse'
+      '404':
+        description: Recalculation job not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+      '503':
+        description: Background job runner is not available
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
@@ -1155,14 +1276,20 @@ logs-rankings:
     parameters:
       - $ref: '#/_histogram-parameters/providers'
       - $ref: '#/_histogram-parameters/models'
+      - $ref: '#/_histogram-parameters/aliases'
       - $ref: '#/_histogram-parameters/status'
       - $ref: '#/_histogram-parameters/objects'
       - $ref: '#/_histogram-parameters/selected_key_ids'
       - $ref: '#/_histogram-parameters/virtual_key_ids'
+      - $ref: '#/_histogram-parameters/team_ids'
+      - $ref: '#/_histogram-parameters/customer_ids'
+      - $ref: '#/_histogram-parameters/user_ids'
+      - $ref: '#/_histogram-parameters/business_unit_ids'
       - $ref: '#/_histogram-parameters/routing_rule_ids'
       - $ref: '#/_histogram-parameters/routing_engine_used'
       - $ref: '#/_histogram-parameters/start_time'
       - $ref: '#/_histogram-parameters/end_time'
+      - $ref: '#/_histogram-parameters/period'
       - $ref: '#/_histogram-parameters/min_latency'
       - $ref: '#/_histogram-parameters/max_latency'
       - $ref: '#/_histogram-parameters/min_tokens'
@@ -1170,6 +1297,10 @@ logs-rankings:
       - $ref: '#/_histogram-parameters/min_cost'
       - $ref: '#/_histogram-parameters/max_cost'
       - $ref: '#/_histogram-parameters/missing_cost_only'
+      - $ref: '#/_histogram-parameters/stop_reasons'
+      - $ref: '#/_histogram-parameters/cache_hit_types'
+      - $ref: '#/_histogram-parameters/parent_request_id'
+      - $ref: '#/_histogram-parameters/metadata_key'
       - $ref: '#/_histogram-parameters/content_search'
     security:
       - ManagementBearerAuth: []
@@ -1180,6 +1311,78 @@ logs-rankings:
           application/json:
             schema:
               $ref: '../../schemas/management/logging.yaml#/ModelRankingResult'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+logs-dashboard:
+  get:
+    operationId: getDashboard
+    summary: Get consolidated dashboard data
+    description: |
+      Returns every metric shown on the workspace dashboard in a single
+      response: overview totals and histograms, provider usage, model rankings,
+      dimension rankings (team, user, virtual key, customer, business unit), and
+      MCP usage. Intended for external integrations that want the full dashboard
+      in one call rather than orchestrating the individual endpoints.
+
+      Accepts the same LLM filter parameters as the histogram and rankings
+      endpoints, plus the MCP filter parameters (`tool_names`, `server_labels`)
+      which apply to the `mcp` section. Filters are applied once and every
+      section is computed against the same time window and bucket size. The
+      request fails as a whole if any section cannot be computed, so the payload
+      is always complete.
+    tags:
+      - Logging
+    parameters:
+      - $ref: '#/_histogram-parameters/providers'
+      - $ref: '#/_histogram-parameters/models'
+      - $ref: '#/_histogram-parameters/aliases'
+      - $ref: '#/_histogram-parameters/status'
+      - $ref: '#/_histogram-parameters/objects'
+      - $ref: '#/_histogram-parameters/selected_key_ids'
+      - $ref: '#/_histogram-parameters/virtual_key_ids'
+      - $ref: '#/_histogram-parameters/team_ids'
+      - $ref: '#/_histogram-parameters/customer_ids'
+      - $ref: '#/_histogram-parameters/user_ids'
+      - $ref: '#/_histogram-parameters/business_unit_ids'
+      - $ref: '#/_histogram-parameters/routing_rule_ids'
+      - $ref: '#/_histogram-parameters/routing_engine_used'
+      - $ref: '#/_histogram-parameters/start_time'
+      - $ref: '#/_histogram-parameters/end_time'
+      - $ref: '#/_histogram-parameters/period'
+      - $ref: '#/_histogram-parameters/min_latency'
+      - $ref: '#/_histogram-parameters/max_latency'
+      - $ref: '#/_histogram-parameters/min_tokens'
+      - $ref: '#/_histogram-parameters/max_tokens'
+      - $ref: '#/_histogram-parameters/min_cost'
+      - $ref: '#/_histogram-parameters/max_cost'
+      - $ref: '#/_histogram-parameters/missing_cost_only'
+      - $ref: '#/_histogram-parameters/stop_reasons'
+      - $ref: '#/_histogram-parameters/cache_hit_types'
+      - $ref: '#/_histogram-parameters/parent_request_id'
+      - $ref: '#/_histogram-parameters/metadata_key'
+      - $ref: '#/_histogram-parameters/content_search'
+      - name: tool_names
+        in: query
+        description: Comma-separated list of MCP tool names to filter the MCP section by
+        schema:
+          type: string
+      - name: server_labels
+        in: query
+        description: Comma-separated list of MCP server labels to filter the MCP section by
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Dashboard data retrieved successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/logging.yaml#/DashboardResult'
       '400':
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '500':

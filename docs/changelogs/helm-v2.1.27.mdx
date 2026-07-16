@@ -1,0 +1,24 @@
+---
+title: "v2.1.27"
+description: "Helm v2.1.27 changelog - 2026-07-09"
+---
+
+<Update label="Bifrost Helm" description="v2.1.27">
+
+<Warning>
+**Known issue - use v2.1.28 instead.** This version dropped `runAsUser: 1000` from the default security contexts. With any image before v1.6.4 (including the chart's default), kubelet cannot verify `runAsNonRoot: true` against the image's non-numeric `USER appuser`, and pods fail with `CreateContainerConfigError: container has runAsNonRoot and image has non-numeric user (appuser)`. If you must stay on v2.1.27, set `podSecurityContext.runAsUser: 1000` and `securityContext.runAsUser: 1000` in your values, or use image v1.6.4+. On OpenShift (restricted-v2), v2.1.27 works as-is since the SCC injects a numeric UID; pair it with image v1.6.4+ and `podSecurityContext.fsGroup: null`.
+</Warning>
+
+## Changelog
+
+- `bifrost.schemaUrl` — override the generated `config.json` `$schema` location for isolated or air-gapped deployments. Accepts an HTTP(S) URL, `file://` URL, or filesystem path. When set, the value is also exported as `BIFROST_SCHEMA_URL` in the pod; when empty (default), the env var is not injected and the public schema URL is used. Renders into `$schema`.
+- `bifrost.auditLogs.objectStorage` for archiving audit events to S3/GCS. Each flushed batch is written as a JSONL object (`{prefix}/audit-logs/YYYY/MM/DD/HH/{id}.jsonl`); set `compress: true` to gzip the output (`.jsonl.gz`). Supports `type` (s3/gcs), `bucket`, `prefix`, `compress`, and full S3 credential fields (`region`, `endpoint`, `accessKeyId`, `secretAccessKey`, `sessionToken`, `roleArn`, `forcePathStyle`) and GCS fields (`projectId`, `credentialsJson`). Renders into `audit_logs.object_storage`.
+- `force_single_region` on `bifrost.providers.vertex.keys[*].vertex_key_config` — when `true`, skips automatic promotion of multi-region-only models to a multi-region endpoint. Enable for provisioned throughput. Renders into `vertex_key_config.force_single_region`.
+- `calendar_aligned` on `bifrost.accessProfiles[*]` (top-level) — snaps all budget and rate-limit reset windows to calendar boundaries for the profile. Passes through into `access_profiles[*].calendar_aligned`.
+- `calendar_aligned` on `bifrost.accessProfiles[*].budgets[*]` and `bifrost.accessProfiles[*].provider_configs[*].budgets[*]` — schema previously blocked this field; now matches parity with `governance.budgets[*].calendar_aligned`.
+- `calendar_aligned` on `bifrost.governance.virtualKeys[*]` — was accepted by schema but not rendered into config. Now correctly emits `virtual_keys[*].calendar_aligned` in the generated config.
+- `bifrost.alerting` for declarative alert channels and rules. Supports `history_retention_days`, `webhook_network` (`allow_http`, `allow_private_network`), `channels[]` (slack, microsoft_teams, pagerduty, webhook), and `rules[]` (CEL-expression-based, governance-scope-aware). Renders into `alerting`.
+- `postgresql.external.port` now accepts a string in addition to an integer, enabling env-variable substitution via `env.VAR_NAME` references when mounting port from a Kubernetes secret. Renders into `postgres_config.port`.
+- `bifrost.mcp.toolGroups[*].id` — optional integer DB ID for an existing MCP tool group. When set, the reconciler updates the group by ID instead of matching by name. Renders into `mcp.tool_groups[*].id`.
+
+</Update>

@@ -115,13 +115,13 @@ func (provider *VertexProvider) CachedContentCreate(ctx *schemas.BifrostContext,
 		return nil, providerUtils.NewBifrostOperationError("model is required for cached content create", nil)
 	}
 
-	projectID := key.VertexKeyConfig.ProjectID.GetValue()
+	projectID := resolveVertexProjectID(ctx, key)
 	if projectID == "" {
-		return nil, providerUtils.NewConfigurationError("project_id is not set in vertex key config")
+		return nil, providerUtils.NewConfigurationError("project_id is not set")
 	}
-	region := key.VertexKeyConfig.Region.GetValue()
+	region := resolveVertexRegion(ctx, key)
 	if region == "" {
-		return nil, providerUtils.NewConfigurationError("region is not set in vertex key config")
+		return nil, providerUtils.NewConfigurationError("region is not set")
 	}
 
 	model := expandVertexModelPath(request.Model, projectID, region)
@@ -178,7 +178,7 @@ func (provider *VertexProvider) CachedContentCreate(ctx *schemas.BifrostContext,
 		return nil, bifrostErr
 	}
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, parseVertexCachedContentError(resp)
+		return nil, providerUtils.SetErrorLatency(parseVertexCachedContentError(resp), latency)
 	}
 
 	respBody, decErr := providerUtils.CheckAndDecodeBody(resp)
@@ -210,13 +210,13 @@ func (provider *VertexProvider) CachedContentCreate(ctx *schemas.BifrostContext,
 }
 
 func (provider *VertexProvider) cachedContentListByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostCachedContentListRequest) (*schemas.BifrostCachedContentListResponse, time.Duration, *schemas.BifrostError) {
-	projectID := key.VertexKeyConfig.ProjectID.GetValue()
+	projectID := resolveVertexProjectID(ctx, key)
 	if projectID == "" {
-		return nil, 0, providerUtils.NewConfigurationError("project_id is not set in vertex key config")
+		return nil, 0, providerUtils.NewConfigurationError("project_id is not set")
 	}
-	region := key.VertexKeyConfig.Region.GetValue()
+	region := resolveVertexRegion(ctx, key)
 	if region == "" {
-		return nil, 0, providerUtils.NewConfigurationError("region is not set in vertex key config")
+		return nil, 0, providerUtils.NewConfigurationError("region is not set")
 	}
 
 	req := fasthttp.AcquireRequest()
@@ -250,7 +250,7 @@ func (provider *VertexProvider) cachedContentListByKey(ctx *schemas.BifrostConte
 		return nil, latency, bifrostErr
 	}
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, latency, parseVertexCachedContentError(resp)
+		return nil, latency, providerUtils.SetErrorLatency(parseVertexCachedContentError(resp), latency)
 	}
 
 	respBody, decErr := providerUtils.CheckAndDecodeBody(resp)
@@ -292,13 +292,13 @@ func (provider *VertexProvider) CachedContentList(ctx *schemas.BifrostContext, k
 }
 
 func (provider *VertexProvider) cachedContentRetrieveByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostCachedContentRetrieveRequest) (*schemas.BifrostCachedContentRetrieveResponse, time.Duration, *schemas.BifrostError) {
-	projectID := key.VertexKeyConfig.ProjectID.GetValue()
+	projectID := resolveVertexProjectID(ctx, key)
 	if projectID == "" {
-		return nil, 0, providerUtils.NewConfigurationError("project_id is not set in vertex key config")
+		return nil, 0, providerUtils.NewConfigurationError("project_id is not set")
 	}
-	region := key.VertexKeyConfig.Region.GetValue()
+	region := resolveVertexRegion(ctx, key)
 	if region == "" {
-		return nil, 0, providerUtils.NewConfigurationError("region is not set in vertex key config")
+		return nil, 0, providerUtils.NewConfigurationError("region is not set")
 	}
 
 	req := fasthttp.AcquireRequest()
@@ -323,7 +323,7 @@ func (provider *VertexProvider) cachedContentRetrieveByKey(ctx *schemas.BifrostC
 		return nil, latency, bifrostErr
 	}
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, latency, parseVertexCachedContentError(resp)
+		return nil, latency, providerUtils.SetErrorLatency(parseVertexCachedContentError(resp), latency)
 	}
 
 	respBody, decErr := providerUtils.CheckAndDecodeBody(resp)
@@ -372,13 +372,13 @@ func (provider *VertexProvider) CachedContentRetrieve(ctx *schemas.BifrostContex
 }
 
 func (provider *VertexProvider) cachedContentUpdateByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostCachedContentUpdateRequest) (*schemas.BifrostCachedContentUpdateResponse, time.Duration, *schemas.BifrostError) {
-	projectID := key.VertexKeyConfig.ProjectID.GetValue()
+	projectID := resolveVertexProjectID(ctx, key)
 	if projectID == "" {
-		return nil, 0, providerUtils.NewConfigurationError("project_id is not set in vertex key config")
+		return nil, 0, providerUtils.NewConfigurationError("project_id is not set")
 	}
-	region := key.VertexKeyConfig.Region.GetValue()
+	region := resolveVertexRegion(ctx, key)
 	if region == "" {
-		return nil, 0, providerUtils.NewConfigurationError("region is not set in vertex key config")
+		return nil, 0, providerUtils.NewConfigurationError("region is not set")
 	}
 
 	body := vertexCachedContent{}
@@ -427,7 +427,7 @@ func (provider *VertexProvider) cachedContentUpdateByKey(ctx *schemas.BifrostCon
 		return nil, latency, bifrostErr
 	}
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, latency, parseVertexCachedContentError(resp)
+		return nil, latency, providerUtils.SetErrorLatency(parseVertexCachedContentError(resp), latency)
 	}
 
 	respBody, decErr := providerUtils.CheckAndDecodeBody(resp)
@@ -482,13 +482,13 @@ func (provider *VertexProvider) CachedContentUpdate(ctx *schemas.BifrostContext,
 }
 
 func (provider *VertexProvider) cachedContentDeleteByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostCachedContentDeleteRequest) (*schemas.BifrostCachedContentDeleteResponse, time.Duration, *schemas.BifrostError) {
-	projectID := key.VertexKeyConfig.ProjectID.GetValue()
+	projectID := resolveVertexProjectID(ctx, key)
 	if projectID == "" {
-		return nil, 0, providerUtils.NewConfigurationError("project_id is not set in vertex key config")
+		return nil, 0, providerUtils.NewConfigurationError("project_id is not set")
 	}
-	region := key.VertexKeyConfig.Region.GetValue()
+	region := resolveVertexRegion(ctx, key)
 	if region == "" {
-		return nil, 0, providerUtils.NewConfigurationError("region is not set in vertex key config")
+		return nil, 0, providerUtils.NewConfigurationError("region is not set")
 	}
 
 	req := fasthttp.AcquireRequest()
@@ -512,7 +512,7 @@ func (provider *VertexProvider) cachedContentDeleteByKey(ctx *schemas.BifrostCon
 		return nil, latency, bifrostErr
 	}
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, latency, parseVertexCachedContentError(resp)
+		return nil, latency, providerUtils.SetErrorLatency(parseVertexCachedContentError(resp), latency)
 	}
 
 	return &schemas.BifrostCachedContentDeleteResponse{

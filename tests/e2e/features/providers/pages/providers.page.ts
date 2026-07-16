@@ -4,6 +4,18 @@ import { BasePage } from '../../../core/pages/base.page'
 import { Selectors } from '../../../core/utils/selectors'
 import { fillSelect, waitForNetworkIdle } from '../../../core/utils/test-helpers'
 
+const resetPeriodLabels: Record<string, string> = {
+  '1m': 'Every Minute',
+  '5m': 'Every 5 Minutes',
+  '15m': 'Every 15 Minutes',
+  '30m': 'Every 30 Minutes',
+  '1h': 'Hourly',
+  '6h': 'Every 6 Hours',
+  '1d': 'Daily',
+  '1w': 'Weekly',
+  '1M': 'Monthly',
+}
+
 export type { CustomProviderConfig, ProviderKeyConfig }
 
 /**
@@ -629,16 +641,53 @@ export class ProvidersPage extends BasePage {
    * Set governance configuration (budget and rate limits)
    */
   async setGovernanceConfig(config: {
-    budgetLimit?: number
+    aligned?: boolean
+    budgets?: Array<{
+      amount?: number
+      resetPeriod?: string
+    }>
     tokenLimit?: number
     requestLimit?: number
   }): Promise<void> {
     await this.selectConfigTab('governance')
 
-    if (config.budgetLimit !== undefined) {
-      const input = this.page.locator('#providerBudgetMaxLimit')
-      await input.clear()
-      await input.fill(String(config.budgetLimit))
+    if (config.budgets) {
+      const budgetLines = this.page.locator('[data-testid^="provider-governance-budgets-line-"]')
+      let existingCount = await budgetLines.count()
+
+      while (existingCount < config.budgets.length) {
+        await this.page.getByTestId('provider-governance-budgets-add-btn').click()
+        existingCount += 1
+      }
+
+      while (existingCount > config.budgets.length) {
+        existingCount -= 1
+        await this.page.getByTestId(`provider-governance-budgets-remove-${existingCount}`).click()
+      }
+
+      for (const [index, budget] of config.budgets.entries()) {
+        const amountInput = this.page.getByTestId(`provider-governance-budgets-amount-${index}`)
+        await amountInput.click()
+        await amountInput.fill('')
+        if (budget.amount !== undefined) {
+          await amountInput.pressSequentially(String(budget.amount))
+        }
+
+        if (budget.resetPeriod) {
+          const budgetLine = this.page.getByTestId(`provider-governance-budgets-line-${index}`)
+          const resetPeriodLabel = resetPeriodLabels[budget.resetPeriod] ?? budget.resetPeriod
+          await budgetLine.getByRole('combobox').click()
+          await this.page.getByRole('option', { name: resetPeriodLabel }).click()
+        }
+      }
+
+      if (config.aligned !== undefined && config.budgets.length > 0) {
+        const switchEl = this.page.getByTestId('provider-governance-calendar-aligned-switch')
+        const isChecked = (await switchEl.getAttribute('data-state')) === 'checked'
+        if (isChecked !== config.aligned) {
+          await switchEl.click()
+        }
+      }
     }
 
     if (config.tokenLimit !== undefined) {

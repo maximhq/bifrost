@@ -92,6 +92,83 @@ func (h *WSRealtimeHandler) handleUpgrade(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	// Run PreRequestHook to give governance + LB a chance to route the realtime connection.
+	// Realtime bypasses handleRequest (per-turn pipelines instead), so we invoke the routing
+	// phase explicitly here. Mutations to provider/model are read back into the local vars
+	// and copied to fasthttp user values so snapshotRealtimeMiddlewareValues picks up any
+	// ctx changes (governance team/customer IDs, routing engine logs).
+	preReqCtx, preReqCancel := createBifrostContextFromAuth(h.handlerStore, auth)
+	if preReqCtx == nil {
+		preReqCancel()
+		upgrader := h.websocketUpgrader("")
+		upgradeErr := upgrader.Upgrade(ctx, func(conn *ws.Conn) {
+			defer conn.Close()
+			clientConn := newRealtimeClientConn(conn)
+			clientConn.writeRealtimeError(newRealtimeWireBifrostError(500, "server_error", "failed to create request context"))
+		})
+		if upgradeErr != nil {
+			logger.Warn("websocket upgrade failed for %s: %v", path, upgradeErr)
+		}
+		return
+	}
+	preReqCtx.SetValue(schemas.BifrostContextKeyHTTPRequestType, schemas.RealtimeRequest)
+	if realtimeDefaultProviderForPath(path) == schemas.OpenAI {
+		preReqCtx.SetValue(schemas.BifrostContextKeyIntegrationType, "openai")
+	}
+	// Surface full request headers + query params on the pre-request context so governance
+	// CEL routing rules (which read headers[...] / params[...]) see the same shape they would
+	// for normal HTTP requests. Mirrors lib/ctx.go ConvertToBifrostContext; the normal HTTP
+	// path doesn't run for WS upgrades, so we populate these explicitly. Keys are lowercased.
+	allHeaders := make(map[string]string)
+	ctx.Request.Header.All()(func(key, value []byte) bool {
+		allHeaders[strings.ToLower(string(key))] = string(value)
+		return true
+	})
+	preReqCtx.SetValue(schemas.BifrostContextKeyRequestHeaders, allHeaders)
+	if queryArgs := ctx.Request.URI().QueryArgs(); queryArgs.Len() > 0 {
+		allQuery := make(map[string]string, queryArgs.Len())
+		queryArgs.All()(func(key, value []byte) bool {
+			allQuery[strings.ToLower(string(key))] = string(value)
+			return true
+		})
+		preReqCtx.SetValue(schemas.BifrostContextKeyRequestQuery, allQuery)
+	}
+	preReq := &schemas.BifrostRequest{
+		RequestType: schemas.RealtimeRequest,
+		ResponsesRequest: &schemas.BifrostResponsesRequest{
+			Provider: providerKey,
+			Model:    model,
+		},
+	}
+	h.client.RunPreRequestHooks(preReqCtx, preReq)
+	routedProvider, routedModel, _ := preReq.GetRequestFields()
+	if routedProvider == "" {
+		// Mirror the empty-provider check in core handleRequest. No routing layer
+		// (governance routing rules / LB / modelcatalogresolver) could pick a provider
+		// for this model — caller's input is unresolvable.
+		upgrader := h.websocketUpgrader("")
+		upgradeErr := upgrader.Upgrade(ctx, func(conn *ws.Conn) {
+			defer conn.Close()
+			clientConn := newRealtimeClientConn(conn)
+			clientConn.writeRealtimeError(newRealtimeWireBifrostError(400, "invalid_request_error", fmt.Sprintf("no provider could be resolved for model %q (set as provider/model or configure the model catalog)", model)))
+		})
+		if upgradeErr != nil {
+			logger.Warn("websocket upgrade failed for %s: %v", path, upgradeErr)
+		}
+		preReqCancel()
+		return
+	}
+	providerKey = routedProvider
+	if routedModel != "" {
+		model = routedModel
+	}
+	// Mirror ctx values back to fasthttp user values so snapshotRealtimeMiddlewareValues
+	// (called below) picks them up — same mechanism TransportInterceptorMiddleware uses.
+	for k, v := range preReqCtx.GetUserValues() {
+		ctx.SetUserValue(k, v)
+	}
+	preReqCancel()
+
 	provider := h.client.GetProviderByKey(providerKey)
 	rtProvider, ok := provider.(schemas.RealtimeProvider)
 	if provider == nil || !ok || !rtProvider.SupportsRealtimeAPI() {
@@ -517,7 +594,7 @@ func (h *WSRealtimeHandler) relayRealtimeProviderToClient(
 	}
 }
 
-func resolveRealtimeTarget(ctx *fasthttp.RequestCtx, config *lib.Config, path, modelParam, deploymentParam string) (schemas.ModelProvider, string, error) {
+func resolveRealtimeTarget(_ *fasthttp.RequestCtx, _ *lib.Config, path, modelParam, deploymentParam string) (schemas.ModelProvider, string, error) {
 	defaultProvider := realtimeDefaultProviderForPath(path)
 
 	var rawParam string
@@ -535,22 +612,9 @@ func resolveRealtimeTarget(ctx *fasthttp.RequestCtx, config *lib.Config, path, m
 		return "", "", errRealtimeModelFormat
 	}
 
-	// Model catalog auto-resolution: when no provider prefix is present and the
-	// path doesn't imply a default provider, look up the model catalog — same
-	// logic as resolveModelAndProvider in inference.go.
-	if provider == "" {
-		providers := config.GetProvidersForModel(model)
-		if len(providers) == 0 {
-			return "", "", errRealtimeModelFormat
-		}
-		ctx.SetUserValue(lib.FastHTTPUserValueModelCatalogResolution, &lib.ModelCatalogResolution{
-			Model:            model,
-			ResolvedProvider: providers[0],
-			AllProviders:     providers,
-		})
-		provider = providers[0]
-	}
-
+	// Provider may be empty here when no path-default applies and the model has
+	// no explicit prefix. The modelcatalogresolver PreRequestHook will fill it in
+	// (or surface a clear error if no provider matches) — no inline lookup needed.
 	return provider, model, nil
 }
 
@@ -766,19 +830,21 @@ var realtimeMiddlewareKeys = []any{
 	schemas.BifrostContextKeyAPIKeyName,
 	schemas.BifrostContextKeySelectedKeyID,
 	schemas.BifrostContextKeySelectedKeyName,
-	schemas.BifrostContextKeyTraceID,
+	// NOTE: BifrostContextKeyTraceID is intentionally NOT inherited here. The
+	// upgrade request's trace is already ended by the time realtime turns run, so
+	// inheriting it would route each turn's log entry into pendingLogsToInject
+	// under a dead trace ID whose Inject() never fires, dropping the row. Each
+	// realtime turn mints its own trace in RunRealtimeTurnPreHooks instead.
 	schemas.BifrostContextKeyTransportPluginLogs,
 }
 
 // snapshotRealtimeMiddlewareValues reads governance/routing values from the fasthttp
 // context's UserValue store. TransportInterceptorMiddleware copies them there as
-// individual key-value pairs (not inside a BifrostContext).
-//
-// It also processes FastHTTPUserValueModelCatalogResolution, which is set by
-// resolveRealtimeTarget when a bare model name is auto-resolved via the model
-// catalog. ConvertToBifrostContext normally handles this for regular inference,
-// but WebSocket handlers use createBifrostContextFromAuth instead, so we do the
-// same log/engine enrichment here.
+// individual key-value pairs (not inside a BifrostContext). Routing engine logs
+// emitted by PreRequestHook (governance routing rules, LB, modelcatalogresolver)
+// are surfaced through the same mechanism — the hooks write them onto preReqCtx
+// and handleUpgrade mirrors that ctx's user values onto the fasthttp ctx before
+// this function is called.
 func snapshotRealtimeMiddlewareValues(ctx *fasthttp.RequestCtx) map[any]any {
 	result := make(map[any]any)
 	for _, key := range realtimeMiddlewareKeys {
@@ -786,33 +852,6 @@ func snapshotRealtimeMiddlewareValues(ctx *fasthttp.RequestCtx) map[any]any {
 			result[key] = value
 		}
 	}
-
-	// Model catalog auto-resolution: replicate the routing engine log that
-	// ConvertToBifrostContext would normally emit (see lib/ctx.go).
-	if res, ok := ctx.UserValue(lib.FastHTTPUserValueModelCatalogResolution).(*lib.ModelCatalogResolution); ok && res != nil {
-		providerStrs := make([]string, len(res.AllProviders))
-		for i, p := range res.AllProviders {
-			providerStrs[i] = string(p)
-		}
-		logEntry := schemas.RoutingEngineLogEntry{
-			Engine:    schemas.RoutingEngineModelCatalog,
-			Level:     schemas.LogLevelInfo,
-			Message:   fmt.Sprintf("No provider specified for model %s, found %d options in model catalog: [%s], selecting first: %s", res.Model, len(res.AllProviders), strings.Join(providerStrs, ", "), res.ResolvedProvider),
-			Timestamp: time.Now().UnixMilli(),
-		}
-		// Merge with any existing routing engine logs from governance middleware.
-		if existing, ok := result[schemas.BifrostContextKeyRoutingEngineLogs].([]schemas.RoutingEngineLogEntry); ok {
-			result[schemas.BifrostContextKeyRoutingEngineLogs] = append(existing, logEntry)
-		} else {
-			result[schemas.BifrostContextKeyRoutingEngineLogs] = []schemas.RoutingEngineLogEntry{logEntry}
-		}
-		if existing, ok := result[schemas.BifrostContextKeyRoutingEnginesUsed].([]string); ok {
-			result[schemas.BifrostContextKeyRoutingEnginesUsed] = append(existing, schemas.RoutingEngineModelCatalog)
-		} else {
-			result[schemas.BifrostContextKeyRoutingEnginesUsed] = []string{schemas.RoutingEngineModelCatalog}
-		}
-	}
-
 	if len(result) == 0 {
 		return nil
 	}

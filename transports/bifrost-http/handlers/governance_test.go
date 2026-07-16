@@ -14,7 +14,10 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/plugins/governance"
+	"github.com/maximhq/bifrost/plugins/governance/complexity"
+	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/valyala/fasthttp"
 	"gorm.io/gorm"
 )
@@ -24,11 +27,12 @@ import (
 type mockGovernanceManagerForVK struct {
 	GovernanceManager
 	getGovernanceDataCalls int
+	data                   *governance.GovernanceData
 }
 
 func (m *mockGovernanceManagerForVK) GetGovernanceData(ctx context.Context) *governance.GovernanceData {
 	m.getGovernanceDataCalls++
-	return nil
+	return m.data
 }
 
 // mockConfigStoreForVK embeds the interface so unimplemented methods panic.
@@ -122,6 +126,164 @@ func (m *mockRotateGovernanceManager) ReloadVirtualKey(ctx context.Context, id s
 		return nil, m.reloadErr
 	}
 	return m.store.GetVirtualKey(ctx, id)
+}
+
+type mockComplexityGovernanceManager struct {
+	GovernanceManager
+	reloadedConfig *complexity.AnalyzerConfig
+	reloadCalls    int
+	reloadErr      error
+}
+
+func (m *mockComplexityGovernanceManager) ReloadComplexityAnalyzerConfig(_ context.Context, config *complexity.AnalyzerConfig) error {
+	m.reloadCalls++
+	m.reloadedConfig = config
+	return m.reloadErr
+}
+
+func testComplexityAnalyzerPayload(t *testing.T, cfg complexity.AnalyzerConfig) string {
+	t.Helper()
+	body, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("marshal complexity analyzer config: %v", err)
+	}
+	return string(body)
+}
+
+func TestComplexityAnalyzerConfigGetReturnsDefaultsWhenUnset(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	handler := &GovernanceHandler{
+		configStore:       store,
+		governanceManager: &mockComplexityGovernanceManager{},
+	}
+
+	ctx := newTestRequestCtx("")
+	handler.getComplexityAnalyzerConfig(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	var resp complexity.AnalyzerConfig
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if resp.TierBoundaries != complexity.DefaultTierBoundaries() {
+		t.Fatalf("expected default boundaries, got %+v", resp.TierBoundaries)
+	}
+	if len(resp.Keywords.CodeKeywords) == 0 {
+		t.Fatalf("expected default code keywords")
+	}
+}
+
+func TestComplexityAnalyzerConfigPutPersistsAndReloads(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	manager := &mockComplexityGovernanceManager{}
+	handler := &GovernanceHandler{
+		configStore:       store,
+		governanceManager: manager,
+	}
+
+	cfg := complexity.DefaultAnalyzerConfig()
+	cfg.TierBoundaries.SimpleMedium = 0.12
+	cfg.TierBoundaries.MediumComplex = 0.34
+	cfg.TierBoundaries.ComplexReasoning = 0.78
+	cfg.Keywords.CodeKeywords = []string{" Function ", "api", "API"}
+
+	ctx := newTestRequestCtx(testComplexityAnalyzerPayload(t, cfg))
+	handler.updateComplexityAnalyzerConfig(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	if manager.reloadCalls != 1 {
+		t.Fatalf("expected one reload, got %d", manager.reloadCalls)
+	}
+	if manager.reloadedConfig == nil || manager.reloadedConfig.TierBoundaries.ComplexReasoning != 0.78 {
+		t.Fatalf("expected reload with normalized config, got %+v", manager.reloadedConfig)
+	}
+
+	stored, err := store.GetComplexityAnalyzerConfig(context.Background())
+	if err != nil {
+		t.Fatalf("get stored config: %v", err)
+	}
+	if stored == nil || len(stored.Keywords.CodeKeywords) != 2 || stored.Keywords.CodeKeywords[0] != "api" {
+		t.Fatalf("expected normalized stored keywords, got %+v", stored)
+	}
+}
+
+func TestComplexityAnalyzerConfigPutRejectsInvalidPayloads(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	handler := &GovernanceHandler{
+		configStore:       store,
+		governanceManager: &mockComplexityGovernanceManager{},
+	}
+
+	valid := complexity.DefaultAnalyzerConfig()
+	validBody := testComplexityAnalyzerPayload(t, valid)
+	invalidBoundaries := valid
+	invalidBoundaries.TierBoundaries.MediumComplex = invalidBoundaries.TierBoundaries.SimpleMedium
+	emptyKeywords := valid
+	emptyKeywords.Keywords.CodeKeywords = nil
+
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{name: "unknown field", body: strings.TrimSuffix(validBody, "}") + `,"extra":true}`, want: "Invalid request payload"},
+		{name: "multiple json values", body: validBody + `{}`, want: "multiple JSON values"},
+		{name: "invalid boundaries", body: testComplexityAnalyzerPayload(t, invalidBoundaries), want: "tier boundaries"},
+		{name: "empty keywords", body: testComplexityAnalyzerPayload(t, emptyKeywords), want: "keyword lists must be non-empty"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := newTestRequestCtx(tt.body)
+			handler.updateComplexityAnalyzerConfig(ctx)
+			if ctx.Response.StatusCode() != fasthttp.StatusBadRequest {
+				t.Fatalf("expected status 400, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			}
+			if !strings.Contains(string(ctx.Response.Body()), tt.want) {
+				t.Fatalf("expected response to contain %q, got %s", tt.want, string(ctx.Response.Body()))
+			}
+		})
+	}
+}
+
+func TestComplexityAnalyzerConfigResetPersistsDefaultsAndReloads(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	manager := &mockComplexityGovernanceManager{}
+	handler := &GovernanceHandler{
+		configStore:       store,
+		governanceManager: manager,
+	}
+
+	custom := complexity.DefaultAnalyzerConfig()
+	custom.TierBoundaries.ComplexReasoning = 0.80
+	if err := store.UpdateComplexityAnalyzerConfig(context.Background(), &custom); err != nil {
+		t.Fatalf("seed custom config: %v", err)
+	}
+
+	ctx := newTestRequestCtx("")
+	handler.resetComplexityAnalyzerConfig(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	if manager.reloadCalls != 1 {
+		t.Fatalf("expected one reload, got %d", manager.reloadCalls)
+	}
+	stored, err := store.GetComplexityAnalyzerConfig(context.Background())
+	if err != nil {
+		t.Fatalf("get stored config: %v", err)
+	}
+	if stored == nil || stored.TierBoundaries != complexity.DefaultTierBoundaries() {
+		t.Fatalf("expected stored defaults, got %+v", stored)
+	}
 }
 
 func TestApplyVirtualKeyOwnershipUpdatePreservesOmittedAssociation(t *testing.T) {
@@ -879,7 +1041,7 @@ func TestRotateVirtualKey_OnlyChangesValueAndReloads(t *testing.T) {
 			"vk-1": {
 				ID:          "vk-1",
 				Name:        "Production",
-				Value:       "sk-bf-old",
+				Value:       *schemas.NewSecretVar("sk-bf-old"),
 				Description: "existing description",
 				TeamID:      &teamID,
 				RateLimitID: &rateLimitID,
@@ -915,11 +1077,11 @@ func TestRotateVirtualKey_OnlyChangesValueAndReloads(t *testing.T) {
 	}
 
 	updated := store.virtualKeys["vk-1"]
-	if updated.Value == "sk-bf-old" {
+	if updated.Value.GetValue() == "sk-bf-old" {
 		t.Fatal("expected virtual key value to rotate")
 	}
-	if !strings.HasPrefix(updated.Value, governance.VirtualKeyPrefix) {
-		t.Fatalf("expected rotated value to use %q prefix, got %q", governance.VirtualKeyPrefix, updated.Value)
+	if !strings.HasPrefix(updated.Value.GetValue(), governance.VirtualKeyPrefix) {
+		t.Fatalf("expected rotated value to use %q prefix, got %q", governance.VirtualKeyPrefix, updated.Value.GetValue())
 	}
 	if updated.ID != "vk-1" || updated.Name != "Production" || updated.Description != "existing description" {
 		t.Fatalf("rotation changed non-value fields: %#v", updated)
@@ -944,8 +1106,8 @@ func TestRotateVirtualKey_OnlyChangesValueAndReloads(t *testing.T) {
 	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
 		t.Fatalf("failed to parse response: %v", err)
 	}
-	if resp.VirtualKey.Value != updated.Value {
-		t.Fatalf("response value = %q, want %q", resp.VirtualKey.Value, updated.Value)
+	if resp.VirtualKey.Value.GetValue() != updated.Value.GetValue() {
+		t.Fatalf("response value = %q, want %q", resp.VirtualKey.Value.GetValue(), updated.Value.GetValue())
 	}
 }
 
@@ -977,7 +1139,7 @@ func TestRotateVirtualKey_UpdateFailureDoesNotReload(t *testing.T) {
 
 	store := &mockRotateConfigStore{
 		virtualKeys: map[string]*configstoreTables.TableVirtualKey{
-			"vk-1": {ID: "vk-1", Name: "One", Value: "sk-bf-old"},
+			"vk-1": {ID: "vk-1", Name: "One", Value: *schemas.NewSecretVar("sk-bf-old")},
 		},
 		updateErr: errors.New("database unavailable"),
 	}
@@ -992,8 +1154,8 @@ func TestRotateVirtualKey_UpdateFailureDoesNotReload(t *testing.T) {
 	if ctx.Response.StatusCode() != 500 {
 		t.Fatalf("expected status 500, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
 	}
-	if store.virtualKeys["vk-1"].Value != "sk-bf-old" {
-		t.Fatalf("expected value to remain unchanged, got %q", store.virtualKeys["vk-1"].Value)
+	if store.virtualKeys["vk-1"].Value.GetValue() != "sk-bf-old" {
+		t.Fatalf("expected value to remain unchanged, got %q", store.virtualKeys["vk-1"].Value.GetValue())
 	}
 	if len(manager.reloadIDs) != 0 {
 		t.Fatalf("expected no reloads, got %#v", manager.reloadIDs)
@@ -1005,7 +1167,7 @@ func TestRotateVirtualKey_ReloadFailureReturnsErrorAfterUpdate(t *testing.T) {
 
 	store := &mockRotateConfigStore{
 		virtualKeys: map[string]*configstoreTables.TableVirtualKey{
-			"vk-1": {ID: "vk-1", Name: "One", Value: "sk-bf-old"},
+			"vk-1": {ID: "vk-1", Name: "One", Value: *schemas.NewSecretVar("sk-bf-old")},
 		},
 	}
 	manager := &mockRotateGovernanceManager{store: store, reloadErr: errors.New("reload failed")}
@@ -1022,7 +1184,7 @@ func TestRotateVirtualKey_ReloadFailureReturnsErrorAfterUpdate(t *testing.T) {
 	if store.updates != 1 {
 		t.Fatalf("expected one update, got %d", store.updates)
 	}
-	if store.virtualKeys["vk-1"].Value == "sk-bf-old" {
+	if store.virtualKeys["vk-1"].Value.GetValue() == "sk-bf-old" {
 		t.Fatal("expected value to rotate before reload failure")
 	}
 	if len(manager.reloadIDs) != 1 || manager.reloadIDs[0] != "vk-1" {
@@ -1038,8 +1200,8 @@ func TestRotateVirtualKeys_PartialSuccess(t *testing.T) {
 
 	store := &mockRotateConfigStore{
 		virtualKeys: map[string]*configstoreTables.TableVirtualKey{
-			"vk-1": {ID: "vk-1", Name: "One", Value: "sk-bf-old-1"},
-			"vk-2": {ID: "vk-2", Name: "Two", Value: "sk-bf-old-2"},
+			"vk-1": {ID: "vk-1", Name: "One", Value: *schemas.NewSecretVar("sk-bf-old-1")},
+			"vk-2": {ID: "vk-2", Name: "Two", Value: *schemas.NewSecretVar("sk-bf-old-2")},
 		},
 	}
 	manager := &mockRotateGovernanceManager{store: store}
@@ -1059,7 +1221,7 @@ func TestRotateVirtualKeys_PartialSuccess(t *testing.T) {
 	if len(manager.reloadIDs) != 2 || manager.reloadIDs[0] != "vk-1" || manager.reloadIDs[1] != "vk-2" {
 		t.Fatalf("expected reloads for vk-1 and vk-2, got %#v", manager.reloadIDs)
 	}
-	if store.virtualKeys["vk-1"].Value == "sk-bf-old-1" || store.virtualKeys["vk-2"].Value == "sk-bf-old-2" {
+	if store.virtualKeys["vk-1"].Value.GetValue() == "sk-bf-old-1" || store.virtualKeys["vk-2"].Value.GetValue() == "sk-bf-old-2" {
 		t.Fatalf("expected successful IDs to rotate: %#v", store.virtualKeys)
 	}
 
@@ -1095,7 +1257,7 @@ func TestRotateVirtualKeys_RejectsInvalidRequests(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			store := &mockRotateConfigStore{
 				virtualKeys: map[string]*configstoreTables.TableVirtualKey{
-					"vk-1": {ID: "vk-1", Name: "One", Value: "sk-bf-old-1"},
+					"vk-1": {ID: "vk-1", Name: "One", Value: *schemas.NewSecretVar("sk-bf-old-1")},
 				},
 			}
 			manager := &mockRotateGovernanceManager{store: store}
@@ -1127,8 +1289,8 @@ func TestRotateVirtualKeys_TrimsAndDeduplicatesIDs(t *testing.T) {
 
 	store := &mockRotateConfigStore{
 		virtualKeys: map[string]*configstoreTables.TableVirtualKey{
-			"vk-1": {ID: "vk-1", Name: "One", Value: "sk-bf-old-1"},
-			"vk-2": {ID: "vk-2", Name: "Two", Value: "sk-bf-old-2"},
+			"vk-1": {ID: "vk-1", Name: "One", Value: *schemas.NewSecretVar("sk-bf-old-1")},
+			"vk-2": {ID: "vk-2", Name: "Two", Value: *schemas.NewSecretVar("sk-bf-old-2")},
 		},
 	}
 	manager := &mockRotateGovernanceManager{store: store}
@@ -1190,14 +1352,16 @@ func TestRotateVirtualKeys_AllFailuresReturnsServerError(t *testing.T) {
 
 // mockQuotaConfigStore backs the self-service quota endpoint. It returns a VK from
 // GetVirtualKeyQuotaByValue (whose direct Budgets/RateLimit are empty post-PR-#3939)
-// and serves the VK-scoped wildcard model configs that own the governance, so
-// hydrateVKGovernance can reverse-map them onto the response.
+// and serves the VK-scoped model configs that own the governance via the bulk query the
+// quota path uses — wildcard ("*") configs are reverse-mapped onto the VK/provider
+// configs, and specific-model configs surface as the per-model usage breakdown.
 type mockQuotaConfigStore struct {
 	configstore.ConfigStore
-	vk           *configstoreTables.TableVirtualKey
-	vkErr        error
-	modelConfigs map[string]*configstoreTables.TableModelConfig
-	quotaCalls   int
+	vk              *configstoreTables.TableVirtualKey
+	vkErr           error
+	modelConfigs    []configstoreTables.TableModelConfig
+	modelConfigsErr error
+	quotaCalls      int
 }
 
 func (m *mockQuotaConfigStore) GetVirtualKeyQuotaByValue(_ context.Context, _ string) (*configstoreTables.TableVirtualKey, error) {
@@ -1208,16 +1372,51 @@ func (m *mockQuotaConfigStore) GetVirtualKeyQuotaByValue(_ context.Context, _ st
 	return cloneTestVirtualKey(m.vk), nil
 }
 
-func (m *mockQuotaConfigStore) GetModelConfig(_ context.Context, scope string, scopeID *string, modelName string, provider *string) (*configstoreTables.TableModelConfig, error) {
-	return lookupVKModelConfig(m.modelConfigs, scope, scopeID, modelName, provider)
+func (m *mockQuotaConfigStore) GetModelConfigsByScopeAndScopeIDs(_ context.Context, scope string, scopeIDs []string) ([]configstoreTables.TableModelConfig, error) {
+	if m.modelConfigsErr != nil {
+		return nil, m.modelConfigsErr
+	}
+	want := make(map[string]bool, len(scopeIDs))
+	for _, id := range scopeIDs {
+		want[id] = true
+	}
+	var out []configstoreTables.TableModelConfig
+	for _, mc := range m.modelConfigs {
+		if mc.Scope == scope && mc.ScopeID != nil && want[*mc.ScopeID] {
+			out = append(out, mc)
+		}
+	}
+	return out, nil
+}
+
+// mockQuotaLogManager backs the quota endpoint's actual per-model usage breakdown. It
+// embeds the LogManager interface (so the dozens of unused methods are satisfied) and
+// overrides only GetModelRankings, recording the filters it was called with so tests can
+// assert the per-budget cycle window.
+type mockQuotaLogManager struct {
+	logging.LogManager
+	rankings *logstore.ModelRankingResult
+	rankErr  error
+	calls    []logstore.SearchFilters
+}
+
+func (m *mockQuotaLogManager) GetModelRankings(_ context.Context, filters *logstore.SearchFilters) (*logstore.ModelRankingResult, error) {
+	if filters != nil {
+		m.calls = append(m.calls, *filters)
+	}
+	if m.rankErr != nil {
+		return nil, m.rankErr
+	}
+	return m.rankings, nil
 }
 
 type quotaResponse struct {
 	VirtualKeyName  string                                            `json:"virtual_key_name"`
 	IsActive        bool                                              `json:"is_active"`
-	Budgets         []configstoreTables.TableBudget                   `json:"budgets"`
+	Budgets         []quotaBudget                                     `json:"budgets"`
 	RateLimit       *configstoreTables.TableRateLimit                 `json:"rate_limit"`
 	ProviderConfigs []configstoreTables.TableVirtualKeyProviderConfig `json:"provider_configs"`
+	Models          []quotaModelUsage                                 `json:"model_configs"`
 }
 
 // TestGetVirtualKeyQuota_HydratesBudgetsFromModelConfigs is the regression test for
@@ -1230,6 +1429,10 @@ func TestGetVirtualKeyQuota_HydratesBudgetsFromModelConfigs(t *testing.T) {
 	active := true
 	tokenMax := int64(1000)
 	rlID := "rl-vk"
+	modelTokenMax := int64(500)
+	modelRLID := "rl-gpt4o"
+	// Deterministic cycle start so the per-model usage query window is asserted exactly.
+	cycleStart := time.Date(2026, time.January, 2, 15, 4, 5, 0, time.UTC)
 	store := &mockQuotaConfigStore{
 		vk: &configstoreTables.TableVirtualKey{
 			ID:       "vk-1",
@@ -1240,28 +1443,53 @@ func TestGetVirtualKeyQuota_HydratesBudgetsFromModelConfigs(t *testing.T) {
 				{ID: 7, VirtualKeyID: "vk-1", Provider: "openai"},
 			},
 		},
-		modelConfigs: map[string]*configstoreTables.TableModelConfig{
-			// VK top-level governance (provider == nil).
-			vkModelConfigIndexKey("vk-1", nil): {
-				ID:    "mc-vk",
-				Scope: configstoreTables.ModelConfigScopeVirtualKey,
+		modelConfigs: []configstoreTables.TableModelConfig{
+			// VK top-level governance (wildcard, provider == nil).
+			{
+				ID:        "mc-vk",
+				Scope:     configstoreTables.ModelConfigScopeVirtualKey,
+				ScopeID:   schemas.Ptr("vk-1"),
+				ModelName: configstoreTables.ModelConfigAllModels,
 				Budgets: []configstoreTables.TableBudget{
-					{ID: "b-vk", MaxLimit: 100, CurrentUsage: 30, ResetDuration: "1d"},
+					{ID: "b-vk", MaxLimit: 100, CurrentUsage: 30, ResetDuration: "1d", LastReset: cycleStart},
 				},
 				RateLimitID: &rlID,
 				RateLimit:   &configstoreTables.TableRateLimit{ID: rlID, TokenMaxLimit: &tokenMax, TokenCurrentUsage: 250},
 			},
-			// Per-provider governance (provider == "openai").
-			vkModelConfigIndexKey("vk-1", schemas.Ptr("openai")): {
-				ID:    "mc-openai",
-				Scope: configstoreTables.ModelConfigScopeVirtualKey,
+			// Per-provider governance (wildcard, provider == "openai").
+			{
+				ID:        "mc-openai",
+				Scope:     configstoreTables.ModelConfigScopeVirtualKey,
+				ScopeID:   schemas.Ptr("vk-1"),
+				ModelName: configstoreTables.ModelConfigAllModels,
+				Provider:  schemas.Ptr("openai"),
 				Budgets: []configstoreTables.TableBudget{
 					{ID: "b-openai", MaxLimit: 50, CurrentUsage: 10, ResetDuration: "1d"},
 				},
 			},
+			// Per-model governance (specific model) — surfaces as the per-model usage breakdown.
+			{
+				ID:        "mc-gpt4o",
+				Scope:     configstoreTables.ModelConfigScopeVirtualKey,
+				ScopeID:   schemas.Ptr("vk-1"),
+				ModelName: "gpt-4o",
+				Provider:  schemas.Ptr("openai"),
+				Budgets: []configstoreTables.TableBudget{
+					{ID: "b-gpt4o", MaxLimit: 25, CurrentUsage: 7, ResetDuration: "1d"},
+				},
+				RateLimitID: &modelRLID,
+				RateLimit:   &configstoreTables.TableRateLimit{ID: modelRLID, TokenMaxLimit: &modelTokenMax, TokenCurrentUsage: 120},
+			},
 		},
 	}
-	h := &GovernanceHandler{configStore: store}
+	logMgr := &mockQuotaLogManager{
+		rankings: &logstore.ModelRankingResult{
+			Rankings: []logstore.ModelRankingWithTrend{
+				{ModelRankingEntry: logstore.ModelRankingEntry{Model: "gpt-4o", Provider: "openai", TotalRequests: 12, TotalTokens: 3400, TotalCost: 1.25}},
+			},
+		},
+	}
+	h := &GovernanceHandler{configStore: store, logManager: logMgr}
 
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.Header.Set("x-bf-vk", "sk-bf-secret")
@@ -1294,6 +1522,169 @@ func TestGetVirtualKeyQuota_HydratesBudgetsFromModelConfigs(t *testing.T) {
 	pcBudgets := resp.ProviderConfigs[0].Budgets
 	if len(pcBudgets) != 1 || pcBudgets[0].ID != "b-openai" || pcBudgets[0].CurrentUsage != 10 {
 		t.Fatalf("expected hydrated provider budget b-openai (usage 10), got %#v", pcBudgets)
+	}
+	// Per-model usage: only the specific-model config (gpt-4o) — wildcard configs feed the
+	// VK/provider governance above and must not leak into the per-model list.
+	if len(resp.Models) != 1 {
+		t.Fatalf("expected one per-model usage entry, got %#v", resp.Models)
+	}
+	m := resp.Models[0]
+	if m.ModelName != "gpt-4o" || m.Provider == nil || *m.Provider != "openai" {
+		t.Fatalf("unexpected per-model identity: name=%q provider=%v", m.ModelName, m.Provider)
+	}
+	if len(m.Budgets) != 1 || m.Budgets[0].ID != "b-gpt4o" || m.Budgets[0].CurrentUsage != 7 {
+		t.Fatalf("expected per-model budget b-gpt4o (usage 7), got %#v", m.Budgets)
+	}
+	if m.RateLimit == nil || m.RateLimit.ID != "rl-gpt4o" || m.RateLimit.TokenCurrentUsage != 120 {
+		t.Fatalf("expected per-model rate limit rl-gpt4o (usage 120), got %#v", m.RateLimit)
+	}
+
+	// Actual per-model spend from logs is now embedded in each budget. The VK has a single
+	// budget (b-vk), whose models list breaks down spend over its current cycle.
+	bu := resp.Budgets[0]
+	if bu.ID != "b-vk" || bu.ResetDuration != "1d" || bu.CurrentUsage != 30 {
+		t.Fatalf("unexpected budget envelope: %#v", bu)
+	}
+	if len(bu.Models) != 1 {
+		t.Fatalf("expected one model spend entry, got %#v", bu.Models)
+	}
+	spend := bu.Models[0]
+	if spend.Model != "gpt-4o" || spend.Provider != "openai" || spend.TotalRequests != 12 || spend.TotalTokens != 3400 || spend.TotalCost != 1.25 {
+		t.Fatalf("unexpected model spend: %#v", spend)
+	}
+	// The usage query must be scoped to this VK and windowed to the budget's current cycle.
+	if len(logMgr.calls) != 1 {
+		t.Fatalf("expected GetModelRankings called once, got %d", len(logMgr.calls))
+	}
+	call := logMgr.calls[0]
+	if len(call.VirtualKeyIDs) != 1 || call.VirtualKeyIDs[0] != "vk-1" {
+		t.Fatalf("expected usage query scoped to vk-1, got %#v", call.VirtualKeyIDs)
+	}
+	if call.StartTime == nil || call.EndTime == nil {
+		t.Fatalf("expected usage query to carry a cycle window, got start=%v end=%v", call.StartTime, call.EndTime)
+	}
+	// The window must start exactly at the budget's last reset and end at/after it.
+	if !call.StartTime.Equal(cycleStart) {
+		t.Fatalf("expected StartTime=%v (budget last reset), got %v", cycleStart, *call.StartTime)
+	}
+	if call.EndTime.Before(cycleStart) {
+		t.Fatalf("expected EndTime >= StartTime, got start=%v end=%v", *call.StartTime, *call.EndTime)
+	}
+}
+
+// TestGetVirtualKeyQuota_ExternalResolverReplacesWithAccessProfileBudgets verifies the
+// AP-managed-VK path: when a registered ExternalQuotaBudgetResolver returns budgets
+// (enterprise access-profile budgets, which carry the real usage), they REPLACE the VK's
+// own budget rows in the quota response. Those rows are reset to current_usage=0 at
+// adoption and never charged again, so reporting them would be a misleading $0 row.
+func TestGetVirtualKeyQuota_ExternalResolverReplacesWithAccessProfileBudgets(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	active := true
+	cycleStart := time.Date(2026, time.January, 2, 15, 4, 5, 0, time.UTC)
+	store := &mockQuotaConfigStore{
+		vk: &configstoreTables.TableVirtualKey{
+			ID:       "vk-1",
+			Name:     "AP Key",
+			IsActive: &active,
+		},
+		modelConfigs: []configstoreTables.TableModelConfig{
+			{
+				ID:        "mc-vk",
+				Scope:     configstoreTables.ModelConfigScopeVirtualKey,
+				ScopeID:   schemas.Ptr("vk-1"),
+				ModelName: configstoreTables.ModelConfigAllModels,
+				// VK mirror row: zero usage, reset at adoption — must NOT appear in the response.
+				Budgets: []configstoreTables.TableBudget{
+					{ID: "b-vk", MaxLimit: 100, CurrentUsage: 0, ResetDuration: "1d", LastReset: cycleStart},
+				},
+			},
+		},
+	}
+	// The AP user's inference is logged under user-1 (virtual_key_id is empty on SSO/AP
+	// log rows), so the per-model usage query must be scoped to the user, not the VK.
+	logMgr := &mockQuotaLogManager{
+		rankings: &logstore.ModelRankingResult{
+			Rankings: []logstore.ModelRankingWithTrend{
+				{ModelRankingEntry: logstore.ModelRankingEntry{Model: "claude-opus-4-7", Provider: "anthropic", TotalRequests: 2, TotalTokens: 900, TotalCost: 42}},
+			},
+		},
+	}
+	h := &GovernanceHandler{
+		configStore: store,
+		logManager:  logMgr,
+		externalQuotaBudgetResolver: func(_ context.Context, vk *configstoreTables.TableVirtualKey) (*ExternalQuotaBudgetResult, error) {
+			if vk.ID != "vk-1" {
+				return nil, nil
+			}
+			return &ExternalQuotaBudgetResult{
+				// The access-profile budget that holds the real ongoing usage.
+				Budgets: []configstoreTables.TableBudget{
+					{ID: "b-ap", MaxLimit: 500, CurrentUsage: 42, ResetDuration: "1d", LastReset: cycleStart},
+				},
+				UsageUserID: "user-1",
+			}, nil
+		},
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("x-bf-vk", "sk-bf-secret")
+
+	h.getVirtualKeyQuota(ctx)
+
+	if ctx.Response.StatusCode() != 200 {
+		t.Fatalf("expected status 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	var resp quotaResponse
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+	// Only the access-profile budget — the VK's own b-vk row is replaced, not appended.
+	if len(resp.Budgets) != 1 || resp.Budgets[0].ID != "b-ap" || resp.Budgets[0].CurrentUsage != 42 {
+		t.Fatalf("expected only the access-profile budget b-ap (usage 42), got %#v", resp.Budgets)
+	}
+	// Per-model spend on that budget comes from the user-scoped log query and reconciles
+	// with current_usage (both 42).
+	if len(resp.Budgets[0].Models) != 1 || resp.Budgets[0].Models[0].Model != "claude-opus-4-7" || resp.Budgets[0].Models[0].TotalCost != 42 {
+		t.Fatalf("expected per-model spend from user-scoped logs, got %#v", resp.Budgets[0].Models)
+	}
+	// The usage query must be scoped to the AP user, NOT the VK (whose logs are empty).
+	if len(logMgr.calls) != 1 {
+		t.Fatalf("expected GetModelRankings called once, got %d", len(logMgr.calls))
+	}
+	call := logMgr.calls[0]
+	if len(call.UserIDs) != 1 || call.UserIDs[0] != "user-1" {
+		t.Fatalf("expected usage query scoped to user-1, got UserIDs=%#v", call.UserIDs)
+	}
+	if len(call.VirtualKeyIDs) != 0 {
+		t.Fatalf("expected no VK scoping on the AP usage query, got %#v", call.VirtualKeyIDs)
+	}
+}
+
+// TestGetVirtualKeyQuota_ExternalResolverErrorFailsClosed verifies the endpoint returns
+// 500 (not a partial response) when the registered resolver errors — usage must not be
+// silently under-reported.
+func TestGetVirtualKeyQuota_ExternalResolverErrorFailsClosed(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	active := true
+	store := &mockQuotaConfigStore{
+		vk: &configstoreTables.TableVirtualKey{ID: "vk-1", Name: "AP Key", IsActive: &active},
+	}
+	h := &GovernanceHandler{
+		configStore: store,
+		externalQuotaBudgetResolver: func(_ context.Context, _ *configstoreTables.TableVirtualKey) (*ExternalQuotaBudgetResult, error) {
+			return nil, errors.New("boom")
+		},
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("x-bf-vk", "sk-bf-secret")
+
+	h.getVirtualKeyQuota(ctx)
+
+	if ctx.Response.StatusCode() != 500 {
+		t.Fatalf("expected status 500 on resolver error, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
 	}
 }
 
@@ -1355,6 +1746,9 @@ func TestGetVirtualKeyQuota_MissingHeaderReturns401(t *testing.T) {
 	if ctx.Response.StatusCode() != 401 {
 		t.Fatalf("expected status 401, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
 	}
+	if !strings.Contains(string(ctx.Response.Body()), "api-key header") {
+		t.Fatalf("expected missing VK message to include api-key header, got %s", string(ctx.Response.Body()))
+	}
 	if store.quotaCalls != 0 {
 		t.Fatalf("expected store not queried without a VK, got %d calls", store.quotaCalls)
 	}
@@ -1379,6 +1773,68 @@ func TestGetVirtualKeyQuota_NotFoundReturns401(t *testing.T) {
 	}
 }
 
+// TestGetVirtualKeyQuota_ModelConfigLoadErrorFailsClosed verifies the endpoint returns 500
+// (not a 200 with silently-empty governance) when the model-config lookup fails. Failing
+// open here would leave vk.Budgets un-hydrated and report "budgets": [], hiding configured
+// limits from a client that reads len(budgets)==0 as "no limits".
+func TestGetVirtualKeyQuota_ModelConfigLoadErrorFailsClosed(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	active := true
+	store := &mockQuotaConfigStore{
+		vk:              &configstoreTables.TableVirtualKey{ID: "vk-1", Name: "Prod", IsActive: &active},
+		modelConfigsErr: errors.New("db down"),
+	}
+	h := &GovernanceHandler{configStore: store}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("x-bf-vk", "sk-bf-secret")
+
+	h.getVirtualKeyQuota(ctx)
+
+	if ctx.Response.StatusCode() != 500 {
+		t.Fatalf("expected status 500 on model-config load error, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+}
+
+// TestGetVirtualKeyQuota_RankingsErrorFailsClosed verifies that a log-store failure fails
+// closed (500) rather than returning per_model_usage: [], which is indistinguishable from a
+// legitimately empty breakdown (logging disabled).
+func TestGetVirtualKeyQuota_RankingsErrorFailsClosed(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	active := true
+	store := &mockQuotaConfigStore{
+		vk: &configstoreTables.TableVirtualKey{
+			ID:       "vk-1",
+			Name:     "Prod",
+			IsActive: &active,
+		},
+		modelConfigs: []configstoreTables.TableModelConfig{
+			{
+				ID:        "mc-vk",
+				Scope:     configstoreTables.ModelConfigScopeVirtualKey,
+				ScopeID:   schemas.Ptr("vk-1"),
+				ModelName: configstoreTables.ModelConfigAllModels,
+				Budgets: []configstoreTables.TableBudget{
+					{ID: "b-vk", MaxLimit: 100, CurrentUsage: 30, ResetDuration: "1d"},
+				},
+			},
+		},
+	}
+	logMgr := &mockQuotaLogManager{rankErr: errors.New("log store down")}
+	h := &GovernanceHandler{configStore: store, logManager: logMgr}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("x-bf-vk", "sk-bf-secret")
+
+	h.getVirtualKeyQuota(ctx)
+
+	if ctx.Response.StatusCode() != 500 {
+		t.Fatalf("expected status 500 on rankings load error, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+}
+
 // TestGetVirtualKeyQuota_EndToEndWithRealStore exercises the full round-trip against
 // a real (SQLite) config store: create a VK, write its top-level and per-provider
 // governance as VK-scoped wildcard model configs (the same shape the create path
@@ -1389,6 +1845,8 @@ func TestGetVirtualKeyQuota_NotFoundReturns401(t *testing.T) {
 func TestGetVirtualKeyQuota_EndToEndWithRealStore(t *testing.T) {
 	SetLogger(&mockLogger{})
 	ctx := context.Background()
+	// Deterministic cycle start so the per-model usage query window can be asserted exactly.
+	cycleStart := time.Date(2026, time.January, 2, 15, 4, 5, 0, time.UTC)
 
 	store, err := configstore.NewConfigStore(ctx, &configstore.Config{
 		Enabled: true,
@@ -1404,7 +1862,7 @@ func TestGetVirtualKeyQuota_EndToEndWithRealStore(t *testing.T) {
 	vk := &configstoreTables.TableVirtualKey{
 		ID:       vkID,
 		Name:     "Prod",
-		Value:    "sk-bf-e2e-secret",
+		Value:    *schemas.NewSecretVar("sk-bf-e2e-secret"),
 		IsActive: &active,
 		ProviderConfigs: []configstoreTables.TableVirtualKeyProviderConfig{
 			{VirtualKeyID: vkID, Provider: "openai", AllowAllKeys: true, AllowedModels: schemas.WhiteList{"*"}},
@@ -1422,7 +1880,9 @@ func TestGetVirtualKeyQuota_EndToEndWithRealStore(t *testing.T) {
 		Scope:     configstoreTables.ModelConfigScopeVirtualKey,
 		ScopeID:   &scopeID,
 		Budgets: []configstoreTables.TableBudget{
-			{ID: "b-vk-e2e", MaxLimit: 100, CurrentUsage: 30, ResetDuration: "1d"},
+			// CreatedAt precedes LastReset (the steady-state: budget has existed for
+			// several cycles), so the window clamp keeps LastReset as the query start.
+			{ID: "b-vk-e2e", MaxLimit: 100, CurrentUsage: 30, ResetDuration: "1d", LastReset: cycleStart, CreatedAt: cycleStart.Add(-24 * time.Hour)},
 		},
 	}
 	if err := store.CreateModelConfig(ctx, vkMC); err != nil {
@@ -1443,8 +1903,31 @@ func TestGetVirtualKeyQuota_EndToEndWithRealStore(t *testing.T) {
 	if err := store.CreateModelConfig(ctx, provMC); err != nil {
 		t.Fatalf("failed to create provider-scoped model config: %v", err)
 	}
+	// Per-model governance: (scope=virtual_key, model_name='gpt-4o', provider='openai').
+	modelMC := &configstoreTables.TableModelConfig{
+		ID:        "mc-gpt4o-e2e",
+		ModelName: "gpt-4o",
+		Scope:     configstoreTables.ModelConfigScopeVirtualKey,
+		ScopeID:   &scopeID,
+		Provider:  &openai,
+		Budgets: []configstoreTables.TableBudget{
+			{ID: "b-gpt4o-e2e", MaxLimit: 25, CurrentUsage: 7, ResetDuration: "1d"},
+		},
+	}
+	if err := store.CreateModelConfig(ctx, modelMC); err != nil {
+		t.Fatalf("failed to create model-scoped model config: %v", err)
+	}
 
-	h := &GovernanceHandler{configStore: store}
+	// Exercise the log-manager path so per_model_usage and the cycle window are covered
+	// against the real store (mirrors the mocked unit test).
+	logMgr := &mockQuotaLogManager{
+		rankings: &logstore.ModelRankingResult{
+			Rankings: []logstore.ModelRankingWithTrend{
+				{ModelRankingEntry: logstore.ModelRankingEntry{Model: "gpt-4o", Provider: "openai", TotalRequests: 3, TotalTokens: 900, TotalCost: 0.42}},
+			},
+		},
+	}
+	h := &GovernanceHandler{configStore: store, logManager: logMgr}
 
 	// The real store query uses the RequestCtx as a context.Context (Done/Err), which
 	// nil-derefs on a non-Init'd RequestCtx — so initialize it like a live request.
@@ -1480,6 +1963,110 @@ func TestGetVirtualKeyQuota_EndToEndWithRealStore(t *testing.T) {
 	}
 	if b := pcBudgets[0]; b.ID != "b-openai-e2e" || b.MaxLimit != 50 || b.CurrentUsage != 10 {
 		t.Fatalf("unexpected provider budget values: %#v", b)
+	}
+	// Per-model usage: only the specific-model config (gpt-4o), not the wildcard configs.
+	if len(resp.Models) != 1 {
+		t.Fatalf("expected one per-model usage entry, got %#v", resp.Models)
+	}
+	m := resp.Models[0]
+	if m.ModelName != "gpt-4o" || m.Provider == nil || *m.Provider != "openai" {
+		t.Fatalf("unexpected per-model identity: name=%q provider=%v", m.ModelName, m.Provider)
+	}
+	if len(m.Budgets) != 1 {
+		t.Fatalf("expected one per-model budget, got %#v", m.Budgets)
+	}
+	if b := m.Budgets[0]; b.ID != "b-gpt4o-e2e" || b.MaxLimit != 25 || b.CurrentUsage != 7 {
+		t.Fatalf("unexpected per-model budget values: %#v", b)
+	}
+	// per_model_usage: the VK budget carries the actual per-model spend from the log manager.
+	if len(resp.Budgets[0].Models) != 1 {
+		t.Fatalf("expected one per_model_usage entry on the VK budget, got %#v", resp.Budgets[0].Models)
+	}
+	if s := resp.Budgets[0].Models[0]; s.Model != "gpt-4o" || s.Provider != "openai" || s.TotalRequests != 3 || s.TotalTokens != 900 || s.TotalCost != 0.42 {
+		t.Fatalf("unexpected per_model_usage spend: %#v", s)
+	}
+	// The usage query must be scoped to this VK and windowed at the budget's last
+	// reset (the budget predates LastReset, so the creation-time clamp is a no-op here).
+	if len(logMgr.calls) != 1 {
+		t.Fatalf("expected GetModelRankings called once, got %d", len(logMgr.calls))
+	}
+	call := logMgr.calls[0]
+	if len(call.VirtualKeyIDs) != 1 || call.VirtualKeyIDs[0] != vkID {
+		t.Fatalf("expected usage query scoped to %q, got %#v", vkID, call.VirtualKeyIDs)
+	}
+	if call.StartTime == nil || !call.StartTime.Equal(cycleStart) {
+		t.Fatalf("expected StartTime=%v (budget last reset), got %v", cycleStart, call.StartTime)
+	}
+	if call.EndTime == nil || call.EndTime.Before(cycleStart) {
+		t.Fatalf("expected EndTime >= StartTime, got %v", call.EndTime)
+	}
+}
+
+// TestGetVirtualKeyQuota_WindowClampedToBudgetCreation verifies that when a budget's
+// LastReset is backdated to a calendar period start that predates the budget's
+// creation (e.g. a "1d" budget created mid-day with LastReset at midnight), the
+// per_model_usage query window starts at CreatedAt rather than LastReset — so the
+// breakdown does not report spend that occurred before the budget existed and stays
+// consistent with current_usage (which only accrues from creation).
+func TestGetVirtualKeyQuota_WindowClampedToBudgetCreation(t *testing.T) {
+	SetLogger(&mockLogger{})
+	ctx := context.Background()
+	periodStart := time.Date(2026, time.June, 24, 0, 0, 0, 0, time.UTC)  // backdated "1d" boundary (midnight)
+	createdAt := time.Date(2026, time.June, 24, 11, 56, 42, 0, time.UTC) // budget created mid-day
+
+	store, err := configstore.NewConfigStore(ctx, &configstore.Config{
+		Enabled: true,
+		Type:    configstore.ConfigStoreTypeSQLite,
+		Config:  &configstore.SQLiteConfig{Path: filepath.Join(t.TempDir(), "quota_clamp.db")},
+	}, &mockLogger{})
+	if err != nil {
+		t.Fatalf("failed to create config store: %v", err)
+	}
+
+	const vkID = "vk-clamp"
+	active := true
+	vk := &configstoreTables.TableVirtualKey{
+		ID:       vkID,
+		Name:     "Clamp",
+		Value:    *schemas.NewSecretVar("sk-bf-clamp-secret"),
+		IsActive: &active,
+	}
+	if err := store.CreateVirtualKey(ctx, vk); err != nil {
+		t.Fatalf("failed to create VK: %v", err)
+	}
+
+	scopeID := vkID
+	vkMC := &configstoreTables.TableModelConfig{
+		ID:        "mc-clamp",
+		ModelName: configstoreTables.ModelConfigAllModels,
+		Scope:     configstoreTables.ModelConfigScopeVirtualKey,
+		ScopeID:   &scopeID,
+		Budgets: []configstoreTables.TableBudget{
+			{ID: "b-clamp", MaxLimit: 6, CurrentUsage: 0, ResetDuration: "1d", LastReset: periodStart, CreatedAt: createdAt},
+		},
+	}
+	if err := store.CreateModelConfig(ctx, vkMC); err != nil {
+		t.Fatalf("failed to create model config: %v", err)
+	}
+
+	logMgr := &mockQuotaLogManager{rankings: &logstore.ModelRankingResult{}}
+	h := &GovernanceHandler{configStore: store, logManager: logMgr}
+
+	var req fasthttp.Request
+	req.Header.Set("x-bf-vk", "sk-bf-clamp-secret")
+	reqCtx := &fasthttp.RequestCtx{}
+	reqCtx.Init(&req, &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 12345}, nil)
+	h.getVirtualKeyQuota(reqCtx)
+
+	if reqCtx.Response.StatusCode() != 200 {
+		t.Fatalf("expected status 200, got %d: %s", reqCtx.Response.StatusCode(), string(reqCtx.Response.Body()))
+	}
+	if len(logMgr.calls) != 1 {
+		t.Fatalf("expected GetModelRankings called once, got %d", len(logMgr.calls))
+	}
+	call := logMgr.calls[0]
+	if call.StartTime == nil || !call.StartTime.Equal(createdAt) {
+		t.Fatalf("expected StartTime=%v (budget creation, clamped above backdated last reset), got %v", createdAt, call.StartTime)
 	}
 }
 
@@ -1613,13 +2200,18 @@ func TestGetVirtualKeys_PaginatedEndpoint_QueryParams(t *testing.T) {
 	}
 }
 
-// TestGetVirtualKeys_FromMemoryUsesConfigStore verifies the legacy
-// from_memory flag no longer bypasses the DB-backed ConfigStore path.
-func TestGetVirtualKeys_FromMemoryUsesConfigStore(t *testing.T) {
+// TestGetVirtualKeys_FromMemoryUsesGovernanceData verifies the from_memory
+// flag serves virtual keys from the in-memory GovernanceData and bypasses the
+// DB-backed ConfigStore entirely.
+func TestGetVirtualKeys_FromMemoryUsesGovernanceData(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	store := &mockConfigStoreForVK{}
-	manager := &mockGovernanceManagerForVK{}
+	manager := &mockGovernanceManagerForVK{
+		data: &governance.GovernanceData{
+			VirtualKeys: map[string]*configstoreTables.TableVirtualKey{},
+		},
+	}
 	h := &GovernanceHandler{
 		configStore:       store,
 		governanceManager: manager,
@@ -1634,24 +2226,29 @@ func TestGetVirtualKeys_FromMemoryUsesConfigStore(t *testing.T) {
 	if ctx.Response.StatusCode() != 200 {
 		t.Fatalf("expected status 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
 	}
-	if manager.getGovernanceDataCalls != 0 {
-		t.Fatalf("from_memory path called GetGovernanceData %d times", manager.getGovernanceDataCalls)
+	if manager.getGovernanceDataCalls != 1 {
+		t.Fatalf("expected GetGovernanceData to be called once, got %d", manager.getGovernanceDataCalls)
 	}
-	if store.getVirtualKeysCalls != 1 {
-		t.Fatalf("expected GetVirtualKeys to be called once, got %d", store.getVirtualKeysCalls)
+	if store.getVirtualKeysCalls != 0 {
+		t.Fatalf("from_memory path called GetVirtualKeys %d times", store.getVirtualKeysCalls)
 	}
 	if store.getVirtualKeysPaginatedCalls != 0 {
-		t.Fatalf("unexpected paginated call count %d", store.getVirtualKeysPaginatedCalls)
+		t.Fatalf("from_memory path called GetVirtualKeysPaginated %d times", store.getVirtualKeysPaginatedCalls)
 	}
 }
 
-// TestGetVirtualKeys_FromMemoryWithLimitUsesPaginatedConfigStore verifies
-// limit=0 plus from_memory still follows the DB-backed paginated path.
-func TestGetVirtualKeys_FromMemoryWithLimitUsesPaginatedConfigStore(t *testing.T) {
+// TestGetVirtualKeys_FromMemoryTakesPrecedenceOverLimit verifies the
+// from_memory flag is honored even when pagination parameters are present, so
+// the in-memory path is used and the paginated ConfigStore query is skipped.
+func TestGetVirtualKeys_FromMemoryTakesPrecedenceOverLimit(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	store := &mockConfigStoreForVK{}
-	manager := &mockGovernanceManagerForVK{}
+	manager := &mockGovernanceManagerForVK{
+		data: &governance.GovernanceData{
+			VirtualKeys: map[string]*configstoreTables.TableVirtualKey{},
+		},
+	}
 	h := &GovernanceHandler{
 		configStore:       store,
 		governanceManager: manager,
@@ -1666,14 +2263,14 @@ func TestGetVirtualKeys_FromMemoryWithLimitUsesPaginatedConfigStore(t *testing.T
 	if ctx.Response.StatusCode() != 200 {
 		t.Fatalf("expected status 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
 	}
-	if manager.getGovernanceDataCalls != 0 {
-		t.Fatalf("from_memory path called GetGovernanceData %d times", manager.getGovernanceDataCalls)
+	if manager.getGovernanceDataCalls != 1 {
+		t.Fatalf("expected GetGovernanceData to be called once, got %d", manager.getGovernanceDataCalls)
 	}
-	if store.getVirtualKeysPaginatedCalls != 1 {
-		t.Fatalf("expected GetVirtualKeysPaginated to be called once, got %d", store.getVirtualKeysPaginatedCalls)
+	if store.getVirtualKeysPaginatedCalls != 0 {
+		t.Fatalf("from_memory path called GetVirtualKeysPaginated %d times", store.getVirtualKeysPaginatedCalls)
 	}
 	if store.getVirtualKeysCalls != 0 {
-		t.Fatalf("unexpected non-paginated call count %d", store.getVirtualKeysCalls)
+		t.Fatalf("from_memory path called GetVirtualKeys %d times", store.getVirtualKeysCalls)
 	}
 }
 
@@ -2328,5 +2925,315 @@ func TestUpdateCustomer_CalendarAligned_NoSnapWhenAlreadyEnabled(t *testing.T) {
 	}
 	if len(store.updatedBudgets) != 0 {
 		t.Errorf("expected no UpdateBudget call when calendar_aligned was already true, got %d", len(store.updatedBudgets))
+	}
+}
+
+// TestApplyVKGovernanceFromModelConfigs_PreservesDirectlyAttachedBudget is a
+// regression test for BF-1497: VKs provisioned via an access profile / config.json
+// carry their global budget directly (TableBudget.VirtualKeyID set, preloaded into
+// vk.Budgets) and have no VK-scoped model config. Hydration must not wipe that
+// budget when no model config matches.
+func TestApplyVKGovernanceFromModelConfigs_PreservesDirectlyAttachedBudget(t *testing.T) {
+	directBudget := configstoreTables.TableBudget{
+		ID:            "bud-direct",
+		MaxLimit:      2500.0,
+		ResetDuration: "1M",
+		VirtualKeyID:  schemas.Ptr("vk-ap"),
+		CurrentUsage:  120.0,
+	}
+	directRL := &configstoreTables.TableRateLimit{ID: "rl-direct"}
+	// A config.json-provisioned VK can also carry directly-attached per-provider
+	// budgets (TableBudget.ProviderConfigID set), which must survive hydration too.
+	pcBudget := configstoreTables.TableBudget{
+		ID:               "bud-direct-pc",
+		MaxLimit:         500.0,
+		ResetDuration:    "1M",
+		ProviderConfigID: schemas.Ptr(uint(7)),
+	}
+	vk := &configstoreTables.TableVirtualKey{
+		ID:          "vk-ap",
+		Budgets:     []configstoreTables.TableBudget{directBudget},
+		RateLimit:   directRL,
+		RateLimitID: schemas.Ptr("rl-direct"),
+		ProviderConfigs: []configstoreTables.TableVirtualKeyProviderConfig{
+			{Provider: "anthropic", Budgets: []configstoreTables.TableBudget{pcBudget}},
+		},
+	}
+
+	// No VK-scoped model config exists for this VK.
+	applyVKGovernanceFromModelConfigs(vk, map[string]*configstoreTables.TableModelConfig{})
+
+	if len(vk.Budgets) != 1 || vk.Budgets[0].ID != "bud-direct" {
+		t.Fatalf("directly attached budget was wiped: got %+v", vk.Budgets)
+	}
+	if vk.RateLimit != directRL || vk.RateLimitID == nil || *vk.RateLimitID != "rl-direct" {
+		t.Errorf("directly attached rate limit was wiped: rl=%v id=%v", vk.RateLimit, vk.RateLimitID)
+	}
+	if len(vk.ProviderConfigs[0].Budgets) != 1 || vk.ProviderConfigs[0].Budgets[0].ID != "bud-direct-pc" {
+		t.Errorf("directly attached per-provider budget was wiped: got %+v", vk.ProviderConfigs[0].Budgets)
+	}
+}
+
+// TestApplyVKGovernanceFromModelConfigs_OverlaysModelConfigGovernance verifies the
+// existing overlay path: when a VK-scoped model config owns the governance
+// (TableBudget.ModelConfigID set, not preloaded onto the VK), hydration overlays it.
+func TestApplyVKGovernanceFromModelConfigs_OverlaysModelConfigGovernance(t *testing.T) {
+	mcBudget := configstoreTables.TableBudget{
+		ID:            "bud-mc",
+		MaxLimit:      999.0,
+		ResetDuration: "1M",
+		ModelConfigID: schemas.Ptr("mc-top"),
+	}
+	mcRL := &configstoreTables.TableRateLimit{ID: "rl-mc"}
+	vk := &configstoreTables.TableVirtualKey{ID: "vk-sheet"}
+
+	byKey := map[string]*configstoreTables.TableModelConfig{
+		vkModelConfigIndexKey("vk-sheet", nil): {
+			ID:          "mc-top",
+			Budgets:     []configstoreTables.TableBudget{mcBudget},
+			RateLimit:   mcRL,
+			RateLimitID: schemas.Ptr("rl-mc"),
+		},
+	}
+
+	applyVKGovernanceFromModelConfigs(vk, byKey)
+
+	if len(vk.Budgets) != 1 || vk.Budgets[0].ID != "bud-mc" {
+		t.Fatalf("expected model-config budget overlaid, got %+v", vk.Budgets)
+	}
+	if vk.RateLimit != mcRL || vk.RateLimitID == nil || *vk.RateLimitID != "rl-mc" {
+		t.Errorf("expected model-config rate limit overlaid, got rl=%v id=%v", vk.RateLimit, vk.RateLimitID)
+	}
+}
+
+// newGovernanceProviderNameCtx builds a RequestCtx exactly as the fasthttp router
+// would hand it to the handler: the {provider_name} path param is stored RAW
+// (still percent-encoded), because the router does not decode path params. This
+// is what exercises url.PathUnescape inside the handler.
+func newGovernanceProviderNameCtx(encodedProviderName, body string) *fasthttp.RequestCtx {
+	ctx := newTestRequestCtx(body)
+	ctx.SetUserValue("provider_name", encodedProviderName)
+	return ctx
+}
+
+// TestProviderGovernance_DecodesEncodedProviderName is a regression test for the
+// 404 "Provider not found" that occurred when updating/deleting governance for a
+// custom provider whose name contains a space (e.g. "OpenRouter Base"). The UI
+// percent-encodes the name in the path ("OpenRouter%20Base"); the handler must
+// url.PathUnescape it before matching against the stored provider name.
+func TestProviderGovernance_DecodesEncodedProviderName(t *testing.T) {
+	SetLogger(&mockLogger{})
+	ctx := context.Background()
+	store := setupPricingOverrideHandlerStore(t)
+	handler := &GovernanceHandler{
+		configStore:       store,
+		governanceManager: pricingOverrideTestGovernanceManager{},
+	}
+
+	// Seed a custom provider whose name contains a space.
+	const providerName = "OpenRouter Base"
+	const encodedName = "OpenRouter%20Base"
+	if err := store.AddProvider(ctx, schemas.ModelProvider(providerName), configstore.ProviderConfig{}); err != nil {
+		t.Fatalf("seed provider: %v", err)
+	}
+
+	// PUT a budget using the encoded name in the path param, exactly as the router
+	// delivers it. Before the fix this returned 404 because "OpenRouter%20Base" was
+	// compared raw against the stored name.
+	putCtx := newGovernanceProviderNameCtx(encodedName, `{"budgets":[{"max_limit":10,"reset_duration":"1M"}],"calendar_aligned":false}`)
+	handler.updateProviderGovernance(putCtx)
+	if putCtx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("PUT status got %d, want 200; body=%s", putCtx.Response.StatusCode(), putCtx.Response.Body())
+	}
+
+	// The budget must be persisted against the decoded provider name.
+	pn := providerName
+	mc, err := store.GetModelConfig(ctx, configstoreTables.ModelConfigScopeGlobal, nil, configstoreTables.ModelConfigAllModels, &pn)
+	if err != nil {
+		t.Fatalf("expected persisted model config for %q, got err: %v", providerName, err)
+	}
+	if len(mc.Budgets) != 1 || mc.Budgets[0].MaxLimit != 10 {
+		t.Fatalf("expected one budget with max_limit 10, got %+v", mc.Budgets)
+	}
+
+	// DELETE with the same encoded path param must also resolve and succeed.
+	delCtx := newGovernanceProviderNameCtx(encodedName, "")
+	handler.deleteProviderGovernance(delCtx)
+	if delCtx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("DELETE status got %d, want 200; body=%s", delCtx.Response.StatusCode(), delCtx.Response.Body())
+	}
+
+	// The model config must actually be gone — a 200 alone could come from the
+	// handler's idempotent ErrNotFound branch even if nothing was removed.
+	if _, err := store.GetModelConfig(ctx, configstoreTables.ModelConfigScopeGlobal, nil, configstoreTables.ModelConfigAllModels, &pn); !errors.Is(err, configstore.ErrNotFound) {
+		t.Fatalf("expected model config for %q to be removed (ErrNotFound), got err: %v", providerName, err)
+	}
+}
+
+// TestProviderGovernance_UnknownProviderStill404 guards the inverse: a genuinely
+// unknown provider must still 404, so the decode change didn't mask the check.
+func TestProviderGovernance_UnknownProviderStill404(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	handler := &GovernanceHandler{
+		configStore:       store,
+		governanceManager: pricingOverrideTestGovernanceManager{},
+	}
+
+	putCtx := newGovernanceProviderNameCtx("Nope%20Missing", `{"budgets":[{"max_limit":10,"reset_duration":"1M"}]}`)
+	handler.updateProviderGovernance(putCtx)
+	if putCtx.Response.StatusCode() != fasthttp.StatusNotFound {
+		t.Fatalf("PUT unknown provider status got %d, want 404; body=%s", putCtx.Response.StatusCode(), putCtx.Response.Body())
+	}
+}
+
+// TestProviderGovernance_MalformedEncodingReturns400 locks in the fail-closed
+// contract: when the provider name is not valid percent-encoding (e.g. a stray
+// "%2"), url.PathUnescape fails and both handlers must respond 400 rather than
+// matching against the raw string.
+func TestProviderGovernance_MalformedEncodingReturns400(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	handler := &GovernanceHandler{
+		configStore:       store,
+		governanceManager: pricingOverrideTestGovernanceManager{},
+	}
+
+	const malformedName = "OpenRouter%2"
+
+	putCtx := newGovernanceProviderNameCtx(malformedName, `{"budgets":[{"max_limit":10,"reset_duration":"1M"}]}`)
+	handler.updateProviderGovernance(putCtx)
+	if putCtx.Response.StatusCode() != fasthttp.StatusBadRequest {
+		t.Fatalf("PUT malformed encoding status got %d, want 400; body=%s", putCtx.Response.StatusCode(), putCtx.Response.Body())
+	}
+
+	delCtx := newGovernanceProviderNameCtx(malformedName, "")
+	handler.deleteProviderGovernance(delCtx)
+	if delCtx.Response.StatusCode() != fasthttp.StatusBadRequest {
+		t.Fatalf("DELETE malformed encoding status got %d, want 400; body=%s", delCtx.Response.StatusCode(), delCtx.Response.Body())
+	}
+}
+
+// newGovernanceTeamIDCtx builds a request whose team_id path param carries the
+// raw (still percent-encoded) value, exactly as the fasthttp router delivers it
+// (it matches on URI().PathOriginal(), so no decoding happens before the handler).
+func newGovernanceTeamIDCtx(encodedTeamID, body string) *fasthttp.RequestCtx {
+	ctx := newTestRequestCtx(body)
+	ctx.SetUserValue("team_id", encodedTeamID)
+	return ctx
+}
+
+// TestTeam_DecodesEncodedTeamID is a regression test for #3106: SCIM/IdP-synced
+// team IDs containing spaces or other URL-sensitive characters are listable but
+// individual GET/DELETE returned "404 Team not found". The router delivers the
+// team_id path segment still percent-encoded, so the handler must url.PathUnescape
+// it before the config-store lookup (mirrors the provider_name handling).
+func TestTeam_DecodesEncodedTeamID(t *testing.T) {
+	SetLogger(&mockLogger{})
+	ctx := context.Background()
+	store := setupPricingOverrideHandlerStore(t)
+	handler := &GovernanceHandler{
+		configStore:       store,
+		governanceManager: pricingOverrideTestGovernanceManager{},
+	}
+
+	cases := []struct {
+		name    string
+		teamID  string // stored (decoded) ID
+		encoded string // what the router hands to the handler
+	}{
+		{"space", "SCIM Team Alpha", "SCIM%20Team%20Alpha"},
+		{"punctuation", "Team (prod): eu-west", "Team%20%28prod%29%3A%20eu-west"},
+		{"encoded-slash", "org/team/beta", "org%2Fteam%2Fbeta"},
+		{"plus", "team+gamma", "team%2Bgamma"},
+		{"unicode", "команда-δ", "%D0%BA%D0%BE%D0%BC%D0%B0%D0%BD%D0%B4%D0%B0-%CE%B4"},
+	}
+
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			team := &configstoreTables.TableTeam{
+				ID:   tc.teamID,
+				Name: tc.name + "-" + string(rune('A'+i)), // Name has a unique index
+			}
+			if err := store.CreateTeam(ctx, team); err != nil {
+				t.Fatalf("seed team %q: %v", tc.teamID, err)
+			}
+
+			// GET with the encoded path param must resolve the team.
+			getCtx := newGovernanceTeamIDCtx(tc.encoded, "")
+			handler.getTeam(getCtx)
+			if getCtx.Response.StatusCode() != fasthttp.StatusOK {
+				t.Fatalf("GET status got %d, want 200; body=%s", getCtx.Response.StatusCode(), getCtx.Response.Body())
+			}
+			var getResp struct {
+				Team configstoreTables.TableTeam `json:"team"`
+			}
+			if err := json.Unmarshal(getCtx.Response.Body(), &getResp); err != nil {
+				t.Fatalf("parse GET body: %v", err)
+			}
+			if getResp.Team.ID != tc.teamID {
+				t.Fatalf("GET returned team id %q, want %q", getResp.Team.ID, tc.teamID)
+			}
+
+			// PUT with the encoded path param must resolve and apply the update.
+			renamed := tc.name + "-renamed-" + string(rune('A'+i))
+			putCtx := newGovernanceTeamIDCtx(tc.encoded, `{"name":"`+renamed+`"}`)
+			handler.updateTeam(putCtx)
+			if putCtx.Response.StatusCode() != fasthttp.StatusOK {
+				t.Fatalf("PUT status got %d, want 200; body=%s", putCtx.Response.StatusCode(), putCtx.Response.Body())
+			}
+			updated, err := store.GetTeam(ctx, tc.teamID)
+			if err != nil {
+				t.Fatalf("re-fetch team %q after update: %v", tc.teamID, err)
+			}
+			if updated.Name != renamed {
+				t.Fatalf("PUT did not apply: name %q, want %q", updated.Name, renamed)
+			}
+
+			// DELETE with the same encoded path param must resolve and succeed.
+			delCtx := newGovernanceTeamIDCtx(tc.encoded, "")
+			handler.deleteTeam(delCtx)
+			if delCtx.Response.StatusCode() != fasthttp.StatusOK {
+				t.Fatalf("DELETE status got %d, want 200; body=%s", delCtx.Response.StatusCode(), delCtx.Response.Body())
+			}
+
+			// The team must actually be gone — a 200 could otherwise come from an
+			// idempotent ErrNotFound branch without deleting anything.
+			if _, err := store.GetTeam(ctx, tc.teamID); !errors.Is(err, configstore.ErrNotFound) {
+				t.Fatalf("expected team %q removed (ErrNotFound), got err: %v", tc.teamID, err)
+			}
+		})
+	}
+}
+
+// TestTeam_MalformedEncodingReturns400 locks in the fail-closed contract: a team_id
+// that is not valid percent-encoding (e.g. a stray "%2") must yield 400 rather than
+// being matched raw against stored IDs.
+func TestTeam_MalformedEncodingReturns400(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	handler := &GovernanceHandler{
+		configStore:       store,
+		governanceManager: pricingOverrideTestGovernanceManager{},
+	}
+
+	const malformedID = "Team%2"
+
+	getCtx := newGovernanceTeamIDCtx(malformedID, "")
+	handler.getTeam(getCtx)
+	if getCtx.Response.StatusCode() != fasthttp.StatusBadRequest {
+		t.Fatalf("GET malformed encoding status got %d, want 400; body=%s", getCtx.Response.StatusCode(), getCtx.Response.Body())
+	}
+
+	putCtx := newGovernanceTeamIDCtx(malformedID, `{"name":"irrelevant"}`)
+	handler.updateTeam(putCtx)
+	if putCtx.Response.StatusCode() != fasthttp.StatusBadRequest {
+		t.Fatalf("PUT malformed encoding status got %d, want 400; body=%s", putCtx.Response.StatusCode(), putCtx.Response.Body())
+	}
+
+	delCtx := newGovernanceTeamIDCtx(malformedID, "")
+	handler.deleteTeam(delCtx)
+	if delCtx.Response.StatusCode() != fasthttp.StatusBadRequest {
+		t.Fatalf("DELETE malformed encoding status got %d, want 400; body=%s", delCtx.Response.StatusCode(), delCtx.Response.Body())
 	}
 }

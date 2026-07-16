@@ -1,5 +1,5 @@
 import { Badge } from "./ui/badge";
 
 export default function BetaBadge() {
-  return <Badge variant="secondary">BETA</Badge>;
+	return <Badge variant="secondary">BETA</Badge>;
 }

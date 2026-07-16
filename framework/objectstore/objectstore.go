@@ -3,7 +3,16 @@
 // objects from S3, GCS (via S3 interop), MinIO, R2, or other S3-compatible stores.
 package objectstore
 
-import "context"
+import (
+	"context"
+	"time"
+)
+
+// ObjectInfo describes a stored object returned by listing operations.
+type ObjectInfo struct {
+	Key          string
+	LastModified time.Time
+}
 
 // ObjectStore abstracts S3-compatible blob storage operations.
 type ObjectStore interface {
@@ -13,6 +22,9 @@ type ObjectStore interface {
 
 	// Get retrieves and decompresses data for the given key.
 	Get(ctx context.Context, key string) ([]byte, error)
+
+	// ListByPrefix returns objects matching the given prefix with metadata.
+	ListByPrefix(ctx context.Context, prefix string) ([]ObjectInfo, error)
 
 	// Delete removes an object by key.
 	Delete(ctx context.Context, key string) error

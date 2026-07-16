@@ -9,7 +9,13 @@ import (
 )
 
 // ToGeminiChatCompletionRequest converts a BifrostChatRequest to Gemini's generation request format for chat completion
-func ToGeminiChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) (*GeminiGenerationRequest, error) {
+func ToGeminiChatCompletionRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostChatRequest) (*GeminiGenerationRequest, error) {
+	return ToGeminiChatCompletionRequestWithImageURLSchemes(ctx, bifrostReq, defaultGeminiImageURLSchemes...)
+}
+
+// ToGeminiChatCompletionRequestWithImageURLSchemes converts a BifrostChatRequest
+// to Gemini format using the provider-specific allowlist for non-data image URLs.
+func ToGeminiChatCompletionRequestWithImageURLSchemes(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostChatRequest, allowedImageURLSchemes ...string) (*GeminiGenerationRequest, error) {
 	if bifrostReq == nil {
 		return nil, nil
 	}
@@ -21,11 +27,14 @@ func ToGeminiChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) (*Gem
 		Model: bifrostReq.Model,
 	}
 
+	// Canonical model for capability gating only; wire model is untouched.
+	capModel := NormalizeModelName(schemas.ResolveCanonicalModel(ctx, bifrostReq.Model))
+
 	// Convert parameters to generation config
 	if bifrostReq.Params != nil {
 		geminiReq.ExtraParams = bifrostReq.Params.ExtraParams
 		var err error
-		geminiReq.GenerationConfig, err = convertParamsToGenerationConfig(bifrostReq.Params, []string{}, bifrostReq.Model)
+		geminiReq.GenerationConfig, err = convertParamsToGenerationConfig(bifrostReq.Params, []string{}, capModel)
 		if err != nil {
 			return nil, err
 		}
@@ -40,6 +49,21 @@ func ToGeminiChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) (*Gem
 			if bifrostReq.Params.ToolChoice != nil {
 				geminiReq.ToolConfig = convertToolChoiceToToolConfig(bifrostReq.Params.ToolChoice)
 			}
+		}
+
+		// Map OpenAI web_search_options to Google Search grounding
+		if bifrostReq.Params.WebSearchOptions != nil {
+			googleSearch := &GoogleSearch{}
+			if filters := bifrostReq.Params.WebSearchOptions.Filters; filters != nil {
+				googleSearch.ExcludeDomains = filters.BlockedDomains
+				if filters.TimeRangeFilter != nil {
+					googleSearch.TimeRangeFilter = &Interval{
+						StartTime: filters.TimeRangeFilter.StartTime,
+						EndTime:   filters.TimeRangeFilter.EndTime,
+					}
+				}
+			}
+			geminiReq.Tools = append(geminiReq.Tools, Tool{GoogleSearch: googleSearch})
 		}
 
 		if bifrostReq.Params.ServiceTier != nil {
@@ -72,7 +96,10 @@ func ToGeminiChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) (*Gem
 		}
 	}
 	// Convert chat completion messages to Gemini format
-	contents, systemInstruction := convertBifrostMessagesToGemini(bifrostReq.Input)
+	contents, systemInstruction, err := convertBifrostMessagesToGemini(bifrostReq.Input, allowedImageURLSchemes...)
+	if err != nil {
+		return nil, err
+	}
 	if systemInstruction != nil {
 		geminiReq.SystemInstruction = systemInstruction
 	}
@@ -252,10 +279,14 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 			ContentBlocks: contentBlocks,
 		}
 
-		if len(toolCalls) > 0 || len(reasoningDetails) > 0 {
+		// Map Google Search grounding supports to OpenAI url_citation annotations
+		annotations := convertGroundingMetadataToChatAnnotations(candidate.GroundingMetadata)
+
+		if len(toolCalls) > 0 || len(reasoningDetails) > 0 || len(annotations) > 0 {
 			message.ChatAssistantMessage = &schemas.ChatAssistantMessage{
 				ToolCalls:        toolCalls,
 				ReasoningDetails: reasoningDetails,
+				Annotations:      annotations,
 			}
 		}
 
@@ -476,8 +507,15 @@ func (response *GenerateContentResponse) ToBifrostChatCompletionStream(state *Ge
 		}
 	}
 
+	// Map Google Search grounding supports to OpenAI url_citation annotations.
+	// Gemini sends complete groundingMetadata on the finish-reason chunk; read it only
+	// there (matching the Responses path) so re-sends can't drop or duplicate citations.
+	if candidate.FinishReason != "" {
+		delta.Annotations = convertGroundingMetadataToChatAnnotations(candidate.GroundingMetadata)
+	}
+
 	// Check if delta has any content - if not and it's not the last chunk, skip it
-	hasDeltaContent := delta.Role != nil || delta.Content != nil || len(delta.ToolCalls) > 0 || len(delta.ReasoningDetails) > 0
+	hasDeltaContent := delta.Role != nil || delta.Content != nil || len(delta.ToolCalls) > 0 || len(delta.ReasoningDetails) > 0 || len(delta.Annotations) > 0
 	if !hasDeltaContent && !isLastChunk {
 		return nil, nil, false
 	}
@@ -517,6 +555,44 @@ func (response *GenerateContentResponse) ToBifrostChatCompletionStream(state *Ge
 	}
 
 	return streamResponse, nil, isLastChunk
+}
+
+// convertGroundingMetadataToChatAnnotations converts Gemini grounding supports to OpenAI
+// url_citation annotations, one per (support, chunk index) pair so multi-source segments
+// are preserved. Indices are Gemini's byte offsets into the response text, passed through as-is.
+func convertGroundingMetadataToChatAnnotations(metadata *GroundingMetadata) []schemas.ChatAssistantMessageAnnotation {
+	if metadata == nil {
+		return nil
+	}
+	var annotations []schemas.ChatAssistantMessageAnnotation
+	for _, support := range metadata.GroundingSupports {
+		if support.Segment == nil {
+			continue
+		}
+		for _, chunkIdx := range support.GroundingChunkIndices {
+			if chunkIdx < 0 || int(chunkIdx) >= len(metadata.GroundingChunks) {
+				continue
+			}
+			chunk := metadata.GroundingChunks[chunkIdx]
+			if chunk.Web == nil || chunk.Web.URI == "" {
+				continue
+			}
+			annotation := schemas.ChatAssistantMessageAnnotation{
+				Type: "url_citation",
+				URLCitation: schemas.ChatAssistantMessageAnnotationCitation{
+					StartIndex: int(support.Segment.StartIndex),
+					EndIndex:   int(support.Segment.EndIndex),
+					Title:      chunk.Web.Title,
+					URL:        schemas.Ptr(chunk.Web.URI),
+				},
+			}
+			if support.Segment.Text != "" {
+				annotation.URLCitation.Text = schemas.Ptr(support.Segment.Text)
+			}
+			annotations = append(annotations, annotation)
+		}
+	}
+	return annotations
 }
 
 // isErrorFinishReason checks if a finish reason indicates a filtered or error response

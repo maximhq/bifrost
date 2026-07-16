@@ -74,6 +74,12 @@ func buildAnthropicPassthroughUsage(au *AnthropicUsage) *schemas.BifrostPassthro
 		t := MapAnthropicServiceTierToBifrost(*au.ServiceTier)
 		u.ServiceTier = &t
 	}
+	if au.Speed != nil {
+		u.Speed = au.Speed
+	}
+	if au.InferenceGeo != nil {
+		u.InferenceGeo = au.InferenceGeo
+	}
 	return u
 }
 
@@ -135,6 +141,12 @@ func (a *AnthropicPassthroughStreamUsage) ObserveEvent(event []byte) *schemas.Bi
 	}
 	if u.ServiceTier != nil {
 		c.ServiceTier = u.ServiceTier
+	}
+	if u.Speed != nil {
+		c.Speed = u.Speed
+	}
+	if u.InferenceGeo != nil {
+		c.InferenceGeo = u.InferenceGeo
 	}
 	return a.usage()
 }

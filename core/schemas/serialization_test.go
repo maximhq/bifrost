@@ -748,6 +748,8 @@ func TestResponsesTool_MarshalJSON_RoundTrip(t *testing.T) {
 		`{"type":"function","name":"get_weather","description":"Get weather","strict":true}`,
 		`{"type":"function","name":"search_db","description":"Search database","cache_control":{"type":"ephemeral"},"strict":false}`,
 		`{"type":"file_search","vector_store_ids":["vs_1"],"max_num_results":10}`,
+		// Anthropic advisor server tool: model/max_uses/max_tokens/caching must survive the JSON boundary.
+		`{"type":"advisor","name":"advisor","model":"claude-opus-4-8","max_uses":3,"max_tokens":2048,"caching":{"type":"ephemeral","ttl":"5m"}}`,
 	}
 
 	for _, input := range inputs {
@@ -1113,7 +1115,7 @@ func TestNetworkConfig_TLSFieldsRoundTrip(t *testing.T) {
 		DefaultRequestTimeoutInSeconds: 60,
 		MaxRetries:                     3,
 		InsecureSkipVerify:             true,
-		CACertPEM:                      NewEnvVar("-----BEGIN CERTIFICATE-----\nMIIB...\n-----END CERTIFICATE-----"),
+		CACertPEM:                      NewSecretVar("-----BEGIN CERTIFICATE-----\nMIIB...\n-----END CERTIFICATE-----"),
 	}
 
 	data, err := json.Marshal(nc)
@@ -1133,7 +1135,7 @@ func TestNetworkConfig_TLSFieldsRoundTrip(t *testing.T) {
 // round-trips correctly through JSON marshaling.
 func TestNetworkConfig_StreamIdleTimeoutRoundTrip(t *testing.T) {
 	nc := NetworkConfig{
-		DefaultRequestTimeoutInSeconds: 30,
+		DefaultRequestTimeoutInSeconds: 300,
 		StreamIdleTimeoutInSeconds:     120,
 	}
 
@@ -1214,6 +1216,8 @@ func TestResponsesTool_UnmarshalJSON_NormalizesVersionedToolTypes(t *testing.T) 
 		wantWebFetch   bool
 		wantComputer   bool
 		wantCodeInterp bool
+		wantAdvisor    bool
+		wantModel      string
 	}{
 		// web_search variants
 		{name: "web_search canonical", input: `{"type":"web_search"}`, wantType: ResponsesToolTypeWebSearch, wantWebSearch: true},
@@ -1240,6 +1244,10 @@ func TestResponsesTool_UnmarshalJSON_NormalizesVersionedToolTypes(t *testing.T) 
 		{name: "code_execution_20250522", input: `{"type":"code_execution_20250522"}`, wantType: ResponsesToolTypeCodeInterpreter, wantCodeInterp: true},
 		{name: "code_execution_20250825", input: `{"type":"code_execution_20250825"}`, wantType: ResponsesToolTypeCodeInterpreter, wantCodeInterp: true},
 
+		// advisor variants → advisor
+		{name: "advisor canonical", input: `{"type":"advisor","name":"advisor","model":"claude-opus-4-8"}`, wantType: ResponsesToolTypeAdvisor, wantAdvisor: true, wantModel: "claude-opus-4-8"},
+		{name: "advisor_20260301", input: `{"type":"advisor_20260301","name":"advisor","model":"claude-opus-4-8"}`, wantType: ResponsesToolTypeAdvisor, wantAdvisor: true, wantModel: "claude-opus-4-8"},
+
 		// unrecognized types pass through unchanged
 		{name: "function unchanged", input: `{"type":"function","name":"foo","strict":true}`, wantType: ResponsesToolTypeFunction},
 		{name: "custom unchanged", input: `{"type":"custom","name":"bar"}`, wantType: ResponsesToolTypeCustom},
@@ -1264,8 +1272,124 @@ func TestResponsesTool_UnmarshalJSON_NormalizesVersionedToolTypes(t *testing.T) 
 			if tt.wantCodeInterp {
 				assert.NotNil(t, tool.ResponsesToolCodeInterpreter, "ResponsesToolCodeInterpreter should be populated")
 			}
+			if tt.wantAdvisor {
+				require.NotNil(t, tool.ResponsesToolAdvisor, "ResponsesToolAdvisor should be populated")
+				assert.Equal(t, tt.wantModel, tool.ResponsesToolAdvisor.Model)
+			}
 		})
 	}
+}
+
+// TestChatTool_ServerToolNameRoundTrip is a diagnostic probe for the Bedrock
+// managed-tool harness failures (`tools.0.<type>.name: Field required`). It feeds
+// the exact request shapes the harness sends for Anthropic server tools through the
+// real Unmarshal -> MarshalSorted round-trip and asserts the top-level `name`
+// survives. If this fails, the name is dropped at the schemas layer (sonic /
+// ChatTool.UnmarshalJSON / normalizeShape) and the fix belongs here for all providers.
+func TestChatTool_ServerToolNameRoundTrip(t *testing.T) {
+	cases := []struct {
+		name     string
+		input    string
+		wantType ChatToolType
+		wantName string
+	}{
+		{"bash", `{"type":"bash_20250124","name":"bash"}`, "bash_20250124", "bash"},
+		{"computer", `{"type":"computer_20251124","name":"computer","display_width_px":1280,"display_height_px":800}`, "computer_20251124", "computer"},
+		{"text_editor", `{"type":"text_editor_20250728","name":"str_replace_based_edit_tool"}`, "text_editor_20250728", "str_replace_based_edit_tool"},
+		{"memory", `{"type":"memory_20250818","name":"memory"}`, "memory_20250818", "memory"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var tool ChatTool
+			require.NoError(t, Unmarshal([]byte(tc.input), &tool))
+			assert.Equal(t, tc.wantType, tool.Type, "type should survive unmarshal")
+			assert.Equal(t, tc.wantName, tool.Name, "name should survive unmarshal")
+
+			out, err := MarshalSorted(tool)
+			require.NoError(t, err)
+			assert.Contains(t, string(out), `"name":"`+tc.wantName+`"`, "marshaled tool must carry name; got %s", string(out))
+		})
+	}
+}
+
+// TestDeepCopyChatTool_PreservesServerToolFields locks in the fix for the Bedrock
+// managed-tool harness 400s (`tools.0.<type>.name: Field required`). The compat
+// plugin clones requests via DeepCopyChatTool during its PreHook; the copier used
+// to drop the top-level Name and every Anthropic server-tool variant field, so a
+// {type:"bash_20250124", name:"bash"} tool reached Bedrock with no name. This
+// asserts all server-tool fields survive the copy and that the copy is independent
+// of the original (mutating the copy must not affect the source).
+func TestDeepCopyChatTool_PreservesServerToolFields(t *testing.T) {
+	original := ChatTool{
+		Type:                "computer_20251124",
+		Name:                "computer",
+		DeferLoading:        Ptr(true),
+		AllowedCallers:      []string{"direct", "code_execution_20250825"},
+		EagerInputStreaming: Ptr(true),
+		InputExamples: []ChatToolInputExample{
+			{Input: json.RawMessage(`{"action":"screenshot"}`), Description: Ptr("take a screenshot")},
+		},
+		MaxUses:          Ptr(5),
+		AllowedDomains:   []string{"example.com"},
+		BlockedDomains:   []string{"evil.com"},
+		UserLocation:     &ChatToolUserLocation{Type: Ptr("approximate"), City: Ptr("SF"), Region: Ptr("CA"), Country: Ptr("US"), Timezone: Ptr("America/Los_Angeles")},
+		MaxContentTokens: Ptr(1000),
+		Citations:        &ChatToolCitationsConfig{Enabled: Ptr(true)},
+		UseCache:         Ptr(true),
+		DisplayWidthPx:   Ptr(1280),
+		DisplayHeightPx:  Ptr(800),
+		DisplayNumber:    Ptr(1),
+		EnableZoom:       Ptr(true),
+		MaxCharacters:    Ptr(2000),
+		MCPServerName:    "my-server",
+		DefaultConfig:    &ChatMCPToolsetConfig{Enabled: Ptr(true), DeferLoading: Ptr(false)},
+		Configs:          map[string]*ChatMCPToolsetConfig{"tool_a": {Enabled: Ptr(false)}},
+	}
+
+	c := DeepCopyChatTool(original)
+
+	// Every server-tool field must survive the copy.
+	assert.Equal(t, ChatToolType("computer_20251124"), c.Type)
+	assert.Equal(t, "computer", c.Name)
+	require.NotNil(t, c.DeferLoading)
+	assert.True(t, *c.DeferLoading)
+	assert.Equal(t, []string{"direct", "code_execution_20250825"}, c.AllowedCallers)
+	require.NotNil(t, c.EagerInputStreaming)
+	require.Len(t, c.InputExamples, 1)
+	assert.JSONEq(t, `{"action":"screenshot"}`, string(c.InputExamples[0].Input))
+	require.NotNil(t, c.MaxUses)
+	assert.Equal(t, 5, *c.MaxUses)
+	assert.Equal(t, []string{"example.com"}, c.AllowedDomains)
+	assert.Equal(t, []string{"evil.com"}, c.BlockedDomains)
+	require.NotNil(t, c.UserLocation)
+	require.NotNil(t, c.UserLocation.City)
+	assert.Equal(t, "SF", *c.UserLocation.City)
+	require.NotNil(t, c.Citations)
+	require.NotNil(t, c.Citations.Enabled)
+	require.NotNil(t, c.MaxContentTokens)
+	require.NotNil(t, c.UseCache)
+	require.NotNil(t, c.DisplayWidthPx)
+	assert.Equal(t, 1280, *c.DisplayWidthPx)
+	require.NotNil(t, c.DisplayHeightPx)
+	require.NotNil(t, c.DisplayNumber)
+	require.NotNil(t, c.EnableZoom)
+	require.NotNil(t, c.MaxCharacters)
+	assert.Equal(t, "my-server", c.MCPServerName)
+	require.NotNil(t, c.DefaultConfig)
+	require.NotNil(t, c.DefaultConfig.Enabled)
+	require.NotNil(t, c.Configs["tool_a"])
+	require.NotNil(t, c.Configs["tool_a"].Enabled)
+
+	// The copy must be independent: mutating it must not touch the original.
+	*c.DisplayWidthPx = 9999
+	c.AllowedDomains[0] = "mutated.com"
+	*c.UserLocation.City = "NYC"
+	c.Configs["tool_a"] = nil
+	assert.Equal(t, 1280, *original.DisplayWidthPx, "original DisplayWidthPx must be unchanged")
+	assert.Equal(t, "example.com", original.AllowedDomains[0], "original AllowedDomains must be unchanged")
+	assert.Equal(t, "SF", *original.UserLocation.City, "original UserLocation.City must be unchanged")
+	assert.NotNil(t, original.Configs["tool_a"], "original Configs entry must be unchanged")
 }
 
 // TestSonic_ChatTool_AnnotationsNeverSerialized verifies that MCPToolAnnotations
@@ -1369,7 +1493,7 @@ func TestProviderOverride_KeyOmittedFromJSON(t *testing.T) {
 	// presence in the JSON output here — that would lock in unsafe
 	// serialisation. Only assert the credential-bearing Key fields are absent.
 	override := ProviderOverride{
-		Key:     &Key{ID: "leak-canary", Value: *NewEnvVar("sk-secret-do-not-leak")},
+		Key:     &Key{ID: "leak-canary", Value: *NewSecretVar("sk-secret-do-not-leak")},
 		BaseURL: "https://eu.api.openai.com",
 	}
 
@@ -1389,7 +1513,7 @@ func TestBifrostRequest_ProviderOverrideOmittedFromJSON(t *testing.T) {
 			Model:    "gpt-4o",
 		},
 		ProviderOverride: &ProviderOverride{
-			Key:     &Key{ID: "leak-canary", Value: *NewEnvVar("sk-secret-do-not-leak")},
+			Key:     &Key{ID: "leak-canary", Value: *NewSecretVar("sk-secret-do-not-leak")},
 			BaseURL: "https://override.example.com",
 		},
 	}
@@ -1502,4 +1626,199 @@ func TestSonic_ToolFunctionParameters_DeepCopy_KeyOrderIndependent(t *testing.T)
 
 	assert.NotEqual(t, original.keyOrder.keys[0], copied.keyOrder.keys[0], "copy must not share JSONKeyOrder.keys backing array")
 	assert.Equal(t, "$defs", copied.keyOrder.keys[0])
+}
+
+// --- ChatPromptTokensDetails / ResponsesResponseInputTokens cached_tokens ---
+// Per the OpenAI spec, cached_tokens counts prompt tokens read from the cache. Cache
+// writes must not be folded in, or spec consumers price cache writes as cache reads.
+
+func TestSonic_ChatPromptTokensDetails_CachedTokensExcludesWrites(t *testing.T) {
+	// Fresh-cache turn: write only, no read. cached_tokens must stay 0.
+	out, err := Marshal(ChatPromptTokensDetails{CachedWriteTokens: 9106})
+	require.NoError(t, err)
+	var m map[string]any
+	require.NoError(t, json.Unmarshal(out, &m))
+	assert.Equal(t, float64(0), m["cached_tokens"])
+	assert.Equal(t, float64(9106), m["cached_write_tokens"])
+	assert.Equal(t, float64(9106), m["cache_write_tokens"]) // OpenAI SDK reads this name
+
+	// Cache-hit turn with a concurrent write: cached_tokens must equal reads only.
+	out, err = Marshal(ChatPromptTokensDetails{CachedReadTokens: 500, CachedWriteTokens: 100})
+	require.NoError(t, err)
+	m = nil
+	require.NoError(t, json.Unmarshal(out, &m))
+	assert.Equal(t, float64(500), m["cached_tokens"])
+	assert.Equal(t, float64(500), m["cached_read_tokens"])
+	assert.Equal(t, float64(100), m["cached_write_tokens"])
+	assert.Equal(t, float64(100), m["cache_write_tokens"])
+}
+
+func TestSonic_ChatPromptTokensDetails_CachedTokensRoundTrip(t *testing.T) {
+	// Round-trip must preserve the read/write split; the bare cached_tokens fallback
+	// in UnmarshalJSON only applies when the split fields are absent.
+	in := ChatPromptTokensDetails{CachedReadTokens: 500, CachedWriteTokens: 100}
+	out, err := Marshal(in)
+	require.NoError(t, err)
+	var back ChatPromptTokensDetails
+	require.NoError(t, Unmarshal(out, &back))
+	assert.Equal(t, in.CachedReadTokens, back.CachedReadTokens)
+	assert.Equal(t, in.CachedWriteTokens, back.CachedWriteTokens)
+
+	// OpenAI-spec providers send only cached_tokens; it maps to reads.
+	var d ChatPromptTokensDetails
+	require.NoError(t, Unmarshal([]byte(`{"cached_tokens":42}`), &d))
+	assert.Equal(t, 42, d.CachedReadTokens)
+	assert.Equal(t, 0, d.CachedWriteTokens)
+}
+
+func TestSonic_ResponsesResponseInputTokens_CachedTokensExcludesWrites(t *testing.T) {
+	// Fresh-cache turn: write only, no read. cached_tokens must stay 0.
+	out, err := Marshal(ResponsesResponseInputTokens{CachedWriteTokens: 9106})
+	require.NoError(t, err)
+	var m map[string]any
+	require.NoError(t, json.Unmarshal(out, &m))
+	assert.Equal(t, float64(0), m["cached_tokens"])
+	assert.Equal(t, float64(9106), m["cached_write_tokens"])
+	assert.Equal(t, float64(9106), m["cache_write_tokens"]) // OpenAI SDK reads this name
+
+	// Cache-hit turn with a concurrent write: cached_tokens must equal reads only.
+	out, err = Marshal(ResponsesResponseInputTokens{CachedReadTokens: 500, CachedWriteTokens: 100})
+	require.NoError(t, err)
+	m = nil
+	require.NoError(t, json.Unmarshal(out, &m))
+	assert.Equal(t, float64(500), m["cached_tokens"])
+	assert.Equal(t, float64(500), m["cached_read_tokens"])
+	assert.Equal(t, float64(100), m["cached_write_tokens"])
+	assert.Equal(t, float64(100), m["cache_write_tokens"])
+}
+
+func TestSonic_ResponsesResponseInputTokens_CachedTokensRoundTrip(t *testing.T) {
+	in := ResponsesResponseInputTokens{CachedReadTokens: 500, CachedWriteTokens: 100}
+	out, err := Marshal(in)
+	require.NoError(t, err)
+	var back ResponsesResponseInputTokens
+	require.NoError(t, Unmarshal(out, &back))
+	assert.Equal(t, in.CachedReadTokens, back.CachedReadTokens)
+	assert.Equal(t, in.CachedWriteTokens, back.CachedWriteTokens)
+
+	var d ResponsesResponseInputTokens
+	require.NoError(t, Unmarshal([]byte(`{"cached_tokens":42}`), &d))
+	assert.Equal(t, 42, d.CachedReadTokens)
+	assert.Equal(t, 0, d.CachedWriteTokens)
+}
+
+// OpenAI's Responses API reports cache writes under cache_write_tokens (distinct
+// from Bifrost's cached_write_tokens); it must map into CachedWriteTokens.
+func TestSonic_ResponsesResponseInputTokens_OpenAICacheWriteTokensAlias(t *testing.T) {
+	// Fresh-cache Responses turn: OpenAI sends cache_write_tokens with cached_tokens:0.
+	var d ResponsesResponseInputTokens
+	require.NoError(t, Unmarshal([]byte(`{"cached_tokens":0,"cache_write_tokens":28003}`), &d))
+	assert.Equal(t, 28003, d.CachedWriteTokens)
+	assert.Equal(t, 0, d.CachedReadTokens)
+
+	// Bifrost's own cached_write_tokens takes precedence when both are present.
+	var d2 ResponsesResponseInputTokens
+	require.NoError(t, Unmarshal([]byte(`{"cached_write_tokens":100,"cache_write_tokens":28003}`), &d2))
+	assert.Equal(t, 100, d2.CachedWriteTokens)
+}
+
+func TestSonic_ChatPromptTokensDetails_OpenAICacheWriteTokensAlias(t *testing.T) {
+	var d ChatPromptTokensDetails
+	require.NoError(t, Unmarshal([]byte(`{"cached_tokens":0,"cache_write_tokens":28003}`), &d))
+	assert.Equal(t, 28003, d.CachedWriteTokens)
+	assert.Equal(t, 0, d.CachedReadTokens)
+
+	var d2 ChatPromptTokensDetails
+	require.NoError(t, Unmarshal([]byte(`{"cached_write_tokens":100,"cache_write_tokens":28003}`), &d2))
+	assert.Equal(t, 100, d2.CachedWriteTokens)
+}
+
+// --- prompt_cache_options / prompt_cache_breakpoint (OpenAI gpt-5.6+) ---
+
+func TestSonic_PromptCacheOptions_RoundTrip(t *testing.T) {
+	mode := "explicit"
+	ttl := "30m"
+
+	// Responses request params serialize the object to the wire.
+	out, err := Marshal(ResponsesParameters{PromptCacheOptions: &PromptCacheOptions{Mode: &mode, TTL: &ttl}})
+	require.NoError(t, err)
+	var m map[string]any
+	require.NoError(t, json.Unmarshal(out, &m))
+	pco, ok := m["prompt_cache_options"].(map[string]any)
+	require.True(t, ok, "prompt_cache_options must serialize on ResponsesParameters")
+	assert.Equal(t, "explicit", pco["mode"])
+	assert.Equal(t, "30m", pco["ttl"])
+
+	// Chat request params round-trip (through ChatParameters' custom unmarshaler).
+	out, err = Marshal(ChatParameters{PromptCacheOptions: &PromptCacheOptions{Mode: &mode, TTL: &ttl}})
+	require.NoError(t, err)
+	var cp ChatParameters
+	require.NoError(t, Unmarshal(out, &cp))
+	require.NotNil(t, cp.PromptCacheOptions)
+	assert.Equal(t, "explicit", *cp.PromptCacheOptions.Mode)
+	assert.Equal(t, "30m", *cp.PromptCacheOptions.TTL)
+
+	// Response echo: OpenAI returns prompt_cache_options on the response object.
+	var resp BifrostResponsesResponse
+	require.NoError(t, Unmarshal([]byte(`{"prompt_cache_options":{"mode":"implicit","ttl":"30m"}}`), &resp))
+	require.NotNil(t, resp.PromptCacheOptions)
+	assert.Equal(t, "implicit", *resp.PromptCacheOptions.Mode)
+	assert.Equal(t, "30m", *resp.PromptCacheOptions.TTL)
+}
+
+func TestSonic_PromptCacheBreakpoint_RoundTrip(t *testing.T) {
+	mode := "explicit"
+
+	// Responses content block serializes the breakpoint to the wire.
+	out, err := Marshal(ResponsesMessageContentBlock{
+		Type:                  ResponsesInputMessageContentBlockTypeText,
+		PromptCacheBreakpoint: &PromptCacheBreakpoint{Mode: &mode},
+	})
+	require.NoError(t, err)
+	var m map[string]any
+	require.NoError(t, json.Unmarshal(out, &m))
+	bp, ok := m["prompt_cache_breakpoint"].(map[string]any)
+	require.True(t, ok, "prompt_cache_breakpoint must serialize on ResponsesMessageContentBlock")
+	assert.Equal(t, "explicit", bp["mode"])
+
+	// Chat content block round-trips through its custom unmarshaler.
+	out, err = Marshal(ChatContentBlock{
+		Type:                  ChatContentBlockTypeText,
+		PromptCacheBreakpoint: &PromptCacheBreakpoint{Mode: &mode},
+	})
+	require.NoError(t, err)
+	var cb ChatContentBlock
+	require.NoError(t, Unmarshal(out, &cb))
+	require.NotNil(t, cb.PromptCacheBreakpoint)
+	assert.Equal(t, "explicit", *cb.PromptCacheBreakpoint.Mode)
+}
+
+// A native Responses stream's response.completed event carries the full response
+// object; prompt_cache_options and cache_write_tokens usage must survive parsing.
+func TestSonic_ResponsesStreamCompleted_CapturesPromptCacheAndCacheWrite(t *testing.T) {
+	event := `{
+		"type": "response.completed",
+		"sequence_number": 42,
+		"response": {
+			"id": "resp_1",
+			"object": "response",
+			"prompt_cache_options": {"mode": "implicit", "ttl": "30m"},
+			"usage": {
+				"input_tokens": 2006,
+				"input_tokens_details": {"cached_tokens": 1920, "cache_write_tokens": 80},
+				"output_tokens": 300,
+				"total_tokens": 2306
+			}
+		}
+	}`
+	var stream BifrostResponsesStreamResponse
+	require.NoError(t, Unmarshal([]byte(event), &stream))
+	require.NotNil(t, stream.Response)
+	require.NotNil(t, stream.Response.PromptCacheOptions)
+	assert.Equal(t, "implicit", *stream.Response.PromptCacheOptions.Mode)
+	assert.Equal(t, "30m", *stream.Response.PromptCacheOptions.TTL)
+	require.NotNil(t, stream.Response.Usage)
+	require.NotNil(t, stream.Response.Usage.InputTokensDetails)
+	assert.Equal(t, 80, stream.Response.Usage.InputTokensDetails.CachedWriteTokens)
+	assert.Equal(t, 1920, stream.Response.Usage.InputTokensDetails.CachedReadTokens)
 }

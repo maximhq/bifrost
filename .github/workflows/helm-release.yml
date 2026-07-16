@@ -15,6 +15,9 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
@@ -22,8 +25,11 @@ jobs:
           egress-policy: block
           allowed-endpoints: >
             api.github.com:443
+            auth.docker.io:443
             get.helm.sh:443
+            ghcr.io:443
             github.com:443
+            registry-1.docker.io:443
             maximhq.github.io:443
             proxy.golang.org:443
             release-assets.githubusercontent.com:443
@@ -99,6 +105,7 @@ jobs:
           cd helm-charts
           gh release create "helm-chart-v${{ steps.chart-version.outputs.version }}" \
             bifrost-${{ steps.chart-version.outputs.version }}.tgz \
+            --target ${{ github.sha }} \
             --title "Helm Chart v${{ steps.chart-version.outputs.version }}" \
             --notes "Helm chart release for Bifrost v${{ steps.chart-version.outputs.version }}"
         env:
@@ -127,3 +134,32 @@ jobs:
           enable_jekyll: false
           user_name: "github-actions[bot]"
           user_email: "github-actions[bot]@users.noreply.github.com"
+
+      - name: Login to GitHub Container Registry
+        if: steps.check-release.outputs.exists == 'false'
+        continue-on-error: true
+        uses: step-security/docker-login-action@870af644803bf9f204aed474adbad2958fec048b # v4.1.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Login to Docker Hub
+        if: steps.check-release.outputs.exists == 'false'
+        continue-on-error: true
+        uses: step-security/docker-login-action@870af644803bf9f204aed474adbad2958fec048b # v4.1.0
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Push Helm chart as OCI artifact to GHCR
+        if: steps.check-release.outputs.exists == 'false'
+        continue-on-error: true
+        run: |
+          helm push helm-charts/bifrost-${{ steps.chart-version.outputs.version }}.tgz oci://ghcr.io/maximhq/helm-charts
+
+      - name: Push Helm chart as OCI artifact to Docker Hub
+        if: steps.check-release.outputs.exists == 'false'
+        continue-on-error: true
+        run: |
+          helm push helm-charts/bifrost-${{ steps.chart-version.outputs.version }}.tgz oci://registry-1.docker.io/maximhq

@@ -55,6 +55,18 @@ LogEntry:
       type: string
     raw_response:
       type: string
+    redaction_mapping:
+      type: object
+      properties:
+        input:
+          type: object
+          additionalProperties:
+            type: string
+        output:
+          type: object
+          additionalProperties:
+            type: string
+      description: Phase-scoped placeholder-to-original-value mappings for reversible redactions. Present only on log detail responses when the caller has `Logs:Reveal`.
     created_at:
       type: string
       format: date-time
@@ -560,16 +572,44 @@ RecalculateCostRequest:
 
 RecalculateCostResponse:
   type: object
-  description: Recalculate cost response
+  description: Recalculate cost job status
   properties:
-    total_matched:
+    id:
+      type: string
+      description: Background job ID
+    status:
+      type: string
+      description: Current job status
+    total:
       type: integer
+      format: int64
+      description: Total matching logs queued for recalculation
+    processed:
+      type: integer
+      format: int64
+      description: Logs processed so far
     updated:
       type: integer
+      format: int64
+      description: Logs updated with new costs
     skipped:
       type: integer
-    remaining:
-      type: integer
+      format: int64
+      description: Logs skipped during processing
+    message:
+      type: string
+      description: Optional progress message
+    last_error:
+      type: string
+      description: Last error encountered by the job
+    started_at:
+      type: string
+      format: date-time
+      description: Job start time
+    updated_at:
+      type: string
+      format: date-time
+      description: Last status update time
 
 # Histogram schemas
 
@@ -1177,3 +1217,168 @@ MCPTopToolsResult:
       type: array
       items:
         $ref: '#/MCPTopToolResult'
+
+RankingDimension:
+  type: string
+  description: Entity used to group dimension rankings
+  enum:
+    - team
+    - customer
+    - business_unit
+    - user
+    - virtual_key
+
+DimensionRankingEntry:
+  type: object
+  description: Aggregated usage for a single dimension value (team, user, virtual key, etc.)
+  properties:
+    id:
+      type: string
+    name:
+      type: string
+    total_requests:
+      type: integer
+      format: int64
+    total_tokens:
+      type: integer
+      format: int64
+    total_cost:
+      type: number
+
+DimensionRankingTrend:
+  type: object
+  description: Percentage change versus the previous comparable period
+  properties:
+    has_previous_period:
+      type: boolean
+    requests_trend:
+      type: number
+    tokens_trend:
+      type: number
+    cost_trend:
+      type: number
+
+DimensionRankingWithTrend:
+  allOf:
+    - $ref: '#/DimensionRankingEntry'
+    - type: object
+      properties:
+        trend:
+          $ref: '#/DimensionRankingTrend'
+
+DimensionRankingResult:
+  type: object
+  description: Dimension values ranked by usage with trend comparison
+  properties:
+    rankings:
+      type: array
+      items:
+        $ref: '#/DimensionRankingWithTrend'
+    dimension:
+      $ref: '#/RankingDimension'
+    total_actual_requests:
+      type: integer
+      format: int64
+      description: |
+        Distinct request count over the attributed population. Only set for
+        fan-out dimensions (team, customer, business_unit) on Postgres.
+    total_attributed_requests:
+      type: integer
+      format: int64
+      description: |
+        Requests credited to every dimension value they touch; the sum can
+        exceed the real request count. Only set for fan-out dimensions.
+
+DashboardMeta:
+  type: object
+  description: Parameters the dashboard data was computed with
+  properties:
+    generated_at:
+      type: string
+      format: date-time
+      description: UTC time the response was assembled
+    bucket_size_seconds:
+      type: integer
+      format: int64
+      description: Width of every histogram bucket, derived from the time range
+    start_time:
+      type: string
+      format: date-time
+      description: Resolved start of the queried range
+    end_time:
+      type: string
+      format: date-time
+      description: Resolved end of the queried range
+
+DashboardOverview:
+  type: object
+  description: Overview tab metrics
+  properties:
+    stats:
+      $ref: '#/LogStats'
+    requests:
+      $ref: '#/HistogramResult'
+    tokens:
+      $ref: '#/TokenHistogramResult'
+    cost:
+      $ref: '#/CostHistogramResult'
+    models:
+      $ref: '#/ModelHistogramResult'
+    latency:
+      $ref: '#/LatencyHistogramResult'
+
+DashboardProviderUsage:
+  type: object
+  description: Provider Usage tab metrics
+  properties:
+    cost:
+      $ref: '#/ProviderCostHistogramResult'
+    tokens:
+      $ref: '#/ProviderTokenHistogramResult'
+    latency:
+      $ref: '#/ProviderLatencyHistogramResult'
+
+DashboardModelRankings:
+  type: object
+  description: Model Rankings tab data
+  properties:
+    rankings:
+      $ref: '#/ModelRankingResult'
+    histogram:
+      $ref: '#/ModelHistogramResult'
+
+DashboardMCP:
+  type: object
+  description: MCP usage tab metrics
+  properties:
+    volume:
+      $ref: '#/MCPHistogramResult'
+    cost:
+      $ref: '#/MCPCostHistogramResult'
+    top_tools:
+      $ref: '#/MCPTopToolsResult'
+
+DashboardResult:
+  type: object
+  description: |
+    Consolidated payload containing every metric shown on the workspace
+    dashboard. Each section mirrors the response of its dedicated endpoint, so
+    consumers can integrate a single call instead of orchestrating many.
+  properties:
+    meta:
+      $ref: '#/DashboardMeta'
+    overview:
+      $ref: '#/DashboardOverview'
+    provider_usage:
+      $ref: '#/DashboardProviderUsage'
+    model_rankings:
+      $ref: '#/DashboardModelRankings'
+    dimension_rankings:
+      type: object
+      description: |
+        Ranking tables keyed by dimension (`team`, `user`, `virtual_key`,
+        `customer`, `business_unit`); each value is that dimension's rankings.
+      additionalProperties:
+        $ref: '#/DimensionRankingResult'
+    mcp:
+      $ref: '#/DashboardMCP'

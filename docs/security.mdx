@@ -102,8 +102,18 @@ WORKDIR /app
 COPY --from=builder /app/main .
 COPY --from=builder /app/docker-entrypoint.sh .
 
-RUN mkdir -p $APP_DIR/logs
-USER appuser
+# Give the data dir group-0 ownership and group-write so the fail-fast
+# entrypoint can write config.db/logs.db under an arbitrary (OpenShift-assigned)
+# UID without needing CAP_CHOWN at runtime.
+RUN mkdir -p "$APP_DIR/logs" && \
+    adduser -D -s /bin/sh appuser && \
+    chown -R appuser:appuser /app && \
+    chown -R appuser:0 "$APP_DIR" && \
+    { [ "$APP_DIR" = "/app" ] || chmod -R g=rwX "$APP_DIR"; } && \
+    chmod +x /app/docker-entrypoint.sh
+# Numeric UID:GID (group 0) so kubelet can verify runAsNonRoot and the container
+# stays writable under arbitrary OpenShift UIDs.
+USER 1000:0
 
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
 CMD ["/app/main"]

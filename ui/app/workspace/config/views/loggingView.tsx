@@ -83,7 +83,7 @@ export default function LoggingView() {
 			<div className="space-y-4">
 				{/* Enable Logs */}
 				<div>
-					<div className="flex items-center justify-between space-x-2 rounded-lg border p-4">
+					<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 						<div className="space-y-0.5">
 							<label htmlFor="enable-logging" className="text-sm font-medium">
 								Enable Logs
@@ -113,7 +113,7 @@ export default function LoggingView() {
 				{/* Disable Content Logging - Only show when logging is enabled */}
 				{localConfig.enable_logging && bifrostConfig?.is_logs_connected && (
 					<div>
-						<div className="flex items-center justify-between space-x-2 rounded-lg border p-4">
+						<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 							<div className="space-y-0.5">
 								<label htmlFor="disable-content-logging" className="text-sm font-medium">
 									Disable Content Logging
@@ -137,7 +137,7 @@ export default function LoggingView() {
 
 				{/* Allow Per-Request Content Storage Override - Only show when logging is enabled */}
 				{localConfig.enable_logging && bifrostConfig?.is_logs_connected && (
-					<div className="flex items-center justify-between space-x-2 rounded-lg border p-4">
+					<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 						<div className="space-y-0.5">
 							<label htmlFor="allow-per-request-content-storage-override" className="text-sm font-medium">
 								Allow Per-Request Content Storage Override
@@ -163,7 +163,7 @@ export default function LoggingView() {
 				)}
 
 				{/* Allow Per-Request Raw Override */}
-				<div className="flex items-center justify-between space-x-2 rounded-lg border p-4">
+				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 					<div className="space-y-0.5">
 						<label htmlFor="allow-per-request-raw-override" className="text-sm font-medium">
 							Allow Per-Request Raw Override
@@ -186,7 +186,7 @@ export default function LoggingView() {
 
 				{/* Log Retention Days */}
 				{localConfig.enable_logging && bifrostConfig?.is_logs_connected && (
-					<div className="flex items-center justify-between space-x-2 rounded-lg border p-4">
+					<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 						<div className="space-y-0.5">
 							<Label htmlFor="log-retention-days" className="text-sm font-medium">
 								Log Retention Days
@@ -209,7 +209,7 @@ export default function LoggingView() {
 					</div>
 				)}
 
-				<div className="flex items-center justify-between space-x-2 rounded-lg border p-4">
+				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 					<div className="space-y-0.5">
 						<label htmlFor="hide-deleted-virtual-keys-in-filters" className="text-sm font-medium">
 							Do Not Show Deleted VirtualKeys In Filters
@@ -229,14 +229,15 @@ export default function LoggingView() {
 
 				{/* Logging Headers */}
 				{localConfig.enable_logging && bifrostConfig?.is_logs_connected && (
-					<div className="space-y-2 rounded-lg border p-4">
+					<div className="space-y-2 rounded-sm border p-4">
 						<label htmlFor="logging-headers" className="text-sm font-medium">
 							Logging Headers
 						</label>
 						<p className="text-muted-foreground text-sm">
 							Comma-separated list of request headers to capture in log metadata. Supports exact names and wildcard patterns (e.g.{" "}
-							<code className="text-xs">x-custom-*</code> captures all headers with that prefix, <code className="text-xs">*</code> logs
-							all headers — note that <code className="text-xs">*</code> will capture sensitive headers like Authorization). Values are extracted from incoming requests and stored in the metadata field of log entries. Headers with the{" "}
+							<code className="text-xs">x-custom-*</code> captures all headers with that prefix, <code className="text-xs">*</code> logs all
+							headers — note that <code className="text-xs">*</code> will capture sensitive headers like Authorization). Values are
+							extracted from incoming requests and stored in the metadata field of log entries. Headers with the{" "}
 							<code className="text-xs">x-bf-lh-</code> prefix are always captured automatically.
 						</p>
 						<Textarea

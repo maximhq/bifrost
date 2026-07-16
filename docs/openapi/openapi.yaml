@@ -140,6 +140,12 @@ tags:
     description: Log search and management endpoints
   - name: Cache
     description: Cache management endpoints
+  - name: Vault
+    description: Vault secret management endpoints
+  - name: Skills
+    description: Skills Repository management, marketplace, and download endpoints
+  - name: Audit Logs
+    description: CADF-compliant audit log search, export, and signature verification endpoints
 
 paths:
   # ==================== Unified Inference API ====================
@@ -912,11 +918,37 @@ paths:
   /api/users/{target_user_id}/access-profiles/virtual-keys/{vk_id}:
     $ref: './paths/management/accessprofiles.yaml#/users-access-profile-virtual-key-by-id'
 
+  # Audit Logs
+  /api/audit-logs:
+    $ref: './paths/management/auditlogs.yaml#/audit-logs'
+  /api/audit-logs/filterdata:
+    $ref: './paths/management/auditlogs.yaml#/audit-logs-filterdata'
+  /api/audit-logs/export:
+    $ref: './paths/management/auditlogs.yaml#/audit-logs-export'
+  /api/audit-logs/{id}:
+    $ref: './paths/management/auditlogs.yaml#/audit-logs-by-id'
+  /api/audit-logs/{id}/verify:
+    $ref: './paths/management/auditlogs.yaml#/audit-logs-verify'
+
   # MCP Tool Groups
   /api/mcp/tool-groups:
     $ref: './paths/management/mcptoolgroups.yaml#/mcp-tool-groups'
   /api/mcp/tool-groups/{id}:
     $ref: './paths/management/mcptoolgroups.yaml#/mcp-tool-groups-by-id'
+
+  # Circuit Breaker
+  /api/circuit-breaker/policies:
+    $ref: './paths/management/circuitbreaker.yaml#/circuit-breaker-policies'
+  /api/circuit-breaker/policies/{name}:
+    $ref: './paths/management/circuitbreaker.yaml#/circuit-breaker-policy-by-name'
+  /api/circuit-breaker/state:
+    $ref: './paths/management/circuitbreaker.yaml#/circuit-breaker-state'
+
+  # Governance - Complexity Analyzer Config
+  /api/governance/complexity-analyzer-config:
+    $ref: './paths/management/governance.yaml#/complexity'
+  /api/governance/complexity-analyzer-config/reset:
+    $ref: './paths/management/governance.yaml#/complexity-reset'
 
   # Logging
   /api/logs:
@@ -957,8 +989,12 @@ paths:
     $ref: './paths/management/logging.yaml#/logs-filterdata'
   /api/logs/rankings:
     $ref: './paths/management/logging.yaml#/logs-rankings'
+  /api/logs/dashboard:
+    $ref: './paths/management/logging.yaml#/logs-dashboard'
   /api/logs/recalculate-cost:
     $ref: './paths/management/logging.yaml#/logs-recalculate-cost'
+  /api/logs/recalculate-cost/status:
+    $ref: './paths/management/logging.yaml#/logs-recalculate-cost-status'
 
   # MCP Logs
   /api/mcp-logs:
@@ -998,11 +1034,41 @@ paths:
   /api/prompt-repo/sessions/{id}/commit:
     $ref: './paths/management/prompts.yaml#/sessions-commit'
 
+  # Skills Repository
+  /api/skills/files/upload:
+    $ref: './paths/management/skills.yaml#/skill-file-upload'
+  /api/skills/files/orphans:
+    $ref: './paths/management/skills.yaml#/skill-orphan-files'
+  /api/skills/all/version:
+    $ref: './paths/management/skills.yaml#/all-skills-version'
+  /api/skills:
+    $ref: './paths/management/skills.yaml#/skills'
+  /api/skills/{id}:
+    $ref: './paths/management/skills.yaml#/skills-by-id'
+  /api/skills/{id}/versions:
+    $ref: './paths/management/skills.yaml#/skill-versions'
+  /api/skills/{id}/shift-version:
+    $ref: './paths/management/skills.yaml#/shift-skill-version'
+  /api/skills/serve/claude-code/.claude-plugin/marketplace.json:
+    $ref: './paths/management/skills.yaml#/claude-code-skills-marketplace'
+  /api/skills/serve/codex/.agents/plugins/marketplace.json:
+    $ref: './paths/management/skills.yaml#/codex-skills-marketplace'
+  /api/skills/serve/all/download.zip:
+    $ref: './paths/management/skills.yaml#/all-skills-download'
+  /api/skills/serve/{skill-name}/download.zip:
+    $ref: './paths/management/skills.yaml#/skill-download'
+  /api/skills/serve/{skill-name}/files/{filepath}:
+    $ref: './paths/management/skills.yaml#/skill-file-download'
+
   # Cache
   /api/cache/clear/{cacheId}:
     $ref: './paths/management/cache.yaml#/clear-by-cache-id'
   /api/cache/clear-by-key/{cacheKey}:
     $ref: './paths/management/cache.yaml#/clear-by-cache-key'
+
+  # Vault
+  /api/vault/flush-cache:
+    $ref: './paths/management/vault.yaml#/flush-cache'
 
   # Infrastructure
   /ws:
@@ -1082,6 +1148,12 @@ components:
             $ref: './schemas/inference/common.yaml#/BifrostError'
     InternalError:
       description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: './schemas/inference/common.yaml#/BifrostError'
+    ConfigStoreUnavailable:
+      description: Config store not available
       content:
         application/json:
           schema:
@@ -1519,6 +1591,44 @@ components:
     ListPricingOverridesResponse:
       $ref: './schemas/management/governance.yaml#/ListPricingOverridesResponse'
 
+    # Skills Repository
+    SkillSourceType:
+      $ref: './schemas/management/skills.yaml#/SkillSourceType'
+    SkillFileEntry:
+      $ref: './schemas/management/skills.yaml#/SkillFileEntry'
+    SkillFile:
+      $ref: './schemas/management/skills.yaml#/SkillFile'
+    SkillVersion:
+      $ref: './schemas/management/skills.yaml#/SkillVersion'
+    Skill:
+      $ref: './schemas/management/skills.yaml#/Skill'
+    CreateSkillRequest:
+      $ref: './schemas/management/skills.yaml#/CreateSkillRequest'
+    UpdateSkillRequest:
+      $ref: './schemas/management/skills.yaml#/UpdateSkillRequest'
+    SkillResponse:
+      $ref: './schemas/management/skills.yaml#/SkillResponse'
+    ListSkillsResponse:
+      $ref: './schemas/management/skills.yaml#/ListSkillsResponse'
+    ListSkillVersionsResponse:
+      $ref: './schemas/management/skills.yaml#/ListSkillVersionsResponse'
+    UploadSkillFileRequest:
+      $ref: './schemas/management/skills.yaml#/UploadSkillFileRequest'
+    UploadSkillFileResponse:
+      $ref: './schemas/management/skills.yaml#/UploadSkillFileResponse'
+    SkillOrphanCleanupResponse:
+      $ref: './schemas/management/skills.yaml#/SkillOrphanCleanupResponse'
+    AllSkillsVersionResponse:
+      $ref: './schemas/management/skills.yaml#/AllSkillsVersionResponse'
+    BumpAllSkillsVersionRequest:
+      $ref: './schemas/management/skills.yaml#/BumpAllSkillsVersionRequest'
+    ShiftSkillVersionRequest:
+      $ref: './schemas/management/skills.yaml#/ShiftSkillVersionRequest'
+    ClaudeCodeSkillMarketplace:
+      $ref: './schemas/management/skills.yaml#/ClaudeCodeSkillMarketplace'
+    CodexSkillMarketplace:
+      $ref: './schemas/management/skills.yaml#/CodexSkillMarketplace'
+
     # Logging
     LogEntry:
       $ref: './schemas/management/logging.yaml#/LogEntry'
@@ -1536,3 +1646,31 @@ components:
     # Cache
     ClearCacheResponse:
       $ref: './schemas/management/cache.yaml#/ClearCacheResponse'
+
+    # Audit Logs
+    AuditEventType:
+      $ref: './schemas/management/auditlogs.yaml#/AuditEventType'
+    AuditAction:
+      $ref: './schemas/management/auditlogs.yaml#/AuditAction'
+    AuditOutcome:
+      $ref: './schemas/management/auditlogs.yaml#/AuditOutcome'
+    AuditResourceType:
+      $ref: './schemas/management/auditlogs.yaml#/AuditResourceType'
+    AuditResource:
+      $ref: './schemas/management/auditlogs.yaml#/AuditResource'
+    AuditReason:
+      $ref: './schemas/management/auditlogs.yaml#/AuditReason'
+    AuditAttachment:
+      $ref: './schemas/management/auditlogs.yaml#/AuditAttachment'
+    AuditEvent:
+      $ref: './schemas/management/auditlogs.yaml#/AuditEvent'
+    AuditLogsResult:
+      $ref: './schemas/management/auditlogs.yaml#/AuditLogsResult'
+    AuditLogResponse:
+      $ref: './schemas/management/auditlogs.yaml#/AuditLogResponse'
+    AuditFilterKeyPair:
+      $ref: './schemas/management/auditlogs.yaml#/AuditFilterKeyPair'
+    AuditFilterDataResponse:
+      $ref: './schemas/management/auditlogs.yaml#/AuditFilterDataResponse'
+    AuditVerifyResult:
+      $ref: './schemas/management/auditlogs.yaml#/AuditVerifyResult'

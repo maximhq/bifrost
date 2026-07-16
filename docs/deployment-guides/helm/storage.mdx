@@ -184,8 +184,10 @@ Point Bifrost at an existing PostgreSQL instance - RDS, Cloud SQL, Azure Databas
 | `postgresql.external.user` | Username | `bifrost` |
 | `postgresql.external.database` | Database name | `bifrost` |
 | `postgresql.external.sslMode` | SSL mode (`disable`, `require`, `verify-ca`, `verify-full`) | `disable` |
-| `postgresql.external.existingSecret` | Secret name for the password | `""` |
+| `postgresql.external.existingSecret` | Secret name for the password. Mutually exclusive with `passwordCommand`. | `""` |
 | `postgresql.external.passwordKey` | Key within the secret | `"password"` |
+| `postgresql.external.passwordCommand` | Command executed by Bifrost to produce the database password on stdout for each new physical connection. Mutually exclusive with `existingSecret`; set only the executable path or name in `command` and pass arguments through `args`. | unset |
+| `postgresql.external.connMaxLifetime` | Maximum lifetime for physical database connections, such as `"10m"` | unset |
 
 ```bash
 kubectl create secret generic external-postgres-credentials \
@@ -218,6 +220,35 @@ bifrost:
 
 ```bash
 helm install bifrost bifrost/bifrost -f external-postgres-values.yaml
+```
+
+For dynamic credentials such as AWS RDS IAM auth tokens, use `passwordCommand` instead of `existingSecret`:
+
+```yaml
+postgresql:
+  enabled: false
+  external:
+    enabled: true
+    host: "your-rds-endpoint.us-east-1.rds.amazonaws.com"
+    port: 5432
+    user: bifrost
+    database: bifrost
+    sslMode: require
+    passwordCommand:
+      command: aws
+      args:
+        - rds
+        - generate-db-auth-token
+        - --hostname
+        - your-rds-endpoint.us-east-1.rds.amazonaws.com
+        - --port
+        - "5432"
+        - --region
+        - us-east-1
+        - --username
+        - bifrost
+      timeout: 10s
+    connMaxLifetime: 10m
 ```
 
 **Test connectivity before installing:**
@@ -303,6 +334,36 @@ Offload large request/response payloads from the database to S3 or GCS. The DB r
 
 <Tabs>
 <Tab title="AWS S3">
+
+#### Required IAM Permissions
+
+The IAM user or role needs the following permissions on your bucket:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "BucketAccess",
+      "Effect": "Allow",
+      "Action": ["s3:ListBucket"],
+      "Resource": "arn:aws:s3:::bifrost-logs"
+    },
+    {
+      "Sid": "ObjectAccess",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:DeleteObject",
+        "s3:PutObjectTagging",
+        "s3:GetObjectTagging"
+      ],
+      "Resource": "arn:aws:s3:::bifrost-logs/*"
+    }
+  ]
+}
+```
 
 ```bash
 kubectl create secret generic s3-credentials \

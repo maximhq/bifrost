@@ -790,7 +790,7 @@ func (ma *MockAccount) AddProviderWithBaseURL(provider schemas.ModelProvider, co
 	ma.configs[provider] = &schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
 			BaseURL:                        baseURL,
-			DefaultRequestTimeoutInSeconds: 30,
+			DefaultRequestTimeoutInSeconds: 300,
 			MaxRetries:                     3,
 			RetryBackoffInitial:            500 * time.Millisecond,
 			RetryBackoffMax:                5 * time.Second,
@@ -804,7 +804,7 @@ func (ma *MockAccount) AddProviderWithBaseURL(provider schemas.ModelProvider, co
 	ma.keys[provider] = []schemas.Key{
 		{
 			ID:     fmt.Sprintf("test-key-%s", provider),
-			Value:  *schemas.NewEnvVar(fmt.Sprintf("sk-test-%s", provider)),
+			Value:  *schemas.NewSecretVar(fmt.Sprintf("sk-test-%s", provider)),
 			Models: schemas.WhiteList{"*"},
 			Weight: 100,
 		},
@@ -968,8 +968,8 @@ func TestSelectKeyFromProviderForModel_SessionStickiness(t *testing.T) {
 	account.AddProvider(schemas.OpenAI, 5, 1000)
 	// Use 2 keys so we hit the keySelector path (single key returns early)
 	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
-		{ID: "key-a", Name: "Key A", Value: *schemas.NewEnvVar("sk-a"), Models: schemas.WhiteList{"*"}, Weight: 1},
-		{ID: "key-b", Name: "Key B", Value: *schemas.NewEnvVar("sk-b"), Models: schemas.WhiteList{"*"}, Weight: 1},
+		{ID: "key-a", Name: "Key A", Value: *schemas.NewSecretVar("sk-a"), Models: schemas.WhiteList{"*"}, Weight: 1},
+		{ID: "key-b", Name: "Key B", Value: *schemas.NewSecretVar("sk-b"), Models: schemas.WhiteList{"*"}, Weight: 1},
 	})
 
 	var keySelectorCalls int
@@ -1035,8 +1035,8 @@ func TestSelectKeyFromProviderForModel_NoStickinessWithoutSessionID(t *testing.T
 	account := NewMockAccount()
 	account.AddProvider(schemas.OpenAI, 5, 1000)
 	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
-		{ID: "key-a", Name: "Key A", Value: *schemas.NewEnvVar("sk-a"), Models: schemas.WhiteList{"*"}, Weight: 1},
-		{ID: "key-b", Name: "Key B", Value: *schemas.NewEnvVar("sk-b"), Models: schemas.WhiteList{"*"}, Weight: 1},
+		{ID: "key-a", Name: "Key A", Value: *schemas.NewSecretVar("sk-a"), Models: schemas.WhiteList{"*"}, Weight: 1},
+		{ID: "key-b", Name: "Key B", Value: *schemas.NewSecretVar("sk-b"), Models: schemas.WhiteList{"*"}, Weight: 1},
 	})
 
 	var keySelectorCalls int
@@ -1087,8 +1087,8 @@ func TestSelectKeyFromProviderForModel_SessionStickinessNoRotation(t *testing.T)
 	account := NewMockAccount()
 	account.AddProvider(schemas.OpenAI, 5, 1000)
 	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
-		{ID: "key-a", Name: "Key A", Value: *schemas.NewEnvVar("sk-a"), Models: schemas.WhiteList{"*"}, Weight: 1},
-		{ID: "key-b", Name: "Key B", Value: *schemas.NewEnvVar("sk-b"), Models: schemas.WhiteList{"*"}, Weight: 1},
+		{ID: "key-a", Name: "Key A", Value: *schemas.NewSecretVar("sk-a"), Models: schemas.WhiteList{"*"}, Weight: 1},
+		{ID: "key-b", Name: "Key B", Value: *schemas.NewSecretVar("sk-b"), Models: schemas.WhiteList{"*"}, Weight: 1},
 	})
 
 	deterministicSelector := func(ctx *schemas.BifrostContext, keys []schemas.Key, _ schemas.ModelProvider, _ string) (schemas.Key, error) {
@@ -1172,7 +1172,7 @@ func TestSelectKeyFromProviderForModel_BlacklistedModels(t *testing.T) {
 
 	t.Run("all keys blacklist model", func(t *testing.T) {
 		account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
-			{ID: "k1", Name: "K1", Value: *schemas.NewEnvVar("sk-1"), Weight: 1, BlacklistedModels: []string{"gpt-4"}},
+			{ID: "k1", Name: "K1", Value: *schemas.NewSecretVar("sk-1"), Weight: 1, BlacklistedModels: []string{"gpt-4"}},
 		})
 		_, _, err := bifrost.selectKeyFromProviderForModelWithPool(bfCtx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", schemas.OpenAI)
 		if err == nil {
@@ -1186,7 +1186,7 @@ func TestSelectKeyFromProviderForModel_BlacklistedModels(t *testing.T) {
 	t.Run("blacklist wins over models allow list", func(t *testing.T) {
 		account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
 			{
-				ID: "k1", Name: "K1", Value: *schemas.NewEnvVar("sk-1"), Weight: 1,
+				ID: "k1", Name: "K1", Value: *schemas.NewSecretVar("sk-1"), Weight: 1,
 				Models:            []string{"gpt-4"},
 				BlacklistedModels: []string{"gpt-4"},
 			},
@@ -1199,8 +1199,8 @@ func TestSelectKeyFromProviderForModel_BlacklistedModels(t *testing.T) {
 
 	t.Run("second key used when first blacklists", func(t *testing.T) {
 		account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
-			{ID: "k1", Name: "K1", Value: *schemas.NewEnvVar("sk-1"), Weight: 1, BlacklistedModels: []string{"gpt-4"}},
-			{ID: "k2", Name: "K2", Value: *schemas.NewEnvVar("sk-2"), Weight: 1, Models: []string{"*"}},
+			{ID: "k1", Name: "K1", Value: *schemas.NewSecretVar("sk-1"), Weight: 1, BlacklistedModels: []string{"gpt-4"}},
+			{ID: "k2", Name: "K2", Value: *schemas.NewSecretVar("sk-2"), Weight: 1, Models: []string{"*"}},
 		})
 		pool, canRotate, err := bifrost.selectKeyFromProviderForModelWithPool(bfCtx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", schemas.OpenAI)
 		if err != nil {
@@ -3048,15 +3048,15 @@ func TestProviderOverride(t *testing.T) {
 		account.AddProviderWithBaseURL(schemas.OpenAI, 2, 100, server.URL+"/v1")
 		// Three-key pool — would normally rotate on 429 retries.
 		account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
-			{ID: "pool-a", Name: "Pool A", Value: *schemas.NewEnvVar("sk-pool-a"), Models: schemas.WhiteList{"*"}, Weight: 1},
-			{ID: "pool-b", Name: "Pool B", Value: *schemas.NewEnvVar("sk-pool-b"), Models: schemas.WhiteList{"*"}, Weight: 1},
-			{ID: "pool-c", Name: "Pool C", Value: *schemas.NewEnvVar("sk-pool-c"), Models: schemas.WhiteList{"*"}, Weight: 1},
+			{ID: "pool-a", Name: "Pool A", Value: *schemas.NewSecretVar("sk-pool-a"), Models: schemas.WhiteList{"*"}, Weight: 1},
+			{ID: "pool-b", Name: "Pool B", Value: *schemas.NewSecretVar("sk-pool-b"), Models: schemas.WhiteList{"*"}, Weight: 1},
+			{ID: "pool-c", Name: "Pool C", Value: *schemas.NewSecretVar("sk-pool-c"), Models: schemas.WhiteList{"*"}, Weight: 1},
 		})
 
 		plugin := newKeyBaseURLPluginWithID(schemas.Key{
 			ID:     overrideKeyID,
 			Name:   overrideKeyName,
-			Value:  *schemas.NewEnvVar(overrideKeyValue),
+			Value:  *schemas.NewSecretVar(overrideKeyValue),
 			Models: schemas.WhiteList{"*"},
 			Weight: 1,
 		}, server.URL)
@@ -3132,7 +3132,7 @@ func TestProviderOverride(t *testing.T) {
 		plugin := newKeyBaseURLPluginWithID(schemas.Key{
 			ID:     trailKeyID,
 			Name:   trailKeyName,
-			Value:  *schemas.NewEnvVar(trailKeyValue),
+			Value:  *schemas.NewSecretVar(trailKeyValue),
 			Models: schemas.WhiteList{"*"},
 			Weight: 1,
 		}, server.URL)
@@ -3195,7 +3195,7 @@ func TestProviderOverride(t *testing.T) {
 		account.AddProviderWithBaseURL(schemas.OpenAI, 2, 100, server.URL+"/v1")
 		// Seed a key with a known ID so BifrostContextKeyAPIKeyID can pin it.
 		account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
-			{ID: pinnedKeyID, Name: "Pinned", Value: *schemas.NewEnvVar(pinnedKeyValue), Models: schemas.WhiteList{"*"}, Weight: 1},
+			{ID: pinnedKeyID, Name: "Pinned", Value: *schemas.NewSecretVar(pinnedKeyValue), Models: schemas.WhiteList{"*"}, Weight: 1},
 		})
 
 		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
@@ -3255,8 +3255,8 @@ func TestProviderOverride(t *testing.T) {
 		// Multi-key pool so that, absent the override, stickiness would run keySelector
 		// and persist a sticky entry in the KV store.
 		account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
-			{ID: "sticky-a", Name: "Sticky A", Value: *schemas.NewEnvVar("sk-sticky-a"), Models: schemas.WhiteList{"*"}, Weight: 1},
-			{ID: "sticky-b", Name: "Sticky B", Value: *schemas.NewEnvVar("sk-sticky-b"), Models: schemas.WhiteList{"*"}, Weight: 1},
+			{ID: "sticky-a", Name: "Sticky A", Value: *schemas.NewSecretVar("sk-sticky-a"), Models: schemas.WhiteList{"*"}, Weight: 1},
+			{ID: "sticky-b", Name: "Sticky B", Value: *schemas.NewSecretVar("sk-sticky-b"), Models: schemas.WhiteList{"*"}, Weight: 1},
 		})
 
 		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
@@ -3503,7 +3503,7 @@ func TestValidateRequest_DefersProviderCheck(t *testing.T) {
 				Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &content}},
 			},
 		}
-		if err := validateRequest(req); err != nil {
+		if err := validateRequestAfterPreRequestHooks(req); err != nil {
 			t.Errorf("validateRequest rejected empty-provider request: %v", err.Error.Message)
 		}
 	})
@@ -3516,17 +3516,17 @@ func TestValidateRequest_DefersProviderCheck(t *testing.T) {
 				Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &content}},
 			},
 		}
-		err := validateRequest(req)
+		err := validateRequestAfterPreRequestHooks(req)
 		if err == nil {
 			t.Fatal("validateRequest accepted missing model — model check regressed")
 		}
-		if !strings.Contains(err.Error.Message, "model is required") {
-			t.Errorf("expected 'model is required', got: %s", err.Error.Message)
+		if !strings.Contains(err.Error.Message, ModelAutoResolveErrorMessage) {
+			t.Errorf("expected %q, got: %s", ModelAutoResolveErrorMessage, err.Error.Message)
 		}
 	})
 
 	t.Run("nil request rejected", func(t *testing.T) {
-		err := validateRequest(nil)
+		err := validateRequestAfterPreRequestHooks(nil)
 		if err == nil {
 			t.Fatal("validateRequest accepted nil request")
 		}
@@ -3548,8 +3548,12 @@ func newKeyBaseURLPlugin(key, baseURL string) *keyBaseURLPlugin {
 
 func (p *keyBaseURLPlugin) GetName() string { return "key-base-url-test-plugin" }
 func (p *keyBaseURLPlugin) Cleanup() error  { return nil }
+func (p *keyBaseURLPlugin) PreRequestHook(_ *schemas.BifrostContext, _ *schemas.BifrostRequest) error {
+	return nil
+}
+
 func (p *keyBaseURLPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
-	req.UpdateAPIKey(schemas.Key{Value: *schemas.NewEnvVar(p.key)})
+	req.UpdateAPIKey(schemas.Key{Value: *schemas.NewSecretVar(p.key)})
 	req.UpdateProviderBaseURL(p.baseURL)
 	return req, nil, nil
 }
@@ -3566,6 +3570,10 @@ func (p *providerOverridePostHookObserverPlugin) GetName() string {
 	return "provider-override-post-hook-observer-test-plugin"
 }
 func (p *providerOverridePostHookObserverPlugin) Cleanup() error { return nil }
+func (p *providerOverridePostHookObserverPlugin) PreRequestHook(_ *schemas.BifrostContext, _ *schemas.BifrostRequest) error {
+	return nil
+}
+
 func (p *providerOverridePostHookObserverPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	return req, nil, nil
 }
@@ -3590,6 +3598,10 @@ func newKeyBaseURLPluginWithID(key schemas.Key, baseURL string) *keyBaseURLPlugi
 
 func (p *keyBaseURLPluginWithID) GetName() string { return "key-base-url-with-id-test-plugin" }
 func (p *keyBaseURLPluginWithID) Cleanup() error  { return nil }
+func (p *keyBaseURLPluginWithID) PreRequestHook(_ *schemas.BifrostContext, _ *schemas.BifrostRequest) error {
+	return nil
+}
+
 func (p *keyBaseURLPluginWithID) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	req.UpdateAPIKey(p.key)
 	req.UpdateProviderBaseURL(p.baseURL)
@@ -3608,10 +3620,14 @@ type primaryOnlyOverridePlugin struct {
 
 func (p *primaryOnlyOverridePlugin) GetName() string { return "primary-only-override-test-plugin" }
 func (p *primaryOnlyOverridePlugin) Cleanup() error  { return nil }
+func (p *primaryOnlyOverridePlugin) PreRequestHook(_ *schemas.BifrostContext, _ *schemas.BifrostRequest) error {
+	return nil
+}
+
 func (p *primaryOnlyOverridePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	idx, _ := ctx.Value(schemas.BifrostContextKeyFallbackIndex).(int)
 	if idx == 0 {
-		req.UpdateAPIKey(schemas.Key{Value: *schemas.NewEnvVar(p.key)})
+		req.UpdateAPIKey(schemas.Key{Value: *schemas.NewSecretVar(p.key)})
 		req.UpdateProviderBaseURL(p.baseURL)
 	}
 	return req, nil, nil
@@ -3633,11 +3649,15 @@ func newProviderSwitchPlugin(provider schemas.ModelProvider, key, baseURL string
 
 func (p *providerSwitchPlugin) GetName() string { return "provider-switch-test-plugin" }
 func (p *providerSwitchPlugin) Cleanup() error  { return nil }
+func (p *providerSwitchPlugin) PreRequestHook(_ *schemas.BifrostContext, _ *schemas.BifrostRequest) error {
+	return nil
+}
+
 func (p *providerSwitchPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	if err := req.UpdateProvider(p.provider); err != nil {
 		return nil, nil, err
 	}
-	req.UpdateAPIKey(schemas.Key{Value: *schemas.NewEnvVar(p.key)})
+	req.UpdateAPIKey(schemas.Key{Value: *schemas.NewSecretVar(p.key)})
 	req.UpdateProviderBaseURL(p.baseURL)
 	return req, nil, nil
 }
@@ -3871,6 +3891,10 @@ type dynamicFallbackPlugin struct {
 func (p *dynamicFallbackPlugin) GetName() string { return "dynamic-fallback-test-plugin" }
 func (p *dynamicFallbackPlugin) Cleanup() error  { return nil }
 
+func (p *dynamicFallbackPlugin) PreRequestHook(_ *schemas.BifrostContext, _ *schemas.BifrostRequest) error {
+	return nil
+}
+
 func (p *dynamicFallbackPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	idx, _ := ctx.Value(schemas.BifrostContextKeyFallbackIndex).(int)
 	if idx == 0 && req.ChatRequest != nil {
@@ -3887,7 +3911,7 @@ func (p *dynamicFallbackPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *sch
 	if !ok {
 		return req, nil, nil
 	}
-	req.UpdateAPIKey(schemas.Key{Value: *schemas.NewEnvVar(route.key)})
+	req.UpdateAPIKey(schemas.Key{Value: *schemas.NewSecretVar(route.key)})
 	req.UpdateProviderBaseURL(route.baseURL)
 	return req, nil, nil
 }
@@ -3900,7 +3924,7 @@ func (p *dynamicFallbackPlugin) PostLLMHook(_ *schemas.BifrostContext, resp *sch
 // to scalar fields (Provider, Model) and ProviderOverride on the clone do not affect
 // the original, and vice versa.
 func TestBifrostRequestClone(t *testing.T) {
-	key := schemas.Key{Value: *schemas.NewEnvVar("sk-original")}
+	key := schemas.Key{Value: *schemas.NewSecretVar("sk-original")}
 	original := &schemas.BifrostRequest{
 		ChatRequest: &schemas.BifrostChatRequest{
 			Provider: schemas.Anthropic,
@@ -4015,13 +4039,17 @@ type fallbackOverridePlugin struct {
 func (p *fallbackOverridePlugin) GetName() string { return "fallback-override-test-plugin" }
 func (p *fallbackOverridePlugin) Cleanup() error  { return nil }
 
+func (p *fallbackOverridePlugin) PreRequestHook(_ *schemas.BifrostContext, _ *schemas.BifrostRequest) error {
+	return nil
+}
+
 func (p *fallbackOverridePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	idx, _ := ctx.Value(schemas.BifrostContextKeyFallbackIndex).(int)
 	if idx > 0 {
 		if err := req.UpdateProvider(schemas.OpenAI); err != nil {
 			return nil, nil, err
 		}
-		req.UpdateAPIKey(schemas.Key{Value: *schemas.NewEnvVar(p.fallbackKey)})
+		req.UpdateAPIKey(schemas.Key{Value: *schemas.NewSecretVar(p.fallbackKey)})
 		req.UpdateProviderBaseURL(p.fallbackBaseURL)
 	}
 	return req, nil, nil
@@ -4166,6 +4194,10 @@ type extraFieldsClobberPlugin struct {
 
 func (p *extraFieldsClobberPlugin) GetName() string { return "extra-fields-clobber-test-plugin" }
 func (p *extraFieldsClobberPlugin) Cleanup() error  { return nil }
+func (p *extraFieldsClobberPlugin) PreRequestHook(_ *schemas.BifrostContext, _ *schemas.BifrostRequest) error {
+	return nil
+}
+
 func (p *extraFieldsClobberPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	return req, nil, nil
 }
@@ -4475,6 +4507,10 @@ type postHookObserverPlugin struct {
 
 func (p *postHookObserverPlugin) GetName() string { return "post-hook-observer-test-plugin" }
 func (p *postHookObserverPlugin) Cleanup() error  { return nil }
+func (p *postHookObserverPlugin) PreRequestHook(_ *schemas.BifrostContext, _ *schemas.BifrostRequest) error {
+	return nil
+}
+
 func (p *postHookObserverPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	atomic.AddInt32(&p.preCalls, 1)
 	return req, nil, nil
@@ -4498,6 +4534,10 @@ type captureFlagPlugin struct {
 
 func (p *captureFlagPlugin) GetName() string { return "capture-flag-test-plugin" }
 func (p *captureFlagPlugin) Cleanup() error  { return nil }
+func (p *captureFlagPlugin) PreRequestHook(_ *schemas.BifrostContext, _ *schemas.BifrostRequest) error {
+	return nil
+}
+
 func (p *captureFlagPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	return req, nil, nil
 }
@@ -4749,6 +4789,10 @@ type nilRequestPlugin struct {
 
 func (p *nilRequestPlugin) GetName() string { return "nil-request-test-plugin" }
 func (p *nilRequestPlugin) Cleanup() error  { return nil }
+func (p *nilRequestPlugin) PreRequestHook(_ *schemas.BifrostContext, _ *schemas.BifrostRequest) error {
+	return nil
+}
+
 func (p *nilRequestPlugin) PreLLMHook(_ *schemas.BifrostContext, _ *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	atomic.AddInt32(&p.preCalls, 1)
 	return nil, nil, nil
@@ -5189,13 +5233,17 @@ type perModelRoutePlugin struct {
 func (p *perModelRoutePlugin) GetName() string { return "per-model-route-test-plugin" }
 func (p *perModelRoutePlugin) Cleanup() error  { return nil }
 
+func (p *perModelRoutePlugin) PreRequestHook(_ *schemas.BifrostContext, _ *schemas.BifrostRequest) error {
+	return nil
+}
+
 func (p *perModelRoutePlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	_, model, _ := req.GetRequestFields()
 	route, ok := p.byModel[model]
 	if !ok {
 		return req, nil, nil
 	}
-	req.UpdateAPIKey(schemas.Key{Value: *schemas.NewEnvVar(route.key)})
+	req.UpdateAPIKey(schemas.Key{Value: *schemas.NewSecretVar(route.key)})
 	req.UpdateProviderBaseURL(route.baseURL)
 	if route.extraHeaders != nil {
 		req.UpdateProviderNetworkConfig(schemas.ProviderNetworkConfigOverride{ExtraHeaders: route.extraHeaders})
@@ -5279,8 +5327,12 @@ type deadOverrideKeyPlugin struct {
 
 func (p *deadOverrideKeyPlugin) GetName() string { return "dead-override-key-test-plugin" }
 func (p *deadOverrideKeyPlugin) Cleanup() error  { return nil }
+func (p *deadOverrideKeyPlugin) PreRequestHook(_ *schemas.BifrostContext, _ *schemas.BifrostRequest) error {
+	return nil
+}
+
 func (p *deadOverrideKeyPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
-	req.UpdateAPIKey(schemas.Key{ID: "ovr-dead-key", Value: *schemas.NewEnvVar("sk-revoked")})
+	req.UpdateAPIKey(schemas.Key{ID: "ovr-dead-key", Value: *schemas.NewSecretVar("sk-revoked")})
 	req.UpdateProviderBaseURL(p.baseURL)
 	maxRetries := 1
 	req.UpdateProviderNetworkConfig(schemas.ProviderNetworkConfigOverride{MaxRetries: &maxRetries})
@@ -5363,13 +5415,17 @@ type providerConfigTimeoutPlugin struct {
 
 func (p *providerConfigTimeoutPlugin) GetName() string { return "provider-config-timeout-test-plugin" }
 func (p *providerConfigTimeoutPlugin) Cleanup() error  { return nil }
+func (p *providerConfigTimeoutPlugin) PreRequestHook(_ *schemas.BifrostContext, _ *schemas.BifrostRequest) error {
+	return nil
+}
+
 func (p *providerConfigTimeoutPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	provider, _, _ := req.GetRequestFields()
 	cfg, ok := p.configs[provider]
 	if !ok {
 		return req, nil, nil
 	}
-	req.UpdateAPIKey(schemas.Key{Value: *schemas.NewEnvVar("sk-timeout-test")})
+	req.UpdateAPIKey(schemas.Key{Value: *schemas.NewSecretVar("sk-timeout-test")})
 	req.UpdateProviderBaseURL(cfg.baseURL)
 	timeoutSeconds := cfg.timeoutSeconds
 	req.UpdateProviderNetworkConfig(schemas.ProviderNetworkConfigOverride{RequestTimeoutInSeconds: &timeoutSeconds})
@@ -5622,5 +5678,273 @@ func TestPerRequestTimeoutOverride_DynamicProvider(t *testing.T) {
 	}
 	if elapsed > 2500*time.Millisecond {
 		t.Fatalf("request returned after %v; the 1s per-request deadline did not bound the call", elapsed)
+	}
+}
+
+// TestFilterKeysByID covers the KeyID scoping path for ListModels requests:
+// a hit returns the single matching key, a miss returns an empty slice
+// (which the caller surfaces as "no key found"), and the input slice must
+// not be mutated.
+func TestFilterKeysByID(t *testing.T) {
+	keys := []schemas.Key{
+		{ID: "k1"},
+		{ID: "k2"},
+		{ID: "k3"},
+	}
+
+	t.Run("match returns single key", func(t *testing.T) {
+		got := filterKeysByID(keys, "k2")
+		if len(got) != 1 || got[0].ID != "k2" {
+			t.Fatalf("filterKeysByID(_, k2) = %+v, want one key with ID=k2", got)
+		}
+	})
+
+	t.Run("no match returns empty slice", func(t *testing.T) {
+		got := filterKeysByID(keys, "does-not-exist")
+		if len(got) != 0 {
+			t.Fatalf("filterKeysByID(_, missing) = %+v, want empty", got)
+		}
+	})
+
+	t.Run("empty target returns empty slice", func(t *testing.T) {
+		got := filterKeysByID(keys, "")
+		if len(got) != 0 {
+			t.Fatalf("filterKeysByID(_, \"\") = %+v, want empty", got)
+		}
+	})
+
+	t.Run("input slice is not mutated", func(t *testing.T) {
+		before := make([]schemas.Key, len(keys))
+		copy(before, keys)
+		_ = filterKeysByID(keys, "k1")
+		for i := range keys {
+			if keys[i].ID != before[i].ID {
+				t.Fatalf("input mutated at index %d: got %q, want %q", i, keys[i].ID, before[i].ID)
+			}
+		}
+	})
+}
+
+// fakeRoutingPlugin is a minimal LLMPlugin whose PreRequestHook writes a routing key pin to the
+// non-reserved BifrostContextKeyRoutingPinnedAPIKeyID, mirroring what the governance routing
+// engine does. It exists to exercise the commit step in PluginPipeline.RunPreRequestHooks.
+type fakeRoutingPlugin struct {
+	name     string
+	pinKeyID string // written to BifrostContextKeyRoutingPinnedAPIKeyID when non-empty
+}
+
+func (f *fakeRoutingPlugin) GetName() string { return f.name }
+func (f *fakeRoutingPlugin) Cleanup() error  { return nil }
+func (f *fakeRoutingPlugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) error {
+	if f.pinKeyID != "" {
+		// A direct write to the reserved BifrostContextKeyAPIKeyID here would be dropped by the
+		// restricted-write block; routing must use the non-reserved key.
+		ctx.SetValue(schemas.BifrostContextKeyRoutingPinnedAPIKeyID, f.pinKeyID)
+	}
+	return nil
+}
+func (f *fakeRoutingPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	return req, nil, nil
+}
+func (f *fakeRoutingPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	return resp, bifrostErr, nil
+}
+
+func newRoutingCommitPipeline(plugins ...schemas.LLMPlugin) *PluginPipeline {
+	return &PluginPipeline{
+		logger:     NewDefaultLogger(schemas.LogLevelError),
+		tracer:     &schemas.NoOpTracer{},
+		llmPlugins: plugins,
+	}
+}
+
+// TestRunPreRequestHooks_CommitsRoutingPinnedKey verifies that the pinned key a routing rule
+// writes to the non-reserved BifrostContextKeyRoutingPinnedAPIKeyID (during the blocked
+// PreRequestHook phase) is committed by core into the reserved BifrostContextKeyAPIKeyID that
+// key selection reads — and that the routing pin's precedence over a caller-supplied pin holds.
+func TestRunPreRequestHooks_CommitsRoutingPinnedKey(t *testing.T) {
+	const pinned = "routing-pinned-key-id"
+
+	t.Run("routing pin is committed to reserved api-key-id", func(t *testing.T) {
+		p := newRoutingCommitPipeline(&fakeRoutingPlugin{name: "gov", pinKeyID: pinned})
+		ctx := schemas.NewBifrostContext(context.Background(), time.Now())
+		p.RunPreRequestHooks(ctx, &schemas.BifrostRequest{})
+		if got, _ := ctx.Value(schemas.BifrostContextKeyAPIKeyID).(string); got != pinned {
+			t.Fatalf("APIKeyID = %q, want %q", got, pinned)
+		}
+	})
+
+	t.Run("routing pin overrides a caller-supplied api-key-id", func(t *testing.T) {
+		p := newRoutingCommitPipeline(&fakeRoutingPlugin{name: "gov", pinKeyID: pinned})
+		ctx := schemas.NewBifrostContext(context.Background(), time.Now())
+		ctx.SetValue(schemas.BifrostContextKeyAPIKeyID, "caller-pin")
+		p.RunPreRequestHooks(ctx, &schemas.BifrostRequest{})
+		if got, _ := ctx.Value(schemas.BifrostContextKeyAPIKeyID).(string); got != pinned {
+			t.Fatalf("APIKeyID = %q, want %q (routing pin must override caller pin)", got, pinned)
+		}
+	})
+
+	t.Run("caller api-key-id preserved when no routing pin", func(t *testing.T) {
+		p := newRoutingCommitPipeline(&fakeRoutingPlugin{name: "noop"})
+		ctx := schemas.NewBifrostContext(context.Background(), time.Now())
+		ctx.SetValue(schemas.BifrostContextKeyAPIKeyID, "caller-pin")
+		p.RunPreRequestHooks(ctx, &schemas.BifrostRequest{})
+		if got, _ := ctx.Value(schemas.BifrostContextKeyAPIKeyID).(string); got != "caller-pin" {
+			t.Fatalf("APIKeyID = %q, want %q (no routing pin must not clobber caller pin)", got, "caller-pin")
+		}
+	})
+}
+
+// TestClearAnthropicPassthroughForNonNativeProvider verifies that Anthropic raw-body
+// passthrough flags are cleared only when an Anthropic-integration request resolves to a
+// provider that doesn't speak the Anthropic Messages API natively (e.g. Bedrock). This
+// guards the fix for Claude-via-Bedrock tool calls breaking when the model is routed to
+// Bedrock through a key alias (so the catalog-time guard never fires).
+func TestClearAnthropicPassthroughForNonNativeProvider(t *testing.T) {
+	flagKeys := []schemas.BifrostContextKey{
+		schemas.BifrostContextKeyUseRawRequestBody,
+		schemas.BifrostContextKeySendBackRawResponse,
+		schemas.BifrostContextKeyPassthroughOverridesPresent,
+	}
+
+	tests := []struct {
+		name            string
+		integrationType string
+		baseProvider    schemas.ModelProvider
+		wantCleared     bool
+	}{
+		{"anthropic integration to bedrock clears", "anthropic", schemas.Bedrock, true},
+		{"anthropic integration to anthropic preserved", "anthropic", schemas.Anthropic, false},
+		{"anthropic integration to vertex preserved", "anthropic", schemas.Vertex, false},
+		{"anthropic integration to azure preserved", "anthropic", schemas.Azure, false},
+		{"non-anthropic integration to bedrock preserved", "openai", schemas.Bedrock, false},
+		{"no integration type to bedrock preserved", "", schemas.Bedrock, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if tt.integrationType != "" {
+				ctx.SetValue(schemas.BifrostContextKeyIntegrationType, tt.integrationType)
+			}
+			for _, k := range flagKeys {
+				ctx.SetValue(k, true)
+			}
+
+			clearAnthropicPassthroughForNonNativeProvider(ctx, tt.baseProvider)
+
+			for _, k := range flagKeys {
+				got, _ := ctx.Value(k).(bool)
+				want := !tt.wantCleared // flags start true; cleared means false
+				if got != want {
+					t.Errorf("flag %v = %v, want %v", k, got, want)
+				}
+			}
+		})
+	}
+}
+
+// Test that releaseChannelMessage clears all request-scoped references so an
+// idle pooled ChannelMessage cannot pin the parsed request body, the request
+// context, or an undelivered response/error.
+func TestReleaseChannelMessage_ClearsPooledReferences(t *testing.T) {
+	b := &Bifrost{
+		channelMessagePool: sync.Pool{New: func() interface{} { return &ChannelMessage{} }},
+		responseChannelPool: sync.Pool{New: func() interface{} {
+			return make(chan *schemas.BifrostResponse, 1)
+		}},
+		errorChannelPool: sync.Pool{New: func() interface{} {
+			return make(chan schemas.BifrostError, 1)
+		}},
+		responseStreamPool: sync.Pool{New: func() interface{} {
+			return make(chan chan *schemas.BifrostStreamChunk, 1)
+		}},
+	}
+
+	req := schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Model: "test-model",
+			Input: []schemas.ChatMessage{{}},
+		},
+	}
+	msg := b.getChannelMessage(req)
+	msg.Context = schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	// Simulate an undelivered response and error sitting in the channels.
+	respCh := msg.Response
+	errCh := msg.Err
+	respCh <- &schemas.BifrostResponse{}
+	errCh <- schemas.BifrostError{}
+
+	b.releaseChannelMessage(msg)
+
+	if msg.ChatRequest != nil || msg.RequestType != "" {
+		t.Error("releaseChannelMessage should zero the embedded BifrostRequest")
+	}
+	if msg.Context != nil {
+		t.Error("releaseChannelMessage should clear the Context reference")
+	}
+	select {
+	case <-respCh:
+		t.Error("pooled response channel should be drained before Put")
+	default:
+	}
+	select {
+	case <-errCh:
+		t.Error("pooled error channel should be drained before Put")
+	default:
+	}
+}
+
+// Streaming variant: releaseChannelMessage must also drain and clear
+// ResponseStream, which is only allocated for stream request types.
+func TestReleaseChannelMessage_ClearsPooledReferences_Streaming(t *testing.T) {
+	b := &Bifrost{
+		channelMessagePool: sync.Pool{New: func() interface{} { return &ChannelMessage{} }},
+		responseChannelPool: sync.Pool{New: func() interface{} {
+			return make(chan *schemas.BifrostResponse, 1)
+		}},
+		errorChannelPool: sync.Pool{New: func() interface{} {
+			return make(chan schemas.BifrostError, 1)
+		}},
+		responseStreamPool: sync.Pool{New: func() interface{} {
+			return make(chan chan *schemas.BifrostStreamChunk, 1)
+		}},
+	}
+
+	req := schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionStreamRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Model: "test-model",
+			Input: []schemas.ChatMessage{{}},
+		},
+	}
+	msg := b.getChannelMessage(req)
+	msg.Context = schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	if msg.ResponseStream == nil {
+		t.Fatal("getChannelMessage should allocate ResponseStream for stream request types")
+	}
+
+	// Simulate an undelivered stream handoff sitting in the channel.
+	streamCh := msg.ResponseStream
+	streamCh <- make(chan *schemas.BifrostStreamChunk)
+
+	b.releaseChannelMessage(msg)
+
+	if msg.ChatRequest != nil || msg.RequestType != "" {
+		t.Error("releaseChannelMessage should zero the embedded BifrostRequest")
+	}
+	if msg.Context != nil {
+		t.Error("releaseChannelMessage should clear the Context reference")
+	}
+	if msg.ResponseStream != nil {
+		t.Error("releaseChannelMessage should clear the ResponseStream reference")
+	}
+	select {
+	case <-streamCh:
+		t.Error("pooled response stream channel should be drained before Put")
+	default:
 	}
 }

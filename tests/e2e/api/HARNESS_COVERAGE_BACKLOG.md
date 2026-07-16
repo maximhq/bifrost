@@ -42,7 +42,7 @@ Sources:
 - [ ] **Service tier** (`service_tier: "scale" | "default" | "priority"`)
 - [ ] **Audio input** (`input_audio` content block, gpt-4o-audio-preview)
 - [ ] **Audio output** (`modalities: ["text","audio"], audio: {voice, format}`)
-- [ ] **Web search options** (`web_search_options` for chat-completions web search)
+- [x] **Web search options** (`web_search_options` for chat-completions web search)
 - [ ] **Predicted outputs** (`prediction: { type: "content", content: "..." }`)
 - [ ] **Store + metadata for evals** (`store: true, metadata: {...}`)
 
@@ -53,7 +53,7 @@ Sources:
 - [x] Code interpreter (`tools: [{ type: "code_interpreter", container: { type: "auto" }}]`)
 - [ ] **File search** (dropped earlier; needs vector_store setup) — `tools: [{ type: "file_search", vector_store_ids: [...] }]`
 - [ ] **Computer use preview** (`tools: [{ type: "computer_use_preview", display_width, display_height, environment }]`)
-- [ ] **MCP tool** (`tools: [{ type: "mcp", server_label, server_url }]`)
+- [~] **MCP tool** (`tools: [{ type: "mcp", server_label, server_url }]`) — drop-path covered for non-MCP providers (Bedrock + Vertex) via "MCP Tool Handling cross-cut" (regression #3795); **OpenAI/Anthropic forward-to-connector path still untested**
 - [ ] **Image generation** (`tools: [{ type: "image_generation" }]` requires gpt-image-1 access)
 - [ ] **Reasoning summary** (`reasoning: { summary: "auto" }` for o3/gpt-5)
 - [ ] **Background mode** (`background: true`) — async execution
@@ -372,6 +372,7 @@ These exercise Bifrost's translation layer between provider shapes — every che
 - [~] **Multi-turn conversation cross-cut** (Vertex Claude added in Round 4; remaining providers still cross-cut-implicit only)
 - [x] **Stop sequences cross-cut** (OpenAI + Anthropic + Gemini already; + Bedrock + Vertex Claude + Vertex Gemini added in Cross-Cut Round 4)
 - [~] **Sampling-params normalization** (Bifrost should silently drop temperature for Opus 4.7+; Anthropic-direct + Vertex Claude Opus 4.7 covered; **Bedrock Opus 4.7 via cross-model still missing**)
+- [x] **MCP tool stripping for non-MCP providers** (Bifrost silently drops provider-side `type:"mcp"` server tools from a Responses request for Bedrock + Vertex instead of erroring; function tools — how local/configured MCP servers surface — survive — regression #3795. Folder "11. Cross-Provider Feature Tests / MCP Tool Handling cross-cut": 16-item matrix over {opus, sonnet} × {lone-mcp, mcp+function, multi-tool #3795 shape} plus /openai drop-in and streaming axes)
 - [ ] **Failover scenarios** (request to provider X falls back to provider Y on 5xx)
 - [ ] **Virtual keys / governance** (`X-Bifrost-VK` header with allowed_models)
 - [ ] **Rate limit propagation** (provider 429 → Bifrost 429 with Retry-After preserved)
