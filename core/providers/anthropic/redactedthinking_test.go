@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/bytedance/sonic"
+	"github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -288,6 +290,70 @@ func TestToAnthropicChatRequest_DropsUnsignedTextOnlyReasoningDetail(t *testing.
 	}
 	if thinkingBlocks[0].Signature == nil || *thinkingBlocks[0].Signature != "sig-1" {
 		t.Errorf("surviving thinking block signature = %v, want sig-1", thinkingBlocks[0].Signature)
+	}
+}
+
+// GH #5274 full pipeline: an OpenAI-compatible request (the actual entrance
+// clients use — /openai/*, /litellm/*) carrying an encrypted reasoning_details
+// entry (Anthropic redacted_thinking replay, e.g. OpenRouter-style) alongside
+// a tool call must survive raw JSON unmarshal -> ConvertOpenAIMessagesToBifrostMessages
+// -> ToAnthropicChatRequest and re-emerge as a redacted_thinking block, not
+// just the signed-text case already covered above.
+func TestToAnthropicChatRequest_OpenAICompatEntrance_EncryptedReasoningRoundTrips(t *testing.T) {
+	raw := []byte(`{
+		"model": "anthropic/claude-sonnet-4-5",
+		"messages": [
+			{"role": "user", "content": "What is the weather in Paris?"},
+			{"role": "assistant", "content": "",
+			 "tool_calls": [{"id": "toolu_1", "type": "function",
+				"function": {"name": "get_weather", "arguments": "{\"city\":\"Paris\"}"}}],
+			 "reasoning_details": [{"index": 0, "type": "reasoning.encrypted", "data": "ENCRYPTED_PAYLOAD"}]},
+			{"role": "tool", "tool_call_id": "toolu_1", "content": "22C, sunny"}
+		]
+	}`)
+
+	var req openai.OpenAIChatRequest
+	if err := sonic.Unmarshal(raw, &req); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	bifrostMessages := openai.ConvertOpenAIMessagesToBifrostMessages(req.Messages)
+
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-sonnet-4-5",
+		Input:    bifrostMessages,
+		Params:   &schemas.ChatParameters{MaxCompletionTokens: schemas.Ptr(2048), Reasoning: &schemas.ChatReasoning{MaxTokens: schemas.Ptr(1024)}},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	result, err := ToAnthropicChatRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	blocks := result.Messages[1].Content.ContentBlocks
+	var redacted []AnthropicContentBlock
+	for _, b := range blocks {
+		if b.Type == AnthropicContentBlockTypeRedactedThinking {
+			redacted = append(redacted, b)
+		}
+	}
+	if len(redacted) != 1 {
+		t.Fatalf("expected 1 redacted_thinking block, got %d: %+v", len(redacted), blocks)
+	}
+	if redacted[0].Data == nil || *redacted[0].Data != "ENCRYPTED_PAYLOAD" {
+		t.Errorf("redacted_thinking data = %v, want ENCRYPTED_PAYLOAD", redacted[0].Data)
+	}
+
+	hasToolUse := false
+	for _, b := range blocks {
+		if b.Type == AnthropicContentBlockTypeToolUse {
+			hasToolUse = true
+		}
+	}
+	if !hasToolUse {
+		t.Errorf("tool_use block missing from replay: %+v", blocks)
 	}
 }
 
