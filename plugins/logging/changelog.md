@@ -1,3 +1,0 @@
-- feat: added user-agent tracking to LLM and MCP logs
-- fix: added missing direct `github.com/google/uuid` dependency
-- chore: upgraded core to v1.7.2 and framework to v1.5.2

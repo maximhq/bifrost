@@ -1,5 +1,0 @@
-- feat: added user-agent tracking columns, materialized views, and migrations to the log store
-- feat: added endpoint-agent columns (device_id, app_key, decision, source) to mcp_tool_logs for Edge agent log ingestion
-- fix: removed a duplicate materialized-view rebuild step from the log store migration registry and pointed the app-column step at the correct migration function
-- fix: cleaned up the sidekiq table creation migration
-- chore: upgraded core to v1.7.2
