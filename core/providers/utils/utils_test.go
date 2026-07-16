@@ -2445,3 +2445,59 @@ func TestMakeRequestWithContext_RequestTimeoutOverride(t *testing.T) {
 		}
 	})
 }
+
+func TestEffectiveBetaHeaderOverridesFromContext(t *testing.T) {
+	mkCtx := func(overrides map[string]bool) *schemas.BifrostContext {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		if overrides != nil {
+			ctx.SetValue(schemas.BifrostContextKeyProviderOverride, &schemas.ProviderOverride{
+				NetworkConfig: &schemas.ProviderNetworkConfigOverride{
+					BetaHeaderOverrides: overrides,
+				},
+			})
+		}
+		return ctx
+	}
+
+	t.Run("no override returns base unchanged", func(t *testing.T) {
+		base := map[string]bool{"tool-examples-2025-10-29": true}
+		got := EffectiveBetaHeaderOverridesFromContext(mkCtx(nil), base)
+		if len(got) != 1 || !got["tool-examples-2025-10-29"] {
+			t.Fatalf("got %v, want base map unchanged", got)
+		}
+	})
+
+	t.Run("nil base with override returns override keys", func(t *testing.T) {
+		got := EffectiveBetaHeaderOverridesFromContext(mkCtx(map[string]bool{"redact-thinking-": true}), nil)
+		if !got["redact-thinking-"] {
+			t.Fatalf("got %v, want override key present", got)
+		}
+	})
+
+	t.Run("override key wins over base", func(t *testing.T) {
+		base := map[string]bool{"redact-thinking-": true}
+		got := EffectiveBetaHeaderOverridesFromContext(mkCtx(map[string]bool{"redact-thinking-": false}), base)
+		if got["redact-thinking-"] != false {
+			t.Fatalf("override did not win: got true, want false")
+		}
+	})
+
+	t.Run("base key absent from override is preserved", func(t *testing.T) {
+		base := map[string]bool{"tool-examples-2025-10-29": true}
+		got := EffectiveBetaHeaderOverridesFromContext(mkCtx(map[string]bool{"redact-thinking-": false}), base)
+		if !got["tool-examples-2025-10-29"] {
+			t.Fatalf("base-only key dropped: %v", got)
+		}
+		if got["redact-thinking-"] != false {
+			t.Fatalf("override key missing: %v", got)
+		}
+	})
+
+	t.Run("merge does not mutate base map", func(t *testing.T) {
+		base := map[string]bool{"tool-examples-2025-10-29": true}
+		EffectiveBetaHeaderOverridesFromContext(mkCtx(map[string]bool{"redact-thinking-": false}), base)
+		if _, ok := base["redact-thinking-"]; ok {
+			t.Fatal("EffectiveBetaHeaderOverridesFromContext mutated the caller's base map")
+		}
+	})
+}

@@ -204,6 +204,25 @@ func SetErrorLatency(bifrostErr *schemas.BifrostError, latency time.Duration) *s
 	return bifrostErr
 }
 
+// EffectiveBetaHeaderOverridesFromContext returns the beta-header override map
+// for this request: the provider's base map with any request-scoped overrides
+// merged on top. Keys in the override win; keys absent from the override keep
+// the provider default. Returns base unchanged when no override is set.
+func EffectiveBetaHeaderOverridesFromContext(ctx context.Context, base map[string]bool) map[string]bool {
+	override := providerNetworkOverrideFromContext(ctx)
+	if override == nil || override.BetaHeaderOverrides == nil {
+		return base
+	}
+	merged := make(map[string]bool, len(base)+len(override.BetaHeaderOverrides))
+	for k, v := range base {
+		merged[k] = v
+	}
+	for k, v := range override.BetaHeaderOverrides {
+		merged[k] = v
+	}
+	return merged
+}
+
 // makeRequestWithDoFunc is the shared core behind MakeRequestWithContext and
 // MakeRequestWithContextFollowRedirects. It runs do() in a goroutine and handles
 // context cancellation, latency tracking, and error classification uniformly.

@@ -525,7 +525,7 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 		jsonBody, bifrostErr = anthropic.BuildAnthropicChatRequestBody(ctx, request, anthropic.AnthropicRequestBuildConfig{
 			Provider:                  schemas.Vertex,
 			Model:                     request.Model,
-			BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
+			BetaHeaderOverrides:       providerUtils.EffectiveBetaHeaderOverridesFromContext(ctx, provider.networkConfig.BetaHeaderOverrides),
 			ProviderExtraHeaders:      provider.networkConfig.ExtraHeaders,
 			ShouldSendBackRawRequest:  provider.sendBackRawRequest,
 			ShouldSendBackRawResponse: provider.sendBackRawResponse,
@@ -828,7 +828,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 			Provider:                  schemas.Vertex,
 			Model:                     request.Model,
 			IsStreaming:               true,
-			BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
+			BetaHeaderOverrides:       providerUtils.EffectiveBetaHeaderOverridesFromContext(ctx, provider.networkConfig.BetaHeaderOverrides),
 			ProviderExtraHeaders:      provider.networkConfig.ExtraHeaders,
 			ShouldSendBackRawRequest:  provider.sendBackRawRequest,
 			ShouldSendBackRawResponse: provider.sendBackRawResponse,
@@ -883,7 +883,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 			headers,
 			provider.networkConfig.ExtraHeaders,
 			provider.networkConfig.StreamIdleTimeoutInSeconds,
-			provider.networkConfig.BetaHeaderOverrides,
+			providerUtils.EffectiveBetaHeaderOverridesFromContext(ctx, provider.networkConfig.BetaHeaderOverrides),
 			providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 			providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 			providerName,
@@ -1054,7 +1054,7 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 		jsonBody, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, request, anthropic.AnthropicRequestBuildConfig{
 			Provider:                  schemas.Vertex,
 			Model:                     request.Model,
-			BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
+			BetaHeaderOverrides:       providerUtils.EffectiveBetaHeaderOverridesFromContext(ctx, provider.networkConfig.BetaHeaderOverrides),
 			ProviderExtraHeaders:      provider.networkConfig.ExtraHeaders,
 			ValidateTools:             true,
 			ShouldSendBackRawRequest:  provider.sendBackRawRequest,
@@ -1091,7 +1091,7 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 		req.Header.SetContentType("application/json")
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, []string{anthropic.AnthropicBetaHeader})
 
-		if betaHeaders := anthropic.FilterBetaHeadersForProvider(anthropic.MergeBetaHeaders(ctx, provider.networkConfig.ExtraHeaders), schemas.Vertex, provider.networkConfig.BetaHeaderOverrides); len(betaHeaders) > 0 {
+		if betaHeaders := anthropic.FilterBetaHeadersForProvider(anthropic.MergeBetaHeaders(ctx, provider.networkConfig.ExtraHeaders), schemas.Vertex, providerUtils.EffectiveBetaHeaderOverridesFromContext(ctx, provider.networkConfig.BetaHeaderOverrides)); len(betaHeaders) > 0 {
 			req.Header.Set(anthropic.AnthropicBetaHeader, strings.Join(betaHeaders, ","))
 		} else {
 			req.Header.Del(anthropic.AnthropicBetaHeader)
@@ -1359,7 +1359,7 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 			Provider:                  schemas.Vertex,
 			Model:                     request.Model,
 			IsStreaming:               true,
-			BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
+			BetaHeaderOverrides:       providerUtils.EffectiveBetaHeaderOverridesFromContext(ctx, provider.networkConfig.BetaHeaderOverrides),
 			ProviderExtraHeaders:      provider.networkConfig.ExtraHeaders,
 			ValidateTools:             true,
 			ShouldSendBackRawRequest:  provider.sendBackRawRequest,
@@ -1398,7 +1398,7 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 			headers,
 			provider.networkConfig.ExtraHeaders,
 			provider.networkConfig.StreamIdleTimeoutInSeconds,
-			provider.networkConfig.BetaHeaderOverrides,
+			providerUtils.EffectiveBetaHeaderOverridesFromContext(ctx, provider.networkConfig.BetaHeaderOverrides),
 			providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 			providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 			provider.GetProviderKey(),
@@ -4043,7 +4043,7 @@ func (provider *VertexProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 			Provider:                  schemas.Vertex,
 			Model:                     request.Model,
 			IsCountTokens:             true,
-			BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
+			BetaHeaderOverrides:       providerUtils.EffectiveBetaHeaderOverridesFromContext(ctx, provider.networkConfig.BetaHeaderOverrides),
 			ProviderExtraHeaders:      provider.networkConfig.ExtraHeaders,
 			ValidateTools:             true,
 			ShouldSendBackRawRequest:  provider.sendBackRawRequest,
