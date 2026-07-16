@@ -2337,7 +2337,8 @@
                       "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
                       "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
                       "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
-                      "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"}
+                      "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"},
+                      "provisioningToken": {"$ref": "#/$defs/scim_provisioning_token"}
                     },
                     "required": ["issuerUrl", "clientId", "clientSecret", "apiToken"],
                     "additionalProperties": false
@@ -2408,7 +2409,8 @@
                       "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
                       "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
                       "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
-                      "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"}
+                      "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"},
+                      "provisioningToken": {"$ref": "#/$defs/scim_provisioning_token"}
                     },
                     "required": ["tenantId", "clientId"],
                     "additionalProperties": false
@@ -2707,7 +2709,8 @@
                       "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
                       "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
                       "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
-                      "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"}
+                      "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"},
+                      "provisioningToken": {"$ref": "#/$defs/scim_provisioning_token"}
                     },
                     "required": ["product"],
                     "additionalProperties": false
@@ -2777,7 +2780,8 @@
                       "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
                       "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
                       "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
-                      "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"}
+                      "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"},
+                      "provisioningToken": {"$ref": "#/$defs/scim_provisioning_token"}
                     },
                     "required": ["issuerUrl", "clientId"],
                     "additionalProperties": false
@@ -6229,6 +6233,10 @@
         "required": ["attributeType", "attributeValue"],
         "additionalProperties": false
       }
+    },
+    "scim_provisioning_token": {
+      "type": "string",
+      "description": "Bearer token that inbound SCIM 2.0 provisioning clients (the IdP's SCIM app) must present in the Authorization header to push users and groups to Bifrost. Normally minted in the dashboard (Governance -> User Provisioning) and shown once, but may be seeded here for declarative/GitOps deployments; supports the env. prefix for environment-variable references. Generate one with: openssl rand -base64 32 | tr '+/' '-_' | tr -d '='"
     }
   }
 }
