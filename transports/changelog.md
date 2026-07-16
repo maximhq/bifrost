@@ -52,6 +52,13 @@
 - **API Key Provider Selection** - Fixed provider selection for API keys
 - **Azure Auth Headers** - Pass Azure auth headers in helpers
 - **Stream Delta Schema** - Added `ExtraContent` to `ChatStreamResponseChoiceDelta` (thanks [@nghodkicisco](https://github.com/nghodkicisco)!)
+- **Log Store Migrations** - Removed a duplicate materialized-view rebuild step from the log store migration registry and fixed the app-column step running the wrong migration function
+- **Config Store Migrations** - Cleaned up the sidekiq table creation migration
+- **Dashboard Sidebar** - Removed unused sidebar icon imports that broke the UI build
+
+## 🔧 Maintenance
+
+- **Dependency Fixes** - Added the missing direct `google/uuid` dependency to the logging plugin and bumped framework to v1.5.2 across all modules
 
 ## 🐙 Closed GitHub Issues
 
