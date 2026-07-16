@@ -86,7 +86,7 @@ func (provider *OpenAIProvider) GetProviderKey() schemas.ModelProvider {
 
 // buildRequestURL constructs the full request URL using the provider's configuration.
 func (provider *OpenAIProvider) buildRequestURL(ctx *schemas.BifrostContext, defaultPath string, requestType schemas.RequestType) string {
-	path, isCompleteURL := providerUtils.GetRequestPath(ctx, defaultPath, provider.customProviderConfig, requestType)
+	path, isCompleteURL, isDefaultPath := providerUtils.GetRequestPath(ctx, defaultPath, provider.customProviderConfig, requestType)
 	if isCompleteURL {
 		return path
 	}
@@ -99,7 +99,7 @@ func (provider *OpenAIProvider) buildRequestURL(ctx *schemas.BifrostContext, def
 	// RequestPathOverrides), preserving explicit path control.
 	if provider.customProviderConfig != nil &&
 		provider.customProviderConfig.DisableDefaultVersionPath &&
-		path == defaultPath &&
+		isDefaultPath &&
 		strings.HasPrefix(path, "/v1/") {
 		if u, err := url.Parse(provider.networkConfig.BaseURL); err == nil && u.Path != "" && u.Path != "/" {
 			path = strings.TrimPrefix(path, "/v1")

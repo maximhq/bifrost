@@ -472,21 +472,24 @@ func TestGetRequestPath(t *testing.T) {
 		requestType          schemas.RequestType
 		expectedPath         string
 		expectedIsURL        bool
+		expectedIsDefault    bool
 	}{
 		{
-			name:          "Returns default path when nothing is set",
-			defaultPath:   "/v1/chat/completions",
-			requestType:   schemas.ChatCompletionRequest,
-			expectedPath:  "/v1/chat/completions",
-			expectedIsURL: false,
+			name:            "Returns default path when nothing is set",
+			defaultPath:     "/v1/chat/completions",
+			requestType:     schemas.ChatCompletionRequest,
+			expectedPath:    "/v1/chat/completions",
+			expectedIsURL:   false,
+			expectedIsDefault: true,
 		},
 		{
-			name:          "Returns path from context when present",
-			contextPath:   schemas.Ptr("/custom/path"),
-			defaultPath:   "/v1/chat/completions",
-			requestType:   schemas.ChatCompletionRequest,
-			expectedPath:  "/custom/path",
-			expectedIsURL: false,
+			name:            "Returns path from context when present",
+			contextPath:     schemas.Ptr("/custom/path"),
+			defaultPath:     "/v1/chat/completions",
+			requestType:     schemas.ChatCompletionRequest,
+			expectedPath:    "/custom/path",
+			expectedIsURL:   false,
+			expectedIsDefault: false,
 		},
 		{
 			name: "Returns full URL from config override",
@@ -495,10 +498,11 @@ func TestGetRequestPath(t *testing.T) {
 					schemas.ChatCompletionRequest: "https://custom.api.com/v1/completions",
 				},
 			},
-			defaultPath:   "/v1/chat/completions",
-			requestType:   schemas.ChatCompletionRequest,
-			expectedPath:  "https://custom.api.com/v1/completions",
-			expectedIsURL: true,
+			defaultPath:      "/v1/chat/completions",
+			requestType:      schemas.ChatCompletionRequest,
+			expectedPath:     "https://custom.api.com/v1/completions",
+			expectedIsURL:    true,
+			expectedIsDefault: false,
 		},
 		{
 			name: "Returns path override with leading slash",
@@ -507,10 +511,11 @@ func TestGetRequestPath(t *testing.T) {
 					schemas.ChatCompletionRequest: "/custom/endpoint",
 				},
 			},
-			defaultPath:   "/v1/chat/completions",
-			requestType:   schemas.ChatCompletionRequest,
-			expectedPath:  "/custom/endpoint",
-			expectedIsURL: false,
+			defaultPath:      "/v1/chat/completions",
+			requestType:      schemas.ChatCompletionRequest,
+			expectedPath:     "/custom/endpoint",
+			expectedIsURL:    false,
+			expectedIsDefault: false,
 		},
 		{
 			name: "Adds leading slash to path override without one",
@@ -519,10 +524,11 @@ func TestGetRequestPath(t *testing.T) {
 					schemas.ChatCompletionRequest: "custom/endpoint",
 				},
 			},
-			defaultPath:   "/v1/chat/completions",
-			requestType:   schemas.ChatCompletionRequest,
-			expectedPath:  "/custom/endpoint",
-			expectedIsURL: false,
+			defaultPath:      "/v1/chat/completions",
+			requestType:      schemas.ChatCompletionRequest,
+			expectedPath:     "/custom/endpoint",
+			expectedIsURL:    false,
+			expectedIsDefault: false,
 		},
 		{
 			name: "Returns default path for empty override",
@@ -531,10 +537,11 @@ func TestGetRequestPath(t *testing.T) {
 					schemas.ChatCompletionRequest: "   ",
 				},
 			},
-			defaultPath:   "/v1/chat/completions",
-			requestType:   schemas.ChatCompletionRequest,
-			expectedPath:  "/v1/chat/completions",
-			expectedIsURL: false,
+			defaultPath:      "/v1/chat/completions",
+			requestType:      schemas.ChatCompletionRequest,
+			expectedPath:     "/v1/chat/completions",
+			expectedIsURL:    false,
+			expectedIsDefault: true,
 		},
 		{
 			name: "Returns default when override exists for different request type",
@@ -543,10 +550,11 @@ func TestGetRequestPath(t *testing.T) {
 					schemas.EmbeddingRequest: "/custom/embeddings",
 				},
 			},
-			defaultPath:   "/v1/chat/completions",
-			requestType:   schemas.ChatCompletionRequest,
-			expectedPath:  "/v1/chat/completions",
-			expectedIsURL: false,
+			defaultPath:      "/v1/chat/completions",
+			requestType:      schemas.ChatCompletionRequest,
+			expectedPath:     "/v1/chat/completions",
+			expectedIsURL:    false,
+			expectedIsDefault: true,
 		},
 		{
 			name: "Handles URL with http scheme",
@@ -555,10 +563,11 @@ func TestGetRequestPath(t *testing.T) {
 					schemas.ChatCompletionRequest: "http://internal.api:8080/completions",
 				},
 			},
-			defaultPath:   "/v1/chat/completions",
-			requestType:   schemas.ChatCompletionRequest,
-			expectedPath:  "http://internal.api:8080/completions",
-			expectedIsURL: true,
+			defaultPath:      "/v1/chat/completions",
+			requestType:      schemas.ChatCompletionRequest,
+			expectedPath:     "http://internal.api:8080/completions",
+			expectedIsURL:    true,
+			expectedIsDefault: false,
 		},
 		{
 			name:        "Context path takes precedence over config override",
@@ -568,10 +577,23 @@ func TestGetRequestPath(t *testing.T) {
 					schemas.ChatCompletionRequest: "/config/path",
 				},
 			},
-			defaultPath:   "/v1/chat/completions",
-			requestType:   schemas.ChatCompletionRequest,
-			expectedPath:  "/context/path",
-			expectedIsURL: false,
+			defaultPath:      "/v1/chat/completions",
+			requestType:      schemas.ChatCompletionRequest,
+			expectedPath:     "/context/path",
+			expectedIsURL:    false,
+			expectedIsDefault: false,
+		},
+		{
+			// Regression test: a context path that happens to equal the default
+			// string must NOT be reported as the default path. Callers that strip
+			// /v1 only for the true default must not strip it here.
+			name:            "Context path equal to default is not the default",
+			contextPath:     schemas.Ptr("/v1/chat/completions"),
+			defaultPath:     "/v1/chat/completions",
+			requestType:     schemas.ChatCompletionRequest,
+			expectedPath:    "/v1/chat/completions",
+			expectedIsURL:   false,
+			expectedIsDefault: false,
 		},
 	}
 
@@ -582,7 +604,7 @@ func TestGetRequestPath(t *testing.T) {
 				ctx = context.WithValue(ctx, schemas.BifrostContextKeyURLPath, *tt.contextPath)
 			}
 
-			path, isURL := GetRequestPath(ctx, tt.defaultPath, tt.customProviderConfig, tt.requestType)
+			path, isURL, isDefault := GetRequestPath(ctx, tt.defaultPath, tt.customProviderConfig, tt.requestType)
 
 			if path != tt.expectedPath {
 				t.Errorf("GetRequestPath() path = %q, want %q", path, tt.expectedPath)
@@ -590,6 +612,10 @@ func TestGetRequestPath(t *testing.T) {
 
 			if isURL != tt.expectedIsURL {
 				t.Errorf("GetRequestPath() isURL = %v, want %v", isURL, tt.expectedIsURL)
+			}
+
+			if isDefault != tt.expectedIsDefault {
+				t.Errorf("GetRequestPath() isDefault = %v, want %v", isDefault, tt.expectedIsDefault)
 			}
 		})
 	}

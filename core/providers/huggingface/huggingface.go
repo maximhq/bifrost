@@ -116,14 +116,14 @@ func (provider *HuggingFaceProvider) GetProviderKey() schemas.ModelProvider {
 
 // buildRequestURL composes the final request URL based on context overrides.
 func (provider *HuggingFaceProvider) buildRequestURL(ctx *schemas.BifrostContext, defaultPath string, requestType schemas.RequestType) string {
-	path, isCompleteURL := providerUtils.GetRequestPath(ctx, defaultPath, provider.customProviderConfig, requestType)
+	path, isCompleteURL, isDefaultPath := providerUtils.GetRequestPath(ctx, defaultPath, provider.customProviderConfig, requestType)
 	if isCompleteURL {
 		return path
 	}
 
 	if provider.customProviderConfig != nil &&
 		provider.customProviderConfig.DisableDefaultVersionPath &&
-		path == defaultPath &&
+		isDefaultPath &&
 		strings.HasPrefix(path, "/v1/") {
 		if u, err := url.Parse(provider.networkConfig.BaseURL); err == nil && u.Path != "" && u.Path != "/" {
 			path = strings.TrimPrefix(path, "/v1")

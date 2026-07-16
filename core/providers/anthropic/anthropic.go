@@ -129,7 +129,7 @@ func (provider *AnthropicProvider) GetProviderKey() schemas.ModelProvider {
 
 // buildRequestURL constructs the full request URL using the provider's configuration.
 func (provider *AnthropicProvider) buildRequestURL(ctx *schemas.BifrostContext, defaultPath string, requestType schemas.RequestType) string {
-	path, isCompleteURL := providerUtils.GetRequestPath(ctx, defaultPath, provider.customProviderConfig, requestType)
+	path, isCompleteURL, _ := providerUtils.GetRequestPath(ctx, defaultPath, provider.customProviderConfig, requestType)
 	if isCompleteURL {
 		return path
 	}
