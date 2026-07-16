@@ -1354,6 +1354,9 @@ false
 {{- if hasKey $inputConfig "disable_root_span_content" }}
 {{- $_ := set $otelConfig "disable_root_span_content" $inputConfig.disable_root_span_content }}
 {{- end }}
+{{- if hasKey $inputConfig "request_headers" }}
+{{- $_ := set $otelConfig "request_headers" $inputConfig.request_headers }}
+{{- end }}
 {{- if $inputConfig.plugin_span_filter }}
 {{- $_ := set $otelConfig "plugin_span_filter" $inputConfig.plugin_span_filter }}
 {{- end }}
@@ -1422,7 +1425,7 @@ false
 {{- if $inputConfig.site }}
 {{- $_ := set $datadogConfig "site" $inputConfig.site }}
 {{- end }}
-{{- if $inputConfig.request_headers }}
+{{- if hasKey $inputConfig "request_headers" }}
 {{- $_ := set $datadogConfig "request_headers" $inputConfig.request_headers }}
 {{- end }}
 {{- if $inputConfig.plugin_span_filter }}
@@ -1465,7 +1468,7 @@ false
 {{- if hasKey $inputConfig "disable_content_logging" }}
 {{- $_ := set $bigqueryConfig "disable_content_logging" $inputConfig.disable_content_logging }}
 {{- end }}
-{{- if $inputConfig.request_headers }}
+{{- if hasKey $inputConfig "request_headers" }}
 {{- $_ := set $bigqueryConfig "request_headers" $inputConfig.request_headers }}
 {{- end }}
 {{- if $inputConfig.plugin_span_filter }}
@@ -1511,7 +1514,7 @@ false
 {{- if hasKey $inputConfig "disable_content_logging" }}
 {{- $_ := set $kafkaConfig "disable_content_logging" $inputConfig.disable_content_logging }}
 {{- end }}
-{{- if $inputConfig.request_headers }}
+{{- if hasKey $inputConfig "request_headers" }}
 {{- $_ := set $kafkaConfig "request_headers" $inputConfig.request_headers }}
 {{- end }}
 {{- if $inputConfig.plugin_span_filter }}
@@ -1539,7 +1542,7 @@ false
 {{- if hasKey $inputConfig "disable_content_logging" }}
 {{- $_ := set $pubsubConfig "disable_content_logging" $inputConfig.disable_content_logging }}
 {{- end }}
-{{- if $inputConfig.request_headers }}
+{{- if hasKey $inputConfig "request_headers" }}
 {{- $_ := set $pubsubConfig "request_headers" $inputConfig.request_headers }}
 {{- end }}
 {{- if $inputConfig.plugin_span_filter }}
