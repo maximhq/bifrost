@@ -60,6 +60,19 @@ type UsageTracker struct {
 	// by a TTL sweep on the existing resetWorker tick (no extra goroutine).
 	billedMu sync.Mutex
 	billed   map[string]time.Time
+	// batchBilled tracks each durable batch aggregate's individual governance
+	// target. Reporting may be retried after a database marker failure, so the
+	// target-level key prevents budgets or rate limits that already succeeded
+	// from being incremented again while allowing failed targets to retry.
+	//
+	// This is process-local and therefore best-effort: it makes batch reporting
+	// idempotent within one process, not across a restart or another node. A
+	// batch whose report succeeded but whose durable marker write failed stays
+	// retryable, and a retry elsewhere has an empty map and will bill it again.
+	// That gap is accepted — see framework/batchaccounting's package doc for why
+	// and what closing it would cost. Note the synchronous path's `billed` map
+	// above has the same property with no durable marker at all.
+	batchBilled map[string]time.Time
 }
 
 const (
@@ -68,6 +81,10 @@ const (
 	// lifetime of a single logical request (max retries × backoff + stream idle
 	// timeout); 5 minutes is well beyond any real request.
 	billedEntryTTL = 5 * time.Minute
+	// Batch settlement retries can outlive a normal request by hours. Keep the
+	// stable aggregate-log keys long enough for the durable reported marker to
+	// be written and observed by every local retry path.
+	batchBilledEntryTTL = 7 * 24 * time.Hour
 )
 
 // NewUsageTracker creates a new usage tracker for the hierarchical budget system
@@ -79,6 +96,7 @@ func NewUsageTracker(ctx context.Context, store GovernanceStore, resolver *Budge
 		logger:      logger,
 		done:        make(chan struct{}),
 		billed:      make(map[string]time.Time),
+		batchBilled: make(map[string]time.Time),
 	}
 
 	// Start background workers for business logic
@@ -286,7 +304,9 @@ func (t *UsageTracker) tryClaimBilling(update *UsageUpdate) bool {
 // sweepBilled drops idempotency keys older than billedEntryTTL, bounding the
 // map to roughly the requests seen within the TTL window.
 func (t *UsageTracker) sweepBilled() {
-	cutoff := time.Now().Add(-billedEntryTTL)
+	now := time.Now()
+	cutoff := now.Add(-billedEntryTTL)
+	batchCutoff := now.Add(-batchBilledEntryTTL)
 	t.billedMu.Lock()
 	defer t.billedMu.Unlock()
 	for k, at := range t.billed {
@@ -294,6 +314,33 @@ func (t *UsageTracker) sweepBilled() {
 			delete(t.billed, k)
 		}
 	}
+	for k, at := range t.batchBilled {
+		if at.Before(batchCutoff) {
+			delete(t.batchBilled, k)
+		}
+	}
+}
+
+func (t *UsageTracker) tryClaimBatchBilling(key string) bool {
+	if key == "" {
+		return true
+	}
+	t.billedMu.Lock()
+	defer t.billedMu.Unlock()
+	if _, seen := t.batchBilled[key]; seen {
+		return false
+	}
+	t.batchBilled[key] = time.Now()
+	return true
+}
+
+func (t *UsageTracker) releaseBatchBilling(key string) {
+	if key == "" {
+		return
+	}
+	t.billedMu.Lock()
+	delete(t.batchBilled, key)
+	t.billedMu.Unlock()
 }
 
 // Public methods for monitoring and admin operations
