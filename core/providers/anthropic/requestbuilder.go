@@ -124,6 +124,7 @@ var AnthropicProviderRequestDefaultsMap = map[schemas.ModelProvider]AnthropicPro
 		RemapToolVersions:         true,
 		InjectBetaHeadersIntoBody: true,
 	},
+	schemas.SGL: {},
 }
 
 // BuildAnthropicResponsesRequestBody is the single implementation of the

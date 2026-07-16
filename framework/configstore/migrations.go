@@ -451,6 +451,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_webhook_jobs_table"}, run: migrationAddWebhookJobsTable},
 	{IDs: []string{"add_webhook_config_client_column"}, run: migrationAddWebhookConfigClientColumn},
 	{IDs: []string{"add_oauth_config_resource_column"}, run: migrationAddOauthConfigResourceColumn},
+	{IDs: []string{"add_use_anthropic_endpoints_column"}, run: migrationAddUseAnthropicEndpointsColumn},
 }
 
 // quoteSQLiteIdentifier quotes a SQLite identifier, escaping any double quotes.
@@ -3140,6 +3141,34 @@ func migrationAddUseForBatchAPIColumnAndS3BucketsConfig(ctx context.Context, db 
 
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running use_for_batch_api migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddUseAnthropicEndpointsColumn adds the use_anthropic_endpoints column to the config_keys table.
+func migrationAddUseAnthropicEndpointsColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_use_anthropic_endpoints_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableKey{}, "use_anthropic_endpoints"); err != nil {
+				return fmt.Errorf("failed to add use_anthropic_endpoints column: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableKey{}, "use_anthropic_endpoints"); err != nil {
+				return fmt.Errorf("failed to drop use_anthropic_endpoints column: %w", err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_use_anthropic_endpoints_column migration: %s", err.Error())
 	}
 	return nil
 }
@@ -7771,7 +7800,6 @@ func migrationAddMCPClientDiscoveredToolsColumns(ctx context.Context, db *gorm.D
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running add_mcp_client_discovered_tools_columns migration: %s", err.Error())
-
 	}
 	return nil
 }
@@ -7875,7 +7903,6 @@ func migrationAddFlexTierPricingColumns(ctx context.Context, db *gorm.DB, logger
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running flex tier pricing columns migration: %s", err.Error())
-
 	}
 	return nil
 }
@@ -8304,7 +8331,6 @@ func migrationNormalizeOtelTraceType(ctx context.Context, db *gorm.DB, logger sc
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running normalize_otel_trace_type migration: %s", err.Error())
-
 	}
 	return nil
 }
