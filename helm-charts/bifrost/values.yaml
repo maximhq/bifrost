@@ -86,6 +86,33 @@ service:
   port: 8080
   annotations: {}
 
+# Prometheus Operator ServiceMonitor for scraping Bifrost's native /metrics endpoint.
+# Requires the Prometheus Operator CRDs (monitoring.coreos.com/v1), e.g. from
+# kube-prometheus-stack. When enabled without those CRDs the render fails fast.
+serviceMonitor:
+  enabled: false
+  # Extra labels on the ServiceMonitor object. Match your Prometheus instance's
+  # serviceMonitorSelector, e.g. `release: kube-prometheus-stack`.
+  additionalLabels: {}
+  # Namespace to create the ServiceMonitor in. Defaults to the release namespace.
+  namespace: ""
+  # Path Bifrost exposes Prometheus metrics on.
+  path: /metrics
+  # Scrape interval. Empty string uses the Prometheus global default.
+  interval: 30s
+  # Per-scrape timeout. Empty string uses the Prometheus default.
+  scrapeTimeout: 10s
+  # Scrape scheme: http (default) or https.
+  scheme: ""
+  # TLS settings for the scrape endpoint (https). See the ServiceMonitor spec.
+  tlsConfig: {}
+  # Keep target labels on collision instead of letting Prometheus prefix them.
+  honorLabels: false
+  # relabel_configs applied before scraping.
+  relabelings: []
+  # metric_relabel_configs applied to scraped samples (e.g. drop high-cardinality series).
+  metricRelabelings: []
+
 # Single ingress (legacy format):
 ingress:
   enabled: false

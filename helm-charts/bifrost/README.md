@@ -8,6 +8,11 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 
 ## Changelog
 
+### 2.1.30
+
+- Added `serviceMonitor` for scraping Bifrost's native `/metrics` endpoint via the Prometheus Operator. Set `serviceMonitor.enabled: true` (requires the `monitoring.coreos.com/v1` CRDs, e.g. from kube-prometheus-stack) to render a `ServiceMonitor` targeting the `http` service port. Supports `additionalLabels` (to match your Prometheus `serviceMonitorSelector`, e.g. `release: kube-prometheus-stack`), `namespace`, `path`, `interval`, `scrapeTimeout`, `scheme`, `tlsConfig`, `honorLabels`, `relabelings`, and `metricRelabelings`. Disabled by default; the render fails fast with a clear message if enabled without the Prometheus Operator CRDs installed.
+- Added the `app.kubernetes.io/component: server` label to the primary `Service` metadata so the `ServiceMonitor` selects only the ClusterIP service and not the SQLite headless service (both otherwise share the same labels). This is an additive label; the service's pod selector is unchanged.
+
 ### 2.1.28
 
 - Restored `runAsUser: 1000` defaults in `podSecurityContext` and `securityContext` (dropped in 2.1.27). Images before v1.6.4 use a non-numeric `USER appuser`, so kubelet could not verify `runAsNonRoot: true` and pods failed with CreateContainerConfigError. OpenShift (restricted-v2) users unset the pins with explicit nulls: `podSecurityContext.runAsUser: null`, `podSecurityContext.fsGroup: null`, `securityContext.runAsUser: null`.
@@ -1044,6 +1049,28 @@ Bifrost exposes Prometheus metrics at `/metrics`:
 # Get metrics
 curl http://localhost:8080/metrics
 ```
+
+### Prometheus Operator (ServiceMonitor)
+
+If you run the Prometheus Operator (e.g. via [kube-prometheus-stack](https://github.com/prometheus-community/helm-charts/tree/main/charts/kube-prometheus-stack)), enable the bundled `ServiceMonitor` so Prometheus scrapes the `/metrics` endpoint automatically:
+
+```yaml
+serviceMonitor:
+  enabled: true
+  # Must match your Prometheus instance's serviceMonitorSelector.
+  additionalLabels:
+    release: kube-prometheus-stack
+  interval: 30s
+  scrapeTimeout: 10s
+  path: /metrics
+  # Optionally drop high-cardinality series:
+  # metricRelabelings:
+  #   - sourceLabels: [__name__]
+  #     regex: "go_gc_.*"
+  #     action: drop
+```
+
+The `ServiceMonitor` targets the service's `http` port. It requires the `monitoring.coreos.com/v1` CRDs to be installed; when they are missing the render fails with a clear message. Leave `serviceMonitor.enabled: false` (the default) if you use OpenTelemetry push-based metrics or a Prometheus scrape-annotation setup instead.
 
 For OpenTelemetry integration:
 

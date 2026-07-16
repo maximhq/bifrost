@@ -107,6 +107,57 @@
         }
       }
     },
+    "serviceMonitor": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Create a Prometheus Operator ServiceMonitor for the /metrics endpoint"
+        },
+        "additionalLabels": {
+          "type": "object",
+          "description": "Extra labels on the ServiceMonitor (match your Prometheus serviceMonitorSelector)"
+        },
+        "namespace": {
+          "type": "string",
+          "description": "Namespace for the ServiceMonitor; defaults to the release namespace"
+        },
+        "path": {
+          "type": "string",
+          "description": "Metrics path to scrape"
+        },
+        "interval": {
+          "type": "string",
+          "description": "Scrape interval (e.g. 30s); empty uses the Prometheus default"
+        },
+        "scrapeTimeout": {
+          "type": "string",
+          "description": "Per-scrape timeout (e.g. 10s); empty uses the Prometheus default"
+        },
+        "scheme": {
+          "type": "string",
+          "enum": ["", "http", "https"],
+          "description": "Scrape scheme"
+        },
+        "tlsConfig": {
+          "type": "object",
+          "description": "TLS settings for the scrape endpoint"
+        },
+        "honorLabels": {
+          "type": "boolean",
+          "description": "Preserve scraped target labels on collision"
+        },
+        "relabelings": {
+          "type": "array",
+          "description": "relabel_configs applied before scraping"
+        },
+        "metricRelabelings": {
+          "type": "array",
+          "description": "metric_relabel_configs applied to scraped samples"
+        }
+      },
+      "additionalProperties": false
+    },
     "ingress": {
       "description": "Ingress configuration. Either a single ingress (legacy, with top-level 'enabled') or a map of named ingresses (new format, each key becomes a separate Ingress resource named <release>-<key>).",
       "oneOf": [
