@@ -621,7 +621,7 @@ bifrost:
         headers: {}
         # TLS configuration
         tls_ca_cert: "" # Path to TLS CA certificate file
-        insecure: false # Skip TLS verification (ignored if tls_ca_cert is set)
+        # insecure: false # Skip TLS verification (ignored if tls_ca_cert is set)
         # Drop message content (input/output messages, embeddings, tool defs/args/results) from exported spans
         disable_content_logging: false
         # Group requests sharing the same x-bf-session-id header into one trace (an inbound W3C traceparent takes precedence)
