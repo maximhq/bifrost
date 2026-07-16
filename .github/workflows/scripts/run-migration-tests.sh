@@ -25,7 +25,7 @@ set -euo pipefail
 #   VERSIONS_TO_TEST  - Number of previous versions to test (default: 3)
 
 # Pull all the tags available
-git fetch --tags
+#git fetch --tags
 
 # Get the absolute path of the script directory
 if command -v readlink >/dev/null 2>&1 && readlink -f "$0" >/dev/null 2>&1; then
@@ -820,6 +820,7 @@ append_dynamic_mcp_clients_insert() {
     generate_skills_repo_tables_insert_postgres "$now" "$faker_sql"
     generate_sidekiq_insert_postgres "$now" "$faker_sql"
     generate_oauth2_issuance_tables_insert_postgres "$now" "$faker_sql"
+    generate_sidekiq_insert_postgres "$now" "$past" "$faker_sql"
     append_dynamic_columns_postgres "$now" "$past" "$faker_sql"
   else
     now="datetime('now')"
@@ -841,6 +842,7 @@ append_dynamic_mcp_clients_insert() {
     generate_skills_repo_tables_insert_sqlite "$now" "$faker_sql" "$config_db"
     generate_sidekiq_insert_sqlite "$now" "$faker_sql" "$config_db"
     generate_oauth2_issuance_tables_insert_sqlite "$now" "$faker_sql" "$config_db"
+    generate_sidekiq_insert_sqlite "$now" "$past" "$faker_sql" "$config_db"
     append_dynamic_columns_sqlite "$now" "$past" "$faker_sql" "$config_db"
   fi
 }
@@ -2109,6 +2111,54 @@ append_dynamic_columns_postgres() {
     echo "UPDATE governance_virtual_keys SET expires_at = NULL WHERE id = 'vk-migration-test-1';" >> "$output_file"
     echo "UPDATE governance_virtual_keys SET expires_at = NULL WHERE id = 'vk-migration-test-2';" >> "$output_file"
   fi
+
+  # -------------------------------------------------------------------------
+  # v1.6.4 columns
+  # -------------------------------------------------------------------------
+
+  # config_keys.vertex_force_single_region (added in v1.6.4 via add_vertex_force_single_region_column - nullable bool)
+  if column_exists_postgres "config_keys" "vertex_force_single_region"; then
+    echo "UPDATE config_keys SET vertex_force_single_region = NULL WHERE name = 'migration-test-key-openai';" >> "$output_file"
+    echo "UPDATE config_keys SET vertex_force_single_region = NULL WHERE name = 'migration-test-key-anthropic';" >> "$output_file"
+  fi
+
+  # config_keys.bedrock_project_id, bedrock_mantle_project_id (added in v1.6.4 via add_bedrock_project_id_columns - nullable text SecretVars)
+  for bedrock_proj_col in bedrock_project_id bedrock_mantle_project_id; do
+    if column_exists_postgres "config_keys" "$bedrock_proj_col"; then
+      echo "UPDATE config_keys SET $bedrock_proj_col = NULL WHERE name = 'migration-test-key-openai';" >> "$output_file"
+      echo "UPDATE config_keys SET $bedrock_proj_col = NULL WHERE name = 'migration-test-key-anthropic';" >> "$output_file"
+    fi
+  done
+
+  # governance_model_pricing flex/272k cache-creation tiers (added in v1.6.4 via
+  # add_flex_and_cache_creation_272k_pricing_columns), fast-mode cache pricing
+  # (add_fast_mode_cache_pricing_columns), and inference geo multiplier
+  # (add_inference_geo_multiplier_column) - all nullable float64
+  for pricing_col in \
+    input_cost_per_token_flex_above_272k_tokens \
+    output_cost_per_token_flex_above_272k_tokens \
+    cache_read_input_token_cost_flex_above_272k_tokens \
+    cache_creation_input_token_cost_above_272k_tokens \
+    cache_creation_input_token_cost_flex \
+    cache_creation_input_token_cost_flex_above_272k_tokens \
+    cache_creation_input_token_cost_priority \
+    cache_creation_input_token_cost_fast \
+    cache_creation_input_token_cost_above_1hr_fast \
+    cache_read_input_token_cost_fast \
+    inference_geo_us_multiplier; do
+    if column_exists_postgres "governance_model_pricing" "$pricing_col"; then
+      echo "UPDATE governance_model_pricing SET $pricing_col = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET $pricing_col = NULL WHERE id = 2;" >> "$output_file"
+    fi
+  done
+
+  # logs.redaction_mapping (added in v1.6.4 via logs_add_redaction_mapping_column -
+  # nullable text, stores the encrypted reversible redaction mapping)
+  if column_exists_postgres "logs" "redaction_mapping"; then
+    echo "UPDATE logs SET redaction_mapping = NULL WHERE id = 'log-migration-test-001';" >> "$output_file"
+    echo "UPDATE logs SET redaction_mapping = NULL WHERE id = 'log-migration-test-002';" >> "$output_file"
+    echo "UPDATE logs SET redaction_mapping = NULL WHERE id = 'log-migration-test-003';" >> "$output_file"
+  fi
 }
 
 # Append dynamic column UPDATEs for columns that may not exist in older schemas (SQLite)
@@ -3206,6 +3256,46 @@ append_dynamic_columns_sqlite() {
       echo "UPDATE governance_virtual_keys SET expires_at = NULL WHERE id = 'vk-migration-test-1';" >> "$output_file"
       echo "UPDATE governance_virtual_keys SET expires_at = NULL WHERE id = 'vk-migration-test-2';" >> "$output_file"
     fi
+
+    # -----------------------------------------------------------------------
+    # v1.6.4 columns
+    # -----------------------------------------------------------------------
+
+    # config_keys.vertex_force_single_region (added in v1.6.4 via add_vertex_force_single_region_column - nullable bool)
+    if column_exists_sqlite "$config_db" "config_keys" "vertex_force_single_region"; then
+      echo "UPDATE config_keys SET vertex_force_single_region = NULL WHERE name = 'migration-test-key-openai';" >> "$output_file"
+      echo "UPDATE config_keys SET vertex_force_single_region = NULL WHERE name = 'migration-test-key-anthropic';" >> "$output_file"
+    fi
+
+    # config_keys.bedrock_project_id, bedrock_mantle_project_id (added in v1.6.4 via add_bedrock_project_id_columns - nullable text SecretVars)
+    for bedrock_proj_col in bedrock_project_id bedrock_mantle_project_id; do
+      if column_exists_sqlite "$config_db" "config_keys" "$bedrock_proj_col"; then
+        echo "UPDATE config_keys SET $bedrock_proj_col = NULL WHERE name = 'migration-test-key-openai';" >> "$output_file"
+        echo "UPDATE config_keys SET $bedrock_proj_col = NULL WHERE name = 'migration-test-key-anthropic';" >> "$output_file"
+      fi
+    done
+
+    # governance_model_pricing flex/272k cache-creation tiers (added in v1.6.4 via
+    # add_flex_and_cache_creation_272k_pricing_columns), fast-mode cache pricing
+    # (add_fast_mode_cache_pricing_columns), and inference geo multiplier
+    # (add_inference_geo_multiplier_column) - all nullable float64
+    for pricing_col in \
+      input_cost_per_token_flex_above_272k_tokens \
+      output_cost_per_token_flex_above_272k_tokens \
+      cache_read_input_token_cost_flex_above_272k_tokens \
+      cache_creation_input_token_cost_above_272k_tokens \
+      cache_creation_input_token_cost_flex \
+      cache_creation_input_token_cost_flex_above_272k_tokens \
+      cache_creation_input_token_cost_priority \
+      cache_creation_input_token_cost_fast \
+      cache_creation_input_token_cost_above_1hr_fast \
+      cache_read_input_token_cost_fast \
+      inference_geo_us_multiplier; do
+      if column_exists_sqlite "$config_db" "governance_model_pricing" "$pricing_col"; then
+        echo "UPDATE governance_model_pricing SET $pricing_col = NULL WHERE id = 1;" >> "$output_file"
+        echo "UPDATE governance_model_pricing SET $pricing_col = NULL WHERE id = 2;" >> "$output_file"
+      fi
+    done
   fi
 
   # logs multi-team/BU/customer JSON-array columns (added in v1.5.9 via
@@ -3231,6 +3321,7 @@ append_dynamic_columns_sqlite() {
     echo "UPDATE logs SET alias_model_family = NULL WHERE id = 'log-migration-test-003';" >> "$output_file"
   fi
 
+<<<<<<< HEAD
   # -------------------------------------------------------------------------
   # v1.6.4 columns - config store / governance / log store tables
   # -------------------------------------------------------------------------
@@ -3270,6 +3361,14 @@ append_dynamic_columns_sqlite() {
     echo "UPDATE logs SET redaction_mapping = '' WHERE id = 'log-migration-test-001';" >> "$output_file"
     echo "UPDATE logs SET redaction_mapping = '' WHERE id = 'log-migration-test-002';" >> "$output_file"
     echo "UPDATE logs SET redaction_mapping = '' WHERE id = 'log-migration-test-003';" >> "$output_file"
+=======
+  # logs.redaction_mapping (added in v1.6.4 via logs_add_redaction_mapping_column -
+  # nullable text, stores the encrypted reversible redaction mapping)
+  if column_exists_sqlite "$logs_db" "logs" "redaction_mapping"; then
+    echo "UPDATE logs SET redaction_mapping = NULL WHERE id = 'log-migration-test-001';" >> "$output_file"
+    echo "UPDATE logs SET redaction_mapping = NULL WHERE id = 'log-migration-test-002';" >> "$output_file"
+    echo "UPDATE logs SET redaction_mapping = NULL WHERE id = 'log-migration-test-003';" >> "$output_file"
+>>>>>>> 6523ab566 (prerelease 2 (#5283))
   fi
 }
 
@@ -4232,6 +4331,45 @@ generate_temp_tokens_insert_sqlite() {
   echo "" >> "$output_file"
   echo "-- temp_tokens (short-lived narrow-scope credentials - added in v1.5.3, dynamically generated)" >> "$output_file"
   echo "INSERT INTO temp_tokens (id, token, token_hash, scope, resource_id, expires_at, created_at, updated_at, encryption_status) VALUES ('temp-token-migration-test-001', 'migration-test-temp-token-value-001', 'a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3', 'mcp_auth', 'oauth-config-migration-test-001', datetime('now', '+15 minutes'), $now, $now, 'plain_text') ON CONFLICT DO NOTHING;" >> "$output_file"
+}
+
+# Generate sidekiq INSERT for PostgreSQL (added in v1.6.4 via migrationAddSidekiqTable)
+# Only terminal statuses (completed/failed) are seeded: the sidekiq runner and reaper
+# mutate pending/running jobs on startup, which would diff the before/after snapshots.
+generate_sidekiq_insert_postgres() {
+  local now="$1"
+  local past="$2"
+  local output_file="$3"
+
+  if ! column_exists_postgres "sidekiq" "id"; then
+    return
+  fi
+
+  echo "" >> "$output_file"
+  echo "-- sidekiq (generic durable background jobs - added in v1.6.4, dynamically generated)" >> "$output_file"
+  echo "INSERT INTO sidekiq (id, kind, status, runner_id, metadata, attempts, last_error, created_at, updated_at, started_at, created_by_user_id, completed_at) VALUES ('sidekiq-migration-test-001', 'migration-test-kind', 'completed', 'runner-migration-test-001', '{\"cursor\":\"migration-test\"}', 1, '', $past, $now, $past, 'user-migration-test-001', $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+  echo "INSERT INTO sidekiq (id, kind, status, runner_id, metadata, attempts, last_error, created_at, updated_at, started_at, created_by_user_id, completed_at) VALUES ('sidekiq-migration-test-002', 'migration-test-kind', 'failed', '', '{}', 3, 'migration test failure message', $past, $now, $past, NULL, NULL) ON CONFLICT DO NOTHING;" >> "$output_file"
+}
+
+# Generate sidekiq INSERT for SQLite (added in v1.6.4 via migrationAddSidekiqTable)
+generate_sidekiq_insert_sqlite() {
+  local now="$1"
+  local past="$2"
+  local output_file="$3"
+  local config_db="$4"
+
+  if [ ! -f "$config_db" ]; then
+    return
+  fi
+
+  if ! column_exists_sqlite "$config_db" "sidekiq" "id"; then
+    return
+  fi
+
+  echo "" >> "$output_file"
+  echo "-- sidekiq (generic durable background jobs - added in v1.6.4, dynamically generated)" >> "$output_file"
+  echo "INSERT INTO sidekiq (id, kind, status, runner_id, metadata, attempts, last_error, created_at, updated_at, started_at, created_by_user_id, completed_at) VALUES ('sidekiq-migration-test-001', 'migration-test-kind', 'completed', 'runner-migration-test-001', '{\"cursor\":\"migration-test\"}', 1, '', $past, $now, $past, 'user-migration-test-001', $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+  echo "INSERT INTO sidekiq (id, kind, status, runner_id, metadata, attempts, last_error, created_at, updated_at, started_at, created_by_user_id, completed_at) VALUES ('sidekiq-migration-test-002', 'migration-test-kind', 'failed', '', '{}', 3, 'migration test failure message', $past, $now, $past, NULL, NULL) ON CONFLICT DO NOTHING;" >> "$output_file"
 }
 
 # Generate oauth2_clients / oauth2_authorize_requests / oauth2_refresh_tokens INSERTs for PostgreSQL
