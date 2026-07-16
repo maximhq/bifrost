@@ -1,3 +1,4 @@
+[feat]: add process-wide skip-startup-migrations switch (`migrator.SetSkipStartupMigrations`) honored by configstore, logstore, and ClickHouse migration triggers; SQL stores fail fast when migrations are pending and the switch is set
 - feat: add durable background-job `sidekiq` table, store methods, and runner with recovery and reaper
 - feat: pass created-by user ID and runner ID through sidekiq job lifecycle, add `GetInFlightSidekiqJobByKind` to config store interface
 - feat: show canonical model names in dashboard model rankings (thanks [@satyamkrishna](https://github.com/satyamkrishna)!)

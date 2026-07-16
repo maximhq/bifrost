@@ -60,6 +60,8 @@ docker run -p 8080:8080 -v $(pwd)/data:/app/data maximhq/bifrost
 | host      | localhost | `-host 0.0.0.0`   | `-e APP_HOST=0.0.0.0`           | Host to bind server to               |
 | log-level | info      | `-log-level info` | `-e LOG_LEVEL=info`             | Log level (debug, info, warn, error) |
 | log-style | json      | `-log-style json` | `-e LOG_STYLE=json`             | Log style (pretty, json)             |
+| migrate-only | false  | `-migrate-only`   | `-e BIFROST_MIGRATE_ONLY=1`     | Run database migrations and exit (for one-shot migration jobs) |
+| no-migrate | false    | `-no-migrate`     | `-e BIFROST_NO_MIGRATE=1`       | Skip database migrations on startup; fails fast if any are pending |
 
 **Understanding App Directory**
 
