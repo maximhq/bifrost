@@ -25,7 +25,7 @@ set -euo pipefail
 #   VERSIONS_TO_TEST  - Number of previous versions to test (default: 3)
 
 # Pull all the tags available
-#git fetch --tags
+git fetch --tags
 
 # Get the absolute path of the script directory
 if command -v readlink >/dev/null 2>&1 && readlink -f "$0" >/dev/null 2>&1; then
