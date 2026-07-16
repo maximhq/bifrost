@@ -43,7 +43,7 @@ func (r *OpenAIRerankRequest) MarshalJSON() ([]byte, error) {
 	type Alias OpenAIRerankRequest
 
 	if len(r.Documents) == 0 {
-		return schemas.Marshal((*Alias)(r))
+		return sonic.Marshal((*Alias)(r))
 	}
 
 	allPlain := true
@@ -54,7 +54,7 @@ func (r *OpenAIRerankRequest) MarshalJSON() ([]byte, error) {
 		}
 	}
 	if !allPlain {
-		return schemas.Marshal((*Alias)(r))
+		return sonic.Marshal((*Alias)(r))
 	}
 
 	plainDocs := make([]string, len(r.Documents))
@@ -68,7 +68,7 @@ func (r *OpenAIRerankRequest) MarshalJSON() ([]byte, error) {
 		Alias:     (*Alias)(r),
 		Documents: plainDocs,
 	}
-	return schemas.Marshal(override)
+	return sonic.Marshal(override)
 }
 
 // ToBifrostRerankResponse converts an OpenAI-compatible rerank response to Bifrost format
