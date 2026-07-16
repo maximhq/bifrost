@@ -165,3 +165,44 @@ func TestChatCompletionStreamUsesContextPathAndExtraParams(t *testing.T) {
 		t.Fatal("stream did not close")
 	}
 }
+
+func TestResponsesFallbackUsesChatCompletions(t *testing.T) {
+	t.Parallel()
+
+	pathCh := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		pathCh <- r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"chatcmpl-test","object":"chat.completion","created":1,"model":"MiniMax-M3","choices":[{"index":0,"message":{"role":"assistant","content":"Hello"},"finish_reason":"stop"}]}`)
+	}))
+	defer server.Close()
+
+	var input []schemas.ResponsesMessage
+	if err := json.Unmarshal([]byte(`[{"role":"user","content":"Hello"}]`), &input); err != nil {
+		t.Fatalf("failed to decode responses input: %v", err)
+	}
+	request := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Minimax,
+		Model:    "MiniMax-M3",
+		Input:    input,
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	key := schemas.Key{Value: schemas.SecretVar{Val: "test-key"}}
+
+	response, bifrostErr := testProvider(server.URL).Responses(ctx, key, request)
+	if bifrostErr != nil {
+		t.Fatalf("Responses returned error: %v", bifrostErr.Error.Message)
+	}
+	if response == nil || len(response.Output) == 0 {
+		t.Fatalf("expected a converted Responses output, got %#v", response)
+	}
+
+	select {
+	case path := <-pathCh:
+		if path != "/v1/chat/completions" {
+			t.Fatalf("expected Responses fallback path %q, got %q", "/v1/chat/completions", path)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Chat Completions fallback request was not received")
+	}
+}

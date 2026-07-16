@@ -1,12 +1,12 @@
 ---
 title: "MiniMax"
-description: "MiniMax provider guide for chat, responses, streaming, multimodal input, regional endpoints, and current model parameters"
+description: "MiniMax provider guide for chat, Responses compatibility, streaming, multimodal input, regional endpoints, and current model parameters"
 icon: "m"
 ---
 
 ## Overview
 
-The MiniMax provider connects Bifrost to the MiniMax API with bearer authentication and the provider's compatible request and response formats. It supports model listing, chat completions, streaming chat completions, and the native Responses API.
+The MiniMax provider connects Bifrost to the MiniMax API with bearer authentication and the provider's compatible request and response formats. It supports model listing, chat completions, streaming chat completions, and the Bifrost Responses API through Chat Completions compatibility.
 
 MiniMax-M3 accepts text, image, and video content in chat messages. This input capability is separate from image or video generation, which is not exposed by this provider implementation.
 
@@ -16,7 +16,7 @@ MiniMax-M3 accepts text, image, and video content in chat messages. This input c
 | --- | --- | --- | --- |
 | List Models | Supported | - | `/v1/models` |
 | Chat Completions | Supported | Supported | `/v1/chat/completions` |
-| Responses API | Supported | Supported | `/v1/responses` |
+| Responses API | Supported | Supported | Translated to `/v1/chat/completions` |
 | Text Completions | Not supported | Not supported | - |
 | Embeddings | Not supported | Not supported | - |
 | Image or Video Generation | Not supported | Not supported | - |
@@ -70,7 +70,7 @@ For the China endpoint, override the provider origin. Bifrost appends the operat
 | Global | `https://api.minimax.io/v1` | `https://api.minimax.io/anthropic` | `https://api.minimax.io/anthropic/v1/messages` |
 | China | `https://api.minimaxi.com/v1` | `https://api.minimaxi.com/anthropic` | `https://api.minimaxi.com/anthropic/v1/messages` |
 
-The Bifrost provider uses the OpenAI-compatible `/v1` upstream routes. Anthropic SDK clients use Bifrost's protocol adapter instead of putting an upstream Anthropic URL in `network_config.base_url`:
+The Bifrost provider uses the OpenAI-compatible `/v1/models` and `/v1/chat/completions` upstream routes. Bifrost Responses requests are translated to Chat Completions because MiniMax does not expose an upstream `/v1/responses` route. Anthropic SDK clients use Bifrost's protocol adapter instead of putting an upstream Anthropic URL in `network_config.base_url`:
 
 ```python
 import anthropic
@@ -93,7 +93,7 @@ The Anthropic SDK appends `/v1/messages`, so the Bifrost base URL must end at `/
 
 | Model | Context window | Input modalities | Thinking |
 | --- | ---: | --- | --- |
-| `MiniMax-M3` | 1,000,000 total input and output tokens | Text, image, video | `adaptive` or `disabled`; the OpenAI-compatible API defaults to `adaptive` and the direct Anthropic-compatible API defaults to `disabled` |
+| `MiniMax-M3` | 1,000,000-token context window | Text, image, video | `adaptive` or `disabled`; the OpenAI-compatible API defaults to `adaptive` and the direct Anthropic-compatible API defaults to `disabled` |
 | `MiniMax-M2.7` | 204,800 | Text | Always on |
 
 Provider-specific fields such as `thinking` and `reasoning_split` can be supplied through `extra_params`:
@@ -134,6 +134,6 @@ See the official [model guide](https://platform.minimax.io/docs/guides/models-in
 
 ## Caveats
 
-- The classic `/v1/completions` API is not listed by the upstream API and is returned as unsupported by this provider.
+- The classic `/v1/completions` and `/v1/responses` APIs are not listed by the upstream API. Text Completions is returned as unsupported, while Bifrost Responses requests are translated to Chat Completions.
 - MiniMax-M3 image and video support applies to chat input content; it does not enable Bifrost image-generation or video-generation operations.
 - The China endpoint requires an explicit `network_config.base_url` override.

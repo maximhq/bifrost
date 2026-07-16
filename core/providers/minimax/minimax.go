@@ -138,47 +138,25 @@ func (provider *MinimaxProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 	)
 }
 
+// Responses translates Bifrost Responses requests to MiniMax Chat Completions.
 func (provider *MinimaxProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
-	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
-	return openai.HandleOpenAIResponsesRequest(
-		ctx,
-		provider.client,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/responses"),
-		request,
-		openai.BearerAuthHeader(key),
-		provider.networkConfig.ExtraHeaders,
-		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
-		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
-		provider.GetProviderKey(),
-		nil,
-		nil,
-		nil,
-		provider.logger,
-	)
+	chatResponse, err := provider.ChatCompletion(ctx, key, request.ToChatRequest())
+	if err != nil {
+		return nil, err
+	}
+
+	return chatResponse.ToBifrostResponsesResponse(), nil
 }
 
 // ResponsesStream performs a streaming responses request to the Minimax API.
 func (provider *MinimaxProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
-	return openai.HandleOpenAIResponsesStreaming(
+	ctx.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
+	return provider.ChatCompletionStream(
 		ctx,
-		provider.streamingClient,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/responses"),
-		request,
-		openai.BearerAuthHeader(key),
-		provider.networkConfig.ExtraHeaders,
-		provider.networkConfig.StreamIdleTimeoutInSeconds,
-		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
-		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
-		provider.GetProviderKey(),
 		postHookRunner,
-		nil,
-		nil,
-		nil,
-		nil,
-		nil,
-		provider.logger,
 		postHookSpanFinalizer,
+		key,
+		request.ToChatRequest(),
 	)
 }
 
