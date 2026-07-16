@@ -3498,11 +3498,7 @@ extract_faker_columns() {
 
   # Also extract UPDATE SET columns (for dynamically added columns)
   # Pattern: UPDATE table SET col = value WHERE ...
-<<<<<<< HEAD
   # Note: Column names can contain digits (e.g., input_cost_per_token_above_128k_tokens)
-=======
-  # Note: Table and column names can contain digits (e.g., oauth2_clients, input_cost_per_token_above_128k_tokens)
->>>>>>> ee3c0e9c9 (migration test fixes (#4981))
   grep -E "^UPDATE [a-z0-9_]+ SET [a-z0-9_]+" "$faker_sql" | \
     sed -E 's/UPDATE ([a-z0-9_]+) SET ([a-z0-9_]+) =.*/\1:\2/' | \
     tr -d ' ' | sort -u >> "$output_file"
