@@ -101,8 +101,11 @@ parse_args() {
                 shift
                 ;;
             *)
-                # Keep other arguments for the main application
-                set -- "$@" "$1"
+                # Ignore anything else (including the default CMD /app/main):
+                # the exec below passes an explicit, fixed argument list, so
+                # unrecognized args were never forwarded. The previous
+                # rotate-and-shift (`set -- "$@" "$1"; shift`) kept $# constant
+                # and looped forever on any unrecognized argument.
                 shift
                 ;;
         esac
