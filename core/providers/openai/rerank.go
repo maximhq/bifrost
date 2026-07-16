@@ -6,7 +6,6 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/tidwall/sjson"
 )
 
 // ToOpenAIRerankRequest converts a Bifrost rerank request to OpenAI-compatible format
@@ -31,50 +30,45 @@ func ToOpenAIRerankRequest(request *schemas.BifrostRerankRequest) *OpenAIRerankR
 
 // MarshalJSON serializes "documents" into the shape most OpenAI-compatible
 // rerank servers expect: a plain string array when none of the documents
-// carry an id/meta, otherwise a uniform array of {text,id,meta} objects.
-// The array is never a mix of strings and objects, since some strict
-// string-array upstreams (e.g. llama.cpp) reject a "documents" array
-// containing any non-string element.
+// carry an id/meta, otherwise a uniform array of {text,id,meta} objects
+// (r.Documents marshals natively into that shape). The array is never a mix
+// of strings and objects, since some strict string-array upstreams (e.g.
+// llama.cpp) reject a "documents" array containing any non-string element.
+// A nil/empty Documents slice is left untouched so it keeps marshaling to
+// null/[] exactly as the native struct tag would.
 func (r *OpenAIRerankRequest) MarshalJSON() ([]byte, error) {
 	if r == nil {
 		return []byte("null"), nil
 	}
 	type Alias OpenAIRerankRequest
-	data, err := schemas.Marshal((*Alias)(r))
-	if err != nil {
-		return nil, err
-	}
-	docsJSON, err := schemas.Marshal(formatOpenAIRerankDocuments(r.Documents))
-	if err != nil {
-		return nil, err
-	}
-	return sjson.SetRawBytes(data, "documents", docsJSON)
-}
 
-// formatOpenAIRerankDocuments converts Bifrost rerank documents into the wire
-// shape most OpenAI-compatible rerank servers expect: bare strings when none
-// of the documents carry an id/meta, otherwise structured {text,id,meta}
-// objects for all of them so id/meta isn't silently dropped. The decision is
-// made array-wide (never a mix of strings and objects) since strict
-// string-array upstreams reject a "documents" array containing any
-// non-string element.
-func formatOpenAIRerankDocuments(documents []schemas.RerankDocument) []interface{} {
+	if len(r.Documents) == 0 {
+		return schemas.Marshal((*Alias)(r))
+	}
+
 	allPlain := true
-	for _, doc := range documents {
+	for _, doc := range r.Documents {
 		if doc.ID != nil || len(doc.Meta) > 0 {
 			allPlain = false
 			break
 		}
 	}
-	formatted := make([]interface{}, len(documents))
-	for i, doc := range documents {
-		if allPlain {
-			formatted[i] = doc.Text
-		} else {
-			formatted[i] = doc
-		}
+	if !allPlain {
+		return schemas.Marshal((*Alias)(r))
 	}
-	return formatted
+
+	plainDocs := make([]string, len(r.Documents))
+	for i, doc := range r.Documents {
+		plainDocs[i] = doc.Text
+	}
+	override := struct {
+		*Alias
+		Documents []string `json:"documents"`
+	}{
+		Alias:     (*Alias)(r),
+		Documents: plainDocs,
+	}
+	return schemas.Marshal(override)
 }
 
 // ToBifrostRerankResponse converts an OpenAI-compatible rerank response to Bifrost format
