@@ -606,6 +606,7 @@ bifrost:
         #     disable_content_logging: false
         #     group_traces_by_session: false # Group requests sharing x-bf-session-id into one trace (traceparent takes precedence)
         #     disable_root_span_content: false # Drop input/output from the root span only (keeps it on the llm.call span)
+        #     request_headers: []     # Header name patterns (exact or wildcard like "x-custom-*") captured as span attributes; "*" includes sensitive headers like Authorization
         #
         # Single-profile shape:
         service_name: "bifrost"
@@ -627,6 +628,9 @@ bifrost:
         group_traces_by_session: false
         # Drop input/output content from the root span only (the llm.call generation span keeps it)
         disable_root_span_content: false
+        # Request header name patterns (exact or wildcard like "x-custom-*") captured and emitted as span attributes.
+        # Note: "*" captures all headers including sensitive ones like Authorization.
+        # request_headers: []
     datadog:
       enabled: false
       version: 1

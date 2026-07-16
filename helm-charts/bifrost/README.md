@@ -10,6 +10,7 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 
 ### 2.1.29
 
+- Added `request_headers` to the OTEL plugin config, on both the single-profile shape (`bifrost.plugins.otel.config.request_headers`) and per-profile entries (`bifrost.plugins.otel.config.profiles[*].request_headers`). Header name patterns (exact or wildcard like `x-custom-*`) are captured and emitted as span attributes; renders into the plugin config `request_headers`. Previously accepted only for datadog/bigquery/kafka/pubsub, so OTEL values with `request_headers` failed schema validation and were dropped from the rendered config.
 - Added `bifrost.client.dualCredentialConflictBehavior` to control what happens when an inference request presents both an IDP access token and a virtual key (`x-bf-vk`). Accepts `"error"` (reject with 400), `"prefer_vk"` (drop IDP token, use VK), or `"prefer_idp"` (default, IDP token wins). Renders into `client.dual_credential_conflict_behavior`.
 
 ### 2.1.28

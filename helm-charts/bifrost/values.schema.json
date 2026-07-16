@@ -4682,6 +4682,13 @@
           "description": "When true, input/output message content is dropped from the root span only; the underlying generation (llm.call) span retains the full content. This removes the duplicate input/output stored at the trace level (e.g. the Langfuse trace Input/Output goes empty) to reduce downstream storage.",
           "default": false
         },
+        "request_headers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Request header name patterns (exact or wildcard like x-custom-*) to capture and emit as span attributes. Note: * captures all headers including sensitive ones like Authorization."
+        },
         "plugin_span_filter": {
           "$ref": "#/$defs/pluginSpanFilter"
         }
@@ -4795,6 +4802,13 @@
         "disable_root_span_content": {
           "type": "boolean",
           "description": "Deprecated in the profiles wrapper; configure disable_root_span_content per profile instead."
+        },
+        "request_headers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Deprecated in the profiles wrapper; configure request_headers per profile instead."
         }
       },
       "required": ["profiles"],
