@@ -81,6 +81,7 @@ var server *bifrostServer.BifrostHTTPServer
 
 var migrateOnly bool
 var noMigrate bool
+var matviewRefreshOnly bool
 
 // init initializes command line flags (but does not parse them).
 // Flag parsing is deferred to main() to avoid conflicts with test flags.
@@ -114,6 +115,7 @@ func init() {
 	flag.StringVar(&server.LogOutputStyle, "log-style", bifrostServer.DefaultLogOutputStyle, "Logger output type (json or pretty). Default is JSON.")
 	flag.BoolVar(&migrateOnly, "migrate-only", false, "Run database migrations and exit without starting the server (for one-shot migration jobs)")
 	flag.BoolVar(&noMigrate, "no-migrate", false, "Skip database migrations on startup; fails if migrations are pending (apply them out of band, e.g. with --migrate-only)")
+	flag.BoolVar(&matviewRefreshOnly, "matview-refresh-only", false, "Refresh logstore materialized views once and exit without starting the server (for cron jobs); implies --no-migrate")
 }
 
 // main is the entry point of the application.
@@ -157,21 +159,32 @@ func main() {
 
 	ctx := context.Background()
 
-	if migrateOnly && noMigrate {
-		logger.Error("--migrate-only and --no-migrate are mutually exclusive")
+	if migrateOnly && (noMigrate || matviewRefreshOnly) {
+		logger.Error("--migrate-only cannot be combined with --no-migrate or --matview-refresh-only")
 		os.Exit(1)
 	}
 	if noMigrate {
 		migrator.SetSkipStartupMigrations(true)
 	}
 	if migrateOnly {
-		migrator.SetMigrateOnly(true)
+		migrator.SetOneShotMaintenance(true)
 		t := time.Now()
-		if err := server.RunMigrations(ctx); err != nil {
+		if err := server.RunMaintenance(ctx); err != nil {
 			logger.Error("migration run failed: %v", err)
 			os.Exit(1)
 		}
 		logger.Info("migrations applied in %d ms; exiting (--migrate-only)", time.Since(t).Milliseconds())
+		return
+	}
+	if matviewRefreshOnly {
+		migrator.SetSkipStartupMigrations(true)
+		migrator.SetOneShotMaintenance(true)
+		t := time.Now()
+		if err := server.RunMaintenance(ctx); err != nil {
+			logger.Error("matview refresh run failed: %v", err)
+			os.Exit(1)
+		}
+		logger.Info("materialized views refreshed in %d ms; exiting (--matview-refresh-only)", time.Since(t).Milliseconds())
 		return
 	}
 

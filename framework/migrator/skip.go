@@ -15,15 +15,16 @@ func SetSkipStartupMigrations(skip bool) { skipStartupMigrations.Store(skip) }
 // this process.
 func SkipStartupMigrations() bool { return skipStartupMigrations.Load() }
 
-// migrateOnly is a process-wide switch (set by the --migrate-only transport
-// flag) meaning: this is a one-shot migration job. Stores run maintenance
-// that is normally backgrounded (e.g. logstore index builds) synchronously,
-// so it completes before the process exits.
-var migrateOnly atomic.Bool
+// oneShotMaintenance is a process-wide switch (set by the --migrate-only and
+// --matview-refresh-only transport flags) meaning: this is a one-shot
+// maintenance job. Stores run boot maintenance that is normally backgrounded
+// (logstore index builds, matview create/refresh) synchronously so it
+// completes before the process exits, and skip periodic background work.
+var oneShotMaintenance atomic.Bool
 
-// SetMigrateOnly toggles the process-wide "one-shot migration job" switch.
-// Call once at startup, before any store is opened.
-func SetMigrateOnly(v bool) { migrateOnly.Store(v) }
+// SetOneShotMaintenance toggles the process-wide "one-shot maintenance job"
+// switch. Call once at startup, before any store is opened.
+func SetOneShotMaintenance(v bool) { oneShotMaintenance.Store(v) }
 
-// MigrateOnly reports whether this process is a one-shot migration job.
-func MigrateOnly() bool { return migrateOnly.Load() }
+// OneShotMaintenance reports whether this process is a one-shot maintenance job.
+func OneShotMaintenance() bool { return oneShotMaintenance.Load() }

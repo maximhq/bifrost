@@ -100,6 +100,10 @@ parse_args() {
                 export BIFROST_NO_MIGRATE=1
                 shift
                 ;;
+            --matview-refresh-only|-matview-refresh-only)
+                export BIFROST_MATVIEW_REFRESH_ONLY=1
+                shift
+                ;;
             *)
                 # Ignore anything else (including the default CMD /app/main):
                 # the exec below passes an explicit, fixed argument list, so
@@ -125,6 +129,9 @@ case "$BIFROST_MIGRATE_ONLY" in
 esac
 case "$BIFROST_NO_MIGRATE" in
     1|true|TRUE|True) EXTRA_ARGS="$EXTRA_ARGS --no-migrate" ;;
+esac
+case "$BIFROST_MATVIEW_REFRESH_ONLY" in
+    1|true|TRUE|True) EXTRA_ARGS="$EXTRA_ARGS --matview-refresh-only" ;;
 esac
 
 # Build the command with environment variables and standard arguments
