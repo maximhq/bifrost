@@ -238,6 +238,59 @@ func TestToBifrostChatCompletionStream_RedactedThinkingStart(t *testing.T) {
 	}
 }
 
+// GH #5274: Anthropic rejects replayed thinking blocks that lack a valid
+// signature (400 "Invalid signature"). An unsigned text-only reasoning.text
+// detail — e.g. plain-text reasoning replayed from a non-Anthropic client —
+// has nothing for Anthropic to verify, so request conversion must drop it
+// rather than forwarding a block Anthropic will reject. A signed detail in
+// the same message must still come through as a thinking block.
+func TestToAnthropicChatRequest_DropsUnsignedTextOnlyReasoningDetail(t *testing.T) {
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-sonnet-4-20250514",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("weather in paris?")}},
+			{
+				Role: schemas.ChatMessageRoleAssistant,
+				ChatAssistantMessage: &schemas.ChatAssistantMessage{
+					ReasoningDetails: []schemas.ChatReasoningDetails{
+						{Index: 0, Type: schemas.BifrostReasoningDetailsTypeText, Text: schemas.Ptr("unsigned replay")},
+						{Index: 1, Type: schemas.BifrostReasoningDetailsTypeText, Text: schemas.Ptr("signed replay"), Signature: schemas.Ptr("sig-1")},
+					},
+				},
+			},
+		},
+		Params: &schemas.ChatParameters{
+			MaxCompletionTokens: schemas.Ptr(2048),
+			Reasoning:           &schemas.ChatReasoning{MaxTokens: schemas.Ptr(1024)},
+		},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	result, err := ToAnthropicChatRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	blocks := result.Messages[1].Content.ContentBlocks
+	var thinkingBlocks []AnthropicContentBlock
+	for _, b := range blocks {
+		if b.Type == AnthropicContentBlockTypeThinking {
+			thinkingBlocks = append(thinkingBlocks, b)
+		}
+	}
+	if len(thinkingBlocks) != 1 {
+		t.Fatalf("expected 1 thinking block (unsigned one dropped), got %d: %+v", len(thinkingBlocks), thinkingBlocks)
+	}
+	if thinkingBlocks[0].Thinking == nil || *thinkingBlocks[0].Thinking != "signed replay" {
+		t.Errorf("surviving thinking block = %+v, want text %q", thinkingBlocks[0], "signed replay")
+	}
+	if thinkingBlocks[0].Signature == nil || *thinkingBlocks[0].Signature != "sig-1" {
+		t.Errorf("surviving thinking block signature = %v, want sig-1", thinkingBlocks[0].Signature)
+	}
+}
+
 // A stream mixing redacted and visible thinking blocks must keep one
 // reasoning_details index per content block. The accumulator and replaying
 // clients group reasoning deltas by that index; if a redacted block shares
