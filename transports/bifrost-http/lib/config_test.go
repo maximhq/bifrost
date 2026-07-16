@@ -1553,6 +1553,43 @@ func (m *MockConfigStore) DeleteRoutingRule(ctx context.Context, id string, tx .
 	return nil
 }
 
+// Batch jobs
+func (m *MockConfigStore) UpsertBatchJob(ctx context.Context, job *tables.TableBatchJob) error {
+	return nil
+}
+
+func (m *MockConfigStore) GetBatchJob(ctx context.Context, jobID string) (*tables.TableBatchJob, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) ListDueBatchJobs(ctx context.Context, provider string, now time.Time, limit int) ([]*tables.TableBatchJob, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) ClaimBatchJob(ctx context.Context, jobID, runnerID string, staleBefore time.Time) (bool, error) {
+	return false, nil
+}
+
+func (m *MockConfigStore) MarkBatchJobAggregateLogWritten(ctx context.Context, jobID, runnerID string) error {
+	return nil
+}
+
+func (m *MockConfigStore) MarkBatchJobGovernanceReported(ctx context.Context, jobID, runnerID string) error {
+	return nil
+}
+
+func (m *MockConfigStore) CompleteBatchJob(ctx context.Context, jobID, runnerID string) error {
+	return nil
+}
+
+func (m *MockConfigStore) MarkBatchJobUnpriceable(ctx context.Context, jobID, runnerID, reason string, err error) error {
+	return nil
+}
+
+func (m *MockConfigStore) FailBatchJob(ctx context.Context, jobID, runnerID string, err error) error {
+	return nil
+}
+
 // Sidekiq
 func (m *MockConfigStore) CreateSidekiqJob(ctx context.Context, job *tables.TableSidekiqJob) error {
 	return nil
