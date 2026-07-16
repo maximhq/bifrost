@@ -1912,6 +1912,14 @@ Call this template at the beginning of deployment/stateful templates
 {{- fail "ERROR: bifrost.scim.config.clientId is required when SCIM provider is Google Workspace." }}
 {{- end }}
 {{- end }}
+{{- if eq $scimValidation.provider "generic" }}
+{{- if not $scimValidation.config.issuerUrl }}
+{{- fail "ERROR: bifrost.scim.config.issuerUrl is required when SCIM provider is a generic OIDC provider. Example: https://idp.company.com" }}
+{{- end }}
+{{- if not $scimValidation.config.clientId }}
+{{- fail "ERROR: bifrost.scim.config.clientId is required when SCIM provider is a generic OIDC provider." }}
+{{- end }}
+{{- end }}
 {{- end }}
 
 {{/* Validate cluster config when enabled */}}

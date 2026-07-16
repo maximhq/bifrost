@@ -408,6 +408,77 @@ func TestSchemaSCIMConfigValidation(t *testing.T) {
 				}
 			}`,
 		},
+		{
+			name:      "enabled generic with empty config is invalid",
+			config:    `{"scim_config":{"enabled":true,"provider":"generic","config":{}}}`,
+			wantError: true,
+		},
+		{
+			name:      "enabled zitadel with empty config is invalid",
+			config:    `{"scim_config":{"enabled":true,"provider":"zitadel","config":{}}}`,
+			wantError: true,
+		},
+		{
+			name:   "enabled zitadel with required config is valid",
+			config: `{"scim_config":{"enabled":true,"provider":"zitadel","config":{"domain":"acme.zitadel.cloud","clientId":"bifrost"}}}`,
+		},
+		{
+			name:      "enabled google with empty config is invalid",
+			config:    `{"scim_config":{"enabled":true,"provider":"google","config":{}}}`,
+			wantError: true,
+		},
+		{
+			name:   "enabled google with required config is valid",
+			config: `{"scim_config":{"enabled":true,"provider":"google","config":{"domain":"company.com","clientId":"bifrost"}}}`,
+		},
+		{
+			name:      "enabled google with credentialMode env but no serviceAccountEnvVar is invalid",
+			config:    `{"scim_config":{"enabled":true,"provider":"google","config":{"domain":"company.com","clientId":"bifrost","credentialMode":"env"}}}`,
+			wantError: true,
+		},
+		{
+			name:      "enabled sailpoint with empty config is invalid",
+			config:    `{"scim_config":{"enabled":true,"provider":"sailpoint","config":{}}}`,
+			wantError: true,
+		},
+		{
+			name:   "enabled sailpoint with required config is valid",
+			config: `{"scim_config":{"enabled":true,"provider":"sailpoint","config":{"product":"isc","tenant":"acme"}}}`,
+		},
+		{
+			name:      "unknown provider is rejected",
+			config:    `{"scim_config":{"enabled":true,"provider":"pingfederate","config":{}}}`,
+			wantError: true,
+		},
+		{
+			name: "enabled generic with required config is valid",
+			config: `{
+				"scim_config": {
+					"enabled": true,
+					"provider": "generic",
+					"config": {
+						"issuerUrl": "https://idp.company.com",
+						"clientId": "bifrost"
+					}
+				}
+			}`,
+		},
+		{
+			name: "enabled generic with claim SCIM attributes is valid",
+			config: `{
+				"scim_config": {
+					"enabled": true,
+					"provider": "generic",
+					"config": {
+						"issuerUrl": "https://idp.company.com",
+						"clientId": "bifrost",
+						"claimScimAttributes": {
+							"department": {"attributeType": "user", "attributeValue": "department"}
+						}
+					}
+				}
+			}`,
+		},
 	}
 
 	for _, tt := range tests {

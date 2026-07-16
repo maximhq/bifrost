@@ -1,0 +1,12 @@
+---
+title: "v2.1.29"
+description: "Helm v2.1.29 changelog - 2026-07-15"
+---
+
+<Update label="Bifrost Helm" description="v2.1.29">
+
+## Changelog
+
+- Added generic OIDC SCIM/SSO provider support (`bifrost.scim.provider: generic`) for any standards-compliant OIDC IdP. Configure via `bifrost.scim.config` (`issuerUrl` and `clientId` required; optional `clientSecret`, `audience`, endpoint overrides, `teamIdsField`, `rolesField`, `scopes`, and attribute/claim mappings). Endpoints are resolved via OIDC discovery unless overridden. Renders into `scim_config.config`.
+
+</Update>
