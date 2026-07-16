@@ -1,1 +1,2 @@
-- chore: upgraded framework to v1.5.2
+- feat: added resolver support for Bifrost Edge fallback pages
+- chore: upgraded core to v1.7.2 and framework to v1.5.2
