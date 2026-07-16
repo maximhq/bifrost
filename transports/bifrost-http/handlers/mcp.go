@@ -545,6 +545,7 @@ type OAuthConfigRequest struct {
 	TokenURL        string             `json:"token_url"`
 	RegistrationURL string             `json:"registration_url"`
 	Scopes          []string           `json:"scopes"`
+	Resource        string             `json:"resource"`
 }
 
 // MCPClientRequest represents the full MCP client creation request with OAuth support.
@@ -769,6 +770,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			RedirectURI:     redirectURI,
 			Scopes:          req.OauthConfig.Scopes,
 			ServerURL:       req.ConnectionString.GetValue(),
+			Resource:        req.OauthConfig.Resource,
 		})
 		if err != nil {
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to initiate OAuth flow: %v", err))
@@ -861,6 +863,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			RedirectURI:     redirectURI,
 			Scopes:          req.OauthConfig.Scopes,
 			ServerURL:       req.ConnectionString.GetValue(),
+			Resource:        req.OauthConfig.Resource,
 		})
 		if err != nil {
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to initiate OAuth flow: %v", err))

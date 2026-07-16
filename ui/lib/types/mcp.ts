@@ -37,6 +37,7 @@ export interface OAuthConfig {
 	registration_url?: string; // Optional, for dynamic client registration
 	scopes?: string[]; // Optional, can be discovered
 	server_url?: string; // MCP server URL for OAuth discovery (automatically set from connection_string)
+	resource?: string; // Optional OAuth resource indicator; omitted when empty
 }
 
 /** OAuth fields allowed on MCP client update (e.g. client_secret-only rotation). */

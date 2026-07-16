@@ -442,6 +442,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_vertex_force_single_region_column"}, run: migrationAddVertexForceSingleRegionColumn},
 	{IDs: []string{"add_sidekiq_table"}, run: migrationAddSidekiqTable},
 	{IDs: []string{"add_sidekiq_kind_status_created_index"}, run: migrationAddSidekiqKindStatusCreatedIndex},
+	{IDs: []string{"add_oauth_config_resource_column"}, run: migrationAddOauthConfigResourceColumn},
 	{IDs: []string{"add_fast_mode_cache_pricing_columns"}, run: migrationAddFastModeCachePricingColumns},
 	{IDs: []string{"add_inference_geo_multiplier_column"}, run: migrationAddInferenceGeoMultiplierColumn},
 	{IDs: []string{"repair_bare_wildcard_allowed_models"}, run: migrationRepairBareWildcardAllowedModels},
@@ -10674,6 +10675,30 @@ func migrationAddSidekiqKindStatusCreatedIndex(ctx context.Context, db *gorm.DB,
 			return tx.Exec(`DROP INDEX IF EXISTS idx_sidekiq_kind_status_created`).Error
 		},
 	}); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddOauthConfigResourceColumn adds the RFC 8707 resource indicator to
+// outbound MCP OAuth configs so authorization, token exchange, and refresh stay
+// bound to the same protected MCP resource.
+func migrationAddOauthConfigResourceColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_oauth_config_resource_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return addColumnIfNotExists(tx, logger, &tables.TableOauthConfig{}, "resource")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return dropColumnIfExists(tx, logger, &tables.TableOauthConfig{}, "resource")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running %s migration: %w", migrationName, err)
 	}
 	return nil

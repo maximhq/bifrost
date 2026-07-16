@@ -74334,6 +74334,10 @@
               "type": "string"
             },
             "description": "OAuth scopes requested. Optional - can be discovered from server_url if not provided.\nExample: [\"read\", \"write\"]\n"
+          },
+          "resource": {
+            "type": "string",
+            "description": "OAuth resource indicator (RFC 8707). Optional - omitted when empty. Providers such as Cloudflare managed MCP may require this value to identify the protected MCP resource.\n"
           }
         }
       },

@@ -130,6 +130,7 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 	const [createMCPClient] = useCreateMCPClientMutation();
 	const [isLoading, setIsLoading] = useState(false);
 	const [scopesText, setScopesText] = useState("");
+	const [resourceText, setResourceText] = useState("");
 	const [envVars, setEnvVars] = useState<Record<string, string>>({});
 	const [oauthFlow, setOauthFlow] = useState<{
 		authorizeUrl: string;
@@ -206,6 +207,7 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 		if (!open) return;
 		reset(defaultValues);
 		setScopesText("");
+		setResourceText("");
 		setEnvVars(initialEnvVars);
 		setOauthFlow(null);
 		setHeadersFlow(null);
@@ -254,6 +256,14 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 			if (data.oauth_config?.registration_url && !/^https?:\/\/.+$/.test(data.oauth_config.registration_url)) {
 				setError("oauth_config.registration_url", {
 					message: "Registration URL must start with http:// or https://",
+				});
+				hasErrors = true;
+			}
+			if (resourceText.trim() && !/^https?:\/\/.+$/.test(resourceText.trim())) {
+				toast({
+					title: "Invalid resource URL",
+					description: "OAuth resource must start with http:// or https://.",
+					variant: "destructive",
 				});
 				hasErrors = true;
 			}
@@ -306,6 +316,7 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 							registration_url: data.oauth_config?.registration_url || undefined,
 							scopes: scopesText.trim() ? parseArrayFromText(scopesText) : undefined,
 							server_url: connectionUrl || undefined,
+							resource: resourceText.trim() || undefined,
 						}
 					: undefined,
 			headers:
@@ -737,6 +748,15 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 														onChange={(event) => setScopesText(event.target.value)}
 														placeholder="read, write, admin"
 														data-testid="library-oauth-scopes-input"
+													/>
+												</div>
+												<div className="space-y-2">
+													<Label>Resource</Label>
+													<Input
+														value={resourceText}
+														onChange={(event) => setResourceText(event.target.value)}
+														placeholder="https://provider.example.com/mcp"
+														data-testid="library-oauth-resource-input"
 													/>
 												</div>
 											</AccordionContent>
