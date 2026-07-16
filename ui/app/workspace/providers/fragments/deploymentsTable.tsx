@@ -332,6 +332,8 @@ function ProviderSection({ providerName, ...props }: ProviderSectionProps & { pr
 			return <UseAnthropicEndpointsToggleSection providerName="Deepseek" {...props} />;
         case "fireworks":
 			return <UseAnthropicEndpointsToggleSection providerName="Fireworks" {...props} />;
+        case "vllm":
+			return <UseAnthropicEndpointsToggleSection providerName="vLLM" {...props} />;
 		default:
 			return null;
 	}
