@@ -1302,6 +1302,14 @@ func (s *BifrostHTTPServer) SyncLoadedPlugin(ctx context.Context, name string, p
 	if _, ok := plugin.(schemas.ObservabilityPlugin); ok {
 		s.reloadObservabilityPlugins()
 	}
+	// 4b. Batch accounting is wired at bootstrap against the live logging and
+	// governance plugins. Reloading either swaps the instance — which cancels the
+	// old sweeper and leaves the sweeper holding a torn-down usage reporter — so
+	// it must be rewired here or batch accounting silently stops until restart.
+	// Safe to re-run: StartBatchAccountingSweeper cancels any prior sweeper.
+	if plugin.GetName() == logging.PluginName || plugin.GetName() == s.getGovernancePluginName() {
+		s.WireBatchAccountingSweeper()
+	}
 	// 5. Update plugin status
 	s.Config.UpdatePluginOverallStatus(plugin.GetName(), name, schemas.PluginStatusActive,
 		[]string{fmt.Sprintf("plugin %s reloaded successfully", name)}, InferPluginTypes(plugin))
@@ -1832,6 +1840,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	}
 	logger.Info("models added to catalog")
 	s.Config.SetBifrostClient(s.Client)
+	s.WireBatchAccountingSweeper()
 	// Initialize routes
 	s.Router = router.New()
 	// Save the matched route template on each request
