@@ -1692,6 +1692,24 @@ func startSkillsOrphanCleanupWorker(ctx context.Context, config *lib.Config) {
 	}()
 }
 
+// RunMigrations initializes the config, logs, and vector stores — which
+// applies all pending schema migrations plus the startup encryption pass —
+// then closes them again without starting the server. Backs the
+// --migrate-only flag so migrations can run as a one-shot job (e.g. a k8s
+// Job or initContainer) while the server pods start with --no-migrate.
+func (s *BifrostHTTPServer) RunMigrations(ctx context.Context) error {
+	configDir := GetDefaultConfigDir(s.AppDir)
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		return fmt.Errorf("failed to create app directory %s: %v", configDir, err)
+	}
+	config, err := lib.LoadConfig(ctx, configDir)
+	if err != nil {
+		return err
+	}
+	config.Close(ctx)
+	return nil
+}
+
 // Bootstrap initializes the Bifrost HTTP server with all necessary components.
 // It:
 // 1. Initializes Prometheus collectors for monitoring

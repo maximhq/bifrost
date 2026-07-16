@@ -292,6 +292,13 @@ func areThereAnyPendingMigrations(ctx context.Context, db *gorm.DB, logger schem
 // triggerMigrations runs all registered logstore schema migrations in order under
 // a PostgreSQL advisory lock so only one node migrates the logstore at a time.
 func triggerMigrations(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	if migrator.SkipStartupMigrations() {
+		if areThereAnyPendingMigrations(ctx, db, logger) {
+			return fmt.Errorf("[logstore] schema migrations are pending but this process was started with --no-migrate; apply them out of band first (e.g. run bifrost with --migrate-only)")
+		}
+		logger.Info("[logstore] --no-migrate set and schema is current; skipping migration run")
+		return nil
+	}
 	if !areThereAnyPendingMigrations(ctx, db, logger) {
 		logger.Info("[logstore] migrations already current; skipping migration lock")
 		return nil

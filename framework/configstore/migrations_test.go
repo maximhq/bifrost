@@ -16,6 +16,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/encrypt"
+	frameworkmigrator "github.com/maximhq/bifrost/framework/migrator"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/driver/postgres"
@@ -1190,6 +1191,33 @@ func TestTriggerMigrations_Idempotent(t *testing.T) {
 	assert.True(t, db.Migrator().HasTable(&tables.TableProvider{}), "TableProvider should still exist")
 	assert.True(t, db.Migrator().HasTable(&tables.TableKey{}), "TableKey should still exist")
 	assert.True(t, db.Migrator().HasTable(&tables.TableVirtualKey{}), "TableVirtualKey should still exist")
+}
+
+// TestTriggerMigrations_SkipStartupMigrations covers the --no-migrate flag:
+// with the process-wide skip switch on, triggerMigrations must refuse to boot
+// a DB with pending migrations and must be a silent no-op on a current one.
+func TestTriggerMigrations_SkipStartupMigrations(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	frameworkmigrator.SetSkipStartupMigrations(true)
+	t.Cleanup(func() { frameworkmigrator.SetSkipStartupMigrations(false) })
+
+	// Fresh DB with skip on: pending migrations must fail startup, not be
+	// silently skipped.
+	err = triggerMigrations(ctx, db, testMigrationLogger)
+	require.Error(t, err, "triggerMigrations should fail when migrations are pending and skip is set")
+	require.Contains(t, err.Error(), "--no-migrate")
+
+	// Apply migrations out of band, then skip becomes a no-op.
+	frameworkmigrator.SetSkipStartupMigrations(false)
+	require.NoError(t, triggerMigrations(ctx, db, testMigrationLogger))
+	frameworkmigrator.SetSkipStartupMigrations(true)
+	require.NoError(t, triggerMigrations(ctx, db, testMigrationLogger),
+		"triggerMigrations should no-op when schema is current and skip is set")
 }
 
 func TestFullMigration_ProviderAndKeyCRUD(t *testing.T) {
