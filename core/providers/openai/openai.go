@@ -1447,7 +1447,7 @@ func HandleOpenAIChatCompletionStreaming(
 
 // Responses performs a responses request to the OpenAI API.
 func (provider *OpenAIProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
-	if provider.shouldFallbackResponsesToChat(schemas.ResponsesRequest, schemas.ChatCompletionRequest) {
+	if !IsChatGPTPassthrough(ctx) && provider.shouldFallbackResponsesToChat(schemas.ResponsesRequest, schemas.ChatCompletionRequest) {
 		chatResponse, err := provider.ChatCompletion(ctx, key, request.ToChatRequest())
 		if err != nil {
 			return nil, err
@@ -1455,12 +1455,13 @@ func (provider *OpenAIProvider) Responses(ctx *schemas.BifrostContext, key schem
 		return chatResponse.ToBifrostResponsesResponse(), nil
 	}
 
-	// Check if chat completion is allowed for this provider
-	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ResponsesRequest); err != nil {
-		return nil, err
+	if !IsChatGPTPassthrough(ctx) {
+		if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ResponsesRequest); err != nil {
+			return nil, err
+		}
 	}
 
-	if provider.disableStore {
+	if provider.disableStore || IsChatGPTPassthrough(ctx) {
 		if request.Params == nil {
 			request.Params = &schemas.ResponsesParameters{}
 		}
@@ -1630,16 +1631,21 @@ func HandleOpenAIResponsesRequest(
 
 // ResponsesStream performs a streaming responses request to the OpenAI API.
 func (provider *OpenAIProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	if provider.shouldFallbackResponsesToChat(schemas.ResponsesStreamRequest, schemas.ChatCompletionStreamRequest) {
+	if !IsChatGPTPassthrough(ctx) && provider.shouldFallbackResponsesToChat(schemas.ResponsesStreamRequest, schemas.ChatCompletionStreamRequest) {
 		ctx.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
 		return provider.ChatCompletionStream(ctx, postHookRunner, postHookSpanFinalizer, key, request.ToChatRequest())
 	}
 
-	// Check if chat completion stream is allowed for this provider
-	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ResponsesStreamRequest); err != nil {
-		return nil, err
+	if !IsChatGPTPassthrough(ctx) {
+		if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ResponsesStreamRequest); err != nil {
+			return nil, err
+		}
 	}
-	if provider.disableStore {
+	var authHeader map[string]string
+	if key.Value.GetValue() != "" {
+		authHeader = map[string]string{"Authorization": "Bearer " + key.Value.GetValue()}
+	}
+	if provider.disableStore || IsChatGPTPassthrough(ctx) {
 		if request.Params == nil {
 			request.Params = &schemas.ResponsesParameters{}
 		}
@@ -1652,7 +1658,7 @@ func (provider *OpenAIProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 		provider.streamingClient,
 		provider.buildRequestURL(ctx, "/v1/responses", schemas.ResponsesStreamRequest),
 		request,
-		BearerAuthHeader(key),
+		authHeader,
 		provider.networkConfig.ExtraHeaders,
 		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
