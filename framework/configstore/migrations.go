@@ -442,7 +442,6 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_vertex_force_single_region_column"}, run: migrationAddVertexForceSingleRegionColumn},
 	{IDs: []string{"add_sidekiq_table"}, run: migrationAddSidekiqTable},
 	{IDs: []string{"add_sidekiq_kind_status_created_index"}, run: migrationAddSidekiqKindStatusCreatedIndex},
-	{IDs: []string{"add_oauth_config_resource_column"}, run: migrationAddOauthConfigResourceColumn},
 	{IDs: []string{"add_fast_mode_cache_pricing_columns"}, run: migrationAddFastModeCachePricingColumns},
 	{IDs: []string{"add_inference_geo_multiplier_column"}, run: migrationAddInferenceGeoMultiplierColumn},
 	{IDs: []string{"repair_bare_wildcard_allowed_models"}, run: migrationRepairBareWildcardAllowedModels},
@@ -450,6 +449,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_webhook_endpoints_table"}, run: migrationAddWebhookEndpointsTable},
 	{IDs: []string{"add_webhook_jobs_table"}, run: migrationAddWebhookJobsTable},
 	{IDs: []string{"add_webhook_config_client_column"}, run: migrationAddWebhookConfigClientColumn},
+	{IDs: []string{"add_oauth_config_resource_column"}, run: migrationAddOauthConfigResourceColumn},
 }
 
 // quoteSQLiteIdentifier quotes a SQLite identifier, escaping any double quotes.
@@ -10683,7 +10683,6 @@ func migrationAddSidekiqKindStatusCreatedIndex(ctx context.Context, db *gorm.DB,
 	return nil
 }
 
-
 // migrationAddOauthConfigResourceColumn adds the RFC 8707 resource indicator to
 // outbound MCP OAuth configs so authorization, token exchange, and refresh stay
 // bound to the same protected MCP resource.
@@ -10707,7 +10706,6 @@ func migrationAddOauthConfigResourceColumn(ctx context.Context, db *gorm.DB, log
 	}
 	return nil
 }
-  
 
 // migrationAddWebhookEndpointsTable creates the config_webhook_endpoints table.
 func migrationAddWebhookEndpointsTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
