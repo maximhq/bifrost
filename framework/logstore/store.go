@@ -43,6 +43,10 @@ type LogStore interface {
 	GetProviderCostHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ProviderCostHistogramResult, error)
 	GetProviderTokenHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ProviderTokenHistogramResult, error)
 	GetProviderLatencyHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ProviderLatencyHistogramResult, error)
+	// GetThroughputHistogram returns time-bucketed token-generation throughput (tokens/sec).
+	GetThroughputHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ThroughputHistogramResult, error)
+	// GetProviderThroughputHistogram returns time-bucketed tokens/sec with provider breakdown.
+	GetProviderThroughputHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ProviderThroughputHistogramResult, error)
 	GetModelRankings(ctx context.Context, filters SearchFilters) (*ModelRankingResult, error)
 	GetUserRankings(ctx context.Context, filters SearchFilters) (*UserRankingResult, error)
 	GetDimensionRankings(ctx context.Context, filters SearchFilters, dimension RankingDimension) (*DimensionRankingResult, error)

@@ -1382,6 +1382,199 @@ func (s *RDBLogStore) GetTokenHistogram(ctx context.Context, filters SearchFilte
 	}, nil
 }
 
+// tokensPerSecond computes aggregate token-generation throughput for a bucket:
+// total completion tokens divided by total latency in seconds. latencyMs is the
+// sum of per-request latencies (milliseconds). Returns 0 when latency is absent.
+func tokensPerSecond(completionTokens int64, latencyMs float64) float64 {
+	if latencyMs <= 0 {
+		return 0
+	}
+	return float64(completionTokens) / (latencyMs / 1000.0)
+}
+
+// GetThroughputHistogram returns time-bucketed token-generation throughput
+// (tokens/sec) for the given filters. TokensPerSecond is the aggregate rate for
+// each bucket: SUM(completion_tokens) / (SUM(latency_ms)/1000), computed over
+// terminal rows that recorded a latency > 0.
+func (s *RDBLogStore) GetThroughputHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ThroughputHistogramResult, error) {
+	if bucketSizeSeconds <= 0 {
+		bucketSizeSeconds = 3600 // Default to 1 hour
+	}
+	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 {
+		return s.getThroughputHistogramFromMatView(ctx, filters, bucketSizeSeconds)
+	}
+
+	dialect := s.db.Dialector.Name()
+
+	baseQuery := s.ScopedDB(ctx).Model(&Log{})
+	baseQuery = s.applyFilters(baseQuery, filters)
+	// Only successful requests contribute to throughput: failed/cancelled rows
+	// spend latency but produce no (or partial) completion tokens, which would
+	// inflate the denominator and understate the true generation rate. This
+	// intersects with any caller-supplied status filter rather than overriding it,
+	// so throughput honors the same status filter as the sibling histograms; a
+	// filter that excludes success (e.g. status=error) correctly yields empty
+	// throughput, since there is no successful-generation throughput in that set.
+	baseQuery = baseQuery.Where("status = ?", "success")
+	// Only rows with a measured latency contribute to throughput.
+	baseQuery = baseQuery.Where("latency > 0")
+
+	var results []struct {
+		BucketTimestamp  int64   `gorm:"column:bucket_timestamp"`
+		CompletionTokens int64   `gorm:"column:completion_tokens"`
+		SumLatency       float64 `gorm:"column:sum_latency"`
+		TotalRequests    int64   `gorm:"column:total_requests"`
+	}
+
+	selectClause := fmt.Sprintf(`
+			%s as bucket_timestamp,
+			COALESCE(SUM(completion_tokens), 0) as completion_tokens,
+			COALESCE(SUM(latency), 0) as sum_latency,
+			COUNT(*) as total_requests
+		`, unixBucketExpr(dialect, bucketSizeSeconds))
+
+	if err := baseQuery.
+		Select(selectClause).
+		Group("bucket_timestamp").
+		Order("bucket_timestamp ASC").
+		Find(&results).Error; err != nil {
+		return nil, fmt.Errorf("failed to get throughput histogram: %w", err)
+	}
+
+	type agg struct {
+		completionTokens int64
+		sumLatency       float64
+		totalRequests    int64
+	}
+	resultMap := make(map[int64]agg, len(results))
+	for _, r := range results {
+		resultMap[r.BucketTimestamp] = agg{r.CompletionTokens, r.SumLatency, r.TotalRequests}
+	}
+
+	buildBucket := func(ts int64, a agg) ThroughputHistogramBucket {
+		return ThroughputHistogramBucket{
+			Timestamp:             time.Unix(ts, 0).UTC(),
+			TokensPerSecond:       tokensPerSecond(a.completionTokens, a.sumLatency),
+			TotalCompletionTokens: a.completionTokens,
+			TotalRequests:         a.totalRequests,
+		}
+	}
+
+	allTimestamps := generateBucketTimestamps(filters.StartTime, filters.EndTime, bucketSizeSeconds)
+	if len(allTimestamps) == 0 {
+		buckets := make([]ThroughputHistogramBucket, len(results))
+		for i, r := range results {
+			buckets[i] = buildBucket(r.BucketTimestamp, agg{r.CompletionTokens, r.SumLatency, r.TotalRequests})
+		}
+		return &ThroughputHistogramResult{Buckets: buckets, BucketSizeSeconds: bucketSizeSeconds}, nil
+	}
+
+	buckets := make([]ThroughputHistogramBucket, len(allTimestamps))
+	for i, ts := range allTimestamps {
+		if a, ok := resultMap[ts]; ok {
+			buckets[i] = buildBucket(ts, a)
+		} else {
+			buckets[i] = ThroughputHistogramBucket{Timestamp: time.Unix(ts, 0).UTC()}
+		}
+	}
+	return &ThroughputHistogramResult{Buckets: buckets, BucketSizeSeconds: bucketSizeSeconds}, nil
+}
+
+// GetProviderThroughputHistogram returns time-bucketed tokens/sec with a
+// per-provider breakdown for the given filters. See GetThroughputHistogram for
+// the throughput definition.
+func (s *RDBLogStore) GetProviderThroughputHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ProviderThroughputHistogramResult, error) {
+	if bucketSizeSeconds <= 0 {
+		bucketSizeSeconds = 3600
+	}
+	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 {
+		return s.getProviderThroughputHistogramFromMatView(ctx, filters, bucketSizeSeconds)
+	}
+
+	dialect := s.db.Dialector.Name()
+
+	baseQuery := s.ScopedDB(ctx).Model(&Log{})
+	baseQuery = s.applyFilters(baseQuery, filters)
+	// Successful requests only — see GetThroughputHistogram.
+	baseQuery = baseQuery.Where("status = ?", "success")
+	baseQuery = baseQuery.Where("latency > 0")
+
+	var results []struct {
+		BucketTimestamp  int64   `gorm:"column:bucket_timestamp"`
+		Provider         string  `gorm:"column:provider"`
+		CompletionTokens int64   `gorm:"column:completion_tokens"`
+		SumLatency       float64 `gorm:"column:sum_latency"`
+		TotalRequests    int64   `gorm:"column:total_requests"`
+	}
+
+	selectClause := fmt.Sprintf(`
+			%s as bucket_timestamp,
+			provider,
+			COALESCE(SUM(completion_tokens), 0) as completion_tokens,
+			COALESCE(SUM(latency), 0) as sum_latency,
+			COUNT(*) as total_requests
+		`, unixBucketExpr(dialect, bucketSizeSeconds))
+
+	if err := baseQuery.
+		Select(selectClause).
+		Group("bucket_timestamp, provider").
+		Order("bucket_timestamp ASC").
+		Find(&results).Error; err != nil {
+		return nil, fmt.Errorf("failed to get provider throughput histogram: %w", err)
+	}
+
+	bucketMap := make(map[int64]*ProviderThroughputHistogramBucket)
+	providersSet := make(map[string]bool)
+	for _, r := range results {
+		providersSet[r.Provider] = true
+		stats := ProviderThroughputStats{
+			TokensPerSecond:       tokensPerSecond(r.CompletionTokens, r.SumLatency),
+			TotalCompletionTokens: r.CompletionTokens,
+			TotalRequests:         r.TotalRequests,
+		}
+		if bucket, exists := bucketMap[r.BucketTimestamp]; exists {
+			bucket.ByProvider[r.Provider] = stats
+		} else {
+			bucketMap[r.BucketTimestamp] = &ProviderThroughputHistogramBucket{
+				Timestamp:  time.Unix(r.BucketTimestamp, 0).UTC(),
+				ByProvider: map[string]ProviderThroughputStats{r.Provider: stats},
+			}
+		}
+	}
+
+	providers := make([]string, 0, len(providersSet))
+	for provider := range providersSet {
+		providers = append(providers, provider)
+	}
+	sort.Strings(providers)
+
+	allTimestamps := generateBucketTimestamps(filters.StartTime, filters.EndTime, bucketSizeSeconds)
+	if len(allTimestamps) == 0 {
+		buckets := make([]ProviderThroughputHistogramBucket, 0, len(bucketMap))
+		for _, bucket := range bucketMap {
+			buckets = append(buckets, *bucket)
+		}
+		sort.Slice(buckets, func(i, j int) bool {
+			return buckets[i].Timestamp.Before(buckets[j].Timestamp)
+		})
+		return &ProviderThroughputHistogramResult{Buckets: buckets, BucketSizeSeconds: bucketSizeSeconds, Providers: providers}, nil
+	}
+
+	buckets := make([]ProviderThroughputHistogramBucket, len(allTimestamps))
+	for i, ts := range allTimestamps {
+		if bucket, exists := bucketMap[ts]; exists {
+			buckets[i] = *bucket
+		} else {
+			buckets[i] = ProviderThroughputHistogramBucket{
+				Timestamp:  time.Unix(ts, 0).UTC(),
+				ByProvider: make(map[string]ProviderThroughputStats),
+			}
+		}
+	}
+
+	return &ProviderThroughputHistogramResult{Buckets: buckets, BucketSizeSeconds: bucketSizeSeconds, Providers: providers}, nil
+}
+
 // GetCostHistogram returns time-bucketed cost data with model breakdown for the given filters.
 func (s *RDBLogStore) GetCostHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*CostHistogramResult, error) {
 	if bucketSizeSeconds <= 0 {

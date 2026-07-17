@@ -1541,6 +1541,48 @@ type ProviderLatencyHistogramResult struct {
 	Providers         []string                         `json:"providers"`
 }
 
+// Throughput (tokens/sec) histogram types
+//
+// TokensPerSecond is an aggregate rate for the bucket: total completion tokens
+// divided by total generation latency in seconds (SUM(completion_tokens) /
+// (SUM(latency_ms)/1000)), computed over terminal rows with latency > 0. It is
+// the "overall" throughput definition (not a mean of per-request rates), which
+// keeps it uniformly computable across streaming and non-streaming requests.
+
+// ThroughputHistogramBucket represents a single time bucket for token-generation throughput
+type ThroughputHistogramBucket struct {
+	Timestamp             time.Time `json:"timestamp"`
+	TokensPerSecond       float64   `json:"tokens_per_second"`
+	TotalCompletionTokens int64     `json:"total_completion_tokens"`
+	TotalRequests         int64     `json:"total_requests"`
+}
+
+// ThroughputHistogramResult represents the throughput histogram query result
+type ThroughputHistogramResult struct {
+	Buckets           []ThroughputHistogramBucket `json:"buckets"`
+	BucketSizeSeconds int64                       `json:"bucket_size_seconds"`
+}
+
+// ProviderThroughputStats represents throughput statistics for a single provider
+type ProviderThroughputStats struct {
+	TokensPerSecond       float64 `json:"tokens_per_second"`
+	TotalCompletionTokens int64   `json:"total_completion_tokens"`
+	TotalRequests         int64   `json:"total_requests"`
+}
+
+// ProviderThroughputHistogramBucket represents a single time bucket for provider throughput data
+type ProviderThroughputHistogramBucket struct {
+	Timestamp  time.Time                          `json:"timestamp"`
+	ByProvider map[string]ProviderThroughputStats `json:"by_provider"`
+}
+
+// ProviderThroughputHistogramResult represents the provider throughput histogram query result
+type ProviderThroughputHistogramResult struct {
+	Buckets           []ProviderThroughputHistogramBucket `json:"buckets"`
+	BucketSizeSeconds int64                               `json:"bucket_size_seconds"`
+	Providers         []string                            `json:"providers"`
+}
+
 // HistogramDimension represents a column that can be used as a grouping dimension in histograms
 type HistogramDimension string
 
@@ -1815,6 +1857,8 @@ type DashboardOverview struct {
 	Cost     *CostHistogramResult    `json:"cost"`     // Cost over time, broken down by model
 	Models   *ModelHistogramResult   `json:"models"`   // Per-model usage over time
 	Latency  *LatencyHistogramResult `json:"latency"`  // Latency percentiles over time
+	// Throughput holds tokens/sec over time (aggregate rate per bucket).
+	Throughput *ThroughputHistogramResult `json:"throughput"`
 }
 
 // DashboardProviderUsage holds the Provider Usage tab metrics.
@@ -1822,6 +1866,8 @@ type DashboardProviderUsage struct {
 	Cost    *ProviderCostHistogramResult    `json:"cost"`
 	Tokens  *ProviderTokenHistogramResult   `json:"tokens"`
 	Latency *ProviderLatencyHistogramResult `json:"latency"`
+	// Throughput holds per-provider tokens/sec over time.
+	Throughput *ProviderThroughputHistogramResult `json:"throughput"`
 }
 
 // DashboardModelRankings holds the Model Rankings tab data.
