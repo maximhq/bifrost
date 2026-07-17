@@ -93,4 +93,18 @@ func TestThroughputHistogramMath(t *testing.T) {
 	require.Equal(t, int64(2), stats["openai"].TotalRequests)
 	require.InDelta(t, 100.0, stats["anthropic"].TokensPerSecond, 1e-6)
 	require.Equal(t, int64(1), stats["anthropic"].TotalRequests)
+
+	// Model rankings expose the same per-model throughput. All rows use model
+	// "gpt-4o", so ranking groups by (model, provider): openai => 200 tok/s,
+	// anthropic => 100 tok/s. The latency-less / zero-latency / non-success rows
+	// (t4, t7, t5, t6) must be excluded from the rate exactly as above.
+	rankings, err := sq.GetModelRankings(ctx, window)
+	require.NoError(t, err)
+	tpByProvider := make(map[string]float64)
+	for _, r := range rankings.Rankings {
+		require.Equal(t, "gpt-4o", r.Model)
+		tpByProvider[r.Provider] = r.Throughput
+	}
+	require.InDelta(t, 200.0, tpByProvider["openai"], 1e-6)
+	require.InDelta(t, 100.0, tpByProvider["anthropic"], 1e-6)
 }
