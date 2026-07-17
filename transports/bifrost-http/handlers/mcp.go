@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"sort"
 	"strconv"
@@ -566,6 +567,16 @@ type MCPVKConfigRequest struct {
 	ToolsToExecute schemas.WhiteList `json:"tools_to_execute"`
 }
 
+// Bounds for the tool_sync_interval request field, which is expressed in minutes.
+// They mark the point where minutes*time.Minute would overflow int64 (~292 years),
+// so they reject unit-confused input without constraining any realistic interval.
+// The persisted int seconds cannot wrap within these bounds: that would require a
+// 32-bit int, and sonic (a core dependency) fails to compile on 32-bit by design.
+const (
+	maxToolSyncIntervalMinutes = int64(math.MaxInt64) / int64(time.Minute)
+	minToolSyncIntervalMinutes = int64(math.MinInt64) / int64(time.Minute)
+)
+
 // MCPClientUpdateRequest is the body for PUT /api/mcp/client/{id}.
 // All fields are optional — omitting a field retains its existing value (PATCH semantics).
 // Immutable fields (connection_type, auth_type, connection_string, stdio_config) are not
@@ -1095,6 +1106,13 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 	// boundary below; the in-memory duration is the source of truth here.
 	resolvedToolSyncInterval := existingConfig.ToolSyncInterval
 	if req.ToolSyncInterval != nil {
+		// Reject values that would overflow the minutes->Duration multiply. Without
+		// this, a caller echoing back the nanosecond value from a GET response wraps
+		// int64 and silently persists a garbage interval of either sign.
+		if int64(*req.ToolSyncInterval) > maxToolSyncIntervalMinutes || int64(*req.ToolSyncInterval) < minToolSyncIntervalMinutes {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("tool_sync_interval must be between %d and %d minutes", minToolSyncIntervalMinutes, maxToolSyncIntervalMinutes))
+			return
+		}
 		resolvedToolSyncInterval = time.Duration(*req.ToolSyncInterval) * time.Minute
 	}
 	resolvedToolExecutionTimeout := existingConfig.ToolExecutionTimeout
