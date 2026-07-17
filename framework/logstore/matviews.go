@@ -53,6 +53,13 @@ SELECT
     COALESCE(percentile_cont(0.99) WITHIN GROUP (ORDER BY latency), 0) AS p99_latency,
     COALESCE(SUM(prompt_tokens), 0) AS total_prompt_tokens,
     COALESCE(SUM(completion_tokens), 0) AS total_completion_tokens,
+    -- Throughput measures restricted to rows with a positive measured latency,
+    -- so the tokens/sec matview path matches the raw path exactly (which filters
+    -- latency > 0). Without this, a latency=0 success row would add completion
+    -- tokens to the numerator with nothing in the denominator and inflate the rate.
+    COALESCE(SUM(completion_tokens) FILTER (WHERE latency > 0), 0) AS throughput_completion_tokens,
+    COALESCE(SUM(latency) FILTER (WHERE latency > 0), 0) AS throughput_latency_ms,
+    COALESCE(COUNT(*) FILTER (WHERE latency > 0), 0) AS throughput_request_count,
     COALESCE(SUM(total_tokens), 0) AS total_tokens,
     COALESCE(SUM(cached_read_tokens), 0) AS total_cached_read_tokens,
     COALESCE(SUM(cost), 0) AS total_cost
@@ -88,6 +95,9 @@ var mvLogsHourlyRequiredColumns = []string{
 	"alias",
 	"canonical_model_name",
 	"cancelled_count",
+	"throughput_completion_tokens",
+	"throughput_latency_ms",
+	"throughput_request_count",
 }
 
 // legacyMatViewNames are matviews from previous schema versions that no longer
@@ -1243,6 +1253,115 @@ func (s *RDBLogStore) getLatencyHistogramFromMatView(ctx context.Context, filter
 		buckets = append(buckets, b)
 	}
 	return &LatencyHistogramResult{Buckets: buckets, BucketSizeSeconds: bucketSizeSeconds}, nil
+}
+
+// getThroughputHistogramFromMatView returns time-bucketed token-generation
+// throughput (tokens/sec) from mv_logs_hourly. It sums the precomputed
+// positive-latency measures (throughput_completion_tokens / throughput_latency_ms
+// / throughput_request_count), which the matview restricts to rows with
+// latency > 0 exactly as the raw path does — so both paths return the same value.
+func (s *RDBLogStore) getThroughputHistogramFromMatView(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ThroughputHistogramResult, error) {
+	var results []struct {
+		BucketTimestamp  int64   `gorm:"column:bucket_timestamp"`
+		CompletionTokens int64   `gorm:"column:completion_tokens"`
+		SumLatency       float64 `gorm:"column:sum_latency"`
+		TotalRequests    int64   `gorm:"column:total_requests"`
+	}
+	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
+	q = s.applyMatViewFilters(q, filters)
+	// Successful requests only: status is a matview dimension, so this restricts
+	// the summed tokens/latency/count to success rows (see GetThroughputHistogram).
+	q = q.Where("status = ?", "success")
+	if err := q.Select(fmt.Sprintf(`
+		CAST(FLOOR(EXTRACT(EPOCH FROM hour) / %d) * %d AS BIGINT) AS bucket_timestamp,
+		COALESCE(SUM(throughput_completion_tokens), 0) AS completion_tokens,
+		COALESCE(SUM(throughput_latency_ms), 0) AS sum_latency,
+		COALESCE(SUM(throughput_request_count), 0) AS total_requests
+	`, bucketSizeSeconds, bucketSizeSeconds)).
+		Group("bucket_timestamp").
+		Order("bucket_timestamp ASC").
+		Find(&results).Error; err != nil {
+		return nil, err
+	}
+
+	resultMap := make(map[int64]int, len(results))
+	for i, r := range results {
+		resultMap[r.BucketTimestamp] = i
+	}
+
+	allTimestamps := generateBucketTimestamps(filters.StartTime, filters.EndTime, bucketSizeSeconds)
+	buckets := make([]ThroughputHistogramBucket, 0, len(allTimestamps))
+	for _, ts := range allTimestamps {
+		b := ThroughputHistogramBucket{Timestamp: time.Unix(ts, 0).UTC()}
+		if idx, ok := resultMap[ts]; ok {
+			r := results[idx]
+			b.TokensPerSecond = tokensPerSecond(r.CompletionTokens, r.SumLatency)
+			b.TotalCompletionTokens = r.CompletionTokens
+			b.TotalRequests = r.TotalRequests
+		}
+		buckets = append(buckets, b)
+	}
+	return &ThroughputHistogramResult{Buckets: buckets, BucketSizeSeconds: bucketSizeSeconds}, nil
+}
+
+// getProviderThroughputHistogramFromMatView returns time-bucketed tokens/sec
+// with per-provider breakdown from mv_logs_hourly.
+func (s *RDBLogStore) getProviderThroughputHistogramFromMatView(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ProviderThroughputHistogramResult, error) {
+	var results []struct {
+		BucketTimestamp  int64   `gorm:"column:bucket_timestamp"`
+		Provider         string  `gorm:"column:provider"`
+		CompletionTokens int64   `gorm:"column:completion_tokens"`
+		SumLatency       float64 `gorm:"column:sum_latency"`
+		TotalRequests    int64   `gorm:"column:total_requests"`
+	}
+	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
+	q = s.applyMatViewFilters(q, filters)
+	// Successful requests only — see getThroughputHistogramFromMatView.
+	q = q.Where("status = ?", "success")
+	if err := q.Select(fmt.Sprintf(`
+		CAST(FLOOR(EXTRACT(EPOCH FROM hour) / %d) * %d AS BIGINT) AS bucket_timestamp,
+		provider,
+		COALESCE(SUM(throughput_completion_tokens), 0) AS completion_tokens,
+		COALESCE(SUM(throughput_latency_ms), 0) AS sum_latency,
+		COALESCE(SUM(throughput_request_count), 0) AS total_requests
+	`, bucketSizeSeconds, bucketSizeSeconds)).
+		Group("bucket_timestamp, provider").
+		Order("bucket_timestamp ASC").
+		Find(&results).Error; err != nil {
+		return nil, err
+	}
+
+	type bucketAgg struct {
+		byProvider map[string]ProviderThroughputStats
+	}
+	grouped := make(map[int64]*bucketAgg)
+	providersSet := make(map[string]struct{})
+	for _, r := range results {
+		a, ok := grouped[r.BucketTimestamp]
+		if !ok {
+			a = &bucketAgg{byProvider: make(map[string]ProviderThroughputStats)}
+			grouped[r.BucketTimestamp] = a
+		}
+		a.byProvider[r.Provider] = ProviderThroughputStats{
+			TokensPerSecond:       tokensPerSecond(r.CompletionTokens, r.SumLatency),
+			TotalCompletionTokens: r.CompletionTokens,
+			TotalRequests:         r.TotalRequests,
+		}
+		providersSet[r.Provider] = struct{}{}
+	}
+
+	allTimestamps := generateBucketTimestamps(filters.StartTime, filters.EndTime, bucketSizeSeconds)
+	buckets := make([]ProviderThroughputHistogramBucket, 0, len(allTimestamps))
+	for _, ts := range allTimestamps {
+		b := ProviderThroughputHistogramBucket{Timestamp: time.Unix(ts, 0).UTC(), ByProvider: make(map[string]ProviderThroughputStats)}
+		if a, ok := grouped[ts]; ok {
+			b.ByProvider = a.byProvider
+		}
+		buckets = append(buckets, b)
+	}
+
+	providers := sortedStringKeys(providersSet)
+	return &ProviderThroughputHistogramResult{Buckets: buckets, BucketSizeSeconds: bucketSizeSeconds, Providers: providers}, nil
 }
 
 // getProviderCostHistogramFromMatView returns time-bucketed cost data with

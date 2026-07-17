@@ -677,6 +677,18 @@ func (h *HybridLogStore) GetProviderLatencyHistogram(ctx context.Context, filter
 	return h.inner.GetProviderLatencyHistogram(ctx, filters, bucketSizeSeconds)
 }
 
+// GetThroughputHistogram delegates to the inner store and returns a
+// token-generation throughput (tokens/sec) histogram bucketed by bucketSizeSeconds.
+func (h *HybridLogStore) GetThroughputHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ThroughputHistogramResult, error) {
+	return h.inner.GetThroughputHistogram(ctx, filters, bucketSizeSeconds)
+}
+
+// GetProviderThroughputHistogram delegates to the inner store and returns a
+// per-provider throughput (tokens/sec) histogram bucketed by bucketSizeSeconds.
+func (h *HybridLogStore) GetProviderThroughputHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ProviderThroughputHistogramResult, error) {
+	return h.inner.GetProviderThroughputHistogram(ctx, filters, bucketSizeSeconds)
+}
+
 // GetModelRankings delegates to the inner store and returns ranked usage
 // aggregates per model for the matching log rows.
 func (h *HybridLogStore) GetModelRankings(ctx context.Context, filters SearchFilters) (*ModelRankingResult, error) {
