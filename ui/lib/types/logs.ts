@@ -779,6 +779,38 @@ export interface ProviderLatencyHistogramResponse {
 	providers: string[];
 }
 
+// Throughput (tokens/sec) histogram types
+// tokens_per_second is the aggregate rate for the bucket: total completion tokens
+// divided by total generation latency in seconds.
+export interface ThroughputHistogramBucket {
+	timestamp: string;
+	tokens_per_second: number;
+	total_completion_tokens: number;
+	total_requests: number;
+}
+
+export interface ThroughputHistogramResponse {
+	buckets: ThroughputHistogramBucket[];
+	bucket_size_seconds: number;
+}
+
+export interface ProviderThroughputStats {
+	tokens_per_second: number;
+	total_completion_tokens: number;
+	total_requests: number;
+}
+
+export interface ProviderThroughputHistogramBucket {
+	timestamp: string;
+	by_provider: Record<string, ProviderThroughputStats>;
+}
+
+export interface ProviderThroughputHistogramResponse {
+	buckets: ProviderThroughputHistogramBucket[];
+	bucket_size_seconds: number;
+	providers: string[];
+}
+
 export interface LogsResponse {
 	logs: LogEntry[];
 	pagination: Pagination;
