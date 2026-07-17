@@ -1657,9 +1657,10 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 	delta := choice.ChatStreamResponseChoice.Delta
 	var responses []*BifrostResponsesStreamResponse
 
-	// Store message ID and model from first chunk
+	// Store message ID and model from first chunk. Mint a fresh resp_* ID instead of
+	// reusing the chat completion's chatcmpl-* ID, matching the non-streaming bridge.
 	if state.MessageID == nil && cr.ID != "" {
-		state.MessageID = &cr.ID
+		state.MessageID = Ptr("resp_" + GetRandomString(50))
 	}
 	if state.Model == nil && cr.Model != "" {
 		state.Model = &cr.Model

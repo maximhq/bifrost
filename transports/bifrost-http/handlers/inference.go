@@ -1529,8 +1529,18 @@ func prepareTranscriptionRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (
 			continue
 		}
 		// Repeated form fields (e.g. known_speaker_names[], known_speaker_references[])
-		// must be preserved as arrays instead of collapsing to the first value.
-		transcriptionParams.ExtraParams[key] = value
+		// must be preserved as arrays instead of collapsing to the first value. Drop
+		// blank entries, same as the single-value case above, so a stray empty field
+		// doesn't get forwarded upstream and trip provider-side validation.
+		nonEmpty := make([]string, 0, len(value))
+		for _, v := range value {
+			if v != "" {
+				nonEmpty = append(nonEmpty, v)
+			}
+		}
+		if len(nonEmpty) > 0 {
+			transcriptionParams.ExtraParams[key] = nonEmpty
+		}
 	}
 	stream := false
 	if streamValues := form.Value["stream"]; len(streamValues) > 0 && streamValues[0] == "true" {

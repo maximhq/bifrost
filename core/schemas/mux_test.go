@@ -2,6 +2,7 @@ package schemas
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -564,6 +565,26 @@ func TestToBifrostResponsesResponse_UnknownFinishReasonLeavesStatusUnset(t *test
 	}
 	if resp.StopReason != nil {
 		t.Fatalf("expected stop_reason to be nil, got %q", *resp.StopReason)
+	}
+}
+
+func TestToBifrostResponsesResponse_MintsFreshRespID(t *testing.T) {
+	chatID := "chatcmpl-abc123"
+
+	resp1 := (&BifrostChatResponse{ID: chatID}).ToBifrostResponsesResponse()
+	resp2 := (&BifrostChatResponse{ID: chatID}).ToBifrostResponsesResponse()
+
+	if resp1 == nil || resp1.ID == nil {
+		t.Fatal("expected non-nil id")
+	}
+	if !strings.HasPrefix(*resp1.ID, "resp_") {
+		t.Fatalf("expected id to start with resp_, got %q", *resp1.ID)
+	}
+	if *resp1.ID == chatID {
+		t.Fatalf("expected a fresh id, got the source chat completion id %q reused verbatim", chatID)
+	}
+	if resp2 == nil || resp2.ID == nil || *resp1.ID == *resp2.ID {
+		t.Fatalf("expected distinct ids across conversions, got %q and %v", *resp1.ID, resp2)
 	}
 }
 
