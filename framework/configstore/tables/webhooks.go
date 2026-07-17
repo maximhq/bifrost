@@ -284,3 +284,32 @@ func (w *TableWebhookEndpoint) AfterFind(tx *gorm.DB) error {
 	}
 	return nil
 }
+
+// TableWebhookJob is one in-flight webhook delivery in the work queue. A row
+// exists only while its delivery is pending or retrying: it is created when a
+// subscribed event fires, claimed for each attempt, and deleted once the
+// delivery reaches a terminal outcome — so the table's steady-state size is
+// the number of concurrent in-flight deliveries. The row id doubles as the
+// delivery's stable `webhook-id` header value across attempts and redeliveries.
+type TableWebhookJob struct {
+	ID         string       `gorm:"type:varchar(36);primaryKey" json:"id"`
+	EndpointID string       `gorm:"type:varchar(36);not null;index" json:"endpoint_id"`
+	AsyncJobID string       `gorm:"type:varchar(255);not null" json:"async_job_id"`
+	Event      WebhookEvent `gorm:"type:varchar(255);not null" json:"event"`
+
+	AttemptCount  int       `gorm:"not null;default:0" json:"attempt_count"`
+	NextAttemptAt time.Time `gorm:"not null;index" json:"next_attempt_at"`
+
+	// ClaimedBy and ClaimedUntil form the delivery lease: a row with a live
+	// lease is owned by exactly one worker; once the lease expires the row is
+	// reclaimable (its owner is presumed dead mid-attempt). ClaimedBy holds
+	// the claiming runner's id and is empty in single-node mode, where the
+	// lease alone provides the fencing.
+	ClaimedBy    string     `gorm:"type:varchar(255);not null;default:''" json:"claimed_by,omitempty"`
+	ClaimedUntil *time.Time `json:"claimed_until,omitempty"`
+
+	CreatedAt time.Time `gorm:"not null" json:"created_at"`
+}
+
+// TableName sets the table name for the webhook job model
+func (TableWebhookJob) TableName() string { return "webhook_jobs" }

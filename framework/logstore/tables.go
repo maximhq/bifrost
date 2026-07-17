@@ -1075,10 +1075,13 @@ type AsyncJob struct {
 	StatusCode   int                    `gorm:"default:0" json:"status_code,omitempty"`
 	Error        string                 `gorm:"type:text" json:"error,omitempty"`
 	VirtualKeyID *string                `gorm:"type:varchar(255);index:idx_async_jobs_vk_id" json:"virtual_key_id,omitempty"`
-	ResultTTL    int                    `gorm:"default:3600" json:"-"` // TTL in seconds, used to calculate ExpiresAt on completion
-	ExpiresAt    *time.Time             `gorm:"index:idx_async_jobs_expires_at" json:"expires_at,omitempty"`
-	CreatedAt    time.Time              `gorm:"index;not null" json:"created_at"`
-	CompletedAt  *time.Time             `json:"completed_at,omitempty"`
+	// WebhookEndpointID references the webhook endpoint to notify when this
+	// job reaches a terminal state, when one was requested at submit time.
+	WebhookEndpointID *string    `gorm:"type:varchar(36)" json:"webhook_endpoint_id,omitempty"`
+	ResultTTL         int        `gorm:"default:3600" json:"-"` // TTL in seconds, used to calculate ExpiresAt on completion
+	ExpiresAt         *time.Time `gorm:"index:idx_async_jobs_expires_at" json:"expires_at,omitempty"`
+	CreatedAt         time.Time  `gorm:"index;not null" json:"created_at"`
+	CompletedAt       *time.Time `json:"completed_at,omitempty"`
 }
 
 // TableName sets the table name for GORM
@@ -1172,6 +1175,52 @@ func (j *AsyncJob) ToResponse() *schemas.AsyncJobResponse {
 	}
 
 	return resp
+}
+
+// WebhookDeliveryOutcome classifies the result of one webhook delivery attempt.
+type WebhookDeliveryOutcome string
+
+const (
+	// WebhookDeliveryOutcomeDelivered means the receiver acknowledged with a 2xx.
+	WebhookDeliveryOutcomeDelivered WebhookDeliveryOutcome = "delivered"
+	// WebhookDeliveryOutcomeRetryableFailure means the attempt failed but the
+	// delivery has retries left.
+	WebhookDeliveryOutcomeRetryableFailure WebhookDeliveryOutcome = "retryable_failure"
+	// WebhookDeliveryOutcomePermanentFailure means the receiver rejected the
+	// delivery with a non-retryable status; no further attempts are made.
+	WebhookDeliveryOutcomePermanentFailure WebhookDeliveryOutcome = "permanent_failure"
+	// WebhookDeliveryOutcomeExhausted means the final allowed attempt failed.
+	WebhookDeliveryOutcomeExhausted WebhookDeliveryOutcome = "exhausted"
+)
+
+// WebhookDelivery records one webhook delivery attempt. Rows are insert-only
+// — every attempt appends a new record and existing rows are never updated —
+// and carry delivery metadata only, never event payloads or receiver
+// response bodies. WebhookID is the delivery's `webhook-id` wire header,
+// shared by every attempt of the same delivery.
+type WebhookDelivery struct {
+	ID         string                 `gorm:"primaryKey;type:varchar(36)" json:"id"`
+	WebhookID  string                 `gorm:"type:varchar(36);index:idx_webhook_deliveries_webhook_id;not null" json:"webhook_id"`
+	EndpointID string                 `gorm:"type:varchar(36);index:idx_webhook_deliveries_endpoint_id;not null" json:"endpoint_id"`
+	AsyncJobID string                 `gorm:"type:varchar(255);not null" json:"async_job_id"`
+	Event      tables.WebhookEvent    `gorm:"type:varchar(255);not null" json:"event"`
+	AttemptNo  int                    `gorm:"not null;default:0" json:"attempt_no"`
+	Outcome    WebhookDeliveryOutcome `gorm:"type:varchar(50);not null" json:"outcome"`
+	StatusCode int                    `gorm:"default:0" json:"status_code,omitempty"`
+	Error      string                 `gorm:"type:text" json:"error,omitempty"`
+	CreatedAt  time.Time              `gorm:"index:idx_webhook_deliveries_created_at;not null" json:"created_at"`
+	ExpiresAt  *time.Time             `gorm:"index:idx_webhook_deliveries_expires_at" json:"expires_at,omitempty"`
+}
+
+// TableName sets the table name for GORM
+func (WebhookDelivery) TableName() string {
+	return "webhook_deliveries"
+}
+
+// WebhookDeliverySearchResult represents one page of webhook delivery history.
+type WebhookDeliverySearchResult struct {
+	Deliveries []WebhookDelivery `json:"deliveries"`
+	Pagination PaginationOptions `json:"pagination"`
 }
 
 // MCPToolLogSearchFilters represents the available filters for MCP tool log searches

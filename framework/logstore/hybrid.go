@@ -1238,3 +1238,26 @@ func (h *HybridLogStore) DeleteExpiredAsyncJobs(ctx context.Context) (int64, err
 func (h *HybridLogStore) DeleteStaleAsyncJobs(ctx context.Context, staleSince time.Time) (int64, error) {
 	return h.inner.DeleteStaleAsyncJobs(ctx, staleSince)
 }
+
+// Webhook Delivery methods — delegated directly; delivery history rows are
+// metadata-only and never carry offloadable payloads.
+
+// CreateWebhookDelivery appends one webhook delivery attempt record.
+func (h *HybridLogStore) CreateWebhookDelivery(ctx context.Context, delivery *WebhookDelivery) error {
+	return h.inner.CreateWebhookDelivery(ctx, delivery)
+}
+
+// FindWebhookDeliveryByID retrieves a webhook delivery attempt by its ID.
+func (h *HybridLogStore) FindWebhookDeliveryByID(ctx context.Context, id string) (*WebhookDelivery, error) {
+	return h.inner.FindWebhookDeliveryByID(ctx, id)
+}
+
+// SearchWebhookDeliveries returns one page of delivery history for an endpoint.
+func (h *HybridLogStore) SearchWebhookDeliveries(ctx context.Context, endpointID string, pagination PaginationOptions) (*WebhookDeliverySearchResult, error) {
+	return h.inner.SearchWebhookDeliveries(ctx, endpointID, pagination)
+}
+
+// DeleteExpiredWebhookDeliveries deletes delivery history whose expiry has passed.
+func (h *HybridLogStore) DeleteExpiredWebhookDeliveries(ctx context.Context) (int64, error) {
+	return h.inner.DeleteExpiredWebhookDeliveries(ctx)
+}
