@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -129,6 +130,14 @@ func TestAssumeRoleCredsCache_ParallelLiveUsers(t *testing.T) {
 	var mu sync.Mutex
 	allKeys := []string{sharedKey}
 
+	// Every shared-key call, across every goroutine, must return the exact
+	// same *aws.CredentialsCache pointer - collected here so that can be
+	// asserted below, rather than just checking the key is present (which
+	// would still pass even if concurrent callers had ended up with
+	// distinct credential caches for the same key).
+	sharedReturns := make([]*aws.CredentialsCache, sharedUsers*callsPerUser)
+	var sharedReturnsIdx atomic.Int64
+
 	var wg sync.WaitGroup
 
 	for u := 0; u < sharedUsers; u++ {
@@ -136,9 +145,10 @@ func TestAssumeRoleCredsCache_ParallelLiveUsers(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for c := 0; c < callsPerUser; c++ {
-				getOrCreateAssumeRoleCredsCache(sharedKey, func() *aws.CredentialsCache {
+				credsCache := getOrCreateAssumeRoleCredsCache(sharedKey, func() *aws.CredentialsCache {
 					return newBenchAssumeRoleCredsCache("us-east-1", "arn:aws:iam::123456789012:role/shared")
 				})
+				sharedReturns[sharedReturnsIdx.Add(1)-1] = credsCache
 			}
 		}()
 	}
@@ -169,6 +179,20 @@ func TestAssumeRoleCredsCache_ParallelLiveUsers(t *testing.T) {
 		t.Fatalf("expected shared session key to be present")
 	}
 
+	// Every one of the sharedUsers*callsPerUser concurrent calls must have
+	// received the exact same *aws.CredentialsCache pointer - proves
+	// concurrent callers never raced into distinct credential caches for
+	// the same key, not just that the key ended up present afterward.
+	first := sharedReturns[0]
+	if first == nil {
+		t.Fatalf("expected a non-nil credsCache from the shared-key path")
+	}
+	for i, cc := range sharedReturns {
+		if cc != first {
+			t.Fatalf("shared-key call %d returned a different *aws.CredentialsCache instance than call 0 - concurrent callers diverged onto separate credential caches for the same key", i)
+		}
+	}
+
 	// Every unique session must be present exactly once.
 	for _, k := range uniqueKeys {
 		if _, ok := assumeRoleCredsCache.Load(k); !ok {
@@ -186,12 +210,19 @@ func TestAssumeRoleCredsCache_ParallelLiveUsers(t *testing.T) {
 // known race documented on sweepAssumeRoleCredsCache: touch() and the
 // sweeper's staleness-check-then-Delete aren't atomic against each other.
 // Runs many goroutines continuously touching (getOrCreateAssumeRoleCredsCache)
-// a small, shared set of keys while other goroutines concurrently sweep
-// with ttl=0 (so every entry is a stale-eviction candidate on every pass -
-// the maximum possible contention between touch and sweep). Asserts:
+// a small, shared set of keys while other goroutines concurrently sweep -
+// with "now" advanced one second ahead of wall-clock time so every entry
+// is a genuine stale-eviction candidate on every pass, regardless of
+// same-second touches (lastUsed has only second resolution and the sweep
+// condition is a strict age > ttl, so sweeping with ttl=0 at real
+// wall-clock time would almost never actually evict anything touched
+// within the same second - advancing "now" avoids that and guarantees
+// real touch/delete contention occurs). Asserts:
 //  1. No data race (run with -race - this is the primary point of the test).
 //  2. No panic/crash under the race.
-//  3. The cache is left in a valid, usable state afterward: a fresh
+//  3. At least one real eviction actually happened (proves the sweepers
+//     weren't just no-ops racing against nothing).
+//  4. The cache is left in a valid, usable state afterward: a fresh
 //     getOrCreateAssumeRoleCredsCache call for each key still returns a
 //     non-nil, working *aws.CredentialsCache (self-heals whether or not any
 //     individual entry was evicted mid-use).
@@ -212,6 +243,7 @@ func TestAssumeRoleCredsCache_ConcurrentTouchDuringSweep(t *testing.T) {
 	defer clearAssumeRoleCacheKeys(keys)
 
 	var wg sync.WaitGroup
+	var totalEvicted atomic.Int64
 	stop := make(chan struct{})
 
 	// Touchers: continuously get-or-create (which touches on a hit) for a
@@ -236,15 +268,16 @@ func TestAssumeRoleCredsCache_ConcurrentTouchDuringSweep(t *testing.T) {
 		}
 	}
 
-	// Sweepers: ttl=0 means every entry (including ones touched moments
-	// ago) is immediately a staleness candidate - maximum possible
-	// contention against the touchers above.
+	// Sweepers: "now" advanced one second ahead + ttl=0 means every entry
+	// (including ones touched moments ago, same wall-clock second) is
+	// genuinely, unconditionally stale on every pass - maximum possible,
+	// real contention against the touchers above.
 	for s := 0; s < sweepers; s++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for i := 0; i < iterations; i++ {
-				sweepAssumeRoleCredsCache(time.Now(), 0)
+				totalEvicted.Add(int64(sweepAssumeRoleCredsCache(time.Now().Add(time.Second), 0)))
 			}
 		}()
 	}
@@ -255,6 +288,10 @@ func TestAssumeRoleCredsCache_ConcurrentTouchDuringSweep(t *testing.T) {
 		close(stop)
 	}()
 	wg.Wait()
+
+	if totalEvicted.Load() == 0 {
+		t.Fatalf("expected at least one real eviction during the stress run, got 0 - the test did not actually exercise touch/sweep contention")
+	}
 
 	// The cache must still be usable afterward, regardless of whether any
 	// individual key survived the eviction storm above.
@@ -267,7 +304,7 @@ func TestAssumeRoleCredsCache_ConcurrentTouchDuringSweep(t *testing.T) {
 		}
 	}
 
-	t.Logf("%d keys x %d touchers survived %d sweeper passes (ttl=0, max contention) with no race/panic; cache still usable", keyCount, touchersPerKey, sweepers*iterations)
+	t.Logf("%d keys x %d touchers survived %d sweeper passes (%d real evictions) with no race/panic; cache still usable", keyCount, touchersPerKey, sweepers*iterations, totalEvicted.Load())
 }
 
 // BenchmarkAssumeRoleCredsCache_DistinctSessions measures allocation
@@ -341,13 +378,20 @@ func BenchmarkAssumeRoleCacheEntry_TouchDirectManyDistinct(b *testing.B) {
 		entries[i] = &assumeRoleCacheEntry{credsCache: newBenchAssumeRoleCredsCache("us-east-1", "arn:aws:iam::123456789012:role/manydirect")}
 	}
 
+	// A shared atomic counter (not a per-worker-local index starting at 0)
+	// ensures each RunParallel worker advances through a disjoint slice of
+	// entries rather than every worker independently starting at
+	// entries[0] and colliding on the same early indices - which would
+	// silently reintroduce same-entry contention this benchmark is meant
+	// to measure the ABSENCE of.
+	var next atomic.Int64
+
 	b.ReportAllocs()
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
-		i := 0
 		for pb.Next() {
-			entries[i%poolSize].touch()
-			i++
+			idx := next.Add(1) - 1
+			entries[idx%poolSize].touch()
 		}
 	})
 }
