@@ -132,6 +132,7 @@ type sessionHeaders struct {
 	googAPIKey    string
 	baggage       string
 	headers       map[string][]string
+	queryParams   map[string]string
 }
 
 // captureSessionHeaders copies all request headers for use after the setup request ends.
@@ -148,6 +149,12 @@ func captureSessionHeaders(ctx *fasthttp.RequestCtx) *sessionHeaders {
 	for key, value := range ctx.Request.Header.All() {
 		k := strings.ToLower(string(key))
 		capturedHeaders.headers[k] = append(capturedHeaders.headers[k], string(value))
+	}
+	if queryArgs := ctx.URI().QueryArgs(); queryArgs.Len() > 0 {
+		capturedHeaders.queryParams = make(map[string]string, queryArgs.Len())
+		for key, value := range queryArgs.All() {
+			capturedHeaders.queryParams[strings.ToLower(string(key))] = string(value)
+		}
 	}
 	return capturedHeaders
 }
@@ -234,6 +241,51 @@ func (h *WSResponsesHandler) handleResponseCreate(session *bfws.Session, setupHe
 	if parentRequestID, _ := bifrostCtx.Value(schemas.BifrostContextKeyParentRequestID).(string); parentRequestID == "" {
 		bifrostCtx.SetValue(schemas.BifrostContextKeyParentRequestID, session.ID())
 	}
+
+	// Run PreRequestHook so governance routing rules / load balancing can rewrite
+	// provider/model before we select the upstream. The native WS path below bypasses
+	// handleStreamRequest (where these hooks normally run), so without this the request
+	// would always stick to the provider parsed from the model string (default: openai).
+	// Mirrors the live gateway (livesession.go resolveSession). createBifrostContextFromHeaders
+	// already surfaces the upgrade-request headers; add its query so CEL rules
+	// (headers[...] / params[...]) see the same shape they would for normal HTTP requests.
+	if setupHeaders != nil && len(setupHeaders.queryParams) > 0 {
+		bifrostCtx.SetValue(schemas.BifrostContextKeyRequestQuery, setupHeaders.queryParams)
+	}
+	preReq := &schemas.BifrostRequest{
+		RequestType:      schemas.WebSocketResponsesRequest,
+		ResponsesRequest: bifrostReq,
+	}
+	h.client.RunPreRequestHooks(bifrostCtx, preReq)
+	routedProvider, routedModel, _ := preReq.GetRequestFields()
+	if routedProvider == "" {
+		// Mirror the empty-provider check in core handleRequest: no routing layer could
+		// resolve a provider for this model.
+		cancel()
+		writeWSError(session, 400, "invalid_request_error", "no provider could be resolved for model "+bifrostReq.Model)
+		return
+	}
+	bifrostReq.Provider = routedProvider
+	if routedModel != "" {
+		bifrostReq.Model = routedModel
+	}
+
+	// Recompute the store override if routing changed the provider — DisableStore is a
+	// per-provider setting and must reflect the provider the request will actually hit.
+	if routedProvider != provider {
+		if providerCfg, cfgErr := h.config.GetProviderConfigRaw(routedProvider); cfgErr == nil &&
+			providerCfg.OpenAIConfig != nil && providerCfg.OpenAIConfig.DisableStore {
+			event.Store = schemas.Ptr(false)
+		} else {
+			event.Store = schemas.Ptr(true)
+		}
+		if bifrostReq.Params != nil {
+			bifrostReq.Params.Store = event.Store
+		}
+	}
+
+	// Pin after routing: the session key is per provider, so it must be validated against
+	// the provider and model this turn will actually hit.
 	h.pinSessionKey(bifrostCtx, session, bifrostReq)
 
 	// Rewrite the raw event for upstream: strip provider/ prefix from model,
