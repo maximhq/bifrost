@@ -11,6 +11,7 @@ import {
 	displayModelLabel,
 	formatFullTimestamp,
 	formatTimestamp,
+	formatTokensPerSecond,
 	getModelColor,
 	OTHER_SERIES_COLOR,
 	OTHER_SERIES_KEY,
@@ -20,7 +21,7 @@ import { ChartCard } from "./charts/chartCard";
 import { ChartErrorBoundary } from "./charts/chartErrorBoundary";
 import { formatCost, SortableHeader, TrendBadge } from "./rankingsShared";
 
-type SortField = "total_requests" | "success_rate" | "total_tokens" | "total_cost" | "avg_latency";
+type SortField = "total_requests" | "success_rate" | "total_tokens" | "total_cost" | "avg_latency" | "throughput";
 type SortOrder = "asc" | "desc";
 
 interface ModelRankingsTabProps {
@@ -336,6 +337,15 @@ function ModelRankingsTabImpl({ rankingsData, loading, modelData, loadingModels,
 										onSort={handleSort}
 									/>
 								</TableHead>
+								<TableHead className="text-right">
+									<SortableHeader
+										label="Throughput"
+										field="throughput"
+										currentSort={sortField}
+										currentOrder={sortOrder}
+										onSort={handleSort}
+									/>
+								</TableHead>
 							</TableRow>
 						</TableHeader>
 						<TableBody>
@@ -390,6 +400,12 @@ function ModelRankingsTabImpl({ rankingsData, loading, modelData, loadingModels,
 										<div className="flex items-center justify-end gap-2">
 											<span>{formatLatency(entry.avg_latency)}</span>
 											<TrendBadge value={entry.trend.latency_trend} positiveIsGood={false} isNew={!entry.trend.has_previous_period} />
+										</div>
+									</TableCell>
+									<TableCell className="text-right">
+										<div className="flex items-center justify-end gap-2">
+											<span>{formatTokensPerSecond(entry.throughput)}</span>
+											<TrendBadge value={entry.trend.throughput_trend} isNew={!entry.trend.has_previous_period} />
 										</div>
 									</TableCell>
 								</TableRow>
