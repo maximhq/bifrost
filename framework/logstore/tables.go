@@ -1070,6 +1070,7 @@ func (l *MCPToolLog) DeserializeFields() error {
 type AsyncJob struct {
 	ID           string                 `gorm:"primaryKey;type:varchar(255)" json:"id"`
 	Status       schemas.AsyncJobStatus `gorm:"type:varchar(50);index:idx_async_jobs_status;not null" json:"status"`
+	RequestID    string                 `gorm:"type:varchar(255)" json:"request_id,omitempty"`
 	RequestType  schemas.RequestType    `gorm:"type:varchar(50);index:idx_async_jobs_request_type;not null" json:"request_type"`
 	Response     string                 `gorm:"type:text" json:"response"`
 	StatusCode   int                    `gorm:"default:0" json:"status_code,omitempty"`
@@ -1093,6 +1094,7 @@ func (AsyncJob) TableName() string {
 func (j *AsyncJob) ToResponse() *schemas.AsyncJobResponse {
 	resp := &schemas.AsyncJobResponse{
 		ID:          j.ID,
+		RequestID:   j.RequestID,
 		Status:      j.Status,
 		ExpiresAt:   j.ExpiresAt,
 		CreatedAt:   j.CreatedAt,
@@ -1199,10 +1201,14 @@ const (
 // response bodies. WebhookID is the delivery's `webhook-id` wire header,
 // shared by every attempt of the same delivery.
 type WebhookDelivery struct {
-	ID         string                 `gorm:"primaryKey;type:varchar(36)" json:"id"`
-	WebhookID  string                 `gorm:"type:varchar(36);index:idx_webhook_deliveries_webhook_id;not null" json:"webhook_id"`
-	EndpointID string                 `gorm:"type:varchar(36);index:idx_webhook_deliveries_endpoint_id;not null" json:"endpoint_id"`
-	AsyncJobID string                 `gorm:"type:varchar(255);not null" json:"async_job_id"`
+	ID         string `gorm:"primaryKey;type:varchar(36)" json:"id"`
+	WebhookID  string `gorm:"type:varchar(36);index:idx_webhook_deliveries_webhook_id;not null" json:"webhook_id"`
+	EndpointID string `gorm:"type:varchar(36);index:idx_webhook_deliveries_endpoint_id;not null" json:"endpoint_id"`
+	AsyncJobID string `gorm:"type:varchar(255);not null" json:"async_job_id"`
+	// RequestID is the async job's inference request id — the same id the
+	// LLM logs record — copied here at attempt time. Empty when the job row
+	// expired before the attempt.
+	RequestID  string                 `gorm:"type:varchar(255)" json:"request_id,omitempty"`
 	Event      tables.WebhookEvent    `gorm:"type:varchar(255);not null" json:"event"`
 	AttemptNo  int                    `gorm:"not null;default:0" json:"attempt_no"`
 	Outcome    WebhookDeliveryOutcome `gorm:"type:varchar(50);not null" json:"outcome"`

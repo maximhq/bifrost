@@ -112,6 +112,24 @@ func TestSubmitJob_PropagatesContextValues(t *testing.T) {
 	assert.Equal(t, true, capturedCtx.Value(schemas.BifrostIsAsyncRequest))
 }
 
+func TestSubmitJob_StoresRequestID(t *testing.T) {
+	// File-backed store: the test polls the job row across goroutines, and a
+	// :memory: DSN gives each pooled connection its own database.
+	executor := newWebhookTestExecutor(t, nil)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-123")
+
+	job, err := executor.SubmitJob(ctx, 3600, func(*schemas.BifrostContext) (interface{}, *schemas.BifrostError) {
+		return map[string]string{"status": "ok"}, nil
+	}, schemas.ChatCompletionRequest)
+	require.NoError(t, err)
+	assert.Equal(t, "req-123", job.RequestID, "the submit call's request id keys the job's LLM log entry")
+
+	stored := waitForJobStatus(t, executor.logstore, job.ID)
+	assert.Equal(t, "req-123", stored.RequestID)
+}
+
 func TestSubmitJob_NilContextValues(t *testing.T) {
 	executor := newTestAsyncExecutor(t)
 
