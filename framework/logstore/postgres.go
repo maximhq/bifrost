@@ -56,17 +56,17 @@ func resolveMatViewRefreshInterval(raw string, logger schemas.Logger) time.Durat
 	}
 	d, err := time.ParseDuration(raw)
 	if err != nil {
-		logger.Warn(fmt.Sprintf("logstore: invalid matview_refresh_interval %q (%s); using default %s", raw, err, defaultMatViewRefreshInterval))
+		logger.Warn("logstore: invalid matview_refresh_interval %q (%v); using default %s", raw, err, defaultMatViewRefreshInterval)
 		return defaultMatViewRefreshInterval
 	}
 	if d == 0 {
 		return 0
 	}
 	if d < minMatViewRefreshInterval {
-		logger.Warn(fmt.Sprintf("logstore: matview_refresh_interval %s is below floor %s; clamping to %s", d, minMatViewRefreshInterval, minMatViewRefreshInterval))
+		logger.Warn("logstore: matview_refresh_interval %s is below floor %s; clamping to %s", d, minMatViewRefreshInterval, minMatViewRefreshInterval)
 		return minMatViewRefreshInterval
 	}
-	logger.Info(fmt.Sprintf("logstore: matview refresh interval set to %s", d))
+	logger.Info("logstore: matview refresh interval set to %s", d)
 	return d
 }
 
@@ -174,31 +174,31 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 		lock, err := acquireIndexLock(context.Background(), db, logger)
 		if err != nil {
 			// Lock is taken by another node, so we will skip the index build
-			logger.Warn(fmt.Sprintf("logstore: skipping index maintenance, could not acquire index lock: %s", err))
+			logger.Warn("logstore: skipping index maintenance, could not acquire index lock: %v", err)
 			return
 		}
 		defer lock.release(context.Background())
 
 		if err := ensureMetadataGINIndex(context.Background(), lock.conn); err != nil {
-			logger.Warn(fmt.Sprintf("logstore: metadata GIN index build failed: %s (queries will still work without the index)", err))
+			logger.Warn("logstore: metadata GIN index build failed: %v (queries will still work without the index)", err)
 		} else {
 			logger.Info("logstore: metadata GIN index is ready")
 		}
 
 		if err := ensureMultiTeamBusinessUnitGINIndexes(context.Background(), lock.conn); err != nil {
-			logger.Warn(fmt.Sprintf("logstore: team/business-unit GIN index build failed: %s (filtering will still work without the index)", err))
+			logger.Warn("logstore: team/business-unit GIN index build failed: %v (filtering will still work without the index)", err)
 		} else {
 			logger.Info("logstore: team/business-unit GIN indexes are ready")
 		}
 
 		if err := ensureDashboardEnhancements(context.Background(), lock.conn); err != nil {
-			logger.Warn(fmt.Sprintf("logstore: dashboard enhancements failed: %s (dashboard will still work with partial data)", err))
+			logger.Warn("logstore: dashboard enhancements failed: %v (dashboard will still work with partial data)", err)
 		} else {
 			logger.Info("logstore: dashboard enhancements completed")
 		}
 
 		if err := ensurePerformanceIndexes(context.Background(), lock.conn, logger); err != nil {
-			logger.Warn(fmt.Sprintf("logstore: performance index build failed: %s (queries will still work without the indexes)", err))
+			logger.Warn("logstore: performance index build failed: %v (queries will still work without the indexes)", err)
 		} else {
 			logger.Info("logstore: performance indexes are ready")
 		}
