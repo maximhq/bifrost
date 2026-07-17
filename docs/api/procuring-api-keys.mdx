@@ -1,0 +1,51 @@
+---
+title: "Creating API Keys"
+description: "Create and use API keys to call Bifrost management API endpoints."
+icon: "key"
+---
+
+## Overview
+
+Bifrost management API endpoints are the endpoints that interact directly with Bifrost itself, instead of sending inference requests to model providers. These include APIs for RBAC, governance, users, teams, virtual keys, providers, plugins, logs, configuration, and similar control-plane operations.
+
+Use an API key as the bearer token when calling these endpoints from scripts, backend services, CI jobs, or other automation.
+
+## Create An API Key
+
+1. Open the Bifrost dashboard.
+2. Go to **Settings** > **API Keys**.
+3. Click **Create API Key**.
+4. Give the key a recognizable name. Scopes are auto-assigned based on the RBAC permissions associated with the user creating the key.
+5. Create the key.
+6. Copy the generated key and store it in your secret manager.
+
+<Warning>
+  Copy the generated key when it is shown and follow general security practices.
+</Warning>
+
+## Management API Endpoints
+
+Use this bearer token for management API endpoints that configure or inspect Bifrost. The following endpoint patterns use management API authentication in the OpenAPI spec:
+
+| Area | Endpoint patterns |
+| --- | --- |
+| Configuration | `/api/config`, `/api/proxy-config`, `/api/version`, `/api/pricing/force-sync` |
+| Providers and models | `/api/providers`, `/api/providers/{provider}`, `/api/providers/{provider}/keys`, `/api/providers/{provider}/keys/{key_id}`, `/api/keys`, `/api/models`, `/api/models/base`, `/api/models/details`, `/api/models/parameters` |
+| Plugins | `/api/plugins`, `/api/plugins/builtins`, `/api/plugins/{name}` |
+| Governance | `/api/governance/virtual-keys`, `/api/governance/virtual-keys/{vk_id}`, `/api/governance/teams`, `/api/governance/teams/{team_id}`, `/api/governance/customers`, `/api/governance/customers/{customer_id}`, `/api/governance/budgets`, `/api/governance/rate-limits`, `/api/governance/routing-rules`, `/api/governance/routing-rules/{rule_id}`, `/api/governance/model-configs`, `/api/governance/model-configs/{mc_id}`, `/api/governance/providers`, `/api/governance/providers/{provider_name}`, `/api/governance/pricing-overrides`, `/api/governance/pricing-overrides/{id}` |
+| Business units | `/api/governance/business-units`, `/api/governance/business-units/{id}`, `/api/governance/business-units/{id}/teams`, `/api/governance/business-units/{id}/teams/{team_id}`, `/api/governance/business-units/{id}/governance` |
+| RBAC | `/api/roles`, `/api/roles/{id}`, `/api/roles/{id}/permissions`, `/api/resources`, `/api/operations`, `/api/permissions` |
+| Users and teams | `/api/users`, `/api/users/{id}`, `/api/users/{id}/role`, `/api/users/{id}/teams`, `/api/users/me/permissions`, `/api/users/email/{email}/virtual-keys`, `/api/teams`, `/api/teams/{id}`, `/api/teams/{id}/members`, `/api/teams/{id}/members/{userId}` |
+| Access profiles | `/api/access-profiles`, `/api/access-profiles/{id}`, `/api/access-profiles/{id}/activate`, `/api/access-profiles/{id}/deactivate`, `/api/access-profiles/{id}/clone`, `/api/access-profiles/{id}/propagate`, `/api/access-profiles/{id}/roles`, `/api/access-profiles/{id}/roles/{role_id}`, `/api/access-profiles/{id}/versions`, `/api/access-profiles/{id}/versions/{version}`, `/api/access-profiles/{id}/audit-logs`, `/api/access-profiles/audit-logs`, `/api/users/{target_user_id}/access-profiles`, `/api/users/{target_user_id}/access-profiles/{profile_id}`, `/api/users/{target_user_id}/access-profiles/{profile_id}/virtual-keys`, `/api/users/{target_user_id}/access-profiles/virtual-keys/{vk_id}` |
+| Logs and analytics | `/api/logs`, `/api/logs/{id}`, `/api/logs/sessions/{session_id}`, `/api/logs/sessions/{session_id}/summary`, `/api/logs/stats`, `/api/logs/filterdata`, `/api/logs/dashboard`, `/api/logs/dropped`, `/api/logs/rankings`, `/api/logs/recalculate-cost`, `/api/logs/recalculate-cost/status`, `/api/logs/histogram`, `/api/logs/histogram/cost`, `/api/logs/histogram/tokens`, `/api/logs/histogram/models`, `/api/logs/histogram/latency`, `/api/logs/histogram/cost/by-provider`, `/api/logs/histogram/tokens/by-provider`, `/api/logs/histogram/latency/by-provider`, `/api/logs/histogram/cost/by-dimension`, `/api/logs/histogram/tokens/by-dimension`, `/api/logs/histogram/latency/by-dimension` |
+| MCP logs | `/api/mcp-logs`, `/api/mcp-logs/{id}`, `/api/mcp-logs/stats`, `/api/mcp-logs/filterdata`, `/api/mcp-logs/histogram`, `/api/mcp-logs/histogram/cost`, `/api/mcp-logs/histogram/top-tools` |
+| MCP clients and sessions | `/api/mcp/clients`, `/api/mcp/client`, `/api/mcp/client/{id}`, `/api/mcp/client/{id}/reconnect`, `/api/mcp/client/{id}/complete-oauth`, `/api/mcp/sessions`, `/api/mcp/sessions/{id}`, `/api/mcp/sessions/{id}/reauth`, `/api/mcp/per-user-headers/flows/{id}`, `/api/mcp/per-user-headers/credential/{id}` |
+| MCP tool groups | `/api/mcp/tool-groups`, `/api/mcp/tool-groups/{id}` |
+| OAuth management | `/api/oauth/config/{id}`, `/api/oauth/config/{id}/status`, `/api/oauth/per-user/flows/{id}`, `/api/oauth/per-user/flows/{id}/start` |
+| Prompt repository | `/api/prompt-repo/folders`, `/api/prompt-repo/folders/{id}`, `/api/prompt-repo/prompts`, `/api/prompt-repo/prompts/{id}`, `/api/prompt-repo/prompts/{id}/versions`, `/api/prompt-repo/versions/{id}`, `/api/prompt-repo/prompts/{id}/sessions`, `/api/prompt-repo/sessions/{id}`, `/api/prompt-repo/sessions/{id}/rename`, `/api/prompt-repo/sessions/{id}/commit` |
+| Skills | `/api/skills`, `/api/skills/{id}`, `/api/skills/{id}/versions`, `/api/skills/{id}/shift-version`, `/api/skills/all/version`, `/api/skills/files/upload`, `/api/skills/files/orphans` |
+| Cache | `/api/cache/clear/{cacheId}`, `/api/cache/clear-by-key/{cacheKey}` |
+| Circuit breaker | `/api/circuit-breaker/policies`, `/api/circuit-breaker/policies/{name}`, `/api/circuit-breaker/state` |
+| Audit logs | `/api/audit-logs`, `/api/audit-logs/{id}`, `/api/audit-logs/filterdata`, `/api/audit-logs/export`, `/api/audit-logs/{id}/verify` |
+| Webhooks | `/api/webhooks`, `/api/webhooks/{id}`, `/api/webhooks/{id}/deliveries`, `/api/webhooks/{id}/rotate-secret`, `/api/webhooks/{id}/test`, `/api/webhooks/deliveries/{id}/redeliver` |
+| Session and vault operations | `/api/session/logout`, `/api/session/ws-ticket`, `/api/vault/flush-cache` |
