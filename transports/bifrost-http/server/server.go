@@ -1813,7 +1813,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 			if s.WebhookDispatcher != nil {
 				jobDispatcher = s.WebhookDispatcher
 			}
-			s.Config.AsyncJobExecutor = logstore.NewAsyncJobExecutor(s.Config.LogsStore, governancePlugin.GetGovernanceStore(), jobDispatcher, logger)
+			s.Config.AsyncJobExecutor = logstore.NewAsyncJobExecutor(s.Config.LogsStore, governancePlugin.GetGovernanceStore(), jobDispatcher, s.Config, logger)
 			logger.Info("async job executor initialized")
 		}
 	}
