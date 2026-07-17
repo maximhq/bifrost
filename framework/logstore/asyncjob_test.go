@@ -51,7 +51,7 @@ func newTestAsyncExecutor(t *testing.T) *AsyncJobExecutor {
 		},
 	}
 
-	return NewAsyncJobExecutor(store, govStore, nil, asyncTestLogger{})
+	return NewAsyncJobExecutor(store, govStore, nil, nil, asyncTestLogger{})
 }
 
 // waitForJobCompletion polls until the operation callback has been invoked.
@@ -260,13 +260,27 @@ func newWebhookTestExecutor(t *testing.T, dispatcher WebhookDispatcher) *AsyncJo
 	}, asyncTestLogger{})
 	require.NoError(t, err)
 	t.Cleanup(func() { store.Close(ctx) })
-	return NewAsyncJobExecutor(store, &testGovernanceStore{}, dispatcher, asyncTestLogger{})
+	return NewAsyncJobExecutor(store, &testGovernanceStore{}, dispatcher, testWebhookManager{}, asyncTestLogger{})
+}
+
+// testWebhookManager resolves the single endpoint used by webhook tests.
+type testWebhookManager struct{}
+
+func (testWebhookManager) WebhookEndpointByName(name string) (*configstoreTables.TableWebhookEndpoint, bool) {
+	switch name {
+	case "receiver":
+		return &configstoreTables.TableWebhookEndpoint{ID: "ep-1", Name: "receiver"}, true
+	case "off":
+		return &configstoreTables.TableWebhookEndpoint{ID: "ep-2", Name: "off", Disabled: true}, true
+	default:
+		return nil, false
+	}
 }
 
 func submitWebhookTestJob(t *testing.T, executor *AsyncJobExecutor, operation AsyncOperation) *AsyncJob {
 	t.Helper()
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	ctx.SetValue(schemas.BifrostContextKeyAsyncWebhook, "ep-1")
+	ctx.SetValue(schemas.BifrostContextKeyAsyncWebhookEndpoint, "receiver")
 	job, err := executor.SubmitJob(ctx, 3600, operation, schemas.ChatCompletionRequest)
 	require.NoError(t, err)
 	require.NotNil(t, job)
@@ -274,7 +288,9 @@ func submitWebhookTestJob(t *testing.T, executor *AsyncJobExecutor, operation As
 }
 
 func TestSubmitJob_StampsWebhookEndpointID(t *testing.T) {
-	executor := newWebhookTestExecutor(t, nil)
+	// A non-nil dispatcher is required to reach endpoint-name resolution: the
+	// submit path fails fast when delivery is unwired, before stamping.
+	executor := newWebhookTestExecutor(t, &recordingWebhookDispatcher{})
 
 	job := submitWebhookTestJob(t, executor, func(*schemas.BifrostContext) (interface{}, *schemas.BifrostError) {
 		return map[string]string{"status": "ok"}, nil
@@ -285,6 +301,26 @@ func TestSubmitJob_StampsWebhookEndpointID(t *testing.T) {
 	stored := waitForJobStatus(t, executor.logstore, job.ID)
 	require.NotNil(t, stored.WebhookEndpointID, "the endpoint reference must be persisted on the job row")
 	assert.Equal(t, "ep-1", *stored.WebhookEndpointID)
+}
+
+func TestSubmitJob_RejectsUnusableWebhookReference(t *testing.T) {
+	// A non-nil dispatcher lets the submit path reach WebhookEndpointByName so
+	// the unknown/disabled reference branches are exercised rather than short-
+	// circuiting on the fail-fast "dispatcher not available" guard.
+	executor := newWebhookTestExecutor(t, &recordingWebhookDispatcher{})
+
+	operation := func(*schemas.BifrostContext) (interface{}, *schemas.BifrostError) {
+		return map[string]string{"status": "ok"}, nil
+	}
+	for name, reference := range map[string]string{"unknown": "no-such-endpoint", "disabled": "off"} {
+		t.Run(name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyAsyncWebhookEndpoint, reference)
+			job, err := executor.SubmitJob(ctx, 3600, operation, schemas.ChatCompletionRequest)
+			require.Error(t, err)
+			assert.Nil(t, job)
+		})
+	}
 }
 
 func TestSubmitJob_NoWebhookWithoutContextValue(t *testing.T) {
