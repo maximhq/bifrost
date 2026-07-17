@@ -112,6 +112,68 @@ func TestResponsesRequestExtractsTranslationEnhancedCivicResponseFormat(t *testi
 	assert.Equal(t, "keep-me", result.ExtraParams["unrelated_passthrough_key"])
 }
 
+func TestChatCompletionRequestExtractsResponseFormatFromCanonicalField(t *testing.T) {
+	// On /v1/chat/completions, "response_format" is a known top-level field, so
+	// the HTTP layer parses it into Params.ResponseFormat (canonical field),
+	// never into Params.ExtraParams. Gemini's native per-modality shape (no
+	// OpenAI "type" discriminator) must still be picked up from there.
+	rf := interface{}(map[string]interface{}{
+		"text": map[string]interface{}{"mimeType": "text/plain"},
+	})
+	result, err := ToGeminiChatCompletionRequest(nil, &schemas.BifrostChatRequest{
+		Model: "gemini-2.5-flash",
+		Input: []schemas.ChatMessage{
+			{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hola")},
+			},
+		},
+		Params: &schemas.ChatParameters{
+			ResponseFormat: &rf,
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	require.NotNil(t, result.GenerationConfig.ResponseFormat)
+	require.NotNil(t, result.GenerationConfig.ResponseFormat.Text)
+	assert.Equal(t, "text/plain", result.GenerationConfig.ResponseFormat.Text.MimeType)
+}
+
+func TestChatCompletionRequestCanonicalResponseFormatStillMapsJSONSchema(t *testing.T) {
+	// OpenAI's canonical json_schema shape (with a "type" discriminator) must
+	// keep mapping to ResponseSchema/ResponseMIMEType, not be misread as the
+	// Gemini-native per-modality shape.
+	rf := interface{}(map[string]interface{}{
+		"type": "json_schema",
+		"json_schema": map[string]interface{}{
+			"name": "test_schema",
+			"schema": map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{"a": map[string]interface{}{"type": "string"}},
+			},
+		},
+	})
+	result, err := ToGeminiChatCompletionRequest(nil, &schemas.BifrostChatRequest{
+		Model: "gemini-2.5-flash",
+		Input: []schemas.ChatMessage{
+			{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hola")},
+			},
+		},
+		Params: &schemas.ChatParameters{
+			ResponseFormat: &rf,
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	assert.Equal(t, "application/json", result.GenerationConfig.ResponseMIMEType)
+	assert.NotNil(t, result.GenerationConfig.ResponseJSONSchema)
+	assert.Nil(t, result.GenerationConfig.ResponseFormat)
+}
+
 func TestGoogleSearchSearchTypesRoundTrip(t *testing.T) {
 	t.Run("camelCase", func(t *testing.T) {
 		raw := []byte(`{"searchTypes":{"webSearch":{},"imageSearch":{}}}`)
