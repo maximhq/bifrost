@@ -6058,6 +6058,9 @@ func executeRequestWithRetries[T any](
 		if userName, ok := ctx.Value(schemas.BifrostContextKeyUserName).(string); ok && userName != "" {
 			tracer.SetAttribute(handle, schemas.AttrBifrostUserName, userName)
 		}
+		if userEmail, ok := ctx.Value(schemas.BifrostContextKeyUserEmail).(string); ok && userEmail != "" {
+			tracer.SetAttribute(handle, schemas.AttrBifrostUserEmail, userEmail)
+		}
 		if fallbackIndex, ok := ctx.Value(schemas.BifrostContextKeyFallbackIndex).(int); ok {
 			tracer.SetAttribute(handle, schemas.AttrFallbackIndex, fallbackIndex) // legacy: gen_ai.* placement of bifrost-internal attr
 			tracer.SetAttribute(handle, schemas.AttrBifrostFallbackIndex, fallbackIndex)
