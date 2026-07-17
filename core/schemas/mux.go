@@ -1392,8 +1392,11 @@ func (cr *BifrostChatResponse) ToBifrostResponsesResponse() *BifrostResponsesRes
 	}
 
 	// Create new BifrostResponsesResponse from Chat fields
+	// Mint a fresh resp_* ID instead of reusing the chat completion's chatcmpl-* ID
+	// (chat-only providers bridging into the Responses API shape must not leak the
+	// chat-completions ID format into a response object).
 	responsesResp := &BifrostResponsesResponse{
-		ID:            Ptr(cr.ID),
+		ID:            Ptr("resp_" + GetRandomString(50)),
 		Object:        "response",
 		CreatedAt:     cr.Created,
 		Model:         cr.Model,

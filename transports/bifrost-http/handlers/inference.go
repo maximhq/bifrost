@@ -1519,9 +1519,18 @@ func prepareTranscriptionRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (
 		transcriptionParams.ExtraParams = make(map[string]interface{})
 	}
 	for key, value := range form.Value {
-		if len(value) > 0 && value[0] != "" && !transcriptionParamsKnownFields[key] {
-			transcriptionParams.ExtraParams[key] = value[0]
+		if len(value) == 0 || transcriptionParamsKnownFields[key] {
+			continue
 		}
+		if len(value) == 1 {
+			if value[0] != "" {
+				transcriptionParams.ExtraParams[key] = value[0]
+			}
+			continue
+		}
+		// Repeated form fields (e.g. known_speaker_names[], known_speaker_references[])
+		// must be preserved as arrays instead of collapsing to the first value.
+		transcriptionParams.ExtraParams[key] = value
 	}
 	stream := false
 	if streamValues := form.Value["stream"]; len(streamValues) > 0 && streamValues[0] == "true" {
