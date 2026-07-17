@@ -14,6 +14,8 @@ import (
 // Bifrost-specific response transform (issue #5325) — and that the alias does NOT leak
 // into outbound provider request payloads, which also reuse ChatMessage.
 
+// TestMarshal_BifrostResponseChoice_MirrorsReasoningContent verifies the non-stream
+// message alias: message.reasoning_content mirrors message.reasoning.
 func TestMarshal_BifrostResponseChoice_MirrorsReasoningContent(t *testing.T) {
 	reasoning := "internal reasoning summary"
 	choice := BifrostResponseChoice{
@@ -40,6 +42,8 @@ func TestMarshal_BifrostResponseChoice_MirrorsReasoningContent(t *testing.T) {
 	assert.Equal(t, reasoning, message["reasoning_content"])
 }
 
+// TestMarshal_BifrostResponseChoice_NoReasoning_OmitsReasoningContent verifies the alias
+// is omitted entirely when there is no reasoning to mirror.
 func TestMarshal_BifrostResponseChoice_NoReasoning_OmitsReasoningContent(t *testing.T) {
 	content := "final answer"
 	contentPtr := ChatMessageContent{ContentStr: &content}
@@ -65,6 +69,8 @@ func TestMarshal_BifrostResponseChoice_NoReasoning_OmitsReasoningContent(t *test
 	assert.False(t, hasReasoningContent)
 }
 
+// TestMarshal_BifrostResponseChoice_Stream_MirrorsReasoningContent verifies the streaming
+// alias: delta.reasoning_content mirrors delta.reasoning.
 func TestMarshal_BifrostResponseChoice_Stream_MirrorsReasoningContent(t *testing.T) {
 	reasoning := "internal reasoning fragment"
 	choice := BifrostResponseChoice{
@@ -114,8 +120,12 @@ func TestMarshal_ChatMessage_RequestSide_NoReasoningContentLeak(t *testing.T) {
 	assert.False(t, hasReasoningContent, "reasoning_content must not leak into outbound request messages")
 }
 
-// Round-trip: a response we emit (with both reasoning and reasoning_content) must still
-// unmarshal cleanly without duplicating reasoning_details.
+// TestRoundTrip_BifrostResponseChoice_ReasoningContentAlias verifies a response we emit
+// (with both reasoning and reasoning_content) unmarshals cleanly and reasoning_details
+// ends up with exactly one synthesized entry — not duplicated by the extra field. The
+// input here has no ReasoningDetails; ChatAssistantMessage.UnmarshalJSON synthesizes the
+// single "reasoning.text" entry from Reasoning on decode (pre-existing behavior), which
+// is exactly what this test is asserting still happens post round-trip.
 func TestRoundTrip_BifrostResponseChoice_ReasoningContentAlias(t *testing.T) {
 	reasoning := "roundtrip reasoning"
 	choice := BifrostResponseChoice{
