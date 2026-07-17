@@ -147,6 +147,23 @@ func ensureAssumeRoleCacheSweeper() {
 // loop so it can be driven directly (with a synthetic now/ttl) by tests and
 // benchmarks instead of waiting on the real ticker/clock. Returns the
 // number of entries evicted.
+//
+// Known race (lock-free by design, same tradeoff class as the LoadOrStore
+// race in getOrCreateAssumeRoleCredsCache's miss path): a concurrent
+// touch() can land on an entry between the staleness Load below and the
+// Delete call. The re-check immediately before Delete closes almost all of
+// that window (it's re-verified as close to the delete as possible without
+// a lock), but cannot close it entirely without adding per-entry
+// synchronization. Worst case if it does happen: the in-flight request
+// keeps using its already-retrieved *aws.CredentialsCache (still valid,
+// still usable - Go doesn't invalidate a reference just because the map
+// entry pointing to it was deleted), the next request for that key pays
+// one redundant sts:AssumeRole call to populate a fresh entry, and the
+// cache self-heals from there. No wrong/stale credentials are ever
+// returned, and no unbounded growth results - see
+// TestAssumeRoleCredsCache_ConcurrentTouchDuringSweep for a stress test
+// confirming this stays race-detector-clean and leaves the cache usable
+// under maximum touch/sweep contention.
 func sweepAssumeRoleCredsCache(now time.Time, ttl time.Duration) int {
 	nowUnix := now.Unix()
 	ttlSeconds := int64(ttl.Seconds())
@@ -157,8 +174,13 @@ func sweepAssumeRoleCredsCache(now time.Time, ttl time.Duration) int {
 			return true
 		}
 		if nowUnix-entry.lastUsed.Load() > ttlSeconds {
-			assumeRoleCredsCache.Delete(key)
-			evicted++
+			// Re-check immediately before deleting: narrows (does not
+			// eliminate - see doc comment above) the race window against a
+			// concurrent touch() that lands after the first Load above.
+			if nowUnix-entry.lastUsed.Load() > ttlSeconds {
+				assumeRoleCredsCache.Delete(key)
+				evicted++
+			}
 		}
 		return true
 	})
