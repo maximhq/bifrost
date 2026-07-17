@@ -681,7 +681,9 @@ ResponsesStreamResponseType:
     - response.file_search_call.searching
     - response.file_search_call.results.added
     - response.file_search_call.results.completed
+    - response.web_search_call.in_progress
     - response.web_search_call.searching
+    - response.web_search_call.completed
     - response.web_search_call.results.added
     - response.web_search_call.results.completed
     - response.web_fetch_call.in_progress
