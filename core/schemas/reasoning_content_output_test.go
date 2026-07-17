@@ -122,10 +122,7 @@ func TestMarshal_ChatMessage_RequestSide_NoReasoningContentLeak(t *testing.T) {
 
 // TestRoundTrip_BifrostResponseChoice_ReasoningContentAlias verifies a response we emit
 // (with both reasoning and reasoning_content) unmarshals cleanly and reasoning_details
-// ends up with exactly one synthesized entry — not duplicated by the extra field. The
-// input here has no ReasoningDetails; ChatAssistantMessage.UnmarshalJSON synthesizes the
-// single "reasoning.text" entry from Reasoning on decode (pre-existing behavior), which
-// is exactly what this test is asserting still happens post round-trip.
+// ends up with exactly one entry — not duplicated by the extra field.
 func TestRoundTrip_BifrostResponseChoice_ReasoningContentAlias(t *testing.T) {
 	reasoning := "roundtrip reasoning"
 	choice := BifrostResponseChoice{
@@ -135,6 +132,12 @@ func TestRoundTrip_BifrostResponseChoice_ReasoningContentAlias(t *testing.T) {
 				Role: ChatMessageRoleAssistant,
 				ChatAssistantMessage: &ChatAssistantMessage{
 					Reasoning: &reasoning,
+					ReasoningDetails: []ChatReasoningDetails{
+						{
+							Type: BifrostReasoningDetailsTypeText,
+							Text: &reasoning,
+						},
+					},
 				},
 			},
 		},
