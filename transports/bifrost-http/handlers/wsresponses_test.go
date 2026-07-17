@@ -35,6 +35,7 @@ func (s testWSHandlerStore) GetAsyncJobExecutor() *logstore.AsyncJobExecutor {
 func (s testWSHandlerStore) GetAsyncJobResultTTL() int {
 	return 0
 }
+func (s testWSHandlerStore) GetStreamKeepAliveInterval() int { return 0 }
 
 func (s testWSHandlerStore) GetKVStore() *kvstore.Store {
 	return nil

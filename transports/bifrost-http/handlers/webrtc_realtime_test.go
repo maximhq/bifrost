@@ -24,6 +24,7 @@ func (s testHandlerStore) GetStreamChunkInterceptor() lib.StreamChunkInterceptor
 }
 func (s testHandlerStore) GetAsyncJobExecutor() *logstore.AsyncJobExecutor  { return nil }
 func (s testHandlerStore) GetAsyncJobResultTTL() int                        { return 0 }
+func (s testHandlerStore) GetStreamKeepAliveInterval() int                  { return 0 }
 func (s testHandlerStore) GetKVStore() *kvstore.Store                       { return s.kv }
 func (s testHandlerStore) GetMCPHeaderCombinedAllowlist() schemas.WhiteList { return nil }
 func (s testHandlerStore) ShouldAllowPerRequestStorageOverride() bool       { return false }

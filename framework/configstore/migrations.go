@@ -457,6 +457,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_budget_override_anchor_columns"}, run: migrationAddBudgetOverrideAnchorColumns},
 	{IDs: []string{"add_live_models_sync_interval_column"}, run: migrationAddLiveModelsSyncIntervalColumn},
 	{IDs: []string{"add_pricing_override_user_id_column"}, run: migrationAddPricingOverrideUserIDColumn},
+	{IDs: []string{"add_stream_keepalive_interval_column"}, run: migrationAddStreamKeepAliveIntervalColumn},
 }
 
 // quoteSQLiteIdentifier quotes a SQLite identifier, escaping any double quotes.
@@ -1856,6 +1857,34 @@ func migrationAddDisableContentLoggingColumn(ctx context.Context, db *gorm.DB, l
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			if err := dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "disable_content_logging"); err != nil {
+				return err
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while running db migration: %s", err.Error())
+	}
+	return nil
+}
+
+func migrationAddStreamKeepAliveIntervalColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_stream_keepalive_interval_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, "stream_keepalive_interval"); err != nil {
+				return err
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "stream_keepalive_interval"); err != nil {
 				return err
 			}
 			return nil
