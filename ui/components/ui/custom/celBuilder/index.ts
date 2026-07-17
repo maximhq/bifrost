@@ -1,2 +1,2 @@
 export { CELRuleBuilder } from "./celRuleBuilder";
-export type { CELRuleBuilderProps, CELFieldDefinition, CELOperatorDefinition } from "./celRuleBuilder";
+export type { CELBuilderMode, CELRuleBuilderProps, CELFieldDefinition, CELOperatorDefinition } from "./celRuleBuilder";
