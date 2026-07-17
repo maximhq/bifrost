@@ -394,7 +394,13 @@ func TestIsImageEditRequest_TextOnly_NotEdit(t *testing.T) {
 	assert.False(t, isImageEditRequest(req), "text-only request must not classify as image edit")
 }
 
-func TestIsImageEditRequest_ImageAcrossMultipleContents(t *testing.T) {
+// Scope is intentionally limited to the first content — matching the original
+// (pre-fix) target — since deciding whether an image in a later/earlier
+// content "belongs" to the current turn is ambiguous in multi-turn
+// conversations (a stale unrelated image and an intentional continued-edit
+// reference look identical) and is out of scope for the part-ordering bug
+// this fix addresses.
+func TestIsImageEditRequest_ImageOnlyInLaterContent_NotEdit(t *testing.T) {
 	req := &gemini.GeminiGenerationRequest{
 		Contents: []gemini.Content{
 			{Parts: []*gemini.Part{{Text: "first turn"}}},
@@ -410,12 +416,12 @@ func TestIsImageEditRequest_ImageAcrossMultipleContents(t *testing.T) {
 		},
 	}
 
-	assert.True(t, isImageEditRequest(req), "image in a later content entry must still classify as image edit")
+	assert.False(t, isImageEditRequest(req), "an image in a non-first content must not be treated as an edit source; only the first content is inspected")
 }
 
 // A historical image left over from an earlier turn (e.g. a previous model
 // response) in a multi-turn conversation must not be picked up as the edit
-// source for a new, unrelated, text-only request in the latest turn.
+// source for a new, unrelated, text-only request in a later turn.
 func TestIsImageEditRequest_HistoricalImageInEarlierContent_NotEdit(t *testing.T) {
 	req := &gemini.GeminiGenerationRequest{
 		Contents: []gemini.Content{

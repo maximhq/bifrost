@@ -1789,10 +1789,12 @@ func isImageGenerationRequest(req *gemini.GeminiGenerationRequest) bool {
 // isImageEditRequest checks if the request is for image edit
 // Image edit is detected by:
 // 1. Model is an Imagen model and has reference images
-// 2. Inline image data present in any part of the latest content (regardless of position within
-//    that content) and response modalities contain IMAGE. Only the latest content is inspected so
-//    that a leftover image from earlier turns in a multi-turn conversation's history isn't picked
-//    up as the edit source for an unrelated new request.
+// 2. Inline image data present in any part of the first content (regardless of position within
+//    that content) and response modalities contain IMAGE. Scope is intentionally limited to the
+//    first content only, matching the original (pre-fix) detection target — this only fixes the
+//    within-content part-ordering bug. Reasoning about which content in a multi-turn conversation
+//    an image "belongs to" is inherently ambiguous (a stale historical image and an intentional
+//    continued-edit reference look identical) and out of scope here.
 func isImageEditRequest(req *gemini.GeminiGenerationRequest) bool {
 	if schemas.IsImagenModel(req.Model) && len(req.Instances) > 0 && req.Instances[0].ReferenceImages != nil {
 		return true
@@ -1806,8 +1808,7 @@ func isImageEditRequest(req *gemini.GeminiGenerationRequest) bool {
 		return false
 	}
 
-	latest := req.Contents[len(req.Contents)-1]
-	for _, part := range latest.Parts {
+	for _, part := range req.Contents[0].Parts {
 		if part != nil && part.InlineData != nil && strings.Contains(strings.ToLower(part.InlineData.MIMEType), "image") {
 			return true
 		}
