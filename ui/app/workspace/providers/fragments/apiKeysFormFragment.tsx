@@ -73,14 +73,14 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 	// Credential UI keys off the base provider type for custom providers; the
 	// model list, deployments table, and API calls still use the real providerName.
 	const effectiveProvider = baseProviderType ?? providerName;
-	const isBedrock = providerName === "bedrock";
-	const isBedrockMantle = providerName === "bedrock_mantle";
-	const isVertex = providerName === "vertex";
-	const isAzure = providerName === "azure";
-	const isReplicate = providerName === "replicate";
-	const isVLLM = providerName === "vllm";
-	const isOllama = providerName === "ollama";
-	const isSGL = providerName === "sgl";
+	const isBedrock = effectiveProvider === "bedrock";
+	const isBedrockMantle = effectiveProvider === "bedrock_mantle";
+	const isVertex = effectiveProvider === "vertex";
+	const isAzure = effectiveProvider === "azure";
+	const isReplicate = effectiveProvider === "replicate";
+	const isVLLM = effectiveProvider === "vllm";
+	const isOllama = effectiveProvider === "ollama";
+	const isSGL = effectiveProvider === "sgl";
 	const isKeylessProvider = isOllama || isSGL;
 	const isCopilot = providerName === "copilot";
 	const supportsBatchAPI = BATCH_SUPPORTED_PROVIDERS.includes(effectiveProvider);
@@ -90,7 +90,7 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 	// For providers that support model refresh, enable the button only when a token
 	// is available — either a freshly obtained local token (device-login / manual)
 	// or a saved/redacted one from the server.
-	const copilotKeyValue = supportsModelRefresh ? form.watch('key.value') : undefined;
+	const copilotKeyValue = supportsModelRefresh ? form.watch("key.value") : undefined;
 	// Enable refresh when there's a literal token value OR an env-var reference (e.g. env.GITHUB_COPILOT_TOKEN)
 	const hasToken = hasTokenValue(copilotKeyValue);
 
@@ -166,18 +166,18 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 	}, [isBedrock, form]);
 
 	// Copilot auth type state: 'device_login' or 'manual_token'
-	const [copilotAuthType, setCopilotAuthType] = useState<'device_login' | 'manual_token'>('device_login')
+	const [copilotAuthType, setCopilotAuthType] = useState<"device_login" | "manual_token">("device_login");
 
 	// Detect copilot auth type from existing form values when editing
 	useEffect(() => {
-		if (form.formState.isDirty) return
+		if (form.formState.isDirty) return;
 		if (isCopilot) {
-			const apiKey = form.getValues('key.value')?.value
+			const apiKey = form.getValues("key.value")?.value;
 			if (apiKey && !isRedacted(apiKey)) {
-				setCopilotAuthType('manual_token')
+				setCopilotAuthType("manual_token");
 			}
 		}
-	}, [isCopilot, form])
+	}, [isCopilot, form]);
 
 	useEffect(() => {
 		if (form.formState.isDirty) return;
@@ -319,7 +319,7 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 			</div>
 			{copilotAuthBlock}
 			{/* Hide API Key field for Azure when using Entra ID, for Bedrock when using IAM Role, for Vertex, and for Copilot when using Device Login */}
-			{!isAzure && !isBedrock && !isBedrockMantle && !isVertex && !(isCopilot && copilotAuthType === 'device_login') && (
+			{!isAzure && !isBedrock && !isBedrockMantle && !isVertex && !(isCopilot && copilotAuthType === "device_login") && (
 				<FormField
 					control={control}
 					name={`key.value`}
@@ -394,11 +394,13 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 													: "Search models..."
 										}
 										unfiltered={true}
-										{...(supportsModelRefresh ? {
-											onRefresh: () => refreshModels(providerName),
-											isRefreshing: isRefreshingModels,
-											refreshDisabled: !hasToken,
-										} : {})}
+										{...(supportsModelRefresh
+											? {
+													onRefresh: () => refreshModels(providerName),
+													isRefreshing: isRefreshingModels,
+													refreshDisabled: !hasToken,
+												}
+											: {})}
 									/>
 								</FormControl>
 								<FormMessage />
@@ -715,6 +717,10 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 						render={({ field }) => (
 							<FormItem>
 								<FormLabel>Region (Required)</FormLabel>
+								<FormDescription>
+									Multi-region-only models are automatically routed to Google&apos;s matching multi-region endpoint. Turn on{" "}
+									<span className="font-medium">Force single region</span> below to always use exactly this region.
+								</FormDescription>
 								<FormControl>
 									<SecretVarInput placeholder="us-central1 or env.VERTEX_REGION" {...field} />
 								</FormControl>
@@ -768,6 +774,24 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 							)}
 						/>
 					)}
+					<FormField
+						control={control}
+						name="key.vertex_key_config.force_single_region"
+						render={({ field }) => (
+							<FormItem className="flex flex-row items-center justify-between rounded-sm border p-2">
+								<div className="space-y-1.5">
+									<FormLabel>Force single region</FormLabel>
+									<FormDescription>
+										Always call the region set above and skip automatic promotion of multi-region-only models to a multi-region endpoint.
+										Enable when serving these models from a single region via provisioned throughput.
+									</FormDescription>
+								</div>
+								<FormControl>
+									<Switch checked={field.value ?? false} onCheckedChange={field.onChange} />
+								</FormControl>
+							</FormItem>
+						)}
+					/>
 					{supportsBatchAPI && <BatchAPIFormField control={control} form={form} />}
 				</div>
 			)}
@@ -979,6 +1003,27 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 							</FormItem>
 						)}
 					/>
+					<FormField
+						control={control}
+						name={`key.bedrock_key_config.project_id`}
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>Mantle Project ID (Optional)</FormLabel>
+								<FormDescription>
+									Scopes Bedrock Mantle-routed models (OpenAI-family / Gemma) to a specific project via the OpenAI-Project header. Leave
+									empty to use the account&apos;s default project.
+								</FormDescription>
+								<FormControl>
+									<SecretVarInput
+										data-testid="apikey-bedrock-project-id-input"
+										placeholder="proj_xxxxxxxx or env.BEDROCK_PROJECT_ID"
+										{...field}
+									/>
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
 					{bedrockAuthType !== "api_key" && (
 						<>
 							<FormField
@@ -1185,6 +1230,28 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 						)}
 					/>
 
+					<FormField
+						control={control}
+						name={`key.bedrock_mantle_key_config.project_id`}
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>Project ID (Optional)</FormLabel>
+								<FormDescription>
+									Scopes inference and model listing to a specific Bedrock project (sent as the OpenAI-Project / anthropic-workspace-id
+									header). Leave empty to use the account&apos;s default project.
+								</FormDescription>
+								<FormControl>
+									<SecretVarInput
+										data-testid="apikey-bedrock-mantle-project-id-input"
+										placeholder="proj_xxxxxxxx or env.BEDROCK_PROJECT_ID"
+										{...field}
+									/>
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+
 					{bedrockMantleAuthType !== "api_key" && (
 						<>
 							<FormField
@@ -1276,8 +1343,8 @@ function CopilotDeviceLoginSection({
 }: {
 	control: Control<any>;
 	form: UseFormReturn<any>;
-	copilotAuthType: 'device_login' | 'manual_token';
-	setCopilotAuthType: (v: 'device_login' | 'manual_token') => void;
+	copilotAuthType: "device_login" | "manual_token";
+	setCopilotAuthType: (v: "device_login" | "manual_token") => void;
 	providerName: string;
 	keyId: string | null;
 	updateProviderKey: ReturnType<typeof useUpdateProviderKeyMutation>[0];
@@ -1287,13 +1354,13 @@ function CopilotDeviceLoginSection({
 	onReauthComplete?: () => void;
 }) {
 	const [deviceState, setDeviceState] = useState<{
-		status: 'idle' | 'awaiting_auth' | 'complete' | 'error';
+		status: "idle" | "awaiting_auth" | "complete" | "error";
 		userCode?: string;
 		verificationUri?: string;
 		deviceCode?: string;
 		interval?: number;
 		error?: string;
-	}>({ status: 'idle' });
+	}>({ status: "idle" });
 
 	const [copied, setCopied] = useState(false);
 	const [countdown, setCountdown] = useState<number | null>(null);
@@ -1327,46 +1394,49 @@ function CopilotDeviceLoginSection({
 
 	const initiateLogin = useCallback(async () => {
 		invalidatePolling();
-		setDeviceState({ status: 'awaiting_auth' });
+		setDeviceState({ status: "awaiting_auth" });
 		try {
 			const baseUrl = getApiBaseUrl();
 			const resp = await fetch(`${baseUrl}/providers/copilot/device-login/initiate`, {
-				method: 'POST',
-				credentials: 'include',
-				headers: { 'Content-Type': 'application/json' },
+				method: "POST",
+				credentials: "include",
+				headers: { "Content-Type": "application/json" },
 			});
 			if (!resp.ok) {
 				const errData = await resp.json().catch(() => ({ error: { message: resp.statusText } }));
-				setDeviceState({ status: 'error', error: errData?.error?.message || 'Failed to start device login' });
+				setDeviceState({ status: "error", error: errData?.error?.message || "Failed to start device login" });
 				return;
 			}
 			const data = await resp.json();
 			setDeviceState({
-				status: 'awaiting_auth',
+				status: "awaiting_auth",
 				userCode: data.user_code,
 				verificationUri: data.verification_uri,
 				deviceCode: data.device_code,
 				interval: data.interval || 5,
 			});
 		} catch (err) {
-			setDeviceState({ status: 'error', error: 'Failed to connect to server' });
+			setDeviceState({ status: "error", error: "Failed to connect to server" });
 		}
 	}, [invalidatePolling]);
 
-	const startCountdown = useCallback((seconds?: number) => {
-		clearCountdown();
-		const interval = (seconds ?? deviceState.interval) || 5;
-		setCountdown(interval);
-		countdownRef.current = setInterval(() => {
-			setCountdown(prev => {
-				if (prev === null || prev <= 1) return 0;
-				return prev - 1;
-			});
-		}, 1000);
-	}, [clearCountdown, deviceState.interval]);
+	const startCountdown = useCallback(
+		(seconds?: number) => {
+			clearCountdown();
+			const interval = (seconds ?? deviceState.interval) || 5;
+			setCountdown(interval);
+			countdownRef.current = setInterval(() => {
+				setCountdown((prev) => {
+					if (prev === null || prev <= 1) return 0;
+					return prev - 1;
+				});
+			}, 1000);
+		},
+		[clearCountdown, deviceState.interval],
+	);
 
 	const pollOnce = useCallback(async () => {
-		if (!deviceState.deviceCode || authTypeRef.current !== 'device_login') return;
+		if (!deviceState.deviceCode || authTypeRef.current !== "device_login") return;
 
 		clearCountdown();
 		setIsChecking(true);
@@ -1375,30 +1445,30 @@ function CopilotDeviceLoginSection({
 		try {
 			const baseUrl = getApiBaseUrl();
 			const resp = await fetch(`${baseUrl}/providers/copilot/device-login/poll`, {
-				method: 'POST',
-				credentials: 'include',
-				headers: { 'Content-Type': 'application/json' },
+				method: "POST",
+				credentials: "include",
+				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify({ device_code: deviceState.deviceCode }),
 			});
-			if (pollSession !== pollSessionRef.current || authTypeRef.current !== 'device_login') {
+			if (pollSession !== pollSessionRef.current || authTypeRef.current !== "device_login") {
 				return;
 			}
 			if (!resp.ok) {
-				setDeviceState(prev => ({ ...prev, status: 'error', error: 'Failed to check authorization status' }));
+				setDeviceState((prev) => ({ ...prev, status: "error", error: "Failed to check authorization status" }));
 				return;
 			}
 			const data = await resp.json();
-			if (pollSession !== pollSessionRef.current || authTypeRef.current !== 'device_login') {
+			if (pollSession !== pollSessionRef.current || authTypeRef.current !== "device_login") {
 				return;
 			}
 
-			if (data.status === 'complete' && data.access_token) {
-				form.setValue('key.value', { value: data.access_token, env_var: '', from_env: false }, { shouldDirty: true, shouldValidate: true });
-				setDeviceState(prev => ({ ...prev, status: 'complete' }));
+			if (data.status === "complete" && data.access_token) {
+				form.setValue("key.value", { value: data.access_token, env_var: "", from_env: false }, { shouldDirty: true, shouldValidate: true });
+				setDeviceState((prev) => ({ ...prev, status: "complete" }));
 
 				// Build the payload from current form values, stripping internal helpers.
 				const buildPayload = () => {
-					const keyValues: any = { ...form.getValues('key') };
+					const keyValues: any = { ...form.getValues("key") };
 					if (keyValues.azure_key_config) {
 						const { _auth_type, ...rest } = keyValues.azure_key_config;
 						keyValues.azure_key_config = rest;
@@ -1419,7 +1489,7 @@ function CopilotDeviceLoginSection({
 					// so the dropdown reflects what Copilot serves for this account.
 					const valid = await form.trigger();
 					if (!valid) {
-						toast.info('Token obtained. Fix validation errors and click Save to refresh models.');
+						toast.info("Token obtained. Fix validation errors and click Save to refresh models.");
 						return;
 					}
 					const keyValues = buildPayload();
@@ -1428,14 +1498,14 @@ function CopilotDeviceLoginSection({
 						form.reset(form.getValues(), { keepValues: true });
 						try {
 							await refreshModels(providerName).unwrap();
-							toast.success('Token saved. Models refreshed.');
+							toast.success("Token saved. Models refreshed.");
 						} catch {
-							toast.success('Token saved.', { description: 'Model refresh failed; try the refresh icon.' });
+							toast.success("Token saved.", { description: "Model refresh failed; try the refresh icon." });
 						}
 						onReauthComplete?.();
 					} catch {
-						toast.error('Token obtained but failed to save.', {
-							description: 'Click Save to commit and refresh models.',
+						toast.error("Token obtained but failed to save.", {
+							description: "Click Save to commit and refresh models.",
 						});
 					}
 					return;
@@ -1447,17 +1517,17 @@ function CopilotDeviceLoginSection({
 				// models within the same flow; the form transitions to 'edit' mode
 				// via onAutoCreated, and the eventual Save click becomes an update.
 				if (!createProviderKey) {
-					toast.success('Token obtained.', { description: 'Click Save to commit and refresh models.' });
+					toast.success("Token obtained.", { description: "Click Save to commit and refresh models." });
 					return;
 				}
 				const keyValues = buildPayload();
 				if (!keyValues.name || !String(keyValues.name).trim()) {
-					keyValues.name = 'GitHub Copilot';
-					form.setValue('key.name', keyValues.name, { shouldDirty: true });
+					keyValues.name = "GitHub Copilot";
+					form.setValue("key.name", keyValues.name, { shouldDirty: true });
 				}
 				const valid = await form.trigger();
 				if (!valid) {
-					toast.info('Token obtained. Fix validation errors and click Save to refresh models.');
+					toast.info("Token obtained. Fix validation errors and click Save to refresh models.");
 					return;
 				}
 				try {
@@ -1467,36 +1537,36 @@ function CopilotDeviceLoginSection({
 					form.reset(form.getValues(), { keepValues: true });
 					try {
 						await refreshModels(providerName).unwrap();
-						toast.success('Key saved. Models refreshed.', {
-							description: 'Pick allowed models or click Save to keep all.',
+						toast.success("Key saved. Models refreshed.", {
+							description: "Pick allowed models or click Save to keep all.",
 						});
 					} catch {
-						toast.success('Key saved.', { description: 'Model refresh failed; try the refresh icon.' });
+						toast.success("Key saved.", { description: "Model refresh failed; try the refresh icon." });
 					}
 				} catch {
-					toast.error('Token obtained but failed to save.', {
-						description: 'Click Save to commit and refresh models.',
+					toast.error("Token obtained but failed to save.", {
+						description: "Click Save to commit and refresh models.",
 					});
 				}
 				return;
 			}
 
-			if (data.status === 'expired' || data.status === 'error') {
-				setDeviceState(prev => ({ ...prev, status: 'error', error: data.error || 'Authorization failed' }));
+			if (data.status === "expired" || data.status === "error") {
+				setDeviceState((prev) => ({ ...prev, status: "error", error: data.error || "Authorization failed" }));
 				return;
 			}
 
 			// Still pending — restart countdown.
 			// If GitHub sent "slow_down", increase the interval by 5s as per the device flow spec.
 			let nextInterval = deviceState.interval || 5;
-			if (data.status === 'slow_down') {
+			if (data.status === "slow_down") {
 				nextInterval += 5;
-				setDeviceState(prev => ({ ...prev, interval: nextInterval }));
+				setDeviceState((prev) => ({ ...prev, interval: nextInterval }));
 			}
 			startCountdown(nextInterval);
 		} catch {
-			if (pollSession === pollSessionRef.current && authTypeRef.current === 'device_login') {
-				setDeviceState(prev => ({ ...prev, status: 'error', error: 'Failed to connect to server' }));
+			if (pollSession === pollSessionRef.current && authTypeRef.current === "device_login") {
+				setDeviceState((prev) => ({ ...prev, status: "error", error: "Failed to connect to server" }));
 			}
 		} finally {
 			if (pollSession === pollSessionRef.current) {
@@ -1520,7 +1590,7 @@ function CopilotDeviceLoginSection({
 
 	// Trigger poll when countdown reaches 0 (only in device_login mode)
 	useEffect(() => {
-		if (countdown === 0 && !isChecking && copilotAuthType === 'device_login') {
+		if (countdown === 0 && !isChecking && copilotAuthType === "device_login") {
 			pollOnce();
 		}
 	}, [countdown, isChecking, pollOnce, copilotAuthType]);
@@ -1535,7 +1605,7 @@ function CopilotDeviceLoginSection({
 
 	// Auto-start countdown when user code is obtained
 	useEffect(() => {
-		if (deviceState.status === 'awaiting_auth' && deviceState.userCode) {
+		if (deviceState.status === "awaiting_auth" && deviceState.userCode) {
 			startCountdown();
 		}
 	}, [deviceState.status, deviceState.userCode, startCountdown]);
@@ -1544,7 +1614,7 @@ function CopilotDeviceLoginSection({
 		invalidatePolling();
 		clearCountdown();
 		setIsChecking(false);
-		setDeviceState({ status: 'idle' });
+		setDeviceState({ status: "idle" });
 	}, [clearCountdown, invalidatePolling]);
 
 	return (
@@ -1552,77 +1622,70 @@ function CopilotDeviceLoginSection({
 			<Separator className="my-6" />
 			<div className="space-y-2">
 				<FormLabel>Authentication Method</FormLabel>
-				<Tabs value={copilotAuthType} onValueChange={(v) => {
-					setCopilotAuthType(v as 'device_login' | 'manual_token');
-					if (v === 'device_login') {
-						resetFlow();
-					} else {
-						// Switching away from device login — stop any active polling
-						invalidatePolling();
-						clearCountdown();
-						setIsChecking(false);
-					}
-				}}>
+				<Tabs
+					value={copilotAuthType}
+					onValueChange={(v) => {
+						setCopilotAuthType(v as "device_login" | "manual_token");
+						if (v === "device_login") {
+							resetFlow();
+						} else {
+							// Switching away from device login — stop any active polling
+							invalidatePolling();
+							clearCountdown();
+							setIsChecking(false);
+						}
+					}}
+				>
 					<TabsList className="grid w-full grid-cols-2">
-						<TabsTrigger data-testid="apikey-copilot-device-login-tab" value="device_login">GitHub Device Login</TabsTrigger>
-						<TabsTrigger data-testid="apikey-copilot-manual-token-tab" value="manual_token">Manual Token</TabsTrigger>
+						<TabsTrigger data-testid="apikey-copilot-device-login-tab" value="device_login">
+							GitHub Device Login
+						</TabsTrigger>
+						<TabsTrigger data-testid="apikey-copilot-manual-token-tab" value="manual_token">
+							Manual Token
+						</TabsTrigger>
 					</TabsList>
 				</Tabs>
 			</div>
 
-			{copilotAuthType === 'device_login' && (
+			{copilotAuthType === "device_login" && (
 				<div className="space-y-4">
-					{deviceState.status === 'idle' && (
+					{deviceState.status === "idle" && (
 						<>
 							<Alert variant="default">
 								<Info className="mt-0.5 h-4 w-4 flex-shrink-0 text-blue-600" />
 								<AlertTitle>GitHub Copilot Authentication</AlertTitle>
 								<AlertDescription>
-									Copilot requires a GitHub OAuth token obtained through the device login flow.
-									Your GitHub account must have an active Copilot subscription.
+									Copilot requires a GitHub OAuth token obtained through the device login flow. Your GitHub account must have an active
+									Copilot subscription.
 								</AlertDescription>
 							</Alert>
-							<Button
-								type="button"
-								data-testid="copilot-device-login-button"
-								onClick={initiateLogin}
-								className="w-full"
-							>
+							<Button type="button" data-testid="copilot-device-login-button" onClick={initiateLogin} className="w-full">
 								Login with GitHub
 							</Button>
 						</>
 					)}
 
-					{deviceState.status === 'awaiting_auth' && deviceState.userCode && (
+					{deviceState.status === "awaiting_auth" && deviceState.userCode && (
 						<div className="space-y-4">
 							<Alert variant="default">
 								<Info className="mt-0.5 h-4 w-4 flex-shrink-0 text-blue-600" />
 								<AlertTitle>Enter this code on GitHub</AlertTitle>
 								<AlertDescription className="space-y-3">
 									<div className="flex items-center gap-3 pt-2">
-										<code className="bg-muted rounded-md px-4 py-2 text-2xl font-bold tracking-widest">
-											{deviceState.userCode}
-										</code>
-										<Button
-											type="button"
-											variant="outline"
-											size="sm"
-											onClick={copyCode}
-											data-testid="copilot-copy-code-button"
-										>
+										<code className="bg-muted rounded-md px-4 py-2 text-2xl font-bold tracking-widest">{deviceState.userCode}</code>
+										<Button type="button" variant="outline" size="sm" onClick={copyCode} data-testid="copilot-copy-code-button">
 											{copied ? <CheckCircle2 className="h-4 w-4 text-green-600" /> : <Copy className="h-4 w-4" />}
 										</Button>
 									</div>
 									<p className="text-sm">
 										Visit{" "}
-										{deviceState.verificationUri &&
-										 /^https:\/\/([a-z0-9-]+\.)*github\.com(\/|$)/i.test(deviceState.verificationUri) ? (
+										{deviceState.verificationUri && /^https:\/\/([a-z0-9-]+\.)*github\.com(\/|$)/i.test(deviceState.verificationUri) ? (
 											<a
 												href={deviceState.verificationUri}
 												target="_blank"
 												rel="noopener noreferrer"
 												data-testid="copilot-verification-link"
-												className="text-blue-600 underline hover:text-blue-800 inline-flex items-center gap-1"
+												className="inline-flex items-center gap-1 text-blue-600 underline hover:text-blue-800"
 											>
 												{deviceState.verificationUri}
 												<ExternalLink className="h-3 w-3" />
@@ -1631,21 +1694,17 @@ function CopilotDeviceLoginSection({
 											<code data-testid="copilot-verification-link" className="bg-muted rounded px-1 py-0.5 text-sm">
 												{deviceState.verificationUri}
 											</code>
-										)}
-										{" "}and enter the code above to authorize Bifrost.
+										)}{" "}
+										and enter the code above to authorize Bifrost.
 									</p>
 								</AlertDescription>
 							</Alert>
 
-							<Button
-								type="button"
-								data-testid="copilot-confirm-auth-button"
-								onClick={pollOnce}
-								disabled={isChecking}
-								className="w-full"
-							>
+							<Button type="button" data-testid="copilot-confirm-auth-button" onClick={pollOnce} disabled={isChecking} className="w-full">
 								{isChecking ? (
-									<><Loader2 className="h-4 w-4 animate-spin" /> Checking authorization...</>
+									<>
+										<Loader2 className="h-4 w-4 animate-spin" /> Checking authorization...
+									</>
 								) : countdown !== null && countdown > 0 ? (
 									<>Check authorization ({countdown}s)</>
 								) : (
@@ -1666,31 +1725,21 @@ function CopilotDeviceLoginSection({
 						</div>
 					)}
 
-					{deviceState.status === 'complete' && (
+					{deviceState.status === "complete" && (
 						<Alert variant="default">
 							<CheckCircle2 className="mt-0.5 h-4 w-4 flex-shrink-0 text-green-600" />
 							<AlertTitle>Authentication successful</AlertTitle>
-							<AlertDescription>
-								GitHub OAuth token has been set. You can now save the provider configuration.
-							</AlertDescription>
+							<AlertDescription>GitHub OAuth token has been set. You can now save the provider configuration.</AlertDescription>
 						</Alert>
 					)}
 
-					{deviceState.status === 'error' && (
+					{deviceState.status === "error" && (
 						<div className="space-y-3">
 							<Alert variant="destructive">
 								<AlertTitle>Authentication failed</AlertTitle>
-								<AlertDescription>
-									{deviceState.error || 'An unknown error occurred'}
-								</AlertDescription>
+								<AlertDescription>{deviceState.error || "An unknown error occurred"}</AlertDescription>
 							</Alert>
-							<Button
-								type="button"
-								variant="outline"
-								onClick={initiateLogin}
-								className="w-full"
-								data-testid="copilot-retry-login-button"
-							>
+							<Button type="button" variant="outline" onClick={initiateLogin} className="w-full" data-testid="copilot-retry-login-button">
 								Try again
 							</Button>
 						</div>
@@ -1698,14 +1747,14 @@ function CopilotDeviceLoginSection({
 				</div>
 			)}
 
-			{copilotAuthType === 'manual_token' && (
+			{copilotAuthType === "manual_token" && (
 				<div className="space-y-2">
 					<Alert variant="default">
 						<Info className="mt-0.5 h-4 w-4 flex-shrink-0 text-blue-600" />
 						<AlertTitle>Manual Token Entry</AlertTitle>
 						<AlertDescription>
-							Enter an OAuth access token obtained from the GitHub device code flow.
-							Standard GitHub PATs will not work — you must use the device login flow token.
+							Enter an OAuth access token obtained from the GitHub device code flow. Standard GitHub PATs will not work — you must use the
+							device login flow token.
 						</AlertDescription>
 					</Alert>
 					<FormField
@@ -1715,7 +1764,7 @@ function CopilotDeviceLoginSection({
 							<FormItem>
 								<FormLabel>OAuth Access Token</FormLabel>
 								<FormControl>
-									<EnvVarInput placeholder="ghu_xxxxxxxxxxxx or env.GITHUB_COPILOT_TOKEN" type="text" {...field} />
+									<SecretVarInput placeholder="ghu_xxxxxxxxxxxx or env.GITHUB_COPILOT_TOKEN" type="text" {...field} />
 								</FormControl>
 								<FormMessage />
 							</FormItem>

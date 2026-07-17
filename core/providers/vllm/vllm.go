@@ -421,6 +421,7 @@ func (provider *VLLMProvider) Transcription(ctx *schemas.BifrostContext, key sch
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,
+		nil,
 		provider.GetProviderKey(),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		HandleVLLMResponse,

@@ -621,6 +621,26 @@ func accumulateAnthropicResponsesUsage(usage *schemas.ResponsesResponseUsage, bi
 	if usage == nil || usageToProcess == nil {
 		return
 	}
+	// Web search request count → billed as search queries (server tool use). The
+	// terminal chunk overwrites Response.Usage with this accumulator, so the count
+	// must live here (not only on the per-event message_delta usage).
+	if usageToProcess.ServerToolUse != nil && usageToProcess.ServerToolUse.WebSearchRequests > 0 {
+		n := usageToProcess.ServerToolUse.WebSearchRequests
+		if usage.OutputTokensDetails == nil {
+			usage.OutputTokensDetails = &schemas.ResponsesResponseOutputTokens{}
+		}
+		if usage.OutputTokensDetails.NumSearchQueries == nil || n > *usage.OutputTokensDetails.NumSearchQueries {
+			usage.OutputTokensDetails.NumSearchQueries = schemas.Ptr(n)
+		}
+		if billedUsage != nil {
+			if billedUsage.CompletionTokensDetails == nil {
+				billedUsage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{}
+			}
+			if billedUsage.CompletionTokensDetails.NumSearchQueries == nil || n > *billedUsage.CompletionTokensDetails.NumSearchQueries {
+				billedUsage.CompletionTokensDetails.NumSearchQueries = schemas.Ptr(n)
+			}
+		}
+	}
 	if usageToProcess.InputTokens > usage.InputTokens {
 		usage.InputTokens = usageToProcess.InputTokens
 		if billedUsage != nil {
@@ -863,6 +883,10 @@ func HandleAnthropicChatCompletionStreaming(
 		var finishReason *string
 
 		usage := &schemas.BifrostLLMUsage{}
+		// Served billing modifiers (top-level response fields, not usage) captured
+		// across events and set on the final chunk: fast mode and data residency.
+		var servedSpeed *string
+		var servedInferenceGeo *string
 		// Register the accumulating usage handle so a mid-stream cancel/timeout
 		// can bill for tokens already processed Mutated in place below;
 		// the deferred HandleStreamCancellation/Timeout reads it from context.
@@ -938,6 +962,26 @@ func HandleAnthropicChatCompletionStreaming(
 				usageToProcess = event.Message.Usage
 			}
 			if usageToProcess != nil {
+				// Web search request count → billed as search queries (server tool use).
+				if usageToProcess.ServerToolUse != nil && usageToProcess.ServerToolUse.WebSearchRequests > 0 {
+					if usage.CompletionTokensDetails == nil {
+						usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{}
+					}
+					if n := usageToProcess.ServerToolUse.WebSearchRequests; usage.CompletionTokensDetails.NumSearchQueries == nil || n > *usage.CompletionTokensDetails.NumSearchQueries {
+						usage.CompletionTokensDetails.NumSearchQueries = &n
+					}
+				}
+				// Capture served fast mode + inference geography (top-level response fields).
+				// Mirror onto the billing usage handle so a mid-stream cancel/timeout can
+				// still apply the served-tier multiplier (billed usage is otherwise bare).
+				if usageToProcess.Speed != nil {
+					servedSpeed = usageToProcess.Speed
+					usage.Speed = usageToProcess.Speed
+				}
+				if usageToProcess.InferenceGeo != nil {
+					servedInferenceGeo = usageToProcess.InferenceGeo
+					usage.InferenceGeo = usageToProcess.InferenceGeo
+				}
 				// Collect usage information and send at the end of the stream
 				// Here in some cases usage comes before final message
 				// So we need to check if the response.Usage is nil and then if usage != nil
@@ -1098,6 +1142,13 @@ func HandleAnthropicChatCompletionStreaming(
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 				return
 			}
+		}
+		// Forward served fast mode + data residency so the final chunk bills correctly.
+		if servedSpeed != nil {
+			response.Speed = servedSpeed
+		}
+		if servedInferenceGeo != nil {
+			response.InferenceGeo = servedInferenceGeo
 		}
 		// Set raw request if enabled
 		if sendBackRawRequest {
@@ -1455,6 +1506,8 @@ func HandleAnthropicResponsesStream(
 		}
 
 		var modelName string
+		var servedSpeed *string
+		var servedInferenceGeo *string
 
 		for {
 			// If context was cancelled/timed out, let defer handle it
@@ -1503,6 +1556,20 @@ func HandleAnthropicResponsesStream(
 				// Also mirror it into billedUsage so cancellation/timeout paths can
 				// charge for provider-reported usage before the final chunk arrives.
 				accumulateAnthropicResponsesUsage(usage, billedUsage, usageToProcess)
+				// Mirror served tier onto billedUsage so a mid-stream cancel/timeout can
+				// still apply the served-tier multiplier (billed usage is otherwise bare).
+				if usageToProcess.Speed != nil {
+					servedSpeed = usageToProcess.Speed
+					if billedUsage != nil {
+						billedUsage.Speed = usageToProcess.Speed
+					}
+				}
+				if usageToProcess.InferenceGeo != nil {
+					servedInferenceGeo = usageToProcess.InferenceGeo
+					if billedUsage != nil {
+						billedUsage.InferenceGeo = usageToProcess.InferenceGeo
+					}
+				}
 			}
 
 			responses, bifrostErr, isLastChunk := event.ToBifrostResponsesStream(ctx, chunkIndex, streamState)
@@ -1561,6 +1628,12 @@ func HandleAnthropicResponsesStream(
 							usage.TotalTokens = usage.TotalTokens + usage.InputTokensDetails.CachedReadTokens + usage.InputTokensDetails.CachedWriteTokens
 						}
 						response.Response.Usage = usage
+						if servedSpeed != nil {
+							response.Response.Speed = servedSpeed
+						}
+						if servedInferenceGeo != nil {
+							response.Response.InferenceGeo = servedInferenceGeo
+						}
 						// Set raw request if enabled
 						if sendBackRawRequest {
 							providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonBody)

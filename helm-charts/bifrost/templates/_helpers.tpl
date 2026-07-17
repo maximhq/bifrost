@@ -201,7 +201,7 @@ false
 {{- end -}}
 
 {{- define "bifrost.config" -}}
-{{- $config := dict "$schema" "https://www.getbifrost.ai/schema" }}
+{{- $config := dict "$schema" (.Values.bifrost.schemaUrl | default "https://www.getbifrost.ai/schema") }}
 {{- if .Values.bifrost.sourceOfTruth }}
 {{- $_ := set $config "source_of_truth" .Values.bifrost.sourceOfTruth }}
 {{- end }}
@@ -227,6 +227,9 @@ false
 {{- end }}
 {{- if hasKey .Values.bifrost.client "enforceAuthOnInference" }}
 {{- $_ := set $client "enforce_auth_on_inference" .Values.bifrost.client.enforceAuthOnInference }}
+{{- end }}
+{{- if .Values.bifrost.client.dualCredentialConflictBehavior }}
+{{- $_ := set $client "dual_credential_conflict_behavior" .Values.bifrost.client.dualCredentialConflictBehavior }}
 {{- end }}
 {{- if hasKey .Values.bifrost.client "enforceGovernanceHeader" }}
 {{- $_ := set $client "enforce_governance_header" .Values.bifrost.client.enforceGovernanceHeader }}
@@ -512,6 +515,7 @@ false
 {{- if .customer_id }}{{- $_ := set $vk "customer_id" .customer_id }}{{- end }}
 {{- if hasKey . "access_profile_id" }}{{- $_ := set $vk "access_profile_id" .access_profile_id }}{{- end }}
 {{- if .rate_limit_id }}{{- $_ := set $vk "rate_limit_id" .rate_limit_id }}{{- end }}
+{{- if hasKey . "calendar_aligned" }}{{- $_ := set $vk "calendar_aligned" .calendar_aligned }}{{- end }}
 {{- if .provider_configs }}{{- $_ := set $vk "provider_configs" .provider_configs }}{{- end }}
 {{- if .mcp_configs }}{{- $_ := set $vk "mcp_configs" .mcp_configs }}{{- end }}
 {{- $vks = append $vks $vk }}
@@ -741,6 +745,20 @@ false
 {{- /* Access Profiles (Enterprise) */ -}}
 {{- if .Values.bifrost.accessProfiles }}
 {{- $_ := set $config "access_profiles" .Values.bifrost.accessProfiles }}
+{{- end }}
+{{- /* Alerting */ -}}
+{{- if .Values.bifrost.alerting }}
+{{- if .Values.bifrost.alerting.rules }}
+{{- range .Values.bifrost.alerting.rules }}
+{{- if and (hasKey . "target_type") (not (hasKey . "target_id")) }}
+{{- fail (printf "alerting rule '%s': target_type is set but target_id is missing" .id) }}
+{{- end }}
+{{- if and (hasKey . "target_id") (not (hasKey . "target_type")) }}
+{{- fail (printf "alerting rule '%s': target_id is set but target_type is missing" .id) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- $_ := set $config "alerting" .Values.bifrost.alerting }}
 {{- end }}
 {{- /* Config Store */ -}}
 {{- if .Values.storage.configStore.enabled }}
@@ -1175,6 +1193,7 @@ false
 {{- $toolGroups := list }}
 {{- range .Values.bifrost.mcp.toolGroups }}
 {{- $group := dict "name" .name }}
+{{- if .id }}{{- $_ := set $group "id" .id }}{{- end }}
 {{- if hasKey . "enabled" }}{{- $_ := set $group "enabled" .enabled }}{{- end }}
 {{- if .description }}{{- $_ := set $group "description" .description }}{{- end }}
 {{- if .tools }}
@@ -1335,6 +1354,9 @@ false
 {{- if hasKey $inputConfig "disable_root_span_content" }}
 {{- $_ := set $otelConfig "disable_root_span_content" $inputConfig.disable_root_span_content }}
 {{- end }}
+{{- if hasKey $inputConfig "request_headers" }}
+{{- $_ := set $otelConfig "request_headers" $inputConfig.request_headers }}
+{{- end }}
 {{- if $inputConfig.plugin_span_filter }}
 {{- $_ := set $otelConfig "plugin_span_filter" $inputConfig.plugin_span_filter }}
 {{- end }}
@@ -1403,7 +1425,7 @@ false
 {{- if $inputConfig.site }}
 {{- $_ := set $datadogConfig "site" $inputConfig.site }}
 {{- end }}
-{{- if $inputConfig.request_headers }}
+{{- if hasKey $inputConfig "request_headers" }}
 {{- $_ := set $datadogConfig "request_headers" $inputConfig.request_headers }}
 {{- end }}
 {{- if $inputConfig.plugin_span_filter }}
@@ -1446,7 +1468,7 @@ false
 {{- if hasKey $inputConfig "disable_content_logging" }}
 {{- $_ := set $bigqueryConfig "disable_content_logging" $inputConfig.disable_content_logging }}
 {{- end }}
-{{- if $inputConfig.request_headers }}
+{{- if hasKey $inputConfig "request_headers" }}
 {{- $_ := set $bigqueryConfig "request_headers" $inputConfig.request_headers }}
 {{- end }}
 {{- if $inputConfig.plugin_span_filter }}
@@ -1492,7 +1514,7 @@ false
 {{- if hasKey $inputConfig "disable_content_logging" }}
 {{- $_ := set $kafkaConfig "disable_content_logging" $inputConfig.disable_content_logging }}
 {{- end }}
-{{- if $inputConfig.request_headers }}
+{{- if hasKey $inputConfig "request_headers" }}
 {{- $_ := set $kafkaConfig "request_headers" $inputConfig.request_headers }}
 {{- end }}
 {{- if $inputConfig.plugin_span_filter }}
@@ -1520,7 +1542,7 @@ false
 {{- if hasKey $inputConfig "disable_content_logging" }}
 {{- $_ := set $pubsubConfig "disable_content_logging" $inputConfig.disable_content_logging }}
 {{- end }}
-{{- if $inputConfig.request_headers }}
+{{- if hasKey $inputConfig "request_headers" }}
 {{- $_ := set $pubsubConfig "request_headers" $inputConfig.request_headers }}
 {{- end }}
 {{- if $inputConfig.plugin_span_filter }}
@@ -1554,7 +1576,49 @@ false
 {{- if .Values.bifrost.auditLogs.hmacKey }}
 {{- $_ := set $auditLogs "hmac_key" .Values.bifrost.auditLogs.hmacKey }}
 {{- end }}
-{{- if or (hasKey $auditLogs "disabled") $auditLogs.hmac_key }}
+{{- if .Values.bifrost.auditLogs.objectStorage }}
+{{- $aos := .Values.bifrost.auditLogs.objectStorage }}
+{{- $aosConfig := dict "type" $aos.type "bucket" $aos.bucket }}
+{{- if $aos.prefix }}
+{{- $_ := set $aosConfig "prefix" $aos.prefix }}
+{{- end }}
+{{- if $aos.compress }}
+{{- $_ := set $aosConfig "compress" true }}
+{{- end }}
+{{- if eq $aos.type "s3" }}
+{{- if $aos.region }}
+{{- $_ := set $aosConfig "region" $aos.region }}
+{{- end }}
+{{- if $aos.endpoint }}
+{{- $_ := set $aosConfig "endpoint" $aos.endpoint }}
+{{- end }}
+{{- if $aos.accessKeyId }}
+{{- $_ := set $aosConfig "access_key_id" $aos.accessKeyId }}
+{{- end }}
+{{- if $aos.secretAccessKey }}
+{{- $_ := set $aosConfig "secret_access_key" $aos.secretAccessKey }}
+{{- end }}
+{{- if $aos.sessionToken }}
+{{- $_ := set $aosConfig "session_token" $aos.sessionToken }}
+{{- end }}
+{{- if $aos.roleArn }}
+{{- $_ := set $aosConfig "role_arn" $aos.roleArn }}
+{{- end }}
+{{- if $aos.forcePathStyle }}
+{{- $_ := set $aosConfig "force_path_style" true }}
+{{- end }}
+{{- end }}
+{{- if eq $aos.type "gcs" }}
+{{- if $aos.projectId }}
+{{- $_ := set $aosConfig "project_id" $aos.projectId }}
+{{- end }}
+{{- if $aos.credentialsJson }}
+{{- $_ := set $aosConfig "credentials_json" $aos.credentialsJson }}
+{{- end }}
+{{- end }}
+{{- $_ := set $auditLogs "object_storage" $aosConfig }}
+{{- end }}
+{{- if or (hasKey $auditLogs "disabled") $auditLogs.hmac_key $auditLogs.object_storage }}
 {{- $_ := set $config "audit_logs" $auditLogs }}
 {{- end }}
 {{- end }}
@@ -1852,6 +1916,14 @@ Call this template at the beginning of deployment/stateful templates
 {{- end }}
 {{- if not $scimValidation.config.clientId }}
 {{- fail "ERROR: bifrost.scim.config.clientId is required when SCIM provider is Google Workspace." }}
+{{- end }}
+{{- end }}
+{{- if eq $scimValidation.provider "generic" }}
+{{- if not $scimValidation.config.issuerUrl }}
+{{- fail "ERROR: bifrost.scim.config.issuerUrl is required when SCIM provider is a generic OIDC provider. Example: https://idp.company.com" }}
+{{- end }}
+{{- if not $scimValidation.config.clientId }}
+{{- fail "ERROR: bifrost.scim.config.clientId is required when SCIM provider is a generic OIDC provider." }}
 {{- end }}
 {{- end }}
 {{- end }}

@@ -5,7 +5,7 @@ icon: "brackets-curly"
 ---
 
 <Note>
-The live schema is published at [`https://www.getbifrost.ai/schema`](https://www.getbifrost.ai/schema). Add `"$schema": "https://www.getbifrost.ai/schema"` to your `config.json` for IDE autocomplete and inline validation.
+The live schema is published at [`https://www.getbifrost.ai/schema`](https://www.getbifrost.ai/schema). Add `"$schema": "https://www.getbifrost.ai/schema"` to your `config.json` for IDE autocomplete and inline validation, or point it to a mirrored HTTP(S) URL, `file://` URL, or filesystem path in isolated deployments. You can also set the `BIFROST_SCHEMA_URL` environment variable, which takes precedence over the `$schema` value. When mirroring, snapshot a schema published by a Bifrost release that supports custom `$schema` values; older schema copies pin `$schema` to the public URL and will flag a mirrored location as invalid in IDEs.
 </Note>
 
 This page is a concise reference for every top-level key in `config.json`. Click the **Guide** links for full field-by-field documentation.
@@ -16,13 +16,14 @@ This page is a concise reference for every top-level key in `config.json`. Click
 
 | Key | Type | Description | Guide |
 |-----|------|-------------|-------|
-| `$schema` | string | Schema URL for IDE validation. Set to `"https://www.getbifrost.ai/schema"` | - |
+| `$schema` | string | Schema location for IDE validation. Defaults to `"https://www.getbifrost.ai/schema"`; isolated deployments can use a mirrored URL, `file://` URL, or filesystem path. | - |
 | `version` | integer | Compatibility switch for empty allow-list arrays. Omit for current v2 semantics. | [`version`](#version) |
 | `source_of_truth` | string | Startup reconciliation mode for DB-backed `config.json`: `"split"` or `"config.json"` | [Source of Truth](/deployment-guides/config-json/source-of-truth) |
 | `encryption_key` | string | Optional AES-256 key (derived via Argon2id). Accepts `env.VAR` prefix and is also read from `BIFROST_ENCRYPTION_KEY`. If omitted, data is stored in plaintext. | [Client](/deployment-guides/config-json/client#encryption-key) |
 | `client` | object | Worker pool, logging, CORS, auth enforcement, header filtering, MCP, compat shims | [Client](/deployment-guides/config-json/client) |
 | `providers` | object | LLM provider API keys, network settings, concurrency | [Providers](/deployment-guides/config-json/providers) |
 | `governance` | object | Admin auth, virtual keys, budgets, rate limits, routing rules, customers, teams | [Governance](/deployment-guides/config-json/governance) |
+| `alerting` | object | Alert channels, CEL-based rules, history retention, and webhook network controls *(enterprise only)* | [Alerting](/deployment-guides/config-json/alerting) |
 | `guardrails_config` | object | Content moderation providers and CEL-based rules *(enterprise only)* | [Guardrails](/deployment-guides/config-json/guardrails) |
 | `access_profiles` | array | Access profile templates for enterprise RBAC/governance controls *(enterprise only)* | [Enterprise Governance](/enterprise/advanced-governance) |
 | `cluster_config` | object | Cluster mode settings: gossip, peers, and auto-discovery backends *(enterprise only)* | [Cluster](/deployment-guides/config-json/cluster) |
@@ -142,6 +143,14 @@ Full documentation: [Governance](/deployment-guides/config-json/governance).
 Enterprise-only. Two sub-keys: `guardrail_providers` (array) and `guardrail_rules` (array).
 
 Full documentation: [Guardrails](/deployment-guides/config-json/guardrails).
+
+---
+
+## `alerting`
+
+Enterprise-only. Supports `channels` (array), `rules` (array), `history_retention_days`, `evaluation_interval_seconds`, and `webhook_network`.
+
+Full documentation: [Alerting](/deployment-guides/config-json/alerting).
 
 ---
 

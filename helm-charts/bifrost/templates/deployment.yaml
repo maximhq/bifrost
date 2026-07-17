@@ -97,6 +97,10 @@ spec:
               value: {{ .Values.bifrost.logLevel | quote }}
             - name: LOG_STYLE
               value: {{ .Values.bifrost.logStyle | quote }}
+            {{- if .Values.bifrost.schemaUrl }}
+            - name: BIFROST_SCHEMA_URL
+              value: {{ .Values.bifrost.schemaUrl | quote }}
+            {{- end }}
             {{- if .Values.bifrost.encryptionKeySecret.name }}
             - name: BIFROST_ENCRYPTION_KEY
               valueFrom:

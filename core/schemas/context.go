@@ -2,6 +2,7 @@ package schemas
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -484,6 +485,25 @@ func (bc *BifrostContext) ResumeStream() {
 	}
 	bc.setReservedValue(BifrostContextKeyStreamGated, true)
 	tr.ResumeStream(tid)
+}
+
+// streamBufferClearer is an optional tracer capability for dropping paused replay chunks.
+type streamBufferClearer interface {
+	ClearPausedStreamBuffer(traceID string) error
+}
+
+// ClearPausedStreamBuffer drops chunks buffered while the active stream is paused.
+func (bc *BifrostContext) ClearPausedStreamBuffer() error {
+	tr, _ := bc.Value(BifrostContextKeyTracer).(Tracer)
+	tid, _ := bc.Value(BifrostContextKeyTraceID).(string)
+	if tr == nil || tid == "" {
+		return fmt.Errorf("stream tracer or trace ID is missing")
+	}
+	clearer, ok := any(tr).(streamBufferClearer)
+	if !ok {
+		return fmt.Errorf("stream tracer does not support buffer clearing")
+	}
+	return clearer.ClearPausedStreamBuffer(tid)
 }
 
 // EndStream terminates the active streaming response. Any buffered chunks are

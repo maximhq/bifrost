@@ -24,6 +24,7 @@ import (
 	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/logstore"
 	dynamicPlugins "github.com/maximhq/bifrost/framework/plugins"
+	"github.com/maximhq/bifrost/framework/sidekiq"
 	"github.com/maximhq/bifrost/framework/temptoken"
 	"github.com/maximhq/bifrost/framework/tracing"
 	"github.com/maximhq/bifrost/plugins/governance"
@@ -127,6 +128,12 @@ type ServerCallbacks interface {
 	EnableMCPClient(ctx context.Context, id string) error
 }
 
+// LogRedactionMappingResolverProvider is implemented by servers that can attach reveal data to log-detail responses.
+type LogRedactionMappingResolverProvider interface {
+	// GetLogRedactionMappingResolver returns the resolver used by the logging handler.
+	GetLogRedactionMappingResolver() handlers.LogRedactionMappingResolver
+}
+
 // BifrostHTTPServer represents a HTTP server instance.
 type BifrostHTTPServer struct {
 	Ctx    *schemas.BifrostContext
@@ -172,6 +179,9 @@ type BifrostHTTPServer struct {
 	// access-profile-managed VKs). Optional; wired at server init when available,
 	// otherwise left nil so the quota endpoint reads the VK's own budget rows.
 	ExternalQuotaBudgetResolver handlers.ExternalQuotaBudgetResolver
+
+	SidekiqRunner         *sidekiq.Runner
+	SidekiqDispatcherStop func()
 
 	wsPool *bfws.Pool
 }
@@ -707,6 +717,12 @@ func (s *BifrostHTTPServer) OnKeyAdded(ctx context.Context, provider schemas.Mod
 	if isKeylessProvider(provider, s.Config) {
 		keyID = ""
 	}
+	// Skip the fetch for a disabled key — core rejects list-models calls
+	// scoped to a disabled key's ID, so it would just fail and fall back
+	// onto the (usually empty, for custom providers) static datasheet.
+	if !keyEnabled(key) {
+		return nil
+	}
 	s.FetchAndStoreLiveForKey(ctx, provider, keyID)
 	return nil
 }
@@ -728,6 +744,11 @@ func (s *BifrostHTTPServer) OnKeyUpdated(ctx context.Context, provider schemas.M
 		keyID = ""
 	}
 	s.Config.ModelCatalog.InvalidateLive(provider, keyID)
+	// Skip the fetch for a disabled key — the invalidate above still clears
+	// its stale cached entries, but re-fetching would just fail against core.
+	if !keyEnabled(key) {
+		return nil
+	}
 	s.FetchAndStoreLiveForKey(ctx, provider, keyID)
 	return nil
 }
@@ -746,6 +767,16 @@ func (s *BifrostHTTPServer) OnKeyDeleted(ctx context.Context, provider schemas.M
 	s.Config.ModelCatalog.SetKeyConfigForProvider(provider, keys)
 	s.Config.ModelCatalog.InvalidateLive(provider, keyID)
 	return nil
+}
+
+// keyEnabled reports whether a key should be treated as active for
+// scheduling model-discovery fetches. Enabled defaults to true when nil,
+// matching the convention core.getAllSupportedKeys uses to filter keys for
+// ListModels requests — a key discovery schedules a fetch for must be one
+// core will actually accept, or the call is a guaranteed
+// "no key found with id..." failure.
+func keyEnabled(key schemas.Key) bool {
+	return key.Enabled == nil || *key.Enabled
 }
 
 // isKeylessProvider returns true when the provider's config marks it
@@ -967,12 +998,25 @@ func (s *BifrostHTTPServer) RefreshLiveModelsForProvider(ctx context.Context, pr
 		return
 	}
 	var wg sync.WaitGroup
+	enabledCount := 0
 	for _, key := range keys {
+		// Skip disabled keys — core rejects list-models calls scoped to a
+		// disabled key's ID ("no key found with id..."), so fetching for one
+		// is guaranteed to fail and only adds "falling back onto the static
+		// datasheet" log noise per disabled key.
+		if !keyEnabled(key) {
+			continue
+		}
+		enabledCount++
 		wg.Add(1)
 		go func(keyID string) {
 			defer wg.Done()
 			s.FetchAndStoreLiveForKey(ctx, provider, keyID)
 		}(key.ID)
+	}
+	if enabledCount == 0 {
+		logger.Warn("model discovery skipped for provider %s: no enabled keys configured", provider)
+		return
 	}
 	wg.Wait()
 }
@@ -1325,6 +1369,26 @@ func (s *BifrostHTTPServer) RemovePlugin(ctx context.Context, displayName string
 	return nil
 }
 
+// StartOAuth2SweepWorker creates and starts the janitor for the OAuth2
+// issuance tables (expired authorize requests, aged-out revoked refresh
+// tokens, orphaned dynamically-registered clients). Call it once from
+// single-threaded bootstrap wiring, like the other worker fields on this
+// struct — the nil-check makes double-wiring a no-op, it is not a concurrency
+// guard. It is also a no-op when no config store is configured. The Start()
+// shutdown path stops the worker.
+//
+// shouldSweep, when non-nil, is consulted before each pass; returning false
+// skips that pass. Deployments running several instances against one config
+// store can use it to restrict sweeping to a single instance. nil means
+// always sweep.
+func (s *BifrostHTTPServer) StartOAuth2SweepWorker(ctx context.Context, shouldSweep func() bool) {
+	if s.OAuth2SweepWorker != nil || s.Config == nil || s.Config.ConfigStore == nil {
+		return
+	}
+	s.OAuth2SweepWorker = newOAuth2SweepWorker(s.Config.ConfigStore, shouldSweep)
+	s.OAuth2SweepWorker.start(ctx)
+}
+
 // RegisterInferenceRoutes initializes the routes for the inference handler
 func (s *BifrostHTTPServer) RegisterInferenceRoutes(ctx context.Context, middlewares ...schemas.BifrostHTTPMiddleware) error {
 	// Initialize WebSocket pool and handler before integrations so it can be wired through
@@ -1370,6 +1434,15 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	var govLogManager logging.LogManager
 	if loggerPlugin != nil {
 		loggingHandler = handlers.NewLoggingHandler(loggerPlugin.GetPluginLogManager(), s, s.Config)
+		if resolverProvider, ok := callbacks.(LogRedactionMappingResolverProvider); ok {
+			loggingHandler.SetLogRedactionMappingResolver(resolverProvider.GetLogRedactionMappingResolver())
+		}
+		// Wire the sidekiq runner so cost recalculation runs as a durable background
+		// job. Registering the handler here (before RecoverIncomplete) lets a job
+		// interrupted by a restart resume on boot.
+		if s.SidekiqRunner != nil && s.Config != nil && s.Config.ConfigStore != nil {
+			loggingHandler.SetSidekiqBackend(s.SidekiqRunner, s.Config.ConfigStore)
+		}
 		govLogManager = loggerPlugin.GetPluginLogManager()
 	}
 	var governanceHandler *handlers.GovernanceHandler
@@ -1549,6 +1622,19 @@ func (s *BifrostHTTPServer) GetAllRedactedRoutingRules(ctx context.Context, ids 
 // PrepareCommonMiddlewares gets the common middlewares for the Bifrost HTTP server
 func (s *BifrostHTTPServer) PrepareCommonMiddlewares() []schemas.BifrostHTTPMiddleware {
 	commonMiddlewares := []schemas.BifrostHTTPMiddleware{}
+	// Copy the matched route template saved by the router (SaveMatchedRoutePath) into a
+	// stable, router-agnostic user value so metrics middlewares below can label by route
+	// template instead of the raw URL path.
+	commonMiddlewares = append(commonMiddlewares, func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) {
+			if route, ok := ctx.UserValue(router.MatchedRoutePathParam).(string); ok && route != "" {
+				ctx.SetUserValue(string(schemas.BifrostContextKeyHTTPRoute), route)
+				// Drop the router's randomized key so it doesn't leak into request PathParams.
+				ctx.RemoveUserValue(router.MatchedRoutePathParam)
+			}
+			next(ctx)
+		}
+	})
 	// Preparing middlewares
 	// Initializing prometheus plugin
 	prometheusPlugin, err := lib.FindPluginAs[*telemetry.PrometheusPlugin](s.Config, telemetry.PluginName)
@@ -1570,8 +1656,14 @@ func (s *BifrostHTTPServer) PrepareCommonMiddlewares() []schemas.BifrostHTTPMidd
 			if err != nil {
 				return
 			}
+			// Label by the matched route template when available (set by the middleware
+			// above) so path params (model names, batch/file IDs) don't explode cardinality.
+			path := string(ctx.Path())
+			if route, ok := ctx.UserValue(string(schemas.BifrostContextKeyHTTPRoute)).(string); ok && route != "" {
+				path = route
+			}
 			otelPlugin.RecordHTTPMetrics(ctx,
-				string(ctx.Path()),
+				path,
 				string(ctx.Method()),
 				strconv.Itoa(ctx.Response.StatusCode()),
 				time.Since(start).Seconds(),
@@ -1618,7 +1710,6 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	s.Ctx, s.cancel = schemas.NewBifrostContextWithCancel(ctx)
 	handlers.SetVersion(s.Version)
 	configDir := GetDefaultConfigDir(s.AppDir)
-
 	// Ensure app directory exists
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
 		return fmt.Errorf("failed to create app directory %s: %v", configDir, err)
@@ -1745,6 +1836,9 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	s.Config.SetBifrostClient(s.Client)
 	// Initialize routes
 	s.Router = router.New()
+	// Save the matched route template on each request
+	// so metrics can use it as the `path` label instead of the raw URL path.
+	s.Router.SaveMatchedRoutePath = true
 	// Initialize CORS middleware
 	s.CORSMiddleware = handlers.NewCorsMiddleware(s.Config)
 	commonMiddlewares := s.PrepareCommonMiddlewares()
@@ -1774,10 +1868,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		if s.TempTokenSweepWorker != nil {
 			s.TempTokenSweepWorker.Start(s.Ctx)
 		}
-		s.OAuth2SweepWorker = newOAuth2SweepWorker(s.Config.ConfigStore)
-		if s.OAuth2SweepWorker != nil {
-			s.OAuth2SweepWorker.start(s.Ctx)
-		}
+		s.StartOAuth2SweepWorker(s.Ctx, nil)
 		// Hand the service to the OAuth provider so InitiateUserOAuthFlow mints
 		// a mcp_auth token and embeds it as a URL fragment on the auth-page link.
 		if s.Config.OAuthProvider != nil {
@@ -1810,6 +1901,11 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	semanticCachePlugin, err := lib.FindPluginAs[*semanticcache.Plugin](s.Config, semanticcache.PluginName)
 	if err == nil && semanticCachePlugin != nil {
 		semanticCachePlugin.SetEmbeddingRequestExecutor(s.Client.EmbeddingRequest)
+	}
+
+	// Initialize Sidekiq runner for background jobs
+	if s.Config != nil && s.Config.ConfigStore != nil {
+		s.SidekiqRunner = sidekiq.New(s.Config.ConfigStore, logger, 4, "")
 	}
 
 	// Register routes
@@ -1882,6 +1978,14 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	})
 	// Register UI handler
 	s.RegisterUIRoutes()
+
+	// Start the Sidekiq dispatcher: on every node it periodically claims pending and
+	// stale (orphaned) jobs, with an atomic claim guaranteeing exactly one node runs
+	// each job. Subsumes startup recovery of jobs left behind by a crash or restart.
+	if s.SidekiqRunner != nil {
+		s.SidekiqDispatcherStop = s.SidekiqRunner.StartDispatcher(sidekiq.DispatchInterval, sidekiq.StaleAfter)
+	}
+
 	// Checking if config has server config and use it to set read buffer size
 	logger.Debug("server read buffer size: %d", s.Config.ServerConfig.ReadBufferSize)
 	// Create fasthttp server instance
@@ -1968,6 +2072,14 @@ func (s *BifrostHTTPServer) Start() error {
 				logger.Info("stopping oauth2 sweep worker...")
 				s.OAuth2SweepWorker.stop()
 				s.OAuth2SweepWorker = nil
+			}
+			if s.SidekiqDispatcherStop != nil {
+				logger.Info("stopping sidekiq dispatcher...")
+				s.SidekiqDispatcherStop()
+			}
+			if s.SidekiqRunner != nil {
+				logger.Info("stopping sidekiq runner...")
+				s.SidekiqRunner.Shutdown()
 			}
 			if s.devPprofHandler != nil {
 				logger.Info("stopping dev pprof handler...")

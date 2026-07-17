@@ -1,0 +1,28 @@
+---
+title: "v0.3.0"
+description: "v0.3.0 changelog - 2026-07-16"
+---
+
+<Update label="Bifrost Edge" description="v0.3.0">
+
+## Changelog
+
+Focuses on policy scoping and setup reliability: app and MCP server approvals and the kill switch can now be scoped instead of fleet-wide, device setup and removal flows were reworked across macOS, Linux, and Windows, and token rotation and passthrough mode issues were fixed.
+
+## ✨ Features
+
+- **Scoped Approvals Enforcement** - App and MCP server approvals are resolved by scope (team-based, with per-device overrides configured in the dashboard) and enforced on device.
+- **Scoped Kill Switch** - The kill switch can target a scope instead of the entire fleet; the agent picks up the scoped state through inventory sync and enforces it locally.
+- **Reworked Setup Flow** - New device setup and removal flow with native OS prompts on macOS, Linux, and Windows, replacing the previous single-shot setup path.
+- **macOS Uninstaller** - The macOS package now ships an uninstall script for clean removal of all agent components.
+- **Cursor Routing Skip** - Cursor traffic can be excluded from routing via agent config.
+
+## 🐞 Fixed
+
+- **Token Rotation** - Rotated credentials for supported apps (Claude web, Codex, Cursor) no longer cause repeated auth failures after the upstream app refreshes its token.
+- **Passthrough Mode** - Fixed passthrough mode handling, covering auth and request logging while passthrough is active.
+- **Policy Disable Flow** - Disabling a policy now correctly restores routing.
+- **Setup Edge Cases** - Fixed setup flow edge cases on macOS.
+- **Tray Fixes** - Tray notification and usage count fixes, plus connection handling fixes.
+
+</Update>

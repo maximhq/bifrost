@@ -154,7 +154,11 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 		baseQuery = baseQuery.Where("provider IN ?", filters.Providers)
 	}
 	if len(filters.Models) > 0 {
-		baseQuery = baseQuery.Where("model IN ?", filters.Models)
+		// Match either the wire model or the canonical model name so that
+		// filtering by a canonical model (e.g. gpt-4o-mini) also surfaces
+		// requests routed through an alias whose wire model differs. Parens
+		// keep the OR grouped when GORM ANDs this with the other predicates.
+		baseQuery = baseQuery.Where("(model IN ? OR canonical_model_name IN ?)", filters.Models, filters.Models)
 	}
 	if len(filters.Aliases) > 0 {
 		baseQuery = baseQuery.Where("alias IN ?", filters.Aliases)
@@ -1866,6 +1870,9 @@ func (s *RDBLogStore) GetModelRankings(ctx context.Context, filters SearchFilter
 		COALESCE(SUM(cost), 0) as total_cost,
 		AVG(latency) as avg_latency
 	`
+	// Only the current-period query scans canonical_name; keeping it out of the
+	// shared clause spares the previous-period query a discarded aggregate.
+	currentSelectClause := "MAX(NULLIF(canonical_model_name, '')) as canonical_name," + selectClause
 
 	// Query current period
 	currentQuery := s.ScopedDB(ctx).Model(&Log{})
@@ -1875,6 +1882,7 @@ func (s *RDBLogStore) GetModelRankings(ctx context.Context, filters SearchFilter
 
 	var currentResults []struct {
 		Model         string          `gorm:"column:model"`
+		CanonicalName sql.NullString  `gorm:"column:canonical_name"`
 		Provider      string          `gorm:"column:provider"`
 		TotalRequests int64           `gorm:"column:total_requests"`
 		SuccessCount  int64           `gorm:"column:success_count"`
@@ -1884,7 +1892,7 @@ func (s *RDBLogStore) GetModelRankings(ctx context.Context, filters SearchFilter
 	}
 
 	if err := currentQuery.
-		Select(selectClause).
+		Select(currentSelectClause).
 		Group("model, provider").
 		Order("total_requests DESC").
 		Limit(defaultMaxRankingsLimit).
@@ -1966,6 +1974,9 @@ func (s *RDBLogStore) GetModelRankings(ctx context.Context, filters SearchFilter
 			TotalTokens:   r.TotalTokens.Int64,
 			TotalCost:     r.TotalCost.Float64,
 			AvgLatency:    r.AvgLatency.Float64,
+		}
+		if r.CanonicalName.Valid {
+			entry.CanonicalModelName = &r.CanonicalName.String
 		}
 		if r.TotalRequests > 0 {
 			entry.SuccessRate = float64(r.SuccessCount) / float64(r.TotalRequests) * 100
@@ -3178,10 +3189,12 @@ func (s *RDBLogStore) HasLogs(ctx context.Context) (bool, error) {
 	return true, nil
 }
 
-// FindByID gets a log entry from the database by its ID.
+// FindByID gets a log entry from the database by its ID. When ctx carries a
+// QueryScope (for example, Enterprise DAC), ScopedDB applies it so out-of-scope
+// IDs return ErrNotFound. Contexts without a QueryScope stay unscoped as before.
 func (s *RDBLogStore) FindByID(ctx context.Context, id string) (*Log, error) {
 	var log Log
-	if err := s.db.WithContext(ctx).Where("id = ?", id).First(&log).Error; err != nil {
+	if err := s.ScopedDB(ctx).Where("id = ?", id).First(&log).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
 		}
