@@ -1072,6 +1072,16 @@ func (p *LoggerPlugin) GetProviderLatencyHistogram(ctx context.Context, filters 
 	return p.store.GetProviderLatencyHistogram(ctx, filters, bucketSizeSeconds)
 }
 
+// GetThroughputHistogram returns time-bucketed token-generation throughput (tokens/sec) for the given filters
+func (p *LoggerPlugin) GetThroughputHistogram(ctx context.Context, filters logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.ThroughputHistogramResult, error) {
+	return p.store.GetThroughputHistogram(ctx, filters, bucketSizeSeconds)
+}
+
+// GetProviderThroughputHistogram returns time-bucketed tokens/sec with provider breakdown for the given filters
+func (p *LoggerPlugin) GetProviderThroughputHistogram(ctx context.Context, filters logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.ProviderThroughputHistogramResult, error) {
+	return p.store.GetProviderThroughputHistogram(ctx, filters, bucketSizeSeconds)
+}
+
 func (p *LoggerPlugin) GetModelRankings(ctx context.Context, filters logstore.SearchFilters) (*logstore.ModelRankingResult, error) {
 	return p.store.GetModelRankings(ctx, filters)
 }

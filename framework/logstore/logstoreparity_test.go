@@ -598,6 +598,12 @@ func TestLogStoreParity(t *testing.T) {
 		"provider_latency": func(ctx context.Context, s LogStore) (any, error) {
 			return s.GetProviderLatencyHistogram(ctx, window, 60)
 		},
+		"throughput": func(ctx context.Context, s LogStore) (any, error) {
+			return s.GetThroughputHistogram(ctx, window, 60)
+		},
+		"provider_throughput": func(ctx context.Context, s LogStore) (any, error) {
+			return s.GetProviderThroughputHistogram(ctx, window, 60)
+		},
 		"dimension_cost": func(ctx context.Context, s LogStore) (any, error) {
 			return s.GetDimensionCostHistogram(ctx, window, 60, DimensionProvider)
 		},
