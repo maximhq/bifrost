@@ -4,9 +4,13 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.28
+**Latest Version:** 2.1.29
 
 ## Changelog
+
+### 2.1.29
+
+- Added `model_budgets` to `bifrost.accessProfiles[*].provider_configs[*]`. Each entry (`model_name` plus `budgets[]` of `id`/`max_limit`/`reset_duration`) declares a per-model spend cap scoped to that provider. On copy/sync to a user these materialize as user-scoped model configs enforced on every virtual key generated for the profile's users. Passes through directly into `access_profiles[*].provider_configs[*].model_budgets`.
 
 ### 2.1.28
 

@@ -3189,6 +3189,39 @@
                       "items": {
                         "type": "string"
                       }
+                    },
+                    "model_budgets": {
+                      "type": "array",
+                      "description": "Per-model budgets scoped to this provider. Each entry becomes a user-scoped model config (model_name + this provider) enforced on the virtual keys generated for the profile's users.",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "model_name": {
+                            "type": "string"
+                          },
+                          "budgets": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "id": {
+                                  "type": "string"
+                                },
+                                "max_limit": {
+                                  "type": "number"
+                                },
+                                "reset_duration": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": ["id", "max_limit", "reset_duration"],
+                              "additionalProperties": false
+                            }
+                          }
+                        },
+                        "required": ["model_name"],
+                        "additionalProperties": false
+                      }
                     }
                   },
                   "required": ["provider_name"],
