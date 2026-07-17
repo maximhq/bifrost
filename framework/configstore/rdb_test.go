@@ -2938,3 +2938,54 @@ func TestWebhookJobStaleOwnerAfterReclaimIsFenced(t *testing.T) {
 	// The live claim holder still owns the job.
 	require.NoError(t, store.DeleteWebhookJob(ctx, "job-1", "", newLease))
 }
+
+func TestClientConfigWebhookConfigRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, store.UpdateClientConfig(ctx, &ClientConfig{
+		WebhookConfig: &tables.WebhookConfig{DeliveryHistoryRetentionDays: 90},
+	}))
+	loaded, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, loaded.WebhookConfig, "webhook settings must survive the database round-trip")
+	assert.Equal(t, 90, loaded.WebhookConfig.DeliveryHistoryRetentionDays)
+
+	// Absent settings stay absent rather than becoming a zero-value struct.
+	require.NoError(t, store.UpdateClientConfig(ctx, &ClientConfig{}))
+	loaded, err = store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Nil(t, loaded.WebhookConfig)
+}
+
+func TestWebhookEndpointTuningRoundTripAndHash(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	endpoint := testWebhookEndpoint("tuning-test")
+	endpoint.MaxRetries = 2
+	endpoint.RetryBackoffInitialSeconds = 5
+	endpoint.AttemptTimeoutSeconds = 3
+	require.NoError(t, endpoint.Validate())
+	require.NoError(t, store.CreateWebhookEndpoint(ctx, endpoint))
+
+	fetched, err := store.GetWebhookEndpointByID(ctx, endpoint.ID)
+	require.NoError(t, err)
+	assert.Equal(t, 2, fetched.MaxRetries)
+	assert.Equal(t, 5, fetched.RetryBackoffInitialSeconds)
+	assert.Equal(t, 3, fetched.AttemptTimeoutSeconds)
+	assert.Zero(t, fetched.MaxConcurrentDeliveries, "unset knobs stay zero (worker default)")
+
+	// Tuning participates in change detection for config.json sync.
+	baseHash, err := GenerateWebhookEndpointHash(fetched)
+	require.NoError(t, err)
+	fetched.MaxRetries = 7
+	changedHash, err := GenerateWebhookEndpointHash(fetched)
+	require.NoError(t, err)
+	assert.NotEqual(t, baseHash, changedHash)
+
+	// Negative knobs are rejected at validation.
+	invalid := testWebhookEndpoint("tuning-invalid")
+	invalid.MaxRetries = -1
+	assert.Error(t, invalid.Validate())
+}

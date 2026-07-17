@@ -282,6 +282,7 @@ func (s *RDBConfigStore) UpdateClientConfig(ctx context.Context, config *ClientC
 		AllowDirectKeys:                       config.AllowDirectKeys,
 		MCPServerAuthMode:                     config.MCPServerAuthMode,
 		OAuth2ServerConfig:                    config.OAuth2ServerConfig,
+		WebhookConfig:                         config.WebhookConfig,
 		ConfigHash:                            config.ConfigHash,
 	}
 	// Delete existing client config and create new one in a transaction.
@@ -549,6 +550,7 @@ func (s *RDBConfigStore) GetClientConfig(ctx context.Context) (*ClientConfig, er
 		AllowDirectKeys:                       dbConfig.AllowDirectKeys,
 		MCPServerAuthMode:                     dbConfig.MCPServerAuthMode,
 		OAuth2ServerConfig:                    dbConfig.OAuth2ServerConfig,
+		WebhookConfig:                         dbConfig.WebhookConfig,
 		ConfigHash:                            dbConfig.ConfigHash,
 	}, nil
 }
@@ -7469,7 +7471,9 @@ func (s *RDBConfigStore) CreateWebhookEndpoint(ctx context.Context, endpoint *ta
 
 // UpdateWebhookEndpoint updates an endpoint's caller-editable fields. Callers
 // are expected to run endpoint.Validate() on user-supplied input first.
-// Signing secrets are never modified here — use RotateWebhookEndpointSecret.
+// Signing secrets are never modified here — the secret is immutable after
+// creation and rotates only through RotateWebhookEndpointSecret (the config
+// hash excludes it, so a changed config.json secret is intentionally inert).
 // Changing the URL resets the consecutive-failure counter; re-enabling a
 // disabled endpoint does not — only a successful delivery clears the streak.
 func (s *RDBConfigStore) UpdateWebhookEndpoint(ctx context.Context, endpoint *tables.TableWebhookEndpoint) error {
