@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -47,8 +48,150 @@ type BedrockProvider struct {
 
 // assumeRoleCredsCache caches *aws.CredentialsCache instances keyed by the
 // unique combination of role parameters so that STS AssumeRole is not called
-// on every request.
-var assumeRoleCredsCache sync.Map
+// on every request. Entries are evicted by assumeRoleCacheSweeper when idle
+// (unused) for longer than assumeRoleCacheIdleTTL, so that distinct
+// role/session/sourceIdentity combinations that stop being used (e.g. a
+// caller that mints a new session name per request) don't accumulate
+// forever in this process-lifetime cache.
+var assumeRoleCredsCache sync.Map // map[string]*assumeRoleCacheEntry
+
+// assumeRoleCacheEntry wraps a cached *aws.CredentialsCache with a
+// lock-free last-used timestamp (unix seconds) so the sweeper can identify
+// idle entries without adding any locking to the request path.
+type assumeRoleCacheEntry struct {
+	credsCache *aws.CredentialsCache
+	lastUsed   atomic.Int64
+}
+
+// touch updates lastUsed to the current time, synchronously, on the
+// caller's own goroutine. Deduplicated against redundant writes: if
+// lastUsed already reflects the current second (e.g. another concurrent
+// request on this same hot entry touched it moments ago), this is a
+// read-only no-op. This matters because Load is cheap and read-only
+// (doesn't dirty the cache line other cores may have cached), while Store
+// invalidates that cache line across all cores - skipping redundant Stores
+// avoids unnecessary cross-core cache-line ping-pong when many concurrent
+// requests hit the same hot entry within the same second. Benchmarked
+// against two async (channel+worker) alternatives (queued by pointer, and
+// queued by key with a worker pool re-looking the entry up) - neither beat
+// this direct approach under real multi-core contention (they tied it at
+// best, lost to it at worst), so the extra machinery wasn't kept.
+func (e *assumeRoleCacheEntry) touch() {
+	now := time.Now().Unix()
+	if e.lastUsed.Load() != now {
+		e.lastUsed.Store(now)
+	}
+}
+
+// assumeRoleCacheSweepInterval is how often the background sweeper scans
+// assumeRoleCredsCache for idle entries. Var (not const) so tests/benchmarks
+// can shrink it without waiting on wall-clock time.
+var assumeRoleCacheSweepInterval = 5 * time.Minute
+
+// assumeRoleCacheIdleTTL is how long an entry may go unused before the
+// sweeper evicts it. This is intentionally well above the STS AssumeRole
+// session duration (15 minutes by default) so that active callers never
+// have their entry evicted mid-use. Var (not const) so tests/benchmarks can
+// shrink it without waiting on wall-clock time.
+var assumeRoleCacheIdleTTL = 1 * time.Hour
+
+// assumeRoleCacheSweeperOnce ensures the background sweeper goroutine is
+// started at most once per process, lazily, on first use of the cache -
+// so packages that never touch Bedrock AssumeRole never pay for it.
+var assumeRoleCacheSweeperOnce sync.Once
+
+// ensureAssumeRoleCacheSweeper lazily starts a background goroutine that
+// periodically evicts assumeRoleCredsCache entries idle for longer than
+// assumeRoleCacheIdleTTL. Eviction only drops Bifrost's local reference to
+// the cached *aws.CredentialsCache (and the sts.Client / AssumeRoleProvider
+// it holds) - it has no effect on AWS's side; any already-issued temporary
+// credentials remain valid until their own natural expiry regardless of
+// local cache state.
+//
+// This is called from signAWSRequest's roleARN branch (not from
+// NewBedrockProvider) so the goroutine only ever starts for deployments
+// that actually use AssumeRole - most Bedrock configs use static
+// access-key/secret-key credentials and never populate this cache at all,
+// so gating on first real use avoids running a background ticker forever
+// for the common case where it would stay permanently idle.
+//
+// assumeRoleCacheSweeperOnce is a package-level (not per-provider-instance)
+// sync.Once, so this goroutine is started at most once per process even
+// across Bedrock provider hot-reloads (UpdateProvider rebuilds a fresh
+// *BedrockProvider via NewBedrockProvider on every config change, but
+// assumeRoleCredsCache/assumeRoleCacheSweeperOnce are shared globals, not
+// fields on that struct).
+//
+// Known limitation: schemas.Provider has no Close()/Shutdown() hook today,
+// and Bifrost.Shutdown() never tears down individual providers - so once
+// started, this goroutine runs for the life of the process with no
+// graceful-stop path, same as e.g. fasthttp's own per-host connsCleaner.
+// Wiring a real stop signal would require adding a teardown hook to
+// schemas.Provider and call sites across every provider - out of scope
+// here; flagged as a follow-up if it's ever needed.
+func ensureAssumeRoleCacheSweeper() {
+	assumeRoleCacheSweeperOnce.Do(func() {
+		go func() {
+			ticker := time.NewTicker(assumeRoleCacheSweepInterval)
+			defer ticker.Stop()
+			for range ticker.C {
+				sweepAssumeRoleCredsCache(time.Now(), assumeRoleCacheIdleTTL)
+			}
+		}()
+	})
+}
+
+// sweepAssumeRoleCredsCache performs one eviction pass over
+// assumeRoleCredsCache, removing every entry whose lastUsed is older than
+// ttl relative to now. Split out from ensureAssumeRoleCacheSweeper's ticker
+// loop so it can be driven directly (with a synthetic now/ttl) by tests and
+// benchmarks instead of waiting on the real ticker/clock. Returns the
+// number of entries evicted.
+func sweepAssumeRoleCredsCache(now time.Time, ttl time.Duration) int {
+	nowUnix := now.Unix()
+	ttlSeconds := int64(ttl.Seconds())
+	evicted := 0
+	assumeRoleCredsCache.Range(func(key, value any) bool {
+		entry, ok := value.(*assumeRoleCacheEntry)
+		if !ok {
+			return true
+		}
+		if nowUnix-entry.lastUsed.Load() > ttlSeconds {
+			assumeRoleCredsCache.Delete(key)
+			evicted++
+		}
+		return true
+	})
+	return evicted
+}
+
+// getOrCreateAssumeRoleCredsCache returns the cached *aws.CredentialsCache
+// for cacheKey, creating (and touching) a new entry via newCredsCache() on
+// a cache miss. Extracted from signAWSRequest so the exact real population
+// code path is directly callable from benchmarks/tests without needing a
+// full signed HTTP request or live AWS credentials (newCredsCache does not
+// itself make any network call - the STS AssumeRole call only happens
+// lazily, later, inside CredentialsCache.Retrieve).
+func getOrCreateAssumeRoleCredsCache(cacheKey string, newCredsCache func() *aws.CredentialsCache) *aws.CredentialsCache {
+	ensureAssumeRoleCacheSweeper()
+
+	if cached, ok := assumeRoleCredsCache.Load(cacheKey); ok {
+		entry := cached.(*assumeRoleCacheEntry)
+		entry.touch() // synchronous, self-deduplicated (see touch's doc comment)
+		return entry.credsCache
+	}
+
+	// Cache miss / creation path stays synchronous: the sweeper reads
+	// lastUsed's zero-value as "very old", so a brand-new entry MUST have
+	// an accurate timestamp immediately, or it risks being evicted on the
+	// very next sweep pass before it's ever been used.
+	newEntry := &assumeRoleCacheEntry{credsCache: newCredsCache()}
+	newEntry.touch()
+	actual, _ := assumeRoleCredsCache.LoadOrStore(cacheKey, newEntry)
+	entry := actual.(*assumeRoleCacheEntry)
+	entry.touch() // covers the race where another goroutine created this entry first
+	return entry.credsCache
+}
 
 // bedrockChatResponsePool provides a pool for Bedrock response objects.
 var bedrockChatResponsePool = sync.Pool{
@@ -666,9 +809,7 @@ func signAWSRequest(
 			sourceIdentity,
 		}, "|")
 
-		if cached, ok := assumeRoleCredsCache.Load(cacheKey); ok {
-			cfg.Credentials = cached.(*aws.CredentialsCache)
-		} else {
+		cfg.Credentials = getOrCreateAssumeRoleCredsCache(cacheKey, func() *aws.CredentialsCache {
 			stsClient := sts.NewFromConfig(cfg)
 
 			opts := func(o *stscreds.AssumeRoleOptions) {
@@ -678,16 +819,14 @@ func signAWSRequest(
 				o.RoleSessionName = sessName
 			}
 
-			credsCache := aws.NewCredentialsCache(
+			return aws.NewCredentialsCache(
 				stscreds.NewAssumeRoleProvider(
 					stsClient,
 					roleARN.GetValue(),
 					opts,
 				),
 			)
-			actual, _ := assumeRoleCredsCache.LoadOrStore(cacheKey, credsCache)
-			cfg.Credentials = actual.(*aws.CredentialsCache)
-		}
+		})
 	}
 
 	// Create the AWS signer
