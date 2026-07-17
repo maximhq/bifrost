@@ -1220,6 +1220,7 @@ export interface ModelRankingTrend {
 	tokens_trend: number;
 	cost_trend: number;
 	latency_trend: number;
+	throughput_trend: number;
 }
 
 export interface ModelRankingEntry {
@@ -1232,6 +1233,7 @@ export interface ModelRankingEntry {
 	total_tokens: number;
 	total_cost: number;
 	avg_latency: number;
+	throughput: number; // tokens/sec
 	trend: ModelRankingTrend;
 }
 
