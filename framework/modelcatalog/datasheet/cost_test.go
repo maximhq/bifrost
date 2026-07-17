@@ -3824,3 +3824,51 @@ func TestCalculateCostForUsage_NoServerSideFallback_Unchanged(t *testing.T) {
 	assert.InDelta(t, 38*(10.0/1_000_000)+345*(50.0/1_000_000),
 		s.CalculateCostForUsage(usage, schemas.Anthropic, "claude-fable-5", schemas.ResponsesRequest, nil), 1e-12)
 }
+
+// TestGetBasePricing_RegionPrefixedSelection verifies OpenAI regional-processing
+// pricing: when RoutingInfo.Region is set, the cost path prefers the
+// region-prefixed model row (e.g. "eu.gpt-5.4") and falls back to the bare model
+// when the datasheet has no regional entry — so listed models get the uplift and
+// unlisted ones keep default pricing (no extrapolation). The wire model sent to
+// the provider stays "gpt-5.4"; only pricing resolution changes.
+func TestGetBasePricing_RegionPrefixedSelection(t *testing.T) {
+	base := chatPricing(0.0000025, 0.000015) // gpt-5.4 US
+	base.Model, base.Provider = "gpt-5.4", "openai"
+	eu := chatPricing(0.00000275, 0.0000165) // gpt-5.4 EU (+10%)
+	eu.Model, eu.Provider = "eu.gpt-5.4", "openai"
+	other := chatPricing(0.000005, 0.000015) // gpt-4o US, no EU row
+	other.Model, other.Provider = "gpt-4o", "openai"
+
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-5.4", "openai", "chat"):    base,
+		makeKey("eu.gpt-5.4", "openai", "chat"): eu,
+		makeKey("gpt-4o", "openai", "chat"):     other,
+	})
+
+	costFor := func(model, region string) float64 {
+		resp := &schemas.BifrostResponse{
+			ChatResponse: &schemas.BifrostChatResponse{
+				Usage: &schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 500, TotalTokens: 1500},
+				ExtraFields: schemas.BifrostResponseExtraFields{
+					RequestType: schemas.ChatCompletionRequest,
+					RoutingInfo: schemas.RoutingInfo{Provider: schemas.OpenAI, Model: model, Region: region},
+				},
+			},
+		}
+		return s.CalculateCost(resp, nil)
+	}
+
+	usCost := 1000*0.0000025 + 500*0.000015
+	euCost := 1000*0.00000275 + 500*0.0000165
+
+	// Default region → the bare (US) row.
+	assert.InDelta(t, usCost, costFor("gpt-5.4", ""), 1e-12)
+	// EU region → the eu.<model> row (uplifted rates).
+	assert.InDelta(t, euCost, costFor("gpt-5.4", "eu"), 1e-12)
+	// EU pricing is exactly US pricing +10%.
+	assert.InDelta(t, usCost*1.1, costFor("gpt-5.4", "eu"), 1e-9)
+	// Model with no eu.<model> row → falls back to the US row (no extrapolation).
+	assert.InDelta(t, 1000*0.000005+500*0.000015, costFor("gpt-4o", "eu"), 1e-12)
+	// A caller that addressed the region-prefixed model directly is not double-prefixed.
+	assert.InDelta(t, euCost, costFor("eu.gpt-5.4", "eu"), 1e-12)
+}

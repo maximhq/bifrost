@@ -1239,7 +1239,7 @@ func (s *Store) resolvePricing(routingInfo schemas.RoutingInfo, requestType sche
 		if candidate == "" {
 			continue
 		}
-		base, exists := s.getBasePricing(candidate, provider, requestType)
+		base, exists := s.getBasePricing(candidate, provider, requestType, routingInfo.Region)
 		if exists && base != nil {
 			result, _ := s.applyPricingOverrides(overrideKey, requestType, *base, scopes)
 			return &result
@@ -1278,12 +1278,35 @@ func (s *Store) resolvePricing(routingInfo schemas.RoutingInfo, requestType sche
 // Output: TableModelPricing — the matched pricing row (zero value when not found).
 //
 //	bool              — true when a pricing entry was found, false otherwise.
-func (s *Store) getBasePricing(model, provider string, requestType schemas.RequestType) (*configstoreTables.TableModelPricing, bool) {
+//	region      — routed regional-processing region ("" for default/US). When
+//	              non-empty, each lookup prefers the region-prefixed model row
+//	              (e.g. "eu.gpt-5.4") and falls back to the bare model when the
+//	              datasheet has no regional entry, so models without a regional
+//	              row keep their default pricing. This mirrors the datasheet's
+//	              existing region-prefixed naming (e.g. "eu.anthropic.claude-*",
+//	              Bedrock "us./eu./apac." inference profiles).
+func (s *Store) getBasePricing(model, provider string, requestType schemas.RequestType, region string) (*configstoreTables.TableModelPricing, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	mode := normalizeRequestType(requestType)
 	fallbackMode, hasFallbackMode := chatResponsesFallbackMode(requestType)
+
+	// lookup resolves a (model, provider, mode) key against the routed region.
+	// When a region is set it first tries the region-prefixed model name
+	// ("<region>.<model>") — the datasheet convention for regional-processing
+	// rows — then falls back to the bare model. Guarded so an already-prefixed
+	// model (a caller that addressed "eu.<model>" directly) isn't double-prefixed.
+	// All fallback-chain lookups below go through it so region selection is uniform.
+	lookup := func(model, provider, mode string) (configstoreTables.TableModelPricing, bool) {
+		if region != "" && !strings.HasPrefix(model, region+".") {
+			if p, ok := s.pricingData[makeKey(region+"."+model, provider, mode)]; ok {
+				return p, true
+			}
+		}
+		p, ok := s.pricingData[makeKey(model, provider, mode)]
+		return p, ok
+	}
 
 	// Datasheet rows for all Bedrock variants are stored under the "bedrock"
 	// provider (normalizeProvider folds bedrock_* onto "bedrock"), so
@@ -1292,7 +1315,7 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 		provider = string(schemas.Bedrock)
 	}
 
-	pricing, ok := s.pricingData[makeKey(model, provider, mode)]
+	pricing, ok := lookup(model, provider, mode)
 	if ok {
 		return &pricing, true
 	}
@@ -1300,7 +1323,7 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 	// Lookup in vertex if gemini not found
 	if provider == string(schemas.Gemini) {
 		s.logger.Debug("primary lookup failed, trying vertex provider for the same model")
-		pricing, ok = s.pricingData[makeKey(model, "vertex", mode)]
+		pricing, ok = lookup(model, "vertex", mode)
 		if ok {
 			return &pricing, true
 		}
@@ -1308,7 +1331,7 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 		// Lookup in the counterpart chat/responses mode if this model's row is filed under the other one
 		if hasFallbackMode {
 			s.logger.Debug("secondary lookup failed, trying vertex provider for the same model in %s mode", fallbackMode)
-			pricing, ok = s.pricingData[makeKey(model, "vertex", fallbackMode)]
+			pricing, ok = lookup(model, "vertex", fallbackMode)
 			if ok {
 				return &pricing, true
 			}
@@ -1320,7 +1343,7 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 		if strings.Contains(model, "/") {
 			modelWithoutProvider := strings.SplitN(model, "/", 2)[1]
 			s.logger.Debug("primary lookup failed, trying vertex provider for the same model with provider/model format %s", modelWithoutProvider)
-			pricing, ok = s.pricingData[makeKey(modelWithoutProvider, "vertex", mode)]
+			pricing, ok = lookup(modelWithoutProvider, "vertex", mode)
 			if ok {
 				return &pricing, true
 			}
@@ -1328,7 +1351,7 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 			// Lookup in the counterpart chat/responses mode if this model's row is filed under the other one
 			if hasFallbackMode {
 				s.logger.Debug("secondary lookup failed, trying vertex provider for the same model in %s mode", fallbackMode)
-				pricing, ok = s.pricingData[makeKey(modelWithoutProvider, "vertex", fallbackMode)]
+				pricing, ok = lookup(modelWithoutProvider, "vertex", fallbackMode)
 				if ok {
 					return &pricing, true
 				}
@@ -1354,7 +1377,7 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 		}
 		if vendorPrefix != "" {
 			s.logger.Debug("primary lookup failed, trying with %s prefix for the same model", vendorPrefix)
-			pricing, ok = s.pricingData[makeKey(vendorPrefix+model, provider, mode)]
+			pricing, ok = lookup(vendorPrefix+model, provider, mode)
 			if ok {
 				return &pricing, true
 			}
@@ -1362,7 +1385,7 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 			// Lookup in the counterpart chat/responses mode if this model's row is filed under the other one
 			if hasFallbackMode {
 				s.logger.Debug("secondary lookup failed, trying the same prefixed model in %s mode", fallbackMode)
-				pricing, ok = s.pricingData[makeKey(vendorPrefix+model, provider, fallbackMode)]
+				pricing, ok = lookup(vendorPrefix+model, provider, fallbackMode)
 				if ok {
 					return &pricing, true
 				}
@@ -1373,7 +1396,7 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 	// Lookup in the counterpart chat/responses mode if this model's row is filed under the other one
 	if hasFallbackMode {
 		s.logger.Debug("primary lookup failed, trying the same model in %s mode", fallbackMode)
-		pricing, ok = s.pricingData[makeKey(model, provider, fallbackMode)]
+		pricing, ok = lookup(model, provider, fallbackMode)
 		if ok {
 			return &pricing, true
 		}
@@ -1384,7 +1407,7 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 		requestType == schemas.ImageEditStreamRequest ||
 		requestType == schemas.ImageVariationRequest {
 		s.logger.Debug("primary lookup failed, trying image generation provider for the same model")
-		pricing, ok = s.pricingData[makeKey(model, provider, normalizeRequestType(schemas.ImageGenerationRequest))]
+		pricing, ok = lookup(model, provider, normalizeRequestType(schemas.ImageGenerationRequest))
 		if ok {
 			return &pricing, true
 		}
@@ -1395,13 +1418,13 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 	// 2. Try the base "container" model in chat mode (default rate when no memory-specific entry exists)
 	if requestType == schemas.ContainerCreateRequest {
 		s.logger.Debug("primary lookup failed, trying chat mode for container create pricing")
-		pricing, ok = s.pricingData[makeKey(model, provider, normalizeRequestType(schemas.ChatCompletionRequest))]
+		pricing, ok = lookup(model, provider, normalizeRequestType(schemas.ChatCompletionRequest))
 		if ok {
 			return &pricing, true
 		}
 		if model != "container" {
 			s.logger.Debug("memory-specific container pricing not found, falling back to base container entry")
-			pricing, ok = s.pricingData[makeKey("container", provider, normalizeRequestType(schemas.ChatCompletionRequest))]
+			pricing, ok = lookup("container", provider, normalizeRequestType(schemas.ChatCompletionRequest))
 			if ok {
 				return &pricing, true
 			}
