@@ -223,6 +223,7 @@ const (
 	BifrostContextKeyAPIKeyName        BifrostContextKey = "x-bf-api-key"          // string (explicit key name selection)
 	BifrostContextKeyAPIKeyID          BifrostContextKey = "x-bf-api-key-id"       // string (explicit key ID selection, takes priority over name)
 	BifrostContextKeyDirectKey         BifrostContextKey = "x-bf-direct-key"       // schemas.Key (raw key supplied via x-bf-direct-key: true header; bypasses registered key pool)
+	BifrostContextKeyAsyncWebhook      BifrostContextKey = "x-bf-async-webhook"    // string (webhook endpoint to notify when an async job finishes; the submit path validates the caller's id-or-name reference and normalizes this value to the endpoint ID before the job is created)
 	BifrostContextKeyRequestID         BifrostContextKey = "request-id"            // string
 	BifrostContextKeyFallbackRequestID BifrostContextKey = "fallback-request-id"   // string
 
