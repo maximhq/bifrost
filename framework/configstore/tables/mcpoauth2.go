@@ -26,6 +26,7 @@ type TableOauthConfig struct {
 	Status              string             `gorm:"type:varchar(50);not null;index" json:"status"`   // "pending", "authorized", "failed", "expired", "revoked"
 	TokenID             *string            `gorm:"type:varchar(255);index" json:"token_id"`         // Foreign key to oauth_tokens.ID (set after callback)
 	ServerURL           string             `gorm:"type:text" json:"server_url"`                     // MCP server URL for OAuth discovery
+	Resource            string             `gorm:"type:text" json:"resource,omitempty"`             // OAuth resource indicator (RFC 8707), typically the MCP server URL
 	UseDiscovery        bool               `gorm:"default:false" json:"use_discovery"`              // Flag to enable OAuth discovery
 	MCPClientConfigJSON *string            `gorm:"type:text" json:"-"`                              // JSON serialized MCPClientConfig for multi-instance support (pending MCP client waiting for OAuth completion)
 	EncryptionStatus    string             `gorm:"type:varchar(20);default:'plain_text'" json:"-"`
