@@ -855,6 +855,14 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 		}
 		hash.Write(data)
 	}
+	// Hash OpenAIKeyConfig (per-key region)
+	if key.OpenAIKeyConfig != nil {
+		data, err := sonic.Marshal(key.OpenAIKeyConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
 	// Hash Enabled (nil = false, only true produces different hash)
 	if key.Enabled != nil && *key.Enabled {
 		hash.Write([]byte("enabled:true"))

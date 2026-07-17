@@ -1555,6 +1555,7 @@ func mergeProviderKeys(provider schemas.ModelProvider, fileKeys, dbKeys []schema
 					VLLMKeyConfig:          dbKey.VLLMKeyConfig,
 					OllamaKeyConfig:        dbKey.OllamaKeyConfig,
 					SGLKeyConfig:           dbKey.SGLKeyConfig,
+					OpenAIKeyConfig:        dbKey.OpenAIKeyConfig,
 					Enabled:                dbKey.Enabled,
 					UseForBatchAPI:         dbKey.UseForBatchAPI,
 					UseAnthropicEndpoints:  dbKey.UseAnthropicEndpoints,
@@ -1638,6 +1639,7 @@ func reconcileProviderKeys(provider schemas.ModelProvider, fileKeys, dbKeys []sc
 					VLLMKeyConfig:          dbKey.VLLMKeyConfig,
 					OllamaKeyConfig:        dbKey.OllamaKeyConfig,
 					SGLKeyConfig:           dbKey.SGLKeyConfig,
+					OpenAIKeyConfig:        dbKey.OpenAIKeyConfig,
 					Enabled:                dbKey.Enabled,
 					UseForBatchAPI:         dbKey.UseForBatchAPI,
 					UseAnthropicEndpoints:  dbKey.UseAnthropicEndpoints,
@@ -5982,6 +5984,10 @@ func (c *Config) GetAllKeys() ([]configstoreTables.TableKey, error) {
 				cfg := *key.SGLKeyConfig // safe copy
 				cfg.URL = *cfg.URL.Redacted()
 				configStoreKey.SGLKeyConfig = &cfg
+			}
+			if key.OpenAIKeyConfig != nil {
+				cfg := *key.OpenAIKeyConfig // safe copy (region only — no secrets to redact)
+				configStoreKey.OpenAIKeyConfig = &cfg
 			}
 			keys = append(keys, configStoreKey)
 		}

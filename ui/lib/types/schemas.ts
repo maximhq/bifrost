@@ -266,6 +266,11 @@ export const sglKeyConfigSchema = z
 		path: ["url"],
 	});
 
+// OpenAI per-key config schema — data-residency region ("" default, "eu", ...).
+export const openaiKeyConfigSchema = z.object({
+	region: z.string().optional(),
+});
+
 // Model family enum schema — must mirror schemas.ModelFamily in Go.
 export const modelFamilySchema = z.enum([
 	"anthropic",
@@ -349,6 +354,7 @@ export const modelProviderKeySchema = z
 		replicate_key_config: replicateKeyConfigSchema.optional(),
 		ollama_key_config: ollamaKeyConfigSchema.optional(),
 		sgl_key_config: sglKeyConfigSchema.optional(),
+		openai_key_config: openaiKeyConfigSchema.optional(),
 		use_for_batch_api: z.boolean().optional(),
 		use_anthropic_endpoints: z.boolean().optional(),
 		enabled: z.boolean().optional(),
@@ -599,6 +605,8 @@ export const proxyFormConfigSchema = z
 // OpenAI Config tab
 export const openaiConfigFormSchema = z.object({
 	disable_store: z.boolean(),
+	// Regional-processing region: "" (default/US) or "eu" (data residency).
+	region: z.string().optional(),
 });
 
 export type OpenAIConfigFormSchema = z.infer<typeof openaiConfigFormSchema>;

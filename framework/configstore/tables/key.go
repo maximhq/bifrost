@@ -82,6 +82,9 @@ type TableKey struct {
 	// SGL config fields (embedded)
 	SGLUrl *schemas.SecretVar `gorm:"type:text" json:"sgl_url,omitempty"`
 
+	// OpenAI config fields (embedded)
+	OpenAIRegion string `gorm:"type:varchar(50);column:openai_region" json:"openai_region,omitempty"` // Per-key OpenAI regional-processing region (e.g. "eu")
+
 	// Batch API configuration
 	UseForBatchAPI *bool `gorm:"default:false" json:"use_for_batch_api,omitempty"` // Whether this key can be used for batch API operations
 
@@ -106,6 +109,7 @@ type TableKey struct {
 	ReplicateKeyConfig     *schemas.ReplicateKeyConfig     `gorm:"-" json:"replicate_key_config,omitempty"`
 	OllamaKeyConfig        *schemas.OllamaKeyConfig        `gorm:"-" json:"ollama_key_config,omitempty"`
 	SGLKeyConfig           *schemas.SGLKeyConfig           `gorm:"-" json:"sgl_key_config,omitempty"`
+	OpenAIKeyConfig        *schemas.OpenAIKeyConfig        `gorm:"-" json:"openai_key_config,omitempty"`
 }
 
 // TableName sets the table name for each model
@@ -423,6 +427,12 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		k.SGLUrl = &u
 	} else {
 		k.SGLUrl = nil
+	}
+
+	if k.OpenAIKeyConfig != nil {
+		k.OpenAIRegion = k.OpenAIKeyConfig.Region
+	} else {
+		k.OpenAIRegion = ""
 	}
 
 	// Store plaintext SecretVar columns into the vault and rewrite them to vault refs.
@@ -821,6 +831,14 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		}
 	} else {
 		k.SGLKeyConfig = nil
+	}
+	// Reconstruct OpenAI per-key config if a region is set
+	if k.OpenAIRegion != "" {
+		k.OpenAIKeyConfig = &schemas.OpenAIKeyConfig{
+			Region: k.OpenAIRegion,
+		}
+	} else {
+		k.OpenAIKeyConfig = nil
 	}
 	return nil
 }
