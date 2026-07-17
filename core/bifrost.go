@@ -660,9 +660,31 @@ func (bifrost *Bifrost) RetrieveModelRequest(ctx *schemas.BifrostContext, req *s
 		}
 	}
 
+	if ctx == nil {
+		ctx = bifrost.ctx
+	}
+
 	var listResp *schemas.BifrostListModelsResponse
 	var bifrostErr *schemas.BifrostError
 	if req.Provider != "" {
+		// Enforce the same virtual-key provider allow-list ListAllModels applies to its
+		// fan-out: an explicitly named provider must still be filtered, otherwise a VK
+		// restricted to a subset of providers could retrieve metadata from one outside
+		// its allowed set just by naming it directly.
+		if len(filterProvidersByContext(ctx, []schemas.ModelProvider{req.Provider})) == 0 {
+			notFoundStatus := 404
+			return nil, schemas.BifrostResponseExtraFields{}, &schemas.BifrostError{
+				IsBifrostError: false,
+				StatusCode:     &notFoundStatus,
+				Error: &schemas.ErrorField{
+					Message: fmt.Sprintf("The model '%s' does not exist", req.ModelID),
+				},
+				ExtraFields: schemas.BifrostErrorExtraFields{
+					RequestType: schemas.RetrieveModelRequest,
+				},
+			}
+		}
+
 		// Paginate through every page for this provider (not just the first) so a model
 		// isn't falsely reported missing when the provider's catalog spans multiple pages.
 		providerCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)

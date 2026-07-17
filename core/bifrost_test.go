@@ -3025,3 +3025,69 @@ func TestReleaseChannelMessage_ClearsPooledReferences_Streaming(t *testing.T) {
 	default:
 	}
 }
+
+// TestRetrieveModelRequest_RespectsVirtualKeyProviderFilter is a regression test for a security
+// gap flagged in review: an explicitly named provider used to bypass the virtual-key provider
+// allow-list that ListAllModels already applies to its fan-out, letting a restricted caller
+// retrieve model metadata from a provider outside its allowed set just by naming it directly.
+func TestRetrieveModelRequest_RespectsVirtualKeyProviderFilter(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 1, 1)
+	account.AddProvider(schemas.Anthropic, 1, 1)
+
+	client, err := Init(ctx, schemas.BifrostConfig{
+		Account: account,
+		Logger:  NewDefaultLogger(schemas.LogLevelError),
+	})
+	if err != nil {
+		t.Fatalf("Error initializing Bifrost: %v", err)
+	}
+	defer client.Shutdown()
+
+	// Restrict this request's virtual key to openai only.
+	ctx.SetValue(schemas.BifrostContextKeyAvailableProviders, []schemas.ModelProvider{schemas.OpenAI})
+
+	// Explicitly request a model from anthropic, which is configured but not in the allow-list.
+	_, _, bifrostErr := client.RetrieveModelRequest(ctx, &schemas.BifrostRetrieveModelRequest{
+		Provider: schemas.Anthropic,
+		ModelID:  "anthropic/claude-3-opus",
+	})
+	if bifrostErr == nil {
+		t.Fatal("expected an error for a provider outside the virtual key's allow-list, got nil")
+	}
+	if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 404 {
+		t.Errorf("expected 404, got status %v (message: %s)", bifrostErr.StatusCode, bifrostErr.Error.Message)
+	}
+}
+
+// TestRetrieveModelRequest_NilContextDoesNotPanic is a regression test: unlike its sibling
+// ListModelsRequest/ListAllModels, RetrieveModelRequest didn't fall back to bifrost.ctx when
+// given a nil context, so a direct SDK caller passing nil would panic instead of getting a result.
+func TestRetrieveModelRequest_NilContextDoesNotPanic(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 1, 1)
+
+	client, err := Init(ctx, schemas.BifrostConfig{
+		Account: account,
+		Logger:  NewDefaultLogger(schemas.LogLevelError),
+	})
+	if err != nil {
+		t.Fatalf("Error initializing Bifrost: %v", err)
+	}
+	defer client.Shutdown()
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("RetrieveModelRequest panicked with nil context: %v", r)
+		}
+	}()
+
+	// A live network call would fail (no real OpenAI key), but the point of this test is that
+	// it fails gracefully (returns a *BifrostError) rather than panicking on the nil context.
+	_, _, _ = client.RetrieveModelRequest(nil, &schemas.BifrostRetrieveModelRequest{
+		Provider: schemas.OpenAI,
+		ModelID:  "openai/gpt-4o",
+	})
+}
