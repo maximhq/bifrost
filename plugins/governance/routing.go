@@ -11,6 +11,7 @@ import (
 	"github.com/google/cel-go/common/types"
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/routing"
 	"github.com/maximhq/bifrost/plugins/governance/complexity"
 )
 
@@ -595,6 +596,43 @@ func extractMapKeysFromCEL(expr, mapName string) []string {
 		}
 	}
 	return keys
+}
+
+var (
+	routingValidationEnv     *cel.Env
+	routingValidationEnvErr  error
+	routingValidationEnvOnce sync.Once
+)
+
+// ValidateRoutingCELExpression compiles a routing CEL expression against the routing
+// environment and returns an error describing any syntax or type problem. An empty (or
+// whitespace-only) expression is treated as match-all ("true") and is considered valid.
+//
+// This mirrors the compilation performed lazily in GetRoutingProgram so that HTTP handlers
+// can reject a malformed expression at write time instead of it silently failing at first
+// evaluation. The environment is built once and reused across calls.
+func ValidateRoutingCELExpression(expr string) error {
+	if strings.TrimSpace(expr) == "" {
+		return nil
+	}
+
+	routingValidationEnvOnce.Do(func() {
+		routingValidationEnv, routingValidationEnvErr = createCELEnvironment()
+	})
+	if routingValidationEnvErr != nil {
+		return fmt.Errorf("failed to initialize CEL environment: %w", routingValidationEnvErr)
+	}
+
+	// Match the normalization and format check applied at evaluation time.
+	normalized := routing.NormalizeMapKeysInCEL(expr)
+	if err := routing.ValidateCELExpression(normalized); err != nil {
+		return err
+	}
+
+	if _, issues := routingValidationEnv.Compile(normalized); issues != nil && issues.Err() != nil {
+		return fmt.Errorf("CEL compile error: %s", issues.Err().Error())
+	}
+	return nil
 }
 
 // createCELEnvironment creates a new CEL environment for routing rules

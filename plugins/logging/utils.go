@@ -61,6 +61,12 @@ type LogManager interface {
 	// GetProviderLatencyHistogram returns time-bucketed latency percentiles with provider breakdown for the given filters
 	GetProviderLatencyHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.ProviderLatencyHistogramResult, error)
 
+	// GetThroughputHistogram returns time-bucketed token-generation throughput (tokens/sec) for the given filters
+	GetThroughputHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.ThroughputHistogramResult, error)
+
+	// GetProviderThroughputHistogram returns time-bucketed tokens/sec with provider breakdown for the given filters
+	GetProviderThroughputHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.ProviderThroughputHistogramResult, error)
+
 	// GetModelRankings returns models ranked by usage with trend comparison
 	GetModelRankings(ctx context.Context, filters *logstore.SearchFilters) (*logstore.ModelRankingResult, error)
 
@@ -260,6 +266,20 @@ func (p *PluginLogManager) GetProviderLatencyHistogram(ctx context.Context, filt
 		return nil, fmt.Errorf("filters cannot be nil")
 	}
 	return p.plugin.GetProviderLatencyHistogram(ctx, *filters, bucketSizeSeconds)
+}
+
+func (p *PluginLogManager) GetThroughputHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.ThroughputHistogramResult, error) {
+	if filters == nil {
+		return nil, fmt.Errorf("filters cannot be nil")
+	}
+	return p.plugin.GetThroughputHistogram(ctx, *filters, bucketSizeSeconds)
+}
+
+func (p *PluginLogManager) GetProviderThroughputHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.ProviderThroughputHistogramResult, error) {
+	if filters == nil {
+		return nil, fmt.Errorf("filters cannot be nil")
+	}
+	return p.plugin.GetProviderThroughputHistogram(ctx, *filters, bucketSizeSeconds)
 }
 
 func (p *PluginLogManager) GetModelRankings(ctx context.Context, filters *logstore.SearchFilters) (*logstore.ModelRankingResult, error) {

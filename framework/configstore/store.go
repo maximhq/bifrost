@@ -62,6 +62,16 @@ type RoutingRulesQueryParams struct {
 	Search string
 }
 
+// WebhookEndpointsQueryParams holds pagination, filtering, and search
+// parameters for webhook endpoint queries.
+type WebhookEndpointsQueryParams struct {
+	Limit    int
+	Offset   int
+	Search   string   // matches name or url (case-insensitive)
+	Events   []string // endpoints subscribed to any of these events, OR semantics
+	Disabled *bool    // nil = no filter; true/false = filter on disabled
+}
+
 // MCPClientsQueryParams holds pagination, filtering, and search parameters for MCP client queries.
 type MCPClientsQueryParams struct {
 	Limit            int
@@ -674,6 +684,25 @@ type ConfigStore interface {
 	ListClaimableSidekiqJobs(ctx context.Context, staleBefore time.Time) ([]tables.TableSidekiqJob, error)
 	GetInFlightSidekiqJobByKind(ctx context.Context, kind string) (*tables.TableSidekiqJob, error)
 	MarkStaleSidekiqJobsFailed(ctx context.Context, staleBefore time.Time) (int64, error)
+
+	// Webhook Endpoints
+	GetWebhookEndpoints(ctx context.Context) ([]tables.TableWebhookEndpoint, error)
+	GetWebhookEndpointsPaginated(ctx context.Context, params WebhookEndpointsQueryParams) ([]tables.TableWebhookEndpoint, int64, error)
+	GetWebhookEndpointByID(ctx context.Context, id string) (*tables.TableWebhookEndpoint, error)
+	GetWebhookEndpointByName(ctx context.Context, name string) (*tables.TableWebhookEndpoint, error)
+	CreateWebhookEndpoint(ctx context.Context, endpoint *tables.TableWebhookEndpoint) error
+	UpdateWebhookEndpoint(ctx context.Context, endpoint *tables.TableWebhookEndpoint) error
+	DeleteWebhookEndpoint(ctx context.Context, id string) error
+	RotateWebhookEndpointSecret(ctx context.Context, id string) (*tables.TableWebhookEndpoint, error)
+	RecordWebhookEndpointSuccess(ctx context.Context, id string) error
+	RecordWebhookEndpointFailure(ctx context.Context, id string) (int, error)
+
+	// Webhook Jobs - in-flight webhook delivery work queue
+	CreateWebhookJob(ctx context.Context, job *tables.TableWebhookJob) error
+	ListDueWebhookJobs(ctx context.Context, limit int) ([]tables.TableWebhookJob, error)
+	ClaimWebhookJob(ctx context.Context, id, runnerID string, leaseUntil time.Time) (bool, error)
+	RescheduleWebhookJob(ctx context.Context, id, runnerID string, leaseUntil, nextAttemptAt time.Time) error
+	DeleteWebhookJob(ctx context.Context, id, runnerID string, leaseUntil time.Time) error
 
 	// DB returns the underlying database connection.
 	DB() *gorm.DB

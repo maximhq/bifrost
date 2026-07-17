@@ -40,6 +40,7 @@ func setupTestDB(t *testing.T) *gorm.DB {
 		&TableOauthConfig{},
 		&TableOauthToken{},
 		&TableVectorStoreConfig{},
+		&TableWebhookEndpoint{},
 	)
 	require.NoError(t, err)
 	return db

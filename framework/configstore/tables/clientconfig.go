@@ -20,7 +20,7 @@ type TableClientConfig struct {
 	EnableLogging                         *bool  `gorm:"default:true" json:"enable_logging"`
 	DisableContentLogging                 bool   `gorm:"default:false" json:"disable_content_logging"` // DisableContentLogging controls whether sensitive content (inputs, outputs, embeddings, etc.) is logged
 	DisableDBPingsInHealth                bool   `gorm:"default:false" json:"disable_db_pings_in_health"`
-	DumpErrorsInConsoleLogs               bool   `gorm:"default:false" json:"dump_errors_in_console_logs"` // Dump full error details to the server console logs
+	DumpErrorsInConsoleLogs               bool   `gorm:"default:false" json:"dump_errors_in_console_logs"`       // Dump full error details to the server console logs
 	LogRetentionDays                      int    `gorm:"default:365" json:"log_retention_days" validate:"min=1"` // Number of days to retain logs (minimum 1 day)
 	EnforceAuthOnInference                bool   `gorm:"default:false" json:"enforce_auth_on_inference"`
 	EnforceGovernanceHeader               bool   `gorm:"" json:"enforce_governance_header"`
@@ -39,9 +39,9 @@ type TableClientConfig struct {
 	RoutingChainMaxDepth                  int    `gorm:"default:10" json:"routing_chain_max_depth"`                       // Maximum depth for routing rule chain evaluation (default: 10)
 	MCPExternalClientURL                  string `gorm:"type:varchar(512)" json:"mcp_external_client_url,omitempty"`      // Public base URL used as redirect_uri when Bifrost acts as an OAuth client to upstream MCP servers
 	WhitelistedRoutesJSON                 string `gorm:"type:text" json:"-"`                                              // JSON serialized []string
-	AllowPerRequestContentStorageOverride bool `gorm:"default:false" json:"allow_per_request_content_storage_override"` // Allow per-request override for content storage (e.g. long-term vs ephemeral)
-	AllowPerRequestRawOverride            bool `gorm:"default:false" json:"allow_per_request_raw_override"`             // Allow per-request override for raw request/response storage
-	AllowDirectKeys                       bool `gorm:"default:false" json:"allow_direct_keys"`                          // Allow callers to bypass the registered key pool via x-bf-direct-key header
+	AllowPerRequestContentStorageOverride bool   `gorm:"default:false" json:"allow_per_request_content_storage_override"` // Allow per-request override for content storage (e.g. long-term vs ephemeral)
+	AllowPerRequestRawOverride            bool   `gorm:"default:false" json:"allow_per_request_raw_override"`             // Allow per-request override for raw request/response storage
+	AllowDirectKeys                       bool   `gorm:"default:false" json:"allow_direct_keys"`                          // Allow callers to bypass the registered key pool via x-bf-direct-key header
 
 	// Compat plugin feature flags
 	CompatConvertTextToChat      bool `gorm:"column:compat_convert_text_to_chat;default:false" json:"-"`
@@ -58,6 +58,9 @@ type TableClientConfig struct {
 	// by AfterFind. The explicit column name avoids GORM deriving the leading
 	// acronym as "o_auth2_..." from the field name.
 	OAuth2ServerConfigJSON string `gorm:"column:oauth2_server_config_json;type:text" json:"-"`
+	// WebhookConfigJSON holds the webhook delivery settings as a JSON blob,
+	// deserialized into Webhooks by AfterFind.
+	WebhookConfigJSON string `gorm:"column:webhook_config_json;type:text" json:"-"`
 
 	// Config hash is used to detect the changes synced from config.json file
 	// Every time we sync the config.json file, we will update the config hash
@@ -67,15 +70,34 @@ type TableClientConfig struct {
 	UpdatedAt time.Time `gorm:"index;not null" json:"updated_at"`
 
 	// Virtual fields for runtime use (not stored in DB)
-	PrometheusLabels    []string                  `gorm:"-" json:"prometheus_labels"`
-	AllowedOrigins      []string                  `gorm:"-" json:"allowed_origins,omitempty"`
-	AllowedHeaders      []string                  `gorm:"-" json:"allowed_headers,omitempty"`
-	RequiredHeaders     []string                  `gorm:"-" json:"required_headers,omitempty"`
-	LoggingHeaders      []string                  `gorm:"-" json:"logging_headers,omitempty"`
-	WhitelistedRoutes   []string                  `gorm:"-" json:"whitelisted_routes,omitempty"`
-	HeaderFilterConfig  *GlobalHeaderFilterConfig `gorm:"-" json:"header_filter_config,omitempty"`
-	Metadata            map[string]any            `gorm:"-" json:"metadata,omitempty"`
+	PrometheusLabels   []string                  `gorm:"-" json:"prometheus_labels"`
+	AllowedOrigins     []string                  `gorm:"-" json:"allowed_origins,omitempty"`
+	AllowedHeaders     []string                  `gorm:"-" json:"allowed_headers,omitempty"`
+	RequiredHeaders    []string                  `gorm:"-" json:"required_headers,omitempty"`
+	LoggingHeaders     []string                  `gorm:"-" json:"logging_headers,omitempty"`
+	WhitelistedRoutes  []string                  `gorm:"-" json:"whitelisted_routes,omitempty"`
+	HeaderFilterConfig *GlobalHeaderFilterConfig `gorm:"-" json:"header_filter_config,omitempty"`
+	Metadata           map[string]any            `gorm:"-" json:"metadata,omitempty"`
 	OAuth2ServerConfig *OAuth2ServerConfig       `gorm:"-" json:"oauth2_server_config,omitempty"`
+	WebhookConfig      *WebhookConfig            `gorm:"-" json:"webhook_config,omitempty"`
+}
+
+// WebhookConfig holds global webhook delivery settings. Delivery
+// tuning (retries, backoff, timeouts, payload caps) lives on each endpoint;
+// only storage policy is global. Zero values fall back to the defaults,
+// read at server startup.
+type WebhookConfig struct {
+	DeliveryHistoryRetentionDays int `json:"delivery_history_retention_days,omitempty"` // How long delivery history rows are kept (default: 30)
+}
+
+// DeliveryHistoryRetention returns the configured retention for webhook
+// delivery history rows, falling back to the default (30 days) when unset.
+// Safe on a nil receiver — nil means all defaults.
+func (w *WebhookConfig) DeliveryHistoryRetention() time.Duration {
+	if w == nil || w.DeliveryHistoryRetentionDays <= 0 {
+		return 30 * 24 * time.Hour
+	}
+	return time.Duration(w.DeliveryHistoryRetentionDays) * 24 * time.Hour
 }
 
 // TableName sets the table name for each model
@@ -174,6 +196,16 @@ func (cc *TableClientConfig) BeforeSave(tx *gorm.DB) error {
 		cc.OAuth2ServerConfigJSON = ""
 	}
 
+	if cc.WebhookConfig != nil {
+		data, err := json.Marshal(cc.WebhookConfig)
+		if err != nil {
+			return err
+		}
+		cc.WebhookConfigJSON = string(data)
+	} else {
+		cc.WebhookConfigJSON = ""
+	}
+
 	return nil
 }
 
@@ -241,6 +273,16 @@ func (cc *TableClientConfig) AfterFind(tx *gorm.DB) error {
 		cc.OAuth2ServerConfig = &authCfg
 	} else {
 		cc.OAuth2ServerConfig = nil
+	}
+
+	if cc.WebhookConfigJSON != "" {
+		var webhooksCfg WebhookConfig
+		if err := json.Unmarshal([]byte(cc.WebhookConfigJSON), &webhooksCfg); err != nil {
+			return err
+		}
+		cc.WebhookConfig = &webhooksCfg
+	} else {
+		cc.WebhookConfig = nil
 	}
 
 	return nil
