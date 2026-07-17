@@ -10,6 +10,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
+	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -143,6 +144,88 @@ func TestRetrieveModel_E2E_CatchAllLeadingSlashStripped(t *testing.T) {
 	body := string(ctx.Response.Body())
 	if !strings.Contains(body, `"id":"openai/custom-model-1"`) {
 		t.Errorf("expected leading slash to be stripped from model_id, got: %s", body)
+	}
+}
+
+// twoProviderVKAccount backs two providers (openai, groq) each pointed at their own mock
+// server, so a test can prove a virtual-key provider restriction actually blocks the
+// disallowed one rather than just filtering its output after the fact.
+type twoProviderVKAccount struct {
+	openaiURL string
+	groqURL   string
+	groqHits  *int
+}
+
+func (a *twoProviderVKAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
+	return []schemas.ModelProvider{schemas.OpenAI, schemas.Groq}, nil
+}
+
+func (a *twoProviderVKAccount) GetConfigForProvider(provider schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	url := a.openaiURL
+	if provider == schemas.Groq {
+		url = a.groqURL
+	}
+	return &schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: url, DefaultRequestTimeoutInSeconds: 5},
+	}, nil
+}
+
+func (a *twoProviderVKAccount) GetKeysForProvider(_ context.Context, _ schemas.ModelProvider) ([]schemas.Key, error) {
+	return []schemas.Key{{ID: "test-key", Value: *schemas.NewSecretVar("sk-test"), Weight: 100, Models: schemas.WhiteList{"*"}}}, nil
+}
+
+// TestRetrieveModel_E2E_VirtualKeyProviderRestrictionBlocksExplicitProvider is a regression
+// test for a bug found in review: retrieveModel only ran applyListModelsVirtualKeyProviderFilter
+// (which resolves the VK's allowed-provider set onto the context) when no provider was given,
+// so a virtual key restricted to a provider subset could retrieve metadata from an excluded
+// provider just by naming it explicitly in the path/query. Verifies the disallowed provider's
+// mock server is never even hit.
+func TestRetrieveModel_E2E_VirtualKeyProviderRestrictionBlocksExplicitProvider(t *testing.T) {
+	groqHits := 0
+	openaiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"gpt-4o","object":"model","owned_by":"openai"}]}`))
+	}))
+	defer openaiServer.Close()
+	groqServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		groqHits++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"llama3-groq","object":"model","owned_by":"groq"}]}`))
+	}))
+	defer groqServer.Close()
+
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: &twoProviderVKAccount{openaiURL: openaiServer.URL, groqURL: groqServer.URL, groqHits: &groqHits},
+	})
+	if err != nil {
+		t.Fatalf("bifrost.Init failed: %v", err)
+	}
+
+	h := &CompletionHandler{
+		client: client,
+		config: &lib.Config{
+			ClientConfig: &configstore.ClientConfig{},
+			ConfigStore: &mockListModelsVKConfigStore{vk: &configstoreTables.TableVirtualKey{
+				Value:           *schemas.NewSecretVar("sk-bf-vk-openai-only"),
+				IsActive:        new(true),
+				ProviderConfigs: []configstoreTables.TableVirtualKeyProviderConfig{{Provider: "openai"}},
+			}},
+		},
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.Header.Set("Authorization", "Bearer sk-bf-vk-openai-only")
+	ctx.Request.SetRequestURI("/v1/models/groq/llama3-groq")
+	ctx.SetUserValue("model_id", "groq/llama3-groq")
+
+	h.retrieveModel(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusNotFound {
+		t.Fatalf("expected 404 (provider outside VK allow-list), got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if groqHits != 0 {
+		t.Errorf("expected groq's server to never be called, got %d hits", groqHits)
 	}
 }
 

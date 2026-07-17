@@ -910,7 +910,13 @@ func (h *CompletionHandler) retrieveModel(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
-	if provider == "" && !h.applyListModelsVirtualKeyProviderFilter(ctx, bifrostCtx) {
+	// Unlike listModels, this must run even when a provider is explicitly given: unlike
+	// ListModelsRequest (which never consults BifrostContextKeyAvailableProviders),
+	// RetrieveModelRequest enforces it for the explicit-provider path too, so a VK
+	// restricted to a provider subset can't retrieve metadata from an excluded provider
+	// just by naming it. This only resolves the VK's allowed-providers set - the
+	// resolution doesn't depend on which provider the caller requested.
+	if !h.applyListModelsVirtualKeyProviderFilter(ctx, bifrostCtx) {
 		return
 	}
 
