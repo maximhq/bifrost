@@ -42,6 +42,15 @@ function buildTLSConfigPayload(tls: MCPTLSConfig | undefined): MCPTLSConfig | un
 	return { insecure_skip_verify: tls.insecure_skip_verify, ca_cert_pem: hasCACert ? tls.ca_cert_pem : undefined };
 }
 
+function isValidOAuthResourceURI(value: string): boolean {
+	try {
+		const parsed = new URL(value);
+		return parsed.protocol !== "" && parsed.hash === "";
+	} catch {
+		return false;
+	}
+}
+
 /**
  * Sanitize a catalog server name into a valid MCP client name. The backend
  * only allows [a-zA-Z0-9_] and disallows a leading digit, so we slugify by
@@ -259,10 +268,10 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 				});
 				hasErrors = true;
 			}
-			if (resourceText.trim() && !/^https?:\/\/.+$/.test(resourceText.trim())) {
+			if (resourceText.trim() && !isValidOAuthResourceURI(resourceText.trim())) {
 				toast({
-					title: "Invalid resource URL",
-					description: "OAuth resource must start with http:// or https://.",
+					title: "Invalid resource URI",
+					description: "OAuth resource must be an absolute URI without a fragment.",
 					variant: "destructive",
 				});
 				hasErrors = true;
@@ -755,7 +764,7 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 													<Input
 														value={resourceText}
 														onChange={(event) => setResourceText(event.target.value)}
-														placeholder="https://provider.example.com/mcp"
+														placeholder="https://provider.example.com/mcp or urn:example:mcp"
 														data-testid="library-oauth-resource-input"
 													/>
 												</div>

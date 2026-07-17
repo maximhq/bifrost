@@ -54,6 +54,15 @@ const emptyForm: CreateMCPClientRequest = {
 	auth_type: "none",
 };
 
+function isValidOAuthResourceURI(value: string): boolean {
+	try {
+		const parsed = new URL(value);
+		return parsed.protocol !== "" && parsed.hash === "";
+	} catch {
+		return false;
+	}
+}
+
 const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 	const hasCreateMCPClientAccess = useRbac(RbacResource.MCPGateway, RbacOperation.Create);
 	const { toast } = useToast();
@@ -202,10 +211,10 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 				setError("oauth_config.registration_url", { message: "Registration URL must start with http:// or https://" });
 				hasErrors = true;
 			}
-			if (resourceText.trim() && !/^https?:\/\/.+$/.test(resourceText.trim())) {
+			if (resourceText.trim() && !isValidOAuthResourceURI(resourceText.trim())) {
 				toast({
-					title: "Invalid resource URL",
-					description: "OAuth resource must start with http:// or https://.",
+					title: "Invalid resource URI",
+					description: "OAuth resource must be an absolute URI without a fragment.",
 					variant: "destructive",
 				});
 				hasErrors = true;
@@ -755,7 +764,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 														<Input
 															value={resourceText}
 															onChange={(e) => setResourceText(e.target.value)}
-															placeholder="https://provider.example.com/mcp"
+															placeholder="https://provider.example.com/mcp or urn:example:mcp"
 															data-testid="mcp-oauth-resource-input"
 														/>
 													</div>

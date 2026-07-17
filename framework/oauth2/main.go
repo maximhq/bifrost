@@ -456,6 +456,10 @@ func (p *OAuth2Provider) InitiateOAuthFlow(ctx context.Context, config *schemas.
 			registrationURL = metadata.RegistrationURL
 			logger.Debug("Discovered registration_url", "url", *registrationURL)
 		}
+		if resource == "" && metadata.Resource != "" {
+			resource = metadata.Resource
+			logger.Debug("Discovered OAuth resource", "resource", resource)
+		}
 		// Merge scopes: use discovered scopes if user didn't provide any
 		if len(scopes) == 0 && len(metadata.ScopesSupported) > 0 {
 			scopes = metadata.ScopesSupported
