@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -56,6 +57,7 @@ func setupRDBTestStore(t *testing.T) *RDBConfigStore {
 		&tables.TableMCPPerUserHeaderCredential{},
 		&tables.TableMCPPerUserHeaderFlow{},
 		&tables.TableOAuth2RefreshToken{},
+		&tables.TableWebhookEndpoint{},
 	)
 	require.NoError(t, err, "Failed to migrate test database")
 
@@ -2312,4 +2314,250 @@ func TestUpsertModelParametersBatch_SQLite(t *testing.T) {
 	got, err = s.GetModelParameters(ctx)
 	require.NoError(t, err)
 	assert.Len(t, got, 3)
+}
+
+func testWebhookEndpoint(name string) *tables.TableWebhookEndpoint {
+	return &tables.TableWebhookEndpoint{
+		Name:   name,
+		URL:    "https://93.184.216.34/hook",
+		Events: []tables.WebhookEvent{tables.WebhookEventAsyncJobCompleted},
+	}
+}
+
+func TestWebhookEndpointCreate(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	endpoint := testWebhookEndpoint("create-test")
+	require.NoError(t, store.CreateWebhookEndpoint(ctx, endpoint))
+
+	// Server generates the ID and a Standard Webhooks style secret, and leaves
+	// the plaintext on the struct for one-time display.
+	assert.NotEmpty(t, endpoint.ID)
+	require.NotNil(t, endpoint.Secret)
+	secret := endpoint.Secret.GetValue()
+	assert.True(t, strings.HasPrefix(secret, "whsec_"), "secret %q missing whsec_ prefix", secret)
+	assert.Len(t, secret, len("whsec_")+44) // base64 of 32 bytes
+
+	fetched, err := store.GetWebhookEndpointByID(ctx, endpoint.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "create-test", fetched.Name)
+	assert.Equal(t, "https://93.184.216.34/hook", fetched.URL)
+	assert.Equal(t, []tables.WebhookEvent{tables.WebhookEventAsyncJobCompleted}, fetched.Events)
+	assert.Equal(t, secret, fetched.Secret.GetValue())
+
+	byName, err := store.GetWebhookEndpointByName(ctx, "create-test")
+	require.NoError(t, err)
+	assert.Equal(t, endpoint.ID, byName.ID)
+
+	// Distinct endpoints get distinct generated secrets.
+	second := testWebhookEndpoint("create-test-2")
+	require.NoError(t, store.CreateWebhookEndpoint(ctx, second))
+	assert.NotEqual(t, secret, second.Secret.GetValue())
+}
+
+func TestWebhookEndpointCreateDuplicateName(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, store.CreateWebhookEndpoint(ctx, testWebhookEndpoint("dup-name")))
+	err := store.CreateWebhookEndpoint(ctx, testWebhookEndpoint("dup-name"))
+	assert.ErrorIs(t, err, ErrAlreadyExists)
+}
+
+func TestWebhookEndpointCreateRejectsUnresolvedSecretRef(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	// An env reference that resolves to nothing must never be persisted —
+	// deliveries would sign with an empty key. The API never accepts a
+	// secret, so a reference can only arrive from config.json.
+	endpoint := testWebhookEndpoint("unresolved-ref")
+	endpoint.Secret = schemas.NewSecretVar("env.E2E_WEBHOOK_SECRET_THAT_DOES_NOT_EXIST")
+	require.True(t, endpoint.Secret.IsFromSecret())
+
+	err := store.CreateWebhookEndpoint(ctx, endpoint)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "did not resolve")
+
+	// A reference that resolves is kept as the signing key.
+	t.Setenv("E2E_WEBHOOK_SECRET_SET", "whsec_from_env")
+	resolved := testWebhookEndpoint("resolved-ref")
+	resolved.Secret = schemas.NewSecretVar("env.E2E_WEBHOOK_SECRET_SET")
+	require.NoError(t, store.CreateWebhookEndpoint(ctx, resolved))
+	assert.Equal(t, "whsec_from_env", resolved.Secret.GetValue())
+}
+
+func TestWebhookEndpointCreateFailureKeepsCallerPlaintext(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, store.CreateWebhookEndpoint(ctx, testWebhookEndpoint("plaintext-kept")))
+
+	// A failed create (duplicate name here) must leave the caller's secret
+	// as the plaintext it supplied — not the BeforeSave ciphertext — so a
+	// retry cannot double-encrypt and persist unusable key material.
+	retry := testWebhookEndpoint("plaintext-kept")
+	retry.Secret = schemas.NewSecretVar("whsec_caller_supplied")
+	err := store.CreateWebhookEndpoint(ctx, retry)
+	require.ErrorIs(t, err, ErrAlreadyExists)
+	assert.Equal(t, "whsec_caller_supplied", retry.Secret.GetValue())
+
+	// And the retry (under a fresh name) persists a working secret.
+	retry.Name = "plaintext-kept-2"
+	retry.ID = ""
+	require.NoError(t, store.CreateWebhookEndpoint(ctx, retry))
+	fetched, err := store.GetWebhookEndpointByID(ctx, retry.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "whsec_caller_supplied", fetched.Secret.GetValue())
+}
+
+func TestWebhookEndpointUpdate(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	endpoint := testWebhookEndpoint("update-test")
+	require.NoError(t, store.CreateWebhookEndpoint(ctx, endpoint))
+	originalSecret := endpoint.Secret.GetValue()
+
+	// Seed a failure streak without going through hooks.
+	require.NoError(t, store.DB().Model(&tables.TableWebhookEndpoint{}).
+		Where("id = ?", endpoint.ID).UpdateColumn("consecutive_failures", 7).Error)
+
+	// A non-URL change keeps the failure counter and the stored secret.
+	loaded, err := store.GetWebhookEndpointByID(ctx, endpoint.ID)
+	require.NoError(t, err)
+	loaded.IncludeResponse = true
+	loaded.Events = []tables.WebhookEvent{tables.WebhookEventAsyncJobCompleted, tables.WebhookEventAsyncJobFailed}
+	require.NoError(t, store.UpdateWebhookEndpoint(ctx, loaded))
+
+	fetched, err := store.GetWebhookEndpointByID(ctx, endpoint.ID)
+	require.NoError(t, err)
+	assert.True(t, fetched.IncludeResponse)
+	assert.Len(t, fetched.Events, 2)
+	assert.Equal(t, 7, fetched.ConsecutiveFailures)
+	assert.Equal(t, originalSecret, fetched.Secret.GetValue(), "update must not touch the signing secret")
+
+	// Changing the URL resets the failure counter.
+	fetched.URL = "https://93.184.216.35/hook"
+	require.NoError(t, store.UpdateWebhookEndpoint(ctx, fetched))
+	fetched, err = store.GetWebhookEndpointByID(ctx, endpoint.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "https://93.184.216.35/hook", fetched.URL)
+	assert.Equal(t, 0, fetched.ConsecutiveFailures)
+}
+
+func TestWebhookEndpointUpdateReenablePreservesFailureCounter(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	endpoint := testWebhookEndpoint("reenable-test")
+	require.NoError(t, store.CreateWebhookEndpoint(ctx, endpoint))
+
+	loaded, err := store.GetWebhookEndpointByID(ctx, endpoint.ID)
+	require.NoError(t, err)
+	loaded.Disabled = true
+	require.NoError(t, store.UpdateWebhookEndpoint(ctx, loaded))
+	require.NoError(t, store.DB().Model(&tables.TableWebhookEndpoint{}).
+		Where("id = ?", endpoint.ID).UpdateColumn("consecutive_failures", 25).Error)
+
+	disabled, err := store.GetWebhookEndpointByID(ctx, endpoint.ID)
+	require.NoError(t, err)
+	assert.True(t, disabled.Disabled)
+
+	disabled.Disabled = false
+	require.NoError(t, store.UpdateWebhookEndpoint(ctx, disabled))
+
+	// Re-enabling does not touch the failure counter — only a successful
+	// delivery (or a URL change) resets it.
+	reenabled, err := store.GetWebhookEndpointByID(ctx, endpoint.ID)
+	require.NoError(t, err)
+	assert.False(t, reenabled.Disabled)
+	assert.Equal(t, 25, reenabled.ConsecutiveFailures)
+}
+
+func TestWebhookEndpointUpdateNotFound(t *testing.T) {
+	store := setupRDBTestStore(t)
+
+	endpoint := testWebhookEndpoint("ghost")
+	endpoint.ID = "does-not-exist"
+	assert.ErrorIs(t, store.UpdateWebhookEndpoint(context.Background(), endpoint), ErrNotFound)
+}
+
+func TestWebhookEndpointDelete(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	endpoint := testWebhookEndpoint("delete-test")
+	require.NoError(t, store.CreateWebhookEndpoint(ctx, endpoint))
+
+	require.NoError(t, store.DeleteWebhookEndpoint(ctx, endpoint.ID))
+	_, err := store.GetWebhookEndpointByID(ctx, endpoint.ID)
+	assert.ErrorIs(t, err, ErrNotFound)
+	assert.ErrorIs(t, store.DeleteWebhookEndpoint(ctx, endpoint.ID), ErrNotFound)
+}
+
+func TestWebhookEndpointRotateSecret(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	endpoint := testWebhookEndpoint("rotate-test")
+	require.NoError(t, store.CreateWebhookEndpoint(ctx, endpoint))
+	originalSecret := endpoint.Secret.GetValue()
+
+	rotated, err := store.RotateWebhookEndpointSecret(ctx, endpoint.ID)
+	require.NoError(t, err)
+
+	newSecret := rotated.Secret.GetValue()
+	assert.True(t, strings.HasPrefix(newSecret, "whsec_"))
+	assert.NotEqual(t, originalSecret, newSecret)
+
+	// Rotation is immediate: only the new secret is stored.
+	fetched, err := store.GetWebhookEndpointByID(ctx, endpoint.ID)
+	require.NoError(t, err)
+	assert.Equal(t, newSecret, fetched.Secret.GetValue())
+
+	_, err = store.RotateWebhookEndpointSecret(ctx, "does-not-exist")
+	assert.ErrorIs(t, err, ErrNotFound)
+}
+
+func TestWebhookEndpointList(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	endpoints, err := store.GetWebhookEndpoints(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, endpoints)
+
+	require.NoError(t, store.CreateWebhookEndpoint(ctx, testWebhookEndpoint("list-a")))
+	require.NoError(t, store.CreateWebhookEndpoint(ctx, testWebhookEndpoint("list-b")))
+
+	endpoints, err = store.GetWebhookEndpoints(ctx)
+	require.NoError(t, err)
+	assert.Len(t, endpoints, 2)
+}
+
+func TestWebhookEndpointUpdatePersistsTuningAndHeaders(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	endpoint := testWebhookEndpoint("update-persist-test")
+	require.NoError(t, store.CreateWebhookEndpoint(ctx, endpoint))
+
+	loaded, err := store.GetWebhookEndpointByID(ctx, endpoint.ID)
+	require.NoError(t, err)
+	loaded.MaxRetries = 2
+	loaded.AttemptTimeoutSeconds = 7
+	loaded.MaxConcurrentDeliveries = 3
+	loaded.Headers = map[string]schemas.SecretVar{"Authorization": {Val: "Bearer tok"}}
+	require.NoError(t, store.UpdateWebhookEndpoint(ctx, loaded))
+
+	fetched, err := store.GetWebhookEndpointByID(ctx, endpoint.ID)
+	require.NoError(t, err)
+	assert.Equal(t, 2, fetched.MaxRetries, "updates must persist tuning knobs")
+	assert.Equal(t, 7, fetched.AttemptTimeoutSeconds)
+	assert.Equal(t, 3, fetched.MaxConcurrentDeliveries)
+	require.Len(t, fetched.Headers, 1)
+	auth := fetched.Headers["Authorization"]
+	assert.Equal(t, "Bearer tok", auth.GetValue())
 }
