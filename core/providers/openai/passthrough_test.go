@@ -17,7 +17,7 @@ func TestBuildPassthroughURLWithUpstreamOverride(t *testing.T) {
 		UpstreamURL: "https://chatgpt.com",
 	}
 
-	got := provider.buildPassthroughURL(req)
+	got := provider.buildPassthroughURL(nil, req)
 	want := "https://chatgpt.com/backend-api/codex/responses?conversation=abc"
 	if got != want {
 		t.Fatalf("buildPassthroughURL = %q, want %q", got, want)
@@ -34,7 +34,7 @@ func TestBuildPassthroughURLDefaultsToOpenAIV1(t *testing.T) {
 		RawQuery: "stream=true",
 	}
 
-	got := provider.buildPassthroughURL(req)
+	got := provider.buildPassthroughURL(nil, req)
 	want := "https://api.openai.com/v1/responses?stream=true"
 	if got != want {
 		t.Fatalf("buildPassthroughURL = %q, want %q", got, want)

@@ -217,6 +217,12 @@ export interface SGLKeyConfig {
 	url: SecretVar;
 }
 
+// OpenAIKeyConfig matching Go's schemas.OpenAIKeyConfig — per-key OpenAI settings.
+export interface OpenAIKeyConfig {
+	// Regional-processing region for this key (e.g. "eu"); empty = provider default.
+	region?: string;
+}
+
 // Default SGLKeyConfig
 export const DefaultSGLKeyConfig: SGLKeyConfig = {
 	url: { value: "", ref: "" },
@@ -242,6 +248,7 @@ export interface ModelProviderKey {
 	replicate_key_config?: ReplicateKeyConfig;
 	ollama_key_config?: OllamaKeyConfig;
 	sgl_key_config?: SGLKeyConfig;
+	openai_key_config?: OpenAIKeyConfig;
 	config_hash?: string; // Present when config is synced from config.json
 	status?: "unknown" | "success" | "list_models_failed";
 	description?: string;
@@ -406,6 +413,11 @@ export interface CustomProviderConfig {
 // OpenAIConfig holds OpenAI-specific provider configuration.
 export interface OpenAIConfig {
 	disable_store?: boolean;
+	// Region selects OpenAI's regional-processing (data-residency) endpoint.
+	// Empty/"us" = the default global endpoint; "eu" routes to eu.api.openai.com
+	// and applies the region's uplifted pricing. Requires an eligible
+	// region-scoped OpenAI Project key.
+	region?: string;
 }
 
 // ProviderConfig matching Go's lib.ProviderConfig
