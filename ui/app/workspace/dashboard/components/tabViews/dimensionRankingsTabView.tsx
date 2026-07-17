@@ -46,7 +46,7 @@ export const DimensionRankingsTabView = forwardRef<DimensionRankingsTabViewHandl
 				loading={loading}
 				dimensionLabel={dimensionLabel}
 				testIdPrefix={testIdPrefix}
-				attributed={dimension === "team" || dimension === "business_unit" || dimension === "customer"}
+				attributed
 			/>
 		);
 	},
