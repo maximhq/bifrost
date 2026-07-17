@@ -571,12 +571,6 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 			}
 			return true
 		}
-		if keyStr == "x-bf-disable-content-logging" {
-			if b, err := strconv.ParseBool(string(value)); err == nil {
-				bifrostCtx.SetValue(schemas.BifrostContextKeyDisableContentLogging, b)
-			}
-			return true
-		}
 		// Compat header: per-request override of compat plugin settings.
 		// Accepts: "true" (enable all), JSON array of feature names, or ["*"] (enable all).
 		// An empty array [] or absent header means no overrides.

@@ -269,7 +269,7 @@ func (m *MCPManager) runConnectWithPluginPipeline(
 	ctx *schemas.BifrostContext,
 	req *schemas.BifrostMCPConnectRequest,
 	op MCPConnectOpFunc,
-) (*schemas.BifrostMCPConnectResponse, *schemas.BifrostError) {
+) (finalResponse *schemas.BifrostMCPConnectResponse, finalError *schemas.BifrostError) {
 	if ctx != nil {
 		if _, ok := ctx.Value(schemas.BifrostContextKeyRequestID).(string); !ok {
 			ctx.SetValue(schemas.BifrostContextKeyRequestID, uuid.New().String())
