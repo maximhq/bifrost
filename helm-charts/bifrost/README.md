@@ -11,6 +11,7 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 ### 2.1.30
 
 - Added `serviceMonitor` for scraping Bifrost's native `/metrics` endpoint via the Prometheus Operator. Set `serviceMonitor.enabled: true` (requires the `monitoring.coreos.com/v1` CRDs, e.g. from kube-prometheus-stack) to render a `ServiceMonitor` targeting the `http` service port. Supports `additionalLabels` (to match your Prometheus `serviceMonitorSelector`, e.g. `release: kube-prometheus-stack`), `namespace`, `path`, `interval`, `scrapeTimeout`, `scheme`, `tlsConfig`, `honorLabels`, `relabelings`, and `metricRelabelings`. Disabled by default; the render fails fast with a clear message if enabled without the Prometheus Operator CRDs installed.
+- Added `serviceMonitor.basicAuth` and `serviceMonitor.authorization` for authenticating the scrape. Bifrost's auth middleware is global, so with `authConfig.isEnabled: true` the `/metrics` endpoint returns `401` to an unauthenticated scrape and the target silently sits at `up=0`. `serviceMonitor.basicAuth.enabled: true` sends the admin credentials, defaulting `existingSecret` / `usernameKey` / `passwordKey` to whatever `governance.authConfig` or `authConfig` already uses, so rotating the admin password rotates the scrape credentials too. Rendering fails with an actionable message if no credentials Secret can be resolved (e.g. inline `adminUsername` / `adminPassword`, which Prometheus cannot read).
 - Added the `app.kubernetes.io/component: server` label to the primary `Service` metadata so the `ServiceMonitor` selects only the ClusterIP service and not the SQLite headless service (both otherwise share the same labels). This is an additive label; the service's pod selector is unchanged.
 
 ### 2.1.28
@@ -1071,6 +1072,34 @@ serviceMonitor:
 ```
 
 The `ServiceMonitor` targets the service's `http` port. It requires the `monitoring.coreos.com/v1` CRDs to be installed; when they are missing the render fails with a clear message. Leave `serviceMonitor.enabled: false` (the default) if you use OpenTelemetry push-based metrics or a Prometheus scrape-annotation setup instead.
+
+#### Scraping with authentication enabled
+
+Bifrost's auth middleware is global. When auth is on (`bifrost.authConfig.isEnabled` or `bifrost.governance.authConfig.isEnabled`), `/metrics` requires credentials too — only `/health`, `/api/session/login`, `/api/session/is-auth-enabled`, `/api/oauth/callback` and `/api/info` are always open. **An unauthenticated scrape gets a `401` and the target silently sits at `up=0`**: the Prometheus UI shows a target, no error is logged by the chart, and no Bifrost metrics are ever stored.
+
+Enable `serviceMonitor.basicAuth` so the scrape authenticates with the admin credentials:
+
+```yaml
+bifrost:
+  authConfig:
+    isEnabled: true
+    # Prometheus reads scrape credentials from a Secret, so the admin credentials
+    # must live in one — inline adminUsername/adminPassword cannot be scraped with.
+    existingSecret: bifrost-secrets
+    usernameKey: admin-username
+    passwordKey: admin-password
+
+serviceMonitor:
+  enabled: true
+  basicAuth:
+    enabled: true
+    # existingSecret / usernameKey / passwordKey default to the authConfig above,
+    # so rotating the admin password rotates the scrape credentials with it.
+```
+
+The Secret must exist in the `ServiceMonitor`'s namespace (relevant if you set `serviceMonitor.namespace`). If `basicAuth.enabled` is true and no Secret can be resolved, the render fails with a message pointing at `existingSecret` rather than producing a `ServiceMonitor` that would quietly scrape 401s.
+
+To authenticate with a bearer token instead, use `serviceMonitor.authorization` (mutually exclusive with `basicAuth`). To leave `/metrics` open instead of authenticating the scrape, add it to `bifrost.client.whitelistedRoutes` — note that this exposes metrics to anyone who can reach the pod.
 
 For OpenTelemetry integration:
 

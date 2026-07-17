@@ -143,6 +143,33 @@
           "type": "object",
           "description": "TLS settings for the scrape endpoint"
         },
+        "basicAuth": {
+          "type": "object",
+          "description": "Authenticate the scrape with Bifrost's admin credentials. Needed when auth is enabled: /metrics sits behind the global auth middleware, so an unauthenticated scrape gets a 401 and the target stays at up=0.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Send HTTP basic auth credentials with each scrape"
+            },
+            "existingSecret": {
+              "type": "string",
+              "description": "Secret holding the admin credentials; defaults to the existingSecret from governance.authConfig or authConfig. Must exist in the ServiceMonitor's namespace."
+            },
+            "usernameKey": {
+              "type": "string",
+              "description": "Key holding the admin username; defaults to the resolved authConfig's usernameKey, then 'username'"
+            },
+            "passwordKey": {
+              "type": "string",
+              "description": "Key holding the admin password; defaults to the resolved authConfig's passwordKey, then 'password'"
+            }
+          },
+          "additionalProperties": false
+        },
+        "authorization": {
+          "type": "object",
+          "description": "Bearer-token auth for the scrape, as an alternative to basicAuth (mutually exclusive with it)"
+        },
         "honorLabels": {
           "type": "boolean",
           "description": "Preserve scraped target labels on collision"
