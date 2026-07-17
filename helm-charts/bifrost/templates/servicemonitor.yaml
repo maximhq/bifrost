@@ -1,0 +1,89 @@
+{{- if .Values.serviceMonitor.enabled }}
+{{- $basicAuth := .Values.serviceMonitor.basicAuth | default dict }}
+{{- if and $basicAuth.enabled .Values.serviceMonitor.authorization }}
+{{- fail "ERROR: serviceMonitor.basicAuth.enabled and serviceMonitor.authorization are mutually exclusive; a scrape endpoint carries at most one authentication method. Pick one." }}
+{{- end }}
+{{- $basicAuthSecret := "" }}
+{{- $basicAuthUsernameKey := "" }}
+{{- $basicAuthPasswordKey := "" }}
+{{- if $basicAuth.enabled }}
+{{/*
+  Inherit the credentials Secret from whichever authConfig the deployment already wires
+  into BIFROST_ADMIN_USERNAME/PASSWORD (governance first, then the deprecated top-level
+  one) so rotating the admin password rotates the scrape credentials with it. An explicit
+  serviceMonitor.basicAuth.existingSecret takes over entirely — its keys must not be
+  inherited from an authConfig pointing at a different Secret.
+*/}}
+{{- $authSource := dict }}
+{{- if $basicAuth.existingSecret }}
+{{- $authSource = dict }}
+{{- else if and .Values.bifrost.governance .Values.bifrost.governance.authConfig .Values.bifrost.governance.authConfig.existingSecret }}
+{{- $authSource = .Values.bifrost.governance.authConfig }}
+{{- else if and .Values.bifrost.authConfig .Values.bifrost.authConfig.existingSecret }}
+{{- $authSource = .Values.bifrost.authConfig }}
+{{- end }}
+{{- $basicAuthSecret = $basicAuth.existingSecret | default (index $authSource "existingSecret") }}
+{{- if not $basicAuthSecret }}
+{{- fail "ERROR: serviceMonitor.basicAuth.enabled is true but no credentials Secret could be resolved. Prometheus reads scrape credentials from a Secret only, so inline bifrost.authConfig.adminUsername/adminPassword cannot be used. Either set bifrost.authConfig.existingSecret (or bifrost.governance.authConfig.existingSecret) so the admin credentials live in a Secret, or point serviceMonitor.basicAuth.existingSecret at a Secret that holds them. The Secret must exist in the ServiceMonitor's namespace." }}
+{{- end }}
+{{- $basicAuthUsernameKey = $basicAuth.usernameKey | default (index $authSource "usernameKey") | default "username" }}
+{{- $basicAuthPasswordKey = $basicAuth.passwordKey | default (index $authSource "passwordKey") | default "password" }}
+{{- end }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "bifrost.fullname" . }}
+  namespace: {{ default .Release.Namespace .Values.serviceMonitor.namespace }}
+  labels:
+    {{- include "bifrost.labels" . | nindent 4 }}
+    {{- with .Values.serviceMonitor.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  endpoints:
+    - port: http
+      path: {{ .Values.serviceMonitor.path | quote }}
+      {{- with .Values.serviceMonitor.interval }}
+      interval: {{ . }}
+      {{- end }}
+      {{- with .Values.serviceMonitor.scrapeTimeout }}
+      scrapeTimeout: {{ . }}
+      {{- end }}
+      {{- with .Values.serviceMonitor.scheme }}
+      scheme: {{ . }}
+      {{- end }}
+      {{- with .Values.serviceMonitor.tlsConfig }}
+      tlsConfig:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if $basicAuth.enabled }}
+      basicAuth:
+        username:
+          name: {{ $basicAuthSecret }}
+          key: {{ $basicAuthUsernameKey }}
+        password:
+          name: {{ $basicAuthSecret }}
+          key: {{ $basicAuthPasswordKey }}
+      {{- end }}
+      {{- with .Values.serviceMonitor.authorization }}
+      authorization:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if hasKey .Values.serviceMonitor "honorLabels" }}
+      honorLabels: {{ .Values.serviceMonitor.honorLabels }}
+      {{- end }}
+      {{- with .Values.serviceMonitor.relabelings }}
+      relabelings:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.serviceMonitor.metricRelabelings }}
+      metricRelabelings:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+  selector:
+    matchLabels:
+      {{- include "bifrost.serverSelectorLabels" . | nindent 6 }}
+{{- end }}

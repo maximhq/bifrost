@@ -107,6 +107,117 @@
         }
       }
     },
+    "serviceMonitor": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Create a Prometheus Operator ServiceMonitor for the /metrics endpoint"
+        },
+        "additionalLabels": {
+          "type": "object",
+          "description": "Extra labels on the ServiceMonitor (match your Prometheus serviceMonitorSelector)"
+        },
+        "namespace": {
+          "type": "string",
+          "description": "Namespace for the ServiceMonitor; defaults to the release namespace"
+        },
+        "path": {
+          "type": "string",
+          "description": "Metrics path to scrape"
+        },
+        "interval": {
+          "type": "string",
+          "description": "Scrape interval (e.g. 30s); empty uses the Prometheus default"
+        },
+        "scrapeTimeout": {
+          "type": "string",
+          "description": "Per-scrape timeout (e.g. 10s); empty uses the Prometheus default"
+        },
+        "scheme": {
+          "type": "string",
+          "enum": ["", "http", "https"],
+          "description": "Scrape scheme"
+        },
+        "tlsConfig": {
+          "type": "object",
+          "description": "TLS settings for the scrape endpoint"
+        },
+        "basicAuth": {
+          "type": "object",
+          "description": "Authenticate the scrape with Bifrost's admin credentials. Needed when auth is enabled: /metrics sits behind the global auth middleware, so an unauthenticated scrape gets a 401 and the target stays at up=0.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Send HTTP basic auth credentials with each scrape"
+            },
+            "existingSecret": {
+              "type": "string",
+              "description": "Secret holding the admin credentials; defaults to the existingSecret from governance.authConfig or authConfig. Must exist in the ServiceMonitor's namespace."
+            },
+            "usernameKey": {
+              "type": "string",
+              "description": "Key holding the admin username; defaults to the resolved authConfig's usernameKey, then 'username'"
+            },
+            "passwordKey": {
+              "type": "string",
+              "description": "Key holding the admin password; defaults to the resolved authConfig's passwordKey, then 'password'"
+            }
+          },
+          "additionalProperties": false
+        },
+        "authorization": {
+          "type": "object",
+          "description": "Bearer-token auth for the scrape, as an alternative to basicAuth (mutually exclusive with it)",
+          "properties": {
+            "type": {
+              "type": "string",
+              "description": "Authentication scheme; defaults to Bearer"
+            },
+            "credentials": {
+              "type": "object",
+              "description": "Secret key holding the credentials. Must be in the ServiceMonitor's namespace.",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "description": "Name of the secret holding the credentials"
+                },
+                "key": {
+                  "type": "string",
+                  "description": "Key within that secret"
+                },
+                "optional": {
+                  "type": "boolean",
+                  "description": "Whether the secret or its key must be defined"
+                }
+              },
+              "required": ["name", "key"],
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        "honorLabels": {
+          "type": "boolean",
+          "description": "Preserve scraped target labels on collision"
+        },
+        "relabelings": {
+          "type": "array",
+          "description": "relabel_configs applied before scraping",
+          "items": {
+            "$ref": "#/$defs/relabelConfig"
+          }
+        },
+        "metricRelabelings": {
+          "type": "array",
+          "description": "metric_relabel_configs applied to scraped samples",
+          "items": {
+            "$ref": "#/$defs/relabelConfig"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
     "ingress": {
       "description": "Ingress configuration. Either a single ingress (legacy, with top-level 'enabled') or a map of named ingresses (new format, each key becomes a separate Ingress resource named <release>-<key>).",
       "oneOf": [
@@ -4566,6 +4677,45 @@
     }
   },
   "$defs": {
+    "relabelConfig": {
+      "type": "object",
+      "description": "A Prometheus Operator RelabelConfig entry (monitoring.coreos.com/v1)",
+      "properties": {
+        "sourceLabels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Labels whose values are concatenated and matched against regex"
+        },
+        "separator": {
+          "type": "string",
+          "description": "Separator placed between concatenated source label values"
+        },
+        "targetLabel": {
+          "type": "string",
+          "description": "Label written by the replace and hashmod actions"
+        },
+        "regex": {
+          "type": "string",
+          "description": "Regular expression matched against the concatenated source labels"
+        },
+        "modulus": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Modulus for the hashmod action"
+        },
+        "replacement": {
+          "type": "string",
+          "description": "Replacement value written to the target label on a regex match"
+        },
+        "action": {
+          "type": "string",
+          "description": "Relabeling action, e.g. replace, keep, drop, labelmap, labeldrop, labelkeep, hashmod"
+        }
+      },
+      "additionalProperties": false
+    },
     "otelEndpoint": {
       "type": "string",
       "description": "OpenTelemetry endpoint URL or host:port. Supports env.VAR_NAME prefix for environment variable substitution.",
