@@ -369,18 +369,35 @@ func (d *Dispatcher) attempt(job tables.TableWebhookJob, endpoint *tables.TableW
 	attemptNo := job.AttemptCount + 1
 
 	if endpoint == nil || endpoint.Disabled {
-		// Nothing to deliver to anymore; retire the job with a terminal
-		// history record. No counter updates: there was no receiver attempt,
-		// and the endpoint is already gone or disabled.
-		d.finalize(job, attemptNo, attemptResult{errText: "webhook endpoint deleted or disabled"}, logstore.WebhookDeliveryOutcomePermanentFailure, now, false, tuning, leaseUntil)
+		// Nothing to deliver to anymore; retire the job with a terminal history
+		// record. No counter updates: there was no receiver attempt, and the
+		// endpoint is already gone or disabled. Carry the async job's request id
+		// so the history row still reconciles with its LLM log.
+		var requestID string
+		asyncJob, findErr := d.logStore.FindAsyncJobByID(d.baseCtx, job.AsyncJobID)
+		switch {
+		case findErr == nil:
+			requestID = asyncJob.RequestID
+		case errors.Is(findErr, logstore.ErrNotFound):
+			// The job's result TTL lapsed; retire without a request id.
+		default:
+			// Transient storage error — leave the row claimed so a retry after
+			// the lease expiry can retire it with correlation intact, matching
+			// the delivery path below.
+			d.logger.Warn("webhooks: reading async job %s failed: %v", job.AsyncJobID, findErr)
+			return
+		}
+		d.finalize(job, attemptNo, requestID, attemptResult{errText: "webhook endpoint deleted or disabled"}, logstore.WebhookDeliveryOutcomePermanentFailure, now, false, tuning, leaseUntil)
 		return
 	}
 
 	var body []byte
 	var err error
+	var requestID string
 	asyncJob, findErr := d.logStore.FindAsyncJobByID(d.baseCtx, job.AsyncJobID)
 	switch {
 	case findErr == nil:
+		requestID = asyncJob.RequestID
 		body, err = renderPayload(asyncJob, job.Event, endpoint.IncludeResponse, tuning.maxResponsePayloadBytes, now)
 	case errors.Is(findErr, logstore.ErrNotFound):
 		// The job row must have existed for this delivery to be queued, so
@@ -399,7 +416,7 @@ func (d *Dispatcher) attempt(job tables.TableWebhookJob, endpoint *tables.TableW
 		// every lease expiry, forever and without history. Retire it as a
 		// recorded permanent failure instead (no receiver was attempted, so
 		// the endpoint counters must not move).
-		d.finalize(job, attemptNo, attemptResult{errText: fmt.Sprintf("rendering payload failed: %v", err)}, logstore.WebhookDeliveryOutcomePermanentFailure, now, false, tuning, leaseUntil)
+		d.finalize(job, attemptNo, requestID, attemptResult{errText: fmt.Sprintf("rendering payload failed: %v", err)}, logstore.WebhookDeliveryOutcomePermanentFailure, now, false, tuning, leaseUntil)
 		return
 	}
 
@@ -411,7 +428,7 @@ func (d *Dispatcher) attempt(job tables.TableWebhookJob, endpoint *tables.TableW
 	if outcome == logstore.WebhookDeliveryOutcomeRetryableFailure && attemptNo > tuning.maxRetries {
 		outcome = logstore.WebhookDeliveryOutcomeExhausted
 	}
-	d.finalize(job, attemptNo, result, outcome, now, true, tuning, leaseUntil)
+	d.finalize(job, attemptNo, requestID, result, outcome, now, true, tuning, leaseUntil)
 }
 
 // finalize persists an attempt: history first, then the queue row, then the
@@ -420,13 +437,14 @@ func (d *Dispatcher) attempt(job tables.TableWebhookJob, endpoint *tables.TableW
 // receiver's webhook-id dedupe absorbs the duplicate. touchCounters is false
 // when no receiver was attempted (endpoint gone), which must not move the
 // failure streak.
-func (d *Dispatcher) finalize(job tables.TableWebhookJob, attemptNo int, result attemptResult, outcome logstore.WebhookDeliveryOutcome, now time.Time, touchCounters bool, tuning endpointTuning, leaseUntil time.Time) {
+func (d *Dispatcher) finalize(job tables.TableWebhookJob, attemptNo int, requestID string, result attemptResult, outcome logstore.WebhookDeliveryOutcome, now time.Time, touchCounters bool, tuning endpointTuning, leaseUntil time.Time) {
 	expiresAt := now.Add(d.historyRetention)
 	history := &logstore.WebhookDelivery{
 		ID:         uuid.NewString(),
 		WebhookID:  job.ID,
 		EndpointID: job.EndpointID,
 		AsyncJobID: job.AsyncJobID,
+		RequestID:  requestID,
 		Event:      job.Event,
 		AttemptNo:  attemptNo,
 		Outcome:    outcome,

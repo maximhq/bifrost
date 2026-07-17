@@ -76,6 +76,7 @@ export interface WebhookDelivery {
 	webhook_id: string;
 	endpoint_id: string;
 	async_job_id: string;
+	request_id?: string;
 	event: WebhookEvent;
 	attempt_no: number;
 	outcome: WebhookDeliveryOutcome;

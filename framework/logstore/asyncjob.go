@@ -120,9 +120,17 @@ func (e *AsyncJobExecutor) SubmitJob(bifrostCtx *schemas.BifrostContext, resultT
 		return nil, fmt.Errorf("failed to resolve webhook endpoint: %w", err)
 	}
 
+	// The background execution inherits the submit call's request id, so its
+	// LLM log row is keyed by it — store it for reconciliation.
+	requestID := ""
+	if bifrostCtx != nil {
+		requestID = bifrost.GetStringFromContext(bifrostCtx, schemas.BifrostContextKeyRequestID)
+	}
+
 	now := time.Now().UTC()
 	job := &AsyncJob{
 		ID:           uuid.New().String(),
+		RequestID:    requestID,
 		Status:       schemas.AsyncJobStatusPending,
 		RequestType:  operationType,
 		VirtualKeyID: virtualKeyID,
