@@ -4,9 +4,13 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.28
+**Latest Version:** 2.1.29
 
 ## Changelog
+
+### Upcoming
+
+- Added optional `bifrost.scim.config.authProxy` (renders into `scim_config.config.authProxy`) to front any SCIM/SSO provider with an identity-aware proxy (Cloudflare Access, generic OIDC proxy, or AWS ALB). Login tokens are validated against the proxy's own keys; claims are still enriched by the configured provider. Includes `enabled`, `provider`, `mode`, `headerName`, `issuerUrl`, `jwksUrl`, `audience`, `allowedAudiences`.
 
 ### 2.1.28
 

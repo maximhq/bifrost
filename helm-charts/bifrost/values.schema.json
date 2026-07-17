@@ -2332,7 +2332,8 @@
                       "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
                       "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
                       "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
-                      "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"}
+                      "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"},
+                      "authProxy": {"$ref": "#/$defs/scim_auth_proxy"}
                     },
                     "required": ["issuerUrl", "clientId", "clientSecret", "apiToken"],
                     "additionalProperties": false
@@ -2403,7 +2404,8 @@
                       "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
                       "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
                       "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
-                      "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"}
+                      "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"},
+                      "authProxy": {"$ref": "#/$defs/scim_auth_proxy"}
                     },
                     "required": ["tenantId", "clientId"],
                     "additionalProperties": false
@@ -2468,7 +2470,8 @@
                       "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
                       "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
                       "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
-                      "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"}
+                      "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"},
+                      "authProxy": {"$ref": "#/$defs/scim_auth_proxy"}
                     },
                     "required": ["serverUrl", "realm", "clientId", "clientSecret"],
                     "additionalProperties": false
@@ -2532,7 +2535,8 @@
                       "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
                       "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
                       "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
-                      "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"}
+                      "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"},
+                      "authProxy": {"$ref": "#/$defs/scim_auth_proxy"}
                     },
                     "required": ["domain", "clientId"],
                     "additionalProperties": false
@@ -2606,7 +2610,8 @@
                       "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
                       "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
                       "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
-                      "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"}
+                      "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"},
+                      "authProxy": {"$ref": "#/$defs/scim_auth_proxy"}
                     },
                     "required": ["domain", "clientId"],
                     "additionalProperties": false,
@@ -2702,7 +2707,8 @@
                       "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
                       "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
                       "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
-                      "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"}
+                      "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"},
+                      "authProxy": {"$ref": "#/$defs/scim_auth_proxy"}
                     },
                     "required": ["product"],
                     "additionalProperties": false
@@ -2772,7 +2778,8 @@
                       "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
                       "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
                       "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
-                      "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"}
+                      "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"},
+                      "authProxy": {"$ref": "#/$defs/scim_auth_proxy"}
                     },
                     "required": ["issuerUrl", "clientId"],
                     "additionalProperties": false
@@ -6210,6 +6217,69 @@
         "required": ["attributeType", "attributeValue"],
         "additionalProperties": false
       }
+    },
+    "scim_auth_proxy": {
+      "type": "object",
+      "description": "Identity-aware proxy (IAP) fronting the SCIM/SSO provider (e.g. Cloudflare Access, a generic OIDC proxy, or AWS ALB). When enabled, login tokens arrive via the proxy's request header and are validated against the proxy's own keys (NOT the IdP's); the resulting claims are still interpreted and enriched by the configured provider.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether the auth proxy layer is enabled"
+        },
+        "provider": {
+          "type": "string",
+          "enum": ["cloudflare-access", "generic", "aws-alb"],
+          "description": "Auth proxy type: 'cloudflare-access' (Cf-Access-Jwt-Assertion header, JWKS), 'generic' (OIDC-style JWT in a configurable header, JWKS or OIDC discovery), or 'aws-alb' (x-amzn-oidc-data header, ES256 validated against the regional public key). Default: 'cloudflare-access'."
+        },
+        "mode": {
+          "type": "string",
+          "enum": ["full", "login_only"],
+          "default": "login_only",
+          "description": "'full' validates the token and runs attribute -> role/team/business-unit mapping from its claims (IdP claims must be passed through the proxy token). 'login_only' (default) validates identity and authenticates an already-provisioned user by email without deriving permissions."
+        },
+        "headerName": {
+          "type": "string",
+          "description": "Request header carrying the proxy token. Defaulted per provider (Cloudflare: 'Cf-Access-Jwt-Assertion', AWS ALB: 'x-amzn-oidc-data'); required for the generic provider. Supports env./vault. references."
+        },
+        "issuerUrl": {
+          "type": "string",
+          "description": "Proxy issuer URL, e.g. https://<team>.cloudflareaccess.com (required for JWKS providers). Supports env./vault. references."
+        },
+        "jwksUrl": {
+          "type": "string",
+          "description": "Explicit JWKS URL for JWKS providers. Derived from the issuer for cloudflare-access; empty uses OIDC discovery for the generic provider. Supports env./vault. references."
+        },
+        "audience": {
+          "type": "string",
+          "description": "Expected token audience (aud) binding the token to this application (JWKS providers). Supports env./vault. references."
+        },
+        "allowedAudiences": {
+          "type": "array",
+          "description": "Alternative to a single audience: the list of accepted audiences. Entries must not be blank.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "region": {
+          "type": "string",
+          "description": "AWS ALB region for the public-key endpoint. Derived from the signer ARN when empty. Supports env./vault. references."
+        },
+        "expectedSigner": {
+          "type": "string",
+          "description": "Required AWS ALB ARN to pin the token's signer to (the regional public key signs tokens for every ALB in the region). Required for the aws-alb provider. Supports env./vault. references."
+        },
+        "publicKeyBaseUrl": {
+          "type": "string",
+          "description": "Override base URL for the AWS ALB public-key endpoint (keys fetched from <base>/<kid>). Needed for partitions like GovCloud whose endpoint differs from the standard region-derived URL. Supports env./vault. references."
+        },
+        "userIdClaim": {
+          "type": "string",
+          "default": "email",
+          "description": "Identity claim to read from the proxy token (default: 'email')."
+        }
+      },
+      "required": ["enabled"],
+      "additionalProperties": false
     }
   }
 }

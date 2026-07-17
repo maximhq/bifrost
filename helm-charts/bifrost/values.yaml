@@ -1001,6 +1001,20 @@ bifrost:
       # attributeRoleMappings: []
       # attributeTeamMappings: []
       # attributeBusinessUnitMappings: []
+      #
+      # Auth proxy (identity-aware proxy / IAP) — optional layer in front of ANY provider above.
+      # When enabled, login tokens arrive via the proxy header and are validated against the
+      # proxy's own keys (NOT the IdP's); the resulting claims are still enriched by the provider.
+      # Renders into scim_config.config.authProxy. All string fields support env./vault. references.
+      # authProxy:
+      #   enabled: true
+      #   provider: "cloudflare-access"     # cloudflare-access | generic | aws-alb
+      #   mode: "login_only"                # login_only (default) | full
+      #   headerName: ""                    # defaulted per provider; required for generic
+      #   issuerUrl: "https://<team>.cloudflareaccess.com"   # JWKS providers
+      #   jwksUrl: ""                       # explicit JWKS; derived for cloudflare-access
+      #   audience: "<application-aud>"     # binds the token to this app (JWKS providers)
+      #   allowedAudiences: []              # alternative to a single audience (no blank entries)
 
   # Load balancer configuration for intelligent request routing
   loadBalancer:
