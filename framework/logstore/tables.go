@@ -1713,6 +1713,10 @@ type ModelRankingEntry struct {
 	TotalTokens        int64   `json:"total_tokens"`
 	TotalCost          float64 `json:"total_cost"`
 	AvgLatency         float64 `json:"avg_latency"`
+	// Throughput is aggregate token-generation rate (tokens/sec) for this model:
+	// SUM(completion_tokens) / (SUM(latency_ms)/1000) over successful rows with
+	// latency > 0 — the same definition as the throughput histogram.
+	Throughput float64 `json:"throughput"`
 }
 
 // ModelRankingTrend represents the percentage change compared to the previous period.
@@ -1722,6 +1726,7 @@ type ModelRankingTrend struct {
 	TokensTrend       float64 `json:"tokens_trend"`
 	CostTrend         float64 `json:"cost_trend"`
 	LatencyTrend      float64 `json:"latency_trend"`
+	ThroughputTrend   float64 `json:"throughput_trend"`
 }
 
 // ModelRankingWithTrend combines ranking entry with trend data.
