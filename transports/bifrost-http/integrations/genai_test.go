@@ -2,6 +2,7 @@ package integrations
 
 import (
 	"context"
+	"encoding/base64"
 	"testing"
 
 	"github.com/bytedance/sonic"
@@ -410,4 +411,94 @@ func TestIsImageEditRequest_ImageAcrossMultipleContents(t *testing.T) {
 	}
 
 	assert.True(t, isImageEditRequest(req), "image in a later content entry must still classify as image edit")
+}
+
+func TestIsImageEditRequest_NilPartInList(t *testing.T) {
+	req := &gemini.GeminiGenerationRequest{
+		Contents: []gemini.Content{
+			{
+				Parts: []*gemini.Part{
+					nil,
+					{Text: "prompt"},
+					{InlineData: &gemini.Blob{MIMEType: "image/png", Data: "AAAA"}},
+				},
+			},
+		},
+		GenerationConfig: gemini.GenerationConfig{
+			ResponseModalities: []gemini.Modality{gemini.ModalityImage},
+		},
+	}
+
+	assert.NotPanics(t, func() {
+		assert.True(t, isImageEditRequest(req))
+	})
+}
+
+func TestIsImageEditRequest_NonImageInlineData_NotEdit(t *testing.T) {
+	req := &gemini.GeminiGenerationRequest{
+		Contents: []gemini.Content{
+			{
+				Parts: []*gemini.Part{
+					{Text: "prompt"},
+					{InlineData: &gemini.Blob{MIMEType: "application/pdf", Data: "AAAA"}},
+				},
+			},
+		},
+		GenerationConfig: gemini.GenerationConfig{
+			ResponseModalities: []gemini.Modality{gemini.ModalityImage},
+		},
+	}
+
+	assert.False(t, isImageEditRequest(req), "non-image inline data must not classify as image edit")
+}
+
+func TestIsImageEditRequest_ImageWithoutImageModality_NotEdit(t *testing.T) {
+	req := &gemini.GeminiGenerationRequest{
+		Contents: []gemini.Content{
+			{
+				Parts: []*gemini.Part{
+					{Text: "prompt"},
+					{InlineData: &gemini.Blob{MIMEType: "image/png", Data: "AAAA"}},
+				},
+			},
+		},
+		GenerationConfig: gemini.GenerationConfig{
+			ResponseModalities: []gemini.Modality{gemini.ModalityText},
+		},
+	}
+
+	assert.False(t, isImageEditRequest(req), "image without IMAGE response modality must not classify as image edit")
+}
+
+// End-to-end: text-first ordering must route through ToBifrostImageEditRequest
+// and preserve the inline image bytes, not silently drop them via the
+// image-generation path (the actual symptom reported in issue #5314).
+func TestIsImageEditRequest_TextFirst_EndToEndPreservesImage(t *testing.T) {
+	imageB64 := "AQIDBA=="
+	req := &gemini.GeminiGenerationRequest{
+		Model: "gemini-2.5-flash-image",
+		Contents: []gemini.Content{
+			{
+				Parts: []*gemini.Part{
+					{Text: "Add a yellow circle."},
+					{InlineData: &gemini.Blob{MIMEType: "image/png", Data: imageB64}},
+				},
+			},
+		},
+		GenerationConfig: gemini.GenerationConfig{
+			ResponseModalities: []gemini.Modality{gemini.ModalityImage},
+		},
+	}
+
+	require.True(t, isImageEditRequest(req), "text-first request must classify as image edit")
+
+	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	editReq := req.ToBifrostImageEditRequest(bifrostCtx)
+	require.NotNil(t, editReq)
+	require.NotNil(t, editReq.Input)
+	require.NotEmpty(t, editReq.Input.Images, "input image must be preserved, not dropped")
+
+	decoded, err := base64.StdEncoding.DecodeString(imageB64)
+	require.NoError(t, err)
+	assert.Equal(t, decoded, editReq.Input.Images[0].Image)
 }
