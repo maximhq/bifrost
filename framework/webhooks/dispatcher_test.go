@@ -174,6 +174,7 @@ type fakeLogStore struct {
 	mu         sync.Mutex
 	asyncJobs  map[string]*logstore.AsyncJob
 	deliveries []logstore.WebhookDelivery
+	findErr    error // when set, FindAsyncJobByID returns it (simulates a DB outage)
 }
 
 func newFakeLogStore() *fakeLogStore {
@@ -183,6 +184,9 @@ func newFakeLogStore() *fakeLogStore {
 func (f *fakeLogStore) FindAsyncJobByID(ctx context.Context, id string) (*logstore.AsyncJob, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.findErr != nil {
+		return nil, f.findErr
+	}
 	job, ok := f.asyncJobs[id]
 	if !ok {
 		return nil, logstore.ErrNotFound
@@ -609,6 +613,42 @@ func TestEndpointGoneRetiresJobWithoutCounters(t *testing.T) {
 	assert.Contains(t, deliveries[0].Error, "deleted or disabled")
 	assert.Nil(t, f.configStore.job("wh-1"))
 	assert.Zero(t, f.configStore.failures["ep-gone"], "no receiver attempt happened, the streak must not move")
+}
+
+func TestDisabledEndpointRetiresJobKeepingRequestID(t *testing.T) {
+	endpoint := testEndpoint("ep-1", "http://127.0.0.1:0")
+	endpoint.Disabled = true
+	f := newFixture(t, endpoint)
+	asyncJob := testAsyncJob()
+	asyncJob.RequestID = "req-abc"
+	f.logStore.asyncJobs["job-1"] = asyncJob
+	require.NoError(t, f.configStore.CreateWebhookJob(context.Background(), dueWebhookJob("wh-1", "ep-1", "job-1")))
+
+	f.dispatcher.processDue(*f.configStore.job("wh-1"))
+
+	deliveries := f.logStore.deliveryList()
+	require.Len(t, deliveries, 1)
+	assert.Equal(t, logstore.WebhookDeliveryOutcomePermanentFailure, deliveries[0].Outcome)
+	assert.Contains(t, deliveries[0].Error, "deleted or disabled")
+	assert.Equal(t, "req-abc", deliveries[0].RequestID,
+		"the request id must survive so the terminal history row reconciles with its LLM log")
+	assert.Nil(t, f.configStore.job("wh-1"))
+}
+
+func TestDisabledEndpointDefersRetireOnTransientLookupError(t *testing.T) {
+	endpoint := testEndpoint("ep-1", "http://127.0.0.1:0")
+	endpoint.Disabled = true
+	f := newFixture(t, endpoint)
+	// A transient storage error (not ErrNotFound) must not permanently retire
+	// the job: leaving it claimed lets a later attempt correlate the request id
+	// once the database recovers.
+	f.logStore.findErr = fmt.Errorf("database temporarily unavailable")
+	require.NoError(t, f.configStore.CreateWebhookJob(context.Background(), dueWebhookJob("wh-1", "ep-1", "job-1")))
+
+	f.dispatcher.processDue(*f.configStore.job("wh-1"))
+
+	assert.Empty(t, f.logStore.deliveryList(), "no terminal history row on a transient lookup failure")
+	assert.NotNil(t, f.configStore.job("wh-1"), "the job stays claimed for a retry after the lease expires")
 }
 
 func TestClaimLosersDoNothing(t *testing.T) {
