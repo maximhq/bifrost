@@ -13,7 +13,6 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
-import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import {
@@ -24,23 +23,28 @@ import {
 	useTestWebhookEndpointMutation,
 	useUpdateWebhookEndpointMutation,
 } from "@/lib/store";
-import {
-	WEBHOOK_EVENT_COLORS,
-	WEBHOOK_TEST_COOLDOWN_SECONDS,
-	WebhookEndpoint,
-	WebhookEndpointRequest,
-	WebhookEvent,
-} from "@/lib/types/webhooks";
+import { WEBHOOK_EVENT_COLORS, WEBHOOK_EVENTS, WebhookEndpoint, WebhookEndpointRequest, WebhookEvent } from "@/lib/types/webhooks";
+import { useDebouncedValue } from "@/hooks/useDebounce";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { MoreHorizontal, PencilIcon, Plus, RotateCcw, Search, Trash2, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, MoreHorizontal, PencilIcon, Plus, RotateCcw, Trash2 } from "lucide-react";
+import { parseAsArrayOf, parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { WebhookSecretDialog, WebhookSecretReveal } from "../dialogs/webhookSecretDialog";
 import { WebhookDetailsSheet } from "./webhookDetailsSheet";
 import { WebhookSheet } from "./webhookSheet";
 import { WebhooksEmptyState } from "./webhooksEmptyState";
+import WebhooksFilterBar from "./webhooksFilterBar";
 
 const POLLING_INTERVAL = 5000;
+const PAGE_SIZE = 25;
+// Event filter values come from the URL and may be shared or hand-edited; only
+// known events are forwarded so a bogus ?event=... is ignored rather than
+// producing a 400 that hides the whole list.
+const VALID_WEBHOOK_EVENTS = new Set<string>(WEBHOOK_EVENTS.map((e) => e.value));
+// Status filter is likewise URL-driven; an unknown value must be ignored rather
+// than collapsing to "enabled" and silently hiding disabled endpoints.
+const VALID_WEBHOOK_STATUSES = new Set<string>(["enabled", "disabled"]);
 
 // PUT replaces the endpoint's full editable state, so toggles resend the row
 // as-is. Redacted header values round-trip untouched and the server keeps the
@@ -150,13 +154,41 @@ export default function WebhooksView() {
 	const hasUpdateAccess = useRbac(RbacResource.Governance, RbacOperation.Update);
 	const hasDeleteAccess = useRbac(RbacResource.Governance, RbacOperation.Delete);
 
-	const { data, isLoading, isError, error, refetch } = useGetWebhookEndpointsQuery(undefined, { pollingInterval: POLLING_INTERVAL });
+	const [urlState, setUrlState] = useQueryStates({
+		q: parseAsString.withDefault(""),
+		event: parseAsArrayOf(parseAsString).withDefault([]),
+		status: parseAsArrayOf(parseAsString).withDefault([]),
+		// Only paging pushes a history entry; search/filter edits use the default
+		// replace so a back press doesn't walk through every keystroke.
+		offset: parseAsInteger.withDefault(0).withOptions({ history: "push" }),
+	});
+	// The raw q drives the input for responsiveness; the debounced value
+	// drives the server query.
+	const debouncedSearch = useDebouncedValue(urlState.q, 300);
+	// Ignore unrecognized status values, then both-or-neither means no filter.
+	const selectedStatuses = urlState.status.filter((s) => VALID_WEBHOOK_STATUSES.has(s));
+	const disabledFilter = selectedStatuses.length === 1 ? selectedStatuses[0] === "disabled" : undefined;
+	// Drop any unrecognized event value before it reaches the server query.
+	const selectedEvents = useMemo(() => urlState.event.filter((e): e is WebhookEvent => VALID_WEBHOOK_EVENTS.has(e)), [urlState.event]);
+	// URL offset is user-editable; clamp to a non-negative, page-aligned value so
+	// a hand-edited "?offset=-25" never 400s the query and blocks recovery.
+	const offset = Math.max(0, Math.floor(urlState.offset / PAGE_SIZE) * PAGE_SIZE);
+
+	const { data, isLoading, isFetching, isError, error, refetch } = useGetWebhookEndpointsQuery(
+		{
+			search: debouncedSearch.trim() || undefined,
+			events: selectedEvents.length ? selectedEvents : undefined,
+			disabled: disabledFilter,
+			limit: PAGE_SIZE,
+			offset,
+		},
+		{ pollingInterval: POLLING_INTERVAL },
+	);
 	const [updateWebhookEndpoint] = useUpdateWebhookEndpointMutation();
 	const [deleteWebhookEndpoint, { isLoading: isDeleting }] = useDeleteWebhookEndpointMutation();
 	const [rotateWebhookEndpointSecret, { isLoading: isRotating }] = useRotateWebhookEndpointSecretMutation();
 	const [testWebhookEndpoint] = useTestWebhookEndpointMutation();
 
-	const [search, setSearch] = useState("");
 	const [sheetOpen, setSheetOpen] = useState(false);
 	const [editingEndpoint, setEditingEndpoint] = useState<WebhookEndpoint | null>(null);
 	const [detailsEndpoint, setDetailsEndpoint] = useState<WebhookEndpoint | null>(null);
@@ -167,11 +199,24 @@ export default function WebhooksView() {
 	const [testingIds, setTestingIds] = useState<Set<string>>(new Set());
 
 	const endpoints = useMemo(() => data?.endpoints ?? [], [data]);
-	const filteredEndpoints = useMemo(() => {
-		const query = search.trim().toLowerCase();
-		if (!query) return endpoints;
-		return endpoints.filter((e) => e.name.toLowerCase().includes(query) || e.url.toLowerCase().includes(query));
-	}, [endpoints, search]);
+	const totalCount = data?.total_count ?? 0;
+	const hasActiveFilters = urlState.q !== "" || urlState.event.length > 0 || urlState.status.length > 0;
+
+	// Keep the URL offset valid: non-negative, page-aligned, and within the
+	// current match set. Covers a hand-edited offset and a match set that
+	// shrank below the current page (delete, narrowed filter).
+	useEffect(() => {
+		if (isLoading) return;
+		const maxOffset = totalCount === 0 ? 0 : Math.floor((totalCount - 1) / PAGE_SIZE) * PAGE_SIZE;
+		const normalized = Math.min(maxOffset, offset);
+		if (normalized !== urlState.offset) {
+			setUrlState({ offset: normalized || null });
+		}
+	}, [isLoading, totalCount, offset, urlState.offset, setUrlState]);
+
+	const handleClearFilters = () => {
+		setUrlState({ q: null, event: null, status: null, offset: null });
+	};
 
 	// Row data refreshes every poll; keep the open details sheet in sync.
 	const liveDetailsEndpoint = useMemo(
@@ -275,7 +320,7 @@ export default function WebhooksView() {
 
 	return (
 		<div className="w-full space-y-4">
-			{endpoints.length === 0 ? (
+			{totalCount === 0 && !hasActiveFilters ? (
 				<WebhooksEmptyState onAddClick={handleAdd} canCreate={hasCreateAccess} />
 			) : (
 				<>
@@ -293,29 +338,18 @@ export default function WebhooksView() {
 						</Button>
 					</div>
 
-					<div className="relative max-w-sm">
-						<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
-						<Input
-							placeholder="Search by name or URL"
-							value={search}
-							onChange={(e) => setSearch(e.target.value)}
-							className="pr-8 pl-9"
-							data-testid="webhook-search-input"
-						/>
-						{search && (
-							<Button
-								variant="ghost"
-								size="icon"
-								className="absolute top-1/2 right-1 h-6 w-6 -translate-y-1/2"
-								onClick={() => setSearch("")}
-								aria-label="Clear search"
-							>
-								<X className="h-3 w-3" />
-							</Button>
-						)}
-					</div>
+					<WebhooksFilterBar
+						search={urlState.q}
+						onSearchChange={(value) => setUrlState({ q: value || null, offset: 0 })}
+						eventFilter={urlState.event}
+						onEventFilterChange={(value) => setUrlState({ event: value.length ? value : null, offset: 0 })}
+						statusFilter={urlState.status}
+						onStatusFilterChange={(value) => setUrlState({ status: value.length ? value : null, offset: 0 })}
+						hasActiveFilters={hasActiveFilters}
+						onClearFilters={handleClearFilters}
+					/>
 
-					<div className="overflow-auto rounded-sm border">
+					<div className={`overflow-auto rounded-sm border ${isFetching ? "opacity-70" : ""}`}>
 						<Table data-testid="webhooks-table">
 							<TableHeader className="bg-muted sticky top-0 z-10">
 								<TableRow>
@@ -327,14 +361,14 @@ export default function WebhooksView() {
 								</TableRow>
 							</TableHeader>
 							<TableBody>
-								{filteredEndpoints.length === 0 ? (
+								{endpoints.length === 0 ? (
 									<TableRow>
 										<TableCell colSpan={5} className="text-muted-foreground h-24 text-center">
 											No matching webhook endpoints found.
 										</TableCell>
 									</TableRow>
 								) : (
-									filteredEndpoints.map((endpoint) => (
+									endpoints.map((endpoint) => (
 										<TableRow
 											key={endpoint.id}
 											className="group cursor-pointer"
@@ -381,6 +415,42 @@ export default function WebhooksView() {
 							</TableBody>
 						</Table>
 					</div>
+
+					{totalCount > 0 && (
+						<div className="flex shrink-0 items-center justify-between text-xs" data-testid="pagination">
+							<div className="text-muted-foreground flex items-center gap-2">
+								{(offset + 1).toLocaleString()}-{Math.min(offset + PAGE_SIZE, totalCount).toLocaleString()} of {totalCount.toLocaleString()}{" "}
+								entries
+							</div>
+							<div className="flex items-center gap-2">
+								<Button
+									variant="ghost"
+									size="sm"
+									onClick={() => setUrlState({ offset: Math.max(0, offset - PAGE_SIZE) || null })}
+									disabled={offset === 0}
+									data-testid="webhooks-pagination-prev-btn"
+									aria-label="Previous page"
+								>
+									<ChevronLeft className="size-3" />
+								</Button>
+								<div className="flex items-center gap-1">
+									<span>Page</span>
+									<span>{Math.floor(offset / PAGE_SIZE) + 1}</span>
+									<span>of {Math.ceil(totalCount / PAGE_SIZE)}</span>
+								</div>
+								<Button
+									variant="ghost"
+									size="sm"
+									onClick={() => setUrlState({ offset: offset + PAGE_SIZE })}
+									disabled={offset + PAGE_SIZE >= totalCount}
+									data-testid="webhooks-pagination-next-btn"
+									aria-label="Next page"
+								>
+									<ChevronRight className="size-3" />
+								</Button>
+							</div>
+						</div>
+					)}
 				</>
 			)}
 
