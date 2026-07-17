@@ -267,12 +267,30 @@ func migrationClickHouseAsyncJobsTable(ctx context.Context, db *gorm.DB, cluster
 	return clickhouseReconcileColumns(ctx, db, &AsyncJob{}, "async_jobs", cluster, logger)
 }
 
+// migrationClickHouseWebhookDeliveriesTable creates the webhook_deliveries
+// table and reconciles it with the WebhookDelivery struct. Delivery history
+// is insert-only metadata, so it follows the logs retention setting for its
+// TTL backstop; DeleteExpiredWebhookDeliveries handles normal expiry from
+// each row's expires_at.
+func migrationClickHouseWebhookDeliveriesTable(ctx context.Context, db *gorm.DB, cluster string, retentionDays int, logger schemas.Logger) error {
+	logger.Info("[logstore] clickhouse: creating table webhook_deliveries")
+	if err := clickhouseCreateTable(ctx, db, &WebhookDelivery{}, chTableOpts{
+		table:   "webhook_deliveries",
+		orderBy: "id",
+		ttl:     chLogsTTL(retentionDays),
+	}, cluster); err != nil {
+		return fmt.Errorf("clickhouse: create webhook_deliveries table: %w", err)
+	}
+	return clickhouseReconcileColumns(ctx, db, &WebhookDelivery{}, "webhook_deliveries", cluster, logger)
+}
+
 // clickhouseMigrationSteps lists the per-table migrations in execution order,
 // mirroring logstoreMigrationSteps for the SQL stores.
 var clickhouseMigrationSteps = []clickhouseMigrationStep{
 	migrationClickHouseLogsTable,
 	migrationClickHouseMCPToolLogsTable,
 	migrationClickHouseAsyncJobsTable,
+	migrationClickHouseWebhookDeliveriesTable,
 }
 
 // triggerClickHouseMigrations runs all registered ClickHouse table migrations

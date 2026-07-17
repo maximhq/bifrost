@@ -448,6 +448,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_bedrock_project_id_columns"}, run: migrationAddBedrockProjectIDColumns},
 	{IDs: []string{"add_dual_credential_conflict_behavior_column"}, run: migrationAddDualCredentialConflictBehaviorColumn},
 	{IDs: []string{"add_webhook_endpoints_table"}, run: migrationAddWebhookEndpointsTable},
+	{IDs: []string{"add_webhook_jobs_table"}, run: migrationAddWebhookJobsTable},
 }
 
 // quoteSQLiteIdentifier quotes a SQLite identifier, escaping any double quotes.
@@ -10735,6 +10736,34 @@ func migrationAddWebhookEndpointsTable(ctx context.Context, db *gorm.DB, logger 
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running webhook endpoints table migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddWebhookJobsTable creates the webhook_jobs work-queue table.
+func migrationAddWebhookJobsTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_webhook_jobs_table"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if !mg.HasTable(&tables.TableWebhookJob{}) {
+				if err := mg.CreateTable(&tables.TableWebhookJob{}); err != nil {
+					return fmt.Errorf("create webhook_jobs table: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return tx.Migrator().DropTable(&tables.TableWebhookJob{})
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running webhook jobs table migration: %s", err.Error())
 	}
 	return nil
 }

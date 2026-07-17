@@ -49,7 +49,7 @@ func trySetupClickHouseStore(t *testing.T) *ClickHouseLogStore {
 		t.Skipf("ClickHouse not available, skipping test: %v", err)
 	}
 	ch := store.(*ClickHouseLogStore)
-	for _, table := range []string{"logs", "mcp_tool_logs", "async_jobs"} {
+	for _, table := range []string{"logs", "mcp_tool_logs", "async_jobs", "webhook_deliveries"} {
 		require.NoError(t, ch.db.Exec("TRUNCATE TABLE "+table).Error)
 	}
 	t.Cleanup(func() { _ = ch.Close(context.Background()) })
