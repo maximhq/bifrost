@@ -75,15 +75,16 @@ func TestTeamOrBUFanoutFrom(t *testing.T) {
 	assert.False(t, ok)
 }
 
-// TestCanUseMatViewFilters_ExcludesTeamBU verifies that a team or business-unit
-// filter disqualifies the matview path: mv_logs_hourly only has the scalar
-// primary, so these must fall through to the raw (array-or-scalar) path to stay
+// TestCanUseMatViewFilters_ExcludesUnsupportedFilters verifies that filters
+// unavailable in mv_logs_hourly fall through to the raw path. Team and
+// business-unit filters also require raw array-or-scalar matching to stay
 // complete. Other filters (e.g. provider) remain matview-eligible.
-func TestCanUseMatViewFilters_ExcludesTeamBU(t *testing.T) {
+func TestCanUseMatViewFilters_ExcludesUnsupportedFilters(t *testing.T) {
 	assert.True(t, canUseMatViewFilters(SearchFilters{}), "empty filters → matview eligible")
 	assert.True(t, canUseMatViewFilters(SearchFilters{Providers: []string{"openai"}}), "provider filter stays matview-eligible")
 	assert.True(t, canUseMatViewFilters(SearchFilters{Status: []string{"cancelled"}}), "cancelled is materialized as a terminal status")
 
+	assert.False(t, canUseMatViewFilters(SearchFilters{ParentRequestID: "session-1"}), "parent request filter must force the raw path")
 	assert.False(t, canUseMatViewFilters(SearchFilters{Status: []string{"processing"}}), "processing is not present in mv_logs_hourly")
 	assert.False(t, canUseMatViewFilters(SearchFilters{TeamIDs: []string{"t1"}}), "team filter must force the raw path")
 	assert.False(t, canUseMatViewFilters(SearchFilters{BusinessUnitIDs: []string{"bu1"}}), "BU filter must force the raw path")

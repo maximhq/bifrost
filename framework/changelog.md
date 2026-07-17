@@ -1,3 +1,4 @@
+- fix: route parent request log filters through the raw table (thanks [@G-XD](https://github.com/G-XD)!)
 - feat: add durable background-job `sidekiq` table, store methods, and runner with recovery and reaper
 - feat: pass created-by user ID and runner ID through sidekiq job lifecycle, add `GetInFlightSidekiqJobByKind` to config store interface
 - feat: show canonical model names in dashboard model rankings (thanks [@satyamkrishna](https://github.com/satyamkrishna)!)
