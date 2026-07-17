@@ -1795,22 +1795,13 @@ func isImageEditRequest(req *gemini.GeminiGenerationRequest) bool {
 		return true
 	}
 
-	hasImage := false
+	if !slices.Contains(req.GenerationConfig.ResponseModalities, gemini.ModalityImage) {
+		return false
+	}
+
 	for _, content := range req.Contents {
 		for _, part := range content.Parts {
 			if part != nil && part.InlineData != nil && strings.Contains(part.InlineData.MIMEType, "image") {
-				hasImage = true
-				break
-			}
-		}
-		if hasImage {
-			break
-		}
-	}
-
-	if hasImage {
-		for _, modality := range req.GenerationConfig.ResponseModalities {
-			if modality == gemini.ModalityImage {
 				return true
 			}
 		}
