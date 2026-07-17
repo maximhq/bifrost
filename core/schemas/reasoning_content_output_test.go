@@ -9,10 +9,10 @@ import (
 
 // These tests verify that non-stream (BifrostResponseChoice) and stream
 // (ChatStreamResponseChoiceDelta) assistant responses mirror "reasoning" into
-// "reasoning_content" on the wire, so OpenAI-compatible clients using the LiteLLM/AI SDK
-// dialect (e.g. @ai-sdk/openai-compatible) can consume reasoning output without a
-// Bifrost-specific response transform (issue #5325) — and that the alias does NOT leak
-// into outbound provider request payloads, which also reuse ChatMessage.
+// "reasoning_content" on the wire, so OpenAI-compatible clients that only recognize
+// "reasoning_content" (e.g. @ai-sdk/openai-compatible) can consume reasoning output
+// without a Bifrost-specific response transform (issue #5325) — and that the alias does
+// NOT leak into outbound provider request payloads, which also reuse ChatMessage.
 
 // TestMarshal_BifrostResponseChoice_MirrorsReasoningContent verifies the non-stream
 // message alias: message.reasoning_content mirrors message.reasoning.

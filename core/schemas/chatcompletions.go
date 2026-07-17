@@ -1501,8 +1501,8 @@ type BifrostResponseChoice struct {
 // MarshalJSON implements custom JSON marshalling for BifrostResponseChoice.
 // Beyond the default flattening of the embedded choice fields, it mirrors the
 // non-stream message's "reasoning" into "message.reasoning_content" so OpenAI-compatible
-// clients using the LiteLLM/AI SDK dialect (e.g. @ai-sdk/openai-compatible) can read
-// reasoning output without a Bifrost-specific response transform (issue #5325).
+// clients that only recognize "reasoning_content" (e.g. @ai-sdk/openai-compatible) can
+// read reasoning output without a Bifrost-specific response transform (issue #5325).
 // This type is response-only — unlike ChatMessage, which is also reused to build
 // outbound provider requests (Perplexity, HuggingFace, ...) — so the alias cannot leak
 // into request payloads. The streaming case is handled directly by
@@ -1645,9 +1645,9 @@ func (d *ChatStreamResponseChoiceDelta) UnmarshalJSON(data []byte) error {
 }
 
 // MarshalJSON implements custom marshalling for ChatStreamResponseChoiceDelta.
-// It mirrors "reasoning" into "reasoning_content" so OpenAI-compatible clients that
-// only recognize the LiteLLM/AI SDK dialect (e.g. @ai-sdk/openai-compatible) can read
-// streamed reasoning deltas without a Bifrost-specific response transform.
+// It mirrors "reasoning" into "reasoning_content" so OpenAI-compatible clients that only
+// recognize "reasoning_content" (e.g. @ai-sdk/openai-compatible) can read streamed
+// reasoning deltas without a Bifrost-specific response transform.
 func (d ChatStreamResponseChoiceDelta) MarshalJSON() ([]byte, error) {
 	type Alias ChatStreamResponseChoiceDelta
 	aux := struct {
