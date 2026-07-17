@@ -938,7 +938,11 @@ func (s *RDBLogStore) listSelectColumns() string {
 		"business_unit_id", "business_unit_name",
 		"team_ids", "team_names", "customer_ids", "customer_names", "business_unit_ids", "business_unit_names",
 		"speech_input", "transcription_input", "image_generation_input", "video_generation_input",
-		"latency", "token_usage", "cost", "status", "error_details", "stream",
+		// error_details is intentionally excluded from the list select: for status=error
+		// rows it can carry the provider's full (unbounded) error payload, and 25+ such
+		// rows can push the /api/logs response past Cloud Run's 32MB body limit (500s).
+		// The full error is still served by the detail endpoint (GetLog / GET /api/logs/{id}).
+		"latency", "token_usage", "cost", "status", "stream",
 		fmt.Sprintf("substr(content_summary, 1, %d) AS content_summary", maxContentSummaryBytes),
 		"metadata", "cache_debug",
 		"is_large_payload_request", "is_large_payload_response",
