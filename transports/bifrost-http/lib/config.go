@@ -75,6 +75,8 @@ type HandlerStore interface {
 	GetAsyncJobExecutor() *logstore.AsyncJobExecutor
 	// GetAsyncJobResultTTL returns the default TTL for async job results in seconds.
 	GetAsyncJobResultTTL() int
+	// GetStreamKeepAliveInterval returns the SSE keepalive interval in seconds.
+	GetStreamKeepAliveInterval() int
 	// GetKVStore returns the shared in-memory kvstore instance.
 	// Returns nil if not initialized.
 	GetKVStore() *kvstore.Store
@@ -4898,6 +4900,15 @@ func (c *Config) GetAsyncJobExecutor() *logstore.AsyncJobExecutor {
 }
 
 // GetAsyncJobResultTTL returns the default TTL for async job results in seconds.
+// GetStreamKeepAliveInterval returns the configured SSE keepalive interval in
+// seconds. The keepalive is opt-in: zero (the default) disables it.
+func (c *Config) GetStreamKeepAliveInterval() int {
+	if c.ClientConfig != nil {
+		return c.ClientConfig.StreamKeepAliveInterval
+	}
+	return 0
+}
+
 func (c *Config) GetAsyncJobResultTTL() int {
 	if c.ClientConfig.AsyncJobResultTTL > 0 {
 		return c.ClientConfig.AsyncJobResultTTL

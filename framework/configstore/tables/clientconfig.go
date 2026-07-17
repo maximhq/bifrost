@@ -41,6 +41,7 @@ type TableClientConfig struct {
 	EnforceSCIMAuth                       bool                           `gorm:"default:false" json:"enforce_scim_auth"`
 	DualCredentialConflictBehavior        DualCredentialConflictBehavior `gorm:"column:dual_credential_conflict_behavior;type:varchar(20);not null;default:'prefer_idp'" json:"dual_credential_conflict_behavior"`
 	MaxRequestBodySizeMB                  int                            `gorm:"default:100" json:"max_request_body_size_mb"`
+	StreamKeepAliveInterval               int                            `gorm:"column:stream_keepalive_interval;default:0" json:"stream_keepalive_interval,omitempty"` // Seconds between SSE keepalive comments during provider silence (0 = disabled; opt-in)
 	MCPAgentDepth                         int                            `gorm:"default:10" json:"mcp_agent_depth"`
 	MCPToolExecutionTimeout               int                            `gorm:"default:30" json:"mcp_tool_execution_timeout"`                    // Timeout for individual tool execution in seconds (default: 30)
 	MCPCodeModeBindingLevel               string                         `gorm:"default:server" json:"mcp_code_mode_binding_level"`               // How tools are exposed in VFS: "server" or "tool"
