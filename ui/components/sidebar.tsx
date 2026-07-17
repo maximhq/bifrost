@@ -46,6 +46,7 @@ import {
 	Users,
 	Wallet,
 	WalletCards,
+	Webhook,
 	CircuitBoard,
 	GitCompareArrows,
 } from "lucide-react";
@@ -897,6 +898,13 @@ export default function AppSidebar() {
 						hasAccess: hasGuardrailsProvidersAccess,
 					},
 				],
+			},
+			{
+				title: "Webhooks",
+				url: "/workspace/webhooks",
+				icon: Webhook,
+				description: "Async job webhook endpoints",
+				hasAccess: hasGovernanceLegacyAccess,
 			},
 			{
 				title: "Cluster Config",
