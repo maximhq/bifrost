@@ -441,6 +441,15 @@ export default function LogsPage() {
 				title: "Total Tokens",
 				value: <NumberFlow value={stats?.total_tokens ?? 0} format={COMPACT_NUMBER_FORMAT} />,
 				icon: <Hash className="size-4" />,
+				subValue: (
+					<>
+						<NumberFlow value={stats?.prompt_tokens ?? 0} format={COMPACT_NUMBER_FORMAT} />
+						<span> in / </span>
+						<NumberFlow value={stats?.completion_tokens ?? 0} format={COMPACT_NUMBER_FORMAT} />
+						<span> out</span>
+					</>
+				),
+				description: "Total tokens used, split into input (prompt) and output (completion) tokens.",
 			},
 			{
 				title: "Total Cost",
@@ -667,6 +676,9 @@ export default function LogsPage() {
 												)}
 											</div>
 											<div className="truncate font-mono text-xl font-medium sm:text-2xl">{card.value}</div>
+											{"subValue" in card && card.subValue && (
+												<div className="truncate font-mono text-[10.5px] tabular-nums">{card.subValue}</div>
+											)}
 										</div>
 									</CardContent>
 								</Card>

@@ -60,3 +60,35 @@ func TestParseGeminiError_RoundTripToGeminiError(t *testing.T) {
 		t.Fatalf("expected status RESOURCE_EXHAUSTED to survive round trip, got %q", geminiErr.Error.Status)
 	}
 }
+
+// TestProcessGeminiStreamChunk_MidStreamError verifies that an error payload
+// delivered inside an HTTP 200 stream body (e.g. Vertex aborting with a
+// pretty-printed 429 on quota exhaustion) is surfaced as a typed error that
+// preserves the upstream code, status, and message.
+func TestProcessGeminiStreamChunk_MidStreamError(t *testing.T) {
+	chunk := "{\n" +
+		"  \"error\": {\n" +
+		"    \"code\": 429,\n" +
+		"    \"message\": \"Resource exhausted. Please try again later.\",\n" +
+		"    \"status\": \"RESOURCE_EXHAUSTED\"\n" +
+		"  }\n" +
+		"}"
+
+	resp, err := processGeminiStreamChunk([]byte(chunk))
+	if resp != nil {
+		t.Fatal("expected nil response for error chunk")
+	}
+	apiErr, ok := err.(*GeminiStreamAPIError)
+	if !ok {
+		t.Fatalf("expected *GeminiStreamAPIError, got %T: %v", err, err)
+	}
+	if apiErr.Err.Code != 429 {
+		t.Errorf("expected code 429, got %d", apiErr.Err.Code)
+	}
+	if apiErr.Err.Status != "RESOURCE_EXHAUSTED" {
+		t.Errorf("expected status RESOURCE_EXHAUSTED, got %q", apiErr.Err.Status)
+	}
+	if apiErr.Err.Message != "Resource exhausted. Please try again later." {
+		t.Errorf("unexpected message: %q", apiErr.Err.Message)
+	}
+}

@@ -327,7 +327,7 @@ bifrost:
           sampling_rate: 100
 ```
 
-GraySwan requests automatically include sanitized incoming request headers in GraySwan `metadata.headers`; no extra Helm value is required. Credential-bearing headers such as `authorization`, `x-api-key`, API-key variants, cookies, and `grayswan-api-key` are excluded, while non-sensitive context headers such as `x-request-id`, `traceparent`, `x-tenant-id`, `content-type`, and `content-length` are included when present.
+Gray Swan requests automatically include sanitized incoming request headers in Gray Swan `metadata.headers`; no extra Helm value is required. Credential-bearing headers such as `authorization`, `x-api-key`, API-key variants, cookies, and `grayswan-api-key` are excluded, while non-sensitive context headers such as `x-request-id`, `traceparent`, `x-tenant-id`, `content-type`, and `content-length` are included when present.
 
 </Tab>
 </Tabs>

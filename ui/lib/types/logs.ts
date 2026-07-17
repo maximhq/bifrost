@@ -630,6 +630,8 @@ export interface LogStats {
 	user_facing_total_requests: number;
 	average_latency: number;
 	total_tokens: number;
+	prompt_tokens: number;
+	completion_tokens: number;
 	total_cost: number;
 	cache_hit_rate_total_requests?: number | null;
 	direct_cache_hits?: number | null;
@@ -775,6 +777,38 @@ export interface ProviderLatencyHistogramBucket {
 
 export interface ProviderLatencyHistogramResponse {
 	buckets: ProviderLatencyHistogramBucket[];
+	bucket_size_seconds: number;
+	providers: string[];
+}
+
+// Throughput (tokens/sec) histogram types
+// tokens_per_second is the aggregate rate for the bucket: total completion tokens
+// divided by total generation latency in seconds.
+export interface ThroughputHistogramBucket {
+	timestamp: string;
+	tokens_per_second: number;
+	total_completion_tokens: number;
+	total_requests: number;
+}
+
+export interface ThroughputHistogramResponse {
+	buckets: ThroughputHistogramBucket[];
+	bucket_size_seconds: number;
+}
+
+export interface ProviderThroughputStats {
+	tokens_per_second: number;
+	total_completion_tokens: number;
+	total_requests: number;
+}
+
+export interface ProviderThroughputHistogramBucket {
+	timestamp: string;
+	by_provider: Record<string, ProviderThroughputStats>;
+}
+
+export interface ProviderThroughputHistogramResponse {
+	buckets: ProviderThroughputHistogramBucket[];
 	bucket_size_seconds: number;
 	providers: string[];
 }
@@ -1188,6 +1222,7 @@ export interface ModelRankingTrend {
 	tokens_trend: number;
 	cost_trend: number;
 	latency_trend: number;
+	throughput_trend: number;
 }
 
 export interface ModelRankingEntry {
@@ -1200,6 +1235,7 @@ export interface ModelRankingEntry {
 	total_tokens: number;
 	total_cost: number;
 	avg_latency: number;
+	throughput: number; // tokens/sec
 	trend: ModelRankingTrend;
 }
 

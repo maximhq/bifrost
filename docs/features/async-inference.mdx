@@ -12,6 +12,10 @@ Async inference uses a fire-and-forget pattern for gateway requests: submit a no
 This is a gateway-only feature and is not available in the Go SDK and requires a Logs Store to be configured.
 </Note>
 
+<Tip>
+Prefer to be notified instead of polling? Register a [Webhook](/features/webhooks) and Bifrost delivers a signed callback the moment a job completes or fails.
+</Tip>
+
 ## How It Works
 
 ```mermaid
