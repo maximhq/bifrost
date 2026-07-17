@@ -1137,10 +1137,29 @@ bifrost:
   auditLogs:
     disabled: false
     hmacKey: ""
-    # Object storage archival for audit events (optional)
-    # When configured, each flushed batch of audit events is written as a JSONL object at
-    # {prefix}/audit-logs/YYYY/MM/DD/HH/{id}.jsonl in addition to the DB.
-    # Set compress: true to gzip the objects ({id}.jsonl.gz).
+    # Object storage archival for audit events (optional).
+    #
+    # When configured, a background job periodically copies audit events from the
+    # database to object storage, one closed time window at a time. Each window is
+    # written as one or more JSONL part objects plus a manifest that lists them:
+    #   {prefix}/audit-logs/YYYY/MM/DD/<start>-<end>/part-00000.jsonl[.gz]
+    #   {prefix}/audit-logs/YYYY/MM/DD/<start>-<end>/manifest.json[.gz]
+    # Read the manifest to enumerate a window; ignore any object it does not list.
+    #
+    # The database remains the source of truth. Archival never deletes rows —
+    # retentionDays handles that independently. In a cluster, only the leader
+    # archives. Events written before archival is first enabled are not backfilled.
+    #
+    # Window size and job period. Default 24h, minimum 5m.
+    # archiveInterval: "24h"
+    # A window only closes once (now - grace) has passed its end, which absorbs
+    # clock skew and late inserts. Must be less than archiveInterval. Default 15m.
+    # archiveGracePeriod: "15m"
+    # Roll a new part object once the current part reaches this many uncompressed
+    # bytes. Default 134217728 (128MiB). Raising it produces fewer, larger objects;
+    # note peak memory on the archiving node is roughly 2x this when compress: true,
+    # so size pod memory limits accordingly.
+    # archiveMaxObjectBytes: 134217728
     # objectStorage:
     #   type: s3        # Options: s3, gcs
     #   bucket: ""      # Bucket name
