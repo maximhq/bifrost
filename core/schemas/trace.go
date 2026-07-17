@@ -730,6 +730,7 @@ const (
 	AttrBifrostBusinessUnitNames   = "bifrost.business_unit.names"
 	AttrBifrostUserID              = "bifrost.user.id"
 	AttrBifrostUserName            = "bifrost.user.name"
+	AttrBifrostUserEmail           = "bifrost.user.email"
 	AttrBifrostRetries             = "bifrost.retries"
 	AttrBifrostFallbackIndex       = "bifrost.fallback_index"
 	AttrBifrostAlias               = "bifrost.alias"                // original requested model when it differs from the resolved model
