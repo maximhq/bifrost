@@ -6280,9 +6280,28 @@
           "minimum": 0,
           "description": "Number of days to retain audit logs (0 means no retention limit)"
         },
+        "archive_interval": {
+          "type": "string",
+          "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h)([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))*$",
+          "description": "Archival window size and job period, as a Go duration string (e.g. '24h', '1h', '30m'). Each window is archived as one set of objects. The supported range is 5m and above: this schema accepts any valid duration, and the runtime raises anything shorter to 5m rather than failing startup. Only used when object_storage is set. Default: 24h",
+          "default": "24h"
+        },
+        "archive_grace_period": {
+          "type": "string",
+          "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h)([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))*$",
+          "description": "How long to hold a window open past its end before archiving it, as a Go duration string. Absorbs clock skew and late inserts. Must be shorter than archive_interval, otherwise no window would ever close and archival would silently do nothing; the runtime substitutes a safe default if it is not. Only used when object_storage is set. Default: 15m",
+          "default": "15m"
+        },
+        "archive_max_object_bytes": {
+          "type": "integer",
+          "minimum": 1048576,
+          "maximum": 4294967296,
+          "description": "Roll a new part object once the current part reaches this many uncompressed bytes. Bounds memory on the archiving node: peak usage is roughly 2x this value when compress is true, since gzip allocates a second full buffer. The minimum and maximum above are strict validation limits — a config outside [1MiB, 4GiB] is rejected as invalid rather than accepted and adjusted. (The runtime additionally clamps to the same range, as a safety net for configs that never pass through schema validation.) Only used when object_storage is set. Default: 134217728 (128MiB)",
+          "default": 134217728
+        },
         "object_storage": {
           "type": "object",
-          "description": "Optional object storage for archiving audit events to S3/GCS. When configured, each flushed batch of audit events is written as a gzipped JSONL object at {prefix}/audit-logs/YYYY/MM/DD/HH/{id}.jsonl[.gz], in addition to the database (which remains the source of truth). Archival is going-forward only; existing rows are not backfilled.",
+          "description": "Optional object storage for archiving audit events to S3/GCS. Setting this enables archival; there is no separate on/off flag. A background job periodically copies audit events from the database, one closed time window at a time, writing each window as one or more JSONL part objects plus a manifest listing them: {prefix}/audit-logs/YYYY/MM/DD/{start}-{end}/part-00000.jsonl[.gz] and .../manifest.json[.gz]. Read the manifest to enumerate a window and ignore any object it does not list. The database remains the source of truth and archival never deletes rows (retention_days handles that independently). In a cluster only one node archives a given window. Archival is going-forward only; existing rows are not backfilled. See archive_interval, archive_grace_period and archive_max_object_bytes to tune it.",
           "properties": {
             "type": {
               "type": "string",

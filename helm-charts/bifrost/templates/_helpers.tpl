@@ -1576,6 +1576,15 @@ false
 {{- if .Values.bifrost.auditLogs.hmacKey }}
 {{- $_ := set $auditLogs "hmac_key" .Values.bifrost.auditLogs.hmacKey }}
 {{- end }}
+{{- if .Values.bifrost.auditLogs.archiveInterval }}
+{{- $_ := set $auditLogs "archive_interval" .Values.bifrost.auditLogs.archiveInterval }}
+{{- end }}
+{{- if .Values.bifrost.auditLogs.archiveGracePeriod }}
+{{- $_ := set $auditLogs "archive_grace_period" .Values.bifrost.auditLogs.archiveGracePeriod }}
+{{- end }}
+{{- if .Values.bifrost.auditLogs.archiveMaxObjectBytes }}
+{{- $_ := set $auditLogs "archive_max_object_bytes" (int64 .Values.bifrost.auditLogs.archiveMaxObjectBytes) }}
+{{- end }}
 {{- if .Values.bifrost.auditLogs.objectStorage }}
 {{- $aos := .Values.bifrost.auditLogs.objectStorage }}
 {{- $aosConfig := dict "type" $aos.type "bucket" $aos.bucket }}
