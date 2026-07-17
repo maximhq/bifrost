@@ -714,3 +714,35 @@ ResponsesStreamResponseType:
     - response.custom_tool_call_input.delta
     - response.custom_tool_call_input.done
     - error
+
+BifrostResponsesDeleteResponse:
+  type: object
+  description: Wire shape for a successful delete of a stored response.
+  properties:
+    id:
+      type: string
+    object:
+      type: string
+    deleted:
+      type: boolean
+    extra_fields:
+      $ref: './common.yaml#/BifrostResponseExtraFields'
+
+BifrostResponsesInputItemsResponse:
+  type: object
+  description: List payload for a response's input items.
+  properties:
+    object:
+      type: string
+    data:
+      type: array
+      items:
+        $ref: '#/ResponsesMessage'
+    has_more:
+      type: boolean
+    first_id:
+      type: string
+    last_id:
+      type: string
+    extra_fields:
+      $ref: './common.yaml#/BifrostResponseExtraFields'
