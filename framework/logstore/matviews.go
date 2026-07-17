@@ -936,11 +936,13 @@ func (s *RDBLogStore) getCountFromMatView(ctx context.Context, filters SearchFil
 // Latency is a weighted average across hourly buckets.
 func (s *RDBLogStore) getStatsFromMatView(ctx context.Context, filters SearchFilters) (*SearchStats, error) {
 	var result struct {
-		TotalCount   int64   `gorm:"column:total_count"`
-		SuccessCount int64   `gorm:"column:success_count"`
-		AvgLatency   float64 `gorm:"column:avg_latency"`
-		TotalTokens  int64   `gorm:"column:total_tokens"`
-		TotalCost    float64 `gorm:"column:total_cost"`
+		TotalCount       int64   `gorm:"column:total_count"`
+		SuccessCount     int64   `gorm:"column:success_count"`
+		AvgLatency       float64 `gorm:"column:avg_latency"`
+		TotalTokens      int64   `gorm:"column:total_tokens"`
+		PromptTokens     int64   `gorm:"column:prompt_tokens"`
+		CompletionTokens int64   `gorm:"column:completion_tokens"`
+		TotalCost        float64 `gorm:"column:total_cost"`
 	}
 	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, filters)
@@ -949,6 +951,8 @@ func (s *RDBLogStore) getStatsFromMatView(ctx context.Context, filters SearchFil
 		COALESCE(SUM(success_count), 0) AS success_count,
 		CASE WHEN SUM(count) > 0 THEN SUM(avg_latency * count) / SUM(count) ELSE 0 END AS avg_latency,
 		COALESCE(SUM(total_tokens), 0) AS total_tokens,
+		COALESCE(SUM(total_prompt_tokens), 0) AS prompt_tokens,
+		COALESCE(SUM(total_completion_tokens), 0) AS completion_tokens,
 		COALESCE(SUM(total_cost), 0) AS total_cost
 	`).Scan(&result).Error; err != nil {
 		return nil, err
@@ -972,6 +976,8 @@ func (s *RDBLogStore) getStatsFromMatView(ctx context.Context, filters SearchFil
 		UserFacingTotalRequests:   result.TotalCount, // matview approximation; no per-chain data available
 		AverageLatency:            result.AvgLatency,
 		TotalTokens:               result.TotalTokens,
+		PromptTokens:              result.PromptTokens,
+		CompletionTokens:          result.CompletionTokens,
 		TotalCost:                 result.TotalCost,
 		CacheHitRateTotalRequests: &cacheHitRateTotalRequests,
 	}
