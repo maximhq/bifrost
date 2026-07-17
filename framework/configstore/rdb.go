@@ -7543,3 +7543,196 @@ func (s *RDBConfigStore) RotateWebhookEndpointSecret(ctx context.Context, id str
 	rotated.Secret = &schemas.SecretVar{Val: newSecret}
 	return &rotated, nil
 }
+
+// RecordWebhookEndpointSuccess resets the endpoint's consecutive-failure
+// streak after a successful delivery. Operational counters are written with
+// atomic column updates — delivery workers on several nodes may record
+// results for the same endpoint concurrently — and bypass the save hooks so
+// they never touch the endpoint's config fields or updated_at.
+func (s *RDBConfigStore) RecordWebhookEndpointSuccess(ctx context.Context, id string) error {
+	res := s.DB().WithContext(ctx).
+		Model(&tables.TableWebhookEndpoint{}).
+		Where("id = ?", id).
+		UpdateColumns(map[string]any{
+			"consecutive_failures": 0,
+			"last_success_at":      time.Now(),
+		})
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// RecordWebhookEndpointFailure increments the endpoint's consecutive-failure
+// streak and returns the post-increment value so the caller can apply its
+// auto-disable threshold. The increment is a single SQL expression — never a
+// read-modify-write — so concurrent recorders cannot lose updates; the
+// read-back inside the transaction observes this recorder's own increment.
+func (s *RDBConfigStore) RecordWebhookEndpointFailure(ctx context.Context, id string) (int, error) {
+	var failures int
+	err := s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		res := tx.Model(&tables.TableWebhookEndpoint{}).
+			Where("id = ?", id).
+			UpdateColumns(map[string]any{
+				"consecutive_failures": gorm.Expr("consecutive_failures + 1"),
+				"last_failure_at":      time.Now(),
+			})
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return ErrNotFound
+		}
+		var row struct{ ConsecutiveFailures int }
+		if err := tx.Model(&tables.TableWebhookEndpoint{}).
+			Select("consecutive_failures").
+			Where("id = ?", id).
+			Scan(&row).Error; err != nil {
+			return err
+		}
+		failures = row.ConsecutiveFailures
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return failures, nil
+}
+
+// CreateWebhookJob inserts a new delivery job into the webhook work queue.
+// The caller supplies the id: it doubles as the delivery's `webhook-id`
+// header and must stay stable across attempts and redeliveries, so receivers
+// can deduplicate. A zero NextAttemptAt means due immediately.
+func (s *RDBConfigStore) CreateWebhookJob(ctx context.Context, job *tables.TableWebhookJob) error {
+	if job == nil {
+		return fmt.Errorf("webhook job cannot be nil")
+	}
+	if job.ID == "" {
+		return fmt.Errorf("webhook job id is required")
+	}
+	if job.EndpointID == "" {
+		return fmt.Errorf("webhook job endpoint id is required")
+	}
+	if job.AsyncJobID == "" {
+		return fmt.Errorf("webhook job async job id is required")
+	}
+	if !job.Event.IsValid() {
+		return fmt.Errorf("unknown webhook event %q", job.Event)
+	}
+	// A new job must enter the queue in the initial, unclaimed state: a nonzero
+	// attempt count or a pre-set claim would let it start already hidden behind
+	// a lease, invisible to every worker until the phantom lease expired.
+	if job.AttemptCount != 0 || job.ClaimedBy != "" || job.ClaimedUntil != nil {
+		return fmt.Errorf("new webhook job must be unattempted and unclaimed")
+	}
+	// Queue timestamps are normalized to UTC: SQLite compares datetimes as
+	// strings, so mixed offsets break the due and lease predicates.
+	now := time.Now().UTC()
+	if job.NextAttemptAt.IsZero() {
+		job.NextAttemptAt = now
+	} else {
+		job.NextAttemptAt = job.NextAttemptAt.UTC()
+	}
+	job.CreatedAt = now
+	return s.parseGormError(s.DB().WithContext(ctx).Create(job).Error)
+}
+
+// ListDueWebhookJobs returns up to limit jobs that are due for a delivery
+// attempt: next_attempt_at has passed and no live claim lease is held.
+// Ordered oldest-due-first; limit <= 0 means no limit. Every node lists and
+// races to claim; the atomic ClaimWebhookJob decides the single winner per
+// job, so listing needs no cross-node coordination.
+func (s *RDBConfigStore) ListDueWebhookJobs(ctx context.Context, limit int) ([]tables.TableWebhookJob, error) {
+	now := time.Now().UTC()
+	query := s.DB().WithContext(ctx).
+		Where("next_attempt_at <= ? AND (claimed_until IS NULL OR claimed_until < ?)", now, now).
+		Order("next_attempt_at ASC")
+	if limit > 0 {
+		query = query.Limit(limit)
+	}
+	var jobs []tables.TableWebhookJob
+	if err := query.Find(&jobs).Error; err != nil {
+		return nil, err
+	}
+	return jobs, nil
+}
+
+// ClaimWebhookJob atomically claims a due job for runnerID until leaseUntil.
+// The conditional UPDATE re-checks the due predicate, so at most one
+// concurrent claimer wins (RowsAffected == 1). A lease that expired without
+// being released — its owner died mid-attempt — makes the row claimable
+// again, which is also how delivery work is recovered after a restart.
+func (s *RDBConfigStore) ClaimWebhookJob(ctx context.Context, id, runnerID string, leaseUntil time.Time) (bool, error) {
+	now := time.Now().UTC()
+	// The lease must expire strictly in the future: a past or present expiry
+	// would win the claim yet leave the row immediately reclaimable, so a
+	// second worker could seize a job this caller still believes it owns.
+	leaseUntil = normalizeLeaseTime(leaseUntil)
+	if !leaseUntil.After(now) {
+		return false, fmt.Errorf("webhook job lease must expire in the future")
+	}
+	res := s.DB().WithContext(ctx).
+		Model(&tables.TableWebhookJob{}).
+		Where("id = ? AND next_attempt_at <= ? AND (claimed_until IS NULL OR claimed_until < ?)", id, now, now).
+		Updates(map[string]any{
+			"claimed_by":    runnerID,
+			"claimed_until": leaseUntil,
+		})
+	if res.Error != nil {
+		return false, res.Error
+	}
+	return res.RowsAffected == 1, nil
+}
+
+// normalizeLeaseTime is applied to claimed_until on every write and fence
+// comparison: UTC (mixed offsets break SQLite's string datetime compares) and
+// microsecond precision (Postgres truncates to microseconds, so an exact
+// equality fence must not carry nanoseconds).
+func normalizeLeaseTime(t time.Time) time.Time {
+	return t.UTC().Truncate(time.Microsecond)
+}
+
+// RescheduleWebhookJob records a retryable failed attempt on a claimed job:
+// it increments the attempt counter, sets the next due time, and releases
+// the claim lease. Fenced on claimed_by plus the exact lease issued to this
+// claim — runner identity alone cannot distinguish successive claims by the
+// same runner (the single-node runner id is empty), while a reclaim always
+// carries a later lease expiry, so a stale owner's mutation matches nothing.
+func (s *RDBConfigStore) RescheduleWebhookJob(ctx context.Context, id, runnerID string, leaseUntil, nextAttemptAt time.Time) error {
+	res := s.DB().WithContext(ctx).
+		Model(&tables.TableWebhookJob{}).
+		Where("id = ? AND claimed_by = ? AND claimed_until = ?", id, runnerID, normalizeLeaseTime(leaseUntil)).
+		Updates(map[string]any{
+			"attempt_count":   gorm.Expr("attempt_count + 1"),
+			"next_attempt_at": nextAttemptAt.UTC(),
+			"claimed_by":      "",
+			"claimed_until":   nil,
+		})
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return fmt.Errorf("webhook job not found or no longer owned by caller")
+	}
+	return nil
+}
+
+// DeleteWebhookJob removes a job whose delivery reached a terminal outcome —
+// queue rows only exist while a delivery is in flight. Fenced on claimed_by
+// plus the exact lease issued to this claim (see RescheduleWebhookJob), so
+// only the current claim holder can retire the job.
+func (s *RDBConfigStore) DeleteWebhookJob(ctx context.Context, id, runnerID string, leaseUntil time.Time) error {
+	res := s.DB().WithContext(ctx).
+		Where("id = ? AND claimed_by = ? AND claimed_until = ?", id, runnerID, normalizeLeaseTime(leaseUntil)).
+		Delete(&tables.TableWebhookJob{})
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return fmt.Errorf("webhook job not found or no longer owned by caller")
+	}
+	return nil
+}

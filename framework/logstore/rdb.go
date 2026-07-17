@@ -4194,3 +4194,100 @@ func (s *RDBLogStore) DeleteStaleAsyncJobs(ctx context.Context, staleSince time.
 		Delete(&AsyncJob{})
 	return result.RowsAffected, result.Error
 }
+
+// CreateWebhookDelivery appends one webhook delivery attempt record. The
+// history table is insert-only: rows are never updated after creation.
+func (s *RDBLogStore) CreateWebhookDelivery(ctx context.Context, delivery *WebhookDelivery) error {
+	return s.db.WithContext(ctx).Create(delivery).Error
+}
+
+// FindWebhookDeliveryByID retrieves a webhook delivery attempt by its ID.
+func (s *RDBLogStore) FindWebhookDeliveryByID(ctx context.Context, id string) (*WebhookDelivery, error) {
+	var delivery WebhookDelivery
+	result := s.db.WithContext(ctx).Where("id = ?", id).First(&delivery)
+	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, result.Error
+	}
+	return &delivery, nil
+}
+
+// SearchWebhookDeliveries returns one page of delivery history for an
+// endpoint. Pagination is by delivery group (webhook_id), not by individual
+// attempt: a page holds every attempt of the webhook_ids it covers, so a
+// delivery run never straddles a page boundary and the caller can group
+// attempts into runs without losing any. Groups are ordered by their most
+// recent attempt, and attempts within the page are returned newest first.
+func (s *RDBLogStore) SearchWebhookDeliveries(ctx context.Context, endpointID string, pagination PaginationOptions) (*WebhookDeliverySearchResult, error) {
+	limit := pagination.Limit
+	if limit <= 0 || limit > defaultMaxSearchLimit {
+		limit = defaultMaxSearchLimit
+	}
+	// Total counts delivery groups, so the pager reflects the rows the caller
+	// renders rather than raw attempts.
+	var total int64
+	if err := s.db.WithContext(ctx).Model(&WebhookDelivery{}).
+		Where("endpoint_id = ?", endpointID).
+		Distinct("webhook_id").
+		Count(&total).Error; err != nil {
+		return nil, err
+	}
+	// Select the page of webhook_ids, most-recently-active first.
+	webhookIDs := []string{}
+	pageQuery := s.db.WithContext(ctx).
+		Model(&WebhookDelivery{}).
+		Where("endpoint_id = ?", endpointID).
+		Group("webhook_id").
+		Order("MAX(created_at) DESC, webhook_id DESC").
+		Limit(limit)
+	if pagination.Offset > 0 {
+		pageQuery = pageQuery.Offset(pagination.Offset)
+	}
+	if err := pageQuery.Pluck("webhook_id", &webhookIDs).Error; err != nil {
+		return nil, err
+	}
+	// Fetch every attempt of the selected groups so no run is split.
+	deliveries := []WebhookDelivery{}
+	if len(webhookIDs) > 0 {
+		if err := s.db.WithContext(ctx).
+			Where("endpoint_id = ? AND webhook_id IN ?", endpointID, webhookIDs).
+			Order("created_at DESC, id DESC").
+			Find(&deliveries).Error; err != nil {
+			return nil, err
+		}
+	}
+	result := &WebhookDeliverySearchResult{
+		Deliveries: deliveries,
+		Pagination: pagination,
+	}
+	result.Pagination.Limit = limit
+	result.Pagination.TotalCount = total
+	return result, nil
+}
+
+// DeleteExpiredWebhookDeliveries deletes delivery history whose expires_at has passed.
+// Rows with a null expires_at are kept.
+// Deletes in batches to avoid long-running transactions that hold row locks.
+func (s *RDBLogStore) DeleteExpiredWebhookDeliveries(ctx context.Context) (int64, error) {
+	now := time.Now().UTC()
+	const batchLimit = 100
+	var totalDeleted int64
+	for {
+		result := s.db.WithContext(ctx).
+			Where("id IN (?)",
+				s.db.Model(&WebhookDelivery{}).Select("id").
+					Where("expires_at IS NOT NULL AND expires_at < ?", now).
+					Limit(batchLimit),
+			).Delete(&WebhookDelivery{})
+		if result.Error != nil {
+			return totalDeleted, result.Error
+		}
+		totalDeleted += result.RowsAffected
+		if result.RowsAffected < batchLimit {
+			break
+		}
+	}
+	return totalDeleted, nil
+}
