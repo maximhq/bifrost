@@ -1789,13 +1789,26 @@ func isImageGenerationRequest(req *gemini.GeminiGenerationRequest) bool {
 // isImageEditRequest checks if the request is for image edit
 // Image edit is detected by:
 // 1. Model is an Imagen model and has reference images
-// 2. Inline image data present in the first content part and response modalities contain IMAGE
+// 2. Inline image data present in any content part (regardless of position) and response modalities contain IMAGE
 func isImageEditRequest(req *gemini.GeminiGenerationRequest) bool {
 	if schemas.IsImagenModel(req.Model) && len(req.Instances) > 0 && req.Instances[0].ReferenceImages != nil {
 		return true
 	}
 
-	if len(req.Contents) > 0 && len(req.Contents[0].Parts) > 0 && req.Contents[0].Parts[0].InlineData != nil && strings.Contains(req.Contents[0].Parts[0].InlineData.MIMEType, "image") {
+	hasImage := false
+	for _, content := range req.Contents {
+		for _, part := range content.Parts {
+			if part != nil && part.InlineData != nil && strings.Contains(part.InlineData.MIMEType, "image") {
+				hasImage = true
+				break
+			}
+		}
+		if hasImage {
+			break
+		}
+	}
+
+	if hasImage {
 		for _, modality := range req.GenerationConfig.ResponseModalities {
 			if modality == gemini.ModalityImage {
 				return true

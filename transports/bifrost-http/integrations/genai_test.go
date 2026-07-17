@@ -336,3 +336,78 @@ func TestConvertGeminiModelMetadataResponse_EmptyReturnsMinimalModel(t *testing.
 	require.True(t, ok, "expected gemini.GeminiModel")
 	assert.Equal(t, "models/gemini-3-pro-preview", model.Name)
 }
+
+// Issue #5314: isImageEditRequest must be order-insensitive across parts.
+// The native Gemini API accepts inlineData in any position within a content's
+// parts, so a text part preceding the image must still classify as an edit.
+func TestIsImageEditRequest_ImageFirst(t *testing.T) {
+	req := &gemini.GeminiGenerationRequest{
+		Contents: []gemini.Content{
+			{
+				Parts: []*gemini.Part{
+					{InlineData: &gemini.Blob{MIMEType: "image/png", Data: "AAAA"}},
+					{Text: "Add one small yellow circle at the exact center."},
+				},
+			},
+		},
+		GenerationConfig: gemini.GenerationConfig{
+			ResponseModalities: []gemini.Modality{gemini.ModalityImage},
+		},
+	}
+
+	assert.True(t, isImageEditRequest(req), "image-first ordering must classify as image edit")
+}
+
+func TestIsImageEditRequest_TextFirst(t *testing.T) {
+	req := &gemini.GeminiGenerationRequest{
+		Contents: []gemini.Content{
+			{
+				Parts: []*gemini.Part{
+					{Text: "Add one small yellow circle at the exact center."},
+					{InlineData: &gemini.Blob{MIMEType: "image/png", Data: "AAAA"}},
+				},
+			},
+		},
+		GenerationConfig: gemini.GenerationConfig{
+			ResponseModalities: []gemini.Modality{gemini.ModalityImage},
+		},
+	}
+
+	assert.True(t, isImageEditRequest(req), "text-first ordering must also classify as image edit (order-insensitive)")
+}
+
+func TestIsImageEditRequest_TextOnly_NotEdit(t *testing.T) {
+	req := &gemini.GeminiGenerationRequest{
+		Contents: []gemini.Content{
+			{
+				Parts: []*gemini.Part{
+					{Text: "A photo of a cat."},
+				},
+			},
+		},
+		GenerationConfig: gemini.GenerationConfig{
+			ResponseModalities: []gemini.Modality{gemini.ModalityImage},
+		},
+	}
+
+	assert.False(t, isImageEditRequest(req), "text-only request must not classify as image edit")
+}
+
+func TestIsImageEditRequest_ImageAcrossMultipleContents(t *testing.T) {
+	req := &gemini.GeminiGenerationRequest{
+		Contents: []gemini.Content{
+			{Parts: []*gemini.Part{{Text: "first turn"}}},
+			{
+				Parts: []*gemini.Part{
+					{Text: "second turn prompt"},
+					{InlineData: &gemini.Blob{MIMEType: "image/jpeg", Data: "AAAA"}},
+				},
+			},
+		},
+		GenerationConfig: gemini.GenerationConfig{
+			ResponseModalities: []gemini.Modality{gemini.ModalityImage},
+		},
+	}
+
+	assert.True(t, isImageEditRequest(req), "image in a later content entry must still classify as image edit")
+}
