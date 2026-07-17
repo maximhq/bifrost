@@ -14,12 +14,13 @@ import (
 
 // CerebrasProvider implements the Provider interface for Cerebras's API.
 type CerebrasProvider struct {
-	logger              schemas.Logger        // Logger for provider operations
-	client              *fasthttp.Client      // HTTP client for unary API requests (ReadTimeout bounds overall response)
-	streamingClient     *fasthttp.Client      // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
-	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
-	sendBackRawRequest  bool                  // Whether to include raw request in BifrostResponse
-	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
+	logger                   schemas.Logger        // Logger for provider operations
+	client                   *fasthttp.Client      // HTTP client for unary API requests (ReadTimeout bounds overall response)
+	streamingClient          *fasthttp.Client      // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
+	networkConfig            schemas.NetworkConfig // Network configuration including extra headers
+	sendBackRawRequest       bool                  // Whether to include raw request in BifrostResponse
+	sendBackRawResponse      bool                  // Whether to include raw response in BifrostResponse
+	includeCustomModelFields bool                  // Whether to preserve non-standard fields on model list/retrieve responses
 }
 
 // NewCerebrasProvider creates a new Cerebras provider instance.
@@ -51,12 +52,13 @@ func NewCerebrasProvider(config *schemas.ProviderConfig, logger schemas.Logger) 
 	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
 
 	return &CerebrasProvider{
-		logger:              logger,
-		client:              client,
-		streamingClient:     streamingClient,
-		networkConfig:       config.NetworkConfig,
-		sendBackRawRequest:  config.SendBackRawRequest,
-		sendBackRawResponse: config.SendBackRawResponse,
+		logger:                   logger,
+		client:                   client,
+		streamingClient:          streamingClient,
+		networkConfig:            config.NetworkConfig,
+		sendBackRawRequest:       config.SendBackRawRequest,
+		sendBackRawResponse:      config.SendBackRawResponse,
+		includeCustomModelFields: config.IncludeCustomModelFields,
 	}, nil
 }
 
@@ -77,6 +79,7 @@ func (provider *CerebrasProvider) ListModels(ctx *schemas.BifrostContext, keys [
 		provider.GetProviderKey(),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		provider.includeCustomModelFields,
 	)
 }
 

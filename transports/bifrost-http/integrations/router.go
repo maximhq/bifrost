@@ -178,6 +178,10 @@ type RequestConverter func(ctx *schemas.BifrostContext, req interface{}) (*schem
 // It takes a BifrostListModelsResponse and returns the format expected by the specific integration.
 type ListModelsResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostListModelsResponse) (interface{}, error)
 
+// RetrieveModelResponseConverter is a function that converts a single retrieved schemas.Model
+// to integration-specific format (e.g. the strict OpenAI model wire shape).
+type RetrieveModelResponseConverter func(ctx *schemas.BifrostContext, model *schemas.Model) (interface{}, error)
+
 // TextResponseConverter is a function that converts BifrostTextCompletionResponse to integration-specific format.
 // It takes a BifrostTextCompletionResponse and returns the format expected by the specific integration.
 type TextResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostTextCompletionResponse) (interface{}, error)
@@ -461,6 +465,7 @@ type RouteConfig struct {
 	CachedContentUpdateResponseConverter   CachedContentUpdateResponseConverter   // Optional response converter for cached content update
 	CachedContentDeleteResponseConverter   CachedContentDeleteResponseConverter   // Optional response converter for cached content delete
 	ListModelsResponseConverter            ListModelsResponseConverter            // Function to convert BifrostListModelsResponse to integration format (SHOULD NOT BE NIL)
+	RetrieveModelResponseConverter         RetrieveModelResponseConverter         // Function to convert a single retrieved schemas.Model to integration format
 	TextResponseConverter                  TextResponseConverter                  // Function to convert BifrostTextCompletionResponse to integration format (SHOULD NOT BE NIL)
 	ChatResponseConverter                  ChatResponseConverter                  // Function to convert BifrostChatResponse to integration format (SHOULD NOT BE NIL)
 	AsyncChatResponseConverter             AsyncChatResponseConverter             // Function to convert AsyncJobResponse to integration format (SHOULD NOT BE NIL)
@@ -957,6 +962,40 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 
 		response, err = config.ListModelsResponseConverter(bifrostCtx, listModelsResponse)
 		bifrostExtraFields = listModelsResponse.ExtraFields
+	case bifrostReq.RetrieveModelRequest != nil:
+		// Determine provider: explicit header overrides request field; otherwise
+		// fall back to the request field, mirroring the ListModelsRequest branch above.
+		retrieveModelProvider := strings.ToLower(string(ctx.Request.Header.Peek("x-bf-model-provider")))
+		switch retrieveModelProvider {
+		case "":
+			// keep any provider already set on the request
+		case "all":
+			bifrostReq.RetrieveModelRequest.Provider = ""
+		default:
+			bifrostReq.RetrieveModelRequest.Provider = schemas.ModelProvider(retrieveModelProvider)
+		}
+
+		model, retrieveExtraFields, bifrostErr := g.client.RetrieveModelRequest(bifrostCtx, bifrostReq.RetrieveModelRequest)
+		if bifrostErr != nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
+			return
+		}
+		if config.PostCallback != nil {
+			if err := config.PostCallback(ctx, req, model); err != nil {
+				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to execute post-request callback"))
+				return
+			}
+		}
+		if model == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Bifrost response is nil after post-request callback"))
+			return
+		}
+		if config.RetrieveModelResponseConverter == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "missing RetrieveModelResponseConverter for integration"))
+			return
+		}
+		response, err = config.RetrieveModelResponseConverter(bifrostCtx, model)
+		bifrostExtraFields = retrieveExtraFields
 	case bifrostReq.TextCompletionRequest != nil:
 		textCompletionResponse, bifrostErr := g.client.TextCompletionRequest(bifrostCtx, bifrostReq.TextCompletionRequest)
 		if bifrostErr != nil {

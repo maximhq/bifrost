@@ -16,13 +16,14 @@ import (
 
 // opencodeProvider implements the Provider interface for Opencode Zen and Go gateways.
 type opencodeProvider struct {
-	providerKey         schemas.ModelProvider
-	logger              schemas.Logger
-	client              *fasthttp.Client
-	streamingClient     *fasthttp.Client
-	networkConfig       schemas.NetworkConfig
-	sendBackRawRequest  bool
-	sendBackRawResponse bool
+	providerKey              schemas.ModelProvider
+	logger                   schemas.Logger
+	client                   *fasthttp.Client
+	streamingClient          *fasthttp.Client
+	networkConfig            schemas.NetworkConfig
+	sendBackRawRequest       bool
+	sendBackRawResponse      bool
+	includeCustomModelFields bool
 }
 
 // NewOpencodeZenProvider creates a new Opencode Zen provider instance.
@@ -68,13 +69,14 @@ func newOpencodeProvider(
 	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
 
 	return &opencodeProvider{
-		providerKey:         providerKey,
-		logger:              logger,
-		client:              client,
-		streamingClient:     streamingClient,
-		networkConfig:       config.NetworkConfig,
-		sendBackRawRequest:  config.SendBackRawRequest,
-		sendBackRawResponse: config.SendBackRawResponse,
+		providerKey:              providerKey,
+		logger:                   logger,
+		client:                   client,
+		streamingClient:          streamingClient,
+		networkConfig:            config.NetworkConfig,
+		sendBackRawRequest:       config.SendBackRawRequest,
+		sendBackRawResponse:      config.SendBackRawResponse,
+		includeCustomModelFields: config.IncludeCustomModelFields,
 	}, nil
 }
 
@@ -95,6 +97,7 @@ func (p *opencodeProvider) ListModels(ctx *schemas.BifrostContext, keys []schema
 		p.providerKey,
 		providerUtils.ShouldSendBackRawRequest(ctx, p.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, p.sendBackRawResponse),
+		p.includeCustomModelFields,
 	)
 }
 

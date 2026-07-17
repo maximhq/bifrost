@@ -30,6 +30,7 @@ export function DebuggingFormFragment({ provider }: DebuggingFormFragmentProps) 
 			send_back_raw_request: provider.send_back_raw_request ?? false,
 			send_back_raw_response: provider.send_back_raw_response ?? false,
 			store_raw_request_response: provider.store_raw_request_response ?? false,
+			include_custom_model_fields: provider.include_custom_model_fields ?? false,
 		},
 	});
 	const sendBackRawRequest = form.watch("send_back_raw_request");
@@ -45,15 +46,23 @@ export function DebuggingFormFragment({ provider }: DebuggingFormFragmentProps) 
 			send_back_raw_request: provider.send_back_raw_request ?? false,
 			send_back_raw_response: provider.send_back_raw_response ?? false,
 			store_raw_request_response: provider.store_raw_request_response ?? false,
+			include_custom_model_fields: provider.include_custom_model_fields ?? false,
 		});
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [provider.name, provider.send_back_raw_request, provider.send_back_raw_response, provider.store_raw_request_response]);
+	}, [
+		provider.name,
+		provider.send_back_raw_request,
+		provider.send_back_raw_response,
+		provider.store_raw_request_response,
+		provider.include_custom_model_fields,
+	]);
 
 	const onSubmit = (data: DebuggingFormSchema) => {
 		const updatedProvider = buildProviderUpdatePayload(provider, {
 			send_back_raw_request: data.send_back_raw_request,
 			send_back_raw_response: data.send_back_raw_response,
 			store_raw_request_response: data.store_raw_request_response,
+			include_custom_model_fields: data.include_custom_model_fields,
 		});
 		updateProvider(updatedProvider)
 			.unwrap()
@@ -189,6 +198,50 @@ export function DebuggingFormFragment({ provider }: DebuggingFormFragmentProps) 
 											onCheckedChange={(checked) => {
 												field.onChange(checked);
 												form.trigger("store_raw_request_response");
+											}}
+										/>
+									</FormControl>
+								</div>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+
+					{/* Include Custom Model Fields */}
+					<FormField
+						control={form.control}
+						name="include_custom_model_fields"
+						render={({ field }) => (
+							<FormItem>
+								<div className="flex items-center justify-between space-x-2">
+									<div className="space-y-0.5">
+										<div className="flex items-center gap-1.5">
+											<FormLabel>Include Custom Model Fields</FormLabel>
+											<TooltipProvider>
+												<Tooltip>
+													<TooltipTrigger asChild data-testid="provider-debugging-include-custom-model-fields-tooltip-trigger">
+														<Info className="text-muted-foreground h-3 w-3 cursor-pointer" />
+													</TooltipTrigger>
+													<TooltipContent>
+														Applies to GET /v1/models and GET /v1/models/{"{model_id}"}
+													</TooltipContent>
+												</Tooltip>
+											</TooltipProvider>
+										</div>
+										<p className="text-muted-foreground text-xs">
+											Preserve non-standard fields from this provider&apos;s upstream model list/retrieve responses instead of dropping
+											them.
+										</p>
+									</div>
+									<FormControl>
+										<Switch
+											data-testid="provider-debugging-include-custom-model-fields-switch"
+											size="md"
+											checked={field.value}
+											disabled={!hasUpdateProviderAccess}
+											onCheckedChange={(checked) => {
+												field.onChange(checked);
+												form.trigger("include_custom_model_fields");
 											}}
 										/>
 									</FormControl>

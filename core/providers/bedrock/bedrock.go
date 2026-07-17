@@ -34,15 +34,16 @@ import (
 
 // BedrockProvider implements the Provider interface for AWS Bedrock.
 type BedrockProvider struct {
-	logger                schemas.Logger                // Logger for provider operations
-	client                *http.Client                  // HTTP client for unary API requests (Client.Timeout bounds overall response)
-	streamingClient       *http.Client                  // HTTP client for streaming API requests (no Timeout; idle governed by NewIdleTimeoutReader)
-	mantleClient          *fasthttp.Client              // fasthttp client for Bedrock Mantle unary requests (OpenAI-compatible and native-Anthropic paths)
-	mantleStreamingClient *fasthttp.Client              // fasthttp streaming client for Bedrock Mantle streaming requests
-	networkConfig         schemas.NetworkConfig         // Network configuration including extra headers
-	customProviderConfig  *schemas.CustomProviderConfig // Custom provider config
-	sendBackRawRequest    bool                          // Whether to include raw request in BifrostResponse
-	sendBackRawResponse   bool                          // Whether to include raw response in BifrostResponse
+	logger                   schemas.Logger                // Logger for provider operations
+	client                   *http.Client                  // HTTP client for unary API requests (Client.Timeout bounds overall response)
+	streamingClient          *http.Client                  // HTTP client for streaming API requests (no Timeout; idle governed by NewIdleTimeoutReader)
+	mantleClient             *fasthttp.Client              // fasthttp client for Bedrock Mantle unary requests (OpenAI-compatible and native-Anthropic paths)
+	mantleStreamingClient    *fasthttp.Client              // fasthttp streaming client for Bedrock Mantle streaming requests
+	networkConfig            schemas.NetworkConfig         // Network configuration including extra headers
+	customProviderConfig     *schemas.CustomProviderConfig // Custom provider config
+	sendBackRawRequest       bool                          // Whether to include raw request in BifrostResponse
+	sendBackRawResponse      bool                          // Whether to include raw response in BifrostResponse
+	includeCustomModelFields bool                          // Whether to preserve non-standard fields on model list/retrieve responses
 }
 
 // assumeRoleCredsCache caches *aws.CredentialsCache instances keyed by the
@@ -148,15 +149,16 @@ func NewBedrockProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 	}
 
 	return &BedrockProvider{
-		logger:                logger,
-		client:                client,
-		streamingClient:       streamingClient,
-		mantleClient:          mantleFasthttpClient,
-		mantleStreamingClient: mantleStreamingFasthttpClient,
-		networkConfig:         config.NetworkConfig,
-		customProviderConfig:  config.CustomProviderConfig,
-		sendBackRawRequest:    config.SendBackRawRequest,
-		sendBackRawResponse:   config.SendBackRawResponse,
+		logger:                   logger,
+		client:                   client,
+		streamingClient:          streamingClient,
+		mantleClient:             mantleFasthttpClient,
+		mantleStreamingClient:    mantleStreamingFasthttpClient,
+		networkConfig:            config.NetworkConfig,
+		customProviderConfig:     config.CustomProviderConfig,
+		sendBackRawRequest:       config.SendBackRawRequest,
+		sendBackRawResponse:      config.SendBackRawResponse,
+		includeCustomModelFields: config.IncludeCustomModelFields,
 	}, nil
 }
 
@@ -752,7 +754,7 @@ func (provider *BedrockProvider) listMantleModels(ctx *schemas.BifrostContext, k
 		provider.logger.Warn("failed to parse mantle list-models response: %v", err)
 		return nil
 	}
-	return mantleResponse.ToBifrostListModelsResponse(provider.GetProviderKey(), key.Models, key.BlacklistedModels, key.Aliases, unfiltered)
+	return mantleResponse.ToBifrostListModelsResponse(provider.GetProviderKey(), key.Models, key.BlacklistedModels, key.Aliases, unfiltered, provider.includeCustomModelFields)
 }
 
 func (provider *BedrockProvider) listModelsByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {

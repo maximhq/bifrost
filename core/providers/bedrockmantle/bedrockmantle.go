@@ -23,12 +23,13 @@ import (
 
 // BedrockMantleProvider implements the Provider interface for the Bedrock Mantle endpoint.
 type BedrockMantleProvider struct {
-	logger                schemas.Logger        // Logger for provider operations
-	mantleClient          *fasthttp.Client      // fasthttp client for unary requests (OpenAI-compatible and native-Anthropic paths)
-	mantleStreamingClient *fasthttp.Client      // fasthttp streaming client for streaming requests
-	networkConfig         schemas.NetworkConfig // Network configuration including extra headers
-	sendBackRawRequest    bool                  // Whether to include raw request in BifrostResponse
-	sendBackRawResponse   bool                  // Whether to include raw response in BifrostResponse
+	logger                   schemas.Logger        // Logger for provider operations
+	mantleClient             *fasthttp.Client      // fasthttp client for unary requests (OpenAI-compatible and native-Anthropic paths)
+	mantleStreamingClient    *fasthttp.Client      // fasthttp streaming client for streaming requests
+	networkConfig            schemas.NetworkConfig // Network configuration including extra headers
+	sendBackRawRequest       bool                  // Whether to include raw request in BifrostResponse
+	sendBackRawResponse      bool                  // Whether to include raw response in BifrostResponse
+	includeCustomModelFields bool                  // Whether to preserve non-standard fields on model list/retrieve responses
 }
 
 // NewBedrockMantleProvider creates a new Bedrock Mantle provider instance.
@@ -57,12 +58,13 @@ func NewBedrockMantleProvider(config *schemas.ProviderConfig, logger schemas.Log
 	mantleStreamingFasthttpClient := providerUtils.BuildStreamingClient(mantleFasthttpClient)
 
 	return &BedrockMantleProvider{
-		logger:                logger,
-		mantleClient:          mantleFasthttpClient,
-		mantleStreamingClient: mantleStreamingFasthttpClient,
-		networkConfig:         config.NetworkConfig,
-		sendBackRawRequest:    config.SendBackRawRequest,
-		sendBackRawResponse:   config.SendBackRawResponse,
+		logger:                   logger,
+		mantleClient:             mantleFasthttpClient,
+		mantleStreamingClient:    mantleStreamingFasthttpClient,
+		networkConfig:            config.NetworkConfig,
+		sendBackRawRequest:       config.SendBackRawRequest,
+		sendBackRawResponse:      config.SendBackRawResponse,
+		includeCustomModelFields: config.IncludeCustomModelFields,
 	}, nil
 }
 
@@ -148,6 +150,7 @@ func (provider *BedrockMantleProvider) listModelsByKey(ctx *schemas.BifrostConte
 		provider.GetProviderKey(),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		provider.includeCustomModelFields,
 	)
 }
 

@@ -1484,6 +1484,77 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 	return routes
 }
 
+// CreateOpenAIRetrieveModelRouteConfigs creates route configurations for the OpenAI
+// single-model retrieve endpoint (GET /v1/models/{model_id}). See
+// https://developers.openai.com/api/reference/resources/models/methods/retrieve.
+func CreateOpenAIRetrieveModelRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) []RouteConfig {
+	var routes []RouteConfig
+
+	for _, path := range []string{
+		"/v1/models/{model_id:*}",
+		"/models/{model_id:*}",
+		"/openai/models/{model_id:*}",
+	} {
+		routes = append(routes, RouteConfig{
+			Type:   RouteConfigTypeOpenAI,
+			Path:   pathPrefix + path,
+			Method: "GET",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.RetrieveModelRequest
+			},
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
+				return &schemas.BifrostRetrieveModelRequest{}
+			},
+			PreCallback: extractRetrieveModelFromPath,
+			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
+				if retrieveReq, ok := req.(*schemas.BifrostRetrieveModelRequest); ok {
+					return &schemas.BifrostRequest{
+						RetrieveModelRequest: retrieveReq,
+					}, nil
+				}
+				return nil, errors.New("invalid request type")
+			},
+			RetrieveModelResponseConverter: func(ctx *schemas.BifrostContext, model *schemas.Model) (interface{}, error) {
+				return openai.ToOpenAIModel(model), nil
+			},
+			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+				return err
+			},
+		})
+	}
+
+	return routes
+}
+
+// extractRetrieveModelFromPath fills in BifrostRetrieveModelRequest from the {model_id} path
+// param and an optional ?provider= query param, mirroring how GET /v1/models resolves its
+// provider filter.
+func extractRetrieveModelFromPath(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
+	// {model_id:*} is a catch-all param (needed since Bifrost model IDs are "provider/model"),
+	// which fasthttp/router returns with a leading "/".
+	rawModelID, ok := ctx.UserValue("model_id").(string)
+	if !ok {
+		return errors.New("model_id is required")
+	}
+	modelID := strings.TrimPrefix(rawModelID, "/")
+	if modelID == "" {
+		return errors.New("model_id is required")
+	}
+	provider := string(ctx.QueryArgs().Peek("provider"))
+	if provider == "" {
+		if parsedProvider, _ := schemas.ParseModelString(modelID, ""); parsedProvider != "" {
+			provider = string(parsedProvider)
+		}
+	}
+	retrieveReq, ok := req.(*schemas.BifrostRetrieveModelRequest)
+	if !ok {
+		return errors.New("invalid request type for model retrieve")
+	}
+	retrieveReq.ModelID = modelID
+	retrieveReq.Provider = schemas.ModelProvider(provider)
+	return nil
+}
+
 // CreateOpenAIListModelsRouteConfigs creates route configurations for OpenAI list models endpoint.
 func CreateOpenAIListModelsRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) []RouteConfig {
 	var routes []RouteConfig
@@ -3256,6 +3327,7 @@ func OpenAIRealtimeClientSecretPaths(pathPrefix string) []string {
 func NewOpenAIRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, logger schemas.Logger) *OpenAIRouter {
 	routes := CreateOpenAIRouteConfigs("/openai", handlerStore)
 	routes = append(routes, CreateOpenAIListModelsRouteConfigs("/openai", handlerStore)...)
+	routes = append(routes, CreateOpenAIRetrieveModelRouteConfigs("/openai", handlerStore)...)
 	routes = append(routes, CreateOpenAIBatchRouteConfigs("/openai", handlerStore)...)
 	routes = append(routes, CreateOpenAIFileRouteConfigs("/openai", handlerStore)...)
 	routes = append(routes, CreateOpenAIContainerRouteConfigs("/openai", handlerStore)...)

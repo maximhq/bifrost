@@ -442,6 +442,90 @@ func (bifrost *Bifrost) ListModelsRequest(ctx *schemas.BifrostContext, req *sche
 	return resp.ListModelsResponse, nil
 }
 
+// listModelsForProviderPaginated lists every model for a single provider, following
+// NextPageToken until exhausted (bounded by schemas.MaxPaginationRequests) with a page size of
+// schemas.DefaultPageSize. Used by ListAllModels (fanning out across all configured providers)
+// and by RetrieveModelRequest (scoped to one known provider) so a model past the first page
+// isn't missed. The returned cancelled flag is true if ctx was cancelled mid-pagination, in
+// which case the other return values should be ignored.
+// suppressExpectedErrors controls whether per-provider failures that are "expected" when
+// fanning out across every configured provider (ListAllModels) get silently dropped rather
+// than surfaced. A single, explicitly targeted provider (RetrieveModelRequest) must not
+// suppress them - dropping them there turns a real failure (e.g. list_models disallowed for
+// a custom provider) into a misleading 404 "model does not exist".
+func (bifrost *Bifrost) listModelsForProviderPaginated(ctx *schemas.BifrostContext, providerCtx *schemas.BifrostContext, providerKey schemas.ModelProvider, unfiltered bool, suppressExpectedErrors bool) (models []schemas.Model, keyStatuses []schemas.KeyStatus, bifrostErr *schemas.BifrostError, cancelled bool, extraFields schemas.BifrostResponseExtraFields) {
+	models = make([]schemas.Model, 0)
+
+	providerRequest := &schemas.BifrostListModelsRequest{
+		Provider:   providerKey,
+		PageSize:   schemas.DefaultPageSize,
+		Unfiltered: unfiltered,
+	}
+
+	iterations := 0
+	for {
+		// check for context cancellation
+		select {
+		case <-ctx.Done():
+			return nil, nil, nil, true, schemas.BifrostResponseExtraFields{}
+		default:
+		}
+
+		iterations++
+		if iterations > schemas.MaxPaginationRequests {
+			bifrost.logger.Warn("reached maximum pagination requests (%d) for provider %s, please increase the page size", schemas.MaxPaginationRequests, providerKey)
+			break
+		}
+
+		response, err := bifrost.ListModelsRequest(providerCtx, providerRequest)
+		if err != nil {
+			// Some per-provider failures are expected when fanning out across all
+			// configured providers and must not be surfaced as a top-level error
+			errType := ""
+			if err.Type != nil {
+				errType = *err.Type
+			}
+			errMsg := ""
+			if err.Error != nil {
+				errMsg = err.Error.Message
+			}
+			isExpected := suppressExpectedErrors && (strings.Contains(errMsg, "no keys found") ||
+				strings.Contains(errMsg, "not supported") ||
+				errType == "provider_blocked")
+			if !isExpected {
+				bifrostErr = err
+				bifrost.logger.Warn("failed to list models for provider %s: %s", providerKey, err.GetErrorString())
+			}
+			// Collect key statuses from error (failure case)
+			if len(err.ExtraFields.KeyStatuses) > 0 {
+				keyStatuses = append(keyStatuses, err.ExtraFields.KeyStatuses...)
+			}
+			break
+		}
+
+		if response == nil || len(response.Data) == 0 {
+			break
+		}
+
+		models = append(models, response.Data...)
+		extraFields = response.ExtraFields
+
+		if len(response.KeyStatuses) > 0 {
+			keyStatuses = append(keyStatuses, response.KeyStatuses...)
+		}
+
+		// Check if there are more pages
+		if response.NextPageToken == "" {
+			break
+		}
+
+		// Set the page token for the next request
+		providerRequest.PageToken = response.NextPageToken
+	}
+
+	return models, keyStatuses, bifrostErr, false, extraFields
+}
+
 // ListAllModels lists all models from all configured providers.
 // It accumulates responses from all providers with a limit of 1000 per provider to get all results.
 func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, req *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
@@ -493,76 +577,10 @@ func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, req *schemas.
 			providerCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 			providerCtx.SetValue(schemas.BifrostContextKeyRequestID, uuid.New().String())
 
-			providerModels := make([]schemas.Model, 0)
-			var providerKeyStatuses []schemas.KeyStatus
-			var providerErr *schemas.BifrostError
-
-			// Create request for this provider with limit of 1000
-			providerRequest := &schemas.BifrostListModelsRequest{
-				Provider:   providerKey,
-				PageSize:   schemas.DefaultPageSize,
-				Unfiltered: req.Unfiltered,
-			}
-
-			iterations := 0
-			for {
-				// check for context cancellation
-				select {
-				case <-ctx.Done():
-					bifrost.logger.Warn("context cancelled for provider %s", providerKey)
-					return
-				default:
-				}
-
-				iterations++
-				if iterations > schemas.MaxPaginationRequests {
-					bifrost.logger.Warn("reached maximum pagination requests (%d) for provider %s, please increase the page size", schemas.MaxPaginationRequests, providerKey)
-					break
-				}
-
-				response, bifrostErr := bifrost.ListModelsRequest(providerCtx, providerRequest)
-				if bifrostErr != nil {
-					// Some per-provider failures are expected when fanning out across all
-					// configured providers and must not be surfaced as a top-level error
-					errType := ""
-					if bifrostErr.Type != nil {
-						errType = *bifrostErr.Type
-					}
-					errMsg := ""
-					if bifrostErr.Error != nil {
-						errMsg = bifrostErr.Error.Message
-					}
-					isExpected := strings.Contains(errMsg, "no keys found") ||
-						strings.Contains(errMsg, "not supported") ||
-						errType == "provider_blocked"
-					if !isExpected {
-						providerErr = bifrostErr
-						bifrost.logger.Warn("failed to list models for provider %s: %s", providerKey, bifrostErr.GetErrorString())
-					}
-					// Collect key statuses from error (failure case)
-					if len(bifrostErr.ExtraFields.KeyStatuses) > 0 {
-						providerKeyStatuses = append(providerKeyStatuses, bifrostErr.ExtraFields.KeyStatuses...)
-					}
-					break
-				}
-
-				if response == nil || len(response.Data) == 0 {
-					break
-				}
-
-				providerModels = append(providerModels, response.Data...)
-
-				if len(response.KeyStatuses) > 0 {
-					providerKeyStatuses = append(providerKeyStatuses, response.KeyStatuses...)
-				}
-
-				// Check if there are more pages
-				if response.NextPageToken == "" {
-					break
-				}
-
-				// Set the page token for the next request
-				providerRequest.PageToken = response.NextPageToken
+			providerModels, providerKeyStatuses, providerErr, cancelled, _ := bifrost.listModelsForProviderPaginated(ctx, providerCtx, providerKey, req.Unfiltered, true)
+			if cancelled {
+				bifrost.logger.Warn("context cancelled for provider %s", providerKey)
+				return
 			}
 
 			results <- providerResult{
@@ -620,6 +638,132 @@ func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, req *schemas.
 	response = response.ApplyPagination(req.PageSize, req.PageToken)
 
 	return response, nil
+}
+
+// RetrieveModelRequest returns a single model's details (GET /v1/models/{model_id}).
+// It reuses ListModelsRequest (when Provider is set) or ListAllModels (when it isn't) and
+// filters the result for the one matching entry, rather than adding a dedicated per-provider
+// retrieve method - Bifrost already fetches/caches the full catalog to serve the list endpoint.
+// RetrieveModelRequest returns a single model's details plus the response-level metadata
+// (provider identity, latency, forwarded upstream headers) so callers can build the same
+// x-bifrost-*/provider-header footer as every other Bifrost response.
+func (bifrost *Bifrost) RetrieveModelRequest(ctx *schemas.BifrostContext, req *schemas.BifrostRetrieveModelRequest) (*schemas.Model, schemas.BifrostResponseExtraFields, *schemas.BifrostError) {
+	if req == nil || req.ModelID == "" {
+		return nil, schemas.BifrostResponseExtraFields{}, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "model_id is required",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.RetrieveModelRequest,
+			},
+		}
+	}
+
+	if ctx == nil {
+		ctx = bifrost.ctx
+	}
+
+	var listResp *schemas.BifrostListModelsResponse
+	var bifrostErr *schemas.BifrostError
+	if req.Provider != "" {
+		// Enforce the same virtual-key provider allow-list ListAllModels applies to its
+		// fan-out: an explicitly named provider must still be filtered, otherwise a VK
+		// restricted to a subset of providers could retrieve metadata from one outside
+		// its allowed set just by naming it directly.
+		if len(filterProvidersByContext(ctx, []schemas.ModelProvider{req.Provider})) == 0 {
+			notFoundStatus := 404
+			return nil, schemas.BifrostResponseExtraFields{}, &schemas.BifrostError{
+				IsBifrostError: false,
+				StatusCode:     &notFoundStatus,
+				Error: &schemas.ErrorField{
+					Message: fmt.Sprintf("The model '%s' does not exist", req.ModelID),
+				},
+				ExtraFields: schemas.BifrostErrorExtraFields{
+					RequestType: schemas.RetrieveModelRequest,
+				},
+			}
+		}
+
+		// Paginate through every page for this provider (not just the first) so a model
+		// isn't falsely reported missing when the provider's catalog spans multiple pages.
+		providerCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+		models, _, err, cancelled, extraFields := bifrost.listModelsForProviderPaginated(ctx, providerCtx, req.Provider, false, false)
+		if cancelled {
+			return nil, schemas.BifrostResponseExtraFields{}, &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: &schemas.ErrorField{
+					Message: schemas.ErrRequestCancelled,
+				},
+				ExtraFields: schemas.BifrostErrorExtraFields{
+					RequestType: schemas.RetrieveModelRequest,
+				},
+			}
+		}
+		if err != nil {
+			return nil, schemas.BifrostResponseExtraFields{}, err
+		}
+		listResp = &schemas.BifrostListModelsResponse{Data: models, ExtraFields: extraFields}
+	} else {
+		listResp, bifrostErr = bifrost.ListAllModels(ctx, &schemas.BifrostListModelsRequest{})
+		if bifrostErr != nil {
+			return nil, schemas.BifrostResponseExtraFields{}, bifrostErr
+		}
+		// ListAllModels fans out per-provider goroutines that silently drop their result on
+		// cancellation, so a fully cancelled fan-out comes back as an empty *successful* list
+		// rather than an error. Check explicitly so cancellation isn't misreported as a 404.
+		select {
+		case <-ctx.Done():
+			return nil, schemas.BifrostResponseExtraFields{}, &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: &schemas.ErrorField{
+					Message: schemas.ErrRequestCancelled,
+				},
+				ExtraFields: schemas.BifrostErrorExtraFields{
+					RequestType: schemas.RetrieveModelRequest,
+				},
+			}
+		default:
+		}
+	}
+
+	if model := findModelByID(listResp, req.ModelID, req.Provider); model != nil {
+		return model, listResp.ExtraFields, nil
+	}
+
+	notFoundStatus := 404
+	return nil, schemas.BifrostResponseExtraFields{}, &schemas.BifrostError{
+		IsBifrostError: false,
+		StatusCode:     &notFoundStatus,
+		Error: &schemas.ErrorField{
+			Message: fmt.Sprintf("The model '%s' does not exist", req.ModelID),
+		},
+		ExtraFields: schemas.BifrostErrorExtraFields{
+			RequestType: schemas.RetrieveModelRequest,
+		},
+	}
+}
+
+// findModelByID looks up a single entry from a list-models response by its full ID
+// ("provider/model"), its alias, or - when a provider was resolved for the request - its
+// bare model name with the provider prefix stripped.
+func findModelByID(resp *schemas.BifrostListModelsResponse, modelID string, provider schemas.ModelProvider) *schemas.Model {
+	if resp == nil {
+		return nil
+	}
+	for i := range resp.Data {
+		model := &resp.Data[i]
+		if model.ID == modelID {
+			return model
+		}
+		if model.Alias != nil && *model.Alias == modelID {
+			return model
+		}
+		if provider != "" && strings.TrimPrefix(model.ID, string(provider)+"/") == modelID {
+			return model
+		}
+	}
+	return nil
 }
 
 func filterProvidersByContext(ctx *schemas.BifrostContext, providerKeys []schemas.ModelProvider) []schemas.ModelProvider {

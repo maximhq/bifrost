@@ -720,6 +720,8 @@ func (h *CompletionHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 
 	// Model endpoints
 	r.GET("/v1/models", lib.ChainMiddlewares(h.listModels, baseMiddlewares...))
+	retrieveModelMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.RetrieveModelRequest)}, middlewares...)
+	r.GET("/v1/models/{model_id:*}", lib.ChainMiddlewares(h.retrieveModel, retrieveModelMW...))
 
 	// Completion endpoints (non-parameterized)
 	r.POST("/v1/completions", lib.ChainMiddlewares(h.textCompletion, baseMiddlewares...))
@@ -880,6 +882,67 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 	}
 	// Send successful response
 	SendJSON(ctx, resp)
+}
+
+// retrieveModel handles GET /v1/models/{model_id} - retrieve a single model's details.
+// Delegates to Bifrost's RetrieveModelRequest, which reuses the same list-models call as
+// GET /v1/models and filters for the matching entry, rather than adding a dedicated
+// per-provider retrieve method.
+func (h *CompletionHandler) retrieveModel(ctx *fasthttp.RequestCtx) {
+	// {model_id:*} is a catch-all param (needed since Bifrost model IDs are "provider/model"),
+	// which fasthttp/router returns with a leading "/".
+	modelID := strings.TrimPrefix(ctx.UserValue("model_id").(string), "/")
+	if modelID == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "model_id is required")
+		return
+	}
+
+	provider := string(ctx.QueryArgs().Peek("provider"))
+	if provider == "" {
+		if parsedProvider, _ := schemas.ParseModelString(modelID, ""); parsedProvider != "" {
+			provider = string(parsedProvider)
+		}
+	}
+
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.config)
+	defer cancel()
+	if bifrostCtx == nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
+		return
+	}
+	// Unlike listModels, this must run even when a provider is explicitly given: unlike
+	// ListModelsRequest (which never consults BifrostContextKeyAvailableProviders),
+	// RetrieveModelRequest enforces it for the explicit-provider path too, so a VK
+	// restricted to a provider subset can't retrieve metadata from an excluded provider
+	// just by naming it. This only resolves the VK's allowed-providers set - the
+	// resolution doesn't depend on which provider the caller requested.
+	if !h.applyListModelsVirtualKeyProviderFilter(ctx, bifrostCtx) {
+		return
+	}
+
+	model, extraFields, bifrostErr := h.client.RetrieveModelRequest(bifrostCtx, &schemas.BifrostRetrieveModelRequest{
+		Provider: schemas.ModelProvider(provider),
+		ModelID:  modelID,
+	})
+	if bifrostErr != nil {
+		forwardProviderHeadersFromContext(ctx, bifrostCtx)
+		SendBifrostError(ctx, bifrostErr)
+		return
+	}
+	if extraFields.ProviderResponseHeaders != nil {
+		forwardProviderHeaders(ctx, extraFields.ProviderResponseHeaders)
+	}
+
+	enrichedResp := &schemas.BifrostListModelsResponse{Data: []schemas.Model{*model}}
+	enrichListModelsResponse(enrichedResp, h.config.ModelCatalog)
+
+	body, err := enrichedResp.Data[0].MarshalJSONWithProviderExtra()
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to encode response: %v", err))
+		return
+	}
+	ctx.SetContentType("application/json")
+	ctx.SetBody(body)
 }
 
 func enrichListModelsResponse(resp *schemas.BifrostListModelsResponse, catalog *modelcatalog.ModelCatalog) {

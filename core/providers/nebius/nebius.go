@@ -17,12 +17,13 @@ import (
 
 // NebiusProvider implements the Provider interface for Nebius's API.
 type NebiusProvider struct {
-	logger              schemas.Logger        // Logger for provider operations
-	client              *fasthttp.Client      // HTTP client for unary API requests (ReadTimeout bounds overall response)
-	streamingClient     *fasthttp.Client      // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
-	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
-	sendBackRawRequest  bool                  // Whether to include raw request in BifrostResponse
-	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
+	logger                   schemas.Logger        // Logger for provider operations
+	client                   *fasthttp.Client      // HTTP client for unary API requests (ReadTimeout bounds overall response)
+	streamingClient          *fasthttp.Client      // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
+	networkConfig            schemas.NetworkConfig // Network configuration including extra headers
+	sendBackRawRequest       bool                  // Whether to include raw request in BifrostResponse
+	sendBackRawResponse      bool                  // Whether to include raw response in BifrostResponse
+	includeCustomModelFields bool                  // Whether to preserve non-standard fields on model list/retrieve responses
 }
 
 // NewNebiusProvider creates a new Nebius provider instance.
@@ -54,12 +55,13 @@ func NewNebiusProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
 
 	return &NebiusProvider{
-		logger:              logger,
-		client:              client,
-		streamingClient:     streamingClient,
-		networkConfig:       config.NetworkConfig,
-		sendBackRawRequest:  config.SendBackRawRequest,
-		sendBackRawResponse: config.SendBackRawResponse,
+		logger:                   logger,
+		client:                   client,
+		streamingClient:          streamingClient,
+		networkConfig:            config.NetworkConfig,
+		sendBackRawRequest:       config.SendBackRawRequest,
+		sendBackRawResponse:      config.SendBackRawResponse,
+		includeCustomModelFields: config.IncludeCustomModelFields,
 	}, nil
 }
 
@@ -80,6 +82,7 @@ func (provider *NebiusProvider) ListModels(ctx *schemas.BifrostContext, keys []s
 		provider.GetProviderKey(),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		provider.includeCustomModelFields,
 	)
 }
 

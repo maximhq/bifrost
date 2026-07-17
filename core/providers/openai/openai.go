@@ -24,14 +24,15 @@ import (
 
 // OpenAIProvider implements the Provider interface for OpenAI's GPT API.
 type OpenAIProvider struct {
-	logger               schemas.Logger                // Logger for provider operations
-	client               *fasthttp.Client              // HTTP client for unary API requests (ReadTimeout bounds overall response)
-	streamingClient      *fasthttp.Client              // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
-	networkConfig        schemas.NetworkConfig         // Network configuration including extra headers
-	sendBackRawRequest   bool                          // Whether to include raw request in BifrostResponse
-	sendBackRawResponse  bool                          // Whether to include raw response in BifrostResponse
-	customProviderConfig *schemas.CustomProviderConfig // Custom provider config
-	disableStore         bool                          // Whether to force store=false on outgoing requests
+	logger                   schemas.Logger                // Logger for provider operations
+	client                   *fasthttp.Client              // HTTP client for unary API requests (ReadTimeout bounds overall response)
+	streamingClient          *fasthttp.Client              // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
+	networkConfig            schemas.NetworkConfig         // Network configuration including extra headers
+	sendBackRawRequest       bool                          // Whether to include raw request in BifrostResponse
+	sendBackRawResponse      bool                          // Whether to include raw response in BifrostResponse
+	customProviderConfig     *schemas.CustomProviderConfig // Custom provider config
+	disableStore             bool                          // Whether to force store=false on outgoing requests
+	includeCustomModelFields bool                          // Whether to preserve non-standard fields on model list/retrieve responses
 }
 
 // NewOpenAIProvider creates a new OpenAI provider instance.
@@ -68,14 +69,15 @@ func NewOpenAIProvider(config *schemas.ProviderConfig, logger schemas.Logger) *O
 	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
 
 	return &OpenAIProvider{
-		logger:               logger,
-		client:               client,
-		streamingClient:      streamingClient,
-		networkConfig:        config.NetworkConfig,
-		sendBackRawRequest:   config.SendBackRawRequest,
-		sendBackRawResponse:  config.SendBackRawResponse,
-		customProviderConfig: config.CustomProviderConfig,
-		disableStore:         config.OpenAIConfig != nil && config.OpenAIConfig.DisableStore,
+		logger:                   logger,
+		client:                   client,
+		streamingClient:          streamingClient,
+		networkConfig:            config.NetworkConfig,
+		sendBackRawRequest:       config.SendBackRawRequest,
+		sendBackRawResponse:      config.SendBackRawResponse,
+		customProviderConfig:     config.CustomProviderConfig,
+		disableStore:             config.OpenAIConfig != nil && config.OpenAIConfig.DisableStore,
+		includeCustomModelFields: config.IncludeCustomModelFields,
 	}
 }
 
@@ -111,6 +113,7 @@ func (provider *OpenAIProvider) ListModels(ctx *schemas.BifrostContext, keys []s
 				providerName,
 				providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 				providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+				provider.includeCustomModelFields,
 			)
 		})
 	}
@@ -124,6 +127,7 @@ func (provider *OpenAIProvider) ListModels(ctx *schemas.BifrostContext, keys []s
 		providerName,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		provider.includeCustomModelFields,
 	)
 }
 
@@ -139,6 +143,7 @@ func ListModelsByKey(
 	providerName schemas.ModelProvider,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
+	includeCustomModelFields bool,
 ) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	// Create request
 	req := fasthttp.AcquireRequest()
@@ -184,7 +189,7 @@ func ListModelsByKey(
 		return nil, providerUtils.SetErrorLatency(bifrostErr, latency)
 	}
 
-	response := openaiResponse.ToBifrostListModelsResponse(providerName, key.Models, key.BlacklistedModels, key.Aliases, unfiltered)
+	response := openaiResponse.ToBifrostListModelsResponse(providerName, key.Models, key.BlacklistedModels, key.Aliases, unfiltered, includeCustomModelFields)
 
 	response.ExtraFields.Latency = latency.Milliseconds()
 	response.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
@@ -225,12 +230,13 @@ func HandleOpenAIListModelsRequest(
 	providerName schemas.ModelProvider,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
+	includeCustomModelFields bool,
 ) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	if len(keys) == 0 {
-		return ListModelsByKey(ctx, client, url, schemas.Key{}, request.Unfiltered, extraHeaders, providerName, sendBackRawRequest, sendBackRawResponse)
+		return ListModelsByKey(ctx, client, url, schemas.Key{}, request.Unfiltered, extraHeaders, providerName, sendBackRawRequest, sendBackRawResponse, includeCustomModelFields)
 	}
 	listModelsByKeyWrapper := func(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
-		return ListModelsByKey(ctx, client, url, key, request.Unfiltered, extraHeaders, providerName, sendBackRawRequest, sendBackRawResponse)
+		return ListModelsByKey(ctx, client, url, key, request.Unfiltered, extraHeaders, providerName, sendBackRawRequest, sendBackRawResponse, includeCustomModelFields)
 	}
 	return providerUtils.HandleMultipleListModelsRequests(
 		ctx,

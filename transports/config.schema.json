@@ -928,6 +928,10 @@
                 "type": "boolean",
                 "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
               },
+              "include_custom_model_fields": {
+                "type": "boolean",
+                "description": "Preserve non-standard fields from upstream model list/retrieve responses (default: false)"
+              },
               "network_config": {
                 "$ref": "#/$defs/network_config"
               },
@@ -4057,6 +4061,10 @@
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
         },
+        "include_custom_model_fields": {
+          "type": "boolean",
+          "description": "Preserve non-standard fields from upstream model list/retrieve responses (default: false)"
+        },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
         }
@@ -4095,6 +4103,10 @@
         "store_raw_request_response": {
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
+        },
+        "include_custom_model_fields": {
+          "type": "boolean",
+          "description": "Preserve non-standard fields from upstream model list/retrieve responses (default: false)"
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
@@ -4135,6 +4147,10 @@
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
         },
+        "include_custom_model_fields": {
+          "type": "boolean",
+          "description": "Preserve non-standard fields from upstream model list/retrieve responses (default: false)"
+        },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
         }
@@ -4173,6 +4189,10 @@
         "store_raw_request_response": {
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
+        },
+        "include_custom_model_fields": {
+          "type": "boolean",
+          "description": "Preserve non-standard fields from upstream model list/retrieve responses (default: false)"
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
@@ -4213,6 +4233,10 @@
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
         },
+        "include_custom_model_fields": {
+          "type": "boolean",
+          "description": "Preserve non-standard fields from upstream model list/retrieve responses (default: false)"
+        },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
         }
@@ -4251,6 +4275,10 @@
         "store_raw_request_response": {
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
+        },
+        "include_custom_model_fields": {
+          "type": "boolean",
+          "description": "Preserve non-standard fields from upstream model list/retrieve responses (default: false)"
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
@@ -4291,6 +4319,10 @@
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
         },
+        "include_custom_model_fields": {
+          "type": "boolean",
+          "description": "Preserve non-standard fields from upstream model list/retrieve responses (default: false)"
+        },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
         }
@@ -4330,6 +4362,10 @@
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
         },
+        "include_custom_model_fields": {
+          "type": "boolean",
+          "description": "Preserve non-standard fields from upstream model list/retrieve responses (default: false)"
+        },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
         }
@@ -4367,6 +4403,10 @@
         "store_raw_request_response": {
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
+        },
+        "include_custom_model_fields": {
+          "type": "boolean",
+          "description": "Preserve non-standard fields from upstream model list/retrieve responses (default: false)"
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"

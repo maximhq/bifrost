@@ -128,6 +128,7 @@ func (r RequestType) Value() (driver.Value, error) {
 
 const (
 	ListModelsRequest            RequestType = "list_models"
+	RetrieveModelRequest         RequestType = "retrieve_model"
 	TextCompletionRequest        RequestType = "text_completion"
 	TextCompletionStreamRequest  RequestType = "text_completion_stream"
 	ChatCompletionRequest        RequestType = "chat_completion"
@@ -494,6 +495,7 @@ type BifrostRequest struct {
 	RequestType RequestType
 
 	ListModelsRequest            *BifrostListModelsRequest
+	RetrieveModelRequest         *BifrostRetrieveModelRequest
 	TextCompletionRequest        *BifrostTextCompletionRequest
 	ChatRequest                  *BifrostChatRequest
 	ResponsesRequest             *BifrostResponsesRequest

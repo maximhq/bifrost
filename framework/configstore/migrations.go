@@ -446,6 +446,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_inference_geo_multiplier_column"}, run: migrationAddInferenceGeoMultiplierColumn},
 	{IDs: []string{"repair_bare_wildcard_allowed_models"}, run: migrationRepairBareWildcardAllowedModels},
 	{IDs: []string{"add_bedrock_project_id_columns"}, run: migrationAddBedrockProjectIDColumns},
+	{IDs: []string{"add_include_custom_model_fields_column"}, run: migrationAddIncludeCustomModelFieldsColumn},
 }
 
 // quoteSQLiteIdentifier quotes a SQLite identifier, escaping any double quotes.
@@ -10675,6 +10676,90 @@ func migrationAddSidekiqKindStatusCreatedIndex(ctx context.Context, db *gorm.DB,
 		},
 	}); err != nil {
 		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddIncludeCustomModelFieldsColumn adds the include_custom_model_fields column to
+// providers and backfills config_hash for existing rows, since IncludeCustomModelFields is now
+// part of the hash input (GenerateConfigHash) and rows written before this migration would
+// otherwise show a stale hash and appear dirty against config.json after upgrade. The column's
+// zero value (false) already matches the desired default for existing rows, so no derived
+// default logic is needed here (unlike store_raw_request_response).
+func migrationAddIncludeCustomModelFieldsColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_include_custom_model_fields_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableProvider{}, "include_custom_model_fields"); err != nil {
+				return err
+			}
+			// openai_config_json has no migration of its own (it was only ever added via
+			// AutoMigrate), so it isn't guaranteed to exist at this point when replaying the
+			// migration chain against an old schema dump. Guard it the same way so the
+			// SELECT below doesn't fail with "no such column".
+			if err := addColumnIfNotExists(tx, logger, &tables.TableProvider{}, "OpenAIConfigJSON"); err != nil {
+				return err
+			}
+
+			var providers []tables.TableProvider
+			if err := tx.
+				Select(
+					"id",
+					"name",
+					"network_config_json",
+					"concurrency_buffer_json",
+					"proxy_config_json",
+					"custom_provider_config_json",
+					"open_ai_config_json",
+					"send_back_raw_request",
+					"send_back_raw_response",
+					"store_raw_request_response",
+					"include_custom_model_fields",
+					"encryption_status",
+				).
+				Find(&providers).Error; err != nil {
+				return fmt.Errorf("failed to fetch providers for hash backfill: %w", err)
+			}
+			logger.Info("[configstore] %s: processing %d providers", migrationName, len(providers))
+			for _, provider := range providers {
+				providerConfig := ProviderConfig{
+					NetworkConfig:            provider.NetworkConfig,
+					ConcurrencyAndBufferSize: provider.ConcurrencyAndBufferSize,
+					ProxyConfig:              provider.ProxyConfig,
+					SendBackRawRequest:       provider.SendBackRawRequest,
+					SendBackRawResponse:      provider.SendBackRawResponse,
+					StoreRawRequestResponse:  provider.StoreRawRequestResponse,
+					IncludeCustomModelFields: provider.IncludeCustomModelFields,
+					CustomProviderConfig:     provider.CustomProviderConfig,
+					OpenAIConfig:             provider.OpenAIConfig,
+				}
+				hash, err := providerConfig.GenerateConfigHash(provider.Name)
+				if err != nil {
+					return fmt.Errorf("failed to generate hash for provider %s: %w", provider.Name, err)
+				}
+				if err := tx.Model(&provider).Updates(map[string]interface{}{
+					"config_hash": hash,
+				}).Error; err != nil {
+					return fmt.Errorf("failed to update hash for provider %s: %w", provider.Name, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableProvider{}, "include_custom_model_fields"); err != nil {
+				return err
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while running add include custom model fields column migration: %s", err.Error())
 	}
 	return nil
 }
