@@ -413,6 +413,42 @@ func TestIsImageEditRequest_ImageAcrossMultipleContents(t *testing.T) {
 	assert.True(t, isImageEditRequest(req), "image in a later content entry must still classify as image edit")
 }
 
+// A historical image left over from an earlier turn (e.g. a previous model
+// response) in a multi-turn conversation must not be picked up as the edit
+// source for a new, unrelated, text-only request in the latest turn.
+func TestIsImageEditRequest_HistoricalImageInEarlierContent_NotEdit(t *testing.T) {
+	req := &gemini.GeminiGenerationRequest{
+		Contents: []gemini.Content{
+			{Role: "user", Parts: []*gemini.Part{{Text: "generate a cat"}}},
+			{Role: "model", Parts: []*gemini.Part{{InlineData: &gemini.Blob{MIMEType: "image/png", Data: "AAAA"}}}},
+			{Role: "user", Parts: []*gemini.Part{{Text: "now generate a completely different dog picture"}}},
+		},
+		GenerationConfig: gemini.GenerationConfig{
+			ResponseModalities: []gemini.Modality{gemini.ModalityImage},
+		},
+	}
+
+	assert.False(t, isImageEditRequest(req), "an image from earlier conversation history must not be treated as an edit source for a new text-only turn")
+}
+
+func TestIsImageEditRequest_CaseInsensitiveImageMimeType(t *testing.T) {
+	req := &gemini.GeminiGenerationRequest{
+		Contents: []gemini.Content{
+			{
+				Parts: []*gemini.Part{
+					{Text: "prompt"},
+					{InlineData: &gemini.Blob{MIMEType: "IMAGE/PNG", Data: "AAAA"}},
+				},
+			},
+		},
+		GenerationConfig: gemini.GenerationConfig{
+			ResponseModalities: []gemini.Modality{gemini.ModalityImage},
+		},
+	}
+
+	assert.True(t, isImageEditRequest(req), "MIME type match must be case-insensitive")
+}
+
 func TestIsImageEditRequest_NilPartInList(t *testing.T) {
 	req := &gemini.GeminiGenerationRequest{
 		Contents: []gemini.Content{

@@ -1789,7 +1789,10 @@ func isImageGenerationRequest(req *gemini.GeminiGenerationRequest) bool {
 // isImageEditRequest checks if the request is for image edit
 // Image edit is detected by:
 // 1. Model is an Imagen model and has reference images
-// 2. Inline image data present in any content part (regardless of position) and response modalities contain IMAGE
+// 2. Inline image data present in any part of the latest content (regardless of position within
+//    that content) and response modalities contain IMAGE. Only the latest content is inspected so
+//    that a leftover image from earlier turns in a multi-turn conversation's history isn't picked
+//    up as the edit source for an unrelated new request.
 func isImageEditRequest(req *gemini.GeminiGenerationRequest) bool {
 	if schemas.IsImagenModel(req.Model) && len(req.Instances) > 0 && req.Instances[0].ReferenceImages != nil {
 		return true
@@ -1799,11 +1802,14 @@ func isImageEditRequest(req *gemini.GeminiGenerationRequest) bool {
 		return false
 	}
 
-	for _, content := range req.Contents {
-		for _, part := range content.Parts {
-			if part != nil && part.InlineData != nil && strings.Contains(part.InlineData.MIMEType, "image") {
-				return true
-			}
+	if len(req.Contents) == 0 {
+		return false
+	}
+
+	latest := req.Contents[len(req.Contents)-1]
+	for _, part := range latest.Parts {
+		if part != nil && part.InlineData != nil && strings.Contains(strings.ToLower(part.InlineData.MIMEType), "image") {
+			return true
 		}
 	}
 
