@@ -51,9 +51,20 @@ export interface WebhookEndpointRequest {
 	max_concurrent_deliveries: number;
 }
 
+export interface GetWebhookEndpointsParams {
+	search?: string;
+	events?: WebhookEvent[]; // subscribed to any of these, OR semantics
+	disabled?: boolean;
+	limit?: number;
+	offset?: number;
+}
+
 export interface GetWebhookEndpointsResponse {
 	endpoints: WebhookEndpoint[];
 	count: number;
+	total_count: number;
+	limit: number;
+	offset: number;
 }
 
 // Returned by create and rotate-secret; the signing secret appears exactly

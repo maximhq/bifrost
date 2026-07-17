@@ -62,6 +62,16 @@ type RoutingRulesQueryParams struct {
 	Search string
 }
 
+// WebhookEndpointsQueryParams holds pagination, filtering, and search
+// parameters for webhook endpoint queries.
+type WebhookEndpointsQueryParams struct {
+	Limit    int
+	Offset   int
+	Search   string   // matches name or url (case-insensitive)
+	Events   []string // endpoints subscribed to any of these events, OR semantics
+	Disabled *bool    // nil = no filter; true/false = filter on disabled
+}
+
 // MCPClientsQueryParams holds pagination, filtering, and search parameters for MCP client queries.
 type MCPClientsQueryParams struct {
 	Limit            int
@@ -677,6 +687,7 @@ type ConfigStore interface {
 
 	// Webhook Endpoints
 	GetWebhookEndpoints(ctx context.Context) ([]tables.TableWebhookEndpoint, error)
+	GetWebhookEndpointsPaginated(ctx context.Context, params WebhookEndpointsQueryParams) ([]tables.TableWebhookEndpoint, int64, error)
 	GetWebhookEndpointByID(ctx context.Context, id string) (*tables.TableWebhookEndpoint, error)
 	GetWebhookEndpointByName(ctx context.Context, name string) (*tables.TableWebhookEndpoint, error)
 	CreateWebhookEndpoint(ctx context.Context, endpoint *tables.TableWebhookEndpoint) error

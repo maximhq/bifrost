@@ -135,6 +135,66 @@ func TestWebhookHandlerCreateAndGet(t *testing.T) {
 	assert.Equal(t, fasthttp.StatusNotFound, missingCtx.Response.StatusCode())
 }
 
+func TestWebhookHandlerListFilters(t *testing.T) {
+	handler, _ := newWebhookTestHandler(t)
+
+	create := func(body string) {
+		t.Helper()
+		ctx := newWebhookRequestCtx(body, nil)
+		handler.createWebhookEndpoint(ctx)
+		require.Equal(t, fasthttp.StatusCreated, ctx.Response.StatusCode(), "body: %s", ctx.Response.Body())
+	}
+	create(`{"name":"billing","url":"https://93.184.216.34/billing","events":["async_job.completed"]}`)
+	create(`{"name":"alerts","url":"https://93.184.216.34/alerts","events":["async_job.failed"]}`)
+	create(`{"name":"paused","url":"https://93.184.216.34/paused","events":["async_job.completed"],"disabled":true}`)
+
+	list := func(query map[string]string) map[string]any {
+		t.Helper()
+		ctx := newWebhookRequestCtx("", nil)
+		for key, value := range query {
+			ctx.QueryArgs().Set(key, value)
+		}
+		handler.listWebhookEndpoints(ctx)
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), "body: %s", ctx.Response.Body())
+		return decodeJSONResponse(t, ctx)
+	}
+
+	// Unfiltered: full count plus the pagination envelope.
+	page := list(nil)
+	assert.Equal(t, float64(3), page["total_count"])
+	assert.Equal(t, float64(3), page["count"])
+	assert.Equal(t, float64(25), page["limit"])
+
+	// Paging keeps the full match count.
+	page = list(map[string]string{"limit": "1", "offset": "1"})
+	assert.Equal(t, float64(3), page["total_count"])
+	assert.Equal(t, float64(1), page["count"])
+
+	page = list(map[string]string{"search": "ALERTS"})
+	assert.Equal(t, float64(1), page["total_count"])
+
+	page = list(map[string]string{"disabled": "true"})
+	assert.Equal(t, float64(1), page["total_count"])
+
+	page = list(map[string]string{"event": "async_job.completed"})
+	assert.Equal(t, float64(2), page["total_count"])
+
+	// Invalid parameters are rejected.
+	for name, query := range map[string]map[string]string{
+		"bad disabled": {"disabled": "maybe"},
+		"bad event":    {"event": "bogus.event"},
+		"bad limit":    {"limit": "not-a-number"},
+		"bad offset":   {"offset": "-1"},
+	} {
+		ctx := newWebhookRequestCtx("", nil)
+		for key, value := range query {
+			ctx.QueryArgs().Set(key, value)
+		}
+		handler.listWebhookEndpoints(ctx)
+		assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), name)
+	}
+}
+
 func TestWebhookHandlerCreateValidation(t *testing.T) {
 	handler, _ := newWebhookTestHandler(t)
 
