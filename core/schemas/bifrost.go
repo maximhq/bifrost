@@ -935,6 +935,21 @@ func (t MCPRequestType) IsExecuteTool() bool {
 	return false
 }
 
+// OTelMethodName returns the OTel semconv mcp.method.name for this request type
+// (tools/call, tools/list, ping). Unknown types fall back to the raw string.
+func (t MCPRequestType) OTelMethodName() string {
+	switch {
+	case t.IsExecuteTool():
+		return "tools/call"
+	case t == MCPRequestTypeListTools:
+		return "tools/list"
+	case t == MCPRequestTypePing:
+		return "ping"
+	default:
+		return string(t)
+	}
+}
+
 // BifrostMCPRequest is the envelope for MCP requests that flow through the generic
 // PreMCPHook/PostMCPHook pipeline (Ping, ListTools, ExecuteTool variants). Connect
 // requests do NOT use this envelope — they are dispatched via the typed
