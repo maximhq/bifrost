@@ -25,6 +25,7 @@ type TableProvider struct {
 	SendBackRawRequest       bool      `json:"send_back_raw_request"`
 	SendBackRawResponse      bool      `json:"send_back_raw_response"`
 	StoreRawRequestResponse  bool      `json:"store_raw_request_response"`
+	IncludeCustomModelFields bool      `json:"include_custom_model_fields"`
 	CreatedAt                time.Time `gorm:"index;not null" json:"created_at"`
 	UpdatedAt                time.Time `gorm:"index;not null" json:"updated_at"`
 
@@ -182,4 +183,3 @@ func (p *TableProvider) AfterFind(tx *gorm.DB) error {
 
 	return nil
 }
-

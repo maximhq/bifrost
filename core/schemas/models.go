@@ -68,6 +68,20 @@ type BifrostListModelsRequest struct {
 	ExtraParams map[string]interface{} `json:"-"`
 }
 
+// BifrostRetrieveModelRequest requests a single model's details (GET /v1/models/{model_id}).
+// There is no dedicated per-provider retrieve call: Bifrost already has to fetch/cache the
+// full catalog to serve BifrostListModelsRequest, so retrieval reuses that same list and
+// filters for the one matching entry instead of adding a new Provider interface method.
+type BifrostRetrieveModelRequest struct {
+	// Provider scopes the lookup to a single provider's model list. Empty means search
+	// across all configured providers, same as an empty Provider on BifrostListModelsRequest.
+	Provider ModelProvider `json:"provider"`
+
+	// ModelID is matched against a list entry's full ID ("provider/model"), its Alias, or -
+	// when Provider is set - the bare model name with the provider prefix stripped.
+	ModelID string `json:"model_id"`
+}
+
 type BifrostListModelsResponse struct {
 	Data          []Model                    `json:"data"`
 	ExtraFields   BifrostResponseExtraFields `json:"extra_fields"`
@@ -177,6 +191,38 @@ type Model struct {
 	// ProviderExtra carries opaque provider-specific data (e.g. Anthropic capabilities)
 	// through the Bifrost pipeline for integration reverse-conversion. Never serialized.
 	ProviderExtra json.RawMessage `json:"-"`
+}
+
+// MarshalJSONWithProviderExtra serializes the model via its normal JSON tags and, if
+// ProviderExtra is set, merges those raw keys into the resulting object (known Model fields
+// always win over an extra with the same name). Used only by the GET /v1/models/{model_id}
+// retrieve endpoint so non-standard upstream fields aren't silently dropped there; the
+// /v1/models list endpoint keeps serializing Model via its default tags and leaves
+// ProviderExtra internal/opaque, so list output is unaffected.
+func (model *Model) MarshalJSONWithProviderExtra() ([]byte, error) {
+	base, err := Marshal(model)
+	if err != nil {
+		return nil, err
+	}
+	if len(model.ProviderExtra) == 0 {
+		return base, nil
+	}
+
+	var merged map[string]json.RawMessage
+	if err := Unmarshal(base, &merged); err != nil {
+		return base, nil
+	}
+	var extra map[string]json.RawMessage
+	if err := Unmarshal(model.ProviderExtra, &extra); err != nil {
+		return base, nil
+	}
+	for key, value := range extra {
+		if _, exists := merged[key]; exists {
+			continue // known Model fields always win
+		}
+		merged[key] = value
+	}
+	return MarshalSorted(merged)
 }
 
 type Architecture struct {

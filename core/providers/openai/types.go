@@ -996,6 +996,75 @@ type OpenAIModel struct {
 	// GROQ specific fields
 	Active        *bool `json:"active,omitempty"`
 	ContextWindow *int  `json:"context_window,omitempty"`
+
+	// Extra carries any non-standard fields an upstream (typically a custom
+	// OpenAI-compatible) provider includes on a model entry that aren't part of
+	// the known schema above. Kept as raw JSON (not decoded into interface{}) so
+	// values like large integer IDs round-trip byte-for-byte instead of being
+	// widened to float64 and losing precision. Always populated by UnmarshalJSON
+	// (parsing cost is per-model-entry, not conditional); it's ToBifrostListModelsResponse
+	// that gates whether this ever reaches Model.ProviderExtra behind
+	// ProviderConfig.IncludeCustomModelFields. Callers that want Extra preserved on
+	// the way back out must marshal through MarshalJSON, which merges it back at
+	// the top level.
+	Extra map[string]json.RawMessage `json:"-"`
+}
+
+// openAIModelKnownFields lists the JSON keys OpenAIModel already has typed fields for.
+// Anything else is captured into Extra instead of being silently dropped.
+var openAIModelKnownFields = map[string]struct{}{
+	"id": {}, "object": {}, "owned_by": {}, "created": {}, "active": {}, "context_window": {},
+}
+
+// UnmarshalJSON decodes the known OpenAIModel fields as usual and stashes any
+// unrecognized keys into Extra instead of discarding them.
+func (m *OpenAIModel) UnmarshalJSON(data []byte) error {
+	type modelAlias OpenAIModel
+	var alias modelAlias
+	if err := sonic.Unmarshal(data, &alias); err != nil {
+		return err
+	}
+	*m = OpenAIModel(alias)
+	m.Extra = nil
+
+	var raw map[string]json.RawMessage
+	if err := sonic.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	for key, value := range raw {
+		if _, known := openAIModelKnownFields[key]; known {
+			continue
+		}
+		if m.Extra == nil {
+			m.Extra = make(map[string]json.RawMessage)
+		}
+		m.Extra[key] = value
+	}
+	return nil
+}
+
+// MarshalJSON emits the known fields and merges Extra back in at the top level.
+func (m OpenAIModel) MarshalJSON() ([]byte, error) {
+	type modelAlias OpenAIModel
+	base, err := sonic.Marshal(modelAlias(m))
+	if err != nil {
+		return nil, err
+	}
+	if len(m.Extra) == 0 {
+		return base, nil
+	}
+
+	var merged map[string]json.RawMessage
+	if err := sonic.Unmarshal(base, &merged); err != nil {
+		return base, nil
+	}
+	for key, value := range m.Extra {
+		if _, known := openAIModelKnownFields[key]; known {
+			continue // known fields always win over stashed extras
+		}
+		merged[key] = value
+	}
+	return sonic.Marshal(merged)
 }
 
 // OpenAIListModelsResponse represents an OpenAI list models response

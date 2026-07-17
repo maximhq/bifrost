@@ -86,6 +86,7 @@ func (provider *FireworksProvider) listModelsByKey(_ *schemas.BifrostContext, ke
 		key.BlacklistedModels,
 		key.Aliases,
 		false,
+		false,
 	), nil
 }
 

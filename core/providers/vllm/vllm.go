@@ -19,12 +19,13 @@ import (
 
 // VLLMProvider implements the Provider interface for vLLM's OpenAI-compatible API.
 type VLLMProvider struct {
-	logger              schemas.Logger        // Logger for provider operations
-	client              *fasthttp.Client      // HTTP client for unary API requests (ReadTimeout bounds overall response)
-	streamingClient     *fasthttp.Client      // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
-	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
-	sendBackRawRequest  bool                  // Whether to include raw request in BifrostResponse
-	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
+	logger                   schemas.Logger        // Logger for provider operations
+	client                   *fasthttp.Client      // HTTP client for unary API requests (ReadTimeout bounds overall response)
+	streamingClient          *fasthttp.Client      // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
+	networkConfig            schemas.NetworkConfig // Network configuration including extra headers
+	sendBackRawRequest       bool                  // Whether to include raw request in BifrostResponse
+	sendBackRawResponse      bool                  // Whether to include raw response in BifrostResponse
+	includeCustomModelFields bool                  // Whether to preserve non-standard fields on model list/retrieve responses
 }
 
 // NewVLLMProvider creates a new vLLM provider instance.
@@ -50,12 +51,13 @@ func NewVLLMProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*VL
 
 	// BaseURL is optional when keys have vllm_key_config with per-key URLs
 	return &VLLMProvider{
-		logger:              logger,
-		client:              client,
-		streamingClient:     streamingClient,
-		networkConfig:       config.NetworkConfig,
-		sendBackRawRequest:  config.SendBackRawRequest,
-		sendBackRawResponse: config.SendBackRawResponse,
+		logger:                   logger,
+		client:                   client,
+		streamingClient:          streamingClient,
+		networkConfig:            config.NetworkConfig,
+		sendBackRawRequest:       config.SendBackRawRequest,
+		sendBackRawResponse:      config.SendBackRawResponse,
+		includeCustomModelFields: config.IncludeCustomModelFields,
 	}, nil
 }
 
@@ -102,6 +104,7 @@ func (provider *VLLMProvider) listModelsByKey(ctx *schemas.BifrostContext, key s
 		provider.GetProviderKey(),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		provider.includeCustomModelFields,
 	)
 }
 

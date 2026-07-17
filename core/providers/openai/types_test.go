@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/bytedance/sonic"
@@ -466,3 +467,32 @@ func TestOpenAIChatRequest_UnmarshalJSON_ValueAssertions(t *testing.T) {
 	}
 }
 
+// TestOpenAIModel_ExtraPreservesLargeIntegerPrecision is a regression test: Extra used to be
+// decoded through interface{}, which widens JSON integers to float64 and silently rounds
+// anything above 2^53 (e.g. a large upstream revision/identifier field). Extra is now kept as
+// json.RawMessage so such values round-trip byte-for-byte.
+func TestOpenAIModel_ExtraPreservesLargeIntegerPrecision(t *testing.T) {
+	const largeInt = `9007199254740993` // 2^53 + 1: the smallest integer float64 cannot represent exactly
+	payload := `{"id":"custom-model","object":"model","owned_by":"acme","revision_id":` + largeInt + `}`
+
+	var model OpenAIModel
+	if err := sonic.Unmarshal([]byte(payload), &model); err != nil {
+		t.Fatalf("UnmarshalJSON failed: %v", err)
+	}
+
+	raw, ok := model.Extra["revision_id"]
+	if !ok {
+		t.Fatalf("expected revision_id to be captured in Extra, got: %v", model.Extra)
+	}
+	if string(raw) != largeInt {
+		t.Errorf("expected Extra[\"revision_id\"] to preserve raw digits %s, got %s", largeInt, raw)
+	}
+
+	out, err := sonic.Marshal(model)
+	if err != nil {
+		t.Fatalf("MarshalJSON failed: %v", err)
+	}
+	if !strings.Contains(string(out), `"revision_id":`+largeInt) {
+		t.Errorf("expected marshaled output to preserve exact digits %s, got: %s", largeInt, out)
+	}
+}
