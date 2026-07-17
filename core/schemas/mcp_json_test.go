@@ -129,7 +129,6 @@ func TestMCPClientConfigUnmarshalToolExecutionTimeoutNegativeString(t *testing.T
 	}
 }
 
-
 // TestMCPClientConfigMarshalToolSyncIntervalEmitsNanoseconds pins the wire unit of
 // tool_sync_interval. MarshalJSON overrides tool_execution_timeout into a duration
 // string but lets tool_sync_interval fall through to time.Duration's default
@@ -172,5 +171,59 @@ func TestMCPClientConfigToolSyncIntervalRoundTrips(t *testing.T) {
 		if got.ToolSyncInterval != interval {
 			t.Fatalf("round-trip changed tool_sync_interval: want %v, got %v (wire: %s)", interval, got.ToolSyncInterval, raw)
 		}
+	}
+}
+
+// TestMCPToolManagerConfigJSONRoundTrip guards against tool_execution_timeout being
+// corrupted by a marshal/unmarshal cycle. UnmarshalJSON reads bare integers as seconds,
+// but the underlying Duration marshals as nanoseconds, so MCPToolManagerConfig must
+// supply a MarshalJSON that emits a duration string. Without it, marshaling 30s yields
+// 30000000000 (ns), which unmarshal then reinterprets as seconds and overflows to a
+// negative timeout — an already-expired deadline that fails every MCP tool execution.
+func TestMCPToolManagerConfigJSONRoundTrip(t *testing.T) {
+	original := MCPToolManagerConfig{
+		ToolExecutionTimeout: Duration(30 * time.Second),
+		MaxAgentDepth:        5,
+	}
+	data, err := sonic.Marshal(original)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	// Must serialize as a duration string, not raw nanoseconds.
+	if !strings.Contains(string(data), `"tool_execution_timeout":"30s"`) {
+		t.Fatalf("expected tool_execution_timeout to marshal as \"30s\", got %s", data)
+	}
+	var round MCPToolManagerConfig
+	if err := sonic.Unmarshal(data, &round); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if round.ToolExecutionTimeout.D() != 30*time.Second {
+		t.Fatalf("round trip corrupted tool_execution_timeout: expected 30s, got %v", round.ToolExecutionTimeout.D())
+	}
+}
+
+// TestMCPToolManagerConfigUnmarshalToolExecutionTimeoutInteger confirms the existing
+// bare-integer-as-seconds contract still holds after adding MarshalJSON.
+func TestMCPToolManagerConfigUnmarshalToolExecutionTimeoutInteger(t *testing.T) {
+	raw := []byte(`{"tool_execution_timeout":30,"max_agent_depth":5}`)
+	var cfg MCPToolManagerConfig
+	if err := sonic.Unmarshal(raw, &cfg); err != nil {
+		t.Fatalf("unexpected unmarshal error: %v", err)
+	}
+	if cfg.ToolExecutionTimeout.D() != 30*time.Second {
+		t.Fatalf("expected 30s, got %v", cfg.ToolExecutionTimeout.D())
+	}
+}
+
+// TestMCPToolManagerConfigUnmarshalToolExecutionTimeoutString confirms duration strings
+// continue to parse as before.
+func TestMCPToolManagerConfigUnmarshalToolExecutionTimeoutString(t *testing.T) {
+	raw := []byte(`{"tool_execution_timeout":"45s","max_agent_depth":5}`)
+	var cfg MCPToolManagerConfig
+	if err := sonic.Unmarshal(raw, &cfg); err != nil {
+		t.Fatalf("unexpected unmarshal error: %v", err)
+	}
+	if cfg.ToolExecutionTimeout.D() != 45*time.Second {
+		t.Fatalf("expected 45s, got %v", cfg.ToolExecutionTimeout.D())
 	}
 }
