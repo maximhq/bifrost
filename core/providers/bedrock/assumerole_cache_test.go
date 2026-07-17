@@ -182,6 +182,94 @@ func TestAssumeRoleCredsCache_ParallelLiveUsers(t *testing.T) {
 	_ = context.Background() // reserved: kept for parity if future variant needs ctx-based cancellation
 }
 
+// TestAssumeRoleCredsCache_ConcurrentTouchDuringSweep stress-tests the
+// known race documented on sweepAssumeRoleCredsCache: touch() and the
+// sweeper's staleness-check-then-Delete aren't atomic against each other.
+// Runs many goroutines continuously touching (getOrCreateAssumeRoleCredsCache)
+// a small, shared set of keys while other goroutines concurrently sweep
+// with ttl=0 (so every entry is a stale-eviction candidate on every pass -
+// the maximum possible contention between touch and sweep). Asserts:
+//  1. No data race (run with -race - this is the primary point of the test).
+//  2. No panic/crash under the race.
+//  3. The cache is left in a valid, usable state afterward: a fresh
+//     getOrCreateAssumeRoleCredsCache call for each key still returns a
+//     non-nil, working *aws.CredentialsCache (self-heals whether or not any
+//     individual entry was evicted mid-use).
+//
+// Run with: go test ./core/providers/bedrock/ -run TestAssumeRoleCredsCache_ConcurrentTouchDuringSweep -race -v
+func TestAssumeRoleCredsCache_ConcurrentTouchDuringSweep(t *testing.T) {
+	const (
+		keyCount       = 8 // small key set so touch and sweep repeatedly contend on the SAME entries
+		touchersPerKey = 20
+		sweepers       = 4
+		iterations     = 200
+	)
+
+	keys := make([]string, keyCount)
+	for i := range keys {
+		keys[i] = fmt.Sprintf("racetest-region|racetest-role|ext|session-%d|source-%d", i, i)
+	}
+	defer clearAssumeRoleCacheKeys(keys)
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+
+	// Touchers: continuously get-or-create (which touches on a hit) for a
+	// fixed key, racing against sweepers trying to evict that same key.
+	for _, key := range keys {
+		for t := 0; t < touchersPerKey; t++ {
+			key := key
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for {
+					select {
+					case <-stop:
+						return
+					default:
+					}
+					getOrCreateAssumeRoleCredsCache(key, func() *aws.CredentialsCache {
+						return newBenchAssumeRoleCredsCache("us-east-1", "arn:aws:iam::123456789012:role/racetest")
+					})
+				}
+			}()
+		}
+	}
+
+	// Sweepers: ttl=0 means every entry (including ones touched moments
+	// ago) is immediately a staleness candidate - maximum possible
+	// contention against the touchers above.
+	for s := 0; s < sweepers; s++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < iterations; i++ {
+				sweepAssumeRoleCredsCache(time.Now(), 0)
+			}
+		}()
+	}
+
+	// Let the race run for a bounded number of sweeper iterations, then stop.
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		close(stop)
+	}()
+	wg.Wait()
+
+	// The cache must still be usable afterward, regardless of whether any
+	// individual key survived the eviction storm above.
+	for _, key := range keys {
+		credsCache := getOrCreateAssumeRoleCredsCache(key, func() *aws.CredentialsCache {
+			return newBenchAssumeRoleCredsCache("us-east-1", "arn:aws:iam::123456789012:role/racetest")
+		})
+		if credsCache == nil {
+			t.Fatalf("expected a valid, non-nil credsCache for key %q after touch/sweep contention", key)
+		}
+	}
+
+	t.Logf("%d keys x %d touchers survived %d sweeper passes (ttl=0, max contention) with no race/panic; cache still usable", keyCount, touchersPerKey, sweepers*iterations)
+}
+
 // BenchmarkAssumeRoleCredsCache_DistinctSessions measures allocation
 // overhead per distinct session under go test -bench, in addition to the
 // heap-based before/after numbers above.
