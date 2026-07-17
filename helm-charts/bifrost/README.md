@@ -10,7 +10,7 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 
 ### 2.1.30
 
-- Added `serviceMonitor` for scraping Bifrost's native `/metrics` endpoint via the Prometheus Operator. Set `serviceMonitor.enabled: true` (requires the `monitoring.coreos.com/v1` CRDs, e.g. from kube-prometheus-stack) to render a `ServiceMonitor` targeting the `http` service port. Supports `additionalLabels` (to match your Prometheus `serviceMonitorSelector`, e.g. `release: kube-prometheus-stack`), `namespace`, `path`, `interval`, `scrapeTimeout`, `scheme`, `tlsConfig`, `honorLabels`, `relabelings`, and `metricRelabelings`. Disabled by default; the render fails fast with a clear message if enabled without the Prometheus Operator CRDs installed.
+- Added `serviceMonitor` for scraping Bifrost's native `/metrics` endpoint via the Prometheus Operator. Set `serviceMonitor.enabled: true` (requires the `monitoring.coreos.com/v1` CRDs, e.g. from kube-prometheus-stack) to render a `ServiceMonitor` targeting the `http` service port. Supports `additionalLabels` (to match your Prometheus `serviceMonitorSelector`, e.g. `release: kube-prometheus-stack`), `namespace`, `path`, `interval`, `scrapeTimeout`, `scheme`, `tlsConfig`, `honorLabels`, `relabelings`, and `metricRelabelings`. Disabled by default.
 - Added `serviceMonitor.basicAuth` and `serviceMonitor.authorization` for authenticating the scrape. Bifrost's auth middleware is global, so with `authConfig.isEnabled: true` the `/metrics` endpoint returns `401` to an unauthenticated scrape and the target silently sits at `up=0`. `serviceMonitor.basicAuth.enabled: true` sends the admin credentials, defaulting `existingSecret` / `usernameKey` / `passwordKey` to whatever `governance.authConfig` or `authConfig` already uses, so rotating the admin password rotates the scrape credentials too. Rendering fails with an actionable message if no credentials Secret can be resolved (e.g. inline `adminUsername` / `adminPassword`, which Prometheus cannot read).
 - Added the `app.kubernetes.io/component: server` label to the primary `Service` metadata so the `ServiceMonitor` selects only the ClusterIP service and not the SQLite headless service (both otherwise share the same labels). This is an additive label; the service's pod selector is unchanged.
 
@@ -1071,7 +1071,7 @@ serviceMonitor:
   #     action: drop
 ```
 
-The `ServiceMonitor` targets the service's `http` port. It requires the `monitoring.coreos.com/v1` CRDs to be installed; when they are missing the render fails with a clear message. Leave `serviceMonitor.enabled: false` (the default) if you use OpenTelemetry push-based metrics or a Prometheus scrape-annotation setup instead.
+The `ServiceMonitor` targets the service's `http` port. It requires the `monitoring.coreos.com/v1` CRDs to be installed. Leave `serviceMonitor.enabled: false` (the default) if you use OpenTelemetry push-based metrics or a Prometheus scrape-annotation setup instead.
 
 #### Scraping with authentication enabled
 

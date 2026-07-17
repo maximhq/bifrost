@@ -1,7 +1,4 @@
 {{- if .Values.serviceMonitor.enabled }}
-{{- if not (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1") }}
-{{- fail "ERROR: serviceMonitor.enabled is true but the monitoring.coreos.com/v1 API (Prometheus Operator) is not installed in the cluster. Install kube-prometheus-stack / Prometheus Operator, or set serviceMonitor.enabled to false." }}
-{{- end }}
 {{- $basicAuth := .Values.serviceMonitor.basicAuth | default dict }}
 {{- if and $basicAuth.enabled .Values.serviceMonitor.authorization }}
 {{- fail "ERROR: serviceMonitor.basicAuth.enabled and serviceMonitor.authorization are mutually exclusive; a scrape endpoint carries at most one authentication method. Pick one." }}

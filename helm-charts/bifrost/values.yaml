@@ -88,7 +88,7 @@ service:
 
 # Prometheus Operator ServiceMonitor for scraping Bifrost's native /metrics endpoint.
 # Requires the Prometheus Operator CRDs (monitoring.coreos.com/v1), e.g. from
-# kube-prometheus-stack. When enabled without those CRDs the render fails fast.
+# kube-prometheus-stack.
 serviceMonitor:
   enabled: false
   # Extra labels on the ServiceMonitor object. Match your Prometheus instance's
