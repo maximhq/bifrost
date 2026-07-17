@@ -43,21 +43,30 @@ type WebhookDispatcher interface {
 	EnqueueJobEvent(ctx context.Context, job *AsyncJob)
 }
 
+// WebhookManager resolves registered webhook endpoints so submit-time
+// references can be validated before a job is accepted.
+type WebhookManager interface {
+	WebhookEndpointByName(endpointName string) (*configstoreTables.TableWebhookEndpoint, bool)
+}
+
 // AsyncJobExecutor manages async job creation and background execution.
 type AsyncJobExecutor struct {
 	logstore          LogStore
 	governanceStore   GovernanceStore
-	logger            schemas.Logger
 	webhookDispatcher WebhookDispatcher
+	webhookManager    WebhookManager
+	logger            schemas.Logger
 }
 
 // NewAsyncJobExecutor creates a new AsyncJobExecutor. A nil webhookDispatcher
-// leaves webhook notification disabled.
-func NewAsyncJobExecutor(logstore LogStore, governanceStore GovernanceStore, webhookDispatcher WebhookDispatcher, logger schemas.Logger) *AsyncJobExecutor {
+// leaves webhook notification disabled; a nil webhookManager rejects any
+// submit that references a webhook endpoint.
+func NewAsyncJobExecutor(logstore LogStore, governanceStore GovernanceStore, webhookDispatcher WebhookDispatcher, webhookManager WebhookManager, logger schemas.Logger) *AsyncJobExecutor {
 	return &AsyncJobExecutor{
 		logstore:          logstore,
 		governanceStore:   governanceStore,
 		webhookDispatcher: webhookDispatcher,
+		webhookManager:    webhookManager,
 		logger:            logger,
 	}
 }
@@ -106,15 +115,23 @@ func (e *AsyncJobExecutor) SubmitJob(bifrostCtx *schemas.BifrostContext, resultT
 		virtualKeyID = &vk.ID
 	}
 
+	endpoint, err := e.getWebhookEndpointIfPresent(bifrostCtx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve webhook endpoint: %w", err)
+	}
+
 	now := time.Now().UTC()
 	job := &AsyncJob{
-		ID:                uuid.New().String(),
-		Status:            schemas.AsyncJobStatusPending,
-		RequestType:       operationType,
-		VirtualKeyID:      virtualKeyID,
-		WebhookEndpointID: getWebhookEndpointIDFromContext(bifrostCtx),
-		ResultTTL:         resultTTL,
-		CreatedAt:         now,
+		ID:           uuid.New().String(),
+		Status:       schemas.AsyncJobStatusPending,
+		RequestType:  operationType,
+		VirtualKeyID: virtualKeyID,
+		ResultTTL:    resultTTL,
+		CreatedAt:    now,
+	}
+
+	if endpoint != nil {
+		job.WebhookEndpointID = &endpoint.ID
 	}
 
 	ctx := context.Background()
@@ -252,6 +269,37 @@ func (e *AsyncJobExecutor) notifyWebhook(ctx context.Context, job *AsyncJob, sta
 	e.webhookDispatcher.EnqueueJobEvent(ctx, &notified)
 }
 
+// getWebhookEndpointIfPresent resolves the webhook endpoint name the caller
+// attached to the request context, if any. A reference that does not resolve
+// to an existing, enabled endpoint is an error: accepting the job anyway
+// would silently drop the notification the caller asked for.
+func (e *AsyncJobExecutor) getWebhookEndpointIfPresent(ctx *schemas.BifrostContext) (*configstoreTables.TableWebhookEndpoint, error) {
+	if ctx == nil {
+		return nil, nil
+	}
+	webhookEndpointName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyAsyncWebhookEndpoint)
+	if webhookEndpointName == "" {
+		return nil, nil
+	}
+	if e.webhookManager == nil {
+		return nil, fmt.Errorf("webhook manager is not available")
+	}
+	// Fail fast when delivery is not wired: without a dispatcher the job would
+	// persist an endpoint reference that notifyWebhook can never act on,
+	// silently dropping the notification the caller asked for.
+	if e.webhookDispatcher == nil {
+		return nil, fmt.Errorf("webhook dispatcher is not available")
+	}
+	endpoint, ok := e.webhookManager.WebhookEndpointByName(webhookEndpointName)
+	if !ok {
+		return nil, fmt.Errorf("%w: unknown webhook endpoint with name %q", ErrInvalidWebhookReference, webhookEndpointName)
+	}
+	if endpoint.Disabled {
+		return nil, fmt.Errorf("%w: webhook endpoint %q is disabled", ErrInvalidWebhookReference, endpoint.Name)
+	}
+	return endpoint, nil
+}
+
 // --- Cleaner ---
 
 // AsyncJobCleaner manages the cleanup of expired async jobs.
@@ -360,19 +408,4 @@ func getVirtualKeyFromContext(ctx *schemas.BifrostContext) *string {
 		return nil
 	}
 	return &vkValue
-}
-
-// getWebhookEndpointIDFromContext extracts the webhook endpoint to notify
-// when this job reaches a terminal state. Submit entry points validate the
-// caller's endpoint reference and normalize the context value to the
-// endpoint ID before submitting; nil means no webhook was requested.
-func getWebhookEndpointIDFromContext(ctx *schemas.BifrostContext) *string {
-	if ctx == nil {
-		return nil
-	}
-	endpointID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyAsyncWebhook)
-	if endpointID == "" {
-		return nil
-	}
-	return &endpointID
 }
