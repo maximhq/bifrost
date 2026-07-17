@@ -272,6 +272,23 @@ func (c *MCPToolManagerConfig) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// MarshalJSON emits tool_execution_timeout as a duration string so it round-trips
+// correctly — the underlying Duration marshals as nanoseconds, but UnmarshalJSON
+// treats bare integers as seconds, so without this a marshal/unmarshal cycle would
+// reinterpret the nanosecond value as seconds and overflow to a negative timeout.
+func (c MCPToolManagerConfig) MarshalJSON() ([]byte, error) {
+	type alias MCPToolManagerConfig
+	type shadow struct {
+		ToolExecutionTimeout string `json:"tool_execution_timeout,omitempty"`
+		*alias
+	}
+	s := shadow{alias: (*alias)(&c)}
+	if c.ToolExecutionTimeout > 0 {
+		s.ToolExecutionTimeout = c.ToolExecutionTimeout.String()
+	}
+	return json.Marshal(s)
+}
+
 const (
 	DefaultMaxAgentDepth        = 10
 	DefaultToolExecutionTimeout = 30 * time.Second
