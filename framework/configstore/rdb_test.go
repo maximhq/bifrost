@@ -2326,6 +2326,99 @@ func testWebhookEndpoint(name string) *tables.TableWebhookEndpoint {
 	}
 }
 
+func TestWebhookEndpointsPaginated(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	billing := testWebhookEndpoint("billing-hook")
+	require.NoError(t, store.CreateWebhookEndpoint(ctx, billing))
+
+	alerts := testWebhookEndpoint("alerts-hook")
+	alerts.URL = "https://93.184.216.34/alerts"
+	alerts.Events = []tables.WebhookEvent{tables.WebhookEventAsyncJobFailed}
+	require.NoError(t, store.CreateWebhookEndpoint(ctx, alerts))
+
+	paused := testWebhookEndpoint("paused-hook")
+	paused.Disabled = true
+	require.NoError(t, store.CreateWebhookEndpoint(ctx, paused))
+
+	names := func(endpoints []tables.TableWebhookEndpoint) []string {
+		out := make([]string, 0, len(endpoints))
+		for _, e := range endpoints {
+			out = append(out, e.Name)
+		}
+		return out
+	}
+
+	// No filters: everything, creation order, full count.
+	all, total, err := store.GetWebhookEndpointsPaginated(ctx, WebhookEndpointsQueryParams{Limit: 10})
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), total)
+	assert.Equal(t, []string{"billing-hook", "alerts-hook", "paused-hook"}, names(all))
+
+	// Paging: total stays the full match count.
+	page, total, err := store.GetWebhookEndpointsPaginated(ctx, WebhookEndpointsQueryParams{Limit: 1, Offset: 1})
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), total)
+	assert.Equal(t, []string{"alerts-hook"}, names(page))
+
+	// Search matches name or URL, case-insensitively.
+	found, total, err := store.GetWebhookEndpointsPaginated(ctx, WebhookEndpointsQueryParams{Search: "ALERTS", Limit: 10})
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), total)
+	assert.Equal(t, []string{"alerts-hook"}, names(found))
+
+	// Disabled filter is tri-state.
+	enabledOnly := false
+	found, total, err = store.GetWebhookEndpointsPaginated(ctx, WebhookEndpointsQueryParams{Disabled: &enabledOnly, Limit: 10})
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), total)
+	assert.Equal(t, []string{"billing-hook", "alerts-hook"}, names(found))
+
+	// Event filter selects subscribers of any requested event.
+	found, total, err = store.GetWebhookEndpointsPaginated(ctx, WebhookEndpointsQueryParams{
+		Events: []string{string(tables.WebhookEventAsyncJobFailed)},
+		Limit:  10,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), total)
+	assert.Equal(t, []string{"alerts-hook"}, names(found))
+
+	// Filters compose with AND semantics.
+	found, total, err = store.GetWebhookEndpointsPaginated(ctx, WebhookEndpointsQueryParams{
+		Search:   "hook",
+		Disabled: &enabledOnly,
+		Events:   []string{string(tables.WebhookEventAsyncJobCompleted)},
+		Limit:    10,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), total)
+	assert.Equal(t, []string{"billing-hook"}, names(found))
+}
+
+func TestWebhookEndpointsSearchEscapesLikeWildcards(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, store.CreateWebhookEndpoint(ctx, testWebhookEndpoint("prod-hook")))
+	require.NoError(t, store.CreateWebhookEndpoint(ctx, testWebhookEndpoint("team_hook")))
+
+	names := func(endpoints []tables.TableWebhookEndpoint) []string {
+		out := make([]string, 0, len(endpoints))
+		for _, e := range endpoints {
+			out = append(out, e.Name)
+		}
+		return out
+	}
+
+	// A literal "_" must match only the name that contains one — not act as a
+	// single-character LIKE wildcard, which would also match "prod-hook".
+	found, total, err := store.GetWebhookEndpointsPaginated(ctx, WebhookEndpointsQueryParams{Search: "_", Limit: 10})
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), total)
+	assert.Equal(t, []string{"team_hook"}, names(found))
+}
+
 func TestWebhookEndpointCreate(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()

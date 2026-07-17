@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
+	"strings"
 
 	"github.com/bytedance/sonic"
 	"github.com/fasthttp/router"
@@ -130,14 +131,51 @@ func (h *WebhookHandler) storeAvailable(ctx *fasthttp.RequestCtx) bool {
 	return true
 }
 
-// listWebhookEndpoints returns all endpoints. Reads the store, not memory:
-// list views include the operational failure counters, which are only
-// tracked in the database.
+// listWebhookEndpoints returns one page of endpoints matching the query
+// filters. Reads the store, not memory: list views include the operational
+// failure counters, which are only tracked in the database.
 func (h *WebhookHandler) listWebhookEndpoints(ctx *fasthttp.RequestCtx) {
 	if !h.storeAvailable(ctx) {
 		return
 	}
-	endpoints, err := h.store.ConfigStore.GetWebhookEndpoints(ctx)
+	args := ctx.QueryArgs()
+	params := configstore.WebhookEndpointsQueryParams{
+		Search: strings.TrimSpace(string(args.Peek("search"))),
+		Events: parseCommaSeparated(string(args.Peek("event"))),
+	}
+	for _, event := range params.Events {
+		if !configstoreTables.WebhookEvent(event).IsValid() {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Unknown webhook event %q", event))
+			return
+		}
+	}
+	if disabledStr := string(args.Peek("disabled")); disabledStr != "" {
+		disabled, err := strconv.ParseBool(disabledStr)
+		if err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, "Invalid disabled parameter: must be true or false")
+			return
+		}
+		params.Disabled = &disabled
+	}
+	if limitStr := string(args.Peek("limit")); limitStr != "" {
+		limit, err := strconv.Atoi(limitStr)
+		if err != nil || limit < 0 {
+			SendError(ctx, fasthttp.StatusBadRequest, "Invalid limit parameter: must be a non-negative number")
+			return
+		}
+		params.Limit = limit
+	}
+	if offsetStr := string(args.Peek("offset")); offsetStr != "" {
+		offset, err := strconv.Atoi(offsetStr)
+		if err != nil || offset < 0 {
+			SendError(ctx, fasthttp.StatusBadRequest, "Invalid offset parameter: must be a non-negative number")
+			return
+		}
+		params.Offset = offset
+	}
+	params.Limit, params.Offset = ClampPaginationParams(params.Limit, params.Offset)
+
+	endpoints, totalCount, err := h.store.ConfigStore.GetWebhookEndpointsPaginated(ctx, params)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to list webhook endpoints: %v", err))
 		return
@@ -147,8 +185,11 @@ func (h *WebhookHandler) listWebhookEndpoints(ctx *fasthttp.RequestCtx) {
 		redacted = append(redacted, redactedWebhookEndpoint(&endpoints[i]))
 	}
 	SendJSON(ctx, map[string]any{
-		"endpoints": redacted,
-		"count":     len(redacted),
+		"endpoints":   redacted,
+		"count":       len(redacted),
+		"total_count": totalCount,
+		"limit":       params.Limit,
+		"offset":      params.Offset,
 	})
 }
 
