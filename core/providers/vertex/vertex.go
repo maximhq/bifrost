@@ -1327,7 +1327,7 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 
 		return response, nil
 	} else {
-		chatResponse, err := provider.ChatCompletion(ctx, key, request.ToChatRequest())
+		chatResponse, err := provider.ChatCompletion(ctx, key, request.ToChatRequest(provider.logger))
 		if err != nil {
 			return nil, err
 		}
@@ -1519,7 +1519,7 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 			postHookRunner,
 			postHookSpanFinalizer,
 			key,
-			request.ToChatRequest(),
+			request.ToChatRequest(provider.logger),
 		)
 	}
 }

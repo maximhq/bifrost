@@ -146,7 +146,7 @@ func (provider *GroqProvider) ChatCompletionStream(ctx *schemas.BifrostContext, 
 
 // Responses performs a responses request to the Groq API.
 func (provider *GroqProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
-	chatResponse, err := provider.ChatCompletion(ctx, key, request.ToChatRequest())
+	chatResponse, err := provider.ChatCompletion(ctx, key, request.ToChatRequest(provider.logger))
 	if err != nil {
 		return nil, err
 	}
@@ -164,7 +164,7 @@ func (provider *GroqProvider) ResponsesStream(ctx *schemas.BifrostContext, postH
 		postHookRunner,
 		postHookSpanFinalizer,
 		key,
-		request.ToChatRequest(),
+		request.ToChatRequest(provider.logger),
 	)
 }
 

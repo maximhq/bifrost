@@ -1171,10 +1171,19 @@ func (cr *BifrostChatRequest) ToResponsesRequest() *BifrostResponsesRequest {
 	return brr
 }
 
-// ToChatRequest converts a BifrostResponsesRequest to BifrostChatRequest format
-func (brr *BifrostResponsesRequest) ToChatRequest() *BifrostChatRequest {
+// ToChatRequest converts a BifrostResponsesRequest to BifrostChatRequest format.
+// logger is variadic and optional (preserving the original zero-argument call
+// shape for backward compatibility); pass the calling provider's own
+// instance-bound logger — not a process-global — to receive a warning whenever
+// a field is silently dropped because Chat Completions has no equivalent
+// representation for it. Only the first argument is used.
+func (brr *BifrostResponsesRequest) ToChatRequest(logger ...Logger) *BifrostChatRequest {
 	if brr == nil {
 		return &BifrostChatRequest{}
+	}
+	var log Logger
+	if len(logger) > 0 {
+		log = logger[0]
 	}
 
 	bcr := &BifrostChatRequest{
@@ -1186,6 +1195,16 @@ func (brr *BifrostResponsesRequest) ToChatRequest() *BifrostChatRequest {
 	// Convert Input messages using existing ToChatMessages()
 	bcr.Input = ToChatMessages(brr.Input)
 	normalizeDeveloperRoleForChatFallback(bcr.Input)
+
+	// Chat Completions has no top-level "instructions" field; prepend it as a leading
+	// system message so it isn't silently dropped on the Responses->Chat fallback path.
+	if brr.Params != nil && brr.Params.Instructions != nil && strings.TrimSpace(*brr.Params.Instructions) != "" {
+		systemMsg := ChatMessage{
+			Role:    ChatMessageRoleSystem,
+			Content: &ChatMessageContent{ContentStr: brr.Params.Instructions},
+		}
+		bcr.Input = append([]ChatMessage{systemMsg}, bcr.Input...)
+	}
 
 	// Convert Parameters
 	if brr.Params != nil {
@@ -1217,12 +1236,12 @@ func (brr *BifrostResponsesRequest) ToChatRequest() *BifrostChatRequest {
 		}
 
 		// Responses -> Chat fallback only supports function tools in a valid chat shape.
-		bcr.Params.Tools = sanitizeResponsesToolsForChatFallback(brr.Params.Tools)
+		bcr.Params.Tools = sanitizeResponsesToolsForChatFallback(brr.Params.Tools, log)
 
 		// Convert ToolChoice using existing ResponsesToolChoice.ToChatToolChoice()
 		if brr.Params.ToolChoice != nil {
 			chatToolChoice := brr.Params.ToolChoice.ToChatToolChoice()
-			bcr.Params.ToolChoice = sanitizeChatToolChoiceForFallback(chatToolChoice, bcr.Params.Tools)
+			bcr.Params.ToolChoice = sanitizeChatToolChoiceForFallback(chatToolChoice, bcr.Params.Tools, log)
 		}
 
 		// Handle Reasoning from Reasoning
@@ -1267,14 +1286,28 @@ func (brr *BifrostResponsesRequest) ToChatRequest() *BifrostChatRequest {
 	return bcr
 }
 
-func sanitizeResponsesToolsForChatFallback(tools []ResponsesTool) []ChatTool {
+// warnFallbackDrop logs (via the caller-supplied, instance-scoped logger) whenever
+// the Responses->Chat fallback conversion silently drops a field the caller
+// explicitly set, because Chat Completions has no equivalent representation for
+// it. logger may be nil (e.g. in tests), in which case this is a no-op — deliberately
+// NOT a package-level global, so warnings are always attributed to the correct
+// Bifrost instance/tenant rather than whichever instance last called Init.
+func warnFallbackDrop(logger Logger, msg string, args ...any) {
+	if logger != nil {
+		logger.Warn(msg, args...)
+	}
+}
+
+func sanitizeResponsesToolsForChatFallback(tools []ResponsesTool, logger Logger) []ChatTool {
 	if len(tools) == 0 {
 		return nil
 	}
 
+	var droppedTypes []string
 	chatTools := make([]ChatTool, 0, len(tools))
 	for _, responsesTool := range tools {
 		if responsesTool.Type != ResponsesToolTypeFunction {
+			droppedTypes = append(droppedTypes, string(responsesTool.Type))
 			continue
 		}
 		if responsesTool.Name == nil || strings.TrimSpace(*responsesTool.Name) == "" {
@@ -1289,6 +1322,10 @@ func sanitizeResponsesToolsForChatFallback(tools []ResponsesTool) []ChatTool {
 		chatTool.Type = ChatToolTypeFunction
 		chatTool.Custom = nil
 		chatTools = append(chatTools, *chatTool)
+	}
+
+	if len(droppedTypes) > 0 {
+		warnFallbackDrop(logger, "responses->chat fallback: dropping tool(s) with no Chat Completions equivalent: tool_types=%v", droppedTypes)
 	}
 
 	if len(chatTools) == 0 {
@@ -1306,11 +1343,12 @@ func normalizeDeveloperRoleForChatFallback(messages []ChatMessage) {
 	}
 }
 
-func sanitizeChatToolChoiceForFallback(toolChoice *ChatToolChoice, tools []ChatTool) *ChatToolChoice {
+func sanitizeChatToolChoiceForFallback(toolChoice *ChatToolChoice, tools []ChatTool, logger Logger) *ChatToolChoice {
 	if toolChoice == nil {
 		return nil
 	}
 	if len(tools) == 0 {
+		warnFallbackDrop(logger, "responses->chat fallback: dropping tool_choice because no compatible tools remain after filtering")
 		return nil
 	}
 
@@ -1328,9 +1366,11 @@ func sanitizeChatToolChoiceForFallback(toolChoice *ChatToolChoice, tools []ChatT
 				return nil
 			}
 			if _, ok := validToolNames[toolChoice.ChatToolChoiceStruct.Function.Name]; !ok {
+				warnFallbackDrop(logger, "responses->chat fallback: dropping tool_choice referencing a tool filtered out of the fallback request: tool_name=%v", toolChoice.ChatToolChoiceStruct.Function.Name)
 				return nil
 			}
 		case ChatToolChoiceTypeAllowedTools, ChatToolChoiceTypeCustom:
+			warnFallbackDrop(logger, "responses->chat fallback: dropping tool_choice type with no Chat Completions equivalent: tool_choice_type=%v", string(toolChoice.ChatToolChoiceStruct.Type))
 			return nil
 		}
 	}
@@ -1345,7 +1385,9 @@ func sanitizeChatToolChoiceForFallback(toolChoice *ChatToolChoice, tools []ChatT
 func responsesStatusFromChatFinishReason(finishReason string) (status string, incompleteDetails *ResponsesResponseIncompleteDetails, mapped bool) {
 	switch finishReason {
 	case string(BifrostFinishReasonLength):
-		return "incomplete", &ResponsesResponseIncompleteDetails{Reason: "max_output_tokens"}, true
+		return "incomplete", &ResponsesResponseIncompleteDetails{Reason: ResponsesResponseIncompleteReasonMaxOutputTokens}, true
+	case ResponsesResponseIncompleteReasonContentFilter:
+		return "incomplete", &ResponsesResponseIncompleteDetails{Reason: ResponsesResponseIncompleteReasonContentFilter}, true
 	case string(BifrostFinishReasonStop), string(BifrostFinishReasonToolCalls):
 		return "completed", nil, true
 	default:

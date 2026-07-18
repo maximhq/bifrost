@@ -592,7 +592,7 @@ func (provider *HuggingFaceProvider) Responses(ctx *schemas.BifrostContext, key 
 		return nil, err
 	}
 
-	chatResponse, err := provider.ChatCompletion(ctx, key, request.ToChatRequest())
+	chatResponse, err := provider.ChatCompletion(ctx, key, request.ToChatRequest(provider.logger))
 	if err != nil {
 		return nil, err
 	}
@@ -613,7 +613,7 @@ func (provider *HuggingFaceProvider) ResponsesStream(ctx *schemas.BifrostContext
 		postHookRunner,
 		postHookSpanFinalizer,
 		key,
-		request.ToChatRequest(),
+		request.ToChatRequest(provider.logger),
 	)
 }
 

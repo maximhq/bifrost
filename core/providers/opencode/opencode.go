@@ -154,7 +154,7 @@ func (p *opencodeProvider) ChatCompletionStream(ctx *schemas.BifrostContext, pos
 
 // Responses performs a responses request to the Opencode API.
 func (p *opencodeProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
-	chatResponse, err := p.ChatCompletion(ctx, key, request.ToChatRequest())
+	chatResponse, err := p.ChatCompletion(ctx, key, request.ToChatRequest(p.logger))
 	if err != nil {
 		return nil, err
 	}
@@ -164,7 +164,7 @@ func (p *opencodeProvider) Responses(ctx *schemas.BifrostContext, key schemas.Ke
 // ResponsesStream performs a streaming responses request to the Opencode API.
 func (p *opencodeProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	ctx.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
-	return p.ChatCompletionStream(ctx, postHookRunner, postHookSpanFinalizer, key, request.ToChatRequest())
+	return p.ChatCompletionStream(ctx, postHookRunner, postHookSpanFinalizer, key, request.ToChatRequest(p.logger))
 }
 
 // Embedding is not supported by Opencode.
