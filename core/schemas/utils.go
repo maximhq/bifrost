@@ -1241,6 +1241,25 @@ func deepCopySchemaValue(original interface{}) interface{} {
 	}
 }
 
+// DeepCopyResponsesTool deep-copies a ResponsesTool, including nested union
+// payloads such as namespace sub-tools, MCP header maps, and function
+// parameter schemas. The ResponsesTool union has many provider-specific
+// embedded structs, so round-tripping through the schema JSON shape is the
+// most reliable way to preserve concrete nested types without aliasing.
+func DeepCopyResponsesTool(original ResponsesTool) ResponsesTool {
+	encoded, err := MarshalSorted(original)
+	if err != nil {
+		return original
+	}
+
+	var copied ResponsesTool
+	if err := Unmarshal(encoded, &copied); err != nil {
+		return original
+	}
+
+	return copied
+}
+
 // DeepCopyResponsesMessage creates a deep copy of a ResponsesMessage
 // to prevent shared data mutation between different plugin accumulators
 func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {
@@ -1312,14 +1331,31 @@ func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {
 			copy.ResponsesToolMessage.Name = &copyName
 		}
 
+		if original.ResponsesToolMessage.Namespace != nil {
+			copyNamespace := *original.ResponsesToolMessage.Namespace
+			copy.ResponsesToolMessage.Namespace = &copyNamespace
+		}
+
 		if original.ResponsesToolMessage.Arguments != nil {
 			copyArguments := *original.ResponsesToolMessage.Arguments
 			copy.ResponsesToolMessage.Arguments = &copyArguments
 		}
 
+		if original.ResponsesToolMessage.Execution != nil {
+			copyExecution := *original.ResponsesToolMessage.Execution
+			copy.ResponsesToolMessage.Execution = &copyExecution
+		}
+
 		if original.ResponsesToolMessage.Error != nil {
 			copyError := *original.ResponsesToolMessage.Error
 			copy.ResponsesToolMessage.Error = &copyError
+		}
+
+		if original.ResponsesToolMessage.Tools != nil {
+			copy.ResponsesToolMessage.Tools = make([]ResponsesTool, len(original.ResponsesToolMessage.Tools))
+			for i, tool := range original.ResponsesToolMessage.Tools {
+				copy.ResponsesToolMessage.Tools[i] = DeepCopyResponsesTool(tool)
+			}
 		}
 
 		// Deep copy Output

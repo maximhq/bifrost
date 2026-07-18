@@ -258,6 +258,110 @@ func TestResponsesMessageToolCallArguments(t *testing.T) {
 			if string(encoded) != items[name] {
 				t.Fatalf("[%s] expected item to round-trip verbatim\nwant: %s\ngot:  %s", name, items[name], encoded)
 			}
+			// Note: Execution is not surfaced as a typed field for rawPreserved
+			// items (only Arguments is, for downstream consumers) — the
+			// byte-identical round-trip check above is what actually proves
+			// "execution" survives on the wire.
+		}
+	})
+}
+
+// TestResponsesMessageToolSearchCallMarshal verifies the round-trip wire format
+// for tool_search_call items. tool_search_call is a rawPreserved item type (see
+// isRawPreservedItem): Bifrost re-emits the exact bytes it received rather than
+// reconstructing the item field-by-field, so the object-vs-string arguments shape
+// and the "execution" field survive byte-for-byte, whatever Codex originally sent.
+// Arguments is additionally surfaced as a *string on ResponsesToolMessage (see
+// setToolArguments) so downstream consumers that only read the typed field keep
+// working, without affecting the re-emitted wire bytes.
+func TestResponsesMessageToolSearchCallMarshal(t *testing.T) {
+	t.Run("completed frame round-trips arguments object and execution verbatim", func(t *testing.T) {
+		raw := []byte(`{"type":"tool_search_call","call_id":"call_1","execution":"client","arguments":{"query":"observability","limit":10}}`)
+		var msg ResponsesMessage
+		if err := Unmarshal(raw, &msg); err != nil {
+			t.Fatalf("unmarshal tool_search_call: %v", err)
+		}
+		// Arguments is additionally surfaced as a string for typed consumers.
+		if msg.Arguments == nil || *msg.Arguments != `{"query":"observability","limit":10}` {
+			t.Fatalf("expected Arguments surfaced as string, got: %v", msg.Arguments)
+		}
+		encoded, err := MarshalSorted(msg)
+		if err != nil {
+			t.Fatalf("marshal tool_search_call message: %v", err)
+		}
+		if string(encoded) != string(raw) {
+			t.Fatalf("expected byte-identical round-trip:\n got: %s\nwant: %s", encoded, raw)
+		}
+	})
+
+	t.Run("in_progress empty-object frame round-trips verbatim", func(t *testing.T) {
+		raw := []byte(`{"type":"tool_search_call","call_id":"call_2","execution":"client","arguments":{}}`)
+		var msg ResponsesMessage
+		if err := Unmarshal(raw, &msg); err != nil {
+			t.Fatalf("unmarshal in_progress tool_search_call: %v", err)
+		}
+		encoded, err := MarshalSorted(msg)
+		if err != nil {
+			t.Fatalf("marshal in_progress tool_search_call: %v", err)
+		}
+		if string(encoded) != string(raw) {
+			t.Fatalf("expected byte-identical round-trip:\n got: %s\nwant: %s", encoded, raw)
+		}
+	})
+
+	t.Run("full round-trip from raw openai frame", func(t *testing.T) {
+		raw := []byte(`{"id":"tsc_abc","type":"tool_search_call","status":"completed","call_id":"call_xyz","execution":"client","arguments":{"query":"sentry grafana","limit":10}}`)
+		var msg ResponsesMessage
+		if err := Unmarshal(raw, &msg); err != nil {
+			t.Fatalf("unmarshal tool_search_call: %v", err)
+		}
+		if msg.Arguments == nil || *msg.Arguments != `{"query":"sentry grafana","limit":10}` {
+			t.Fatalf("unexpected arguments after unmarshal: %v", msg.Arguments)
+		}
+		encoded, err := MarshalSorted(msg)
+		if err != nil {
+			t.Fatalf("marshal tool_search_call after round-trip: %v", err)
+		}
+		if string(encoded) != string(raw) {
+			t.Fatalf("expected byte-identical round-trip:\n got: %s\nwant: %s", encoded, raw)
+		}
+	})
+
+	t.Run("execution value is preserved verbatim, not defaulted", func(t *testing.T) {
+		raw := []byte(`{"type":"tool_search_call","call_id":"call_3","execution":"server","arguments":{"query":"test"}}`)
+		var msg ResponsesMessage
+		if err := Unmarshal(raw, &msg); err != nil {
+			t.Fatalf("unmarshal tool_search_call: %v", err)
+		}
+		encoded, err := MarshalSorted(msg)
+		if err != nil {
+			t.Fatalf("marshal tool_search_call with custom execution: %v", err)
+		}
+		if string(encoded) != string(raw) {
+			t.Fatalf("expected byte-identical round-trip:\n got: %s\nwant: %s", encoded, raw)
+		}
+	})
+
+	t.Run("function_call still marshals arguments as json string", func(t *testing.T) {
+		fcType := ResponsesMessageTypeFunctionCall
+		args := `{"param":"value"}`
+		msg := ResponsesMessage{
+			Type: &fcType,
+			ResponsesToolMessage: &ResponsesToolMessage{
+				Arguments: &args,
+			},
+		}
+		encoded, err := MarshalSorted(msg)
+		if err != nil {
+			t.Fatalf("marshal function_call message: %v", err)
+		}
+		// function_call arguments must remain a JSON string
+		if !strings.Contains(string(encoded), `"arguments":"{`) {
+			t.Fatalf("expected function_call arguments as string, got: %s", encoded)
+		}
+		// function_call must not emit execution
+		if strings.Contains(string(encoded), `"execution"`) {
+			t.Fatalf("execution must not appear in function_call output, got: %s", encoded)
 		}
 	})
 }
@@ -366,6 +470,146 @@ func TestWithDefaultsStripsCodeExecutionCarry(t *testing.T) {
 	}
 	if strings.Contains(string(encoded), "code_execution_") {
 		t.Errorf("normalized JSON still contains code_execution_* fields:\n%s", encoded)
+	}
+}
+
+// TestResponsesMessageToolSearchOutputRoundTrip verifies that tool_search_output
+// items survive a Bifrost unmarshal → marshal round-trip with the tools array
+// (including the "type" field on each entry) preserved verbatim. This covers the
+// bug reported in GitHub issue #4713 where Bifrost dropped tools[*].type on the
+// inbound request leg.
+func TestResponsesMessageToolSearchOutputRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		raw        string
+		wantFields []string
+		wantAbsent []string
+	}{
+		{
+			name: "namespace tool type is preserved",
+			raw: `{
+				"type": "tool_search_output",
+				"call_id": "search-1",
+				"tools": [
+					{
+						"type": "namespace",
+						"name": "mcp__codexself",
+						"description": "Codex self-tools",
+						"tools": [
+							{"type": "function", "name": "codex_reply", "description": "Reply with a message"}
+						]
+					}
+				]
+			}`,
+			wantFields: []string{
+				`"type":"tool_search_output"`,
+				`"call_id":"search-1"`,
+				`"type":"namespace"`,
+				`"name":"mcp__codexself"`,
+				`"type":"function"`,
+				`"name":"codex_reply"`,
+			},
+		},
+		{
+			name: "empty tools array round-trips cleanly",
+			raw:  `{"type":"tool_search_output","call_id":"search-3","tools":[]}`,
+			wantFields: []string{
+				`"type":"tool_search_output"`,
+				`"call_id":"search-3"`,
+			},
+		},
+		{
+			name: "tool_search_output preserves execution field verbatim (codex requires it)",
+			raw: `{
+				"type": "tool_search_output",
+				"call_id": "search-4",
+				"execution": "client",
+				"tools": [{"type": "function", "name": "shell"}]
+			}`,
+			wantFields: []string{
+				`"type":"tool_search_output"`,
+				`"execution":"client"`,
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var msg ResponsesMessage
+			if err := Unmarshal([]byte(tc.raw), &msg); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+
+			// Verify the type constant parsed correctly.
+			if msg.Type == nil || *msg.Type != ResponsesMessageTypeToolSearchOutput {
+				t.Fatalf("expected type tool_search_output, got %v", msg.Type)
+			}
+
+			encoded, err := MarshalSorted(msg)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			got := string(encoded)
+
+			for _, want := range tc.wantFields {
+				if !strings.Contains(got, want) {
+					t.Errorf("missing %q in encoded output:\n%s", want, got)
+				}
+			}
+			for _, absent := range tc.wantAbsent {
+				if strings.Contains(got, absent) {
+					t.Errorf("unexpected %q present in encoded output:\n%s", absent, got)
+				}
+			}
+		})
+	}
+}
+
+// TestResponsesMessageMCPListToolsRoundTrip guards against a field collision:
+// ResponsesToolMessage.Tools (tool_search_output) and the embedded
+// ResponsesMCPListTools.Tools (mcp_list_tools) both use the wire key "tools".
+// If either field were left to struct-tag-based encoding, the shallower one
+// would silently win for every message type and the other would never survive
+// marshal/unmarshal.
+//
+// Note: this only asserts the "tools" field, which is what UnmarshalJSON/
+// MarshalJSON route manually. ResponsesMCPListTools.ServerLabel is a separate,
+// pre-existing bug (reproduces identically on a clean upstream/dev checkout,
+// unrelated to this collision or to tool_search at all): the JSON decoder
+// never auto-allocates the doubly-nested anonymous pointer chain
+// ResponsesMessage -> *ResponsesToolMessage -> *ResponsesMCPListTools, so no
+// field on ResponsesMCPListTools reaches the wire on unmarshal unless
+// something else (like this Tools routing) has already allocated the struct.
+func TestResponsesMessageMCPListToolsRoundTrip(t *testing.T) {
+	raw := `{"type":"mcp_list_tools","tools":[{"name":"query_prometheus","input_schema":{"type":"object"}}]}`
+
+	var msg ResponsesMessage
+	if err := Unmarshal([]byte(raw), &msg); err != nil {
+		t.Fatalf("unmarshal mcp_list_tools: %v", err)
+	}
+
+	if msg.ResponsesToolMessage == nil || msg.ResponsesMCPListTools == nil {
+		t.Fatalf("expected ResponsesMCPListTools to be populated, got %#v", msg.ResponsesToolMessage)
+	}
+	if len(msg.ResponsesMCPListTools.Tools) != 1 || msg.ResponsesMCPListTools.Tools[0].Name != "query_prometheus" {
+		t.Fatalf("expected mcp_list_tools.tools to survive unmarshal, got %#v", msg.ResponsesMCPListTools.Tools)
+	}
+	// The unrelated tool_search_output field must stay untouched.
+	if msg.ResponsesToolMessage.Tools != nil {
+		t.Fatalf("expected ResponsesToolMessage.Tools to stay nil for mcp_list_tools, got %#v", msg.ResponsesToolMessage.Tools)
+	}
+
+	encoded, err := MarshalSorted(msg)
+	if err != nil {
+		t.Fatalf("marshal mcp_list_tools: %v", err)
+	}
+	got := string(encoded)
+	if !strings.Contains(got, `"name":"query_prometheus"`) {
+		t.Fatalf("expected mcp_list_tools.tools to survive marshal, got: %s", got)
 	}
 }
 

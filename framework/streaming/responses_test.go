@@ -10,6 +10,24 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+func testToolParamType(t *testing.T, value interface{}) interface{} {
+	t.Helper()
+
+	switch v := value.(type) {
+	case map[string]interface{}:
+		return v["type"]
+	case *schemas.OrderedMap:
+		got, _ := v.Get("type")
+		return got
+	case schemas.OrderedMap:
+		got, _ := v.Get("type")
+		return got
+	default:
+		t.Fatalf("unexpected schema value type %T", value)
+		return nil
+	}
+}
+
 func testResponsesAccumulator(tb testing.TB) *Accumulator {
 	tb.Helper()
 	acc := NewAccumulator(nil, bifrost.NewDefaultLogger(schemas.LogLevelError))
@@ -403,5 +421,94 @@ func TestDeepCopyResponsesStreamResponsePreservesAllFields(t *testing.T) {
 	}
 	if *copied.Item.Phase != "final_answer" {
 		t.Errorf("Item.Phase aliased original: got %q", *copied.Item.Phase)
+	}
+}
+
+func TestDeepCopyResponsesStreamResponsePreservesToolSearchFields(t *testing.T) {
+	toolSearchType := schemas.ResponsesMessageTypeToolSearchOutput
+	const wantNamespace = "mcp__codexself"
+	const wantExecution = "client"
+	const wantFunction = "codex_reply"
+	namespace := wantNamespace
+	execution := wantExecution
+	functionName := wantFunction
+	paramDesc := "reply payload"
+	params := &schemas.ToolFunctionParameters{
+		Type:        "object",
+		Description: &paramDesc,
+		Properties: schemas.NewOrderedMapFromPairs(
+			schemas.Pair{Key: "message", Value: map[string]interface{}{"type": "string"}},
+		),
+	}
+
+	original := &schemas.BifrostResponsesStreamResponse{
+		Type: schemas.ResponsesStreamResponseTypeOutputItemDone,
+		Item: &schemas.ResponsesMessage{
+			Type: &toolSearchType,
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				Namespace: &namespace,
+				Execution: &execution,
+				Tools: []schemas.ResponsesTool{
+					{
+						Type: schemas.ResponsesToolType("namespace"),
+						Name: schemas.Ptr(namespace),
+						ResponsesToolNamespace: &schemas.ResponsesToolNamespace{
+							Tools: []schemas.ResponsesTool{
+								{
+									Type: schemas.ResponsesToolType("function"),
+									Name: schemas.Ptr(functionName),
+									ResponsesToolFunction: &schemas.ResponsesToolFunction{
+										Parameters: params,
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	copied := deepCopyResponsesStreamResponse(original)
+	if copied == nil || copied.Item == nil || copied.Item.ResponsesToolMessage == nil {
+		t.Fatal("expected non-nil deep copy with tool message")
+	}
+	if copied.Item.ResponsesToolMessage.Namespace == nil || *copied.Item.ResponsesToolMessage.Namespace != wantNamespace {
+		t.Fatalf("Namespace: want %q, got %#v", wantNamespace, copied.Item.ResponsesToolMessage.Namespace)
+	}
+	if copied.Item.ResponsesToolMessage.Execution == nil || *copied.Item.ResponsesToolMessage.Execution != wantExecution {
+		t.Fatalf("Execution: want %q, got %#v", wantExecution, copied.Item.ResponsesToolMessage.Execution)
+	}
+	if len(copied.Item.ResponsesToolMessage.Tools) != 1 || copied.Item.ResponsesToolMessage.Tools[0].Type != schemas.ResponsesToolType("namespace") {
+		t.Fatalf("Tools: unexpected copy %#v", copied.Item.ResponsesToolMessage.Tools)
+	}
+	if *copied.Item.ResponsesToolMessage.Tools[0].ResponsesToolNamespace.Tools[0].Name != wantFunction {
+		t.Fatalf("Nested tool name: want %q, got %#v", wantFunction, copied.Item.ResponsesToolMessage.Tools[0].ResponsesToolNamespace.Tools[0].Name)
+	}
+	if got := testToolParamType(t, copied.Item.ResponsesToolMessage.Tools[0].ResponsesToolNamespace.Tools[0].ResponsesToolFunction.Parameters.Properties.ToMap()["message"]); got != "string" {
+		t.Fatalf("Nested tool params: want string type, got %#v", got)
+	}
+
+	// Mutate the original after copying; the copy must not observe any of it.
+	*original.Item.ResponsesToolMessage.Namespace = "mutated-namespace"
+	*original.Item.ResponsesToolMessage.Execution = "server"
+	original.Item.ResponsesToolMessage.Tools[0].Type = schemas.ResponsesToolType("mutated")
+	*original.Item.ResponsesToolMessage.Tools[0].ResponsesToolNamespace.Tools[0].Name = "mutated-function"
+	original.Item.ResponsesToolMessage.Tools[0].ResponsesToolNamespace.Tools[0].ResponsesToolFunction.Parameters.Properties.Set("message", map[string]interface{}{"type": "number"})
+
+	if *copied.Item.ResponsesToolMessage.Namespace != wantNamespace {
+		t.Fatalf("Namespace aliased original: got %q", *copied.Item.ResponsesToolMessage.Namespace)
+	}
+	if *copied.Item.ResponsesToolMessage.Execution != wantExecution {
+		t.Fatalf("Execution aliased original: got %q", *copied.Item.ResponsesToolMessage.Execution)
+	}
+	if copied.Item.ResponsesToolMessage.Tools[0].Type != schemas.ResponsesToolType("namespace") {
+		t.Fatalf("Tools aliased original: got %#v", copied.Item.ResponsesToolMessage.Tools)
+	}
+	if *copied.Item.ResponsesToolMessage.Tools[0].ResponsesToolNamespace.Tools[0].Name != wantFunction {
+		t.Fatalf("Nested tool name aliased original: got %#v", copied.Item.ResponsesToolMessage.Tools[0].ResponsesToolNamespace.Tools[0].Name)
+	}
+	if got := testToolParamType(t, copied.Item.ResponsesToolMessage.Tools[0].ResponsesToolNamespace.Tools[0].ResponsesToolFunction.Parameters.Properties.ToMap()["message"]); got != "string" {
+		t.Fatalf("Nested tool params aliased original: got %#v", got)
 	}
 }

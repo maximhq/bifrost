@@ -1150,6 +1150,13 @@ func isRawPreservedItem(t string) bool {
 // silently drops the item mid-stream and hangs streaming clients. We shadow
 // `arguments` as raw JSON, decode everything else as usual, then store the
 // canonical stringified form.
+//
+// It also shadows `tools`, which two different message types put under the
+// same wire key: tool_search_output's discovered-tools array (destined for
+// ResponsesToolMessage.Tools) and mcp_list_tools' tool list (destined for the
+// embedded ResponsesMCPListTools.Tools). Struct-tag-based decoding can only
+// bind one field per JSON key, so both are routed manually here based on
+// Type instead of relying on either field's own tag.
 func (m *ResponsesMessage) UnmarshalJSON(data []byte) error {
 	// Clear the receiver first so a reused instance never retains a stale
 	// rawPreserved (or other fields) from a prior decode — unmarshalling a
@@ -1170,6 +1177,7 @@ func (m *ResponsesMessage) UnmarshalJSON(data []byte) error {
 	type Alias ResponsesMessage
 	aux := &struct {
 		Arguments json.RawMessage `json:"arguments,omitempty"`
+		Tools     json.RawMessage `json:"tools,omitempty"`
 		*Alias
 	}{
 		Alias: (*Alias)(m),
@@ -1180,6 +1188,32 @@ func (m *ResponsesMessage) UnmarshalJSON(data []byte) error {
 	}
 
 	m.setToolArguments(aux.Arguments)
+
+	if len(aux.Tools) > 0 && string(aux.Tools) != "null" {
+		switch {
+		case m.Type != nil && *m.Type == ResponsesMessageTypeToolSearchOutput:
+			var tools []ResponsesTool
+			if err := Unmarshal(aux.Tools, &tools); err != nil {
+				return fmt.Errorf("tool_search_output tools: %w", err)
+			}
+			if m.ResponsesToolMessage == nil {
+				m.ResponsesToolMessage = &ResponsesToolMessage{}
+			}
+			m.ResponsesToolMessage.Tools = tools
+		case m.Type != nil && *m.Type == ResponsesMessageTypeMCPListTools:
+			var tools []ResponsesMCPTool
+			if err := Unmarshal(aux.Tools, &tools); err != nil {
+				return fmt.Errorf("mcp_list_tools tools: %w", err)
+			}
+			if m.ResponsesToolMessage == nil {
+				m.ResponsesToolMessage = &ResponsesToolMessage{}
+			}
+			if m.ResponsesToolMessage.ResponsesMCPListTools == nil {
+				m.ResponsesToolMessage.ResponsesMCPListTools = &ResponsesMCPListTools{}
+			}
+			m.ResponsesToolMessage.ResponsesMCPListTools.Tools = tools
+		}
+	}
 
 	return nil
 }
@@ -1402,8 +1436,25 @@ type ResponsesToolMessage struct {
 	Namespace *string                           `json:"namespace,omitempty"` // Namespace for function_call items (set by OpenAI when namespace tools are used)
 	Arguments *string                           `json:"arguments,omitempty"`
 	Output    *ResponsesToolMessageOutputStruct `json:"output,omitempty"`
+	Execution *string                           `json:"execution,omitempty"` // tool_search_call execution mode (e.g. "client")
 	Action    *ResponsesToolMessageActionStruct `json:"action,omitempty"`
 	Error     *string                           `json:"error,omitempty"`
+	// Tools holds the discovered tools array for tool_search_output items.
+	// Uses []ResponsesTool so each entry's "type" field round-trips via the
+	// existing ResponsesTool marshal/unmarshal pipeline (namespace, function, etc.).
+	// Note: tool_search_output is a rawPreserved item type, so this field is not
+	// consulted by MarshalJSON for wire encoding (the verbatim bytes are re-emitted
+	// instead) — it exists for typed introspection/deep-copy of the parsed value.
+	//
+	// json:"-" (not "tools,omitempty"): ResponsesToolMessage also embeds
+	// *ResponsesMCPListTools, whose Tools []ResponsesMCPTool field is also
+	// tagged "tools" for mcp_list_tools items. Struct-tag-based encoding can't
+	// disambiguate two same-named fields at different embedding depths (the
+	// shallower one silently wins and the other is dropped from both marshal
+	// and unmarshal) — tagging this field "-" lets mcp_list_tools' embedded
+	// Tools round-trip normally via its own tag, since this field is never
+	// wire-encoded anyway (rawPreserved handles tool_search_output).
+	Tools []ResponsesTool `json:"-"`
 	// Caller is the neutral form of Anthropic's "caller" union on server-tool blocks
 	Caller *ResponsesToolCaller `json:"tool_caller,omitempty"`
 
