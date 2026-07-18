@@ -112,6 +112,7 @@ var AnthropicProviderRequestDefaultsMap = map[schemas.ModelProvider]AnthropicPro
 	schemas.BedrockMantle: {
 		RemapToolVersions: true,
 	},
+	schemas.DeepSeek: {},
 	// Vertex publisher endpoint: model + region in URL, anthropic_version
 	// required, beta headers in body (not HTTP), cache_control.scope stripped
 	// at marshal time, tool versions remapped.
