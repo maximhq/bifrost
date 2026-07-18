@@ -504,6 +504,11 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	updatedConfig.EnforceGovernanceHeader = payload.ClientConfig.EnforceAuthOnInference
 	updatedConfig.EnforceSCIMAuth = payload.ClientConfig.EnforceAuthOnInference
 
+	// Only update when explicitly provided to avoid clearing the stored default (prefer_idp)
+	if payload.ClientConfig.DualCredentialConflictBehavior != "" {
+		updatedConfig.DualCredentialConflictBehavior = payload.ClientConfig.DualCredentialConflictBehavior
+	}
+
 	// Only update MaxRequestBodySizeMB if explicitly provided (> 0) to avoid clearing stored value
 	if payload.ClientConfig.MaxRequestBodySizeMB > 0 {
 		if payload.ClientConfig.MaxRequestBodySizeMB != currentConfig.MaxRequestBodySizeMB {
@@ -626,14 +631,14 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	}
 	updatedConfig.LogRetentionDays = payload.ClientConfig.LogRetentionDays
 
-	// Update the store with the new config
-	h.store.ClientConfig = updatedConfig
-
 	if err := h.store.ConfigStore.UpdateClientConfig(ctx, updatedConfig); err != nil {
 		logger.Warn("failed to save configuration: %v", err)
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to save configuration: %v", err))
 		return
 	}
+
+	// Apply the in-memory change only after persistence succeeds.
+	h.store.ClientConfig = updatedConfig
 	// Reloading client config from config store
 	if err := h.configManager.ReloadClientConfigFromConfigStore(ctx); err != nil {
 		logger.Warn("failed to reload client config from config store: %v", err)

@@ -1,22 +1,22 @@
 ---
-title: "v1.6.4"
-description: "v1.6.4 changelog - 2026-07-14"
+title: "v2.0.0-prerelease2"
+description: "v2.0.0-prerelease2 changelog - 2026-07-16"
 ---
 <Tabs>
   <Tab title="NPX">
     ```bash
-    npx -y @maximhq/bifrost --transport-version v1.6.4
+    npx -y @maximhq/bifrost --transport-version v2.0.0-prerelease2
     ```
   </Tab>
   <Tab title="Docker">
     ```bash
-    docker pull maximhq/bifrost:v1.6.4
-    docker run -p 8080:8080 maximhq/bifrost:v1.6.4
+    docker pull maximhq/bifrost:v2.0.0-prerelease2
+    docker run -p 8080:8080 maximhq/bifrost:v2.0.0-prerelease2
     ```
   </Tab>
 </Tabs>
 
-<Update label="Bifrost(HTTP)" description="1.6.4">
+<Update label="Bifrost(HTTP)" description="2.0.0-prerelease2">
 ## ✨ Features
 
 - **Sarvam AI Provider** - Added Sarvam AI as a first-class provider with chat, text-to-speech, and speech-to-text support (thanks [@Purvi09](https://github.com/Purvi09)!)
@@ -24,6 +24,7 @@ description: "v1.6.4 changelog - 2026-07-14"
 - **Bedrock Project Scoping** - Added optional `project_id` to Bedrock and Bedrock Mantle key configs with per-alias overrides for Bedrock, Bedrock Mantle, and Vertex, plus UI support
 - **Trace Redaction** - Phase-scoped redaction and revealing, transient redaction data field for guardrails, and trace content redaction before connector export
 - **Durable Background Jobs** - New `sidekiq` background-job table, store methods, and runner with recovery and reaper; cost recalculation migrated to a durable, resumable job with polling instead of SSE
+- **Audit Log Object Storage** - S3/GCS object storage config schema for audit log archival
 - **Alerting Configuration** - Alerting schema in `config.schema.json` with declarative channels and CEL-based rules, Helm chart support, and enterprise fallback pages
 - **Model Catalog Pricing** - Added pricing data to the model catalog (thanks [@johnbrett](https://github.com/johnbrett)!)
 - **Canonical Model Names** - Dashboard model rankings now show canonical model names instead of inference-profile IDs (thanks [@satyamkrishna](https://github.com/satyamkrishna)!)
@@ -70,6 +71,9 @@ description: "v1.6.4 changelog - 2026-07-14"
 - **API Key Provider Selection** - Fixed provider selection for API keys
 - **Azure Auth Headers** - Pass Azure auth headers in helpers
 - **Stream Delta Schema** - Added `ExtraContent` to `ChatStreamResponseChoiceDelta` (thanks [@nghodkicisco](https://github.com/nghodkicisco)!)
+- **Log Store Migrations** - Removed a duplicate materialized-view rebuild step from the log store migration registry and fixed the app-column step running the wrong migration function
+- **Config Store Migrations** - Cleaned up the sidekiq table creation migration
+- **Dashboard Sidebar** - Removed unused sidebar icon imports that broke the UI build
 
 ## 🐙 Closed GitHub Issues
 
@@ -105,120 +109,64 @@ description: "v1.6.4 changelog - 2026-07-14"
 - [#5113](https://github.com/maximhq/bifrost/issues/5113) - Gemini/Vertex streaming stops emitting web_search_call items after first grounded request
 
 </Update>
-<Update label="Core" description="1.7.1">
-- feat: add Sarvam AI provider with chat, text-to-speech, and speech-to-text support (thanks [@Purvi09](https://github.com/Purvi09)!)
-- feat: add ElevenLabs sound effects (text-to-sound) support (thanks [@SecretSun](https://github.com/SecretSun)!)
-- feat: add `ProjectID` to Bedrock and Bedrock Mantle key configs with per-alias overrides for Bedrock, Bedrock Mantle, and Vertex
-- feat: add `additional_tools` message type support
-- feat: force single-region config in Vertex key config
-- feat: phase-scoped redaction and revealing with transient redaction data field, plus `ClearPausedStreamBuffer` for pause-accumulate stream flows
-- fix: map web search options to Google Search grounding in the Gemini API
-- fix: parse `SecretVar` JSON with `ref`/`env_var` fields even when `value` is absent
-- fix: cap max reasoning effort in OpenAI
-- fix: honor service tier in OpenAI chat completion
-- fix: support GA transcription-type sessions in POST /v1/realtime/client_secrets (thanks [@Shaik-Sirajuddin](https://github.com/Shaik-Sirajuddin)!)
-- fix: support diarized_json transcription segments and ElevenLabs speaker passthrough (thanks [@Shaik-Sirajuddin](https://github.com/Shaik-Sirajuddin)!)
-- fix: sanitize tool_use/tool_result ids to Anthropic's charset (thanks [@Shaik-Sirajuddin](https://github.com/Shaik-Sirajuddin)!)
-- fix: never persist masked provider key previews (thanks [@eyeveil](https://github.com/eyeveil)!)
-- fix: make tracing span lookup nil-safe to prevent panic on streaming errors (thanks [@eyeveil](https://github.com/eyeveil)!)
-- fix: enable rerank for custom OpenAI-compatible providers (thanks [@eyeveil](https://github.com/eyeveil)!)
-- fix: forward and rebuild Anthropic server-side tool_search on the Responses path (thanks [@ws4charlie](https://github.com/ws4charlie)!)
-- fix: zero pooled ChannelMessage references on release to avoid pinning request bodies (thanks [@citrocat](https://github.com/citrocat)!)
-- fix: round-trip Anthropic `redacted_thinking` blocks on the responses surface so multi-turn tool use with redacted reasoning can be replayed (thanks [@fus3r](https://github.com/fus3r)!)
-- fix: reset `HasEmittedWebSearch` when recycling pooled Gemini responses stream state so grounded streaming requests keep emitting `web_search_call` items (thanks [@fus3r](https://github.com/fus3r)!)
-- fix: omit role from OpenAI Responses non-message items (thanks [@nettee](https://github.com/nettee)!)
-- fix: serialize OpenAI compaction request `input` correctly (thanks [@mcclurmc](https://github.com/mcclurmc)!)
-- fix: preserve `reasoning_config` on Bedrock cross-provider translation (thanks [@Purvi09](https://github.com/Purvi09)!)
-- fix: preserve Gemini file upload MIME types for GenAI file URI completions
-- fix: Gemini video reference fields map to instances (thanks [@vojthor](https://github.com/vojthor)!)
-- fix: accept object-valued tool-call arguments (e.g. tool_search_call) on the Responses API streaming path
-- fix: recover from idle-timeout timer-goroutine panic that could crash the process
-- fix: deterministic MCP tool ordering for prompt cache stability
-- fix: pass through `gs://` image URLs on Vertex Gemini
-- fix: signal Bedrock max_output_tokens truncation on Responses API (thanks [@jeremym-tanium](https://github.com/jeremym-tanium)!)
-- fix: warn callers not to truncate the `#t=` temp-token fragment on MCP inline-auth links (thanks [@MarcusPeng](https://github.com/MarcusPeng)!)
-- fix: add `ExtraContent` to ChatStreamResponseChoiceDelta (thanks [@nghodkicisco](https://github.com/nghodkicisco)!)
-- fix: correct inference geo cost on Anthropic and cache rate for fast mode
-- fix: send MIME type when specified
-- fix: send status code on OTEL metrics
-- fix: reduce telemetry metrics cardinality explosion risk
-- fix: race conditions in tracer span locks
-- fix: pass container block from Anthropic API
-- fix: pass Azure auth headers in helpers
-- chore: upgrade ClickHouse client library
+<Update label="Core" description="1.7.2">
+- feat: added ChatGPT passthrough support to the OpenAI provider
+- feat: added user-agent tracking schemas with custom user-agent mapping
+- feat: MCP tool execution plugin pipeline improvements
 
 </Update>
-<Update label="Framework" description="1.5.1">
-- feat: add durable background-job `sidekiq` table, store methods, and runner with recovery and reaper
-- feat: pass created-by user ID and runner ID through sidekiq job lifecycle, add `GetInFlightSidekiqJobByKind` to config store interface
-- feat: show canonical model names in dashboard model rankings (thanks [@satyamkrishna](https://github.com/satyamkrishna)!)
-- feat: redact trace content before connector export with transient redaction data field
-- feat: force single-region config in Vertex key config
-- fix: persist Responses stream usage when providers omit or reuse sequence numbers (thanks [@eyeveil](https://github.com/eyeveil)!)
-- fix: fold streamed output_text.annotation.added events into the accumulated responses message so citations survive in logging, observability, and cache (thanks [@fus3r](https://github.com/fus3r)!)
-- fix: keep the streaming finish_reason in the accumulated response when a provider forwards it on a content chunk (thanks [@fus3r](https://github.com/fus3r)!)
-- fix: sweep orphaned deferred spans in trace store TTL cleanup (thanks [@citrocat](https://github.com/citrocat)!)
-- fix: rebuild token usage from denormalized columns in hybrid log list (thanks [@G-XD](https://github.com/G-XD)!)
-- fix: repair bare wildcard allowed_models rows that break admin provider updates (thanks [@eyeveil](https://github.com/eyeveil)!)
-- fix: use AutoMigrate and add `runner_id`/`created_by_user_id` columns to sidekiq table migration
-- fix: match model filter on canonical_model_name and restore routing info for cost recalculation
-- fix: forward ScopedDB from HybridLogStore
-- fix: race conditions in tracer span locks
-- chore: upgrade ClickHouse client library
+<Update label="Framework" description="1.5.2">
+- feat: added user-agent tracking columns, materialized views, and migrations to the log store
+- feat: added endpoint-agent columns (device_id, app_key, decision, source) to mcp_tool_logs for Edge agent log ingestion
+- fix: removed a duplicate materialized-view rebuild step from the log store migration registry and pointed the app-column step at the correct migration function
+- fix: cleaned up the sidekiq table creation migration
+- chore: upgraded core to v1.7.2
 
 </Update>
-<Update label="compat" description="0.1.27">
-- chore: upgraded core to v1.7.1 and framework to v1.5.1
+<Update label="compat" description="0.1.28">
+- chore: upgraded core to v1.7.2 and framework to v1.5.2
 
 </Update>
-<Update label="governance" description="1.6.5">
-- fix: parallelize resting-budget flows only when absolutely required to reduce lock contention
-- fix: add guards against invalid rate-limit reset timeouts
-- fix: calendar-based alignment qualifier for budget periods
-- fix: attribute passthrough virtual keys sent via Azure api-key header (thanks [@eyeveil](https://github.com/eyeveil)!)
-- chore: upgraded core to v1.7.1 and framework to v1.5.1
+<Update label="governance" description="1.6.6">
+- feat: added resolver support for Bifrost Edge fallback pages
+- chore: upgraded core to v1.7.2 and framework to v1.5.2
 
 </Update>
-<Update label="jsonparser" description="1.5.28">
-- chore: upgraded core to v1.7.1 and framework to v1.5.1
+<Update label="jsonparser" description="1.5.29">
+- chore: upgraded core to v1.7.2 and framework to v1.5.2
 
 </Update>
-<Update label="logging" description="1.6.1">
-- feat: migrate cost recalculation to durable background sidekiq job with resume and dedup
-- feat: redact trace content before connector export
-- fix: match model filter on canonical_model_name and restore routing info for cost recalculation
-- chore: upgraded core to v1.7.1 and framework to v1.5.1
+<Update label="logging" description="1.6.2">
+- feat: added user-agent tracking to LLM and MCP logs
+- fix: added missing direct `github.com/google/uuid` dependency
+- chore: upgraded core to v1.7.2 and framework to v1.5.2
 
 </Update>
-<Update label="maxim" description="1.6.28">
-- chore: upgraded core to v1.7.1 and framework to v1.5.1
+<Update label="maxim" description="1.6.29">
+- chore: upgraded core to v1.7.2 and framework to v1.5.2
 
 </Update>
-<Update label="mocker" description="1.5.28">
-- chore: upgraded core to v1.7.1 and framework to v1.5.1
+<Update label="mocker" description="1.5.29">
+- chore: upgraded core to v1.7.2 and framework to v1.5.2
 
 </Update>
-<Update label="modelcatalogresolver" description="1.0.9">
-- chore: upgraded core to v1.7.1 and framework to v1.5.1
+<Update label="modelcatalogresolver" description="1.0.10">
+- chore: upgraded core to v1.7.2 and framework to v1.5.2
 
 </Update>
-<Update label="otel" description="1.4.0">
-- fix: send status code on OTEL metrics
-- chore: upgraded core to v1.7.1 and framework to v1.5.1
+<Update label="otel" description="1.4.1">
+- chore: upgraded core to v1.7.2 and framework to v1.5.2
 
 </Update>
-<Update label="prompts" description="1.0.28">
-- chore: upgraded core to v1.7.1 and framework to v1.5.1
+<Update label="prompts" description="1.0.29">
+- chore: upgraded core to v1.7.2 and framework to v1.5.2
 
 </Update>
-<Update label="semanticcache" description="1.5.28">
-- chore: upgraded core to v1.7.1 and framework to v1.5.1
+<Update label="semanticcache" description="1.5.29">
+- chore: upgraded core to v1.7.2 and framework to v1.5.2
 
 </Update>
-<Update label="telemetry" description="1.5.28">
-- feat: add missing connector attributes
-- fix: reduce metrics cardinality explosion risk
-- fix: forward request id and trace id through telemetry
-- chore: upgraded core to v1.7.1 and framework to v1.5.1
+<Update label="telemetry" description="1.5.29">
+- chore: upgraded core to v1.7.2 and framework to v1.5.2
 
 </Update>

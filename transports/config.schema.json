@@ -124,6 +124,11 @@
           "type": "boolean",
           "description": "Require auth (VK, API key, or user token) on inference endpoints"
         },
+        "dual_credential_conflict_behavior": {
+          "type": "string",
+          "enum": ["error", "prefer_vk", "prefer_idp"],
+          "description": "Controls behavior when an inference request carries both an IDP access token (Authorization: Bearer <jwt>) and a virtual key (x-bf-vk header). 'error' rejects with 400. 'prefer_vk' drops the IDP token and authenticates via the VK. 'prefer_idp' (default) uses the IDP token for identity."
+        },
         "enforce_scim_auth": {
           "type": "boolean",
           "description": "Deprecated: use enforce_auth_on_inference"
@@ -5144,7 +5149,7 @@
         },
         "provider": {
           "type": "string",
-          "enum": ["okta", "entra", "keycloak"],
+          "enum": ["okta", "entra", "keycloak", "zitadel", "google", "sailpoint", "generic"],
           "description": "SCIM provider type"
         },
         "config": {
@@ -5214,6 +5219,86 @@
               }
             }
           }
+        },
+        {
+          "if": {
+            "properties": {
+              "enabled": {
+                "const": true
+              },
+              "provider": {
+                "const": "generic"
+              }
+            },
+            "required": ["enabled", "provider"]
+          },
+          "then": {
+            "properties": {
+              "config": {
+                "$ref": "#/$defs/generic_config"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "enabled": {
+                "const": true
+              },
+              "provider": {
+                "const": "zitadel"
+              }
+            },
+            "required": ["enabled", "provider"]
+          },
+          "then": {
+            "properties": {
+              "config": {
+                "$ref": "#/$defs/zitadel_config"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "enabled": {
+                "const": true
+              },
+              "provider": {
+                "const": "google"
+              }
+            },
+            "required": ["enabled", "provider"]
+          },
+          "then": {
+            "properties": {
+              "config": {
+                "$ref": "#/$defs/google_config"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "enabled": {
+                "const": true
+              },
+              "provider": {
+                "const": "sailpoint"
+              }
+            },
+            "required": ["enabled", "provider"]
+          },
+          "then": {
+            "properties": {
+              "config": {
+                "$ref": "#/$defs/sailpoint_config"
+              }
+            }
+          }
         }
       ]
     },
@@ -5264,7 +5349,9 @@
         },
         "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
         "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
-        "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"}
+        "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
+        "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"},
+        "provisioningToken": {"$ref": "#/$defs/scim_provisioning_token"}
       },
       "required": ["issuerUrl", "clientId", "clientSecret", "apiToken"],
       "additionalProperties": false
@@ -5317,7 +5404,9 @@
         },
         "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
         "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
-        "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"}
+        "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
+        "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"},
+        "provisioningToken": {"$ref": "#/$defs/scim_provisioning_token"}
       },
       "required": ["tenantId", "clientId"],
       "additionalProperties": false
@@ -5368,6 +5457,277 @@
       },
       "required": ["serverUrl", "realm", "clientId", "clientSecret"],
       "additionalProperties": false
+    },
+    "generic_config": {
+      "type": "object",
+      "description": "Generic OIDC authentication configuration for any standards-compliant OIDC identity provider. Endpoints are resolved via OIDC discovery (.well-known/openid-configuration) from issuerUrl unless overridden.",
+      "properties": {
+        "issuerUrl": {
+          "type": "string",
+          "format": "uri",
+          "description": "OIDC issuer URL (e.g., https://idp.company.com)"
+        },
+        "clientId": {
+          "type": "string",
+          "description": "OAuth2/OIDC application client ID"
+        },
+        "clientSecret": {
+          "type": "string",
+          "description": "OAuth2/OIDC client secret (optional, for confidential clients). Supports env. prefix for environment variable references."
+        },
+        "audience": {
+          "type": "string",
+          "description": "JWT audience for token validation (optional)"
+        },
+        "authorizationEndpoint": {
+          "type": "string",
+          "format": "uri",
+          "description": "Manual override for the authorization endpoint (used in preference to discovery when set)"
+        },
+        "tokenEndpoint": {
+          "type": "string",
+          "format": "uri",
+          "description": "Manual override for the token endpoint (used in preference to discovery when set)"
+        },
+        "userinfoEndpoint": {
+          "type": "string",
+          "format": "uri",
+          "description": "Manual override for the userinfo endpoint (used in preference to discovery when set)"
+        },
+        "teamIdsField": {
+          "type": "string",
+          "description": "JWT claim field for team/group IDs (default: 'groups')",
+          "default": "groups"
+        },
+        "rolesField": {
+          "type": "string",
+          "description": "JWT claim field for role names (optional)"
+        },
+        "scopes": {
+          "type": "array",
+          "description": "Override the default OIDC scopes requested during login",
+          "items": { "type": "string" }
+        },
+        "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
+        "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
+        "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
+        "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"},
+        "provisioningToken": {"$ref": "#/$defs/scim_provisioning_token"}
+      },
+      "required": ["issuerUrl", "clientId"],
+      "additionalProperties": false
+    },
+    "zitadel_config": {
+      "type": "object",
+      "description": "Zitadel OIDC authentication configuration",
+      "properties": {
+        "domain": {
+          "type": "string",
+          "format": "hostname",
+          "pattern": "^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$",
+          "description": "Zitadel instance domain (e.g., 'my-instance.zitadel.cloud' or 'auth.company.com'). Bare host only - do NOT include the scheme, port, or path."
+        },
+        "clientId": {
+          "type": "string",
+          "description": "Zitadel application client ID"
+        },
+        "clientSecret": {
+          "type": "string",
+          "description": "Zitadel client secret (optional, required for confidential clients and token revocation)"
+        },
+        "projectId": {
+          "type": "string",
+          "description": "Optional Zitadel project ID for project-scoped role claims"
+        },
+        "audience": {
+          "type": "string",
+          "description": "Access-token audience override (default: clientId)"
+        },
+        "serviceAccountClientId": {
+          "type": "string",
+          "description": "Service account client ID for Zitadel Management API (required for user provisioning - web apps cannot use client_credentials)"
+        },
+        "serviceAccountClientSecret": {
+          "type": "string",
+          "description": "Service account client secret for Zitadel Management API"
+        },
+        "teamIdsField": {
+          "type": "string",
+          "description": "JWT claim field for team/group IDs (default: 'groups')",
+          "default": "groups"
+        },
+        "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
+        "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
+        "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
+        "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"}
+      },
+      "required": ["domain", "clientId"],
+      "additionalProperties": false
+    },
+    "google_config": {
+      "type": "object",
+      "description": "Google Workspace OIDC authentication configuration",
+      "properties": {
+        "domain": {
+          "type": "string",
+          "format": "hostname",
+          "pattern": "^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$",
+          "description": "Google Workspace primary domain (e.g., 'company.com'). Bare host only - do NOT include the scheme, port, or path."
+        },
+        "clientId": {
+          "type": "string",
+          "description": "Google OAuth2 client ID"
+        },
+        "clientSecret": {
+          "type": "string",
+          "description": "Google client secret (optional, used for token revocation)"
+        },
+        "credentialMode": {
+          "type": "string",
+          "enum": ["", "inherit", "env", "file"],
+          "description": "How Directory API credentials are sourced. 'inherit' uses Application Default Credentials; 'env' uses serviceAccountEnvVar; 'file' uses serviceAccountFile."
+        },
+        "serviceAccountEnvVar": {
+          "type": "string",
+          "description": "Name of the environment variable containing the service account JSON (used when credentialMode is 'env'). Required for Directory API access without ADC."
+        },
+        "serviceAccountFile": {
+          "type": "string",
+          "description": "Filesystem path to the service account JSON key file (used when credentialMode is 'file')."
+        },
+        "adminEmail": {
+          "type": "string",
+          "format": "email",
+          "description": "Admin email for domain-wide delegation. Required whenever Directory API access is configured."
+        },
+        "impersonateServiceAccount": {
+          "type": "string",
+          "description": "GCP service account email to impersonate when using ADC (Workload Identity); must have domain-wide delegation configured."
+        },
+        "audience": {
+          "type": "string",
+          "description": "JWT audience override (default: clientId)"
+        },
+        "teamIdsField": {
+          "type": "string",
+          "description": "Claim field for team/group IDs (default: 'groups')",
+          "default": "groups"
+        },
+        "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
+        "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
+        "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
+        "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"}
+      },
+      "required": ["domain", "clientId"],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "credentialMode": { "const": "env" }
+            },
+            "required": ["credentialMode"]
+          },
+          "then": {
+            "required": ["serviceAccountEnvVar"]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "credentialMode": { "const": "file" }
+            },
+            "required": ["credentialMode"]
+          },
+          "then": {
+            "required": ["serviceAccountFile"]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "credentialMode": {
+                "enum": ["inherit", "env", "file"]
+              }
+            },
+            "required": ["credentialMode"]
+          },
+          "then": {
+            "required": ["adminEmail"]
+          }
+        }
+      ]
+    },
+    "sailpoint_config": {
+      "type": "object",
+      "description": "SailPoint identity security platform configuration",
+      "properties": {
+        "product": {
+          "type": "string",
+          "enum": ["isc", "iiq"],
+          "description": "SailPoint product type: 'isc' for Identity Security Cloud, 'iiq' for IdentityIQ"
+        },
+        "tenant": {
+          "type": "string",
+          "description": "ISC tenant identifier (required for ISC product)"
+        },
+        "baseUrl": {
+          "type": "string",
+          "format": "uri",
+          "description": "IdentityIQ base URL (required for IIQ product)"
+        },
+        "username": {
+          "type": "string",
+          "description": "Username for IdentityIQ authentication"
+        },
+        "password": {
+          "type": "string",
+          "description": "Password for IdentityIQ authentication"
+        },
+        "clientId": {
+          "type": "string",
+          "description": "OAuth2 client ID"
+        },
+        "clientSecret": {
+          "type": "string",
+          "description": "OAuth2 client secret"
+        },
+        "teamIdsField": {
+          "type": "string",
+          "description": "JWT claim field for team IDs"
+        },
+        "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
+        "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
+        "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
+        "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"},
+        "provisioningToken": {"$ref": "#/$defs/scim_provisioning_token"}
+      },
+      "required": ["product"],
+      "additionalProperties": false
+    },
+    "scim_claim_attributes": {
+      "type": "object",
+      "description": "Per-claim SCIM interpretation. Maps each claim name to its SCIM source type and attribute key.",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "attributeType": {
+            "type": "string",
+            "enum": ["user", "group"],
+            "description": "'user' reads from SCIM User resource attributes; 'group' matches SCIM Group resource."
+          },
+          "attributeValue": {
+            "type": "string",
+            "description": "SCIM attribute key or group match field for this claim."
+          }
+        },
+        "required": ["attributeType", "attributeValue"],
+        "additionalProperties": false
+      }
+    },
+    "scim_provisioning_token": {
+      "type": "string",
+      "description": "Bearer token that inbound SCIM 2.0 provisioning clients (the IdP's SCIM app) must present in the Authorization header to push users and groups to Bifrost. Normally minted in the dashboard (Governance -> User Provisioning) and shown once, but may be seeded here for declarative/GitOps deployments; supports the env. prefix for environment-variable references. Generate one with: openssl rand -base64 32 | tr '+/' '-_' | tr -d '='"
     },
     "load_balancer_config": {
       "type": "object",

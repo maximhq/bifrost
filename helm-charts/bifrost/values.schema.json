@@ -463,6 +463,11 @@
               "type": "boolean",
               "description": "Require auth (VK, API key, or user token) on inference endpoints"
             },
+            "dualCredentialConflictBehavior": {
+              "type": "string",
+              "enum": ["error", "prefer_vk", "prefer_idp"],
+              "description": "Behavior when an inference request presents both an IDP access token and a virtual key (x-bf-vk). 'error' rejects with 400; 'prefer_vk' drops the IDP token and uses the VK; 'prefer_idp' (default) uses the IDP token for identity."
+            },
             "enforceSCIMAuth": {
               "type": "boolean",
               "description": "Deprecated: use enforceAuthOnInference"
@@ -2332,7 +2337,8 @@
                       "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
                       "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
                       "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
-                      "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"}
+                      "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"},
+                      "provisioningToken": {"$ref": "#/$defs/scim_provisioning_token"}
                     },
                     "required": ["issuerUrl", "clientId", "clientSecret", "apiToken"],
                     "additionalProperties": false
@@ -2403,7 +2409,8 @@
                       "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
                       "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
                       "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
-                      "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"}
+                      "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"},
+                      "provisioningToken": {"$ref": "#/$defs/scim_provisioning_token"}
                     },
                     "required": ["tenantId", "clientId"],
                     "additionalProperties": false
@@ -2702,7 +2709,8 @@
                       "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
                       "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
                       "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
-                      "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"}
+                      "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"},
+                      "provisioningToken": {"$ref": "#/$defs/scim_provisioning_token"}
                     },
                     "required": ["product"],
                     "additionalProperties": false
@@ -2772,7 +2780,8 @@
                       "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
                       "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
                       "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
-                      "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"}
+                      "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"},
+                      "provisioningToken": {"$ref": "#/$defs/scim_provisioning_token"}
                     },
                     "required": ["issuerUrl", "clientId"],
                     "additionalProperties": false
@@ -4677,6 +4686,13 @@
           "description": "When true, input/output message content is dropped from the root span only; the underlying generation (llm.call) span retains the full content. This removes the duplicate input/output stored at the trace level (e.g. the Langfuse trace Input/Output goes empty) to reduce downstream storage.",
           "default": false
         },
+        "request_headers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Request header name patterns (exact or wildcard like x-custom-*) to capture and emit as span attributes. Note: * captures all headers including sensitive ones like Authorization."
+        },
         "plugin_span_filter": {
           "$ref": "#/$defs/pluginSpanFilter"
         }
@@ -4790,6 +4806,13 @@
         "disable_root_span_content": {
           "type": "boolean",
           "description": "Deprecated in the profiles wrapper; configure disable_root_span_content per profile instead."
+        },
+        "request_headers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Deprecated in the profiles wrapper; configure request_headers per profile instead."
         }
       },
       "required": ["profiles"],
@@ -5054,6 +5077,10 @@
               "type": "string",
               "description": "Role session name for AssumeRole (can use env. prefix)"
             },
+            "project_id": {
+              "type": "string",
+              "description": "Bedrock project ID scoping inference and model listing. Sent as the OpenAI-Project header on the OpenAI-compatible surface and the anthropic-workspace-id header on the native-Anthropic (Claude) surface. When empty, AWS routes to the account's default project (can use env. prefix)"
+            },
             "deployments": {
               "type": "object",
               "additionalProperties": {
@@ -5125,6 +5152,10 @@
             "session_name": {
               "type": "string",
               "description": "Role session name for AssumeRole (can use env. prefix)"
+            },
+            "project_id": {
+              "type": "string",
+              "description": "Bedrock project ID scoping the Mantle sub-surface (OpenAI-compatible gpt-*/Gemma routing) via the OpenAI-Project header. When empty, AWS routes to the account's default project. No effect on the Converse/bedrock-runtime paths (can use env. prefix)"
             }
           },
           "required": ["region"],
@@ -5192,7 +5223,7 @@
                   },
                   "project_id": {
                     "type": "string",
-                    "description": "Per-alias Vertex project ID override (can use env. prefix)."
+                    "description": "Per-alias project override shared across providers: Vertex uses it as the GCP project; Bedrock and Bedrock Mantle send it as the AWS project via the OpenAI-Project / anthropic-workspace-id header (can use env. prefix)."
                   },
                   "project_number": {
                     "type": "string",
@@ -6202,6 +6233,10 @@
         "required": ["attributeType", "attributeValue"],
         "additionalProperties": false
       }
+    },
+    "scim_provisioning_token": {
+      "type": "string",
+      "description": "Bearer token that inbound SCIM 2.0 provisioning clients (the IdP's SCIM app) must present in the Authorization header to push users and groups to Bifrost. Normally minted in the dashboard (Governance -> User Provisioning) and shown once, but may be seeded here for declarative/GitOps deployments; supports the env. prefix for environment-variable references. Generate one with: openssl rand -base64 32 | tr '+/' '-_' | tr -d '='"
     }
   }
 }

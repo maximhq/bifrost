@@ -5,7 +5,6 @@
 - **Bedrock Project Scoping** - Added optional `project_id` to Bedrock and Bedrock Mantle key configs with per-alias overrides for Bedrock, Bedrock Mantle, and Vertex, plus UI support
 - **Trace Redaction** - Phase-scoped redaction and revealing, transient redaction data field for guardrails, and trace content redaction before connector export
 - **Durable Background Jobs** - New `sidekiq` background-job table, store methods, and runner with recovery and reaper; cost recalculation migrated to a durable, resumable job with polling instead of SSE
-- **Audit Log Object Storage** - S3/GCS object storage config schema for audit log archival
 - **Alerting Configuration** - Alerting schema in `config.schema.json` with declarative channels and CEL-based rules, Helm chart support, and enterprise fallback pages
 - **Model Catalog Pricing** - Added pricing data to the model catalog (thanks [@johnbrett](https://github.com/johnbrett)!)
 - **Canonical Model Names** - Dashboard model rankings now show canonical model names instead of inference-profile IDs (thanks [@satyamkrishna](https://github.com/satyamkrishna)!)

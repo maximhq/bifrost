@@ -57,13 +57,20 @@ deploymentLabels: {}
 podAnnotations: {}
 podLabels: {}
 
-# Pod-level security context. Defaults chown freshly provisioned PVCs (fsGroup)
-# and forbid running as root, which vanilla Kubernetes needs for restrictive
-# storage classes. On OpenShift (restricted-v2), set `podSecurityContext.fsGroup: null`
-# (Helm merges maps, so `{}` would keep this default) — the image supports
-# arbitrary UIDs with group 0, so no custom SCC is needed.
+# Pod-level security context. Defaults pin UID 1000 and chown freshly
+# provisioned PVCs (fsGroup), which vanilla Kubernetes needs for restrictive
+# storage classes. runAsUser is also required by kubelet to verify
+# runAsNonRoot against images whose USER is non-numeric (bifrost images
+# before v1.6.4 use `USER appuser`).
+# On OpenShift (restricted-v2), unset the UID pins so the SCC can assign an
+# arbitrary UID: set `podSecurityContext.runAsUser: null`,
+# `podSecurityContext.fsGroup: null`, and `securityContext.runAsUser: null`
+# (Helm merges maps, so explicit `null` is required; `{}` keeps these
+# defaults). The image supports arbitrary UIDs with group 0, so no custom
+# SCC is needed.
 podSecurityContext:
   fsGroup: 1000
+  runAsUser: 1000
   runAsNonRoot: true
 
 securityContext:
@@ -71,6 +78,7 @@ securityContext:
     drop:
       - ALL
   readOnlyRootFilesystem: false
+  runAsUser: 1000
   runAsNonRoot: true
 
 service:
@@ -280,6 +288,10 @@ bifrost:
     # Require auth (VK, API key, or user token) on inference endpoints.
     # Open by default in the raw binary; this chart enables enforcement for production.
     enforceAuthOnInference: true
+    # dualCredentialConflictBehavior -- Behavior when an inference request presents both an IDP
+    # access token and a virtual key (x-bf-vk). Options: "error" (reject with 400),
+    # "prefer_vk" (drop IDP token, use VK), "prefer_idp" (default, IDP token wins for identity).
+    # dualCredentialConflictBehavior: "prefer_idp"
     maxRequestBodySizeMb: 100
     compat:
       convertTextToChat: false
@@ -421,6 +433,7 @@ bifrost:
   #         region: "us-east-1"
   #         access_key: "env.AWS_ACCESS_KEY_ID"
   #         secret_key: "env.AWS_SECRET_ACCESS_KEY"
+  #         project_id: ""  # Optional: Bedrock project ID scoping inference and model listing (can use env. prefix)
   #
   # # AWS Bedrock Mantle example (requires bedrock_mantle_key_config)
   # bedrock_mantle:
@@ -432,6 +445,7 @@ bifrost:
   #         region: "us-east-1"                     # Required
   #         access_key: "env.AWS_ACCESS_KEY_ID"
   #         secret_key: "env.AWS_SECRET_ACCESS_KEY"
+  #         project_id: ""                          # Optional: Bedrock project ID sent as the OpenAI-Project header (can use env. prefix)
   #         # session_token: "env.AWS_SESSION_TOKEN"
   #         # role_arn: ""                          # For AssumeRole
   #         # external_id: ""
@@ -592,6 +606,7 @@ bifrost:
         #     disable_content_logging: false
         #     group_traces_by_session: false # Group requests sharing x-bf-session-id into one trace (traceparent takes precedence)
         #     disable_root_span_content: false # Drop input/output from the root span only (keeps it on the llm.call span)
+        #     request_headers: []     # Header name patterns (exact or wildcard like "x-custom-*") captured as span attributes; "*" includes sensitive headers like Authorization
         #
         # Single-profile shape:
         service_name: "bifrost"
@@ -606,13 +621,16 @@ bifrost:
         headers: {}
         # TLS configuration
         tls_ca_cert: "" # Path to TLS CA certificate file
-        insecure: false # Skip TLS verification (ignored if tls_ca_cert is set)
+        # insecure: false # Skip TLS verification (ignored if tls_ca_cert is set)
         # Drop message content (input/output messages, embeddings, tool defs/args/results) from exported spans
         disable_content_logging: false
         # Group requests sharing the same x-bf-session-id header into one trace (an inbound W3C traceparent takes precedence)
         group_traces_by_session: false
         # Drop input/output content from the root span only (the llm.call generation span keeps it)
         disable_root_span_content: false
+        # Request header name patterns (exact or wildcard like "x-custom-*") captured and emitted as span attributes.
+        # Note: "*" captures all headers including sensitive ones like Authorization.
+        # request_headers: []
     datadog:
       enabled: false
       version: 1
@@ -888,7 +906,7 @@ bifrost:
   # SCIM/SSO configuration for enterprise SSO
   scim:
     enabled: false
-    # Provider: okta, entra, keycloak, zitadel, google
+    # Provider: okta, entra, keycloak, zitadel, google, sailpoint, generic
     provider: ""
     config: {}
       # Okta configuration:
@@ -927,6 +945,12 @@ bifrost:
       #   - attribute: "department"
       #     value: "platform"
       #     business_unit: "Platform"
+      # # SCIM inbound provisioning (Enterprise): the IdP pushes users/groups to Bifrost's SCIM 2.0 endpoint.
+      # claimScimAttributes:                         # per-claim SCIM interpretation
+      #   groups:
+      #     attributeType: "group"                   # "user" (SCIM User attribute) or "group" (match SCIM Group)
+      #     attributeValue: "displayName"
+      # provisioningToken: "env.SCIM_PROVISIONING_TOKEN"  # bearer token the IdP presents; generate: openssl rand -base64 32 | tr '+/' '-_' | tr -d '='
       #
       # Entra (Azure AD) configuration:
       # tenantId: ""
@@ -947,6 +971,12 @@ bifrost:
       #     value: "<group-object-id>"
       #     team: "platform-team"
       # attributeBusinessUnitMappings: []
+      # # SCIM inbound provisioning (Enterprise): the IdP pushes users/groups to Bifrost's SCIM 2.0 endpoint.
+      # claimScimAttributes:                         # per-claim SCIM interpretation
+      #   groups:
+      #     attributeType: "group"                   # "user" (SCIM User attribute) or "group" (match SCIM Group)
+      #     attributeValue: "displayName"
+      # provisioningToken: "env.SCIM_PROVISIONING_TOKEN"  # bearer token the IdP presents; generate: openssl rand -base64 32 | tr '+/' '-_' | tr -d '='
       #
       # Keycloak configuration:
       # serverUrl: "https://keycloak.company.com"  # base URL, must NOT include /realms/{realm}
@@ -991,6 +1021,28 @@ bifrost:
       # attributeRoleMappings: []
       # attributeTeamMappings: []
       # attributeBusinessUnitMappings: []
+      #
+      # Generic OIDC configuration (any standards-compliant OIDC IdP):
+      # issuerUrl: "https://idp.company.com"        # required; endpoints resolved via OIDC discovery (.well-known/openid-configuration)
+      # clientId: ""                                # required
+      # clientSecret: "env.OIDC_CLIENT_SECRET"      # optional, for confidential clients; supports env. prefix
+      # audience: ""                                # optional, JWT audience for token validation
+      # # Optional manual endpoint overrides (used in preference to discovery when the IdP has no compliant discovery document):
+      # authorizationEndpoint: "https://idp.company.com/oauth2/authorize"
+      # tokenEndpoint: "https://idp.company.com/oauth2/token"
+      # userinfoEndpoint: "https://idp.company.com/oauth2/userinfo"
+      # teamIdsField: "groups"                      # JWT claim for team/group IDs (default: "groups")
+      # rolesField: "roles"                         # JWT claim for role names (optional)
+      # scopes: []                                  # override the default OIDC scopes requested during login
+      # attributeRoleMappings: []
+      # attributeTeamMappings: []
+      # attributeBusinessUnitMappings: []
+      # # SCIM inbound provisioning (Enterprise): the IdP pushes users/groups to Bifrost's SCIM 2.0 endpoint.
+      # claimScimAttributes:                         # per-claim SCIM interpretation
+      #   groups:
+      #     attributeType: "group"                   # "user" (SCIM User attribute) or "group" (match SCIM Group)
+      #     attributeValue: "displayName"
+      # provisioningToken: "env.SCIM_PROVISIONING_TOKEN"  # bearer token the IdP presents; generate: openssl rand -base64 32 | tr '+/' '-_' | tr -d '='
 
   # Load balancer configuration for intelligent request routing
   loadBalancer:
