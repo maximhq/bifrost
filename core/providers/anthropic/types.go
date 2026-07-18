@@ -943,14 +943,23 @@ const (
 	AnthropicContentBlockTypeBashCodeExecutionToolResult       AnthropicContentBlockType = "bash_code_execution_tool_result"
 	AnthropicContentBlockTypeTextEditorCodeExecutionToolResult AnthropicContentBlockType = "text_editor_code_execution_tool_result"
 	AnthropicContentBlockTypeToolSearchToolResult              AnthropicContentBlockType = "tool_search_tool_result"
-	AnthropicContentBlockTypeToolReference                     AnthropicContentBlockType = "tool_reference"
-	AnthropicContentBlockTypeContainerUpload                   AnthropicContentBlockType = "container_upload"
-	AnthropicContentBlockTypeAdvisorToolResult                 AnthropicContentBlockType = "advisor_tool_result"
-	AnthropicContentBlockTypeMCPToolUse                        AnthropicContentBlockType = "mcp_tool_use"
-	AnthropicContentBlockTypeMCPToolResult                     AnthropicContentBlockType = "mcp_tool_result"
-	AnthropicContentBlockTypeThinking                          AnthropicContentBlockType = "thinking"
-	AnthropicContentBlockTypeRedactedThinking                  AnthropicContentBlockType = "redacted_thinking"
-	AnthropicContentBlockTypeCompaction                        AnthropicContentBlockType = "compaction"
+	// AnthropicContentBlockTypeToolSearchToolSearchResult is the discriminator
+	// on the object nested under tool_search_tool_result.content — Anthropic
+	// nests tool_references one level deeper than every other *_tool_result
+	// block (which puts result fields directly on the block or in a plain
+	// content array). See https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool.
+	AnthropicContentBlockTypeToolSearchToolSearchResult AnthropicContentBlockType = "tool_search_tool_search_result"
+	// AnthropicContentBlockTypeToolSearchToolResultError is the nested
+	// content.type for a failed tool_search_tool_result (carries ErrorCode/ErrorMessage).
+	AnthropicContentBlockTypeToolSearchToolResultError AnthropicContentBlockType = "tool_search_tool_result_error"
+	AnthropicContentBlockTypeToolReference             AnthropicContentBlockType = "tool_reference"
+	AnthropicContentBlockTypeContainerUpload           AnthropicContentBlockType = "container_upload"
+	AnthropicContentBlockTypeAdvisorToolResult         AnthropicContentBlockType = "advisor_tool_result"
+	AnthropicContentBlockTypeMCPToolUse                AnthropicContentBlockType = "mcp_tool_use"
+	AnthropicContentBlockTypeMCPToolResult             AnthropicContentBlockType = "mcp_tool_result"
+	AnthropicContentBlockTypeThinking                  AnthropicContentBlockType = "thinking"
+	AnthropicContentBlockTypeRedactedThinking          AnthropicContentBlockType = "redacted_thinking"
+	AnthropicContentBlockTypeCompaction                AnthropicContentBlockType = "compaction"
 
 	// code_execution inner result-content discriminators (the "content" object on
 	// a *_code_execution_tool_result block; ContentObj.Type carries these).
@@ -1043,7 +1052,16 @@ type AnthropicContentBlock struct {
 	Lines        []string `json:"lines,omitempty"`          // str_replace_result
 	ErrorMessage *string  `json:"error_message,omitempty"`  // text_editor error variant
 
-	// tool_search_tool_result success variant
+	// tool_search_tool_result success variant. IMPORTANT: on the wire this
+	// field lives on the NESTED object under tool_search_tool_result.content
+	// (content.type == "tool_search_tool_search_result"), not on the outer
+	// tool_search_tool_result block itself — unlike every other *_tool_result
+	// block type in this struct, which puts its result fields directly on the
+	// block. Use the outer block's existing Content (*AnthropicContent) field
+	// to reach it: Content.ContentObj.ToolReferences (egress) or
+	// Content.ContentBlocks[0].ToolReferences (post-unmarshal, since a bare
+	// object decodes into ContentBlocks — see AnthropicContent.UnmarshalJSON).
+	// Use toolSearchResultReferences(block) to read this safely from either shape.
 	ToolReferences []AnthropicContentBlock `json:"tool_references,omitempty"` // tool_search_tool_search_result (array of tool_reference blocks)
 
 	// tool_reference block — tool_name field on the block itself

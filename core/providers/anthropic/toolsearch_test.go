@@ -1,335 +1,223 @@
 package anthropic
 
 import (
-	"context"
 	"strings"
 	"testing"
+	"time"
 
 	schemas "github.com/maximhq/bifrost/core/schemas"
+
+	"github.com/bytedance/sonic"
 )
 
-// These tests cover the Anthropic server-side tool_search streaming path
-// (server_tool_use(tool_search) -> tool_search_tool_result(tool_references) ->
-// tool_use(discovered tool)). Without the handler this provider drops the
-// tool_references and emits orphan function_call argument deltas; with it the
-// discovered tool references are forwarded and the follow-up tool_use is intact.
-
-const (
-	tsServerToolUseID  = "srvtoolu_ts_1"
-	tsDiscoveredTool   = "OpenMeteoMCP-weather_forecast"
-	tsDiscoveredCallID = "toolu_weather_1"
-)
-
-// newToolSearchTestState builds a stream state primed past message_start so a
-// test can feed content_block_* chunks directly.
-func newToolSearchTestState() *AnthropicResponsesStreamState {
-	return &AnthropicResponsesStreamState{
-		ContentIndexToOutputIndex: make(map[int]int),
-		ContentIndexToBlockType:   make(map[int]AnthropicContentBlockType),
-		ToolArgumentBuffers:       make(map[int]string),
-		MCPCallOutputIndices:      make(map[int]bool),
-		ItemIDs:                   make(map[int]string),
-		OutputItems:               make(map[int]*schemas.ResponsesMessage),
-		ReasoningSignatures:       make(map[int]string),
-		TextContentIndices:        make(map[int]bool),
-		ReasoningContentIndices:   make(map[int]bool),
-		CompactionContentIndices:  make(map[int]*schemas.CacheControl),
-		TextBuffers:               make(map[int]*strings.Builder),
-		CurrentOutputIndex:        0,
-		MessageID:                 schemas.Ptr("msg_ts_test"),
-		Model:                     schemas.Ptr("claude-sonnet-4-6"),
-		CreatedAt:                 1234567890,
-		HasEmittedCreated:         true,
-		HasEmittedInProgress:      true,
-	}
+// toolSearchStreamEvents mirrors a Claude tool_search_tool_bm25 turn: the model
+// invokes the server-run tool_search tool, Anthropic returns the discovered tool
+// references in a tool_search_tool_result block, then the model answers using one
+// of the discovered tools. Regression fixture for #4780: this result was
+// previously dropped entirely on the /v1/responses streaming path.
+var toolSearchStreamEvents = []string{
+	`{"type":"message_start","message":{"model":"claude-opus-4-8","id":"msg_ts1","type":"message","role":"assistant","content":[],"usage":{"input_tokens":10,"output_tokens":1}}}`,
+	`{"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"srvtoolu_ts1","name":"tool_search_tool_bm25","input":{}}}`,
+	`{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"query\": \"weather"}}`,
+	`{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\"}"}}`,
+	`{"type":"content_block_stop","index":0}`,
+	`{"type":"content_block_start","index":1,"content_block":{"type":"tool_search_tool_result","tool_use_id":"srvtoolu_ts1","content":{"type":"tool_search_tool_search_result","tool_references":[{"type":"tool_reference","tool_name":"get_weather"},{"type":"tool_reference","tool_name":"get_forecast"}]}}}`,
+	`{"type":"content_block_stop","index":1}`,
+	`{"type":"content_block_start","index":2,"content_block":{"type":"text","text":""}}`,
+	`{"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"I found the get_weather tool."}}`,
+	`{"type":"content_block_stop","index":2}`,
+	`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":20}}`,
+	`{"type":"message_stop"}`,
 }
 
-// toolSearchStreamChunks builds a realistic server-side tool_search Anthropic
-// stream for the given tool-search variant: server_tool_use(toolName) ->
-// tool_search_tool_result(tool_references to the discovered tool) ->
-// tool_use(discovered tool). When withStop is set, a terminal message_stop is
-// appended so the converter emits response.completed.
-func toolSearchStreamChunks(toolName string, withStop bool) []*AnthropicStreamEvent {
-	q := `{"query":"weather"}`
-	args := `{"location":"Tokyo"}`
-	chunks := []*AnthropicStreamEvent{
-		// idx0: server_tool_use(<tool search variant>) + its query deltas
-		{Type: AnthropicStreamEventTypeContentBlockStart, Index: schemas.Ptr(0), ContentBlock: &AnthropicContentBlock{
-			Type: AnthropicContentBlockTypeServerToolUse,
-			ID:   schemas.Ptr(tsServerToolUseID),
-			Name: schemas.Ptr(toolName),
-		}},
-		{Type: AnthropicStreamEventTypeContentBlockDelta, Index: schemas.Ptr(0), Delta: &AnthropicStreamDelta{
-			Type: AnthropicStreamDeltaTypeInputJSON, PartialJSON: &q,
-		}},
-		{Type: AnthropicStreamEventTypeContentBlockStop, Index: schemas.Ptr(0)},
+// TestToolSearch_Stream verifies the streaming converter surfaces the
+// tool_search_tool_result on the /v1/responses path instead of dropping it: an
+// output_item.added (tool_search_call, in_progress) is emitted for the
+// server_tool_use, and an output_item.done (tool_search_call, completed) carrying
+// the discovered tool names is emitted once the result block closes.
+func TestToolSearch_Stream(t *testing.T) {
+	ctx := schemas.NewBifrostContext(nil, time.Time{})
+	state := AcquireAnthropicResponsesStreamState()
+	defer ReleaseAnthropicResponsesStreamState(state)
 
-		// idx1: tool_search_tool_result carrying tool_references to the discovered tool
-		{Type: AnthropicStreamEventTypeContentBlockStart, Index: schemas.Ptr(1), ContentBlock: &AnthropicContentBlock{
-			Type:      AnthropicContentBlockTypeToolSearchToolResult,
-			ToolUseID: schemas.Ptr(tsServerToolUseID),
-			ToolReferences: []AnthropicContentBlock{
-				{Type: AnthropicContentBlockTypeToolReference, ToolName: schemas.Ptr(tsDiscoveredTool)},
-			},
-		}},
-		{Type: AnthropicStreamEventTypeContentBlockStop, Index: schemas.Ptr(1)},
-
-		// idx2: tool_use that calls the discovered tool (the client must forward this)
-		{Type: AnthropicStreamEventTypeContentBlockStart, Index: schemas.Ptr(2), ContentBlock: &AnthropicContentBlock{
-			Type: AnthropicContentBlockTypeToolUse,
-			ID:   schemas.Ptr(tsDiscoveredCallID),
-			Name: schemas.Ptr(tsDiscoveredTool),
-		}},
-		{Type: AnthropicStreamEventTypeContentBlockDelta, Index: schemas.Ptr(2), Delta: &AnthropicStreamDelta{
-			Type: AnthropicStreamDeltaTypeInputJSON, PartialJSON: &args,
-		}},
-		{Type: AnthropicStreamEventTypeContentBlockStop, Index: schemas.Ptr(2)},
-	}
-	if withStop {
-		stopReason := AnthropicStopReasonToolUse
-		chunks = append(chunks,
-			&AnthropicStreamEvent{Type: AnthropicStreamEventTypeMessageDelta, Delta: &AnthropicStreamDelta{StopReason: &stopReason}},
-			&AnthropicStreamEvent{Type: AnthropicStreamEventTypeMessageStop},
-		)
-	}
-	return chunks
-}
-
-func driveToolSearch(t *testing.T, chunks []*AnthropicStreamEvent) []*schemas.BifrostResponsesStreamResponse {
-	t.Helper()
-	state := newToolSearchTestState()
-	var all []*schemas.BifrostResponsesStreamResponse
+	var emitted []*schemas.BifrostResponsesStreamResponse
 	seq := 0
-	for i, c := range chunks {
-		resps, berr, _ := c.ToBifrostResponsesStream(context.Background(), seq, state)
-		if berr != nil {
-			t.Fatalf("chunk %d returned error: %v", i, berr)
+	for _, raw := range toolSearchStreamEvents {
+		var chunk AnthropicStreamEvent
+		if err := sonic.Unmarshal([]byte(raw), &chunk); err != nil {
+			t.Fatalf("unmarshal event: %v", err)
 		}
-		all = append(all, resps...)
-		seq += len(resps)
+		responses, bErr, _ := chunk.ToBifrostResponsesStream(ctx, seq, state)
+		if bErr != nil {
+			t.Fatalf("ToBifrostResponsesStream error: %v", bErr)
+		}
+		for _, r := range responses {
+			seq++
+			emitted = append(emitted, r)
+		}
 	}
-	return all
-}
-
-// TestToolSearch_ForwardsToolReferences asserts the discovered tool references
-// from tool_search_tool_result survive into a tool_search_call item (carrying
-// the tool name), instead of being dropped. Runs both tool_search variants.
-// Fails on the unpatched provider, which emits no tool_search_call.
-func TestToolSearch_ForwardsToolReferences(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct {
-		name     string
-		toolName string
-	}{
-		{"regex", string(AnthropicToolNameToolSearchRegex)},
-		{"bm25", string(AnthropicToolNameToolSearchBM25)},
-	} {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			all := driveToolSearch(t, toolSearchStreamChunks(tc.toolName, false))
-
-			var done *schemas.ResponsesMessage
-			for _, r := range all {
-				if r.Type == schemas.ResponsesStreamResponseTypeOutputItemDone &&
-					r.Item != nil && r.Item.Type != nil &&
-					*r.Item.Type == schemas.ResponsesMessageTypeToolSearchCall {
-					done = r.Item
-				}
-			}
-			if done == nil {
-				t.Fatal("no tool_search_call output_item.done emitted — tool_search_tool_result was dropped")
-			}
-			if done.ResponsesToolMessage == nil || done.ResponsesToolMessage.ResponsesToolSearchCall == nil {
-				t.Fatal("tool_search_call item carries no ResponsesToolSearchCall payload")
-			}
-			refs := done.ResponsesToolMessage.ResponsesToolSearchCall.ToolReferences
-			if len(refs) != 1 || refs[0] != tsDiscoveredTool {
-				t.Fatalf("tool_references = %v, want [%q]", refs, tsDiscoveredTool)
-			}
-			// done item must carry the tool name, matching the added item (advisor parity)
-			if done.ResponsesToolMessage.Name == nil || *done.ResponsesToolMessage.Name != tc.toolName {
-				t.Fatalf("tool_search_call done Name = %v, want %q", done.ResponsesToolMessage.Name, tc.toolName)
-			}
-		})
-	}
-}
-
-// TestToolSearch_ForwardsDiscoveredToolUse asserts the follow-up tool_use that
-// calls the discovered tool is forwarded as a function_call (added + done).
-func TestToolSearch_ForwardsDiscoveredToolUse(t *testing.T) {
-	t.Parallel()
-	all := driveToolSearch(t, toolSearchStreamChunks(string(AnthropicToolNameToolSearchRegex), false))
 
 	var sawAdded, sawDone bool
-	for _, r := range all {
-		if r.Item == nil || r.Item.Type == nil || *r.Item.Type != schemas.ResponsesMessageTypeFunctionCall {
-			continue
-		}
-		if r.Item.ResponsesToolMessage == nil || r.Item.ResponsesToolMessage.Name == nil ||
-			*r.Item.ResponsesToolMessage.Name != tsDiscoveredTool {
-			continue
-		}
-		switch r.Type {
+	for _, e := range emitted {
+		switch e.Type {
 		case schemas.ResponsesStreamResponseTypeOutputItemAdded:
-			sawAdded = true
-		case schemas.ResponsesStreamResponseTypeOutputItemDone:
-			sawDone = true
-		}
-	}
-	if !sawAdded || !sawDone {
-		t.Fatalf("discovered tool_use not forwarded as function_call (added=%v done=%v)", sawAdded, sawDone)
-	}
-}
-
-// TestToolSearch_NoOrphanFunctionCallArgs asserts every function_call argument
-// delta/done is preceded by an output_item.added for the same item. The unpatched
-// provider emits orphan tool-search query argument deltas (args with no parent
-// item), which desync the client stream parser — this guards against that.
-func TestToolSearch_NoOrphanFunctionCallArgs(t *testing.T) {
-	t.Parallel()
-	all := driveToolSearch(t, toolSearchStreamChunks(string(AnthropicToolNameToolSearchRegex), false))
-
-	added := map[string]bool{}
-	for _, r := range all {
-		switch r.Type {
-		case schemas.ResponsesStreamResponseTypeOutputItemAdded:
-			if r.Item != nil && r.Item.ID != nil {
-				added[*r.Item.ID] = true
-			}
-		case schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta,
-			schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone:
-			if r.ItemID == nil {
-				t.Fatalf("function_call args event %q has no ItemID (orphan)", r.Type)
-			}
-			if !added[*r.ItemID] {
-				t.Fatalf("orphan function_call args for item %q — no preceding output_item.added", *r.ItemID)
-			}
-		}
-	}
-}
-
-// TestToolSearch_CompletedResponseIncludesToolSearchCall asserts the terminal
-// response.completed Output carries the tool_search_call (with its tool_references),
-// guarding the OutputItems persistence that the streamed done events alone don't cover.
-func TestToolSearch_CompletedResponseIncludesToolSearchCall(t *testing.T) {
-	t.Parallel()
-	all := driveToolSearch(t, toolSearchStreamChunks(string(AnthropicToolNameToolSearchRegex), true))
-
-	var completed *schemas.BifrostResponsesResponse
-	for _, r := range all {
-		if r.Type == schemas.ResponsesStreamResponseTypeCompleted && r.Response != nil {
-			completed = r.Response
-		}
-	}
-	if completed == nil {
-		t.Fatal("no response.completed emitted")
-	}
-	var foundRefs []string
-	var foundTool bool
-	for i := range completed.Output {
-		item := completed.Output[i]
-		if item.Type == nil {
-			continue
-		}
-		switch *item.Type {
-		case schemas.ResponsesMessageTypeToolSearchCall:
-			if item.ResponsesToolMessage != nil && item.ResponsesToolMessage.ResponsesToolSearchCall != nil {
-				foundRefs = item.ResponsesToolMessage.ResponsesToolSearchCall.ToolReferences
-			}
-		case schemas.ResponsesMessageTypeFunctionCall:
-			if item.ResponsesToolMessage != nil && item.ResponsesToolMessage.Name != nil &&
-				*item.ResponsesToolMessage.Name == tsDiscoveredTool {
-				foundTool = true
-			}
-		}
-	}
-	if len(foundRefs) != 1 || foundRefs[0] != tsDiscoveredTool {
-		t.Fatalf("response.completed tool_search_call tool_references = %v, want [%q]", foundRefs, tsDiscoveredTool)
-	}
-	if !foundTool {
-		t.Fatal("response.completed Output missing the discovered tool function_call")
-	}
-}
-
-// TestToolSearch_ReverseRebuildsAnthropicBlocks asserts the Bifrost→Anthropic
-// request builder rebuilds a tool_search_call into the paired
-// server_tool_use(tool_search) + tool_search_tool_result(tool_references) blocks,
-// so a follow-up turn keeps the search context (parity with web_search/advisor).
-// Without the reverse case the item hits `default: continue` and is dropped.
-func TestToolSearch_ReverseRebuildsAnthropicBlocks(t *testing.T) {
-	t.Parallel()
-	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
-	defer cancel()
-
-	history := []schemas.ResponsesMessage{
-		{
-			ID:   schemas.Ptr(tsServerToolUseID),
-			Type: schemas.Ptr(schemas.ResponsesMessageTypeToolSearchCall),
-			ResponsesToolMessage: &schemas.ResponsesToolMessage{
-				CallID:                  schemas.Ptr(tsServerToolUseID),
-				Name:                    schemas.Ptr(string(AnthropicToolNameToolSearchRegex)),
-				ResponsesToolSearchCall: &schemas.ResponsesToolSearchCall{ToolReferences: []string{tsDiscoveredTool}},
-			},
-		},
-		{
-			ID:   schemas.Ptr(tsDiscoveredCallID),
-			Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
-			ResponsesToolMessage: &schemas.ResponsesToolMessage{
-				CallID: schemas.Ptr(tsDiscoveredCallID), Name: schemas.Ptr(tsDiscoveredTool), Arguments: schemas.Ptr(`{"location":"Tokyo"}`),
-			},
-		},
-	}
-
-	msgs, _ := ConvertBifrostMessagesToAnthropicMessages(ctx, history, true, schemas.Anthropic, "claude-sonnet-4-6")
-
-	var serverToolUse, resultBlock *AnthropicContentBlock
-	for mi := range msgs {
-		for bi := range msgs[mi].Content.ContentBlocks {
-			b := &msgs[mi].Content.ContentBlocks[bi]
-			switch b.Type {
-			case AnthropicContentBlockTypeServerToolUse:
-				if b.Name != nil && *b.Name == string(AnthropicToolNameToolSearchRegex) {
-					serverToolUse = b
+			if e.Item != nil && e.Item.Type != nil && *e.Item.Type == schemas.ResponsesMessageTypeAnthropicToolSearchCall {
+				sawAdded = true
+				if e.Item.Status == nil || *e.Item.Status != "in_progress" {
+					t.Errorf("added item status = %v, want in_progress", e.Item.Status)
 				}
-			case AnthropicContentBlockTypeToolSearchToolResult:
-				resultBlock = b
+			}
+		case schemas.ResponsesStreamResponseTypeOutputItemDone:
+			if e.Item == nil || e.Item.Type == nil || *e.Item.Type != schemas.ResponsesMessageTypeAnthropicToolSearchCall {
+				continue
+			}
+			sawDone = true
+			if e.Item.Status == nil || *e.Item.Status != "completed" {
+				t.Errorf("done item status = %v, want completed", e.Item.Status)
+			}
+			tm := e.Item.ResponsesToolMessage
+			if tm == nil || tm.Output == nil || tm.Output.ResponsesToolCallOutputStr == nil {
+				t.Fatal("output_item.done tool_search_call missing Output")
+			}
+			out := *tm.Output.ResponsesToolCallOutputStr
+			if !strings.Contains(out, "get_weather") || !strings.Contains(out, "get_forecast") {
+				t.Errorf("output = %q, want it to contain both discovered tool names", out)
 			}
 		}
 	}
 
-	if serverToolUse == nil {
-		t.Fatal("reverse path dropped tool_search_call — no server_tool_use(tool_search) block rebuilt")
+	if !sawAdded {
+		t.Error("expected an output_item.added for the tool_search_call, got none — the call was dropped")
 	}
-	if serverToolUse.ID == nil || *serverToolUse.ID != tsServerToolUseID {
-		t.Fatalf("server_tool_use ID = %v, want %q", serverToolUse.ID, tsServerToolUseID)
+	if !sawDone {
+		t.Error("expected an output_item.done for the tool_search_call carrying discovered tool references, got none — the result was dropped (#4780)")
 	}
-	if resultBlock == nil {
-		t.Fatal("no tool_search_tool_result block rebuilt")
+
+	// response.completed's Output array is built solely from state.OutputItems
+	// (see AnthropicStreamEventTypeMessageStop) — verify the tool_search_call
+	// actually persisted there, not just in the individual stream events.
+	var sawInCompleted bool
+	for _, r := range emitted {
+		if r.Type != schemas.ResponsesStreamResponseTypeCompleted || r.Response == nil {
+			continue
+		}
+		for _, out := range r.Response.Output {
+			if out.Type != nil && *out.Type == schemas.ResponsesMessageTypeAnthropicToolSearchCall {
+				sawInCompleted = true
+			}
+		}
 	}
-	if resultBlock.ToolUseID == nil || *resultBlock.ToolUseID != tsServerToolUseID {
-		t.Fatalf("tool_search_tool_result tool_use_id = %v, want %q", resultBlock.ToolUseID, tsServerToolUseID)
-	}
-	if len(resultBlock.ToolReferences) != 1 || resultBlock.ToolReferences[0].ToolName == nil ||
-		*resultBlock.ToolReferences[0].ToolName != tsDiscoveredTool {
-		t.Fatalf("rebuilt tool_references = %+v, want one ref to %q", resultBlock.ToolReferences, tsDiscoveredTool)
+	if !sawInCompleted {
+		t.Error("expected the tool_search_call to be present in response.completed's Output array, got none — it would be missing from the final response")
 	}
 }
 
-// A JSON-decoded tool_search_call input item has an initialized ResponsesToolMessage
-// (arguments surfaced) but no CallID/ID, so there is no valid tool-use id to build
-// server_tool_use / tool_search_tool_result blocks — the reverse path must skip it,
-// not emit a nil-id pair Anthropic would reject.
-func TestToolSearch_ReverseSkipsWhenNoToolUseID(t *testing.T) {
-	t.Parallel()
-	msg := schemas.ResponsesMessage{
-		Type: schemas.Ptr(schemas.ResponsesMessageTypeToolSearchCall),
-		ResponsesToolMessage: &schemas.ResponsesToolMessage{
-			Name:                    schemas.Ptr(string(AnthropicToolNameToolSearchRegex)),
-			ResponsesToolSearchCall: &schemas.ResponsesToolSearchCall{ToolReferences: []string{tsDiscoveredTool}},
-		},
+// multiToolSearchStreamEvents reproduces a real event sequence observed against the
+// live Anthropic API: the model issues three tool_search_tool_bm25 calls whose call
+// blocks are ALL emitted before any of their result blocks arrive — the call/result
+// blocks are not interleaved 1:1 per call. A single-slot state design (tracking only
+// "the current" tool_use ID) drops every result except the last, leaving earlier
+// calls stuck "in_progress" forever.
+var multiToolSearchStreamEvents = []string{
+	`{"type":"message_start","message":{"model":"claude-opus-4-8","id":"msg_multi1","type":"message","role":"assistant","content":[],"usage":{"input_tokens":10,"output_tokens":1}}}`,
+	`{"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"srvtoolu_a","name":"tool_search_tool_bm25","input":{}}}`,
+	`{"type":"content_block_stop","index":0}`,
+	`{"type":"content_block_start","index":1,"content_block":{"type":"server_tool_use","id":"srvtoolu_b","name":"tool_search_tool_bm25","input":{}}}`,
+	`{"type":"content_block_stop","index":1}`,
+	`{"type":"content_block_start","index":2,"content_block":{"type":"server_tool_use","id":"srvtoolu_c","name":"tool_search_tool_bm25","input":{}}}`,
+	`{"type":"content_block_stop","index":2}`,
+	`{"type":"content_block_start","index":3,"content_block":{"type":"tool_search_tool_result","tool_use_id":"srvtoolu_a","content":{"type":"tool_search_tool_search_result","tool_references":[{"type":"tool_reference","tool_name":"tool_a"}]}}}`,
+	`{"type":"content_block_stop","index":3}`,
+	`{"type":"content_block_start","index":4,"content_block":{"type":"tool_search_tool_result","tool_use_id":"srvtoolu_b","content":{"type":"tool_search_tool_search_result","tool_references":[{"type":"tool_reference","tool_name":"tool_b"}]}}}`,
+	`{"type":"content_block_stop","index":4}`,
+	`{"type":"content_block_start","index":5,"content_block":{"type":"tool_search_tool_result","tool_use_id":"srvtoolu_c","content":{"type":"tool_search_tool_search_result","tool_references":[{"type":"tool_reference","tool_name":"tool_c"}]}}}`,
+	`{"type":"content_block_stop","index":5}`,
+	`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":20}}`,
+	`{"type":"message_stop"}`,
+}
+
+// TestToolSearch_MultipleCallsInOneTurn is a regression test for a bug found while
+// manually verifying #4780 against the live Anthropic API: a single-slot
+// (non-map-keyed) state design silently drops every tool_search result except the
+// last when a turn contains multiple calls whose blocks aren't interleaved 1:1.
+func TestToolSearch_MultipleCallsInOneTurn(t *testing.T) {
+	ctx := schemas.NewBifrostContext(nil, time.Time{})
+	state := AcquireAnthropicResponsesStreamState()
+	defer ReleaseAnthropicResponsesStreamState(state)
+
+	var emitted []*schemas.BifrostResponsesStreamResponse
+	seq := 0
+	for _, raw := range multiToolSearchStreamEvents {
+		var chunk AnthropicStreamEvent
+		if err := sonic.Unmarshal([]byte(raw), &chunk); err != nil {
+			t.Fatalf("unmarshal event: %v", err)
+		}
+		responses, bErr, _ := chunk.ToBifrostResponsesStream(ctx, seq, state)
+		if bErr != nil {
+			t.Fatalf("ToBifrostResponsesStream error: %v", bErr)
+		}
+		for _, r := range responses {
+			seq++
+			emitted = append(emitted, r)
+		}
 	}
-	if blocks := convertBifrostToolSearchCallToAnthropicBlocks(&msg); blocks != nil {
-		t.Fatalf("expected nil (no tool-use id), got %+v", blocks)
+
+	completedOutputs := map[string]string{} // call_id -> output
+	for _, e := range emitted {
+		if e.Type != schemas.ResponsesStreamResponseTypeOutputItemDone {
+			continue
+		}
+		if e.Item == nil || e.Item.Type == nil || *e.Item.Type != schemas.ResponsesMessageTypeAnthropicToolSearchCall {
+			continue
+		}
+		if e.Item.ResponsesToolMessage == nil || e.Item.ResponsesToolMessage.CallID == nil {
+			continue
+		}
+		if e.Item.Status == nil || *e.Item.Status != "completed" {
+			t.Errorf("call %s: status = %v, want completed", *e.Item.ResponsesToolMessage.CallID, e.Item.Status)
+			continue
+		}
+		if e.Item.ResponsesToolMessage.Output == nil || e.Item.ResponsesToolMessage.Output.ResponsesToolCallOutputStr == nil {
+			t.Errorf("call %s: missing Output", *e.Item.ResponsesToolMessage.CallID)
+			continue
+		}
+		completedOutputs[*e.Item.ResponsesToolMessage.CallID] = *e.Item.ResponsesToolMessage.Output.ResponsesToolCallOutputStr
+	}
+
+	for callID, wantTool := range map[string]string{
+		"srvtoolu_a": "tool_a",
+		"srvtoolu_b": "tool_b",
+		"srvtoolu_c": "tool_c",
+	} {
+		out, ok := completedOutputs[callID]
+		if !ok {
+			t.Errorf("call %s: never completed — stuck in_progress forever (all-calls-before-results ordering not handled)", callID)
+			continue
+		}
+		if !strings.Contains(out, wantTool) {
+			t.Errorf("call %s: output = %q, want it to contain %q", callID, out, wantTool)
+		}
+	}
+
+	// Every one of the three calls must also appear completed in response.completed's
+	// Output array — not just in the individual output_item.done stream events.
+	completedInFinal := map[string]bool{}
+	for _, r := range emitted {
+		if r.Type != schemas.ResponsesStreamResponseTypeCompleted || r.Response == nil {
+			continue
+		}
+		for _, out := range r.Response.Output {
+			if out.Type == nil || *out.Type != schemas.ResponsesMessageTypeAnthropicToolSearchCall {
+				continue
+			}
+			if out.Status != nil && *out.Status == "completed" && out.ResponsesToolMessage != nil && out.ResponsesToolMessage.CallID != nil {
+				completedInFinal[*out.ResponsesToolMessage.CallID] = true
+			}
+		}
+	}
+	for _, callID := range []string{"srvtoolu_a", "srvtoolu_b", "srvtoolu_c"} {
+		if !completedInFinal[callID] {
+			t.Errorf("call %s: not present as completed in response.completed's Output array", callID)
+		}
 	}
 }

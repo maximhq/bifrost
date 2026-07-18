@@ -74,9 +74,9 @@ func TestExtractAnthropicPassthroughUsage(t *testing.T) {
 			},
 		},
 		{
-			name:  "messages zero usage -> nil",
-			path:  "/v1/messages",
-			body:  `{"usage":{"input_tokens":0,"output_tokens":0}}`,
+			name: "messages zero usage -> nil",
+			path: "/v1/messages",
+			body: `{"usage":{"input_tokens":0,"output_tokens":0}}`,
 			check: func(t *testing.T, u *schemas.BifrostPassthroughUsage) {
 				if u != nil {
 					t.Fatalf("expected nil, got %+v", u)

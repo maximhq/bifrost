@@ -1088,6 +1088,16 @@ const (
 	ResponsesMessageTypeToolSearchOutput ResponsesMessageType = "tool_search_output"
 	ResponsesMessageTypeAdditionalTools  ResponsesMessageType = "additional_tools"
 	ResponsesMessageTypeAdvisorCall      ResponsesMessageType = "advisor_call" // Anthropic advisor server tool (server_tool_use + advisor_tool_result)
+
+	// ResponsesMessageTypeAnthropicToolSearchCall is Anthropic's server-run tool_search
+	// (tool_search_tool_bm25 / tool_search_tool_regex + tool_search_tool_result).
+	// Deliberately distinct from ResponsesMessageTypeToolSearchCall/ToolSearchOutput
+	// above, which are Codex/OpenAI's client-executed tool_search meta-tool (different
+	// shape: arguments is a search query object, execution:"client", no server-side
+	// results). Reusing that type string would collide with isRawPreservedItem's raw-byte
+	// preservation path and misrepresent Anthropic's server-completed search as a
+	// client-side call to any Responses API consumer.
+	ResponsesMessageTypeAnthropicToolSearchCall ResponsesMessageType = "tool_search_tool_call"
 )
 
 // ResponsesMessage is a union type that can contain different types of input items
@@ -1423,9 +1433,6 @@ type ResponsesToolMessage struct {
 	// Anthropic advisor-specific (advisor_call): carries the advisor_tool_result payload
 	*ResponsesAdvisorCall
 
-	// Anthropic tool_search-specific (tool_search_call): carries the discovered tool references
-	*ResponsesToolSearchCall
-
 	// Anthropic web-fetch-specific (web_fetch_call): carries the web_fetch_tool_result payload
 	*ResponsesWebFetchCall
 
@@ -1443,14 +1450,6 @@ type ResponsesAdvisorCall struct {
 	EncryptedContent *string `json:"advisor_encrypted_content,omitempty"` // advisor_redacted_result variant
 	ErrorCode        *string `json:"advisor_error_code,omitempty"`        // advisor_tool_result_error variant
 	StopReason       *string `json:"advisor_stop_reason,omitempty"`       // present when max_tokens is set on the tool
-}
-
-// ResponsesToolSearchCall carries the payload of an Anthropic server-side
-// tool_search (server_tool_use + tool_search_tool_result). ToolReferences holds
-// the names of the deferred tools the search discovered (from the result block's
-// tool_references); the model then emits a normal tool_use to call one of them.
-type ResponsesToolSearchCall struct {
-	ToolReferences []string `json:"tool_references,omitempty"` // names of discovered (deferred) tools
 }
 
 // ResponsesWebFetchCall carries the Anthropic web_fetch_tool_result payload

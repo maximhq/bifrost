@@ -25,12 +25,16 @@ type AnthropicResponsesStreamState struct {
 	// Computer tool accumulation
 	ComputerToolID *string
 
-	// Web search tool accumulation (minimal fields)
-	WebSearchToolID      *string                // Tool ID of active web search
-	WebSearchOutputIndex *int                   // Output index for this search
-	WebSearchResult      *AnthropicContentBlock // Result block when it arrives
-	WebSearchQuery       *string                // Query captured from the (pre-populated) server_tool_use input
-	WebSearchCaller      *AnthropicToolCaller   // Programmatic-tool-calling caller, if the search was spawned from code execution
+	// Web search tool accumulation. Keyed by tool_use ID (not a single slot)
+	// because a single assistant turn can contain multiple concurrent web_search
+	// calls whose call and result content blocks are NOT necessarily interleaved
+	// 1:1 — the same concurrency hazard fixed for tool_search (see #4780 and
+	// ToolSearchOutputIndices below): a single-slot design silently drops every
+	// result except the last, leaving earlier calls stuck "in_progress" forever.
+	WebSearchPending          map[string]*pendingWebSearch      // tool_use ID -> pending call (query/caller/output index)
+	WebSearchResults          map[string]*AnthropicContentBlock // tool_use ID -> result block once it arrives
+	WebSearchIndexToToolUseID map[int]string                    // content index of the result block -> tool_use ID
+	WebSearchCallIndices      map[int]string                    // content index of the call block -> tool_use ID (for the input_json fallback-capture path on content_block_stop)
 
 	// Web fetch tool accumulation
 	WebFetchToolID      *string                // Tool ID of active web fetch
@@ -38,16 +42,26 @@ type AnthropicResponsesStreamState struct {
 	WebFetchURL         *string                // URL captured from the server_tool_use input
 	WebFetchResult      *AnthropicContentBlock // Result block when it arrives
 
+	// Tool search tool accumulation (tool_search_tool_bm25 / tool_search_tool_regex).
+	// Keyed by tool_use ID (not a single slot) because a single assistant turn can
+	// contain multiple tool_search calls whose call and result content blocks are
+	// NOT necessarily interleaved 1:1 — confirmed live: Claude can emit several
+	// tool_search_tool_bm25 calls back-to-back before any of their
+	// tool_search_tool_result blocks arrive. A single-slot design (like the
+	// simpler web_fetch/advisor accumulation above) silently drops every result
+	// except the last, leaving earlier calls stuck "in_progress" forever.
+	ToolSearchOutputIndices    map[string]int                    // tool_use ID -> output index
+	ToolSearchResults          map[string]*AnthropicContentBlock // tool_use ID -> result block once it arrives
+	ToolSearchIndexToToolUseID map[int]string                    // content index of the result block -> tool_use ID (content_block_stop carries no payload, only the index)
+	ToolSearchToolNames        map[string]*string                // tool_use ID -> sub-tool name (tool_search_tool_bm25/_regex); needed at finalize since the completed item is rebuilt fresh
+	ToolSearchInputs           map[string]string                 // tool_use ID -> verbatim server_tool_use input JSON, for Anthropic-egress replay
+	ToolSearchCallIndices      map[int]string                    // content index of the call block -> tool_use ID (for capturing input_json on content_block_stop)
+	ToolSearchCallers          map[string]*AnthropicToolCaller   // tool_use ID -> caller (set when the search was spawned from inside code execution), mirrors WebSearchPending.Caller
+
 	// Advisor tool accumulation
 	AdvisorToolID      *string                // Tool ID of active advisor call
 	AdvisorOutputIndex *int                   // Output index for this advisor call
 	AdvisorResult      *AnthropicContentBlock // advisor_tool_result block when it arrives
-
-	// Tool search (server-side tool_search) accumulation
-	ToolSearchToolID      *string                // server_tool_use ID of active tool_search
-	ToolSearchToolName    *string                // tool name (tool_search_tool_regex|bm25) — kept so the done item matches the added item
-	ToolSearchOutputIndex *int                   // Output index for this tool_search call
-	ToolSearchResult      *AnthropicContentBlock // tool_search_tool_result block (carries tool_references) when it arrives
 
 	// Code execution tool accumulation (bash / text_editor / python sub-tools)
 	CodeExecToolID      *string                     // server_tool_use id of the active code-execution call
@@ -82,6 +96,14 @@ type AnthropicResponsesStreamState struct {
 	StructuredOutputIndex     *int                              // Output index of the structured output tool call
 	UsedStructuredOutputTool  bool                              // True when the SO tool block was actually consumed into text content
 	SeenRealToolCall          bool                              // True when any non-SO tool_use/server_tool_use/mcp_tool_use content block was started
+}
+
+// pendingWebSearch tracks one in-flight web_search server_tool_use call, keyed by
+// tool_use ID in AnthropicResponsesStreamState.WebSearchPending.
+type pendingWebSearch struct {
+	OutputIndex int
+	Query       *string
+	Caller      *AnthropicToolCaller
 }
 
 type anthropicInputJSONBufferKind string
@@ -362,22 +384,24 @@ func AcquireAnthropicResponsesStreamState() *AnthropicResponsesStreamState {
 	}
 	// Reset other fields
 	state.ComputerToolID = nil
-	state.WebSearchToolID = nil
-	state.WebSearchOutputIndex = nil
-	state.WebSearchResult = nil
-	state.WebSearchQuery = nil
-	state.WebSearchCaller = nil
+	state.WebSearchPending = nil
+	state.WebSearchResults = nil
+	state.WebSearchIndexToToolUseID = nil
+	state.WebSearchCallIndices = nil
 	state.WebFetchToolID = nil
 	state.WebFetchOutputIndex = nil
 	state.WebFetchURL = nil
 	state.WebFetchResult = nil
+	state.ToolSearchOutputIndices = nil
+	state.ToolSearchResults = nil
+	state.ToolSearchIndexToToolUseID = nil
+	state.ToolSearchToolNames = nil
+	state.ToolSearchInputs = nil
+	state.ToolSearchCallIndices = nil
+	state.ToolSearchCallers = nil
 	state.AdvisorToolID = nil
 	state.AdvisorOutputIndex = nil
 	state.AdvisorResult = nil
-	state.ToolSearchToolID = nil
-	state.ToolSearchToolName = nil
-	state.ToolSearchOutputIndex = nil
-	state.ToolSearchResult = nil
 	state.CodeExecToolID = nil
 	state.CodeExecToolName = nil
 	state.CodeExecOutputIndex = nil
@@ -412,22 +436,24 @@ func (state *AnthropicResponsesStreamState) flush() {
 	state.InputJSONBuffers = nil
 	state.InputJSONPurposes = nil
 	state.ComputerToolID = nil
-	state.WebSearchToolID = nil
-	state.WebSearchOutputIndex = nil
-	state.WebSearchResult = nil
-	state.WebSearchQuery = nil
-	state.WebSearchCaller = nil
+	state.WebSearchPending = nil
+	state.WebSearchResults = nil
+	state.WebSearchIndexToToolUseID = nil
+	state.WebSearchCallIndices = nil
 	state.WebFetchToolID = nil
 	state.WebFetchOutputIndex = nil
 	state.WebFetchURL = nil
 	state.WebFetchResult = nil
+	state.ToolSearchOutputIndices = nil
+	state.ToolSearchResults = nil
+	state.ToolSearchIndexToToolUseID = nil
+	state.ToolSearchToolNames = nil
+	state.ToolSearchInputs = nil
+	state.ToolSearchCallIndices = nil
+	state.ToolSearchCallers = nil
 	state.AdvisorToolID = nil
 	state.AdvisorOutputIndex = nil
 	state.AdvisorResult = nil
-	state.ToolSearchToolID = nil
-	state.ToolSearchToolName = nil
-	state.ToolSearchOutputIndex = nil
-	state.ToolSearchResult = nil
 	state.CodeExecToolID = nil
 	state.CodeExecToolName = nil
 	state.CodeExecOutputIndex = nil
@@ -623,30 +649,38 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 				// input, not streamed). Keep a buffer anyway so unusual input_json_delta
 				// events are swallowed and can be used as a fallback on block stop.
 				state.beginInputJSONBuffer(chunk.Index, anthropicInputJSONBufferWebSearch)
-				state.WebSearchToolID = chunk.ContentBlock.ID
-				state.WebSearchOutputIndex = schemas.Ptr(outputIndex)
-				state.WebSearchQuery = nil
+
+				pending := &pendingWebSearch{OutputIndex: outputIndex, Caller: chunk.ContentBlock.Caller}
 				if q := providerUtils.GetJSONField(chunk.ContentBlock.Input, "query"); q.Exists() && q.Type == gjson.String {
-					state.WebSearchQuery = schemas.Ptr(q.Str)
+					pending.Query = schemas.Ptr(q.Str)
 				}
-				state.WebSearchCaller = chunk.ContentBlock.Caller
+				if state.WebSearchPending == nil {
+					state.WebSearchPending = make(map[string]*pendingWebSearch)
+				}
+				state.WebSearchPending[*chunk.ContentBlock.ID] = pending
+				if chunk.Index != nil {
+					if state.WebSearchCallIndices == nil {
+						state.WebSearchCallIndices = make(map[int]string)
+					}
+					state.WebSearchCallIndices[*chunk.Index] = *chunk.ContentBlock.ID
+				}
 
 				// Store item ID
 				state.ItemIDs[outputIndex] = *chunk.ContentBlock.ID
 
 				wsAction := &schemas.ResponsesWebSearchToolCallAction{Type: "search"}
-				if state.WebSearchQuery != nil {
-					wsAction.Query = state.WebSearchQuery
-					wsAction.Queries = []string{*state.WebSearchQuery}
+				if pending.Query != nil {
+					wsAction.Query = pending.Query
+					wsAction.Queries = []string{*pending.Query}
 				}
 				toolMsg := &schemas.ResponsesToolMessage{
 					CallID: chunk.ContentBlock.ID,
 					Action: &schemas.ResponsesToolMessageActionStruct{ResponsesWebSearchToolCallAction: wsAction},
 				}
-				if state.WebSearchCaller != nil {
+				if pending.Caller != nil {
 					toolMsg.Caller = &schemas.ResponsesToolCaller{
-						Type:   string(state.WebSearchCaller.Type),
-						ToolID: state.WebSearchCaller.ToolID,
+						Type:   string(pending.Caller.Type),
+						ToolID: pending.Caller.ToolID,
 					}
 				}
 
@@ -657,6 +691,15 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 					Status:               schemas.Ptr("in_progress"),
 					ResponsesToolMessage: toolMsg,
 				}
+
+				// Persist into OutputItems so response.completed includes the call
+				// even if the result never arrives (mirrors advisor/code_exec/tool_search
+				// handling; web_search itself was previously missing this despite
+				// sibling comments claiming otherwise).
+				clonedItem := *item
+				clonedToolMsg := *item.ResponsesToolMessage
+				clonedItem.ResponsesToolMessage = &clonedToolMsg
+				state.OutputItems[outputIndex] = &clonedItem
 
 				var responses []*schemas.BifrostResponsesStreamResponse
 
@@ -697,88 +740,34 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 					state.ContentIndexToBlockType[*chunk.Index] = AnthropicContentBlockTypeWebSearchToolResult
 				}
 
-				// Check if this matches our active web search
-				if state.WebSearchToolID != nil && *state.WebSearchToolID == *chunk.ContentBlock.ToolUseID {
+				toolUseID := *chunk.ContentBlock.ToolUseID
+				// Check if this matches one of our pending web searches
+				if pending, ok := state.WebSearchPending[toolUseID]; ok {
 
 					// Store the result block (arrives complete with all sources)
-					state.WebSearchResult = chunk.ContentBlock
+					if state.WebSearchResults == nil {
+						state.WebSearchResults = make(map[string]*AnthropicContentBlock)
+					}
+					state.WebSearchResults[toolUseID] = chunk.ContentBlock
 
 					if chunk.Index != nil {
 						delete(state.ContentIndexToBlockType, *chunk.Index)
+						if state.WebSearchIndexToToolUseID == nil {
+							state.WebSearchIndexToToolUseID = make(map[int]string)
+						}
+						state.WebSearchIndexToToolUseID[*chunk.Index] = toolUseID
 					}
 
 					// Emit web_search_call.completed
 					return []*schemas.BifrostResponsesStreamResponse{{
 						Type:           schemas.ResponsesStreamResponseTypeWebSearchCallCompleted,
 						SequenceNumber: sequenceNumber,
-						OutputIndex:    state.WebSearchOutputIndex,
+						OutputIndex:    schemas.Ptr(pending.OutputIndex),
 						ItemID:         chunk.ContentBlock.ToolUseID,
 					}}, nil, false
 				}
 
 				// If no matching tool ID, skip (shouldn't happen in normal flow)
-				return nil, nil, false
-			}
-
-			// Handle tool_search server_tool_use (server-side tool_search query block).
-			// Anthropic runs the search server-side and returns a tool_search_tool_result
-			// carrying tool_references to the discovered (deferred) tools; the model then
-			// emits a normal tool_use to call one. Mirrors the web_search query path.
-			if chunk.ContentBlock.Type == AnthropicContentBlockTypeServerToolUse &&
-				chunk.ContentBlock.Name != nil &&
-				(*chunk.ContentBlock.Name == string(AnthropicToolNameToolSearchRegex) ||
-					*chunk.ContentBlock.Name == string(AnthropicToolNameToolSearchBM25)) &&
-				chunk.ContentBlock.ID != nil {
-
-				state.SeenRealToolCall = true
-				// Suppress the query input_json deltas via the shared input-buffer path;
-				// the search is run server-side, so we only care about the result block.
-				state.beginInputJSONBuffer(chunk.Index, anthropicInputJSONBufferToolSearch)
-				state.ToolSearchToolID = chunk.ContentBlock.ID
-				state.ToolSearchToolName = chunk.ContentBlock.Name
-				state.ToolSearchOutputIndex = schemas.Ptr(outputIndex)
-				state.ItemIDs[outputIndex] = *chunk.ContentBlock.ID
-				// Mark block type so content_block_stop doesn't emit a generic message done
-				if chunk.Index != nil {
-					state.ContentIndexToBlockType[*chunk.Index] = AnthropicContentBlockTypeServerToolUse
-					state.TextContentIndices[*chunk.Index] = false
-				}
-
-				// Emit output_item.added for the tool_search_call (completed at result block-stop)
-				item := &schemas.ResponsesMessage{
-					ID:     chunk.ContentBlock.ID,
-					Type:   schemas.Ptr(schemas.ResponsesMessageTypeToolSearchCall),
-					Status: schemas.Ptr("in_progress"),
-					ResponsesToolMessage: &schemas.ResponsesToolMessage{
-						CallID: chunk.ContentBlock.ID,
-						Name:   chunk.ContentBlock.Name,
-					},
-				}
-				return []*schemas.BifrostResponsesStreamResponse{{
-					Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
-					SequenceNumber: sequenceNumber,
-					OutputIndex:    schemas.Ptr(outputIndex),
-					ContentIndex:   chunk.Index,
-					Item:           item,
-				}}, nil, false
-			}
-
-			// Handle tool_search_tool_result block (the discovered tool_references arrive).
-			// Store it; the tool_search_call output_item.done (carrying tool_references) is
-			// emitted on this block's content_block_stop. Mirrors web_search_tool_result.
-			if chunk.ContentBlock.Type == AnthropicContentBlockTypeToolSearchToolResult &&
-				chunk.ContentBlock.ToolUseID != nil {
-
-				if chunk.Index != nil {
-					state.ContentIndexToBlockType[*chunk.Index] = AnthropicContentBlockTypeToolSearchToolResult
-				}
-
-				if state.ToolSearchToolID != nil && *state.ToolSearchToolID == *chunk.ContentBlock.ToolUseID {
-					// Store the result block (arrives complete with all tool_references)
-					state.ToolSearchResult = chunk.ContentBlock
-				}
-
-				// Defer the done to content_block_stop (don't drop the block)
 				return nil, nil, false
 			}
 
@@ -986,6 +975,94 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 				}
 				if state.CodeExecToolID != nil && *state.CodeExecToolID == *chunk.ContentBlock.ToolUseID {
 					state.CodeExecResult = chunk.ContentBlock
+				}
+				return nil, nil, false
+			}
+
+			// Handle tool_search server_tool_use (the call — Bifrost advertises
+			// ToolSearch: true, but the result was previously dropped; see #4780).
+			if chunk.ContentBlock.Type == AnthropicContentBlockTypeServerToolUse &&
+				chunk.ContentBlock.Name != nil &&
+				isAnthropicToolSearchToolName(*chunk.ContentBlock.Name) &&
+				chunk.ContentBlock.ID != nil {
+
+				state.SeenRealToolCall = true
+				state.beginInputJSONBuffer(chunk.Index, anthropicInputJSONBufferToolSearch)
+				if state.ToolSearchOutputIndices == nil {
+					state.ToolSearchOutputIndices = make(map[string]int)
+				}
+				state.ToolSearchOutputIndices[*chunk.ContentBlock.ID] = outputIndex
+				state.ItemIDs[outputIndex] = *chunk.ContentBlock.ID
+				if state.ToolSearchToolNames == nil {
+					state.ToolSearchToolNames = make(map[string]*string)
+				}
+				state.ToolSearchToolNames[*chunk.ContentBlock.ID] = chunk.ContentBlock.Name
+				if chunk.ContentBlock.Caller != nil {
+					if state.ToolSearchCallers == nil {
+						state.ToolSearchCallers = make(map[string]*AnthropicToolCaller)
+					}
+					state.ToolSearchCallers[*chunk.ContentBlock.ID] = chunk.ContentBlock.Caller
+				}
+				if chunk.Index != nil {
+					if state.ToolSearchCallIndices == nil {
+						state.ToolSearchCallIndices = make(map[int]string)
+					}
+					state.ToolSearchCallIndices[*chunk.Index] = *chunk.ContentBlock.ID
+				}
+
+				toolMsg := &schemas.ResponsesToolMessage{
+					CallID: chunk.ContentBlock.ID,
+					Name:   chunk.ContentBlock.Name,
+				}
+				if chunk.ContentBlock.Caller != nil {
+					toolMsg.Caller = &schemas.ResponsesToolCaller{
+						Type:   string(chunk.ContentBlock.Caller.Type),
+						ToolID: chunk.ContentBlock.Caller.ToolID,
+					}
+				}
+				item := &schemas.ResponsesMessage{
+					ID:                   chunk.ContentBlock.ID,
+					Type:                 schemas.Ptr(schemas.ResponsesMessageTypeAnthropicToolSearchCall),
+					Status:               schemas.Ptr("in_progress"),
+					ResponsesToolMessage: toolMsg,
+				}
+
+				// Persist into OutputItems so response.completed includes the call even
+				// if the result never arrives (mirrors function_call/advisor handling).
+				clonedItem := *item
+				clonedToolMsg := *item.ResponsesToolMessage
+				clonedItem.ResponsesToolMessage = &clonedToolMsg
+				state.OutputItems[outputIndex] = &clonedItem
+
+				return []*schemas.BifrostResponsesStreamResponse{
+					{
+						Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
+						SequenceNumber: sequenceNumber,
+						OutputIndex:    schemas.Ptr(outputIndex),
+						ContentIndex:   chunk.Index,
+						Item:           item,
+					},
+				}, nil, false
+			}
+
+			// Handle tool_search_tool_result block (arrives complete with all tool_references).
+			// Store it; the output_item.done is emitted on its content_block_stop.
+			if chunk.ContentBlock.Type == AnthropicContentBlockTypeToolSearchToolResult &&
+				chunk.ContentBlock.ToolUseID != nil {
+
+				toolUseID := *chunk.ContentBlock.ToolUseID
+				if _, ok := state.ToolSearchOutputIndices[toolUseID]; ok {
+					if chunk.Index != nil {
+						state.ContentIndexToBlockType[*chunk.Index] = AnthropicContentBlockTypeToolSearchToolResult
+						if state.ToolSearchIndexToToolUseID == nil {
+							state.ToolSearchIndexToToolUseID = make(map[int]string)
+						}
+						state.ToolSearchIndexToToolUseID[*chunk.Index] = toolUseID
+					}
+					if state.ToolSearchResults == nil {
+						state.ToolSearchResults = make(map[string]*AnthropicContentBlock)
+					}
+					state.ToolSearchResults[toolUseID] = chunk.ContentBlock
 				}
 				return nil, nil, false
 			}
@@ -1542,12 +1619,17 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 					}, nil, false
 
 				case anthropicInputJSONBufferWebSearch:
-					if state.WebSearchToolID == nil {
+					if chunk.Index == nil {
 						return nil, nil, false
 					}
-					if state.WebSearchQuery == nil && inputJSON != "" {
+					toolUseID, ok := state.WebSearchCallIndices[*chunk.Index]
+					if !ok {
+						return nil, nil, false
+					}
+					pending := state.WebSearchPending[toolUseID]
+					if pending != nil && pending.Query == nil && inputJSON != "" {
 						if q := providerUtils.GetJSONField([]byte(inputJSON), "query"); q.Exists() && q.Type == gjson.String {
-							state.WebSearchQuery = schemas.Ptr(q.Str)
+							pending.Query = schemas.Ptr(q.Str)
 						}
 					}
 					return nil, nil, false
@@ -1564,6 +1646,17 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 					return nil, nil, false
 
 				case anthropicInputJSONBufferAdvisor:
+					return nil, nil, false
+
+				case anthropicInputJSONBufferToolSearch:
+					if chunk.Index != nil && inputJSON != "" {
+						if toolUseID, ok := state.ToolSearchCallIndices[*chunk.Index]; ok {
+							if state.ToolSearchInputs == nil {
+								state.ToolSearchInputs = make(map[string]string)
+							}
+							state.ToolSearchInputs[toolUseID] = inputJSON
+						}
+					}
 					return nil, nil, false
 
 				case anthropicInputJSONBufferCodeExec:
@@ -1618,93 +1711,202 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 						},
 					)
 					return responses, nil, false
-
-				case anthropicInputJSONBufferToolSearch:
-					// tool_search server_tool_use query block ended — the search runs
-					// server-side, so just wait for the tool_search_tool_result block.
-					return nil, nil, false
 				}
 			}
 
-			// Check if this is the end of a web_search_tool_result block
-			if state.WebSearchResult != nil && state.WebSearchToolID != nil {
+			// Check if this is the end of a web_search_tool_result block — looked up by
+			// content index (not a single slot), since a turn can contain multiple
+			// concurrent web_search calls whose results don't necessarily arrive in a
+			// strict per-call interleaved order (same hazard as tool_search, #4780).
+			if chunk.Index != nil {
+				if toolUseID, ok := state.WebSearchIndexToToolUseID[*chunk.Index]; ok {
+					pending := state.WebSearchPending[toolUseID]
+					result := state.WebSearchResults[toolUseID]
 
-				// Use the query captured from the server_tool_use input at block start
-				var query string
-				var queries []string
-				if state.WebSearchQuery != nil {
-					query = *state.WebSearchQuery
-					queries = []string{query}
-				}
+					// Use the query captured from the server_tool_use input at block start
+					var query string
+					var queries []string
+					if pending != nil && pending.Query != nil {
+						query = *pending.Query
+						queries = []string{query}
+					}
 
-				// Extract sources from the result block
-				var sources []schemas.ResponsesWebSearchToolCallActionSearchSource
-				if state.WebSearchResult.Content != nil && len(state.WebSearchResult.Content.ContentBlocks) > 0 {
-					for _, resultBlock := range state.WebSearchResult.Content.ContentBlocks {
-						if resultBlock.Type == AnthropicContentBlockTypeWebSearchResult && resultBlock.URL != nil {
-							sources = append(sources, schemas.ResponsesWebSearchToolCallActionSearchSource{
-								Type:             "url",
-								URL:              *resultBlock.URL,
-								Title:            resultBlock.Title,
-								EncryptedContent: resultBlock.EncryptedContent,
-								PageAge:          resultBlock.PageAge,
-							})
+					// Extract sources from the result block
+					var sources []schemas.ResponsesWebSearchToolCallActionSearchSource
+					if result != nil && result.Content != nil && len(result.Content.ContentBlocks) > 0 {
+						for _, resultBlock := range result.Content.ContentBlocks {
+							if resultBlock.Type == AnthropicContentBlockTypeWebSearchResult && resultBlock.URL != nil {
+								sources = append(sources, schemas.ResponsesWebSearchToolCallActionSearchSource{
+									Type:             "url",
+									URL:              *resultBlock.URL,
+									Title:            resultBlock.Title,
+									EncryptedContent: resultBlock.EncryptedContent,
+									PageAge:          resultBlock.PageAge,
+								})
+							}
 						}
 					}
-				}
 
-				// Create complete web_search_call item with action including query and sources
-				statusCompleted := "completed"
-				action := &schemas.ResponsesWebSearchToolCallAction{
-					Type:    "search",
-					Sources: sources,
-				}
-				// Only set query fields if query is not empty
-				if query != "" {
-					action.Query = &query
-					action.Queries = queries
-				}
-
-				toolMsg := &schemas.ResponsesToolMessage{
-					CallID: state.WebSearchToolID,
-					Action: &schemas.ResponsesToolMessageActionStruct{ResponsesWebSearchToolCallAction: action},
-				}
-				if state.WebSearchCaller != nil {
-					toolMsg.Caller = &schemas.ResponsesToolCaller{
-						Type:   string(state.WebSearchCaller.Type),
-						ToolID: state.WebSearchCaller.ToolID,
+					// Create complete web_search_call item with action including query and sources
+					statusCompleted := "completed"
+					action := &schemas.ResponsesWebSearchToolCallAction{
+						Type:    "search",
+						Sources: sources,
 					}
-				}
-				item := &schemas.ResponsesMessage{
-					ID:                   state.WebSearchToolID,
-					Type:                 schemas.Ptr(schemas.ResponsesMessageTypeWebSearchCall),
-					Status:               &statusCompleted,
-					ResponsesToolMessage: toolMsg,
-				}
+					// Only set query fields if query is not empty
+					if query != "" {
+						action.Query = &query
+						action.Queries = queries
+					}
 
-				outputIdx := state.WebSearchOutputIndex
+					callIDCopy := toolUseID
+					toolMsg := &schemas.ResponsesToolMessage{
+						CallID: &callIDCopy,
+						Action: &schemas.ResponsesToolMessageActionStruct{ResponsesWebSearchToolCallAction: action},
+					}
+					if pending != nil && pending.Caller != nil {
+						toolMsg.Caller = &schemas.ResponsesToolCaller{
+							Type:   string(pending.Caller.Type),
+							ToolID: pending.Caller.ToolID,
+						}
+					}
+					item := &schemas.ResponsesMessage{
+						ID:                   &callIDCopy,
+						Type:                 schemas.Ptr(schemas.ResponsesMessageTypeWebSearchCall),
+						Status:               &statusCompleted,
+						ResponsesToolMessage: toolMsg,
+					}
 
-				// Clear all web search state
-				state.WebSearchToolID = nil
-				state.WebSearchOutputIndex = nil
-				state.WebSearchResult = nil
-				state.WebSearchQuery = nil
-				state.WebSearchCaller = nil
+					var outputIdx *int
+					if pending != nil {
+						outputIdx = schemas.Ptr(pending.OutputIndex)
+						// Persist the completed item into OutputItems so response.completed
+						// reflects the final status/action instead of the stale in_progress
+						// item stored at call-start (see #4780 for the original bug class).
+						cloned := *item
+						clonedToolMsg := *item.ResponsesToolMessage
+						cloned.ResponsesToolMessage = &clonedToolMsg
+						state.OutputItems[pending.OutputIndex] = &cloned
+					}
 
-				if chunk.Index != nil {
+					// Clear this call's web search state
+					delete(state.WebSearchPending, toolUseID)
+					delete(state.WebSearchResults, toolUseID)
+					delete(state.WebSearchIndexToToolUseID, *chunk.Index)
 					delete(state.ContentIndexToBlockType, *chunk.Index)
-				}
+					for idx, id := range state.WebSearchCallIndices {
+						if id == toolUseID {
+							delete(state.WebSearchCallIndices, idx)
+							break
+						}
+					}
 
-				// Return output_item.done for the web_search_call (not the result block)
-				return []*schemas.BifrostResponsesStreamResponse{
-					{
-						Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
-						SequenceNumber: sequenceNumber,
-						OutputIndex:    outputIdx,
-						ContentIndex:   chunk.Index,
-						Item:           item,
-					},
-				}, nil, false
+					// Return output_item.done for the web_search_call (not the result block)
+					return []*schemas.BifrostResponsesStreamResponse{
+						{
+							Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
+							SequenceNumber: sequenceNumber,
+							OutputIndex:    outputIdx,
+							ContentIndex:   chunk.Index,
+							Item:           item,
+						},
+					}, nil, false
+				}
+			}
+
+			// End of a tool_search_tool_result block — emit the tool_search_call done with
+			// the discovered tool references surfaced as the call's output (previously
+			// dropped entirely; see #4780). Looked up by content index (not a single
+			// slot) since a turn can contain multiple tool_search calls whose results
+			// don't necessarily arrive in a strict per-call interleaved order.
+			if chunk.Index != nil {
+				if toolUseID, ok := state.ToolSearchIndexToToolUseID[*chunk.Index]; ok {
+					result := state.ToolSearchResults[toolUseID]
+					outputIndexForCall, hasOutputIndex := state.ToolSearchOutputIndices[toolUseID]
+
+					var toolNames []string
+					for _, ref := range toolSearchResultReferences(result) {
+						if ref.ToolName != nil {
+							toolNames = append(toolNames, *ref.ToolName)
+						} else if ref.Name != nil {
+							toolNames = append(toolNames, *ref.Name)
+						}
+					}
+					if toolNames == nil {
+						toolNames = []string{}
+					}
+					outputBytes, marshalErr := sonic.Marshal(toolNames)
+					outputStr := "[]"
+					if marshalErr == nil {
+						outputStr = string(outputBytes)
+					}
+
+					statusCompleted := "completed"
+					callIDCopy := toolUseID
+					toolMsg := &schemas.ResponsesToolMessage{
+						CallID: &callIDCopy,
+						Name:   state.ToolSearchToolNames[toolUseID],
+						Output: &schemas.ResponsesToolMessageOutputStruct{
+							ResponsesToolCallOutputStr: &outputStr,
+						},
+					}
+					// Preserve the verbatim call input (e.g. the search query) so a later
+					// turn that replays this item back to Anthropic (egress) can rebuild
+					// an equivalent server_tool_use block — reuses the same generic
+					// Arguments field function_call uses, no new schema type needed.
+					if input, ok := state.ToolSearchInputs[toolUseID]; ok {
+						toolMsg.Arguments = &input
+					}
+					if caller := state.ToolSearchCallers[toolUseID]; caller != nil {
+						toolMsg.Caller = &schemas.ResponsesToolCaller{
+							Type:   string(caller.Type),
+							ToolID: caller.ToolID,
+						}
+					}
+					item := &schemas.ResponsesMessage{
+						ID:                   &callIDCopy,
+						Type:                 schemas.Ptr(schemas.ResponsesMessageTypeAnthropicToolSearchCall),
+						Status:               &statusCompleted,
+						ResponsesToolMessage: toolMsg,
+					}
+
+					var outputIdx *int
+					if hasOutputIndex {
+						outputIdx = &outputIndexForCall
+						// Persist the completed item into OutputItems so response.completed
+						// includes it (mirrors advisor/code-exec handling) — previously missing,
+						// so tool_search results never surfaced in the final response even
+						// though the individual stream events fired correctly.
+						cloned := *item
+						clonedToolMsg := *item.ResponsesToolMessage
+						cloned.ResponsesToolMessage = &clonedToolMsg
+						state.OutputItems[outputIndexForCall] = &cloned
+					}
+
+					delete(state.ToolSearchOutputIndices, toolUseID)
+					delete(state.ToolSearchResults, toolUseID)
+					delete(state.ToolSearchIndexToToolUseID, *chunk.Index)
+					delete(state.ToolSearchToolNames, toolUseID)
+					delete(state.ToolSearchInputs, toolUseID)
+					delete(state.ToolSearchCallers, toolUseID)
+					delete(state.ContentIndexToBlockType, *chunk.Index)
+					for idx, id := range state.ToolSearchCallIndices {
+						if id == toolUseID {
+							delete(state.ToolSearchCallIndices, idx)
+							break
+						}
+					}
+
+					return []*schemas.BifrostResponsesStreamResponse{
+						{
+							Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
+							SequenceNumber: sequenceNumber,
+							OutputIndex:    outputIdx,
+							ContentIndex:   chunk.Index,
+							Item:           item,
+						},
+					}, nil, false
+				}
 			}
 
 			// End of a web_fetch_tool_result block — emit the web_fetch_call done with
@@ -1801,54 +2003,6 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 				}}, nil, false
 			}
 
-			// End of a tool_search_tool_result block — emit the tool_search_call done
-			// carrying the discovered tool references (the deferred tools the search found).
-			// Mirrors the web_search_call done; the model's subsequent tool_use (calling one
-			// of those tools) is forwarded by the generic tool_use path.
-			if state.ToolSearchResult != nil && state.ToolSearchToolID != nil {
-				var toolRefs []string
-				for _, ref := range state.ToolSearchResult.ToolReferences {
-					if ref.ToolName != nil {
-						toolRefs = append(toolRefs, *ref.ToolName)
-					} else if ref.Name != nil {
-						toolRefs = append(toolRefs, *ref.Name)
-					}
-				}
-				item := &schemas.ResponsesMessage{
-					ID:     state.ToolSearchToolID,
-					Type:   schemas.Ptr(schemas.ResponsesMessageTypeToolSearchCall),
-					Status: schemas.Ptr("completed"),
-					ResponsesToolMessage: &schemas.ResponsesToolMessage{
-						CallID:                  state.ToolSearchToolID,
-						Name:                    state.ToolSearchToolName,
-						ResponsesToolSearchCall: &schemas.ResponsesToolSearchCall{ToolReferences: toolRefs},
-					},
-				}
-				outputIdx := state.ToolSearchOutputIndex
-				// Persist into OutputItems so message_stop includes the tool_search_call
-				// in response.completed (mirrors web_search_call / advisor_call handling).
-				if outputIdx != nil {
-					cloned := *item
-					clonedToolMsg := *item.ResponsesToolMessage
-					cloned.ResponsesToolMessage = &clonedToolMsg
-					state.OutputItems[*outputIdx] = &cloned
-				}
-				state.ToolSearchToolID = nil
-				state.ToolSearchToolName = nil
-				state.ToolSearchOutputIndex = nil
-				state.ToolSearchResult = nil
-				if chunk.Index != nil {
-					delete(state.ContentIndexToBlockType, *chunk.Index)
-				}
-				return []*schemas.BifrostResponsesStreamResponse{{
-					Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
-					SequenceNumber: sequenceNumber,
-					OutputIndex:    outputIdx,
-					ContentIndex:   chunk.Index,
-					Item:           item,
-				}}, nil, false
-			}
-
 			// End of a code-execution result block — emit the code_interpreter_call done.
 			if state.CodeExecResult != nil && state.CodeExecToolID != nil {
 				// Rebuild the server_tool_use block from accumulated state so the
@@ -1911,8 +2065,8 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 				if blockType, exists := state.ContentIndexToBlockType[*chunk.Index]; exists {
 					if blockType == AnthropicContentBlockTypeWebSearchToolResult ||
 						blockType == AnthropicContentBlockTypeWebFetchToolResult ||
-						blockType == AnthropicContentBlockTypeAdvisorToolResult ||
 						blockType == AnthropicContentBlockTypeToolSearchToolResult ||
+						blockType == AnthropicContentBlockTypeAdvisorToolResult ||
 						blockType == AnthropicContentBlockTypeServerToolUse ||
 						blockType == AnthropicContentBlockTypeCodeExecutionToolResult ||
 						blockType == AnthropicContentBlockTypeBashCodeExecutionToolResult ||
@@ -3716,7 +3870,17 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 
 		// Convert tools
 		if bifrostReq.Params.Tools != nil {
-			anthropicTools, mcpServers := convertBifrostToolsToAnthropic(capModel, bifrostReq.Params.Tools, bifrostReq.Provider)
+			// Resolve Bifrost's own caller-facing tool_search bridge (a
+			// "namespace" tool declaration reserved for surfacing Anthropic's
+			// bm25/regex algorithm choice to an OpenAI-Responses-shaped
+			// caller) into the two native tool_search declarations Anthropic
+			// expects, before the per-tool egress switch below. No-op (same
+			// slice returned) unless the reserved bridge namespace is present.
+			toolsForAnthropic, bridgeActive := schemas.ExpandToolSearchBridgeDeclaration(bifrostReq.Params.Tools)
+			if bridgeActive && ctx != nil {
+				ctx.SetValue(schemas.BifrostContextKeyToolSearchBridgeActive, true)
+			}
+			anthropicTools, mcpServers := convertBifrostToolsToAnthropic(capModel, toolsForAnthropic, bifrostReq.Provider)
 			if len(anthropicTools) > 0 {
 				if anthropicReq.Tools == nil {
 					anthropicReq.Tools = anthropicTools
@@ -3746,7 +3910,13 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 	}
 
 	if bifrostReq.Input != nil {
-		anthropicMessages, systemContent := ConvertBifrostMessagesToAnthropicMessages(ctx, bifrostReq.Input, true, bifrostReq.Provider, capModel)
+		// Merge any namespace-tagged tool_search bridge call/output pairs
+		// (Bifrost's own caller-facing convention) back into the neutral
+		// tool_search_tool_call item the egress switch below already knows
+		// how to render onto Anthropic's server_tool_use + tool_search_tool_result
+		// shape. No-op unless the reserved bridge namespace is present.
+		inputForAnthropic := schemas.ExpandToolSearchBridgeItems(bifrostReq.Input)
+		anthropicMessages, systemContent := ConvertBifrostMessagesToAnthropicMessages(ctx, inputForAnthropic, true, bifrostReq.Provider, capModel)
 
 		// Set system message if present
 		if systemContent != nil {
@@ -3931,6 +4101,24 @@ func (response *AnthropicMessageResponse) ToBifrostResponsesResponse(ctx *schema
 			}
 			bifrostResp.Output = outputMessages
 		}
+	}
+
+	// If the caller declared tool_search via Bifrost's own namespace bridge
+	// (see schemas.ExpandToolSearchBridgeDeclaration, set on ingest above),
+	// collapse any completed tool_search_tool_call item back into the
+	// caller-facing function_call/function_call_output pair tagged with the
+	// reserved bridge namespace, instead of leaking the internal neutral hub
+	// type onto the wire.
+	if bridgeActive, ok := ctx.Value(schemas.BifrostContextKeyToolSearchBridgeActive).(bool); ok && bridgeActive && len(bifrostResp.Output) > 0 {
+		collapsed := make([]schemas.ResponsesMessage, 0, len(bifrostResp.Output))
+		for _, msg := range bifrostResp.Output {
+			if pair := schemas.CollapseToolSearchItemToNamespacePair(msg); pair != nil {
+				collapsed = append(collapsed, pair...)
+				continue
+			}
+			collapsed = append(collapsed, msg)
+		}
+		bifrostResp.Output = collapsed
 	}
 
 	bifrostResp.Model = response.Model
@@ -4638,10 +4826,11 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 				}
 			}
 
-		case schemas.ResponsesMessageTypeToolSearchCall:
+		case schemas.ResponsesMessageTypeAnthropicToolSearchCall:
 			// tool_search calls, like web search/advisor, emit a server_tool_use +
 			// result pair (carrying the discovered tool_references) that lives inside
 			// the assistant message, so a follow-up turn keeps the search context.
+			// (see #4780 — this is the egress/replay counterpart of the ingest fix).
 			flushPendingToolResults()
 			toolSearchBlocks := convertBifrostToolSearchCallToAnthropicBlocks(&msg)
 			if len(toolSearchBlocks) > 0 {
@@ -5512,6 +5701,39 @@ func convertAnthropicContentBlocksToResponsesMessages(ctx *schemas.BifrostContex
 				if isOutputMessage {
 					bifrostMessages = append(bifrostMessages, buildBifrostCodeExecutionCall(block))
 				}
+			} else if block.Name != nil && isAnthropicToolSearchToolName(*block.Name) {
+				// tool_search_tool_bm25 / tool_search_tool_regex server_tool_use — the
+				// paired tool_search_tool_result is attached below (see #4780; this is
+				// the non-streaming counterpart of the streaming fix).
+				// ID and CallID intentionally hold independent string copies (not the
+				// same *string as block.ID) so a downstream mutation of one can never
+				// silently alias the other.
+				var msgID, callID *string
+				if block.ID != nil {
+					idCopy, callIDCopy := *block.ID, *block.ID
+					msgID, callID = &idCopy, &callIDCopy
+				}
+				bifrostMsg := schemas.ResponsesMessage{
+					Type:   schemas.Ptr(schemas.ResponsesMessageTypeAnthropicToolSearchCall),
+					ID:     msgID,
+					Status: schemas.Ptr("in_progress"),
+					ResponsesToolMessage: &schemas.ResponsesToolMessage{
+						Name:   block.Name,
+						CallID: callID,
+					},
+				}
+				if len(block.Input) > 0 {
+					bifrostMsg.ResponsesToolMessage.Arguments = schemas.Ptr(string(block.Input))
+				}
+				if block.Caller != nil {
+					bifrostMsg.ResponsesToolMessage.Caller = &schemas.ResponsesToolCaller{
+						Type:   string(block.Caller.Type),
+						ToolID: block.Caller.ToolID,
+					}
+				}
+				if isOutputMessage {
+					bifrostMessages = append(bifrostMessages, bifrostMsg)
+				}
 			}
 
 		case AnthropicContentBlockTypeCodeExecutionToolResult,
@@ -5559,6 +5781,43 @@ func convertAnthropicContentBlocksToResponsesMessages(ctx *schemas.BifrostContex
 			// Find the corresponding web_search_call by tool_use_id
 			if block.ToolUseID != nil {
 				attachWebSearchSourcesToCall(bifrostMessages, *block.ToolUseID, block, true)
+			}
+
+		case AnthropicContentBlockTypeToolSearchToolResult:
+			// Attach the discovered tool references onto the matching
+			// tool_search_tool_call (see #4780).
+			if block.ToolUseID != nil {
+				for i := len(bifrostMessages) - 1; i >= 0; i-- {
+					msg := &bifrostMessages[i]
+					if msg.Type == nil || *msg.Type != schemas.ResponsesMessageTypeAnthropicToolSearchCall {
+						continue
+					}
+					if msg.ResponsesToolMessage == nil || msg.ResponsesToolMessage.CallID == nil ||
+						*msg.ResponsesToolMessage.CallID != *block.ToolUseID {
+						continue
+					}
+					var toolNames []string
+					for _, ref := range toolSearchResultReferences(&block) {
+						if ref.ToolName != nil {
+							toolNames = append(toolNames, *ref.ToolName)
+						} else if ref.Name != nil {
+							toolNames = append(toolNames, *ref.Name)
+						}
+					}
+					if toolNames == nil {
+						toolNames = []string{}
+					}
+					outputBytes, marshalErr := sonic.Marshal(toolNames)
+					outputStr := "[]"
+					if marshalErr == nil {
+						outputStr = string(outputBytes)
+					}
+					msg.Status = schemas.Ptr("completed")
+					msg.ResponsesToolMessage.Output = &schemas.ResponsesToolMessageOutputStruct{
+						ResponsesToolCallOutputStr: &outputStr,
+					}
+					break
+				}
 			}
 
 		case AnthropicContentBlockTypeWebFetchToolResult:
@@ -6372,10 +6631,11 @@ func convertBifrostAdvisorCallToAnthropicBlocks(msg *schemas.ResponsesMessage) [
 
 // convertBifrostToolSearchCallToAnthropicBlocks rebuilds the tool_search
 // server_tool_use block and its paired tool_search_tool_result block (carrying
-// the discovered tool_references) from a neutral tool_search_call. Anthropic
-// requires the server_tool_use to be followed by its result block in the
-// assistant message, so a follow-up turn that references a discovered tool keeps
-// the search context. Mirrors convertBifrostWebSearchCall/AdvisorCall.
+// the discovered tool_references) from a neutral tool_search_call/tool_search_tool_call
+// item. Anthropic requires the server_tool_use to be followed by its result
+// block in the assistant message, so a later turn can replay this call back
+// to Anthropic and keep the search context (egress counterpart of the ingest
+// fix for #4780). Mirrors convertBifrostWebSearchCall/AdvisorCall.
 func convertBifrostToolSearchCallToAnthropicBlocks(msg *schemas.ResponsesMessage) []AnthropicContentBlock {
 	if msg.ResponsesToolMessage == nil {
 		return nil
@@ -6396,36 +6656,93 @@ func convertBifrostToolSearchCallToAnthropicBlocks(msg *schemas.ResponsesMessage
 		return nil
 	}
 
-	// 1. server_tool_use block. Preserve the search variant name (regex/bm25);
-	// the query is not retained on the neutral item, so send an empty input.
-	name := string(AnthropicToolNameToolSearchRegex)
-	if msg.ResponsesToolMessage.Name != nil && *msg.ResponsesToolMessage.Name != "" {
-		name = *msg.ResponsesToolMessage.Name
-	}
-	serverToolUseBlock := AnthropicContentBlock{
-		Type:  AnthropicContentBlockTypeServerToolUse,
-		ID:    toolUseID,
-		Name:  schemas.Ptr(name),
-		Input: json.RawMessage("{}"),
+	toolName := msg.ResponsesToolMessage.Name
+	if toolName == nil {
+		toolName = schemas.Ptr(string(AnthropicToolNameToolSearchBM25))
 	}
 
-	// 2. tool_search_tool_result block reconstructed from the discovered tool names.
-	var toolReferences []AnthropicContentBlock
-	if msg.ResponsesToolMessage.ResponsesToolSearchCall != nil {
-		for _, toolName := range msg.ResponsesToolMessage.ResponsesToolSearchCall.ToolReferences {
-			toolReferences = append(toolReferences, AnthropicContentBlock{
-				Type:     AnthropicContentBlockTypeToolReference,
-				ToolName: schemas.Ptr(toolName),
-			})
-		}
+	// The caller (set when this search was spawned from inside the code execution
+	// sandbox) must be re-emitted on both the server_tool_use and the result
+	// block, mirroring convertBifrostWebSearchCallToAnthropicBlocks.
+	var caller *AnthropicToolCaller
+	if c := msg.ResponsesToolMessage.Caller; c != nil {
+		caller = &AnthropicToolCaller{Type: AnthropicToolCallerType(c.Type), ToolID: c.ToolID}
+	}
+
+	// 1. server_tool_use block — reuse the verbatim input JSON captured at
+	// ingest time (the search query) if present, otherwise an empty object
+	// (Anthropic requires input to always be present on tool_use blocks).
+	serverToolUseBlock := AnthropicContentBlock{
+		Type:   AnthropicContentBlockTypeServerToolUse,
+		ID:     toolUseID,
+		Name:   toolName,
+		Caller: caller,
+	}
+	if msg.ResponsesToolMessage.Arguments != nil && *msg.ResponsesToolMessage.Arguments != "" {
+		serverToolUseBlock.Input = json.RawMessage(*msg.ResponsesToolMessage.Arguments)
+	} else {
+		serverToolUseBlock.Input = json.RawMessage("{}")
+	}
+
+	// 2. tool_search_tool_result block carrying the discovered tool names as
+	// tool_reference blocks. Only the name survives the round trip (that's all
+	// Output carries) — best-effort, matching what was persisted.
+	var toolNames []string
+	if msg.ResponsesToolMessage.Output != nil && msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr != nil {
+		_ = sonic.Unmarshal([]byte(*msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr), &toolNames)
+	}
+	toolReferences := make([]AnthropicContentBlock, 0, len(toolNames))
+	for _, name := range toolNames {
+		n := name
+		toolReferences = append(toolReferences, AnthropicContentBlock{
+			Type:     AnthropicContentBlockTypeToolReference,
+			ToolName: &n,
+		})
 	}
 	resultBlock := AnthropicContentBlock{
-		Type:           AnthropicContentBlockTypeToolSearchToolResult,
-		ToolUseID:      toolUseID,
-		ToolReferences: toolReferences,
+		Type:      AnthropicContentBlockTypeToolSearchToolResult,
+		ToolUseID: toolUseID,
+		Caller:    caller,
+		Content:   buildToolSearchResultContent(toolReferences),
 	}
 
 	return []AnthropicContentBlock{serverToolUseBlock, resultBlock}
+}
+
+// toolSearchResultReferences extracts the discovered tool_references from a
+// tool_search_tool_result block, handling Anthropic's nesting: unlike every
+// other *_tool_result block type, tool_search_tool_result carries its result
+// fields one level deeper, under content.tool_references (content.type ==
+// "tool_search_tool_search_result"), not directly on the block. Checks
+// Content.ContentObj first (the egress/construction shape), then
+// Content.ContentBlocks[0] (the post-unmarshal shape, since AnthropicContent's
+// UnmarshalJSON decodes a bare JSON object into a one-element ContentBlocks
+// slice rather than ContentObj). Returns nil if block or its content is nil,
+// or if the search matched nothing (Anthropic returns an empty array, not a
+// missing field, for a genuine no-match result).
+func toolSearchResultReferences(block *AnthropicContentBlock) []AnthropicContentBlock {
+	if block == nil || block.Content == nil {
+		return nil
+	}
+	if inner := block.Content.ContentObj; inner != nil {
+		return inner.ToolReferences
+	}
+	if len(block.Content.ContentBlocks) > 0 {
+		return block.Content.ContentBlocks[0].ToolReferences
+	}
+	return nil
+}
+
+// buildToolSearchResultContent wraps discovered tool references in the
+// content.tool_search_tool_search_result nesting Anthropic's wire format
+// requires for tool_search_tool_result (see toolSearchResultReferences).
+func buildToolSearchResultContent(toolReferences []AnthropicContentBlock) *AnthropicContent {
+	return &AnthropicContent{
+		ContentObj: &AnthropicContentBlock{
+			Type:           AnthropicContentBlockTypeToolSearchToolSearchResult,
+			ToolReferences: toolReferences,
+		},
+	}
 }
 
 // isAnthropicCodeExecutionToolName reports whether name is one of the code
@@ -6434,6 +6751,18 @@ func convertBifrostToolSearchCallToAnthropicBlocks(msg *schemas.ResponsesMessage
 func isAnthropicCodeExecutionToolName(name string) bool {
 	switch AnthropicToolName(name) {
 	case AnthropicToolNameCodeExecution, AnthropicToolNameBashCodeExecution, AnthropicToolNameTextEditorCodeExecution:
+		return true
+	default:
+		return false
+	}
+}
+
+// isAnthropicToolSearchToolName reports whether name is one of the tool_search
+// server-tool names (tool_search_tool_bm25 / tool_search_tool_regex), regardless of
+// which versioned tool type (e.g. _20251119) declared it in the request.
+func isAnthropicToolSearchToolName(name string) bool {
+	switch AnthropicToolName(name) {
+	case AnthropicToolNameToolSearchBM25, AnthropicToolNameToolSearchRegex:
 		return true
 	default:
 		return false
@@ -7382,9 +7711,14 @@ func convertBifrostToolToAnthropic(model string, tool *schemas.ResponsesTool, pr
 		anthropicTool.Description = tool.Description
 	}
 
-	// Convert parameters and strict from ToolFunction
+	// Convert parameters and strict from ToolFunction. Drop strict on targets that don't
+	// support structured outputs (e.g. Vertex) — mirrors the chat-completions path's gate
+	// in stripUnsupportedAnthropicFields (utils.go); the Responses path lacked it (#3233).
 	if tool.ResponsesToolFunction != nil {
 		anthropicTool.Strict = tool.ResponsesToolFunction.Strict
+		if features, ok := ProviderFeatures[provider]; anthropicTool.Strict != nil && (!ok || !features.StructuredOutputs) {
+			anthropicTool.Strict = nil
+		}
 	}
 	if tool.ResponsesToolFunction != nil && tool.ResponsesToolFunction.Parameters != nil {
 		anthropicTool.InputSchema = tool.ResponsesToolFunction.Parameters
