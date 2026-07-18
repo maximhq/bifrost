@@ -1,6 +1,8 @@
 package tracing
 
 import (
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,8 +18,10 @@ func TestCreateTrace_WithInheritedTraceID(t *testing.T) {
 
 	traceID := store.CreateTrace(inheritedTraceID)
 
-	if traceID != inheritedTraceID {
-		t.Errorf("CreateTrace() returned %q, want inherited trace ID %q", traceID, inheritedTraceID)
+	// The returned value is a unique store key, deliberately NOT the inherited
+	// trace ID — concurrent requests may share an inherited ID (issue #5256).
+	if traceID == inheritedTraceID {
+		t.Errorf("CreateTrace() returned the inherited trace ID %q, want a unique store key", traceID)
 	}
 
 	trace := store.GetTrace(traceID)
@@ -26,7 +30,10 @@ func TestCreateTrace_WithInheritedTraceID(t *testing.T) {
 	}
 
 	if trace.TraceID != inheritedTraceID {
-		t.Errorf("trace.TraceID = %q, want %q", trace.TraceID, inheritedTraceID)
+		t.Errorf("trace.TraceID = %q, want inherited %q", trace.TraceID, inheritedTraceID)
+	}
+	if trace.InternalID != traceID {
+		t.Errorf("trace.InternalID = %q, want store key %q", trace.InternalID, traceID)
 	}
 
 	// ParentID should be empty - we no longer set it incorrectly to the trace ID
@@ -162,8 +169,10 @@ func TestStartChildSpan_WithExternalParentSpanID(t *testing.T) {
 		t.Errorf("root span.ParentID = %q, want external parent %q", rootSpan.ParentID, externalParentSpanID)
 	}
 
-	if rootSpan.TraceID != inheritedTraceID {
-		t.Errorf("root span.TraceID = %q, want inherited trace ID %q", rootSpan.TraceID, inheritedTraceID)
+	// span.TraceID is internal linkage to the store entry (the per-request key),
+	// not the W3C ID — exporters read the W3C ID from trace.TraceID.
+	if rootSpan.TraceID != traceID {
+		t.Errorf("root span.TraceID = %q, want store key %q", rootSpan.TraceID, traceID)
 	}
 }
 
@@ -309,5 +318,54 @@ func TestCleanupOldTraces_RemovesOrphanedDeferredSpans(t *testing.T) {
 	}
 	if store.GetTrace(freshTraceID) == nil {
 		t.Error("fresh trace should survive TTL cleanup")
+	}
+}
+
+// TestCreateTrace_ConcurrentSharedInheritedTraceID reproduces issue #5256:
+// concurrent requests carrying the same W3C traceparent trace ID must each get
+// their own store entry, complete independently, and keep the shared TraceID
+// for export. Before keying the store by a unique per-request handle, siblings
+// overwrote each other and most CompleteTrace calls returned nil — those
+// requests' log rows were silently lost.
+func TestCreateTrace_ConcurrentSharedInheritedTraceID(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+
+	const totalRequests = 18
+	const sharedTraceID = "4bf92f3577b34da6a3ce929d0e0e4736"
+
+	keys := make([]string, totalRequests)
+	traces := make([]*schemas.Trace, totalRequests)
+
+	var wg sync.WaitGroup
+	for i := 0; i < totalRequests; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			key := store.CreateTrace(sharedTraceID, fmt.Sprintf("req-%02d", i))
+			keys[i] = key
+			time.Sleep(10 * time.Millisecond) // overlap the lifetimes
+			traces[i] = store.CompleteTrace(key)
+		}(i)
+	}
+	wg.Wait()
+
+	seenKeys := make(map[string]struct{}, totalRequests)
+	for i := 0; i < totalRequests; i++ {
+		if _, dup := seenKeys[keys[i]]; dup {
+			t.Errorf("request %d: store key %q collided with another request", i, keys[i])
+		}
+		seenKeys[keys[i]] = struct{}{}
+
+		if traces[i] == nil {
+			t.Errorf("request %d: CompleteTrace returned nil — trace lost", i)
+			continue
+		}
+		if traces[i].TraceID != sharedTraceID {
+			t.Errorf("request %d: trace.TraceID = %q, want shared W3C ID %q", i, traces[i].TraceID, sharedTraceID)
+		}
+		if traces[i].RequestID != fmt.Sprintf("req-%02d", i) {
+			t.Errorf("request %d: got trace of another request (RequestID %q)", i, traces[i].RequestID)
+		}
 	}
 }
