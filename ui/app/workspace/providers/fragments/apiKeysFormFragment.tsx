@@ -768,7 +768,7 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 					/>
 				</div>
 			)}
-			{(isSGL || isDeepseek || isFireworks) && (
+			{(isSGL || isDeepseek || isFireworks || isVLLM) && (
 				<div className="space-y-4">
 					<FormField
 						control={control}

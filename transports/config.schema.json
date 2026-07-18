@@ -3999,6 +3999,11 @@
               },
               "required": ["url", "model_name"],
               "additionalProperties": false
+            },
+            "use_anthropic_endpoints": {
+              "type": "boolean",
+              "description": "Routes chat completions and responses requests through Anthropic-compatible endpoints.",
+              "default": false
             }
           },
           "required": ["vllm_key_config"]
