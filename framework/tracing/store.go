@@ -286,9 +286,11 @@ func (s *TraceStore) StartSpan(traceID, name string, kind schemas.SpanKind) *sch
 
 	span := s.spanPool.Get().(*schemas.Span)
 
-	// Reset and initialize the span
+	// Reset and initialize the span. Span.TraceID carries the exported W3C
+	// trace identity (shared across sibling requests of a distributed trace);
+	// store lookups use the unique key passed as traceID, never this field.
 	span.SpanID = generateSpanID()
-	span.TraceID = traceID
+	span.TraceID = trace.TraceID
 	span.Name = name
 	span.Kind = kind
 	span.StartTime = time.Now()
@@ -333,10 +335,11 @@ func (s *TraceStore) StartChildSpan(traceID, parentSpanID, name string, kind sch
 
 	span := s.spanPool.Get().(*schemas.Span)
 
-	// Reset and initialize the span
+	// Reset and initialize the span. As in StartSpan, Span.TraceID carries the
+	// exported W3C trace identity, not the store key.
 	span.SpanID = generateSpanID()
 	span.ParentID = parentSpanID
-	span.TraceID = traceID
+	span.TraceID = trace.TraceID
 	span.Name = name
 	span.Kind = kind
 	span.StartTime = time.Now()

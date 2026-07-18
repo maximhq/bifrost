@@ -204,13 +204,13 @@ func TestTracer_StartSpan_RootSpanWithW3CParent(t *testing.T) {
 		t.Errorf("Root span ParentID = %q, want external parent span ID %q", trace.RootSpan.ParentID, externalParentSpanID)
 	}
 
-	// The exported W3C trace ID is preserved on the trace; spans carry the
-	// internal store key for linkage.
+	// The exported W3C trace ID is preserved on both the trace and its spans;
+	// only the store key returned by CreateTrace is the per-request handle.
 	if trace.TraceID != inheritedTraceID {
 		t.Errorf("trace.TraceID = %q, want inherited %q", trace.TraceID, inheritedTraceID)
 	}
-	if trace.RootSpan.TraceID != traceID {
-		t.Errorf("Root span TraceID = %q, want store key %q", trace.RootSpan.TraceID, traceID)
+	if trace.RootSpan.TraceID != inheritedTraceID {
+		t.Errorf("Root span TraceID = %q, want inherited %q", trace.RootSpan.TraceID, inheritedTraceID)
 	}
 
 	// Verify context has span ID for child span creation
@@ -630,10 +630,10 @@ func TestIntegration_FullDistributedTraceFlow(t *testing.T) {
 			pluginSpan.ParentID, llmSpan.SpanID)
 	}
 
-	// All spans link to the same store entry; the trace itself keeps the
-	// inherited W3C ID for export.
-	if httpSpan.TraceID != traceID || llmSpan.TraceID != traceID || pluginSpan.TraceID != traceID {
-		t.Error("All spans should carry the trace's store key")
+	// All spans carry the inherited W3C trace identity; the store key returned
+	// by CreateTrace is a separate per-request handle.
+	if httpSpan.TraceID != inheritedTraceID || llmSpan.TraceID != inheritedTraceID || pluginSpan.TraceID != inheritedTraceID {
+		t.Error("All spans should have the inherited trace ID")
 	}
 	if trace.TraceID != inheritedTraceID {
 		t.Errorf("trace.TraceID = %q, want inherited %q", trace.TraceID, inheritedTraceID)
