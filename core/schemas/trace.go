@@ -688,6 +688,15 @@ const (
 	AttrToolCallResult    = "gen_ai.tool.call.result"
 	AttrToolType          = "gen_ai.tool.type"
 
+	// OTel MCP semconv attributes on mcp.client spans, read by the duration metric.
+	AttrMCPMethodName    = "mcp.method.name"   // e.g. tools/call, tools/list, ping
+	AttrNetworkTransport = "network.transport" // pipe (stdio) | tcp (http/sse)
+
+	// Tool-execution latency (ms) — the raw CallTool round-trip — so the duration metric
+	// measures it, not span wall-time (which covers the PostHooks). Bifrost-namespaced; not
+	// OTel MCP semconv.
+	AttrBifrostMCPToolDurationMs = "bifrost.mcp.tool.duration_ms"
+
 	// =====================================================================
 	// Bifrost-namespaced attributes (bifrost.*)
 	//
@@ -721,6 +730,7 @@ const (
 	AttrBifrostBusinessUnitNames   = "bifrost.business_unit.names"
 	AttrBifrostUserID              = "bifrost.user.id"
 	AttrBifrostUserName            = "bifrost.user.name"
+	AttrBifrostUserEmail           = "bifrost.user.email"
 	AttrBifrostRetries             = "bifrost.retries"
 	AttrBifrostFallbackIndex       = "bifrost.fallback_index"
 	AttrBifrostAlias               = "bifrost.alias"                // original requested model when it differs from the resolved model

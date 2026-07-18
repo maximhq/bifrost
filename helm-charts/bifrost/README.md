@@ -4,11 +4,35 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.27
+**Latest Version:** 2.1.29
 
 ## Changelog
 
+### 2.1.29
+
+- Added `bifrost.scim.config.provisioningToken` and `claimScimAttributes` to the Okta, Entra, SailPoint, and generic OIDC SCIM providers, so inbound SCIM provisioning can be seeded declaratively instead of via the dashboard. Both render into `scim_config.config`. Generate a token with `openssl rand -base64 32 | tr '+/' '-_' | tr -d '='` (supports `env.` prefix).
+- Added `request_headers` to the OTEL plugin config (`bifrost.plugins.otel.config.request_headers` and `profiles[*].request_headers`) to capture request headers as span attributes. Renders into `request_headers`.
+- Added `bifrost.client.dualCredentialConflictBehavior` to control what happens when an inference request presents both an IDP access token and a virtual key (`x-bf-vk`). Accepts `"error"` (reject with 400), `"prefer_vk"` (drop IDP token, use VK), or `"prefer_idp"` (default, IDP token wins). Renders into `client.dual_credential_conflict_behavior`.
+
+### 2.1.28
+
+- Restored `runAsUser: 1000` defaults in `podSecurityContext` and `securityContext` (dropped in 2.1.27). Images before v1.6.4 use a non-numeric `USER appuser`, so kubelet could not verify `runAsNonRoot: true` and pods failed with CreateContainerConfigError. OpenShift (restricted-v2) users unset the pins with explicit nulls: `podSecurityContext.runAsUser: null`, `podSecurityContext.fsGroup: null`, `securityContext.runAsUser: null`.
+- Added `project_id` to `bifrost.providers.bedrock.keys[*].bedrock_key_config` (renders into `bedrock_key_config.project_id`) and `bifrost.providers.bedrock_mantle.keys[*].bedrock_mantle_key_config` (renders into `bedrock_mantle_key_config.project_id`) for AWS project scoping via the OpenAI-Project / anthropic-workspace-id headers.
+- Updated the per-alias `project_id` description: it is now a shared cross-provider override (Vertex GCP project; Bedrock/Bedrock Mantle AWS project header).
+
 ### 2.1.27
+
+> **Known issue - use 2.1.28 instead.** This version dropped `runAsUser: 1000`
+> from the default security contexts. With any image before v1.6.4 (including
+> the chart's default), kubelet cannot verify `runAsNonRoot: true` against the
+> image's non-numeric `USER appuser` and pods fail with
+> `CreateContainerConfigError: container has runAsNonRoot and image has
+> non-numeric user (appuser)`. If you must stay on 2.1.27, set
+> `podSecurityContext.runAsUser: 1000` and `securityContext.runAsUser: 1000`
+> in your values, or use image v1.6.4+. On OpenShift (restricted-v2), 2.1.27
+> works as-is since the SCC injects a numeric UID; pair it with image v1.6.4+
+> and `podSecurityContext.fsGroup: null` (see the OpenShift section under
+> Installation).
 
 - Added `bifrost.auditLogs.objectStorage` for archiving audit events to S3/GCS. Supports `type` (s3/gcs), `bucket`, `prefix`, `compress`, and full S3 credential fields (`region`, `endpoint`, `accessKeyId`, `secretAccessKey`, `sessionToken`, `roleArn`, `forcePathStyle`) and GCS fields (`projectId`, `credentialsJson`). Renders into `audit_logs.object_storage`.
 - Added `bifrost.schemaUrl` to override the generated `config.json` `$schema` location for isolated deployments. It accepts HTTP(S), `file://`, or filesystem paths. When set, it is also exported as `BIFROST_SCHEMA_URL` in the pod; when empty (default), the env var is not injected and the public schema URL is used.
@@ -458,23 +482,53 @@ cd bifrost/helm-charts/bifrost
 
 ### OpenShift (restricted-v2 SCC)
 
-The default install sets `podSecurityContext.fsGroup: 1000`. OpenShift's
-`restricted-v2` SCC enforces `MustRunAs` against the namespace's allocated
-group range and rejects that value at admission:
+The default install pins `runAsUser: 1000` (pod and container level) and
+`podSecurityContext.fsGroup: 1000`. The UID pin is required on vanilla
+Kubernetes: images before v1.6.4 declare a non-numeric `USER appuser`, so
+kubelet cannot verify `runAsNonRoot: true` without an explicit numeric UID and
+rejects the container with:
+
+```text
+container has runAsNonRoot and image has non-numeric user (appuser), cannot verify user is non-root
+```
+
+OpenShift's `restricted-v2` SCC enforces `MustRunAsRange` / `MustRunAs`
+against the namespace's allocated UID/GID ranges and rejects those pinned
+values at admission:
 
 ```text
 fsGroup: Invalid value: []int64{1000}: 1000 is not an allowed group
 ```
 
-To deploy on OpenShift, clear the default `fsGroup` so the SCC can assign an
+To deploy on OpenShift, clear all three pins so the SCC can assign an
 in-range UID/GID:
 
 ```yaml
 podSecurityContext:
-  # Helm merges maps, so `{}` does NOT clear this — you must use null.
+  # Helm merges maps, so `{}` does NOT clear these - you must use null.
+  runAsUser: null
   fsGroup: null
   runAsNonRoot: true
+
+securityContext:
+  runAsUser: null
 ```
+
+Or equivalently on the command line:
+
+```bash
+helm install bifrost bifrost/bifrost \
+  --set image.tag=v1.6.4 \
+  --set podSecurityContext.runAsUser=null \
+  --set podSecurityContext.fsGroup=null \
+  --set securityContext.runAsUser=null
+```
+
+Use image v1.6.4 or later on OpenShift. The SCC injects an arbitrary in-range
+UID at admission (so `runAsNonRoot` verification always passes there), but
+only v1.6.4+ images make the data directory group-0-owned and group-writable
+at build time; earlier images assume UID 1000 owns `/app/data` and fail to
+write `config.db` under an arbitrary UID.
 
 The Bifrost image supports arbitrary UIDs with group 0: the data directory is
 owned by group 0 and group-writable at build time, so the restricted-v2 UID

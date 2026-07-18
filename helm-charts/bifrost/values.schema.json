@@ -463,6 +463,11 @@
               "type": "boolean",
               "description": "Require auth (VK, API key, or user token) on inference endpoints"
             },
+            "dualCredentialConflictBehavior": {
+              "type": "string",
+              "enum": ["error", "prefer_vk", "prefer_idp"],
+              "description": "Behavior when an inference request presents both an IDP access token and a virtual key (x-bf-vk). 'error' rejects with 400; 'prefer_vk' drops the IDP token and uses the VK; 'prefer_idp' (default) uses the IDP token for identity."
+            },
             "enforceSCIMAuth": {
               "type": "boolean",
               "description": "Deprecated: use enforceAuthOnInference"
@@ -2332,7 +2337,8 @@
                       "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
                       "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
                       "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
-                      "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"}
+                      "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"},
+                      "provisioningToken": {"$ref": "#/$defs/scim_provisioning_token"}
                     },
                     "required": ["issuerUrl", "clientId", "clientSecret", "apiToken"],
                     "additionalProperties": false
@@ -2403,7 +2409,8 @@
                       "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
                       "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
                       "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
-                      "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"}
+                      "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"},
+                      "provisioningToken": {"$ref": "#/$defs/scim_provisioning_token"}
                     },
                     "required": ["tenantId", "clientId"],
                     "additionalProperties": false
@@ -2702,7 +2709,8 @@
                       "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
                       "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
                       "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
-                      "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"}
+                      "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"},
+                      "provisioningToken": {"$ref": "#/$defs/scim_provisioning_token"}
                     },
                     "required": ["product"],
                     "additionalProperties": false
@@ -2772,7 +2780,8 @@
                       "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
                       "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
                       "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
-                      "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"}
+                      "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"},
+                      "provisioningToken": {"$ref": "#/$defs/scim_provisioning_token"}
                     },
                     "required": ["issuerUrl", "clientId"],
                     "additionalProperties": false
@@ -3516,9 +3525,28 @@
             "hmacKey": {
               "type": "string"
             },
+            "archiveInterval": {
+              "type": "string",
+              "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h)([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))*$",
+              "description": "Archival window size and job period, as a Go duration string (e.g. '24h'). The supported range is 5m and above; anything shorter is raised to 5m at runtime rather than failing startup. Only used when objectStorage is set. Default: 24h",
+              "default": "24h"
+            },
+            "archiveGracePeriod": {
+              "type": "string",
+              "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h)([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))*$",
+              "description": "How long to hold a window open past its end before archiving it, absorbing clock skew and late inserts. Must be shorter than archiveInterval, otherwise no window would ever close; the runtime substitutes a safe default if it is not. Only used when objectStorage is set. Default: 15m",
+              "default": "15m"
+            },
+            "archiveMaxObjectBytes": {
+              "type": "integer",
+              "minimum": 1048576,
+              "maximum": 4294967296,
+              "description": "Roll a new part object once the current part reaches this many uncompressed bytes. Peak node memory is roughly 2x this when compress is true, so size pod memory limits accordingly. The minimum and maximum above are strict validation limits: helm install/template rejects a value outside [1MiB, 4GiB] rather than adjusting it. Only used when objectStorage is set. Default: 134217728 (128MiB)",
+              "default": 134217728
+            },
             "objectStorage": {
               "type": "object",
-              "description": "Optional object storage for archiving audit events to S3/GCS. Each flushed batch is written as a gzipped JSONL object at {prefix}/audit-logs/YYYY/MM/DD/HH/{id}.jsonl[.gz], in addition to the database.",
+              "description": "Optional object storage for archiving audit events to S3/GCS. A background job periodically copies audit events from the database, one closed time window at a time, writing each window as JSONL part objects plus a manifest at {prefix}/audit-logs/YYYY/MM/DD/{start}-{end}/. The database remains the source of truth; archival never deletes rows (retentionDays handles that independently).",
               "properties": {
                 "type": {
                   "type": "string",
@@ -4677,6 +4705,13 @@
           "description": "When true, input/output message content is dropped from the root span only; the underlying generation (llm.call) span retains the full content. This removes the duplicate input/output stored at the trace level (e.g. the Langfuse trace Input/Output goes empty) to reduce downstream storage.",
           "default": false
         },
+        "request_headers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Request header name patterns (exact or wildcard like x-custom-*) to capture and emit as span attributes. Note: * captures all headers including sensitive ones like Authorization."
+        },
         "plugin_span_filter": {
           "$ref": "#/$defs/pluginSpanFilter"
         }
@@ -4790,6 +4825,13 @@
         "disable_root_span_content": {
           "type": "boolean",
           "description": "Deprecated in the profiles wrapper; configure disable_root_span_content per profile instead."
+        },
+        "request_headers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Deprecated in the profiles wrapper; configure request_headers per profile instead."
         }
       },
       "required": ["profiles"],
@@ -5054,6 +5096,10 @@
               "type": "string",
               "description": "Role session name for AssumeRole (can use env. prefix)"
             },
+            "project_id": {
+              "type": "string",
+              "description": "Bedrock project ID scoping inference and model listing. Sent as the OpenAI-Project header on the OpenAI-compatible surface and the anthropic-workspace-id header on the native-Anthropic (Claude) surface. When empty, AWS routes to the account's default project (can use env. prefix)"
+            },
             "deployments": {
               "type": "object",
               "additionalProperties": {
@@ -5125,6 +5171,10 @@
             "session_name": {
               "type": "string",
               "description": "Role session name for AssumeRole (can use env. prefix)"
+            },
+            "project_id": {
+              "type": "string",
+              "description": "Bedrock project ID scoping the Mantle sub-surface (OpenAI-compatible gpt-*/Gemma routing) via the OpenAI-Project header. When empty, AWS routes to the account's default project. No effect on the Converse/bedrock-runtime paths (can use env. prefix)"
             }
           },
           "required": ["region"],
@@ -5192,7 +5242,7 @@
                   },
                   "project_id": {
                     "type": "string",
-                    "description": "Per-alias Vertex project ID override (can use env. prefix)."
+                    "description": "Per-alias project override shared across providers: Vertex uses it as the GCP project; Bedrock and Bedrock Mantle send it as the AWS project via the OpenAI-Project / anthropic-workspace-id header (can use env. prefix)."
                   },
                   "project_number": {
                     "type": "string",
@@ -6202,6 +6252,10 @@
         "required": ["attributeType", "attributeValue"],
         "additionalProperties": false
       }
+    },
+    "scim_provisioning_token": {
+      "type": "string",
+      "description": "Bearer token that inbound SCIM 2.0 provisioning clients (the IdP's SCIM app) must present in the Authorization header to push users and groups to Bifrost. Normally minted in the dashboard (Governance -> User Provisioning) and shown once, but may be seeded here for declarative/GitOps deployments; supports the env. prefix for environment-variable references. Generate one with: openssl rand -base64 32 | tr '+/' '-_' | tr -d '='"
     }
   }
 }

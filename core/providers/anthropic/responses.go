@@ -68,6 +68,7 @@ type AnthropicResponsesStreamState struct {
 	TextContentIndices        map[int]bool                      // Tracks which content indices are text blocks
 	ReasoningContentIndices   map[int]bool                      // Tracks which content indices are reasoning blocks
 	TextBuffers               map[int]*strings.Builder          // Maps output_index to accumulated text content for done events
+	ReasoningTextBuffers      map[int]*strings.Builder          // Maps output_index to accumulated reasoning text for done events
 	CompactionContentIndices  map[int]*schemas.CacheControl     // Tracks pending compaction blocks with their cache control
 	CurrentOutputIndex        int                               // Current output index counter
 	MessageID                 *string                           // Message ID from message_start
@@ -149,6 +150,7 @@ var anthropicResponsesStreamStatePool = sync.Pool{
 			CompactionContentIndices:  make(map[int]*schemas.CacheControl),
 			OutputItems:               make(map[int]*schemas.ResponsesMessage),
 			TextBuffers:               make(map[int]*strings.Builder),
+			ReasoningTextBuffers:      make(map[int]*strings.Builder),
 			CurrentOutputIndex:        0,
 			CreatedAt:                 int(time.Now().Unix()),
 			HasEmittedCreated:         false,
@@ -343,6 +345,11 @@ func AcquireAnthropicResponsesStreamState() *AnthropicResponsesStreamState {
 	} else {
 		clear(state.TextBuffers)
 	}
+	if state.ReasoningTextBuffers == nil {
+		state.ReasoningTextBuffers = make(map[int]*strings.Builder)
+	} else {
+		clear(state.ReasoningTextBuffers)
+	}
 	if state.CompactionContentIndices == nil {
 		state.CompactionContentIndices = make(map[int]*schemas.CacheControl)
 	} else {
@@ -436,6 +443,7 @@ func (state *AnthropicResponsesStreamState) flush() {
 	state.TextContentIndices = nil
 	state.ReasoningContentIndices = nil
 	state.TextBuffers = nil
+	state.ReasoningTextBuffers = nil
 	state.CompactionContentIndices = nil
 	state.OutputItems = nil
 	state.CurrentOutputIndex = 0
@@ -1191,6 +1199,12 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 					state.ReasoningContentIndices[*chunk.Index] = true
 				}
 
+				// Persist into OutputItems so content_block_stop can fold the
+				// accumulated text and signature into the matching output_item.done
+				// and response.completed carries the completed reasoning item.
+				itemCopy := *item
+				state.OutputItems[outputIndex] = &itemCopy
+
 				var responses []*schemas.BifrostResponsesStreamResponse
 
 				// Emit output_item.added
@@ -1395,6 +1409,16 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 			case AnthropicStreamDeltaTypeThinking:
 				// Reasoning/thinking content delta
 				if chunk.Delta.Thinking != nil && *chunk.Delta.Thinking != "" {
+					// Accumulate the text so content_block_stop can emit it on
+					// reasoning_summary_text.done and the completed reasoning item
+					if state.ReasoningTextBuffers == nil {
+						state.ReasoningTextBuffers = make(map[int]*strings.Builder)
+					}
+					if state.ReasoningTextBuffers[outputIndex] == nil {
+						state.ReasoningTextBuffers[outputIndex] = &strings.Builder{}
+					}
+					state.ReasoningTextBuffers[outputIndex].WriteString(*chunk.Delta.Thinking)
+
 					itemID := state.ItemIDs[outputIndex]
 					response := &schemas.BifrostResponsesStreamResponse{
 						Type:           schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta,
@@ -1958,26 +1982,64 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 
 				// Check if this content index is a reasoning block
 				if state.ReasoningContentIndices[*chunk.Index] {
-					// Emit reasoning_summary_text.done (reasoning equivalent of output_text.done)
-					emptyText := ""
+					// Capture the accumulated reasoning text and signature
+					accReasoning := ""
+					if buf := state.ReasoningTextBuffers[outputIndex]; buf != nil {
+						accReasoning = buf.String()
+						delete(state.ReasoningTextBuffers, outputIndex)
+					}
+					var signature *string
+					if sig, ok := state.ReasoningSignatures[outputIndex]; ok && sig != "" {
+						sigCopy := sig
+						signature = &sigCopy
+						delete(state.ReasoningSignatures, outputIndex)
+					}
+
+					// Fold them into the stored item with the same shape the
+					// non-streaming converter produces (a reasoning_text content
+					// block carrying text + signature), so output_item.done and
+					// response.completed carry a replayable reasoning item.
+					if storedItem, exists := state.OutputItems[outputIndex]; exists {
+						textCopy := accReasoning
+						storedItem.Content = &schemas.ResponsesMessageContent{
+							ContentBlocks: []schemas.ResponsesMessageContentBlock{
+								{
+									Type:      schemas.ResponsesOutputMessageContentTypeReasoning,
+									Text:      &textCopy,
+									Signature: signature,
+								},
+							},
+						}
+						storedItem.ResponsesReasoning = nil
+					}
+
+					// Emit reasoning_summary_text.done (reasoning equivalent of
+					// output_text.done) with the full accumulated text
+					doneText := accReasoning
 					reasoningDoneResponse := &schemas.BifrostResponsesStreamResponse{
 						Type:           schemas.ResponsesStreamResponseTypeReasoningSummaryTextDone,
 						SequenceNumber: sequenceNumber + len(responses),
 						OutputIndex:    schemas.Ptr(outputIndex),
 						ContentIndex:   chunk.Index,
-						Text:           &emptyText,
+						Text:           &doneText,
 					}
 					if itemID != "" {
 						reasoningDoneResponse.ItemID = &itemID
 					}
 					responses = append(responses, reasoningDoneResponse)
 
-					// Emit content_part.done for reasoning
+					// Emit content_part.done for reasoning with the completed part
+					partText := accReasoning
 					partDoneResponse := &schemas.BifrostResponsesStreamResponse{
 						Type:           schemas.ResponsesStreamResponseTypeContentPartDone,
 						SequenceNumber: sequenceNumber + len(responses),
 						OutputIndex:    schemas.Ptr(outputIndex),
 						ContentIndex:   chunk.Index,
+						Part: &schemas.ResponsesMessageContentBlock{
+							Type:      schemas.ResponsesOutputMessageContentTypeReasoning,
+							Text:      &partText,
+							Signature: signature,
+						},
 					}
 					if itemID != "" {
 						partDoneResponse.ItemID = &itemID
@@ -5690,10 +5752,16 @@ func convertBifrostReasoningToAnthropicThinking(msg *schemas.ResponsesMessage) [
 	if msg.Content != nil && msg.Content.ContentBlocks != nil {
 		for _, block := range msg.Content.ContentBlocks {
 			if block.Type == schemas.ResponsesOutputMessageContentTypeReasoning && block.Text != nil {
+				// signature is required by the Agent SDK; converted (non-Anthropic) reasoning
+				// has none, so default to empty rather than omitting the field.
+				signature := block.Signature
+				if signature == nil {
+					signature = schemas.Ptr("")
+				}
 				thinkingBlock := AnthropicContentBlock{
 					Type:      AnthropicContentBlockTypeThinking,
 					Thinking:  block.Text,
-					Signature: block.Signature,
+					Signature: signature,
 				}
 				thinkingBlocks = append(thinkingBlocks, thinkingBlock)
 			}
@@ -5707,8 +5775,9 @@ func convertBifrostReasoningToAnthropicThinking(msg *schemas.ResponsesMessage) [
 		if len(msg.ResponsesReasoning.Summary) > 0 {
 			for _, reasoningContent := range msg.ResponsesReasoning.Summary {
 				thinkingBlock := AnthropicContentBlock{
-					Type:     AnthropicContentBlockTypeThinking,
-					Thinking: &reasoningContent.Text,
+					Type:      AnthropicContentBlockTypeThinking,
+					Thinking:  &reasoningContent.Text,
+					Signature: schemas.Ptr(""), // required by the Agent SDK; converted reasoning has no signature
 				}
 				thinkingBlocks = append(thinkingBlocks, thinkingBlock)
 			}

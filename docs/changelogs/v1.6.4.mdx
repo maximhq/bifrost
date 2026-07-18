@@ -24,7 +24,6 @@ description: "v1.6.4 changelog - 2026-07-14"
 - **Bedrock Project Scoping** - Added optional `project_id` to Bedrock and Bedrock Mantle key configs with per-alias overrides for Bedrock, Bedrock Mantle, and Vertex, plus UI support
 - **Trace Redaction** - Phase-scoped redaction and revealing, transient redaction data field for guardrails, and trace content redaction before connector export
 - **Durable Background Jobs** - New `sidekiq` background-job table, store methods, and runner with recovery and reaper; cost recalculation migrated to a durable, resumable job with polling instead of SSE
-- **Audit Log Object Storage** - S3/GCS object storage config schema for audit log archival
 - **Alerting Configuration** - Alerting schema in `config.schema.json` with declarative channels and CEL-based rules, Helm chart support, and enterprise fallback pages
 - **Model Catalog Pricing** - Added pricing data to the model catalog (thanks [@johnbrett](https://github.com/johnbrett)!)
 - **Canonical Model Names** - Dashboard model rankings now show canonical model names instead of inference-profile IDs (thanks [@satyamkrishna](https://github.com/satyamkrishna)!)
@@ -106,7 +105,7 @@ description: "v1.6.4 changelog - 2026-07-14"
 - [#5113](https://github.com/maximhq/bifrost/issues/5113) - Gemini/Vertex streaming stops emitting web_search_call items after first grounded request
 
 </Update>
-<Update label="Core" description="1.6.4">
+<Update label="Core" description="1.7.1">
 - feat: add Sarvam AI provider with chat, text-to-speech, and speech-to-text support (thanks [@Purvi09](https://github.com/Purvi09)!)
 - feat: add ElevenLabs sound effects (text-to-sound) support (thanks [@SecretSun](https://github.com/SecretSun)!)
 - feat: add `ProjectID` to Bedrock and Bedrock Mantle key configs with per-alias overrides for Bedrock, Bedrock Mantle, and Vertex
@@ -149,7 +148,7 @@ description: "v1.6.4 changelog - 2026-07-14"
 - chore: upgrade ClickHouse client library
 
 </Update>
-<Update label="Framework" description="1.4.4">
+<Update label="Framework" description="1.5.1">
 - feat: add durable background-job `sidekiq` table, store methods, and runner with recovery and reaper
 - feat: pass created-by user ID and runner ID through sidekiq job lifecycle, add `GetInFlightSidekiqJobByKind` to config store interface
 - feat: show canonical model names in dashboard model rankings (thanks [@satyamkrishna](https://github.com/satyamkrishna)!)
@@ -168,58 +167,58 @@ description: "v1.6.4 changelog - 2026-07-14"
 - chore: upgrade ClickHouse client library
 
 </Update>
-<Update label="compat" description="0.1.26">
-- chore: upgraded core to v1.6.4 and framework to v1.4.4
+<Update label="compat" description="0.1.27">
+- chore: upgraded core to v1.7.1 and framework to v1.5.1
 
 </Update>
-<Update label="governance" description="1.6.4">
+<Update label="governance" description="1.6.5">
 - fix: parallelize resting-budget flows only when absolutely required to reduce lock contention
 - fix: add guards against invalid rate-limit reset timeouts
 - fix: calendar-based alignment qualifier for budget periods
 - fix: attribute passthrough virtual keys sent via Azure api-key header (thanks [@eyeveil](https://github.com/eyeveil)!)
-- chore: upgraded core to v1.6.4 and framework to v1.4.4
+- chore: upgraded core to v1.7.1 and framework to v1.5.1
 
 </Update>
-<Update label="jsonparser" description="1.5.27">
-- chore: upgraded core to v1.6.4 and framework to v1.4.4
+<Update label="jsonparser" description="1.5.28">
+- chore: upgraded core to v1.7.1 and framework to v1.5.1
 
 </Update>
-<Update label="logging" description="1.5.27">
+<Update label="logging" description="1.6.1">
 - feat: migrate cost recalculation to durable background sidekiq job with resume and dedup
 - feat: redact trace content before connector export
 - fix: match model filter on canonical_model_name and restore routing info for cost recalculation
-- chore: upgraded core to v1.6.4 and framework to v1.4.4
+- chore: upgraded core to v1.7.1 and framework to v1.5.1
 
 </Update>
-<Update label="maxim" description="1.6.27">
-- chore: upgraded core to v1.6.4 and framework to v1.4.4
+<Update label="maxim" description="1.6.28">
+- chore: upgraded core to v1.7.1 and framework to v1.5.1
 
 </Update>
-<Update label="mocker" description="1.5.27">
-- chore: upgraded core to v1.6.4 and framework to v1.4.4
+<Update label="mocker" description="1.5.28">
+- chore: upgraded core to v1.7.1 and framework to v1.5.1
 
 </Update>
-<Update label="modelcatalogresolver" description="1.0.8">
-- chore: upgraded core to v1.6.4 and framework to v1.4.4
+<Update label="modelcatalogresolver" description="1.0.9">
+- chore: upgraded core to v1.7.1 and framework to v1.5.1
 
 </Update>
-<Update label="otel" description="1.3.4">
+<Update label="otel" description="1.4.0">
 - fix: send status code on OTEL metrics
-- chore: upgraded core to v1.6.4 and framework to v1.4.4
+- chore: upgraded core to v1.7.1 and framework to v1.5.1
 
 </Update>
-<Update label="prompts" description="1.0.27">
-- chore: upgraded core to v1.6.4 and framework to v1.4.4
+<Update label="prompts" description="1.0.28">
+- chore: upgraded core to v1.7.1 and framework to v1.5.1
 
 </Update>
-<Update label="semanticcache" description="1.5.27">
-- chore: upgraded core to v1.6.4 and framework to v1.4.4
+<Update label="semanticcache" description="1.5.28">
+- chore: upgraded core to v1.7.1 and framework to v1.5.1
 
 </Update>
-<Update label="telemetry" description="1.5.27">
+<Update label="telemetry" description="1.5.28">
 - feat: add missing connector attributes
 - fix: reduce metrics cardinality explosion risk
 - fix: forward request id and trace id through telemetry
-- chore: upgraded core to v1.6.4 and framework to v1.4.4
+- chore: upgraded core to v1.7.1 and framework to v1.5.1
 
 </Update>
