@@ -1150,6 +1150,16 @@ func isRawPreservedItem(t string) bool {
 // silently drops the item mid-stream and hangs streaming clients. We shadow
 // `arguments` as raw JSON, decode everything else as usual, then store the
 // canonical stringified form.
+//
+// It also reconstructs Action for mcp_approval_request items. Unlike
+// local_shell_call's "exec" sub-action or web_search_call's "search"/
+// "open_page"/"find" sub-actions, which genuinely nest under an "action" key,
+// mcp_approval_request is a top-level item type: its id/type/name/
+// server_label/arguments sit directly on the item. Action's own struct tag
+// (`json:"action,omitempty"`) only ever fires on a literal nested "action"
+// object, so it never fires for mcp_approval_request — Action (and the
+// server_label living inside it, which OpenAI requires on replay) stayed
+// permanently nil.
 func (m *ResponsesMessage) UnmarshalJSON(data []byte) error {
 	// Clear the receiver first so a reused instance never retains a stale
 	// rawPreserved (or other fields) from a prior decode — unmarshalling a
@@ -1169,7 +1179,8 @@ func (m *ResponsesMessage) UnmarshalJSON(data []byte) error {
 
 	type Alias ResponsesMessage
 	aux := &struct {
-		Arguments json.RawMessage `json:"arguments,omitempty"`
+		Arguments   json.RawMessage `json:"arguments,omitempty"`
+		ServerLabel *string         `json:"server_label,omitempty"`
 		*Alias
 	}{
 		Alias: (*Alias)(m),
@@ -1180,6 +1191,30 @@ func (m *ResponsesMessage) UnmarshalJSON(data []byte) error {
 	}
 
 	m.setToolArguments(aux.Arguments)
+
+	if m.Type != nil && *m.Type == ResponsesMessageTypeMCPApprovalRequest {
+		action := &ResponsesMCPApprovalRequestAction{
+			Type: string(*m.Type),
+		}
+		if m.ID != nil {
+			action.ID = *m.ID
+		}
+		if m.ResponsesToolMessage != nil && m.ResponsesToolMessage.Name != nil {
+			action.Name = *m.ResponsesToolMessage.Name
+		}
+		if m.ResponsesToolMessage != nil && m.ResponsesToolMessage.Arguments != nil {
+			action.Arguments = *m.ResponsesToolMessage.Arguments
+		}
+		if aux.ServerLabel != nil {
+			action.ServerLabel = *aux.ServerLabel
+		}
+		if m.ResponsesToolMessage == nil {
+			m.ResponsesToolMessage = &ResponsesToolMessage{}
+		}
+		m.ResponsesToolMessage.Action = &ResponsesToolMessageActionStruct{
+			ResponsesMCPApprovalRequestAction: action,
+		}
+	}
 
 	return nil
 }
@@ -1200,14 +1235,55 @@ func (m *ResponsesMessage) setToolArguments(raw json.RawMessage) {
 }
 
 // MarshalJSON re-emits preserved tool_search items verbatim and defers every
-// other item type to the default (sorted-key) struct encoding.
-
+// other item type to the default (sorted-key) struct encoding — except
+// mcp_approval_request, whose Action is suppressed from the embedded struct
+// (it isn't a real nested "action" object on the wire — see UnmarshalJSON)
+// and whose name/server_label/arguments are re-injected as top-level fields
+// instead.
 func (m ResponsesMessage) MarshalJSON() ([]byte, error) {
 	if m.rawPreserved != nil {
 		return m.rawPreserved, nil
 	}
+
 	type alias ResponsesMessage
-	return MarshalSorted(alias(m))
+
+	isMCPApprovalRequest := m.Type != nil && *m.Type == ResponsesMessageTypeMCPApprovalRequest
+	if !isMCPApprovalRequest || m.ResponsesToolMessage == nil || m.ResponsesToolMessage.Action == nil ||
+		m.ResponsesToolMessage.Action.ResponsesMCPApprovalRequestAction == nil {
+		return MarshalSorted(alias(m))
+	}
+
+	action := m.ResponsesToolMessage.Action.ResponsesMCPApprovalRequestAction
+
+	clone := m
+	toolCopy := *clone.ResponsesToolMessage
+	toolCopy.Action = nil
+	if action.Name != "" {
+		toolCopy.Name = &action.Name
+	}
+	if action.Arguments != "" {
+		toolCopy.Arguments = &action.Arguments
+	}
+	clone.ResponsesToolMessage = &toolCopy
+
+	// omitempty on a *string only omits a nil pointer, not a pointer to an
+	// empty string — only take the address when server_label is actually
+	// set, or a response that never had it would gain a spurious
+	// "server_label":"" on remarshal.
+	var serverLabel *string
+	if action.ServerLabel != "" {
+		serverLabel = &action.ServerLabel
+	}
+
+	aux := struct {
+		ServerLabel *string `json:"server_label,omitempty"`
+		*alias
+	}{
+		ServerLabel: serverLabel,
+		alias:       (*alias)(&clone),
+	}
+
+	return MarshalSorted(aux)
 }
 
 // responsesToolArgumentsToString normalizes a function/tool-call `arguments`

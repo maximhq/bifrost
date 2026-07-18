@@ -322,6 +322,74 @@ func TestResponsesMessagePreservesOpenAIPhase(t *testing.T) {
 	}
 }
 
+// TestResponsesMessageMCPApprovalRequestRoundTrip guards against Action (and
+// the server_label it carries) never populating for mcp_approval_request
+// items. Unlike local_shell_call's "exec" sub-action, mcp_approval_request's
+// id/type/name/server_label/arguments sit directly on the item rather than
+// nested under an "action" key, so Action's own struct tag never fires for
+// it — Action stayed permanently nil, silently breaking any consumer that
+// reads Action.ResponsesMCPApprovalRequestAction, and dropping server_label
+// (required by OpenAI on replay) entirely.
+func TestResponsesMessageMCPApprovalRequestRoundTrip(t *testing.T) {
+	raw := []byte(`{"id":"mcpr_1","type":"mcp_approval_request","name":"ask_question","server_label":"deepwiki","arguments":"{}"}`)
+
+	var msg ResponsesMessage
+	if err := Unmarshal(raw, &msg); err != nil {
+		t.Fatalf("unmarshal responses message: %v", err)
+	}
+
+	if msg.ResponsesToolMessage == nil || msg.ResponsesToolMessage.Action == nil ||
+		msg.ResponsesToolMessage.Action.ResponsesMCPApprovalRequestAction == nil {
+		t.Fatalf("expected Action.ResponsesMCPApprovalRequestAction to be populated")
+	}
+	action := msg.ResponsesToolMessage.Action.ResponsesMCPApprovalRequestAction
+	if action.ServerLabel != "deepwiki" {
+		t.Fatalf("expected server_label to survive unmarshal, got %q", action.ServerLabel)
+	}
+	if action.Name != "ask_question" {
+		t.Fatalf("expected name to survive unmarshal, got %q", action.Name)
+	}
+	if action.ID != "mcpr_1" {
+		t.Fatalf("expected id to survive unmarshal, got %q", action.ID)
+	}
+
+	encoded, err := MarshalSorted(msg)
+	if err != nil {
+		t.Fatalf("marshal responses message: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"server_label":"deepwiki"`) {
+		t.Fatalf("expected encoded message to contain server_label, got %s", encoded)
+	}
+	if !strings.Contains(string(encoded), `"name":"ask_question"`) {
+		t.Fatalf("expected encoded message to contain name, got %s", encoded)
+	}
+	if strings.Contains(string(encoded), `"action"`) {
+		t.Fatalf("expected no spurious nested action object, got %s", encoded)
+	}
+}
+
+// TestResponsesMessageMCPApprovalRequestNoSpuriousServerLabel guards against
+// server_label:"" appearing on remarshal for an mcp_approval_request item
+// that never had it. omitempty on a *string only omits a nil pointer, not a
+// pointer to an empty string, so always taking &action.ServerLabel would
+// inject a field that wasn't in the original input.
+func TestResponsesMessageMCPApprovalRequestNoSpuriousServerLabel(t *testing.T) {
+	raw := []byte(`{"id":"mcpr_1","type":"mcp_approval_request","name":"ask_question","arguments":"{}"}`)
+
+	var msg ResponsesMessage
+	if err := Unmarshal(raw, &msg); err != nil {
+		t.Fatalf("unmarshal responses message: %v", err)
+	}
+
+	encoded, err := MarshalSorted(msg)
+	if err != nil {
+		t.Fatalf("marshal responses message: %v", err)
+	}
+	if strings.Contains(string(encoded), `"server_label"`) {
+		t.Fatalf("expected no spurious server_label field, got %s", encoded)
+	}
+}
+
 // TestWithDefaultsStripsCodeExecutionCarry verifies that WithDefaults() (the
 // normalized provider-format converters, e.g. openai/v1/responses) drops the
 // Anthropic-only code-execution fidelity carry while keeping the neutral
