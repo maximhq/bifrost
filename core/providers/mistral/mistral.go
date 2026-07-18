@@ -663,28 +663,28 @@ func (provider *MistralProvider) OCR(ctx *schemas.BifrostContext, key schemas.Ke
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
 	defer wait()
 	if bifrostErr != nil {
-		return nil, bifrostErr
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, requestBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, providerUtils.SetErrorLatency(ParseMistralError(resp), latency)
+		return nil, providerUtils.EnrichError(ctx, ParseMistralError(resp), requestBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	responseBody, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), requestBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	// Check for empty response
 	trimmed := strings.TrimSpace(string(responseBody))
 	if len(trimmed) == 0 {
-		return nil, &schemas.BifrostError{
+		return nil, providerUtils.EnrichError(ctx, &schemas.BifrostError{
 			IsBifrostError: true,
 			Error: &schemas.ErrorField{
 				Message: schemas.ErrProviderResponseEmpty,
 			},
-		}
+		}, requestBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	copiedResponseBody := append([]byte(nil), responseBody...)
@@ -693,29 +693,34 @@ func (provider *MistralProvider) OCR(ctx *schemas.BifrostContext, key schemas.Ke
 	var mistralResponse MistralOCRResponse
 	if err := sonic.Unmarshal(copiedResponseBody, &mistralResponse); err != nil {
 		if providerUtils.IsHTMLResponse(resp, copiedResponseBody) {
-			return nil, &schemas.BifrostError{
+			return nil, providerUtils.EnrichError(ctx, &schemas.BifrostError{
 				IsBifrostError: false,
 				Error: &schemas.ErrorField{
 					Message: schemas.ErrProviderResponseHTML,
 					Error:   errors.New(string(copiedResponseBody)),
 				},
-			}
+			}, requestBody, copiedResponseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		}
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err), requestBody, copiedResponseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	// Convert to Bifrost format
 	response := mistralResponse.ToBifrostOCRResponse()
 	if response == nil {
-		return nil, providerUtils.NewBifrostOperationError("failed to convert ocr response", nil)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("failed to convert ocr response", nil), requestBody, copiedResponseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	// Set extra fields
 	response.ExtraFields.Latency = latency.Milliseconds()
 
+	// Set raw request if enabled
+	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+		providerUtils.ParseAndSetRawRequest(&response.ExtraFields, requestBody)
+	}
+
 	// Set raw response if enabled
 	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
-		var rawResponse interface{}
+		var rawResponse any
 		if err := sonic.Unmarshal(copiedResponseBody, &rawResponse); err == nil {
 			response.ExtraFields.RawResponse = rawResponse
 		}
