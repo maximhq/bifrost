@@ -2468,6 +2468,65 @@
                       }
                     }
                   ]
+                },
+                {
+                  "name": "DeepSeek (2 latest)",
+                  "item": [
+                    {
+                      "name": "deepseek/deepseek-v4-flash",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello\"\n    }\n  ]\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/v1/chat/completions",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "v1",
+                            "chat",
+                            "completions"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "name": "deepseek/deepseek-v4-pro",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"model\": \"deepseek/deepseek-v4-pro\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello\"\n    }\n  ]\n}"
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/v1/chat/completions",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "v1",
+                            "chat",
+                            "completions"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               ]
             },
@@ -2864,6 +2923,32 @@
                       ]
                     }
                   }
+                },
+                {
+                  "name": "deepseek/deepseek-v4-flash",
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"input\": \"Hello\"\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/v1/responses",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "v1",
+                        "responses"
+                      ]
+                    }
+                  }
                 }
               ]
             },
@@ -3192,6 +3277,34 @@
                     "body": {
                       "mode": "raw",
                       "raw": "{\n  \"model\": \"azure/gpt-4o\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }]\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/openai/v1/chat/completions",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "openai",
+                        "v1",
+                        "chat",
+                        "completions"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "name": "deepseek/deepseek-v4-flash",
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello\"\n    }\n  ]\n}"
                     },
                     "url": {
                       "raw": "{{baseUrl}}/openai/v1/chat/completions",
@@ -3866,6 +3979,33 @@
                       ]
                     }
                   }
+                },
+                {
+                  "name": "deepseek/deepseek-v4-flash",
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"max_tokens\": 800,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello\"\n    }\n  ]\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/anthropic/v1/messages",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "anthropic",
+                        "v1",
+                        "messages"
+                      ]
+                    }
+                  }
                 }
               ]
             },
@@ -4386,6 +4526,33 @@
                       ]
                     }
                   }
+                },
+                {
+                  "name": "deepseek/deepseek-v4-flash",
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Count to 5\"\n    }\n  ],\n  \"stream\": true\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/v1/chat/completions",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "v1",
+                        "chat",
+                        "completions"
+                      ]
+                    }
+                  }
                 }
               ]
             },
@@ -4588,6 +4755,32 @@
                     "body": {
                       "mode": "raw",
                       "raw": "{\n  \"model\": \"xai/grok-4-0709\",\n  \"input\": \"Count to 5\",\n  \"stream\": true\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/v1/responses",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "v1",
+                        "responses"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "name": "deepseek/deepseek-v4-flash",
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"input\": \"Count to 5\",\n  \"stream\": true\n}"
                     },
                     "url": {
                       "raw": "{{baseUrl}}/v1/responses",
@@ -6801,6 +6994,33 @@
                   }
                 },
                 {
+                  "name": "8.6.1.A native chat → deepseek/deepseek-v4-flash",
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What's the weather in SF?\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get current weather\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ]\n        }\n      }\n    }\n  ]\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/v1/chat/completions",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "v1",
+                        "chat",
+                        "completions"
+                      ]
+                    }
+                  }
+                },
+                {
                   "name": "8.6.1.A native chat → anthropic/claude-haiku-4-5",
                   "request": {
                     "method": "POST",
@@ -7489,6 +7709,33 @@
                     "body": {
                       "mode": "raw",
                       "raw": "{\n  \"model\": \"openai/o3-mini\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"What is 17 * 23? Think step by step.\" }],\n  \"reasoning_effort\": \"low\"\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/v1/chat/completions",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "v1",
+                        "chat",
+                        "completions"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "name": "8.6.4.A native chat → deepseek/deepseek-v4-pro (reasoning_effort max)",
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"model\": \"deepseek/deepseek-v4-pro\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is 17 * 23? Think step by step.\"\n    }\n  ],\n  \"reasoning_effort\": \"max\"\n}"
                     },
                     "url": {
                       "raw": "{{baseUrl}}/v1/chat/completions",
@@ -10257,6 +10504,119 @@
               }
             }
           ]
+        },
+        {
+          "name": "DeepSeek Features",
+          "item": [
+            {
+              "name": "Function calling (custom tool)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What's the weather in Tokyo?\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get current weather for a city\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ]\n        }\n      }\n    }\n  ]\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/chat/completions",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "chat",
+                    "completions"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "Streaming (SSE)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Count from 1 to 10.\"\n    }\n  ],\n  \"stream\": true\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/chat/completions",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "chat",
+                    "completions"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "Reasoning effort (deepseek-v4-pro)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"deepseek/deepseek-v4-pro\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is 17 * 23? Think step by step.\"\n    }\n  ],\n  \"reasoning_effort\": \"max\"\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/chat/completions",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "chat",
+                    "completions"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "System message + multi-turn",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are a pirate. Respond in pirate speak.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello, what time is it?\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"Arrr, the sun be high in the sky, matey!\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Now tell me a joke.\"\n    }\n  ]\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/chat/completions",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "chat",
+                    "completions"
+                  ]
+                }
+              }
+            }
+          ]
         }
       ]
     },
@@ -10737,6 +11097,44 @@
                   ]
                 }
               }
+            },
+            {
+              "name": "deepseek/deepseek-v4-flash",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if (pm.response.code < 400) { pm.test('Function call: get_weather invoked with city argument', function () { var j = pm.response.json(); var tc = null; if (j.choices && j.choices[0] && j.choices[0].message && Array.isArray(j.choices[0].message.tool_calls) && j.choices[0].message.tool_calls.length) { tc = j.choices[0].message.tool_calls[0]; } pm.expect(tc, 'no tool_calls in response').to.not.be.null; pm.expect(tc.function && tc.function.name).to.equal('get_weather'); var a; try { a = JSON.parse(tc.function.arguments); } catch (e) { pm.expect.fail('arguments not JSON: ' + e.message); return; } pm.expect(a).to.have.property('city').that.is.a('string'); }); }"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Weather in Lagos, Nigeria?\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ]\n        }\n      }\n    }\n  ]\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/chat/completions",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "chat",
+                    "completions"
+                  ]
+                }
+              }
             }
           ]
         },
@@ -10882,6 +11280,33 @@
                 "body": {
                   "mode": "raw",
                   "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"messages\": [{\"role\":\"user\",\"content\":\"Count 1-5.\"}],\n  \"stream\": true\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/chat/completions",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "chat",
+                    "completions"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "deepseek/deepseek-v4-flash",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Count 1-5.\"\n    }\n  ],\n  \"stream\": true\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/v1/chat/completions",
@@ -40087,6 +40512,218 @@
                   "    pm.expect(parsed.parts[k].type, 'wrong anyOf branch selected, output: ' + outputText).to.eql('text');",
                   "  }",
                   "  pm.expect(outputText.indexOf('cite:web'), 'fabricated citation in output: ' + outputText).to.eql(-1);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "25. DeepSeek Anthropic-Compatible Migration",
+      "description": "DeepSeek Chat Completions and the Responses API now route to DeepSeek's Anthropic-compatible endpoint (/anthropic/v1/messages, authenticated with x-api-key) instead of the OpenAI-compatible /chat/completions endpoint. Responses no longer falls back to ChatCompletion+ToBifrostResponsesResponse conversion - it calls the Anthropic Responses handler directly. The migration also enables correct multiple-tool-call handling for DeepSeek (previously limited on the OpenAI-compatible path). These cases pin: (1) basic chat completions still work end-to-end through the new endpoint, non-streaming and streaming, (2) a single turn can request two independent tools and get both tool calls back, and (3) the native /v1/responses route (no chat-completion fallback) works independently.",
+      "item": [
+        {
+          "name": "deepseek/deepseek-v4-flash chat completions (non-streaming)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hello in exactly one word.\"\n    }\n  ],\n  \"max_tokens\": 50\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('deepseek anthropic-compatible chat completions: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "pm.test('deepseek anthropic-compatible chat completions: content non-empty', function () {",
+                  "  var msg = pm.response.json().choices[0].message;",
+                  "  pm.expect(msg.content, 'empty content: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "deepseek/deepseek-v4-flash chat completions streaming (SSE)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hello in exactly one word.\"\n    }\n  ],\n  \"stream\": true,\n  \"max_tokens\": 300\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('deepseek anthropic-compatible streaming: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var content = '';",
+                  "var finished = false;",
+                  "pm.response.text().split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var payload = line.slice(5).trim();",
+                  "  if (!payload || payload === '[DONE]') { return; }",
+                  "  var chunk;",
+                  "  try { chunk = JSON.parse(payload); } catch (e) { return; }",
+                  "  var choice = chunk.choices && chunk.choices[0];",
+                  "  if (!choice) { return; }",
+                  "  if (choice.finish_reason) { finished = true; }",
+                  "  if (choice.delta && choice.delta.content) { content += choice.delta.content; }",
+                  "});",
+                  "pm.test('deepseek anthropic-compatible streaming: stream reached finish_reason', function () {",
+                  "  pm.expect(finished, 'no finish_reason in stream: ' + pm.response.text()).to.be.true;",
+                  "});",
+                  "pm.test('deepseek anthropic-compatible streaming: content accumulated', function () {",
+                  "  pm.expect(content.length, 'no content in any delta: ' + pm.response.text()).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "deepseek/deepseek-v4-flash multiple tool calls in one turn",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"I need to know the weather in London and also calculate 15 * 23. Can you help with both in a single request?\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get the current weather in a given location\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"location\": {\n              \"type\": \"string\",\n              \"description\": \"The city, e.g. London\"\n            }\n          },\n          \"required\": [\n            \"location\"\n          ]\n        }\n      }\n    },\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"calculate\",\n        \"description\": \"Perform basic mathematical calculations\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"expression\": {\n              \"type\": \"string\",\n              \"description\": \"The mathematical expression to evaluate, e.g. '2 + 3'\"\n            }\n          },\n          \"required\": [\n            \"expression\"\n          ]\n        }\n      }\n    }\n  ],\n  \"max_tokens\": 512\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('deepseek multiple tool calls: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var msg = pm.response.json().choices[0].message;",
+                  "pm.test('deepseek multiple tool calls: both tools called in a single turn', function () {",
+                  "  pm.expect(msg.tool_calls, 'no tool_calls: ' + pm.response.text()).to.be.an('array');",
+                  "  pm.expect(msg.tool_calls.length, 'expected at least 2 tool calls: ' + pm.response.text()).to.be.at.least(2);",
+                  "  var names = msg.tool_calls.map(function (tc) { return tc.function.name; });",
+                  "  pm.expect(names).to.include('get_weather');",
+                  "  pm.expect(names).to.include('calculate');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "deepseek/deepseek-v4-flash native Responses API (non-streaming)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"input\": \"Say hello in exactly one word.\",\n  \"max_output_tokens\": 50\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('deepseek native responses (no chat-completion fallback): 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var j = pm.response.json();",
+                  "var output = j.output || [];",
+                  "var msg = output.find(function (o) { return o.type === 'message'; });",
+                  "pm.test('deepseek native responses: message output present with text', function () {",
+                  "  pm.expect(msg, 'no message output item: ' + pm.response.text()).to.exist;",
+                  "  var hasText = (msg.content || []).some(function (c) { return c.type === 'output_text' && c.text && c.text.length > 0; });",
+                  "  pm.expect(hasText, 'message should contain non-empty output_text: ' + pm.response.text()).to.be.true;",
                   "});"
                 ]
               }
