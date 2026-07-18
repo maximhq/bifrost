@@ -569,7 +569,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 										// Parse provider/model from fallback string
 										const parts = fallback.split("/");
 										const fbProvider = parts[0] || "";
-										const fbModel = parts[1] || "";
+										const fbModel = parts.slice(1).join("/");
 
 										const handleProviderChange = (newProvider: string) => {
 											const model = fbModel || "";
