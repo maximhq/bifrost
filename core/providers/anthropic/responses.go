@@ -3736,6 +3736,13 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 				anthropicReq.ToolChoice = anthropicToolChoice
 			}
 		}
+
+		// DeepSeek rejects a forced tool_choice while thinking is on. Force thinking
+		// off when tool_choice pins a specific tool.
+		if bifrostReq.Provider == schemas.DeepSeek && anthropicReq.ToolChoice != nil &&
+			anthropicReq.ToolChoice.Type == "tool" {
+			anthropicReq.Thinking = &AnthropicThinking{Type: "disabled"}
+		}
 	}
 
 	if bifrostReq.Input != nil {

@@ -420,7 +420,7 @@
           "$ref": "#/$defs/provider"
         },
         "deepseek": {
-          "$ref": "#/$defs/provider"
+          "$ref": "#/$defs/provider_with_deepseek_config"
         },
         "vllm": {
           "$ref": "#/$defs/provider_with_vllm_config"
@@ -429,7 +429,7 @@
           "$ref": "#/$defs/provider"
         },
         "fireworks": {
-          "$ref": "#/$defs/provider"
+          "$ref": "#/$defs/provider_with_fireworks_config"
         },
         "nebius": {
           "$ref": "#/$defs/provider"
@@ -3813,6 +3813,10 @@
                   "use_deployments_endpoint": {
                     "type": "boolean",
                     "description": "Replicate: use the deployments endpoint instead of the predictions endpoint for this alias."
+                  },
+                  "use_anthropic_endpoints": {
+                    "type": "boolean",
+                    "description": "Routes chat completions and responses requests through Anthropic-compatible endpoints."
                   }
                 },
                 "required": ["model_id"],
@@ -3995,6 +3999,11 @@
               },
               "required": ["url", "model_name"],
               "additionalProperties": false
+            },
+            "use_anthropic_endpoints": {
+              "type": "boolean",
+              "description": "Routes chat completions and responses requests through Anthropic-compatible endpoints.",
+              "default": false
             }
           },
           "required": ["vllm_key_config"]
@@ -4067,9 +4076,48 @@
               },
               "required": ["url"],
               "additionalProperties": false
+            },
+            "use_anthropic_endpoints": {
+              "type": "boolean",
+              "description": "Routes chat completions and responses requests through Anthropic-compatible endpoints.",
+              "default": false
             }
           },
           "required": ["sgl_key_config"]
+        }
+      ]
+    },
+    "deepseek_key": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base_key"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "use_anthropic_endpoints": {
+              "type": "boolean",
+              "description": "Routes chat completions and responses requests through Anthropic-compatible endpoints.",
+              "default": false
+            }
+          }
+        }
+      ]
+    },
+    "fireworks_key": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base_key"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "use_anthropic_endpoints": {
+              "type": "boolean",
+              "description": "Routes chat completions and responses requests through Anthropic-compatible endpoints.",
+              "default": false
+            }
+          }
         }
       ]
     },
@@ -4511,6 +4559,84 @@
           "$ref": "#/$defs/custom_provider_config"
         }
       },
+      "additionalProperties": false
+    },
+    "provider_with_deepseek_config": {
+      "type": "object",
+      "properties": {
+        "keys": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/deepseek_key"
+          },
+          "minItems": 1,
+          "description": "API keys for this provider"
+        },
+        "network_config": {
+          "$ref": "#/$defs/network_config"
+        },
+        "concurrency_and_buffer_size": {
+          "$ref": "#/$defs/concurrency_and_buffer_size"
+        },
+        "proxy_config": {
+          "$ref": "#/$defs/proxy_config"
+        },
+        "send_back_raw_request": {
+          "type": "boolean",
+          "description": "Include raw request in BifrostResponse (default: false)"
+        },
+        "send_back_raw_response": {
+          "type": "boolean",
+          "description": "Include raw response in BifrostResponse (default: false)"
+        },
+        "store_raw_request_response": {
+          "type": "boolean",
+          "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
+        },
+        "custom_provider_config": {
+          "$ref": "#/$defs/custom_provider_config"
+        }
+      },
+      "required": ["keys"],
+      "additionalProperties": false
+    },
+    "provider_with_fireworks_config": {
+      "type": "object",
+      "properties": {
+        "keys": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/fireworks_key"
+          },
+          "minItems": 1,
+          "description": "API keys for this provider"
+        },
+        "network_config": {
+          "$ref": "#/$defs/network_config"
+        },
+        "concurrency_and_buffer_size": {
+          "$ref": "#/$defs/concurrency_and_buffer_size"
+        },
+        "proxy_config": {
+          "$ref": "#/$defs/proxy_config"
+        },
+        "send_back_raw_request": {
+          "type": "boolean",
+          "description": "Include raw request in BifrostResponse (default: false)"
+        },
+        "send_back_raw_response": {
+          "type": "boolean",
+          "description": "Include raw response in BifrostResponse (default: false)"
+        },
+        "store_raw_request_response": {
+          "type": "boolean",
+          "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
+        },
+        "custom_provider_config": {
+          "$ref": "#/$defs/custom_provider_config"
+        }
+      },
+      "required": ["keys"],
       "additionalProperties": false
     },
     "mcp_client_config": {

@@ -84,6 +84,10 @@ type TableKey struct {
 	// Batch API configuration
 	UseForBatchAPI *bool `gorm:"default:false" json:"use_for_batch_api,omitempty"` // Whether this key can be used for batch API operations
 
+	// UseAnthropicEndpoints routes inference through the provider's Anthropic-compatible
+	// endpoints instead of its OpenAI-compatible ones.
+	UseAnthropicEndpoints *bool `gorm:"default:false" json:"use_anthropic_endpoints,omitempty"`
+
 	Status      string `gorm:"type:varchar(50);default:'unknown'" json:"status"`
 	Description string `gorm:"type:text" json:"description,omitempty"`
 
@@ -135,6 +139,10 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 	if k.UseForBatchAPI == nil {
 		useForBatchAPI := false // DB default
 		k.UseForBatchAPI = &useForBatchAPI
+	}
+	if k.UseAnthropicEndpoints == nil {
+		useAnthropicEndpoints := false // DB default
+		k.UseAnthropicEndpoints = &useAnthropicEndpoints
 	}
 	// IMPORTANT: All *SecretVar fields assigned from provider config structs (AzureKeyConfig,
 	// VertexKeyConfig, BedrockKeyConfig) MUST be value-copied before assignment. The caller
@@ -655,6 +663,10 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 	if k.UseForBatchAPI == nil {
 		useForBatchAPI := false // DB default
 		k.UseForBatchAPI = &useForBatchAPI
+	}
+	if k.UseAnthropicEndpoints == nil {
+		useAnthropicEndpoints := false // DB default
+		k.UseAnthropicEndpoints = &useAnthropicEndpoints
 	}
 	// Reconstruct Azure config if fields are present
 	if k.AzureEndpoint != nil || k.AzureClientID != nil || k.AzureClientSecret != nil || k.AzureTenantID != nil || (k.AzureScopesJSON != nil && *k.AzureScopesJSON != "") {

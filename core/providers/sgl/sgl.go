@@ -7,11 +7,16 @@ import (
 	"strings"
 	"time"
 
+	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/openai"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
+
+// sglAnthropicVersion is the Anthropic API version sent as the "anthropic-version" header on
+// SGLang's Anthropic-compatible endpoint.
+const sglAnthropicVersion = "2023-06-01"
 
 // SGLProvider implements the Provider interface for SGL's API.
 type SGLProvider struct {
@@ -80,6 +85,13 @@ func (provider *SGLProvider) getBaseURL(key schemas.Key) string {
 	return ""
 }
 
+// anthropicHeaders builds the auth and version headers for SGL's Anthropic-compatible endpoint.
+func anthropicHeaders(key schemas.Key) map[string]string {
+	headers := openai.BearerAuthHeader(key)
+	headers["anthropic-version"] = sglAnthropicVersion
+	return headers
+}
+
 // baseURLOrError returns the resolved base URL or a BifrostError when none is configured.
 func (provider *SGLProvider) baseURLOrError(key schemas.Key) (string, *schemas.BifrostError) {
 	u := provider.getBaseURL(key)
@@ -124,7 +136,10 @@ func (provider *SGLProvider) ListModels(ctx *schemas.BifrostContext, keys []sche
 	)
 }
 
-// TextCompletion performs a text completion request to the SGL API.
+// TextCompletion performs a text completion request to the SGL API. UseAnthropicEndpoints has
+// no effect here: Anthropic's legacy text-completions surface has no reusable shared handler
+// and SGLang's Anthropic-compatible layer doesn't expose one either, so this always uses the
+// OpenAI-compatible /v1/completions endpoint.
 func (provider *SGLProvider) TextCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (*schemas.BifrostTextCompletionResponse, *schemas.BifrostError) {
 	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 	baseURL, bifrostErr := provider.baseURLOrError(key)
@@ -176,13 +191,35 @@ func (provider *SGLProvider) TextCompletionStream(ctx *schemas.BifrostContext, p
 	)
 }
 
-// ChatCompletion performs a chat completion request to the SGL API.
+// ChatCompletion performs a chat completion request to the SGL API. When the key (or the
+// resolved alias) has UseAnthropicEndpoints set, the request is routed through SGLang's
+// Anthropic-compatible Messages endpoint instead of its OpenAI-compatible one.
 func (provider *SGLProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 	baseURL, bifrostErr := provider.baseURLOrError(key)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
+
+	if anthropic.ResolveUseAnthropicEndpoints(ctx, key) {
+		return anthropic.HandleAnthropicChatCompletionRequest(
+			ctx,
+			provider.client,
+			baseURL+providerUtils.GetPathFromContext(ctx, "/v1/messages"),
+			request,
+			anthropic.AnthropicRequestBuildConfig{
+				Provider:                  provider.GetProviderKey(),
+				BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
+				ShouldSendBackRawRequest:  provider.sendBackRawRequest,
+				ShouldSendBackRawResponse: provider.sendBackRawResponse,
+			},
+			anthropicHeaders(key),
+			provider.networkConfig.ExtraHeaders,
+			nil,
+			provider.logger,
+		)
+	}
+
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
 		provider.client,
@@ -210,6 +247,39 @@ func (provider *SGLProvider) ChatCompletionStream(ctx *schemas.BifrostContext, p
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
+
+	if anthropic.ResolveUseAnthropicEndpoints(ctx, key) {
+		url := baseURL + providerUtils.GetPathFromContext(ctx, "/v1/messages")
+		jsonData, bifrostErr := anthropic.BuildAnthropicChatRequestBody(ctx, request, anthropic.AnthropicRequestBuildConfig{
+			Provider:                  provider.GetProviderKey(),
+			IsStreaming:               true,
+			BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
+			ShouldSendBackRawRequest:  provider.sendBackRawRequest,
+			ShouldSendBackRawResponse: provider.sendBackRawResponse,
+		})
+		if bifrostErr != nil {
+			return nil, bifrostErr
+		}
+		return anthropic.HandleAnthropicChatCompletionStreaming(
+			ctx,
+			provider.streamingClient,
+			url,
+			jsonData,
+			anthropicHeaders(key),
+			provider.networkConfig.ExtraHeaders,
+			provider.networkConfig.StreamIdleTimeoutInSeconds,
+			provider.networkConfig.BetaHeaderOverrides,
+			providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+			providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+			provider.GetProviderKey(),
+			postHookRunner,
+			nil,
+			nil,
+			provider.logger,
+			postHookSpanFinalizer,
+		)
+	}
+
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
 		provider.streamingClient,
@@ -233,8 +303,36 @@ func (provider *SGLProvider) ChatCompletionStream(ctx *schemas.BifrostContext, p
 	)
 }
 
-// Responses performs a responses request to the SGL API.
+// Responses performs a responses request to the SGL API. When the key (or the resolved alias)
+// has UseAnthropicEndpoints set, the request is routed through SGLang's Anthropic-compatible
+// Messages endpoint directly (rather than falling back through ChatCompletion), since the
+// Anthropic responses handler operates on the Responses-shaped request natively.
 func (provider *SGLProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+	if anthropic.ResolveUseAnthropicEndpoints(ctx, key) {
+		ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+		baseURL, bifrostErr := provider.baseURLOrError(key)
+		if bifrostErr != nil {
+			return nil, bifrostErr
+		}
+		return anthropic.HandleAnthropicResponsesRequest(
+			ctx,
+			provider.client,
+			baseURL+providerUtils.GetPathFromContext(ctx, "/v1/messages"),
+			request,
+			anthropic.AnthropicRequestBuildConfig{
+				Provider:                  provider.GetProviderKey(),
+				ValidateTools:             true,
+				BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
+				ShouldSendBackRawRequest:  provider.sendBackRawRequest,
+				ShouldSendBackRawResponse: provider.sendBackRawResponse,
+			},
+			anthropicHeaders(key),
+			provider.networkConfig.ExtraHeaders,
+			nil,
+			provider.logger,
+		)
+	}
+
 	chatResponse, err := provider.ChatCompletion(ctx, key, request.ToChatRequest())
 	if err != nil {
 		return nil, err
@@ -247,6 +345,44 @@ func (provider *SGLProvider) Responses(ctx *schemas.BifrostContext, key schemas.
 
 // ResponsesStream performs a streaming responses request to the SGL API.
 func (provider *SGLProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	if anthropic.ResolveUseAnthropicEndpoints(ctx, key) {
+		ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+		baseURL, bifrostErr := provider.baseURLOrError(key)
+		if bifrostErr != nil {
+			return nil, bifrostErr
+		}
+		url := baseURL + providerUtils.GetPathFromContext(ctx, "/v1/messages")
+		jsonData, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, request, anthropic.AnthropicRequestBuildConfig{
+			Provider:                  provider.GetProviderKey(),
+			IsStreaming:               true,
+			ValidateTools:             true,
+			BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
+			ShouldSendBackRawRequest:  provider.sendBackRawRequest,
+			ShouldSendBackRawResponse: provider.sendBackRawResponse,
+		})
+		if bifrostErr != nil {
+			return nil, bifrostErr
+		}
+		return anthropic.HandleAnthropicResponsesStream(
+			ctx,
+			provider.streamingClient,
+			url,
+			jsonData,
+			anthropicHeaders(key),
+			provider.networkConfig.ExtraHeaders,
+			provider.networkConfig.StreamIdleTimeoutInSeconds,
+			provider.networkConfig.BetaHeaderOverrides,
+			providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+			providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+			provider.GetProviderKey(),
+			postHookRunner,
+			nil,
+			nil,
+			provider.logger,
+			postHookSpanFinalizer,
+		)
+	}
+
 	ctx.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
 	return provider.ChatCompletionStream(
 		ctx,
@@ -418,9 +554,29 @@ func (provider *SGLProvider) BatchResults(_ *schemas.BifrostContext, _ []schemas
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchResultsRequest, provider.GetProviderKey())
 }
 
-// CountTokens is not supported by the SGL provider.
-func (provider *SGLProvider) CountTokens(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostResponsesRequest) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.CountTokensRequest, provider.GetProviderKey())
+// CountTokens counts tokens for a request against SGLang's Anthropic-compatible messages endpoint.
+func (provider *SGLProvider) CountTokens(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
+	baseURL, bifrostErr := provider.baseURLOrError(key)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	return anthropic.HandleAnthropicCountTokensRequest(
+		ctx,
+		provider.client,
+		baseURL+providerUtils.GetPathFromContext(ctx, "/v1/messages/count_tokens"),
+		request,
+		anthropic.AnthropicRequestBuildConfig{
+			Provider:                  provider.GetProviderKey(),
+			ValidateTools:             true,
+			BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
+			ShouldSendBackRawRequest:  provider.sendBackRawRequest,
+			ShouldSendBackRawResponse: provider.sendBackRawResponse,
+		},
+		anthropicHeaders(key),
+		provider.networkConfig.ExtraHeaders,
+		provider.logger,
+	)
 }
 
 // Compaction is not supported by the SGL provider.
