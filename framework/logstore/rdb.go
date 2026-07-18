@@ -3117,13 +3117,13 @@ func (s *RDBLogStore) buildProviderLatencyHistogramResult(computedBuckets map[in
 // GetDimensionCostHistogram returns time-bucketed cost data grouped by the specified dimension.
 // Uses the mv_logs_hourly materialized view on PostgreSQL when eligible; falls back to raw queries otherwise.
 func (s *RDBLogStore) GetDimensionCostHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64, dimension HistogramDimension) (*DimensionCostHistogramResult, error) {
-	if !ValidHistogramDimensions[dimension] {
+	dimCol, ok := histogramDimensionColumn(dimension)
+	if !ok {
 		return nil, fmt.Errorf("invalid histogram dimension: %s", dimension)
 	}
 	if bucketSizeSeconds <= 0 {
 		bucketSizeSeconds = 3600
 	}
-	dimCol := string(dimension)
 	dialect := s.db.Dialector.Name()
 	// Rollup dimensions (team / business unit / customer / user / virtual key)
 	// attribute each request to a single owner and bucket owner-less traffic as
@@ -3218,13 +3218,13 @@ func (s *RDBLogStore) GetDimensionCostHistogram(ctx context.Context, filters Sea
 // GetDimensionTokenHistogram returns time-bucketed token usage grouped by the specified dimension.
 // Uses the mv_logs_hourly materialized view on PostgreSQL when eligible; falls back to raw queries otherwise.
 func (s *RDBLogStore) GetDimensionTokenHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64, dimension HistogramDimension) (*DimensionTokenHistogramResult, error) {
-	if !ValidHistogramDimensions[dimension] {
+	dimCol, ok := histogramDimensionColumn(dimension)
+	if !ok {
 		return nil, fmt.Errorf("invalid histogram dimension: %s", dimension)
 	}
 	if bucketSizeSeconds <= 0 {
 		bucketSizeSeconds = 3600
 	}
-	dimCol := string(dimension)
 	dialect := s.db.Dialector.Name()
 	// Internal org-rollup dimensions (team / business unit / customer) attribute
 	// each request to a single owner and bucket owner-less traffic as
@@ -3339,7 +3339,8 @@ func (s *RDBLogStore) GetDimensionTokenHistogram(ctx context.Context, filters Se
 // Uses the mv_logs_hourly materialized view on PostgreSQL when eligible; falls back to raw queries otherwise.
 // The fallback path computes AVG latency only (no percentiles) since percentile_cont is Postgres-specific.
 func (s *RDBLogStore) GetDimensionLatencyHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64, dimension HistogramDimension) (*DimensionLatencyHistogramResult, error) {
-	if !ValidHistogramDimensions[dimension] {
+	dimCol, ok := histogramDimensionColumn(dimension)
+	if !ok {
 		return nil, fmt.Errorf("invalid histogram dimension: %s", dimension)
 	}
 	if bucketSizeSeconds <= 0 {
@@ -3348,7 +3349,6 @@ func (s *RDBLogStore) GetDimensionLatencyHistogram(ctx context.Context, filters 
 	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 {
 		return s.getDimensionLatencyHistogramFromMatView(ctx, filters, bucketSizeSeconds, dimension)
 	}
-	dimCol := string(dimension)
 	dialect := s.db.Dialector.Name()
 	baseQuery := s.ScopedDB(ctx).Model(&Log{})
 	baseQuery = s.applyFilters(baseQuery, filters)
