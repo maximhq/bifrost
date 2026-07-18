@@ -880,6 +880,11 @@ func TestEscapeSearchValue(t *testing.T) {
 			value:    "модель-テスト",
 			expected: `модель\-テスト`,
 		},
+		{
+			name:     "malformed utf-8 bytes preserved",
+			value:    "a\xffb",
+			expected: "a\xffb",
+		},
 	}
 
 	for _, tt := range tests {

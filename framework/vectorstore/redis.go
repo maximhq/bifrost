@@ -13,7 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode"
+	"unicode/utf8"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/redis/go-redis/v9"
@@ -1563,16 +1563,19 @@ func (s *RedisStore) RequiresVectors() bool {
 // instead of enumerating specials: an unescaped character either fails the
 // query with a syntax error (e.g. ":" in "gemma31b-q6:latest") or silently
 // matches nothing (e.g. "/" in "openai/gpt-4o").
+// Iterates bytes, not runes, so non-ASCII and even malformed UTF-8 pass
+// through byte-for-byte, matching the raw bytes Redis stored.
 func escapeSearchValue(value string) string {
 	var b strings.Builder
 	b.Grow(len(value) * 2)
-	for _, r := range value {
-		isSafe := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
-			(r >= '0' && r <= '9') || r == '_' || r > unicode.MaxASCII
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		isSafe := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') || c == '_' || c >= utf8.RuneSelf
 		if !isSafe {
 			b.WriteByte('\\')
 		}
-		b.WriteRune(r)
+		b.WriteByte(c)
 	}
 	return b.String()
 }
