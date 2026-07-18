@@ -2272,6 +2272,20 @@ func TestTracingMiddleware_SetsCorrelationHeaders(t *testing.T) {
 		}
 	})
 
+	t.Run("replaces all-zero caller request id", func(t *testing.T) {
+		ctx := newCtx()
+		ctx.Request.Header.Set("x-request-id", "00000000000000000000000000000000")
+		mw(func(*fasthttp.RequestCtx) {})(ctx)
+
+		got := string(ctx.Response.Header.Peek("x-request-id"))
+		if got == "" || got == "00000000000000000000000000000000" {
+			t.Fatalf("x-request-id was not normalized: %q", got)
+		}
+		if downstream := string(ctx.Request.Header.Peek("x-request-id")); downstream != got {
+			t.Fatalf("downstream x-request-id = %q, response = %q", downstream, got)
+		}
+	})
+
 	t.Run("headers survive the error path", func(t *testing.T) {
 		ctx := newCtx()
 		mw(func(c *fasthttp.RequestCtx) {

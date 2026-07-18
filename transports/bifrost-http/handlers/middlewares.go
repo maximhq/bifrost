@@ -13,7 +13,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/google/uuid"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
@@ -1204,12 +1203,10 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 				next(ctx)
 				return
 			}
-			requestID := string(ctx.Request.Header.Peek("x-request-id"))
-			if requestID == "" {
-				requestID = uuid.New().String()
-				// Injecting this back to be picked up by the next middleware
-				ctx.Request.Header.Set("x-request-id", requestID)
-			}
+			requestID := lib.NormalizeRequestID(string(ctx.Request.Header.Peek("x-request-id")))
+			// Inject the normalized ID back so every downstream middleware sees
+			// the same value, including when the caller sent an all-zero sentinel.
+			ctx.Request.Header.Set("x-request-id", requestID)
 			// Extract trace ID from W3C traceparent header (if present)
 			// This is the 32-char trace ID that links all spans in a distributed trace
 			inheritedTraceID := tracing.ExtractParentID(&ctx.Request.Header)
