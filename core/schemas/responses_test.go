@@ -322,6 +322,100 @@ func TestResponsesMessagePreservesOpenAIPhase(t *testing.T) {
 	}
 }
 
+// TestResponsesMessageMCPListToolsServerLabelRoundTrip guards against
+// server_label (and tools) being dropped for mcp_list_tools items.
+// ResponsesMCPListTools sits behind two levels of anonymous pointer embedding
+// (ResponsesMessage -> *ResponsesToolMessage -> *ResponsesMCPListTools), which
+// neither Unmarshal nor Marshal auto-vivifies/promotes through, so both fields
+// were silently dropped in both directions.
+func TestResponsesMessageMCPListToolsServerLabelRoundTrip(t *testing.T) {
+	raw := []byte(`{"id":"mcpl_1","type":"mcp_list_tools","server_label":"deepwiki","tools":[{"name":"ask_question","input_schema":{"type":"object"},"description":"d"}]}`)
+
+	var msg ResponsesMessage
+	if err := Unmarshal(raw, &msg); err != nil {
+		t.Fatalf("unmarshal responses message: %v", err)
+	}
+
+	if msg.ResponsesToolMessage == nil || msg.ResponsesToolMessage.ResponsesMCPListTools == nil {
+		t.Fatalf("expected ResponsesMCPListTools to be populated")
+	}
+	if got := msg.ResponsesToolMessage.ResponsesMCPListTools.ServerLabel; got != "deepwiki" {
+		t.Fatalf("expected server_label to survive unmarshal, got %q", got)
+	}
+	if len(msg.ResponsesToolMessage.ResponsesMCPListTools.Tools) != 1 {
+		t.Fatalf("expected tools to survive unmarshal, got %#v", msg.ResponsesToolMessage.ResponsesMCPListTools.Tools)
+	}
+
+	encoded, err := MarshalSorted(msg)
+	if err != nil {
+		t.Fatalf("marshal responses message: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"server_label":"deepwiki"`) {
+		t.Fatalf("expected encoded message to contain server_label, got %s", encoded)
+	}
+	if !strings.Contains(string(encoded), `"ask_question"`) {
+		t.Fatalf("expected encoded message to contain tools, got %s", encoded)
+	}
+}
+
+// TestResponsesMessageMCPListToolsEmptyToolsPreserved guards against an
+// explicit empty tools: [] collapsing into an omitted field on remarshal.
+// OpenAI's mcp_list_tools schema requires tools to be present even when a
+// server exposes zero tools, so "absent" and "present but empty" must stay
+// distinguishable.
+func TestResponsesMessageMCPListToolsEmptyToolsPreserved(t *testing.T) {
+	raw := []byte(`{"id":"mcpl_1","type":"mcp_list_tools","server_label":"empty-server","tools":[]}`)
+
+	var msg ResponsesMessage
+	if err := Unmarshal(raw, &msg); err != nil {
+		t.Fatalf("unmarshal responses message: %v", err)
+	}
+
+	if msg.ResponsesToolMessage == nil || msg.ResponsesToolMessage.ResponsesMCPListTools == nil {
+		t.Fatalf("expected ResponsesMCPListTools to be populated")
+	}
+	if msg.ResponsesToolMessage.ResponsesMCPListTools.Tools == nil {
+		t.Fatalf("expected tools to unmarshal to a non-nil empty slice, got nil")
+	}
+
+	encoded, err := MarshalSorted(msg)
+	if err != nil {
+		t.Fatalf("marshal responses message: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"tools":[]`) {
+		t.Fatalf("expected encoded message to preserve explicit empty tools array, got %s", encoded)
+	}
+}
+
+// TestResponsesMessageMCPCallServerLabelRoundTrip guards against server_label
+// being dropped for mcp_call items — same doubly-nested-embedding cause as
+// mcp_list_tools, but for ResponsesMCPToolCall. OpenAI requires server_label
+// on these items; a dropped value causes a 400 the moment a client replays
+// this history back on a follow-up turn.
+func TestResponsesMessageMCPCallServerLabelRoundTrip(t *testing.T) {
+	raw := []byte(`{"id":"mcp_1","type":"mcp_call","call_id":"call_1","name":"ask_question","server_label":"deepwiki","arguments":"{}"}`)
+
+	var msg ResponsesMessage
+	if err := Unmarshal(raw, &msg); err != nil {
+		t.Fatalf("unmarshal responses message: %v", err)
+	}
+
+	if msg.ResponsesToolMessage == nil || msg.ResponsesToolMessage.ResponsesMCPToolCall == nil {
+		t.Fatalf("expected ResponsesMCPToolCall to be populated")
+	}
+	if got := msg.ResponsesToolMessage.ResponsesMCPToolCall.ServerLabel; got != "deepwiki" {
+		t.Fatalf("expected server_label to survive unmarshal, got %q", got)
+	}
+
+	encoded, err := MarshalSorted(msg)
+	if err != nil {
+		t.Fatalf("marshal responses message: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"server_label":"deepwiki"`) {
+		t.Fatalf("expected encoded message to contain server_label, got %s", encoded)
+	}
+}
+
 // TestWithDefaultsStripsCodeExecutionCarry verifies that WithDefaults() (the
 // normalized provider-format converters, e.g. openai/v1/responses) drops the
 // Anthropic-only code-execution fidelity carry while keeping the neutral

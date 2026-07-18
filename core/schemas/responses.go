@@ -1150,6 +1150,15 @@ func isRawPreservedItem(t string) bool {
 // silently drops the item mid-stream and hangs streaming clients. We shadow
 // `arguments` as raw JSON, decode everything else as usual, then store the
 // canonical stringified form.
+//
+// It also shadows `server_label` and `tools` for mcp_list_tools/mcp_call:
+// ResponsesMCPListTools and ResponsesMCPToolCall sit behind two levels of
+// anonymous pointer embedding (ResponsesMessage -> *ResponsesToolMessage ->
+// *ResponsesMCPListTools / *ResponsesMCPToolCall), and the JSON decoder does
+// not auto-allocate through more than one level of embedded pointer. Left to
+// struct tags alone, neither struct is ever reachable, so `server_label`
+// (required by OpenAI on any request that replays these items) and
+// mcp_list_tools' `tools` array are silently dropped.
 func (m *ResponsesMessage) UnmarshalJSON(data []byte) error {
 	// Clear the receiver first so a reused instance never retains a stale
 	// rawPreserved (or other fields) from a prior decode — unmarshalling a
@@ -1169,7 +1178,9 @@ func (m *ResponsesMessage) UnmarshalJSON(data []byte) error {
 
 	type Alias ResponsesMessage
 	aux := &struct {
-		Arguments json.RawMessage `json:"arguments,omitempty"`
+		Arguments   json.RawMessage `json:"arguments,omitempty"`
+		Tools       json.RawMessage `json:"tools,omitempty"`
+		ServerLabel *string         `json:"server_label,omitempty"`
 		*Alias
 	}{
 		Alias: (*Alias)(m),
@@ -1180,6 +1191,44 @@ func (m *ResponsesMessage) UnmarshalJSON(data []byte) error {
 	}
 
 	m.setToolArguments(aux.Arguments)
+
+	isMCPListTools := m.Type != nil && *m.Type == ResponsesMessageTypeMCPListTools
+	isMCPCall := m.Type != nil && *m.Type == ResponsesMessageTypeMCPCall
+
+	if isMCPListTools && len(aux.Tools) > 0 && string(aux.Tools) != "null" {
+		var tools []ResponsesMCPTool
+		if err := Unmarshal(aux.Tools, &tools); err != nil {
+			return fmt.Errorf("mcp_list_tools tools: %w", err)
+		}
+		if m.ResponsesToolMessage == nil {
+			m.ResponsesToolMessage = &ResponsesToolMessage{}
+		}
+		if m.ResponsesToolMessage.ResponsesMCPListTools == nil {
+			m.ResponsesToolMessage.ResponsesMCPListTools = &ResponsesMCPListTools{}
+		}
+		m.ResponsesToolMessage.ResponsesMCPListTools.Tools = tools
+	}
+
+	if aux.ServerLabel != nil {
+		switch {
+		case isMCPListTools:
+			if m.ResponsesToolMessage == nil {
+				m.ResponsesToolMessage = &ResponsesToolMessage{}
+			}
+			if m.ResponsesToolMessage.ResponsesMCPListTools == nil {
+				m.ResponsesToolMessage.ResponsesMCPListTools = &ResponsesMCPListTools{}
+			}
+			m.ResponsesToolMessage.ResponsesMCPListTools.ServerLabel = *aux.ServerLabel
+		case isMCPCall:
+			if m.ResponsesToolMessage == nil {
+				m.ResponsesToolMessage = &ResponsesToolMessage{}
+			}
+			if m.ResponsesToolMessage.ResponsesMCPToolCall == nil {
+				m.ResponsesToolMessage.ResponsesMCPToolCall = &ResponsesMCPToolCall{}
+			}
+			m.ResponsesToolMessage.ResponsesMCPToolCall.ServerLabel = *aux.ServerLabel
+		}
+	}
 
 	return nil
 }
@@ -1200,14 +1249,57 @@ func (m *ResponsesMessage) setToolArguments(raw json.RawMessage) {
 }
 
 // MarshalJSON re-emits preserved tool_search items verbatim and defers every
-// other item type to the default (sorted-key) struct encoding.
-
+// other item type to the default (sorted-key) struct encoding — except
+// mcp_list_tools/mcp_call, whose server_label (and mcp_list_tools' tools)
+// live behind the same doubly-nested embedding that UnmarshalJSON works
+// around, so they're re-injected here rather than left to struct tags.
 func (m ResponsesMessage) MarshalJSON() ([]byte, error) {
 	if m.rawPreserved != nil {
 		return m.rawPreserved, nil
 	}
+
 	type alias ResponsesMessage
-	return MarshalSorted(alias(m))
+
+	isMCPListTools := m.Type != nil && *m.Type == ResponsesMessageTypeMCPListTools
+	isMCPCall := m.Type != nil && *m.Type == ResponsesMessageTypeMCPCall
+
+	if (!isMCPListTools && !isMCPCall) || m.ResponsesToolMessage == nil {
+		return MarshalSorted(alias(m))
+	}
+
+	clone := m
+	toolCopy := *clone.ResponsesToolMessage
+	var toolsValue interface{}
+	var serverLabelValue *string
+
+	if isMCPListTools && m.ResponsesToolMessage.ResponsesMCPListTools != nil {
+		// Assign unconditionally (not just when non-empty) so an explicit
+		// empty tools: [] round-trips distinctly from an absent field —
+		// OpenAI's mcp_list_tools schema requires tools to be present, even
+		// when a server exposes zero tools.
+		tools := m.ResponsesToolMessage.ResponsesMCPListTools.Tools
+		if tools == nil {
+			tools = []ResponsesMCPTool{}
+		}
+		toolsValue = tools
+		serverLabelValue = &m.ResponsesToolMessage.ResponsesMCPListTools.ServerLabel
+	} else if isMCPCall && m.ResponsesToolMessage.ResponsesMCPToolCall != nil {
+		serverLabelValue = &m.ResponsesToolMessage.ResponsesMCPToolCall.ServerLabel
+	}
+
+	clone.ResponsesToolMessage = &toolCopy
+
+	aux := struct {
+		Tools       interface{} `json:"tools,omitempty"`
+		ServerLabel *string     `json:"server_label,omitempty"`
+		*alias
+	}{
+		Tools:       toolsValue,
+		ServerLabel: serverLabelValue,
+		alias:       (*alias)(&clone),
+	}
+
+	return MarshalSorted(aux)
 }
 
 // responsesToolArgumentsToString normalizes a function/tool-call `arguments`
