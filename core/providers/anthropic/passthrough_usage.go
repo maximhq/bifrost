@@ -69,6 +69,13 @@ func buildAnthropicPassthroughUsage(au *AnthropicUsage) *schemas.BifrostPassthro
 		}
 	}
 
+	if au.OutputTokensDetails != nil && au.OutputTokensDetails.ThinkingTokens > 0 {
+		if usage.CompletionTokensDetails == nil {
+			usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{}
+		}
+		usage.CompletionTokensDetails.ReasoningTokens = au.OutputTokensDetails.ThinkingTokens
+	}
+
 	u := &schemas.BifrostPassthroughUsage{LLMUsage: usage}
 	if au.ServiceTier != nil {
 		t := MapAnthropicServiceTierToBifrost(*au.ServiceTier)
@@ -137,6 +144,14 @@ func (a *AnthropicPassthroughStreamUsage) ObserveEvent(event []byte) *schemas.Bi
 		}
 		if u.ServerToolUse.WebSearchRequests > c.ServerToolUse.WebSearchRequests {
 			c.ServerToolUse.WebSearchRequests = u.ServerToolUse.WebSearchRequests
+		}
+	}
+	if u.OutputTokensDetails != nil {
+		if c.OutputTokensDetails == nil {
+			c.OutputTokensDetails = &AnthropicOutputTokensDetails{}
+		}
+		if u.OutputTokensDetails.ThinkingTokens > c.OutputTokensDetails.ThinkingTokens {
+			c.OutputTokensDetails.ThinkingTokens = u.OutputTokensDetails.ThinkingTokens
 		}
 	}
 	if u.ServiceTier != nil {

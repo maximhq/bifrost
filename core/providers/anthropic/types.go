@@ -1611,16 +1611,17 @@ type AnthropicTextResponse struct {
 type AnthropicUsage struct {
 	Type *string `json:"type,omitempty"`
 	// Unlike OpenAI models, Anthropic (claude) models separately track cache creation and cache read tokens, and its not included in the input_tokens field.
-	InputTokens              int                          `json:"input_tokens"`
-	CacheCreationInputTokens int                          `json:"cache_creation_input_tokens"`
-	CacheReadInputTokens     int                          `json:"cache_read_input_tokens"`
-	CacheCreation            AnthropicUsageCacheCreation  `json:"cache_creation"`
-	OutputTokens             int                          `json:"output_tokens"`
-	ServerToolUse            *AnthropicServerToolUseUsage `json:"server_tool_use,omitempty"` // Server tool use statistics (e.g., web search)
-	ServiceTier              *string                      `json:"service_tier,omitempty"`    // "standard", "priority", or "batch"
-	Speed                    *string                      `json:"speed,omitempty"`           // "fast" or "standard" — which speed was actually served (fast mode research preview)
-	InferenceGeo             *string                      `json:"inference_geo,omitempty"`   // the geographic region for inference processing. If not specified, the workspace's default_inference_geo is used.
-	Iterations               []AnthropicUsage             `json:"iterations,omitempty"`      // Iterations statistics
+	InputTokens              int                           `json:"input_tokens"`
+	CacheCreationInputTokens int                           `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int                           `json:"cache_read_input_tokens"`
+	CacheCreation            AnthropicUsageCacheCreation   `json:"cache_creation"`
+	OutputTokens             int                           `json:"output_tokens"`
+	ServerToolUse            *AnthropicServerToolUseUsage  `json:"server_tool_use,omitempty"`       // Server tool use statistics (e.g., web search)
+	ServiceTier              *string                       `json:"service_tier,omitempty"`          // "standard", "priority", or "batch"
+	Speed                    *string                       `json:"speed,omitempty"`                 // "fast" or "standard" — which speed was actually served (fast mode research preview)
+	InferenceGeo             *string                       `json:"inference_geo,omitempty"`         // the geographic region for inference processing. If not specified, the workspace's default_inference_geo is used.
+	Iterations               []AnthropicUsage              `json:"iterations,omitempty"`            // Iterations statistics
+	OutputTokensDetails      *AnthropicOutputTokensDetails `json:"output_tokens_details,omitempty"` // Breakdown of output tokens by category (e.g. thinking tokens)
 }
 
 // AnthropicServerToolUseUsage represents server tool use statistics in usage
@@ -1631,6 +1632,13 @@ type AnthropicServerToolUseUsage struct {
 type AnthropicUsageCacheCreation struct {
 	Ephemeral5mInputTokens int `json:"ephemeral_5m_input_tokens"`
 	Ephemeral1hInputTokens int `json:"ephemeral_1h_input_tokens"`
+}
+
+// AnthropicOutputTokensDetails represents a breakdown of output tokens by category.
+// output_tokens remains the inclusive, authoritative total; this is a read-only
+// decomposition for observability (e.g. how much was spent on internal reasoning).
+type AnthropicOutputTokensDetails struct {
+	ThinkingTokens int `json:"thinking_tokens"`
 }
 
 // ==================== STREAMING TYPES ====================

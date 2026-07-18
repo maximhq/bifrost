@@ -710,6 +710,20 @@ func accumulateAnthropicResponsesUsage(usage *schemas.ResponsesResponseUsage, bi
 			}
 		}
 	}
+	if usageToProcess.OutputTokensDetails != nil && usageToProcess.OutputTokensDetails.ThinkingTokens > 0 {
+		if usage.OutputTokensDetails == nil {
+			usage.OutputTokensDetails = &schemas.ResponsesResponseOutputTokens{}
+		}
+		if usageToProcess.OutputTokensDetails.ThinkingTokens > usage.OutputTokensDetails.ReasoningTokens {
+			usage.OutputTokensDetails.ReasoningTokens = usageToProcess.OutputTokensDetails.ThinkingTokens
+			if billedUsage != nil {
+				if billedUsage.CompletionTokensDetails == nil {
+					billedUsage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{}
+				}
+				billedUsage.CompletionTokensDetails.ReasoningTokens = usageToProcess.OutputTokensDetails.ThinkingTokens
+			}
+		}
+	}
 }
 
 // HandleAnthropicChatCompletionStreaming handles streaming for Anthropic-compatible APIs.
@@ -1022,6 +1036,14 @@ func HandleAnthropicChatCompletionStreaming(
 						if usageToProcess.CacheCreation.Ephemeral1hInputTokens > usage.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h {
 							usage.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h = usageToProcess.CacheCreation.Ephemeral1hInputTokens
 						}
+					}
+				}
+				if usageToProcess.OutputTokensDetails != nil && usageToProcess.OutputTokensDetails.ThinkingTokens > 0 {
+					if usage.CompletionTokensDetails == nil {
+						usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{}
+					}
+					if usageToProcess.OutputTokensDetails.ThinkingTokens > usage.CompletionTokensDetails.ReasoningTokens {
+						usage.CompletionTokensDetails.ReasoningTokens = usageToProcess.OutputTokensDetails.ThinkingTokens
 					}
 				}
 			}
