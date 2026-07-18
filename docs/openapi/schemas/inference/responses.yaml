@@ -97,7 +97,25 @@ ResponsesMessage:
     arguments:
       type: string
     output:
-      type: object
+      description: |
+        Tool call output. A plain string for function/custom/local-shell tool
+        outputs, an array of content blocks for structured function tool
+        outputs, or a computer-tool screenshot object for computer_call_output.
+      oneOf:
+        - type: string
+        - type: array
+          items:
+            $ref: '#/ResponsesMessageContentBlock'
+        - type: object
+          description: Computer tool call output (computer_screenshot).
+          properties:
+            type:
+              type: string
+              enum: [computer_screenshot]
+            file_id:
+              type: string
+            image_url:
+              type: string
     action:
       type: object
     error:
