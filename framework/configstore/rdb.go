@@ -152,6 +152,7 @@ func schemaKeyFromTableKey(dbKey tables.TableKey) schemas.Key {
 		Weight:                 getWeight(dbKey.Weight),
 		Enabled:                dbKey.Enabled,
 		UseForBatchAPI:         dbKey.UseForBatchAPI,
+		UseAnthropicEndpoints:  dbKey.UseAnthropicEndpoints,
 		AzureKeyConfig:         dbKey.AzureKeyConfig,
 		VertexKeyConfig:        dbKey.VertexKeyConfig,
 		BedrockKeyConfig:       dbKey.BedrockKeyConfig,
@@ -180,6 +181,7 @@ func tableKeyFromSchemaKey(provider tables.TableProvider, key schemas.Key) (tabl
 		Weight:                 &key.Weight,
 		Enabled:                key.Enabled,
 		UseForBatchAPI:         key.UseForBatchAPI,
+		UseAnthropicEndpoints:  key.UseAnthropicEndpoints,
 		AzureKeyConfig:         key.AzureKeyConfig,
 		VertexKeyConfig:        key.VertexKeyConfig,
 		BedrockKeyConfig:       key.BedrockKeyConfig,
@@ -717,6 +719,7 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 				Weight:                 &key.Weight,
 				Enabled:                key.Enabled,
 				UseForBatchAPI:         key.UseForBatchAPI,
+				UseAnthropicEndpoints:  key.UseAnthropicEndpoints,
 				AzureKeyConfig:         key.AzureKeyConfig,
 				VertexKeyConfig:        key.VertexKeyConfig,
 				BedrockKeyConfig:       key.BedrockKeyConfig,
@@ -947,6 +950,7 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 			Weight:                 &key.Weight,
 			Enabled:                key.Enabled,
 			UseForBatchAPI:         key.UseForBatchAPI,
+			UseAnthropicEndpoints:  key.UseAnthropicEndpoints,
 			AzureKeyConfig:         key.AzureKeyConfig,
 			VertexKeyConfig:        key.VertexKeyConfig,
 			BedrockKeyConfig:       key.BedrockKeyConfig,
@@ -1088,6 +1092,7 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 			Weight:                 &key.Weight,
 			Enabled:                key.Enabled,
 			UseForBatchAPI:         key.UseForBatchAPI,
+			UseAnthropicEndpoints:  key.UseAnthropicEndpoints,
 			AzureKeyConfig:         key.AzureKeyConfig,
 			VertexKeyConfig:        key.VertexKeyConfig,
 			BedrockKeyConfig:       key.BedrockKeyConfig,
@@ -1976,6 +1981,7 @@ func (s *RDBConfigStore) GetProtectedMCPLibrarySlugs(ctx context.Context) ([]str
 	}
 	return slugs, nil
 }
+
 func (s *RDBConfigStore) GetMCPClientByID(ctx context.Context, id string) (*tables.TableMCPClient, error) {
 	var mcpClient tables.TableMCPClient
 	if err := s.DB().WithContext(ctx).Where("client_id = ?", id).First(&mcpClient).Error; err != nil {
