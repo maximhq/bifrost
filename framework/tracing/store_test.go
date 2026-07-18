@@ -169,10 +169,10 @@ func TestStartChildSpan_WithExternalParentSpanID(t *testing.T) {
 		t.Errorf("root span.ParentID = %q, want external parent %q", rootSpan.ParentID, externalParentSpanID)
 	}
 
-	// span.TraceID is internal linkage to the store entry (the per-request key),
-	// not the W3C ID — exporters read the W3C ID from trace.TraceID.
-	if rootSpan.TraceID != traceID {
-		t.Errorf("root span.TraceID = %q, want store key %q", rootSpan.TraceID, traceID)
+	// Span.TraceID carries the exported W3C identity even though the store
+	// key returned by CreateTrace is a distinct per-request handle.
+	if rootSpan.TraceID != inheritedTraceID {
+		t.Errorf("root span.TraceID = %q, want inherited trace ID %q", rootSpan.TraceID, inheritedTraceID)
 	}
 }
 
