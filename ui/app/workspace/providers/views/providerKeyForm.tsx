@@ -9,7 +9,7 @@ import { modelProviderKeySchema } from "@/lib/types/schemas";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Save } from "lucide-react";
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { v4 as uuid } from "uuid";
@@ -34,8 +34,14 @@ export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: P
 	const [createProviderKey, { isLoading: isCreatingProviderKey }] = useCreateProviderKeyMutation();
 	const [updateProviderKey, { isLoading: isUpdatingProviderKey }] = useUpdateProviderKeyMutation();
 	const { data: keys = [] } = useGetProviderKeysQuery(provider.name);
-	const isEditing = keyId !== null;
-	const currentKey = keyId ? keys.find((k) => k.id === keyId) : undefined;
+	// When a new copilot key is auto-created mid-flow (after device-auth completes so the
+	// backend can populate the model catalog), the parent's `keyId` prop stays null but we
+	// track the freshly created id locally so subsequent saves go through the update path
+	// and the model picker can resolve the live catalog.
+	const [autoCreatedKeyId, setAutoCreatedKeyId] = useState<string | null>(null);
+	const effectiveKeyId = keyId ?? autoCreatedKeyId;
+	const isEditing = effectiveKeyId !== null;
+	const currentKey = effectiveKeyId ? keys.find((k) => k.id === effectiveKeyId) : undefined;
 
 	const form = useForm({
 		resolver: zodResolver(providerKeyFormSchema),
@@ -110,6 +116,8 @@ export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: P
 					provider: provider.name,
 					key,
 				});
+		// Used by submit error toast below — captured before async resolves.
+		const submittingAsEdit = isEditing;
 
 		mutation
 			.unwrap()
@@ -136,6 +144,9 @@ export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: P
 						providerName={provider.name}
 						baseProviderType={provider.custom_provider_config?.base_provider_type}
 						form={form}
+						keyId={effectiveKeyId}
+						createProviderKey={createProviderKey}
+						onAutoCreated={setAutoCreatedKeyId}
 					/>
 					{isEditing && currentKey?.config_hash && <ConfigSyncAlert className="mt-4" />}
 				</div>

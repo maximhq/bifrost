@@ -70,6 +70,7 @@ const (
 	Runway        ModelProvider = "runway"
 	Runware       ModelProvider = "runware"
 	Fireworks     ModelProvider = "fireworks"
+	Copilot       ModelProvider = "copilot"
 	Sarvam        ModelProvider = "sarvam"
 )
 
@@ -114,6 +115,7 @@ var StandardProviders = []ModelProvider{
 	Runway,
 	Runware,
 	Fireworks,
+	Copilot,
 	Sarvam,
 }
 
