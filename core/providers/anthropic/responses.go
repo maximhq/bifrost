@@ -7307,28 +7307,20 @@ func convertBifrostToolToAnthropic(model string, tool *schemas.ResponsesTool, pr
 	}
 
 	// Convert parameters and strict from ToolFunction
+	var params *schemas.ToolFunctionParameters
 	if tool.ResponsesToolFunction != nil {
 		anthropicTool.Strict = tool.ResponsesToolFunction.Strict
-	}
-	if tool.ResponsesToolFunction != nil && tool.ResponsesToolFunction.Parameters != nil {
-		anthropicTool.InputSchema = tool.ResponsesToolFunction.Parameters
-	} else {
-		// Anthropic requires input_schema for custom tools, provide empty object schema if missing
-		anthropicTool.InputSchema = &schemas.ToolFunctionParameters{
-			Type:       "object",
-			Properties: &schemas.OrderedMap{},
-		}
+		params = tool.ResponsesToolFunction.Parameters
 	}
 
-	// Normalize tool schema key ordering to ensure deterministic serialization.
+	// Apply Anthropic's required fallback and normalize tool schema key ordering
+	// to ensure deterministic serialization.
 	// Clients (e.g. Claude Agent SDK) may send non-deterministic property orderings
 	// across turns, which breaks Anthropic's prefix-based prompt caching since tool
 	// definitions are part of the serialized request prefix.
 	// Normalized() returns a shallow copy with sorted key slices, so the
 	// caller-owned tool.ResponsesToolFunction.Parameters is never mutated.
-	if anthropicTool.InputSchema != nil {
-		anthropicTool.InputSchema = anthropicTool.InputSchema.Normalized()
-	}
+	anthropicTool.InputSchema = normalizeAnthropicToolInputSchema(params)
 
 	if tool.CacheControl != nil {
 		anthropicTool.CacheControl = tool.CacheControl

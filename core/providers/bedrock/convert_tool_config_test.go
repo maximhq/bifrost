@@ -9,6 +9,50 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+func TestConvertToolConfig_RawParametersPassthrough(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{
+			name: "empty object uses Bedrock object fallback",
+			raw:  `{ }`,
+			want: `{"type":"object","properties":{}}`,
+		},
+		{
+			name: "populated schema remains raw",
+			raw:  `{"x-provider-key":{"enabled":true},"type":"object","properties":{"query":{"type":["string","null"]}}}`,
+			want: `{"x-provider-key":{"enabled":true},"type":"object","properties":{"query":{"type":["string","null"]}}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			toolParams, err := schemas.NewRawToolFunctionParameters([]byte(tt.raw))
+			if err != nil {
+				t.Fatalf("create raw tool parameters: %v", err)
+			}
+
+			cfg := convertToolConfig("global.anthropic.claude-sonnet-4-6", &schemas.ChatParameters{
+				Tools: []schemas.ChatTool{{
+					Type: schemas.ChatToolTypeFunction,
+					Function: &schemas.ChatToolFunction{
+						Name:       "search",
+						Parameters: toolParams,
+					},
+				}},
+			})
+			if cfg == nil || len(cfg.Tools) != 1 || cfg.Tools[0].ToolSpec == nil {
+				t.Fatalf("expected one converted function tool, got %+v", cfg)
+			}
+			if got := string(cfg.Tools[0].ToolSpec.InputSchema.JSON); got != tt.want {
+				t.Fatalf("unexpected Bedrock input schema:\n got: %s\nwant: %s", got, tt.want)
+			}
+		})
+	}
+}
+
 // TestConvertToolConfig_DropsServerToolsOnBedrock locks in the bug fix from
 // the user-reported repro: sending `web_search_20260209` via the OpenAI-
 // compatible /v1/chat/completions endpoint to Bedrock was producing a

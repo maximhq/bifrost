@@ -1023,6 +1023,112 @@ func TestToolFunctionParameters_ExplicitObjectSchemaPreserved(t *testing.T) {
 	assert.JSONEq(t, `{"type":"object","properties":{}}`, string(normalized))
 }
 
+func TestToolFunctionParameters_RawJSONPassthrough(t *testing.T) {
+	raw := []byte(`{"x-provider-key":{"enabled":true},"type":"object","properties":{"query":{"type":["string","null"]}}}`)
+	params, err := NewRawToolFunctionParameters(raw)
+	require.NoError(t, err)
+	require.True(t, params.HasRawJSON())
+	assert.Empty(t, params.Type, "raw construction must not materialize typed fields")
+	assert.Nil(t, params.Properties, "raw construction must not materialize ordered maps")
+
+	// The constructor owns its bytes so caller mutation cannot alter requests.
+	raw[2] = 'z'
+
+	marshaled, err := Marshal(params)
+	require.NoError(t, err)
+	assert.Equal(t, `{"x-provider-key":{"enabled":true},"type":"object","properties":{"query":{"type":["string","null"]}}}`, string(marshaled))
+
+	normalized, err := Marshal(params.Normalized())
+	require.NoError(t, err)
+	assert.Equal(t, string(marshaled), string(normalized))
+}
+
+func TestToolFunctionParameters_RawJSONValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		wantErr bool
+	}{
+		{name: "empty", input: "", wantErr: true},
+		{name: "whitespace", input: "  \n\t", wantErr: true},
+		{name: "invalid syntax", input: `{"type":"object"`, wantErr: true},
+		{name: "null", input: `null`, wantErr: true},
+		{name: "array", input: `[]`, wantErr: true},
+		{name: "number", input: `42`, wantErr: true},
+		{name: "string", input: `"object"`, wantErr: true},
+		{name: "boolean", input: `true`, wantErr: true},
+		{name: "string schema", input: `{"type":"string"}`, wantErr: true},
+		{name: "array schema", input: `{"type":"array"}`, wantErr: true},
+		{name: "union schema", input: `{"type":["object","null"]}`, wantErr: true},
+		{name: "non-string schema type", input: `{"type":42}`, wantErr: true},
+		{name: "enum schema without type", input: `{"enum":["a"]}`, wantErr: true},
+		{name: "properties schema without type", input: `{"properties":{"name":{"type":"string"}}}`, wantErr: true},
+		{name: "reference schema without type", input: `{"$ref":"#/$defs/arguments"}`, wantErr: true},
+		{name: "composition schema without type", input: `{"allOf":[{"type":"object"}]}`, wantErr: true},
+		{name: "empty object", input: `{}`},
+		{name: "object schema", input: `{"type":"object","properties":{}}`},
+		{name: "object with whitespace", input: `  {"type":"object"}  `},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			params, err := NewRawToolFunctionParameters([]byte(tt.input))
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Nil(t, params)
+				return
+			}
+
+			require.NoError(t, err)
+			require.NotNil(t, params)
+			assert.True(t, params.HasRawJSON())
+		})
+	}
+}
+
+func TestToolFunctionParameters_IsExplicitEmptyObject(t *testing.T) {
+	rawEmpty, err := NewRawToolFunctionParameters([]byte(`{ }`))
+	require.NoError(t, err)
+	rawPopulated, err := NewRawToolFunctionParameters([]byte(`{"type":"object"}`))
+	require.NoError(t, err)
+
+	var decodedEmpty ToolFunctionParameters
+	require.NoError(t, Unmarshal([]byte(`{}`), &decodedEmpty))
+
+	tests := []struct {
+		name   string
+		params *ToolFunctionParameters
+		want   bool
+	}{
+		{name: "nil", params: nil},
+		{name: "programmatic empty", params: &ToolFunctionParameters{}},
+		{name: "decoded empty", params: &decodedEmpty, want: true},
+		{name: "raw empty", params: rawEmpty, want: true},
+		{name: "raw populated", params: rawPopulated},
+		{name: "typed populated", params: &ToolFunctionParameters{Type: "object"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, tt.params.IsExplicitEmptyObject())
+		})
+	}
+}
+
+func TestToolFunctionParameters_RawJSONDeepCopy(t *testing.T) {
+	params, err := NewRawToolFunctionParameters([]byte(`{"type":"object"}`))
+	require.NoError(t, err)
+
+	copied := DeepCopyToolFunctionParameters(params)
+	require.NotNil(t, copied)
+	require.True(t, copied.HasRawJSON())
+	params.rawJSON[2] = 'z'
+
+	marshaled, err := Marshal(copied)
+	require.NoError(t, err)
+	assert.Equal(t, `{"type":"object"}`, string(marshaled))
+}
+
 // TestResponsesToolFileSearchFilter_MarshalJSON_Deterministic verifies deterministic
 // serialization for file search filters.
 func TestResponsesToolFileSearchFilter_MarshalJSON_Deterministic(t *testing.T) {

@@ -1106,6 +1106,7 @@ func DeepCopyToolFunctionParameters(original *ToolFunctionParameters) *ToolFunct
 		Type:                original.Type,
 		keyOrder:            JSONKeyOrder{keys: append([]string(nil), original.keyOrder.keys...)},
 		explicitEmptyObject: original.explicitEmptyObject,
+		rawJSON:             append(json.RawMessage(nil), original.rawJSON...),
 	}
 
 	if original.Description != nil {

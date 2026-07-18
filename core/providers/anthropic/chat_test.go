@@ -81,6 +81,53 @@ func TestToAnthropicChatRequest_PreservesPropertyOrder(t *testing.T) {
 	}
 }
 
+func TestConvertFunctionToolToAnthropic_RawParameters(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{
+			name: "empty schema uses Anthropic object fallback",
+			raw:  `{ }`,
+			want: `{"type":"object","properties":{}}`,
+		},
+		{
+			name: "populated schema remains raw",
+			raw:  `{"x-provider-key":{"enabled":true},"type":"object"}`,
+			want: `{"x-provider-key":{"enabled":true},"type":"object"}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			params, err := schemas.NewRawToolFunctionParameters([]byte(tt.raw))
+			if err != nil {
+				t.Fatalf("create raw tool parameters: %v", err)
+			}
+
+			got := convertFunctionToolToAnthropic(schemas.ChatTool{
+				Type: schemas.ChatToolTypeFunction,
+				Function: &schemas.ChatToolFunction{
+					Name:       "test_tool",
+					Parameters: params,
+				},
+			})
+			if got.InputSchema == nil {
+				t.Fatal("expected input schema")
+			}
+
+			marshaled, err := schemas.Marshal(got.InputSchema)
+			if err != nil {
+				t.Fatalf("marshal input schema: %v", err)
+			}
+			if string(marshaled) != tt.want {
+				t.Fatalf("unexpected input schema:\n got: %s\nwant: %s", marshaled, tt.want)
+			}
+		})
+	}
+}
+
 func TestToAnthropicChatRequest_OpenAICompatibleFileIDUsesFileSource(t *testing.T) {
 	body := `{
 		"model": "anthropic/claude-sonnet-4-5-20250929",
