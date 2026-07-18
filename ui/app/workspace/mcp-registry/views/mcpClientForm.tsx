@@ -54,6 +54,15 @@ const emptyForm: CreateMCPClientRequest = {
 	auth_type: "none",
 };
 
+function isValidOAuthResourceURI(value: string): boolean {
+	try {
+		const parsed = new URL(value);
+		return parsed.protocol !== "" && parsed.hash === "";
+	} catch {
+		return false;
+	}
+}
+
 const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 	const hasCreateMCPClientAccess = useRbac(RbacResource.MCPGateway, RbacOperation.Create);
 	const { toast } = useToast();
@@ -65,6 +74,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 	// stdio process reads it from Bifrost's host environment.
 	const [envVars, setEnvVars] = useState<Record<string, string>>({});
 	const [scopesText, setScopesText] = useState("");
+	const [resourceText, setResourceText] = useState("");
 	const [oauthFlow, setOauthFlow] = useState<{
 		authorizeUrl: string;
 		oauthConfigId: string;
@@ -149,6 +159,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 			setArgsText("");
 			setEnvVars({});
 			setScopesText("");
+			setResourceText("");
 			setOauthFlow(null);
 			setHeadersFlow(null);
 			setPerUserHeaderKeys([]);
@@ -198,6 +209,14 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 			}
 			if (data.oauth_config?.registration_url && !/^https?:\/\/.+$/.test(data.oauth_config.registration_url)) {
 				setError("oauth_config.registration_url", { message: "Registration URL must start with http:// or https://" });
+				hasErrors = true;
+			}
+			if (resourceText.trim() && !isValidOAuthResourceURI(resourceText.trim())) {
+				toast({
+					title: "Invalid resource URI",
+					description: "OAuth resource must be an absolute URI without a fragment.",
+					variant: "destructive",
+				});
 				hasErrors = true;
 			}
 		}
@@ -250,6 +269,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 							registration_url: data.oauth_config?.registration_url || undefined,
 							scopes: scopesText.trim() ? parseArrayFromText(scopesText) : undefined,
 							server_url: data.connection_string?.value || undefined,
+							resource: resourceText.trim() || undefined,
 						}
 					: undefined,
 			// "headers" and "per_user_headers" both can carry static admin
@@ -735,6 +755,17 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 															onChange={(e) => setScopesText(e.target.value)}
 															placeholder="read, write, admin"
 															data-testid="mcp-oauth-scopes-input"
+														/>
+													</div>
+
+													{/* OAuth Resource Indicator (local state, not RHF field) */}
+													<div className="space-y-2">
+														<Label>Resource</Label>
+														<Input
+															value={resourceText}
+															onChange={(e) => setResourceText(e.target.value)}
+															placeholder="https://provider.example.com/mcp or urn:example:mcp"
+															data-testid="mcp-oauth-resource-input"
 														/>
 													</div>
 												</AccordionContent>

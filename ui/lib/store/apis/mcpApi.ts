@@ -173,7 +173,11 @@ export const mcpApi = baseApi.injectEndpoints({
 										draft.clients[index].config.tools_to_auto_execute = data.tools_to_auto_execute;
 									if (data.is_ping_available !== undefined) draft.clients[index].config.is_ping_available = data.is_ping_available;
 									if (data.tool_pricing !== undefined) draft.clients[index].config.tool_pricing = data.tool_pricing;
-									if (data.tool_sync_interval !== undefined) draft.clients[index].config.tool_sync_interval = data.tool_sync_interval;
+									// The request carries minutes, but the cached config mirrors the GET
+									// response, which carries nanoseconds. Convert so the cache stays in
+									// the server's unit instead of drifting until the next refetch.
+									if (data.tool_sync_interval !== undefined)
+										draft.clients[index].config.tool_sync_interval = data.tool_sync_interval * 6e10;
 									if (data.disabled !== undefined) {
 										draft.clients[index].config.disabled = data.disabled;
 										if (data.disabled) {

@@ -104,6 +104,7 @@ type ClientConfig struct {
 	OAuth2ServerConfig                    *tables.OAuth2ServerConfig            `json:"oauth2_server_config,omitempty"`              // OAuth2 AS-specific settings (IssuerURL, token TTLs). Only relevant when MCPServerAuthMode is both or oauth.
 	ConfigHash                            string                                `json:"-"`                                           // Config hash for reconciliation (not serialized)
 	DumpErrorsInConsoleLogs               bool                                  `json:"dump_errors_in_console_logs"`                 // Dump error details in console logs
+	WebhookConfig                         *tables.WebhookConfig                 `json:"webhook_config,omitempty"`                    // Global webhook delivery settings; nil means all defaults
 }
 
 // IsMCPOAuthDiscoveryEnabled reports whether the well-known OAuth discovery
@@ -255,6 +256,16 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 	// Only hash non-default value to avoid legacy config hash churn on upgrade.
 	if c.DumpErrorsInConsoleLogs {
 		hash.Write([]byte("dumpErrorsInConsoleLogs:true"))
+	}
+
+	// Only hash when present to avoid legacy config hash churn on upgrade.
+	if c.WebhookConfig != nil {
+		data, err := sonic.Marshal(c.WebhookConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write([]byte("webhookConfig:"))
+		hash.Write(data)
 	}
 
 	// Hash integer fields
@@ -1476,6 +1487,67 @@ func GenerateMCPClientHash(m tables.TableMCPClient) (string, error) {
 
 	// will enable it in the future with a migration
 	// hash.Write([]byte("disabled:" + strconv.FormatBool(m.Disabled)))
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+// GenerateWebhookEndpointHash generates a SHA256 hash of a webhook endpoint's
+// declared fields. This is used to detect changes between config.json and
+// database config. Operational fields (failure counters, timestamps) and the
+// generated ID are excluded on purpose.
+func GenerateWebhookEndpointHash(endpoint *tables.TableWebhookEndpoint) (string, error) {
+	hash := sha256.New()
+
+	hash.Write([]byte("name:" + endpoint.Name))
+	hash.Write([]byte("url:" + endpoint.URL))
+
+	// The signing secret is deliberately excluded: it is set once at creation
+	// and rotates only through RotateWebhookEndpointSecret, so config-file
+	// sync must not treat a changed webhooks[].secret as a mutation — doing so
+	// would store the new hash while UpdateWebhookEndpoint leaves the credential
+	// untouched, silently diverging the two.
+
+	// Hash Events (sorted for deterministic hashing)
+	if len(endpoint.Events) > 0 {
+		sortedEvents := make([]string, 0, len(endpoint.Events))
+		for _, event := range endpoint.Events {
+			sortedEvents = append(sortedEvents, string(event))
+		}
+		sort.Strings(sortedEvents)
+		data, err := sonic.Marshal(sortedEvents)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+
+	hash.Write([]byte("includeResponse:" + strconv.FormatBool(endpoint.IncludeResponse)))
+	hash.Write([]byte("allowPrivateNetwork:" + strconv.FormatBool(endpoint.AllowPrivateNetwork)))
+	hash.Write([]byte("disabled:" + strconv.FormatBool(endpoint.Disabled)))
+
+	hash.Write([]byte("maxRetries:" + strconv.Itoa(endpoint.MaxRetries)))
+	hash.Write([]byte("retryBackoffInitialSeconds:" + strconv.Itoa(endpoint.RetryBackoffInitialSeconds)))
+	hash.Write([]byte("retryBackoffMaxSeconds:" + strconv.Itoa(endpoint.RetryBackoffMaxSeconds)))
+	hash.Write([]byte("attemptTimeoutSeconds:" + strconv.Itoa(endpoint.AttemptTimeoutSeconds)))
+	hash.Write([]byte("maxResponsePayloadKBs:" + strconv.Itoa(endpoint.MaxResponsePayloadKBs)))
+	hash.Write([]byte("maxConcurrentDeliveries:" + strconv.Itoa(endpoint.MaxConcurrentDeliveries)))
+
+	// Hash Headers (sorted for deterministic hashing)
+	if len(endpoint.Headers) > 0 {
+		keys := make([]string, 0, len(endpoint.Headers))
+		for k := range endpoint.Headers {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			val := endpoint.Headers[k]
+			if val.IsFromSecret() {
+				hash.Write([]byte(k + ":ref:" + val.GetRawRef()))
+			} else {
+				hash.Write([]byte(k + ":val:" + val.Val))
+			}
+		}
+	}
+
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 

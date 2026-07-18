@@ -233,6 +233,7 @@ func TestNetworkConfig_AllFieldsAccountedForInOverrideOrExclusionList(t *testing
 		"ca_cert_pem":                        "TLS CA cert applied at construction via ConfigureTLS",
 		"max_conns_per_host":                 "connection pool limit set at construction",
 		"enforce_http2":                      "HTTP/2 protocol selection set at construction",
+		"keep_alive_timeout_in_seconds":      "idle-connection keep-alive baked into the shared client's MaxIdleConnDuration at construction; pooled connections are shared across requests so a per-request value cannot apply",
 	}
 
 	// Sanity: every exclusion entry must have a non-empty reason.
