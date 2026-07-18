@@ -322,6 +322,216 @@ func TestResponsesMessagePreservesOpenAIPhase(t *testing.T) {
 	}
 }
 
+// TestResponsesMessageImageGenerationCallNullResultRoundTrip verifies that a
+// null "result" (image still generating, per OpenAI's schema) round-trips as
+// null rather than being coerced into an empty string.
+func TestResponsesMessageImageGenerationCallNullResultRoundTrip(t *testing.T) {
+	raw := []byte(`{"id":"ig_1","type":"image_generation_call","status":"in_progress","result":null}`)
+
+	var msg ResponsesMessage
+	if err := Unmarshal(raw, &msg); err != nil {
+		t.Fatalf("unmarshal responses message: %v", err)
+	}
+
+	if msg.ResponsesToolMessage == nil || msg.ResponsesToolMessage.ResponsesImageGenerationCall == nil {
+		t.Fatalf("expected ResponsesImageGenerationCall to be populated, got %#v", msg.ResponsesToolMessage)
+	}
+	if msg.ResponsesToolMessage.ResponsesImageGenerationCall.Result != nil {
+		t.Fatalf("expected result to stay nil, got %#v", msg.ResponsesToolMessage.ResponsesImageGenerationCall.Result)
+	}
+
+	encoded, err := MarshalSorted(msg)
+	if err != nil {
+		t.Fatalf("marshal responses message: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"result":null`) {
+		t.Fatalf("expected encoded message to preserve null result, got %s", encoded)
+	}
+	if strings.Contains(string(encoded), `"result":""`) {
+		t.Fatalf("null result was coerced into an empty string: %s", encoded)
+	}
+}
+
+// TestResponsesToolMCPAllowedToolsArrayForm verifies that allowed_tools sent
+// as a plain array of tool names (the common form) decodes and re-encodes
+// correctly instead of throwing a hard unmarshal error.
+func TestResponsesToolMCPAllowedToolsArrayForm(t *testing.T) {
+	raw := []byte(`{"type":"mcp","server_label":"srv","server_url":"https://x/mcp","allowed_tools":["t1","t2"]}`)
+
+	var tool ResponsesTool
+	if err := Unmarshal(raw, &tool); err != nil {
+		t.Fatalf("unmarshal responses tool: %v", err)
+	}
+	if tool.ResponsesToolMCP == nil || tool.ResponsesToolMCP.AllowedTools == nil {
+		t.Fatalf("expected AllowedTools to be populated, got %#v", tool.ResponsesToolMCP)
+	}
+	if len(tool.ResponsesToolMCP.AllowedTools.ToolNames) != 2 {
+		t.Fatalf("expected 2 tool names, got %#v", tool.ResponsesToolMCP.AllowedTools.ToolNames)
+	}
+
+	encoded, err := MarshalSorted(tool)
+	if err != nil {
+		t.Fatalf("marshal responses tool: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"allowed_tools":["t1","t2"]`) {
+		t.Fatalf("expected encoded tool to preserve allowed_tools array, got %s", encoded)
+	}
+}
+
+// TestResponsesToolMCPAllowedToolsFilterForm verifies that allowed_tools sent
+// as a filter object ({read_only, tool_names}) round-trips instead of
+// silently decoding to an empty object.
+func TestResponsesToolMCPAllowedToolsFilterForm(t *testing.T) {
+	raw := []byte(`{"type":"mcp","server_label":"srv","server_url":"https://x/mcp","allowed_tools":{"read_only":true,"tool_names":["t1"]}}`)
+
+	var tool ResponsesTool
+	if err := Unmarshal(raw, &tool); err != nil {
+		t.Fatalf("unmarshal responses tool: %v", err)
+	}
+	if tool.ResponsesToolMCP == nil || tool.ResponsesToolMCP.AllowedTools == nil || tool.ResponsesToolMCP.AllowedTools.Filter == nil {
+		t.Fatalf("expected AllowedTools.Filter to be populated, got %#v", tool.ResponsesToolMCP)
+	}
+	if tool.ResponsesToolMCP.AllowedTools.Filter.ReadOnly == nil || !*tool.ResponsesToolMCP.AllowedTools.Filter.ReadOnly {
+		t.Fatalf("expected read_only true, got %#v", tool.ResponsesToolMCP.AllowedTools.Filter)
+	}
+
+	encoded, err := MarshalSorted(tool)
+	if err != nil {
+		t.Fatalf("marshal responses tool: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"tool_names":["t1"]`) || !strings.Contains(string(encoded), `"read_only":true`) {
+		t.Fatalf("expected encoded tool to preserve allowed_tools filter, got %s", encoded)
+	}
+}
+
+// TestResponsesToolMCPAllowedToolsEmptyArrayMarshalsToEmptyArray verifies that
+// a non-nil empty ToolNames slice (Anthropic's "deny all" case, e.g.
+// convertAnthropicToolsetToBifrostTool in core/providers/anthropic/responses.go)
+// marshals as "[]", not "{}" or "null" — the old bare struct encoding treated
+// a zero-length slice as empty via omitempty and dropped it entirely,
+// producing "{}", which is neither a valid array nor a valid filter object
+// per OpenAI's allowed_tools schema.
+func TestResponsesToolMCPAllowedToolsEmptyArrayMarshalsToEmptyArray(t *testing.T) {
+	at := ResponsesToolMCPAllowedTools{ToolNames: []string{}}
+
+	encoded, err := MarshalSorted(at)
+	if err != nil {
+		t.Fatalf("marshal responses tool mcp allowed tools: %v", err)
+	}
+	if string(encoded) != "[]" {
+		t.Fatalf("expected empty ToolNames to marshal as [], got %s", encoded)
+	}
+}
+
+// TestResponsesMessageMCPCallServerLabelAndApprovalRequestIDTogether verifies
+// that approval_request_id decodes correctly and isn't clobbered when
+// server_label is also present in the same mcp_call item (the common
+// production shape). Note: server_label itself does not round-trip on this
+// branch — that's a separate, already-tracked bug (server_label sits behind
+// two levels of anonymous pointer embedding that the JSON decoder doesn't
+// auto-promote through) fixed independently in maximhq/bifrost#4844. This
+// test only asserts that approval_request_id's manual routing doesn't
+// misbehave when ResponsesMCPToolCall is (or isn't) already allocated by
+// other decode paths.
+func TestResponsesMessageMCPCallServerLabelAndApprovalRequestIDTogether(t *testing.T) {
+	raw := []byte(`{"id":"mcp_1","type":"mcp_call","server_label":"my-srv","name":"tool1","arguments":"{}","status":"completed","approval_request_id":"apr_1"}`)
+
+	var msg ResponsesMessage
+	if err := Unmarshal(raw, &msg); err != nil {
+		t.Fatalf("unmarshal responses message: %v", err)
+	}
+	if msg.ResponsesToolMessage == nil || msg.ResponsesToolMessage.ResponsesMCPToolCall == nil {
+		t.Fatalf("expected ResponsesMCPToolCall to be populated, got %#v", msg.ResponsesToolMessage)
+	}
+	if msg.ResponsesToolMessage.ResponsesMCPToolCall.ApprovalRequestID == nil || *msg.ResponsesToolMessage.ResponsesMCPToolCall.ApprovalRequestID != "apr_1" {
+		t.Fatalf("expected approval_request_id to survive unmarshal even with server_label present, got %#v", msg.ResponsesToolMessage.ResponsesMCPToolCall.ApprovalRequestID)
+	}
+
+	encoded, err := MarshalSorted(msg)
+	if err != nil {
+		t.Fatalf("marshal responses message: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"approval_request_id":"apr_1"`) {
+		t.Fatalf("expected encoded message to preserve approval_request_id, got %s", encoded)
+	}
+}
+
+// TestResponsesMessageMCPCallApprovalRequestIDRoundTrip verifies that
+// mcp_call's approval_request_id (which links the call to a later
+// mcp_approval_response) survives decode/re-encode.
+func TestResponsesMessageMCPCallApprovalRequestIDRoundTrip(t *testing.T) {
+	raw := []byte(`{"id":"mcp_1","type":"mcp_call","name":"tool1","arguments":"{}","status":"completed","approval_request_id":"apr_1"}`)
+
+	var msg ResponsesMessage
+	if err := Unmarshal(raw, &msg); err != nil {
+		t.Fatalf("unmarshal responses message: %v", err)
+	}
+	if msg.ResponsesToolMessage == nil || msg.ResponsesToolMessage.ResponsesMCPToolCall == nil {
+		t.Fatalf("expected ResponsesMCPToolCall to be populated, got %#v", msg.ResponsesToolMessage)
+	}
+	if msg.ResponsesToolMessage.ResponsesMCPToolCall.ApprovalRequestID == nil || *msg.ResponsesToolMessage.ResponsesMCPToolCall.ApprovalRequestID != "apr_1" {
+		t.Fatalf("expected approval_request_id to survive unmarshal, got %#v", msg.ResponsesToolMessage.ResponsesMCPToolCall.ApprovalRequestID)
+	}
+
+	encoded, err := MarshalSorted(msg)
+	if err != nil {
+		t.Fatalf("marshal responses message: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"approval_request_id":"apr_1"`) {
+		t.Fatalf("expected encoded message to preserve approval_request_id, got %s", encoded)
+	}
+}
+
+// TestResponsesToolFileSearchHybridSearchRoundTrip verifies that
+// ranking_options.hybrid_search (reciprocal-rank-fusion weighting) survives
+// decode/re-encode on a file_search tool declaration.
+func TestResponsesToolFileSearchHybridSearchRoundTrip(t *testing.T) {
+	raw := []byte(`{"type":"file_search","vector_store_ids":["vs_1"],"ranking_options":{"ranker":"auto","hybrid_search":{"embedding_weight":0.7,"text_weight":0.3}}}`)
+
+	var tool ResponsesTool
+	if err := Unmarshal(raw, &tool); err != nil {
+		t.Fatalf("unmarshal responses tool: %v", err)
+	}
+	if tool.ResponsesToolFileSearch == nil || tool.ResponsesToolFileSearch.RankingOptions == nil || tool.ResponsesToolFileSearch.RankingOptions.HybridSearch == nil {
+		t.Fatalf("expected HybridSearch to be populated, got %#v", tool.ResponsesToolFileSearch)
+	}
+	if tool.ResponsesToolFileSearch.RankingOptions.HybridSearch.EmbeddingWeight != 0.7 || tool.ResponsesToolFileSearch.RankingOptions.HybridSearch.TextWeight != 0.3 {
+		t.Fatalf("expected hybrid_search weights to survive unmarshal, got %#v", tool.ResponsesToolFileSearch.RankingOptions.HybridSearch)
+	}
+
+	encoded, err := MarshalSorted(tool)
+	if err != nil {
+		t.Fatalf("marshal responses tool: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"hybrid_search":{"embedding_weight":0.7,"text_weight":0.3}`) {
+		t.Fatalf("expected encoded tool to preserve hybrid_search, got %s", encoded)
+	}
+}
+
+// TestResponsesToolWebSearchPreviewSearchContentTypesRoundTrip verifies that
+// search_content_types survives decode/re-encode on the web_search_preview
+// tool variant specifically (it was already modeled correctly on the plain
+// web_search variant).
+func TestResponsesToolWebSearchPreviewSearchContentTypesRoundTrip(t *testing.T) {
+	raw := []byte(`{"type":"web_search_preview","search_content_types":["text","image"]}`)
+
+	var tool ResponsesTool
+	if err := Unmarshal(raw, &tool); err != nil {
+		t.Fatalf("unmarshal responses tool: %v", err)
+	}
+	if tool.ResponsesToolWebSearchPreview == nil || len(tool.ResponsesToolWebSearchPreview.SearchContentTypes) != 2 {
+		t.Fatalf("expected SearchContentTypes to be populated, got %#v", tool.ResponsesToolWebSearchPreview)
+	}
+
+	encoded, err := MarshalSorted(tool)
+	if err != nil {
+		t.Fatalf("marshal responses tool: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"search_content_types":["text","image"]`) {
+		t.Fatalf("expected encoded tool to preserve search_content_types, got %s", encoded)
+	}
+}
+
 // TestWithDefaultsStripsCodeExecutionCarry verifies that WithDefaults() (the
 // normalized provider-format converters, e.g. openai/v1/responses) drops the
 // Anthropic-only code-execution fidelity carry while keeping the neutral

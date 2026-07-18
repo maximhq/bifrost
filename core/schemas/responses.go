@@ -1169,7 +1169,8 @@ func (m *ResponsesMessage) UnmarshalJSON(data []byte) error {
 
 	type Alias ResponsesMessage
 	aux := &struct {
-		Arguments json.RawMessage `json:"arguments,omitempty"`
+		Arguments         json.RawMessage `json:"arguments,omitempty"`
+		ApprovalRequestID *string         `json:"approval_request_id,omitempty"`
 		*Alias
 	}{
 		Alias: (*Alias)(m),
@@ -1180,6 +1181,20 @@ func (m *ResponsesMessage) UnmarshalJSON(data []byte) error {
 	}
 
 	m.setToolArguments(aux.Arguments)
+
+	// ResponsesMCPToolCall sits two levels deep behind anonymous pointer
+	// embedding (ResponsesMessage -> *ResponsesToolMessage -> *ResponsesMCPToolCall),
+	// which the JSON decoder does not auto-allocate/promote through, so
+	// approval_request_id must be shadowed and routed manually.
+	if aux.ApprovalRequestID != nil && m.Type != nil && *m.Type == ResponsesMessageTypeMCPCall {
+		if m.ResponsesToolMessage == nil {
+			m.ResponsesToolMessage = &ResponsesToolMessage{}
+		}
+		if m.ResponsesToolMessage.ResponsesMCPToolCall == nil {
+			m.ResponsesToolMessage.ResponsesMCPToolCall = &ResponsesMCPToolCall{}
+		}
+		m.ResponsesToolMessage.ResponsesMCPToolCall.ApprovalRequestID = aux.ApprovalRequestID
+	}
 
 	return nil
 }
@@ -1206,8 +1221,23 @@ func (m ResponsesMessage) MarshalJSON() ([]byte, error) {
 	if m.rawPreserved != nil {
 		return m.rawPreserved, nil
 	}
+
 	type alias ResponsesMessage
-	return MarshalSorted(alias(m))
+
+	isMCPCall := m.Type != nil && *m.Type == ResponsesMessageTypeMCPCall
+	if !isMCPCall || m.ResponsesToolMessage == nil || m.ResponsesToolMessage.ResponsesMCPToolCall == nil {
+		return MarshalSorted(alias(m))
+	}
+
+	aux := struct {
+		ApprovalRequestID *string `json:"approval_request_id,omitempty"`
+		*alias
+	}{
+		ApprovalRequestID: m.ResponsesToolMessage.ResponsesMCPToolCall.ApprovalRequestID,
+		alias:             (*alias)(&m),
+	}
+
+	return MarshalSorted(aux)
 }
 
 // responsesToolArgumentsToString normalizes a function/tool-call `arguments`
@@ -1885,7 +1915,10 @@ type ResponsesReasoningSummary struct {
 
 // ResponsesImageGenerationCall represents an image generation tool call
 type ResponsesImageGenerationCall struct {
-	Result string `json:"result"`
+	// Result is null while the image is still being generated (status
+	// "in_progress"/"generating") and a base64 string once "completed".
+	// Must stay a pointer so null round-trips as null, not "".
+	Result *string `json:"result"`
 }
 
 // -----------------------------------------------------------------------------
@@ -2027,6 +2060,9 @@ type ResponsesMCPApprovalResponse struct {
 // ResponsesMCPToolCall represents a MCP tool call
 type ResponsesMCPToolCall struct {
 	ServerLabel string `json:"server_label"` // The label of the MCP server running the tool
+	// ApprovalRequestID links this call to a later mcp_approval_response input
+	// item. Nullable and only present once an approval was actually requested.
+	ApprovalRequestID *string `json:"approval_request_id,omitempty"`
 }
 
 // -----------------------------------------------------------------------------
@@ -2721,8 +2757,16 @@ type ResponsesToolFileSearchCompoundFilter struct {
 
 // ResponsesToolFileSearchRankingOptions represents a file search ranking options
 type ResponsesToolFileSearchRankingOptions struct {
-	Ranker         *string  `json:"ranker,omitempty"`          // The ranker to use
-	ScoreThreshold *float64 `json:"score_threshold,omitempty"` // Score threshold (0-1)
+	Ranker         *string                              `json:"ranker,omitempty"`          // The ranker to use
+	ScoreThreshold *float64                             `json:"score_threshold,omitempty"` // Score threshold (0-1)
+	HybridSearch   *ResponsesToolFileSearchHybridSearch `json:"hybrid_search,omitempty"`   // Weights balancing embedding vs keyword matches
+}
+
+// ResponsesToolFileSearchHybridSearch controls how reciprocal rank fusion
+// balances semantic embedding matches versus sparse keyword matches.
+type ResponsesToolFileSearchHybridSearch struct {
+	EmbeddingWeight float64 `json:"embedding_weight"`
+	TextWeight      float64 `json:"text_weight"`
 }
 
 // ResponsesToolComputerUsePreview represents a tool computer use preview
@@ -2839,8 +2883,43 @@ type ResponsesToolMCP struct {
 // ResponsesToolMCPAllowedTools - List of allowed tool names or a filter object
 type ResponsesToolMCPAllowedTools struct {
 	// Either a simple array of tool names or a filter object
-	ToolNames []string                            `json:",omitempty"`
-	Filter    *ResponsesToolMCPAllowedToolsFilter `json:",omitempty"`
+	ToolNames []string
+	Filter    *ResponsesToolMCPAllowedToolsFilter
+}
+
+// MarshalJSON implements custom JSON marshalling for ResponsesToolMCPAllowedTools
+func (at ResponsesToolMCPAllowedTools) MarshalJSON() ([]byte, error) {
+	if at.ToolNames != nil && at.Filter != nil {
+		return nil, fmt.Errorf("only one of 'ToolNames' or 'Filter' can be set")
+	}
+	if at.ToolNames != nil {
+		return MarshalSorted(at.ToolNames)
+	}
+	if at.Filter != nil {
+		return MarshalSorted(at.Filter)
+	}
+	return []byte("null"), nil
+}
+
+// UnmarshalJSON implements custom JSON unmarshalling for ResponsesToolMCPAllowedTools.
+// OpenAI's allowed_tools is a oneOf: a plain array of tool names, or a filter
+// object ({read_only, tool_names}). Without this, the bare struct decodes
+// against its literal Go field names (not "tool_names"), so the array form
+// throws a hard error and the object form silently decodes to empty.
+func (at *ResponsesToolMCPAllowedTools) UnmarshalJSON(data []byte) error {
+	var toolNames []string
+	if err := Unmarshal(data, &toolNames); err == nil {
+		at.ToolNames = toolNames
+		return nil
+	}
+
+	var filter ResponsesToolMCPAllowedToolsFilter
+	if err := Unmarshal(data, &filter); err == nil {
+		at.Filter = &filter
+		return nil
+	}
+
+	return fmt.Errorf("allowed_tools field is neither an array of tool names nor a filter object")
 }
 
 // ResponsesToolMCPAllowedToolsFilter - A filter object to specify which tools are allowed
@@ -2975,8 +3054,9 @@ type ResponsesToolCustomFormat struct {
 
 // ResponsesToolWebSearchPreview represents a web search preview
 type ResponsesToolWebSearchPreview struct {
-	SearchContextSize *string                             `json:"search_context_size,omitempty"` // "low" | "medium" | "high"
-	UserLocation      *ResponsesToolWebSearchUserLocation `json:"user_location,omitempty"`       // The user's location
+	SearchContextSize  *string                             `json:"search_context_size,omitempty"`  // "low" | "medium" | "high"
+	UserLocation       *ResponsesToolWebSearchUserLocation `json:"user_location,omitempty"`        // The user's location
+	SearchContentTypes []string                            `json:"search_content_types,omitempty"` // "text" | "image"
 }
 
 // ResponsesToolToolSearch represents a Responses API tool_search tool.
