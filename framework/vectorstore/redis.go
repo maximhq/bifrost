@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/redis/go-redis/v9"
@@ -1557,35 +1558,23 @@ func (s *RedisStore) RequiresVectors() bool {
 }
 
 // escapeSearchValue escapes special characters in search values.
+// RediSearch treats every punctuation character as special inside a TAG query
+// (@field:{value}, DIALECT 2), so escape all non-alphanumeric ASCII characters
+// instead of enumerating specials: an unescaped character either fails the
+// query with a syntax error (e.g. ":" in "gemma31b-q6:latest") or silently
+// matches nothing (e.g. "/" in "openai/gpt-4o").
 func escapeSearchValue(value string) string {
-	// Escape special RediSearch characters
-	replacer := strings.NewReplacer(
-		"(", "\\(",
-		")", "\\)",
-		"[", "\\[",
-		"]", "\\]",
-		"{", "\\{",
-		"}", "\\}",
-		"*", "\\*",
-		"?", "\\?",
-		"|", "\\|",
-		"&", "\\&",
-		"!", "\\!",
-		"@", "\\@",
-		"#", "\\#",
-		"$", "\\$",
-		"%", "\\%",
-		"^", "\\^",
-		"~", "\\~",
-		"`", "\\`",
-		"\"", "\\\"",
-		"'", "\\'",
-		" ", "\\ ",
-		"-", "\\-",
-		".", "\\.",
-		",", "\\,",
-	)
-	return replacer.Replace(value)
+	var b strings.Builder
+	b.Grow(len(value) * 2)
+	for _, r := range value {
+		isSafe := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || r == '_' || r > unicode.MaxASCII
+		if !isSafe {
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 // Binary embedding conversion helpers
