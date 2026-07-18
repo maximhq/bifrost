@@ -1443,6 +1443,11 @@ func (s *BifrostHTTPServer) RegisterInferenceRoutes(ctx context.Context, middlew
 	s.MCPServerHandler = mcpServerHandler
 	asyncHandler := handlers.NewAsyncHandler(s.Client, s.Config)
 	s.IntegrationHandler.RegisterRoutes(s.Router, middlewares...)
+	// Dedicated route for Realtime providers that send client audio as raw
+	// binary WebSocket frames (see schemas.RealtimeBinaryAudioProvider), e.g.
+	// Deepgram's Voice Agent API. Reuses wsRealtimeHandler's own auth/session/
+	// relay logic as-is; only the route is separate.
+	wsRealtimeHandler.RegisterBinaryAudioRoute(s.Router, middlewares...)
 	inferenceHandler.RegisterRoutes(s.Router, middlewares...)
 	asyncHandler.RegisterRoutes(s.Router, middlewares...)
 	mcpInferenceHandler.RegisterRoutes(s.Router, middlewares...)

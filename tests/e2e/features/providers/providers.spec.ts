@@ -290,6 +290,63 @@ test.describe("Providers", () => {
       await expect(providersPage.customProviderSheet).toBeVisible();
     });
   });
+
+  test.describe("Deepgram Provider (Audio)", () => {
+    test("should add Deepgram from dropdown, configure a key, then remove it", async ({
+      providersPage,
+    }) => {
+      // Add Deepgram from the known-provider dropdown if not already present
+      const wasAlreadyConfigured = await providersPage.providerExists("deepgram");
+      if (!wasAlreadyConfigured) {
+        await providersPage.addKnownProviderFromDropdown("deepgram");
+        createdProviders.push("deepgram");
+      }
+
+      // Verify it reflects as available in the sidebar
+      const providerItem = providersPage.getProviderItem("deepgram");
+      await expect(providerItem).toBeVisible({ timeout: 15000 });
+
+      // Select it. Only a freshly-added provider is guaranteed to start with
+      // zero keys — if it already existed (e.g. leftover from a prior failed
+      // cleanup), it may already have keys configured.
+      await providersPage.selectProvider("deepgram");
+      await expect(providersPage.page).toHaveURL(/provider=deepgram/);
+      if (!wasAlreadyConfigured) {
+        expect(await providersPage.getKeyCount()).toBe(0);
+      }
+      const keyCountBeforeAdd = await providersPage.getKeyCount();
+
+      // Add a key — this is what makes the provider actually usable for requests
+      const keyData = createProviderKeyData({
+        name: `Deepgram-E2E-Key-${Date.now()}`,
+        value: "test-deepgram-key-12345",
+        weight: 1.0,
+      });
+      createdKeys.push({ provider: "deepgram", keyName: keyData.name });
+      await providersPage.addKey(keyData);
+
+      // Verify the key — and therefore usability — is reflected in the UI
+      expect(await providersPage.keyExists(keyData.name)).toBe(true);
+      expect(await providersPage.getKeyCount()).toBe(keyCountBeforeAdd + 1);
+
+      // Remove the provider entirely. Skip the delete-confirmation toast
+      // wait — it flakily matches the still-visible earlier "Key added
+      // successfully" toast instead of a fresh one — and independently
+      // verify removal below via providerExists() instead.
+      await providersPage.deleteProvider("deepgram", { skipToastWait: true });
+      const providerIdx = createdProviders.indexOf("deepgram");
+      if (providerIdx !== -1) {
+        createdProviders.splice(providerIdx, 1);
+      }
+      const keyIdx = createdKeys.findIndex((k) => k.provider === "deepgram");
+      if (keyIdx !== -1) {
+        createdKeys.splice(keyIdx, 1);
+      }
+
+      // Verify it no longer reflects as available
+      expect(await providersPage.providerExists("deepgram")).toBe(false);
+    });
+  });
 });
 
 test.describe("Provider Key Management", () => {

@@ -394,6 +394,57 @@ func extractRealtimeResponseDoneToolCalls(outputs []realtimeResponseDoneOutput) 
 	return toolCalls
 }
 
+// extractRealtimeEventToolCalls converts a single BifrostRealtimeEvent's
+// function-call item(s) into ChatAssistantMessageToolCall form, for turn-level
+// tool-call accumulation (see bfws.Session.AppendRealtimeToolCalls). Most
+// providers emit at most one function call per event, carried in event.Item;
+// a provider whose wire protocol batches multiple calls into one message
+// additionally sets ExtraParams[schemas.RealtimeExtraParamKeyAdditionalItems]
+// (see that constant's doc comment) to the remaining calls.
+func extractRealtimeEventToolCalls(event *schemas.BifrostRealtimeEvent) []schemas.ChatAssistantMessageToolCall {
+	if event == nil {
+		return nil
+	}
+
+	items := make([]*schemas.RealtimeItem, 0, 1)
+	if event.Item != nil && event.Item.Type == "function_call" {
+		items = append(items, event.Item)
+	}
+	if raw, ok := event.ExtraParams[schemas.RealtimeExtraParamKeyAdditionalItems]; ok && len(raw) > 0 {
+		var additional []schemas.RealtimeItem
+		if err := sonic.Unmarshal(raw, &additional); err == nil {
+			for i := range additional {
+				items = append(items, &additional[i])
+			}
+		}
+	}
+	if len(items) == 0 {
+		return nil
+	}
+
+	toolCalls := make([]schemas.ChatAssistantMessageToolCall, 0, len(items))
+	for _, item := range items {
+		name := strings.TrimSpace(item.Name)
+		if name == "" {
+			continue
+		}
+		toolType := "function"
+		toolCall := schemas.ChatAssistantMessageToolCall{
+			Index: uint16(len(toolCalls)),
+			Type:  &toolType,
+			Function: schemas.ChatAssistantMessageToolCallFunction{
+				Name:      schemas.Ptr(name),
+				Arguments: item.Arguments,
+			},
+		}
+		if id := strings.TrimSpace(item.CallID); id != "" {
+			toolCall.ID = schemas.Ptr(id)
+		}
+		toolCalls = append(toolCalls, toolCall)
+	}
+	return toolCalls
+}
+
 func extractRealtimeResponseDoneUsage(rawMessage []byte) *schemas.BifrostLLMUsage {
 	if len(rawMessage) == 0 {
 		return nil

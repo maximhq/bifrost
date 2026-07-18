@@ -416,6 +416,9 @@
         "elevenlabs": {
           "$ref": "#/$defs/provider"
         },
+        "deepgram": {
+          "$ref": "#/$defs/provider"
+        },
         "cerebras": {
           "$ref": "#/$defs/provider"
         },
@@ -6654,7 +6657,8 @@
             "runway",
             "runware",
             "fireworks",
-            "sarvam"
+            "sarvam",
+            "deepgram"
           ],
           "description": "Base provider type to extend"
         },

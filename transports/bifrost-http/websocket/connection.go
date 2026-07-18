@@ -34,7 +34,14 @@ type UpstreamConn struct {
 }
 
 // newUpstreamConn creates a new UpstreamConn wrapping the given websocket connection.
+// upstreamMaxMessageBytes caps a single WebSocket message (text or binary)
+// read from the upstream provider at 16MiB, matching the client-facing limit
+// in wsrealtime.go — without an explicit limit, fasthttp/websocket will
+// buffer an arbitrarily large message into memory before returning it.
+const upstreamMaxMessageBytes = 16 * 1024 * 1024
+
 func newUpstreamConn(conn *ws.Conn, provider schemas.ModelProvider, keyID, endpoint string) *UpstreamConn {
+	conn.SetReadLimit(upstreamMaxMessageBytes)
 	uc := &UpstreamConn{
 		conn:      conn,
 		provider:  provider,

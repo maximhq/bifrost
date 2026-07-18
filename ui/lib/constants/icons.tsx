@@ -233,6 +233,26 @@ export const ProviderIcons = {
 		);
 	},
 
+	deepgram: ({ size = "md", className = "" }: IconProps) => {
+		const resolvedSize = resolveSize(size);
+
+		return (
+			<svg
+				width={resolvedSize}
+				height={resolvedSize}
+				xmlns="http://www.w3.org/2000/svg"
+				viewBox="0 0 24 24"
+				className={className}
+				fill="none"
+			>
+				<rect x="2" y="10" width="3" height="4" rx="1" fill="#13EF93" />
+				<rect x="7" y="6" width="3" height="12" rx="1" fill="#13EF93" />
+				<rect x="12" y="2" width="3" height="20" rx="1" fill="#13EF93" />
+				<rect x="17" y="6" width="3" height="12" rx="1" fill="#13EF93" />
+			</svg>
+		);
+	},
+
 	groq: ({ size = "md", className = "" }: IconProps) => {
 		const resolvedSize = resolveSize(size);
 

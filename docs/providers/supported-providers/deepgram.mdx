@@ -1,0 +1,325 @@
+---
+title: "Deepgram"
+description: "Deepgram API conversion guide - speech-to-text transcription and text-to-speech"
+icon: "waveform-lines"
+---
+
+## Overview
+
+Deepgram is a specialized audio provider for speech-to-text transcription and text-to-speech. Unlike OpenAI/ElevenLabs, Deepgram configures nearly all request behavior via **query parameters** rather than body fields, and its Listen (transcription) endpoint expects **raw audio bytes** (not `multipart/form-data`). Bifrost performs conversions including:
+- **Query parameter mapping** - `model` and `language` are first-classed; everything else (diarization, formatting, analytics toggles, keyword boosts) passes through `extra_params` directly onto the query string
+- **Raw audio body construction** - Transcription requests are sent as raw bytes with a detected `Content-Type: audio/*` header, avoiding the multipart mismatch that Deepgram's Listen endpoint rejects
+- **Response mapping** - `channel.alternatives[].transcript/words/confidence` mapped into Bifrost's unified transcription schema
+
+### Supported Operations
+
+| Operation | Non-Streaming | Streaming | Endpoint |
+|-----------|---------------|-----------|----------|
+| Speech (TTS) | ✅ | ✅ | `/v1/speak` |
+| Transcriptions (STT) | ✅ | - | `/v1/listen` |
+| Voice Agent (Realtime) | - | ✅ | `wss://agent.deepgram.com/v1/agent/converse` via `/v1/realtime` (control messages) + `/v1/realtime/audio` (client audio) |
+| List Models | ❌ | - | - |
+| Chat Completions | ❌ | ❌ | - |
+| Responses API | ❌ | ❌ | - |
+| Text Completions | ❌ | ❌ | - |
+| Embeddings | ❌ | ❌ | - |
+| Image Generation | ❌ | ❌ | - |
+
+<Note>
+**Unsupported Operations** (❌): Deepgram is an audio-focused provider — Chat Completions, Responses API, Text Completions, Embeddings, and List Models return `UnsupportedOperationError`.
+
+**Realtime Voice Agent**: Deepgram's Voice Agent WebSocket API is served from a *different host*
+(`agent.deepgram.com`) than REST Listen/Speak (`api.deepgram.com`) — Bifrost handles this
+automatically. Control/config messages (`Settings`, `UpdateListen/Think/Speak/Prompt`,
+`InjectUserMessage/AgentMessage`, `FunctionCallResponse`) go over the canonical `/v1/realtime`
+route, same as OpenAI Realtime and ElevenLabs Conversational AI. Client **audio** input is
+different: Deepgram sends/expects raw binary WebSocket frames (not JSON-wrapped base64 like
+OpenAI/ElevenLabs), so it's served over a dedicated route, `/v1/realtime/audio`, which accepts
+binary frames and forwards them upstream verbatim. Verified live against the real API end-to-end,
+including a full audio-in-to-audio-out turn: synthetic speech streamed as binary `Media` frames
+produced the expected `UserStartedSpeaking` → `ConversationText` (user) → `ConversationText`
+(assistant) → binary `Audio` frames → `AgentAudioDone` sequence, matching every event mapping
+exactly. (Only running this same flow *through Bifrost's own HTTP transport*, rather than a direct
+client dial to Deepgram, is unverified — see the implementation plan for why.)
+
+**Async callback mode not supported**: Deepgram's `callback`/`callback_method` query params (webhook-delivered async results) are explicitly stripped and never forwarded — Bifrost's handler pipeline is synchronous request/response only.
+</Note>
+
+## Setup & Configuration
+
+Configure Deepgram as a provider.
+
+<Tabs>
+<Tab title="Web UI">
+
+1. Navigate to **Models** > **Model Providers**. Look for **Deepgram** under **Configured Providers**. If it is missing, click on **Add New Provider** and select **Deepgram**.
+2. Click **Add Key** or edit an existing key.
+3. Set a name for your key.
+4. Paste your API key directly or use an environment variable (for example, `env.DEEPGRAM_API_KEY`).
+5. Set **Allowed Models** to **All Models** (default) or the specific model allowlist you want this key to serve.
+6. Save the provider configuration.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "deepgram": {
+      "keys": [
+        {
+          "name": "deepgram-key-1",
+          "value": "env.DEEPGRAM_API_KEY",
+          "models": [
+            "*"
+          ],
+          "weight": 1.0
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="API">
+Refer to the API documentation for [Provider Keys Management](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider).
+</Tab>
+<Tab title="Go SDK">
+
+```go
+case schemas.Deepgram:
+    return []schemas.Key{{
+        Name:   "deepgram-key-1",
+        Value:  *schemas.NewEnvVar("env.DEEPGRAM_API_KEY"),
+        Models: []string{"*"},
+        Weight: 1.0,
+    }}, nil
+```
+
+</Tab>
+</Tabs>
+
+---
+
+# 1. Transcription (Speech-to-Text)
+
+## Request Parameters
+
+### Input Source
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `input.file` | bytes | Audio file content (WAV, MP3, FLAC, etc.), sent as the raw request body |
+
+<Note>
+Bifrost's built-in `/v1/audio/transcriptions` HTTP handler currently requires a `file` form field unconditionally, so URL-based transcription (`extra_params.url`) is only reachable via direct SDK/library construction of a `BifrostTranscriptionRequest`, not through that HTTP endpoint today.
+</Note>
+
+### Core Parameters
+
+| Parameter | Mapping | Description |
+|-----------|---------|-------------|
+| `model` | Query param `model` | Model identifier (e.g., `"nova-2-general"`) |
+| `params.language` | Query param `language` | BCP-47 language tag (e.g., `"en"`) |
+
+### Advanced Parameters
+
+Everything else is passed through `extra_params` directly onto Deepgram's query string:
+
+<Tabs>
+<Tab title="Gateway">
+
+```bash
+curl -X POST http://localhost:8080/v1/audio/transcriptions \
+  -F "file=@audio.wav" \
+  -F "model=deepgram/nova-2-general" \
+  -F "language=en" \
+  -F "punctuate=true" \
+  -F "diarize_model=latest" \
+  -F "smart_format=true"
+```
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+resp, err := client.TranscriptionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostTranscriptionRequest{
+    Provider: schemas.Deepgram,
+    Model:    "nova-2-general",
+    Input: &schemas.TranscriptionInput{
+        File: audioBytes,
+    },
+    Params: &schemas.TranscriptionParameters{
+        Language: schemas.Ptr("en"),
+        ExtraParams: map[string]interface{}{
+            "punctuate":     true,
+            "diarize_model": "latest",
+            "smart_format":  true,
+        },
+    },
+})
+```
+
+</Tab>
+</Tabs>
+
+#### Transcription Options (via `extra_params`)
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `punctuate` | boolean | Add punctuation to the transcript |
+| `smart_format` | boolean | Improve readability (numbers, dates, etc.) |
+| `diarize_model` | string | Speaker diarization model version |
+| `multichannel` | boolean | Transcribe each audio channel independently |
+| `keywords` / `keyterm` | string | Keyword/term boosting |
+| `redact` | string | Redact sensitive info (`"pci"`, `"numbers"`, `"ssn"`, ...) |
+| `sentiment` / `topics` / `intents` / `summarize` | boolean/string | Analytics toggles (see Caveats — response sidecars have no unified-schema field) |
+
+## Response Conversion
+
+```json
+{
+  "text": "Full transcribed text...",
+  "language": "en",
+  "duration": 12.5,
+  "words": [
+    {"word": "Hello", "start": 0.0, "end": 0.5}
+  ]
+}
+```
+
+<Note>
+Deepgram's analytics sidecars (`sentiment`, `summary`, `topics`, `intents`, `entities`) have no field in Bifrost's unified transcription schema today. They're only recoverable via the raw-response passthrough (`send_back_raw_response: true`).
+</Note>
+
+---
+
+# 2. Speech (Text-to-Speech)
+
+## Request Parameters
+
+### Core Parameters
+
+| Parameter | Mapping | Notes |
+|-----------|---------|-------|
+| `input.input` | JSON body `text` | The text to convert to speech (required) |
+| `model` | Query param `model` | Model/voice identifier (e.g., `"aura-asteria-en"`) — Deepgram has no separate voice-vs-model concept |
+| `params.speed` | Query param `speed` | Speaking rate multiplier (0.25-2.0) |
+| `params.response_format` | Query params `encoding`/`container` | See [Response Format](#response-format) |
+
+<Tabs>
+<Tab title="Gateway">
+
+```bash
+curl -X POST http://localhost:8080/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "deepgram/aura-asteria-en",
+    "input": {"input": "Hello, how are you?"},
+    "response_format": "mp3",
+    "speed": 1.0
+  }'
+```
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+resp, err := client.SpeechRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostSpeechRequest{
+    Provider: schemas.Deepgram,
+    Model:    "aura-asteria-en",
+    Input: &schemas.SpeechInput{
+        Input: "Hello, how are you?",
+    },
+    Params: &schemas.SpeechParameters{
+        Speed:          schemas.Ptr(1.0),
+        ResponseFormat: "mp3",
+    },
+})
+```
+
+</Tab>
+</Tabs>
+
+### Response Format
+
+| Format | Deepgram `encoding` | `container` |
+|--------|---------------------|-------------|
+| `mp3` (default) | `mp3` | - |
+| `wav` | `linear16` | `wav` |
+| `pcm` | `linear16` | - |
+| `opus` | `opus` | `ogg` |
+| `flac` | `flac` | - |
+| `aac` | `aac` | - |
+
+<Note>
+This encoding/container mapping is best-effort from Deepgram's documented encodings — verify against a live response if you hit format issues.
+</Note>
+
+## Response Conversion
+
+```json
+{
+  "audio": "<binary audio data>"
+}
+```
+
+## Streaming
+
+Streaming speech returns audio in chunks as they are generated, same envelope as every other streaming-speech provider:
+
+```json
+{"type": "audio.delta", "audio": "<binary audio chunk>"}
+```
+
+Final chunk:
+```json
+{"type": "audio.done"}
+```
+
+---
+
+## Caveats
+
+<Accordion title="Raw Bytes / JSON Body, Not Multipart">
+**Severity**: High
+**Behavior**: Deepgram's `/v1/listen` REST endpoint expects raw audio bytes with an `audio/*` Content-Type (or a JSON `{"url": "..."}` body), never `multipart/form-data`
+**Impact**: This is the root cause of [maximhq/bifrost#4414](https://github.com/maximhq/bifrost/issues/4414) — routing Deepgram through the OpenAI-shaped multipart handler produced a 400 error
+**Code**: `deepgram.go` (Transcription)
+</Accordion>
+
+<Accordion title="Query-Parameter Configuration">
+**Severity**: Medium
+**Behavior**: Nearly all Deepgram Listen/Speak configuration lives in query parameters, not JSON body fields
+**Impact**: Only `model` and `language` are first-classed in Bifrost's schema; everything else must be passed via `extra_params`
+**Code**: `transcription.go` (`BuildTranscriptionQueryParams`), `speech.go` (`BuildSpeakQueryParams`)
+</Accordion>
+
+<Accordion title="Async Callback Mode Not Supported">
+**Severity**: Low
+**Behavior**: `callback`/`callback_method` params are always stripped before the request is forwarded
+**Impact**: Deepgram's async webhook-delivery mode cannot be used through Bifrost; requests always use Deepgram's default synchronous response
+**Code**: `utils.go` (`deepgramBlockedQueryParams`)
+</Accordion>
+
+<Accordion title="2000 Character Limit on Speech Input">
+**Severity**: Medium
+**Behavior**: Deepgram's `/v1/speak` REST endpoint rejects text longer than 2000 characters with `413 Payload Too Large`
+**Impact**: Long-form text-to-speech requests must be chunked client-side before calling Bifrost; verified live against the real API
+**Code**: N/A (Deepgram API limit, not a Bifrost conversion issue)
+</Accordion>
+
+<Accordion title="Analytics Sidecars Not in Unified Schema">
+**Severity**: Low
+**Behavior**: `sentiment`/`summary`/`topics`/`intents`/`entities` response fields have no home in `BifrostTranscriptionResponse`
+**Impact**: Only recoverable via raw-response passthrough
+**Code**: `types.go` (`DeepgramTranscriptionResults`)
+</Accordion>
+
+<Accordion title="Parallel Function Calls in Voice Agent">
+**Severity**: Low
+**Behavior**: A single Deepgram `FunctionCallRequest` can batch multiple function calls into one message (`functions: [...]`), unlike OpenAI/ElevenLabs, which send one call per message. `event.Item` (the unified schema's single-item field) carries only the first call; any additional calls are carried in `event.ExtraParams["additional_items"]` as a JSON array of `RealtimeItem`, so they're never silently dropped
+**Impact**: The client is unaffected either way — Bifrost forwards Deepgram's untranslated raw message verbatim. Turn-level audit logging accumulates tool calls from both `event.Item` and `additional_items` automatically; direct consumers of the unified event schema should check `additional_items` if they need every parallel call, not just `event.Item`
+**Code**: `realtime.go` (`ToBifrostRealtimeEvent`, case `FunctionCallRequest`), `core/schemas/realtime.go` (`RealtimeExtraParamKeyAdditionalItems`)
+</Accordion>

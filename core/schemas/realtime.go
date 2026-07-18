@@ -108,6 +108,19 @@ type BifrostRealtimeEvent struct {
 	RawData json.RawMessage `json:"raw_data,omitempty"`
 }
 
+// RealtimeExtraParamKeyAdditionalItems is a well-known ExtraParams key a
+// provider may set on a function-call-shaped event whose single raw upstream
+// message represents MORE than one item (e.g. Deepgram's Voice Agent
+// FunctionCallRequest, which batches a `functions` array into one message —
+// unlike OpenAI/ElevenLabs, which emit one message per call). Item only
+// carries one RealtimeItem, so a provider in this situation sets Item to the
+// first entry (for existing single-item consumers: turn-start detection,
+// forwarding) and additionally marshals the REMAINING entries here as a JSON
+// array of RealtimeItem, so turn-level accumulation (see
+// transports/bifrost-http/websocket Session.AppendRealtimeToolCalls) doesn't
+// silently drop them.
+const RealtimeExtraParamKeyAdditionalItems = "additional_items"
+
 // RealtimeSession describes session configuration for the Realtime connection.
 type RealtimeSession struct {
 	ID               string                     `json:"id,omitempty"`
@@ -201,6 +214,21 @@ type RealtimeProvider interface {
 	RealtimeWebSocketSubprotocol() string
 	ShouldForwardRealtimeEvent(event *BifrostRealtimeEvent) bool
 	ShouldAccumulateRealtimeOutput(eventType RealtimeEventType) bool
+}
+
+// RealtimeBinaryAudioProvider is an optional interface for providers whose
+// Realtime protocol sends/receives client audio as raw binary WebSocket frames
+// rather than base64-encoded JSON (e.g. Deepgram's "Media" message), unlike
+// OpenAI/Azure/ElevenLabs which wrap client audio in an
+// input_audio_buffer.append JSON text event. Checked via type assertion:
+// provider.(RealtimeBinaryAudioProvider). Served over a dedicated route
+// (/v1/realtime/audio) so the base /v1/realtime relay's behavior for existing
+// text-only providers is unaffected.
+type RealtimeBinaryAudioProvider interface {
+	// SupportsRealtimeBinaryAudioInput reports whether the provider accepts
+	// raw binary WebSocket frames from the client as audio input, forwarded
+	// upstream verbatim with no JSON translation.
+	SupportsRealtimeBinaryAudioInput() bool
 }
 
 // RealtimeLegacyWebRTCProvider is an optional interface for providers that

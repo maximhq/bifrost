@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	ws "github.com/fasthttp/websocket"
+	"github.com/maximhq/bifrost/core/schemas"
 )
 
 func TestSessionManagerCreateAndGet(t *testing.T) {
@@ -125,6 +126,30 @@ func TestSessionRealtimeState(t *testing.T) {
 	}
 	if got := session.ConsumeRealtimeTurnInputs(); len(got) != 0 {
 		t.Fatalf("len(ConsumeRealtimeTurnInputs()) after clear = %d, want 0", len(got))
+	}
+}
+
+func TestSessionRealtimeToolCalls(t *testing.T) {
+	session := NewSession(newTestConn())
+
+	name1, name2 := "get_weather", "get_time"
+	session.AppendRealtimeToolCalls([]schemas.ChatAssistantMessageToolCall{
+		{Function: schemas.ChatAssistantMessageToolCallFunction{Name: &name1, Arguments: `{"city":"NYC"}`}},
+	})
+	session.AppendRealtimeToolCalls([]schemas.ChatAssistantMessageToolCall{
+		{Function: schemas.ChatAssistantMessageToolCallFunction{Name: &name2, Arguments: `{"tz":"EST"}`}},
+	})
+	session.AppendRealtimeToolCalls(nil)
+
+	calls := session.ConsumeRealtimeToolCalls()
+	if len(calls) != 2 {
+		t.Fatalf("len(ConsumeRealtimeToolCalls()) = %d, want 2", len(calls))
+	}
+	if *calls[0].Function.Name != "get_weather" || *calls[1].Function.Name != "get_time" {
+		t.Fatalf("calls = %+v, want get_weather then get_time in arrival order", calls)
+	}
+	if got := session.ConsumeRealtimeToolCalls(); len(got) != 0 {
+		t.Fatalf("len(ConsumeRealtimeToolCalls()) after clear = %d, want 0", len(got))
 	}
 }
 

@@ -55,6 +55,7 @@ export const ModelPlaceholders = {
 	runware: "e.g. runware:100@1, runware:101@1",
 	fireworks: "e.g. accounts/fireworks/models/deepseek-v3p2",
 	sarvam: "e.g. sarvam-30b, sarvam-105b",
+	deepgram: "e.g. nova-2-general (transcription), aura-asteria-en (speech)",
 };
 
 export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
@@ -87,6 +88,7 @@ export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
 	vllm: false,
 	fireworks: true,
 	sarvam: true,
+	deepgram: true,
 };
 
 export const DefaultNetworkConfig = {
