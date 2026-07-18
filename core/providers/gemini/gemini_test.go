@@ -4620,3 +4620,96 @@ func TestGroundingMetadataToChatAnnotations(t *testing.T) {
 		assert.Empty(t, bifrostResp.Choices[0].ChatStreamResponseChoice.Delta.Annotations)
 	})
 }
+
+// TestNonWhitelistedAspectRatioRoundtrip verifies that aspect ratios outside the
+// size-conversion whitelist (e.g. 2:3, 21:9, 8:1) survive the native GenAI
+// ingress→egress round trip verbatim instead of degrading to 1:1 (issue #5324).
+func TestNonWhitelistedAspectRatioRoundtrip(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	pngPixel, _ := base64.StdEncoding.DecodeString(
+		"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+	)
+
+	ratios := []string{"2:3", "3:2", "4:5", "5:4", "21:9", "4:1", "8:1", "1:8"}
+
+	for _, ratio := range ratios {
+		t.Run("generation_"+ratio, func(t *testing.T) {
+			inReq := &gemini.GeminiGenerationRequest{
+				Model: "gemini-3.1-flash-image-preview",
+				GenerationConfig: gemini.GenerationConfig{
+					ResponseModalities: []gemini.Modality{gemini.ModalityImage},
+					ImageConfig:        &gemini.GeminiImageConfig{AspectRatio: ratio},
+				},
+				Contents: []gemini.Content{{
+					Role:  "user",
+					Parts: []*gemini.Part{{Text: "wide banner"}},
+				}},
+			}
+
+			bifrostReq := inReq.ToBifrostImageGenerationRequest(ctx)
+			require.NotNil(t, bifrostReq)
+			require.NotNil(t, bifrostReq.Params.AspectRatio, "aspect ratio must be carried verbatim")
+			assert.Equal(t, ratio, *bifrostReq.Params.AspectRatio)
+
+			outReq := gemini.ToGeminiImageGenerationRequest(bifrostReq)
+			require.NotNil(t, outReq)
+			require.NotNil(t, outReq.GenerationConfig.ImageConfig)
+			assert.Equal(t, ratio, outReq.GenerationConfig.ImageConfig.AspectRatio,
+				"aspect ratio must not degrade to 1:1 on the generation path")
+		})
+
+		t.Run("edit_"+ratio, func(t *testing.T) {
+			inReq := &gemini.GeminiGenerationRequest{
+				Model: "gemini-3.1-flash-image-preview",
+				GenerationConfig: gemini.GenerationConfig{
+					ResponseModalities: []gemini.Modality{gemini.ModalityImage},
+					ImageConfig:        &gemini.GeminiImageConfig{AspectRatio: ratio},
+				},
+				Contents: []gemini.Content{{
+					Role: "user",
+					Parts: []*gemini.Part{
+						{InlineData: &gemini.Blob{MIMEType: "image/png", Data: base64.StdEncoding.EncodeToString(pngPixel)}},
+						{Text: "extend this creative into a wide banner"},
+					},
+				}},
+			}
+
+			bifrostReq := inReq.ToBifrostImageEditRequest(ctx)
+			require.NotNil(t, bifrostReq)
+			require.NotNil(t, bifrostReq.Params.AspectRatio, "aspect ratio must be carried verbatim on edit path")
+			assert.Equal(t, ratio, *bifrostReq.Params.AspectRatio)
+
+			outReq := gemini.ToGeminiImageEditRequest(bifrostReq)
+			require.NotNil(t, outReq)
+			require.NotNil(t, outReq.GenerationConfig.ImageConfig)
+			assert.Equal(t, ratio, outReq.GenerationConfig.ImageConfig.AspectRatio,
+				"aspect ratio must not degrade to 1:1 on the edit path")
+		})
+	}
+}
+
+// TestImagenImageEditAspectRatio verifies the explicit aspect_ratio on edit params
+// takes precedence over the size-derived value on the Imagen :predict edit path.
+func TestImagenImageEditAspectRatio(t *testing.T) {
+	pngPixel, _ := base64.StdEncoding.DecodeString(
+		"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+	)
+	bifrostReq := &schemas.BifrostImageEditRequest{
+		Model: "imagen-3.0-capability-001",
+		Input: &schemas.ImageEditInput{
+			Prompt: "extend the banner",
+			Images: []schemas.ImageInput{{Image: pngPixel}},
+		},
+		Params: &schemas.ImageEditParameters{
+			Size:        schemas.Ptr("1024x1024"),
+			AspectRatio: schemas.Ptr("21:9"),
+		},
+	}
+
+	imagenReq := gemini.ToImagenImageEditRequest(bifrostReq)
+	require.NotNil(t, imagenReq)
+	require.NotNil(t, imagenReq.Parameters.AspectRatio)
+	assert.Equal(t, "21:9", *imagenReq.Parameters.AspectRatio,
+		"explicit aspect_ratio must override size-derived ratio on edit path")
+}
