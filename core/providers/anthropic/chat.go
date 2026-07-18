@@ -993,6 +993,20 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 		}
 	}
 
+	// Surface a safety-classifier decline via OpenAI's own native message.refusal
+	// field, rather than a Bifrost-only extension — this is the same field the
+	// OpenAI provider already round-trips for direct OpenAI calls.
+	if response.StopReason == AnthropicStopReasonRefusal {
+		if assistantMessage == nil {
+			assistantMessage = &schemas.ChatAssistantMessage{}
+		}
+		if response.StopDetails != nil && response.StopDetails.Explanation != nil {
+			assistantMessage.Refusal = response.StopDetails.Explanation
+		} else {
+			assistantMessage.Refusal = schemas.Ptr("The model declined to respond.")
+		}
+	}
+
 	// Create message
 	message := schemas.ChatMessage{
 		Role:                 schemas.ChatMessageRoleAssistant,
@@ -1136,6 +1150,16 @@ func ToAnthropicChatResponse(bifrostResp *schemas.BifrostChatResponse) *Anthropi
 		}
 		if choice.ChatNonStreamResponseChoice != nil && choice.StopString != nil {
 			anthropicResp.StopSequence = choice.StopString
+		}
+
+		// Round-trip a refusal set via OpenAI's native message.refusal field back
+		// into Anthropic's stop_details, keeping stop_reason in sync.
+		if choice.ChatNonStreamResponseChoice != nil && choice.Message != nil && choice.Message.ChatAssistantMessage != nil && choice.Message.ChatAssistantMessage.Refusal != nil {
+			anthropicResp.StopReason = AnthropicStopReasonRefusal
+			anthropicResp.StopDetails = &AnthropicStopDetails{
+				Type:        "refusal",
+				Explanation: choice.Message.ChatAssistantMessage.Refusal,
+			}
 		}
 
 		// Add reasoning content

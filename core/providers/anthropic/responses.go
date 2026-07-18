@@ -74,6 +74,7 @@ type AnthropicResponsesStreamState struct {
 	MessageID                 *string                           // Message ID from message_start
 	Model                     *string                           // Model name from message_start
 	StopReason                *string                           // Stop reason for the message
+	StopDetails               *AnthropicStopDetails             // Refusal detail (only set when the raw stop_reason was "refusal")
 	CreatedAt                 int                               // Timestamp for created_at consistency
 	HasEmittedCreated         bool                              // Whether we've emitted response.created
 	HasEmittedInProgress      bool                              // Whether we've emitted response.in_progress
@@ -387,6 +388,7 @@ func AcquireAnthropicResponsesStreamState() *AnthropicResponsesStreamState {
 	state.CurrentOutputIndex = 0
 	state.MessageID = nil
 	state.StopReason = nil
+	state.StopDetails = nil
 	state.Model = nil
 	state.CreatedAt = int(time.Now().Unix())
 	state.HasEmittedCreated = false
@@ -449,6 +451,7 @@ func (state *AnthropicResponsesStreamState) flush() {
 	state.CurrentOutputIndex = 0
 	state.MessageID = nil
 	state.StopReason = nil
+	state.StopDetails = nil
 	state.Model = nil
 	state.CreatedAt = int(time.Now().Unix())
 	state.HasEmittedCreated = false
@@ -2214,6 +2217,13 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 				mapped = string(schemas.BifrostFinishReasonStop)
 			}
 			state.StopReason = &mapped
+			if *chunk.Delta.StopReason == AnthropicStopReasonRefusal {
+				if chunk.Delta.StopDetails != nil {
+					state.StopDetails = chunk.Delta.StopDetails
+				} else {
+					state.StopDetails = &AnthropicStopDetails{Type: "refusal"}
+				}
+			}
 		}
 		// Check if integration type in ctx is anthropic
 		if ctx.Value(schemas.BifrostContextKeyIntegrationType) == "anthropic" {
@@ -2238,6 +2248,12 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 			}
 			if stopReason != nil {
 				response.StopReason = stopReason
+			}
+			if state.StopDetails != nil {
+				response.Status = schemas.Ptr(schemas.ResponsesResponseStatusIncomplete)
+				response.IncompleteDetails = &schemas.ResponsesResponseIncompleteDetails{
+					Reason: schemas.ResponsesResponseIncompleteReasonContentFilter,
+				}
 			}
 			if bifrostUsage != nil {
 				response.Usage = bifrostUsage
@@ -2281,6 +2297,12 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 		}
 		if state.StopReason != nil {
 			response.StopReason = state.StopReason
+		}
+		if state.StopDetails != nil {
+			response.Status = schemas.Ptr(schemas.ResponsesResponseStatusIncomplete)
+			response.IncompleteDetails = &schemas.ResponsesResponseIncompleteDetails{
+				Reason: schemas.ResponsesResponseIncompleteReasonContentFilter,
+			}
 		}
 
 		// Fold the sandbox container (delivered on the final message_delta) onto
@@ -3956,6 +3978,15 @@ func (response *AnthropicMessageResponse) ToBifrostResponsesResponse(ctx *schema
 		bifrostResp.StopReason = &mapped
 	}
 
+	// Surface a safety-classifier decline via the OpenAI-native status/incomplete_details
+	// shape, using the already-defined "content_filter" reason constant.
+	if response.StopReason == AnthropicStopReasonRefusal {
+		bifrostResp.Status = schemas.Ptr(schemas.ResponsesResponseStatusIncomplete)
+		bifrostResp.IncompleteDetails = &schemas.ResponsesResponseIncompleteDetails{
+			Reason: schemas.ResponsesResponseIncompleteReasonContentFilter,
+		}
+	}
+
 	if response.Usage != nil && response.Usage.ServiceTier != nil {
 		mapped := MapAnthropicServiceTierToBifrost(*response.Usage.ServiceTier)
 		bifrostResp.ServiceTier = &mapped
@@ -4045,6 +4076,13 @@ func ToAnthropicResponsesResponse(ctx *schemas.BifrostContext, bifrostResp *sche
 				break
 			}
 		}
+	}
+
+	// Round-trip the OpenAI-native incomplete_details/content_filter shape back into
+	// Anthropic's stop_reason/stop_details, keeping the two in sync.
+	if bifrostResp.IncompleteDetails != nil && bifrostResp.IncompleteDetails.Reason == schemas.ResponsesResponseIncompleteReasonContentFilter {
+		anthropicResp.StopReason = AnthropicStopReasonRefusal
+		anthropicResp.StopDetails = &AnthropicStopDetails{Type: "refusal"}
 	}
 
 	anthropicResp.Model = bifrostResp.Model

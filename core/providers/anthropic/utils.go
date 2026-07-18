@@ -214,20 +214,36 @@ func ValidateToolsForProvider(tools []schemas.ResponsesTool, provider schemas.Mo
 
 var (
 	// Maps provider-specific finish reasons to Bifrost format
+	// content_filter/refusal follows the same convention as bedrockFinishReasonToBifrost
+	// (core/providers/bedrock/utils.go) and geminiFinishReasonToBifrost, which already map
+	// their moderation-triggered stop reasons to Bifrost's "content_filter".
 	anthropicFinishReasonToBifrost = map[AnthropicStopReason]string{
 		AnthropicStopReasonEndTurn:      "stop",
 		AnthropicStopReasonMaxTokens:    "length",
 		AnthropicStopReasonStopSequence: "stop",
 		AnthropicStopReasonToolUse:      "tool_calls",
 		AnthropicStopReasonCompaction:   "compaction",
+		// Safety-classifier decline. No OpenAI-native "refusal" finish reason exists;
+		// "content_filter" is the closest semantic match and mirrors how Bedrock/Gemini
+		// report their own moderation stops.
+		AnthropicStopReasonRefusal: "content_filter",
+		// Anthropic's server-tool iteration limit was reached; the turn can be resumed by
+		// re-sending the conversation as-is. Chat Completions has no resumable-turn concept,
+		// so this degrades to "stop" — the raw value is still available to callers reading
+		// Bifrost's own extension fields (e.g. BifrostResponsesResponse.StopReason).
+		AnthropicStopReasonPauseTurn: "stop",
+		// Distinct from max_tokens (output cap): the input exhausted the context window.
+		// "length" is the closest existing OpenAI-enum value.
+		AnthropicStopReasonModelContextWindowExceeded: "length",
 	}
 
 	// Maps Bifrost finish reasons to provider-specific format
 	bifrostToAnthropicFinishReason = map[string]AnthropicStopReason{
-		"stop":       AnthropicStopReasonEndTurn, // canonical default
-		"length":     AnthropicStopReasonMaxTokens,
-		"tool_calls": AnthropicStopReasonToolUse,
-		"compaction": AnthropicStopReasonCompaction,
+		"stop":           AnthropicStopReasonEndTurn, // canonical default
+		"length":         AnthropicStopReasonMaxTokens,
+		"tool_calls":     AnthropicStopReasonToolUse,
+		"compaction":     AnthropicStopReasonCompaction,
+		"content_filter": AnthropicStopReasonRefusal,
 	}
 )
 
@@ -2120,6 +2136,23 @@ func ConvertAnthropicFinishReasonToBifrost(providerReason AnthropicStopReason) s
 		return bifrostReason
 	}
 	return string(providerReason)
+}
+
+// RefusalExplanationFromStreamDelta extracts the refusal explanation to surface via
+// OpenAI's native delta.refusal field from a streaming message_delta event, or nil if
+// the delta isn't a refusal. Falls back to a generic message when Anthropic omits
+// stop_details.explanation. Used by the Chat Completions streaming handler
+// (HandleAnthropicChatCompletionStreaming) so the mapping logic is independently
+// testable rather than inlined in the streaming loop. The Responses API streaming
+// path has its own separate handling (AnthropicResponsesStreamState.StopDetails).
+func RefusalExplanationFromStreamDelta(delta *AnthropicStreamDelta) *string {
+	if delta == nil || delta.StopReason == nil || *delta.StopReason != AnthropicStopReasonRefusal {
+		return nil
+	}
+	if delta.StopDetails != nil && delta.StopDetails.Explanation != nil {
+		return delta.StopDetails.Explanation
+	}
+	return schemas.Ptr("The model declined to respond.")
 }
 
 // ConvertBifrostFinishReasonToAnthropic converts Bifrost finish reasons to provider format
