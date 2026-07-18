@@ -60,6 +60,57 @@ Copy both values now — you will need them in [Step 3](#step-3-configure-the-sc
 
 ---
 
+### Alternative: seed the token declaratively (Helm / config.json)
+
+If you manage Bifrost with Helm or a static `config.json` (GitOps), you can seed the **Provisioning Token** yourself instead of generating it in the dashboard.
+
+<Steps>
+
+<Step title="Generate a token">
+
+```bash
+openssl rand -base64 32 | tr '+/' '-_' | tr -d '='
+```
+
+This produces a URL-safe token in the same format Bifrost mints internally.
+
+</Step>
+
+<Step title="Add it to your SCIM config">
+
+Helm `values.yaml`:
+
+```yaml
+bifrost:
+  scim:
+    enabled: true
+    provider: "okta"
+    config:
+      issuerUrl: "https://your-domain.okta.com/oauth2/default"
+      clientId: "..."
+      clientSecret: "env.OKTA_CLIENT_SECRET"
+      apiToken: "env.OKTA_API_TOKEN"
+      provisioningToken: "env.SCIM_PROVISIONING_TOKEN"   # or the literal token
+      claimScimAttributes:                                # per-claim SCIM interpretation
+        groups:
+          attributeType: "group"        # "user" (SCIM User attribute) or "group" (match SCIM Group)
+          attributeValue: "displayName"
+```
+
+The same keys (`provisioningToken`, `claimScimAttributes`) apply directly under `scim_config.config` in a raw `config.json`.
+
+</Step>
+
+</Steps>
+
+<Warning>
+  Keep the token in a Kubernetes Secret and reference it with the `env.` prefix — never commit the literal value. Rotating the token in the dashboard invalidates any value seeded here.
+</Warning>
+
+Then use this token as the **API Token** and your deployment's SCIM endpoint as the **SCIM 2.0 Base URL** in [Step 3](#step-3-configure-the-scim-app) — the rest of the Okta setup is identical.
+
+---
+
 ## Step 2: Create a SCIM App in Okta
 
 <Steps>

@@ -211,6 +211,24 @@ export class RoutingRulesPage extends BasePage {
   }
 
   /**
+   * Open the edit sheet for a rule without making any changes or saving.
+   */
+  async openEditSheet(name: string): Promise<void> {
+    await this.dismissToasts()
+    const row = this.getRuleRow(name)
+    await row.scrollIntoViewIfNeeded()
+
+    const editBtn = row.locator('button').filter({ has: this.page.locator('svg.lucide-pencil') }).or(
+      row.getByRole('button', { name: /Edit/i })
+    )
+    await editBtn.waitFor({ state: 'visible' })
+    await editBtn.click()
+
+    await expect(this.sheet).toBeVisible({ timeout: 5000 })
+    await this.waitForSheetAnimation()
+  }
+
+  /**
    * Edit an existing routing rule
    */
   async editRoutingRule(name: string, updates: Partial<RoutingRuleConfig>): Promise<void> {
@@ -496,6 +514,53 @@ export class RoutingRulesPage extends BasePage {
     const celPreview = this.sheet.locator('textarea').last()
     await celPreview.waitFor({ state: 'visible', timeout: 5000 })
     return await celPreview.inputValue()
+  }
+
+  /**
+   * Switch the Conditions editor to raw-CEL mode.
+   */
+  async switchToCelMode(): Promise<void> {
+    const celTab = this.sheet.getByTestId('cel-builder-mode-cel')
+    await celTab.waitFor({ state: 'visible', timeout: 5000 })
+    await celTab.click()
+    await this.celTextarea.waitFor({ state: 'visible', timeout: 5000 })
+  }
+
+  /**
+   * The editable CEL textarea, only present in CEL mode.
+   */
+  get celTextarea(): Locator {
+    return this.sheet.getByTestId('cel-builder-cel-textarea')
+  }
+
+  /**
+   * The inline validation error shown beneath the CEL textarea (e.g. a server-side compile error).
+   */
+  get celError(): Locator {
+    return this.sheet.getByTestId('cel-builder-cel-error')
+  }
+
+  /**
+   * Whether the Conditions editor is currently in raw-CEL mode.
+   */
+  async isCelMode(): Promise<boolean> {
+    return await this.celTextarea.isVisible().catch(() => false)
+  }
+
+  /**
+   * Type a raw CEL expression into the CEL-mode textarea.
+   */
+  async fillCelExpression(expression: string): Promise<void> {
+    await this.celTextarea.waitFor({ state: 'visible', timeout: 5000 })
+    await this.celTextarea.fill(expression)
+  }
+
+  /**
+   * Read the current CEL-mode textarea value.
+   */
+  async getCelTextareaValue(): Promise<string> {
+    await this.celTextarea.waitFor({ state: 'visible', timeout: 5000 })
+    return await this.celTextarea.inputValue()
   }
 
   /**

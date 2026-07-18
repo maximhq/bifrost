@@ -1682,6 +1682,13 @@ func (g *GenericRouter) handleAsyncCreate(
 
 	job, err := executor.SubmitJob(bifrostCtx, resultTTL, operation, operationType)
 	if err != nil {
+		// An unusable webhook reference is the caller's mistake, not a
+		// server failure.
+		if errors.Is(err, logstore.ErrInvalidWebhookReference) {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter,
+				newBifrostErrorWithCode(err, "failed to create async job", fasthttp.StatusBadRequest))
+			return
+		}
 		g.sendError(ctx, bifrostCtx, config.ErrorConverter,
 			newBifrostError(err, "failed to create async job"))
 		return

@@ -1205,3 +1205,113 @@ func TestToChatRequest_TextFormat_TypedFields(t *testing.T) {
 		t.Fatalf("expected schema.type=object, got %v", schemaMap["type"])
 	}
 }
+
+// streamChunk builds a single Chat streaming chunk for the reasoning/text ordering tests.
+func streamChunk(id string, delta *ChatStreamResponseChoiceDelta, finishReason *string) *BifrostChatResponse {
+	return &BifrostChatResponse{
+		ID:    id,
+		Model: "deepseek-reasoner",
+		Choices: []BifrostResponseChoice{
+			{
+				Index:                    0,
+				FinishReason:             finishReason,
+				ChatStreamResponseChoice: &ChatStreamResponseChoice{Delta: delta},
+			},
+		},
+	}
+}
+
+// TestToBifrostResponsesStreamResponse_ReasoningOpensThinkingBlock reproduces the
+// Claude Code "Content block not found" disconnect: a Chat-Completions reasoning
+// model (reasoning_content first, then content) must yield a proper reasoning output
+// item (added -> deltas carrying its ItemID -> done) BEFORE the text item, so the
+// Anthropic reverse converter emits content_block_start type=thinking before any
+// thinking delta. Previously reasoning only opened a text item and the reasoning
+// delta had no ItemID, producing an orphan thinking block.
+func TestToBifrostResponsesStreamResponse_ReasoningOpensThinkingBlock(t *testing.T) {
+	state := AcquireChatToResponsesStreamState()
+	defer ReleaseChatToResponsesStreamState(state)
+
+	chunks := []*BifrostChatResponse{
+		streamChunk("c1", &ChatStreamResponseChoiceDelta{Role: Ptr("assistant"), Reasoning: Ptr("")}, nil),
+		streamChunk("c1", &ChatStreamResponseChoiceDelta{Reasoning: Ptr("The")}, nil),
+		streamChunk("c1", &ChatStreamResponseChoiceDelta{Reasoning: Ptr(" user")}, nil),
+		streamChunk("c1", &ChatStreamResponseChoiceDelta{Content: Ptr("Run ")}, nil),
+		streamChunk("c1", &ChatStreamResponseChoiceDelta{Content: Ptr("tests")}, nil),
+		streamChunk("c1", &ChatStreamResponseChoiceDelta{}, Ptr("stop")),
+	}
+
+	var events []*BifrostResponsesStreamResponse
+	for _, c := range chunks {
+		events = append(events, c.ToBifrostResponsesStreamResponse(state)...)
+	}
+
+	var reasoningItemID string
+	var reasoningOutputIndex, textOutputIndex = -1, -1
+	reasoningAddedIdx, reasoningDoneIdx, textAddedIdx := -1, -1, -1
+	firstReasoningDeltaIdx := -1
+
+	for i, e := range events {
+		switch e.Type {
+		case ResponsesStreamResponseTypeOutputItemAdded:
+			if e.Item != nil && e.Item.Type != nil && *e.Item.Type == ResponsesMessageTypeReasoning {
+				if reasoningAddedIdx == -1 {
+					reasoningAddedIdx = i
+				}
+				if e.Item.ID != nil {
+					reasoningItemID = *e.Item.ID
+				}
+				if e.OutputIndex != nil {
+					reasoningOutputIndex = *e.OutputIndex
+				}
+			}
+			if e.Item != nil && e.Item.Type != nil && *e.Item.Type == ResponsesMessageTypeMessage {
+				if textAddedIdx == -1 {
+					textAddedIdx = i
+				}
+				if e.OutputIndex != nil {
+					textOutputIndex = *e.OutputIndex
+				}
+			}
+		case ResponsesStreamResponseTypeReasoningSummaryTextDelta:
+			if firstReasoningDeltaIdx == -1 {
+				firstReasoningDeltaIdx = i
+			}
+			if e.ItemID == nil || *e.ItemID == "" {
+				t.Fatalf("reasoning delta at event %d has no ItemID (orphan thinking block)", i)
+			}
+			if e.ItemID != nil && *e.ItemID != reasoningItemID {
+				t.Fatalf("reasoning delta ItemID %q != reasoning item ID %q", *e.ItemID, reasoningItemID)
+			}
+		case ResponsesStreamResponseTypeOutputItemDone:
+			if e.Item != nil && e.Item.Type != nil && *e.Item.Type == ResponsesMessageTypeReasoning && reasoningDoneIdx == -1 {
+				reasoningDoneIdx = i
+			}
+		}
+	}
+
+	if reasoningAddedIdx == -1 {
+		t.Fatal("no reasoning output_item.added emitted")
+	}
+	if firstReasoningDeltaIdx == -1 {
+		t.Fatal("no reasoning delta emitted")
+	}
+	if reasoningAddedIdx >= firstReasoningDeltaIdx {
+		t.Fatalf("reasoning output_item.added (%d) must precede first reasoning delta (%d)", reasoningAddedIdx, firstReasoningDeltaIdx)
+	}
+	if reasoningDoneIdx == -1 {
+		t.Fatal("no reasoning output_item.done emitted (thinking block never closed)")
+	}
+	if textAddedIdx == -1 {
+		t.Fatal("no text output_item.added emitted")
+	}
+	if reasoningDoneIdx >= textAddedIdx {
+		t.Fatalf("reasoning output_item.done (%d) must precede text output_item.added (%d)", reasoningDoneIdx, textAddedIdx)
+	}
+	if reasoningOutputIndex != 0 {
+		t.Fatalf("reasoning output index = %d, want 0 (reasoning first)", reasoningOutputIndex)
+	}
+	if textOutputIndex <= reasoningOutputIndex {
+		t.Fatalf("text output index %d must be greater than reasoning output index %d", textOutputIndex, reasoningOutputIndex)
+	}
+}

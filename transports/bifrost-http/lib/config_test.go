@@ -370,6 +370,7 @@ import (
 	"github.com/maximhq/bifrost/framework"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
@@ -377,6 +378,7 @@ import (
 	"github.com/maximhq/bifrost/framework/vectorstore"
 	"github.com/maximhq/bifrost/plugins/governance/complexity"
 	otelPlugin "github.com/maximhq/bifrost/plugins/otel"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -1592,6 +1594,66 @@ func (m *MockConfigStore) GetInFlightSidekiqJobByKind(ctx context.Context, kind 
 
 func (m *MockConfigStore) MarkStaleSidekiqJobsFailed(ctx context.Context, staleBefore time.Time) (int64, error) {
 	return 0, nil
+}
+
+func (m *MockConfigStore) GetWebhookEndpoints(ctx context.Context) ([]tables.TableWebhookEndpoint, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) GetWebhookEndpointsPaginated(ctx context.Context, params configstore.WebhookEndpointsQueryParams) ([]tables.TableWebhookEndpoint, int64, error) {
+	return nil, 0, nil
+}
+
+func (m *MockConfigStore) GetWebhookEndpointByID(ctx context.Context, id string) (*tables.TableWebhookEndpoint, error) {
+	return nil, configstore.ErrNotFound
+}
+
+func (m *MockConfigStore) GetWebhookEndpointByName(ctx context.Context, name string) (*tables.TableWebhookEndpoint, error) {
+	return nil, configstore.ErrNotFound
+}
+
+func (m *MockConfigStore) CreateWebhookEndpoint(ctx context.Context, endpoint *tables.TableWebhookEndpoint) error {
+	return nil
+}
+
+func (m *MockConfigStore) UpdateWebhookEndpoint(ctx context.Context, endpoint *tables.TableWebhookEndpoint) error {
+	return nil
+}
+
+func (m *MockConfigStore) DeleteWebhookEndpoint(ctx context.Context, id string) error {
+	return nil
+}
+
+func (m *MockConfigStore) RotateWebhookEndpointSecret(ctx context.Context, id string) (*tables.TableWebhookEndpoint, error) {
+	return nil, configstore.ErrNotFound
+}
+
+func (m *MockConfigStore) RecordWebhookEndpointSuccess(ctx context.Context, id string) error {
+	return nil
+}
+
+func (m *MockConfigStore) RecordWebhookEndpointFailure(ctx context.Context, id string) (int, error) {
+	return 0, nil
+}
+
+func (m *MockConfigStore) CreateWebhookJob(ctx context.Context, job *tables.TableWebhookJob) error {
+	return nil
+}
+
+func (m *MockConfigStore) ListDueWebhookJobs(ctx context.Context, limit int) ([]tables.TableWebhookJob, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) ClaimWebhookJob(ctx context.Context, id, runnerID string, leaseUntil time.Time) (bool, error) {
+	return false, nil
+}
+
+func (m *MockConfigStore) RescheduleWebhookJob(ctx context.Context, id, runnerID string, leaseUntil, nextAttemptAt time.Time) error {
+	return nil
+}
+
+func (m *MockConfigStore) DeleteWebhookJob(ctx context.Context, id, runnerID string, leaseUntil time.Time) error {
+	return nil
 }
 
 func TestMergeGovernanceConfig_SyncsComplexityAnalyzerConfig(t *testing.T) {
@@ -17051,6 +17113,10 @@ func getSchemaTypeMappings() []schemaTypeMapping {
 		{"mcp.client_configs.stdio_config", reflect.TypeOf(schemas.MCPStdioConfig{}), false},
 		{"mcp.tool_manager_config", reflect.TypeOf(schemas.MCPToolManagerConfig{}), false},
 
+		// Webhooks config
+		{"webhooks", reflect.TypeOf(WebhookEndpointConfig{}), true},
+		{"client.webhook_config", reflect.TypeOf(tables.WebhookConfig{}), false},
+
 		// Governance config
 		{"governance", reflect.TypeOf(configstore.GovernanceConfig{}), false},
 		{"governance.budgets", reflect.TypeOf(tables.TableBudget{}), true},
@@ -19923,4 +19989,188 @@ func TestLoadPlugins_OtelPluginSpanFilterPassthrough(t *testing.T) {
 	plugins, ok := filterMap["plugins"].([]any)
 	require.True(t, ok, "plugin_span_filter.plugins should be an array")
 	require.ElementsMatch(t, []any{"logging", "compat"}, plugins)
+}
+
+func testMemoryEndpoint(id, name string) *configstoreTables.TableWebhookEndpoint {
+	return &configstoreTables.TableWebhookEndpoint{
+		ID:     id,
+		Name:   name,
+		URL:    "https://93.184.216.34/hook",
+		Events: []configstoreTables.WebhookEvent{configstoreTables.WebhookEventAsyncJobCompleted},
+	}
+}
+
+func TestWebhookEndpointMemoryStore(t *testing.T) {
+	config := &Config{}
+
+	// Empty store misses cleanly.
+	_, ok := config.WebhookEndpointByID("ep-1")
+	assert.False(t, ok)
+
+	config.SetWebhookEndpoint(testMemoryEndpoint("ep-1", "first"))
+	byID, ok := config.WebhookEndpointByID("ep-1")
+	require.True(t, ok)
+	assert.Equal(t, "first", byID.Name)
+	byName, ok := config.WebhookEndpointByName("first")
+	require.True(t, ok)
+	assert.Equal(t, "ep-1", byName.ID)
+
+	// A rename evicts the stale name-index entry.
+	config.SetWebhookEndpoint(testMemoryEndpoint("ep-1", "renamed"))
+	_, ok = config.WebhookEndpointByName("first")
+	assert.False(t, ok)
+	_, ok = config.WebhookEndpointByName("renamed")
+	assert.True(t, ok)
+
+	// Mutating the caller's struct after Set must not affect the store.
+	external := testMemoryEndpoint("ep-2", "second")
+	config.SetWebhookEndpoint(external)
+	external.Name = "mutated"
+	stored, ok := config.WebhookEndpointByID("ep-2")
+	require.True(t, ok)
+	assert.Equal(t, "second", stored.Name)
+
+	config.RemoveWebhookEndpoint("ep-1")
+	_, ok = config.WebhookEndpointByID("ep-1")
+	assert.False(t, ok)
+	_, ok = config.WebhookEndpointByName("renamed")
+	assert.False(t, ok)
+
+	config.replaceWebhookEndpoints([]configstoreTables.TableWebhookEndpoint{*testMemoryEndpoint("ep-3", "third")})
+	_, ok = config.WebhookEndpointByID("ep-2")
+	assert.False(t, ok, "replace swaps the whole store")
+	_, ok = config.WebhookEndpointByName("third")
+	assert.True(t, ok)
+}
+
+// parseConfigData round-trips raw config JSON through ConfigData.UnmarshalJSON
+// so section-presence tracking behaves exactly as it does for a real file.
+func parseConfigData(t *testing.T, raw string) *ConfigData {
+	t.Helper()
+	var configData ConfigData
+	require.NoError(t, json.Unmarshal([]byte(raw), &configData))
+	return &configData
+}
+
+func webhookNamesInStore(t *testing.T, store configstore.ConfigStore) map[string]string {
+	t.Helper()
+	endpoints, err := store.GetWebhookEndpoints(context.Background())
+	require.NoError(t, err)
+	names := make(map[string]string, len(endpoints))
+	for _, endpoint := range endpoints {
+		names[endpoint.Name] = endpoint.URL
+	}
+	return names
+}
+
+func TestLoadWebhooksConfigMerge(t *testing.T) {
+	initTestLogger()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+	config := &Config{ConfigStore: store}
+
+	// One valid declaration, one invalid (skipped with a warning).
+	configData := parseConfigData(t, `{
+		"webhooks": [
+			{"name": "from-file", "url": "https://93.184.216.34/hook", "events": ["async_job.completed"]},
+			{"name": "broken", "url": "http://93.184.216.34/hook", "events": ["async_job.completed"]}
+		]
+	}`)
+	loadWebhooksConfig(context.Background(), config, configData)
+
+	names := webhookNamesInStore(t, store)
+	require.Len(t, names, 1)
+	assert.Contains(t, names, "from-file")
+
+	// Memory serves the synced endpoint.
+	endpoint, ok := config.WebhookEndpointByName("from-file")
+	require.True(t, ok)
+	require.NotNil(t, endpoint.Secret, "a signing secret is generated at creation")
+
+	// An endpoint created outside the file survives a merge reload.
+	uiEndpoint := testMemoryEndpoint("", "from-ui")
+	require.NoError(t, store.CreateWebhookEndpoint(context.Background(), uiEndpoint))
+
+	// A changed URL in the file updates the existing row instead of duplicating.
+	configData = parseConfigData(t, `{
+		"webhooks": [
+			{"name": "from-file", "url": "https://93.184.216.34/hook2", "events": ["async_job.completed"]}
+		]
+	}`)
+	loadWebhooksConfig(context.Background(), config, configData)
+
+	names = webhookNamesInStore(t, store)
+	require.Len(t, names, 2)
+	assert.Equal(t, "https://93.184.216.34/hook2", names["from-file"])
+	assert.Contains(t, names, "from-ui")
+
+	// Both are served from memory after the reload.
+	_, ok = config.WebhookEndpointByName("from-ui")
+	assert.True(t, ok)
+}
+
+func TestLoadWebhooksConfigSourceOfTruthPrunes(t *testing.T) {
+	initTestLogger()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+	config := &Config{ConfigStore: store}
+
+	require.NoError(t, store.CreateWebhookEndpoint(context.Background(), testMemoryEndpoint("", "db-only")))
+
+	configData := parseConfigData(t, `{
+		"source_of_truth": "config.json",
+		"webhooks": [
+			{"name": "from-file", "url": "https://93.184.216.34/hook", "events": ["async_job.completed"]}
+		]
+	}`)
+	require.True(t, configData.isConfigJSONSourceOfTruth(), "fixture must opt into file-as-source-of-truth")
+	loadWebhooksConfig(context.Background(), config, configData)
+
+	names := webhookNamesInStore(t, store)
+	require.Len(t, names, 1)
+	assert.Contains(t, names, "from-file")
+	_, ok := config.WebhookEndpointByName("db-only")
+	assert.False(t, ok, "rows absent from the file are pruned when it is the source of truth")
+
+	// Re-running with an unchanged file is a no-op (hash match).
+	loadWebhooksConfig(context.Background(), config, configData)
+	assert.Len(t, webhookNamesInStore(t, store), 1)
+}
+
+func TestLoadWebhooksConfigInvalidDeclarationKeepsEndpoint(t *testing.T) {
+	initTestLogger()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+	config := &Config{ConfigStore: store}
+
+	// A valid endpoint exists in the DB and is re-declared in the file, but
+	// this run's declaration is malformed (bad URL). The source-of-truth
+	// prune must NOT delete the working row over a typo — fail safe.
+	require.NoError(t, store.CreateWebhookEndpoint(context.Background(), testMemoryEndpoint("", "keep-me")))
+
+	configData := parseConfigData(t, `{
+		"source_of_truth": "config.json",
+		"webhooks": [
+			{"name": "keep-me", "url": "not-a-valid-url", "events": ["async_job.completed"]}
+		]
+	}`)
+	require.True(t, configData.isConfigJSONSourceOfTruth())
+	loadWebhooksConfig(context.Background(), config, configData)
+
+	names := webhookNamesInStore(t, store)
+	assert.Contains(t, names, "keep-me", "an invalid declaration must not prune its existing endpoint")
+}
+
+func TestLoadWebhooksConfigWithoutSection(t *testing.T) {
+	initTestLogger()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+	config := &Config{ConfigStore: store}
+
+	require.NoError(t, store.CreateWebhookEndpoint(context.Background(), testMemoryEndpoint("", "db-only")))
+
+	// Source-of-truth mode without a webhooks section must not prune —
+	// presence of the section is what authorizes it.
+	configData := parseConfigData(t, `{"source_of_truth": "config.json"}`)
+	loadWebhooksConfig(context.Background(), config, configData)
+
+	assert.Len(t, webhookNamesInStore(t, store), 1)
+	_, ok := config.WebhookEndpointByName("db-only")
+	assert.True(t, ok, "database endpoints load into memory even with no file section")
 }

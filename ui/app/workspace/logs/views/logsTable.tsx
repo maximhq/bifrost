@@ -8,8 +8,9 @@ import {
 	usePinOffsets,
 } from "@/components/table";
 import { Button } from "@/components/ui/button";
+import { ComboboxSelect, type ComboboxSelectOption } from "@/components/ui/combobox";
 import { Table, TableBody, TableCell, TableRow } from "@/components/ui/table";
-import { useTablePageSize } from "@/hooks/useTablePageSize";
+import { DEFAULT_PAGE_SIZE_OPTIONS, useTablePageSizePreference } from "@/lib/hooks/useTablePageSizePreference";
 import type { LogEntry, Pagination } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
 import type { ColumnOrderState, ColumnPinningState, VisibilityState } from "@tanstack/react-table";
@@ -56,8 +57,7 @@ export function LogsDataTable({
 	onReorderColumns,
 }: DataTableProps) {
 	const [sorting, setSorting] = useState<SortingState>([{ id: pagination.sort_by, desc: pagination.order === "desc" }]);
-	const tableContainerRef = useRef<HTMLDivElement>(null);
-	const calculatedPageSize = useTablePageSize(tableContainerRef);
+	const [pageSizePref, setPageSizePref, pageSizeHydrated] = useTablePageSizePreference("bifrost.logs.pageSize");
 
 	const fixedColumnIds = useMemo(() => new Set<string>(["actions"]), []);
 
@@ -89,15 +89,35 @@ export function LogsDataTable({
 	paginationRef.current = pagination;
 	onPaginationChangeRef.current = onPaginationChange;
 
+	// Apply the page-size preference as the `limit` query param. Wait until the
+	// localStorage value has hydrated — writing the pre-hydration default would
+	// clobber an explicit `limit` already present in the URL (nuqs clears the
+	// default from the URL), causing the param to flip-flop across refreshes.
 	useEffect(() => {
-		if (calculatedPageSize && calculatedPageSize > paginationRef.current.limit) {
+		if (!pageSizeHydrated) return;
+		if (paginationRef.current.limit !== pageSizePref) {
 			onPaginationChangeRef.current({
 				...paginationRef.current,
-				limit: calculatedPageSize,
+				limit: pageSizePref,
 				offset: 0,
 			});
 		}
-	}, [calculatedPageSize]);
+	}, [pageSizePref, pageSizeHydrated]);
+
+	const pageSizeOptions = useMemo<ComboboxSelectOption[]>(
+		() => DEFAULT_PAGE_SIZE_OPTIONS.map((size) => ({ label: String(size), value: String(size) })),
+		[],
+	);
+
+	const handlePageSizeChange = useCallback(
+		(value: string | null) => {
+			if (!value) return;
+			const next = Number(value);
+			setPageSizePref(next);
+			onPaginationChange({ ...pagination, limit: next, offset: 0 });
+		},
+		[onPaginationChange, pagination, setPageSizePref],
+	);
 
 	const handleSortingChange = (updaterOrValue: SortingState | ((old: SortingState) => SortingState)) => {
 		const newSorting = typeof updaterOrValue === "function" ? updaterOrValue(sorting) : updaterOrValue;
@@ -145,7 +165,7 @@ export function LogsDataTable({
 
 	return (
 		<div className="flex h-full flex-col gap-2">
-			<div ref={tableContainerRef} className="min-h-0 flex-1 overflow-hidden rounded-sm border">
+			<div className="min-h-0 flex-1 overflow-hidden rounded-sm border">
 				<Table containerClassName="h-full overflow-auto">
 					<thead className={cn("[&_tr]:border-b px-2 sticky top-0 z-10 bg-[#f9f9f9] dark:bg-[#27272a]")}>
 						{table.getHeaderGroups().map((headerGroup) => (
@@ -249,34 +269,49 @@ export function LogsDataTable({
 					{startItem.toLocaleString()}-{endItem.toLocaleString()} of {totalItems.toLocaleString()} entries
 				</div>
 
-				<div className="flex items-center gap-2">
-					<Button
-						variant="ghost"
-						size="sm"
-						onClick={() => goToPage(currentPage - 1)}
-						disabled={currentPage <= 1}
-						data-testid="prev-page"
-						aria-label="Previous page"
-					>
-						<ChevronLeft className="size-3" />
-					</Button>
-
-					<div className="flex items-center gap-1">
-						<span>Page</span>
-						<span>{currentPage}</span>
-						<span>of {totalPages}</span>
+				<div className="flex items-center gap-3">
+					<div className="flex items-center gap-1.5">
+						<span className="text-muted-foreground">Rows per page</span>
+						<ComboboxSelect
+							options={pageSizeOptions}
+							value={String(pageSizePref)}
+							onValueChange={handlePageSizeChange}
+							disableSearch
+							hideClear
+							className="h-7 w-fit gap-1 text-xs"
+							data-testid="page-size-select"
+						/>
 					</div>
 
-					<Button
-						variant="ghost"
-						size="sm"
-						onClick={() => goToPage(currentPage + 1)}
-						disabled={totalPages === 0 || currentPage >= totalPages}
-						data-testid="next-page"
-						aria-label="Next page"
-					>
-						<ChevronRight className="size-3" />
-					</Button>
+					<div className="flex items-center gap-2">
+						<Button
+							variant="ghost"
+							size="sm"
+							onClick={() => goToPage(currentPage - 1)}
+							disabled={currentPage <= 1}
+							data-testid="prev-page"
+							aria-label="Previous page"
+						>
+							<ChevronLeft className="size-3" />
+						</Button>
+
+						<div className="flex items-center gap-1">
+							<span>Page</span>
+							<span>{currentPage}</span>
+							<span>of {totalPages}</span>
+						</div>
+
+						<Button
+							variant="ghost"
+							size="sm"
+							onClick={() => goToPage(currentPage + 1)}
+							disabled={totalPages === 0 || currentPage >= totalPages}
+							data-testid="next-page"
+							aria-label="Next page"
+						>
+							<ChevronRight className="size-3" />
+						</Button>
+					</div>
 				</div>
 			</div>
 		</div>

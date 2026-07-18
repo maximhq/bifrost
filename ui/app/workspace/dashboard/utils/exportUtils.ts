@@ -115,10 +115,12 @@ export function modelRankingsToCSV(data: ModelRankingsResponse | null): CSVData 
 		"Total Tokens",
 		"Total Cost ($)",
 		"Avg Latency (ms)",
+		"Throughput (tok/s)",
 		"Requests Trend (%)",
 		"Tokens Trend (%)",
 		"Cost Trend (%)",
 		"Latency Trend (%)",
+		"Throughput Trend (%)",
 	];
 	const rows = (data?.rankings ?? []).map((r) => [
 		r.model,
@@ -130,10 +132,12 @@ export function modelRankingsToCSV(data: ModelRankingsResponse | null): CSVData 
 		r.total_tokens,
 		r.total_cost,
 		r.avg_latency,
+		r.throughput,
 		r.trend.has_previous_period ? r.trend.requests_trend : "N/A",
 		r.trend.has_previous_period ? r.trend.tokens_trend : "N/A",
 		r.trend.has_previous_period ? r.trend.cost_trend : "N/A",
 		r.trend.has_previous_period ? r.trend.latency_trend : "N/A",
+		r.trend.has_previous_period ? r.trend.throughput_trend : "N/A",
 	]);
 	return { headers, rows };
 }

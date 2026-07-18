@@ -4004,6 +4004,11 @@ func (h *GovernanceHandler) createRoutingRule(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, err.Error())
 		return
 	}
+	// Reject malformed CEL at write time instead of it silently failing at first evaluation.
+	if err := governance.ValidateRoutingCELExpression(req.CelExpression); err != nil {
+		SendError(ctx, 400, fmt.Sprintf("invalid CEL expression: %s", err.Error()))
+		return
+	}
 
 	// Set defaults and normalize scope/scope_id
 	scope := req.Scope
@@ -4116,6 +4121,12 @@ func (h *GovernanceHandler) updateRoutingRule(ctx *fasthttp.RequestCtx) {
 		rule.ChainRule = *req.ChainRule
 	}
 	if req.CelExpression != nil {
+		// Validate only when the field is supplied, so unrelated updates (e.g. toggling
+		// enabled) never start failing on a pre-existing malformed expression.
+		if err := governance.ValidateRoutingCELExpression(*req.CelExpression); err != nil {
+			SendError(ctx, 400, fmt.Sprintf("invalid CEL expression: %s", err.Error()))
+			return
+		}
 		rule.CelExpression = *req.CelExpression
 	}
 	if req.Targets != nil {

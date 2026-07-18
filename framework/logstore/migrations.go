@@ -274,6 +274,10 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"logs_recreate_filter_customers_matview_multivalue"}, run: migrationRecreateFilterCustomersMatView},
 	{IDs: []string{"logs_add_canonical_model_columns_v2"}, run: migrationAddCanonicalModelColumns},
 	{IDs: []string{"logs_add_redaction_mapping_column"}, run: migrationAddRedactionMappingColumn},
+	{IDs: []string{"webhook_deliveries_init"}, run: migrationCreateWebhookDeliveriesTable},
+	{IDs: []string{"async_jobs_add_webhook_endpoint_id_column"}, run: migrationAddWebhookEndpointIDColumn},
+	{IDs: []string{"async_jobs_add_request_id_column"}, run: migrationAddAsyncJobRequestIDColumn},
+	{IDs: []string{"webhook_deliveries_add_request_id_column"}, run: migrationAddWebhookDeliveryRequestIDColumn},
 }
 
 // areThereAnyPendingMigrations returns true if there are any pending migrations to be applied.
@@ -1553,6 +1557,135 @@ func migrationCreateAsyncJobsTable(ctx context.Context, db *gorm.DB, logger sche
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while creating async_jobs table: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationCreateWebhookDeliveriesTable creates the webhook_deliveries table
+// and its indexes if missing.
+func migrationCreateWebhookDeliveriesTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "webhook_deliveries_init"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			dbMigrator := tx.Migrator()
+			if !dbMigrator.HasTable(&WebhookDelivery{}) {
+				logger.Info("[logstore] %s: creating table WebhookDelivery", migrationName)
+				if err := dbMigrator.CreateTable(&WebhookDelivery{}); err != nil {
+					return err
+				}
+			}
+
+			// Explicitly create indexes as declared in struct tags
+			for _, index := range []string{
+				"idx_webhook_deliveries_webhook_id",
+				"idx_webhook_deliveries_endpoint_id",
+				"idx_webhook_deliveries_created_at",
+				"idx_webhook_deliveries_expires_at",
+			} {
+				if !dbMigrator.HasIndex(&WebhookDelivery{}, index) {
+					logger.Info("[logstore] %s: creating index %s on WebhookDelivery", migrationName, index)
+					if err := dbMigrator.CreateIndex(&WebhookDelivery{}, index); err != nil {
+						return fmt.Errorf("failed to create index %s: %w", index, err)
+					}
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			logger.Info("[logstore] %s: dropping table WebhookDelivery", migrationName)
+			return tx.Migrator().DropTable(&WebhookDelivery{})
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while creating webhook_deliveries table: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddWebhookEndpointIDColumn adds the webhook_endpoint_id column to
+// the async_jobs table. It references the webhook endpoint to notify when a
+// job reaches a terminal state.
+func migrationAddWebhookEndpointIDColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "async_jobs_add_webhook_endpoint_id_column"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return addColumnIfNotExists(tx, logger, &AsyncJob{}, "webhook_endpoint_id")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return dropColumnIfExists(tx, logger, &AsyncJob{}, "webhook_endpoint_id")
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding webhook_endpoint_id column: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddAsyncJobRequestIDColumn adds the request_id column to the
+// async_jobs table: the inference request id the background execution runs
+// under, which is also the id its LLM log row is keyed by.
+func migrationAddAsyncJobRequestIDColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "async_jobs_add_request_id_column"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return addColumnIfNotExists(tx, logger, &AsyncJob{}, "request_id")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return dropColumnIfExists(tx, logger, &AsyncJob{}, "request_id")
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding request_id column: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddWebhookDeliveryRequestIDColumn adds the request_id column to
+// the webhook_deliveries table for databases created before the column
+// existed; fresh databases get it from the table-create migration.
+func migrationAddWebhookDeliveryRequestIDColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "webhook_deliveries_add_request_id_column"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return addColumnIfNotExists(tx, logger, &WebhookDelivery{}, "request_id")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return dropColumnIfExists(tx, logger, &WebhookDelivery{}, "request_id")
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding request_id column to webhook_deliveries: %s", err.Error())
 	}
 	return nil
 }

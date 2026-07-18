@@ -418,6 +418,7 @@ The plugin emits the following metrics to Datadog:
 | `bifrost.cache.hits` | Counter | Cache hits | provider, model, cache_type |
 | `bifrost.stream.first_token_latency` | Histogram | Time to first token (streaming) | provider, model |
 | `bifrost.stream.inter_token_latency` | Histogram | Inter-token latency (streaming) | provider, model |
+| `bifrost.mcp.client.operation.duration` | Histogram | Duration of an MCP tool call (mirrors the OTel semconv `mcp.client.operation.duration`) | mcp_method, mcp_tool_name, network_transport, error_type, virtual_key_id, virtual_key_name, team_id, team_name, customer_id, customer_name, business_unit_id, business_unit_name |
 
 ### Migrating from `bifrost.cost.usd`
 

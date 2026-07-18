@@ -37,6 +37,7 @@ export interface OAuthConfig {
 	registration_url?: string; // Optional, for dynamic client registration
 	scopes?: string[]; // Optional, can be discovered
 	server_url?: string; // MCP server URL for OAuth discovery (automatically set from connection_string)
+	resource?: string; // Optional OAuth resource indicator; omitted when empty
 }
 
 /** OAuth fields allowed on MCP client update (e.g. client_secret-only rotation). */
@@ -67,7 +68,10 @@ export interface MCPClientConfig {
 	per_user_header_keys?: string[];
 	is_ping_available?: boolean;
 	tool_pricing?: Record<string, number>;
-	tool_sync_interval?: number; // Per-client override in minutes (0 = use global, -1 = disabled)
+	// Per-client override (0 = use global, -1 = disabled). API returns NANOSECONDS
+	// (Go time.Duration), while updates send minutes — convert with
+	// toolSyncIntervalToMinutes before showing or resending this value.
+	tool_sync_interval?: number;
 	tool_execution_timeout?: string | number; // Per-client tool execution timeout; API returns string e.g. "30s", UI sends integer seconds (0 = use global)
 	allowed_extra_headers?: string[]; // Allowlist of x-bf-eh-* headers forwarded to this MCP server. ["*"] = allow all.
 	allow_on_all_virtual_keys?: boolean; // When true, available to all VKs with all tools allowed by default; explicit VK config overrides this

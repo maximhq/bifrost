@@ -46,7 +46,6 @@ type OAuth2Provider interface {
 	// RefreshUserAccessToken refreshes a per-user OAuth access token, looked up
 	// by the token row's primary-key ID.
 	RefreshUserAccessToken(ctx context.Context, tokenID string) error
-
 }
 
 // OauthConfig represents OAuth client configuration
@@ -60,6 +59,7 @@ type OAuth2Config struct {
 	RedirectURI     string   `json:"redirect_uri"`               // Required
 	Scopes          []string `json:"scopes,omitempty"`           // Optional: Can be discovered
 	ServerURL       string   `json:"server_url"`                 // MCP server URL for OAuth discovery (required if URLs not provided)
+	Resource        string   `json:"resource,omitempty"`         // Optional OAuth resource indicator (RFC 8707); omitted when empty
 	UseDiscovery    bool     `json:"use_discovery,omitempty"`    // Deprecated: Discovery now happens automatically when URLs are missing
 }
 
@@ -91,6 +91,7 @@ type OAuth2TokenExchangeRequest struct {
 	ClientSecret string `json:"client_secret,omitempty"`
 	RefreshToken string `json:"refresh_token,omitempty"`
 	CodeVerifier string `json:"code_verifier,omitempty"` // PKCE verifier for authorization_code grant
+	Resource     string `json:"resource,omitempty"`      // OAuth resource indicator (RFC 8707)
 }
 
 // OAuth2TokenExchangeResponse represents the OAuth token exchange response

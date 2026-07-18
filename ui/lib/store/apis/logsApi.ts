@@ -14,10 +14,12 @@ import {
 	Pagination,
 	ProviderCostHistogramResponse,
 	ProviderLatencyHistogramResponse,
+	ProviderThroughputHistogramResponse,
 	ProviderTokenHistogramResponse,
 	RankingDimension,
 	RecalcJobStatus,
 	RecalculateCostResponse,
+	ThroughputHistogramResponse,
 	TokenHistogramResponse,
 } from "@/lib/types/logs";
 import { baseApi } from "./baseApi";
@@ -233,6 +235,34 @@ export const logsApi = baseApi.injectEndpoints({
 			providesTags: ["Logs"],
 		}),
 
+		// Get throughput (tokens/sec) histogram
+		getLogsThroughputHistogram: builder.query<
+			ThroughputHistogramResponse,
+			{
+				filters: LogFilters;
+			}
+		>({
+			query: ({ filters }) => ({
+				url: "/logs/histogram/throughput",
+				params: buildFilterParams(filters),
+			}),
+			providesTags: ["Logs"],
+		}),
+
+		// Get provider throughput (tokens/sec) histogram with provider breakdown
+		getLogsProviderThroughputHistogram: builder.query<
+			ProviderThroughputHistogramResponse,
+			{
+				filters: LogFilters;
+			}
+		>({
+			query: ({ filters }) => ({
+				url: "/logs/histogram/throughput/by-provider",
+				params: buildFilterParams(filters),
+			}),
+			providesTags: ["Logs"],
+		}),
+
 		// Get provider cost histogram with provider breakdown
 		getLogsProviderCostHistogram: builder.query<
 			ProviderCostHistogramResponse,
@@ -393,6 +423,8 @@ export const {
 	useGetLogsProviderCostHistogramQuery,
 	useGetLogsProviderTokenHistogramQuery,
 	useGetLogsProviderLatencyHistogramQuery,
+	useGetLogsThroughputHistogramQuery,
+	useGetLogsProviderThroughputHistogramQuery,
 	useGetLogSessionSummaryByIdQuery,
 	useGetDroppedRequestsQuery,
 	useGetAvailableFilterDataQuery,
@@ -407,6 +439,8 @@ export const {
 	useLazyGetLogsProviderCostHistogramQuery,
 	useLazyGetLogsProviderTokenHistogramQuery,
 	useLazyGetLogsProviderLatencyHistogramQuery,
+	useLazyGetLogsThroughputHistogramQuery,
+	useLazyGetLogsProviderThroughputHistogramQuery,
 	useGetModelRankingsQuery,
 	useGetDimensionRankingsQuery,
 	useLazyGetModelRankingsQuery,

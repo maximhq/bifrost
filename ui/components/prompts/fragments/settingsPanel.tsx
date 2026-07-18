@@ -211,7 +211,7 @@ export function SettingsPanel() {
 									/>
 								</div>
 
-								{((!enforceVirtualKeys && providerKeys.length > 0) || providerVirtualKeys.length > 0) && !!provider && (
+								{!!provider && (enforceVirtualKeys ? providerVirtualKeys.length > 0 : true) && (
 									<ApiKeySelectorView
 										providerKeys={providerKeys}
 										virtualKeys={providerVirtualKeys}

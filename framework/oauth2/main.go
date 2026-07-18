@@ -198,6 +198,7 @@ func (p *OAuth2Provider) RefreshAccessToken(ctx context.Context, oauthConfigID s
 		oauthConfig.GetResolvedClientID(),
 		oauthConfig.GetResolvedClientSecret(),
 		token.RefreshToken,
+		strings.TrimSpace(oauthConfig.Resource),
 	)
 	if err != nil {
 		return fmt.Errorf("token refresh failed: %w", err)
@@ -415,6 +416,7 @@ func (p *OAuth2Provider) InitiateOAuthFlow(ctx context.Context, config *schemas.
 	tokenURL := config.TokenURL
 	registrationURL := config.RegistrationURL // Accept user-provided registration URL
 	scopes := config.Scopes
+	resource := strings.TrimSpace(config.Resource)
 
 	// Perform OAuth discovery ONLY if required URLs are missing
 	// This allows users to:
@@ -453,6 +455,10 @@ func (p *OAuth2Provider) InitiateOAuthFlow(ctx context.Context, config *schemas.
 		if registrationURL == nil && metadata.RegistrationURL != nil {
 			registrationURL = metadata.RegistrationURL
 			logger.Debug("Discovered registration_url", "url", *registrationURL)
+		}
+		if resource == "" && metadata.Resource != "" {
+			resource = metadata.Resource
+			logger.Debug("Discovered OAuth resource", "resource", resource)
 		}
 		// Merge scopes: use discovered scopes if user didn't provide any
 		if len(scopes) == 0 && len(metadata.ScopesSupported) > 0 {
@@ -534,6 +540,7 @@ func (p *OAuth2Provider) InitiateOAuthFlow(ctx context.Context, config *schemas.
 		RegistrationURL: registrationURL,
 		RedirectURI:     config.RedirectURI,
 		Scopes:          string(scopesJSON),
+		Resource:        resource,
 		State:           state,
 		CodeVerifier:    codeVerifier,
 		CodeChallenge:   codeChallenge,
@@ -559,6 +566,7 @@ func (p *OAuth2Provider) InitiateOAuthFlow(ctx context.Context, config *schemas.
 		state,
 		codeChallenge,
 		scopes,
+		resource,
 	)
 
 	logger.Debug("OAuth flow initiated successfully: oauth_config_id: %s, client_id: %s", oauthConfigID, resolvedClientID)
@@ -606,6 +614,7 @@ func (p *OAuth2Provider) CompleteOAuthFlow(ctx context.Context, state, code stri
 		oauthConfig.GetResolvedClientSecret(),
 		oauthConfig.RedirectURI,
 		oauthConfig.CodeVerifier, // PKCE verifier
+		strings.TrimSpace(oauthConfig.Resource),
 	)
 	if err != nil {
 		oauthConfig.Status = "failed"
@@ -706,6 +715,7 @@ func (p *OAuth2Provider) BuildUpstreamAuthorizeURL(ctx context.Context, flowID s
 		flow.State,
 		codeChallenge,
 		scopes,
+		strings.TrimSpace(templateConfig.Resource),
 	), nil
 }
 
@@ -714,7 +724,7 @@ func (p *OAuth2Provider) BuildUpstreamAuthorizeURL(ctx context.Context, flowID s
 // authorizeURL. Naive "authorizeURL + ?" + params.Encode() concatenation
 // would produce malformed URLs like "...?existing=1?response_type=code" when
 // the provider's stored URL is already parameterized.
-func (p *OAuth2Provider) buildAuthorizeURLWithPKCE(authorizeURL, clientID, redirectURI, state, codeChallenge string, scopes []string) string {
+func (p *OAuth2Provider) buildAuthorizeURLWithPKCE(authorizeURL, clientID, redirectURI, state, codeChallenge string, scopes []string, resource string) string {
 	parsed, err := url.Parse(authorizeURL)
 	if err != nil {
 		// Fall back to the naive form rather than dropping the auth URL —
@@ -730,6 +740,9 @@ func (p *OAuth2Provider) buildAuthorizeURLWithPKCE(authorizeURL, clientID, redir
 		if len(scopes) > 0 {
 			params.Set("scope", strings.Join(scopes, " "))
 		}
+		if resource != "" {
+			params.Set("resource", resource)
+		}
 		return authorizeURL + "?" + params.Encode()
 	}
 	q := parsed.Query()
@@ -742,18 +755,24 @@ func (p *OAuth2Provider) buildAuthorizeURLWithPKCE(authorizeURL, clientID, redir
 	if len(scopes) > 0 {
 		q.Set("scope", strings.Join(scopes, " "))
 	}
+	if resource != "" {
+		q.Set("resource", resource)
+	}
 	parsed.RawQuery = q.Encode()
 	return parsed.String()
 }
 
 // exchangeCodeForTokensWithPKCE exchanges authorization code for access/refresh tokens with PKCE verifier
-func (p *OAuth2Provider) exchangeCodeForTokensWithPKCE(ctx context.Context, tokenURL, code, clientID, clientSecret, redirectURI, codeVerifier string) (*schemas.OAuth2TokenExchangeResponse, error) {
+func (p *OAuth2Provider) exchangeCodeForTokensWithPKCE(ctx context.Context, tokenURL, code, clientID, clientSecret, redirectURI, codeVerifier, resource string) (*schemas.OAuth2TokenExchangeResponse, error) {
 	data := url.Values{}
 	data.Set("grant_type", "authorization_code")
 	data.Set("code", code)
 	data.Set("redirect_uri", redirectURI)
 	data.Set("client_id", clientID)
 	data.Set("code_verifier", codeVerifier) // PKCE verifier
+	if resource != "" {
+		data.Set("resource", resource)
+	}
 
 	// Only include client_secret if provided (optional for public clients with PKCE)
 	if clientSecret != "" {
@@ -779,11 +798,14 @@ func (p *OAuth2Provider) markExpiredIfPermanent(ctx context.Context, oauthConfig
 }
 
 // exchangeRefreshToken exchanges refresh token for new access token
-func (p *OAuth2Provider) exchangeRefreshToken(ctx context.Context, tokenURL, clientID, clientSecret, refreshToken string) (*schemas.OAuth2TokenExchangeResponse, error) {
+func (p *OAuth2Provider) exchangeRefreshToken(ctx context.Context, tokenURL, clientID, clientSecret, refreshToken, resource string) (*schemas.OAuth2TokenExchangeResponse, error) {
 	data := url.Values{}
 	data.Set("grant_type", "refresh_token")
 	data.Set("refresh_token", refreshToken)
 	data.Set("client_id", clientID)
+	if resource != "" {
+		data.Set("resource", resource)
+	}
 	data.Set("client_secret", clientSecret)
 
 	return p.callTokenEndpoint(ctx, tokenURL, data)
@@ -1125,6 +1147,7 @@ func (p *OAuth2Provider) CompleteUserOAuthFlow(ctx context.Context, state string
 		templateConfig.GetResolvedClientSecret(),
 		redirectURI,
 		session.CodeVerifier,
+		strings.TrimSpace(templateConfig.Resource),
 	)
 	if err != nil {
 		p.cleanupFlow(ctx, session.ID)
@@ -1282,6 +1305,7 @@ func (p *OAuth2Provider) RefreshUserAccessToken(ctx context.Context, tokenID str
 		templateConfig.GetResolvedClientID(),
 		templateConfig.GetResolvedClientSecret(),
 		token.RefreshToken,
+		strings.TrimSpace(templateConfig.Resource),
 	)
 	if err != nil {
 		// Permanent rejection (HTTP 401, or 400 with invalid_grant /
