@@ -2386,14 +2386,25 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 							thinkingConfig := map[string]any{
 								"type": "adaptive",
 							}
-							// default to "summarized" for Opus 4.7+ where omitting is the provider default.
-							if bifrostReq.Params.Reasoning.Summary != nil {
+							// Explicit raw display value round-tripped from an Anthropic-native
+							// inbound request (see anthropic.ToBifrostResponsesRequest) takes
+							// priority — this is what lets an explicit thinking.display:"summarized"
+							// survive when the same request is routed to a Bedrock-hosted Claude
+							// model instead of Anthropic's direct API (GH #5185 cross-provider gap).
+							if explicitDisplay, ok := schemas.SafeExtractStringPointer(bifrostReq.Params.ExtraParams["thinking_display"]); ok && explicitDisplay != nil {
+								thinkingConfig["display"] = *explicitDisplay
+							} else if bifrostReq.Params.Reasoning.Summary != nil {
 								if *bifrostReq.Params.Reasoning.Summary == "none" {
 									thinkingConfig["display"] = "omitted"
 								} else {
 									thinkingConfig["display"] = "summarized"
 								}
-							} else if anthropic.IsAdaptiveOnlyThinkingModel(capModel) {
+							} else if anthropic.IsAdaptiveOnlyThinkingModel(capModel) && !anthropic.IsAnthropicNativeSurface(ctx) {
+								// default to "summarized" for Opus 4.7+ where omitting is the
+								// provider default — skipped when the caller reached us via
+								// Bifrost's own Anthropic-native surface (routed here through
+								// model-catalog aliasing to a Bedrock-hosted model); such callers
+								// expect the provider's own opaque default, not Bifrost's opinion.
 								thinkingConfig["display"] = "summarized"
 							}
 							bedrockReq.AdditionalModelRequestFields.Set("thinking", thinkingConfig)
@@ -2468,7 +2479,17 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 			}
 		}
 		if bifrostReq.Params.ExtraParams != nil {
-			bedrockReq.ExtraParams = bifrostReq.Params.ExtraParams
+			// Clone rather than alias bifrostReq.Params.ExtraParams: this map is
+			// shared across fallback attempts (core/bifrost.go's
+			// prepareFallbackRequest shallow-copies BifrostResponsesRequest,
+			// keeping the same *Params pointer), so deleting a key below must
+			// not mutate the caller's original request — a later fallback
+			// attempt (e.g. to a different Anthropic-family model) still needs
+			// it.
+			bedrockReq.ExtraParams = make(map[string]interface{}, len(bifrostReq.Params.ExtraParams))
+			for k, v := range bifrostReq.Params.ExtraParams {
+				bedrockReq.ExtraParams[k] = v
+			}
 			if stop, ok := schemas.SafeExtractStringSlice(bifrostReq.Params.ExtraParams["stop"]); ok {
 				delete(bedrockReq.ExtraParams, "stop")
 				// GLM models on Bedrock reject the stopSequences field.
@@ -2476,6 +2497,10 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 					inferenceConfig.StopSequences = stop
 				}
 			}
+			// Consumed above (if present) to seed thinkingConfig["display"];
+			// never a real Bedrock wire field, so always dropped here rather
+			// than forwarded via additionalModelRequestFieldPaths.
+			delete(bedrockReq.ExtraParams, "thinking_display")
 			applyBedrockExtraParams(bedrockReq.ExtraParams, bedrockReq)
 			if len(bedrockReq.ExtraParams) == 0 {
 				bedrockReq.ExtraParams = nil

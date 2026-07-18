@@ -18,6 +18,38 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+// TestStripBifrostInternalOnlyExtraParams covers the safety net in
+// CheckContextAndGetRequestBody: Bifrost-internal round-tripping keys (e.g.
+// "thinking_display", used to carry an explicit Anthropic thinking.display
+// value across a fallback to a non-Anthropic provider) must never reach a
+// provider's wire body via the generic ExtraParams passthrough merge, and the
+// original map must not be mutated (it's shared across fallback attempts).
+func TestStripBifrostInternalOnlyExtraParams(t *testing.T) {
+	original := map[string]interface{}{
+		"thinking_display": "summarized",
+		"top_k":            5,
+	}
+
+	filtered := stripBifrostInternalOnlyExtraParams(original)
+
+	if _, exists := filtered["thinking_display"]; exists {
+		t.Error("expected thinking_display to be stripped from the filtered map")
+	}
+	if filtered["top_k"] != 5 {
+		t.Errorf("expected unrelated keys to survive, got %v", filtered)
+	}
+	if _, exists := original["thinking_display"]; !exists {
+		t.Error("original map must not be mutated by stripping")
+	}
+
+	// No-op fast path: a map without any internal-only key must be returned
+	// as-is (same reference), not needlessly copied.
+	clean := map[string]interface{}{"top_k": 5}
+	if got := stripBifrostInternalOnlyExtraParams(clean); len(got) != 1 || got["top_k"] != 5 {
+		t.Errorf("expected clean map to pass through unchanged, got %v", got)
+	}
+}
+
 func TestRewriteJSONModelValue(t *testing.T) {
 	in := []byte(`{"model":"openai/gpt-5","messages":[{"role":"user","content":"x"}]}`)
 	out, changed := rewriteJSONModelValue(in, "openai/gpt-5", "gpt-5")

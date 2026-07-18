@@ -572,11 +572,14 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 			// model-level support.
 			// Opus 4.7+ and the Fable/Mythos family omit reasoning text by
 			// default; default to "summarized" so the text is visible unless
-			// the caller explicitly requests "omitted".
+			// the caller explicitly requests "omitted". Skipped on Bifrost's
+			// own Anthropic-native surface (/anthropic/v1/messages) — a real
+			// Anthropic SDK caller who left display unset expects Anthropic's
+			// own opaque default, not Bifrost's opinion (GH #5185).
 			if anthropicReq.Thinking != nil && anthropicReq.Thinking.Type != "disabled" {
 				if bifrostReq.Params.Reasoning.Display != nil {
 					anthropicReq.Thinking.Display = bifrostReq.Params.Reasoning.Display
-				} else if IsAdaptiveOnlyThinkingModel(capModel) {
+				} else if IsAdaptiveOnlyThinkingModel(capModel) && !IsAnthropicNativeSurface(ctx) {
 					anthropicReq.Thinking.Display = schemas.Ptr("summarized")
 				}
 			}

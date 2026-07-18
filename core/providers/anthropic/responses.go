@@ -3305,6 +3305,19 @@ func (req *AnthropicMessageRequest) ToBifrostResponsesRequest(ctx *schemas.Bifro
 			if req.Thinking.Display != nil && *req.Thinking.Display == "omitted" {
 				summary = schemas.Ptr("none")
 			}
+			// Preserve the raw explicit display value verbatim so the outbound
+			// converter can round-trip it exactly, independent of the lossy
+			// Summary derivation above (which only distinguishes "none" from
+			// "not none" and can't tell "summarized" apart from "unset").
+			// Without this, an explicit display:"summarized" on the native
+			// surface collapses to Summary=nil — indistinguishable from the
+			// caller saying nothing — and the outbound side (once it stops
+			// substituting its own default, see IsAnthropicNativeSurface)
+			// would send the request with display unset, silently dropping
+			// the caller's explicit choice.
+			if req.Thinking.Display != nil {
+				params.ExtraParams["thinking_display"] = *req.Thinking.Display
+			}
 			if req.OutputConfig != nil && req.OutputConfig.Effort != nil {
 				// Native effort present — map to Bifrost enum (e.g., "max" → "high")
 				params.Reasoning = &schemas.ResponsesParametersReasoning{
@@ -3587,14 +3600,20 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 				}
 			}
 			if anthropicReq.Thinking != nil && anthropicReq.Thinking.Type != "disabled" {
-				if bifrostReq.Params.Reasoning != nil &&
+				if explicitDisplay, ok := schemas.SafeExtractStringPointer(bifrostReq.Params.ExtraParams["thinking_display"]); ok && explicitDisplay != nil {
+					// Caller's raw display value, captured verbatim on the inbound
+					// native-surface conversion — takes priority over the
+					// Summary-derived value below so an explicit "summarized"
+					// (which Summary alone can't distinguish from "unset") round-trips.
+					anthropicReq.Thinking.Display = explicitDisplay
+				} else if bifrostReq.Params.Reasoning != nil &&
 					bifrostReq.Params.Reasoning.Summary != nil {
 					if *bifrostReq.Params.Reasoning.Summary == "none" {
 						anthropicReq.Thinking.Display = schemas.Ptr("omitted")
 					} else {
 						anthropicReq.Thinking.Display = schemas.Ptr("summarized")
 					}
-				} else if IsAdaptiveOnlyThinkingModel(capModel) {
+				} else if IsAdaptiveOnlyThinkingModel(capModel) && !IsAnthropicNativeSurface(ctx) {
 					anthropicReq.Thinking.Display = schemas.Ptr("summarized")
 				}
 			}
@@ -3674,6 +3693,12 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 			if inferenceGeo, ok := schemas.SafeExtractStringPointer(bifrostReq.Params.ExtraParams["inference_geo"]); ok {
 				delete(anthropicReq.ExtraParams, "inference_geo")
 				anthropicReq.InferenceGeo = inferenceGeo
+			}
+			if _, exists := anthropicReq.ExtraParams["thinking_display"]; exists {
+				// Consumed above (if a thinking block was present); never a
+				// real top-level Anthropic wire field, so it's dropped
+				// unconditionally rather than only when Thinking was set.
+				delete(anthropicReq.ExtraParams, "thinking_display")
 			}
 			if cmVal := bifrostReq.Params.ExtraParams["context_management"]; cmVal != nil {
 				if cm, ok := cmVal.(*ContextManagement); ok && cm != nil {
