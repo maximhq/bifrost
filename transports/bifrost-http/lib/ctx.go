@@ -238,12 +238,12 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 	// Initialize extra headers map for headers in the mcp header combined allowlist
 	mcpExtraHeaders := make(map[string][]string)
 
-	// The logging plugin groups related requests by ParentRequestID. Prefer the
-	// standard W3C baggage value, then Bifrost's own session header, and finally
-	// the compatibility header emitted by WorkBuddy/CodeBuddy clients.
-	parentRequestID := ParseSessionIDFromBaggage(string(ctx.Request.Header.Peek("baggage")))
+	// The logging plugin groups related requests by ParentRequestID. Prefer
+	// Bifrost's own session header, then the standard W3C baggage value, and
+	// finally the compatibility header emitted by WorkBuddy/CodeBuddy clients.
+	parentRequestID := strings.TrimSpace(string(ctx.Request.Header.Peek("x-bf-session-id")))
 	if parentRequestID == "" {
-		parentRequestID = strings.TrimSpace(string(ctx.Request.Header.Peek("x-bf-session-id")))
+		parentRequestID = ParseSessionIDFromBaggage(string(ctx.Request.Header.Peek("baggage")))
 	}
 	if parentRequestID == "" {
 		parentRequestID = strings.TrimSpace(string(ctx.Request.Header.Peek("x-conversation-id")))

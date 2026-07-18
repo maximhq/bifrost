@@ -307,7 +307,7 @@ func TestConvertToBifrostContext_SessionHeaderPrecedence(t *testing.T) {
 	}{
 		{name: "workbuddy compatibility header", conversation: "conversation-123", want: "conversation-123"},
 		{name: "bifrost header beats compatibility header", bifrost: "bf-session", conversation: "conversation-123", want: "bf-session"},
-		{name: "w3c baggage beats both headers", baggage: "session-id=w3c-session", bifrost: "bf-session", conversation: "conversation-123", want: "w3c-session"},
+		{name: "bifrost header beats w3c baggage", baggage: "session-id=w3c-session", bifrost: "bf-session", conversation: "conversation-123", want: "bf-session"},
 	}
 
 	for _, tt := range tests {
