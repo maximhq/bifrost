@@ -105,7 +105,7 @@ func (request *GeminiGenerationRequest) ToBifrostImageGenerationRequest(ctx *sch
 		// Carry the caller's aspect ratio verbatim — the size round trip above only
 		// preserves a small whitelist of ratios and degrades the rest to square.
 		if ratio := strings.TrimSpace(ic.AspectRatio); ratio != "" {
-			bifrostReq.Params.AspectRatio = &ratio
+			bifrostReq.Params.AspectRatio = new(ratio)
 		}
 	}
 
@@ -314,7 +314,7 @@ func (request *GeminiGenerationRequest) ToBifrostImageEditRequest(ctx *schemas.B
 		// Carry the caller's aspect ratio verbatim — the size round trip above only
 		// preserves a small whitelist of ratios and degrades the rest to square.
 		if ratio := strings.TrimSpace(ic.AspectRatio); ratio != "" {
-			bifrostReq.Params.AspectRatio = &ratio
+			bifrostReq.Params.AspectRatio = new(ratio)
 		}
 	}
 
