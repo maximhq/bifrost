@@ -141,6 +141,7 @@ type Key struct {
 	SGLKeyConfig           *SGLKeyConfig           `json:"sgl_key_config,omitempty"`            // SGLang-specific key configuration
 	Enabled                *bool                   `json:"enabled,omitempty"`                   // Whether the key is active (default:true)
 	UseForBatchAPI         *bool                   `json:"use_for_batch_api,omitempty"`         // Whether this key can be used for batch API operations (default:false for new keys, migrated keys default to true)
+	UseAnthropicEndpoints  *bool                   `json:"use_anthropic_endpoints,omitempty"`   // Whether to use anthropic endpoints for this key
 	ConfigHash             string                  `json:"config_hash,omitempty"`               // Hash of config.json version, used for change detection
 	Status                 KeyStatusType           `json:"status,omitempty"`                    // Status of key
 	Description            string                  `json:"description,omitempty"`               // Description of key
@@ -229,7 +230,8 @@ type AliasConfig struct {
 	// top-level (rather than inside each provider sub-config) so the flat "project_id"
 	// JSON key does not collide between embedded sub-configs — Go/sonic silently drop
 	// a field name shared by multiple same-depth anonymous structs.
-	ProjectID *SecretVar `json:"project_id,omitempty"`
+	ProjectID             *SecretVar `json:"project_id,omitempty"`
+	UseAnthropicEndpoints *bool      `json:"use_anthropic_endpoints,omitempty"` // Whether to use anthropic endpoints for this alias
 
 	*AzureAliasCfg
 	*VertexAliasCfg
@@ -247,6 +249,7 @@ func (ac AliasConfig) isLegacyShape() bool {
 		ac.Description == "" &&
 		ac.Region == nil &&
 		ac.ProjectID == nil &&
+		ac.UseAnthropicEndpoints == nil &&
 		ac.AzureAliasCfg == nil &&
 		ac.VertexAliasCfg == nil &&
 		ac.BedrockAliasCfg == nil &&

@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
-	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 )
@@ -523,7 +522,13 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 		if key.UseForBatchAPI != nil {
 			redactedConfig.Keys[i].UseForBatchAPI = key.UseForBatchAPI
 		} else {
-			redactedConfig.Keys[i].UseForBatchAPI = bifrost.Ptr(false)
+			redactedConfig.Keys[i].UseForBatchAPI = new(false)
+		}
+		// Add back use anthropic endpoints
+		if key.UseAnthropicEndpoints != nil {
+			redactedConfig.Keys[i].UseAnthropicEndpoints = key.UseAnthropicEndpoints
+		} else {
+			redactedConfig.Keys[i].UseAnthropicEndpoints = new(false)
 		}
 
 		// Add model discovery status and error
@@ -852,6 +857,14 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 	}
 	if useForBatchAPI {
 		hash.Write([]byte("useForBatchAPI:true"))
+	}
+	// Hash UseAnthropicEndpoints (nil = default false for new keys)
+	useAnthropicEndpoints := false
+	if key.UseAnthropicEndpoints != nil {
+		useAnthropicEndpoints = *key.UseAnthropicEndpoints
+	}
+	if useAnthropicEndpoints {
+		hash.Write([]byte("useAnthropicEndpoints:true"))
 	}
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
