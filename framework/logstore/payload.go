@@ -349,6 +349,7 @@ func MarshalMCPToolLogPayload(l *MCPToolLog) ([]byte, error) {
 func MergeMCPToolLogPayloadFromJSON(l *MCPToolLog, data []byte) error {
 	hasObject := l.HasObject
 	virtualKey := l.VirtualKey
+	redactionMapping := l.RedactionMapping
 
 	var payload MCPToolLog
 	if err := sonic.Unmarshal(data, &payload); err != nil {
@@ -360,6 +361,7 @@ func MergeMCPToolLogPayloadFromJSON(l *MCPToolLog, data []byte) error {
 	*l = payload
 	l.HasObject = hasObject
 	l.VirtualKey = virtualKey
+	l.RedactionMapping = redactionMapping
 	return nil
 }
 

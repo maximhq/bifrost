@@ -1031,6 +1031,12 @@ func TestMCPHooksDeferDBWriteUntilPostHookBatch(t *testing.T) {
 	ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamID, "team-1")
 	ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, "customer-1")
 	ctx.SetValue(schemas.BifrostContextKeyGovernanceBusinessUnitID, "bu-1")
+	schemas.SetRedactionDataOnContext(ctx, schemas.RedactionData{
+		ReversibleMappings: schemas.RedactionMapsByPhase{
+			Input:  map[string]string{"EMAIL-1": "private@example.com"},
+			Output: map[string]string{"EMAIL-2": "result@example.com"},
+		},
+	})
 
 	toolName := "docs-search"
 	_, _, err = plugin.PreMCPHook(ctx, &schemas.BifrostMCPRequest{
@@ -1049,6 +1055,17 @@ func TestMCPHooksDeferDBWriteUntilPostHookBatch(t *testing.T) {
 	if _, err := store.FindMCPToolLog(context.Background(), "mcp-batch-flow"); !errors.Is(err, logstore.ErrNotFound) {
 		t.Fatalf("expected MCP log to stay in memory before PostMCPHook, got err=%v", err)
 	}
+	pendingValue, ok := plugin.pendingMCPLogsToInject.Load("mcp-batch-flow")
+	if !ok {
+		t.Fatal("expected pending MCP log entry")
+	}
+	pendingEntry, ok := pendingValue.(*logstore.MCPToolLog)
+	if !ok {
+		t.Fatalf("pending MCP log entry has type %T", pendingValue)
+	}
+	if pendingEntry.RedactionData != nil {
+		t.Fatal("expected redaction data to be attached only after PostMCPHook")
+	}
 
 	result := `{"answer":"done"}`
 	_, _, err = plugin.PostMCPHook(ctx, &schemas.BifrostMCPResponse{
@@ -1065,6 +1082,12 @@ func TestMCPHooksDeferDBWriteUntilPostHookBatch(t *testing.T) {
 	}, nil)
 	if err != nil {
 		t.Fatalf("PostMCPHook() error = %v", err)
+	}
+	if pendingEntry.RedactionData == nil {
+		t.Fatal("expected PostMCPHook to attach redaction data")
+	}
+	if got := pendingEntry.RedactionData.ReversibleMappings.Output["EMAIL-2"]; got != "result@example.com" {
+		t.Fatalf("output redaction mapping = %q, want %q", got, "result@example.com")
 	}
 
 	if err := plugin.Cleanup(); err != nil {

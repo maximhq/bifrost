@@ -1000,6 +1000,10 @@ type MCPToolLog struct {
 	HasObject      bool      `gorm:"default:false" json:"-"`                                                      // True when payload is stored in object storage
 	CreatedAt      time.Time `gorm:"index;not null" json:"created_at"`
 
+	RedactionData          *schemas.RedactionData        `gorm:"-" json:"-"`                           // Transient guardrail redaction data consumed by enterprise logstore wrappers
+	RedactionMapping       string                        `gorm:"type:text" json:"-"`                   // Reversible redaction mapping written by enterprise logstore wrappers; deleted with the row
+	RevealRedactionMapping *schemas.RedactionMapsByPhase `gorm:"-" json:"redaction_mapping,omitempty"` // Virtual field populated only on permitted MCP log-detail reads
+
 	// Endpoint-agent context. These are populated for tool calls observed on a
 	// developer machine by the Bifrost Edge agent (rather than proxied by the
 	// gateway). Source distinguishes the origin: empty/null for gateway-proxied

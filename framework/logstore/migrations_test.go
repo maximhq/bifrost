@@ -3,15 +3,34 @@ package logstore
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/driver/postgres"
+	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
+
+// TestMigrationAddMCPRedactionMappingColumn verifies the MCP mapping column is additive, idempotent, and preserves existing rows.
+func TestMigrationAddMCPRedactionMappingColumn(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "migrations.db")), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, db.Exec("CREATE TABLE mcp_tool_logs (id TEXT PRIMARY KEY)").Error)
+	require.NoError(t, db.Exec("INSERT INTO mcp_tool_logs (id) VALUES (?)", "mcp-existing").Error)
+
+	ctx := context.Background()
+	require.NoError(t, migrationAddMCPRedactionMappingColumn(ctx, db, testLogger{}))
+	require.True(t, db.Migrator().HasColumn(&MCPToolLog{}, "RedactionMapping"))
+	require.NoError(t, migrationAddMCPRedactionMappingColumn(ctx, db, testLogger{}))
+
+	var count int64
+	require.NoError(t, db.Table("mcp_tool_logs").Where("id = ?", "mcp-existing").Count(&count).Error)
+	assert.Equal(t, int64(1), count)
+}
 
 // pgTestSchema is this package's dedicated Postgres schema. Test packages
 // (configstore, configstore/tables, logstore) run in parallel against the same

@@ -109,14 +109,35 @@ func applyLargePayloadPreviewsToEntry(ctx *schemas.BifrostContext, entry *logsto
 	}
 }
 
-// attachLogRedactionData copies guardrail redaction data into the log entry for async writers.
-func attachLogRedactionData(ctx *schemas.BifrostContext, entry *logstore.Log, contentLoggingEnabled bool) {
-	if ctx == nil || entry == nil || !contentLoggingEnabled {
-		return
+// redactionDataForLogging returns an owned request snapshot for asynchronous log writers.
+func redactionDataForLogging(ctx *schemas.BifrostContext, contentLoggingEnabled bool) *schemas.RedactionData {
+	if ctx == nil || !contentLoggingEnabled {
+		return nil
 	}
 	if data, ok := schemas.RedactionDataFromContext(ctx); ok {
 		snapshot := data.Clone()
-		entry.RedactionData = &snapshot
+		return &snapshot
+	}
+	return nil
+}
+
+// attachLogRedactionData copies guardrail redaction data into an LLM log entry.
+func attachLogRedactionData(ctx *schemas.BifrostContext, entry *logstore.Log, contentLoggingEnabled bool) {
+	if entry == nil {
+		return
+	}
+	if snapshot := redactionDataForLogging(ctx, contentLoggingEnabled); snapshot != nil {
+		entry.RedactionData = snapshot
+	}
+}
+
+// attachMCPLogRedactionData copies guardrail redaction data into an MCP tool log entry.
+func attachMCPLogRedactionData(ctx *schemas.BifrostContext, entry *logstore.MCPToolLog, contentLoggingEnabled bool) {
+	if entry == nil {
+		return
+	}
+	if snapshot := redactionDataForLogging(ctx, contentLoggingEnabled); snapshot != nil {
+		entry.RedactionData = snapshot
 	}
 }
 
@@ -1815,6 +1836,7 @@ func (p *LoggerPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.Bi
 	p.mu.Lock()
 	callback := p.mcpToolLogCallback
 	p.mu.Unlock()
+	attachMCPLogRedactionData(ctx, entry, p.contentLoggingEnabled(ctx))
 	p.enqueueMCPToolLogEntry(entry, callback)
 
 	return resp, bifrostErr, nil

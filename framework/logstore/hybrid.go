@@ -932,6 +932,10 @@ func applyMCPToolLogUpdateMap(target *MCPToolLog, updates map[string]interface{}
 				target.Metadata = v
 				target.MetadataParsed = nil
 			}
+		case "redaction_mapping":
+			if v, ok := value.(string); ok {
+				target.RedactionMapping = v
+			}
 		case "latency":
 			if v, ok := numericToFloat64(value); ok {
 				target.Latency = &v
@@ -996,6 +1000,9 @@ func applyMCPToolLogUpdateStruct(target *MCPToolLog, update *MCPToolLog) error {
 	if update.Metadata != "" {
 		target.Metadata = update.Metadata
 		target.MetadataParsed = nil
+	}
+	if update.RedactionMapping != "" {
+		target.RedactionMapping = update.RedactionMapping
 	}
 	if !update.CreatedAt.IsZero() {
 		target.CreatedAt = update.CreatedAt
@@ -1077,6 +1084,9 @@ func prepareMCPToolLogDBUpdatesFromStruct(update MCPToolLog) (map[string]any, er
 	}
 	if update.Metadata != "" {
 		out["metadata"] = update.Metadata
+	}
+	if update.RedactionMapping != "" {
+		out["redaction_mapping"] = update.RedactionMapping
 	}
 	if !update.CreatedAt.IsZero() {
 		out["created_at"] = update.CreatedAt

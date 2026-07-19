@@ -274,6 +274,7 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"logs_recreate_filter_customers_matview_multivalue"}, run: migrationRecreateFilterCustomersMatView},
 	{IDs: []string{"logs_add_canonical_model_columns_v2"}, run: migrationAddCanonicalModelColumns},
 	{IDs: []string{"logs_add_redaction_mapping_column"}, run: migrationAddRedactionMappingColumn},
+	{IDs: []string{"mcp_tool_logs_add_redaction_mapping_column"}, run: migrationAddMCPRedactionMappingColumn},
 	{IDs: []string{"webhook_deliveries_init"}, run: migrationCreateWebhookDeliveriesTable},
 	{IDs: []string{"async_jobs_add_webhook_endpoint_id_column"}, run: migrationAddWebhookEndpointIDColumn},
 	{IDs: []string{"async_jobs_add_request_id_column"}, run: migrationAddAsyncJobRequestIDColumn},
@@ -3534,6 +3535,31 @@ func migrationAddRedactionMappingColumn(ctx context.Context, db *gorm.DB, logger
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while adding redaction_mapping column: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddMCPRedactionMappingColumn adds the reversible redaction mapping
+// column to MCP tool logs while keeping its lifecycle coupled to the log row.
+func migrationAddMCPRedactionMappingColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "mcp_tool_logs_add_redaction_mapping_column"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return addColumnIfNotExists(tx.WithContext(ctx), logger, &MCPToolLog{}, "redaction_mapping")
+		},
+		Rollback: func(*gorm.DB) error {
+			// No-op rollback: dropping the column would permanently destroy
+			// reveal data for already-redacted MCP logs.
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding MCP redaction_mapping column: %s", err.Error())
 	}
 	return nil
 }
