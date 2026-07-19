@@ -497,6 +497,11 @@ export interface KeyAttemptRecord {
 	fail_reason?: string | null; // null/undefined on the final (successful or last) attempt
 }
 
+export interface RedactionMapping {
+	input?: Record<string, string>;
+	output?: Record<string, string>;
+}
+
 export interface LogEntry {
 	id: string;
 	object: string; // text.completion, chat.completion, embedding, audio.speech, audio.transcription
@@ -586,10 +591,7 @@ export interface LogEntry {
 	passthrough_request_body?: string; // Raw passthrough request body (UTF-8)
 	passthrough_response_body?: string; // Raw passthrough response body (UTF-8)
 	metadata?: Record<string, string>; // JSON metadata (e.g., isAsyncRequest)
-	redaction_mapping?: {
-		input?: Record<string, string>;
-		output?: Record<string, string>;
-	}; // Phase-scoped placeholder-to-original mappings, present only when caller has Logs:Reveal
+	redaction_mapping?: RedactionMapping; // Phase-scoped placeholder-to-original mappings, present only when caller has Logs:Reveal
 	user_agent?: string; // Raw HTTP User-Agent of the calling client
 	app?: string; // Backend-detected client app
 }
@@ -1141,6 +1143,7 @@ export interface MCPToolLogEntry {
 	cost?: number; // Cost in dollars (per execution cost)
 	status: string; // "processing", "success", or "error"
 	metadata?: Record<string, string>;
+	redaction_mapping?: RedactionMapping; // Present on detail responses only when the caller has Logs:Reveal
 	created_at: string; // ISO string format
 	virtual_key?: VirtualKey;
 	user_agent?: string; // Raw HTTP User-Agent of the calling client
