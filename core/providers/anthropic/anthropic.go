@@ -608,6 +608,13 @@ func (provider *AnthropicProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 // totals only after the full stream, so the streaming accumulator must apply the
 // same fold before billing - including on a mid-stream cancel/timeout. The += is
 // not idempotent; callers guard with a flag to apply it exactly once.
+//
+// NOTE: this fold is ONLY correct when usage.PromptTokens still holds the
+// PRELIMINARY message_start.input_tokens (the full prompt before the cache
+// breakdown is known). When applyStreamUsageEvent has already processed a
+// message_delta event, the cache breakdown is already folded into PromptTokens
+// and the caller MUST skip this fold (else it double-counts). The streaming
+// chat handler tracks this via the deltaProcessed flag.
 func normalizeCachedUsage(usage *schemas.BifrostLLMUsage) {
 	if usage == nil || usage.PromptTokensDetails == nil {
 		return
@@ -615,6 +622,138 @@ func normalizeCachedUsage(usage *schemas.BifrostLLMUsage) {
 	cached := usage.PromptTokensDetails.CachedReadTokens + usage.PromptTokensDetails.CachedWriteTokens
 	usage.PromptTokens += cached
 	usage.TotalTokens += cached
+}
+
+// applyStreamUsageEvent folds a single Anthropic stream event's usage snapshot
+// into the accumulating Bifrost usage and returns whether the event was a
+// message_delta whose usage was applied as the authoritative final snapshot.
+//
+// Per the Anthropic Messages API streaming spec, a stream emits two usage
+// snapshots:
+//   - message_start: preliminary usage nested under message.usage; the full
+//     prompt as input_tokens, cache fields typically still zero because the
+//     cache breakdown is not yet computed.
+//   - message_delta: authoritative post-cache breakdown; input_tokens is the
+//     UNCACHED tail, and cache_creation_input_tokens + cache_read_input_tokens
+//     decompose the cached portion of the same total.
+//
+// message_delta.usage OVERWRITES message_start.usage wholesale (it does NOT
+// merge-with or add-to). The authoritative prompt total is
+//
+//	delta.input_tokens + delta.cache_creation_input_tokens + delta.cache_read_input_tokens.
+//
+// All input-side fields on both BifrostLLMUsage and AnthropicUsage are
+// non-pointer Go int, so JSON deserialization cannot distinguish "field absent"
+// from "field present-but-zero" — this is why the message_delta branch uses an
+// EVENT-LEVEL unconditional overwrite rather than per-field `if != 0` checks
+// (which would wrongly skip a legitimately-zero input_tokens on an
+// all-cache-hit delta).
+//
+// startSnapshot is the message_start event's usage, captured by the caller; it
+// backs the impossible-zero guard. A conformant Anthropic prompt always has
+// PromptTokens >= 1 (input_tokens >= 1 for any non-empty request), so
+// PromptTokens == 0 after the overwrite is a DEFINITIVE signal of a
+// non-conformant Anthropic-compatible provider that emitted a partial-usage
+// message_delta (input_tokens=0 with cache fields omitted, deserializing to
+// zero for non-pointer Go int). The guard restores the start-side snapshot as
+// the best available approximation. The guard is DEAD CODE for spec-conformant
+// providers (zero behavior change).
+//
+// The caller MUST skip the end-of-stream normalizeCachedUsage fold when this
+// returns true, because the cache breakdown is already folded into
+// PromptTokens by the overwrite (folding again would double-count).
+func applyStreamUsageEvent(
+	usage *schemas.BifrostLLMUsage,
+	eventType AnthropicStreamEventType,
+	usageToProcess *AnthropicUsage,
+	startSnapshot *AnthropicUsage,
+) bool {
+	if usage == nil || usageToProcess == nil {
+		return false
+	}
+
+	if eventType == AnthropicStreamEventTypeMessageDelta {
+		// Authoritative final snapshot: overwrite input-side fields wholesale.
+		if usage.PromptTokensDetails == nil {
+			usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{}
+		}
+		usage.PromptTokensDetails.CachedReadTokens = usageToProcess.CacheReadInputTokens
+		usage.PromptTokensDetails.CachedWriteTokens = usageToProcess.CacheCreationInputTokens
+		if usageToProcess.CacheCreation.Ephemeral5mInputTokens > 0 || usageToProcess.CacheCreation.Ephemeral1hInputTokens > 0 {
+			if usage.PromptTokensDetails.CachedWriteTokenDetails == nil {
+				usage.PromptTokensDetails.CachedWriteTokenDetails = &schemas.ChatCachedWriteTokenDetails{}
+			}
+			if usageToProcess.CacheCreation.Ephemeral5mInputTokens > usage.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens5m {
+				usage.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens5m = usageToProcess.CacheCreation.Ephemeral5mInputTokens
+			}
+			if usageToProcess.CacheCreation.Ephemeral1hInputTokens > usage.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h {
+				usage.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h = usageToProcess.CacheCreation.Ephemeral1hInputTokens
+			}
+		}
+		// Reconstruct the authoritative prompt total from delta's three
+		// components (uncached tail + cache creation + cache read).
+		usage.PromptTokens = usageToProcess.InputTokens + usageToProcess.CacheReadInputTokens + usageToProcess.CacheCreationInputTokens
+		// OutputTokens on message_delta is the cumulative output count.
+		if usageToProcess.OutputTokens > usage.CompletionTokens {
+			usage.CompletionTokens = usageToProcess.OutputTokens
+		}
+		// Impossible-zero guard: restore start-side when a non-conformant
+		// provider emits a partial-usage delta (input=0 + cache fields omitted).
+		if usage.PromptTokens == 0 && startSnapshot != nil && startSnapshot.InputTokens > 0 {
+			usage.PromptTokens = startSnapshot.InputTokens
+			usage.PromptTokensDetails.CachedReadTokens = startSnapshot.CacheReadInputTokens
+			usage.PromptTokensDetails.CachedWriteTokens = startSnapshot.CacheCreationInputTokens
+		}
+		calculatedTotal := usage.PromptTokens + usage.CompletionTokens
+		if calculatedTotal > usage.TotalTokens {
+			usage.TotalTokens = calculatedTotal
+		}
+		return true
+	}
+
+	// message_start (or any non-delta event carrying usage): max-keep capture.
+	// This serves as the fallback when message_delta never arrives (early
+	// stream termination); normalizeCachedUsage folds cache into prompt at
+	// stream end for that case via the normalizeUsage closure.
+	if usageToProcess.InputTokens > usage.PromptTokens {
+		usage.PromptTokens = usageToProcess.InputTokens
+	}
+	if usageToProcess.OutputTokens > usage.CompletionTokens {
+		usage.CompletionTokens = usageToProcess.OutputTokens
+	}
+	calculatedTotal := usage.PromptTokens + usage.CompletionTokens
+	if calculatedTotal > usage.TotalTokens {
+		usage.TotalTokens = calculatedTotal
+	}
+	// Handle cached tokens if present
+	if usageToProcess.CacheReadInputTokens > 0 {
+		if usage.PromptTokensDetails == nil {
+			usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{}
+		}
+		if usageToProcess.CacheReadInputTokens > usage.PromptTokensDetails.CachedReadTokens {
+			usage.PromptTokensDetails.CachedReadTokens = usageToProcess.CacheReadInputTokens
+		}
+	}
+	if usageToProcess.CacheCreationInputTokens > 0 {
+		if usage.PromptTokensDetails == nil {
+			usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{}
+		}
+		if usageToProcess.CacheCreationInputTokens > usage.PromptTokensDetails.CachedWriteTokens {
+			usage.PromptTokensDetails.CachedWriteTokens = usageToProcess.CacheCreationInputTokens
+		}
+		if usageToProcess.CacheCreation.Ephemeral5mInputTokens > 0 || usageToProcess.CacheCreation.Ephemeral1hInputTokens > 0 {
+			if usage.PromptTokensDetails.CachedWriteTokenDetails == nil {
+				usage.PromptTokensDetails.CachedWriteTokenDetails = &schemas.ChatCachedWriteTokenDetails{}
+			}
+			if usageToProcess.CacheCreation.Ephemeral5mInputTokens > usage.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens5m {
+				usage.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens5m = usageToProcess.CacheCreation.Ephemeral5mInputTokens
+			}
+			if usageToProcess.CacheCreation.Ephemeral1hInputTokens > usage.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h {
+				usage.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h = usageToProcess.CacheCreation.Ephemeral1hInputTokens
+			}
+		}
+	}
+	return false
 }
 
 func accumulateAnthropicResponsesUsage(usage *schemas.ResponsesResponseUsage, billedUsage *schemas.BifrostLLMUsage, usageToProcess *AnthropicUsage) {
@@ -883,6 +1022,16 @@ func HandleAnthropicChatCompletionStreaming(
 		var finishReason *string
 
 		usage := &schemas.BifrostLLMUsage{}
+		// startSnapshot captures the message_start event's preliminary usage; it
+		// backs the impossible-zero guard in applyStreamUsageEvent (restoring the
+		// start-side when a non-conformant provider emits a partial-usage delta)
+		// and the delta-absent fallback when the stream ends before message_delta.
+		var startSnapshot *AnthropicUsage
+		// deltaProcessed is set true once applyStreamUsageEvent processes a
+		// message_delta event (the authoritative final snapshot). When true the
+		// normalizeUsage closure skips the normalizeCachedUsage fold because the
+		// cache breakdown is already folded into PromptTokens by the overwrite.
+		deltaProcessed := false
 		// Served billing modifiers (top-level response fields, not usage) captured
 		// across events and set on the final chunk: fast mode and data residency.
 		var servedSpeed *string
@@ -896,14 +1045,18 @@ func HandleAnthropicChatCompletionStreaming(
 		// path calls normalizeUsage() after the loop; on a mid-stream cancel/timeout
 		// the deferred call below runs first (LIFO, registered after the cancellation
 		// handler at the top of the goroutine) so HandleStreamCancellation/Timeout
-		// bills the normalized totals.
+		// bills the normalized totals. The fold is SKIPPED when a message_delta
+		// event already reconstructed PromptTokens from the authoritative cache
+		// breakdown (deltaProcessed) — folding again would double-count.
 		usageNormalized := false
 		normalizeUsage := func() {
 			if usageNormalized {
 				return
 			}
 			usageNormalized = true
-			normalizeCachedUsage(usage)
+			if !deltaProcessed {
+				normalizeCachedUsage(usage)
+			}
 		}
 		defer func() {
 			if ctx.Err() != nil {
@@ -961,6 +1114,12 @@ func HandleAnthropicChatCompletionStreaming(
 			} else if event.Message != nil && event.Message.Usage != nil {
 				usageToProcess = event.Message.Usage
 			}
+			// Capture the message_start usage snapshot; it backs the
+			// impossible-zero guard in applyStreamUsageEvent for non-conformant
+			// providers and the delta-absent fallback path.
+			if event.Type == AnthropicStreamEventTypeMessageStart && usageToProcess != nil {
+				startSnapshot = usageToProcess
+			}
 			if usageToProcess != nil {
 				// Web search request count → billed as search queries (server tool use).
 				if usageToProcess.ServerToolUse != nil && usageToProcess.ServerToolUse.WebSearchRequests > 0 {
@@ -982,47 +1141,14 @@ func HandleAnthropicChatCompletionStreaming(
 					servedInferenceGeo = usageToProcess.InferenceGeo
 					usage.InferenceGeo = usageToProcess.InferenceGeo
 				}
-				// Collect usage information and send at the end of the stream
-				// Here in some cases usage comes before final message
-				// So we need to check if the response.Usage is nil and then if usage != nil
-				// then add up all tokens
-				if usageToProcess.InputTokens > usage.PromptTokens {
-					usage.PromptTokens = usageToProcess.InputTokens
-				}
-				if usageToProcess.OutputTokens > usage.CompletionTokens {
-					usage.CompletionTokens = usageToProcess.OutputTokens
-				}
-				calculatedTotal := usage.PromptTokens + usage.CompletionTokens
-				if calculatedTotal > usage.TotalTokens {
-					usage.TotalTokens = calculatedTotal
-				}
-				// Handle cached tokens if present
-				if usageToProcess.CacheReadInputTokens > 0 {
-					if usage.PromptTokensDetails == nil {
-						usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{}
-					}
-					if usageToProcess.CacheReadInputTokens > usage.PromptTokensDetails.CachedReadTokens {
-						usage.PromptTokensDetails.CachedReadTokens = usageToProcess.CacheReadInputTokens
-					}
-				}
-				if usageToProcess.CacheCreationInputTokens > 0 {
-					if usage.PromptTokensDetails == nil {
-						usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{}
-					}
-					if usageToProcess.CacheCreationInputTokens > usage.PromptTokensDetails.CachedWriteTokens {
-						usage.PromptTokensDetails.CachedWriteTokens = usageToProcess.CacheCreationInputTokens
-					}
-					if usageToProcess.CacheCreation.Ephemeral5mInputTokens > 0 || usageToProcess.CacheCreation.Ephemeral1hInputTokens > 0 {
-						if usage.PromptTokensDetails.CachedWriteTokenDetails == nil {
-							usage.PromptTokensDetails.CachedWriteTokenDetails = &schemas.ChatCachedWriteTokenDetails{}
-						}
-						if usageToProcess.CacheCreation.Ephemeral5mInputTokens > usage.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens5m {
-							usage.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens5m = usageToProcess.CacheCreation.Ephemeral5mInputTokens
-						}
-						if usageToProcess.CacheCreation.Ephemeral1hInputTokens > usage.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h {
-							usage.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h = usageToProcess.CacheCreation.Ephemeral1hInputTokens
-						}
-					}
+				// Fold the event's usage snapshot into the accumulator. On
+				// message_delta this overwrites message_start wholesale and
+				// reconstructs PromptTokens from the authoritative cache
+				// breakdown (delta.input + cache_creation + cache_read); on
+				// message_start (or any other event) it max-keeps the
+				// preliminary values as the delta-absent fallback.
+				if applyStreamUsageEvent(usage, event.Type, usageToProcess, startSnapshot) {
+					deltaProcessed = true
 				}
 			}
 			if event.Message != nil {
