@@ -3453,6 +3453,12 @@ func convertContentBlockToGeminiPart(block schemas.ResponsesMessageContentBlock,
 			}
 		}
 
+	case schemas.ResponsesOutputMessageContentTypeFallback:
+		// Anthropic-specific server-side fallback boundary marker. Unlike compaction it
+		// carries no user content (only from/to model names), so drop it rather than
+		// rendering it as text.
+		return nil, nil
+
 	case schemas.ResponsesInputMessageContentBlockTypeImage:
 		if block.ResponsesInputMessageContentBlockImage != nil && block.ResponsesInputMessageContentBlockImage.ImageURL != nil {
 			imageURL := *block.ResponsesInputMessageContentBlockImage.ImageURL

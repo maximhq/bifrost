@@ -4501,6 +4501,11 @@ func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx conte
 				if block.ResponsesOutputMessageContentCompaction != nil {
 					bedrockBlock.Text = &block.ResponsesOutputMessageContentCompaction.Summary
 				}
+			case schemas.ResponsesOutputMessageContentTypeFallback:
+				// Anthropic-only server-side fallback boundary marker; Bedrock doesn't
+				// support the feature. Unlike compaction it carries no user content
+				// (only from/to model names), so skip it entirely.
+				continue
 			case schemas.ResponsesInputMessageContentBlockTypeFile:
 				if block.ResponsesInputMessageContentBlockFile != nil {
 					doc := &BedrockDocumentSource{

@@ -1801,6 +1801,11 @@ func convertResponsesMessageContentBlocksToCohere(blocks []schemas.ResponsesMess
 					Thinking: block.Text,
 				})
 			}
+		case schemas.ResponsesOutputMessageContentTypeFallback:
+			// Anthropic-only server-side fallback boundary marker. Unlike compaction it
+			// carries no user content (only from/to model names), so drop it rather than
+			// rendering it as text.
+			continue
 		case schemas.ResponsesOutputMessageContentTypeCompaction:
 			// Convert compaction to text block for Cohere (compaction is Anthropic-specific)
 			if block.ResponsesOutputMessageContentCompaction != nil {
