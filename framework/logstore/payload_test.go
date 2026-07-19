@@ -206,12 +206,17 @@ func TestMCPToolLogPayload_RoundTripFullLog(t *testing.T) {
 		MetadataParsed: map[string]interface{}{
 			"trace": "abc",
 		},
+		RedactionData: &schemas.RedactionData{
+			ReversibleMappings: schemas.RedactionMapsByPhase{Input: map[string]string{"EMAIL-1": "private@example.com"}},
+		},
+		RedactionMapping: `plain:{"input":{"EMAIL-1":"private@example.com"}}`,
 	}
 
 	data, err := MarshalMCPToolLogPayload(entry)
 	require.NoError(t, err)
+	assert.NotContains(t, string(data), "private@example.com")
 
-	dbEntry := &MCPToolLog{HasObject: true}
+	dbEntry := &MCPToolLog{HasObject: true, RedactionMapping: entry.RedactionMapping}
 	err = MergeMCPToolLogPayloadFromJSON(dbEntry, data)
 	require.NoError(t, err)
 
@@ -225,6 +230,23 @@ func TestMCPToolLogPayload_RoundTripFullLog(t *testing.T) {
 	assert.Equal(t, true, dbEntry.ResultParsed.(map[string]interface{})["ok"])
 	assert.Equal(t, "stored for round trip", dbEntry.ErrorDetailsParsed.Error.Message)
 	assert.Equal(t, "abc", dbEntry.MetadataParsed["trace"])
+	assert.Equal(t, entry.RedactionMapping, dbEntry.RedactionMapping)
+	assert.Nil(t, dbEntry.RedactionData)
+}
+
+// TestMCPToolLogRedactionMappingJSONVisibility verifies only the authorized virtual mapping is API-visible.
+func TestMCPToolLogRedactionMappingJSONVisibility(t *testing.T) {
+	entry := &MCPToolLog{
+		RedactionMapping: `plain:{"input":{"EMAIL-1":"private@example.com"}}`,
+		RevealRedactionMapping: &schemas.RedactionMapsByPhase{
+			Input: map[string]string{"EMAIL-1": "revealed@example.com"},
+		},
+	}
+
+	data, err := sonic.Marshal(entry)
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "private@example.com")
+	assert.Contains(t, string(data), `"redaction_mapping":{"input":{"EMAIL-1":"revealed@example.com"}}`)
 }
 
 func TestPrepareMCPToolDBEntry_KeepsOnlyInputPreview(t *testing.T) {
