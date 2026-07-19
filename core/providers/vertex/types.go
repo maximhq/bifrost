@@ -431,10 +431,12 @@ type VertexBatchJobListResponse struct {
 }
 
 // VertexBatchOutputLine is one line of a predictions-*.jsonl batch output file.
-// The original request is echoed back; labels carry the Bifrost custom_id.
+// The original request is echoed back; the Bifrost custom_id round-trips via the native
+// top-level "custom_id" (Anthropic/Claude jobs) or the request labels (Gemini jobs).
 type VertexBatchOutputLine struct {
-	Status  string `json:"status,omitempty"` // error string for failed records, empty on success
-	Request struct {
+	CustomID string `json:"custom_id,omitempty"` // native custom_id echoed by Anthropic-on-Vertex batch
+	Status   string `json:"status,omitempty"`    // error string for failed records, empty on success
+	Request  struct {
 		Labels map[string]string `json:"labels"`
 	} `json:"request"`
 	Response map[string]interface{} `json:"response,omitempty"`
