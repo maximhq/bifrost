@@ -1656,6 +1656,11 @@ func isOpenAIReasoningModel(model string) bool {
 	return len(name) == 2 || name[2] == '-'
 }
 
+// IsAzureModelRouter reports whether model is Azure's model-router model.
+func IsAzureModelRouter(model string) bool {
+	return strings.Contains(model, "model-router")
+}
+
 // IsElevenlabsSoundModel checks if the model targets ElevenLabs' text-to-sound
 // effects API (POST /v1/sound-generation, e.g. "eleven_text_to_sound_v2")
 // rather than text-to-speech. These models are not tied to a voice.
