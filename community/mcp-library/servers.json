@@ -2297,6 +2297,27 @@
         "automation"
       ],
       "icon_url": "https://xquik.com/icons/mcp/xquik.png"
+    },
+    {
+      "name": "Latchshot",
+      "description": "Capture screenshots and PDFs of public web pages as inline MCP artifacts, with render diagnostics and usage reporting.",
+      "category": "Developer Tools",
+      "connection_type": "http",
+      "connection_url": "https://latchshot.fly.dev/mcp",
+      "auth_type": "headers",
+      "required_header_keys": [
+        "Authorization"
+      ],
+      "docs_url": "https://latchshot.fly.dev/guides/screenshot-mcp-server.html",
+      "publisher": "Latchshot",
+      "tags": [
+        "screenshots",
+        "pdf",
+        "browser-automation",
+        "rendering",
+        "remote"
+      ],
+      "icon_url": "https://latchshot.fly.dev/favicon.svg"
     }
   ]
 }
