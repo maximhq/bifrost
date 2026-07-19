@@ -40731,6 +40731,317 @@
           ]
         }
       ]
+    },
+    {
+      "name": "26. Anthropic Native Server-Side Fallback (fallbacks shape overload)",
+      "description": "Pins the overloaded request-level `fallbacks` wire key on /anthropic/v1/messages.\nTwo unrelated features share the key and are disambiguated by element shape:\n  - array of STRINGS  (\"provider/model\") = Bifrost cross-provider gateway fallback.\n  - array of OBJECTS  ([{\"model\": \"...\"}]) = Anthropic native server-side fallback\n    (beta server-side-fallback-2026-06-01, refusal fallback).\n\nRegressions pinned:\n  1. Object-form fallbacks used to fail Bifrost-side unmarshalling with 'Invalid JSON'\n     because AnthropicMessageRequest.Fallbacks was typed []string. It is now a shape\n     tolerant union, so both forms parse.\n  2. Native (object) fallbacks are Anthropic-only. Forwarding them to Vertex, Bedrock,\n     Bedrock Mantle or Azure produced a live 400 'fallbacks: Extra inputs are not\n     permitted', because AddMissingBetaHeadersToContext correctly withholds the beta\n     header there while the field was still forwarded. Bifrost now strips native\n     entries fail-closed for providers whose ProviderFeatures.ServerSideFallback is\n     false. Note bedrock_mantle is NOT supported: it is Bedrock's native Anthropic\n     surface, but feature availability still follows Amazon Bedrock.\n  3. Bifrost string-form fallbacks must keep working and must never leak to a provider.\n\nBoth the Claude Code passthrough path (claude-cli User-Agent -> raw request body) and\nthe normalized path are covered, since the strip runs on the shared egress tail.\n\nNot covered here: the `fallback` content block and stop_reason 'refusal'. Those only\noccur when a safety classifier actually declines a request, which is non-deterministic\nand inappropriate to provoke in a live sweep; they are covered by Go unit tests in\ncore/providers/anthropic/serversidefallback_test.go.",
+      "item": [
+        {
+          "name": "vertex/claude-opus-4-7 · native object fallbacks stripped for unsupported provider",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-opus-4-7\",\n  \"max_tokens\": 64,\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }],\n  \"fallbacks\": [{ \"model\": \"claude-opus-4-8\" }]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Infra noise (auth / rate limit / upstream 5xx) skips so it does not false-fail.",
+                  "// 400 is deliberately NOT guarded here - a 400 IS the regression signature for this folder.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var raw = pm.response.text() || '';",
+                  "pm.test('vertex/claude-opus-4-7: native fallbacks parsed and stripped, no provider rejection', function () {",
+                  "  // Original report: object-form fallbacks failed to unmarshal into []string -> 'Invalid JSON'.",
+                  "  pm.expect(raw.toLowerCase().indexOf('invalid json'), 'Bifrost failed to parse the fallbacks field: ' + raw).to.equal(-1);",
+                  "  // Live 400 signature when the field reaches a target that does not accept it.",
+                  "  pm.expect(raw.indexOf('Extra inputs are not permitted'), 'fallbacks reached a target that rejects it: ' + raw).to.equal(-1);",
+                  "  // The provider does not support server-side fallback, so Bifrost must strip the",
+                  "  // native entries before egress (the beta header is withheld there too).",
+                  "  pm.expect(pm.response.code, 'request failed: ' + raw).to.be.below(400);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "vertex/claude-opus-4-7 · native object fallbacks stripped on Claude Code passthrough (claude-cli UA)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/1.0"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-opus-4-7\",\n  \"max_tokens\": 64,\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }],\n  \"fallbacks\": [{ \"model\": \"claude-opus-4-8\" }]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Infra noise (auth / rate limit / upstream 5xx) skips so it does not false-fail.",
+                  "// 400 is deliberately NOT guarded here - a 400 IS the regression signature for this folder.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var raw = pm.response.text() || '';",
+                  "pm.test('vertex/claude-opus-4-7 Claude Code passthrough: native fallbacks stripped from the raw body', function () {",
+                  "  // Original report: object-form fallbacks failed to unmarshal into []string -> 'Invalid JSON'.",
+                  "  pm.expect(raw.toLowerCase().indexOf('invalid json'), 'Bifrost failed to parse the fallbacks field: ' + raw).to.equal(-1);",
+                  "  // Live 400 signature when the field reaches a target that does not accept it.",
+                  "  pm.expect(raw.indexOf('Extra inputs are not permitted'), 'fallbacks reached a target that rejects it: ' + raw).to.equal(-1);",
+                  "  // A claude-cli User-Agent puts Bifrost on the raw-request-body passthrough path.",
+                  "  // If newman strips the custom User-Agent this still exercises the normalized path;",
+                  "  // either way the native fallbacks must not reach Vertex.",
+                  "  pm.expect(pm.response.code, 'request failed: ' + raw).to.be.below(400);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock/global.anthropic.claude-opus-4-7 · native object fallbacks stripped for unsupported provider",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-opus-4-7\",\n  \"max_tokens\": 64,\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }],\n  \"fallbacks\": [{ \"model\": \"claude-opus-4-8\" }]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Infra noise (auth / rate limit / upstream 5xx) skips so it does not false-fail.",
+                  "// 400 is deliberately NOT guarded here - a 400 IS the regression signature for this folder.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var raw = pm.response.text() || '';",
+                  "pm.test('bedrock/global.anthropic.claude-opus-4-7: native fallbacks parsed and stripped', function () {",
+                  "  // Original report: object-form fallbacks failed to unmarshal into []string -> 'Invalid JSON'.",
+                  "  pm.expect(raw.toLowerCase().indexOf('invalid json'), 'Bifrost failed to parse the fallbacks field: ' + raw).to.equal(-1);",
+                  "  // Live 400 signature when the field reaches a target that does not accept it.",
+                  "  pm.expect(raw.indexOf('Extra inputs are not permitted'), 'fallbacks reached a target that rejects it: ' + raw).to.equal(-1);",
+                  "  // The provider does not support server-side fallback, so Bifrost must strip the",
+                  "  // native entries before egress (the beta header is withheld there too).",
+                  "  pm.expect(pm.response.code, 'request failed: ' + raw).to.be.below(400);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock_mantle/anthropic.claude-opus-4-8 · native object fallbacks stripped (mantle is not supported)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock_mantle/anthropic.claude-opus-4-8\",\n  \"max_tokens\": 64,\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }],\n  \"fallbacks\": [{ \"model\": \"claude-opus-4-8\" }]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Infra noise (auth / rate limit / upstream 5xx) skips so it does not false-fail.",
+                  "// 400 is deliberately NOT guarded here - a 400 IS the regression signature for this folder.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var raw = pm.response.text() || '';",
+                  "pm.test('bedrock_mantle/anthropic.claude-opus-4-8: native fallbacks stripped (Bedrock feature set)', function () {",
+                  "  // Original report: object-form fallbacks failed to unmarshal into []string -> 'Invalid JSON'.",
+                  "  pm.expect(raw.toLowerCase().indexOf('invalid json'), 'Bifrost failed to parse the fallbacks field: ' + raw).to.equal(-1);",
+                  "  // Live 400 signature when the field reaches a target that does not accept it.",
+                  "  pm.expect(raw.indexOf('Extra inputs are not permitted'), 'fallbacks reached a target that rejects it: ' + raw).to.equal(-1);",
+                  "  // bedrock_mantle reaches Claude through the native Anthropic Messages surface, but",
+                  "  // server-side fallback follows Amazon Bedrock availability, i.e. unsupported.",
+                  "  pm.expect(pm.response.code, 'request failed: ' + raw).to.be.below(400);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "anthropic/claude-opus-4-7 · Bifrost string fallbacks are not leaked to the provider",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-opus-4-7\",\n  \"max_tokens\": 64,\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }],\n  \"fallbacks\": [\"anthropic/claude-sonnet-4-6\"]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Infra noise (auth / rate limit / upstream 5xx) skips so it does not false-fail.",
+                  "// 400 is deliberately NOT guarded here - a 400 IS the regression signature for this folder.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var raw = pm.response.text() || '';",
+                  "pm.test('anthropic/claude-opus-4-7: Bifrost string fallbacks consumed by the gateway, not forwarded', function () {",
+                  "  // Original report: object-form fallbacks failed to unmarshal into []string -> 'Invalid JSON'.",
+                  "  pm.expect(raw.toLowerCase().indexOf('invalid json'), 'Bifrost failed to parse the fallbacks field: ' + raw).to.equal(-1);",
+                  "  // Live 400 signature when the field reaches a target that does not accept it.",
+                  "  pm.expect(raw.indexOf('Extra inputs are not permitted'), 'fallbacks reached a target that rejects it: ' + raw).to.equal(-1);",
+                  "  // String entries are Bifrost gateway failover targets; Anthropic never sees them.",
+                  "  pm.expect(pm.response.code, 'request failed: ' + raw).to.be.below(400);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "anthropic/claude-fable-5 · native object fallbacks forwarded with server-side-fallback beta",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-fable-5\",\n  \"max_tokens\": 64,\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }],\n  \"fallbacks\": [{ \"model\": \"claude-opus-4-8\" }]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Infra noise (auth / rate limit / upstream 5xx) skips so it does not false-fail.",
+                  "// 400 is deliberately NOT guarded here - a 400 IS the regression signature for this folder.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var raw = pm.response.text() || '';",
+                  "pm.test('anthropic/claude-fable-5: native fallbacks accepted (beta header auto-injected)', function () {",
+                  "  // Original report: object-form fallbacks failed to unmarshal into []string -> 'Invalid JSON'.",
+                  "  pm.expect(raw.toLowerCase().indexOf('invalid json'), 'Bifrost failed to parse the fallbacks field: ' + raw).to.equal(-1);",
+                  "  // Live 400 signature when the field reaches a target that does not accept it.",
+                  "  pm.expect(raw.indexOf('Extra inputs are not permitted'), 'fallbacks reached a target that rejects it: ' + raw).to.equal(-1);",
+                  "  // Anthropic is the only provider with ServerSideFallback=true, so the field is",
+                  "  // forwarded and Bifrost auto-injects server-side-fallback-2026-06-01. A rejection",
+                  "  // of the field itself would mean the beta header was not injected.",
+                  "  pm.expect(pm.response.code, 'request failed: ' + raw).to.be.below(400);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

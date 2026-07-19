@@ -376,7 +376,9 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 		return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 	}
 
-	jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "fallbacks")
+	// Strip Bifrost cross-provider fallback strings, but preserve Anthropic
+	// native server-side fallback objects (server-side-fallback-2026-06-01).
+	jsonBody, err = stripBifrostFallbacksFromBody(jsonBody, cfg.Provider)
 	if err != nil {
 		return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 	}
@@ -597,7 +599,9 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 		return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 	}
 
-	jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "fallbacks")
+	// Strip Bifrost cross-provider fallback strings, but preserve Anthropic
+	// native server-side fallback objects (server-side-fallback-2026-06-01).
+	jsonBody, err = stripBifrostFallbacksFromBody(jsonBody, cfg.Provider)
 	if err != nil {
 		return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 	}

@@ -238,7 +238,8 @@ type BifrostResponsesResponse struct {
 	Container            *ResponsesResponseContainer         `json:"container,omitempty"`     // Code-execution sandbox container (Anthropic surfaces it on the response / final streaming message_delta). The neutral per-call id also lives on ResponsesCodeInterpreterToolCall.ContainerID.
 	Status               *string                             `json:"status,omitempty"`        // completed, failed, in_progress, cancelled, queued, or incomplete
 	StreamOptions        *ResponsesStreamOptions             `json:"stream_options,omitempty"`
-	StopReason           *string                             `json:"stop_reason,omitempty"` // Not in OpenAI's spec, but sent by other providers
+	StopReason           *string                             `json:"stop_reason,omitempty"`  // Not in OpenAI's spec, but sent by other providers
+	StopDetails          *ResponsesStopDetails               `json:"stop_details,omitempty"` // Anthropic refusal detail; null unless stop_reason is "refusal"
 	Store                *bool                               `json:"store,omitempty"`
 	Temperature          *float64                            `json:"temperature,omitempty"`
 	Text                 *ResponsesTextConfig                `json:"text,omitempty"`
@@ -932,8 +933,19 @@ const (
 	ResponsesResponseIncompleteReasonContentFilter   = "content_filter"
 )
 
+// ResponsesStopDetails carries Anthropic's stop_details for a "refusal" stop_reason.
+// Category and Explanation are null when the refusal maps to no named category;
+// RecommendedModel names a model to retry directly when a fallback attempt was skipped.
+type ResponsesStopDetails struct {
+	Type             string  `json:"type"`
+	Category         *string `json:"category,omitempty"`
+	Explanation      *string `json:"explanation,omitempty"`
+	RecommendedModel *string `json:"recommended_model,omitempty"`
+}
+
 type ResponsesResponseUsage struct {
 	Type                *string                        `json:"type,omitempty"`        // type field is sent by anthropic
+	Model               *string                        `json:"model,omitempty"`       // model that produced this (iteration) attempt; sent on iterations[] for Anthropic server-side fallback
 	InputTokens         int                            `json:"input_tokens"`          // Number of input tokens (prompt tokens + cached tokens)
 	InputTokensDetails  *ResponsesResponseInputTokens  `json:"input_tokens_details"`  // Detailed breakdown of input tokens
 	OutputTokens        int                            `json:"output_tokens"`         // Number of output tokens (completion tokens + reasoning tokens)
@@ -1296,6 +1308,10 @@ const (
 	ResponsesOutputMessageContentTypeRenderedContent ResponsesMessageContentBlockType = "rendered_content"
 
 	ResponsesOutputMessageContentTypeCompaction ResponsesMessageContentBlockType = "compaction"
+
+	// ResponsesOutputMessageContentTypeFallback marks a server-side fallback handoff
+	// boundary in the output (Anthropic server-side-fallback-2026-06-01).
+	ResponsesOutputMessageContentTypeFallback ResponsesMessageContentBlockType = "fallback"
 )
 
 // ResponsesMessageContentBlock represents different types of content (text, image, file, audio)
@@ -1317,6 +1333,7 @@ type ResponsesMessageContentBlock struct {
 	*ResponsesOutputMessageContentRefusal         // Model refusal to answer
 	*ResponsesOutputMessageContentRenderedContent // Rendered content from search entry point
 	*ResponsesOutputMessageContentCompaction      // Compaction content from the model
+	*ResponsesOutputMessageContentFallback        // Server-side fallback handoff boundary (from/to model)
 
 	// Not in OpenAI's schemas, but sent by a few providers (Anthropic, Bedrock are some of them)
 	CacheControl *CacheControl `json:"cache_control,omitempty"`
@@ -1328,6 +1345,13 @@ type ResponsesMessageContentBlock struct {
 
 type ResponsesOutputMessageContentCompaction struct {
 	Summary string `json:"summary,omitempty"` // The compaction summary text
+}
+
+// ResponsesOutputMessageContentFallback carries the model boundary of a server-side
+// fallback handoff (Anthropic's fallback content block: from/to model).
+type ResponsesOutputMessageContentFallback struct {
+	FromModel string `json:"from_model,omitempty"` // model that declined
+	ToModel   string `json:"to_model,omitempty"`   // model that continues
 }
 type ResponsesOutputMessageContentRenderedContent struct {
 	RenderedContent string `json:"rendered_content"` // HTML/styled content from search entry point
