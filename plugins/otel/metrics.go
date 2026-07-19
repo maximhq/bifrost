@@ -59,6 +59,10 @@ type MetricsExporter struct {
 	streamInterTokenLatencySeconds *syncFloat64Histogram
 	requestRetries                 *syncFloat64Histogram
 
+	// OTel MCP semconv duration histogram. _count gives call volume and error.type gives
+	// the error rate, so no separate MCP counters are needed.
+	mcpClientOperationDuration *syncFloat64Histogram
+
 	// HTTP metrics
 	httpRequestsTotal     *syncInt64Counter
 	httpRequestDuration   *syncFloat64Histogram
@@ -150,6 +154,11 @@ var (
 	// payload over 10KB into +Inf.
 	httpBodySizeBuckets = []float64{
 		100, 1_000, 10_000, 100_000, 1_000_000, 10_000_000, 100_000_000, 1_000_000_000,
+	}
+
+	// mcpOperationDurationBuckets: boundaries recommended by the MCP semconv.
+	mcpOperationDurationBuckets = []float64{
+		0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 30, 60, 120, 300,
 	}
 )
 
@@ -407,6 +416,15 @@ func (m *MetricsExporter) initMetrics() {
 		boundaries: []float64{0, 1, 2, 3, 5, 10},
 	}
 
+	// Dotted name is intentional: the exact semconv metric name, not a bifrost_* metric.
+	m.mcpClientOperationDuration = &syncFloat64Histogram{
+		name:       "mcp.client.operation.duration",
+		desc:       "Duration of an MCP request as observed by the client (Bifrost) from send until the response is received",
+		unit:       "s",
+		meter:      m.meter,
+		boundaries: mcpOperationDurationBuckets,
+	}
+
 	// HTTP metrics
 	m.httpRequestsTotal = &syncInt64Counter{
 		name:  "http_requests_total",
@@ -522,6 +540,11 @@ func (m *MetricsExporter) RecordStreamInterTokenLatency(ctx context.Context, lat
 // Recorded once per request (off the final span), not once per attempt.
 func (m *MetricsExporter) RecordRequestRetries(ctx context.Context, retries float64, attrs ...attribute.KeyValue) {
 	m.requestRetries.Record(ctx, retries, metric.WithAttributes(attrs...))
+}
+
+// RecordMCPOperationDuration records the mcp.client.operation.duration metric for one op.
+func (m *MetricsExporter) RecordMCPOperationDuration(ctx context.Context, durationSeconds float64, attrs ...attribute.KeyValue) {
+	m.mcpClientOperationDuration.Record(ctx, durationSeconds, metric.WithAttributes(attrs...))
 }
 
 // RecordHTTPRequest records an HTTP request metric

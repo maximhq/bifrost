@@ -227,6 +227,7 @@
               "features/compat-plugin",
               "features/keys-management",
               "features/async-inference",
+              "features/webhooks",
               {
                 "group": "Governance",
                 "icon": "user-lock",
@@ -331,6 +332,16 @@
                       "integrations/guardrails/patronus-ai"
                     ]
                   }
+                ]
+              },
+              {
+                "group": "Alerting",
+                "icon": "bell",
+                "pages": [
+                  "enterprise/alerting/overview",
+                  "enterprise/alerting/alert-rules",
+                  "enterprise/alerting/alert-channels",
+                  "enterprise/alerting/alert-history"
                 ]
               },
               "enterprise/audit-logs",
@@ -594,6 +605,7 @@
                   "deployment-guides/helm/storage",
                   "deployment-guides/helm/plugins",
                   "deployment-guides/helm/governance",
+                  "deployment-guides/helm/alerting",
                   "deployment-guides/helm/guardrails",
                   "deployment-guides/helm/secret-management",
                   "deployment-guides/helm/cluster",
@@ -612,6 +624,7 @@
                   "deployment-guides/config-json/storage",
                   "deployment-guides/config-json/plugins",
                   "deployment-guides/config-json/governance",
+                  "deployment-guides/config-json/alerting",
                   "deployment-guides/config-json/cluster",
                   "deployment-guides/config-json/guardrails",
                   "deployment-guides/config-json/secret-management"
@@ -713,8 +726,9 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
-              "changelogs/v2.0.0-prerelease1",
+              "changelogs/v2.0.0-prerelease2",
               "changelogs/v1.6.4",
+              "changelogs/v2.0.0-prerelease1",
               "changelogs/v1.6.3",
               "changelogs/v1.6.2",
               {
@@ -909,6 +923,7 @@
             "item": "Enterprise",
             "icon": "building",
             "pages": [
+              "changelogs/ent-v2.0.0-prerelease2",
               "changelogs/ent-v2.0.0-prerelease1",
               "changelogs/ent-v1.5.4",
               "changelogs/ent-v1.5.3",
@@ -972,6 +987,7 @@
             "item": "Edge",
             "icon": "grip",
             "pages": [
+              "changelogs/edge-v0.3.0",
               "changelogs/edge-v0.2.0",
               "changelogs/edge-v0.1.0"
             ]
@@ -1003,6 +1019,7 @@
             "item": "Helm",
             "icon": "box",
             "pages": [
+              "changelogs/helm-v2.1.29",
               "changelogs/helm-v2.1.28",
               "changelogs/helm-v2.1.27",
               "changelogs/helm-v2.1.26",
@@ -1235,6 +1252,10 @@
     {
       "source": "/enterprise/getting-started",
       "destination": "/enterprise/overview"
+    },
+    {
+      "source": "/alerting/:slug*",
+      "destination": "/enterprise/alerting/:slug*"
     }
   ],
   "footer": {

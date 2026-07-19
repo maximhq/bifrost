@@ -89,6 +89,26 @@ These metrics capture latency characteristics specific to streaming responses:
 | `bifrost_stream_first_token_latency_seconds` | Histogram | Time from request start to first streamed token | Base Labels |
 | `bifrost_stream_inter_token_latency_seconds` | Histogram | Latency between subsequent streamed tokens      | Base Labels |
 
+### MCP Metrics
+
+These metrics track MCP (Model Context Protocol) tool calls executed through Bifrost:
+
+| Metric                                          | Type      | Description                                                                                                                         | Labels                                                                             |
+| ----------------------------------------------- | --------- | --------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `bifrost_mcp_client_operation_duration_seconds` | Histogram | Duration of an MCP tool call, as observed by Bifrost (the MCP client). `_count` gives call volume; a non-empty `error_type` marks failures. | `mcp_client`, `mcp_tool_name`, `mcp_method`, `error_type`, MCP governance labels, custom labels |
+
+MCP Labels:
+
+- `mcp_client`: MCP server label (client name) the tool belongs to
+- `mcp_tool_name`: Tool name invoked
+- `mcp_method`: MCP method — `tools/call`
+- `error_type`: `auth_required` or `_OTHER` on failure; empty on success
+- MCP governance labels: `virtual_key_id` / `virtual_key_name`, `team_id` / `team_name`, `customer_id` / `customer_name`, `business_unit_id` / `business_unit_name`
+
+<Note>
+  Only tool executions are recorded — lifecycle operations (`ping` / `list_tools`) and codemode tools are skipped. Unlike the LLM metrics, MCP metrics do **not** carry `provider` / `model` or a `network_transport` label.
+</Note>
+
 ---
 
 ## Monitoring Examples

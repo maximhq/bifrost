@@ -49,7 +49,7 @@ func trySetupClickHouseStore(t *testing.T) *ClickHouseLogStore {
 		t.Skipf("ClickHouse not available, skipping test: %v", err)
 	}
 	ch := store.(*ClickHouseLogStore)
-	for _, table := range []string{"logs", "mcp_tool_logs", "async_jobs"} {
+	for _, table := range []string{"logs", "mcp_tool_logs", "async_jobs", "webhook_deliveries"} {
 		require.NoError(t, ch.db.Exec("TRUNCATE TABLE "+table).Error)
 	}
 	t.Cleanup(func() { _ = ch.Close(context.Background()) })
@@ -66,6 +66,46 @@ func chTestLog(id string, ts time.Time) *Log {
 		Status:    "processing",
 		CreatedAt: ts,
 	}
+}
+
+type clickHouseExtensionTestRow struct {
+	ID        string
+	Value     string
+	CreatedAt time.Time
+}
+
+func (clickHouseExtensionTestRow) TableName() string { return "extension_test_events" }
+
+func TestClickHouseEnsureExtensionTable(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	ctx := context.Background()
+	require.NoError(t, store.db.Exec("DROP TABLE IF EXISTS extension_test_events").Error)
+	t.Cleanup(func() {
+		_ = store.db.Exec("DROP TABLE IF EXISTS extension_test_events").Error
+	})
+
+	table := "extension_test_events"
+	partitionBy := "toYYYYMM(created_at)"
+	orderBy := "(created_at, id)"
+	ttl := "toDateTime(created_at) + INTERVAL 30 DAY"
+	skipIndexes := []string{"INDEX idx_extension_value lower(value) TYPE bloom_filter(0.01) GRANULARITY 1"}
+	require.NoError(t, store.EnsureClickHouseTable(ctx, &clickHouseExtensionTestRow{}, table, partitionBy, orderBy, ttl, skipIndexes))
+	require.NoError(t, (&HybridLogStore{inner: store}).EnsureClickHouseTable(ctx, &clickHouseExtensionTestRow{}, table, partitionBy, orderBy, ttl, skipIndexes))
+
+	row := clickHouseExtensionTestRow{ID: "event-1", Value: "matched", CreatedAt: time.Now().UTC()}
+	require.NoError(t, store.db.WithContext(ctx).Create(&row).Error)
+
+	var count int64
+	require.NoError(t, store.db.WithContext(ctx).Model(&clickHouseExtensionTestRow{}).Where("value = ?", "matched").Count(&count).Error)
+	assert.Equal(t, int64(1), count)
+
+	var createQuery string
+	require.NoError(t, store.db.WithContext(ctx).
+		Raw("SELECT create_table_query FROM system.tables WHERE database = currentDatabase() AND name = ?", table).
+		Scan(&createQuery).Error)
+	assert.Contains(t, createQuery, "ReplacingMergeTree")
+	assert.Contains(t, createQuery, "TTL")
+	assert.Contains(t, createQuery, "idx_extension_value")
 }
 
 // chCountRows counts logical rows visible for an id; with the connection-level

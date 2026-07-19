@@ -3353,3 +3353,11 @@ func IsClaudeCodeRequest(ctx *schemas.BifrostContext) bool {
 	}
 	return false
 }
+
+// ResolveUseAnthropicEndpoints reports whether the request should be routed through Anthropic-compatible endpoints
+func ResolveUseAnthropicEndpoints(ctx *schemas.BifrostContext, key schemas.Key) bool {
+	if ra := schemas.GetResolvedAlias(ctx); ra != nil && ra.Config != nil && ra.Config.UseAnthropicEndpoints != nil {
+		return *ra.Config.UseAnthropicEndpoints
+	}
+	return key.UseAnthropicEndpoints != nil && *key.UseAnthropicEndpoints
+}

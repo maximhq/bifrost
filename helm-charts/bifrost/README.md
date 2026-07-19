@@ -4,9 +4,15 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.28
+**Latest Version:** 2.1.29
 
 ## Changelog
+
+### 2.1.29
+
+- Added `bifrost.scim.config.provisioningToken` and `claimScimAttributes` to the Okta, Entra, SailPoint, and generic OIDC SCIM providers, so inbound SCIM provisioning can be seeded declaratively instead of via the dashboard. Both render into `scim_config.config`. Generate a token with `openssl rand -base64 32 | tr '+/' '-_' | tr -d '='` (supports `env.` prefix).
+- Added `request_headers` to the OTEL plugin config (`bifrost.plugins.otel.config.request_headers` and `profiles[*].request_headers`) to capture request headers as span attributes. Renders into `request_headers`.
+- Added `bifrost.client.dualCredentialConflictBehavior` to control what happens when an inference request presents both an IDP access token and a virtual key (`x-bf-vk`). Accepts `"error"` (reject with 400), `"prefer_vk"` (drop IDP token, use VK), or `"prefer_idp"` (default, IDP token wins). Renders into `client.dual_credential_conflict_behavior`.
 
 ### 2.1.28
 

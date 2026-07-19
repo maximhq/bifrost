@@ -158,9 +158,16 @@ func dropUnsupportedParams(ctx *schemas.BifrostContext, req *schemas.BifrostRequ
 			params.PromptCacheKey = nil
 			dropped = append(dropped, "prompt_cache_key")
 		}
-		if params.Reasoning != nil && !isSupported["reasoning"] {
-			params.Reasoning = nil
-			dropped = append(dropped, "reasoning")
+		if params.Reasoning != nil {
+			if !isSupported["reasoning"] {
+				params.Reasoning = nil
+				dropped = append(dropped, "reasoning")
+			} else if params.Reasoning.Summary != nil && *params.Reasoning.Summary != "auto" &&
+				schemas.IsAzureModelRouter(req.ResponsesRequest.Model) {
+				// model-router only supports "auto" summary
+				params.Reasoning.Summary = nil
+				dropped = append(dropped, "reasoning.summary")
+			}
 		}
 		if params.ServiceTier != nil && !isSupported["service_tier"] {
 			params.ServiceTier = nil

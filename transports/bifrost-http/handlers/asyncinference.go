@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 
@@ -129,7 +130,7 @@ func (h *AsyncHandler) asyncTextCompletion(ctx *fasthttp.RequestCtx) {
 		schemas.TextCompletionRequest,
 	)
 	if err != nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, err.Error())
+		sendSubmitJobError(ctx, err)
 		return
 	}
 	SendJSONWithStatus(ctx, job.ToResponse(), fasthttp.StatusAccepted)
@@ -166,7 +167,7 @@ func (h *AsyncHandler) asyncChatCompletion(ctx *fasthttp.RequestCtx) {
 		schemas.ChatCompletionRequest,
 	)
 	if err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		sendSubmitJobError(ctx, err)
 		return
 	}
 	SendJSONWithStatus(ctx, job.ToResponse(), fasthttp.StatusAccepted)
@@ -203,7 +204,7 @@ func (h *AsyncHandler) asyncResponses(ctx *fasthttp.RequestCtx) {
 		schemas.ResponsesRequest,
 	)
 	if err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Failed to create async job: %v", err))
+		sendSubmitJobError(ctx, err)
 		return
 	}
 
@@ -236,7 +237,7 @@ func (h *AsyncHandler) asyncEmbeddings(ctx *fasthttp.RequestCtx) {
 		schemas.EmbeddingRequest,
 	)
 	if err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		sendSubmitJobError(ctx, err)
 		return
 	}
 	SendJSONWithStatus(ctx, job.ToResponse(), fasthttp.StatusAccepted)
@@ -273,7 +274,7 @@ func (h *AsyncHandler) asyncSpeech(ctx *fasthttp.RequestCtx) {
 		schemas.SpeechRequest,
 	)
 	if err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		sendSubmitJobError(ctx, err)
 		return
 	}
 	SendJSONWithStatus(ctx, job.ToResponse(), fasthttp.StatusAccepted)
@@ -310,7 +311,7 @@ func (h *AsyncHandler) asyncTranscription(ctx *fasthttp.RequestCtx) {
 		schemas.TranscriptionRequest,
 	)
 	if err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		sendSubmitJobError(ctx, err)
 		return
 	}
 	SendJSONWithStatus(ctx, job.ToResponse(), fasthttp.StatusAccepted)
@@ -347,7 +348,7 @@ func (h *AsyncHandler) asyncImageGeneration(ctx *fasthttp.RequestCtx) {
 		schemas.ImageGenerationRequest,
 	)
 	if err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		sendSubmitJobError(ctx, err)
 		return
 	}
 	SendJSONWithStatus(ctx, job.ToResponse(), fasthttp.StatusAccepted)
@@ -384,7 +385,7 @@ func (h *AsyncHandler) asyncImageEdit(ctx *fasthttp.RequestCtx) {
 		schemas.ImageEditRequest,
 	)
 	if err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		sendSubmitJobError(ctx, err)
 		return
 	}
 	SendJSONWithStatus(ctx, job.ToResponse(), fasthttp.StatusAccepted)
@@ -416,7 +417,7 @@ func (h *AsyncHandler) asyncImageVariation(ctx *fasthttp.RequestCtx) {
 		schemas.ImageVariationRequest,
 	)
 	if err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		sendSubmitJobError(ctx, err)
 		return
 	}
 	SendJSONWithStatus(ctx, job.ToResponse(), fasthttp.StatusAccepted)
@@ -448,7 +449,7 @@ func (h *AsyncHandler) asyncRerank(ctx *fasthttp.RequestCtx) {
 		schemas.RerankRequest,
 	)
 	if err != nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, err.Error())
+		sendSubmitJobError(ctx, err)
 		return
 	}
 	SendJSONWithStatus(ctx, job.ToResponse(), fasthttp.StatusAccepted)
@@ -480,7 +481,7 @@ func (h *AsyncHandler) asyncOCR(ctx *fasthttp.RequestCtx) {
 		schemas.OCRRequest,
 	)
 	if err != nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, err.Error())
+		sendSubmitJobError(ctx, err)
 		return
 	}
 	SendJSONWithStatus(ctx, job.ToResponse(), fasthttp.StatusAccepted)
@@ -545,4 +546,14 @@ func getResultTTLFromHeaderWithDefault(ctx *fasthttp.RequestCtx, defaultTTL int)
 		return defaultTTL
 	}
 	return resultTTLInt
+}
+
+// sendSubmitJobError maps a submit failure to HTTP: an unusable webhook
+// reference is the caller's mistake, everything else is server-side.
+func sendSubmitJobError(ctx *fasthttp.RequestCtx, err error) {
+	if errors.Is(err, logstore.ErrInvalidWebhookReference) {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+	SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to create async job: %v", err))
 }

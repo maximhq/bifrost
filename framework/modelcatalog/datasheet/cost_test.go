@@ -2046,6 +2046,72 @@ func TestGetPricing_RealtimeFallsBackToChat(t *testing.T) {
 	assert.Equal(t, 0.000005, derefF(p.InputCostPerToken))
 }
 
+func TestGetPricing_ChatFallsBackToResponses(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-4o", "openai", "responses"): chatPricing(0.000005, 0.000015),
+	})
+	p := s.resolvePricing(schemas.RoutingInfo{Provider: "openai", Model: "gpt-4o"}, schemas.ChatCompletionRequest, LookupScopes{Provider: "openai"})
+	require.NotNil(t, p)
+	assert.Equal(t, 0.000005, derefF(p.InputCostPerToken))
+}
+
+func TestGetPricing_ChatStreamFallsBackToResponses(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-4o", "openai", "responses"): chatPricing(0.000005, 0.000015),
+	})
+	p := s.resolvePricing(schemas.RoutingInfo{Provider: "openai", Model: "gpt-4o"}, schemas.ChatCompletionStreamRequest, LookupScopes{Provider: "openai"})
+	require.NotNil(t, p)
+	assert.Equal(t, 0.000005, derefF(p.InputCostPerToken))
+}
+
+func TestGetPricing_BedrockMantleChatStreamFallsBackToBedrockResponses(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("openai.gpt-5.5", "bedrock", "responses"): chatPricing(0.0000055, 0.000033),
+	})
+	// The datasheet files openai.gpt-5.5 as responses-only, but bedrock serves it
+	// over chat completions too: bedrock_mantle folds onto bedrock, chat mode
+	// misses, and the responses row is used.
+	p := s.resolvePricing(schemas.RoutingInfo{Provider: "bedrock_mantle", Model: "openai.gpt-5.5"}, schemas.ChatCompletionStreamRequest, LookupScopes{Provider: "bedrock_mantle"})
+	require.NotNil(t, p)
+	assert.Equal(t, 0.0000055, derefF(p.InputCostPerToken))
+	assert.Equal(t, 0.000033, derefF(p.OutputCostPerToken))
+}
+
+func TestGetPricing_BedrockChatAddsOpenAIPrefixThenFallsBackToResponses(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("openai.gpt-5.5", "bedrock", "responses"): chatPricing(0.0000055, 0.000033),
+	})
+	// Bare model name + chat request: the openai. prefix retry fires, then the
+	// prefixed key falls back to responses mode.
+	p := s.resolvePricing(schemas.RoutingInfo{Provider: "bedrock", Model: "gpt-5.5"}, schemas.ChatCompletionRequest, LookupScopes{Provider: "bedrock"})
+	require.NotNil(t, p)
+	assert.Equal(t, 0.0000055, derefF(p.InputCostPerToken))
+}
+
+func TestGetPricing_ExactModeWinsOverFallback(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-4o", "openai", "chat"):      chatPricing(0.000005, 0.000015),
+		makeKey("gpt-4o", "openai", "responses"): chatPricing(0.000009, 0.000036),
+	})
+	chat := s.resolvePricing(schemas.RoutingInfo{Provider: "openai", Model: "gpt-4o"}, schemas.ChatCompletionRequest, LookupScopes{Provider: "openai"})
+	require.NotNil(t, chat)
+	assert.Equal(t, 0.000005, derefF(chat.InputCostPerToken))
+
+	responses := s.resolvePricing(schemas.RoutingInfo{Provider: "openai", Model: "gpt-4o"}, schemas.ResponsesRequest, LookupScopes{Provider: "openai"})
+	require.NotNil(t, responses)
+	assert.Equal(t, 0.000009, derefF(responses.InputCostPerToken))
+}
+
+func TestGetPricing_GeminiChatFallsBackToVertexResponses(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gemini-2.0-flash", "vertex", "responses"): chatPricing(0.0000001, 0.0000004),
+	})
+	// gemini provider + chat request → try vertex + chat → try vertex + responses
+	p := s.resolvePricing(schemas.RoutingInfo{Provider: "gemini", Model: "gemini-2.0-flash"}, schemas.ChatCompletionRequest, LookupScopes{Provider: "gemini"})
+	require.NotNil(t, p)
+	assert.Equal(t, 0.0000001, derefF(p.InputCostPerToken))
+}
+
 func TestGetPricing_GeminiResponsesFallsBackToVertexChat(t *testing.T) {
 	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gemini-2.0-flash", "vertex", "chat"): chatPricing(0.0000001, 0.0000004),

@@ -110,6 +110,19 @@
           "description": "Dump full error details to the server console logs. Useful for debugging; may be noisy in production.",
           "default": false
         },
+        "webhook_config": {
+          "type": "object",
+          "description": "Global webhook delivery settings; per-endpoint tuning lives on each endpoint. Read at server startup.",
+          "properties": {
+            "delivery_history_retention_days": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 30,
+              "description": "How long delivery history records are kept before being reaped."
+            }
+          },
+          "additionalProperties": false
+        },
         "log_retention_days": {
           "type": "integer",
           "minimum": 1,
@@ -123,6 +136,11 @@
         "enforce_auth_on_inference": {
           "type": "boolean",
           "description": "Require auth (VK, API key, or user token) on inference endpoints"
+        },
+        "dual_credential_conflict_behavior": {
+          "type": "string",
+          "enum": ["error", "prefer_vk", "prefer_idp"],
+          "description": "Controls behavior when an inference request carries both an IDP access token (Authorization: Bearer <jwt>) and a virtual key (x-bf-vk header). 'error' rejects with 400. 'prefer_vk' drops the IDP token and authenticates via the VK. 'prefer_idp' (default) uses the IDP token for identity."
         },
         "enforce_scim_auth": {
           "type": "boolean",
@@ -402,7 +420,7 @@
           "$ref": "#/$defs/provider"
         },
         "deepseek": {
-          "$ref": "#/$defs/provider"
+          "$ref": "#/$defs/provider_with_deepseek_config"
         },
         "vllm": {
           "$ref": "#/$defs/provider_with_vllm_config"
@@ -411,7 +429,7 @@
           "$ref": "#/$defs/provider"
         },
         "fireworks": {
-          "$ref": "#/$defs/provider"
+          "$ref": "#/$defs/provider_with_fireworks_config"
         },
         "nebius": {
           "$ref": "#/$defs/provider"
@@ -1235,6 +1253,115 @@
         }
       },
       "additionalProperties": false
+    },
+    "webhooks": {
+      "type": "array",
+      "description": "Webhook endpoint declarations synced into the database at startup, reconciled by name.",
+      "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "Stable endpoint ID. Generated when omitted."
+              },
+              "name": {
+                "type": "string",
+                "description": "Unique endpoint name."
+              },
+              "url": {
+                "type": "string",
+                "description": "Delivery URL. HTTPS required unless allow_private_network is set; credentials and fragments are rejected; link-local and metadata addresses are always blocked."
+              },
+              "secret": {
+                "anyOf": [
+                  { "type": "string" },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "value": { "type": "string" },
+                      "env_var": { "type": "string" },
+                      "from_env": { "type": "boolean" }
+                    },
+                    "additionalProperties": false
+                  }
+                ],
+                "description": "Signing secret in the whsec_ format. Best supplied as an env reference (\"env.MY_VAR\"); generated when omitted."
+              },
+              "events": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": ["async_job.completed", "async_job.failed"]
+                },
+                "description": "Events this endpoint subscribes to."
+              },
+              "headers": {
+                "type": "object",
+                "additionalProperties": {
+                  "anyOf": [
+                    { "type": "string" },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "value": { "type": "string" },
+                        "env_var": { "type": "string" },
+                        "from_env": { "type": "boolean" }
+                      },
+                      "additionalProperties": false
+                    }
+                  ]
+                },
+                "description": "Custom headers sent with every delivery (e.g. an Authorization value the receiver requires). Values support env var syntax (\"env.MY_VAR\") and are encrypted at rest. Reserved delivery headers (webhook-id, webhook-timestamp, webhook-signature, content-type, etc.) cannot be overridden."
+              },
+              "include_response": {
+                "type": "boolean",
+                "default": false,
+                "description": "Inline the job response into delivery payloads, capped by max_response_payload_kbs."
+              },
+              "allow_private_network": {
+                "type": "boolean",
+                "default": false,
+                "description": "Permit private-network receivers and plain http. Link-local and metadata addresses stay blocked."
+              },
+              "disabled": {
+                "type": "boolean",
+                "default": false,
+                "description": "Register the endpoint without delivering to it."
+              },
+              "max_retries": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "How many times a failed delivery is retried after its first attempt (default: 4)."
+              },
+              "retry_backoff_initial_seconds": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Delay before the first retry in seconds; each further retry doubles it (default: 30)."
+              },
+              "retry_backoff_max_seconds": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Cap on the per-retry delay in seconds (default: 1800)."
+              },
+              "attempt_timeout_seconds": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "End-to-end bound for one delivery attempt in seconds (default: 10)."
+              },
+              "max_response_payload_kbs": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Cap for inlined response payloads in KB when include_response is set (default: 256). Oversized responses are omitted and flagged with response_omitted."
+              },
+              "max_concurrent_deliveries": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Concurrent in-flight deliveries to this endpoint per node (default: 10)."
+              }
+            },
+            "required": ["name", "url", "events"],
+            "additionalProperties": false
+      }
     },
     "mcp": {
       "type": "object",
@@ -3456,6 +3583,12 @@
           "maximum": 3600,
           "description": "Idle timeout per stream chunk in seconds. If no data is received for this many seconds, the stream is closed. Default: 120."
         },
+        "keep_alive_timeout_in_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3600,
+          "description": "Idle keep-alive for pooled connections, in seconds. Set below the upstream server's keep-alive so Bifrost drops idle connections before the server closes them. Default: 30."
+        },
         "max_conns_per_host": {
           "type": "integer",
           "minimum": 1,
@@ -3524,6 +3657,12 @@
           "minimum": 5,
           "maximum": 3600,
           "description": "Idle timeout per stream chunk in seconds. If no data is received for this many seconds, the stream is closed. Default: 120."
+        },
+        "keep_alive_timeout_in_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3600,
+          "description": "Idle keep-alive for pooled connections, in seconds. Set below the upstream server's keep-alive so Bifrost drops idle connections before the server closes them. Default: 30."
         },
         "max_conns_per_host": {
           "type": "integer",
@@ -3674,6 +3813,10 @@
                   "use_deployments_endpoint": {
                     "type": "boolean",
                     "description": "Replicate: use the deployments endpoint instead of the predictions endpoint for this alias."
+                  },
+                  "use_anthropic_endpoints": {
+                    "type": "boolean",
+                    "description": "Routes chat completions and responses requests through Anthropic-compatible endpoints."
                   }
                 },
                 "required": ["model_id"],
@@ -3856,6 +3999,11 @@
               },
               "required": ["url", "model_name"],
               "additionalProperties": false
+            },
+            "use_anthropic_endpoints": {
+              "type": "boolean",
+              "description": "Routes chat completions and responses requests through Anthropic-compatible endpoints.",
+              "default": false
             }
           },
           "required": ["vllm_key_config"]
@@ -3928,9 +4076,48 @@
               },
               "required": ["url"],
               "additionalProperties": false
+            },
+            "use_anthropic_endpoints": {
+              "type": "boolean",
+              "description": "Routes chat completions and responses requests through Anthropic-compatible endpoints.",
+              "default": false
             }
           },
           "required": ["sgl_key_config"]
+        }
+      ]
+    },
+    "deepseek_key": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base_key"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "use_anthropic_endpoints": {
+              "type": "boolean",
+              "description": "Routes chat completions and responses requests through Anthropic-compatible endpoints.",
+              "default": false
+            }
+          }
+        }
+      ]
+    },
+    "fireworks_key": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base_key"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "use_anthropic_endpoints": {
+              "type": "boolean",
+              "description": "Routes chat completions and responses requests through Anthropic-compatible endpoints.",
+              "default": false
+            }
+          }
         }
       ]
     },
@@ -4372,6 +4559,84 @@
           "$ref": "#/$defs/custom_provider_config"
         }
       },
+      "additionalProperties": false
+    },
+    "provider_with_deepseek_config": {
+      "type": "object",
+      "properties": {
+        "keys": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/deepseek_key"
+          },
+          "minItems": 1,
+          "description": "API keys for this provider"
+        },
+        "network_config": {
+          "$ref": "#/$defs/network_config"
+        },
+        "concurrency_and_buffer_size": {
+          "$ref": "#/$defs/concurrency_and_buffer_size"
+        },
+        "proxy_config": {
+          "$ref": "#/$defs/proxy_config"
+        },
+        "send_back_raw_request": {
+          "type": "boolean",
+          "description": "Include raw request in BifrostResponse (default: false)"
+        },
+        "send_back_raw_response": {
+          "type": "boolean",
+          "description": "Include raw response in BifrostResponse (default: false)"
+        },
+        "store_raw_request_response": {
+          "type": "boolean",
+          "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
+        },
+        "custom_provider_config": {
+          "$ref": "#/$defs/custom_provider_config"
+        }
+      },
+      "required": ["keys"],
+      "additionalProperties": false
+    },
+    "provider_with_fireworks_config": {
+      "type": "object",
+      "properties": {
+        "keys": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/fireworks_key"
+          },
+          "minItems": 1,
+          "description": "API keys for this provider"
+        },
+        "network_config": {
+          "$ref": "#/$defs/network_config"
+        },
+        "concurrency_and_buffer_size": {
+          "$ref": "#/$defs/concurrency_and_buffer_size"
+        },
+        "proxy_config": {
+          "$ref": "#/$defs/proxy_config"
+        },
+        "send_back_raw_request": {
+          "type": "boolean",
+          "description": "Include raw request in BifrostResponse (default: false)"
+        },
+        "send_back_raw_response": {
+          "type": "boolean",
+          "description": "Include raw response in BifrostResponse (default: false)"
+        },
+        "store_raw_request_response": {
+          "type": "boolean",
+          "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
+        },
+        "custom_provider_config": {
+          "$ref": "#/$defs/custom_provider_config"
+        }
+      },
+      "required": ["keys"],
       "additionalProperties": false
     },
     "mcp_client_config": {
@@ -5144,7 +5409,7 @@
         },
         "provider": {
           "type": "string",
-          "enum": ["okta", "entra", "keycloak"],
+          "enum": ["okta", "entra", "keycloak", "zitadel", "google", "sailpoint", "generic"],
           "description": "SCIM provider type"
         },
         "config": {
@@ -5214,6 +5479,86 @@
               }
             }
           }
+        },
+        {
+          "if": {
+            "properties": {
+              "enabled": {
+                "const": true
+              },
+              "provider": {
+                "const": "generic"
+              }
+            },
+            "required": ["enabled", "provider"]
+          },
+          "then": {
+            "properties": {
+              "config": {
+                "$ref": "#/$defs/generic_config"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "enabled": {
+                "const": true
+              },
+              "provider": {
+                "const": "zitadel"
+              }
+            },
+            "required": ["enabled", "provider"]
+          },
+          "then": {
+            "properties": {
+              "config": {
+                "$ref": "#/$defs/zitadel_config"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "enabled": {
+                "const": true
+              },
+              "provider": {
+                "const": "google"
+              }
+            },
+            "required": ["enabled", "provider"]
+          },
+          "then": {
+            "properties": {
+              "config": {
+                "$ref": "#/$defs/google_config"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "enabled": {
+                "const": true
+              },
+              "provider": {
+                "const": "sailpoint"
+              }
+            },
+            "required": ["enabled", "provider"]
+          },
+          "then": {
+            "properties": {
+              "config": {
+                "$ref": "#/$defs/sailpoint_config"
+              }
+            }
+          }
         }
       ]
     },
@@ -5264,7 +5609,9 @@
         },
         "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
         "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
-        "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"}
+        "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
+        "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"},
+        "provisioningToken": {"$ref": "#/$defs/scim_provisioning_token"}
       },
       "required": ["issuerUrl", "clientId", "clientSecret", "apiToken"],
       "additionalProperties": false
@@ -5317,7 +5664,9 @@
         },
         "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
         "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
-        "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"}
+        "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
+        "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"},
+        "provisioningToken": {"$ref": "#/$defs/scim_provisioning_token"}
       },
       "required": ["tenantId", "clientId"],
       "additionalProperties": false
@@ -5368,6 +5717,277 @@
       },
       "required": ["serverUrl", "realm", "clientId", "clientSecret"],
       "additionalProperties": false
+    },
+    "generic_config": {
+      "type": "object",
+      "description": "Generic OIDC authentication configuration for any standards-compliant OIDC identity provider. Endpoints are resolved via OIDC discovery (.well-known/openid-configuration) from issuerUrl unless overridden.",
+      "properties": {
+        "issuerUrl": {
+          "type": "string",
+          "format": "uri",
+          "description": "OIDC issuer URL (e.g., https://idp.company.com)"
+        },
+        "clientId": {
+          "type": "string",
+          "description": "OAuth2/OIDC application client ID"
+        },
+        "clientSecret": {
+          "type": "string",
+          "description": "OAuth2/OIDC client secret (optional, for confidential clients). Supports env. prefix for environment variable references."
+        },
+        "audience": {
+          "type": "string",
+          "description": "JWT audience for token validation (optional)"
+        },
+        "authorizationEndpoint": {
+          "type": "string",
+          "format": "uri",
+          "description": "Manual override for the authorization endpoint (used in preference to discovery when set)"
+        },
+        "tokenEndpoint": {
+          "type": "string",
+          "format": "uri",
+          "description": "Manual override for the token endpoint (used in preference to discovery when set)"
+        },
+        "userinfoEndpoint": {
+          "type": "string",
+          "format": "uri",
+          "description": "Manual override for the userinfo endpoint (used in preference to discovery when set)"
+        },
+        "teamIdsField": {
+          "type": "string",
+          "description": "JWT claim field for team/group IDs (default: 'groups')",
+          "default": "groups"
+        },
+        "rolesField": {
+          "type": "string",
+          "description": "JWT claim field for role names (optional)"
+        },
+        "scopes": {
+          "type": "array",
+          "description": "Override the default OIDC scopes requested during login",
+          "items": { "type": "string" }
+        },
+        "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
+        "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
+        "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
+        "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"},
+        "provisioningToken": {"$ref": "#/$defs/scim_provisioning_token"}
+      },
+      "required": ["issuerUrl", "clientId"],
+      "additionalProperties": false
+    },
+    "zitadel_config": {
+      "type": "object",
+      "description": "Zitadel OIDC authentication configuration",
+      "properties": {
+        "domain": {
+          "type": "string",
+          "format": "hostname",
+          "pattern": "^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$",
+          "description": "Zitadel instance domain (e.g., 'my-instance.zitadel.cloud' or 'auth.company.com'). Bare host only - do NOT include the scheme, port, or path."
+        },
+        "clientId": {
+          "type": "string",
+          "description": "Zitadel application client ID"
+        },
+        "clientSecret": {
+          "type": "string",
+          "description": "Zitadel client secret (optional, required for confidential clients and token revocation)"
+        },
+        "projectId": {
+          "type": "string",
+          "description": "Optional Zitadel project ID for project-scoped role claims"
+        },
+        "audience": {
+          "type": "string",
+          "description": "Access-token audience override (default: clientId)"
+        },
+        "serviceAccountClientId": {
+          "type": "string",
+          "description": "Service account client ID for Zitadel Management API (required for user provisioning - web apps cannot use client_credentials)"
+        },
+        "serviceAccountClientSecret": {
+          "type": "string",
+          "description": "Service account client secret for Zitadel Management API"
+        },
+        "teamIdsField": {
+          "type": "string",
+          "description": "JWT claim field for team/group IDs (default: 'groups')",
+          "default": "groups"
+        },
+        "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
+        "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
+        "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
+        "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"}
+      },
+      "required": ["domain", "clientId"],
+      "additionalProperties": false
+    },
+    "google_config": {
+      "type": "object",
+      "description": "Google Workspace OIDC authentication configuration",
+      "properties": {
+        "domain": {
+          "type": "string",
+          "format": "hostname",
+          "pattern": "^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$",
+          "description": "Google Workspace primary domain (e.g., 'company.com'). Bare host only - do NOT include the scheme, port, or path."
+        },
+        "clientId": {
+          "type": "string",
+          "description": "Google OAuth2 client ID"
+        },
+        "clientSecret": {
+          "type": "string",
+          "description": "Google client secret (optional, used for token revocation)"
+        },
+        "credentialMode": {
+          "type": "string",
+          "enum": ["", "inherit", "env", "file"],
+          "description": "How Directory API credentials are sourced. 'inherit' uses Application Default Credentials; 'env' uses serviceAccountEnvVar; 'file' uses serviceAccountFile."
+        },
+        "serviceAccountEnvVar": {
+          "type": "string",
+          "description": "Name of the environment variable containing the service account JSON (used when credentialMode is 'env'). Required for Directory API access without ADC."
+        },
+        "serviceAccountFile": {
+          "type": "string",
+          "description": "Filesystem path to the service account JSON key file (used when credentialMode is 'file')."
+        },
+        "adminEmail": {
+          "type": "string",
+          "format": "email",
+          "description": "Admin email for domain-wide delegation. Required whenever Directory API access is configured."
+        },
+        "impersonateServiceAccount": {
+          "type": "string",
+          "description": "GCP service account email to impersonate when using ADC (Workload Identity); must have domain-wide delegation configured."
+        },
+        "audience": {
+          "type": "string",
+          "description": "JWT audience override (default: clientId)"
+        },
+        "teamIdsField": {
+          "type": "string",
+          "description": "Claim field for team/group IDs (default: 'groups')",
+          "default": "groups"
+        },
+        "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
+        "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
+        "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
+        "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"}
+      },
+      "required": ["domain", "clientId"],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "credentialMode": { "const": "env" }
+            },
+            "required": ["credentialMode"]
+          },
+          "then": {
+            "required": ["serviceAccountEnvVar"]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "credentialMode": { "const": "file" }
+            },
+            "required": ["credentialMode"]
+          },
+          "then": {
+            "required": ["serviceAccountFile"]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "credentialMode": {
+                "enum": ["inherit", "env", "file"]
+              }
+            },
+            "required": ["credentialMode"]
+          },
+          "then": {
+            "required": ["adminEmail"]
+          }
+        }
+      ]
+    },
+    "sailpoint_config": {
+      "type": "object",
+      "description": "SailPoint identity security platform configuration",
+      "properties": {
+        "product": {
+          "type": "string",
+          "enum": ["isc", "iiq"],
+          "description": "SailPoint product type: 'isc' for Identity Security Cloud, 'iiq' for IdentityIQ"
+        },
+        "tenant": {
+          "type": "string",
+          "description": "ISC tenant identifier (required for ISC product)"
+        },
+        "baseUrl": {
+          "type": "string",
+          "format": "uri",
+          "description": "IdentityIQ base URL (required for IIQ product)"
+        },
+        "username": {
+          "type": "string",
+          "description": "Username for IdentityIQ authentication"
+        },
+        "password": {
+          "type": "string",
+          "description": "Password for IdentityIQ authentication"
+        },
+        "clientId": {
+          "type": "string",
+          "description": "OAuth2 client ID"
+        },
+        "clientSecret": {
+          "type": "string",
+          "description": "OAuth2 client secret"
+        },
+        "teamIdsField": {
+          "type": "string",
+          "description": "JWT claim field for team IDs"
+        },
+        "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
+        "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
+        "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
+        "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"},
+        "provisioningToken": {"$ref": "#/$defs/scim_provisioning_token"}
+      },
+      "required": ["product"],
+      "additionalProperties": false
+    },
+    "scim_claim_attributes": {
+      "type": "object",
+      "description": "Per-claim SCIM interpretation. Maps each claim name to its SCIM source type and attribute key.",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "attributeType": {
+            "type": "string",
+            "enum": ["user", "group"],
+            "description": "'user' reads from SCIM User resource attributes; 'group' matches SCIM Group resource."
+          },
+          "attributeValue": {
+            "type": "string",
+            "description": "SCIM attribute key or group match field for this claim."
+          }
+        },
+        "required": ["attributeType", "attributeValue"],
+        "additionalProperties": false
+      }
+    },
+    "scim_provisioning_token": {
+      "type": "string",
+      "description": "Bearer token that inbound SCIM 2.0 provisioning clients (the IdP's SCIM app) must present in the Authorization header to push users and groups to Bifrost. Normally minted in the dashboard (Governance -> User Provisioning) and shown once, but may be seeded here for declarative/GitOps deployments; supports the env. prefix for environment-variable references. Generate one with: openssl rand -base64 32 | tr '+/' '-_' | tr -d '='"
     },
     "load_balancer_config": {
       "type": "object",
@@ -5786,9 +6406,28 @@
           "minimum": 0,
           "description": "Number of days to retain audit logs (0 means no retention limit)"
         },
+        "archive_interval": {
+          "type": "string",
+          "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h)([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))*$",
+          "description": "Archival window size and job period, as a Go duration string (e.g. '24h', '1h', '30m'). Each window is archived as one set of objects. The supported range is 5m and above: this schema accepts any valid duration, and the runtime raises anything shorter to 5m rather than failing startup. Only used when object_storage is set. Default: 24h",
+          "default": "24h"
+        },
+        "archive_grace_period": {
+          "type": "string",
+          "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h)([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))*$",
+          "description": "How long to hold a window open past its end before archiving it, as a Go duration string. Absorbs clock skew and late inserts. Must be shorter than archive_interval, otherwise no window would ever close and archival would silently do nothing; the runtime substitutes a safe default if it is not. Only used when object_storage is set. Default: 15m",
+          "default": "15m"
+        },
+        "archive_max_object_bytes": {
+          "type": "integer",
+          "minimum": 1048576,
+          "maximum": 4294967296,
+          "description": "Roll a new part object once the current part reaches this many uncompressed bytes. Bounds memory on the archiving node: peak usage is roughly 2x this value when compress is true, since gzip allocates a second full buffer. The minimum and maximum above are strict validation limits — a config outside [1MiB, 4GiB] is rejected as invalid rather than accepted and adjusted. (The runtime additionally clamps to the same range, as a safety net for configs that never pass through schema validation.) Only used when object_storage is set. Default: 134217728 (128MiB)",
+          "default": 134217728
+        },
         "object_storage": {
           "type": "object",
-          "description": "Optional object storage for archiving audit events to S3/GCS. When configured, each flushed batch of audit events is written as a gzipped JSONL object at {prefix}/audit-logs/YYYY/MM/DD/HH/{id}.jsonl[.gz], in addition to the database (which remains the source of truth). Archival is going-forward only; existing rows are not backfilled.",
+          "description": "Optional object storage for archiving audit events to S3/GCS. Setting this enables archival; there is no separate on/off flag. A background job periodically copies audit events from the database, one closed time window at a time, writing each window as one or more JSONL part objects plus a manifest listing them: {prefix}/audit-logs/YYYY/MM/DD/{start}-{end}/part-00000.jsonl[.gz] and .../manifest.json[.gz]. Read the manifest to enumerate a window and ignore any object it does not list. The database remains the source of truth and archival never deletes rows (retention_days handles that independently). In a cluster only one node archives a given window. Archival is going-forward only; existing rows are not backfilled. See archive_interval, archive_grace_period and archive_max_object_bytes to tune it.",
           "properties": {
             "type": {
               "type": "string",

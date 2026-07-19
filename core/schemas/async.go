@@ -33,6 +33,7 @@ const (
 // AsyncJobResponse is the JSON response returned when creating or polling an async job
 type AsyncJobResponse struct {
 	ID          string         `json:"id"`
+	RequestID   string         `json:"request_id,omitempty"`
 	Status      AsyncJobStatus `json:"status"`
 	ExpiresAt   *time.Time     `json:"expires_at,omitempty"`
 	CreatedAt   time.Time      `json:"created_at"`

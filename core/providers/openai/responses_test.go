@@ -2155,3 +2155,73 @@ func TestToOpenAIResponsesRequest_OmitsRoleFromNonMessageInputItems(t *testing.T
 		t.Error("original input roles were mutated")
 	}
 }
+
+// TestToOpenAIResponsesRequest_DefaultsImageDetail verifies input_image blocks
+// missing the detail field get "auto" on the wire (OpenAI's schema requires it
+// and strict validators like vLLM reject requests without it), explicit values
+// are preserved, and the caller's input is never mutated.
+func TestToOpenAIResponsesRequest_DefaultsImageDetail(t *testing.T) {
+	imageURL := "data:image/png;base64,iVBORw0KGgo="
+	bifrostReq := &schemas.BifrostResponsesRequest{
+		Model: "gpt-4o",
+		Input: []schemas.ResponsesMessage{
+			{
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{
+						{
+							Type: schemas.ResponsesInputMessageContentBlockTypeText,
+							Text: schemas.Ptr("what is in this image?"),
+						},
+						{
+							Type: schemas.ResponsesInputMessageContentBlockTypeImage,
+							ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{
+								ImageURL: &imageURL,
+							},
+						},
+						{
+							Type: schemas.ResponsesInputMessageContentBlockTypeImage,
+							ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{
+								ImageURL: &imageURL,
+								Detail:   schemas.Ptr("high"),
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	req := ToOpenAIResponsesRequest(nil, bifrostReq)
+	if req == nil {
+		t.Fatal("converted request is nil")
+	}
+
+	blocks := req.Input.OpenAIResponsesRequestInputArray[0].Content.ContentBlocks
+	if len(blocks) != 3 {
+		t.Fatalf("content blocks: got %d, want 3", len(blocks))
+	}
+	if blocks[1].ResponsesInputMessageContentBlockImage.Detail == nil ||
+		*blocks[1].ResponsesInputMessageContentBlockImage.Detail != "auto" {
+		t.Errorf("missing detail not defaulted to auto: %v", blocks[1].ResponsesInputMessageContentBlockImage.Detail)
+	}
+	if blocks[2].ResponsesInputMessageContentBlockImage.Detail == nil ||
+		*blocks[2].ResponsesInputMessageContentBlockImage.Detail != "high" {
+		t.Errorf("explicit detail not preserved: %v", blocks[2].ResponsesInputMessageContentBlockImage.Detail)
+	}
+
+	// Wire-level: the marshaled JSON must carry detail on every input_image.
+	data, err := sonic.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal converted request: %v", err)
+	}
+	if strings.Count(string(data), `"detail"`) != 2 {
+		t.Errorf("wire JSON does not carry detail on both image blocks: %s", data)
+	}
+
+	// Caller's input must remain untouched.
+	original := bifrostReq.Input[0].Content.ContentBlocks[1].ResponsesInputMessageContentBlockImage
+	if original.Detail != nil {
+		t.Errorf("caller's input was mutated: detail = %q", *original.Detail)
+	}
+}

@@ -10,11 +10,22 @@ icon: "star-of-life"
 
 | Version | Released   |
 | ------- | ---------- |
+| 2.1.212 | 2026-07-17 |
 | 2.1.143 | 2026-05-15 |
 | 2.1.132 | 2026-05-06 |
 | 2.1.131 | 2026-05-06 |
 | 2.1.129 | 2026-05-05 |
 | 2.1.128 | 2026-05-04 |
+
+<Warning>
+    Since version 2.1.212, Anthropic has enforced the anthropic-version header along with some others.
+
+    Go to **Settings > Client Settings** and add them as a comma-separated list:
+  
+    ```
+    anthropic-dangerous-direct-browser-access, anthropic-version, content-type, user-agent, x-api-key, x-stainless-arch, x-stainless-helper-method, x-stainless-lang, x-stainless-os, x-stainless-package-version, x-stainless-retry-count, x-stainless-runtime, x-stainless-runtime-version, x-stainless-timeout
+    ```
+</Warning>
 
 <Note>
 	If your Allowed Headers are already set to `*`, you can skip this note. If not and you face issues integrating Bifrost with Claude Code,

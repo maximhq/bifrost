@@ -93,6 +93,12 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			}
 		}
 
+		// OpenAI's Responses schema requires "detail" on input_image items, and strict
+		// downstream validators (e.g. vLLM importing the official OpenAI types) reject
+		// requests without it. Blocks converted from non-OpenAI surfaces (Anthropic,
+		// Gemini, Cohere, chat bridge) never carry one, so default missing values to "auto".
+		message = defaultImageDetail(message)
+
 		// Strip provider reasoning signatures (e.g. Gemini thoughtSignatures smuggled into
 		// call_id as "<baseID>_ts_<sig>") from tool call IDs, but only when the id exceeds
 		// OpenAI's limit — shorter IDs are left intact so distinct upstream IDs are preserved.
@@ -330,6 +336,47 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 }
 
 // filterUnsupportedTools removes tool types that OpenAI doesn't support
+// defaultImageDetail fills "auto" into any input_image content block missing the
+// detail field. Clones content on write — the Content pointer and the image block
+// pointers inside it are shared with the caller's input.
+func defaultImageDetail(message schemas.ResponsesMessage) schemas.ResponsesMessage {
+	if message.Content == nil || len(message.Content.ContentBlocks) == 0 {
+		return message
+	}
+
+	needsDetail := func(block schemas.ResponsesMessageContentBlock) bool {
+		return block.Type == schemas.ResponsesInputMessageContentBlockTypeImage &&
+			block.ResponsesInputMessageContentBlockImage != nil &&
+			block.ResponsesInputMessageContentBlockImage.Detail == nil
+	}
+
+	fixNeeded := false
+	for _, block := range message.Content.ContentBlocks {
+		if needsDetail(block) {
+			fixNeeded = true
+			break
+		}
+	}
+	if !fixNeeded {
+		return message
+	}
+
+	newBlocks := make([]schemas.ResponsesMessageContentBlock, len(message.Content.ContentBlocks))
+	copy(newBlocks, message.Content.ContentBlocks)
+	for i, block := range newBlocks {
+		if needsDetail(block) {
+			imageCopy := *block.ResponsesInputMessageContentBlockImage
+			imageCopy.Detail = schemas.Ptr("auto")
+			newBlocks[i].ResponsesInputMessageContentBlockImage = &imageCopy
+		}
+	}
+
+	contentCopy := *message.Content
+	contentCopy.ContentBlocks = newBlocks
+	message.Content = &contentCopy
+	return message
+}
+
 func (resp *OpenAIResponsesRequest) filterUnsupportedTools() {
 	if len(resp.Tools) == 0 {
 		return
