@@ -1049,6 +1049,7 @@ bifrost:
     enabled: false
     # directionSelectionEnabled: true   # Enable adaptive provider selection. Defaults to true; omit to leave on.
     # routeSelectionEnabled: true       # Enable adaptive per-key (route) selection. Defaults to true; omit to leave on.
+    # appendFallbacksToPinned: false    # When a request already carries a provider, append the healthy providers eligible for its model as fallbacks behind any it configured. Defaults to false.
     # rerouteFailedDirections: false    # Re-route to a healthy provider when a pinned direction is unhealthy. Defaults to false.
     # pruneFailedFallbacks: false       # Drop unhealthy directions from a request's configured fallbacks. Defaults to false.
     trackerConfig: {}

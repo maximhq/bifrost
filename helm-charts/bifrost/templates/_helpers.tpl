@@ -692,6 +692,9 @@ false
 {{- if hasKey .Values.bifrost.loadBalancer "routeSelectionEnabled" }}
 {{- $_ := set $lb "route_selection_enabled" .Values.bifrost.loadBalancer.routeSelectionEnabled }}
 {{- end }}
+{{- if hasKey .Values.bifrost.loadBalancer "appendFallbacksToPinned" }}
+{{- $_ := set $lb "append_fallbacks_to_pinned" .Values.bifrost.loadBalancer.appendFallbacksToPinned }}
+{{- end }}
 {{- if hasKey .Values.bifrost.loadBalancer "rerouteFailedDirections" }}
 {{- $_ := set $lb "reroute_failed_directions" .Values.bifrost.loadBalancer.rerouteFailedDirections }}
 {{- end }}
