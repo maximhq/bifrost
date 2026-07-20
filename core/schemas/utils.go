@@ -826,6 +826,10 @@ func deepCopyChatContentBlock(original ChatContentBlock) ChatContentBlock {
 		copyImage := ChatInputImage{
 			URL: original.ImageURLStruct.URL,
 		}
+		if original.ImageURLStruct.FileID != nil {
+			copyFileID := *original.ImageURLStruct.FileID
+			copyImage.FileID = &copyFileID
+		}
 		if original.ImageURLStruct.Detail != nil {
 			copyDetail := *original.ImageURLStruct.Detail
 			copyImage.Detail = &copyDetail

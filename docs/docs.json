@@ -158,6 +158,7 @@
                   "providers/supported-providers/sgl",
                   "providers/supported-providers/vertex",
                   "providers/supported-providers/vllm",
+                  "providers/supported-providers/wafer",
                   "providers/supported-providers/xai"
                 ]
               },
@@ -661,6 +662,13 @@
         "tab": "API",
         "icon": "code",
         "groups": [
+          {
+            "group": "Authentication",
+            "icon": "key",
+            "pages": [
+              "api/procuring-api-keys"
+            ]
+          },
           {
             "group": "API Reference",
             "openapi": "openapi/openapi.json"

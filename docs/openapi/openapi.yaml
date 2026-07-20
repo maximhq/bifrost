@@ -187,6 +187,12 @@ paths:
     $ref: './paths/inference/count-tokens.yaml#/count-tokens'
   /v1/responses/compact:
     $ref: './paths/inference/compaction.yaml#/compact'
+  /v1/responses/{response_id}:
+    $ref: './paths/inference/responses.yaml#/responses-by-id'
+  /v1/responses/{response_id}/cancel:
+    $ref: './paths/inference/responses.yaml#/responses-cancel'
+  /v1/responses/{response_id}/input_items:
+    $ref: './paths/inference/responses.yaml#/responses-input-items'
   /v1/batches:
     $ref: './paths/inference/batches.yaml#/batches'
   /v1/batches/{batch_id}:
@@ -288,6 +294,12 @@ paths:
     $ref: './paths/integrations/openai/responses.yaml#/azure-responses'
   /openai/v1/responses/input_tokens:
     $ref: './paths/integrations/openai/responses.yaml#/responses-input-tokens'
+  /openai/v1/responses/{response_id}:
+    $ref: './paths/integrations/openai/responses.yaml#/responses-by-id'
+  /openai/v1/responses/{response_id}/cancel:
+    $ref: './paths/integrations/openai/responses.yaml#/responses-cancel'
+  /openai/v1/responses/{response_id}/input_items:
+    $ref: './paths/integrations/openai/responses.yaml#/responses-input-items'
 
   # Context Compaction
   /openai/v1/responses/compact:
@@ -1243,6 +1255,10 @@ components:
       $ref: './schemas/inference/responses.yaml#/ResponsesRequest'
     ResponsesResponse:
       $ref: './schemas/inference/responses.yaml#/ResponsesResponse'
+    BifrostResponsesDeleteResponse:
+      $ref: './schemas/inference/responses.yaml#/BifrostResponsesDeleteResponse'
+    BifrostResponsesInputItemsResponse:
+      $ref: './schemas/inference/responses.yaml#/BifrostResponsesInputItemsResponse'
 
     # ==================== Rerank ====================
     RerankRequest:

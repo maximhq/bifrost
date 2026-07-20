@@ -31,6 +31,7 @@ export default function LoggingView() {
 		return (
 			localConfig.enable_logging !== config.enable_logging ||
 			localConfig.disable_content_logging !== config.disable_content_logging ||
+			localConfig.retain_content_in_object_storage !== config.retain_content_in_object_storage ||
 			localConfig.allow_per_request_content_storage_override !== config.allow_per_request_content_storage_override ||
 			localConfig.allow_per_request_raw_override !== config.allow_per_request_raw_override ||
 			localConfig.log_retention_days !== config.log_retention_days ||
@@ -132,6 +133,42 @@ export default function LoggingView() {
 								onCheckedChange={(checked) => handleConfigChange("disable_content_logging", checked)}
 							/>
 						</div>
+					</div>
+				)}
+
+				{/* Retain Content in Object Storage - Only show when logging is enabled */}
+				{localConfig.enable_logging && bifrostConfig?.is_logs_connected && (
+					<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
+						<div className="space-y-0.5">
+							<label htmlFor="retain-content-in-object-storage" className="text-sm font-medium">
+								Retain Content in Object Storage
+							</label>
+							<p className="text-muted-foreground text-sm">
+								When enabled, requests with content logging disabled — via the global setting above or the{" "}
+								<code className="text-xs">x-bf-disable-content-logging</code> header — still have their full content offloaded to object
+								storage, but the content is never shown in logs: the database row stays metadata-only and the UI/API never fetch the payload
+								back. Content is then only readable with direct access to the storage bucket. When disabled, content for such requests is
+								dropped entirely (current behavior).
+								{!bifrostConfig?.is_object_storage_connected && (
+									<span className="text-destructive font-medium">
+										{" "}
+										Requires object storage to be configured on the logs store in config.json.
+									</span>
+								)}
+							</p>
+						</div>
+						<Switch
+							id="retain-content-in-object-storage"
+							data-testid="workspace-retain-content-in-object-storage-switch"
+							size="md"
+							checked={localConfig.retain_content_in_object_storage && bifrostConfig?.is_object_storage_connected === true}
+							disabled={!bifrostConfig?.is_object_storage_connected}
+							onCheckedChange={(checked) => {
+								if (bifrostConfig?.is_object_storage_connected) {
+									handleConfigChange("retain_content_in_object_storage", checked);
+								}
+							}}
+						/>
 					</div>
 				)}
 

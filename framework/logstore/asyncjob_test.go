@@ -88,7 +88,7 @@ func waitForJobStatus(t *testing.T, store LogStore, jobID string) *AsyncJob {
 func TestSubmitJob_PropagatesContextValues(t *testing.T) {
 	executor := newTestAsyncExecutor(t)
 
-	capturedCtx := schemas.NewBifrostContext(context.Background(), <-time.After(1*time.Minute))
+	capturedCtx := schemas.NewBifrostContext(context.Background(), time.Now().Add(1*time.Minute))
 	capturedCtx.SetValue(schemas.BifrostContextKeyVirtualKey, "sk-bf-test")
 	capturedCtx.SetValue(schemas.BifrostContextKey("x-bf-eh-custom"), "custom-value")
 	capturedCtx.SetValue(schemas.BifrostContextKey("x-bf-prom-env"), "production")
@@ -405,11 +405,17 @@ func TestExecuteJob_WebhookEnqueuedOnPanic(t *testing.T) {
 }
 
 func TestExecuteJob_NilDispatcherIsSafe(t *testing.T) {
+	// No webhook endpoint is set in context: SubmitJob fails fast when one is
+	// requested without a dispatcher wired, so this only exercises executeJob's
+	// terminal-state notifyWebhook path with a nil dispatcher.
 	executor := newWebhookTestExecutor(t, nil)
 
-	job := submitWebhookTestJob(t, executor, func(*schemas.BifrostContext) (interface{}, *schemas.BifrostError) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	job, err := executor.SubmitJob(ctx, 3600, func(*schemas.BifrostContext) (interface{}, *schemas.BifrostError) {
 		return map[string]string{"status": "ok"}, nil
-	})
+	}, schemas.ChatCompletionRequest)
+	require.NoError(t, err)
+	require.NotNil(t, job)
 
 	stored := waitForJobStatus(t, executor.logstore, job.ID)
 	assert.Equal(t, schemas.AsyncJobStatusCompleted, stored.Status)
