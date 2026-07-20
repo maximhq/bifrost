@@ -442,6 +442,42 @@ func TestCohereResponsesStreamToolPlanClosedAtMessageEnd(t *testing.T) {
 	assert.Less(t, itemDoneIndex, completedIndex, "output_item.done must precede response.completed")
 }
 
+// TestCohereResponsesStreamToolPlanThenContentKeepsBothItems pins that a
+// content block following a tool plan gets its own output index, so the
+// completed output array keeps both items and annotations stay on the item
+// they belong to.
+func TestCohereResponsesStreamToolPlanThenContentKeepsBothItems(t *testing.T) {
+	state := acquireCohereResponsesStreamState()
+	defer releaseCohereResponsesStreamState(state)
+
+	events := runCohereResponsesStream(t, state, []CohereStreamEvent{
+		cohereMessageStartEvent("msg-plan-content"),
+		cohereToolPlanDeltaEvent("Plan the answer."),
+		cohereContentStartEvent(0, CohereContentBlockTypeText),
+		cohereTextDeltaEvent(0, "Final answer."),
+		cohereContentEndEvent(0),
+		cohereMessageEndEvent(FinishReasonComplete, 4, 5),
+	})
+
+	added := filterStreamEvents(events, schemas.ResponsesStreamResponseTypeOutputItemAdded)
+	require.Len(t, added, 2)
+	require.NotNil(t, added[0].OutputIndex)
+	require.NotNil(t, added[1].OutputIndex)
+	assert.NotEqual(t, *added[0].OutputIndex, *added[1].OutputIndex, "items must not share an output index")
+
+	response := completedResponse(t, events)
+	require.NotNil(t, response.Output)
+	require.Len(t, response.Output, 2, "both the tool-plan item and the content item must survive in the output array")
+	require.NotNil(t, response.Output[0].Content)
+	require.Len(t, response.Output[0].Content.ContentBlocks, 1)
+	require.NotNil(t, response.Output[0].Content.ContentBlocks[0].Text)
+	assert.Equal(t, "Plan the answer.", *response.Output[0].Content.ContentBlocks[0].Text)
+	require.NotNil(t, response.Output[1].Content)
+	require.Len(t, response.Output[1].Content.ContentBlocks, 1)
+	require.NotNil(t, response.Output[1].Content.ContentBlocks[0].Text)
+	assert.Equal(t, "Final answer.", *response.Output[1].Content.ContentBlocks[0].Text)
+}
+
 // TestCohereResponsesStreamStateRecycleTerminalClean pins that a recycled
 // stream state starts with clean bookkeeping: nothing from a previous stream
 // leaks into the next stream's response.completed.

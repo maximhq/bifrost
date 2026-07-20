@@ -729,15 +729,18 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int, sta
 	case StreamEventToolPlanDelta:
 		if chunk.Delta != nil && chunk.Delta.Message != nil && chunk.Delta.Message.ToolPlan != nil && *chunk.Delta.Message.ToolPlan != "" {
 			// Tool plan delta - treat as normal text (Option A)
-			// Use output_index 0 for text message if it exists, otherwise create new
 			outputIndex := 0
 			var responses []*schemas.BifrostResponsesStreamResponse
 
 			if state.ToolPlanOutputIndex != nil {
 				outputIndex = *state.ToolPlanOutputIndex
 			} else {
-				// Create message item first if it doesn't exist
-				outputIndex = 0
+				// Create message item first if it doesn't exist. Allocate the
+				// index through the counter so a later content block cannot
+				// reuse it and overwrite the tool-plan item in the completed
+				// output array.
+				outputIndex = state.CurrentOutputIndex
+				state.CurrentOutputIndex++
 				state.ToolPlanOutputIndex = &outputIndex
 				state.ContentIndexToOutputIndex[0] = outputIndex
 
