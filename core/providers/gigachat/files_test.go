@@ -143,7 +143,8 @@ func TestGigaChatFilesHTTP(t *testing.T) {
 
 	t.Run("UploadMultipart", testGigaChatFileUploadMultipart)
 	t.Run("ListUsesKeyBaseURLAndAuthHeaders", testGigaChatFileListUsesKeyBaseURLAndAuthHeaders)
-	t.Run("ListAppliesLimitAndRawRequest", testGigaChatFileListAppliesLimitAndRawRequest)
+	t.Run("ListReturnsAllFilesAndRawRequest", testGigaChatFileListReturnsAllFilesAndRawRequest)
+	t.Run("ListRejectsUnsupportedPaginationControls", testGigaChatFileListRejectsUnsupportedPaginationControls)
 	t.Run("ListPreservesUpstreamPurposeWhenFiltering", testGigaChatFileListPreservesUpstreamPurposeWhenFiltering)
 	t.Run("ListRetrieveDelete", testGigaChatFileListRetrieveDelete)
 	t.Run("ContentRawBytes", testGigaChatFileContentRawBytes)
@@ -418,7 +419,7 @@ func testGigaChatFileListUsesKeyBaseURLAndAuthHeaders(t *testing.T) {
 	}
 }
 
-func testGigaChatFileListAppliesLimitAndRawRequest(t *testing.T) {
+func testGigaChatFileListReturnsAllFilesAndRawRequest(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
@@ -444,19 +445,57 @@ func testGigaChatFileListAppliesLimitAndRawRequest(t *testing.T) {
 
 	response, bifrostErr := provider.FileList(ctx, []schemas.Key{testGigaChatAccessTokenKey("files-token")}, &schemas.BifrostFileListRequest{
 		Provider: schemas.GigaChat,
-		Limit:    1,
 	})
 	if bifrostErr != nil {
 		t.Fatalf("FileList returned error: %v", bifrostErr)
 	}
-	if len(response.Data) != 1 || response.Data[0].ID != "file-1" {
-		t.Fatalf("limit was not applied: %#v", response.Data)
+	if len(response.Data) != 2 || response.Data[0].ID != "file-1" || response.Data[1].ID != "file-2" {
+		t.Fatalf("file list mismatch: %#v", response.Data)
 	}
 	if got := stringifyGigaChatRaw(response.ExtraFields.RawRequest); got != `{}` {
 		t.Fatalf("raw request mismatch: got %s", got)
 	}
 	if response.ExtraFields.RawResponse == nil {
 		t.Fatal("expected raw response")
+	}
+}
+
+func testGigaChatFileListRejectsUnsupportedPaginationControls(t *testing.T) {
+	t.Parallel()
+
+	provider, err := NewGigaChatProvider(&schemas.ProviderConfig{}, nil)
+	if err != nil {
+		t.Fatalf("NewGigaChatProvider returned error: %v", err)
+	}
+	order := "desc"
+	testCases := []struct {
+		name       string
+		request    *schemas.BifrostFileListRequest
+		wantErrSub string
+	}{
+		{
+			name:       "limit",
+			request:    &schemas.BifrostFileListRequest{Provider: schemas.GigaChat, Limit: 1},
+			wantErrSub: "does not support limit pagination",
+		},
+		{
+			name:       "order",
+			request:    &schemas.BifrostFileListRequest{Provider: schemas.GigaChat, Order: &order},
+			wantErrSub: "does not support order sorting",
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			response, bifrostErr := provider.FileList(testBifrostContext(), []schemas.Key{testGigaChatAccessTokenKey("files-token")}, testCase.request)
+			if response != nil {
+				t.Fatalf("expected nil response, got %#v", response)
+			}
+			if bifrostErr == nil || !strings.Contains(bifrostErr.GetErrorString(), testCase.wantErrSub) {
+				t.Fatalf("expected %q error, got %v", testCase.wantErrSub, bifrostErr)
+			}
+		})
 	}
 }
 

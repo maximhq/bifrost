@@ -3,106 +3,322 @@ package gigachat
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"runtime"
 	"strings"
 	"sync"
+	"time"
+	"weak"
 
+	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/schemas"
+)
+
+const (
+	gigaChatAttachmentCacheTTL           = 15 * time.Minute
+	gigaChatAttachmentCacheSweepInterval = time.Minute
 )
 
 type gigaChatAttachmentCacheContextKey struct{}
 
-// GigaChat uploads inline attachments before inference; keep successful uploads
-// request-scoped so retries and token refreshes reuse file IDs instead of re-uploading.
+var gigaChatAttachmentCacheKey = gigaChatAttachmentCacheContextKey{}
+
+// GigaChat uploads inline attachments before inference. The context only keeps
+// a small cache ID; uploaded file metadata lives in this provider-owned manager.
+type gigaChatAttachmentCacheManager struct {
+	mu         sync.Mutex
+	entries    map[string]*gigaChatAttachmentCacheEntry
+	sweepTimer *time.Timer
+}
+
+type gigaChatAttachmentCacheEntry struct {
+	cache     gigaChatAttachmentCache
+	expiresAt time.Time
+	writers   int
+}
+
 type gigaChatAttachmentCache struct {
 	mu        sync.Mutex
-	chat      map[gigaChatChatAttachmentCacheKey]*schemas.BifrostChatRequest
-	responses map[gigaChatResponsesAttachmentCacheKey]*schemas.BifrostResponsesRequest
+	chat      map[gigaChatChatAttachmentCacheKey]gigaChatCachedAttachment[schemas.ChatContentBlock]
+	responses map[gigaChatResponsesAttachmentCacheKey]gigaChatCachedAttachment[schemas.ResponsesMessageContentBlock]
+}
+
+type gigaChatCachedAttachment[T any] struct {
+	replacement T
+	expiresAt   time.Time
 }
 
 type gigaChatChatAttachmentCacheKey struct {
-	request *schemas.BifrostChatRequest
-	keyHash string
+	request      weak.Pointer[schemas.BifrostChatRequest]
+	keyHash      string
+	messageIndex int
+	blockIndex   int
 }
 
 type gigaChatResponsesAttachmentCacheKey struct {
-	request *schemas.BifrostResponsesRequest
-	keyHash string
+	request      weak.Pointer[schemas.BifrostResponsesRequest]
+	keyHash      string
+	messageIndex int
+	blockIndex   int
 }
 
-var gigaChatAttachmentCacheKey = gigaChatAttachmentCacheContextKey{}
+func newGigaChatAttachmentCacheManager() *gigaChatAttachmentCacheManager {
+	return &gigaChatAttachmentCacheManager{
+		entries: make(map[string]*gigaChatAttachmentCacheEntry),
+	}
+}
 
-func getGigaChatAttachmentCache(ctx *schemas.BifrostContext) *gigaChatAttachmentCache {
-	if ctx == nil {
-		return nil
-	}
-	if cache, ok := ctx.Value(gigaChatAttachmentCacheKey).(*gigaChatAttachmentCache); ok && cache != nil {
-		return cache
-	}
-	cache := &gigaChatAttachmentCache{}
-	ctx.SetValue(gigaChatAttachmentCacheKey, cache)
+func (manager *gigaChatAttachmentCacheManager) lookupCache(ctx *schemas.BifrostContext) *gigaChatAttachmentCache {
+	cache, _ := manager.cacheFor(ctx, false)
 	return cache
 }
 
-func getCachedGigaChatChatAttachmentRequest(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatRequest, bool) {
-	cache := getGigaChatAttachmentCache(ctx)
-	if cache == nil || request == nil {
-		return nil, false
-	}
-
-	cacheKey := gigaChatChatAttachmentCacheKey{request: request, keyHash: gigaChatAttachmentKeyHash(key)}
-	cache.mu.Lock()
-	defer cache.mu.Unlock()
-	if cache.chat == nil {
-		return nil, false
-	}
-	prepared, ok := cache.chat[cacheKey]
-	return prepared, ok
+func (manager *gigaChatAttachmentCacheManager) cacheForWrite(ctx *schemas.BifrostContext) (*gigaChatAttachmentCache, *gigaChatAttachmentCacheEntry) {
+	return manager.cacheFor(ctx, true)
 }
 
-func setCachedGigaChatChatAttachmentRequest(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest, prepared *schemas.BifrostChatRequest) {
-	cache := getGigaChatAttachmentCache(ctx)
-	if cache == nil || request == nil || prepared == nil {
+func (manager *gigaChatAttachmentCacheManager) cacheFor(ctx *schemas.BifrostContext, create bool) (*gigaChatAttachmentCache, *gigaChatAttachmentCacheEntry) {
+	if manager == nil || ctx == nil {
+		return nil, nil
+	}
+
+	ctx = ctx.Root()
+	if ctx.Err() != nil {
+		return nil, nil
+	}
+	now := time.Now()
+	manager.mu.Lock()
+	cacheID, _ := ctx.Value(gigaChatAttachmentCacheKey).(string)
+	if cacheID == "" {
+		if !create {
+			manager.mu.Unlock()
+			return nil, nil
+		}
+		cacheID = uuid.NewString()
+		ctx.SetValue(gigaChatAttachmentCacheKey, cacheID)
+	}
+
+	entry := manager.entries[cacheID]
+	if entry != nil && entry.writers == 0 && !entry.expiresAt.After(now) {
+		delete(manager.entries, cacheID)
+		entry = nil
+	}
+	if entry == nil {
+		if !create {
+			manager.mu.Unlock()
+			return nil, nil
+		}
+		entry = &gigaChatAttachmentCacheEntry{}
+		manager.entries[cacheID] = entry
+	}
+	entry.expiresAt = now.Add(gigaChatAttachmentCacheTTL)
+	if create {
+		entry.writers++
+	}
+	manager.scheduleSweepLocked()
+	manager.mu.Unlock()
+
+	return &entry.cache, entry
+}
+
+func (manager *gigaChatAttachmentCacheManager) finishWrite(entry *gigaChatAttachmentCacheEntry) {
+	if manager == nil || entry == nil {
 		return
 	}
-
-	cacheKey := gigaChatChatAttachmentCacheKey{request: request, keyHash: gigaChatAttachmentKeyHash(key)}
-	cache.mu.Lock()
-	defer cache.mu.Unlock()
-	if cache.chat == nil {
-		cache.chat = make(map[gigaChatChatAttachmentCacheKey]*schemas.BifrostChatRequest)
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	if entry.writers > 0 {
+		entry.writers--
 	}
-	cache.chat[cacheKey] = prepared
 }
 
-func getCachedGigaChatResponsesAttachmentRequest(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesRequest, bool) {
-	cache := getGigaChatAttachmentCache(ctx)
-	if cache == nil || request == nil {
-		return nil, false
-	}
-
-	cacheKey := gigaChatResponsesAttachmentCacheKey{request: request, keyHash: gigaChatAttachmentKeyHash(key)}
-	cache.mu.Lock()
-	defer cache.mu.Unlock()
-	if cache.responses == nil {
-		return nil, false
-	}
-	prepared, ok := cache.responses[cacheKey]
-	return prepared, ok
-}
-
-func setCachedGigaChatResponsesAttachmentRequest(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest, prepared *schemas.BifrostResponsesRequest) {
-	cache := getGigaChatAttachmentCache(ctx)
-	if cache == nil || request == nil || prepared == nil {
+func (manager *gigaChatAttachmentCacheManager) scheduleSweepLocked() {
+	if manager.sweepTimer != nil || len(manager.entries) == 0 {
 		return
 	}
+	manager.sweepTimer = time.AfterFunc(gigaChatAttachmentCacheSweepInterval, manager.sweep)
+}
 
-	cacheKey := gigaChatResponsesAttachmentCacheKey{request: request, keyHash: gigaChatAttachmentKeyHash(key)}
+func (manager *gigaChatAttachmentCacheManager) sweep() {
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	manager.sweepTimer = nil
+	manager.pruneEntriesLocked(time.Now())
+	manager.scheduleSweepLocked()
+}
+
+func (manager *gigaChatAttachmentCacheManager) pruneEntriesLocked(now time.Time) {
+	for cacheID, entry := range manager.entries {
+		if entry.writers > 0 {
+			continue
+		}
+		if !entry.expiresAt.After(now) {
+			delete(manager.entries, cacheID)
+			continue
+		}
+		if entry.cache.prune(now) {
+			delete(manager.entries, cacheID)
+		}
+	}
+}
+
+func (cache *gigaChatAttachmentCache) prune(now time.Time) bool {
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
-	if cache.responses == nil {
-		cache.responses = make(map[gigaChatResponsesAttachmentCacheKey]*schemas.BifrostResponsesRequest)
+	for key, attachment := range cache.chat {
+		if key.request.Value() == nil || !attachment.expiresAt.After(now) {
+			delete(cache.chat, key)
+		}
 	}
-	cache.responses[cacheKey] = prepared
+	for key, attachment := range cache.responses {
+		if key.request.Value() == nil || !attachment.expiresAt.After(now) {
+			delete(cache.responses, key)
+		}
+	}
+	return len(cache.chat) == 0 && len(cache.responses) == 0
+}
+
+func (provider *GigaChatProvider) getCachedGigaChatChatAttachment(
+	ctx *schemas.BifrostContext,
+	key schemas.Key,
+	request *schemas.BifrostChatRequest,
+	messageIndex int,
+	blockIndex int,
+) (schemas.ChatContentBlock, bool) {
+	if request == nil {
+		return schemas.ChatContentBlock{}, false
+	}
+	cache := provider.attachmentCache.lookupCache(ctx)
+	if cache == nil {
+		return schemas.ChatContentBlock{}, false
+	}
+
+	cacheKey := gigaChatChatAttachmentCacheKey{
+		request:      weak.Make(request),
+		keyHash:      gigaChatAttachmentKeyHash(key),
+		messageIndex: messageIndex,
+		blockIndex:   blockIndex,
+	}
+	cache.mu.Lock()
+	attachment, ok := cache.chat[cacheKey]
+	now := time.Now()
+	if ok && !attachment.expiresAt.After(now) {
+		delete(cache.chat, cacheKey)
+		attachment = gigaChatCachedAttachment[schemas.ChatContentBlock]{}
+		ok = false
+	} else if ok {
+		attachment.expiresAt = now.Add(gigaChatAttachmentCacheTTL)
+		cache.chat[cacheKey] = attachment
+	}
+	cache.mu.Unlock()
+	runtime.KeepAlive(request)
+	return attachment.replacement, ok
+}
+
+func (provider *GigaChatProvider) setCachedGigaChatChatAttachment(
+	ctx *schemas.BifrostContext,
+	key schemas.Key,
+	request *schemas.BifrostChatRequest,
+	messageIndex int,
+	blockIndex int,
+	replacement schemas.ChatContentBlock,
+) {
+	if request == nil {
+		return
+	}
+	cache, entry := provider.attachmentCache.cacheForWrite(ctx)
+	if cache == nil {
+		return
+	}
+	defer provider.attachmentCache.finishWrite(entry)
+
+	cacheKey := gigaChatChatAttachmentCacheKey{
+		request:      weak.Make(request),
+		keyHash:      gigaChatAttachmentKeyHash(key),
+		messageIndex: messageIndex,
+		blockIndex:   blockIndex,
+	}
+	cache.mu.Lock()
+	if cache.chat == nil {
+		cache.chat = make(map[gigaChatChatAttachmentCacheKey]gigaChatCachedAttachment[schemas.ChatContentBlock])
+	}
+	cache.chat[cacheKey] = gigaChatCachedAttachment[schemas.ChatContentBlock]{
+		replacement: replacement,
+		expiresAt:   time.Now().Add(gigaChatAttachmentCacheTTL),
+	}
+	cache.mu.Unlock()
+	runtime.KeepAlive(request)
+}
+
+func (provider *GigaChatProvider) getCachedGigaChatResponsesAttachment(
+	ctx *schemas.BifrostContext,
+	key schemas.Key,
+	request *schemas.BifrostResponsesRequest,
+	messageIndex int,
+	blockIndex int,
+) (schemas.ResponsesMessageContentBlock, bool) {
+	if request == nil {
+		return schemas.ResponsesMessageContentBlock{}, false
+	}
+	cache := provider.attachmentCache.lookupCache(ctx)
+	if cache == nil {
+		return schemas.ResponsesMessageContentBlock{}, false
+	}
+
+	cacheKey := gigaChatResponsesAttachmentCacheKey{
+		request:      weak.Make(request),
+		keyHash:      gigaChatAttachmentKeyHash(key),
+		messageIndex: messageIndex,
+		blockIndex:   blockIndex,
+	}
+	cache.mu.Lock()
+	attachment, ok := cache.responses[cacheKey]
+	now := time.Now()
+	if ok && !attachment.expiresAt.After(now) {
+		delete(cache.responses, cacheKey)
+		attachment = gigaChatCachedAttachment[schemas.ResponsesMessageContentBlock]{}
+		ok = false
+	} else if ok {
+		attachment.expiresAt = now.Add(gigaChatAttachmentCacheTTL)
+		cache.responses[cacheKey] = attachment
+	}
+	cache.mu.Unlock()
+	runtime.KeepAlive(request)
+	return attachment.replacement, ok
+}
+
+func (provider *GigaChatProvider) setCachedGigaChatResponsesAttachment(
+	ctx *schemas.BifrostContext,
+	key schemas.Key,
+	request *schemas.BifrostResponsesRequest,
+	messageIndex int,
+	blockIndex int,
+	replacement schemas.ResponsesMessageContentBlock,
+) {
+	if request == nil {
+		return
+	}
+	cache, entry := provider.attachmentCache.cacheForWrite(ctx)
+	if cache == nil {
+		return
+	}
+	defer provider.attachmentCache.finishWrite(entry)
+
+	cacheKey := gigaChatResponsesAttachmentCacheKey{
+		request:      weak.Make(request),
+		keyHash:      gigaChatAttachmentKeyHash(key),
+		messageIndex: messageIndex,
+		blockIndex:   blockIndex,
+	}
+	cache.mu.Lock()
+	if cache.responses == nil {
+		cache.responses = make(map[gigaChatResponsesAttachmentCacheKey]gigaChatCachedAttachment[schemas.ResponsesMessageContentBlock])
+	}
+	cache.responses[cacheKey] = gigaChatCachedAttachment[schemas.ResponsesMessageContentBlock]{
+		replacement: replacement,
+		expiresAt:   time.Now().Add(gigaChatAttachmentCacheTTL),
+	}
+	cache.mu.Unlock()
+	runtime.KeepAlive(request)
 }
 
 func gigaChatAttachmentKeyHash(key schemas.Key) string {

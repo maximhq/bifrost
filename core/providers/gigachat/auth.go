@@ -320,9 +320,9 @@ func (cache *gigaChatTokenCache) releaseEntry(cacheKey string, entry *gigaChatTo
 	}
 
 	entry.mu.Lock()
-	expired := entry.token.accessToken != "" && !entry.token.isValid(cache.now())
+	reusable := entry.token.isValid(cache.now())
 	entry.mu.Unlock()
-	if expired {
+	if !reusable {
 		delete(cache.entries, cacheKey)
 	}
 }
@@ -333,10 +333,10 @@ func (cache *gigaChatTokenCache) pruneExpiredEntriesLocked(now time.Time) {
 			continue
 		}
 		entry.mu.Lock()
-		expired := entry.token.accessToken != "" && !entry.token.isValid(now)
+		reusable := entry.token.isValid(now)
 		entry.mu.Unlock()
 
-		if expired {
+		if !reusable {
 			delete(cache.entries, cacheKey)
 		}
 	}
@@ -392,7 +392,7 @@ func resolveGigaChatOAuthConfig(key schemas.Key) (gigaChatOAuthConfig, *schemas.
 }
 
 func buildGigaChatOAuthCacheKey(authConfig gigaChatOAuthConfig) string {
-	tlsFingerprint := gigaChatAuthTLSMaterialFingerprint(authConfig.keyConfig)
+	tlsFingerprint := gigaChatAuthTLSConfigFingerprint(authConfig.keyConfig)
 	hash := sha256.New()
 	hash.Write([]byte("oauth"))
 	hash.Write([]byte{0})
@@ -431,7 +431,7 @@ func (provider *GigaChatProvider) resolveGigaChatPasswordAuthConfig(key schemas.
 }
 
 func buildGigaChatPasswordAuthCacheKey(authConfig gigaChatPasswordAuthConfig) string {
-	tlsFingerprint := gigaChatAuthTLSMaterialFingerprint(authConfig.keyConfig)
+	tlsFingerprint := gigaChatAuthTLSConfigFingerprint(authConfig.keyConfig)
 	hash := sha256.New()
 	hash.Write([]byte("password"))
 	hash.Write([]byte{0})

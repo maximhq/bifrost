@@ -418,6 +418,16 @@ func cloneGigaChatSchemaValue(value interface{}) (interface{}, error) {
 		return cloneGigaChatSchemaMap(typed)
 	case schemas.OrderedMap:
 		return cloneGigaChatSchemaMap(&typed)
+	case map[string]interface{}:
+		copied := make(map[string]interface{}, len(typed))
+		for key, item := range typed {
+			itemCopy, err := cloneGigaChatSchemaValue(item)
+			if err != nil {
+				return nil, err
+			}
+			copied[key] = itemCopy
+		}
+		return copied, nil
 	case []interface{}:
 		copied := make([]interface{}, len(typed))
 		for index, item := range typed {

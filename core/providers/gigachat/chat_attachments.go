@@ -16,9 +16,6 @@ func (provider *GigaChatProvider) prepareGigaChatChatAttachments(ctx *schemas.Bi
 	if request == nil {
 		return nil, providerUtils.NewBifrostOperationError("chat completion request is nil", nil)
 	}
-	if cached, ok := getCachedGigaChatChatAttachmentRequest(ctx, key, request); ok {
-		return cached, nil
-	}
 
 	var prepared *schemas.BifrostChatRequest
 	for messageIndex := range request.Input {
@@ -28,6 +25,16 @@ func (provider *GigaChatProvider) prepareGigaChatChatAttachments(ctx *schemas.Bi
 		}
 
 		for blockIndex, block := range content.ContentBlocks {
+			if gigaChatChatAttachmentMayUpload(block) {
+				if replacement, ok := provider.getCachedGigaChatChatAttachment(ctx, key, request, messageIndex, blockIndex); ok {
+					if prepared == nil {
+						prepared = cloneGigaChatChatRequestForAttachmentUpload(request)
+					}
+					prepared.Input[messageIndex].Content.ContentBlocks[blockIndex] = replacement
+					continue
+				}
+			}
+
 			replacement, changed, bifrostErr := provider.prepareGigaChatChatAttachmentBlock(ctx, key, blockIndex, block)
 			if bifrostErr != nil {
 				return nil, bifrostErr
@@ -39,15 +46,29 @@ func (provider *GigaChatProvider) prepareGigaChatChatAttachments(ctx *schemas.Bi
 			if prepared == nil {
 				prepared = cloneGigaChatChatRequestForAttachmentUpload(request)
 			}
+			provider.setCachedGigaChatChatAttachment(ctx, key, request, messageIndex, blockIndex, replacement)
 			prepared.Input[messageIndex].Content.ContentBlocks[blockIndex] = replacement
 		}
 	}
 
 	if prepared != nil {
-		setCachedGigaChatChatAttachmentRequest(ctx, key, request, prepared)
 		return prepared, nil
 	}
 	return request, nil
+}
+
+func gigaChatChatAttachmentMayUpload(block schemas.ChatContentBlock) bool {
+	switch block.Type {
+	case schemas.ChatContentBlockTypeImage:
+		return true
+	case schemas.ChatContentBlockTypeFile:
+		if block.File == nil {
+			return false
+		}
+		return block.File.FileID == nil || strings.TrimSpace(*block.File.FileID) == ""
+	default:
+		return false
+	}
 }
 
 func cloneGigaChatChatRequestForAttachmentUpload(request *schemas.BifrostChatRequest) *schemas.BifrostChatRequest {

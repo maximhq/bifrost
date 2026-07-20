@@ -189,7 +189,7 @@ func (provider *GigaChatProvider) getGigaChatTLSClient(baseClient *fasthttp.Clie
 		return buildGigaChatTLSClient(baseClient, keyConfig)
 	}
 
-	fingerprint := gigaChatTLSMaterialFingerprint(keyConfig)
+	fingerprint := gigaChatTLSConfigFingerprint(keyConfig)
 	cacheKey := cacheKind + ":" + fingerprint
 	provider.tlsClientCache.mu.Lock()
 	defer provider.tlsClientCache.mu.Unlock()
@@ -206,9 +206,11 @@ func (provider *GigaChatProvider) getGigaChatTLSClient(baseClient *fasthttp.Clie
 	return client, nil
 }
 
-// gigaChatTLSMaterialFingerprint identifies the configured TLS inputs without
-// reading them, so cache hits never pay certificate file I/O on the request path.
-func gigaChatTLSMaterialFingerprint(keyConfig *schemas.GigaChatKeyConfig) string {
+// gigaChatTLSConfigFingerprint identifies the configured TLS paths without
+// reading them, so cache hits never pay certificate file I/O on the request
+// path and keep reusing the same connection pool. Replacing material in place
+// intentionally takes effect on provider reload rather than on the next request.
+func gigaChatTLSConfigFingerprint(keyConfig *schemas.GigaChatKeyConfig) string {
 	if keyConfig == nil {
 		return ""
 	}
@@ -230,8 +232,8 @@ func gigaChatTLSMaterialFingerprint(keyConfig *schemas.GigaChatKeyConfig) string
 	return hex.EncodeToString(hash.Sum(nil))
 }
 
-func gigaChatAuthTLSMaterialFingerprint(keyConfig *schemas.GigaChatKeyConfig) string {
-	return gigaChatTLSMaterialFingerprint(gigaChatAuthTLSKeyConfig(keyConfig))
+func gigaChatAuthTLSConfigFingerprint(keyConfig *schemas.GigaChatKeyConfig) string {
+	return gigaChatTLSConfigFingerprint(gigaChatAuthTLSKeyConfig(keyConfig))
 }
 
 func gigaChatAuthTLSKeyConfig(keyConfig *schemas.GigaChatKeyConfig) *schemas.GigaChatKeyConfig {

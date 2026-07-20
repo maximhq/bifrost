@@ -19,9 +19,6 @@ func (provider *GigaChatProvider) prepareGigaChatResponsesAttachments(ctx *schem
 	if request == nil {
 		return nil, providerUtils.NewBifrostOperationError("responses request is nil", nil)
 	}
-	if cached, ok := getCachedGigaChatResponsesAttachmentRequest(ctx, key, request); ok {
-		return cached, nil
-	}
 
 	var prepared *schemas.BifrostResponsesRequest
 	for messageIndex := range request.Input {
@@ -31,6 +28,16 @@ func (provider *GigaChatProvider) prepareGigaChatResponsesAttachments(ctx *schem
 		}
 
 		for blockIndex, block := range content.ContentBlocks {
+			if gigaChatResponsesAttachmentMayUpload(block) {
+				if replacement, ok := provider.getCachedGigaChatResponsesAttachment(ctx, key, request, messageIndex, blockIndex); ok {
+					if prepared == nil {
+						prepared = cloneGigaChatResponsesRequestForAttachmentUpload(request)
+					}
+					prepared.Input[messageIndex].Content.ContentBlocks[blockIndex] = replacement
+					continue
+				}
+			}
+
 			replacement, changed, bifrostErr := provider.prepareGigaChatResponsesAttachmentBlock(ctx, key, blockIndex, block)
 			if bifrostErr != nil {
 				return nil, bifrostErr
@@ -42,15 +49,31 @@ func (provider *GigaChatProvider) prepareGigaChatResponsesAttachments(ctx *schem
 			if prepared == nil {
 				prepared = cloneGigaChatResponsesRequestForAttachmentUpload(request)
 			}
+			provider.setCachedGigaChatResponsesAttachment(ctx, key, request, messageIndex, blockIndex, replacement)
 			prepared.Input[messageIndex].Content.ContentBlocks[blockIndex] = replacement
 		}
 	}
 
 	if prepared != nil {
-		setCachedGigaChatResponsesAttachmentRequest(ctx, key, request, prepared)
 		return prepared, nil
 	}
 	return request, nil
+}
+
+func gigaChatResponsesAttachmentMayUpload(block schemas.ResponsesMessageContentBlock) bool {
+	switch block.Type {
+	case schemas.ResponsesInputMessageContentBlockTypeImage:
+		return block.ResponsesInputMessageContentBlockImage != nil &&
+			block.ResponsesInputMessageContentBlockImage.ImageURL != nil &&
+			strings.TrimSpace(*block.ResponsesInputMessageContentBlockImage.ImageURL) != ""
+	case schemas.ResponsesInputMessageContentBlockTypeFile:
+		file := block.ResponsesInputMessageContentBlockFile
+		return file != nil &&
+			((file.FileData != nil && strings.TrimSpace(*file.FileData) != "") ||
+				(file.FileURL != nil && strings.TrimSpace(*file.FileURL) != ""))
+	default:
+		return false
+	}
 }
 
 func cloneGigaChatResponsesRequestForAttachmentUpload(request *schemas.BifrostResponsesRequest) *schemas.BifrostResponsesRequest {

@@ -53,7 +53,7 @@ Key characteristics:
 | Password flow | Requires a deployment that exposes the SDK-compatible `POST <base_url>/v1/token` endpoint. |
 | TLS/mTLS | `cert_file`/`key_file` can be used as mTLS auth material and must be configured together. `ca_bundle_file` only affects trust roots. |
 | CountTokens | Text input only through `/v1/tokens/count`; image, audio, and file inputs are rejected, and the response is an input-token estimate only. |
-| Files and attachments | Use the Files API first, then reference pre-uploaded `file_id` values in Responses. Inline file bytes and file URLs are rejected. |
+| Files and attachments | Existing `file_id` values are passed through. Bifrost also uploads inline Chat images/files and Responses `input_image`/`input_file` content before inference, then replaces it with the returned GigaChat file ID. Chat `file_url` remains unsupported. |
 | Batches | Create/list/retrieve/results and file-backed batch input are supported for chat, Responses, and embeddings rows. Cancel/delete are unsupported. |
 | Reasoning | Chat and Responses converters preserve supported GigaChat reasoning fields, but generic Bifrost reasoning tests remain disabled because they send unsupported OpenAI Responses reasoning controls. |
 | Images | The standalone Bifrost Image Generation, edit, and variation endpoints are unsupported. Only the GigaChat Responses `image_generate` built-in tool can be passed through. |
@@ -166,7 +166,7 @@ Bifrost sets the GigaChat provider `User-Agent` automatically; users do not need
 | OAuth authorization key | `gigachat_key_config.credentials`, optional `scope`, optional `auth_url` | Default scope is `GIGACHAT_API_PERS`. Bifrost exchanges credentials at `/api/v2/oauth`, caches the token, and refreshes it before expiry. |
 | Explicit access token | `gigachat_key_config.access_token` or key `value` | Useful for tests or short-lived deployments. Bifrost does not refresh explicit tokens. |
 | Password token flow | `gigachat_key_config.user` + `gigachat_key_config.password` | Uses the SDK-compatible `POST <base_url>/v1/token` flow for deployments that expose it. |
-| TLS / mTLS material | `ca_bundle_file`, `cert_file`, `key_file` | Transport supplement only. Bearer auth is still required. Applied to both token and inference clients. `cert_file` and `key_file` must be configured together. |
+| TLS / mTLS material | `ca_bundle_file`, `cert_file`, `key_file` | `ca_bundle_file` changes trust roots for token and inference clients. A complete `cert_file`/`key_file` pair configures the inference client and may be used with bearer auth or as mTLS-only authentication. |
 
 Authentication priority is:
 
@@ -242,6 +242,8 @@ If the base URL ends in `/v1` or `/v2`, Bifrost swaps the version when it needs 
 
 Use `ca_bundle_file` when your runtime does not trust the GigaChat CA chain. Use `cert_file` and `key_file` together for client certificate authentication.
 
+Bifrost loads TLS files into cached provider clients so requests reuse their connection pools without filesystem I/O. If you replace a certificate or CA bundle at the same path, reload the provider configuration or restart Bifrost before sending traffic with the rotated material.
+
 ```json
 {
   "gigachat_key_config": {
@@ -279,6 +281,7 @@ Bifrost ChatCompletion -> GigaChat /v1/chat/completions -> Bifrost ChatCompletio
 | `reasoning.effort` | `reasoning_effort` | `minimal` maps to `low`; `xhigh` and `max` map to `high`; `none` is omitted |
 | `reasoning.max_tokens` | `reasoning_effort` | Best-effort budget-to-effort mapping when `reasoning.effort` is not set |
 | `response_format.type: "json_schema"` | `response_format` | OpenAI/Pydantic-style `json_schema` is converted to GigaChat's `schema` shape |
+| Inline image/file content | `attachments[]` | Base64 image data URLs and inline `file_data` are uploaded through GigaChat Files before inference; existing `file_id` values are reused |
 | `extra_params` | provider-specific top-level fields | Control fields such as `functions`, `function_call`, `tools`, `tool_config`, and `parallel_tool_calls` are blocked |
 
 ### Message Conversion
@@ -286,7 +289,9 @@ Bifrost ChatCompletion -> GigaChat /v1/chat/completions -> Bifrost ChatCompletio
 - `system`, `user`, and `assistant` messages are forwarded.
 - `developer` messages are rejected.
 - Text content blocks are concatenated into a single text message.
-- Non-text chat content blocks are rejected.
+- Base64 image data URLs and inline file data are uploaded automatically and sent as GigaChat attachment IDs; pre-uploaded `file_id` values are forwarded directly.
+- Remote Chat image URLs and `file_url` attachments are rejected; upload them first and pass `file_id`.
+- Other non-text chat content blocks are rejected.
 - Assistant tool calls are converted to GigaChat `function_call`.
 - Assistant reasoning history is sent as GigaChat `reasoning_content`.
 - Tool result messages become GigaChat `role: "function"` messages and must include a function name or a matching `tool_call_id`.
@@ -349,7 +354,9 @@ This is a native v2 mapping, not a fallback through `ResponsesRequest.ToChatRequ
 | Function `tools` | `tools[].functions.specifications` | Function schemas are sanitized before sending |
 | Built-in `tools` | `tools[]` | Supports GigaChat-compatible web search, code interpreter, image generation, URL extraction, and 3D generation |
 | `tool_choice` | `tool_config` | Supports `auto`, `none`, forced function, and forced declared built-in tools |
-| `input_file.file_id` | `messages[].content[].files[].id` | Use the Files API first; inline file bytes and URLs are rejected |
+| `input_file.file_id` | `messages[].content[].files[].id` | Existing GigaChat file IDs are forwarded directly |
+| `input_file.file_data` or `input_file.file_url` | `messages[].content[].files[].id` | Bifrost uploads the content through GigaChat Files before inference and substitutes the returned file ID |
+| `input_image.image_url` | `messages[].content[].files[].id` | Base64 data URLs and remote image URLs are uploaded through GigaChat Files before inference |
 
 ### Provider-Specific Extra Params
 
@@ -390,7 +397,7 @@ Other `extra_params` are passed through as provider-specific top-level fields, e
 
 The GigaChat Responses converter rejects `background`, `conversation`, `include`, `max_tool_calls`, non-empty `metadata`, `parallel_tool_calls: true`, `previous_response_id`, `prompt_cache_key`, `safety_identifier`, `service_tier`, `stream_options`, `store: true`, `truncation`, `user`, `reasoning.generate_summary`, `reasoning.summary`, `reasoning.max_tokens`, and `text.verbosity`.
 
-Input image and input audio content blocks are not supported yet. File content supports pre-uploaded `file_id` references only.
+Input audio content blocks are not supported. Responses input images and files support existing `file_id` references plus automatic upload from `image_url`, `file_data`, and `file_url` sources.
 
 ### Response Conversion
 
@@ -446,7 +453,7 @@ The GigaChat provider implements Bifrost's OpenAI-compatible Files surface on to
 
 When GigaChat returns purpose `assistant`, Bifrost reports `assistants`. When it returns `general`, Bifrost reports the upload request purpose when known and falls back to `user_data`.
 
-Use the Files API before sending file inputs to Responses: upload the file, then reference the returned `file_id` in an `input_file` content block. Inline file bytes and file URLs are rejected so file content is not silently dropped.
+You can upload content explicitly and pass the returned `file_id`, or let Bifrost upload Responses `input_file.file_data`, `input_file.file_url`, and `input_image.image_url` sources before inference. Chat Completions also auto-upload base64 image data URLs and inline file data; remote Chat attachments must be uploaded explicitly and referenced by `file_id`.
 
 ## Batches
 

@@ -1,14 +1,17 @@
 package gigachat
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"io"
 	"math/big"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -35,6 +38,159 @@ func TestGigachat(t *testing.T) {
 	t.Run("BuildsTLSClientWithCertificate", testGigaChatBuildsTLSClientWithCertificate)
 	t.Run("ReusesTLSClientWithCertificateUntilProviderReload", testGigaChatReusesTLSClientWithCertificateUntilProviderReload)
 	t.Run("RejectsMissingCertificatePair", testGigaChatRejectsMissingCertificatePair)
+	t.Run("PassthroughEarlyCloseFinalizesOnce", testGigaChatPassthroughEarlyCloseFinalizesOnce)
+	t.Run("AttachmentCacheLifecycle", testGigaChatAttachmentCacheLifecycle)
+}
+
+type gigaChatCountingReadCloser struct {
+	io.Reader
+	closeCalls atomic.Int32
+}
+
+func (reader *gigaChatCountingReadCloser) Close() error {
+	reader.closeCalls.Add(1)
+	return nil
+}
+
+func testGigaChatPassthroughEarlyCloseFinalizesOnce(t *testing.T) {
+	t.Parallel()
+
+	ctx := testBifrostContext()
+	underlying := &gigaChatCountingReadCloser{Reader: strings.NewReader("incomplete")}
+	var finalizerCalls atomic.Int32
+	reader := &gigaChatPassthroughReadCloser{
+		ReadCloser: underlying,
+		ctx:        ctx,
+		postHookSpanFinalizer: func(context.Context) {
+			finalizerCalls.Add(1)
+		},
+	}
+
+	buffer := make([]byte, 1)
+	if _, err := reader.Read(buffer); err != nil {
+		t.Fatalf("failed to read passthrough prefix: %v", err)
+	}
+
+	closeErrors := make(chan error, 2)
+	for range 2 {
+		go func() {
+			closeErrors <- reader.Close()
+		}()
+	}
+	for range 2 {
+		if err := <-closeErrors; err != nil {
+			t.Fatalf("passthrough close failed: %v", err)
+		}
+	}
+
+	if got := underlying.closeCalls.Load(); got != 1 {
+		t.Fatalf("underlying close calls mismatch: got %d, want 1", got)
+	}
+	if got := finalizerCalls.Load(); got != 1 {
+		t.Fatalf("finalizer calls mismatch: got %d, want 1", got)
+	}
+	if ended, _ := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator).(bool); ended {
+		t.Fatal("early passthrough close must not mark the stream complete")
+	}
+}
+
+func testGigaChatAttachmentCacheLifecycle(t *testing.T) {
+	t.Parallel()
+
+	manager := newGigaChatAttachmentCacheManager()
+	defer func() {
+		manager.mu.Lock()
+		defer manager.mu.Unlock()
+		if manager.sweepTimer != nil {
+			manager.sweepTimer.Stop()
+			manager.sweepTimer = nil
+		}
+	}()
+
+	provider := &GigaChatProvider{attachmentCache: manager}
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	request := &schemas.BifrostChatRequest{}
+	fileID := "uploaded-file"
+	replacement := schemas.ChatContentBlock{
+		Type: schemas.ChatContentBlockTypeFile,
+		File: &schemas.ChatInputFile{FileID: &fileID},
+	}
+	provider.setCachedGigaChatChatAttachment(ctx, schemas.Key{}, request, 0, 0, replacement)
+
+	cacheID, ok := ctx.Value(gigaChatAttachmentCacheKey).(string)
+	if !ok || cacheID == "" {
+		t.Fatalf("context must store only a cache ID, got %#v", ctx.Value(gigaChatAttachmentCacheKey))
+	}
+	manager.mu.Lock()
+	entry := manager.entries[cacheID]
+	manager.mu.Unlock()
+	if entry == nil {
+		t.Fatal("provider-owned attachment cache entry is missing")
+	}
+	childCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+	childCacheID, _ := childCtx.Value(gigaChatAttachmentCacheKey).(string)
+	if childCacheID != cacheID {
+		t.Fatalf("derived context did not inherit cache ID: got %q, want %q", childCacheID, cacheID)
+	}
+	if cached, found := provider.getCachedGigaChatChatAttachment(childCtx, schemas.Key{}, request, 0, 0); !found || cached.File == nil || cached.File.FileID == nil || *cached.File.FileID != fileID {
+		t.Fatalf("derived context did not reuse cached attachment: %#v, found=%v", cached, found)
+	}
+	manager.mu.Lock()
+	entryCount := len(manager.entries)
+	manager.mu.Unlock()
+	if entryCount != 1 {
+		t.Fatalf("derived context created or evicted a cache bucket: got %d entries, want 1", entryCount)
+	}
+
+	entry.cache.mu.Lock()
+	for key, attachment := range entry.cache.chat {
+		attachment.expiresAt = time.Time{}
+		entry.cache.chat[key] = attachment
+	}
+	entry.cache.mu.Unlock()
+	if cached, found := provider.getCachedGigaChatChatAttachment(ctx, schemas.Key{}, request, 0, 0); found {
+		t.Fatalf("expired attachment remained reusable: %#v", cached)
+	}
+	entry.cache.mu.Lock()
+	remainingAttachments := len(entry.cache.chat)
+	entry.cache.mu.Unlock()
+	if remainingAttachments != 0 {
+		t.Fatalf("expired attachment records were not pruned: %d remain", remainingAttachments)
+	}
+
+	_, writer := manager.cacheForWrite(ctx)
+	if writer == nil {
+		t.Fatal("failed to register in-flight attachment cache writer")
+	}
+	manager.mu.Lock()
+	if manager.sweepTimer != nil {
+		manager.sweepTimer.Stop()
+		manager.sweepTimer = nil
+	}
+	manager.mu.Unlock()
+	manager.sweep()
+	manager.mu.Lock()
+	entriesDuringWrite := len(manager.entries)
+	manager.mu.Unlock()
+	if entriesDuringWrite != 1 {
+		t.Fatalf("sweep evicted a cache with an in-flight writer: got %d entries, want 1", entriesDuringWrite)
+	}
+
+	manager.finishWrite(writer)
+	manager.mu.Lock()
+	if manager.sweepTimer != nil {
+		manager.sweepTimer.Stop()
+		manager.sweepTimer = nil
+	}
+	manager.mu.Unlock()
+	manager.sweep()
+	manager.mu.Lock()
+	remainingEntries := len(manager.entries)
+	manager.mu.Unlock()
+	if remainingEntries != 0 {
+		t.Fatalf("empty context cache was not pruned: %d entries remain", remainingEntries)
+	}
+	cancel()
 }
 
 func testNewGigaChatProvider(t *testing.T) {

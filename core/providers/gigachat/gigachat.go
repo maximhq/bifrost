@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	openaiProvider "github.com/maximhq/bifrost/core/providers/openai"
@@ -27,6 +29,54 @@ type GigaChatProvider struct {
 	customProviderConfig *schemas.CustomProviderConfig
 	tokenCache           *gigaChatTokenCache
 	tlsClientCache       *gigaChatTLSClientCache
+	attachmentCache      *gigaChatAttachmentCacheManager
+}
+
+// gigaChatPassthroughReadCloser keeps stream finalization aligned with the
+// transport-owned large-response reader. The provider returns before the HTTP
+// transport consumes that reader, so finalizing in the provider method would
+// incorrectly mark a successful passthrough stream as incomplete.
+type gigaChatPassthroughReadCloser struct {
+	io.ReadCloser
+	ctx                   *schemas.BifrostContext
+	postHookSpanFinalizer func(context.Context)
+	completed             atomic.Bool
+	closeOnce             sync.Once
+	closeErr              error
+}
+
+func (reader *gigaChatPassthroughReadCloser) Read(buffer []byte) (int, error) {
+	read, err := reader.ReadCloser.Read(buffer)
+	if errors.Is(err, io.EOF) {
+		reader.completed.Store(true)
+	}
+	return read, err
+}
+
+func (reader *gigaChatPassthroughReadCloser) Close() error {
+	reader.closeOnce.Do(func() {
+		defer func() {
+			providerUtils.EnsureStreamFinalizerCalled(reader.ctx, reader.postHookSpanFinalizer)
+		}()
+		if reader.completed.Load() {
+			reader.ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+		}
+		reader.closeErr = reader.ReadCloser.Close()
+	})
+	return reader.closeErr
+}
+
+func wrapGigaChatPassthroughFinalizer(ctx *schemas.BifrostContext, postHookSpanFinalizer func(context.Context)) {
+	reader, ok := ctx.Value(schemas.BifrostContextKeyLargeResponseReader).(io.ReadCloser)
+	if !ok || reader == nil {
+		providerUtils.EnsureStreamFinalizerCalled(ctx, postHookSpanFinalizer)
+		return
+	}
+	ctx.SetValue(schemas.BifrostContextKeyLargeResponseReader, &gigaChatPassthroughReadCloser{
+		ReadCloser:            reader,
+		ctx:                   ctx,
+		postHookSpanFinalizer: postHookSpanFinalizer,
+	})
 }
 
 // NewGigaChatProvider creates a new GigaChat provider instance.
@@ -64,6 +114,7 @@ func NewGigaChatProvider(config *schemas.ProviderConfig, logger schemas.Logger) 
 		customProviderConfig: config.CustomProviderConfig,
 		tokenCache:           newGigaChatTokenCache(time.Now),
 		tlsClientCache:       newGigaChatTLSClientCache(),
+		attachmentCache:      newGigaChatAttachmentCacheManager(),
 	}, nil
 }
 
@@ -93,12 +144,7 @@ func (provider *GigaChatProvider) chatCompletion(ctx *schemas.BifrostContext, ke
 		return nil, bifrostErr
 	}
 
-	var headers map[string]string
-	if forceRefresh {
-		headers, bifrostErr = provider.refreshAuthHeaders(ctx, key)
-	} else {
-		headers, bifrostErr = provider.buildAuthHeaders(ctx, key)
-	}
+	headers, bifrostErr := provider.buildAuthHeadersWithRefresh(ctx, key, forceRefresh)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -187,12 +233,7 @@ func (provider *GigaChatProvider) chatCompletionStream(
 	}
 	request = preparedRequest
 
-	var headers map[string]string
-	if forceRefresh {
-		headers, bifrostErr = provider.refreshAuthHeaders(ctx, key)
-	} else {
-		headers, bifrostErr = provider.buildAuthHeaders(ctx, key)
-	}
+	headers, bifrostErr := provider.buildAuthHeadersWithRefresh(ctx, key, forceRefresh)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -233,11 +274,7 @@ func (provider *GigaChatProvider) chatCompletionStream(
 	)
 	if bifrostErr == nil {
 		if isPassthrough, _ := ctx.Value(schemas.BifrostContextKeyLargeResponseMode).(bool); isPassthrough {
-			// The OpenAI-compatible helper transfers resp ownership to the
-			// LargeResponseReader but returns before its streaming goroutine and
-			// finalizer defer are installed. Finalize the GigaChat lifecycle here;
-			// the transport still closes the reader and releases resp.
-			providerUtils.EnsureStreamFinalizerCalled(ctx, postHookSpanFinalizer)
+			wrapGigaChatPassthroughFinalizer(ctx, postHookSpanFinalizer)
 		}
 	}
 	return responseChan, bifrostErr
@@ -269,13 +306,7 @@ func (provider *GigaChatProvider) listModelsByKey(ctx *schemas.BifrostContext, k
 func (provider *GigaChatProvider) listModelsByKeyWithRefresh(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostListModelsRequest, forceRefresh bool) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	ctx = ensureGigaChatContext(ctx)
 
-	var headers map[string]string
-	var bifrostErr *schemas.BifrostError
-	if forceRefresh {
-		headers, bifrostErr = provider.refreshAuthHeaders(ctx, key)
-	} else {
-		headers, bifrostErr = provider.buildAuthHeaders(ctx, key)
-	}
+	headers, bifrostErr := provider.buildAuthHeadersWithRefresh(ctx, key, forceRefresh)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -360,12 +391,7 @@ func (provider *GigaChatProvider) embeddingWithRefresh(ctx *schemas.BifrostConte
 		return nil, bifrostErr
 	}
 
-	var headers map[string]string
-	if forceRefresh {
-		headers, bifrostErr = provider.refreshAuthHeaders(ctx, key)
-	} else {
-		headers, bifrostErr = provider.buildAuthHeaders(ctx, key)
-	}
+	headers, bifrostErr := provider.buildAuthHeadersWithRefresh(ctx, key, forceRefresh)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -460,12 +486,7 @@ func (provider *GigaChatProvider) responsesWithRefresh(ctx *schemas.BifrostConte
 		return nil, bifrostErr
 	}
 
-	var headers map[string]string
-	if forceRefresh {
-		headers, bifrostErr = provider.refreshAuthHeaders(ctx, key)
-	} else {
-		headers, bifrostErr = provider.buildAuthHeaders(ctx, key)
-	}
+	headers, bifrostErr := provider.buildAuthHeadersWithRefresh(ctx, key, forceRefresh)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -552,12 +573,7 @@ func (provider *GigaChatProvider) countTokensWithRefresh(ctx *schemas.BifrostCon
 		return nil, bifrostErr
 	}
 
-	var headers map[string]string
-	if forceRefresh {
-		headers, bifrostErr = provider.refreshAuthHeaders(ctx, key)
-	} else {
-		headers, bifrostErr = provider.buildAuthHeaders(ctx, key)
-	}
+	headers, bifrostErr := provider.buildAuthHeadersWithRefresh(ctx, key, forceRefresh)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -656,12 +672,7 @@ func (provider *GigaChatProvider) responsesStreamWithRefresh(
 		return nil, bifrostErr
 	}
 
-	var headers map[string]string
-	if forceRefresh {
-		headers, bifrostErr = provider.refreshAuthHeaders(ctx, key)
-	} else {
-		headers, bifrostErr = provider.buildAuthHeaders(ctx, key)
-	}
+	headers, bifrostErr := provider.buildAuthHeadersWithRefresh(ctx, key, forceRefresh)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -722,9 +733,7 @@ func (provider *GigaChatProvider) responsesStreamWithRefresh(
 
 	if providerUtils.SetupStreamingPassthrough(ctx, resp) {
 		responseChan := make(chan *schemas.BifrostStreamChunk)
-		// resp is owned by the LargeResponseReader stored on ctx; the HTTP
-		// transport closes that reader, which releases resp.
-		defer providerUtils.EnsureStreamFinalizerCalled(ctx, postHookSpanFinalizer)
+		wrapGigaChatPassthroughFinalizer(ctx, postHookSpanFinalizer)
 		providerUtils.CloseStream(ctx, responseChan)
 		return responseChan, nil
 	}
@@ -1285,6 +1294,9 @@ func (provider *GigaChatProvider) FileList(ctx *schemas.BifrostContext, keys []s
 	}
 	if request.Order != nil && strings.TrimSpace(*request.Order) != "" {
 		return nil, providerUtils.NewBifrostOperationError("GigaChat file list does not support order sorting", nil)
+	}
+	if request.Limit != 0 {
+		return nil, providerUtils.NewBifrostOperationError("GigaChat file list does not support limit pagination", nil)
 	}
 	if len(keys) == 0 {
 		keys = []schemas.Key{{}}

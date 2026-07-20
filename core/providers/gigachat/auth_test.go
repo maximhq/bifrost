@@ -99,7 +99,11 @@ func testGigaChatTokenCachePrunesExpiredEntriesAndKeepsReusableEntries(t *testin
 			expiresAt:   now.Add(time.Second),
 		},
 	}
-	cache.entries["empty"] = &gigaChatTokenCacheEntry{}
+	cache.entries["idle-empty"] = &gigaChatTokenCacheEntry{}
+	cache.entries["in-flight-empty"] = &gigaChatTokenCacheEntry{refCount: 1}
+
+	failedEntry := cache.acquireEntry("failed")
+	cache.releaseEntry("failed", failedEntry)
 
 	entry := cache.acquireEntry("new")
 	entry.mu.Lock()
@@ -115,8 +119,14 @@ func testGigaChatTokenCachePrunesExpiredEntriesAndKeepsReusableEntries(t *testin
 	if _, ok := cache.entries["valid"]; !ok {
 		t.Fatal("valid cache entry was pruned")
 	}
-	if _, ok := cache.entries["empty"]; !ok {
-		t.Fatal("empty in-flight cache entry was pruned")
+	if _, ok := cache.entries["idle-empty"]; ok {
+		t.Fatal("idle empty cache entry was not pruned")
+	}
+	if _, ok := cache.entries["in-flight-empty"]; !ok {
+		t.Fatal("in-flight empty cache entry was pruned")
+	}
+	if _, ok := cache.entries["failed"]; ok {
+		t.Fatal("failed token exchange cache entry was not released")
 	}
 	if _, ok := cache.entries["new"]; !ok {
 		t.Fatal("requested cache entry was not created")
@@ -158,7 +168,7 @@ func testGigaChatTokenCacheConcurrentAccess(t *testing.T) {
 		entry.mu.Lock()
 		valid := entry.token.isValid(now)
 		entry.mu.Unlock()
-		if !valid && cacheKey != "final" {
+		if !valid {
 			t.Fatalf("unexpected stale cache entry after concurrent access: %s", cacheKey)
 		}
 	}
@@ -921,6 +931,7 @@ func testGigaChatPasswordHandlesProviderErrors(t *testing.T) {
 	if bifrostErr.Error == nil || bifrostErr.Error.Message != "invalid password auth" {
 		t.Fatalf("unexpected error: %v", bifrostErr)
 	}
+	assertGigaChatTokenCacheEmpty(t, provider.tokenCache)
 	assertNoGigaChatSecretLeak(t, bifrostErr.String())
 }
 
@@ -1253,8 +1264,18 @@ func testGigaChatOAuthHandlesProviderErrors(t *testing.T) {
 			if bifrostErr.Error.Code == nil || *bifrostErr.Error.Code != testCase.wantCode {
 				t.Fatalf("code mismatch: got %#v, want %q", bifrostErr.Error.Code, testCase.wantCode)
 			}
+			assertGigaChatTokenCacheEmpty(t, provider.tokenCache)
 			assertNoGigaChatSecretLeak(t, bifrostErr.String())
 		})
+	}
+}
+
+func assertGigaChatTokenCacheEmpty(t *testing.T, cache *gigaChatTokenCache) {
+	t.Helper()
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	if len(cache.entries) != 0 {
+		t.Fatalf("token cache retained %d entries after failed exchange", len(cache.entries))
 	}
 }
 

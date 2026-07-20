@@ -1534,7 +1534,10 @@ func toGigaChatResponsesResponseFormat(format *schemas.ResponsesTextConfigFormat
 		if format.JSONSchema == nil {
 			return nil, fmt.Errorf("response_format json_schema requires schema")
 		}
-		schema := format.JSONSchema.ToMap()
+		schema, err := cloneGigaChatSchemaValue(format.JSONSchema.ToMap())
+		if err != nil {
+			return nil, fmt.Errorf("response_format json_schema is invalid: %w", err)
+		}
 		if schema == nil {
 			return nil, fmt.Errorf("response_format json_schema requires non-empty schema")
 		}

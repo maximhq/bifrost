@@ -139,6 +139,7 @@ func testGigaChatChatCompletion(t *testing.T) {
 	t.Run("UploadsInlineImageAttachment", testGigaChatChatCompletionUploadsInlineImageAttachment)
 	t.Run("UploadsInlineFileAttachment", testGigaChatChatCompletionUploadsInlineFileAttachment)
 	t.Run("ReusesUploadedAttachmentAfterBackendError", testGigaChatChatCompletionReusesUploadedAttachmentAfterBackendError)
+	t.Run("ReusesSuccessfulAttachmentAfterPartialUploadFailure", testGigaChatChatCompletionReusesSuccessfulAttachmentAfterPartialUploadFailure)
 	t.Run("DoesNotReuseUploadedAttachmentAcrossIndependentRequests", testGigaChatChatCompletionDoesNotReuseUploadedAttachmentAcrossIndependentRequests)
 	t.Run("DoesNotCacheFailedAttachmentUpload", testGigaChatChatCompletionDoesNotCacheFailedAttachmentUpload)
 	t.Run("RejectsUnsupportedTools", testGigaChatChatCompletionRejectsUnsupportedTools)
@@ -817,6 +818,143 @@ func testGigaChatChatCompletionReusesUploadedAttachmentAfterBackendError(t *test
 	}
 }
 
+func testGigaChatChatCompletionReusesSuccessfulAttachmentAfterPartialUploadFailure(t *testing.T) {
+	t.Parallel()
+
+	var firstFileUploads atomic.Int32
+	var secondFileUploads atomic.Int32
+	var chatRequests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/v1/files":
+			if err := request.ParseMultipartForm(1024); err != nil {
+				t.Fatalf("failed to parse upload multipart form: %v", err)
+			}
+			file, header, err := request.FormFile("file")
+			if err != nil {
+				t.Fatalf("failed to read uploaded file: %v", err)
+			}
+			defer file.Close()
+			fileBytes, err := io.ReadAll(file)
+			if err != nil {
+				t.Fatalf("failed to read uploaded bytes: %v", err)
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			switch header.Filename {
+			case "first.txt":
+				firstFileUploads.Add(1)
+				if string(fileBytes) != "first attachment" {
+					t.Fatalf("first uploaded file bytes mismatch: %q", fileBytes)
+				}
+				_, _ = w.Write([]byte(`{"id":"uploaded-first","object":"file","bytes":16,"created_at":1700000000,"filename":"first.txt","purpose":"general"}`))
+			case "second.txt":
+				uploadIndex := secondFileUploads.Add(1)
+				if string(fileBytes) != "second attachment" {
+					t.Fatalf("second uploaded file bytes mismatch: %q", fileBytes)
+				}
+				if uploadIndex == 1 {
+					w.WriteHeader(http.StatusInternalServerError)
+					_, _ = w.Write([]byte(`{"status":500,"message":"temporary upload failure"}`))
+					return
+				}
+				_, _ = w.Write([]byte(`{"id":"uploaded-second","object":"file","bytes":17,"created_at":1700000000,"filename":"second.txt","purpose":"general"}`))
+			default:
+				t.Fatalf("unexpected uploaded filename: %q", header.Filename)
+			}
+		case "/v1/chat/completions":
+			chatRequests.Add(1)
+			body, err := io.ReadAll(request.Body)
+			if err != nil {
+				t.Fatalf("failed to read chat body: %v", err)
+			}
+			var payload map[string]interface{}
+			if err := json.Unmarshal(body, &payload); err != nil {
+				t.Fatalf("failed to unmarshal chat body %s: %v", body, err)
+			}
+			messages, ok := payload["messages"].([]interface{})
+			if !ok || len(messages) != 1 {
+				t.Fatalf("messages mismatch: %#v", payload["messages"])
+			}
+			message, ok := messages[0].(map[string]interface{})
+			if !ok {
+				t.Fatalf("message shape mismatch: %#v", messages[0])
+			}
+			attachments, ok := message["attachments"].([]interface{})
+			if !ok || len(attachments) != 2 || attachments[0] != "uploaded-first" || attachments[1] != "uploaded-second" {
+				t.Fatalf("attachments mismatch: %#v body %s", message["attachments"], body)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"model":"GigaChat","object":"chat.completion"}`))
+		default:
+			t.Fatalf("unexpected path: %s", request.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	prompt := "Summarize both files."
+	firstFilename := "first.txt"
+	firstFileData := "data:text/plain;base64,Zmlyc3QgYXR0YWNobWVudA=="
+	secondFilename := "second.txt"
+	secondFileData := "data:text/plain;base64,c2Vjb25kIGF0dGFjaG1lbnQ="
+	request := &schemas.BifrostChatRequest{
+		Model: "GigaChat",
+		Input: []schemas.ChatMessage{{
+			Role: schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{
+				ContentBlocks: []schemas.ChatContentBlock{
+					{Type: schemas.ChatContentBlockTypeText, Text: &prompt},
+					{
+						Type: schemas.ChatContentBlockTypeFile,
+						File: &schemas.ChatInputFile{
+							Filename: &firstFilename,
+							FileData: &firstFileData,
+						},
+					},
+					{
+						Type: schemas.ChatContentBlockTypeFile,
+						File: &schemas.ChatInputFile{
+							Filename: &secondFilename,
+							FileData: &secondFileData,
+						},
+					},
+				},
+			},
+		}},
+	}
+
+	provider := newTestGigaChatChatProvider(t, server.URL)
+	parentCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ctx := schemas.NewBifrostContext(parentCtx, schemas.NoDeadline)
+	key := testGigaChatAccessTokenKey("file-token")
+
+	firstResponse, firstErr := provider.ChatCompletion(ctx, key, request)
+	if firstResponse != nil {
+		t.Fatalf("expected nil response from partial upload failure, got %#v", firstResponse)
+	}
+	if firstErr == nil || firstErr.StatusCode == nil || *firstErr.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("expected partial upload 500, got %#v", firstErr)
+	}
+
+	response, bifrostErr := provider.ChatCompletion(ctx, key, request)
+	if bifrostErr != nil {
+		t.Fatalf("second ChatCompletion returned error: %v", bifrostErr)
+	}
+	if response == nil {
+		t.Fatal("expected second response, got nil")
+	}
+	if firstFileUploads.Load() != 1 {
+		t.Fatalf("first attachment upload count mismatch: got %d, want 1", firstFileUploads.Load())
+	}
+	if secondFileUploads.Load() != 2 {
+		t.Fatalf("second attachment upload count mismatch: got %d, want 2", secondFileUploads.Load())
+	}
+	if chatRequests.Load() != 1 {
+		t.Fatalf("chat request count mismatch: got %d, want 1", chatRequests.Load())
+	}
+}
+
 func testGigaChatChatCompletionDoesNotReuseUploadedAttachmentAcrossIndependentRequests(t *testing.T) {
 	t.Parallel()
 
@@ -948,6 +1086,15 @@ func testGigaChatChatCompletionDoesNotCacheFailedAttachmentUpload(t *testing.T) 
 	}
 	if firstErr == nil || firstErr.StatusCode == nil || *firstErr.StatusCode != http.StatusInternalServerError {
 		t.Fatalf("expected upload 500, got %#v", firstErr)
+	}
+	if cacheID := ctx.Value(gigaChatAttachmentCacheKey); cacheID != nil {
+		t.Fatalf("failed attachment upload allocated context cache state: %#v", cacheID)
+	}
+	provider.attachmentCache.mu.Lock()
+	cacheEntries := len(provider.attachmentCache.entries)
+	provider.attachmentCache.mu.Unlock()
+	if cacheEntries != 0 {
+		t.Fatalf("failed attachment upload retained %d cache entries", cacheEntries)
 	}
 	firstErrorOutput := firstErr.String() + stringifyGigaChatRaw(firstErr.ExtraFields.RawRequest) + stringifyGigaChatRaw(firstErr.ExtraFields.RawResponse)
 	if strings.Contains(firstErrorOutput, "stale-secret-inline") || strings.Contains(firstErrorOutput, "c3RhbGUtc2VjcmV0LWlubGluZQ") {
@@ -1266,17 +1413,21 @@ func testGigaChatChatCompletionStreamFinalizesLargeResponsePassthrough(t *testin
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for passthrough stream channel to close")
 	}
-	if got := finalizerCalls.Load(); got != 1 {
-		t.Fatalf("finalizer calls mismatch: got %d, want 1", got)
+	if got := finalizerCalls.Load(); got != 0 {
+		t.Fatalf("finalizer ran before passthrough delivery: got %d calls", got)
 	}
 
 	reader, ok := ctx.Value(schemas.BifrostContextKeyLargeResponseReader).(io.ReadCloser)
 	if !ok || reader == nil {
 		t.Fatalf("large response reader missing from context: %#v", ctx.Value(schemas.BifrostContextKeyLargeResponseReader))
 	}
-	largeReader, ok := reader.(*providerUtils.LargeResponseReader)
+	finalizingReader, ok := reader.(*gigaChatPassthroughReadCloser)
 	if !ok {
-		t.Fatalf("large response reader type mismatch: %T", reader)
+		t.Fatalf("passthrough reader type mismatch: %T", reader)
+	}
+	largeReader, ok := finalizingReader.ReadCloser.(*providerUtils.LargeResponseReader)
+	if !ok {
+		t.Fatalf("wrapped large response reader type mismatch: %T", finalizingReader.ReadCloser)
 	}
 
 	body, err := io.ReadAll(reader)
@@ -1286,8 +1437,17 @@ func testGigaChatChatCompletionStreamFinalizesLargeResponsePassthrough(t *testin
 	if !strings.Contains(string(body), `"id":"chatcmpl-large"`) {
 		t.Fatalf("passthrough body mismatch: %s", body)
 	}
+	if got := finalizerCalls.Load(); got != 0 {
+		t.Fatalf("finalizer ran before passthrough reader close: got %d calls", got)
+	}
 	if err := reader.Close(); err != nil {
 		t.Fatalf("failed to close large response reader: %v", err)
+	}
+	if got := finalizerCalls.Load(); got != 1 {
+		t.Fatalf("finalizer calls mismatch after passthrough delivery: got %d, want 1", got)
+	}
+	if ended, _ := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator).(bool); !ended {
+		t.Fatal("passthrough stream was not marked complete before finalization")
 	}
 	if largeReader.Resp != nil {
 		t.Fatal("large response reader did not release its fasthttp response")

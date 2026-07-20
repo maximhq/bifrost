@@ -110,9 +110,6 @@ func (provider *GigaChatProvider) fileListWithRefresh(ctx *schemas.BifrostContex
 		}
 		files = append(files, converted)
 	}
-	if request != nil && request.Limit > 0 && len(files) > request.Limit {
-		files = files[:request.Limit]
-	}
 
 	response := &schemas.BifrostFileListResponse{
 		Object: "list",
@@ -240,13 +237,7 @@ func (provider *GigaChatProvider) executeGigaChatFileRequest(
 	rawRequestForError []byte,
 	forceRefresh bool,
 ) ([]byte, map[string]string, string, time.Duration, *schemas.BifrostError) {
-	var headers map[string]string
-	var bifrostErr *schemas.BifrostError
-	if forceRefresh {
-		headers, bifrostErr = provider.refreshAuthHeaders(ctx, key)
-	} else {
-		headers, bifrostErr = provider.buildAuthHeaders(ctx, key)
-	}
+	headers, bifrostErr := provider.buildAuthHeadersWithRefresh(ctx, key, forceRefresh)
 	if bifrostErr != nil {
 		return nil, nil, "", 0, bifrostErr
 	}
