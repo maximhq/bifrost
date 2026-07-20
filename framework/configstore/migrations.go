@@ -387,6 +387,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"split_mcp_external_base_url_into_server_client"}, run: migrationSplitMCPExternalBaseURL},
 	{IDs: []string{"make_oauth_token_expiry_nullable"}, run: migrationMakeOAuthTokenExpiryNullable},
 	{IDs: []string{"add_allow_per_request_content_storage_override_column"}, run: migrationAddAllowPerRequestContentStorageOverrideColumn},
+	{IDs: []string{"add_retain_content_in_object_storage_column"}, run: migrationAddRetainContentInObjectStorageColumn},
 	{IDs: []string{"add_allow_per_request_raw_override_column"}, run: migrationAddAllowPerRequestRawOverrideColumn},
 	{IDs: []string{"add_mcp_client_disabled_column"}, run: migrationAddMCPClientDisabledColumn},
 	{IDs: []string{"gov_unique_team_names"}, run: migrationUniqueTeamNames},
@@ -7771,6 +7772,38 @@ func migrationAddAllowPerRequestContentStorageOverrideColumn(ctx context.Context
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running allow_per_request_content_storage_override migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddRetainContentInObjectStorageColumn adds the retain_content_in_object_storage column to config_client.
+func migrationAddRetainContentInObjectStorageColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_retain_content_in_object_storage_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+
+			if err := addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, "RetainContentInObjectStorage"); err != nil {
+				return fmt.Errorf("failed to add retain_content_in_object_storage column: %w", err)
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+
+			if err := dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "retain_content_in_object_storage"); err != nil {
+				return fmt.Errorf("failed to drop retain_content_in_object_storage column: %w", err)
+			}
+
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running retain_content_in_object_storage migration: %s", err.Error())
 	}
 	return nil
 }
