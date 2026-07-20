@@ -56,14 +56,17 @@ export default function DashboardPage() {
 			cost_chart: parseAsString.withDefault("bar"),
 			model_chart: parseAsString.withDefault("bar"),
 			latency_chart: parseAsString.withDefault("bar"),
+			throughput_chart: parseAsString.withDefault("bar"),
 			cost_model: parseAsString.withDefault("all"),
 			usage_model: parseAsString.withDefault("all"),
 			provider_cost_chart: parseAsString.withDefault("bar"),
 			provider_token_chart: parseAsString.withDefault("bar"),
 			provider_latency_chart: parseAsString.withDefault("bar"),
+			provider_throughput_chart: parseAsString.withDefault("bar"),
 			provider_cost_provider: parseAsString.withDefault("all"),
 			provider_token_provider: parseAsString.withDefault("all"),
 			provider_latency_provider: parseAsString.withDefault("all"),
+			provider_throughput_provider: parseAsString.withDefault("all"),
 			mcp_volume_chart: parseAsString.withDefault("bar"),
 			mcp_cost_chart: parseAsString.withDefault("bar"),
 			mcp_tool_names: parseAsString.withDefault(""),
@@ -254,9 +257,11 @@ export default function DashboardPage() {
 	const handleCostChartToggle = useCallback((type: ChartType) => setUrlState({ cost_chart: type }), [setUrlState]);
 	const handleModelChartToggle = useCallback((type: ChartType) => setUrlState({ model_chart: type }), [setUrlState]);
 	const handleLatencyChartToggle = useCallback((type: ChartType) => setUrlState({ latency_chart: type }), [setUrlState]);
+	const handleThroughputChartToggle = useCallback((type: ChartType) => setUrlState({ throughput_chart: type }), [setUrlState]);
 	const handleProviderCostChartToggle = useCallback((type: ChartType) => setUrlState({ provider_cost_chart: type }), [setUrlState]);
 	const handleProviderTokenChartToggle = useCallback((type: ChartType) => setUrlState({ provider_token_chart: type }), [setUrlState]);
 	const handleProviderLatencyChartToggle = useCallback((type: ChartType) => setUrlState({ provider_latency_chart: type }), [setUrlState]);
+	const handleProviderThroughputChartToggle = useCallback((type: ChartType) => setUrlState({ provider_throughput_chart: type }), [setUrlState]);
 	const handleMcpVolumeChartToggle = useCallback((type: ChartType) => setUrlState({ mcp_volume_chart: type }), [setUrlState]);
 	const handleMcpCostChartToggle = useCallback((type: ChartType) => setUrlState({ mcp_cost_chart: type }), [setUrlState]);
 
@@ -273,6 +278,10 @@ export default function DashboardPage() {
 	);
 	const handleProviderLatencyProviderChange = useCallback(
 		(provider: string) => setUrlState({ provider_latency_provider: provider }),
+		[setUrlState],
+	);
+	const handleProviderThroughputProviderChange = useCallback(
+		(provider: string) => setUrlState({ provider_throughput_provider: provider }),
 		[setUrlState],
 	);
 
@@ -530,6 +539,7 @@ export default function DashboardPage() {
 									costChartType={toChartType(urlState.cost_chart)}
 									modelChartType={toChartType(urlState.model_chart)}
 									latencyChartType={toChartType(urlState.latency_chart)}
+									throughputChartType={toChartType(urlState.throughput_chart)}
 									costModel={urlState.cost_model}
 									usageModel={urlState.usage_model}
 									onVolumeChartToggle={handleVolumeChartToggle}
@@ -537,6 +547,7 @@ export default function DashboardPage() {
 									onCostChartToggle={handleCostChartToggle}
 									onModelChartToggle={handleModelChartToggle}
 									onLatencyChartToggle={handleLatencyChartToggle}
+									onThroughputChartToggle={handleThroughputChartToggle}
 									onCostModelChange={handleCostModelChange}
 									onUsageModelChange={handleUsageModelChange}
 								/>
@@ -555,15 +566,19 @@ export default function DashboardPage() {
 									providerCostChartType={toChartType(urlState.provider_cost_chart)}
 									providerTokenChartType={toChartType(urlState.provider_token_chart)}
 									providerLatencyChartType={toChartType(urlState.provider_latency_chart)}
+									providerThroughputChartType={toChartType(urlState.provider_throughput_chart)}
 									providerCostProvider={urlState.provider_cost_provider}
 									providerTokenProvider={urlState.provider_token_provider}
 									providerLatencyProvider={urlState.provider_latency_provider}
+									providerThroughputProvider={urlState.provider_throughput_provider}
 									onProviderCostChartToggle={handleProviderCostChartToggle}
 									onProviderTokenChartToggle={handleProviderTokenChartToggle}
 									onProviderLatencyChartToggle={handleProviderLatencyChartToggle}
+									onProviderThroughputChartToggle={handleProviderThroughputChartToggle}
 									onProviderCostProviderChange={handleProviderCostProviderChange}
 									onProviderTokenProviderChange={handleProviderTokenProviderChange}
 									onProviderLatencyProviderChange={handleProviderLatencyProviderChange}
+									onProviderThroughputProviderChange={handleProviderThroughputProviderChange}
 								/>
 							</div>
 						</TabsContent>

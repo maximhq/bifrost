@@ -2768,3 +2768,39 @@ func TestFullMigration_UpgradeFromPreDumpErrorsSchema(t *testing.T) {
 	assert.NotEmpty(t, gotHash)
 	assert.NotEqual(t, "stale-hash", gotHash, "config_hash should have been recomputed by the chain")
 }
+
+// TestMigrationAddDualCredentialConflictBehaviorColumn verifies that upgrading a
+// config_client that predates dual_credential_conflict_behavior re-adds the column
+// and backfills existing rows with the NOT NULL default ('prefer_idp'). Without the
+// migration, an upgraded deployment would carry a struct column the physical table
+// lacks and fail the config save/sync path.
+func TestMigrationAddDualCredentialConflictBehaviorColumn(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	// Build the current schema, seed a row, then drop the column to simulate a
+	// pre-feature config_client.
+	require.NoError(t, db.AutoMigrate(&tables.TableClientConfig{}))
+	seed := &tables.TableClientConfig{ConfigHash: "seed-hash"}
+	require.NoError(t, db.Create(seed).Error)
+
+	require.NoError(t, db.Migrator().DropColumn(&tables.TableClientConfig{}, "dual_credential_conflict_behavior"))
+	require.False(t, db.Migrator().HasColumn(&tables.TableClientConfig{}, "dual_credential_conflict_behavior"),
+		"precondition: dual_credential_conflict_behavior must be absent to reproduce the upgrade path")
+
+	require.NoError(t, migrationAddDualCredentialConflictBehaviorColumn(ctx, db, testMigrationLogger),
+		"migration should re-add the column")
+
+	require.True(t, db.Migrator().HasColumn(&tables.TableClientConfig{}, "dual_credential_conflict_behavior"),
+		"migration should have added dual_credential_conflict_behavior")
+
+	// The pre-existing row must be backfilled with the prefer_idp default so upgraded
+	// deployments retain the pre-feature behavior.
+	var got string
+	require.NoError(t, db.Raw("SELECT dual_credential_conflict_behavior FROM config_client WHERE id = ?", seed.ID).Scan(&got).Error)
+	assert.Equal(t, "prefer_idp", got, "existing rows should default to prefer_idp after migration")
+
+	// Idempotency: re-running the migration is a no-op and must not error.
+	require.NoError(t, migrationAddDualCredentialConflictBehaviorColumn(ctx, db, testMigrationLogger),
+		"re-running the migration should be idempotent")
+}

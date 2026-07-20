@@ -28,7 +28,7 @@ import {
 	RoutingTargetFormData,
 } from "@/lib/types/routingRules";
 import { validateRateLimitAndBudgetRules, validateRoutingRules } from "@/lib/utils/celConverterRouting";
-import { normalizeRoutingRuleGroupQuery } from "@/lib/utils/routingRuleGroupQuery";
+import { isValidRuleGroupType, normalizeRoutingRuleGroupQuery } from "@/lib/utils/routingRuleGroupQuery";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Plus, Trash2, X } from "lucide-react";
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
@@ -47,6 +47,24 @@ const defaultQuery: RuleGroupType = {
 	combinator: "and",
 	rules: [],
 };
+
+type ConditionMode = "builder" | "cel";
+
+/**
+ * Decides which conditions editor a rule opens in. Rules authored outside the visual
+ * builder (e.g. via the API) have a CEL expression but no usable `query`; those open in
+ * CEL mode so the expression stays visible and editable instead of being silently cleared.
+ */
+function initialConditionMode(rule?: RoutingRule | null): ConditionMode {
+	if (!rule) {
+		return "builder";
+	}
+	const hasQuery = isValidRuleGroupType(rule.query) && (rule.query.rules?.length ?? 0) > 0;
+	if (hasQuery) {
+		return "builder";
+	}
+	return rule.cel_expression?.trim() ? "cel" : "builder";
+}
 
 // Lazy-load CEL builder (heavy dependency tree).
 const CELRuleBuilderLazy = lazy(() =>
@@ -74,7 +92,10 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 	// State for targets and query (managed outside react-hook-form for complex nested structures)
 	const [targets, setTargets] = useState<RoutingTargetFormData[]>([{ ...DEFAULT_ROUTING_TARGET }]);
 	const [query, setQuery] = useState<RuleGroupType>(defaultQuery);
+	const [conditionMode, setConditionMode] = useState<ConditionMode>("builder");
 	const [builderKey, setBuilderKey] = useState(0);
+	// Server-side CEL compile error, surfaced inline under the CEL editor instead of a toast.
+	const [celError, setCelError] = useState<string | null>(null);
 
 	const {
 		register,
@@ -143,12 +164,16 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 			}
 			// Only react-querybuilder-shaped queries are valid; config may store other JSON under `query`.
 			setQuery(normalizeRoutingRuleGroupQuery(editingRule.query));
+			setConditionMode(initialConditionMode(editingRule));
 			setBuilderKey((prev) => prev + 1);
+			setCelError(null);
 		} else {
 			reset();
 			setTargets([{ ...DEFAULT_ROUTING_TARGET }]);
 			setQuery(defaultQuery);
+			setConditionMode("builder");
 			setBuilderKey((prev) => prev + 1);
+			setCelError(null);
 		}
 	}, [editingRule, open, setValue, reset]);
 
@@ -156,9 +181,16 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 		(expression: string, newQuery: RuleGroupType) => {
 			setValue("cel_expression", expression);
 			setQuery(newQuery);
+			// Editing the expression clears a stale server-side CEL error.
+			setCelError(null);
 		},
 		[setValue],
 	);
+
+	const handleModeChange = useCallback((mode: ConditionMode) => {
+		setConditionMode(mode);
+		setCelError(null);
+	}, []);
 
 	const addTarget = () => {
 		const remaining = 1 - targets.reduce((sum, t) => sum + (t.weight || 0), 0);
@@ -176,6 +208,8 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 	const totalWeight = targets.reduce((sum, t) => sum + (t.weight || 0), 0);
 
 	const onSubmit = (data: RoutingRuleFormData) => {
+		setCelError(null);
+
 		// Validate scope_id is required when scope is not global
 		if (data.scope !== "global" && !data.scope_id?.trim()) {
 			toast.error(`${data.scope === "team" ? "Team" : data.scope === "customer" ? "Customer" : "Virtual Key"} is required`);
@@ -198,18 +232,22 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 			return;
 		}
 
-		// Validate regex patterns in routing rules
-		const regexErrors = validateRoutingRules(query);
-		if (regexErrors.length > 0) {
-			toast.error(`Invalid regex pattern:\n${regexErrors.join("\n")}`);
-			return;
-		}
+		// Builder-only validation: these inspect the visual query, which does not exist in
+		// raw-CEL mode. In CEL mode the expression is validated server-side on save instead.
+		if (conditionMode === "builder") {
+			// Validate regex patterns in routing rules
+			const regexErrors = validateRoutingRules(query);
+			if (regexErrors.length > 0) {
+				toast.error(`Invalid regex pattern:\n${regexErrors.join("\n")}`);
+				return;
+			}
 
-		// Validate rate limit and budget rules
-		const rateLimitErrors = validateRateLimitAndBudgetRules(query);
-		if (rateLimitErrors.length > 0) {
-			toast.error(`Invalid rule configuration:\n${rateLimitErrors.join("\n")}`);
-			return;
+			// Validate rate limit and budget rules
+			const rateLimitErrors = validateRateLimitAndBudgetRules(query);
+			if (rateLimitErrors.length > 0) {
+				toast.error(`Invalid rule configuration:\n${rateLimitErrors.join("\n")}`);
+				return;
+			}
 		}
 
 		// Filter out incomplete fallbacks (empty provider)
@@ -251,12 +289,21 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 				reset();
 				setTargets([{ ...DEFAULT_ROUTING_TARGET }]);
 				setQuery(defaultQuery);
+				setConditionMode("builder");
 				setBuilderKey((prev) => prev + 1);
+				setCelError(null);
 				onOpenChange(false);
 				onSuccess?.();
 			})
 			.catch((error: any) => {
-				toast.error(getErrorMessage(error));
+				const message = getErrorMessage(error);
+				// A malformed CEL expression is a field-level problem — show it beneath the CEL
+				// editor rather than in a toast (which turns a syntax error into a jarring popup).
+				if (conditionMode === "cel" && /cel expression/i.test(message)) {
+					setCelError(message);
+					return;
+				}
+				toast.error(message);
 			});
 	};
 
@@ -264,7 +311,9 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 		reset();
 		setTargets([{ ...DEFAULT_ROUTING_TARGET }]);
 		setQuery(defaultQuery);
+		setConditionMode("builder");
 		setBuilderKey((prev) => prev + 1);
+		setCelError(null);
 		onOpenChange(false);
 	};
 
@@ -429,6 +478,11 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 								providers={availableProviders}
 								models={[]}
 								allowCustomModels={true}
+								allowCelMode={true}
+								initialMode={conditionMode}
+								initialCel={editingRule?.cel_expression ?? ""}
+								onModeChange={handleModeChange}
+								celError={celError}
 							/>
 						</div>
 
@@ -515,7 +569,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 										// Parse provider/model from fallback string
 										const parts = fallback.split("/");
 										const fbProvider = parts[0] || "";
-										const fbModel = parts[1] || "";
+										const fbModel = parts.slice(1).join("/");
 
 										const handleProviderChange = (newProvider: string) => {
 											const model = fbModel || "";

@@ -170,6 +170,7 @@ type ConfigData struct {
 	Providers         map[string]configstore.ProviderConfig `json:"providers"`
 	FrameworkConfig   *framework.FrameworkConfig            `json:"framework,omitempty"`
 	MCP               *schemas.MCPConfig                    `json:"mcp,omitempty"`
+	Webhooks          []*WebhookEndpointConfig              `json:"webhooks,omitempty"`
 	Governance        *configstore.GovernanceConfig         `json:"governance,omitempty"`
 	VectorStoreConfig *vectorstore.Config                   `json:"vector_store,omitempty"`
 	ConfigStoreConfig *configstore.Config                   `json:"config_store,omitempty"`
@@ -267,6 +268,50 @@ func (v *FeatureFlagFileValue) UnmarshalJSON(data []byte) error {
 		v.Enabled = false
 	}
 	return nil
+}
+
+// WebhookEndpointConfig declares one webhook endpoint in config.json.
+// The secret is optional and best supplied as an env reference; when absent
+// one is generated at creation time. The tuning knobs are optional; zero
+// means "use the delivery worker's default".
+type WebhookEndpointConfig struct {
+	ID                  string                           `json:"id,omitempty"`
+	Name                string                           `json:"name"`
+	URL                 string                           `json:"url"`
+	Secret              *schemas.SecretVar               `json:"secret,omitempty"`
+	Events              []configstoreTables.WebhookEvent `json:"events"`
+	Headers             map[string]schemas.SecretVar     `json:"headers,omitempty"`
+	IncludeResponse     bool                             `json:"include_response,omitempty"`
+	AllowPrivateNetwork bool                             `json:"allow_private_network,omitempty"`
+	Disabled            bool                             `json:"disabled,omitempty"`
+
+	MaxRetries                 int `json:"max_retries,omitempty"`
+	RetryBackoffInitialSeconds int `json:"retry_backoff_initial_seconds,omitempty"`
+	RetryBackoffMaxSeconds     int `json:"retry_backoff_max_seconds,omitempty"`
+	AttemptTimeoutSeconds      int `json:"attempt_timeout_seconds,omitempty"`
+	MaxResponsePayloadKBs      int `json:"max_response_payload_kbs,omitempty"`
+	MaxConcurrentDeliveries    int `json:"max_concurrent_deliveries,omitempty"`
+}
+
+// toTable converts a file declaration into the table model.
+func (w *WebhookEndpointConfig) toTable() *configstoreTables.TableWebhookEndpoint {
+	return &configstoreTables.TableWebhookEndpoint{
+		ID:                         w.ID,
+		Name:                       w.Name,
+		URL:                        w.URL,
+		Secret:                     w.Secret,
+		Events:                     w.Events,
+		Headers:                    w.Headers,
+		IncludeResponse:            w.IncludeResponse,
+		AllowPrivateNetwork:        w.AllowPrivateNetwork,
+		Disabled:                   w.Disabled,
+		MaxRetries:                 w.MaxRetries,
+		RetryBackoffInitialSeconds: w.RetryBackoffInitialSeconds,
+		RetryBackoffMaxSeconds:     w.RetryBackoffMaxSeconds,
+		AttemptTimeoutSeconds:      w.AttemptTimeoutSeconds,
+		MaxResponsePayloadKBs:      w.MaxResponsePayloadKBs,
+		MaxConcurrentDeliveries:    w.MaxConcurrentDeliveries,
+	}
 }
 
 // normalizeSourceOfTruth returns the configured source-of-truth mode, defaulting to split.
@@ -382,6 +427,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 		AuthConfig        *configstore.AuthConfig               `json:"auth_config,omitempty"`
 		Providers         map[string]configstore.ProviderConfig `json:"providers"`
 		MCP               *schemas.MCPConfig                    `json:"mcp,omitempty"`
+		Webhooks          []*WebhookEndpointConfig              `json:"webhooks,omitempty"`
 		Governance        *configstore.GovernanceConfig         `json:"governance,omitempty"`
 		VectorStoreConfig json.RawMessage                       `json:"vector_store,omitempty"`
 		ConfigStoreConfig json.RawMessage                       `json:"config_store,omitempty"`
@@ -407,6 +453,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 	cd.AuthConfig = temp.AuthConfig
 	cd.Providers = temp.Providers
 	cd.MCP = temp.MCP
+	cd.Webhooks = temp.Webhooks
 	cd.Governance = temp.Governance
 	cd.Plugins = temp.Plugins
 	cd.WebSocket = temp.WebSocket
@@ -477,9 +524,10 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 //   - Support for provider-specific key configurations (Azure, Vertex, Bedrock)
 //   - Lock-free plugin reads via atomic.Pointer for minimal hot-path latency
 type Config struct {
-	Mu     sync.RWMutex // Exported for direct access from handlers (governance plugin)
-	muMCP  sync.RWMutex
-	client *bifrost.Bifrost
+	Mu         sync.RWMutex // Exported for direct access from handlers (governance plugin)
+	muMCP      sync.RWMutex
+	muWebhooks sync.RWMutex
+	client     *bifrost.Bifrost
 
 	configPath string
 
@@ -508,6 +556,14 @@ type Config struct {
 	GovernanceConfig *configstore.GovernanceConfig
 	FrameworkConfig  *framework.FrameworkConfig
 	ProxyConfig      *configstoreTables.GlobalProxyConfig
+
+	// webhookEndpoints serves webhook endpoint config to the request path and
+	// the delivery worker without database reads. Guarded by muWebhooks;
+	// handlers mutate it in lockstep with every database write. Operational
+	// counters are deliberately not mirrored here — reads that need them go
+	// to the store.
+	webhookEndpoints       map[string]*configstoreTables.TableWebhookEndpoint // keyed by ID
+	webhookEndpointsByName map[string]string                                  // unique name -> ID
 
 	// Plugin Storage (SINGLE SOURCE OF TRUTH)
 	// All plugins are stored in BasePlugins. Interface-specific caches are
@@ -890,19 +946,21 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	}
 	// 6. MCP config
 	loadMCPConfig(ctx, config, &configData)
-	// 7. Governance config
+	// 7. Webhook endpoints
+	loadWebhooksConfig(ctx, config, &configData)
+	// 8. Governance config
 	loadGovernanceConfig(ctx, config, &configData)
-	// 8. Auth config
+	// 9. Auth config
 	loadAuthConfig(ctx, config, &configData)
-	// 9. Plugins
+	// 10. Plugins
 	loadPlugins(ctx, config, &configData)
-	// 10. Skills registry (after plugins, before framework)
+	// 11. Skills registry (after plugins, before framework)
 	loadSkillsRegistry(ctx, config, &configData)
-	// 11. Framework config and pricing manager
+	// 12. Framework config and pricing manager
 	initFrameworkConfig(ctx, config, &configData)
-	// 12. Encryption sync
+	// 13. Encryption sync
 	syncEncryption(ctx, config)
-	// 12. Env label (config.json takes precedence over BIFROST_ENV_LABEL env var)
+	// 14. Env label (config.json takes precedence over BIFROST_ENV_LABEL env var)
 	truncateLabel := func(s string) string {
 		r := []rune(s)
 		if len(r) > 14 {
@@ -915,7 +973,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	} else if label := strings.TrimSpace(os.Getenv("BIFROST_ENV_LABEL")); label != "" {
 		config.EnvLabel = truncateLabel(label)
 	}
-	// 13. WebSocket defaults
+	// 15. WebSocket defaults
 	if configData.WebSocket != nil {
 		configData.WebSocket.CheckAndSetDefaults()
 		config.WebSocketConfig = configData.WebSocket
@@ -924,7 +982,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 		wsConfig.CheckAndSetDefaults()
 		config.WebSocketConfig = wsConfig
 	}
-	// 13. Server config
+	// 16. Server config
 	if configData.Server != nil {
 		config.ServerConfig = configData.Server
 	} else {
@@ -1498,6 +1556,7 @@ func mergeProviderKeys(provider schemas.ModelProvider, fileKeys, dbKeys []schema
 					SGLKeyConfig:           dbKey.SGLKeyConfig,
 					Enabled:                dbKey.Enabled,
 					UseForBatchAPI:         dbKey.UseForBatchAPI,
+					UseAnthropicEndpoints:  dbKey.UseAnthropicEndpoints,
 				})
 				if err != nil {
 					logger.Warn("failed to generate key hash for db key %s (%s): %v, falling back to name comparison", dbKey.Name, provider, err)
@@ -1580,6 +1639,7 @@ func reconcileProviderKeys(provider schemas.ModelProvider, fileKeys, dbKeys []sc
 					SGLKeyConfig:           dbKey.SGLKeyConfig,
 					Enabled:                dbKey.Enabled,
 					UseForBatchAPI:         dbKey.UseForBatchAPI,
+					UseAnthropicEndpoints:  dbKey.UseAnthropicEndpoints,
 				})
 				if err != nil {
 					logger.Warn("failed to generate key hash for db key %s (%s): %v", dbKey.Name, provider, err)
@@ -1953,6 +2013,162 @@ func syncMCPConfigFromFile(ctx context.Context, config *Config, configData *Conf
 		}
 	}
 	config.MCPConfig = fileMCPConfig
+}
+
+// loadWebhooksConfig loads webhook endpoints into memory and reconciles
+// config.json declarations against the database, mirroring the MCP config
+// flow: declarations are validated with a warn-and-skip policy, matched
+// against database rows by name using the config hash for change detection,
+// and pruned only when config.json is the source of truth and the section is
+// physically present.
+func loadWebhooksConfig(ctx context.Context, config *Config, configData *ConfigData) {
+	fileEndpoints := make([]*configstoreTables.TableWebhookEndpoint, 0)
+	// Every declared name, valid or not: an entry that fails validation must
+	// still protect its existing database row from the source-of-truth prune —
+	// a typo in one field must never delete a working endpoint.
+	declaredNames := make(map[string]bool)
+	if configData.Webhooks != nil {
+		for _, declared := range configData.Webhooks {
+			if declared == nil {
+				continue
+			}
+			if declared.Name != "" {
+				declaredNames[declared.Name] = true
+			}
+			endpoint := declared.toTable()
+			if err := endpoint.Validate(); err != nil {
+				logger.Warn("skipping webhook endpoint %q from config file: %v", declared.Name, err)
+				continue
+			}
+			fileEndpoints = append(fileEndpoints, endpoint)
+		}
+	}
+
+	if config.ConfigStore == nil {
+		if len(fileEndpoints) > 0 {
+			logger.Warn("config store is disabled - webhook endpoints from config file will not be available")
+		}
+		return
+	}
+
+	existing, err := config.ConfigStore.GetWebhookEndpoints(ctx)
+	if err != nil {
+		logger.Warn("failed to load webhook endpoints: %v", err)
+		return
+	}
+
+	if configData.isConfigJSONSourceOfTruth() && configData.sectionPresent("webhooks") {
+		syncWebhookEndpointsFromFile(ctx, config, fileEndpoints, declaredNames, existing)
+	} else {
+		mergeWebhookEndpoints(ctx, config, fileEndpoints, existing)
+	}
+
+	// Memory serves the final database state, whichever path produced it.
+	final, err := config.ConfigStore.GetWebhookEndpoints(ctx)
+	if err != nil {
+		logger.Warn("failed to reload webhook endpoints: %v", err)
+		return
+	}
+	config.replaceWebhookEndpoints(final)
+}
+
+// mergeWebhookEndpoints reconciles file declarations additively: new names
+// are created, changed ones (by config hash) are updated, and database
+// endpoints absent from the file are left alone. Best-effort with per-item
+// warnings, matching the other config-section loaders.
+func mergeWebhookEndpoints(ctx context.Context, config *Config, fileEndpoints []*configstoreTables.TableWebhookEndpoint, existing []configstoreTables.TableWebhookEndpoint) {
+	existingByName := make(map[string]*configstoreTables.TableWebhookEndpoint, len(existing))
+	for i := range existing {
+		existingByName[existing[i].Name] = &existing[i]
+	}
+	for _, endpoint := range fileEndpoints {
+		fileHash, err := configstore.GenerateWebhookEndpointHash(endpoint)
+		if err != nil {
+			logger.Warn("failed to hash webhook endpoint %q: %v", endpoint.Name, err)
+			continue
+		}
+		endpoint.ConfigHash = fileHash
+		if match, ok := existingByName[endpoint.Name]; ok {
+			if match.ConfigHash == fileHash {
+				continue
+			}
+			endpoint.ID = match.ID
+			if err := config.ConfigStore.UpdateWebhookEndpoint(ctx, endpoint); err != nil {
+				logger.Warn("failed to update webhook endpoint %q: %v", endpoint.Name, err)
+			}
+			continue
+		}
+		if endpoint.ID == "" {
+			endpoint.ID = uuid.NewString()
+		}
+		if err := config.ConfigStore.CreateWebhookEndpoint(ctx, endpoint); err != nil {
+			logger.Warn("failed to create webhook endpoint %q: %v", endpoint.Name, err)
+		}
+	}
+}
+
+// syncWebhookEndpointsFromFile makes the database mirror the config file:
+// declarations are created or updated as in the merge path, and database
+// endpoints not present in the file are deleted. Best-effort, non-
+// transactional — each step warns and continues, and a later load converges.
+// The prune fails safe: a row is only deleted when its name appears in
+// NEITHER the applied set nor the declared set, so a declaration that failed
+// validation or hashing keeps its existing endpoint instead of removing it.
+func syncWebhookEndpointsFromFile(ctx context.Context, config *Config, fileEndpoints []*configstoreTables.TableWebhookEndpoint, declaredNames map[string]bool, existing []configstoreTables.TableWebhookEndpoint) {
+	existingByName := make(map[string]*configstoreTables.TableWebhookEndpoint, len(existing))
+	existingByID := make(map[string]*configstoreTables.TableWebhookEndpoint, len(existing))
+	for i := range existing {
+		existingByName[existing[i].Name] = &existing[i]
+		existingByID[existing[i].ID] = &existing[i]
+	}
+
+	keepIDs := make(map[string]bool, len(fileEndpoints))
+	for _, endpoint := range fileEndpoints {
+		// Resolve the match before anything that can fail, so failures keep
+		// the existing row rather than exposing it to the prune below.
+		match := existingByName[endpoint.Name]
+		if match == nil && endpoint.ID != "" {
+			match = existingByID[endpoint.ID]
+		}
+		if match != nil {
+			keepIDs[match.ID] = true
+		}
+
+		fileHash, err := configstore.GenerateWebhookEndpointHash(endpoint)
+		if err != nil {
+			logger.Warn("failed to hash webhook endpoint %q: %v", endpoint.Name, err)
+			continue
+		}
+		endpoint.ConfigHash = fileHash
+
+		if match != nil {
+			if match.ConfigHash == fileHash {
+				continue
+			}
+			endpoint.ID = match.ID
+			if err := config.ConfigStore.UpdateWebhookEndpoint(ctx, endpoint); err != nil {
+				logger.Warn("failed to update webhook endpoint %q: %v", endpoint.Name, err)
+			}
+			continue
+		}
+		if endpoint.ID == "" {
+			endpoint.ID = uuid.NewString()
+		}
+		if err := config.ConfigStore.CreateWebhookEndpoint(ctx, endpoint); err != nil {
+			logger.Warn("failed to create webhook endpoint %q: %v", endpoint.Name, err)
+			continue
+		}
+		keepIDs[endpoint.ID] = true
+	}
+
+	for i := range existing {
+		if keepIDs[existing[i].ID] || declaredNames[existing[i].Name] {
+			continue
+		}
+		if err := config.ConfigStore.DeleteWebhookEndpoint(ctx, existing[i].ID); err != nil {
+			logger.Warn("failed to delete webhook endpoint %q: %v", existing[i].Name, err)
+		}
+	}
 }
 
 // loadGovernanceConfig loads and merges governance config from file
@@ -6069,6 +6285,83 @@ func (c *Config) GetOAuth2SigningKey(ctx context.Context) (*configstoreTables.OA
 	}
 	c.oauth2SigningKey.Store(k)
 	return k, nil
+}
+
+// Webhook endpoint config is served from memory on the submit path and by the
+// delivery worker, so neither performs a database read. Handlers keep it in
+// lockstep with every database write.
+
+// WebhookEndpointByID returns the endpoint for id, or false when it does not
+// exist. Callers must treat the returned endpoint as read-only.
+func (c *Config) WebhookEndpointByID(id string) (*configstoreTables.TableWebhookEndpoint, bool) {
+	c.muWebhooks.RLock()
+	defer c.muWebhooks.RUnlock()
+	endpoint, ok := c.webhookEndpoints[id]
+	return endpoint, ok
+}
+
+// WebhookEndpointByName returns the endpoint with the given unique name, or
+// false when it does not exist. Callers must treat the returned endpoint as
+// read-only.
+func (c *Config) WebhookEndpointByName(name string) (*configstoreTables.TableWebhookEndpoint, bool) {
+	c.muWebhooks.RLock()
+	defer c.muWebhooks.RUnlock()
+	id, ok := c.webhookEndpointsByName[name]
+	if !ok {
+		return nil, false
+	}
+	endpoint, ok := c.webhookEndpoints[id]
+	return endpoint, ok
+}
+
+// SetWebhookEndpoint upserts an endpoint in the in-memory store, replacing
+// any previous entry with the same ID (including a stale name-index entry
+// after a rename). Called by handlers right after a successful database
+// write, and by the config load.
+func (c *Config) SetWebhookEndpoint(endpoint *configstoreTables.TableWebhookEndpoint) {
+	if endpoint == nil || endpoint.ID == "" {
+		return
+	}
+	copied := *endpoint
+	c.muWebhooks.Lock()
+	defer c.muWebhooks.Unlock()
+	if c.webhookEndpoints == nil {
+		c.webhookEndpoints = make(map[string]*configstoreTables.TableWebhookEndpoint)
+		c.webhookEndpointsByName = make(map[string]string)
+	}
+	if previous, ok := c.webhookEndpoints[copied.ID]; ok && previous.Name != copied.Name {
+		delete(c.webhookEndpointsByName, previous.Name)
+	}
+	c.webhookEndpoints[copied.ID] = &copied
+	c.webhookEndpointsByName[copied.Name] = copied.ID
+}
+
+// RemoveWebhookEndpoint deletes an endpoint from the in-memory store. Called
+// by handlers right after a successful database delete.
+func (c *Config) RemoveWebhookEndpoint(id string) {
+	c.muWebhooks.Lock()
+	defer c.muWebhooks.Unlock()
+	endpoint, ok := c.webhookEndpoints[id]
+	if !ok {
+		return
+	}
+	delete(c.webhookEndpointsByName, endpoint.Name)
+	delete(c.webhookEndpoints, id)
+}
+
+// replaceWebhookEndpoints swaps the whole in-memory store for the given rows.
+func (c *Config) replaceWebhookEndpoints(endpoints []configstoreTables.TableWebhookEndpoint) {
+	byID := make(map[string]*configstoreTables.TableWebhookEndpoint, len(endpoints))
+	byName := make(map[string]string, len(endpoints))
+	for i := range endpoints {
+		endpoint := endpoints[i]
+		byID[endpoint.ID] = &endpoint
+		byName[endpoint.Name] = endpoint.ID
+	}
+	c.muWebhooks.Lock()
+	defer c.muWebhooks.Unlock()
+	c.webhookEndpoints = byID
+	c.webhookEndpointsByName = byName
 }
 
 // autoDetectProviders automatically detects common environment variables and sets up providers

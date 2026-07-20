@@ -1193,11 +1193,11 @@ func (s *Store) resolvePricing(routingInfo schemas.RoutingInfo, requestType sche
 // getBasePricing looks up catalog pricing for the given model, provider, and request type.
 // It applies a provider-specific fallback chain when an exact match is not found:
 //
-//   - Gemini: retries under the "vertex" provider, then falls back to chat mode for Responses requests.
-//   - Vertex: strips the "provider/model" prefix and retries, then falls back to chat mode for Responses requests.
-//   - Bedrock: prepends the vendor namespace ("anthropic.", "openai.", "google.", "xai.") inferred from the model family, then falls back to chat mode for Responses requests.
+//   - Gemini: retries under the "vertex" provider, then falls back to the counterpart chat/responses mode.
+//   - Vertex: strips the "provider/model" prefix and retries, then falls back to the counterpart chat/responses mode.
+//   - Bedrock: prepends the vendor namespace ("anthropic.", "openai.", "google.", "xai.") inferred from the model family, then falls back to the counterpart chat/responses mode.
 //   - Bedrock Mantle: folded onto the "bedrock" provider up front (datasheet rows for all Bedrock variants are stored there), so it shares every Bedrock fallback.
-//   - All providers: for Responses/ResponsesStream requests, retries the lookup in chat mode.
+//   - All providers: chat and responses requests retry in each other's mode, since a model served over both APIs often has a datasheet row under only one of them.
 //   - All providers: for ImageEdit/ImageVariation requests, retries the lookup in image-generation mode.
 //
 // The method acquires a read lock for the duration of the lookup.
@@ -1215,6 +1215,7 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 	defer s.mu.RUnlock()
 
 	mode := normalizeRequestType(requestType)
+	fallbackMode, hasFallbackMode := chatResponsesFallbackMode(requestType)
 
 	// Datasheet rows for all Bedrock variants are stored under the "bedrock"
 	// provider (normalizeProvider folds bedrock_* onto "bedrock"), so
@@ -1236,10 +1237,10 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 			return &pricing, true
 		}
 
-		// Lookup in chat if responses not found
-		if requestType == schemas.ResponsesRequest || requestType == schemas.ResponsesStreamRequest || requestType == schemas.WebSocketResponsesRequest || requestType == schemas.RealtimeRequest || requestType == schemas.CompactionRequest {
-			s.logger.Debug("secondary lookup failed, trying vertex provider for the same model in chat completion")
-			pricing, ok = s.pricingData[makeKey(model, "vertex", normalizeRequestType(schemas.ChatCompletionRequest))]
+		// Lookup in the counterpart chat/responses mode if this model's row is filed under the other one
+		if hasFallbackMode {
+			s.logger.Debug("secondary lookup failed, trying vertex provider for the same model in %s mode", fallbackMode)
+			pricing, ok = s.pricingData[makeKey(model, "vertex", fallbackMode)]
 			if ok {
 				return &pricing, true
 			}
@@ -1256,10 +1257,10 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 				return &pricing, true
 			}
 
-			// Lookup in chat if responses not found
-			if requestType == schemas.ResponsesRequest || requestType == schemas.ResponsesStreamRequest || requestType == schemas.WebSocketResponsesRequest || requestType == schemas.RealtimeRequest || requestType == schemas.CompactionRequest {
-				s.logger.Debug("secondary lookup failed, trying vertex provider for the same model in chat completion")
-				pricing, ok = s.pricingData[makeKey(modelWithoutProvider, "vertex", normalizeRequestType(schemas.ChatCompletionRequest))]
+			// Lookup in the counterpart chat/responses mode if this model's row is filed under the other one
+			if hasFallbackMode {
+				s.logger.Debug("secondary lookup failed, trying vertex provider for the same model in %s mode", fallbackMode)
+				pricing, ok = s.pricingData[makeKey(modelWithoutProvider, "vertex", fallbackMode)]
 				if ok {
 					return &pricing, true
 				}
@@ -1290,10 +1291,10 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 				return &pricing, true
 			}
 
-			// Lookup in chat if responses not found
-			if requestType == schemas.ResponsesRequest || requestType == schemas.ResponsesStreamRequest || requestType == schemas.WebSocketResponsesRequest || requestType == schemas.RealtimeRequest || requestType == schemas.CompactionRequest {
-				s.logger.Debug("secondary lookup failed, trying chat provider for the same model in chat completion")
-				pricing, ok = s.pricingData[makeKey(vendorPrefix+model, provider, normalizeRequestType(schemas.ChatCompletionRequest))]
+			// Lookup in the counterpart chat/responses mode if this model's row is filed under the other one
+			if hasFallbackMode {
+				s.logger.Debug("secondary lookup failed, trying the same prefixed model in %s mode", fallbackMode)
+				pricing, ok = s.pricingData[makeKey(vendorPrefix+model, provider, fallbackMode)]
 				if ok {
 					return &pricing, true
 				}
@@ -1301,10 +1302,10 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 		}
 	}
 
-	// Lookup in chat if responses/compaction not found
-	if requestType == schemas.ResponsesRequest || requestType == schemas.ResponsesStreamRequest || requestType == schemas.WebSocketResponsesRequest || requestType == schemas.RealtimeRequest || requestType == schemas.CompactionRequest {
-		s.logger.Debug("primary lookup failed, trying chat provider for the same model in chat completion")
-		pricing, ok = s.pricingData[makeKey(model, provider, normalizeRequestType(schemas.ChatCompletionRequest))]
+	// Lookup in the counterpart chat/responses mode if this model's row is filed under the other one
+	if hasFallbackMode {
+		s.logger.Debug("primary lookup failed, trying the same model in %s mode", fallbackMode)
+		pricing, ok = s.pricingData[makeKey(model, provider, fallbackMode)]
 		if ok {
 			return &pricing, true
 		}

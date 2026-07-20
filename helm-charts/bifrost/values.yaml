@@ -288,6 +288,10 @@ bifrost:
     # Require auth (VK, API key, or user token) on inference endpoints.
     # Open by default in the raw binary; this chart enables enforcement for production.
     enforceAuthOnInference: true
+    # dualCredentialConflictBehavior -- Behavior when an inference request presents both an IDP
+    # access token and a virtual key (x-bf-vk). Options: "error" (reject with 400),
+    # "prefer_vk" (drop IDP token, use VK), "prefer_idp" (default, IDP token wins for identity).
+    # dualCredentialConflictBehavior: "prefer_idp"
     maxRequestBodySizeMb: 100
     compat:
       convertTextToChat: false
@@ -602,6 +606,7 @@ bifrost:
         #     disable_content_logging: false
         #     group_traces_by_session: false # Group requests sharing x-bf-session-id into one trace (traceparent takes precedence)
         #     disable_root_span_content: false # Drop input/output from the root span only (keeps it on the llm.call span)
+        #     request_headers: []     # Header name patterns (exact or wildcard like "x-custom-*") captured as span attributes; "*" includes sensitive headers like Authorization
         #
         # Single-profile shape:
         service_name: "bifrost"
@@ -616,13 +621,16 @@ bifrost:
         headers: {}
         # TLS configuration
         tls_ca_cert: "" # Path to TLS CA certificate file
-        insecure: false # Skip TLS verification (ignored if tls_ca_cert is set)
+        # insecure: false # Skip TLS verification (ignored if tls_ca_cert is set)
         # Drop message content (input/output messages, embeddings, tool defs/args/results) from exported spans
         disable_content_logging: false
         # Group requests sharing the same x-bf-session-id header into one trace (an inbound W3C traceparent takes precedence)
         group_traces_by_session: false
         # Drop input/output content from the root span only (the llm.call generation span keeps it)
         disable_root_span_content: false
+        # Request header name patterns (exact or wildcard like "x-custom-*") captured and emitted as span attributes.
+        # Note: "*" captures all headers including sensitive ones like Authorization.
+        # request_headers: []
     datadog:
       enabled: false
       version: 1
@@ -898,7 +906,7 @@ bifrost:
   # SCIM/SSO configuration for enterprise SSO
   scim:
     enabled: false
-    # Provider: okta, entra, keycloak, zitadel, google
+    # Provider: okta, entra, keycloak, zitadel, google, sailpoint, generic
     provider: ""
     config: {}
       # Okta configuration:
@@ -937,6 +945,12 @@ bifrost:
       #   - attribute: "department"
       #     value: "platform"
       #     business_unit: "Platform"
+      # # SCIM inbound provisioning (Enterprise): the IdP pushes users/groups to Bifrost's SCIM 2.0 endpoint.
+      # claimScimAttributes:                         # per-claim SCIM interpretation
+      #   groups:
+      #     attributeType: "group"                   # "user" (SCIM User attribute) or "group" (match SCIM Group)
+      #     attributeValue: "displayName"
+      # provisioningToken: "env.SCIM_PROVISIONING_TOKEN"  # bearer token the IdP presents; generate: openssl rand -base64 32 | tr '+/' '-_' | tr -d '='
       #
       # Entra (Azure AD) configuration:
       # tenantId: ""
@@ -957,6 +971,12 @@ bifrost:
       #     value: "<group-object-id>"
       #     team: "platform-team"
       # attributeBusinessUnitMappings: []
+      # # SCIM inbound provisioning (Enterprise): the IdP pushes users/groups to Bifrost's SCIM 2.0 endpoint.
+      # claimScimAttributes:                         # per-claim SCIM interpretation
+      #   groups:
+      #     attributeType: "group"                   # "user" (SCIM User attribute) or "group" (match SCIM Group)
+      #     attributeValue: "displayName"
+      # provisioningToken: "env.SCIM_PROVISIONING_TOKEN"  # bearer token the IdP presents; generate: openssl rand -base64 32 | tr '+/' '-_' | tr -d '='
       #
       # Keycloak configuration:
       # serverUrl: "https://keycloak.company.com"  # base URL, must NOT include /realms/{realm}
@@ -1001,6 +1021,28 @@ bifrost:
       # attributeRoleMappings: []
       # attributeTeamMappings: []
       # attributeBusinessUnitMappings: []
+      #
+      # Generic OIDC configuration (any standards-compliant OIDC IdP):
+      # issuerUrl: "https://idp.company.com"        # required; endpoints resolved via OIDC discovery (.well-known/openid-configuration)
+      # clientId: ""                                # required
+      # clientSecret: "env.OIDC_CLIENT_SECRET"      # optional, for confidential clients; supports env. prefix
+      # audience: ""                                # optional, JWT audience for token validation
+      # # Optional manual endpoint overrides (used in preference to discovery when the IdP has no compliant discovery document):
+      # authorizationEndpoint: "https://idp.company.com/oauth2/authorize"
+      # tokenEndpoint: "https://idp.company.com/oauth2/token"
+      # userinfoEndpoint: "https://idp.company.com/oauth2/userinfo"
+      # teamIdsField: "groups"                      # JWT claim for team/group IDs (default: "groups")
+      # rolesField: "roles"                         # JWT claim for role names (optional)
+      # scopes: []                                  # override the default OIDC scopes requested during login
+      # attributeRoleMappings: []
+      # attributeTeamMappings: []
+      # attributeBusinessUnitMappings: []
+      # # SCIM inbound provisioning (Enterprise): the IdP pushes users/groups to Bifrost's SCIM 2.0 endpoint.
+      # claimScimAttributes:                         # per-claim SCIM interpretation
+      #   groups:
+      #     attributeType: "group"                   # "user" (SCIM User attribute) or "group" (match SCIM Group)
+      #     attributeValue: "displayName"
+      # provisioningToken: "env.SCIM_PROVISIONING_TOKEN"  # bearer token the IdP presents; generate: openssl rand -base64 32 | tr '+/' '-_' | tr -d '='
 
   # Load balancer configuration for intelligent request routing
   loadBalancer:
@@ -1137,10 +1179,29 @@ bifrost:
   auditLogs:
     disabled: false
     hmacKey: ""
-    # Object storage archival for audit events (optional)
-    # When configured, each flushed batch of audit events is written as a JSONL object at
-    # {prefix}/audit-logs/YYYY/MM/DD/HH/{id}.jsonl in addition to the DB.
-    # Set compress: true to gzip the objects ({id}.jsonl.gz).
+    # Object storage archival for audit events (optional).
+    #
+    # When configured, a background job periodically copies audit events from the
+    # database to object storage, one closed time window at a time. Each window is
+    # written as one or more JSONL part objects plus a manifest that lists them:
+    #   {prefix}/audit-logs/YYYY/MM/DD/<start>-<end>/part-00000.jsonl[.gz]
+    #   {prefix}/audit-logs/YYYY/MM/DD/<start>-<end>/manifest.json[.gz]
+    # Read the manifest to enumerate a window; ignore any object it does not list.
+    #
+    # The database remains the source of truth. Archival never deletes rows —
+    # retentionDays handles that independently. In a cluster, only the leader
+    # archives. Events written before archival is first enabled are not backfilled.
+    #
+    # Window size and job period. Default 24h, minimum 5m.
+    # archiveInterval: "24h"
+    # A window only closes once (now - grace) has passed its end, which absorbs
+    # clock skew and late inserts. Must be less than archiveInterval. Default 15m.
+    # archiveGracePeriod: "15m"
+    # Roll a new part object once the current part reaches this many uncompressed
+    # bytes. Default 134217728 (128MiB). Raising it produces fewer, larger objects;
+    # note peak memory on the archiving node is roughly 2x this when compress: true,
+    # so size pod memory limits accordingly.
+    # archiveMaxObjectBytes: 134217728
     # objectStorage:
     #   type: s3        # Options: s3, gcs
     #   bucket: ""      # Bucket name

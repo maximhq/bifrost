@@ -21,6 +21,7 @@ type OAuthMetadata struct {
 	TokenURL         string   `json:"token_endpoint"`
 	RegistrationURL  *string  `json:"registration_endpoint,omitempty"`
 	ScopesSupported  []string `json:"scopes_supported,omitempty"`
+	Resource         string   `json:"resource,omitempty"`
 	Issuer           string   `json:"issuer,omitempty"`
 	ResponseTypes    []string `json:"response_types_supported,omitempty"`
 	GrantTypes       []string `json:"grant_types_supported,omitempty"`
@@ -30,6 +31,7 @@ type OAuthMetadata struct {
 
 // ResourceMetadata contains metadata from protected resource
 type ResourceMetadata struct {
+	Resource             string   `json:"resource,omitempty"`
 	AuthorizationServers []string `json:"authorization_servers"`
 	ScopesSupported      []string `json:"scopes_supported,omitempty"`
 	Scopes               []string `json:"scopes,omitempty"` // Alternative field name
@@ -90,9 +92,10 @@ func DiscoverOAuthMetadata(ctx context.Context, serverURL string) (*OAuthMetadat
 	// Step 3: Fetch resource metadata if available
 	var authServers []string
 	var resourceScopes []string
+	var resource string
 
 	if resourceMetadataURL != "" {
-		authServers, resourceScopes, err = fetchResourceMetadata(ctx, resourceMetadataURL)
+		authServers, resourceScopes, resource, err = fetchResourceMetadata(ctx, resourceMetadataURL)
 		if err != nil {
 			// Log but continue to well-known discovery
 			logger.Warn(fmt.Sprintf("[OAuth Discovery] Failed to fetch resource metadata: %v", err))
@@ -104,7 +107,7 @@ func DiscoverOAuthMetadata(ctx context.Context, serverURL string) (*OAuthMetadat
 	// Step 4: Try well-known discovery if no resource metadata
 	if len(authServers) == 0 {
 		logger.Debug("[OAuth Discovery] Attempting .well-known discovery")
-		authServers, resourceScopes, err = attemptWellKnownDiscovery(ctx, serverURL)
+		authServers, resourceScopes, resource, err = attemptWellKnownDiscovery(ctx, serverURL)
 		if err != nil {
 			return nil, fmt.Errorf("OAuth discovery failed: %w", err)
 		}
@@ -122,6 +125,9 @@ func DiscoverOAuthMetadata(ctx context.Context, serverURL string) (*OAuthMetadat
 		metadata.ScopesSupported = scopesFromHeader
 	} else if len(resourceScopes) > 0 {
 		metadata.ScopesSupported = resourceScopes
+	}
+	if metadata.Resource == "" {
+		metadata.Resource = resource
 	}
 
 	logger.Debug(fmt.Sprintf("[OAuth Discovery] Successfully discovered OAuth metadata for %s", serverURL))
@@ -164,29 +170,29 @@ func parseWWWAuthenticateHeader(header string) (resourceMetadataURL string, scop
 }
 
 // fetchResourceMetadata fetches OAuth metadata from resource metadata endpoint (RFC 9728)
-func fetchResourceMetadata(ctx context.Context, metadataURL string) ([]string, []string, error) {
+func fetchResourceMetadata(ctx context.Context, metadataURL string) ([]string, []string, string, error) {
 	client := &http.Client{
 		Timeout: 10 * time.Second,
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "GET", metadataURL, nil)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, "", err
 	}
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, "", err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, nil, fmt.Errorf("unexpected status %d from resource metadata endpoint", resp.StatusCode)
+		return nil, nil, "", fmt.Errorf("unexpected status %d from resource metadata endpoint", resp.StatusCode)
 	}
 
 	var data ResourceMetadata
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		return nil, nil, fmt.Errorf("failed to decode resource metadata: %w", err)
+		return nil, nil, "", fmt.Errorf("failed to decode resource metadata: %w", err)
 	}
 
 	// Use scopes_supported first, fall back to scopes
@@ -195,15 +201,15 @@ func fetchResourceMetadata(ctx context.Context, metadataURL string) ([]string, [
 		scopes = data.Scopes
 	}
 
-	return data.AuthorizationServers, scopes, nil
+	return data.AuthorizationServers, scopes, data.Resource, nil
 }
 
 // attemptWellKnownDiscovery tries standard .well-known endpoints for protected resource discovery
-func attemptWellKnownDiscovery(ctx context.Context, serverURL string) ([]string, []string, error) {
+func attemptWellKnownDiscovery(ctx context.Context, serverURL string) ([]string, []string, string, error) {
 	// Parse server URL to get base and path
 	base, path := splitURL(serverURL)
 	if base == "" {
-		return nil, nil, fmt.Errorf("invalid server URL: %s", serverURL)
+		return nil, nil, "", fmt.Errorf("invalid server URL: %s", serverURL)
 	}
 
 	// Try different well-known locations
@@ -217,16 +223,16 @@ func attemptWellKnownDiscovery(ctx context.Context, serverURL string) ([]string,
 
 	for _, candidateURL := range candidateURLs {
 		logger.Debug(fmt.Sprintf("[OAuth Discovery] Trying: %s", candidateURL))
-		authServers, scopes, err := fetchResourceMetadata(ctx, candidateURL)
+		authServers, scopes, resource, err := fetchResourceMetadata(ctx, candidateURL)
 		if err == nil && len(authServers) > 0 {
 			logger.Debug(fmt.Sprintf("[OAuth Discovery] Found metadata at: %s", candidateURL))
-			return authServers, scopes, nil
+			return authServers, scopes, resource, nil
 		}
 	}
 
 	// Fallback: assume server base is the authorization server
 	logger.Debug(fmt.Sprintf("[OAuth Discovery] No .well-known found, assuming server base is auth server: %s", base))
-	return []string{base}, nil, nil
+	return []string{base}, nil, "", nil
 }
 
 // fetchAuthorizationServerMetadata fetches OAuth endpoints from authorization server(s)
