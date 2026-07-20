@@ -6008,6 +6008,10 @@
           "type": "boolean",
           "description": "Enable adaptive per-key (route) selection. Defaults to true; omit to leave on."
         },
+        "append_fallbacks_to_pinned": {
+          "type": "boolean",
+          "description": "When a request already carries a provider, append the healthy providers eligible for its model as fallbacks behind any it configured. Defaults to false."
+        },
         "reroute_failed_directions": {
           "type": "boolean",
           "description": "When a pinned provider's direction is unhealthy, re-route the request to a healthy provider. Defaults to false."
