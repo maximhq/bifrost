@@ -202,8 +202,12 @@ Each row corresponds to one trace — one full LLM request lifecycle. The column
 |--------|------|-------------|
 | `input_history` | `STRING` | JSON of input messages. Omitted when `disable_content_logging` is `true`. |
 | `output_message` | `STRING` | JSON of output messages. Omitted when `disable_content_logging` is `true`. |
-| `params` | `STRING` | JSON of request parameters. |
-| `tools` | `STRING` | JSON of tool definitions. |
+| `params` | `STRING` | JSON of request parameters. **Written regardless of `disable_content_logging`.** |
+| `tools` | `STRING` | JSON of tool definitions, including tool names, descriptions, and parameter schemas. **Written regardless of `disable_content_logging`.** |
+
+<Warning>
+`disable_content_logging` gates `input_history` and `output_message` only. `params` and `tools` are always written. Tool definitions frequently describe internal APIs and business logic. If that is sensitive in your deployment, do not rely on this flag alone.
+</Warning>
 
 </Accordion>
 
