@@ -1647,6 +1647,11 @@ type BifrostLLMUsage struct {
 	// the tier multiplier. json:"-" keeps them out of every serialized usage payload.
 	Speed        *string `json:"-"`
 	InferenceGeo *string `json:"-"`
+	// Model that actually served the turn after a server-side fallback handoff.
+	// Carried here for the same reason as the two above: the bare-usage billing path
+	// (CalculateCostForUsage) never sees RoutingInfo, so without it a fallback-served
+	// turn is priced at the requested model's rates.
+	ServerSideFallbackModel *string `json:"-"`
 }
 
 type ChatPromptTokensDetails struct {

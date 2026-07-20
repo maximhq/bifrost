@@ -41080,6 +41080,173 @@
           ]
         }
       ]
+    },
+    {
+      "name": "27. Anthropic Fallback Credit Strip + Fallback Entry Fields",
+      "description": "Fallback credit (fallback-credit-2026-06-01; -2026-06-09 on the AWS surfaces) is a different feature from server-side fallback and has the INVERSE support matrix: the fallbacks parameter is Claude-API-only, while fallback_credit_token is supported nearly everywhere. A fallback entry also accepts output_config and speed, which were unmodelled and therefore dropped on the typed path.\n\nSCOPE NOTE: this folder covers only what a 2xx-asserting suite can observe. Proving that fallback_credit_token is FORWARDED needs a token the platform will evaluate, and an invalid one is rejected with a 400 by design - which the collection-level \"Status code is 2xx\" test treats as a failure. Forwarding, the per-provider beta gating and the AWS beta-date rewrite are therefore covered by unit tests in core/providers/anthropic instead. Response-side shapes (the fallback content block and its trigger, stop_details.fallback_credit_token / fallback_has_prefill_claim) are also unit-tested: reproducing them here would require provoking a safety classifier, which is non-deterministic and inappropriate for a shared suite.",
+      "item": [
+        {
+          "name": "anthropic/claude-opus-4-8 · count_tokens strips fallback_credit_token",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-opus-4-8\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello\"\n    }\n  ],\n  \"fallback_credit_token\": \"bifrost-harness-probe-token\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages/count_tokens",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages",
+                "count_tokens"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Infra noise (auth / rate limit / upstream 5xx) skips so it does not false-fail.",
+                  "// 400 is deliberately NOT guarded - a 400 IS the regression signature for this folder.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var raw = pm.response.text() || '';",
+                  "var lower = raw.toLowerCase();",
+                  "pm.test('anthropic/claude-opus-4-8: count_tokens succeeds with the credit token stripped', function () {",
+                  "  // The token is rejected outright on this endpoint, so the gateway must remove it.",
+                  "  // The token here is intentionally not a real one: if the strip regresses, the",
+                  "  // request fails on the unexpected field before its value is ever evaluated.",
+                  "  pm.expect(raw.indexOf('Extra inputs are not permitted'), 'fallback_credit_token survived into count_tokens: ' + raw).to.equal(-1);",
+                  "  pm.expect(lower.indexOf('fallback_credit_token'), 'fallback_credit_token survived into count_tokens: ' + raw).to.equal(-1);",
+                  "  pm.expect(pm.response.code, 'count_tokens failed: ' + raw).to.be.below(400);",
+                  "  pm.expect(pm.response.json()).to.have.property('input_tokens');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "anthropic/claude-fable-5 · fallback entry carries speed + output_config",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-fable-5\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello\"\n    }\n  ],\n  \"fallbacks\": [\n    {\n      \"model\": \"claude-opus-4-8\",\n      \"max_tokens\": 64,\n      \"speed\": \"standard\",\n      \"output_config\": {\n        \"effort\": \"low\"\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Infra noise (auth / rate limit / upstream 5xx) skips so it does not false-fail.",
+                  "// 400 is deliberately NOT guarded - a 400 IS the regression signature for this folder.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var raw = pm.response.text() || '';",
+                  "var lower = raw.toLowerCase();",
+                  "pm.test('anthropic/claude-fable-5: fallback entry keeps every documented key', function () {",
+                  "  // A fallback entry accepts model, max_tokens, thinking, output_config and speed.",
+                  "  // output_config and speed were unmodelled, so the typed path silently discarded them",
+                  "  // and the retry ran without the overrides the caller asked for. A serialization",
+                  "  // mistake on either new key surfaces here as a rejected request.",
+                  "  pm.expect(lower.indexOf('invalid json'), 'gateway failed to parse the fallback entry: ' + raw).to.equal(-1);",
+                  "  pm.expect(raw.indexOf('Extra inputs are not permitted'), 'a fallback entry key was rejected: ' + raw).to.equal(-1);",
+                  "  pm.expect(pm.response.code, 'request failed: ' + raw).to.be.below(400);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "anthropic/claude-fable-5 · fallback entry keys preserved on Claude Code passthrough (claude-cli UA)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/1.0"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-fable-5\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello\"\n    }\n  ],\n  \"fallbacks\": [\n    {\n      \"model\": \"claude-opus-4-8\",\n      \"max_tokens\": 64,\n      \"speed\": \"standard\",\n      \"output_config\": {\n        \"effort\": \"low\"\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Infra noise (auth / rate limit / upstream 5xx) skips so it does not false-fail.",
+                  "// 400 is deliberately NOT guarded - a 400 IS the regression signature for this folder.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var raw = pm.response.text() || '';",
+                  "var lower = raw.toLowerCase();",
+                  "pm.test('anthropic/claude-fable-5: fallback entry survives the raw-body passthrough path', function () {",
+                  "  // A fallback entry accepts model, max_tokens, thinking, output_config and speed.",
+                  "  // output_config and speed were unmodelled, so the typed path silently discarded them",
+                  "  // and the retry ran without the overrides the caller asked for. A serialization",
+                  "  // mistake on either new key surfaces here as a rejected request.",
+                  "  pm.expect(lower.indexOf('invalid json'), 'gateway failed to parse the fallback entry: ' + raw).to.equal(-1);",
+                  "  pm.expect(raw.indexOf('Extra inputs are not permitted'), 'a fallback entry key was rejected: ' + raw).to.equal(-1);",
+                  "  pm.expect(pm.response.code, 'request failed: ' + raw).to.be.below(400);",
+                  "});",
+                  "// The CLI user-agent routes this through the raw-body path, where the entry is",
+                  "// rewritten by the gjson/sjson strip rather than the typed marshaller - a separate",
+                  "// code path with its own way to corrupt the array."
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

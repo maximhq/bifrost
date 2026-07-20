@@ -899,6 +899,10 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 		Created: int(time.Now().Unix()),
 	}
 
+	// Record the server-side fallback serving model before usage is flattened —
+	// the neutral chat usage has no iterations to recover it from later.
+	bifrostResponse.ExtraFields.RoutingInfo.ServerSideFallbackModel = response.Usage.ServerSideFallbackModel()
+
 	// Check if we have a structured output tool
 	var structuredOutputToolName string
 	if ctx != nil {

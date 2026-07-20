@@ -3,9 +3,11 @@ package anthropic
 import (
 	"context"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/tidwall/gjson"
 )
@@ -1081,5 +1083,337 @@ func TestFallbackBlockTrigger_OmittedWhenAbsent(t *testing.T) {
 	}
 	if block.Trigger != nil {
 		t.Errorf("expected no trigger emitted, got %+v", block.Trigger)
+	}
+}
+
+// --- RoutingInfo.ServerSideFallbackModel population (drives cost) ---
+
+func TestServerSideFallbackModel_FromIterations(t *testing.T) {
+	t.Parallel()
+
+	usage := &AnthropicUsage{
+		InputTokens: 31, OutputTokens: 257,
+		Iterations: []AnthropicUsage{
+			{Type: schemas.Ptr("message"), Model: schemas.Ptr("claude-fable-5"), InputTokens: 31, OutputTokens: 1},
+			{Type: schemas.Ptr(AnthropicUsageIterationTypeFallbackMessage), Model: schemas.Ptr("claude-opus-4-8"), InputTokens: 31, OutputTokens: 257},
+		},
+	}
+	got := usage.ServerSideFallbackModel()
+	if got == nil || *got != "claude-opus-4-8" {
+		t.Errorf("ServerSideFallbackModel() = %v, want claude-opus-4-8", got)
+	}
+
+	// Sticky routing: the requested model is never tried, so there is only the
+	// serving entry and no declining one.
+	sticky := &AnthropicUsage{Iterations: []AnthropicUsage{
+		{Type: schemas.Ptr(AnthropicUsageIterationTypeFallbackMessage), Model: schemas.Ptr("claude-opus-4-8")},
+	}}
+	if got := sticky.ServerSideFallbackModel(); got == nil || *got != "claude-opus-4-8" {
+		t.Errorf("sticky ServerSideFallbackModel() = %v, want claude-opus-4-8", got)
+	}
+
+	// Ordinary responses carry no iterations and must stay nil so pricing is
+	// unchanged for the overwhelming majority of traffic.
+	if got := (&AnthropicUsage{InputTokens: 31, OutputTokens: 257}).ServerSideFallbackModel(); got != nil {
+		t.Errorf("expected nil on a response with no iterations, got %v", got)
+	}
+	// Compaction also uses iterations, but has no fallback_message entry.
+	compaction := &AnthropicUsage{Iterations: []AnthropicUsage{
+		{Type: schemas.Ptr("compaction"), InputTokens: 1000},
+		{Type: schemas.Ptr("message"), Model: schemas.Ptr("claude-opus-4-8")},
+	}}
+	if got := compaction.ServerSideFallbackModel(); got != nil {
+		t.Errorf("expected nil for compaction iterations, got %v", got)
+	}
+	if got := (*AnthropicUsage)(nil).ServerSideFallbackModel(); got != nil {
+		t.Errorf("expected nil for nil usage, got %v", got)
+	}
+}
+
+func TestServerSideFallbackModel_OnResponsesAndChatResponses(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+
+	usage := &AnthropicUsage{
+		InputTokens: 31, OutputTokens: 257,
+		Iterations: []AnthropicUsage{
+			{Type: schemas.Ptr("message"), Model: schemas.Ptr("claude-fable-5"), InputTokens: 31, OutputTokens: 1},
+			{Type: schemas.Ptr(AnthropicUsageIterationTypeFallbackMessage), Model: schemas.Ptr("claude-opus-4-8"), InputTokens: 31, OutputTokens: 257},
+		},
+	}
+	resp := &AnthropicMessageResponse{
+		ID: "msg_fb", Type: "message", Role: "assistant", Model: "claude-opus-4-8",
+		Content:    []AnthropicContentBlock{{Type: AnthropicContentBlockTypeText, Text: schemas.Ptr("hi")}},
+		StopReason: AnthropicStopReasonEndTurn,
+		Usage:      usage,
+	}
+
+	got := resp.ToBifrostResponsesResponse(ctx).ExtraFields.RoutingInfo.ServerSideFallbackModel
+	if got == nil || *got != "claude-opus-4-8" {
+		t.Errorf("responses path: ServerSideFallbackModel = %v, want claude-opus-4-8", got)
+	}
+
+	// The chat path drops iterations from the neutral usage, so this must be
+	// captured from the wire response before that happens.
+	got = resp.ToBifrostChatResponse(ctx).ExtraFields.RoutingInfo.ServerSideFallbackModel
+	if got == nil || *got != "claude-opus-4-8" {
+		t.Errorf("chat path: ServerSideFallbackModel = %v, want claude-opus-4-8", got)
+	}
+}
+
+// PopulateRoutingInfo overwrites RoutingInfo wholesale; the provider-owned
+// serving model must survive that, or streaming loses it entirely.
+func TestServerSideFallbackModel_SurvivesPopulateRoutingInfo(t *testing.T) {
+	t.Parallel()
+
+	resp := &schemas.BifrostResponse{
+		ResponsesResponse: &schemas.BifrostResponsesResponse{
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RoutingInfo: schemas.RoutingInfo{ServerSideFallbackModel: schemas.Ptr("claude-opus-4-8")},
+			},
+		},
+	}
+
+	// Core's snapshot predates the handoff and carries no serving model.
+	resp.PopulateRoutingInfo(schemas.RoutingInfo{Provider: schemas.Anthropic, Model: "claude-fable-5"})
+
+	got := resp.ResponsesResponse.ExtraFields.RoutingInfo.ServerSideFallbackModel
+	if got == nil || *got != "claude-opus-4-8" {
+		t.Fatalf("serving model was clobbered by PopulateRoutingInfo: %v", got)
+	}
+	if resp.ResponsesResponse.ExtraFields.RoutingInfo.Model != "claude-fable-5" {
+		t.Error("expected the rest of RoutingInfo to come from core's snapshot")
+	}
+}
+
+// Chat streaming has no chunk to stamp at the converter (its message_delta case
+// returns nil), so HandleAnthropicChatCompletionStreaming latches the serving
+// model off the usage event and applies it to the final chunk. This pins the
+// contract that latch depends on: the exact stream events Anthropic sends.
+func TestServerSideFallbackModel_FromStreamUsageEvents(t *testing.T) {
+	t.Parallel()
+
+	// message_start carries usage but never iterations — must not latch anything.
+	start := &AnthropicStreamEvent{
+		Type: AnthropicStreamEventTypeMessageStart,
+		Message: &AnthropicMessageResponse{
+			Model: "claude-opus-4-8",
+			Usage: &AnthropicUsage{InputTokens: 29, OutputTokens: 1},
+		},
+	}
+	if got := start.Message.Usage.ServerSideFallbackModel(); got != nil {
+		t.Errorf("message_start must not yield a serving model, got %v", got)
+	}
+
+	// The final message_delta is the only event carrying iterations.
+	delta := &AnthropicStreamEvent{
+		Type: AnthropicStreamEventTypeMessageDelta,
+		Usage: &AnthropicUsage{
+			InputTokens: 29, OutputTokens: 354,
+			Iterations: []AnthropicUsage{
+				{Type: schemas.Ptr("message"), Model: schemas.Ptr("claude-fable-5"), InputTokens: 29, OutputTokens: 7},
+				{Type: schemas.Ptr(AnthropicUsageIterationTypeFallbackMessage), Model: schemas.Ptr("claude-opus-4-8"), InputTokens: 29, OutputTokens: 354},
+			},
+		},
+	}
+	got := delta.Usage.ServerSideFallbackModel()
+	if got == nil || *got != "claude-opus-4-8" {
+		t.Fatalf("message_delta ServerSideFallbackModel = %v, want claude-opus-4-8", got)
+	}
+}
+
+// Every BetaFallbackParam field must survive the union type's custom
+// UnmarshalJSON — anything unmodelled is silently dropped on the typed path,
+// so the fallback attempt would run without the override the caller asked for.
+func TestNativeFallbackEntry_AllFieldsRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	raw := []byte(`{
+		"model": "claude-fable-5",
+		"max_tokens": 1024,
+		"fallbacks": [{
+			"model": "claude-opus-4-8",
+			"max_tokens": 2048,
+			"speed": "fast",
+			"thinking": {"type": "enabled", "budget_tokens": 512},
+			"output_config": {"effort": "high"}
+		}],
+		"messages": [{"role": "user", "content": "hi"}]
+	}`)
+
+	var req AnthropicMessageRequest
+	if err := sonic.Unmarshal(raw, &req); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	native := req.nativeFallbacks()
+	if len(native) != 1 {
+		t.Fatalf("expected 1 native fallback, got %d", len(native))
+	}
+	fb := native[0]
+	if fb.Model != "claude-opus-4-8" {
+		t.Errorf("Model = %q, want claude-opus-4-8", fb.Model)
+	}
+	if fb.MaxTokens == nil || *fb.MaxTokens != 2048 {
+		t.Errorf("MaxTokens = %v, want 2048", fb.MaxTokens)
+	}
+	if fb.Speed == nil || *fb.Speed != "fast" {
+		t.Errorf("Speed = %v, want fast", fb.Speed)
+	}
+	if fb.Thinking == nil || fb.Thinking.Type != "enabled" ||
+		fb.Thinking.BudgetTokens == nil || *fb.Thinking.BudgetTokens != 512 {
+		t.Errorf("Thinking = %+v, want enabled/512", fb.Thinking)
+	}
+	if fb.OutputConfig == nil || fb.OutputConfig.Effort == nil || *fb.OutputConfig.Effort != "high" {
+		t.Errorf("OutputConfig = %+v, want effort=high", fb.OutputConfig)
+	}
+
+	// ...and back onto the wire with every field intact.
+	out, err := sonic.Marshal(req.Fallbacks)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	for _, want := range []string{`"model":"claude-opus-4-8"`, `"max_tokens":2048`, `"speed":"fast"`, `"budget_tokens":512`, `"effort":"high"`} {
+		if !strings.Contains(string(out), want) {
+			t.Errorf("re-marshalled entry missing %s: %s", want, out)
+		}
+	}
+}
+
+// Regression: AnthropicProvider.CountTokens omitted IsCountTokens, so the
+// count-tokens strip never ran and the endpoint answered
+// "fallback_credit_token: Extra inputs are not permitted".
+func TestBuildAnthropicResponsesRequestBody_CountTokensStripsRejectedFields(t *testing.T) {
+	t.Parallel()
+
+	rawBody := []byte(`{"model":"claude-opus-4-8","max_tokens":1024,"temperature":0.5,` +
+		`"messages":[{"role":"user","content":"hi"}],"fallback_credit_token":"tok"}`)
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+
+	result, bifrostErr := BuildAnthropicResponsesRequestBody(ctx,
+		&schemas.BifrostResponsesRequest{
+			Provider:       schemas.Anthropic,
+			Model:          "claude-opus-4-8",
+			RawRequestBody: rawBody,
+		},
+		AnthropicRequestBuildConfig{
+			Provider:      schemas.Anthropic,
+			Model:         "claude-opus-4-8",
+			IsCountTokens: true,
+		})
+	if bifrostErr != nil {
+		t.Fatalf("unexpected error: %v", bifrostErr)
+	}
+	for _, field := range []string{"fallback_credit_token", "max_tokens", "temperature"} {
+		if gjson.GetBytes(result, field).Exists() {
+			t.Errorf("count_tokens rejects %q; expected it stripped, got: %s", field, result)
+		}
+	}
+	// The model must survive — the count-tokens branch rewrites it from cfg.Model,
+	// so an empty cfg.Model here would blank it out.
+	if got := gjson.GetBytes(result, "model").String(); got != "claude-opus-4-8" {
+		t.Errorf("model = %q, want claude-opus-4-8: %s", got, result)
+	}
+	if !gjson.GetBytes(result, "messages").Exists() {
+		t.Errorf("strip damaged the body: %s", result)
+	}
+}
+
+// A fallback entry's speed override needs the fast-mode beta just as a top-level
+// speed does; without it the parameter is rejected as unrecognised.
+func TestFallbackEntrySpeed_InjectsFastModeBetaHeader(t *testing.T) {
+	t.Parallel()
+
+	newReq := func(entry AnthropicNativeFallback) *AnthropicMessageRequest {
+		return &AnthropicMessageRequest{
+			Model:     "claude-fable-5",
+			MaxTokens: 64,
+			Messages:  []AnthropicMessage{{Role: "user", Content: AnthropicContent{ContentStr: schemas.Ptr("hi")}}},
+			Fallbacks: []AnthropicFallbackEntry{{Native: &entry}},
+		}
+	}
+	hasFastMode := func(t *testing.T, req *AnthropicMessageRequest, provider schemas.ModelProvider) bool {
+		t.Helper()
+		ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+		defer cancel()
+		if err := AddMissingBetaHeadersToContext(ctx, req, provider); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		hdrs, _ := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
+		return slices.Contains(hdrs[AnthropicBetaHeader], AnthropicFastModeBetaHeader)
+	}
+
+	// Speed lives only on the fallback entry — no top-level speed to trigger it.
+	if !hasFastMode(t, newReq(AnthropicNativeFallback{Model: "claude-opus-4-8", Speed: schemas.Ptr("fast")}), schemas.Anthropic) {
+		t.Error("expected fast-mode beta header for a fallback entry requesting speed")
+	}
+	// No speed anywhere — the header must not appear.
+	if hasFastMode(t, newReq(AnthropicNativeFallback{Model: "claude-opus-4-8"}), schemas.Anthropic) {
+		t.Error("did not expect fast-mode beta header when no entry requests speed")
+	}
+	// Gated on the entry's own model: sending the header for a model that cannot
+	// serve fast mode guarantees a 400.
+	if hasFastMode(t, newReq(AnthropicNativeFallback{Model: "claude-haiku-4-5", Speed: schemas.Ptr("fast")}), schemas.Anthropic) {
+		t.Error("did not expect fast-mode beta header for a model without fast mode")
+	}
+}
+
+// Documents the contract for the overloaded "fallbacks" key: entries are routed by
+// shape, so the two features coexist in one array and neither consumes the other's.
+func TestFallbacksArray_RoutedByEntryShape(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name        string
+		fallbacks   string
+		wantGateway []schemas.Fallback // Bifrost cross-provider failover
+		wantNative  []string           // forwarded to Anthropic
+	}{
+		{
+			name:        "strings only -> gateway failover, nothing forwarded",
+			fallbacks:   `["openai/gpt-4o-mini","vertex/claude-opus-4-7"]`,
+			wantGateway: []schemas.Fallback{{Provider: "openai", Model: "gpt-4o-mini"}, {Provider: "vertex", Model: "claude-opus-4-7"}},
+		},
+		{
+			name:       "objects only -> forwarded to the provider, no gateway failover",
+			fallbacks:  `[{"model":"claude-opus-4-8"}]`,
+			wantNative: []string{"claude-opus-4-8"},
+		},
+		{
+			name:        "mixed -> each half goes to its own owner",
+			fallbacks:   `["openai/gpt-4o-mini",{"model":"claude-opus-4-8"}]`,
+			wantGateway: []schemas.Fallback{{Provider: "openai", Model: "gpt-4o-mini"}},
+			wantNative:  []string{"claude-opus-4-8"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel()
+
+			var req AnthropicMessageRequest
+			body := `{"model":"claude-fable-5","max_tokens":64,` +
+				`"messages":[{"role":"user","content":"hi"}],"fallbacks":` + tc.fallbacks + `}`
+			if err := sonic.Unmarshal([]byte(body), &req); err != nil {
+				t.Fatalf("unmarshal failed: %v", err)
+			}
+
+			bifrostReq := req.ToBifrostResponsesRequest(ctx)
+			if !slices.Equal(bifrostReq.Fallbacks, tc.wantGateway) {
+				t.Errorf("gateway fallbacks = %+v, want %+v", bifrostReq.Fallbacks, tc.wantGateway)
+			}
+
+			var gotNative []string
+			if v, ok := bifrostReq.Params.ExtraParams["fallbacks"].([]AnthropicNativeFallback); ok {
+				for _, n := range v {
+					gotNative = append(gotNative, n.Model)
+				}
+			}
+			if !slices.Equal(gotNative, tc.wantNative) {
+				t.Errorf("native fallbacks forwarded = %v, want %v", gotNative, tc.wantNative)
+			}
+		})
 	}
 }
