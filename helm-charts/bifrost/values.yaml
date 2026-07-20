@@ -372,6 +372,7 @@ bifrost:
     #     retry_backoff_initial_ms: 500                 # Initial retry backoff in ms
     #     retry_backoff_max_ms: 5000                    # Max retry backoff in ms
     #     stream_idle_timeout_in_seconds: 60            # Max wait for next stream chunk (default: 60)
+    #     keep_alive_timeout_in_seconds: 30             # Idle keep-alive for pooled connections; keep below upstream's (default: 30)
     #     max_conns_per_host: 5000                      # Max TCP connections per host (default: 5000)
     #     enforce_http2: false                           # Force HTTP/2 on provider connections (e.g. Bedrock)
     #     insecure_skip_verify: false                   # Disable TLS certificate verification (last resort)

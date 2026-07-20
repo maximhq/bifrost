@@ -421,6 +421,9 @@ false
 {{- if hasKey $providerConfig.network_config "stream_idle_timeout_in_seconds" }}
 {{- $_ := set $networkConfig "stream_idle_timeout_in_seconds" $providerConfig.network_config.stream_idle_timeout_in_seconds }}
 {{- end }}
+{{- if hasKey $providerConfig.network_config "keep_alive_timeout_in_seconds" }}
+{{- $_ := set $networkConfig "keep_alive_timeout_in_seconds" $providerConfig.network_config.keep_alive_timeout_in_seconds }}
+{{- end }}
 {{- if hasKey $providerConfig.network_config "max_conns_per_host" }}
 {{- $_ := set $networkConfig "max_conns_per_host" $providerConfig.network_config.max_conns_per_host }}
 {{- end }}
