@@ -3997,6 +3997,108 @@ func TestBedrockConverseEagerInputStreamingCoexistsWithServerTools(t *testing.T)
 		"eager beta %q should be appended alongside the server-tool beta", eagerInputStreamingBeta)
 }
 
+func eagerStreamingResponsesRequest(model string, eager *bool) *schemas.BifrostResponsesRequest {
+	toolParams := schemas.ToolFunctionParameters{
+		Type: "object",
+		Properties: schemas.NewOrderedMapFromPairs(
+			schemas.KV("location", map[string]interface{}{"type": "string"}),
+		),
+		Required: []string{"location"},
+	}
+
+	return &schemas.BifrostResponsesRequest{
+		Model: model,
+		Params: &schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{
+				{
+					Type:        schemas.ResponsesToolTypeFunction,
+					Name:        schemas.Ptr("get_weather"),
+					Description: schemas.Ptr("Get weather information"),
+					ResponsesToolFunction: &schemas.ResponsesToolFunction{
+						Parameters: &toolParams,
+					},
+					EagerInputStreaming: eager,
+				},
+			},
+		},
+	}
+}
+
+// TestToBedrockResponsesRequest_EagerInputStreaming is the Responses-path
+// counterpart of TestBedrockConverseEagerInputStreaming. The neutral
+// ResponsesTool keeps eager_input_streaming, but before this fix the Bedrock
+// converter never read it, so the beta remained a silent no-op on /v1/responses.
+func TestToBedrockResponsesRequest_EagerInputStreaming(t *testing.T) {
+	tests := []struct {
+		name     string
+		model    string
+		eager    *bool
+		wantBeta bool
+	}{
+		{
+			name:     "anthropic model, eager_input_streaming true activates the beta",
+			model:    "anthropic.claude-opus-4-7-v1:0",
+			eager:    schemas.Ptr(true),
+			wantBeta: true,
+		},
+		{
+			name:     "anthropic model, eager_input_streaming false leaves it off",
+			model:    "anthropic.claude-opus-4-7-v1:0",
+			eager:    schemas.Ptr(false),
+			wantBeta: false,
+		},
+		{
+			name:     "anthropic model, flag absent leaves it off",
+			model:    "anthropic.claude-opus-4-7-v1:0",
+			eager:    nil,
+			wantBeta: false,
+		},
+		{
+			name:     "non-anthropic (nova) model never gets the anthropic beta",
+			model:    "amazon.nova-lite-v1:0",
+			eager:    schemas.Ptr(true),
+			wantBeta: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			result, err := bedrock.ToBedrockResponsesRequest(ctx, eagerStreamingResponsesRequest(tt.model, tt.eager))
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			got := betaListContains(t, result.AdditionalModelRequestFields, eagerInputStreamingBeta)
+			assert.Equal(t, tt.wantBeta, got,
+				"additionalModelRequestFields.anthropic_beta contains %q = %v, want %v",
+				eagerInputStreamingBeta, got, tt.wantBeta)
+		})
+	}
+}
+
+// TestToBedrockResponsesRequest_EagerInputStreamingPreservesExistingBetas
+// verifies that the Responses-path injection appends to, rather than replaces,
+// caller-provided additionalModelRequestFields.anthropic_beta values.
+func TestToBedrockResponsesRequest_EagerInputStreamingPreservesExistingBetas(t *testing.T) {
+	req := eagerStreamingResponsesRequest("anthropic.claude-opus-4-7-v1:0", schemas.Ptr(true))
+	req.Params.ExtraParams = map[string]interface{}{
+		"additionalModelRequestFieldPaths": schemas.NewOrderedMapFromPairs(
+			schemas.KV("anthropic_beta", []string{"existing-beta"}),
+		),
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result, err := bedrock.ToBedrockResponsesRequest(ctx, req)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, result.AdditionalModelRequestFields)
+	assert.True(t,
+		betaListContains(t, result.AdditionalModelRequestFields, "existing-beta"),
+		"caller-provided beta should survive the eager append")
+	assert.True(t,
+		betaListContains(t, result.AdditionalModelRequestFields, eagerInputStreamingBeta),
+		"eager beta %q should be appended to the caller-provided beta", eagerInputStreamingBeta)
+}
+
 // TestToBedrockResponsesRequest_AnthropicStructuredOutputUsesSyntheticTool
 // is the responses-path twin of TestBedrockAnthropicChatStructuredOutputUsesSyntheticTool.
 // The user's failing request comes through the Anthropic Messages SDK
