@@ -278,6 +278,7 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"async_jobs_add_webhook_endpoint_id_column"}, run: migrationAddWebhookEndpointIDColumn},
 	{IDs: []string{"async_jobs_add_request_id_column"}, run: migrationAddAsyncJobRequestIDColumn},
 	{IDs: []string{"webhook_deliveries_add_request_id_column"}, run: migrationAddWebhookDeliveryRequestIDColumn},
+	{IDs: []string{"logs_add_content_hidden_column"}, run: migrationAddContentHiddenColumn},
 }
 
 // areThereAnyPendingMigrations returns true if there are any pending migrations to be applied.
@@ -2941,6 +2942,39 @@ func migrationAddHasObjectColumnToMCPToolLogs(ctx context.Context, db *gorm.DB, 
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while adding has_object column to mcp_tool_logs: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddContentHiddenColumn adds the content_hidden boolean column to the logs table.
+// Marks logs whose payload is retained in object storage but must never be served back
+// through the API/UI.
+func migrationAddContentHiddenColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_add_content_hidden_column"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &Log{}, "content_hidden"); err != nil {
+				return err
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &Log{}, "content_hidden"); err != nil {
+				return err
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding content_hidden column: %w", err)
 	}
 	return nil
 }

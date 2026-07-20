@@ -638,6 +638,7 @@ var DefaultClientConfig = configstore.ClientConfig{
 	InitialPoolSize:                 schemas.DefaultInitialPoolSize,
 	EnableLogging:                   new(true),
 	DisableContentLogging:           false,
+	RetainContentInObjectStorage:    false,
 	EnforceAuthOnInference:          false,
 	AllowedOrigins:                  []string{"*"},
 	AllowedHeaders:                  []string{},

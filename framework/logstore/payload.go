@@ -608,10 +608,12 @@ func fieldsNeedHydration(fields []string) bool {
 	return false
 }
 
-// ensureHydrationFields appends id, timestamp, and has_object to the
-// projection if not already present, so hydrateLog can function correctly.
+// ensureHydrationFields appends id, timestamp, has_object, and content_hidden
+// to the projection if not already present, so hydrateLog can function
+// correctly. content_hidden must always be selected: a projection that omits
+// it would zero-value the flag and hydrate a hidden log.
 func ensureHydrationFields(fields []string) []string {
-	required := [3]string{"id", "timestamp", "has_object"}
+	required := [4]string{"id", "timestamp", "has_object", "content_hidden"}
 	have := make(map[string]struct{}, len(fields))
 	for _, f := range fields {
 		have[f] = struct{}{}
