@@ -5,6 +5,7 @@
 - feat: force single-region config in Vertex key config
 - feat: phase-scoped redaction and revealing with transient redaction data field, plus `ClearPausedStreamBuffer` for pause-accumulate stream flows
 - fix: complete visible thinking items on the streaming Responses surface so reasoning_summary_text.done, output_item.done, and response.completed carry the accumulated reasoning text and signature (thanks [@fus3r](https://github.com/fus3r)!)
+- fix: return Gemini/Vertex choices for empty chat candidates (thanks [@G-XD](https://github.com/G-XD)!)
 - fix: map web search options to Google Search grounding in the Gemini API
 - fix: parse `SecretVar` JSON with `ref`/`env_var` fields even when `value` is absent
 - fix: cap max reasoning effort in OpenAI

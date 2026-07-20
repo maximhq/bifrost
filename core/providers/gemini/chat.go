@@ -141,7 +141,8 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 	var contentStr *string
 
 	// Process candidate content to extract text, tool calls, and reasoning
-	if candidate.Content != nil && len(candidate.Content.Parts) > 0 {
+	hasParts := candidate.Content != nil && len(candidate.Content.Parts) > 0
+	if hasParts {
 		for _, part := range candidate.Content.Parts {
 			// Handle thought/reasoning text separately - add to reasoning details
 			if part.Text != "" && part.Thought {
@@ -263,51 +264,63 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 				})
 			}
 		}
-
-		// Build the choice with message
-		message := &schemas.ChatMessage{
-			Role: schemas.ChatMessageRoleAssistant,
-		}
-
-		if len(contentBlocks) == 1 && contentBlocks[0].Type == schemas.ChatContentBlockTypeText {
-			contentStr = contentBlocks[0].Text
-			contentBlocks = nil
-		}
-
-		message.Content = &schemas.ChatMessageContent{
-			ContentStr:    contentStr,
-			ContentBlocks: contentBlocks,
-		}
-
-		// Map Google Search grounding supports to OpenAI url_citation annotations
-		annotations := convertGroundingMetadataToChatAnnotations(candidate.GroundingMetadata)
-
-		if len(toolCalls) > 0 || len(reasoningDetails) > 0 || len(annotations) > 0 {
-			message.ChatAssistantMessage = &schemas.ChatAssistantMessage{
-				ToolCalls:        toolCalls,
-				ReasoningDetails: reasoningDetails,
-				Annotations:      annotations,
-			}
-		}
-
-		// Convert finish reason to Bifrost format.
-		// Gemini uses "STOP" for both normal text completions and tool call responses —
-		// it has no dedicated finish reason for tool calls. Override to "tool_calls" when
-		// tool calls are present so downstream consumers see a uniform signal.
-		finishReason := ConvertGeminiFinishReasonToBifrost(candidate.FinishReason)
-		if len(toolCalls) > 0 && finishReason == "stop" {
-			finishReason = "tool_calls"
-		}
-
-		bifrostResp.Choices = append(bifrostResp.Choices, schemas.BifrostResponseChoice{
-			Index:        0,
-			FinishReason: &finishReason,
-			LogProbs:     ConvertGeminiLogprobsResultToBifrost(candidate.LogprobsResult),
-			ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
-				Message: message,
-			},
-		})
 	}
+
+	// Build the choice with message. This must happen even when the candidate has
+	// no visible output — e.g. nil/empty parts, thought-only parts, or MAX_TOKENS
+	// exhausted during thinking — because OpenAI-compatible clients require
+	// `choices` to be present. Mirror OpenAI's behavior: an empty assistant message
+	// with the real finish reason (MAX_TOKENS maps to "length").
+	message := &schemas.ChatMessage{
+		Role: schemas.ChatMessageRoleAssistant,
+	}
+
+	if len(contentBlocks) == 1 && contentBlocks[0].Type == schemas.ChatContentBlockTypeText {
+		contentStr = contentBlocks[0].Text
+		contentBlocks = nil
+	}
+	if contentStr == nil && len(contentBlocks) == 0 && len(toolCalls) == 0 {
+		contentStr = schemas.Ptr("")
+	}
+
+	message.Content = &schemas.ChatMessageContent{
+		ContentStr:    contentStr,
+		ContentBlocks: contentBlocks,
+	}
+
+	// Map Google Search grounding supports to OpenAI url_citation annotations
+	annotations := convertGroundingMetadataToChatAnnotations(candidate.GroundingMetadata)
+
+	if len(toolCalls) > 0 || len(reasoningDetails) > 0 || len(annotations) > 0 {
+		message.ChatAssistantMessage = &schemas.ChatAssistantMessage{
+			ToolCalls:        toolCalls,
+			ReasoningDetails: reasoningDetails,
+			Annotations:      annotations,
+		}
+	}
+
+	// Convert finish reason to Bifrost format.
+	// Gemini uses "STOP" for both normal text completions and tool call responses —
+	// it has no dedicated finish reason for tool calls. Override to "tool_calls" when
+	// tool calls are present so downstream consumers see a uniform signal.
+	finishReason := ConvertGeminiFinishReasonToBifrost(candidate.FinishReason)
+	if len(toolCalls) > 0 && finishReason == "stop" {
+		finishReason = "tool_calls"
+	}
+	if finishReason == "" {
+		// Non-streaming responses must carry a valid finish_reason; default to "stop"
+		// if Gemini omitted it (only seen on degenerate/empty candidates).
+		finishReason = "stop"
+	}
+
+	bifrostResp.Choices = append(bifrostResp.Choices, schemas.BifrostResponseChoice{
+		Index:        0,
+		FinishReason: &finishReason,
+		LogProbs:     ConvertGeminiLogprobsResultToBifrost(candidate.LogprobsResult),
+		ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
+			Message: message,
+		},
+	})
 
 	// Set usage information
 	bifrostResp.Usage = ConvertGeminiUsageMetadataToChatUsage(response.UsageMetadata)

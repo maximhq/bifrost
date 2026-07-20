@@ -203,6 +203,113 @@ func TestEmptyCandidatesRegression(t *testing.T) {
 	}
 }
 
+// TestNoContentCandidateRegression ensures candidates with no visible output
+// (nil/empty content parts, or thought-only parts) still produce an
+// OpenAI-compatible choice with empty string content. Strict clients reject
+// `"choices":null`, and some also reject `"message":{"content":null}`.
+func TestNoContentCandidateRegression(t *testing.T) {
+	tests := []struct {
+		name         string
+		candidate    *gemini.Candidate
+		expectFinish string
+		expectText   string
+	}{
+		{
+			name: "MaxTokensDuringThinking_NilContent",
+			candidate: &gemini.Candidate{
+				Index:        0,
+				FinishReason: gemini.FinishReasonMaxTokens,
+				Content:      nil, // budget burned on thoughts, no visible output
+			},
+			expectFinish: "length",
+		},
+		{
+			name: "MaxTokens_EmptyParts",
+			candidate: &gemini.Candidate{
+				Index:        0,
+				FinishReason: gemini.FinishReasonMaxTokens,
+				Content:      &gemini.Content{Role: string(gemini.RoleModel), Parts: []*gemini.Part{}},
+			},
+			expectFinish: "length",
+		},
+		{
+			name: "Stop_NilContent",
+			candidate: &gemini.Candidate{
+				Index:        0,
+				FinishReason: gemini.FinishReasonStop,
+				Content:      nil,
+			},
+			expectFinish: "stop",
+		},
+		{
+			name: "MissingFinishReason_NilContent",
+			candidate: &gemini.Candidate{
+				Index:   0,
+				Content: nil,
+			},
+			expectFinish: "stop", // defaulted; non-streaming must always carry a finish_reason
+		},
+		{
+			name: "ThoughtOnlyParts",
+			candidate: &gemini.Candidate{
+				Index:        0,
+				FinishReason: gemini.FinishReasonMaxTokens,
+				Content: &gemini.Content{
+					Role: string(gemini.RoleModel),
+					Parts: []*gemini.Part{
+						{Text: "internal reasoning", Thought: true},
+					},
+				},
+			},
+			expectFinish: "length",
+			expectText:   "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			response := &gemini.GenerateContentResponse{
+				ResponseID:   "test-no-content",
+				ModelVersion: "gemini-2.5-pro",
+				Candidates:   []*gemini.Candidate{tt.candidate},
+				UsageMetadata: &gemini.GenerateContentResponseUsageMetadata{
+					PromptTokenCount:     60,
+					CandidatesTokenCount: 32,
+					TotalTokenCount:      92,
+				},
+			}
+
+			bifrostResp := response.ToBifrostChatResponse()
+
+			require.NotNil(t, bifrostResp, "Response should not be nil")
+			require.Len(t, bifrostResp.Choices, 1, "Choices must be present even without visible output")
+
+			choice := bifrostResp.Choices[0]
+			require.NotNil(t, choice.FinishReason, "finish_reason must be set")
+			assert.Equal(t, tt.expectFinish, *choice.FinishReason)
+
+			require.NotNil(t, choice.ChatNonStreamResponseChoice, "Should have non-stream choice")
+			require.NotNil(t, choice.ChatNonStreamResponseChoice.Message, "Should have message object")
+			assert.Equal(t, schemas.ChatMessageRoleAssistant, choice.ChatNonStreamResponseChoice.Message.Role)
+			require.NotNil(t, choice.ChatNonStreamResponseChoice.Message.Content, "message.content should be present")
+			require.NotNil(t, choice.ChatNonStreamResponseChoice.Message.Content.ContentStr, "empty visible output should be an empty string, not null")
+			assert.Equal(t, tt.expectText, *choice.ChatNonStreamResponseChoice.Message.Content.ContentStr)
+
+			responseJSON, err := json.Marshal(bifrostResp)
+			require.NoError(t, err)
+			assert.NotContains(t, string(responseJSON), `"choices":null`)
+			assert.NotContains(t, string(responseJSON), `"content":null`)
+			assert.Contains(t, string(responseJSON), `"content":""`)
+
+			// Usage must still be intact alongside the choice
+			require.NotNil(t, bifrostResp.Usage)
+			assert.Equal(t, 60, bifrostResp.Usage.PromptTokens)
+			assert.Equal(t, 32, bifrostResp.Usage.CompletionTokens)
+			assert.Equal(t, 92, bifrostResp.Usage.TotalTokens)
+		})
+	}
+}
+
 func TestToBifrostEmbeddingResponsePreservesPrecision(t *testing.T) {
 	const want = 0.12345678901234568
 
