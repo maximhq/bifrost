@@ -259,6 +259,9 @@ false
 {{- if hasKey .Values.bifrost.client "disableContentLogging" }}
 {{- $_ := set $client "disable_content_logging" .Values.bifrost.client.disableContentLogging }}
 {{- end }}
+{{- if hasKey .Values.bifrost.client "retainContentInObjectStorage" }}
+{{- $_ := set $client "retain_content_in_object_storage" .Values.bifrost.client.retainContentInObjectStorage }}
+{{- end }}
 {{- if hasKey .Values.bifrost.client "allowPerRequestContentStorageOverride" }}
 {{- $_ := set $client "allow_per_request_content_storage_override" .Values.bifrost.client.allowPerRequestContentStorageOverride }}
 {{- end }}
