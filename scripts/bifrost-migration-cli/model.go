@@ -127,6 +127,7 @@ var standardProviders = map[string]bool{
 	"gemini":      true,
 	"groq":        true,
 	"huggingface": true,
+	"minimax":     true,
 	"mistral":     true,
 	"nebius":      true,
 	"ollama":      true,

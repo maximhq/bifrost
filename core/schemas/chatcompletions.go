@@ -1119,6 +1119,7 @@ type ChatContentBlockType string
 const (
 	ChatContentBlockTypeText       ChatContentBlockType = "text"
 	ChatContentBlockTypeImage      ChatContentBlockType = "image_url"
+	ChatContentBlockTypeVideo      ChatContentBlockType = "video_url"
 	ChatContentBlockTypeInputAudio ChatContentBlockType = "input_audio"
 	ChatContentBlockTypeFile       ChatContentBlockType = "file"
 	ChatContentBlockTypeRefusal    ChatContentBlockType = "refusal"
@@ -1130,6 +1131,7 @@ type ChatContentBlock struct {
 	Text           *string              `json:"text,omitempty"`
 	Refusal        *string              `json:"refusal,omitempty"`
 	ImageURLStruct *ChatInputImage      `json:"image_url,omitempty"`
+	VideoURLStruct *ChatInputVideo      `json:"video_url,omitempty"`
 	InputAudio     *ChatInputAudio      `json:"input_audio,omitempty"`
 	File           *ChatInputFile       `json:"file,omitempty"`
 
@@ -1358,8 +1360,17 @@ type ChatMCPServer struct {
 
 // ChatInputImage represents image data in a message.
 type ChatInputImage struct {
-	URL    string  `json:"url"`
-	Detail *string `json:"detail,omitempty"`
+	URL              string  `json:"url"`
+	Detail           *string `json:"detail,omitempty"`
+	MaxLongSidePixel *int    `json:"max_long_side_pixel,omitempty"`
+}
+
+// ChatInputVideo represents video data in a message.
+type ChatInputVideo struct {
+	URL              string   `json:"url"`
+	Detail           *string  `json:"detail,omitempty"`
+	FPS              *float64 `json:"fps,omitempty"`
+	MaxLongSidePixel *int     `json:"max_long_side_pixel,omitempty"`
 }
 
 // ChatInputAudio represents audio data in a message.

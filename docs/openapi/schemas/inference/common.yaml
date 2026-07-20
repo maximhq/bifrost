@@ -20,6 +20,7 @@ ModelProvider:
     - replicate
     - cerebras
     - deepseek
+    - minimax
     - gemini
     - openrouter
     - elevenlabs
@@ -28,6 +29,7 @@ ModelProvider:
     - xai
     - runway
     - fireworks
+    - sarvam
 
 Fallback:
   type: object

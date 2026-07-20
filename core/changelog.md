@@ -1,3 +1,5 @@
+- fix: translate MiniMax Responses requests through Chat Completions (thanks [@octo-patch](https://github.com/octo-patch)!)
+- feat: add MiniMax provider support (thanks [@octo-patch](https://github.com/octo-patch)!)
 - feat: add Sarvam AI provider with chat, text-to-speech, and speech-to-text support (thanks [@Purvi09](https://github.com/Purvi09)!)
 - feat: add ElevenLabs sound effects (text-to-sound) support (thanks [@SecretSun](https://github.com/SecretSun)!)
 - feat: add `ProjectID` to Bedrock and Bedrock Mantle key configs with per-alias overrides for Bedrock, Bedrock Mantle, and Vertex

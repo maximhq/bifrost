@@ -910,6 +910,7 @@
                         "vertex",
                         "cerebras",
                         "deepseek",
+                        "minimax",
                         "parasail",
                         "perplexity",
                         "sgl",

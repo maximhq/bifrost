@@ -1,5 +1,6 @@
 ## ✨ Features
 
+- **MiniMax Provider** - Registered MiniMax provider configuration and UI metadata (thanks [@octo-patch](https://github.com/octo-patch)!)
 - **Sarvam AI Provider** - Added Sarvam AI as a first-class provider with chat, text-to-speech, and speech-to-text support (thanks [@Purvi09](https://github.com/Purvi09)!)
 - **ElevenLabs Sound Effects** - Added text-to-sound generation support via `/v1/sound-generation` (thanks [@SecretSun](https://github.com/SecretSun)!)
 - **Bedrock Project Scoping** - Added optional `project_id` to Bedrock and Bedrock Mantle key configs with per-alias overrides for Bedrock, Bedrock Mantle, and Vertex, plus UI support
