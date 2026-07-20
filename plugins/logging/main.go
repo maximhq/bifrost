@@ -1055,11 +1055,24 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	if result != nil {
 		ef := result.GetExtraFields()
 		latency = ef.Latency
+		// Model that actually served the turn when the provider swapped models inside
+		// one call. entry.Model still names what the caller asked for.
+		if ef.RoutingInfo.ServerSideFallbackModel != nil {
+			served := *ef.RoutingInfo.ServerSideFallbackModel
+			entry.ServerSideFallbackModel = &served
+		}
 		if ef.CacheDebug != nil && ef.CacheDebug.CacheHit && ef.CacheDebug.CacheHitLatency != nil {
 			latency = *ef.CacheDebug.CacheHitLatency
 		}
 	} else if bifrostErr != nil {
 		latency = bifrostErr.ExtraFields.Latency
+	}
+
+	if entry.ServerSideFallbackModel == nil && bifrostErr != nil && bifrostErr.ExtraFields.BilledUsage != nil {
+		if served := bifrostErr.ExtraFields.BilledUsage.ServerSideFallbackModel; served != nil {
+			m := *served
+			entry.ServerSideFallbackModel = &m
+		}
 	}
 	applyOutputFieldsToEntry(entry, selectedKeyID, selectedKeyName, virtualKeyID, virtualKeyName, routingRuleID, routingRuleName, selectedPromptID, selectedPromptName, selectedPromptVersion, teamID, teamName, customerID, customerName, userID, userName, businessUnitID, businessUnitName, numberOfRetries, latency, attemptTrail)
 	applyResolvedAliasInfo(entry, resolvedKeyAlias)

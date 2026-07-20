@@ -137,6 +137,7 @@ type Log struct {
 	Alias                   *string   `gorm:"type:varchar(255);index" json:"alias,omitempty"`          // Set when model was resolved via alias mapping; the original name the caller used
 	CanonicalModelName      *string   `gorm:"type:varchar(255)" json:"canonical_model_name,omitempty"` // Canonical model name configured on the resolved alias, when set
 	AliasModelFamily        *string   `gorm:"type:varchar(255)" json:"alias_model_family,omitempty"`   // Model family configured on the resolved alias, when set
+	ServerSideFallbackModel *string   `gorm:"type:varchar(255)" json:"server_side_fallback_model,omitempty"`
 	NumberOfRetries         int       `gorm:"default:0" json:"number_of_retries"`
 	FallbackIndex           int       `gorm:"default:0" json:"fallback_index"`
 	SelectedKeyID           string    `gorm:"type:varchar(255);index:idx_logs_selected_key_id" json:"selected_key_id"`
