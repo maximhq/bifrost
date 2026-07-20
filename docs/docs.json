@@ -558,6 +558,7 @@
             "icon": "binoculars",
             "pages": [
               "features/observability/default",
+              "features/observability/content-logging",
               "features/observability/maxim",
               "features/observability/otel",
               "features/observability/prometheus",

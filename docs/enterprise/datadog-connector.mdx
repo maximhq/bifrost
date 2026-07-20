@@ -78,6 +78,8 @@ Datadog officially supports agentless submission for [LLM Observability](https:/
 | `enable_traces` | `bool` | No | `true` | Enable APM traces |
 | `enable_llm_obs` | `bool` | No | `true` | Enable LLM Observability |
 | `group_traces_by_session` | `bool` | No | `false` | Group requests sharing the same `x-bf-session-id` into one APM trace (agent mode only). See [Grouping APM Traces by Session](#grouping-apm-traces-by-session) |
+| `disable_content_logging` | `bool` | No | `false` | Drop message content from APM spans and LLM Observability payloads. See [Controlling Exported Content](#controlling-exported-content) |
+| `request_headers` | `string[]` | No | - | Request-header name patterns to capture and attach to spans. Supports exact names and wildcards (`x-custom-*`, `*`) |
 | `agentless` | `bool` | No | `false` | Use agentless mode (direct API) |
 | `api_key` | `string` | Agentless only | - | Datadog API key (supports `env.VAR_NAME`) |
 | `site` | `string` | No | `datadoghq.com` | Datadog site/region |
@@ -473,6 +475,28 @@ Each APM trace includes comprehensive LLM operation metadata:
 - Reasoning and refusal content (when present)
 
 When Enterprise guardrail redaction is enabled, Bifrost applies trace redaction replacements before exporting completed traces to Datadog. Exported span content receives the redacted or placeholderized value, but reversible reveal mappings are not exported. For the full mode matrix, see [Guardrail Redaction](/enterprise/guardrails/redaction).
+
+### Controlling Exported Content
+
+Set `disable_content_logging: true` to stop message content from reaching Datadog. Input and output messages, prompt and instructions, embedding inputs, model reasoning, and tool definitions, calls, and results are dropped from both APM spans and LLM Observability payloads. Metadata is still exported, including model, provider, tokens, cost, latency, status, and governance attribution, so metrics and dashboards are unaffected.
+
+```json
+{
+  "name": "datadog",
+  "config": {
+    "agent_addr": "localhost:8126",
+    "disable_content_logging": true
+  }
+}
+```
+
+<Warning>
+This flag is **independent** of the global `client.disable_content_logging`, which governs the Bifrost log store only. Setting the client flag does not stop content from reaching Datadog. Set `disable_content_logging` on the Datadog connector as well.
+
+It also does **not** cover attribution identifiers. Metric tags continue to include `user_id`, `user_name`, `team_ids`, `team_names`, `customer_ids`, `customer_names`, `business_unit_ids`, and `business_unit_names`. If end-user identifiers are sensitive in your deployment, treat that as a separate concern from content logging.
+
+Values captured via `request_headers` are attached to spans regardless of this flag. Only enable header capture for headers you intend to export.
+</Warning>
 
 ### Performance Metrics
 
