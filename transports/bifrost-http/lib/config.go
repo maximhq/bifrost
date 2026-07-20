@@ -2335,7 +2335,6 @@ func resolveGovernanceKeyReferences(ctx context.Context, config *Config, governa
 	})
 }
 
-// mergeGovernanceConfig merges governance config from file with store
 // entityIDSet builds a lookup set of IDs from an already-synced slice plus a
 // slice of entries still pending insertion, so newly-added-in-this-file entities
 // are valid scope_id targets even before they're persisted.
@@ -2350,6 +2349,7 @@ func entityIDSet[T any](existing []T, id func(T) string, toAdd []T) map[string]b
 	return set
 }
 
+// mergeGovernanceConfig merges governance config from file with store
 func mergeGovernanceConfig(ctx context.Context, config *Config, configData *ConfigData, governanceConfig *configstore.GovernanceConfig) {
 	logger.Debug("merging governance config from config file with store")
 	// When config.json is the source of truth, file-present entities must be
@@ -2502,6 +2502,12 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 	// Merge VirtualKeys by ID with hash comparison
 	virtualKeysToAdd := make([]configstoreTables.TableVirtualKey, 0)
 	virtualKeysToUpdate := make([]configstoreTables.TableVirtualKey, 0)
+	// skippedNewVirtualKeyIDs tracks brand-new VKs whose secret-backed Value failed
+	// to resolve: an ID is assigned before that check runs, but the entry is never
+	// added to virtualKeysToAdd, so it never gets a DB row. Existing VKs whose
+	// update was skipped for the same reason aren't tracked here — their prior DB
+	// row is untouched and still valid, so their ID stays a legitimate reference.
+	skippedNewVirtualKeyIDs := make(map[string]bool)
 	for i, newVirtualKey := range configData.Governance.VirtualKeys {
 		fileVKHash, err := configstore.GenerateVirtualKeyHash(newVirtualKey)
 		if err != nil {
@@ -2555,6 +2561,7 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 			resolvedVal := configData.Governance.VirtualKeys[i].Value.GetValue()
 			if resolvedVal == "" && configData.Governance.VirtualKeys[i].Value.IsFromSecret() {
 				logger.Warn("virtual key %s: env/vault ref %q could not be resolved, skipping", newVirtualKey.ID, configData.Governance.VirtualKeys[i].Value.GetRawRef())
+				skippedNewVirtualKeyIDs[configData.Governance.VirtualKeys[i].ID] = true
 				continue
 			}
 			if !strings.HasPrefix(resolvedVal, governance.VirtualKeyPrefix) {
@@ -2586,7 +2593,17 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 	}
 	vkScopeIDs := entityIDSet(governanceConfig.VirtualKeys, func(vk configstoreTables.TableVirtualKey) string { return vk.ID }, virtualKeysToAdd)
 	if configData.isConfigJSONSourceOfTruth() && configData.governanceSectionPresent("virtual_keys") {
-		vkScopeIDs = entityIDSet(configData.Governance.VirtualKeys, func(vk configstoreTables.TableVirtualKey) string { return vk.ID }, nil)
+		// Exclude brand-new VKs that were skipped from persistence (unresolved
+		// secret ref): their ID is present in the raw file slice but they never
+		// got a DB row, so counting them here would let a routing rule pass
+		// sanitization while pointing at a virtual key that doesn't exist.
+		vkScopeIDs = make(map[string]bool, len(configData.Governance.VirtualKeys))
+		for _, vk := range configData.Governance.VirtualKeys {
+			if skippedNewVirtualKeyIDs[vk.ID] {
+				continue
+			}
+			vkScopeIDs[vk.ID] = true
+		}
 	}
 	validRoutingScopeIDs := map[string]map[string]bool{
 		"team":        teamScopeIDs,
@@ -2594,33 +2611,65 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 		"virtual_key": vkScopeIDs,
 	}
 
+	// Normalize an omitted/empty scope to the canonical "global" value, matching
+	// the HTTP API's write-time behavior (empty scope defaults to global there).
+	// Without this, a config.json rule persists with Scope="" verbatim: the
+	// routing engine's cache key is built from the literal scope string, and only
+	// the literal "global" is ever looked up, so an unnormalized "" rule would
+	// silently match zero requests — the same failure mode this validation exists
+	// to prevent, via a different field. Also clear any stray scope_id once scope
+	// is (or becomes) global, so it can never carry a dangling reference.
+	for i := range configData.Governance.RoutingRules {
+		if configData.Governance.RoutingRules[i].Scope == "" {
+			configData.Governance.RoutingRules[i].Scope = "global"
+		}
+		if configData.Governance.RoutingRules[i].Scope == "global" {
+			configData.Governance.RoutingRules[i].ScopeID = nil
+		}
+	}
+
 	// Sanitize routing rules with an unresolvable scope_id BEFORE the merge loop
 	// and before pruneGovernanceConfigToFile treats configData.Governance.RoutingRules
 	// as the new authoritative snapshot (it both computes the prune keep-set from it
 	// and assigns it verbatim to config.GovernanceConfig.RoutingRules). A brand-new
-	// invalid rule is dropped outright; an invalid edit to an existing rule reverts
-	// to the last persisted version, so the in-memory snapshot and the prune
-	// keep-set never reflect data that was rejected and never written to the DB.
+	// invalid rule is removed outright; an invalid edit to an existing rule falls back
+	// to the last persisted version ONLY if that version's own scope target also
+	// survives this sync — otherwise it's removed too, so the in-memory snapshot and
+	// the prune keep-set never reflect a rule that was rejected, or one that would be
+	// left dangling by the very entity deletions this same sync is about to perform.
+	// routingScopeResolves reports whether rule's own scope target will still exist
+	// after this sync (used both to reject an incoming file rule and to make sure
+	// a fallback-to-persisted candidate isn't itself pointing at an about-to-be-pruned
+	// entity — restoring a rule whose own scope_id won't survive just reproduces the
+	// same dangling-rule bug one level down).
+	routingScopeResolves := func(rule configstoreTables.TableRoutingRule) bool {
+		if rule.Scope == "" || rule.Scope == "global" {
+			return true
+		}
+		if rule.ScopeID == nil || *rule.ScopeID == "" {
+			return false
+		}
+		return validRoutingScopeIDs[rule.Scope][*rule.ScopeID]
+	}
+
 	existingRoutingRulesByID := make(map[string]configstoreTables.TableRoutingRule, len(governanceConfig.RoutingRules))
 	for _, r := range governanceConfig.RoutingRules {
 		existingRoutingRulesByID[r.ID] = r
 	}
 	sanitizedRoutingRules := make([]configstoreTables.TableRoutingRule, 0, len(configData.Governance.RoutingRules))
 	for _, rule := range configData.Governance.RoutingRules {
-		if rule.Scope != "" && rule.Scope != "global" {
+		if !routingScopeResolves(rule) {
 			scopeID := ""
 			if rule.ScopeID != nil {
 				scopeID = *rule.ScopeID
 			}
-			if scopeID == "" || !validRoutingScopeIDs[rule.Scope][scopeID] {
-				if existing, ok := existingRoutingRulesByID[rule.ID]; ok {
-					logger.Warn("routing rule %s: scope_id %q does not resolve to an existing %s (use the entity's id, not its name); keeping last persisted version", rule.ID, scopeID, rule.Scope)
-					sanitizedRoutingRules = append(sanitizedRoutingRules, existing)
-				} else {
-					logger.Warn("routing rule %s: scope_id %q does not resolve to an existing %s (use the entity's id, not its name); skipping new rule", rule.ID, scopeID, rule.Scope)
-				}
-				continue
+			if existing, ok := existingRoutingRulesByID[rule.ID]; ok && routingScopeResolves(existing) {
+				logger.Warn("routing rule %s: scope_id %q does not resolve to an existing %s (use the entity's id, not its name); keeping last persisted version", rule.ID, scopeID, rule.Scope)
+				sanitizedRoutingRules = append(sanitizedRoutingRules, existing)
+			} else {
+				logger.Warn("routing rule %s: scope_id %q does not resolve to an existing %s (use the entity's id, not its name); removing rule", rule.ID, scopeID, rule.Scope)
 			}
+			continue
 		}
 		sanitizedRoutingRules = append(sanitizedRoutingRules, rule)
 	}
