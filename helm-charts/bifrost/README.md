@@ -8,6 +8,10 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 
 ## Changelog
 
+### 2.1.30
+
+- Added `bifrost.client.retainContentInObjectStorage` (default off, commented out) to keep full request/response content in object storage when content logging is disabled — via the global `disableContentLogging` setting or the `x-bf-disable-content-logging` header — instead of dropping it. The content is hidden: the database row stays metadata-only and the UI/API never fetch the payload back, so it is only readable with direct access to the bucket. Requires `storage.logsStore.objectStorage.enabled: true`; without it the content is dropped as before. Renders into `client.retain_content_in_object_storage`.
+
 ### 2.1.29
 
 - Added `bifrost.scim.config.provisioningToken` and `claimScimAttributes` to the Okta, Entra, SailPoint, and generic OIDC SCIM providers, so inbound SCIM provisioning can be seeded declaratively instead of via the dashboard. Both render into `scim_config.config`. Generate a token with `openssl rand -base64 32 | tr '+/' '-_' | tr -d '='` (supports `env.` prefix).

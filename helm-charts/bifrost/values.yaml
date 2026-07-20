@@ -280,6 +280,13 @@ bifrost:
       - "*"
     enableLogging: true
     disableContentLogging: false
+    # retainContentInObjectStorage -- When content logging is disabled (global setting above or
+    # the x-bf-disable-content-logging header), offload the full content to object storage as
+    # hidden instead of dropping it. Hidden content is never served back through the API/UI: the
+    # database row stays metadata-only and the payload is only readable with direct access to the
+    # bucket. Requires storage.logsStore.objectStorage.enabled: true; without it the content is
+    # dropped as before.
+    # retainContentInObjectStorage: false
     disableDbPingsInHealth: false
     dumpErrorsInConsoleLogs: false
     # Global webhook delivery settings; per-endpoint tuning lives on each bifrost.webhooks[] entry.
