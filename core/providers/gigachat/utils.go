@@ -192,15 +192,21 @@ func (provider *GigaChatProvider) getGigaChatTLSClient(baseClient *fasthttp.Clie
 	fingerprint := gigaChatTLSConfigFingerprint(keyConfig)
 	cacheKey := cacheKind + ":" + fingerprint
 	provider.tlsClientCache.mu.Lock()
-	defer provider.tlsClientCache.mu.Unlock()
-
-	if client := provider.tlsClientCache.clients[cacheKey]; client != nil {
+	client := provider.tlsClientCache.clients[cacheKey]
+	provider.tlsClientCache.mu.Unlock()
+	if client != nil {
 		return client, nil
 	}
 
 	client, err := buildGigaChatTLSClient(baseClient, keyConfig)
 	if err != nil {
 		return nil, err
+	}
+
+	provider.tlsClientCache.mu.Lock()
+	defer provider.tlsClientCache.mu.Unlock()
+	if cached := provider.tlsClientCache.clients[cacheKey]; cached != nil {
+		return cached, nil
 	}
 	provider.tlsClientCache.clients[cacheKey] = client
 	return client, nil

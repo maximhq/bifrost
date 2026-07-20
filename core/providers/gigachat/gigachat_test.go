@@ -11,6 +11,7 @@ import (
 	"math/big"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -35,6 +36,7 @@ func TestGigachat(t *testing.T) {
 	t.Run("Errors", testGigaChatErrors)
 	t.Run("BuildsTLSClientWithCABundle", testGigaChatBuildsTLSClientWithCABundle)
 	t.Run("ReusesTLSClientWithCABundleUntilProviderReload", testGigaChatReusesTLSClientWithCABundleUntilProviderReload)
+	t.Run("CachesTLSClientConcurrently", testGigaChatCachesTLSClientConcurrently)
 	t.Run("BuildsTLSClientWithCertificate", testGigaChatBuildsTLSClientWithCertificate)
 	t.Run("ReusesTLSClientWithCertificateUntilProviderReload", testGigaChatReusesTLSClientWithCertificateUntilProviderReload)
 	t.Run("RejectsMissingCertificatePair", testGigaChatRejectsMissingCertificatePair)
@@ -344,6 +346,46 @@ func testGigaChatReusesTLSClientWithCABundleUntilProviderReload(t *testing.T) {
 		t.Fatal("expected provider reload to validate missing CA bundle file")
 	} else if !strings.Contains(err.Error(), "ca_bundle_file") {
 		t.Fatalf("unexpected missing CA error: %v", err)
+	}
+}
+
+func testGigaChatCachesTLSClientConcurrently(t *testing.T) {
+	t.Parallel()
+
+	certPEM, _ := generateGigaChatTestCertificate(t)
+	caBundleFile := writeGigaChatTestFile(t, "ca.pem", certPEM)
+	provider, err := NewGigaChatProvider(&schemas.ProviderConfig{}, nil)
+	if err != nil {
+		t.Fatalf("NewGigaChatProvider returned error: %v", err)
+	}
+
+	const workerCount = 32
+	keyConfig := &schemas.GigaChatKeyConfig{CABundleFile: caBundleFile}
+	clients := make([]*fasthttp.Client, workerCount)
+	errs := make([]error, workerCount)
+	start := make(chan struct{})
+	var workers sync.WaitGroup
+	for i := range workerCount {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			<-start
+			clients[i], errs[i] = provider.getGigaChatTLSClient(provider.client, gigaChatTLSClientCacheDefault, keyConfig)
+		}()
+	}
+	close(start)
+	workers.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("getGigaChatTLSClient call %d returned error: %v", i, err)
+		}
+	}
+	cachedClient := clients[0]
+	for _, client := range clients[1:] {
+		if client != cachedClient {
+			t.Fatal("concurrent cache misses returned different TLS clients")
+		}
 	}
 }
 
