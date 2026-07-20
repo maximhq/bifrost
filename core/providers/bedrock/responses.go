@@ -2187,10 +2187,23 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest(ctx *schemas.Bi
 
 	// Convert additional model request fields to extra params
 	if request.AdditionalModelRequestFields.Len() > 0 {
-		if bifrostReq.Params.ExtraParams == nil {
-			bifrostReq.Params.ExtraParams = make(map[string]interface{})
+		fieldsToForward := request.AdditionalModelRequestFields
+		// Reasoning keys already consumed into Params.Reasoning get re-synthesized on
+		// egress; forwarding them verbatim too puts two copies on the wire and Bedrock
+		// rejects the collision (e.g. reasoning_config expands to thinking, clashing
+		// with the emitted thinking). output_config is left in place — egress deep-merges it.
+		if bifrostReq.Params.Reasoning != nil {
+			fieldsToForward = request.AdditionalModelRequestFields.Clone()
+			fieldsToForward.Delete("thinking")
+			fieldsToForward.Delete("reasoning_config")
+			fieldsToForward.Delete("reasoningConfig")
 		}
-		bifrostReq.Params.ExtraParams["additionalModelRequestFieldPaths"] = request.AdditionalModelRequestFields
+		if fieldsToForward.Len() > 0 {
+			if bifrostReq.Params.ExtraParams == nil {
+				bifrostReq.Params.ExtraParams = make(map[string]interface{})
+			}
+			bifrostReq.Params.ExtraParams["additionalModelRequestFieldPaths"] = fieldsToForward
+		}
 	}
 
 	// Convert additional model response field paths to extra params
