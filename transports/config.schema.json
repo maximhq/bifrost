@@ -422,6 +422,9 @@
         "deepseek": {
           "$ref": "#/$defs/provider_with_deepseek_config"
         },
+        "wafer": {
+          "$ref": "#/$defs/provider"
+        },
         "vllm": {
           "$ref": "#/$defs/provider_with_vllm_config"
         },
@@ -6780,7 +6783,8 @@
             "runway",
             "runware",
             "fireworks",
-            "sarvam"
+            "sarvam",
+            "wafer"
           ],
           "description": "Base provider type to extend"
         },
