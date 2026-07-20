@@ -55,6 +55,7 @@ export const ModelPlaceholders = {
 	runware: "e.g. runware:100@1, runware:101@1",
 	fireworks: "e.g. accounts/fireworks/models/deepseek-v3p2",
 	sarvam: "e.g. sarvam-30b, sarvam-105b",
+	wafer: "e.g. glm-5.2, kimi-k2.6",
 };
 
 export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
@@ -87,6 +88,7 @@ export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
 	vllm: false,
 	fireworks: true,
 	sarvam: true,
+	wafer: true,
 };
 
 export const DefaultNetworkConfig = {

@@ -31,7 +31,8 @@ type TableClientConfig struct {
 	MetadataJSON                          string                         `gorm:"type:text" json:"-"` // JSON serialized map[string]any for UI/admin preferences (e.g. onboarding_dismissed). Bypasses config.json sync.
 	InitialPoolSize                       int                            `gorm:"default:300" json:"initial_pool_size"`
 	EnableLogging                         *bool                          `gorm:"default:true" json:"enable_logging"`
-	DisableContentLogging                 bool                           `gorm:"default:false" json:"disable_content_logging"` // DisableContentLogging controls whether sensitive content (inputs, outputs, embeddings, etc.) is logged
+	DisableContentLogging                 bool                           `gorm:"default:false" json:"disable_content_logging"`          // DisableContentLogging controls whether sensitive content (inputs, outputs, embeddings, etc.) is logged
+	RetainContentInObjectStorage          bool                           `gorm:"default:false" json:"retain_content_in_object_storage"` // When content logging is disabled, still offload content to object storage as hidden instead of dropping it
 	DisableDBPingsInHealth                bool                           `gorm:"default:false" json:"disable_db_pings_in_health"`
 	DumpErrorsInConsoleLogs               bool                           `gorm:"default:false" json:"dump_errors_in_console_logs"`       // Dump full error details to the server console logs
 	LogRetentionDays                      int                            `gorm:"default:365" json:"log_retention_days" validate:"min=1"` // Number of days to retain logs (minimum 1 day)

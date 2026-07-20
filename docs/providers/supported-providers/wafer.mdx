@@ -1,0 +1,188 @@
+---
+title: "Wafer"
+description: "Wafer AI conversion guide - OpenAI-compatible chat, streaming, tool calling, reasoning, text completions, and file uploads referenced by ID"
+icon: "w"
+---
+
+## Overview
+
+Wafer is an **OpenAI-compatible provider** with a dedicated Bifrost provider implementation. Bifrost uses the shared OpenAI-compatible request and response converters, while preserving Wafer-specific extra parameters. Key characteristics:
+
+- **OpenAI-compatible chat** - Chat Completions use `/chat/completions`
+- **Streaming support** - Server-Sent Events for chat and text completions
+- **Tool calling** - Function tools are passed through using the OpenAI-compatible schema
+- **Reasoning support** - Reasoning models return reasoning via `reasoning_content`
+- **Responses API** - Supported by converting Responses requests to Chat Completions internally
+- **Text completions** - Text completions use Wafer's `/completions` endpoint
+- **File uploads** - Upload media once and reference it by `file_id` in chat requests
+
+### Supported Operations
+
+| Operation | Non-Streaming | Streaming | Endpoint |
+|-----------|---------------|-----------|----------|
+| Chat Completions | ✅ | ✅ | `/chat/completions` |
+| Responses API | ✅ | ✅ | `/chat/completions` |
+| Text Completions | ✅ | ✅ | `/completions` |
+| List Models | ✅ | - | `/models` |
+| File Upload | ✅ | - | `/files` |
+| Embeddings | ❌ | ❌ | - |
+| Image Generation | ❌ | ❌ | - |
+| Speech (TTS) | ❌ | ❌ | - |
+| Transcriptions (STT) | ❌ | ❌ | - |
+| Batch | ❌ | ❌ | - |
+
+## Setup & Configuration
+
+Configure Wafer as a provider.
+
+<Tabs>
+<Tab title="Web UI">
+
+1. Navigate to **Models** > **Model Providers**. Look for **Wafer** under **Configured Providers**. If it is missing, click on **Add New Provider** and select **Wafer**.
+2. Click **Add Key** or edit an existing key.
+3. Set a name for your key.
+4. Paste your API key directly or use an environment variable (for example, `env.WAFER_API_KEY`).
+5. Set **Allowed Models** to **All Models** (default) or the specific model allowlist you want this key to serve.
+6. To upload files, enable **Use for Batch APIs** on the key (this flag also gates file operations).
+7. Save the provider configuration.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "wafer": {
+      "keys": [
+        {
+          "name": "wafer-key-1",
+          "value": "env.WAFER_API_KEY",
+          "models": [
+            "*"
+          ],
+          "weight": 1.0,
+          "use_for_batch_api": true
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="API">
+Refer to the API documentation for [Provider Keys Management](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider).
+</Tab>
+<Tab title="Go SDK">
+
+```go
+case schemas.Wafer:
+    return []schemas.Key{{
+        Name:           "wafer-key-1",
+        Value:          *schemas.NewSecretVar("env.WAFER_API_KEY"),
+        Models:         []string{"*"},
+        Weight:         1.0,
+        UseForBatchAPI: bifrost.Ptr(true),
+    }}, nil
+```
+
+</Tab>
+</Tabs>
+
+---
+
+# 1. Chat Completions
+
+## Request Parameters
+
+Wafer supports OpenAI-compatible chat completion parameters. For the full parameter reference and message conversion behavior, see [OpenAI Chat Completions](/providers/supported-providers/openai#1-chat-completions).
+
+Available chat models include `glm-5.2` and `kimi-k2.6`.
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "wafer/glm-5.2",
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
+```
+
+### Reasoning Parameter
+
+Wafer delegates through `ToOpenAIChatRequest` with provider-specific compatibility handling. Reasoning models return reasoning content via `reasoning_content`.
+
+Assistant-message `reasoning` details are stripped before sending follow-up messages because Wafer rejects `reasoning_details` in assistant messages.
+
+### Extra Parameters
+
+Wafer enables passthrough extra parameters for chat and text completion requests. Provider-specific options can be sent through `extra_params` without being dropped by Bifrost.
+
+<Note>
+Wafer **fails fast** on unsupported parameters, returning an error rather than silently ignoring them. Bifrost filters OpenAI-specific parameters before forwarding to avoid these rejections.
+</Note>
+
+---
+
+# 2. Responses API
+
+Bifrost converts Responses API format to Chat Completions internally, then converts the response back:
+
+```
+BifrostResponsesRequest
+  → ToChatRequest()
+  → ChatCompletion
+  → ToBifrostResponsesResponse()
+```
+
+Same parameter support as Chat Completions with response format differences (output items instead of message content). Streaming Responses requests are also routed through Chat Completions streaming.
+
+---
+
+# 3. Text Completions
+
+Wafer supports text completions through `/completions`:
+
+| Parameter | Mapping |
+|-----------|---------|
+| `prompt` | Sent as-is |
+| `max_tokens` | max_tokens |
+| `temperature` | temperature |
+| `top_p` | top_p |
+| `stop` | stop sequences |
+| `extra_params` | Passed through to Wafer |
+
+Response returns `choices[].text` with completion text. Streaming text completions use Wafer's OpenAI-compatible SSE format on `/completions`.
+
+---
+
+# 4. List Models
+
+Lists available models from Wafer through `/models`.
+
+---
+
+# 5. File Upload
+
+Upload a file once and reference it by `file_id` in later chat requests, avoiding per-request body size limits. Wafer accepts **raw file bytes** with metadata in HTTP headers (not a multipart form):
+
+- `Content-Type` - the file's MIME type (required; validated against the purpose)
+- `X-Wafer-Purpose` - `vision`, `document`, or `video` (required)
+- `X-Wafer-Filename` - optional label
+
+Uploads go to `/files` and return a `file_id`. Files expire after 30 days.
+
+<Note>
+File operations reuse the batch key filter: only keys with **Use for Batch APIs** enabled are eligible. Enable it on at least one Wafer key, or uploads fail with `no config found for batch apis`.
+</Note>
+
+## Referencing a file in a chat completion
+
+Reference an uploaded image by nesting its `file_id` inside `image_url` (in place of `url`):
+
+```json
+{
+  "type": "image_url",
+  "image_url": { "file_id": "file_8a3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e" }
+}
+```
