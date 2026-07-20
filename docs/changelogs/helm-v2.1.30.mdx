@@ -1,0 +1,15 @@
+---
+title: "v2.1.30"
+description: "Helm v2.1.30 changelog - 2026-07-20"
+---
+
+<Update label="Bifrost Helm" description="v2.1.30">
+
+## Changelog
+
+- Added `bifrost.client.retainContentInObjectStorage` (default off, commented out) to keep full request/response content in object storage when content logging is disabled — via the global `disableContentLogging` setting or the `x-bf-disable-content-logging` header — instead of dropping it. The content is hidden: the database row stays metadata-only and the UI/API never fetch the payload back, so it is only readable with direct access to the bucket. Requires `storage.logsStore.objectStorage.enabled: true`; without it the content is dropped as before. Renders into `client.retain_content_in_object_storage`.
+- Added `bifrost.loadBalancer.appendFallbacksToPinned`. When a request already carries a provider, appends the healthy providers eligible for its model as fallbacks behind any it configured. Defaults to `false`. Renders into `load_balancer_config.append_fallbacks_to_pinned`.
+- Added `bifrost.webhooks[]` for declaring webhook endpoints synced into the database at startup, reconciled by name (`name`, `url`, `secret`, `events`, `headers`, `include_response`, `allow_private_network`, `disabled`, retry/timeout/concurrency tuning). Renders directly into top-level `webhooks`. Duplicate names or duplicate events within one endpoint fail chart rendering. Added `bifrost.client.webhookConfig.deliveryHistoryRetentionDays` for global delivery-history retention, rendering into `client.webhook_config.delivery_history_retention_days`.
+- Added `keep_alive_timeout_in_seconds` to `bifrost.providers.<name>.network_config`. Sets the idle keep-alive for pooled provider connections; set below the upstream server's keep-alive so Bifrost drops idle connections before the server closes them. Defaults to 30s. Renders into `network_config.keep_alive_timeout_in_seconds`.
+
+</Update>
