@@ -507,6 +507,10 @@ export interface LogEntry {
 	alias?: string; // Set when model was resolved via alias mapping; the original name the caller used
 	canonical_model_name?: string; // Canonical model name configured on the resolved alias, when set
 	alias_model_family?: string; // Model family configured on the resolved alias, when set
+	// Model that actually produced the response when the provider swapped models inside a
+	// single call (Anthropic server-side fallback). Distinct from fallback_index, which
+	// counts Bifrost's own cross-provider failover attempts.
+	server_side_fallback_model?: string;
 	number_of_retries: number;
 	fallback_index: number;
 	attempt_trail?: KeyAttemptRecord[]; // Per-attempt key selection history

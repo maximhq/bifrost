@@ -1005,6 +1005,9 @@ export function LogDetailView({
 							{!isContainer && log.alias_model_family && (
 								<LogEntryDetailsView className="w-full" label="Model Family" value={log.alias_model_family} />
 							)}
+							{!isContainer && log.server_side_fallback_model && (
+								<LogEntryDetailsView className="w-full" label="Served By (fallback)" value={log.server_side_fallback_model} />
+							)}
 							<LogEntryDetailsView
 								className="w-full"
 								label="Type"
