@@ -1075,7 +1075,7 @@ flowchart TB
 
 ### Level 1: Direction (Provider Selection)
 
-**When it runs**: Only when no provider has been selected yet — i.e. the request has no `provider/` prefix and no earlier layer (governance, routing rules) pinned one
+**When it runs**: **Always** (while the provider-selection switch is on). When no provider has been selected yet, it picks one. When an earlier layer (governance, routing rules, or an explicit `provider/` prefix) already pinned one, that provider keeps the primary slot — but Level 1 still appends its sorted healthy providers as fallbacks behind any the request configured, and, when the re-route toggle is on, moves a circuit-broken pinned provider to a healthy one
 
 **How it works**:
 
@@ -1087,7 +1087,7 @@ flowchart TB
    - **Error rate** — the primary, time-decayed signal
    - **Token-aware latency** — secondary, comparing the provider both to its peers for the model and to its own recent baseline
 4. **Smooth selection**: Concentrate traffic on the best-scoring providers while keeping a small exploration share for the rest, so a recovered provider keeps getting re-probed
-5. **Fallbacks created**: Remaining healthy providers sorted by performance score (descending) are added as fallbacks
+5. **Fallbacks created**: Remaining healthy providers sorted by performance score (descending) are appended as fallbacks after any the request already carries, deduplicated. With the prune toggle on, circuit-broken configured fallbacks are removed first and never re-added
 
 ### Level 2: Route (Key Selection)
 
@@ -1193,7 +1193,7 @@ When both methods are available in your Bifrost deployment, they work together i
 
 <Warning>
 **Key Insight**: Load balancing has **two levels**:
-- **Level 1 (Direction/Provider)**: Skipped when provider is already specified
+- **Level 1 (Direction/Provider)**: Always runs. A pre-specified provider keeps the primary slot, but Level 1 still appends its healthy providers as fallbacks — and can re-route a circuit-broken pinned provider when that toggle is on
 - **Level 2 (Route/Key)**: **Always runs**, even when provider is specified
 
 This means key-level optimization works regardless of how the provider was chosen!
@@ -1212,6 +1212,7 @@ flowchart TD
         AddPrefix["Set req.Provider/Model:<br/>azure/gpt-4o"]
         PrefixCheck{"req.Provider<br/>already set?"}
         LBProvider["Enterprise LB:<br/>Performance-based selection"]
+        LBPinned["Enterprise LB:<br/>Keep pinned provider,<br/>append healthy fallbacks"]
         AddLBPrefix["Set req.Provider/Model:<br/>openai/gpt-4o"]
         Resolver["model-catalog-resolver:<br/>Fill from catalog (last fallback)"]
     end
@@ -1225,7 +1226,7 @@ flowchart TD
     Start --> HasVK
     HasVK -->|Yes| GovRoute --> AddPrefix --> PrefixCheck
     HasVK -->|No| PrefixCheck
-    PrefixCheck -->|Yes, skip LB Level 1| Resolver
+    PrefixCheck -->|Yes| LBPinned --> Resolver
     PrefixCheck -->|No| LBProvider --> AddLBPrefix --> Resolver
     Resolver --> GetKeys
     GetKeys --> ScoreKeys --> SelectKey --> Execute["Execute request<br/>with selected provider + key"]
@@ -1241,10 +1242,10 @@ All three routing layers (governance, enterprise LB Level 1, model-catalog-resol
    - **Result**: `req.Provider`/`req.Model` set; `req.Fallbacks` populated
 
 2. **Enterprise Load Balancer Level 1** (PreRequestHook, builtin)
-   - Runs after governance
-   - If `req.Provider` is already set (by governance or by an explicit `provider/model` prefix from the user): **skips provider selection**
+   - Runs after governance and always evaluates the eligible provider set for the model
+   - If `req.Provider` is already set (by governance or by an explicit `provider/model` prefix from the user): keeps it as the primary and appends its healthy providers as fallbacks behind any configured ones; with the re-route toggle on, a circuit-broken pinned provider is moved to a healthy one (kept when nothing healthier exists)
    - If not: performs performance-based provider selection across catalog providers
-   - **Result**: `req.Provider`/`req.Model` set if previously empty
+   - **Result**: `req.Provider`/`req.Model` set; `req.Fallbacks` extended with the sorted healthy fallback chain
 
 3. **model-catalog-resolver** (PreRequestHook, builtin order 9 — final fallback)
    - Runs last
@@ -1340,7 +1341,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 1. **Governance** applies first (respects explicit user config) → selects Azure provider
 2. Model becomes `azure/gpt-4o`
-3. **Load Balancing Level 1** sees "/" and **skips provider selection** (already decided)
+3. **Load Balancing Level 1** finds the provider already set (Azure, from governance) and keeps it as the primary, appending the healthy providers eligible for the model as fallbacks behind any governance-configured ones
 4. **Load Balancing Level 2** still runs! Selects best Azure key based on performance:
    - `azure-key-1`: 99% success rate, 150ms avg latency → score 0.95
    - `azure-key-2`: 85% success rate, 200ms avg latency → score 0.60 (degraded)
@@ -1368,8 +1369,8 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 **Behavior:**
 
-1. **Governance** sees "/" and skips
-2. **Load Balancing Level 1** sees "/" and **skips provider selection**
+1. **Governance** skips — no Virtual Key is attached, and the explicit `openai/` prefix already pinned the provider
+2. **Load Balancing Level 1** finds the provider already set (OpenAI, from the model prefix) and keeps it as the primary, appending the healthy providers eligible for the model as fallbacks behind it
 3. **Load Balancing Level 2** still runs! Selects best OpenAI key based on current metrics
 4. Request forwarded to OpenAI with optimal key
 
@@ -1385,7 +1386,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 | VK with provider_configs         | **Governance** (weighted random)                | **Standard** or **Adaptive** (if enabled)   |
 | VK without provider_configs + LB | **Blocked** (empty = no providers allowed)      | N/A                                         |
 | No VK + LB                       | **Load Balancing Level 1** (performance)        | **Load Balancing Level 2** (performance)    |
-| Model with provider prefix + LB  | **Skip** (already specified)                    | **Load Balancing Level 2** (performance) ✅ |
+| Model with provider prefix + LB  | **Honored** (kept as primary; healthy fallbacks appended) | **Load Balancing Level 2** (performance) ✅ |
 | No Load Balancing enabled        | **Governance** or **User** or **Model Catalog** | **Standard** (static weights)               |
 
 <Note>
@@ -1427,7 +1428,7 @@ flowchart TD
             VKValidation["Virtual Key Validation"]
             GovRouting["VK Provider Selection<br/>(weighted random)"]
         end
-        LB1["Enterprise LB Level 1:<br/>Provider Selection<br/>(skipped if provider already set)"]
+        LB1["Enterprise LB Level 1:<br/>Provider Selection<br/>(pinned provider kept,<br/>healthy fallbacks appended)"]
         Resolver["model-catalog-resolver:<br/>Fill provider from catalog<br/>(final fallback)"]
     end
 
@@ -1446,7 +1447,7 @@ All routing layers below execute inside the **PreRequestHook** phase in registra
 1. **Routing rules evaluate first** in scope precedence order (VirtualKey → Team → Customer → Global)
 2. **If a routing rule matches**: provider/model/fallbacks are overridden, the VK `provider_configs` weighted selection is skipped
 3. **If no routing rule matches**: VK provider selection runs (weighted random)
-4. **Enterprise LB Level 1**: skipped if `req.Provider` is already set; otherwise performs performance-based selection
+4. **Enterprise LB Level 1**: keeps a pre-set `req.Provider` as the primary while appending healthy fallbacks (re-routing it only when its direction is circuit-broken and the toggle is on); otherwise performs performance-based selection
 5. **model-catalog-resolver**: last fallback — fills `req.Provider` from the catalog if no earlier plugin set it
 6. **Empty-provider validation** (core): returns 400 if `req.Provider` is still empty after the phase
 7. **Load balancing Level 2** (key selection, core, per attempt): always runs to select the best key within the determined provider
@@ -1570,7 +1571,7 @@ Routing Rules work **before** load balancing:
 ```
 Routing Rules decide: openai/gpt-4o
                     ↓
-Load Balancing Level 1: Skipped (provider already determined)
+Load Balancing Level 1: Honors the routing-rule provider, appends healthy fallbacks
                     ↓
 Load Balancing Level 2: Selects best OpenAI key based on performance
 ```
