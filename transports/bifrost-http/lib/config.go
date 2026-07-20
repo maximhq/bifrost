@@ -2336,6 +2336,20 @@ func resolveGovernanceKeyReferences(ctx context.Context, config *Config, governa
 }
 
 // mergeGovernanceConfig merges governance config from file with store
+// entityIDSet builds a lookup set of IDs from an already-synced slice plus a
+// slice of entries still pending insertion, so newly-added-in-this-file entities
+// are valid scope_id targets even before they're persisted.
+func entityIDSet[T any](existing []T, id func(T) string, toAdd []T) map[string]bool {
+	set := make(map[string]bool, len(existing)+len(toAdd))
+	for _, e := range existing {
+		set[id(e)] = true
+	}
+	for _, e := range toAdd {
+		set[id(e)] = true
+	}
+	return set
+}
+
 func mergeGovernanceConfig(ctx context.Context, config *Config, configData *ConfigData, governanceConfig *configstore.GovernanceConfig) {
 	logger.Debug("merging governance config from config file with store")
 	// When config.json is the source of truth, file-present entities must be
@@ -2553,6 +2567,65 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 			virtualKeysToAdd = append(virtualKeysToAdd, configData.Governance.VirtualKeys[i])
 		}
 	}
+	// Build the set of entity IDs each non-global scope may reference, so a routing
+	// rule whose scope_id doesn't resolve (e.g. a name typed in place of an ID) is
+	// rejected here instead of silently matching zero requests at eval time.
+	//
+	// Under source_of_truth=config.json, entities absent from the file are deleted
+	// by the later prune step, so a currently-persisted entity that isn't in the
+	// file is NOT a valid target — only file-declared IDs survive. Otherwise
+	// (default merge mode, or the section is simply absent from this file) anything
+	// already persisted, or being added by this same file, remains valid.
+	teamScopeIDs := entityIDSet(governanceConfig.Teams, func(t configstoreTables.TableTeam) string { return t.ID }, teamsToAdd)
+	if configData.isConfigJSONSourceOfTruth() && configData.governanceSectionPresent("teams") {
+		teamScopeIDs = entityIDSet(configData.Governance.Teams, func(t configstoreTables.TableTeam) string { return t.ID }, nil)
+	}
+	customerScopeIDs := entityIDSet(governanceConfig.Customers, func(c configstoreTables.TableCustomer) string { return c.ID }, customersToAdd)
+	if configData.isConfigJSONSourceOfTruth() && configData.governanceSectionPresent("customers") {
+		customerScopeIDs = entityIDSet(configData.Governance.Customers, func(c configstoreTables.TableCustomer) string { return c.ID }, nil)
+	}
+	vkScopeIDs := entityIDSet(governanceConfig.VirtualKeys, func(vk configstoreTables.TableVirtualKey) string { return vk.ID }, virtualKeysToAdd)
+	if configData.isConfigJSONSourceOfTruth() && configData.governanceSectionPresent("virtual_keys") {
+		vkScopeIDs = entityIDSet(configData.Governance.VirtualKeys, func(vk configstoreTables.TableVirtualKey) string { return vk.ID }, nil)
+	}
+	validRoutingScopeIDs := map[string]map[string]bool{
+		"team":        teamScopeIDs,
+		"customer":    customerScopeIDs,
+		"virtual_key": vkScopeIDs,
+	}
+
+	// Sanitize routing rules with an unresolvable scope_id BEFORE the merge loop
+	// and before pruneGovernanceConfigToFile treats configData.Governance.RoutingRules
+	// as the new authoritative snapshot (it both computes the prune keep-set from it
+	// and assigns it verbatim to config.GovernanceConfig.RoutingRules). A brand-new
+	// invalid rule is dropped outright; an invalid edit to an existing rule reverts
+	// to the last persisted version, so the in-memory snapshot and the prune
+	// keep-set never reflect data that was rejected and never written to the DB.
+	existingRoutingRulesByID := make(map[string]configstoreTables.TableRoutingRule, len(governanceConfig.RoutingRules))
+	for _, r := range governanceConfig.RoutingRules {
+		existingRoutingRulesByID[r.ID] = r
+	}
+	sanitizedRoutingRules := make([]configstoreTables.TableRoutingRule, 0, len(configData.Governance.RoutingRules))
+	for _, rule := range configData.Governance.RoutingRules {
+		if rule.Scope != "" && rule.Scope != "global" {
+			scopeID := ""
+			if rule.ScopeID != nil {
+				scopeID = *rule.ScopeID
+			}
+			if scopeID == "" || !validRoutingScopeIDs[rule.Scope][scopeID] {
+				if existing, ok := existingRoutingRulesByID[rule.ID]; ok {
+					logger.Warn("routing rule %s: scope_id %q does not resolve to an existing %s (use the entity's id, not its name); keeping last persisted version", rule.ID, scopeID, rule.Scope)
+					sanitizedRoutingRules = append(sanitizedRoutingRules, existing)
+				} else {
+					logger.Warn("routing rule %s: scope_id %q does not resolve to an existing %s (use the entity's id, not its name); skipping new rule", rule.ID, scopeID, rule.Scope)
+				}
+				continue
+			}
+		}
+		sanitizedRoutingRules = append(sanitizedRoutingRules, rule)
+	}
+	configData.Governance.RoutingRules = sanitizedRoutingRules
+
 	// Merge RoutingRules by ID with hash comparison
 	routingRulesToAdd := make([]configstoreTables.TableRoutingRule, 0)
 	routingRulesToUpdate := make([]configstoreTables.TableRoutingRule, 0)

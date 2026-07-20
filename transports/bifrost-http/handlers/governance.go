@@ -4028,6 +4028,9 @@ func (h *GovernanceHandler) createRoutingRule(ctx *fasthttp.RequestCtx) {
 	} else if req.ScopeID == nil || *req.ScopeID == "" {
 		SendError(ctx, 400, "scope_id field is required when scope is not global")
 		return
+	} else if err := h.validateRoutingScopeID(ctx, scope, *req.ScopeID); err != nil {
+		sendRoutingScopeIDValidationError(ctx, err)
+		return
 	}
 
 	// Build targets
@@ -4180,6 +4183,13 @@ func (h *GovernanceHandler) updateRoutingRule(ctx *fasthttp.RequestCtx) {
 	} else if rule.ScopeID == nil || *rule.ScopeID == "" {
 		SendError(ctx, 400, "scope_id field is required when scope is not global")
 		return
+	} else if req.Scope != nil || req.ScopeID != nil {
+		// Only re-validate when scope or scope_id actually changed in this request;
+		// avoids re-checking on every unrelated update (e.g. toggling enabled).
+		if err := h.validateRoutingScopeID(ctx, rule.Scope, *rule.ScopeID); err != nil {
+			sendRoutingScopeIDValidationError(ctx, err)
+			return
+		}
 	}
 
 	// Update in database
@@ -4600,6 +4610,55 @@ var validRoutingScopes = map[string]bool{
 	"team":        true,
 	"customer":    true,
 	"virtual_key": true,
+}
+
+// errRoutingScopeIDNotFound marks a validateRoutingScopeID failure as a genuine
+// "entity doesn't exist" rejection, as opposed to a store error (DB down, timeout,
+// context cancellation). Callers use errors.Is to tell the two apart: the former
+// is a 400 (bad request data), the latter a 500 (server couldn't verify).
+var errRoutingScopeIDNotFound = errors.New("routing rule scope_id not found")
+
+// validateRoutingScopeID checks that scopeID resolves to an existing entity of the
+// given scope type. A rule whose scope_id doesn't resolve silently matches zero
+// requests (the routing engine caches rules keyed by the real entity ID), so this
+// must be rejected at write time rather than left to fail invisibly at eval time.
+func (h *GovernanceHandler) validateRoutingScopeID(ctx context.Context, scope string, scopeID string) error {
+	switch scope {
+	case "virtual_key":
+		if _, err := h.configStore.GetVirtualKey(ctx, scopeID); err != nil {
+			if errors.Is(err, configstore.ErrNotFound) {
+				return fmt.Errorf("virtual key '%s' not found: %w", scopeID, errRoutingScopeIDNotFound)
+			}
+			return fmt.Errorf("failed to verify virtual key: %w", err)
+		}
+	case "team":
+		if _, err := h.configStore.GetTeam(ctx, scopeID); err != nil {
+			if errors.Is(err, configstore.ErrNotFound) {
+				return fmt.Errorf("team '%s' not found: %w", scopeID, errRoutingScopeIDNotFound)
+			}
+			return fmt.Errorf("failed to verify team: %w", err)
+		}
+	case "customer":
+		if _, err := h.configStore.GetCustomer(ctx, scopeID); err != nil {
+			if errors.Is(err, configstore.ErrNotFound) {
+				return fmt.Errorf("customer '%s' not found: %w", scopeID, errRoutingScopeIDNotFound)
+			}
+			return fmt.Errorf("failed to verify customer: %w", err)
+		}
+	}
+	return nil
+}
+
+// sendRoutingScopeIDValidationError maps a validateRoutingScopeID error to the
+// right HTTP status: 400 when scope_id genuinely doesn't resolve, 500 when the
+// store itself failed and existence couldn't be determined.
+func sendRoutingScopeIDValidationError(ctx *fasthttp.RequestCtx, err error) {
+	if errors.Is(err, errRoutingScopeIDNotFound) {
+		SendError(ctx, 400, err.Error())
+		return
+	}
+	logger.Error("failed to validate routing rule scope_id: %v", err)
+	SendError(ctx, 500, "Failed to verify scope_id")
 }
 
 // validateRoutingScope validates that the scope value is one of the allowed values
