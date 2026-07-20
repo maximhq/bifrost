@@ -887,6 +887,11 @@ func HandleAnthropicChatCompletionStreaming(
 		// across events and set on the final chunk: fast mode and data residency.
 		var servedSpeed *string
 		var servedInferenceGeo *string
+		// Model that actually served the turn after a server-side fallback handoff.
+		// Latched like the two above because it appears only on the usage event's
+		// iterations, and the neutral chat usage drops iterations before pricing —
+		// so the final chunk's RoutingInfo is the only place it can survive.
+		var servedFallbackModel *string
 		// Register the accumulating usage handle so a mid-stream cancel/timeout
 		// can bill for tokens already processed Mutated in place below;
 		// the deferred HandleStreamCancellation/Timeout reads it from context.
@@ -981,6 +986,10 @@ func HandleAnthropicChatCompletionStreaming(
 				if usageToProcess.InferenceGeo != nil {
 					servedInferenceGeo = usageToProcess.InferenceGeo
 					usage.InferenceGeo = usageToProcess.InferenceGeo
+				}
+				if served := usageToProcess.ServerSideFallbackModel(); served != nil {
+					servedFallbackModel = served
+					usage.ServerSideFallbackModel = served
 				}
 				// Collect usage information and send at the end of the stream
 				// Here in some cases usage comes before final message
@@ -1149,6 +1158,9 @@ func HandleAnthropicChatCompletionStreaming(
 		}
 		if servedInferenceGeo != nil {
 			response.InferenceGeo = servedInferenceGeo
+		}
+		if servedFallbackModel != nil {
+			response.ExtraFields.RoutingInfo.ServerSideFallbackModel = servedFallbackModel
 		}
 		// Set raw request if enabled
 		if sendBackRawRequest {
@@ -1508,6 +1520,10 @@ func HandleAnthropicResponsesStream(
 		var modelName string
 		var servedSpeed *string
 		var servedInferenceGeo *string
+		// Model that served the turn after a server-side fallback handoff. Latched
+		// here rather than stamped in the converter: the per-chunk loop below replaces
+		// ExtraFields wholesale, so anything the converter puts there is discarded.
+		var servedFallbackModel *string
 
 		for {
 			// If context was cancelled/timed out, let defer handle it
@@ -1568,6 +1584,12 @@ func HandleAnthropicResponsesStream(
 					servedInferenceGeo = usageToProcess.InferenceGeo
 					if billedUsage != nil {
 						billedUsage.InferenceGeo = usageToProcess.InferenceGeo
+					}
+				}
+				if served := usageToProcess.ServerSideFallbackModel(); served != nil {
+					servedFallbackModel = served
+					if billedUsage != nil {
+						billedUsage.ServerSideFallbackModel = served
 					}
 				}
 			}
@@ -1633,6 +1655,11 @@ func HandleAnthropicResponsesStream(
 						}
 						if servedInferenceGeo != nil {
 							response.Response.InferenceGeo = servedInferenceGeo
+						}
+						// Applied after the per-chunk ExtraFields reset above, which is
+						// what makes this survive to the cost calculation.
+						if servedFallbackModel != nil {
+							response.ExtraFields.RoutingInfo.ServerSideFallbackModel = servedFallbackModel
 						}
 						// Set raw request if enabled
 						if sendBackRawRequest {
@@ -2738,6 +2765,8 @@ func (provider *AnthropicProvider) CountTokens(ctx *schemas.BifrostContext, key 
 		request,
 		AnthropicRequestBuildConfig{
 			Provider:                  schemas.Anthropic,
+			Model:                     request.Model,
+			IsCountTokens:             true,
 			IsStreaming:               false,
 			BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
 			ShouldSendBackRawRequest:  provider.sendBackRawRequest,

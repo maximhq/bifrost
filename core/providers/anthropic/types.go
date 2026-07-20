@@ -459,10 +459,16 @@ type AnthropicMessageRequest struct {
 // AnthropicNativeFallback is one entry of Anthropic's native server-side fallback
 // list (beta server-side-fallback-2026-06-01): a model to retry the request on when
 // the primary model refuses, with optional per-attempt max_tokens/thinking overrides.
+// Every field except Model overrides the corresponding request-level value for
+// that attempt only. Carried verbatim: the per-attempt gates (e.g. whether the
+// fallback model supports fast mode or the effort parameter) belong to Anthropic,
+// which validates the request against every named model up front.
 type AnthropicNativeFallback struct {
-	Model     string             `json:"model"`
-	MaxTokens *int               `json:"max_tokens,omitempty"`
-	Thinking  *AnthropicThinking `json:"thinking,omitempty"`
+	Model        string                 `json:"model"`
+	MaxTokens    *int                   `json:"max_tokens,omitempty"`
+	Thinking     *AnthropicThinking     `json:"thinking,omitempty"`
+	OutputConfig *AnthropicOutputConfig `json:"output_config,omitempty"`
+	Speed        *string                `json:"speed,omitempty"` // "standard" | "fast"
 }
 
 // AnthropicFallbackEntry is one entry of the overloaded request-level "fallbacks"
@@ -1784,6 +1790,36 @@ type AnthropicUsage struct {
 	Speed                    *string                      `json:"speed,omitempty"`           // "fast" or "standard" — which speed was actually served (fast mode research preview)
 	InferenceGeo             *string                      `json:"inference_geo,omitempty"`   // the geographic region for inference processing. If not specified, the workspace's default_inference_geo is used.
 	Iterations               []AnthropicUsage             `json:"iterations,omitempty"`      // Iterations statistics
+}
+
+// AnthropicUsageIterationTypeFallbackMessage marks the usage.iterations entry for
+// the attempt that actually served the response after a server-side fallback
+// handoff. Declining attempts appear as ordinary "message" entries.
+const AnthropicUsageIterationTypeFallbackMessage = "fallback_message"
+
+// ServerSideFallbackModel returns the model named by the fallback_message entry in
+// usage.iterations — the attempt whose token counts the top-level usage mirrors,
+// and therefore the model those tokens must be priced against. Returns nil on
+// every ordinary response, which carries no iterations at all.
+//
+// Matched on entry type rather than position: the docs put the serving attempt
+// last, but keying on the type says what we mean and survives a shape change.
+func (u *AnthropicUsage) ServerSideFallbackModel() *string {
+	if u == nil {
+		return nil
+	}
+	var served *string
+	for i := range u.Iterations {
+		it := u.Iterations[i]
+		if it.Type == nil || *it.Type != AnthropicUsageIterationTypeFallbackMessage {
+			continue
+		}
+		if it.Model != nil && *it.Model != "" {
+			m := *it.Model
+			served = &m
+		}
+	}
+	return served
 }
 
 // AnthropicServerToolUseUsage represents server tool use statistics in usage

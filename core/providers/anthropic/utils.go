@@ -1224,6 +1224,18 @@ func AddMissingBetaHeadersToContext(ctx *schemas.BifrostContext, req *AnthropicM
 			headers = appendUniqueHeader(headers, AnthropicFastModeBetaHeader)
 		}
 	}
+	// A fallback entry can override speed for its own attempt, so a fast-mode request
+	// can carry no top-level speed at all. Gate on the entry's own model — that is the
+	// one that would run fast — and take it verbatim rather than alias-resolving it,
+	// since it names an Anthropic model directly, not a Bifrost alias.
+	if !hasProvider || features.FastMode {
+		for _, fb := range req.nativeFallbacks() {
+			if fb.Speed != nil && SupportsFastMode(fb.Model) {
+				headers = appendUniqueHeader(headers, AnthropicFastModeBetaHeader)
+				break
+			}
+		}
+	}
 	// Check for task budget
 	if req.OutputConfig != nil && req.OutputConfig.TaskBudget != nil {
 		if !hasProvider || features.TaskBudgets {
