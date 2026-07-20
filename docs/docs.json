@@ -663,6 +663,13 @@
         "icon": "code",
         "groups": [
           {
+            "group": "Authentication",
+            "icon": "key",
+            "pages": [
+              "api/procuring-api-keys"
+            ]
+          },
+          {
             "group": "API Reference",
             "openapi": "openapi/openapi.json"
           }
