@@ -21531,6 +21531,44 @@
               }
             },
             {
+              "name": "Azure Claude: structured output (json_schema)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if (pm.response.code < 400) { pm.test('Structured output: schema-compliant JSON (CityInfo)', function () { var j = pm.response.json(); var c = ''; if (j.choices && j.choices[0] && j.choices[0].message) { c = j.choices[0].message.content || ''; } if (!c && Array.isArray(j.content)) { var tb = j.content.find(function (b) { return b.type === 'text' && b.text; }); c = tb ? tb.text : ''; } pm.expect(c, 'content was empty').to.be.a('string').and.not.empty; var p; try { p = JSON.parse(c); } catch (e) { pm.expect.fail('content not JSON: ' + e.message + ' (got: ' + c.slice(0,120) + ')'); return; } pm.expect(p).to.have.property('name').that.is.a('string'); pm.expect(p).to.have.property('country').that.is.a('string'); pm.expect(p.name.toLowerCase(), 'expected Paris').to.include('paris'); }); }"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"azure/claude-haiku-4-5\",\n  \"messages\": [{\"role\":\"system\",\"content\":\"Extract the city information from the user's message.\"},{\"role\":\"user\",\"content\":\"I visited Paris, France last summer.\"}],\n  \"response_format\": {\"type\":\"json_schema\",\"json_schema\":{\"name\":\"CityInfo\",\"strict\":true,\"schema\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"},\"country\":{\"type\":\"string\"}},\"required\":[\"name\",\"country\"],\"additionalProperties\":false}}}\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/chat/completions",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "chat",
+                    "completions"
+                  ]
+                }
+              }
+            },
+            {
               "name": "Vertex Claude: function calling cross-cut",
               "event": [
                 {
