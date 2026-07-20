@@ -381,6 +381,41 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 			}
 		}
 
+		// Fallbacks — Anthropic native server-side fallback objects arrive via
+		// ExtraParams["fallbacks"]. Promote them onto the typed Fallbacks field so
+		// they marshal natively and drive server-side-fallback beta-header injection
+		// (mirrors ToAnthropicResponsesRequest); Bifrost string fallbacks are not
+		// carried here (they travel on BifrostChatRequest.Fallbacks).
+		if fbVal, exists := bifrostReq.Params.ExtraParams["fallbacks"]; exists {
+			var natives []AnthropicNativeFallback
+			switch v := fbVal.(type) {
+			case []AnthropicNativeFallback:
+				natives = v
+			default:
+				if data, err := providerUtils.MarshalSorted(v); err == nil {
+					_ = sonic.Unmarshal(data, &natives)
+				}
+			}
+			if len(natives) > 0 {
+				delete(anthropicReq.ExtraParams, "fallbacks")
+				entries := make([]AnthropicFallbackEntry, len(natives))
+				for i := range natives {
+					n := natives[i]
+					entries[i] = AnthropicFallbackEntry{Native: &n}
+				}
+				anthropicReq.Fallbacks = entries
+			}
+		}
+
+		// Fallback credit token — same promotion, so the retry marshals the token
+		// top-level and picks up the fallback-credit beta header.
+		if tokenVal, exists := bifrostReq.Params.ExtraParams["fallback_credit_token"]; exists {
+			if token, ok := tokenVal.(string); ok && token != "" {
+				delete(anthropicReq.ExtraParams, "fallback_credit_token")
+				anthropicReq.FallbackCreditToken = &token
+			}
+		}
+
 		// TaskBudget — maps onto output_config.task_budget. If an OutputConfig
 		// already exists (e.g. from structured outputs), attach the budget to
 		// it; otherwise create one.

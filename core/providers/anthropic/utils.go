@@ -351,6 +351,33 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 			}
 		}
 	}
+	// A credit token is bound to the platform that minted it, so it is meaningless
+	// (and rejected as an unknown field) on a provider without the feature.
+	if !features.FallbackCredit {
+		req.FallbackCreditToken = nil
+	}
+	// Server-side fallback boundary markers are Anthropic-only. Replaying history that
+	// contains them onto a provider without the feature (e.g. a gateway fallback from
+	// Anthropic to Vertex) would forward an unknown content block and 400. The marker
+	// carries no user content, so dropping it is lossless for the conversation.
+	if !features.ServerSideFallback {
+		for mi := range req.Messages {
+			blocks := req.Messages[mi].Content.ContentBlocks
+			if len(blocks) == 0 {
+				continue
+			}
+			kept := make([]AnthropicContentBlock, 0, len(blocks))
+			for _, b := range blocks {
+				if b.Type == AnthropicContentBlockTypeFallback {
+					continue
+				}
+				kept = append(kept, b)
+			}
+			if len(kept) != len(blocks) {
+				req.Messages[mi].Content.ContentBlocks = kept
+			}
+		}
+	}
 	if req.ContextManagement != nil {
 		// Gate edits by their type — compaction vs context-editing flags.
 		kept := make([]ContextManagementEdit, 0, len(req.ContextManagement.Edits))
@@ -471,6 +498,48 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "service_tier")
 		if err != nil {
 			return nil, fmt.Errorf("strip raw service_tier: %w", err)
+		}
+	}
+
+	// fallback_credit_token — bound to the minting platform, so a provider without
+	// the feature rejects it as an unknown field.
+	if !features.FallbackCredit {
+		var err error
+		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "fallback_credit_token")
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// fallback content blocks — server-side fallback boundary markers replayed in
+	// history. Anthropic-only; forwarding them to a provider without the feature
+	// (e.g. a gateway fallback from Anthropic to Vertex) sends an unknown content
+	// block. The marker carries no user content, so dropping it is lossless.
+	if !features.ServerSideFallback {
+		if msgs := providerUtils.GetJSONField(jsonBody, "messages"); msgs.IsArray() {
+			for mi, msg := range msgs.Array() {
+				content := msg.Get("content")
+				if !content.IsArray() {
+					continue
+				}
+				kept := make([]string, 0, len(content.Array()))
+				dropped := false
+				for _, block := range content.Array() {
+					if block.Get("type").String() == string(AnthropicContentBlockTypeFallback) {
+						dropped = true
+						continue
+					}
+					kept = append(kept, block.Raw)
+				}
+				if !dropped {
+					continue
+				}
+				// Message indices are stable (only content arrays are replaced).
+				jsonBody, err = sjson.SetRawBytes(jsonBody, fmt.Sprintf("messages.%d.content", mi), []byte("["+strings.Join(kept, ",")+"]"))
+				if err != nil {
+					return nil, fmt.Errorf("strip raw fallback blocks: %w", err)
+				}
+			}
 		}
 	}
 
@@ -1173,6 +1242,20 @@ func AddMissingBetaHeadersToContext(ctx *schemas.BifrostContext, req *AnthropicM
 			headers = appendUniqueHeader(headers, AnthropicCacheDiagnosisBetaHeader)
 		}
 	}
+	// Check for native server-side fallback ("fallbacks" object entries)
+	if len(req.nativeFallbacks()) > 0 {
+		if !hasProvider || features.ServerSideFallback {
+			headers = appendUniqueHeader(headers, AnthropicServerSideFallbackBetaHeader)
+		}
+	}
+	// Check for fallback credit redemption (fallback_credit_token present). The
+	// canonical date is added here; FilterBetaHeadersForProvider rewrites it to the
+	// AWS date on Bedrock/Mantle.
+	if req.FallbackCreditToken != nil {
+		if !hasProvider || features.FallbackCredit {
+			headers = appendUniqueHeader(headers, AnthropicFallbackCreditBetaHeader)
+		}
+	}
 	// Check for cache control with scope in system message (only if not already found)
 	if !hasCachingScope && req.System != nil && req.System.ContentBlocks != nil {
 		for _, block := range req.System.ContentBlocks {
@@ -1273,6 +1356,63 @@ var betaHeaderPrefixKnown = []string{
 	AnthropicEagerInputStreamingBetaHeaderPrefix,
 	AnthropicAdvisorBetaHeaderPrefix,
 	AnthropicCacheDiagnosisBetaHeaderPrefix,
+	AnthropicServerSideFallbackBetaHeaderPrefix,
+	AnthropicFallbackCreditBetaHeaderPrefix,
+}
+
+// betaHeaderProviderVersion rewrites a beta header's version date on providers
+// that ship the same feature under a different date. Keyed by provider, then by
+// the known prefix the token matched. Applied in FilterBetaHeadersForProvider
+// after the support check, so it covers both transports (HTTP header and the
+// body-side anthropic_beta array).
+var betaHeaderProviderVersion = map[schemas.ModelProvider]map[string]string{
+	// AWS-operated surfaces trail the Claude API on fallback credit.
+	schemas.Bedrock:       {AnthropicFallbackCreditBetaHeaderPrefix: AnthropicFallbackCreditBetaHeaderAWS},
+	schemas.BedrockMantle: {AnthropicFallbackCreditBetaHeaderPrefix: AnthropicFallbackCreditBetaHeaderAWS},
+}
+
+// stripBifrostFallbacksFromBody removes Bifrost cross-provider fallback entries
+// (JSON strings) from the request-level "fallbacks" array, which Anthropic does
+// not understand. Anthropic native server-side fallback entries (JSON objects)
+// are kept only when the target provider supports the feature; on providers that
+// don't (Bedrock incl. bedrock-mantle, Vertex, Azure) they are stripped
+// fail-closed, since AddMissingBetaHeadersToContext withholds the required beta
+// header there and forwarding the field alone 400s with
+// "fallbacks: Extra inputs are not permitted". The field is deleted entirely
+// when no entries remain.
+func stripBifrostFallbacksFromBody(jsonBody []byte, provider schemas.ModelProvider) ([]byte, error) {
+	fb := gjson.GetBytes(jsonBody, "fallbacks")
+	if !fb.Exists() {
+		return jsonBody, nil
+	}
+	if !fb.IsArray() {
+		return sjson.DeleteBytes(jsonBody, "fallbacks")
+	}
+	// Unknown/custom providers keep native entries, mirroring the
+	// "!hasProvider || feature" gating in AddMissingBetaHeadersToContext.
+	features, known := ProviderFeatures[provider]
+	keepNative := !known || features.ServerSideFallback
+	var native [][]byte
+	if keepNative {
+		for _, el := range fb.Array() {
+			if el.IsObject() {
+				native = append(native, []byte(el.Raw))
+			}
+		}
+	}
+	if len(native) == 0 {
+		return sjson.DeleteBytes(jsonBody, "fallbacks")
+	}
+	var buf bytes.Buffer
+	buf.WriteByte('[')
+	for i, n := range native {
+		if i > 0 {
+			buf.WriteByte(',')
+		}
+		buf.Write(n)
+	}
+	buf.WriteByte(']')
+	return sjson.SetRawBytes(jsonBody, "fallbacks", buf.Bytes())
 }
 
 // betaHeaderPrefixExists checks if any header in existing shares a known prefix with newHeader.
@@ -1597,6 +1737,8 @@ var betaHeaderPrefixToFeature = map[string]func(ProviderFeatureSupport) bool{
 	AnthropicEagerInputStreamingBetaHeaderPrefix: func(f ProviderFeatureSupport) bool { return f.EagerInputStreaming },
 	AnthropicAdvisorBetaHeaderPrefix:             func(f ProviderFeatureSupport) bool { return f.AdvisorTool },
 	AnthropicCacheDiagnosisBetaHeaderPrefix:      func(f ProviderFeatureSupport) bool { return f.Diagnostics },
+	AnthropicServerSideFallbackBetaHeaderPrefix:  func(f ProviderFeatureSupport) bool { return f.ServerSideFallback },
+	AnthropicFallbackCreditBetaHeaderPrefix:      func(f ProviderFeatureSupport) bool { return f.FallbackCredit },
 }
 
 // MergeBetaHeaders collects anthropic-beta values from provider ExtraHeaders and
@@ -1705,6 +1847,11 @@ func FilterBetaHeadersForProvider(headers []string, provider schemas.ModelProvid
 
 			if !supported {
 				continue
+			}
+			if rewrites, ok := betaHeaderProviderVersion[provider]; ok {
+				if replacement, ok := rewrites[matchedPrefix]; ok {
+					token = replacement
+				}
 			}
 			filtered = append(filtered, token)
 		}
