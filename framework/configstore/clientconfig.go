@@ -72,6 +72,7 @@ type ClientConfig struct {
 	PrometheusLabels                      []string                              `json:"prometheus_labels"`                          // The labels to be used for prometheus metrics
 	EnableLogging                         *bool                                 `json:"enable_logging"`                             // Enable logging of requests and responses
 	DisableContentLogging                 bool                                  `json:"disable_content_logging"`                    // Disable logging of content
+	RetainContentInObjectStorage          bool                                  `json:"retain_content_in_object_storage"`           // When content logging is disabled (config or header), still offload content to object storage as hidden instead of dropping it
 	AllowPerRequestContentStorageOverride bool                                  `json:"allow_per_request_content_storage_override"` // Allow per-request override of content storage via x-bf-disable-content-logging header/context
 	AllowPerRequestRawOverride            bool                                  `json:"allow_per_request_raw_override"`             // Allow per-request override of raw request/response visibility via x-bf-send-back-raw-request and x-bf-send-back-raw-response headers
 	AllowDirectKeys                       bool                                  `json:"allow_direct_keys"`                          // Allow callers to bypass the registered key pool via x-bf-direct-key: true header
@@ -235,6 +236,11 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 	// Only hash non-default value to avoid legacy config hash churn on upgrade.
 	if c.AllowPerRequestContentStorageOverride {
 		hash.Write([]byte("allowPerRequestContentStorageOverride:true"))
+	}
+
+	// Only hash non-default value to avoid legacy config hash churn on upgrade.
+	if c.RetainContentInObjectStorage {
+		hash.Write([]byte("retainContentInObjectStorage:true"))
 	}
 
 	if c.AllowPerRequestRawOverride {

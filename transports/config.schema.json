@@ -90,6 +90,11 @@
           "type": "boolean",
           "description": "Disable logging of sensitive content (inputs, outputs, embeddings, etc.)"
         },
+        "retain_content_in_object_storage": {
+          "type": "boolean",
+          "description": "When content logging is disabled, offload the full content to object storage as hidden instead of dropping it. Hidden content is never served back through the API/UI — the database row stays metadata-only and is only readable with direct access to the storage bucket. Requires object storage to be configured on the logs store.",
+          "default": false
+        },
         "allow_per_request_content_storage_override": {
           "type": "boolean",
           "description": "Allow individual requests to override content storage via the x-bf-disable-content-logging header or context key, and to opt in to raw-byte persistence in logs via x-bf-store-raw-request-response. When false (default), the global disable_content_logging setting is authoritative and per-request storage overrides are ignored. Does not control sending raw bytes back to callers — see allow_per_request_raw_override.",
@@ -2251,6 +2256,11 @@
                     "disable_content_logging": {
                       "type": "boolean",
                       "description": "Disable logging of request and response content"
+                    },
+                    "retain_content_in_object_storage": {
+                      "type": "boolean",
+                      "description": "When content logging is disabled, offload the full content to object storage as hidden instead of dropping it. Hidden content is never served back through the API/UI. Requires object storage to be configured on the logs store.",
+                      "default": false
                     },
                     "allow_per_request_content_storage_override": {
                       "type": "boolean",

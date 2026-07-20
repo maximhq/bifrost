@@ -234,6 +234,15 @@ func (h *HybridLogStore) enqueueRawUpload(logID string, timestamp time.Time, key
 // excluded set are kept intact in the DB row.
 // Must be called after SerializeFields() populates the Parsed fields.
 func prepareDBEntry(dbEntry *Log, excluded map[string]struct{}) {
+	// Hidden entries keep no content in the DB row at all: no summary, no
+	// last-user-message preview, and no exclusion-list carve-outs. The full
+	// payload lives only in object storage and is never hydrated back.
+	if dbEntry.ContentHidden {
+		ClearPayload(dbEntry)
+		dbEntry.ContentSummary = ""
+		return
+	}
+
 	idx := findLastUserMessageIndex(dbEntry.InputHistoryParsed)
 
 	// Content summary: extract text from the found user message.
@@ -280,11 +289,21 @@ func prepareDBEntry(dbEntry *Log, excluded map[string]struct{}) {
 // object storage. The caller's entry is preserved on DB failure by writing to
 // a shallow copy; on success, only ContentSummary is propagated back so the
 // caller can observe what was persisted.
+// extractUploadPayload returns the payload map to offload for entry. Hidden
+// entries always upload the complete payload: the exclusion list exists to
+// keep fields DB-resident, and hidden rows must not retain content in the DB.
+func (h *HybridLogStore) extractUploadPayload(entry *Log) map[string]string {
+	if entry.ContentHidden {
+		return ExtractPayload(entry)
+	}
+	return ExtractPayloadFiltered(entry, h.excludedPayloadFields)
+}
+
 func (h *HybridLogStore) Create(ctx context.Context, entry *Log) error {
 	if err := entry.SerializeFields(); err != nil {
 		return fmt.Errorf("logstore: serialize before extract: %w", err)
 	}
-	payload := ExtractPayloadFiltered(entry, h.excludedPayloadFields)
+	payload := h.extractUploadPayload(entry)
 	tags := BuildTags(entry)
 	// Work on a shallow copy so the caller's entry is preserved on DB failure.
 	dbEntry := *entry
@@ -304,7 +323,7 @@ func (h *HybridLogStore) CreateIfNotExists(ctx context.Context, entry *Log) erro
 	if err := entry.SerializeFields(); err != nil {
 		return fmt.Errorf("logstore: serialize before extract: %w", err)
 	}
-	payload := ExtractPayloadFiltered(entry, h.excludedPayloadFields)
+	payload := h.extractUploadPayload(entry)
 	tags := BuildTags(entry)
 	// Work on a shallow copy so the caller's entry is preserved on DB failure.
 	dbEntry := *entry
@@ -341,7 +360,7 @@ func (h *HybridLogStore) BatchCreateIfNotExists(ctx context.Context, entries []*
 		if err := entry.SerializeFields(); err != nil {
 			return fmt.Errorf("logstore: serialize before extract: %w", err)
 		}
-		payload := ExtractPayloadFiltered(entry, h.excludedPayloadFields)
+		payload := h.extractUploadPayload(entry)
 		tags := BuildTags(entry)
 		// Work on a shallow copy so the caller's entries are preserved on DB failure.
 		dbEntry := *entry
@@ -392,7 +411,9 @@ func (h *HybridLogStore) FindByID(ctx context.Context, id string) (*Log, error) 
 // projection are kept after merge — unrequested payload fields are cleared to
 // honour projection semantics and avoid pulling large blobs unnecessarily.
 func (h *HybridLogStore) hydrateLog(ctx context.Context, log *Log, requestedFields ...string) {
-	if log == nil || !log.HasObject {
+	// ContentHidden is the read-side enforcement for hidden logs: the payload
+	// stays in object storage and is never fetched back into the serving path.
+	if log == nil || !log.HasObject || log.ContentHidden {
 		return
 	}
 	key := ObjectKey(h.prefix, log.Timestamp, log.ID)
