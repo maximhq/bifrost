@@ -186,7 +186,10 @@ func TestResponsesFallbackUsesChatCompletions(t *testing.T) {
 		Model:    "MiniMax-M3",
 		Input:    input,
 	}
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	baseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	deadline, _ := baseCtx.Deadline()
+	ctx := schemas.NewBifrostContext(baseCtx, deadline)
 	key := schemas.Key{Value: schemas.SecretVar{Val: "test-key"}}
 
 	response, bifrostErr := testProvider(server.URL).Responses(ctx, key, request)
