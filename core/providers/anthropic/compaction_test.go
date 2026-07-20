@@ -521,8 +521,36 @@ func TestToAnthropicResponsesResponse_StopReasonFromBifrost(t *testing.T) {
 			expectedReason: AnthropicStopReasonEndTurn,
 		},
 		{
-			name:           "tool_use mapped from tool_calls",
+			name:           "tool_use mapped from tool_calls without output items",
 			stopReason:     schemas.Ptr("tool_calls"),
+			expectedReason: AnthropicStopReasonToolUse,
+		},
+		{
+			name:       "reasoning-only function_call output does not infer tool_use",
+			stopReason: nil,
+			contentBlocks: []schemas.ResponsesMessage{
+				{
+					Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+					ResponsesReasoning: &schemas.ResponsesReasoning{
+						EncryptedContent: schemas.Ptr("opaque-reasoning-payload"),
+					},
+				},
+			},
+			expectedReason: AnthropicStopReasonEndTurn,
+		},
+		{
+			name:       "tool_use mapped from tool_calls with function call output",
+			stopReason: schemas.Ptr("tool_calls"),
+			contentBlocks: []schemas.ResponsesMessage{
+				{
+					Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+					ResponsesToolMessage: &schemas.ResponsesToolMessage{
+						CallID:    schemas.Ptr("call_123"),
+						Name:      schemas.Ptr("my_tool"),
+						Arguments: schemas.Ptr(`{"foo":"bar"}`),
+					},
+				},
+			},
 			expectedReason: AnthropicStopReasonToolUse,
 		},
 		{
@@ -699,6 +727,50 @@ func TestToAnthropicResponsesStreamResponse_CompletedWithCompactionStopReason(t 
 	messageStop := events[1]
 	if messageStop.Type != AnthropicStreamEventTypeMessageStop {
 		t.Errorf("event[1] type = %v, want message_stop", messageStop.Type)
+	}
+}
+
+func TestToAnthropicResponsesStreamResponse_CompletedWithFunctionCallInfersToolUseStopReason(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+
+	bifrostResp := &schemas.BifrostResponsesStreamResponse{
+		Type: schemas.ResponsesStreamResponseTypeCompleted,
+		Response: &schemas.BifrostResponsesResponse{
+			ID:    schemas.Ptr("resp_test"),
+			Model: "gpt-4o",
+			Output: []schemas.ResponsesMessage{
+				{
+					Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+					ResponsesToolMessage: &schemas.ResponsesToolMessage{
+						CallID:    schemas.Ptr("call_123"),
+						Name:      schemas.Ptr("my_tool"),
+						Arguments: schemas.Ptr(`{"foo":"bar"}`),
+					},
+				},
+			},
+		},
+	}
+
+	events := ToAnthropicResponsesStreamResponse(ctx, bifrostResp)
+	if len(events) != 2 {
+		t.Fatalf("expected message_delta + message_stop for response.completed, got %d", len(events))
+	}
+
+	messageDelta := events[0]
+	if messageDelta.Type != AnthropicStreamEventTypeMessageDelta {
+		t.Fatalf("event[0] type = %v, want message_delta", messageDelta.Type)
+	}
+	if messageDelta.Delta == nil || messageDelta.Delta.StopReason == nil {
+		t.Fatalf("expected message_delta stop_reason in events: %#v", events)
+	}
+	if *messageDelta.Delta.StopReason != AnthropicStopReasonToolUse {
+		t.Fatalf("message_delta stop_reason = %q, want %q", *messageDelta.Delta.StopReason, AnthropicStopReasonToolUse)
+	}
+	if events[1].Type != AnthropicStreamEventTypeMessageStop {
+		t.Fatalf("event[1] type = %v, want message_stop", events[1].Type)
 	}
 }
 

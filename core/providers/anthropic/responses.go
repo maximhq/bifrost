@@ -3108,22 +3108,19 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 		if alreadyEmitted, ok := ctx.Value(schemas.BifrostContextKeyHasEmittedMessageDelta).(bool); ok && alreadyEmitted {
 			return []*AnthropicStreamEvent{streamResp}
 		}
+		stopReason := AnthropicStopReasonEndTurn
+		if bifrostResp.Response != nil {
+			stopReason = inferAnthropicStopReasonFromBifrostResponse(bifrostResp.Response, nil)
+		}
 		anthropicContentDeltaEvent := &AnthropicStreamEvent{
 			Type: AnthropicStreamEventTypeMessageDelta,
 			Delta: &AnthropicStreamDelta{
-				StopReason:   schemas.Ptr(AnthropicStopReasonEndTurn),
-				StopSequence: schemas.Ptr(""),
+				StopReason: &stopReason,
 			},
 		}
 		// Convert usage from Bifrost to Anthropic
 		if bifrostResp.Response != nil {
 			anthropicContentDeltaEvent.Usage = ConvertBifrostUsageToAnthropicUsage(bifrostResp.Response.Usage)
-			if bifrostResp.Response.StopReason != nil {
-				anthropicContentDeltaEvent.Delta = &AnthropicStreamDelta{
-					StopReason:   schemas.Ptr(ConvertBifrostFinishReasonToAnthropic(*bifrostResp.Response.StopReason)),
-					StopSequence: nil,
-				}
-			}
 			// Re-emit the code-execution sandbox container on the message_delta.
 			if bifrostResp.Response.Container != nil {
 				if anthropicContentDeltaEvent.Delta == nil {
@@ -3979,6 +3976,42 @@ func (response *AnthropicMessageResponse) ToBifrostResponsesResponse(ctx *schema
 	return bifrostResp
 }
 
+func bifrostResponsesOutputHasFunctionCall(output []schemas.ResponsesMessage) bool {
+	for _, msg := range output {
+		// Reasoning-only items can carry the function_call type but convert to
+		// thinking blocks, not tool_use — they must not force a tool_use stop reason.
+		if msg.Type != nil && *msg.Type == schemas.ResponsesMessageTypeFunctionCall &&
+			msg.ResponsesReasoning == nil && msg.ResponsesToolMessage != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func anthropicContentBlocksHaveToolUse(contentBlocks []AnthropicContentBlock) bool {
+	for _, block := range contentBlocks {
+		if block.Type == AnthropicContentBlockTypeToolUse {
+			return true
+		}
+	}
+	return false
+}
+
+func inferAnthropicStopReasonFromBifrostResponse(bifrostResp *schemas.BifrostResponsesResponse, contentBlocks []AnthropicContentBlock) AnthropicStopReason {
+	if bifrostResp != nil {
+		if bifrostResp.StopReason != nil {
+			return ConvertBifrostFinishReasonToAnthropic(*bifrostResp.StopReason)
+		}
+		if bifrostResponsesOutputHasFunctionCall(bifrostResp.Output) {
+			return AnthropicStopReasonToolUse
+		}
+	}
+	if anthropicContentBlocksHaveToolUse(contentBlocks) {
+		return AnthropicStopReasonToolUse
+	}
+	return AnthropicStopReasonEndTurn
+}
+
 // ToAnthropicResponsesResponse converts a BifrostResponse with Responses structure back to AnthropicMessageResponse
 func ToAnthropicResponsesResponse(ctx *schemas.BifrostContext, bifrostResp *schemas.BifrostResponsesResponse) *AnthropicMessageResponse {
 	anthropicResp := &AnthropicMessageResponse{
@@ -4034,18 +4067,7 @@ func ToAnthropicResponsesResponse(ctx *schemas.BifrostContext, bifrostResp *sche
 		break
 	}
 
-	// Map stop reason from Bifrost response if available, otherwise infer from content
-	if bifrostResp.StopReason != nil {
-		anthropicResp.StopReason = ConvertBifrostFinishReasonToAnthropic(*bifrostResp.StopReason)
-	} else {
-		anthropicResp.StopReason = AnthropicStopReasonEndTurn
-		for _, block := range contentBlocks {
-			if block.Type == AnthropicContentBlockTypeToolUse {
-				anthropicResp.StopReason = AnthropicStopReasonToolUse
-				break
-			}
-		}
-	}
+	anthropicResp.StopReason = inferAnthropicStopReasonFromBifrostResponse(bifrostResp, contentBlocks)
 
 	anthropicResp.Model = bifrostResp.Model
 
