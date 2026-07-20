@@ -6870,3 +6870,65 @@ func TestReasoningConfigSurvivesHTTPUnmarshal(t *testing.T) {
 		assert.Equal(t, "high", *out.Params.Reasoning.Effort)
 	})
 }
+
+// TestReasoningConfigNoDoubleEmissionOnEgress guards against issue #5108's
+// follow-on regression: a reasoning key consumed into Params.Reasoning on ingress
+// must not also be forwarded verbatim via additionalModelRequestFieldPaths, or the
+// Bedrock egress carries two copies and Converse rejects the collision
+// ("The additional field thinking/type conflicts with an existing field").
+func TestReasoningConfigNoDoubleEmissionOnEgress(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	cases := []struct {
+		name        string
+		model       string
+		inputField  string
+		inputConfig string
+		wantKey     string // the single reasoning key expected on egress
+	}{
+		{"anthropic_reasoning_config", "us.anthropic.claude-haiku-4-5-20251001-v1:0", "reasoning_config", `{"type": "enabled", "budget_tokens": 1500}`, "thinking"},
+		{"anthropic_thinking", "us.anthropic.claude-haiku-4-5-20251001-v1:0", "thinking", `{"type": "enabled", "budget_tokens": 1500}`, "thinking"},
+		{"nova_reasoningConfig", "amazon.nova-premier-v1:0", "reasoningConfig", `{"type": "enabled", "maxReasoningEffort": "high"}`, "reasoningConfig"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := []byte(`{
+				"messages": [{"role": "user", "content": [{"text": "What's my best offer?"}]}],
+				"inferenceConfig": {"maxTokens": 4096},
+				"additionalModelRequestFields": {"` + tc.inputField + `": ` + tc.inputConfig + `}
+			}`)
+
+			var req bedrock.BedrockConverseRequest
+			require.NoError(t, json.Unmarshal(body, &req))
+			req.ModelID = tc.model
+
+			// Ingress: Bedrock Converse -> Bifrost
+			mid, err := req.ToBifrostResponsesRequest(ctx)
+			require.NoError(t, err)
+			require.NotNil(t, mid.Params, "Params is nil")
+			require.NotNil(t, mid.Params.Reasoning, "reasoning was not consumed on ingress")
+
+			// Egress: Bifrost -> Bedrock Converse
+			out, err := bedrock.ToBedrockResponsesRequest(ctx, mid)
+			require.NoError(t, err)
+			require.NotNil(t, out.AdditionalModelRequestFields)
+
+			// Exactly one reasoning key on the wire, and never both spellings.
+			_, hasThinking := out.AdditionalModelRequestFields.Get("thinking")
+			_, hasReasoningConfig := out.AdditionalModelRequestFields.Get("reasoning_config")
+			_, hasNova := out.AdditionalModelRequestFields.Get("reasoningConfig")
+
+			assert.False(t, hasThinking && hasReasoningConfig,
+				"both thinking and reasoning_config emitted — Bedrock would reject the collision")
+
+			switch tc.wantKey {
+			case "thinking":
+				assert.True(t, hasThinking, "expected thinking on egress")
+				assert.False(t, hasReasoningConfig, "reasoning_config must not be forwarded verbatim once consumed")
+			case "reasoningConfig":
+				assert.True(t, hasNova, "expected Nova reasoningConfig on egress")
+			}
+		})
+	}
+}
