@@ -2057,6 +2057,13 @@
                       },
                       "description": "Custom labels to add to Prometheus metrics"
                     },
+                    "disabled_labels": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Default labels to omit from every Prometheus metric. Use to drop high-cardinality defaults (e.g. virtual_key_id / virtual_key_name) when a deployment pattern would otherwise blow up histogram series counts. Same hyphen/underscore-insensitive match as custom_labels."
+                    },
                     "push_gateway": {
                       "type": "object",
                       "description": "Configuration for pushing metrics to a Prometheus Push Gateway for multi-node cluster deployments",

@@ -192,9 +192,10 @@ type PrometheusPlugin struct {
 }
 
 type Config struct {
-	CustomLabels []string `json:"custom_labels"`
-	Registry     *prometheus.Registry
-	PushGateway  *PushGatewayConfig `json:"push_gateway"`
+	CustomLabels   []string `json:"custom_labels"`
+	DisabledLabels []string `json:"disabled_labels"` // see docs/features/observability/prometheus.mdx
+	Registry       *prometheus.Registry
+	PushGateway    *PushGatewayConfig `json:"push_gateway"`
 	// MetricsEnabled controls whether the /metrics scrape endpoint is served.
 	MetricsEnabled *bool `json:"metrics_enabled,omitempty"`
 }
@@ -284,13 +285,24 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 	defaultHTTPLabels := []string{"path", "method", "status"}
 	defaultBifrostLabels := append([]string(nil), defaultBifrostLabelNames...)
 
+	// Filter disabled defaults before any MetricVec is registered: prom-client
+	// rejects later attempts to omit a registered label.
+	if len(config.DisabledLabels) > 0 {
+		defaultBifrostLabels = filterDisabledLabels(defaultBifrostLabels, config.DisabledLabels, "default Bifrost", logger)
+		defaultHTTPLabels = filterDisabledLabels(defaultHTTPLabels, config.DisabledLabels, "default HTTP", logger)
+	}
+
 	var filteredCustomLabels []string
 	if len(config.CustomLabels) > 0 {
 		for _, label := range config.CustomLabels {
-			if !containsLabel(defaultBifrostLabels, label) && !containsLabel(defaultHTTPLabels, label) {
-				filteredCustomLabels = append(filteredCustomLabels, label)
-			} else {
+			switch {
+			case containsLabel(defaultBifrostLabels, label) || containsLabel(defaultHTTPLabels, label):
 				logger.Info("custom label %s is already a default label, it will be ignored", label)
+			case containsLabel(config.DisabledLabels, label):
+				// disabled_labels wins; otherwise a stale custom_labels entry could re-add what an operator just disabled.
+				logger.Info("custom label %s is disabled via disabled_labels, it will be ignored", label)
+			default:
+				filteredCustomLabels = append(filteredCustomLabels, label)
 			}
 		}
 	}

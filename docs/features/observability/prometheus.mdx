@@ -235,6 +235,35 @@ Most request-level Bifrost LLM metrics include these labels (the `bifrost_key_ro
   **v1.5.0-prerelease4+**: `selected_key_id` / `selected_key_name` are only populated when the request succeeds. On final errors both are empty — use the `attempt_trail` log field to see which keys were tried.
 </Note>
 
+### Disabling Default Labels
+
+Some default labels carry unbounded cardinality in certain deployment patterns. The most common one is operators who mint a separate Bifrost virtual key per upstream request — `virtual_key_id` and `virtual_key_name` then grow proportional to total request count, multiplied by every histogram's `le` bucket count, and the scrape body grows fast enough to OOM the agent doing the scrape.
+
+`disabled_labels` lets you omit any default Bifrost or HTTP label from every metric. Per-request drilldown should live in logs / traces, not in metric labels — Prometheus is for aggregates.
+
+```json
+{
+  "plugins": [
+    {
+      "name": "telemetry",
+      "enabled": true,
+      "config": {
+        "disabled_labels": [
+          "virtual_key_id",
+          "virtual_key_name"
+        ]
+      }
+    }
+  ]
+}
+```
+
+The match is the same hyphen/underscore-insensitive match used by `custom_labels`, so `"virtual-key-id"` and `"virtual_key_id"` both work. Names not present in the default label set are silently ignored. A `custom_labels` entry that names the same label is also dropped (with a log message), so the disable wins.
+
+<Warning>
+  Disabling a label is a breaking change for any dashboard / alert that groups by it. Check downstream queries before rolling out.
+</Warning>
+
 ### Key Rotation Events <sup>v1.5.0-prerelease4+</sup>
 
 `bifrost_key_rotation_events_total` is incremented once per **actual key rotation** — i.e. when a per-key failure causes the next retry to switch to a different key. Rotation-triggering failures are bound to the specific key/account rather than the request:

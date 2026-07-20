@@ -529,6 +529,8 @@ bifrost:
       version: 1
       config:
         custom_labels: []
+        # docs/features/observability/prometheus.mdx#disabling-default-labels
+        disabled_labels: []
         # push_gateway:
         #   enabled: false
         #   push_gateway_url: ""
