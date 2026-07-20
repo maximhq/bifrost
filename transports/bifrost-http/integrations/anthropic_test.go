@@ -9,6 +9,91 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+func TestCheckAnthropicPassthroughAnchorsOAuthToAnthropic(t *testing.T) {
+	const (
+		model          = "claude-fable-5"
+		qualifiedModel = "anthropic/" + model
+	)
+
+	tests := []struct {
+		name    string
+		request any
+		convert func(*schemas.BifrostContext, any) (schemas.ModelProvider, string)
+	}{
+		{
+			name:    "messages",
+			request: &anthropic.AnthropicMessageRequest{Model: model},
+			convert: func(ctx *schemas.BifrostContext, req any) (schemas.ModelProvider, string) {
+				converted := req.(*anthropic.AnthropicMessageRequest).ToBifrostResponsesRequest(ctx)
+				return converted.Provider, converted.Model
+			},
+		},
+		{
+			name:    "text completion",
+			request: &anthropic.AnthropicTextRequest{Model: model},
+			convert: func(ctx *schemas.BifrostContext, req any) (schemas.ModelProvider, string) {
+				converted := req.(*anthropic.AnthropicTextRequest).ToBifrostTextCompletionRequest(ctx)
+				return converted.Provider, converted.Model
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			httpCtx := &fasthttp.RequestCtx{}
+			httpCtx.Request.Header.Set("user-agent", "claude-cli/2.1.209")
+			httpCtx.Request.Header.Set("authorization", "Bearer sk-ant-oat-test")
+			httpCtx.Request.SetBodyString(`{"model":"claude-fable-5"}`)
+			originalBody := string(httpCtx.Request.Body())
+
+			bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if err := checkAnthropicPassthrough(httpCtx, bifrostCtx, tt.request); err != nil {
+				t.Fatalf("checkAnthropicPassthrough: %v", err)
+			}
+
+			var gotRequestModel string
+			switch req := tt.request.(type) {
+			case *anthropic.AnthropicMessageRequest:
+				gotRequestModel = req.Model
+			case *anthropic.AnthropicTextRequest:
+				gotRequestModel = req.Model
+			}
+			if gotRequestModel != qualifiedModel {
+				t.Fatalf("request model = %q, want %q", gotRequestModel, qualifiedModel)
+			}
+
+			provider, gotModel := tt.convert(bifrostCtx, tt.request)
+			if provider != schemas.Anthropic {
+				t.Errorf("provider = %q, want %q", provider, schemas.Anthropic)
+			}
+			if gotModel != model {
+				t.Errorf("converted model = %q, want %q", gotModel, model)
+			}
+			if skipKeySelection, _ := bifrostCtx.Value(schemas.BifrostContextKeySkipKeySelection).(bool); !skipKeySelection {
+				t.Error("SkipKeySelection was not enabled for Anthropic OAuth passthrough")
+			}
+			if gotBody := string(httpCtx.Request.Body()); gotBody != originalBody {
+				t.Errorf("raw request body changed: got %q, want %q", gotBody, originalBody)
+			}
+		})
+	}
+}
+
+func TestCheckAnthropicPassthroughLeavesAPIKeyModelUnprefixed(t *testing.T) {
+	req := &anthropic.AnthropicMessageRequest{Model: "claude-fable-5"}
+	httpCtx := &fasthttp.RequestCtx{}
+	httpCtx.Request.Header.Set("user-agent", "claude-cli/2.1.209")
+	httpCtx.Request.Header.Set("x-api-key", "test-key")
+
+	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	if err := checkAnthropicPassthrough(httpCtx, bifrostCtx, req); err != nil {
+		t.Fatalf("checkAnthropicPassthrough: %v", err)
+	}
+	if req.Model != "claude-fable-5" {
+		t.Errorf("API-key request model = %q, want unprefixed model", req.Model)
+	}
+}
+
 // TestMustConvertInPassthrough pins the passthrough routing decision that fixes
 // the Claude Code advisor/server-tool streaming bug: server tools (advisor,
 // web_search, web_fetch, code_execution) expand one Responses item into several

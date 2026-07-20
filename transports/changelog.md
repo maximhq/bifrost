@@ -15,6 +15,7 @@
 
 ## 🐞 Fixed
 
+- **Anthropic OAuth Routing** - Pin unprefixed Claude Code OAuth passthrough requests to the native Anthropic provider
 - **Governance Rate-Limit Reset CPU** - Guards against invalid reset timeouts, parallelized resting-budget flows only when absolutely required, and fixed the calendar-based alignment qualifier
 - **Masked Key Persistence** - Never persist masked provider key previews to config storage (thanks [@eyeveil](https://github.com/eyeveil)!)
 - **OpenShift Arbitrary UIDs** - Build-time group-0 ownership with no runtime chown (thanks [@eyeveil](https://github.com/eyeveil)!)

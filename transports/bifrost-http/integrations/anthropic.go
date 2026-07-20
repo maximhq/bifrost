@@ -329,6 +329,20 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 		bifrostCtx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
 		bifrostCtx.SetValue(schemas.BifrostContextKeySendBackRawResponse, true)
 		if !isAnthropicAPIKeyAuth(ctx) && (provider == schemas.Anthropic || provider == "") {
+			// OAuth passthrough credentials are valid only for Anthropic. Anchor an
+			// unprefixed model to the native provider before the request converter
+			// and routing hooks run; otherwise a catalog entry from another provider
+			// can claim the model while the Anthropic OAuth headers remain attached.
+			if provider == "" {
+				qualifiedModel := string(schemas.Anthropic) + "/" + model
+				switch r := req.(type) {
+				case *anthropic.AnthropicTextRequest:
+					r.Model = qualifiedModel
+				case *anthropic.AnthropicMessageRequest:
+					r.Model = qualifiedModel
+				}
+				provider = schemas.Anthropic
+			}
 			url := extractExactPath(ctx)
 			if !strings.HasPrefix(url, "/") {
 				url = "/" + url
