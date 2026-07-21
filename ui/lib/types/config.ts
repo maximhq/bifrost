@@ -582,6 +582,10 @@ export interface CoreConfig {
 	allow_per_request_content_storage_override: boolean;
 	allow_per_request_raw_override: boolean;
 	allow_direct_keys: boolean;
+	// Grace period after a virtual key rotation during which the previous value
+	// still authenticates. API returns int64 nanoseconds; writes accept a Go
+	// duration string like "5m". 0 = old value stops working immediately.
+	vk_rotation_cooldown?: number | string;
 	disable_db_pings_in_health: boolean;
 	dump_errors_in_console_logs: boolean;
 	log_retention_days: number;
@@ -624,6 +628,7 @@ export const DefaultCoreConfig: CoreConfig = {
 	allow_per_request_content_storage_override: false,
 	allow_per_request_raw_override: false,
 	allow_direct_keys: false,
+	vk_rotation_cooldown: 0,
 	disable_db_pings_in_health: false,
 	dump_errors_in_console_logs: false,
 	log_retention_days: 365,

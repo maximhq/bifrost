@@ -75,6 +75,8 @@ export interface VirtualKey {
 	rate_limit_id?: string;
 	is_active: boolean;
 	expires_at?: string | null; // ISO 8601 UTC timestamp; null or absent means never expires
+	previous_value_expires_at?: string | null; // When set, the pre-rotation value still authenticates until this time
+	rotated_at?: string | null; // Timestamp of the last value rotation
 	calendar_aligned?: boolean;
 	created_at: string;
 	updated_at: string;
