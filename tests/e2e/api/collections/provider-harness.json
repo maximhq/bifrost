@@ -10129,7 +10129,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"contents\": [{\"parts\":[{\"text\":\"What was announced at Google I/O 2026?\"}]}],\n  \"tools\": [{ \"googleSearch\": {} }]\n}"
+                  "raw": "{\n  \"contents\": [{\"parts\":[{\"text\":\"What is the current population of Tokyo? Answer briefly using Google Search.\"}]}],\n  \"tools\": [{ \"googleSearch\": {} }]\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/genai/v1beta/models/{{genaiModel}}:generateContent",
@@ -40082,7 +40082,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What was a major world news headline this week? Answer in one short sentence, using Google Search for current information.\"\n    }\n  ],\n  \"web_search_options\": {},\n  \"max_tokens\": 300\n}"
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What was a major world news headline this week? Answer in one short sentence, using Google Search for current information.\"\n    }\n  ],\n  \"web_search_options\": {},\n  \"max_tokens\": 2000\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
@@ -40135,7 +40135,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What was a major world news headline this week? Answer in one short sentence, using Google Search for current information.\"\n    }\n  ],\n  \"web_search_options\": {},\n  \"stream\": true,\n  \"max_tokens\": 300\n}"
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What was a major world news headline this week? Answer in one short sentence, using Google Search for current information.\"\n    }\n  ],\n  \"web_search_options\": {},\n  \"stream\": true,\n  \"max_tokens\": 2000\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",

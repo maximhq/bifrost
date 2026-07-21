@@ -2640,7 +2640,7 @@ func TestGuardrailTraceResponseRoundTrip(t *testing.T) {
 }
 
 func TestToBedrockResponsesRequest_AnthropicTextFormatUsesOutputConfig(t *testing.T) {
-	schemaObj := any(schemas.NewOrderedMapFromPairs(
+	schemaObj := schemas.NewOrderedMapFromPairs(
 		schemas.KV("type", "object"),
 		schemas.KV("properties", schemas.NewOrderedMapFromPairs(
 			schemas.KV("topic", schemas.NewOrderedMapFromPairs(
@@ -2648,7 +2648,7 @@ func TestToBedrockResponsesRequest_AnthropicTextFormatUsesOutputConfig(t *testin
 			)),
 		)),
 		schemas.KV("required", []string{"topic"}),
-	))
+	)
 
 	req := &schemas.BifrostResponsesRequest{
 		Model: "bedrock/anthropic.claude-3-sonnet-20240229-v1:0",
@@ -2658,7 +2658,7 @@ func TestToBedrockResponsesRequest_AnthropicTextFormatUsesOutputConfig(t *testin
 					Type: "json_schema",
 					Name: schemas.Ptr("classification"),
 					JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
-						Schema: &schemaObj,
+						Schema: &schemas.JSONSchemaOrBool{SchemaMap: schemaObj},
 					},
 				},
 			},
@@ -2686,7 +2686,7 @@ func TestToBedrockResponsesRequest_AnthropicTextFormatUsesOutputConfig(t *testin
 }
 
 func TestToBedrockResponsesRequest_NonAnthropicTextFormatStillUsesToolConversion(t *testing.T) {
-	schemaObj := any(schemas.NewOrderedMapFromPairs(
+	schemaObj := schemas.NewOrderedMapFromPairs(
 		schemas.KV("type", "object"),
 		schemas.KV("properties", schemas.NewOrderedMapFromPairs(
 			schemas.KV("topic", schemas.NewOrderedMapFromPairs(
@@ -2694,7 +2694,7 @@ func TestToBedrockResponsesRequest_NonAnthropicTextFormatStillUsesToolConversion
 			)),
 		)),
 		schemas.KV("required", []string{"topic"}),
-	))
+	)
 
 	req := &schemas.BifrostResponsesRequest{
 		Model: "bedrock/amazon.nova-pro-v1:0",
@@ -2704,7 +2704,7 @@ func TestToBedrockResponsesRequest_NonAnthropicTextFormatStillUsesToolConversion
 					Type: "json_schema",
 					Name: schemas.Ptr("classification"),
 					JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
-						Schema: &schemaObj,
+						Schema: &schemas.JSONSchemaOrBool{SchemaMap: schemaObj},
 					},
 				},
 			},
@@ -2729,7 +2729,7 @@ func TestToBedrockResponsesRequest_NonAnthropicTextFormatStillUsesToolConversion
 }
 
 func TestToBedrockResponsesRequest_NonAnthropicTextFormatPreservedWithUserTools(t *testing.T) {
-	schemaObj := any(schemas.NewOrderedMapFromPairs(
+	schemaObj := schemas.NewOrderedMapFromPairs(
 		schemas.KV("type", "object"),
 		schemas.KV("properties", schemas.NewOrderedMapFromPairs(
 			schemas.KV("topic", schemas.NewOrderedMapFromPairs(
@@ -2737,7 +2737,7 @@ func TestToBedrockResponsesRequest_NonAnthropicTextFormatPreservedWithUserTools(
 			)),
 		)),
 		schemas.KV("required", []string{"topic"}),
-	))
+	)
 
 	toolParams := schemas.ToolFunctionParameters{
 		Type: "object",
@@ -2756,7 +2756,7 @@ func TestToBedrockResponsesRequest_NonAnthropicTextFormatPreservedWithUserTools(
 					Type: "json_schema",
 					Name: schemas.Ptr("classification"),
 					JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
-						Schema: &schemaObj,
+						Schema: &schemas.JSONSchemaOrBool{SchemaMap: schemaObj},
 					},
 				},
 			},
@@ -3849,7 +3849,7 @@ func TestBedrockAnthropicChatStructuredOutputUsesSyntheticTool(t *testing.T) {
 // (`client.messages.create`), routed via /v1/messages -> ToBifrostResponsesRequest
 // -> ToBedrockResponsesRequest with Params.Text.Format set.
 func TestToBedrockResponsesRequest_AnthropicStructuredOutputUsesSyntheticTool(t *testing.T) {
-	schemaObj := any(schemas.NewOrderedMapFromPairs(
+	schemaObj := schemas.NewOrderedMapFromPairs(
 		schemas.KV("type", "object"),
 		schemas.KV("properties", schemas.NewOrderedMapFromPairs(
 			schemas.KV("isNewTopic", schemas.NewOrderedMapFromPairs(schemas.KV("type", "boolean"))),
@@ -3857,7 +3857,7 @@ func TestToBedrockResponsesRequest_AnthropicStructuredOutputUsesSyntheticTool(t 
 			schemas.KV("result", schemas.NewOrderedMapFromPairs(schemas.KV("type", "number"))),
 		)),
 		schemas.KV("required", []string{"isNewTopic", "title", "result"}),
-	))
+	)
 
 	req := &schemas.BifrostResponsesRequest{
 		Model: "anthropic.claude-opus-4-7-v1:0",
@@ -3867,7 +3867,7 @@ func TestToBedrockResponsesRequest_AnthropicStructuredOutputUsesSyntheticTool(t 
 					Type: "json_schema",
 					Name: schemas.Ptr("classification"),
 					JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
-						Schema: &schemaObj,
+						Schema: &schemas.JSONSchemaOrBool{SchemaMap: schemaObj},
 					},
 				},
 			},
@@ -5446,13 +5446,13 @@ func TestBedrockNonLlamaChatStructuredOutputForcesToolChoice(t *testing.T) {
 // rather than Params.ResponseFormat, but lands at the same Bedrock Converse
 // constraint: toolChoice.tool is rejected on Llama.
 func TestToBedrockResponsesRequest_LlamaStructuredOutputOmitsForcedToolChoice(t *testing.T) {
-	schemaObj := any(schemas.NewOrderedMapFromPairs(
+	schemaObj := schemas.NewOrderedMapFromPairs(
 		schemas.KV("type", "object"),
 		schemas.KV("properties", schemas.NewOrderedMapFromPairs(
 			schemas.KV("intent", schemas.NewOrderedMapFromPairs(schemas.KV("type", "string"))),
 		)),
 		schemas.KV("required", []string{"intent"}),
-	))
+	)
 
 	req := &schemas.BifrostResponsesRequest{
 		Model: "us.meta.llama4-maverick-17b-instruct-v1:0",
@@ -5462,7 +5462,7 @@ func TestToBedrockResponsesRequest_LlamaStructuredOutputOmitsForcedToolChoice(t 
 					Type: "json_schema",
 					Name: schemas.Ptr("PlannerOutput"),
 					JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
-						Schema: &schemaObj,
+						Schema: &schemas.JSONSchemaOrBool{SchemaMap: schemaObj},
 					},
 				},
 			},

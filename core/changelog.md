@@ -1,3 +1,5 @@
+[fix]: OpenAI Responses - preserve JSON schema key order in structured-output requests [@georg-wolflein](https://github.com/georg-wolflein)
+  - breaking: a non-schema scalar (string/number/array) at the nested `text.format.schema.schema` position now fails request decode; boolean schemas (`"schema": true` / `"schema": false`) and objects still decode and are forwarded
 - feat: track Anthropic extended-thinking tokens as `ReasoningTokens` across chat, responses, and passthrough
 - feat: added Wafer AI provider
 - feat: added toggle for always retaining content in object storage

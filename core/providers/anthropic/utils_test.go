@@ -614,9 +614,9 @@ func TestConvertResponsesTextConfigToAnthropicOutputFormatPreservesSchemaRefs(t 
 			Type: "json_schema",
 			JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
 				Type:       &schemaType,
-				Properties: &properties,
+				Properties: schemas.OrderedMapFromMap(properties),
 				Required:   []string{"record"},
-				Defs:       &defs,
+				Defs:       schemas.OrderedMapFromMap(defs),
 			},
 		},
 	})
@@ -679,9 +679,9 @@ func TestConvertResponsesTextConfigToAnthropicOutputFormatPreservesLegacyDefinit
 			Type: "json_schema",
 			JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
 				Type:        &schemaType,
-				Properties:  &properties,
+				Properties:  schemas.OrderedMapFromMap(properties),
 				Required:    []string{"record"},
-				Definitions: &definitions,
+				Definitions: schemas.OrderedMapFromMap(definitions),
 			},
 		},
 	})
@@ -3951,5 +3951,56 @@ func TestResponsesStream_TerminalChunkCarriesServedModifiers(t *testing.T) {
 	}
 	if finalResp.Usage.InputTokensDetails == nil || finalResp.Usage.InputTokensDetails.CachedWriteTokens != 44667 {
 		t.Fatal("terminal billed chunk missing cache-creation tokens")
+	}
+}
+
+// TestConvertChatResponseFormatToTool_OrderedMapSchema verifies the
+// Responses→Chat fallback path: mux's ToChatRequest builds response_format with
+// OrderedMap-valued schema fields (order-preserving), and the structured-output
+// tool conversion must handle them rather than silently dropping the schema.
+func TestConvertChatResponseFormatToTool_OrderedMapSchema(t *testing.T) {
+	props := schemas.NewOrderedMapFromPairs(
+		schemas.KV("type", map[string]interface{}{"const": "text"}),
+		schemas.KV("text", map[string]interface{}{"type": []interface{}{"string", "integer"}}),
+	)
+	// The schema arrives as an OrderedMap (mux's ToChatRequest emits the
+	// order-preserving form of the client's Responses schema).
+	schemaOM := schemas.NewOrderedMapFromPairs(
+		schemas.KV("type", "object"),
+		schemas.KV("properties", props),
+		schemas.KV("required", []string{"type", "text"}),
+	)
+	var responseFormat interface{} = map[string]interface{}{
+		"type": "json_schema",
+		"json_schema": map[string]interface{}{
+			"name":   "reply",
+			"schema": schemaOM,
+		},
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	tool := convertChatResponseFormatToTool(ctx, &schemas.ChatParameters{ResponseFormat: &responseFormat})
+	if tool == nil {
+		t.Fatal("OrderedMap-valued schema must not be dropped")
+	}
+	if tool.InputSchema == nil || tool.InputSchema.Properties == nil {
+		t.Fatal("expected input schema with properties")
+	}
+	keys := tool.InputSchema.Properties.Keys()
+	if !reflect.DeepEqual(keys, []string{"type", "text"}) {
+		t.Fatalf("property order must be preserved through the fallback conversion, got %v", keys)
+	}
+
+	// The recursion must descend into OrderedMap values: Anthropic does not
+	// accept multi-type arrays, so ["string","integer"] must become anyOf.
+	textProp, ok := tool.InputSchema.Properties.Get("text")
+	if !ok {
+		t.Fatal("text property missing")
+	}
+	normalizedText, ok := schemas.SafeExtractOrderedMap(textProp)
+	if !ok {
+		t.Fatalf("text property should be a schema object, got %T", textProp)
+	}
+	if _, hasAnyOf := normalizedText.Get("anyOf"); !hasAnyOf {
+		t.Fatal("nested multi-type union must be normalized to anyOf (recursion must descend into OrderedMap values)")
 	}
 }
