@@ -4473,6 +4473,45 @@ func (s *RDBConfigStore) UpdateBudget(ctx context.Context, budget *tables.TableB
 	return nil
 }
 
+// UpdateBudgetOverride atomically updates only override columns so concurrent usage changes are preserved.
+func (s *RDBConfigStore) UpdateBudgetOverride(ctx context.Context, id string, amount float64, mode tables.BudgetOverrideMode, cyclesRemaining int, tx ...*gorm.DB) (*tables.TableBudget, error) {
+	if len(tx) == 0 {
+		var updated *tables.TableBudget
+		err := s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+			var err error
+			updated, err = s.UpdateBudgetOverride(ctx, id, amount, mode, cyclesRemaining, transaction)
+			return err
+		})
+		return updated, err
+	}
+
+	txDB := tx[0].WithContext(ctx)
+	var budget tables.TableBudget
+	if err := dbForUpdate(txDB).First(&budget, "id = ?", id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	if err := budget.SetOverride(amount, mode, cyclesRemaining); err != nil {
+		return nil, err
+	}
+	if err := txDB.Session(&gorm.Session{SkipHooks: true}).Model(&tables.TableBudget{}).
+		Where("id = ?", id).
+		Updates(map[string]any{
+			"override_amount":           budget.OverrideAmount,
+			"override_mode":             budget.OverrideMode,
+			"override_cycles_remaining": budget.OverrideCyclesRemaining,
+			"updated_at":                time.Now(),
+		}).Error; err != nil {
+		return nil, s.parseGormError(err)
+	}
+	if err := txDB.First(&budget, "id = ?", id).Error; err != nil {
+		return nil, err
+	}
+	return &budget, nil
+}
+
 // DeleteBudget deletes a budget from the database.
 func (s *RDBConfigStore) DeleteBudget(ctx context.Context, id string, tx ...*gorm.DB) error {
 	if len(tx) == 0 {

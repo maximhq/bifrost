@@ -64,6 +64,56 @@ type TableBudget struct {
 // TableName sets the table name for each model
 func (TableBudget) TableName() string { return "governance_budgets" }
 
+// HasActiveOverride reports whether the budget currently has a valid configured override.
+func (b *TableBudget) HasActiveOverride() bool {
+	if b == nil || b.OverrideAmount <= 0 {
+		return false
+	}
+	return b.OverrideMode == BudgetOverrideModeForever ||
+		(b.OverrideMode == BudgetOverrideModeCycles && b.OverrideCyclesRemaining > 0)
+}
+
+// EffectiveMaxLimit returns the base limit plus any active override amount.
+func (b *TableBudget) EffectiveMaxLimit() float64 {
+	if b == nil {
+		return 0
+	}
+	if !b.HasActiveOverride() {
+		return b.MaxLimit
+	}
+	return b.MaxLimit + b.OverrideAmount
+}
+
+// SetOverride replaces the budget's current override after validating the complete state.
+func (b *TableBudget) SetOverride(amount float64, mode BudgetOverrideMode, cyclesRemaining int) error {
+	if b == nil {
+		return fmt.Errorf("budget is required")
+	}
+	previousAmount := b.OverrideAmount
+	previousMode := b.OverrideMode
+	previousCyclesRemaining := b.OverrideCyclesRemaining
+	b.OverrideAmount = amount
+	b.OverrideMode = mode
+	b.OverrideCyclesRemaining = cyclesRemaining
+	if err := b.validateOverride(); err != nil {
+		b.OverrideAmount = previousAmount
+		b.OverrideMode = previousMode
+		b.OverrideCyclesRemaining = previousCyclesRemaining
+		return err
+	}
+	return nil
+}
+
+// ClearOverride removes any finite or permanent override from the budget.
+func (b *TableBudget) ClearOverride() {
+	if b == nil {
+		return
+	}
+	b.OverrideAmount = 0
+	b.OverrideMode = ""
+	b.OverrideCyclesRemaining = 0
+}
+
 // validateOverride checks that the persisted override fields form one unambiguous state.
 func (b *TableBudget) validateOverride() error {
 	if math.IsNaN(b.OverrideAmount) || math.IsInf(b.OverrideAmount, 0) {
