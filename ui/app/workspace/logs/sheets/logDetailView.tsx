@@ -1691,7 +1691,12 @@ export function LogDetailView({
 				</TabsList>
 
 				<TabsContent value="messages" className="space-y-4">
-					<div className="flex justify-end">
+					{log.content_hidden && (
+						<div className="text-muted-foreground rounded-sm border border-dashed p-5 text-center text-sm">
+							Content logging has been disabled for this request.
+						</div>
+					)}
+					<div className={cn("flex justify-end", log.content_hidden && "hidden")}>
 						<DropdownMenu>
 							<DropdownMenuTrigger asChild>
 								<button

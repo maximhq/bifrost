@@ -580,6 +580,7 @@ export interface LogEntry {
 	created_at: string; // ISO string format from Go time.Time - when the log was first created
 	raw_request?: string; // Raw provider request
 	raw_response?: string; // Raw provider response
+	content_hidden?: boolean; // true when content logging was disabled for this request, so no content is served back
 	is_large_payload_request?: boolean; // true if request used large payload streaming
 	is_large_payload_response?: boolean; // true if response used large payload streaming
 	passthrough_request_body?: string; // Raw passthrough request body (UTF-8)
