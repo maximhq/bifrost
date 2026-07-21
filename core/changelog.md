@@ -1,42 +1,26 @@
-- feat: add Sarvam AI provider with chat, text-to-speech, and speech-to-text support (thanks [@Purvi09](https://github.com/Purvi09)!)
-- feat: add ElevenLabs sound effects (text-to-sound) support (thanks [@SecretSun](https://github.com/SecretSun)!)
-- feat: add `ProjectID` to Bedrock and Bedrock Mantle key configs with per-alias overrides for Bedrock, Bedrock Mantle, and Vertex
-- feat: add `additional_tools` message type support
-- feat: force single-region config in Vertex key config
-- feat: phase-scoped redaction and revealing with transient redaction data field, plus `ClearPausedStreamBuffer` for pause-accumulate stream flows
-- fix: complete Cohere streaming Responses terminal events, response.completed now carries the output array and stop reason, reasoning done events keep the accumulated thinking text, and citation annotations carry their item id (closes #5385) (thanks [@fus3r](https://github.com/fus3r)!)
-- fix: complete visible thinking items on the streaming Responses surface so reasoning_summary_text.done, output_item.done, and response.completed carry the accumulated reasoning text and signature (thanks [@fus3r](https://github.com/fus3r)!)
-- fix: map web search options to Google Search grounding in the Gemini API
-- fix: parse `SecretVar` JSON with `ref`/`env_var` fields even when `value` is absent
-- fix: cap max reasoning effort in OpenAI
-- fix: honor service tier in OpenAI chat completion
-- fix: support GA transcription-type sessions in POST /v1/realtime/client_secrets (thanks [@Shaik-Sirajuddin](https://github.com/Shaik-Sirajuddin)!)
-- fix: support diarized_json transcription segments and ElevenLabs speaker passthrough (thanks [@Shaik-Sirajuddin](https://github.com/Shaik-Sirajuddin)!)
-- fix: sanitize tool_use/tool_result ids to Anthropic's charset (thanks [@Shaik-Sirajuddin](https://github.com/Shaik-Sirajuddin)!)
-- fix: never persist masked provider key previews (thanks [@eyeveil](https://github.com/eyeveil)!)
-- fix: make tracing span lookup nil-safe to prevent panic on streaming errors (thanks [@eyeveil](https://github.com/eyeveil)!)
-- fix: enable rerank for custom OpenAI-compatible providers (thanks [@eyeveil](https://github.com/eyeveil)!)
-- fix: forward and rebuild Anthropic server-side tool_search on the Responses path (thanks [@ws4charlie](https://github.com/ws4charlie)!)
-- fix: zero pooled ChannelMessage references on release to avoid pinning request bodies (thanks [@citrocat](https://github.com/citrocat)!)
-- fix: round-trip Anthropic `redacted_thinking` blocks on the responses surface so multi-turn tool use with redacted reasoning can be replayed (thanks [@fus3r](https://github.com/fus3r)!)
-- fix: reset `HasEmittedWebSearch` when recycling pooled Gemini responses stream state so grounded streaming requests keep emitting `web_search_call` items (thanks [@fus3r](https://github.com/fus3r)!)
-- fix: omit role from OpenAI Responses non-message items (thanks [@nettee](https://github.com/nettee)!)
-- fix: serialize OpenAI compaction request `input` correctly (thanks [@mcclurmc](https://github.com/mcclurmc)!)
-- fix: preserve `reasoning_config` on Bedrock cross-provider translation (thanks [@Purvi09](https://github.com/Purvi09)!)
-- fix: preserve Gemini file upload MIME types for GenAI file URI completions
-- fix: Gemini video reference fields map to instances (thanks [@vojthor](https://github.com/vojthor)!)
-- fix: accept object-valued tool-call arguments (e.g. tool_search_call) on the Responses API streaming path
-- fix: recover from idle-timeout timer-goroutine panic that could crash the process
-- fix: deterministic MCP tool ordering for prompt cache stability
-- fix: pass through `gs://` image URLs on Vertex Gemini
-- fix: signal Bedrock max_output_tokens truncation on Responses API (thanks [@jeremym-tanium](https://github.com/jeremym-tanium)!)
-- fix: warn callers not to truncate the `#t=` temp-token fragment on MCP inline-auth links (thanks [@MarcusPeng](https://github.com/MarcusPeng)!)
-- fix: add `ExtraContent` to ChatStreamResponseChoiceDelta (thanks [@nghodkicisco](https://github.com/nghodkicisco)!)
-- fix: correct inference geo cost on Anthropic and cache rate for fast mode
-- fix: send MIME type when specified
-- fix: send status code on OTEL metrics
-- fix: reduce telemetry metrics cardinality explosion risk
-- fix: race conditions in tracer span locks
-- fix: pass container block from Anthropic API
-- fix: pass Azure auth headers in helpers
-- chore: upgrade ClickHouse client library
+[fix]: OpenAI Responses - preserve JSON schema key order in structured-output requests [@georg-wolflein](https://github.com/georg-wolflein)
+  - breaking: a non-schema scalar (string/number/array) at the nested `text.format.schema.schema` position now fails request decode; boolean schemas (`"schema": true` / `"schema": false`) and objects still decode and are forwarded
+- feat: track Anthropic extended-thinking tokens as `ReasoningTokens` across chat, responses, and passthrough
+- feat: added Wafer AI provider
+- feat: added toggle for always retaining content in object storage
+- feat: added MCP metrics to OTEL and `resource` parameter to MCP OAuth handshake
+- feat: added user email export to connectors
+- feat: configurable keep-alive duration in network config
+- feat: propagate inference `request_id` through async jobs and webhook payloads
+- feat: added `WebhookDispatcher` interface wired to async job terminal states
+- fix: bedrock reasoning double emission
+- fix: anthropic fallbacks and refusal handling; bill for the fallback model actually served
+- fix: complete Cohere streaming Responses terminal events with the output array
+- fix: complete visible thinking items on the streaming Responses surface
+- fix: reasoning item streaming in mux
+- fix: handle line-by-line errors in streaming
+- fix: convert structured output format to tool for Azure provider in Anthropic integration
+- fix: default `detail` to auto on OpenAI `input_image` blocks (thanks [@AdityaPainuli](https://github.com/AdityaPainuli)!)
+- fix: SGLang Anthropic-compatible APIs via key-level setting; DeepSeek uses Anthropic endpoints for chat and responses
+- fix: count-tokens handling for DeepSeek and SGLang
+- fix: moved vLLM to native Responses API
+- fix: added support for Anthropic APIs in Fireworks
+- fix: enable raw request and store for Mistral OCR requests
+- fix: reject out-of-range `tool_sync_interval` minutes to prevent nanosecond sync loops
+- perf: hoist Replicate `parseTokenUsageFromLogs` regexps to package level
+- refactor: extract SSRF-safe dial logic into `core/network` package

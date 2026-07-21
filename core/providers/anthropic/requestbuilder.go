@@ -376,9 +376,19 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 		return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 	}
 
-	jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "fallbacks")
+	// Strip Bifrost cross-provider fallback strings, but preserve Anthropic
+	// native server-side fallback objects (server-side-fallback-2026-06-01).
+	jsonBody, err = stripBifrostFallbacksFromBody(jsonBody, cfg.Provider)
 	if err != nil {
 		return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+	}
+
+	if cfg.IsCountTokens {
+		// The count_tokens endpoint rejects fallback_credit_token outright.
+		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "fallback_credit_token")
+		if err != nil {
+			return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+		}
 	}
 
 	if defaults.DeleteStreamField {
@@ -597,7 +607,9 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 		return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 	}
 
-	jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "fallbacks")
+	// Strip Bifrost cross-provider fallback strings, but preserve Anthropic
+	// native server-side fallback objects (server-side-fallback-2026-06-01).
+	jsonBody, err = stripBifrostFallbacksFromBody(jsonBody, cfg.Provider)
 	if err != nil {
 		return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 	}

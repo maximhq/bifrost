@@ -370,6 +370,9 @@ bifrost:
     #       weight: 1
     #       models: ["gpt-4o", "gpt-4o-mini"]  # Restrict key to specific models
     #       use_for_batch_api: false     # Whether this key can be used for batch API
+    #       # use_anthropic_endpoints: false  # deepseek/fireworks/vllm/sgl keys only: route chat completions
+    #                                         # and responses through Anthropic-compatible endpoints (also
+    #                                         # settable per-alias alongside use_deployments_endpoint)
     #     - name: "secondary-key"
     #       value: "env.OPENAI_KEY"     # Reference to environment variable
     #       weight: 1
@@ -963,6 +966,26 @@ bifrost:
       #     attributeValue: "displayName"
       # provisioningToken: "env.SCIM_PROVISIONING_TOKEN"  # bearer token the IdP presents; generate: openssl rand -base64 32 | tr '+/' '-_' | tr -d '='
       #
+      # # Auth proxy / identity-aware proxy (Enterprise). Shared across every provider above:
+      # # when a Zero Trust / ZTNA proxy fronts the IdP, Bifrost reads the login credential from the
+      # # proxy's header and validates it against the proxy's own keys (not the IdP's).
+      # authProxy:
+      #   enabled: true
+      #   provider: "cloudflare-access"      # cloudflare-access | generic | aws-alb
+      #   mode: "login_only"                 # login_only (default; auth only) | full (also maps roles/teams from token claims)
+      #   # Cloudflare Access / generic OIDC proxy (JWKS):
+      #   issuerUrl: "https://<team>.cloudflareaccess.com"   # required; must be https (env. prefix supported)
+      #   audience: "env.CF_ACCESS_AUD"      # required unless allowedAudiences is set — binds the token to this app
+      #   # headerName: "Cf-Access-Jwt-Assertion"  # defaulted per provider; required for the generic provider
+      #   # jwksUrl: ""                       # explicit JWKS; derived for cloudflare-access, OIDC discovery for generic
+      #   # allowedAudiences: []              # alternative to a single audience
+      #   # userIdClaim: "email"              # identity claim (default: email)
+      #   # AWS ALB (OIDC) instead of the JWKS fields above:
+      #   # provider: "aws-alb"
+      #   # expectedSigner: "arn:aws:elasticloadbalancing:...:loadbalancer/app/..."  # required — pins the ALB signer
+      #   # region: "us-east-1"               # derived from the signer ARN when omitted
+      #   # publicKeyBaseUrl: ""              # override for non-standard partitions (e.g. GovCloud)
+      #
       # Entra (Azure AD) configuration:
       # tenantId: ""
       # clientId: ""
@@ -1079,6 +1102,7 @@ bifrost:
       #   timeout: 60        # Timeout in seconds for rule execution (default: 60)
       #   max_turns_to_send: 0
       #   evaluation_mode: "bundled"   # "bundled" (default) | "per_turn" (each turn scanned in isolation; avoids cross-turn false positives, more provider calls)
+      #   stream_replay_event_interval_ms: 25  # Delay between buffered events after an allowed response; 0 sends them immediately
     providers: []
       # - id: 1
       #   provider_name: "bedrock"

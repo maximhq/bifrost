@@ -74,6 +74,7 @@ type AnthropicResponsesStreamState struct {
 	MessageID                 *string                           // Message ID from message_start
 	Model                     *string                           // Model name from message_start
 	StopReason                *string                           // Stop reason for the message
+	StopDetails               *schemas.ResponsesStopDetails     // Refusal stop_details (server-side fallback), carried to the final message_delta
 	CreatedAt                 int                               // Timestamp for created_at consistency
 	HasEmittedCreated         bool                              // Whether we've emitted response.created
 	HasEmittedInProgress      bool                              // Whether we've emitted response.in_progress
@@ -387,6 +388,7 @@ func AcquireAnthropicResponsesStreamState() *AnthropicResponsesStreamState {
 	state.CurrentOutputIndex = 0
 	state.MessageID = nil
 	state.StopReason = nil
+	state.StopDetails = nil
 	state.Model = nil
 	state.CreatedAt = int(time.Now().Unix())
 	state.HasEmittedCreated = false
@@ -449,6 +451,7 @@ func (state *AnthropicResponsesStreamState) flush() {
 	state.CurrentOutputIndex = 0
 	state.MessageID = nil
 	state.StopReason = nil
+	state.StopDetails = nil
 	state.Model = nil
 	state.CreatedAt = int(time.Now().Unix())
 	state.HasEmittedCreated = false
@@ -467,6 +470,15 @@ func isCompactionItem(item *schemas.ResponsesMessage) bool {
 		*item.Type == schemas.ResponsesMessageTypeMessage &&
 		item.Content != nil && len(item.Content.ContentBlocks) > 0 &&
 		item.Content.ContentBlocks[0].Type == schemas.ResponsesOutputMessageContentTypeCompaction
+}
+
+// isFallbackItem checks if a ResponsesMessage represents a server-side fallback
+// boundary item (a message with a fallback content block as its first content block).
+func isFallbackItem(item *schemas.ResponsesMessage) bool {
+	return item != nil && item.Type != nil &&
+		*item.Type == schemas.ResponsesMessageTypeMessage &&
+		item.Content != nil && len(item.Content.ContentBlocks) > 0 &&
+		item.Content.ContentBlocks[0].Type == schemas.ResponsesOutputMessageContentTypeFallback
 }
 
 // getOrCreateOutputIndex returns the output index for a given content index, creating a new one if needed
@@ -1006,6 +1018,55 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 
 				// Don't emit output_item.added yet - wait for the delta with actual summary
 				return nil, nil, false
+			case AnthropicContentBlockTypeFallback:
+				// Fallback boundary marker - no deltas follow, so emit the complete
+				// item (added + done) here from the start event's from/to models.
+				itemID := fmt.Sprintf("fb_%d", outputIndex)
+				state.ItemIDs[outputIndex] = itemID
+				if chunk.Index != nil {
+					state.ContentIndexToBlockType[*chunk.Index] = AnthropicContentBlockTypeFallback
+				}
+				messageType := schemas.ResponsesMessageTypeMessage
+				fbRole := schemas.ResponsesInputMessageRoleAssistant
+				fallback := &schemas.ResponsesOutputMessageContentFallback{}
+				if chunk.ContentBlock.From != nil {
+					fallback.FromModel = chunk.ContentBlock.From.Model
+				}
+				if chunk.ContentBlock.To != nil {
+					fallback.ToModel = chunk.ContentBlock.To.Model
+				}
+				if chunk.ContentBlock.Trigger != nil {
+					fallback.TriggerType = chunk.ContentBlock.Trigger.Type
+					fallback.TriggerCategory = chunk.ContentBlock.Trigger.Category
+				}
+				item := &schemas.ResponsesMessage{
+					ID:     schemas.Ptr(itemID),
+					Status: schemas.Ptr("completed"),
+					Type:   &messageType,
+					Role:   &fbRole,
+					Content: &schemas.ResponsesMessageContent{
+						ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+							Type:                                  schemas.ResponsesOutputMessageContentTypeFallback,
+							ResponsesOutputMessageContentFallback: fallback,
+						}},
+					},
+				}
+				return []*schemas.BifrostResponsesStreamResponse{
+					{
+						Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
+						SequenceNumber: sequenceNumber,
+						OutputIndex:    schemas.Ptr(outputIndex),
+						ContentIndex:   chunk.Index,
+						Item:           item,
+					},
+					{
+						Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
+						SequenceNumber: sequenceNumber + 1,
+						OutputIndex:    schemas.Ptr(outputIndex),
+						ContentIndex:   chunk.Index,
+						Item:           item,
+					},
+				}, nil, false
 			case AnthropicContentBlockTypeText:
 				// Text block - emit output_item.added with type "message"
 				messageType := schemas.ResponsesMessageTypeMessage
@@ -1925,6 +1986,11 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 						delete(state.ContentIndexToBlockType, *chunk.Index)
 						return nil, nil, false
 					}
+					if blockType == AnthropicContentBlockTypeFallback {
+						// output_item.added + done were already emitted at content_block_start.
+						delete(state.ContentIndexToBlockType, *chunk.Index)
+						return nil, nil, false
+					}
 				}
 			}
 
@@ -2215,6 +2281,9 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 			}
 			state.StopReason = &mapped
 		}
+		if chunk.Delta.StopDetails != nil {
+			state.StopDetails = stopDetailsToBifrost(chunk.Delta.StopDetails)
+		}
 		// Check if integration type in ctx is anthropic
 		if ctx.Value(schemas.BifrostContextKeyIntegrationType) == "anthropic" {
 			// Convert usage from Anthropic format to Bifrost
@@ -2239,6 +2308,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 			if stopReason != nil {
 				response.StopReason = stopReason
 			}
+			response.StopDetails = state.StopDetails
 			if bifrostUsage != nil {
 				response.Usage = bifrostUsage
 				response.Speed = chunk.Usage.Speed
@@ -2282,6 +2352,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 		if state.StopReason != nil {
 			response.StopReason = state.StopReason
 		}
+		response.StopDetails = state.StopDetails
 
 		// Fold the sandbox container (delivered on the final message_delta) onto
 		// every code_interpreter_call so response.completed carries it (mirrors the
@@ -2556,6 +2627,15 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 					contentBlock.Content = &AnthropicContent{ContentStr: schemas.Ptr("")}
 					if bifrostResp.Item.Content.ContentBlocks[0].CacheControl != nil {
 						contentBlock.CacheControl = bifrostResp.Item.Content.ContentBlocks[0].CacheControl
+					}
+				} else if isFallbackItem(bifrostResp.Item) {
+					contentBlock.Type = AnthropicContentBlockTypeFallback
+					if fb := bifrostResp.Item.Content.ContentBlocks[0].ResponsesOutputMessageContentFallback; fb != nil {
+						contentBlock.From = &AnthropicFallbackModel{Model: fb.FromModel}
+						contentBlock.To = &AnthropicFallbackModel{Model: fb.ToModel}
+						if fb.TriggerType != "" {
+							contentBlock.Trigger = &AnthropicFallbackTrigger{Type: fb.TriggerType, Category: fb.TriggerCategory}
+						}
 					}
 				} else if bifrostResp.Item.Type != nil {
 					switch *bifrostResp.Item.Type {
@@ -3124,6 +3204,12 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 					StopSequence: nil,
 				}
 			}
+			if sd := stopDetailsToAnthropic(bifrostResp.Response.StopDetails); sd != nil {
+				if anthropicContentDeltaEvent.Delta == nil {
+					anthropicContentDeltaEvent.Delta = &AnthropicStreamDelta{}
+				}
+				anthropicContentDeltaEvent.Delta.StopDetails = sd
+			}
 			// Re-emit the code-execution sandbox container on the message_delta.
 			if bifrostResp.Response.Container != nil {
 				if anthropicContentDeltaEvent.Delta == nil {
@@ -3193,6 +3279,14 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 					Text: bifrostResp.Delta,
 				}
 			}
+			if bifrostResp.Response != nil {
+				if sd := stopDetailsToAnthropic(bifrostResp.Response.StopDetails); sd != nil {
+					if streamResp.Delta == nil {
+						streamResp.Delta = &AnthropicStreamDelta{}
+					}
+					streamResp.Delta.StopDetails = sd
+				}
+			}
 
 			// Re-emit the code-execution sandbox container on message_delta (read
 			// straight off the event — Anthropic delivers it here natively).
@@ -3231,12 +3325,23 @@ func (req *AnthropicMessageRequest) ToBifrostResponsesRequest(ctx *schemas.Bifro
 	bifrostReq := &schemas.BifrostResponsesRequest{
 		Provider:  provider,
 		Model:     model,
-		Fallbacks: schemas.ParseFallbacks(req.Fallbacks),
+		Fallbacks: schemas.ParseFallbacks(req.bifrostFallbackModels()),
 	}
 
 	// Convert basic parameters
 	params := &schemas.ResponsesParameters{
 		ExtraParams: make(map[string]interface{}),
+	}
+
+	// Anthropic native server-side fallback ("fallbacks" objects) is forwarded to
+	// the provider verbatim, distinct from Bifrost cross-provider fallback above.
+	if native := req.nativeFallbacks(); len(native) > 0 {
+		params.ExtraParams["fallbacks"] = native
+	}
+
+	// Fallback credit token — carried verbatim so the retry can redeem it.
+	if req.FallbackCreditToken != nil {
+		params.ExtraParams["fallback_credit_token"] = *req.FallbackCreditToken
 	}
 
 	if req.MaxTokens > 0 {
@@ -3468,7 +3573,10 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 			// (output_config.format), so convert to a tool instead.
 			if bifrostReq.Provider == schemas.Vertex || bifrostReq.Provider == schemas.BedrockMantle || bifrostReq.Provider == schemas.Azure {
 				if bifrostReq.Params.Text.Format != nil {
-					responseFormatTool := convertResponsesTextFormatToTool(ctx, bifrostReq.Params.Text)
+					responseFormatTool, err := convertResponsesTextFormatToTool(ctx, bifrostReq.Params.Text)
+					if err != nil {
+						return nil, err
+					}
 					if responseFormatTool != nil {
 						if anthropicReq.Tools == nil {
 							anthropicReq.Tools = []AnthropicTool{}
@@ -3712,6 +3820,36 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 				}
 				anthropicReq.OutputConfig.TaskBudget = taskBudget
 			}
+			// Anthropic native server-side fallback: rebuild the typed field so it
+			// marshals as native "fallbacks" objects and drives beta-header injection.
+			if fbVal, exists := bifrostReq.Params.ExtraParams["fallbacks"]; exists {
+				delete(anthropicReq.ExtraParams, "fallbacks")
+				var natives []AnthropicNativeFallback
+				switch v := fbVal.(type) {
+				case []AnthropicNativeFallback:
+					natives = v
+				default:
+					if data, err := providerUtils.MarshalSorted(v); err == nil {
+						_ = sonic.Unmarshal(data, &natives)
+					}
+				}
+				if len(natives) > 0 {
+					entries := make([]AnthropicFallbackEntry, len(natives))
+					for i := range natives {
+						n := natives[i]
+						entries[i] = AnthropicFallbackEntry{Native: &n}
+					}
+					anthropicReq.Fallbacks = entries
+				}
+			}
+			// Fallback credit token: promote onto the typed field so it marshals
+			// top-level and drives beta-header injection.
+			if tokenVal, exists := bifrostReq.Params.ExtraParams["fallback_credit_token"]; exists {
+				delete(anthropicReq.ExtraParams, "fallback_credit_token")
+				if token, ok := tokenVal.(string); ok && token != "" {
+					anthropicReq.FallbackCreditToken = &token
+				}
+			}
 		}
 
 		// Convert tools
@@ -3780,6 +3918,7 @@ func ConvertAnthropicUsageToBifrostUsage(anthropicUsage *AnthropicUsage) *schema
 
 	bifrostUsage := &schemas.ResponsesResponseUsage{
 		Type:         anthropicUsage.Type,
+		Model:        anthropicUsage.Model,
 		InputTokens:  anthropicUsage.InputTokens,
 		OutputTokens: anthropicUsage.OutputTokens,
 		TotalTokens:  anthropicUsage.InputTokens + anthropicUsage.OutputTokens,
@@ -3819,6 +3958,15 @@ func ConvertAnthropicUsageToBifrostUsage(anthropicUsage *AnthropicUsage) *schema
 		bifrostUsage.OutputTokensDetails.NumSearchQueries = schemas.Ptr(anthropicUsage.ServerToolUse.WebSearchRequests)
 	}
 
+	// Extended-thinking token count. Already a subset of OutputTokens upstream, so it
+	// carries across unchanged and OutputTokens/TotalTokens are left alone.
+	if anthropicUsage.OutputTokensDetails != nil && anthropicUsage.OutputTokensDetails.ThinkingTokens > 0 {
+		if bifrostUsage.OutputTokensDetails == nil {
+			bifrostUsage.OutputTokensDetails = &schemas.ResponsesResponseOutputTokens{}
+		}
+		bifrostUsage.OutputTokensDetails.ReasoningTokens = anthropicUsage.OutputTokensDetails.ThinkingTokens
+	}
+
 	// Recursively convert iterations
 	if len(anthropicUsage.Iterations) > 0 {
 		bifrostUsage.Iterations = make([]schemas.ResponsesResponseUsage, len(anthropicUsage.Iterations))
@@ -3841,6 +3989,7 @@ func ConvertBifrostUsageToAnthropicUsage(bifrostUsage *schemas.ResponsesResponse
 
 	anthropicUsage := &AnthropicUsage{
 		Type:         bifrostUsage.Type,
+		Model:        bifrostUsage.Model,
 		InputTokens:  bifrostUsage.InputTokens,
 		OutputTokens: bifrostUsage.OutputTokens,
 	}
@@ -3870,6 +4019,15 @@ func ConvertBifrostUsageToAnthropicUsage(bifrostUsage *schemas.ResponsesResponse
 		}
 	}
 
+	// Reasoning tokens map back to Anthropic's thinking-token breakdown. Unlike the
+	// cache counters above, OutputTokens is not adjusted: thinking tokens are already
+	// inside it on both sides.
+	if bifrostUsage.OutputTokensDetails != nil && bifrostUsage.OutputTokensDetails.ReasoningTokens > 0 {
+		anthropicUsage.OutputTokensDetails = &AnthropicOutputTokensDetails{
+			ThinkingTokens: bifrostUsage.OutputTokensDetails.ReasoningTokens,
+		}
+	}
+
 	// Recursively convert iterations
 	if len(bifrostUsage.Iterations) > 0 {
 		anthropicUsage.Iterations = make([]AnthropicUsage, len(bifrostUsage.Iterations))
@@ -3881,6 +4039,36 @@ func ConvertBifrostUsageToAnthropicUsage(bifrostUsage *schemas.ResponsesResponse
 	}
 
 	return anthropicUsage
+}
+
+// stopDetailsToBifrost converts Anthropic stop_details to the neutral form (nil-safe).
+func stopDetailsToBifrost(d *AnthropicStopDetails) *schemas.ResponsesStopDetails {
+	if d == nil {
+		return nil
+	}
+	return &schemas.ResponsesStopDetails{
+		Type:                    d.Type,
+		Category:                d.Category,
+		Explanation:             d.Explanation,
+		RecommendedModel:        d.RecommendedModel,
+		FallbackCreditToken:     d.FallbackCreditToken,
+		FallbackHasPrefillClaim: d.FallbackHasPrefillClaim,
+	}
+}
+
+// stopDetailsToAnthropic converts neutral stop_details back to Anthropic form (nil-safe).
+func stopDetailsToAnthropic(d *schemas.ResponsesStopDetails) *AnthropicStopDetails {
+	if d == nil {
+		return nil
+	}
+	return &AnthropicStopDetails{
+		Type:                    d.Type,
+		Category:                d.Category,
+		Explanation:             d.Explanation,
+		RecommendedModel:        d.RecommendedModel,
+		FallbackCreditToken:     d.FallbackCreditToken,
+		FallbackHasPrefillClaim: d.FallbackHasPrefillClaim,
+	}
 }
 
 // ToBifrostResponsesResponse converts an Anthropic response to BifrostResponse with Responses structure
@@ -3897,6 +4085,10 @@ func (response *AnthropicMessageResponse) ToBifrostResponsesResponse(ctx *schema
 
 	// Convert usage information using common converter (handles iterations recursively)
 	bifrostResp.Usage = ConvertAnthropicUsageToBifrostUsage(response.Usage)
+
+	// Record the model that actually served the turn when server-side fallback
+	// handed off mid-request. Routing cannot see this, so pricing reads it here.
+	bifrostResp.ExtraFields.RoutingInfo.ServerSideFallbackModel = response.Usage.ServerSideFallbackModel()
 
 	// Convert content to Responses output messages using the new conversion method
 	if len(response.Content) > 0 {
@@ -3955,6 +4147,7 @@ func (response *AnthropicMessageResponse) ToBifrostResponsesResponse(ctx *schema
 		}
 		bifrostResp.StopReason = &mapped
 	}
+	bifrostResp.StopDetails = stopDetailsToBifrost(response.StopDetails)
 
 	if response.Usage != nil && response.Usage.ServiceTier != nil {
 		mapped := MapAnthropicServiceTierToBifrost(*response.Usage.ServiceTier)
@@ -4046,6 +4239,7 @@ func ToAnthropicResponsesResponse(ctx *schemas.BifrostContext, bifrostResp *sche
 			}
 		}
 	}
+	anthropicResp.StopDetails = stopDetailsToAnthropic(bifrostResp.StopDetails)
 
 	anthropicResp.Model = bifrostResp.Model
 
@@ -5190,6 +5384,32 @@ func convertAnthropicContentBlocksToResponsesMessages(ctx *schemas.BifrostContex
 				}
 				bifrostMessages = append(bifrostMessages, bifrostMsg)
 			}
+		case AnthropicContentBlockTypeFallback:
+			fallback := &schemas.ResponsesOutputMessageContentFallback{}
+			if block.From != nil {
+				fallback.FromModel = block.From.Model
+			}
+			if block.To != nil {
+				fallback.ToModel = block.To.Model
+			}
+			if block.Trigger != nil {
+				fallback.TriggerType = block.Trigger.Type
+				fallback.TriggerCategory = block.Trigger.Category
+			}
+			bifrostMessages = append(bifrostMessages, schemas.ResponsesMessage{
+				ID:     schemas.Ptr("fb_" + providerUtils.GetRandomString(50)),
+				Type:   schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+				Role:   role,
+				Status: schemas.Ptr("completed"),
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{
+						{
+							Type:                                  schemas.ResponsesOutputMessageContentTypeFallback,
+							ResponsesOutputMessageContentFallback: fallback,
+						},
+					},
+				},
+			})
 		case AnthropicContentBlockTypeText:
 			if block.Text != nil {
 				var bifrostMsg schemas.ResponsesMessage
@@ -7511,6 +7731,18 @@ func convertContentBlockToAnthropic(block schemas.ResponsesMessageContentBlock) 
 				},
 				CacheControl: block.CacheControl,
 			}
+		}
+	case schemas.ResponsesOutputMessageContentTypeFallback:
+		if fb := block.ResponsesOutputMessageContentFallback; fb != nil {
+			fallbackBlock := &AnthropicContentBlock{
+				Type: AnthropicContentBlockTypeFallback,
+				From: &AnthropicFallbackModel{Model: fb.FromModel},
+				To:   &AnthropicFallbackModel{Model: fb.ToModel},
+			}
+			if fb.TriggerType != "" {
+				fallbackBlock.Trigger = &AnthropicFallbackTrigger{Type: fb.TriggerType, Category: fb.TriggerCategory}
+			}
+			return fallbackBlock
 		}
 	case schemas.ResponsesInputMessageContentBlockTypeFile:
 		if block.ResponsesInputMessageContentBlockFile != nil || block.FileID != nil {

@@ -306,6 +306,21 @@ func newBifrostCtxDoneError(ctx *schemas.BifrostContext, stage string) *schemas.
 	}
 }
 
+// newBifrostQueueFullError creates a 503 BifrostError for requests dropped
+// because the provider queue is full and dropExcessRequests is enabled.
+func newBifrostQueueFullError() *schemas.BifrostError {
+	statusCode := 503
+	errorType := schemas.RequestDropped
+	return &schemas.BifrostError{
+		IsBifrostError: true,
+		StatusCode:     &statusCode,
+		Error: &schemas.ErrorField{
+			Type:    &errorType,
+			Message: "request dropped: queue is full",
+		},
+	}
+}
+
 // newBifrostMessageChan creates a channel that sends a bifrost response.
 // It is used to send a bifrost response to the client.
 func newBifrostMessageChan(message *schemas.BifrostResponse) chan *schemas.BifrostStreamChunk {

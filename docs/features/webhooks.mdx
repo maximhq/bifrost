@@ -81,6 +81,8 @@ The body:
 | `data.result_url` | Relative path to fetch the full result. `GET` it through Bifrost with your usual auth, before `result_expires_at`. |
 | `data.response` | The full job response, inlined only when the endpoint sets `include_response` and the response fits `max_response_payload_kbs`. |
 | `data.response_omitted` | `true` when a response was too large to inline; fetch it via `result_url` instead. |
+| `data.error` | The job's error body, inlined only when the endpoint sets `include_response` and it fits `max_response_payload_kbs`. Present only for `async_job.failed`. |
+| `data.error_omitted` | `true` when an error was too large to inline; fetch it via `result_url` instead. |
 | `data.result_expired` | `true` when the job's result was already gone at delivery time — the outcome is known, but there is nothing left to fetch. |
 
 ---
@@ -230,7 +232,7 @@ Each endpoint exposes per-endpoint controls. All are optional and fall back to t
 | `retry_backoff_initial_seconds` | `30` | Delay before the first retry; each further retry doubles it. |
 | `retry_backoff_max_seconds` | `1800` | Cap on the per-retry delay. |
 | `attempt_timeout_seconds` | `10` | End-to-end bound for a single delivery attempt. |
-| `max_response_payload_kbs` | `256` | Cap for inlined responses when `include_response` is set. Oversized responses are omitted and flagged with `response_omitted`. |
+| `max_response_payload_kbs` | `256` | Cap for inlined response/error payloads when `include_response` is set. Oversized values are omitted and flagged with `response_omitted`/`error_omitted`. |
 | `max_concurrent_deliveries` | `10` | Concurrent in-flight deliveries to this endpoint, per node. |
 
 ---

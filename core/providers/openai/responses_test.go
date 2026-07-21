@@ -2225,3 +2225,75 @@ func TestToOpenAIResponsesRequest_DefaultsImageDetail(t *testing.T) {
 		t.Errorf("caller's input was mutated: detail = %q", *original.Detail)
 	}
 }
+
+// TestToOpenAIResponsesRequest_FallbackBlockDropped verifies that Anthropic's
+// server-side fallback boundary marker never reaches OpenAI. Unlike a compaction
+// block (which is promoted to text), it carries no user content, so it is dropped.
+func TestToOpenAIResponsesRequest_FallbackBlockDropped(t *testing.T) {
+	t.Run("fallback block is dropped, surrounding content survives", func(t *testing.T) {
+		bifrostReq := &schemas.BifrostResponsesRequest{
+			Model: "gpt-5.5",
+			Input: []schemas.ResponsesMessage{{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{
+						{
+							Type: schemas.ResponsesOutputMessageContentTypeFallback,
+							ResponsesOutputMessageContentFallback: &schemas.ResponsesOutputMessageContentFallback{
+								FromModel: "claude-fable-5",
+								ToModel:   "claude-opus-4-8",
+							},
+						},
+						{Type: schemas.ResponsesOutputMessageContentTypeText, Text: schemas.Ptr("Hi there")},
+					},
+				},
+			}},
+		}
+
+		result := ToOpenAIResponsesRequest(nil, bifrostReq)
+		if result == nil || len(result.Input.OpenAIResponsesRequestInputArray) != 1 {
+			t.Fatalf("expected one converted input message, got %#v", result)
+		}
+		msg := result.Input.OpenAIResponsesRequestInputArray[0]
+		if msg.Content == nil {
+			t.Fatal("expected converted message to retain content")
+		}
+		for _, b := range msg.Content.ContentBlocks {
+			if b.Type == schemas.ResponsesOutputMessageContentTypeFallback {
+				t.Fatalf("fallback block leaked to OpenAI: %#v", msg.Content.ContentBlocks)
+			}
+			// The marker must not be smuggled through as text either.
+			if b.Text != nil && strings.Contains(*b.Text, "claude-fable-5") {
+				t.Fatalf("fallback marker rendered as text: %q", *b.Text)
+			}
+		}
+		if len(msg.Content.ContentBlocks) != 1 || msg.Content.ContentBlocks[0].Text == nil || *msg.Content.ContentBlocks[0].Text != "Hi there" {
+			t.Fatalf("expected only the surviving text block, got %#v", msg.Content.ContentBlocks)
+		}
+	})
+
+	t.Run("message with only a fallback block is skipped entirely", func(t *testing.T) {
+		bifrostReq := &schemas.BifrostResponsesRequest{
+			Model: "gpt-5.5",
+			Input: []schemas.ResponsesMessage{{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+						Type: schemas.ResponsesOutputMessageContentTypeFallback,
+						ResponsesOutputMessageContentFallback: &schemas.ResponsesOutputMessageContentFallback{
+							FromModel: "claude-fable-5",
+							ToModel:   "claude-opus-4-8",
+						},
+					}},
+				},
+			}},
+		}
+
+		result := ToOpenAIResponsesRequest(nil, bifrostReq)
+		if result != nil && len(result.Input.OpenAIResponsesRequestInputArray) != 0 {
+			t.Fatalf("expected the fallback-only message to be skipped, got %#v", result.Input.OpenAIResponsesRequestInputArray)
+		}
+	})
+}

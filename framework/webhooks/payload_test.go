@@ -29,6 +29,22 @@ func testAsyncJob() *logstore.AsyncJob {
 	}
 }
 
+func testFailedAsyncJob() *logstore.AsyncJob {
+	created := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	completed := created.Add(time.Minute)
+	expires := completed.Add(time.Hour)
+	return &logstore.AsyncJob{
+		ID:          "job-1",
+		Status:      schemas.AsyncJobStatusFailed,
+		RequestType: schemas.ChatCompletionRequest,
+		Error:       `{"error":{"message":"upstream timed out"}}`,
+		StatusCode:  500,
+		CreatedAt:   created,
+		CompletedAt: &completed,
+		ExpiresAt:   &expires,
+	}
+}
+
 func decodeEnvelope(t *testing.T, body []byte) map[string]any {
 	t.Helper()
 	var envelope map[string]any
@@ -52,6 +68,8 @@ func TestRenderPayloadThin(t *testing.T) {
 	assert.Contains(t, data, "result_expires_at")
 	assert.NotContains(t, data, "response")
 	assert.NotContains(t, data, "response_omitted")
+	assert.NotContains(t, data, "error")
+	assert.NotContains(t, data, "error_omitted")
 	assert.NotContains(t, data, "result_expired")
 }
 
@@ -72,6 +90,34 @@ func TestRenderPayloadIncludeResponse(t *testing.T) {
 	data = decodeEnvelope(t, body)["data"].(map[string]any)
 	assert.NotContains(t, data, "response")
 	assert.Equal(t, true, data["response_omitted"])
+}
+
+func TestRenderPayloadIncludeError(t *testing.T) {
+	now := time.Now().UTC()
+	job := testFailedAsyncJob()
+
+	// A failed job's error is inlined the same way a completed job's
+	// response is, gated by the same includeResponse toggle.
+	body, err := renderPayload(job, tables.WebhookEventAsyncJobFailed, true, 256*1024, now)
+	require.NoError(t, err)
+	data := decodeEnvelope(t, body)["data"].(map[string]any)
+	require.Contains(t, data, "error")
+	assert.NotContains(t, data, "error_omitted")
+	assert.NotContains(t, data, "response")
+
+	// The toggle gates the error the same way it gates the response.
+	body, err = renderPayload(job, tables.WebhookEventAsyncJobFailed, false, 256*1024, now)
+	require.NoError(t, err)
+	data = decodeEnvelope(t, body)["data"].(map[string]any)
+	assert.NotContains(t, data, "error")
+
+	// An oversized error is dropped and flagged instead of inlined.
+	job.Error = `{"error":{"message":"` + strings.Repeat("x", 2048) + `"}}`
+	body, err = renderPayload(job, tables.WebhookEventAsyncJobFailed, true, 1024, now)
+	require.NoError(t, err)
+	data = decodeEnvelope(t, body)["data"].(map[string]any)
+	assert.NotContains(t, data, "error")
+	assert.Equal(t, true, data["error_omitted"])
 }
 
 func TestRenderExpiredPayload(t *testing.T) {

@@ -2355,6 +2355,7 @@
                       "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
                       "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
                       "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
+                      "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
                       "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"},
                       "provisioningToken": {"$ref": "#/$defs/scim_provisioning_token"}
                     },
@@ -2427,6 +2428,7 @@
                       "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
                       "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
                       "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
+                      "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
                       "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"},
                       "provisioningToken": {"$ref": "#/$defs/scim_provisioning_token"}
                     },
@@ -2493,6 +2495,7 @@
                       "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
                       "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
                       "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
+                      "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
                       "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"}
                     },
                     "required": ["serverUrl", "realm", "clientId", "clientSecret"],
@@ -2557,6 +2560,7 @@
                       "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
                       "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
                       "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
+                      "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
                       "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"}
                     },
                     "required": ["domain", "clientId"],
@@ -2631,6 +2635,7 @@
                       "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
                       "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
                       "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
+                      "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
                       "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"}
                     },
                     "required": ["domain", "clientId"],
@@ -2727,6 +2732,7 @@
                       "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
                       "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
                       "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
+                      "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
                       "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"},
                       "provisioningToken": {"$ref": "#/$defs/scim_provisioning_token"}
                     },
@@ -2798,6 +2804,7 @@
                       "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
                       "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
                       "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
+                      "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
                       "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"},
                       "provisioningToken": {"$ref": "#/$defs/scim_provisioning_token"}
                     },
@@ -2928,6 +2935,13 @@
                     "enum": ["bundled", "per_turn"],
                     "default": "bundled",
                     "description": "How the rule's turns are sent to its guardrail providers. 'bundled' (default) concatenates all turns into one guardrail call. 'per_turn' sends each turn in its own call, evaluated in isolation, to avoid context-sensitive classifiers (e.g. Bedrock prompt-attack) combining unrelated turns into a false-positive block; this scans every turn but uses more provider calls."
+                  },
+                  "stream_replay_event_interval_ms": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 1000,
+                    "default": 0,
+                    "description": "Delay in milliseconds between consecutive buffered events after block-capable streaming output guardrails allow the response. 0 sends the buffered events immediately."
                   },
                   "provider_config_ids": {
                     "type": "array",
@@ -3636,7 +3650,7 @@
               "max_response_payload_kbs": {
                 "type": "integer",
                 "minimum": 1,
-                "description": "Cap for inlined response payloads in KB when include_response is set (default: 256). Oversized responses are omitted and flagged with response_omitted."
+                "description": "Cap for inlined response/error payloads in KB when include_response is set (default: 256). Oversized values are omitted and flagged with response_omitted/error_omitted."
               },
               "max_concurrent_deliveries": {
                 "type": "integer",
@@ -5112,6 +5126,11 @@
         "use_for_batch_api": {
           "type": "boolean"
         },
+        "use_anthropic_endpoints": {
+          "type": "boolean",
+          "description": "For deepseek, fireworks, vllm, and sgl keys: route chat completions and responses requests through Anthropic-compatible endpoints.",
+          "default": false
+        },
         "azure_key_config": {
           "type": "object",
           "properties": {
@@ -5387,6 +5406,10 @@
                   "use_deployments_endpoint": {
                     "type": "boolean",
                     "description": "Replicate: use the deployments endpoint instead of the predictions endpoint for this alias."
+                  },
+                  "use_anthropic_endpoints": {
+                    "type": "boolean",
+                    "description": "Routes chat completions and responses requests through Anthropic-compatible endpoints."
                   }
                 },
                 "required": ["model_id"],
@@ -6394,6 +6417,107 @@
     "scim_provisioning_token": {
       "type": "string",
       "description": "Bearer token that inbound SCIM 2.0 provisioning clients (the IdP's SCIM app) must present in the Authorization header to push users and groups to Bifrost. Normally minted in the dashboard (Governance -> User Provisioning) and shown once, but may be seeded here for declarative/GitOps deployments; supports the env. prefix for environment-variable references. Generate one with: openssl rand -base64 32 | tr '+/' '-_' | tr -d '='"
+    },
+    "scim_auth_proxy": {
+      "type": "object",
+      "description": "Identity-aware proxy (IAP) fronting this SCIM/SSO provider — e.g. Cloudflare Access, a generic OIDC proxy, or AWS ALB (Zero Trust / ZTNA). When enabled, Bifrost takes the login credential from the proxy's header and validates it against the proxy's own keys (not the IdP's), then feeds the resulting claims into the active provider's mapping. Shared across every provider. Renders into scim_config.config.authProxy.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Turn the auth-proxy layer on. When false the rest of this block is ignored."
+        },
+        "provider": {
+          "type": "string",
+          "enum": ["cloudflare-access", "generic", "aws-alb"],
+          "default": "cloudflare-access",
+          "description": "Proxy type. 'cloudflare-access' and 'generic' validate OIDC RS256 tokens via JWKS; 'aws-alb' validates ES256 tokens from an AWS ALB via the regional per-kid public key."
+        },
+        "mode": {
+          "type": "string",
+          "enum": ["full", "login_only"],
+          "default": "login_only",
+          "description": "'login_only' (default) authenticates an already-provisioned user by identity (email/sub) without deriving permissions from the token. 'full' also runs attribute→role/team/business-unit mapping from the proxy token's claims — the IdP claims used for mapping must be passed through into the proxy-signed token."
+        },
+        "headerName": {
+          "type": "string",
+          "description": "Request header carrying the proxy token. Defaults per provider (cloudflare-access: Cf-Access-Jwt-Assertion, aws-alb: x-amzn-oidc-data); required for the generic provider. Supports the env. prefix."
+        },
+        "issuerUrl": {
+          "type": "string",
+          "description": "Proxy issuer URL, e.g. https://<team>.cloudflareaccess.com. Required for the cloudflare-access and generic providers; must be https. Supports the env. prefix."
+        },
+        "jwksUrl": {
+          "type": "string",
+          "description": "Explicit JWKS URL for JWKS providers. Derived from issuerUrl for cloudflare-access; empty means OIDC discovery from the issuer (generic). Must be https. Supports the env. prefix."
+        },
+        "audience": {
+          "type": "string",
+          "description": "Expected token audience (aud) for JWKS providers, binding the token to this application. Required unless allowedAudiences is set. Supports the env. prefix."
+        },
+        "allowedAudiences": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Alternative to a single audience: a list of accepted audiences. Must not contain blank entries."
+        },
+        "region": {
+          "type": "string",
+          "description": "AWS ALB only: region for the public-key endpoint. Derived from the signer ARN when empty. Supports the env. prefix."
+        },
+        "expectedSigner": {
+          "type": "string",
+          "description": "AWS ALB only: the ALB ARN to pin the token's signer to. Required for the aws-alb provider — the regional key signs tokens for every ALB in the region, so without this pin any ALB could mint an accepted token. Supports the env. prefix."
+        },
+        "publicKeyBaseUrl": {
+          "type": "string",
+          "description": "AWS ALB only: override base URL for the public-key endpoint (keys fetched from <base>/<kid>). Needed for partitions like GovCloud whose endpoint differs from the standard region-derived URL; must be https. Supports the env. prefix."
+        },
+        "userIdClaim": {
+          "type": "string",
+          "description": "Token claim used as the user identity. Default 'email'. Supports the env. prefix."
+        }
+      },
+      "required": ["enabled"],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": { "enabled": { "const": true }, "provider": { "const": "aws-alb" } },
+            "required": ["enabled", "provider"]
+          },
+          "then": { "required": ["expectedSigner"] }
+        },
+        {
+          "if": {
+            "properties": { "enabled": { "const": true }, "provider": { "const": "generic" } },
+            "required": ["enabled", "provider"]
+          },
+          "then": {
+            "required": ["issuerUrl", "headerName"],
+            "anyOf": [{ "required": ["audience"] }, { "required": ["allowedAudiences"] }]
+          }
+        },
+        {
+          "if": {
+            "properties": { "enabled": { "const": true }, "provider": { "const": "cloudflare-access" } },
+            "required": ["enabled", "provider"]
+          },
+          "then": {
+            "required": ["issuerUrl"],
+            "anyOf": [{ "required": ["audience"] }, { "required": ["allowedAudiences"] }]
+          }
+        },
+        {
+          "if": {
+            "properties": { "enabled": { "const": true } },
+            "required": ["enabled"],
+            "not": { "required": ["provider"] }
+          },
+          "then": {
+            "required": ["issuerUrl"],
+            "anyOf": [{ "required": ["audience"] }, { "required": ["allowedAudiences"] }]
+          }
+        }
+      ]
     }
   }
 }

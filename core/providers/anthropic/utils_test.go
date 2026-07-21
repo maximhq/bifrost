@@ -614,9 +614,9 @@ func TestConvertResponsesTextConfigToAnthropicOutputFormatPreservesSchemaRefs(t 
 			Type: "json_schema",
 			JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
 				Type:       &schemaType,
-				Properties: &properties,
+				Properties: schemas.OrderedMapFromMap(properties),
 				Required:   []string{"record"},
-				Defs:       &defs,
+				Defs:       schemas.OrderedMapFromMap(defs),
 			},
 		},
 	})
@@ -679,9 +679,9 @@ func TestConvertResponsesTextConfigToAnthropicOutputFormatPreservesLegacyDefinit
 			Type: "json_schema",
 			JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
 				Type:        &schemaType,
-				Properties:  &properties,
+				Properties:  schemas.OrderedMapFromMap(properties),
 				Required:    []string{"record"},
-				Definitions: &definitions,
+				Definitions: schemas.OrderedMapFromMap(definitions),
 			},
 		},
 	})
@@ -2194,6 +2194,245 @@ func TestGetRequestBodyForResponses_RawBodyStripsFallbacks(t *testing.T) {
 	if !providerUtils.GetJSONField(result, "temperature").Exists() {
 		t.Error("expected 'temperature' to be present")
 	}
+}
+
+// TestAnthropicFallbackEntry_UnmarshalJSON verifies the overloaded "fallbacks"
+// field disambiguates Bifrost cross-provider strings from Anthropic native objects.
+func TestAnthropicFallbackEntry_UnmarshalJSON(t *testing.T) {
+	t.Run("string entry is a Bifrost fallback", func(t *testing.T) {
+		var e AnthropicFallbackEntry
+		if err := sonic.Unmarshal([]byte(`"openai/gpt-4o"`), &e); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if e.Native != nil {
+			t.Errorf("expected Native nil, got %+v", e.Native)
+		}
+		if e.BifrostModel != "openai/gpt-4o" {
+			t.Errorf("expected BifrostModel openai/gpt-4o, got %q", e.BifrostModel)
+		}
+	})
+
+	t.Run("object entry is a native fallback", func(t *testing.T) {
+		var e AnthropicFallbackEntry
+		if err := sonic.Unmarshal([]byte(`{"model":"claude-opus-4-8","max_tokens":512}`), &e); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if e.BifrostModel != "" {
+			t.Errorf("expected empty BifrostModel, got %q", e.BifrostModel)
+		}
+		if e.Native == nil || e.Native.Model != "claude-opus-4-8" {
+			t.Fatalf("expected native model claude-opus-4-8, got %+v", e.Native)
+		}
+		if e.Native.MaxTokens == nil || *e.Native.MaxTokens != 512 {
+			t.Errorf("expected max_tokens 512, got %+v", e.Native.MaxTokens)
+		}
+	})
+
+	t.Run("marshal round-trips both forms", func(t *testing.T) {
+		str := AnthropicFallbackEntry{BifrostModel: "anthropic/claude-sonnet-4-5"}
+		if data, err := sonic.Marshal(str); err != nil {
+			t.Fatalf("marshal string: %v", err)
+		} else if string(data) != `"anthropic/claude-sonnet-4-5"` {
+			t.Errorf("unexpected string marshal: %s", data)
+		}
+		obj := AnthropicFallbackEntry{Native: &AnthropicNativeFallback{Model: "claude-opus-4-8"}}
+		if data, err := sonic.Marshal(obj); err != nil {
+			t.Fatalf("marshal object: %v", err)
+		} else if !gjson.GetBytes(data, "model").Exists() {
+			t.Errorf("expected object marshal with model, got: %s", data)
+		}
+	})
+}
+
+// TestAnthropicMessageRequest_NativeFallbacksParse is the regression for the
+// reported "Invalid JSON": a request carrying Anthropic's native fallbacks shape
+// must parse instead of failing to unmarshal into the old []string field.
+func TestAnthropicMessageRequest_NativeFallbacksParse(t *testing.T) {
+	body := []byte(`{"model":"claude-fable-5","max_tokens":1024,"messages":[{"role":"user","content":"hi"}],"fallbacks":[{"model":"claude-opus-4-8"}]}`)
+
+	var req AnthropicMessageRequest
+	if err := sonic.Unmarshal(body, &req); err != nil {
+		t.Fatalf("native fallbacks must parse, got error: %v", err)
+	}
+	native := req.nativeFallbacks()
+	if len(native) != 1 || native[0].Model != "claude-opus-4-8" {
+		t.Fatalf("expected one native fallback claude-opus-4-8, got %+v", native)
+	}
+	if len(req.bifrostFallbackModels()) != 0 {
+		t.Errorf("expected no bifrost fallbacks, got %v", req.bifrostFallbackModels())
+	}
+
+	// Bifrost string form still parses as a cross-provider fallback.
+	var bifrostReq AnthropicMessageRequest
+	if err := sonic.Unmarshal([]byte(`{"model":"anthropic/claude-sonnet-4-5","fallbacks":["openai/gpt-4o"]}`), &bifrostReq); err != nil {
+		t.Fatalf("bifrost fallbacks must parse, got error: %v", err)
+	}
+	if got := bifrostReq.bifrostFallbackModels(); len(got) != 1 || got[0] != "openai/gpt-4o" {
+		t.Errorf("expected bifrost fallback openai/gpt-4o, got %v", got)
+	}
+	if len(bifrostReq.nativeFallbacks()) != 0 {
+		t.Errorf("expected no native fallbacks, got %v", bifrostReq.nativeFallbacks())
+	}
+}
+
+// TestToBifrostResponsesRequest_FallbacksRouting verifies fallbacks route by shape:
+// Bifrost strings become BifrostResponsesRequest.Fallbacks; native objects are
+// carried in ExtraParams for verbatim forwarding to Anthropic.
+func TestToBifrostResponsesRequest_FallbacksRouting(t *testing.T) {
+	t.Run("native objects go to ExtraParams", func(t *testing.T) {
+		req := &AnthropicMessageRequest{
+			Model:     "claude-fable-5",
+			MaxTokens: 1024,
+			Fallbacks: []AnthropicFallbackEntry{{Native: &AnthropicNativeFallback{Model: "claude-opus-4-8"}}},
+		}
+		out := req.ToBifrostResponsesRequest(nil)
+		if len(out.Fallbacks) != 0 {
+			t.Errorf("expected no bifrost fallbacks, got %+v", out.Fallbacks)
+		}
+		native, ok := out.Params.ExtraParams["fallbacks"].([]AnthropicNativeFallback)
+		if !ok || len(native) != 1 || native[0].Model != "claude-opus-4-8" {
+			t.Fatalf("expected native fallback in ExtraParams, got %#v", out.Params.ExtraParams["fallbacks"])
+		}
+	})
+
+	t.Run("bifrost strings go to Fallbacks", func(t *testing.T) {
+		req := &AnthropicMessageRequest{
+			Model:     "anthropic/claude-sonnet-4-5",
+			Fallbacks: []AnthropicFallbackEntry{{BifrostModel: "openai/gpt-4o"}},
+		}
+		out := req.ToBifrostResponsesRequest(nil)
+		if len(out.Fallbacks) != 1 || out.Fallbacks[0].Provider != schemas.OpenAI || out.Fallbacks[0].Model != "gpt-4o" {
+			t.Fatalf("expected parsed bifrost fallback openai/gpt-4o, got %+v", out.Fallbacks)
+		}
+		if _, exists := out.Params.ExtraParams["fallbacks"]; exists {
+			t.Errorf("expected no native fallbacks in ExtraParams")
+		}
+	})
+}
+
+// TestAddMissingBetaHeadersToContext_ServerSideFallback verifies the beta header
+// is auto-added for native fallbacks on Anthropic and gated off on providers that
+// do not support the feature.
+func TestAddMissingBetaHeadersToContext_ServerSideFallback(t *testing.T) {
+	t.Run("anthropic adds the beta header", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		req := &AnthropicMessageRequest{
+			Fallbacks: []AnthropicFallbackEntry{{Native: &AnthropicNativeFallback{Model: "claude-opus-4-8"}}},
+		}
+		AddMissingBetaHeadersToContext(ctx, req, schemas.Anthropic)
+		extraHeaders, _ := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
+		if !slices.Contains(extraHeaders[AnthropicBetaHeader], AnthropicServerSideFallbackBetaHeader) {
+			t.Errorf("expected %q, got %v", AnthropicServerSideFallbackBetaHeader, extraHeaders[AnthropicBetaHeader])
+		}
+	})
+
+	t.Run("vertex does not add the beta header", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		req := &AnthropicMessageRequest{
+			Fallbacks: []AnthropicFallbackEntry{{Native: &AnthropicNativeFallback{Model: "claude-opus-4-8"}}},
+		}
+		AddMissingBetaHeadersToContext(ctx, req, schemas.Vertex)
+		extraHeaders, _ := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
+		if slices.Contains(extraHeaders[AnthropicBetaHeader], AnthropicServerSideFallbackBetaHeader) {
+			t.Errorf("did not expect server-side-fallback header on Vertex, got %v", extraHeaders[AnthropicBetaHeader])
+		}
+	})
+
+	t.Run("bifrost string fallbacks do not add the beta header", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		req := &AnthropicMessageRequest{
+			Fallbacks: []AnthropicFallbackEntry{{BifrostModel: "openai/gpt-4o"}},
+		}
+		AddMissingBetaHeadersToContext(ctx, req, schemas.Anthropic)
+		extraHeaders, _ := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
+		if slices.Contains(extraHeaders[AnthropicBetaHeader], AnthropicServerSideFallbackBetaHeader) {
+			t.Errorf("did not expect server-side-fallback header for bifrost fallbacks, got %v", extraHeaders[AnthropicBetaHeader])
+		}
+	})
+}
+
+// TestBuildAnthropicResponsesRequestBody_NativeFallbacks covers the end-to-end
+// body assembly for both the raw-passthrough and typed paths.
+func TestBuildAnthropicResponsesRequestBody_NativeFallbacks(t *testing.T) {
+	t.Run("raw path preserves native fallbacks and injects beta header", func(t *testing.T) {
+		rawBody := []byte(`{"model":"claude-fable-5","max_tokens":1024,"messages":[{"role":"user","content":"hi"}],"fallbacks":[{"model":"claude-opus-4-8"}]}`)
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+
+		request := &schemas.BifrostResponsesRequest{
+			Provider:       schemas.Anthropic,
+			Model:          "claude-fable-5",
+			RawRequestBody: rawBody,
+		}
+		result, bifrostErr := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
+			Provider: schemas.Anthropic,
+		})
+		if bifrostErr != nil {
+			t.Fatalf("unexpected error: %v", bifrostErr)
+		}
+		fb := gjson.GetBytes(result, "fallbacks")
+		if !fb.IsArray() || len(fb.Array()) != 1 || fb.Array()[0].Get("model").String() != "claude-opus-4-8" {
+			t.Errorf("expected native fallbacks preserved, got: %s", fb.Raw)
+		}
+		extraHeaders, _ := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
+		if !slices.Contains(extraHeaders[AnthropicBetaHeader], AnthropicServerSideFallbackBetaHeader) {
+			t.Errorf("expected beta header injected, got %v", extraHeaders[AnthropicBetaHeader])
+		}
+	})
+
+	t.Run("raw path still strips bifrost string fallbacks", func(t *testing.T) {
+		rawBody := []byte(`{"model":"claude-sonnet-4-5","max_tokens":1024,"messages":[{"role":"user","content":"hi"}],"fallbacks":["anthropic/claude-haiku-4-5"]}`)
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+
+		request := &schemas.BifrostResponsesRequest{
+			Provider:       schemas.Anthropic,
+			Model:          "claude-sonnet-4-5",
+			RawRequestBody: rawBody,
+		}
+		result, bifrostErr := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
+			Provider: schemas.Anthropic,
+		})
+		if bifrostErr != nil {
+			t.Fatalf("unexpected error: %v", bifrostErr)
+		}
+		if gjson.GetBytes(result, "fallbacks").Exists() {
+			t.Errorf("expected bifrost fallbacks stripped, got: %s", result)
+		}
+	})
+
+	t.Run("typed path emits native fallbacks and injects beta header", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		maxTokens := 1024
+		request := &schemas.BifrostResponsesRequest{
+			Provider: schemas.Anthropic,
+			Model:    "claude-fable-5",
+			Input: []schemas.ResponsesMessage{{
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+			}},
+			Params: &schemas.ResponsesParameters{
+				MaxOutputTokens: &maxTokens,
+				ExtraParams: map[string]interface{}{
+					"fallbacks": []AnthropicNativeFallback{{Model: "claude-opus-4-8"}},
+				},
+			},
+		}
+		result, bifrostErr := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
+			Provider: schemas.Anthropic,
+		})
+		if bifrostErr != nil {
+			t.Fatalf("unexpected error: %v", bifrostErr)
+		}
+		fb := gjson.GetBytes(result, "fallbacks")
+		if !fb.IsArray() || len(fb.Array()) != 1 || fb.Array()[0].Get("model").String() != "claude-opus-4-8" {
+			t.Errorf("expected native fallbacks emitted, got: %s", fb.Raw)
+		}
+		extraHeaders, _ := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
+		if !slices.Contains(extraHeaders[AnthropicBetaHeader], AnthropicServerSideFallbackBetaHeader) {
+			t.Errorf("expected beta header injected, got %v", extraHeaders[AnthropicBetaHeader])
+		}
+	})
 }
 
 func TestApplyMCPToolsetConfigToBifrostTool(t *testing.T) {
@@ -3712,5 +3951,56 @@ func TestResponsesStream_TerminalChunkCarriesServedModifiers(t *testing.T) {
 	}
 	if finalResp.Usage.InputTokensDetails == nil || finalResp.Usage.InputTokensDetails.CachedWriteTokens != 44667 {
 		t.Fatal("terminal billed chunk missing cache-creation tokens")
+	}
+}
+
+// TestConvertChatResponseFormatToTool_OrderedMapSchema verifies the
+// Responses→Chat fallback path: mux's ToChatRequest builds response_format with
+// OrderedMap-valued schema fields (order-preserving), and the structured-output
+// tool conversion must handle them rather than silently dropping the schema.
+func TestConvertChatResponseFormatToTool_OrderedMapSchema(t *testing.T) {
+	props := schemas.NewOrderedMapFromPairs(
+		schemas.KV("type", map[string]interface{}{"const": "text"}),
+		schemas.KV("text", map[string]interface{}{"type": []interface{}{"string", "integer"}}),
+	)
+	// The schema arrives as an OrderedMap (mux's ToChatRequest emits the
+	// order-preserving form of the client's Responses schema).
+	schemaOM := schemas.NewOrderedMapFromPairs(
+		schemas.KV("type", "object"),
+		schemas.KV("properties", props),
+		schemas.KV("required", []string{"type", "text"}),
+	)
+	var responseFormat interface{} = map[string]interface{}{
+		"type": "json_schema",
+		"json_schema": map[string]interface{}{
+			"name":   "reply",
+			"schema": schemaOM,
+		},
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	tool := convertChatResponseFormatToTool(ctx, &schemas.ChatParameters{ResponseFormat: &responseFormat})
+	if tool == nil {
+		t.Fatal("OrderedMap-valued schema must not be dropped")
+	}
+	if tool.InputSchema == nil || tool.InputSchema.Properties == nil {
+		t.Fatal("expected input schema with properties")
+	}
+	keys := tool.InputSchema.Properties.Keys()
+	if !reflect.DeepEqual(keys, []string{"type", "text"}) {
+		t.Fatalf("property order must be preserved through the fallback conversion, got %v", keys)
+	}
+
+	// The recursion must descend into OrderedMap values: Anthropic does not
+	// accept multi-type arrays, so ["string","integer"] must become anyOf.
+	textProp, ok := tool.InputSchema.Properties.Get("text")
+	if !ok {
+		t.Fatal("text property missing")
+	}
+	normalizedText, ok := schemas.SafeExtractOrderedMap(textProp)
+	if !ok {
+		t.Fatalf("text property should be a schema object, got %T", textProp)
+	}
+	if _, hasAnyOf := normalizedText.Get("anyOf"); !hasAnyOf {
+		t.Fatal("nested multi-type union must be normalized to anyOf (recursion must descend into OrderedMap values)")
 	}
 }

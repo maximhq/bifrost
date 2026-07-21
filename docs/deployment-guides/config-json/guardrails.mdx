@@ -572,6 +572,8 @@ Any field marked **env.\* supported** accepts a bare `"env.VAR_NAME"` string in 
 
 Rules are CEL expressions that fire when their condition matches. Available CEL variables:
 
+For block-capable streaming output rules, `stream_replay_event_interval_ms` sets the delay between consecutive buffered events after the response is allowed. It defaults to `0`, which sends all buffered events immediately; the dashboard initializes it to `25` when pacing is enabled. When multiple matched block-capable rules specify different positive values, Bifrost uses the largest interval.
+
 | Variable | Type | Description |
 |----------|------|-------------|
 | `model` | `string` | Model name from the request |
@@ -605,6 +607,7 @@ Rules are CEL expressions that fire when their condition matches. Available CEL 
         "apply_to": "output",
         "sampling_rate": 100,
         "timeout": 15,
+        "stream_replay_event_interval_ms": 25,
         "provider_config_ids": [3]
       },
       {
