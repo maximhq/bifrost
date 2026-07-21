@@ -57,8 +57,13 @@ type mockRotateConfigStore struct {
 	configstore.ConfigStore
 	virtualKeys  map[string]*configstoreTables.TableVirtualKey
 	modelConfigs map[string]*configstoreTables.TableModelConfig
+	clientConfig *configstore.ClientConfig
 	updates      int
 	updateErr    error
+}
+
+func (m *mockRotateConfigStore) GetClientConfig(_ context.Context) (*configstore.ClientConfig, error) {
+	return m.clientConfig, nil
 }
 
 func cloneTestVirtualKey(vk *configstoreTables.TableVirtualKey) *configstoreTables.TableVirtualKey {
@@ -90,6 +95,14 @@ func (m *mockRotateConfigStore) UpdateVirtualKey(_ context.Context, virtualKey *
 	}
 	updated := cloneTestVirtualKey(existing)
 	updated.Value = virtualKey.Value
+	// Mirror RDBConfigStore.UpdateVirtualKey: rotation fields are authoritative
+	// when the caller performs a rotation (RotatedAt set), carried over otherwise.
+	if virtualKey.RotatedAt != nil {
+		updated.PreviousValue = virtualKey.PreviousValue
+		updated.PreviousValueHash = virtualKey.PreviousValueHash
+		updated.PreviousValueExpiresAt = virtualKey.PreviousValueExpiresAt
+		updated.RotatedAt = virtualKey.RotatedAt
+	}
 	m.virtualKeys[virtualKey.ID] = updated
 	m.updates++
 	return nil
@@ -1108,6 +1121,95 @@ func TestRotateVirtualKey_OnlyChangesValueAndReloads(t *testing.T) {
 	}
 	if resp.VirtualKey.Value.GetValue() != updated.Value.GetValue() {
 		t.Fatalf("response value = %q, want %q", resp.VirtualKey.Value.GetValue(), updated.Value.GetValue())
+	}
+}
+
+func TestRotateVirtualKey_CooldownStoresPreviousValue(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	store := &mockRotateConfigStore{
+		virtualKeys: map[string]*configstoreTables.TableVirtualKey{
+			"vk-1": {
+				ID:    "vk-1",
+				Name:  "Production",
+				Value: *schemas.NewSecretVar("sk-bf-old"),
+			},
+		},
+		clientConfig: &configstore.ClientConfig{
+			VKRotationCooldown: schemas.Duration(5 * time.Minute),
+		},
+	}
+	manager := &mockRotateGovernanceManager{store: store}
+	h := &GovernanceHandler{configStore: store, governanceManager: manager}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.SetUserValue("vk_id", "vk-1")
+	before := time.Now().UTC()
+
+	h.rotateVirtualKey(ctx)
+
+	if ctx.Response.StatusCode() != 200 {
+		t.Fatalf("expected status 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	updated := store.virtualKeys["vk-1"]
+	if updated.Value.GetValue() == "sk-bf-old" {
+		t.Fatal("expected virtual key value to rotate")
+	}
+	if updated.PreviousValue.GetValue() != "sk-bf-old" {
+		t.Fatalf("expected previous value to hold the retired value, got %q", updated.PreviousValue.GetValue())
+	}
+	if updated.RotatedAt == nil {
+		t.Fatal("expected rotated_at to be set")
+	}
+	if updated.PreviousValueExpiresAt == nil {
+		t.Fatal("expected previous_value_expires_at to be set")
+	}
+	wantExpiry := before.Add(5 * time.Minute)
+	if updated.PreviousValueExpiresAt.Before(wantExpiry.Add(-time.Minute)) || updated.PreviousValueExpiresAt.After(wantExpiry.Add(time.Minute)) {
+		t.Fatalf("expected expiry near %v, got %v", wantExpiry, updated.PreviousValueExpiresAt)
+	}
+}
+
+func TestRotateVirtualKey_ZeroCooldownClearsPreviousValue(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	stale := time.Now().UTC().Add(10 * time.Minute)
+	rotatedEarlier := time.Now().UTC().Add(-time.Hour)
+	store := &mockRotateConfigStore{
+		virtualKeys: map[string]*configstoreTables.TableVirtualKey{
+			"vk-1": {
+				ID:    "vk-1",
+				Name:  "Production",
+				Value: *schemas.NewSecretVar("sk-bf-old"),
+				// In-flight grace state from an earlier rotation performed while
+				// a cooldown was configured.
+				PreviousValue:          *schemas.NewSecretVar("sk-bf-older"),
+				PreviousValueExpiresAt: &stale,
+				RotatedAt:              &rotatedEarlier,
+			},
+		},
+		// No client config row: cooldown resolves to 0 (immediate flip).
+	}
+	manager := &mockRotateGovernanceManager{store: store}
+	h := &GovernanceHandler{configStore: store, governanceManager: manager}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.SetUserValue("vk_id", "vk-1")
+
+	h.rotateVirtualKey(ctx)
+
+	if ctx.Response.StatusCode() != 200 {
+		t.Fatalf("expected status 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	updated := store.virtualKeys["vk-1"]
+	if updated.PreviousValue.IsSet() {
+		t.Fatalf("expected previous value to be cleared at zero cooldown, got %q", updated.PreviousValue.GetValue())
+	}
+	if updated.PreviousValueExpiresAt != nil {
+		t.Fatal("expected previous_value_expires_at to be cleared at zero cooldown")
+	}
+	if updated.RotatedAt == nil || !updated.RotatedAt.After(rotatedEarlier) {
+		t.Fatal("expected rotated_at to advance on rotation")
 	}
 }
 
