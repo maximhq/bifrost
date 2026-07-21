@@ -1780,16 +1780,34 @@ type AnthropicUsage struct {
 	Type  *string `json:"type,omitempty"`
 	Model *string `json:"model,omitempty"` // model that produced this (iteration) attempt; sent on usage.iterations[] for server-side fallback
 	// Unlike OpenAI models, Anthropic (claude) models separately track cache creation and cache read tokens, and its not included in the input_tokens field.
-	InputTokens              int                          `json:"input_tokens"`
-	CacheCreationInputTokens int                          `json:"cache_creation_input_tokens"`
-	CacheReadInputTokens     int                          `json:"cache_read_input_tokens"`
-	CacheCreation            AnthropicUsageCacheCreation  `json:"cache_creation"`
-	OutputTokens             int                          `json:"output_tokens"`
-	ServerToolUse            *AnthropicServerToolUseUsage `json:"server_tool_use,omitempty"` // Server tool use statistics (e.g., web search)
-	ServiceTier              *string                      `json:"service_tier,omitempty"`    // "standard", "priority", or "batch"
-	Speed                    *string                      `json:"speed,omitempty"`           // "fast" or "standard" — which speed was actually served (fast mode research preview)
-	InferenceGeo             *string                      `json:"inference_geo,omitempty"`   // the geographic region for inference processing. If not specified, the workspace's default_inference_geo is used.
-	Iterations               []AnthropicUsage             `json:"iterations,omitempty"`      // Iterations statistics
+	InputTokens              int                           `json:"input_tokens"`
+	CacheCreationInputTokens int                           `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int                           `json:"cache_read_input_tokens"`
+	CacheCreation            AnthropicUsageCacheCreation   `json:"cache_creation"`
+	OutputTokens             int                           `json:"output_tokens"`
+	OutputTokensDetails      *AnthropicOutputTokensDetails `json:"output_tokens_details,omitempty"` // Breakdown of output_tokens (extended thinking). Absent on non-thinking responses.
+	ServerToolUse            *AnthropicServerToolUseUsage  `json:"server_tool_use,omitempty"`       // Server tool use statistics (e.g., web search)
+	ServiceTier              *string                       `json:"service_tier,omitempty"`          // "standard", "priority", or "batch"
+	Speed                    *string                       `json:"speed,omitempty"`                 // "fast" or "standard" — which speed was actually served (fast mode research preview)
+	InferenceGeo             *string                       `json:"inference_geo,omitempty"`         // the geographic region for inference processing. If not specified, the workspace's default_inference_geo is used.
+	Iterations               []AnthropicUsage              `json:"iterations,omitempty"`            // Iterations statistics
+}
+
+// AnthropicOutputTokensDetails breaks down output_tokens for extended-thinking responses.
+//
+// ThinkingTokens is a SUBSET of AnthropicUsage.OutputTokens, never additive: Anthropic
+// documents it as "always <= output_tokens", with output_tokens remaining the inclusive,
+// authoritative total used for billing. Do not add it to OutputTokens — non-reasoning
+// output is OutputTokens - ThinkingTokens.
+//
+// Note this is the opposite convention from the input side of the same object, where
+// InputTokens excludes the cache counters and must be summed with them.
+//
+// Observability-grade, not billing-grade: Anthropic computes it by re-tokenizing the raw
+// reasoning text, so it may differ from the model's exact generation count by a few tokens.
+// It reflects raw reasoning, not the shorter visible summary.
+type AnthropicOutputTokensDetails struct {
+	ThinkingTokens int `json:"thinking_tokens"`
 }
 
 // AnthropicUsageIterationTypeFallbackMessage marks the usage.iterations entry for
