@@ -7970,6 +7970,124 @@ func TestVirtualKeyHashComparison_DifferentHash(t *testing.T) {
 	t.Log("✓ Different hashes correctly detected - file config would be synced to DB")
 }
 
+// vkSyncTestSetup builds a merge scenario: a DB VK (with ConfigHash derived from
+// an older file state so the update branch is entered) and a file VK.
+func vkSyncTestSetup(t *testing.T, dbVK tables.TableVirtualKey, fileVK tables.TableVirtualKey, cooldown time.Duration) (*Config, *ConfigData, *configstore.GovernanceConfig) {
+	t.Helper()
+	initTestLogger()
+	dbGovernance := &configstore.GovernanceConfig{VirtualKeys: []tables.TableVirtualKey{dbVK}}
+	config := &Config{
+		GovernanceConfig: dbGovernance,
+		ClientConfig:     &configstore.ClientConfig{VKRotationCooldown: schemas.Duration(cooldown)},
+	}
+	configData := &ConfigData{
+		Governance: &configstore.GovernanceConfig{VirtualKeys: []tables.TableVirtualKey{fileVK}},
+	}
+	return config, configData, dbGovernance
+}
+
+// TestMergeGovernanceConfig_FileValueDiffers_RotatesWithGrace: a config.json
+// value differing from both the active and previous values is treated as an
+// explicit rotation - active becomes previous with a grace expiry.
+func TestMergeGovernanceConfig_FileValueDiffers_RotatesWithGrace(t *testing.T) {
+	dbVK := tables.TableVirtualKey{ID: "vk-1", Name: "rotating-vk", Value: *schemas.NewSecretVar("sk-bf-active")}
+	oldHash, err := configstore.GenerateVirtualKeyHash(dbVK)
+	require.NoError(t, err)
+	dbVK.ConfigHash = oldHash
+
+	fileVK := tables.TableVirtualKey{ID: "vk-1", Name: "rotating-vk", Value: *schemas.NewSecretVar("sk-bf-from-file")}
+	fileHash, err := configstore.GenerateVirtualKeyHash(fileVK)
+	require.NoError(t, err)
+
+	config, configData, dbGovernance := vkSyncTestSetup(t, dbVK, fileVK, 5*time.Minute)
+	mergeGovernanceConfig(context.Background(), config, configData, dbGovernance)
+
+	merged := dbGovernance.VirtualKeys[0]
+	require.Equal(t, "sk-bf-from-file", merged.Value.GetValue(), "config.json value must become active")
+	require.Equal(t, "sk-bf-active", merged.PreviousValue.GetValue(), "old active value must move to previous")
+	require.NotNil(t, merged.RotatedAt)
+	require.NotNil(t, merged.PreviousValueExpiresAt)
+	require.Equal(t, fileHash, merged.ConfigHash, "ConfigHash must be the file-derived hash")
+
+	// Second boot with the same file: hash matches, nothing re-syncs.
+	configData2 := &ConfigData{
+		Governance: &configstore.GovernanceConfig{VirtualKeys: []tables.TableVirtualKey{{ID: "vk-1", Name: "rotating-vk", Value: *schemas.NewSecretVar("sk-bf-from-file")}}},
+	}
+	firstRotatedAt := merged.RotatedAt
+	mergeGovernanceConfig(context.Background(), config, configData2, dbGovernance)
+	again := dbGovernance.VirtualKeys[0]
+	require.Equal(t, "sk-bf-from-file", again.Value.GetValue())
+	require.Equal(t, firstRotatedAt, again.RotatedAt, "second boot must not re-rotate")
+}
+
+// TestMergeGovernanceConfig_FileValueDiffers_ZeroCooldownFlipsImmediately: with
+// no cooldown configured the rotation still happens but no grace state is kept.
+func TestMergeGovernanceConfig_FileValueDiffers_ZeroCooldownFlipsImmediately(t *testing.T) {
+	dbVK := tables.TableVirtualKey{ID: "vk-1", Name: "flip-vk", Value: *schemas.NewSecretVar("sk-bf-active")}
+	oldHash, err := configstore.GenerateVirtualKeyHash(dbVK)
+	require.NoError(t, err)
+	dbVK.ConfigHash = oldHash
+
+	fileVK := tables.TableVirtualKey{ID: "vk-1", Name: "flip-vk", Value: *schemas.NewSecretVar("sk-bf-from-file")}
+
+	config, configData, dbGovernance := vkSyncTestSetup(t, dbVK, fileVK, 0)
+	mergeGovernanceConfig(context.Background(), config, configData, dbGovernance)
+
+	merged := dbGovernance.VirtualKeys[0]
+	require.Equal(t, "sk-bf-from-file", merged.Value.GetValue())
+	require.False(t, merged.PreviousValue.IsSet(), "no grace state at zero cooldown")
+	require.Nil(t, merged.PreviousValueExpiresAt)
+	require.NotNil(t, merged.RotatedAt)
+}
+
+// TestMergeGovernanceConfig_FileMatchesPreviousValue_NoChange: when the file
+// still holds the pre-rotation value (rotated via API/UI after the file was
+// written), the active value is kept and no rotation happens; the file-derived
+// ConfigHash is stored so the next boot no-ops.
+func TestMergeGovernanceConfig_FileMatchesPreviousValue_NoChange(t *testing.T) {
+	graceExpiry := time.Now().UTC().Add(10 * time.Minute)
+	rotatedAt := time.Now().UTC().Add(-time.Minute)
+	dbVK := tables.TableVirtualKey{
+		ID:                     "vk-1",
+		Name:                   "rotated-vk",
+		Description:            "old description",
+		Value:                  *schemas.NewSecretVar("sk-bf-active"),
+		PreviousValue:          *schemas.NewSecretVar("sk-bf-rotated-out"),
+		PreviousValueHash:      encrypt.HashSHA256("sk-bf-rotated-out"),
+		PreviousValueExpiresAt: &graceExpiry,
+		RotatedAt:              &rotatedAt,
+	}
+	// The DB row was last synced when the file held the pre-rotation value.
+	oldFileState := tables.TableVirtualKey{ID: "vk-1", Name: "rotated-vk", Description: "old description", Value: *schemas.NewSecretVar("sk-bf-rotated-out")}
+	oldHash, err := configstore.GenerateVirtualKeyHash(oldFileState)
+	require.NoError(t, err)
+	dbVK.ConfigHash = oldHash
+
+	// The file still holds the pre-rotation value but changes another field, so
+	// the update branch is entered.
+	fileVK := tables.TableVirtualKey{ID: "vk-1", Name: "rotated-vk", Description: "new description", Value: *schemas.NewSecretVar("sk-bf-rotated-out")}
+	fileHash, err := configstore.GenerateVirtualKeyHash(fileVK)
+	require.NoError(t, err)
+
+	config, configData, dbGovernance := vkSyncTestSetup(t, dbVK, fileVK, 5*time.Minute)
+	mergeGovernanceConfig(context.Background(), config, configData, dbGovernance)
+
+	merged := dbGovernance.VirtualKeys[0]
+	require.Equal(t, "sk-bf-active", merged.Value.GetValue(), "active value must be kept when the file holds the previous value")
+	require.Equal(t, "new description", merged.Description, "non-value fields must still sync")
+	require.Equal(t, fileHash, merged.ConfigHash, "ConfigHash must be the file-derived hash so the next boot no-ops")
+	require.Equal(t, "sk-bf-rotated-out", merged.PreviousValue.GetValue(), "in-flight grace state must be carried over")
+	require.NotNil(t, merged.PreviousValueExpiresAt)
+	require.Equal(t, &rotatedAt, merged.RotatedAt)
+
+	// Second boot with the same file: hash matches, value untouched.
+	configData2 := &ConfigData{
+		Governance: &configstore.GovernanceConfig{VirtualKeys: []tables.TableVirtualKey{{ID: "vk-1", Name: "rotated-vk", Description: "new description", Value: *schemas.NewSecretVar("sk-bf-rotated-out")}}},
+	}
+	mergeGovernanceConfig(context.Background(), config, configData2, dbGovernance)
+	require.Equal(t, "sk-bf-active", dbGovernance.VirtualKeys[0].Value.GetValue())
+}
+
 // TestVirtualKeyHashComparison_VirtualKeyOnlyInDB tests that dashboard-added VK is preserved
 func TestVirtualKeyHashComparison_VirtualKeyOnlyInDB(t *testing.T) {
 	customerID := "customer-1"
@@ -17205,14 +17323,16 @@ var excludedGoFields = map[string]map[string]bool{
 		"virtual_keys": true, // GORM relation
 	},
 	"tables.TableVirtualKey": {
-		"config_hash":        true,
-		"created_at":         true,
-		"updated_at":         true,
-		"created_by_user_id": true, // DB ownership metadata; set by API/session layer
-		"budgets":            true, // GORM relation (budgets have virtual_key_id FK)
-		"rate_limit":         true, // GORM relation
-		"team":               true, // GORM relation
-		"customer":           true, // GORM relation
+		"config_hash":               true,
+		"created_at":                true,
+		"updated_at":                true,
+		"created_by_user_id":        true, // DB ownership metadata; set by API/session layer
+		"budgets":                   true, // GORM relation (budgets have virtual_key_id FK)
+		"rate_limit":                true, // GORM relation
+		"team":                      true, // GORM relation
+		"customer":                  true, // GORM relation
+		"previous_value_expires_at": true, // Runtime rotation grace-period state; not config.json-settable
+		"rotated_at":                true, // Runtime rotation state; not config.json-settable
 	},
 	"tables.TableVirtualKeyProviderConfig": {
 		"rate_limit":     true, // GORM relation
