@@ -1,16 +1,18 @@
-- feat: add durable background-job `sidekiq` table, store methods, and runner with recovery and reaper
-- feat: pass created-by user ID and runner ID through sidekiq job lifecycle, add `GetInFlightSidekiqJobByKind` to config store interface
-- feat: show canonical model names in dashboard model rankings (thanks [@satyamkrishna](https://github.com/satyamkrishna)!)
-- feat: redact trace content before connector export with transient redaction data field
-- feat: force single-region config in Vertex key config
-- fix: persist Responses stream usage when providers omit or reuse sequence numbers (thanks [@eyeveil](https://github.com/eyeveil)!)
-- fix: fold streamed output_text.annotation.added events into the accumulated responses message so citations survive in logging, observability, and cache (thanks [@fus3r](https://github.com/fus3r)!)
-- fix: keep the streaming finish_reason in the accumulated response when a provider forwards it on a content chunk (thanks [@fus3r](https://github.com/fus3r)!)
-- fix: sweep orphaned deferred spans in trace store TTL cleanup (thanks [@citrocat](https://github.com/citrocat)!)
-- fix: rebuild token usage from denormalized columns in hybrid log list (thanks [@G-XD](https://github.com/G-XD)!)
-- fix: repair bare wildcard allowed_models rows that break admin provider updates (thanks [@eyeveil](https://github.com/eyeveil)!)
-- fix: use AutoMigrate and add `runner_id`/`created_by_user_id` columns to sidekiq table migration
-- fix: match model filter on canonical_model_name and restore routing info for cost recalculation
-- fix: forward ScopedDB from HybridLogStore
-- fix: race conditions in tracer span locks
-- chore: upgrade ClickHouse client library
+- feat: webhook delivery system - `config_webhook_endpoints` table, store CRUD, dispatcher with SSRF-safe HTTP client, jobs work-queue and delivery history tables, endpoint resolution by name at submit time
+- feat: inline `error`/`error_omitted` fields in webhook payloads for failed async jobs
+- feat: throughput (tokens/sec) histogram endpoints, model rankings, and trend data
+- feat: `prompt_tokens` and `completion_tokens` in search stats
+- feat: show server fallback model in logs; content disabled message on logs UI
+- feat: toggle for always retaining content in object storage
+- feat: persist logs page-size preference in localStorage
+- feat: expose ClickHouse table migrations for enterprise
+- feat: `dual_credential_conflict_behavior` to resolve IDP token conflicts
+- feat: user email export to connectors
+- fix: gate matview read path on shape check to prevent "column does not exist" during rolling deploys
+- fix: bill for serving fallback model in anthropic
+- fix: make `RefineModelForProvider` idempotent and unify Groq/Replicate/Parasail prefix handling
+- fix: extend chat-responses pricing fallback to work bidirectionally
+- fix: replace fan-out attribution with single-owner additive rollup
+- fix: query creation from user input
+- fix: use `time.Now().Add` instead of channel receive for deadline
+- chore: upgraded core to v1.7.2

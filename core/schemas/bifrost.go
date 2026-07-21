@@ -71,6 +71,7 @@ const (
 	Runware       ModelProvider = "runware"
 	Fireworks     ModelProvider = "fireworks"
 	Sarvam        ModelProvider = "sarvam"
+	Wafer         ModelProvider = "wafer"
 )
 
 // SupportedBaseProviders is the list of base providers allowed for custom providers.
@@ -115,6 +116,7 @@ var StandardProviders = []ModelProvider{
 	Runware,
 	Fireworks,
 	Sarvam,
+	Wafer,
 }
 
 // RequestType represents the type of request being made to a provider.
@@ -327,11 +329,12 @@ const (
 	BifrostContextKeyAllowPerRequestStorageOverride      BifrostContextKey = "bifrost-allow-per-request-storage-override"       // bool (set by transport from config — gates whether x-bf-disable-content-logging and x-bf-store-raw-request-response per-request overrides are honored)
 	BifrostContextKeyAllowPerRequestRawOverride          BifrostContextKey = "bifrost-allow-per-request-raw-override"           // bool (set by transport from config — gates whether x-bf-send-back-raw-request and x-bf-send-back-raw-response per-request overrides are honored)
 	BifrostContextKeyRedactionData                       BifrostContextKey = "bifrost-redaction-data"                           // RedactionData (set by enterprise guardrails plugin - DO NOT SET THIS MANUALLY)
-	BifrostContextKeyDisableContentLogging               BifrostContextKey = "x-bf-disable-content-logging"                     // bool (per-request override for content logging; only honored when BifrostContextKeyAllowPerRequestStorageOverride is true)
+	BifrostContextKeyDisableContentLogging               BifrostContextKey = "x-bf-disable-content-logging"                     // bool (per-request override for content logging; only honored when BifrostContextKeyAllowPerRequestStorageOverride is true. When retain_content_in_object_storage is on, disabled content is still offloaded to object storage as hidden instead of dropped)
 	BifrostContextKeySkipListModelsGovernanceFiltering   BifrostContextKey = "bifrost-skip-list-models-governance-filtering"    // bool (set by bifrost - DO NOT SET THIS MANUALLY))
 	BifrostContextKeySCIMClaims                          BifrostContextKey = "scim_claims"
 	BifrostContextKeyUserID                              BifrostContextKey = "bifrost-user-id"                    // string (to store the user ID (set by enterprise auth middleware - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyUserName                            BifrostContextKey = "bifrost-user-name"                  // string (to store the user name (set by enterprise auth middleware - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyUserEmail                           BifrostContextKey = "bifrost-user-email"                 // string (to store the user email (set by enterprise auth middleware - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyQueryScope                          BifrostContextKey = "bifrost-query-scope"                // configstore.QueryScope (func that mutates a query; set by upstream wrapper - DO NOT SET THIS MANUALLY)
 	BifrostContextKeyVisibilityFilterProvider            BifrostContextKey = "bifrost-visibility-filter-provider" // DEPRECATED: replaced by BifrostContextKeyQueryScope. Will be removed once all callers migrate.
 	BifrostContextKeyTargetUserID                        BifrostContextKey = "target_user_id"
@@ -378,6 +381,7 @@ const (
 	BifrostContextKeyConnectionClosed                    BifrostContextKey = "connection_closed"
 	BifrostContextKeyTempTokenScope                      BifrostContextKey = "bifrost-temp-token-scope"       // string (set by auth middleware when a temp token authorized the request - names the scope from the temptoken registry)
 	BifrostContextKeyTempTokenResourceID                 BifrostContextKey = "bifrost-temp-token-resource-id" // string (set by auth middleware alongside the scope - the resource_id the token is bound to, e.g. an OAuth flow ID for mcp_auth)
+	BifrostContextKeyAsyncWebhookEndpoint                BifrostContextKey = "bifrost-async-webhook-endpoint" // string (webhook endpoint name to notify when an async job finishes - carried as-is from the x-bf-async-webhook header; the submit path resolves and validates it before the job is created)
 )
 
 const (
@@ -934,6 +938,21 @@ func (t MCPRequestType) IsExecuteTool() bool {
 	return false
 }
 
+// OTelMethodName returns the OTel semconv mcp.method.name for this request type
+// (tools/call, tools/list, ping). Unknown types fall back to the raw string.
+func (t MCPRequestType) OTelMethodName() string {
+	switch {
+	case t.IsExecuteTool():
+		return "tools/call"
+	case t == MCPRequestTypeListTools:
+		return "tools/list"
+	case t == MCPRequestTypePing:
+		return "ping"
+	default:
+		return string(t)
+	}
+}
+
 // BifrostMCPRequest is the envelope for MCP requests that flow through the generic
 // PreMCPHook/PostMCPHook pipeline (Ping, ListTools, ExecuteTool variants). Connect
 // requests do NOT use this envelope — they are dispatched via the typed
@@ -1213,6 +1232,14 @@ func (r *BifrostResponse) PopulateRoutingInfo(info RoutingInfo) {
 		return
 	}
 	if ef := r.GetExtraFields(); ef != nil {
+		// ServerSideFallbackModel is the one provider-owned field on RoutingInfo:
+		// the orchestrator cannot see a model swap that happened inside a single
+		// upstream call, so carry the provider's value across this overwrite.
+		// Streaming relies on this too — the closure's snapshot predates the final
+		// usage chunk that reveals the handoff.
+		if info.ServerSideFallbackModel == nil {
+			info.ServerSideFallbackModel = ef.RoutingInfo.ServerSideFallbackModel
+		}
 		ef.RoutingInfo = info
 		syncDeprecatedFromRoutingInfo(info, &ef.Provider, &ef.OriginalModelRequested, &ef.ResolvedModelUsed)
 	}
@@ -1676,6 +1703,17 @@ type RoutingInfo struct {
 	// What the caller asked for, before any fallback resolution (populated only when fallback resolution occurred)
 	PrimaryProvider *ModelProvider `json:"primary_provider,omitempty"`
 	PrimaryModel    *string        `json:"primary_model,omitempty"`
+
+	// ServerSideFallbackModel names the model that actually produced the response
+	// when the provider swapped models *inside* a single upstream call — today only
+	// Anthropic's server-side fallback (server-side-fallback-2026-06-01). Model
+	// still names what the caller asked for, since routing never saw the swap.
+	//
+	// Unlike every other field here this one is provider-owned, not written by the
+	// orchestrator: only the provider can see a handoff that happened within its own
+	// response. PopulateRoutingInfo preserves it across core's overwrite. Nil on
+	// every ordinary response, so pricing behaviour is unchanged when it is absent.
+	ServerSideFallbackModel *string `json:"server_side_fallback_model,omitempty"`
 }
 
 type ResolvedKeyAlias struct {
@@ -1718,6 +1756,7 @@ type BifrostCacheDebug struct {
 const (
 	RequestCancelled         = "request_cancelled"
 	RequestTimedOut          = "request_timed_out"
+	RequestDropped           = "request_dropped"
 	ProviderConnectionFailed = "provider_connection_failed"
 )
 

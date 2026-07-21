@@ -386,6 +386,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"split_mcp_external_base_url_into_server_client"}, run: migrationSplitMCPExternalBaseURL},
 	{IDs: []string{"make_oauth_token_expiry_nullable"}, run: migrationMakeOAuthTokenExpiryNullable},
 	{IDs: []string{"add_allow_per_request_content_storage_override_column"}, run: migrationAddAllowPerRequestContentStorageOverrideColumn},
+	{IDs: []string{"add_retain_content_in_object_storage_column"}, run: migrationAddRetainContentInObjectStorageColumn},
 	{IDs: []string{"add_allow_per_request_raw_override_column"}, run: migrationAddAllowPerRequestRawOverrideColumn},
 	{IDs: []string{"add_mcp_client_disabled_column"}, run: migrationAddMCPClientDisabledColumn},
 	{IDs: []string{"gov_unique_team_names"}, run: migrationUniqueTeamNames},
@@ -447,6 +448,11 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"repair_bare_wildcard_allowed_models"}, run: migrationRepairBareWildcardAllowedModels},
 	{IDs: []string{"add_bedrock_project_id_columns"}, run: migrationAddBedrockProjectIDColumns},
 	{IDs: []string{"add_dual_credential_conflict_behavior_column"}, run: migrationAddDualCredentialConflictBehaviorColumn},
+	{IDs: []string{"add_webhook_endpoints_table"}, run: migrationAddWebhookEndpointsTable},
+	{IDs: []string{"add_webhook_jobs_table"}, run: migrationAddWebhookJobsTable},
+	{IDs: []string{"add_webhook_config_client_column"}, run: migrationAddWebhookConfigClientColumn},
+	{IDs: []string{"add_oauth_config_resource_column"}, run: migrationAddOauthConfigResourceColumn},
+	{IDs: []string{"add_use_anthropic_endpoints_column"}, run: migrationAddUseAnthropicEndpointsColumn},
 }
 
 // quoteSQLiteIdentifier quotes a SQLite identifier, escaping any double quotes.
@@ -3136,6 +3142,34 @@ func migrationAddUseForBatchAPIColumnAndS3BucketsConfig(ctx context.Context, db 
 
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running use_for_batch_api migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddUseAnthropicEndpointsColumn adds the use_anthropic_endpoints column to the config_keys table.
+func migrationAddUseAnthropicEndpointsColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_use_anthropic_endpoints_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableKey{}, "use_anthropic_endpoints"); err != nil {
+				return fmt.Errorf("failed to add use_anthropic_endpoints column: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableKey{}, "use_anthropic_endpoints"); err != nil {
+				return fmt.Errorf("failed to drop use_anthropic_endpoints column: %w", err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_use_anthropic_endpoints_column migration: %s", err.Error())
 	}
 	return nil
 }
@@ -7705,6 +7739,38 @@ func migrationAddAllowPerRequestContentStorageOverrideColumn(ctx context.Context
 	return nil
 }
 
+// migrationAddRetainContentInObjectStorageColumn adds the retain_content_in_object_storage column to config_client.
+func migrationAddRetainContentInObjectStorageColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_retain_content_in_object_storage_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+
+			if err := addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, "RetainContentInObjectStorage"); err != nil {
+				return fmt.Errorf("failed to add retain_content_in_object_storage column: %w", err)
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+
+			if err := dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "retain_content_in_object_storage"); err != nil {
+				return fmt.Errorf("failed to drop retain_content_in_object_storage column: %w", err)
+			}
+
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running retain_content_in_object_storage migration: %s", err.Error())
+	}
+	return nil
+}
+
 // migrationAddAllowPerRequestRawOverrideColumn adds the allow_per_request_raw_override column to config_client.
 func migrationAddAllowPerRequestRawOverrideColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
 	migrationName := "add_allow_per_request_raw_override_column"
@@ -7767,7 +7833,6 @@ func migrationAddMCPClientDiscoveredToolsColumns(ctx context.Context, db *gorm.D
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running add_mcp_client_discovered_tools_columns migration: %s", err.Error())
-
 	}
 	return nil
 }
@@ -7871,7 +7936,6 @@ func migrationAddFlexTierPricingColumns(ctx context.Context, db *gorm.DB, logger
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running flex tier pricing columns migration: %s", err.Error())
-
 	}
 	return nil
 }
@@ -8300,7 +8364,6 @@ func migrationNormalizeOtelTraceType(ctx context.Context, db *gorm.DB, logger sc
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running normalize_otel_trace_type migration: %s", err.Error())
-
 	}
 	return nil
 }
@@ -10706,6 +10769,121 @@ func migrationAddSidekiqKindStatusCreatedIndex(ctx context.Context, db *gorm.DB,
 		},
 	}); err != nil {
 		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddOauthConfigResourceColumn adds the RFC 8707 resource indicator to
+// outbound MCP OAuth configs so authorization, token exchange, and refresh stay
+// bound to the same protected MCP resource.
+func migrationAddOauthConfigResourceColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_oauth_config_resource_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return addColumnIfNotExists(tx, logger, &tables.TableOauthConfig{}, "resource")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return dropColumnIfExists(tx, logger, &tables.TableOauthConfig{}, "resource")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddWebhookEndpointsTable creates the config_webhook_endpoints table.
+func migrationAddWebhookEndpointsTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_webhook_endpoints_table"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if !mg.HasTable(&tables.TableWebhookEndpoint{}) {
+				if err := mg.CreateTable(&tables.TableWebhookEndpoint{}); err != nil {
+					return fmt.Errorf("create config_webhook_endpoints table: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return tx.Migrator().DropTable(&tables.TableWebhookEndpoint{})
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running webhook endpoints table migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddWebhookConfigClientColumn adds the webhook_config_json column
+// to config_client.
+func migrationAddWebhookConfigClientColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_webhook_config_client_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if !mg.HasColumn(&tables.TableClientConfig{}, "webhook_config_json") {
+				if err := mg.AddColumn(&tables.TableClientConfig{}, "WebhookConfigJSON"); err != nil {
+					return fmt.Errorf("add webhook_config_json column: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if mg.HasColumn(&tables.TableClientConfig{}, "webhook_config_json") {
+				if err := mg.DropColumn(&tables.TableClientConfig{}, "WebhookConfigJSON"); err != nil {
+					return fmt.Errorf("drop webhook_config_json column: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running webhook config client column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddWebhookJobsTable creates the webhook_jobs work-queue table.
+func migrationAddWebhookJobsTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_webhook_jobs_table"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if !mg.HasTable(&tables.TableWebhookJob{}) {
+				if err := mg.CreateTable(&tables.TableWebhookJob{}); err != nil {
+					return fmt.Errorf("create webhook_jobs table: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return tx.Migrator().DropTable(&tables.TableWebhookJob{})
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running webhook jobs table migration: %s", err.Error())
 	}
 	return nil
 }

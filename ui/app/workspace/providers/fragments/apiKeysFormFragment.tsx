@@ -14,7 +14,7 @@ import { Control, UseFormReturn } from "react-hook-form";
 import { DeploymentsTable } from "./deploymentsTable";
 
 // Providers that support batch APIs
-const BATCH_SUPPORTED_PROVIDERS = ["openai", "bedrock", "anthropic", "gemini", "azure", "vertex"];
+const BATCH_SUPPORTED_PROVIDERS = ["openai", "bedrock", "anthropic", "gemini", "azure", "vertex", "wafer"];
 
 interface Props {
 	control: Control<any>;
@@ -27,7 +27,7 @@ interface Props {
 
 // Batch API form field for all providers
 function BatchAPIFormField({ control }: { control: Control<any>; form: UseFormReturn<any> }) {
-	return (
+	return (	
 		<FormField
 			control={control}
 			name={`key.use_for_batch_api`}
@@ -60,6 +60,8 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 	const isVLLM = effectiveProvider === "vllm";
 	const isOllama = effectiveProvider === "ollama";
 	const isSGL = effectiveProvider === "sgl";
+    const isDeepseek = effectiveProvider === "deepseek";
+    const isFireworks = effectiveProvider === "fireworks";
 	const isKeylessProvider = isOllama || isSGL;
 	const supportsBatchAPI = BATCH_SUPPORTED_PROVIDERS.includes(effectiveProvider);
 
@@ -761,6 +763,27 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 									/>
 								</FormControl>
 								<FormMessage />
+							</FormItem>
+						)}
+					/>
+				</div>
+			)}
+			{(isSGL || isDeepseek || isFireworks || isVLLM) && (
+				<div className="space-y-4">
+					<FormField
+						control={control}
+						name="key.use_anthropic_endpoints"
+						render={({ field }) => (
+							<FormItem className="flex flex-row items-center justify-between rounded-sm border p-2">
+								<div className="space-y-1.5">
+									<FormLabel htmlFor="use-anthropic-endpoints-alias-override-switch">Use Anthropic Endpoints</FormLabel>
+									<FormDescription>
+										Routes chat completions and responses requests through Anthropic-compatible endpoints.
+									</FormDescription>
+								</div>
+								<FormControl>
+									<Switch id="use-anthropic-endpoints-alias-override-switch" checked={field.value ?? false} onCheckedChange={field.onChange} />
+								</FormControl>
 							</FormItem>
 						)}
 					/>

@@ -15,9 +15,7 @@ func TestTableClientConfigAfterFindReplacesMetadata(t *testing.T) {
 			"theme": "dark",
 		},
 	}
-
 	require.NoError(t, config.AfterFind(nil))
-
 	assert.Equal(t, map[string]any{"theme": "light"}, config.Metadata)
 }
 
@@ -27,8 +25,6 @@ func TestTableClientConfigAfterFindClearsMetadataWhenEmpty(t *testing.T) {
 			"stale": "value",
 		},
 	}
-
 	require.NoError(t, config.AfterFind(nil))
-
 	assert.Nil(t, config.Metadata)
 }

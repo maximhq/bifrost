@@ -27,6 +27,7 @@ import (
 	"github.com/maximhq/bifrost/framework/sidekiq"
 	"github.com/maximhq/bifrost/framework/temptoken"
 	"github.com/maximhq/bifrost/framework/tracing"
+	"github.com/maximhq/bifrost/framework/webhooks"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/plugins/governance/complexity"
 	"github.com/maximhq/bifrost/plugins/logging"
@@ -110,6 +111,9 @@ type ServerCallbacks interface {
 	OnKeyDeleted(ctx context.Context, provider schemas.ModelProvider, keyID string) error
 	ReloadRoutingRule(ctx context.Context, id string) error
 	RemoveRoutingRule(ctx context.Context, id string) error
+	// Webhook related callbacks
+	ReloadWebhookEndpoint(ctx context.Context, id string) error
+	RemoveWebhookEndpoint(ctx context.Context, id string) error
 	// MCP related callbacks
 	AddMCPClient(ctx context.Context, clientConfig *schemas.MCPClientConfig) error
 	RemoveMCPClient(ctx context.Context, id string) error
@@ -182,6 +186,8 @@ type BifrostHTTPServer struct {
 
 	SidekiqRunner         *sidekiq.Runner
 	SidekiqDispatcherStop func()
+
+	WebhookDispatcher *webhooks.Dispatcher
 
 	wsPool *bfws.Pool
 }
@@ -861,6 +867,25 @@ func (s *BifrostHTTPServer) RemoveRoutingRule(ctx context.Context, id string) er
 	return nil
 }
 
+// ReloadWebhookEndpoint refreshes a single webhook endpoint in the in-memory
+// store from the database after a mutation. A clustered deployment overrides
+// this to also notify peers so their in-memory copies stay current.
+func (s *BifrostHTTPServer) ReloadWebhookEndpoint(ctx context.Context, id string) error {
+	endpoint, err := s.Config.ConfigStore.GetWebhookEndpointByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	s.Config.SetWebhookEndpoint(endpoint)
+	return nil
+}
+
+// RemoveWebhookEndpoint drops a webhook endpoint from the in-memory store after
+// a database delete. A clustered deployment overrides this to also notify peers.
+func (s *BifrostHTTPServer) RemoveWebhookEndpoint(ctx context.Context, id string) error {
+	s.Config.RemoveWebhookEndpoint(id)
+	return nil
+}
+
 // ReloadClientConfigFromConfigStore reloads the client config from config store
 func (s *BifrostHTTPServer) ReloadClientConfigFromConfigStore(ctx context.Context) error {
 	if s.Config == nil || s.Config.ConfigStore == nil {
@@ -1525,6 +1550,8 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	if skillsHandler != nil {
 		skillsHandler.RegisterRoutes(s.Router, middlewares...)
 	}
+	webhookHandler := handlers.NewWebhookHandler(callbacks, s.Config, s.WebhookDispatcher)
+	webhookHandler.RegisterRoutes(s.Router, middlewares...)
 	skillsServingHandler := handlers.NewSkillsServingHandler(s.Config.ConfigStore, s.Config.ObjectStore)
 	if skillsServingHandler != nil {
 		skillsServingHandler.RegisterRoutes(s.Router, middlewares...)
@@ -1768,11 +1795,25 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		return fmt.Errorf("failed to instantiate plugins: %v", err)
 	}
 
+	// Initialize the webhook delivery dispatcher (requires both stores; the
+	// in-memory endpoint store on Config serves endpoint lookups).
+	if s.Config.LogsStore != nil && s.Config.ConfigStore != nil {
+		s.WebhookDispatcher = webhooks.NewDispatcher(ctx, "", s.Config.ClientConfig.WebhookConfig.DeliveryHistoryRetention(), s.Config.ConfigStore, s.Config.LogsStore, s.Config, logger)
+		s.WebhookDispatcher.Start()
+		logger.Info("webhook dispatcher initialized")
+	}
+
 	// Initialize async job executor (requires LogsStore + governance plugin)
 	if s.Config.LogsStore != nil {
 		governancePlugin, govErr := lib.FindPluginAs[governance.BaseGovernancePlugin](s.Config, s.getGovernancePluginName())
 		if govErr == nil {
-			s.Config.AsyncJobExecutor = logstore.NewAsyncJobExecutor(s.Config.LogsStore, governancePlugin.GetGovernanceStore(), logger)
+			// The dispatcher interface value must stay nil when no dispatcher
+			// exists — a typed-nil pointer would defeat the executor's nil check.
+			var jobDispatcher logstore.WebhookDispatcher
+			if s.WebhookDispatcher != nil {
+				jobDispatcher = s.WebhookDispatcher
+			}
+			s.Config.AsyncJobExecutor = logstore.NewAsyncJobExecutor(s.Config.LogsStore, governancePlugin.GetGovernanceStore(), jobDispatcher, s.Config, logger)
 			logger.Info("async job executor initialized")
 		}
 	}
@@ -2057,6 +2098,10 @@ func (s *BifrostHTTPServer) Start() error {
 			if s.AsyncJobCleaner != nil {
 				logger.Info("stopping async job cleaner...")
 				s.AsyncJobCleaner.StopCleanupRoutine()
+			}
+			if s.WebhookDispatcher != nil {
+				logger.Info("stopping webhook dispatcher...")
+				s.WebhookDispatcher.Stop()
 			}
 			if s.WSTicketStore != nil {
 				logger.Info("stopping ws ticket store...")

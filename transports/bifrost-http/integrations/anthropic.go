@@ -345,7 +345,11 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 				bifrostCtx.SetValue(schemas.BifrostContextKeyExtraHeaders, passthroughHeaders)
 			}
 		}
-		if provider == schemas.Vertex && (hasPromptCachingScopeBetaHeader(headers) || hasFastModeBetaHeader(headers) || hasOutputConfigFormat(req)) {
+		if provider == schemas.Vertex && (hasPromptCachingScopeBetaHeader(headers) || hasFastModeBetaHeader(headers)) {
+			bifrostCtx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
+			return nil
+		}
+		if (provider == schemas.Vertex || provider == schemas.BedrockMantle || provider == schemas.Azure) && hasOutputConfigFormat(req) {
 			bifrostCtx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
 			return nil
 		}

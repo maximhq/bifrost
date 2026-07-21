@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"sync"
 	"testing"
 	"time"
@@ -180,6 +181,164 @@ func TestMCPTempTokenAuthEnabled(t *testing.T) {
 
 	store.clientConfig.MCPEnableTempTokenAuth = true
 	assert.True(t, provider.mcpTempTokenAuthEnabled(context.Background()))
+}
+
+func TestBuildAuthorizeURLWithPKCE_IncludesResource(t *testing.T) {
+	provider := NewOAuth2Provider(newTestConfigStore(), bifrost.NewDefaultLogger(schemas.LogLevelError))
+
+	authURL := provider.buildAuthorizeURLWithPKCE(
+		"https://auth.example.com/oauth/authorize?existing=1",
+		"client-id",
+		"https://bifrost.example.com/api/oauth/callback",
+		"state-token",
+		"challenge",
+		[]string{"mcp:read", "mcp:write"},
+		"https://mcp.cloudflare.com/mcp",
+	)
+
+	parsed, err := url.Parse(authURL)
+	require.NoError(t, err)
+	q := parsed.Query()
+	assert.Equal(t, "1", q.Get("existing"))
+	assert.Equal(t, "code", q.Get("response_type"))
+	assert.Equal(t, "client-id", q.Get("client_id"))
+	assert.Equal(t, "https://mcp.cloudflare.com/mcp", q.Get("resource"))
+	assert.Equal(t, "mcp:read mcp:write", q.Get("scope"))
+}
+
+func TestBuildAuthorizeURLWithPKCE_OmitsEmptyResource(t *testing.T) {
+	provider := NewOAuth2Provider(newTestConfigStore(), bifrost.NewDefaultLogger(schemas.LogLevelError))
+
+	authURL := provider.buildAuthorizeURLWithPKCE(
+		"https://auth.example.com/oauth/authorize",
+		"client-id",
+		"https://bifrost.example.com/api/oauth/callback",
+		"state-token",
+		"challenge",
+		nil,
+		"",
+	)
+
+	parsed, err := url.Parse(authURL)
+	require.NoError(t, err)
+	_, exists := parsed.Query()["resource"]
+	assert.False(t, exists)
+}
+
+func TestExchangeCodeForTokensWithPKCE_IncludesResource(t *testing.T) {
+	var got url.Values
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, r.ParseForm())
+		got = r.PostForm
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"access_token": "access-token",
+			"token_type":   "bearer",
+		})
+	}))
+	defer server.Close()
+
+	provider := NewOAuth2Provider(newTestConfigStore(), bifrost.NewDefaultLogger(schemas.LogLevelError))
+	_, err := provider.exchangeCodeForTokensWithPKCE(
+		context.Background(),
+		server.URL,
+		"auth-code",
+		"client-id",
+		"",
+		"https://bifrost.example.com/api/oauth/callback",
+		"verifier",
+		"https://mcp.cloudflare.com/mcp",
+	)
+
+	require.NoError(t, err)
+	assert.Equal(t, "authorization_code", got.Get("grant_type"))
+	assert.Equal(t, "https://mcp.cloudflare.com/mcp", got.Get("resource"))
+}
+
+func TestExchangeCodeForTokensWithPKCE_OmitsEmptyResource(t *testing.T) {
+	var got url.Values
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, r.ParseForm())
+		got = r.PostForm
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"access_token": "access-token",
+			"token_type":   "bearer",
+		})
+	}))
+	defer server.Close()
+
+	provider := NewOAuth2Provider(newTestConfigStore(), bifrost.NewDefaultLogger(schemas.LogLevelError))
+	_, err := provider.exchangeCodeForTokensWithPKCE(
+		context.Background(),
+		server.URL,
+		"auth-code",
+		"client-id",
+		"",
+		"https://bifrost.example.com/api/oauth/callback",
+		"verifier",
+		"",
+	)
+
+	require.NoError(t, err)
+	_, exists := got["resource"]
+	assert.False(t, exists)
+}
+
+func TestExchangeRefreshToken_IncludesResource(t *testing.T) {
+	var got url.Values
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, r.ParseForm())
+		got = r.PostForm
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"access_token": "new-access-token",
+			"token_type":   "bearer",
+		})
+	}))
+	defer server.Close()
+
+	provider := NewOAuth2Provider(newTestConfigStore(), bifrost.NewDefaultLogger(schemas.LogLevelError))
+	_, err := provider.exchangeRefreshToken(
+		context.Background(),
+		server.URL,
+		"client-id",
+		"",
+		"refresh-token",
+		"https://mcp.cloudflare.com/mcp",
+	)
+
+	require.NoError(t, err)
+	assert.Equal(t, "refresh_token", got.Get("grant_type"))
+	assert.Equal(t, "https://mcp.cloudflare.com/mcp", got.Get("resource"))
+}
+
+func TestExchangeRefreshToken_OmitsEmptyResource(t *testing.T) {
+	var got url.Values
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, r.ParseForm())
+		got = r.PostForm
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"access_token": "new-access-token",
+			"token_type":   "bearer",
+		})
+	}))
+	defer server.Close()
+
+	provider := NewOAuth2Provider(newTestConfigStore(), bifrost.NewDefaultLogger(schemas.LogLevelError))
+	_, err := provider.exchangeRefreshToken(
+		context.Background(),
+		server.URL,
+		"client-id",
+		"",
+		"refresh-token",
+		"",
+	)
+
+	require.NoError(t, err)
+	_, exists := got["resource"]
+	assert.False(t, exists)
 }
 
 func TestTokenRefreshWorker_TransientError_DoesNotMarkExpired(t *testing.T) {

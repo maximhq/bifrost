@@ -710,12 +710,12 @@ func (m *ToolsManager) executeToolInternal(
 
 	toolResponse, callErr := clientConn.CallTool(toolCtx, callRequest)
 	if callErr != nil {
-		// Check if it was a timeout error
+		// Sentinel-wrapped so the gate can classify error.type (timeout vs tool_error).
 		if toolCtx.Err() == context.DeadlineExceeded {
-			return nil, "", "", fmt.Errorf("MCP tool call timed out after %v: %s", toolExecutionTimeout, toolName)
+			return nil, "", "", fmt.Errorf("MCP tool call timed out after %v: %s: %w", toolExecutionTimeout, toolName, ErrMCPToolTimeout)
 		}
 		m.logger.Error("%s Tool execution failed for %s via client %s: %v", MCPLogPrefix, toolName, executionConfig.Name, callErr)
-		return nil, "", "", fmt.Errorf("MCP tool call failed: %v", callErr)
+		return nil, "", "", fmt.Errorf("MCP tool call failed for %s: %v: %w", toolName, callErr, ErrMCPToolCallFailed)
 	}
 
 	// Extract text from MCP response

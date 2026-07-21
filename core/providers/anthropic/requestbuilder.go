@@ -112,6 +112,7 @@ var AnthropicProviderRequestDefaultsMap = map[schemas.ModelProvider]AnthropicPro
 	schemas.BedrockMantle: {
 		RemapToolVersions: true,
 	},
+	schemas.DeepSeek: {},
 	// Vertex publisher endpoint: model + region in URL, anthropic_version
 	// required, beta headers in body (not HTTP), cache_control.scope stripped
 	// at marshal time, tool versions remapped.
@@ -124,6 +125,7 @@ var AnthropicProviderRequestDefaultsMap = map[schemas.ModelProvider]AnthropicPro
 		RemapToolVersions:         true,
 		InjectBetaHeadersIntoBody: true,
 	},
+	schemas.SGL: {},
 }
 
 // BuildAnthropicResponsesRequestBody is the single implementation of the
@@ -374,9 +376,19 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 		return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 	}
 
-	jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "fallbacks")
+	// Strip Bifrost cross-provider fallback strings, but preserve Anthropic
+	// native server-side fallback objects (server-side-fallback-2026-06-01).
+	jsonBody, err = stripBifrostFallbacksFromBody(jsonBody, cfg.Provider)
 	if err != nil {
 		return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+	}
+
+	if cfg.IsCountTokens {
+		// The count_tokens endpoint rejects fallback_credit_token outright.
+		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "fallback_credit_token")
+		if err != nil {
+			return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+		}
 	}
 
 	if defaults.DeleteStreamField {
@@ -595,7 +607,9 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 		return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 	}
 
-	jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "fallbacks")
+	// Strip Bifrost cross-provider fallback strings, but preserve Anthropic
+	// native server-side fallback objects (server-side-fallback-2026-06-01).
+	jsonBody, err = stripBifrostFallbacksFromBody(jsonBody, cfg.Provider)
 	if err != nil {
 		return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 	}

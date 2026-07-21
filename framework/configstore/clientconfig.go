@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
-	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 )
@@ -73,6 +72,7 @@ type ClientConfig struct {
 	PrometheusLabels                      []string                              `json:"prometheus_labels"`                          // The labels to be used for prometheus metrics
 	EnableLogging                         *bool                                 `json:"enable_logging"`                             // Enable logging of requests and responses
 	DisableContentLogging                 bool                                  `json:"disable_content_logging"`                    // Disable logging of content
+	RetainContentInObjectStorage          bool                                  `json:"retain_content_in_object_storage"`           // When content logging is disabled (config or header), still offload content to object storage as hidden instead of dropping it
 	AllowPerRequestContentStorageOverride bool                                  `json:"allow_per_request_content_storage_override"` // Allow per-request override of content storage via x-bf-disable-content-logging header/context
 	AllowPerRequestRawOverride            bool                                  `json:"allow_per_request_raw_override"`             // Allow per-request override of raw request/response visibility via x-bf-send-back-raw-request and x-bf-send-back-raw-response headers
 	AllowDirectKeys                       bool                                  `json:"allow_direct_keys"`                          // Allow callers to bypass the registered key pool via x-bf-direct-key: true header
@@ -104,6 +104,7 @@ type ClientConfig struct {
 	OAuth2ServerConfig                    *tables.OAuth2ServerConfig            `json:"oauth2_server_config,omitempty"`              // OAuth2 AS-specific settings (IssuerURL, token TTLs). Only relevant when MCPServerAuthMode is both or oauth.
 	ConfigHash                            string                                `json:"-"`                                           // Config hash for reconciliation (not serialized)
 	DumpErrorsInConsoleLogs               bool                                  `json:"dump_errors_in_console_logs"`                 // Dump error details in console logs
+	WebhookConfig                         *tables.WebhookConfig                 `json:"webhook_config,omitempty"`                    // Global webhook delivery settings; nil means all defaults
 }
 
 // IsMCPOAuthDiscoveryEnabled reports whether the well-known OAuth discovery
@@ -237,6 +238,11 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		hash.Write([]byte("allowPerRequestContentStorageOverride:true"))
 	}
 
+	// Only hash non-default value to avoid legacy config hash churn on upgrade.
+	if c.RetainContentInObjectStorage {
+		hash.Write([]byte("retainContentInObjectStorage:true"))
+	}
+
 	if c.AllowPerRequestRawOverride {
 		hash.Write([]byte("allowPerRequestRawOverride:true"))
 	}
@@ -255,6 +261,16 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 	// Only hash non-default value to avoid legacy config hash churn on upgrade.
 	if c.DumpErrorsInConsoleLogs {
 		hash.Write([]byte("dumpErrorsInConsoleLogs:true"))
+	}
+
+	// Only hash when present to avoid legacy config hash churn on upgrade.
+	if c.WebhookConfig != nil {
+		data, err := sonic.Marshal(c.WebhookConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write([]byte("webhookConfig:"))
+		hash.Write(data)
 	}
 
 	// Hash integer fields
@@ -512,7 +528,13 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 		if key.UseForBatchAPI != nil {
 			redactedConfig.Keys[i].UseForBatchAPI = key.UseForBatchAPI
 		} else {
-			redactedConfig.Keys[i].UseForBatchAPI = bifrost.Ptr(false)
+			redactedConfig.Keys[i].UseForBatchAPI = new(false)
+		}
+		// Add back use anthropic endpoints
+		if key.UseAnthropicEndpoints != nil {
+			redactedConfig.Keys[i].UseAnthropicEndpoints = key.UseAnthropicEndpoints
+		} else {
+			redactedConfig.Keys[i].UseAnthropicEndpoints = new(false)
 		}
 
 		// Add model discovery status and error
@@ -841,6 +863,14 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 	}
 	if useForBatchAPI {
 		hash.Write([]byte("useForBatchAPI:true"))
+	}
+	// Hash UseAnthropicEndpoints (nil = default false for new keys)
+	useAnthropicEndpoints := false
+	if key.UseAnthropicEndpoints != nil {
+		useAnthropicEndpoints = *key.UseAnthropicEndpoints
+	}
+	if useAnthropicEndpoints {
+		hash.Write([]byte("useAnthropicEndpoints:true"))
 	}
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
@@ -1476,6 +1506,67 @@ func GenerateMCPClientHash(m tables.TableMCPClient) (string, error) {
 
 	// will enable it in the future with a migration
 	// hash.Write([]byte("disabled:" + strconv.FormatBool(m.Disabled)))
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+// GenerateWebhookEndpointHash generates a SHA256 hash of a webhook endpoint's
+// declared fields. This is used to detect changes between config.json and
+// database config. Operational fields (failure counters, timestamps) and the
+// generated ID are excluded on purpose.
+func GenerateWebhookEndpointHash(endpoint *tables.TableWebhookEndpoint) (string, error) {
+	hash := sha256.New()
+
+	hash.Write([]byte("name:" + endpoint.Name))
+	hash.Write([]byte("url:" + endpoint.URL))
+
+	// The signing secret is deliberately excluded: it is set once at creation
+	// and rotates only through RotateWebhookEndpointSecret, so config-file
+	// sync must not treat a changed webhooks[].secret as a mutation — doing so
+	// would store the new hash while UpdateWebhookEndpoint leaves the credential
+	// untouched, silently diverging the two.
+
+	// Hash Events (sorted for deterministic hashing)
+	if len(endpoint.Events) > 0 {
+		sortedEvents := make([]string, 0, len(endpoint.Events))
+		for _, event := range endpoint.Events {
+			sortedEvents = append(sortedEvents, string(event))
+		}
+		sort.Strings(sortedEvents)
+		data, err := sonic.Marshal(sortedEvents)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+
+	hash.Write([]byte("includeResponse:" + strconv.FormatBool(endpoint.IncludeResponse)))
+	hash.Write([]byte("allowPrivateNetwork:" + strconv.FormatBool(endpoint.AllowPrivateNetwork)))
+	hash.Write([]byte("disabled:" + strconv.FormatBool(endpoint.Disabled)))
+
+	hash.Write([]byte("maxRetries:" + strconv.Itoa(endpoint.MaxRetries)))
+	hash.Write([]byte("retryBackoffInitialSeconds:" + strconv.Itoa(endpoint.RetryBackoffInitialSeconds)))
+	hash.Write([]byte("retryBackoffMaxSeconds:" + strconv.Itoa(endpoint.RetryBackoffMaxSeconds)))
+	hash.Write([]byte("attemptTimeoutSeconds:" + strconv.Itoa(endpoint.AttemptTimeoutSeconds)))
+	hash.Write([]byte("maxResponsePayloadKBs:" + strconv.Itoa(endpoint.MaxResponsePayloadKBs)))
+	hash.Write([]byte("maxConcurrentDeliveries:" + strconv.Itoa(endpoint.MaxConcurrentDeliveries)))
+
+	// Hash Headers (sorted for deterministic hashing)
+	if len(endpoint.Headers) > 0 {
+		keys := make([]string, 0, len(endpoint.Headers))
+		for k := range endpoint.Headers {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			val := endpoint.Headers[k]
+			if val.IsFromSecret() {
+				hash.Write([]byte(k + ":ref:" + val.GetRawRef()))
+			} else {
+				hash.Write([]byte(k + ":val:" + val.Val))
+			}
+		}
+	}
+
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 

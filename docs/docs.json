@@ -158,6 +158,7 @@
                   "providers/supported-providers/sgl",
                   "providers/supported-providers/vertex",
                   "providers/supported-providers/vllm",
+                  "providers/supported-providers/wafer",
                   "providers/supported-providers/xai"
                 ]
               },
@@ -227,6 +228,7 @@
               "features/compat-plugin",
               "features/keys-management",
               "features/async-inference",
+              "features/webhooks",
               {
                 "group": "Governance",
                 "icon": "user-lock",
@@ -556,6 +558,7 @@
             "icon": "binoculars",
             "pages": [
               "features/observability/default",
+              "features/observability/content-logging",
               "features/observability/maxim",
               "features/observability/otel",
               "features/observability/prometheus",
@@ -660,6 +663,13 @@
         "tab": "API",
         "icon": "code",
         "groups": [
+          {
+            "group": "Authentication",
+            "icon": "key",
+            "pages": [
+              "api/procuring-api-keys"
+            ]
+          },
           {
             "group": "API Reference",
             "openapi": "openapi/openapi.json"
@@ -1018,6 +1028,7 @@
             "item": "Helm",
             "icon": "box",
             "pages": [
+              "changelogs/helm-v2.1.30",
               "changelogs/helm-v2.1.29",
               "changelogs/helm-v2.1.28",
               "changelogs/helm-v2.1.27",

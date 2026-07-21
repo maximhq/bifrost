@@ -25,7 +25,7 @@ Custom Regex runs in-process and uses Go's RE2-compatible regexp engine. It does
 Custom Regex currently evaluates text content. It does not inspect image pixels or binary file contents.
 
 <Note>
-  **Streaming output:** When this profile is used in an `output` or `both` rule, Bifrost accumulates the stream until the model response is complete, then checks the full response. It does not check individual stream chunks. See [Streaming Output Guardrails](/enterprise/guardrails#streaming-output-guardrails) for details.
+  **Streaming output:** Delivery depends on whether the matched patterns detect, redact, or can block. See [Streaming Output Guardrails](/enterprise/guardrails#streaming-output-guardrails) for details.
 </Note>
 
 ## Pattern Fields

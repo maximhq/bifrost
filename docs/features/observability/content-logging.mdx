@@ -1,0 +1,151 @@
+---
+title: "Content Logging"
+description: "Control which parts of a request and response are persisted, where they land, and who can read them back"
+icon: "eye-slash"
+---
+
+## Overview
+
+Bifrost records two kinds of information about every request. **Metadata** covers model, provider, token counts, cost, latency, status, and governance attribution. **Content** is the actual prompts, completions, and tool traffic.
+
+Metadata is what dashboards, budgets, and alerts run on. Content is what makes a log useful for debugging, and what compliance regimes care about. Bifrost lets you keep the first without the second.
+
+<Note>
+There is no single switch. Content is stripped **independently at each destination**, from that destination's own setting. A log store with content disabled says nothing about what your BigQuery table or Datadog spans contain. This page covers how the layers compose.
+</Note>
+
+---
+
+## What counts as content
+
+Broadly, anything derived from the request or response body:
+
+| Category | Examples |
+|----------|----------|
+| **Messages** | Chat history, prompt text for completions, response messages with role attribution |
+| **Tool traffic** | Tool definitions (names, descriptions, parameter schemas), tool call arguments, tool results |
+| **Parameters** | Temperature, `max_tokens`, stop sequences, and other request parameters |
+| **Modality payloads** | Embedding inputs, transcription audio, speech text, image prompts |
+| **Reasoning** | Reasoning traces and refusal content, when the provider returns them |
+| **Raw bytes** | Verbatim provider request/response bodies, when `x-bf-store-raw-request-response` is used |
+
+<Warning>
+The categories each destination actually strips are **not identical**. A setting that removes messages may leave tool definitions or request parameters in place. Check the destination-specific notes below before treating a flag as a guarantee.
+</Warning>
+
+Attribution identifiers (user ID, team, customer, business unit, virtual key) are **metadata**, not content. They are never removed by a content setting. If end-user identifiers are sensitive in your deployment, treat that as a separate concern.
+
+---
+
+## Where content can land
+
+| Destination | Governed by |
+|-------------|-------------|
+| **Log store** (Postgres / SQLite / ClickHouse row) | `client.disable_content_logging` |
+| **Object storage** (offloaded log payloads) | `client.disable_content_logging` + `client.retain_content_in_object_storage` |
+| **Logs UI and Logs API** | Whatever the log store holds, plus the hidden-content gate |
+| **Observability connectors** (BigQuery, Kafka, Pub/Sub, OpenTelemetry, Datadog) | Each connector's own `disable_content_logging` |
+| **Metrics** (Prometheus, Datadog metrics, OTLP metrics) | Never carry content. Counters, histograms, and dimension tags only |
+
+---
+
+## The control layers
+
+### 1. Global: `client.disable_content_logging`
+
+The default for the Bifrost log store. Set it to `true` and log rows keep metadata only.
+
+```json
+{
+  "client": {
+    "enable_logging": true,
+    "disable_content_logging": true
+  }
+}
+```
+
+This governs **the log store only**. It has no effect on observability connectors.
+
+### 2. Per-request: `x-bf-disable-content-logging`
+
+Overrides the global setting for a single request, in either direction: `true` suppresses content for a request that would otherwise be logged, `false` captures content while the global setting is `true`.
+
+Per-request overrides are **off by default**. Enable `client.allow_per_request_content_storage_override` first. While it is off, the header is ignored and the global setting is authoritative.
+
+See [Request Options](/providers/request-options#disable-content-logging-per-request) for headers, context keys, and SDK examples.
+
+### 3. Per-connector: each connector's own flag
+
+Every observability connector has an independent `disable_content_logging`, defaulting to `false`. It is **not** inherited from the client setting.
+
+| Connector | Flag | Notes |
+|-----------|------|-------|
+| [BigQuery](/features/observability/bigquery) | `disable_content_logging` | Gates `input_history` and `output_message`. **`params` and `tools` are written either way.** |
+| [Kafka](/features/observability/kafka) | `disable_content_logging` | Strips `gen_ai.input.*` and `gen_ai.output.*` from all spans |
+| [Pub/Sub](/features/observability/pubsub) | `disable_content_logging` | Same as Kafka |
+| [OpenTelemetry](/features/observability/otel) | `disable_content_logging`, `disable_root_span_content` | The second drops content from the root span only |
+| [Datadog](/enterprise/datadog-connector) | `disable_content_logging` | Covers APM spans and LLM Observability payloads |
+
+Captured request headers (`request_headers` on a connector, `client.logging_headers` on the log store) are exported **regardless** of any content flag. Only capture headers you intend to export.
+
+<Warning>
+For a workload where content must not leave the deployment, set `disable_content_logging: true` on the client **and on every configured connector**. Setting only the client flag still exports full content everywhere.
+</Warning>
+
+---
+
+## Retaining content in object storage
+
+Disabling content logging normally drops content permanently. `client.retain_content_in_object_storage` offers a middle ground: content is **kept in the object storage bucket but never served back**.
+
+```json
+{
+  "client": {
+    "enable_logging": true,
+    "disable_content_logging": true,
+    "retain_content_in_object_storage": true
+  }
+}
+```
+
+In the UI this is **Retain Content in Object Storage**, under **Logs Settings**. The toggle is disabled unless object storage is configured on the logs store.
+
+When it is on and a request has content logging disabled, either by the global setting or by the `x-bf-disable-content-logging` header, Bifrost:
+
+- writes a **metadata-only database row**, with payload fields and the content preview cleared,
+- offloads the **complete payload** to object storage, marked hidden,
+- and **never hydrates that payload back** on reads. The Logs UI and the Logs API show metadata only.
+
+The content is readable only by someone with direct access to the storage bucket. That is a different access path, typically governed by your cloud IAM rather than by Bifrost roles. The result is that *retention* and *visibility* become separate decisions.
+
+### Requirements and behavior
+
+| Condition | Result |
+|-----------|--------|
+| Content logging enabled | Normal behavior; the toggle has no effect |
+| Content logging disabled, toggle **off** | Content is dropped entirely |
+| Content logging disabled, toggle **on**, object storage configured | Content retained in the bucket, hidden from UI and API |
+| Content logging disabled, toggle **on**, **no** object storage | Content is dropped entirely, and Bifrost logs a warning at startup |
+
+
+---
+
+## Interaction with other features
+
+**Raw byte storage.** `x-bf-store-raw-request-response` only persists raw provider bodies when content logging is on for that request. With content logging off, raw bytes are dropped from the log row even if the header is set.
+
+**Guardrail redaction.** When Enterprise redaction is enabled, redaction runs before persistence and before export, so connectors and object storage receive the redacted or placeholderized values. Reveal mappings stay on the Bifrost log row and are never exported. With `disable_content_logging` enabled, no reveal data is persisted at all. See [Guardrail Redaction](/enterprise/guardrails/redaction).
+
+**Log exports.** Offloaded payloads carry the same fields the log row would have carried. See [Log Exports](/enterprise/log-exports).
+
+---
+
+## Choosing a configuration
+
+**Metadata only, everywhere.** Set `disable_content_logging: true` on the client and on every connector. Confirm no connector is capturing headers you did not intend to export.
+
+**Metadata in Bifrost, content retained for security review.** Set `disable_content_logging: true` and `retain_content_in_object_storage: true`, with object storage configured. Restrict bucket access to the reviewing team.
+
+**Content on by default, suppressed for sensitive traffic.** Leave `disable_content_logging: false`, enable `allow_per_request_content_storage_override`, and send `x-bf-disable-content-logging: true` on the requests that need it.
+
+**Content in Bifrost, not in third-party tools.** Leave the client setting off and set `disable_content_logging: true` on each connector.

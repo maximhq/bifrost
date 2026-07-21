@@ -53,6 +53,13 @@ SELECT
     COALESCE(percentile_cont(0.99) WITHIN GROUP (ORDER BY latency), 0) AS p99_latency,
     COALESCE(SUM(prompt_tokens), 0) AS total_prompt_tokens,
     COALESCE(SUM(completion_tokens), 0) AS total_completion_tokens,
+    -- Throughput measures restricted to rows with a positive measured latency,
+    -- so the tokens/sec matview path matches the raw path exactly (which filters
+    -- latency > 0). Without this, a latency=0 success row would add completion
+    -- tokens to the numerator with nothing in the denominator and inflate the rate.
+    COALESCE(SUM(completion_tokens) FILTER (WHERE latency > 0), 0) AS throughput_completion_tokens,
+    COALESCE(SUM(latency) FILTER (WHERE latency > 0), 0) AS throughput_latency_ms,
+    COALESCE(COUNT(*) FILTER (WHERE latency > 0), 0) AS throughput_request_count,
     COALESCE(SUM(total_tokens), 0) AS total_tokens,
     COALESCE(SUM(cached_read_tokens), 0) AS total_cached_read_tokens,
     COALESCE(SUM(cost), 0) AS total_cost
@@ -71,7 +78,12 @@ ON mv_logs_hourly (hour, provider, model, status, object_type, selected_key_id, 
 
 // mvLogsHourlyRequiredColumns is the canonical column set used by
 // repairMatViewShapes to detect old-shape mv_logs_hourly views from prior
-// schema versions and drop them so they get rebuilt on startup.
+// schema versions and drop them so they get rebuilt on startup, and by
+// matViewShapesReady to gate the matview read path.
+//
+// Must mirror every output column of mvLogsHourlyDDL. A partial list would let
+// a view missing an unlisted column pass both checks, and readers selecting it
+// would fail with "column does not exist" — see TestMvLogsHourlyRequiredColumnsMatchDDL.
 var mvLogsHourlyRequiredColumns = []string{
 	"hour",
 	"provider",
@@ -87,7 +99,22 @@ var mvLogsHourlyRequiredColumns = []string{
 	"business_unit_id",
 	"alias",
 	"canonical_model_name",
+	"count",
+	"success_count",
+	"error_count",
 	"cancelled_count",
+	"avg_latency",
+	"p90_latency",
+	"p95_latency",
+	"p99_latency",
+	"total_prompt_tokens",
+	"total_completion_tokens",
+	"throughput_completion_tokens",
+	"throughput_latency_ms",
+	"throughput_request_count",
+	"total_tokens",
+	"total_cached_read_tokens",
+	"total_cost",
 }
 
 // legacyMatViewNames are matviews from previous schema versions that no longer
@@ -419,39 +446,43 @@ var matviewRequiredColumns = func() map[string][]string {
 // transaction. Multi-replica deployments serialize on the advisory lock so
 // only one instance does the work. It shares the same advisory lock as
 // refreshMatViews so startup create/repair cannot overlap a periodic refresh.
-func ensureMatViews(ctx context.Context, db *gorm.DB) error {
+//
+// Returns false (with a nil error) when another replica holds the lock: nothing
+// about the view shape is established then, so callers must verify with
+// matViewShapesReady before enabling the matview read path.
+func ensureMatViews(ctx context.Context, db *gorm.DB) (bool, error) {
 	if db.Dialector.Name() != "postgres" {
-		return nil
+		return false, nil
 	}
 
 	sqlDB, err := db.DB()
 	if err != nil {
-		return fmt.Errorf("failed to get sql.DB for matview creation: %w", err)
+		return false, fmt.Errorf("failed to get sql.DB for matview creation: %w", err)
 	}
 
 	conn, err := sqlDB.Conn(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to get dedicated connection for matview creation: %w", err)
+		return false, fmt.Errorf("failed to get dedicated connection for matview creation: %w", err)
 	}
 	defer conn.Close()
 
 	var acquired bool
 	if err := conn.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", matviewRefreshAdvisoryLockKey).Scan(&acquired); err != nil {
-		return fmt.Errorf("failed to try advisory lock for matview creation: %w", err)
+		return false, fmt.Errorf("failed to try advisory lock for matview creation: %w", err)
 	}
 	if !acquired {
 		// Another replica is doing the work — nothing to do here.
-		return nil
+		return false, nil
 	}
 	defer func() {
 		_, _ = conn.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", matviewRefreshAdvisoryLockKey)
 	}()
 
 	if err := dropLegacyMatViews(ctx, conn); err != nil {
-		return err
+		return false, err
 	}
 	if err := repairMatViewShapes(ctx, conn); err != nil {
-		return err
+		return false, err
 	}
 
 	ddls := []string{mvLogsHourlyDDL}
@@ -460,15 +491,80 @@ func ensureMatViews(ctx context.Context, db *gorm.DB) error {
 	}
 	for _, ddl := range ddls {
 		if _, err := conn.ExecContext(ctx, ddl); err != nil {
-			return fmt.Errorf("failed to create materialized view: %w", err)
+			return false, fmt.Errorf("failed to create materialized view: %w", err)
 		}
 	}
 
 	if err := ensureMatViewUniqueIndexes(ctx, conn); err != nil {
-		return err
+		return false, err
 	}
 
-	return nil
+	return true, nil
+}
+
+// matViewShapesReady reports whether every managed materialized view exists and
+// carries the full column set this build reads. One read-only pg_catalog query,
+// no lock, no DDL — safe to repeat on refresher ticks.
+//
+// Gates matViewsReady during a rolling deploy: without it a replica that skipped
+// the repair reads an old-shape view and gets "column does not exist".
+func matViewShapesReady(ctx context.Context, db *gorm.DB) (bool, error) {
+	if db.Dialector.Name() != "postgres" {
+		return false, nil
+	}
+
+	sqlDB, err := db.DB()
+	if err != nil {
+		return false, fmt.Errorf("failed to get sql.DB for matview shape check: %w", err)
+	}
+
+	conn, err := sqlDB.Conn(ctx)
+	if err != nil {
+		return false, fmt.Errorf("failed to get connection for matview shape check: %w", err)
+	}
+	defer conn.Close()
+
+	// Flattened into parallel arrays so the check is one round trip. A pair is
+	// unsatisfied when the view is absent, shadowed in the search path, or
+	// missing the column — all three mean "not ready".
+	views := make([]string, 0, len(matviewRequiredColumns)*len(mvLogsHourlyRequiredColumns))
+	columns := make([]string, 0, cap(views))
+	for view, required := range matviewRequiredColumns {
+		for _, column := range required {
+			views = append(views, view)
+			columns = append(columns, column)
+		}
+	}
+
+	var missing int
+	if err := conn.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM unnest($1::text[], $2::text[]) AS required(view_name, column_name)
+		WHERE NOT EXISTS (
+			SELECT 1
+			FROM pg_class c
+			JOIN pg_attribute a ON a.attrelid = c.oid
+			WHERE c.relkind = 'm'
+			  AND c.relname = required.view_name
+			  AND pg_catalog.pg_table_is_visible(c.oid)
+			  AND a.attnum > 0
+			  AND NOT a.attisdropped
+			  AND a.attname = required.column_name
+		)
+	`, pqTextArray(views), pqTextArray(columns)).Scan(&missing); err != nil {
+		return false, fmt.Errorf("failed to inspect matview shapes: %w", err)
+	}
+	return missing == 0, nil
+}
+
+// pqTextArray renders a []string as a Postgres text[] literal, avoiding a
+// driver-specific array type for the one place that needs it.
+func pqTextArray(values []string) string {
+	quoted := make([]string, 0, len(values))
+	for _, v := range values {
+		quoted = append(quoted, `"`+strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(v)+`"`)
+	}
+	return "{" + strings.Join(quoted, ",") + "}"
 }
 
 // dropLegacyMatViews removes matviews from prior schema versions that no
@@ -503,9 +599,10 @@ func matViewNeedsRebuild(ctx context.Context, conn *sql.Conn, view string, requi
 	if err := conn.QueryRowContext(ctx, `
 		SELECT EXISTS (
 			SELECT 1
-			FROM pg_class
-			WHERE relkind = 'm'
-			  AND relname = $1
+			FROM pg_class c
+			WHERE c.relkind = 'm'
+			  AND c.relname = $1
+			  AND pg_catalog.pg_table_is_visible(c.oid)
 		)
 	`, view).Scan(&exists); err != nil {
 		return false, fmt.Errorf("failed to check matview %s existence: %w", view, err)
@@ -520,6 +617,7 @@ func matViewNeedsRebuild(ctx context.Context, conn *sql.Conn, view string, requi
 		JOIN pg_attribute a ON a.attrelid = c.oid
 		WHERE c.relkind = 'm'
 		  AND c.relname = $1
+		  AND pg_catalog.pg_table_is_visible(c.oid)
 		  AND a.attnum > 0
 		  AND NOT a.attisdropped
 	`, view)
@@ -753,8 +851,16 @@ func startMatViewRefresher(ctx context.Context, db *gorm.DB, interval time.Durat
 				if err := refreshMatViews(ctx, db); err != nil {
 					logger.Warn(fmt.Sprintf("logstore: matview refresh failed: %s", err))
 				} else if readyFlag != nil && !readyFlag.Load() {
-					logger.Info("logstore: materialized views are ready (recovered)")
-					readyFlag.Store(true)
+					// A successful refresh is not evidence of the right shape:
+					// REFRESH works fine on an old-shape view, and refreshMatViews
+					// also returns nil when it skipped. Check the catalog.
+					shapesOK, err := matViewShapesReady(ctx, db)
+					if err != nil {
+						logger.Warn(fmt.Sprintf("logstore: matview shape check failed: %s (dashboard queries will use raw tables)", err))
+					} else if shapesOK {
+						logger.Info("logstore: materialized views are ready (recovered)")
+						readyFlag.Store(true)
+					}
 				}
 			case <-ctx.Done():
 				return
@@ -926,11 +1032,13 @@ func (s *RDBLogStore) getCountFromMatView(ctx context.Context, filters SearchFil
 // Latency is a weighted average across hourly buckets.
 func (s *RDBLogStore) getStatsFromMatView(ctx context.Context, filters SearchFilters) (*SearchStats, error) {
 	var result struct {
-		TotalCount   int64   `gorm:"column:total_count"`
-		SuccessCount int64   `gorm:"column:success_count"`
-		AvgLatency   float64 `gorm:"column:avg_latency"`
-		TotalTokens  int64   `gorm:"column:total_tokens"`
-		TotalCost    float64 `gorm:"column:total_cost"`
+		TotalCount       int64   `gorm:"column:total_count"`
+		SuccessCount     int64   `gorm:"column:success_count"`
+		AvgLatency       float64 `gorm:"column:avg_latency"`
+		TotalTokens      int64   `gorm:"column:total_tokens"`
+		PromptTokens     int64   `gorm:"column:prompt_tokens"`
+		CompletionTokens int64   `gorm:"column:completion_tokens"`
+		TotalCost        float64 `gorm:"column:total_cost"`
 	}
 	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, filters)
@@ -939,6 +1047,8 @@ func (s *RDBLogStore) getStatsFromMatView(ctx context.Context, filters SearchFil
 		COALESCE(SUM(success_count), 0) AS success_count,
 		CASE WHEN SUM(count) > 0 THEN SUM(avg_latency * count) / SUM(count) ELSE 0 END AS avg_latency,
 		COALESCE(SUM(total_tokens), 0) AS total_tokens,
+		COALESCE(SUM(total_prompt_tokens), 0) AS prompt_tokens,
+		COALESCE(SUM(total_completion_tokens), 0) AS completion_tokens,
 		COALESCE(SUM(total_cost), 0) AS total_cost
 	`).Scan(&result).Error; err != nil {
 		return nil, err
@@ -962,6 +1072,8 @@ func (s *RDBLogStore) getStatsFromMatView(ctx context.Context, filters SearchFil
 		UserFacingTotalRequests:   result.TotalCount, // matview approximation; no per-chain data available
 		AverageLatency:            result.AvgLatency,
 		TotalTokens:               result.TotalTokens,
+		PromptTokens:              result.PromptTokens,
+		CompletionTokens:          result.CompletionTokens,
 		TotalCost:                 result.TotalCost,
 		CacheHitRateTotalRequests: &cacheHitRateTotalRequests,
 	}
@@ -1245,6 +1357,115 @@ func (s *RDBLogStore) getLatencyHistogramFromMatView(ctx context.Context, filter
 	return &LatencyHistogramResult{Buckets: buckets, BucketSizeSeconds: bucketSizeSeconds}, nil
 }
 
+// getThroughputHistogramFromMatView returns time-bucketed token-generation
+// throughput (tokens/sec) from mv_logs_hourly. It sums the precomputed
+// positive-latency measures (throughput_completion_tokens / throughput_latency_ms
+// / throughput_request_count), which the matview restricts to rows with
+// latency > 0 exactly as the raw path does — so both paths return the same value.
+func (s *RDBLogStore) getThroughputHistogramFromMatView(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ThroughputHistogramResult, error) {
+	var results []struct {
+		BucketTimestamp  int64   `gorm:"column:bucket_timestamp"`
+		CompletionTokens int64   `gorm:"column:completion_tokens"`
+		SumLatency       float64 `gorm:"column:sum_latency"`
+		TotalRequests    int64   `gorm:"column:total_requests"`
+	}
+	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
+	q = s.applyMatViewFilters(q, filters)
+	// Successful requests only: status is a matview dimension, so this restricts
+	// the summed tokens/latency/count to success rows (see GetThroughputHistogram).
+	q = q.Where("status = ?", "success")
+	if err := q.Select(fmt.Sprintf(`
+		CAST(FLOOR(EXTRACT(EPOCH FROM hour) / %d) * %d AS BIGINT) AS bucket_timestamp,
+		COALESCE(SUM(throughput_completion_tokens), 0) AS completion_tokens,
+		COALESCE(SUM(throughput_latency_ms), 0) AS sum_latency,
+		COALESCE(SUM(throughput_request_count), 0) AS total_requests
+	`, bucketSizeSeconds, bucketSizeSeconds)).
+		Group("bucket_timestamp").
+		Order("bucket_timestamp ASC").
+		Find(&results).Error; err != nil {
+		return nil, err
+	}
+
+	resultMap := make(map[int64]int, len(results))
+	for i, r := range results {
+		resultMap[r.BucketTimestamp] = i
+	}
+
+	allTimestamps := generateBucketTimestamps(filters.StartTime, filters.EndTime, bucketSizeSeconds)
+	buckets := make([]ThroughputHistogramBucket, 0, len(allTimestamps))
+	for _, ts := range allTimestamps {
+		b := ThroughputHistogramBucket{Timestamp: time.Unix(ts, 0).UTC()}
+		if idx, ok := resultMap[ts]; ok {
+			r := results[idx]
+			b.TokensPerSecond = tokensPerSecond(r.CompletionTokens, r.SumLatency)
+			b.TotalCompletionTokens = r.CompletionTokens
+			b.TotalRequests = r.TotalRequests
+		}
+		buckets = append(buckets, b)
+	}
+	return &ThroughputHistogramResult{Buckets: buckets, BucketSizeSeconds: bucketSizeSeconds}, nil
+}
+
+// getProviderThroughputHistogramFromMatView returns time-bucketed tokens/sec
+// with per-provider breakdown from mv_logs_hourly.
+func (s *RDBLogStore) getProviderThroughputHistogramFromMatView(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ProviderThroughputHistogramResult, error) {
+	var results []struct {
+		BucketTimestamp  int64   `gorm:"column:bucket_timestamp"`
+		Provider         string  `gorm:"column:provider"`
+		CompletionTokens int64   `gorm:"column:completion_tokens"`
+		SumLatency       float64 `gorm:"column:sum_latency"`
+		TotalRequests    int64   `gorm:"column:total_requests"`
+	}
+	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
+	q = s.applyMatViewFilters(q, filters)
+	// Successful requests only — see getThroughputHistogramFromMatView.
+	q = q.Where("status = ?", "success")
+	if err := q.Select(fmt.Sprintf(`
+		CAST(FLOOR(EXTRACT(EPOCH FROM hour) / %d) * %d AS BIGINT) AS bucket_timestamp,
+		provider,
+		COALESCE(SUM(throughput_completion_tokens), 0) AS completion_tokens,
+		COALESCE(SUM(throughput_latency_ms), 0) AS sum_latency,
+		COALESCE(SUM(throughput_request_count), 0) AS total_requests
+	`, bucketSizeSeconds, bucketSizeSeconds)).
+		Group("bucket_timestamp, provider").
+		Order("bucket_timestamp ASC").
+		Find(&results).Error; err != nil {
+		return nil, err
+	}
+
+	type bucketAgg struct {
+		byProvider map[string]ProviderThroughputStats
+	}
+	grouped := make(map[int64]*bucketAgg)
+	providersSet := make(map[string]struct{})
+	for _, r := range results {
+		a, ok := grouped[r.BucketTimestamp]
+		if !ok {
+			a = &bucketAgg{byProvider: make(map[string]ProviderThroughputStats)}
+			grouped[r.BucketTimestamp] = a
+		}
+		a.byProvider[r.Provider] = ProviderThroughputStats{
+			TokensPerSecond:       tokensPerSecond(r.CompletionTokens, r.SumLatency),
+			TotalCompletionTokens: r.CompletionTokens,
+			TotalRequests:         r.TotalRequests,
+		}
+		providersSet[r.Provider] = struct{}{}
+	}
+
+	allTimestamps := generateBucketTimestamps(filters.StartTime, filters.EndTime, bucketSizeSeconds)
+	buckets := make([]ProviderThroughputHistogramBucket, 0, len(allTimestamps))
+	for _, ts := range allTimestamps {
+		b := ProviderThroughputHistogramBucket{Timestamp: time.Unix(ts, 0).UTC(), ByProvider: make(map[string]ProviderThroughputStats)}
+		if a, ok := grouped[ts]; ok {
+			b.ByProvider = a.byProvider
+		}
+		buckets = append(buckets, b)
+	}
+
+	providers := sortedStringKeys(providersSet)
+	return &ProviderThroughputHistogramResult{Buckets: buckets, BucketSizeSeconds: bucketSizeSeconds, Providers: providers}, nil
+}
+
 // getProviderCostHistogramFromMatView returns time-bucketed cost data with
 // per-provider breakdown from mv_logs_hourly.
 func (s *RDBLogStore) getProviderCostHistogramFromMatView(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ProviderCostHistogramResult, error) {
@@ -1441,7 +1662,10 @@ func (s *RDBLogStore) getProviderLatencyHistogramFromMatView(ctx context.Context
 // getDimensionCostHistogramFromMatView returns time-bucketed cost data grouped by
 // the specified dimension column from mv_logs_hourly.
 func (s *RDBLogStore) getDimensionCostHistogramFromMatView(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64, dimension HistogramDimension) (*DimensionCostHistogramResult, error) {
-	dimCol := string(dimension)
+	dimCol, ok := histogramDimensionColumn(dimension)
+	if !ok {
+		return nil, fmt.Errorf("invalid histogram dimension: %s", dimension)
+	}
 	var results []struct {
 		BucketTimestamp int64   `gorm:"column:bucket_timestamp"`
 		DimValue        string  `gorm:"column:dim_value"`
@@ -1495,7 +1719,10 @@ func (s *RDBLogStore) getDimensionCostHistogramFromMatView(ctx context.Context, 
 // getDimensionTokenHistogramFromMatView returns time-bucketed token usage grouped by
 // the specified dimension column from mv_logs_hourly.
 func (s *RDBLogStore) getDimensionTokenHistogramFromMatView(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64, dimension HistogramDimension) (*DimensionTokenHistogramResult, error) {
-	dimCol := string(dimension)
+	dimCol, ok := histogramDimensionColumn(dimension)
+	if !ok {
+		return nil, fmt.Errorf("invalid histogram dimension: %s", dimension)
+	}
 	var results []struct {
 		BucketTimestamp  int64  `gorm:"column:bucket_timestamp"`
 		DimValue         string `gorm:"column:dim_value"`
@@ -1566,7 +1793,10 @@ func (s *RDBLogStore) getDimensionTokenHistogramFromMatView(ctx context.Context,
 // getDimensionLatencyHistogramFromMatView returns time-bucketed latency percentiles
 // grouped by the specified dimension column from mv_logs_hourly.
 func (s *RDBLogStore) getDimensionLatencyHistogramFromMatView(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64, dimension HistogramDimension) (*DimensionLatencyHistogramResult, error) {
-	dimCol := string(dimension)
+	dimCol, ok := histogramDimensionColumn(dimension)
+	if !ok {
+		return nil, fmt.Errorf("invalid histogram dimension: %s", dimension)
+	}
 	var results []struct {
 		BucketTimestamp int64   `gorm:"column:bucket_timestamp"`
 		DimValue        string  `gorm:"column:dim_value"`
@@ -1632,14 +1862,16 @@ func (s *RDBLogStore) getDimensionLatencyHistogramFromMatView(ctx context.Contex
 // comparison to the previous period of equal duration from mv_logs_hourly.
 func (s *RDBLogStore) getModelRankingsFromMatView(ctx context.Context, filters SearchFilters) (*ModelRankingResult, error) {
 	var results []struct {
-		Model         string         `gorm:"column:model"`
-		CanonicalName sql.NullString `gorm:"column:canonical_name"`
-		Provider      string         `gorm:"column:provider"`
-		Total         int64          `gorm:"column:total"`
-		SuccessCount  int64          `gorm:"column:success_count"`
-		AvgLatency    float64        `gorm:"column:avg_lat"`
-		TotalTokens   int64          `gorm:"column:total_tkns"`
-		TotalCost     float64        `gorm:"column:total_cost"`
+		Model              string         `gorm:"column:model"`
+		CanonicalName      sql.NullString `gorm:"column:canonical_name"`
+		Provider           string         `gorm:"column:provider"`
+		Total              int64          `gorm:"column:total"`
+		SuccessCount       int64          `gorm:"column:success_count"`
+		AvgLatency         float64        `gorm:"column:avg_lat"`
+		TotalTokens        int64          `gorm:"column:total_tkns"`
+		TotalCost          float64        `gorm:"column:total_cost"`
+		TPCompletionTokens int64          `gorm:"column:tp_completion_tokens"`
+		TPLatencyMs        float64        `gorm:"column:tp_latency_ms"`
 	}
 	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, filters)
@@ -1651,7 +1883,9 @@ func (s *RDBLogStore) getModelRankingsFromMatView(ctx context.Context, filters S
 		SUM(success_count) AS success_count,
 		CASE WHEN SUM(count) > 0 THEN SUM(avg_latency * count) / SUM(count) ELSE 0 END AS avg_lat,
 		SUM(total_tokens) AS total_tkns,
-		SUM(total_cost) AS total_cost
+		SUM(total_cost) AS total_cost,
+		COALESCE(SUM(CASE WHEN status = 'success' THEN throughput_completion_tokens ELSE 0 END), 0) AS tp_completion_tokens,
+		COALESCE(SUM(CASE WHEN status = 'success' THEN throughput_latency_ms ELSE 0 END), 0) AS tp_latency_ms
 	`).Group("model, provider").
 		Order("total DESC").
 		Find(&results).Error; err != nil {
@@ -1660,12 +1894,14 @@ func (s *RDBLogStore) getModelRankingsFromMatView(ctx context.Context, filters S
 
 	// Previous period for trend (same duration, ending just before current start)
 	type prevRow struct {
-		Model       string  `gorm:"column:model"`
-		Provider    string  `gorm:"column:provider"`
-		Total       int64   `gorm:"column:total"`
-		AvgLatency  float64 `gorm:"column:avg_lat"`
-		TotalTokens int64   `gorm:"column:total_tkns"`
-		TotalCost   float64 `gorm:"column:total_cost"`
+		Model              string  `gorm:"column:model"`
+		Provider           string  `gorm:"column:provider"`
+		Total              int64   `gorm:"column:total"`
+		AvgLatency         float64 `gorm:"column:avg_lat"`
+		TotalTokens        int64   `gorm:"column:total_tkns"`
+		TotalCost          float64 `gorm:"column:total_cost"`
+		TPCompletionTokens int64   `gorm:"column:tp_completion_tokens"`
+		TPLatencyMs        float64 `gorm:"column:tp_latency_ms"`
 	}
 	var prevResults []prevRow
 	if filters.StartTime != nil && filters.EndTime != nil {
@@ -1694,7 +1930,9 @@ func (s *RDBLogStore) getModelRankingsFromMatView(ctx context.Context, filters S
 			SUM(count) AS total,
 			CASE WHEN SUM(count) > 0 THEN SUM(avg_latency * count) / SUM(count) ELSE 0 END AS avg_lat,
 			SUM(total_tokens) AS total_tkns,
-			SUM(total_cost) AS total_cost
+			SUM(total_cost) AS total_cost,
+			COALESCE(SUM(CASE WHEN status = 'success' THEN throughput_completion_tokens ELSE 0 END), 0) AS tp_completion_tokens,
+			COALESCE(SUM(CASE WHEN status = 'success' THEN throughput_latency_ms ELSE 0 END), 0) AS tp_latency_ms
 		`).Group("model, provider").Find(&prevResults).Error; err != nil {
 			return nil, fmt.Errorf("failed to get previous period rankings: %w", err)
 		}
@@ -1721,6 +1959,7 @@ func (s *RDBLogStore) getModelRankingsFromMatView(ctx context.Context, filters S
 			TotalTokens:   r.TotalTokens,
 			TotalCost:     r.TotalCost,
 			AvgLatency:    r.AvgLatency,
+			Throughput:    tokensPerSecond(r.TPCompletionTokens, r.TPLatencyMs),
 		}
 		if r.CanonicalName.Valid {
 			entry.CanonicalModelName = &r.CanonicalName.String
@@ -1734,6 +1973,7 @@ func (s *RDBLogStore) getModelRankingsFromMatView(ctx context.Context, filters S
 				TokensTrend:       trendPct(float64(r.TotalTokens), float64(prev.TotalTokens)),
 				CostTrend:         trendPct(r.TotalCost, prev.TotalCost),
 				LatencyTrend:      trendPct(r.AvgLatency, prev.AvgLatency),
+				ThroughputTrend:   trendPct(entry.Throughput, tokensPerSecond(prev.TPCompletionTokens, prev.TPLatencyMs)),
 			}
 		}
 		rankings = append(rankings, mrt)

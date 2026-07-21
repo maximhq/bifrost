@@ -49,6 +49,7 @@ import (
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/providers/vertex"
 	"github.com/maximhq/bifrost/core/providers/vllm"
+	"github.com/maximhq/bifrost/core/providers/wafer"
 	"github.com/maximhq/bifrost/core/providers/xai"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
@@ -2805,6 +2806,20 @@ func ensureMCPRawStorageContext(ctx *schemas.BifrostContext) {
 	ctx.SetValue(schemas.BifrostContextKeyShouldStoreRawInLogs, effectiveStore)
 }
 
+// ensureMCPTracerContext installs the tracer on a request-scoped context for MCP tool
+// executions that skip the chat/responses flow (chiefly the inbound MCP-server path). A
+// trace must already exist (created by the HTTP TracingMiddleware) for StartSpan to emit a
+// span. Existing value never overwritten; nil ctx/tracer no-op.
+func ensureMCPTracerContext(ctx *schemas.BifrostContext, tracer schemas.Tracer) {
+	if ctx == nil || tracer == nil {
+		return
+	}
+	if _, ok := ctx.Value(schemas.BifrostContextKeyTracer).(schemas.Tracer); ok {
+		return
+	}
+	ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
+}
+
 // ExecuteChatMCPTool executes an MCP tool call and returns the result as a chat message.
 // This is the main public API for manual MCP tool execution in Chat format. All the
 // real work — request pooling, plugin gate (PreMCPHook / PostMCPHook), short-circuit
@@ -2814,6 +2829,7 @@ func (bifrost *Bifrost) ExecuteChatMCPTool(ctx *schemas.BifrostContext, toolCall
 		ctx = bifrost.ctx
 	} else {
 		ensureMCPRawStorageContext(ctx)
+		ensureMCPTracerContext(ctx, bifrost.getTracer())
 	}
 	if bifrost.MCPManager == nil {
 		return nil, &schemas.BifrostError{
@@ -2832,6 +2848,7 @@ func (bifrost *Bifrost) ExecuteResponsesMCPTool(ctx *schemas.BifrostContext, too
 		ctx = bifrost.ctx
 	} else {
 		ensureMCPRawStorageContext(ctx)
+		ensureMCPTracerContext(ctx, bifrost.getTracer())
 	}
 	if bifrost.MCPManager == nil {
 		return nil, &schemas.BifrostError{
@@ -4270,6 +4287,8 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return cerebras.NewCerebrasProvider(config, bifrost.logger)
 	case schemas.DeepSeek:
 		return deepseek.NewDeepSeekProvider(config, bifrost.logger)
+	case schemas.Wafer:
+		return wafer.NewWaferProvider(config, bifrost.logger)
 	case schemas.Gemini:
 		return gemini.NewGeminiProvider(config, bifrost.logger), nil
 	case schemas.OpenRouter:
@@ -5301,7 +5320,7 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 		if bifrost.dropExcessRequests.Load() {
 			bifrost.releaseChannelMessage(msg)
 			bifrost.logger.Warn("request dropped: queue is full, please increase the queue size or set dropExcessRequests to false")
-			bifrostErr := newBifrostErrorFromMsg("request dropped: queue is full")
+			bifrostErr := newBifrostQueueFullError()
 			bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
 			return nil, bifrostErr
 		}
@@ -5635,7 +5654,7 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 		if bifrost.dropExcessRequests.Load() {
 			bifrost.releaseChannelMessage(msg)
 			bifrost.logger.Warn("request dropped: queue is full, please increase the queue size or set dropExcessRequests to false")
-			bifrostErr := newBifrostErrorFromMsg("request dropped: queue is full")
+			bifrostErr := newBifrostQueueFullError()
 			bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
 			return nil, bifrostErr
 		}
@@ -6041,6 +6060,9 @@ func executeRequestWithRetries[T any](
 		}
 		if userName, ok := ctx.Value(schemas.BifrostContextKeyUserName).(string); ok && userName != "" {
 			tracer.SetAttribute(handle, schemas.AttrBifrostUserName, userName)
+		}
+		if userEmail, ok := ctx.Value(schemas.BifrostContextKeyUserEmail).(string); ok && userEmail != "" {
+			tracer.SetAttribute(handle, schemas.AttrBifrostUserEmail, userEmail)
 		}
 		if fallbackIndex, ok := ctx.Value(schemas.BifrostContextKeyFallbackIndex).(int); ok {
 			tracer.SetAttribute(handle, schemas.AttrFallbackIndex, fallbackIndex) // legacy: gen_ai.* placement of bifrost-internal attr
