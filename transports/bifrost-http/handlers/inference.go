@@ -216,20 +216,22 @@ var rerankParamsKnownFields = map[string]bool{
 }
 
 var ocrParamsKnownFields = map[string]bool{
-	"model":                      true,
-	"id":                         true,
-	"document":                   true,
-	"fallbacks":                  true,
-	"include_image_base64":       true,
-	"pages":                      true,
-	"image_limit":                true,
-	"image_min_size":             true,
-	"table_format":               true,
-	"extract_header":             true,
-	"extract_footer":             true,
-	"bbox_annotation_format":     true,
-	"document_annotation_format": true,
-	"document_annotation_prompt": true,
+	"model":                         true,
+	"id":                            true,
+	"document":                      true,
+	"fallbacks":                     true,
+	"include_image_base64":          true,
+	"include_blocks":                true,
+	"pages":                         true,
+	"image_limit":                   true,
+	"image_min_size":                true,
+	"table_format":                  true,
+	"extract_header":                true,
+	"extract_footer":                true,
+	"confidence_scores_granularity": true,
+	"bbox_annotation_format":        true,
+	"document_annotation_format":    true,
+	"document_annotation_prompt":    true,
 }
 
 var speechParamsKnownFields = map[string]bool{

@@ -20,12 +20,14 @@ type OCRDocument struct {
 // OCRParameters contains optional parameters for an OCR request.
 type OCRParameters struct {
 	IncludeImageBase64          *bool                  `json:"include_image_base64,omitempty"`
+	IncludeBlocks               *bool                  `json:"include_blocks,omitempty"`
 	Pages                       []int                  `json:"pages,omitempty"`
 	ImageLimit                  *int                   `json:"image_limit,omitempty"`
 	ImageMinSize                *int                   `json:"image_min_size,omitempty"`
 	TableFormat                 *string                `json:"table_format,omitempty"`
 	ExtractHeader               *bool                  `json:"extract_header,omitempty"`
 	ExtractFooter               *bool                  `json:"extract_footer,omitempty"`
+	ConfidenceScoresGranularity *string                `json:"confidence_scores_granularity,omitempty"`
 	BBoxAnnotationFormat        *string                `json:"bbox_annotation_format,omitempty"`
 	DocumentAnnotationFormat    *string                `json:"document_annotation_format,omitempty"`
 	DocumentAnnotationPrompt    *string                `json:"document_annotation_prompt,omitempty"`
@@ -50,12 +52,12 @@ func (r *BifrostOCRRequest) GetRawRequestBody() []byte {
 
 // OCRPageImage represents an extracted image from an OCR page.
 type OCRPageImage struct {
-	ID            string  `json:"id"`
-	TopLeftX      float64 `json:"top_left_x"`
-	TopLeftY      float64 `json:"top_left_y"`
-	BottomRightX  float64 `json:"bottom_right_x"`
-	BottomRightY  float64 `json:"bottom_right_y"`
-	ImageBase64   *string `json:"image_base64,omitempty"`
+	ID           string  `json:"id"`
+	TopLeftX     float64 `json:"top_left_x"`
+	TopLeftY     float64 `json:"top_left_y"`
+	BottomRightX float64 `json:"bottom_right_x"`
+	BottomRightY float64 `json:"bottom_right_y"`
+	ImageBase64  *string `json:"image_base64,omitempty"`
 }
 
 // OCRPageDimensions represents the dimensions of an OCR page.
@@ -71,6 +73,10 @@ type OCRPage struct {
 	Markdown   string             `json:"markdown"`
 	Images     []OCRPageImage     `json:"images,omitempty"`
 	Dimensions *OCRPageDimensions `json:"dimensions,omitempty"`
+	// Provider-native layout blocks, present when the request sets
+	// include_blocks=true; pointer so an explicitly empty `blocks: []`
+	// isn't dropped by omitempty.
+	Blocks *[]any `json:"blocks,omitempty"`
 }
 
 // OCRUsageInfo represents usage information from an OCR response.
@@ -81,9 +87,9 @@ type OCRUsageInfo struct {
 
 // BifrostOCRResponse represents the response from an OCR request.
 type BifrostOCRResponse struct {
-	Model               string                     `json:"model"`
-	Pages               []OCRPage                  `json:"pages"`
-	UsageInfo           *OCRUsageInfo              `json:"usage_info,omitempty"`
-	DocumentAnnotation  *string                    `json:"document_annotation,omitempty"`
-	ExtraFields         BifrostResponseExtraFields `json:"extra_fields"`
+	Model              string                     `json:"model"`
+	Pages              []OCRPage                  `json:"pages"`
+	UsageInfo          *OCRUsageInfo              `json:"usage_info,omitempty"`
+	DocumentAnnotation *string                    `json:"document_annotation,omitempty"`
+	ExtraFields        BifrostResponseExtraFields `json:"extra_fields"`
 }

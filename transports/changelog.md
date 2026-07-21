@@ -51,6 +51,7 @@
 - **API Key Provider Selection** - Fixed provider selection for API keys
 - **Azure Auth Headers** - Pass Azure auth headers in helpers
 - **Stream Delta Schema** - Added `ExtraContent` to `ChatStreamResponseChoiceDelta` (thanks [@nghodkicisco](https://github.com/nghodkicisco)!)
+- **Mistral OCR Blocks** - Forward `include_blocks` and `confidence_scores_granularity` to Mistral OCR (`/v1/ocr`) and carry provider-native `pages[].blocks` through the response (thanks [@hugochinchilla](https://github.com/hugochinchilla)!)
 
 ## 🐙 Closed GitHub Issues
 
@@ -84,3 +85,4 @@
 - [#5101](https://github.com/maximhq/bifrost/issues/5101) - Chat-to-Responses tool replay sends role on function_call input items
 - [#5108](https://github.com/maximhq/bifrost/issues/5108) - Bedrock reasoning_config silently dropped on cross-provider translation
 - [#5113](https://github.com/maximhq/bifrost/issues/5113) - Gemini/Vertex streaming stops emitting web_search_call items after first grounded request
+- [#5137](https://github.com/maximhq/bifrost/issues/5137) - Mistral OCR drops include_blocks and never returns pages[].blocks

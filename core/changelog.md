@@ -23,6 +23,7 @@
 - fix: omit role from OpenAI Responses non-message items (thanks [@nettee](https://github.com/nettee)!)
 - fix: serialize OpenAI compaction request `input` correctly (thanks [@mcclurmc](https://github.com/mcclurmc)!)
 - fix: preserve `reasoning_config` on Bedrock cross-provider translation (thanks [@Purvi09](https://github.com/Purvi09)!)
+- fix: forward `include_blocks` and `confidence_scores_granularity` to Mistral OCR and carry provider-native `pages[].blocks` through the response (thanks [@hugochinchilla](https://github.com/hugochinchilla)!)
 - fix: preserve Gemini file upload MIME types for GenAI file URI completions
 - fix: Gemini video reference fields map to instances (thanks [@vojthor](https://github.com/vojthor)!)
 - fix: accept object-valued tool-call arguments (e.g. tool_search_call) on the Responses API streaming path
