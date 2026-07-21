@@ -664,9 +664,10 @@ func (provider *ReplicateProvider) TextCompletionStream(ctx *schemas.BifrostCont
 					// Create a streaming chunk with text completion response
 					text := eventData
 					response := &schemas.BifrostTextCompletionResponse{
-						ID:     messageID,
-						Model:  request.Model,
-						Object: "text_completion",
+						ID:      messageID,
+						Model:   request.Model,
+						Created: int(ParseReplicateTimestamp(prediction.CreatedAt)),
+						Object:  "text_completion",
 						Choices: []schemas.BifrostResponseChoice{
 							{
 								Index: 0,
@@ -743,7 +744,8 @@ func (provider *ReplicateProvider) TextCompletionStream(ctx *schemas.BifrostCont
 					finishReason,
 					chunkIndex,
 					schemas.TextCompletionStreamRequest,
-					request.Model)
+					request.Model,
+					int(ParseReplicateTimestamp(prediction.CreatedAt)))
 
 				// Set raw request if enabled
 				if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
