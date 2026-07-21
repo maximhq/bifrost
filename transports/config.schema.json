@@ -4693,11 +4693,11 @@
           "properties": {
             "client_id": {
               "type": "string",
-              "description": "OAuth client ID (optional — Dynamic Client Registration is used when omitted)"
+              "description": "OAuth client ID (optional — Dynamic Client Registration is used when omitted; can use env. or vault. prefix)"
             },
             "client_secret": {
               "type": "string",
-              "description": "OAuth client secret (optional — omit for PKCE public clients or DCR)"
+              "description": "OAuth client secret (optional — omit for PKCE public clients or DCR; can use env. or vault. prefix)"
             },
             "authorize_url": {
               "type": "string",
