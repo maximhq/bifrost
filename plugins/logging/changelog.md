@@ -1,6 +1,0 @@
-- feat: content disabled message on logs UI
-- feat: show server fallback model in logs
-- feat: toggle for always retaining content in object storage
-- feat: throughput (tokens/sec) histogram support
-- fix: extend chat-responses pricing fallback to work bidirectionally
-- chore: upgraded core to v1.7.3 and framework to v1.5.3
