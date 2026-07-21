@@ -253,6 +253,15 @@ func (m *MCPManager) ReconnectClient(id string) error {
 		m.mu.Unlock()
 		return fmt.Errorf("per-user auth clients do not maintain a shared upstream connection (each user manages their own auth): %w", schemas.ErrMCPReconnectNotApplicable)
 	}
+	// Clients awaiting admin OAuth authorization have no token to connect
+	// with; a reconnect attempt would only flip them out of
+	// pending_verification into an error state and hide the authorization
+	// prompt in the UI.
+	if client.ExecutionConfig != nil && client.ExecutionConfig.PendingOAuthConfig != nil &&
+		(client.ExecutionConfig.AuthType == schemas.MCPAuthTypeOauth || client.ExecutionConfig.AuthType == schemas.MCPAuthTypePerUserOauth) {
+		m.mu.Unlock()
+		return fmt.Errorf("client is awaiting admin OAuth authorization; complete authorization instead of reconnecting: %w", schemas.ErrMCPReconnectNotApplicable)
+	}
 	config := client.ExecutionConfig
 	m.mu.Unlock()
 
@@ -371,6 +380,29 @@ func (m *MCPManager) AddClient(requestCtx context.Context, config *schemas.MCPCl
 			}
 		}
 		m.mu.Unlock()
+		return nil
+	}
+
+	// Shared-OAuth clients with PendingOAuthConfig set carry the inline
+	// `oauth_config` block from config.json but have no oauth_configs row
+	// or token yet. Attempting to connect would fail in ConnectionHeaders
+	// → GetAccessToken. Park them in pending_verification until an admin
+	// completes the browser OAuth flow via
+	// POST /api/mcp/client/{id}/initiate-verification. PendingOAuthConfig
+	// is cleared once the OAuth callback marks the linked oauth_configs
+	// row authorized; the subsequent reconnect skips this branch and
+	// connectToMCPClient runs normally.
+	if config.AuthType == schemas.MCPAuthTypeOauth && config.PendingOAuthConfig != nil {
+		m.mu.Lock()
+		if client, exists := m.clientMap[config.ID]; exists {
+			if config.ConnectionString != nil {
+				url := config.ConnectionString.GetValue()
+				client.ConnectionInfo.ConnectionURL = &url
+			}
+			client.State = schemas.MCPConnectionStatePendingVerification
+		}
+		m.mu.Unlock()
+		m.logger.Debug("%s Shared-OAuth MCP client '%s' registered in pending_verification (awaiting admin authorization)", MCPLogPrefix, config.Name)
 		return nil
 	}
 
@@ -1027,8 +1059,9 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 //
 // Parameters:
 //   - id: ID of the client whose credentials should be updated
-//   - newConfig: Partial config carrying the updated auth fields (Headers). All other fields
-//     are ignored and taken from the current execution config.
+//   - newConfig: Partial config carrying the updated auth fields (Headers, OauthConfigID,
+//     PendingOAuthConfig). All other fields are ignored and taken from the current
+//     execution config.
 //
 // Returns:
 //   - error: Any connection error; nil on success
@@ -1069,6 +1102,11 @@ func (m *MCPManager) UpdateClientConnection(id string, newConfig *schemas.MCPCli
 	if newConfig.OauthConfigID != nil {
 		mergedConfig.OauthConfigID = newConfig.OauthConfigID
 	}
+	// PendingOAuthConfig is taken verbatim, not merged: nil is meaningful
+	// (authorization completed, stash cleared). Carrying the old value
+	// forward would make connectToMCPClient park the client back in
+	// pending_verification instead of connecting.
+	mergedConfig.PendingOAuthConfig = newConfig.PendingOAuthConfig
 	m.mu.RUnlock()
 
 	// connectToMCPClient will close the current connection and create a new clientMap entry.

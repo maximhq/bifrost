@@ -298,19 +298,19 @@ const (
 
 // MCPClientConfig defines tool filtering for an MCP client.
 type MCPClientConfig struct {
-	ID                  string            `json:"client_id"`                       // Client ID
-	Name                string            `json:"name"`                            // Client name
-	IsCodeModeClient    bool              `json:"is_code_mode_client"`             // Whether the client is a code mode client
-	ConnectionType      MCPConnectionType `json:"connection_type"`                 // How to connect (HTTP, STDIO, SSE, or InProcess)
-	ConnectionString    *SecretVar           `json:"connection_string,omitempty"`     // HTTP or SSE URL (required for HTTP or SSE connections)
-	StdioConfig         *MCPStdioConfig   `json:"stdio_config,omitempty"`          // STDIO configuration (required for STDIO connections)
-	TLSConfig           *MCPTLSConfig     `json:"tls_config,omitempty"`            // TLS configuration for HTTP/SSE connections
-	AuthType            MCPAuthType       `json:"auth_type"`                       // Authentication type (none, headers, or oauth)
-	OauthConfigID       *string           `json:"oauth_config_id,omitempty"`       // OAuth config ID (references oauth_configs table)
-	OauthClientID       *SecretVar           `json:"oauth_client_id,omitempty"`       // Redacted OAuth client ID (populated on GET, not stored here)
-	OauthClientSecret   *SecretVar           `json:"oauth_client_secret,omitempty"`   // Redacted OAuth client secret (populated on GET, not stored here)
-	State               string            `json:"state,omitempty"`                 // Connection state (connected, disconnected, error)
-	Headers             map[string]SecretVar `json:"headers,omitempty"`               // Headers to send with the request (for headers auth type)
+	ID                string               `json:"client_id"`                     // Client ID
+	Name              string               `json:"name"`                          // Client name
+	IsCodeModeClient  bool                 `json:"is_code_mode_client"`           // Whether the client is a code mode client
+	ConnectionType    MCPConnectionType    `json:"connection_type"`               // How to connect (HTTP, STDIO, SSE, or InProcess)
+	ConnectionString  *SecretVar           `json:"connection_string,omitempty"`   // HTTP or SSE URL (required for HTTP or SSE connections)
+	StdioConfig       *MCPStdioConfig      `json:"stdio_config,omitempty"`        // STDIO configuration (required for STDIO connections)
+	TLSConfig         *MCPTLSConfig        `json:"tls_config,omitempty"`          // TLS configuration for HTTP/SSE connections
+	AuthType          MCPAuthType          `json:"auth_type"`                     // Authentication type (none, headers, or oauth)
+	OauthConfigID     *string              `json:"oauth_config_id,omitempty"`     // OAuth config ID (references oauth_configs table)
+	OauthClientID     *SecretVar           `json:"oauth_client_id,omitempty"`     // Redacted OAuth client ID (populated on GET, not stored here)
+	OauthClientSecret *SecretVar           `json:"oauth_client_secret,omitempty"` // Redacted OAuth client secret (populated on GET, not stored here)
+	State             string               `json:"state,omitempty"`               // Connection state (connected, disconnected, error)
+	Headers           map[string]SecretVar `json:"headers,omitempty"`             // Headers to send with the request (for headers auth type)
 	// PerUserHeaderKeys lists the header *names* each caller must supply for
 	// MCPAuthTypePerUserHeaders clients. Admin-declared schema only — the
 	// values live per-user in the mcp_per_user_header_credentials table and
@@ -345,6 +345,23 @@ type MCPClientConfig struct {
 	// Discovered tools for per-user OAuth clients (persisted so they survive restart)
 	DiscoveredTools           map[string]ChatTool `json:"-"` // Discovered tool schemas keyed by prefixed name
 	DiscoveredToolNameMapping map[string]string   `json:"-"` // Mapping from sanitized tool names to original MCP names
+
+	// PendingOAuthConfig holds the inline `oauth_config` block declared in
+	// config.json for shared-OAuth MCP clients (auth_type == "oauth").
+	//
+	// Lifecycle: populated by the config.json loader when an entry has
+	// AuthType==oauth without an OauthConfigID; persisted on the DB row as
+	// TableMCPClient.PendingOAuthConfigJSON; consumed at admin-click time by
+	// the initiate-verification endpoint to call InitiateOAuthFlow; cleared
+	// by the OAuth callback once oauth_configs.status='authorized'.
+	//
+	// Mirrors the UI Create-MCP-Client form's `oauth_config` block on the
+	// wire — same field set, same optionality (all inner fields can be
+	// omitted; discovery + dynamic registration fill them in at admin-click
+	// time). Nil for clients whose OAuth has already been authorized.
+	// Stored values are plaintext; env-var-reference resolution is not
+	// applied to fields inside this block.
+	PendingOAuthConfig *OAuth2Config `json:"oauth_config,omitempty"`
 }
 
 // UnmarshalJSON supports Go duration strings (e.g. "10m") for tool_sync_interval and
@@ -554,7 +571,7 @@ type MCPStdioConfig struct {
 // MCPTLSConfig holds TLS options for HTTP and SSE MCP connections.
 // InsecureSkipVerify takes priority over CACertPEM when both are set.
 type MCPTLSConfig struct {
-	InsecureSkipVerify bool    `json:"insecure_skip_verify,omitempty"` // Disable TLS certificate verification (development only)
+	InsecureSkipVerify bool       `json:"insecure_skip_verify,omitempty"` // Disable TLS certificate verification (development only)
 	CACertPEM          *SecretVar `json:"ca_cert_pem,omitempty"`          // PEM-encoded CA certificate to trust (supports env.*)
 }
 
@@ -579,11 +596,12 @@ func (t *MCPTLSConfig) MarshalForStorage() ([]byte, error) {
 type MCPConnectionState string
 
 const (
-	MCPConnectionStateConnected    MCPConnectionState = "connected"     // Client is connected and ready to use
-	MCPConnectionStateDisconnected MCPConnectionState = "disconnected"  // Client is not connected
-	MCPConnectionStateError        MCPConnectionState = "error"         // Client is in an error state, and cannot be used
-	MCPConnectionStatePendingTools MCPConnectionState = "pending_tools" // Connected but tools not yet populated
-	MCPConnectionStateDisabled     MCPConnectionState = "disabled"      // Client is intentionally disabled by the user
+	MCPConnectionStateConnected           MCPConnectionState = "connected"            // Client is connected and ready to use
+	MCPConnectionStateDisconnected        MCPConnectionState = "disconnected"         // Client is not connected
+	MCPConnectionStateError               MCPConnectionState = "error"                // Client is in an error state, and cannot be used
+	MCPConnectionStatePendingTools        MCPConnectionState = "pending_tools"        // Connected but tools not yet populated
+	MCPConnectionStatePendingVerification MCPConnectionState = "pending_verification" // Declared (typically via config.json) but the one-time auth/test flow has not been completed by an admin yet
+	MCPConnectionStateDisabled            MCPConnectionState = "disabled"             // Client is intentionally disabled by the user
 )
 
 // MCPClientState represents a connected MCP client with its configuration and tools.
