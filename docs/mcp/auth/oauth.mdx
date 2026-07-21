@@ -100,20 +100,31 @@ Response:
   "oauth_config_id": "oauth_cfg_abc123",
   "authorize_url": "https://auth.example.com/oauth/authorize?client_id=…&state=…",
   "expires_at": "2026-05-30T12:30:00Z",
-  "mcp_client_id": "mcp_client_abc123"
+  "mcp_client_id": "mcp_client_abc123",
+  "complete_url": "/api/mcp/client/oauth_cfg_abc123/complete-oauth",
+  "status_url": "/api/oauth/config/oauth_cfg_abc123/status",
+  "next_steps": [
+    "1. Open authorize_url in a browser to approve access",
+    "2. Poll status_url to check when status becomes 'authorized'",
+    "3. POST complete_url to activate the MCP client"
+  ]
 }
 ```
 
-Redirect the admin to `authorize_url`. After they authorize, the upstream redirects to `/api/oauth/callback`, Bifrost exchanges the code for tokens, and you finalize the client:
+Redirect the admin to `authorize_url`. After they authorize, the upstream redirects to `/api/oauth/callback`, Bifrost exchanges the code for tokens, and you finalize the client by POSTing `complete_url`:
 
 ```bash
-curl -X POST http://localhost:8080/api/mcp/client/mcp_client_abc123/complete-oauth
+curl -X POST http://localhost:8080/api/mcp/client/oauth_cfg_abc123/complete-oauth
 ```
+
+<Note>
+The path parameter of `complete-oauth` is the **`oauth_config_id`** from the response above — not the MCP client ID. Poll `status_url` until it reports `"authorized"` before calling it.
+</Note>
 
 </Tab>
 <Tab title="config.json">
 
-OAuth-based MCP clients are configured through the dashboard or API rather than file-based config, because the create call returns `pending_oauth` and needs an interactive authorize step. If you want a fully declarative setup, run the create + complete-oauth dance once via API, then check the resulting `oauth_config_id` into your config:
+Declare the client with an inline `oauth_config` block:
 
 ```json
 {
@@ -124,7 +135,11 @@ OAuth-based MCP clients are configured through the dashboard or API rather than 
         "connection_type": "http",
         "connection_string": "https://api.example.com/mcp",
         "auth_type": "oauth",
-        "oauth_config_id": "oauth_cfg_abc123",
+        "oauth_config": {
+          "client_id": "your-client-id",
+          "client_secret": "your-client-secret",
+          "scopes": ["mcp:read"]
+        },
         "tools_to_execute": ["*"]
       }
     ]
@@ -132,7 +147,15 @@ OAuth-based MCP clients are configured through the dashboard or API rather than 
 }
 ```
 
-The OAuth credentials themselves live in the encrypted `oauth_configs` table — they are not represented in `config.json`. Rotate them through the dashboard or API; see [Token management](#token-management).
+The `oauth_config` block itself is optional, and every inner field is optional. `authorize_url` / `token_url` come from RFC 8414 discovery off `connection_string` when the upstream supports it, and `client_id` / `client_secret` can be obtained via RFC 7591 Dynamic Client Registration. The minimum viable declaration is `{ "auth_type": "oauth", "connection_string": "..." }`.
+
+At boot the client lands in **`pending_verification`** state because the OAuth flow still needs a live admin browser session to complete. From the MCP Gateway UI, open the client and click **Authorize** — the same browser popup the Web UI Create flow uses. On success the OAuth tokens are stored, the tool list is discovered, and the client transitions to `connected`.
+
+The same flow is scriptable: `POST /api/mcp/client/{id}/initiate-verification` (this time `{id}` *is* the MCP client ID) returns the same `authorize_url` / `status_url` / `complete_url` payload as the create flow above — open `authorize_url` in a browser, poll `status_url`, then POST `complete_url`. Safe to call again if a previous attempt expired or was abandoned.
+
+Once authorized, the OAuth credentials live in the encrypted `oauth_configs` table and the `pending_oauth_config_json` stash is cleared from the row; see [Token management](#token-management).
+
+**Lifecycle across restarts and config edits:** the authorized state is server-side and survives restarts and config.json re-syncs. Mutable fields (tool lists, headers, pricing, etc.) can be edited freely in config.json. Immutable fields — `auth_type`, `connection_type`, `connection_string`, `stdio_config`, and the `oauth_config` block — cannot be changed after creation: file edits to them are **ignored**, matching the update API (which does not accept them), and Bifrost logs a warning naming the ignored fields at the next boot. To change any of them, delete the client, update the file entry, and restart (see [Rotation](#token-management)).
 
 </Tab>
 </Tabs>
@@ -241,7 +264,7 @@ Background refresh only runs while the MCP client is enabled. Disabling a client
 
 ### Rotation
 
-The MCP client edit flow lets you rotate `client_id` / `client_secret` while preserving the same client ID. `connection_type`, `auth_type`, and `connection_string` are immutable after creation.
+Editing `oauth_config` after setup is not currently supported — the edit flow rejects it (`connection_type`, `auth_type`, and `connection_string` are likewise immutable after creation). To change OAuth credentials, scopes, or endpoints: delete the client and recreate it (UI or API). For a config.json-declared client, delete it from the dashboard, update the `oauth_config` block in the file, and restart — the client re-enters `pending_verification` and can be authorized with the new options.
 
 ### Revoke
 
@@ -367,7 +390,8 @@ You changed Bifrost's public URL after the upstream client was registered. Clear
 | Endpoint                                         | Method | Purpose                                                                |
 | ------------------------------------------------ | ------ | ---------------------------------------------------------------------- |
 | `/api/mcp/client`                                | POST   | Create MCP client; returns `pending_oauth` + `authorize_url`           |
-| `/api/mcp/client/{id}/complete-oauth`            | POST   | Finalize after upstream redirect lands on `/api/oauth/callback`        |
+| `/api/mcp/client/{id}/initiate-verification`     | POST   | Start authorization for a `pending_verification` client declared in config.json (`{id}` = MCP client ID); returns `authorize_url` + `status_url` + `complete_url` |
+| `/api/mcp/client/{id}/complete-oauth`            | POST   | Finalize after upstream redirect lands on `/api/oauth/callback` (`{id}` = `oauth_config_id`) |
 | `/api/oauth/callback`                            | GET    | Upstream provider redirects here; handled internally                   |
 | `/api/oauth/config/{oauth_config_id}/status`     | GET    | Current OAuth config status + token metadata                           |
 | `/api/oauth/config/{oauth_config_id}`            | DELETE | Revoke token + remove OAuth config                                     |

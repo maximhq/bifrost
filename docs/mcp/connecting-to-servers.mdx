@@ -251,6 +251,53 @@ Configure MCP clients in your `config.json`:
 Use `env.VARIABLE_NAME` syntax to reference environment variables for sensitive values like URLs with API keys.
 </Note>
 
+#### Auth-aware clients in `config.json`
+
+All five auth types can be declared in `config.json`. The three that need an admin verification step (`oauth`, `per_user_oauth`, `per_user_headers`) boot into a **`pending_verification`** runtime state and surface an admin CTA in the MCP Gateway UI:
+
+```json
+{
+  "mcp": {
+    "client_configs": [
+      {
+        "name": "google-drive-shared",
+        "connection_type": "http",
+        "connection_string": "https://mcp.google.com/drive",
+        "auth_type": "oauth",
+        "oauth_config": {
+          "client_id": "your-client-id",
+          "client_secret": "your-client-secret",
+          "scopes": ["drive.readonly"]
+        },
+        "tools_to_execute": ["*"]
+      },
+      {
+        "name": "github-per-user",
+        "connection_type": "http",
+        "connection_string": "https://mcp.github.com/v1",
+        "auth_type": "per_user_oauth",
+        "oauth_config": { "scopes": ["repo"] },
+        "tools_to_execute": ["*"]
+      },
+      {
+        "name": "internal-api",
+        "connection_type": "http",
+        "connection_string": "https://api.internal.example.com/mcp",
+        "auth_type": "per_user_headers",
+        "per_user_header_keys": ["authorization", "x-tenant-id"],
+        "tools_to_execute": ["*"]
+      }
+    ]
+  }
+}
+```
+
+For `oauth` / `per_user_oauth`, the `oauth_config` block is optional and each inner field is optional — RFC 8414 discovery and RFC 7591 dynamic client registration fill the gaps off `connection_string` at admin-click time. See [MCP Auth](/mcp/auth/overview) for the per-auth-type details and the post-boot verification UX.
+
+<Note>
+Deleting a config.json-declared client from the dashboard is temporary: the file entry recreates it at the next restart (freshly, in `pending_verification` for auth types that need verification). For a permanent delete, remove the entry from `config.json` as well.
+</Note>
+
 </Tab>
 </Tabs>
 
@@ -651,6 +698,7 @@ response, err := client.ChatCompletionRequest(bifrostCtx, request)
 | `connected` | Client is active and tools are available |
 | `connecting` | Client is establishing connection |
 | `disconnected` | Client lost connection but can be reconnected |
+| `pending_verification` | Declared (typically via config.json) with an auth type that needs a one-time admin step — complete it via the UI's Authorize/Verify button, `POST /api/mcp/client/{id}/initiate-verification` (OAuth types), or `POST /api/mcp/client/{id}/verify-headers` (per-user headers) |
 | `error` | Client configuration or connection failed |
 
 ### Managing Clients at Runtime
@@ -662,6 +710,10 @@ response, err := client.ChatCompletionRequest(bifrostCtx, request)
 ```bash
 curl -X POST http://localhost:8080/api/mcp/client/{id}/reconnect
 ```
+
+<Note>
+Reconnect returns `400` for per-user auth clients (no shared upstream connection to re-establish) and for clients in `pending_verification` — complete the admin verification instead.
+</Note>
 
 **Edit client configuration:**
 ```bash
@@ -883,7 +935,7 @@ You can also trigger manual reconnection at any time:
 curl -X POST http://localhost:8080/api/mcp/client/{id}/reconnect
 ```
 
-Manual reconnection also uses the retry logic for robustness.
+Manual reconnection also uses the retry logic for robustness. Not applicable (`400`) to per-user auth clients — each user's connection is managed per request — or to clients in `pending_verification`, which need the one-time admin verification instead.
 
 </Tab>
 <Tab title="Go SDK">

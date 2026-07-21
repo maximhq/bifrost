@@ -1,0 +1,52 @@
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "client": {
+    "allowed_origins": ["*"],
+    "enable_logging": true,
+    "initial_pool_size": 300
+  },
+  "config_store": {
+    "enabled": true,
+    "type": "sqlite",
+    "config": {
+      "path": "./data/bifrost.db"
+    }
+  },
+  "mcp": {
+    "client_configs": [
+      {
+        "name": "GoogleDriveShared",
+        "connection_type": "http",
+        "client_id": "gdrive-shared-oauth",
+        "connection_string": "https://mcp.google.com/drive",
+        "auth_type": "oauth",
+        "oauth_config": {
+          "client_id": "your-google-oauth-client-id",
+          "client_secret": "your-google-oauth-client-secret",
+          "scopes": ["https://www.googleapis.com/auth/drive.readonly"]
+        },
+        "tools_to_execute": ["*"]
+      },
+      {
+        "name": "GitHubPerUser",
+        "connection_type": "http",
+        "client_id": "github-per-user-oauth",
+        "connection_string": "https://mcp.github.com/v1",
+        "auth_type": "per_user_oauth",
+        "oauth_config": {
+          "scopes": ["repo", "read:user"]
+        },
+        "tools_to_execute": ["*"]
+      },
+      {
+        "name": "InternalAPIPerUser",
+        "connection_type": "http",
+        "client_id": "internal-api-per-user-headers",
+        "connection_string": "https://mcp.internal.example.com",
+        "auth_type": "per_user_headers",
+        "per_user_header_keys": ["authorization", "x-tenant-id"],
+        "tools_to_execute": ["*"]
+      }
+    ]
+  }
+}
