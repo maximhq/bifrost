@@ -3,4 +3,4 @@
 - feat: toggle for always retaining content in object storage
 - feat: throughput (tokens/sec) histogram support
 - fix: extend chat-responses pricing fallback to work bidirectionally
-- chore: upgraded core to v1.7.2 and framework to v1.5.2
+- chore: upgraded core to v1.7.3 and framework to v1.5.3

@@ -289,7 +289,14 @@ func MergePayloadFromJSON(l *Log, data []byte) error {
 	// Metadata is intentionally NOT restored from the snapshot: the copy
 	// written there (see ExtractPayload) is for external object consumers
 	// only, and the DB row stays authoritative.
-	return l.DeserializeFields()
+	if err := l.DeserializeFields(); err != nil {
+		return err
+	}
+	// Rebuild content summary from freshly deserialized Parsed fields so it
+	// reflects the correct data from object storage, not a potentially
+	// corrupted DB value (e.g. from client/server encoding mismatch).
+	l.ContentSummary = l.BuildContentSummary()
+	return nil
 }
 
 // ExtractPayloadFiltered is like ExtractPayload but omits fields present in
