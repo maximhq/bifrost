@@ -3636,7 +3636,7 @@
               "max_response_payload_kbs": {
                 "type": "integer",
                 "minimum": 1,
-                "description": "Cap for inlined response payloads in KB when include_response is set (default: 256). Oversized responses are omitted and flagged with response_omitted."
+                "description": "Cap for inlined response/error payloads in KB when include_response is set (default: 256). Oversized values are omitted and flagged with response_omitted/error_omitted."
               },
               "max_concurrent_deliveries": {
                 "type": "integer",
