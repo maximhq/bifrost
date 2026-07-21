@@ -210,7 +210,7 @@ type Log struct {
 	IsLargePayloadRequest   bool      `gorm:"default:false" json:"is_large_payload_request"`
 	IsLargePayloadResponse  bool      `gorm:"default:false" json:"is_large_payload_response"`
 	HasObject               bool      `gorm:"default:false" json:"-"`              // True when payload is stored in object storage
-	ContentHidden           bool      `gorm:"default:false" json:"content_hidden"` // True when the payload is retained in object storage but must never be served back through the API/UI
+	ContentHidden           bool      `gorm:"default:false" json:"content_hidden"` // True when content logging was disabled for the request, so the payload must never be served back through the API/UI (whether it was retained in object storage or dropped entirely)
 
 	RedactionData          *schemas.RedactionData        `gorm:"-" json:"-"`                           // Transient guardrail redaction data consumed by enterprise logstore wrappers
 	RedactionMapping       string                        `gorm:"type:text" json:"-"`                   // Reversible redaction mapping (encrypted when an encryption key is set), written by enterprise logstore wrappers; deleted with the row

@@ -1392,7 +1392,9 @@ drainQueue:
 // Multiple entries per traceID are supported (e.g. fallback/retry attempts within the same trace).
 func (p *LoggerPlugin) storeOrEnqueueEntry(ctx *schemas.BifrostContext, entry *logstore.Log, callback func(entry *logstore.Log)) {
 	policy := p.resolveContentPolicy(ctx)
-	entry.ContentHidden = policy.hidden
+	// ContentHidden marks entries whose content the API/UI never serves back —
+	// both the retained-in-object-storage case and the dropped-entirely case.
+	entry.ContentHidden = !policy.visible()
 	// Redaction mappings exist to reveal redacted content on permitted UI
 	// reads; hidden entries serve no content back, so attach only when the
 	// content is actually visible.
