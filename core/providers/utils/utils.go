@@ -2773,12 +2773,14 @@ func CreateBifrostTextCompletionChunkResponse(
 	currentChunkIndex int,
 	requestType schemas.RequestType,
 	model string,
+	created int,
 ) *schemas.BifrostTextCompletionResponse {
 	response := &schemas.BifrostTextCompletionResponse{
-		ID:     id,
-		Model:  model,
-		Object: "text_completion",
-		Usage:  usage,
+		ID:      id,
+		Model:   model,
+		Created: created,
+		Object:  "text_completion",
+		Usage:   usage,
 		Choices: []schemas.BifrostResponseChoice{
 			{
 				FinishReason:                 finishReason,
