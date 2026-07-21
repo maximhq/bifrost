@@ -1087,6 +1087,15 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 				NumSearchQueries: &n,
 			}
 		}
+		// Extended-thinking token count. Already a subset of OutputTokens (see
+		// AnthropicOutputTokensDetails), which matches the Bifrost invariant that
+		// ReasoningTokens <= CompletionTokens — so no folding is required here.
+		if response.Usage.OutputTokensDetails != nil && response.Usage.OutputTokensDetails.ThinkingTokens > 0 {
+			if bifrostResponse.Usage.CompletionTokensDetails == nil {
+				bifrostResponse.Usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{}
+			}
+			bifrostResponse.Usage.CompletionTokensDetails.ReasoningTokens = response.Usage.OutputTokensDetails.ThinkingTokens
+		}
 		bifrostResponse.Usage.TotalTokens = bifrostResponse.Usage.PromptTokens + bifrostResponse.Usage.CompletionTokens
 		// Forward service tier from usage to response
 		if response.Usage.ServiceTier != nil {

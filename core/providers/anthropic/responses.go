@@ -3955,6 +3955,15 @@ func ConvertAnthropicUsageToBifrostUsage(anthropicUsage *AnthropicUsage) *schema
 		bifrostUsage.OutputTokensDetails.NumSearchQueries = schemas.Ptr(anthropicUsage.ServerToolUse.WebSearchRequests)
 	}
 
+	// Extended-thinking token count. Already a subset of OutputTokens upstream, so it
+	// carries across unchanged and OutputTokens/TotalTokens are left alone.
+	if anthropicUsage.OutputTokensDetails != nil && anthropicUsage.OutputTokensDetails.ThinkingTokens > 0 {
+		if bifrostUsage.OutputTokensDetails == nil {
+			bifrostUsage.OutputTokensDetails = &schemas.ResponsesResponseOutputTokens{}
+		}
+		bifrostUsage.OutputTokensDetails.ReasoningTokens = anthropicUsage.OutputTokensDetails.ThinkingTokens
+	}
+
 	// Recursively convert iterations
 	if len(anthropicUsage.Iterations) > 0 {
 		bifrostUsage.Iterations = make([]schemas.ResponsesResponseUsage, len(anthropicUsage.Iterations))
@@ -4004,6 +4013,15 @@ func ConvertBifrostUsageToAnthropicUsage(bifrostUsage *schemas.ResponsesResponse
 	if bifrostUsage.OutputTokensDetails != nil && bifrostUsage.OutputTokensDetails.NumSearchQueries != nil && *bifrostUsage.OutputTokensDetails.NumSearchQueries > 0 {
 		anthropicUsage.ServerToolUse = &AnthropicServerToolUseUsage{
 			WebSearchRequests: *bifrostUsage.OutputTokensDetails.NumSearchQueries,
+		}
+	}
+
+	// Reasoning tokens map back to Anthropic's thinking-token breakdown. Unlike the
+	// cache counters above, OutputTokens is not adjusted: thinking tokens are already
+	// inside it on both sides.
+	if bifrostUsage.OutputTokensDetails != nil && bifrostUsage.OutputTokensDetails.ReasoningTokens > 0 {
+		anthropicUsage.OutputTokensDetails = &AnthropicOutputTokensDetails{
+			ThinkingTokens: bifrostUsage.OutputTokensDetails.ReasoningTokens,
 		}
 	}
 

@@ -641,6 +641,26 @@ func accumulateAnthropicResponsesUsage(usage *schemas.ResponsesResponseUsage, bi
 			}
 		}
 	}
+	// Extended-thinking tokens. Max-merged (per-request total, not per-event
+	// increment) and mirrored onto the billing handle so a mid-stream cancel or
+	// timeout still reports the reasoning breakdown.
+	if usageToProcess.OutputTokensDetails != nil && usageToProcess.OutputTokensDetails.ThinkingTokens > 0 {
+		t := usageToProcess.OutputTokensDetails.ThinkingTokens
+		if usage.OutputTokensDetails == nil {
+			usage.OutputTokensDetails = &schemas.ResponsesResponseOutputTokens{}
+		}
+		if t > usage.OutputTokensDetails.ReasoningTokens {
+			usage.OutputTokensDetails.ReasoningTokens = t
+		}
+		if billedUsage != nil {
+			if billedUsage.CompletionTokensDetails == nil {
+				billedUsage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{}
+			}
+			if t > billedUsage.CompletionTokensDetails.ReasoningTokens {
+				billedUsage.CompletionTokensDetails.ReasoningTokens = t
+			}
+		}
+	}
 	if usageToProcess.InputTokens > usage.InputTokens {
 		usage.InputTokens = usageToProcess.InputTokens
 		if billedUsage != nil {
@@ -974,6 +994,17 @@ func HandleAnthropicChatCompletionStreaming(
 					}
 					if n := usageToProcess.ServerToolUse.WebSearchRequests; usage.CompletionTokensDetails.NumSearchQueries == nil || n > *usage.CompletionTokensDetails.NumSearchQueries {
 						usage.CompletionTokensDetails.NumSearchQueries = &n
+					}
+				}
+				// Extended-thinking tokens. Max-merged like the other counters because usage
+				// arrives split across message_start and message_delta; the value is a
+				// per-request total, not a per-event increment, so summing would inflate it.
+				if usageToProcess.OutputTokensDetails != nil && usageToProcess.OutputTokensDetails.ThinkingTokens > 0 {
+					if usage.CompletionTokensDetails == nil {
+						usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{}
+					}
+					if t := usageToProcess.OutputTokensDetails.ThinkingTokens; t > usage.CompletionTokensDetails.ReasoningTokens {
+						usage.CompletionTokensDetails.ReasoningTokens = t
 					}
 				}
 				// Capture served fast mode + inference geography (top-level response fields).
