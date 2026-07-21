@@ -85,7 +85,7 @@ require (
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-sqlite3 v1.14.32 // indirect
-	github.com/maximhq/bifrost/core v1.7.1 // indirect
+	github.com/maximhq/bifrost/core v1.7.3 // indirect
 	github.com/maximhq/bifrost/framework v1.3.16 // indirect
 	github.com/paulmach/orb v0.11.1 // indirect
 	github.com/pierrec/lz4/v4 v4.1.22 // indirect
