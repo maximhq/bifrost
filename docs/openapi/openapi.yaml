@@ -795,6 +795,10 @@ paths:
     $ref: './paths/management/mcp.yaml#/client-reconnect'
   /api/mcp/client/{id}/complete-oauth:
     $ref: './paths/management/mcp.yaml#/client-complete-oauth'
+  /api/mcp/client/{id}/initiate-verification:
+    $ref: './paths/management/mcp.yaml#/client-initiate-verification'
+  /api/mcp/client/{id}/verify-headers:
+    $ref: './paths/management/mcp.yaml#/client-verify-headers'
 
   # MCP — per-user sessions (OAuth tokens + headers credentials + pending flows)
   /api/mcp/sessions:
@@ -1174,6 +1178,12 @@ components:
             $ref: './schemas/inference/common.yaml#/BifrostError'
     NotFound:
       description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: './schemas/inference/common.yaml#/BifrostError'
+    Conflict:
+      description: Conflict with the current state of the resource
       content:
         application/json:
           schema:
