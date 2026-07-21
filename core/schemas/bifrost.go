@@ -1756,6 +1756,7 @@ type BifrostCacheDebug struct {
 const (
 	RequestCancelled         = "request_cancelled"
 	RequestTimedOut          = "request_timed_out"
+	RequestDropped           = "request_dropped"
 	ProviderConnectionFailed = "provider_connection_failed"
 )
 
