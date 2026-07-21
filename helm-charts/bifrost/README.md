@@ -4,9 +4,13 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.30
+**Latest Version:** 2.1.31
 
 ## Changelog
+
+### 2.1.31
+
+- Added `bifrost.guardrails.rules[].stream_replay_event_interval_ms` to configure the delay between buffered events after block-capable output guardrails allow a streaming response; `0` keeps immediate delivery.
 
 ### 2.1.30
 
@@ -17,8 +21,6 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 - Added `keep_alive_timeout_in_seconds` to provider `network_config` (default 30) to drop idle pooled connections before the upstream closes them. Renders into `network_config.keep_alive_timeout_in_seconds`.
 - Added `use_anthropic_endpoints` to provider keys (deepseek/fireworks/vllm/sgl) and to per-alias configs, routing chat completions and responses through Anthropic-compatible endpoints. Passes through into each key / alias as `use_anthropic_endpoints`.
 - Added SCIM auth-proxy / identity-aware-proxy support via `bifrost.scim.config.authProxy` (shared across all SCIM providers), for deployments fronted by a Zero Trust / ZTNA proxy — Cloudflare Access, a generic OIDC proxy, or AWS ALB. Carries `enabled`, `provider`, `mode` (`login_only`/`full`), the JWKS fields (`issuerUrl`/`jwksUrl`/`audience`/`allowedAudiences`/`headerName`), and the AWS ALB fields (`expectedSigner`/`region`/`publicKeyBaseUrl`), plus `userIdClaim`. Renders into `scim_config.config.authProxy`. (Also synced the field into the source-of-truth `transports/config.schema.json` so the generated config validates at startup.)
-
-- Added `bifrost.guardrails.rules[].stream_replay_event_interval_ms` to configure the delay between buffered events after block-capable output guardrails allow a streaming response; `0` keeps immediate delivery.
 
 ### 2.1.29
 
