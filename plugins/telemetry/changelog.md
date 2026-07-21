@@ -1,2 +1,2 @@
 - feat: added MCP metrics to telemetry plugin
-- chore: upgraded core to v1.7.2 and framework to v1.5.2
+- chore: upgraded core to v1.7.3 and framework to v1.5.3
