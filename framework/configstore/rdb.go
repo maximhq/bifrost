@@ -4457,6 +4457,11 @@ func (s *RDBConfigStore) UpdateBudget(ctx context.Context, budget *tables.TableB
 			}
 			return err
 		}
+		// Overrides are managed by the dedicated override path, not UpdateBudget;
+		// carry them forward so partial updates can't wipe an active override.
+		budget.OverrideAmount = existing.OverrideAmount
+		budget.OverrideMode = existing.OverrideMode
+		budget.OverrideCyclesRemaining = existing.OverrideCyclesRemaining
 	}
 	if err := txDB.WithContext(ctx).Save(budget).Error; err != nil {
 		return s.parseGormError(err)

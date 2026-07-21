@@ -748,6 +748,38 @@ func TestUpdateBudget(t *testing.T) {
 	assert.Equal(t, 200.0, result.MaxLimit)
 }
 
+// TestCreateBudgetWithOverride verifies finite and permanent override state round-trips through the config store.
+func TestCreateBudgetWithOverride(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	tests := []*tables.TableBudget{
+		{
+			ID:                      "budget-override-cycles",
+			MaxLimit:                100,
+			ResetDuration:           "1h",
+			OverrideAmount:          25,
+			OverrideMode:            tables.BudgetOverrideModeCycles,
+			OverrideCyclesRemaining: 4,
+		},
+		{
+			ID:             "budget-override-forever",
+			MaxLimit:       200,
+			ResetDuration:  "1d",
+			OverrideAmount: 50,
+			OverrideMode:   tables.BudgetOverrideModeForever,
+		},
+	}
+
+	for _, budget := range tests {
+		require.NoError(t, store.CreateBudget(ctx, budget))
+		got, err := store.GetBudget(ctx, budget.ID)
+		require.NoError(t, err)
+		assert.Equal(t, budget.OverrideAmount, got.OverrideAmount)
+		assert.Equal(t, budget.OverrideMode, got.OverrideMode)
+		assert.Equal(t, budget.OverrideCyclesRemaining, got.OverrideCyclesRemaining)
+	}
+}
+
 func TestGetBudgets(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()

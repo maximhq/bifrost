@@ -2,9 +2,20 @@ package tables
 
 import (
 	"fmt"
+	"math"
 	"time"
 
 	"gorm.io/gorm"
+)
+
+// BudgetOverrideMode identifies how long a budget override remains active.
+type BudgetOverrideMode string
+
+const (
+	// BudgetOverrideModeCycles keeps an override active for a finite number of reset cycles.
+	BudgetOverrideModeCycles BudgetOverrideMode = "cycles"
+	// BudgetOverrideModeForever keeps an override active until it is explicitly removed.
+	BudgetOverrideModeForever BudgetOverrideMode = "forever"
 )
 
 // TableBudget defines spending limits with configurable reset periods
@@ -14,6 +25,13 @@ type TableBudget struct {
 	ResetDuration string    `gorm:"type:varchar(50);not null" json:"reset_duration"` // e.g., "30s", "5m", "1h", "1d", "1w", "1M", "1Y"
 	LastReset     time.Time `gorm:"index" json:"last_reset"`                         // Last time budget was reset
 	CurrentUsage  float64   `gorm:"default:0" json:"current_usage"`                  // Current usage in dollars
+
+	// OverrideAmount is added to MaxLimit while the override is active.
+	OverrideAmount float64 `gorm:"not null;default:0" json:"override_amount,omitempty"`
+	// OverrideMode distinguishes finite cycle-based overrides from permanent overrides.
+	OverrideMode BudgetOverrideMode `gorm:"type:varchar(20);not null;default:''" json:"override_mode,omitempty"`
+	// OverrideCyclesRemaining includes the current cycle and is positive only for cycle-based overrides.
+	OverrideCyclesRemaining int `gorm:"not null;default:0" json:"override_cycles_remaining,omitempty"`
 
 	// Owner FKs: a budget belongs to at most one Team, VK, ProviderConfig, ModelConfig, or Customer
 	TeamID           *string `gorm:"type:varchar(255);index" json:"team_id,omitempty"`
@@ -46,6 +64,36 @@ type TableBudget struct {
 // TableName sets the table name for each model
 func (TableBudget) TableName() string { return "governance_budgets" }
 
+// validateOverride checks that the persisted override fields form one unambiguous state.
+func (b *TableBudget) validateOverride() error {
+	if math.IsNaN(b.OverrideAmount) || math.IsInf(b.OverrideAmount, 0) {
+		return fmt.Errorf("budget override_amount must be finite")
+	}
+	switch b.OverrideMode {
+	case "":
+		if b.OverrideAmount != 0 || b.OverrideCyclesRemaining != 0 {
+			return fmt.Errorf("budget override fields require override_mode")
+		}
+	case BudgetOverrideModeCycles:
+		if b.OverrideAmount <= 0 {
+			return fmt.Errorf("budget override_amount must be > 0 for cycles mode")
+		}
+		if b.OverrideCyclesRemaining <= 0 {
+			return fmt.Errorf("budget override_cycles_remaining must be > 0 for cycles mode")
+		}
+	case BudgetOverrideModeForever:
+		if b.OverrideAmount <= 0 {
+			return fmt.Errorf("budget override_amount must be > 0 for forever mode")
+		}
+		if b.OverrideCyclesRemaining != 0 {
+			return fmt.Errorf("budget override_cycles_remaining must be 0 for forever mode")
+		}
+	default:
+		return fmt.Errorf("invalid budget override_mode: %s", b.OverrideMode)
+	}
+	return nil
+}
+
 // BeforeSave hook for Budget to validate reset duration format and max limit
 func (b *TableBudget) BeforeSave(tx *gorm.DB) error {
 	// A budget belongs to at most one owner type
@@ -77,6 +125,9 @@ func (b *TableBudget) BeforeSave(tx *gorm.DB) error {
 	// Validate that MaxLimit is not negative (budgets should be positive)
 	if b.MaxLimit < 0 {
 		return fmt.Errorf("budget max_limit cannot be negative: %.2f", b.MaxLimit)
+	}
+	if err := b.validateOverride(); err != nil {
+		return err
 	}
 
 	return nil
