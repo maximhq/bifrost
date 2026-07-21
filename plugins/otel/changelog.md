@@ -1,2 +1,3 @@
-- fix: send status code on OTEL metrics
-- chore: upgraded core to v1.7.1 and framework to v1.5.1
+- feat: added MCP metrics to OTEL
+- fix: use the central method for content attribute check
+- chore: upgraded core to v1.7.2 and framework to v1.5.2
