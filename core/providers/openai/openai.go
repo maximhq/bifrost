@@ -1871,18 +1871,26 @@ func HandleOpenAIResponsesStreaming(
 
 			// Parse into bifrost response
 			var response schemas.BifrostResponsesStreamResponse
-			// TODO fix this
+			var rawRequest interface{}
+			var rawResponse interface{}
+			var bifrostErr *schemas.BifrostError
+			preserveCustomRawErrorFields := func(err *schemas.BifrostError) *schemas.BifrostError {
+				if err == nil {
+					return nil
+				}
+				if sendBackRawRequest && rawRequest != nil {
+					err.ExtraFields.RawRequest = rawRequest
+				}
+				if sendBackRawResponse && rawResponse != nil {
+					err.ExtraFields.RawResponse = rawResponse
+				}
+				return err
+			}
 			if customResponseHandler != nil {
-				rawRequest, rawResponse, bifrostErr := customResponseHandler([]byte(jsonData), &response, nil, false, false)
+				rawRequest, rawResponse, bifrostErr = customResponseHandler([]byte(jsonData), &response, jsonBody, sendBackRawRequest, sendBackRawResponse)
 				if bifrostErr != nil {
-					if sendBackRawRequest {
-						bifrostErr.ExtraFields.RawRequest = rawRequest
-					}
-					if sendBackRawResponse {
-						bifrostErr.ExtraFields.RawResponse = rawResponse
-					}
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency), responseChan, logger, postHookSpanFinalizer)
+					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, preserveCustomRawErrorFields(providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency)), responseChan, logger, postHookSpanFinalizer)
 					return
 				}
 			} else {
@@ -1890,91 +1898,99 @@ func HandleOpenAIResponsesStreaming(
 					logger.Warn("Failed to parse stream response: %v", err)
 					continue
 				}
+			}
 
-				if postResponseConverter != nil {
-					if converted := postResponseConverter(&response); converted != nil {
-						response = *converted
-					} else {
-						logger.Warn("postResponseConverter returned nil; leaving chunk unmodified")
-					}
+			if postResponseConverter != nil {
+				if converted := postResponseConverter(&response); converted != nil {
+					response = *converted
+				} else {
+					logger.Warn("postResponseConverter returned nil; leaving chunk unmodified")
 				}
+			}
 
-				if sendBackRawResponse {
+			if sendBackRawResponse {
+				if rawResponse != nil {
+					response.ExtraFields.RawResponse = rawResponse
+				} else {
 					response.ExtraFields.RawResponse = jsonData
 				}
+			}
 
-				if response.Type == schemas.ResponsesStreamResponseTypeError {
-					bifrostErr := &schemas.BifrostError{
-						Type:           schemas.Ptr(string(schemas.ResponsesStreamResponseTypeError)),
-						IsBifrostError: false,
-						Error:          &schemas.ErrorField{},
-					}
-
-					if response.Message != nil {
-						bifrostErr.Error.Message = *response.Message
-					}
-					if response.Param != nil {
-						bifrostErr.Error.Param = *response.Param
-					}
-					if response.Code != nil {
-						bifrostErr.Error.Code = response.Code
-					}
-					if response.Error != nil {
-						if response.Error.Message != "" && bifrostErr.Error.Message == "" {
-							bifrostErr.Error.Message = response.Error.Message
-						}
-						if response.Error.Code != "" && (bifrostErr.Error.Code == nil || *bifrostErr.Error.Code == "") {
-							bifrostErr.Error.Code = &response.Error.Code
-						}
-					}
-					if response.Response != nil && response.Response.Error != nil {
-						if response.Response.Error.Message != "" && bifrostErr.Error.Message == "" {
-							bifrostErr.Error.Message = response.Response.Error.Message
-						}
-						if response.Response.Error.Code != "" && (bifrostErr.Error.Code == nil || *bifrostErr.Error.Code == "") {
-							bifrostErr.Error.Code = schemas.Ptr(response.Response.Error.Code)
-						}
-					}
-
-					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, []byte(jsonData), sendBackRawRequest, sendBackRawResponse, latency), responseChan, logger, postHookSpanFinalizer)
-					return
+			if response.Type == schemas.ResponsesStreamResponseTypeError {
+				bifrostErr := &schemas.BifrostError{
+					Type:           schemas.Ptr(string(schemas.ResponsesStreamResponseTypeError)),
+					IsBifrostError: false,
+					Error:          &schemas.ErrorField{},
 				}
 
-				// Some providers (e.g. Fireworks) send response.failed on HTTP 200 streams
-				// instead of a pre-stream 4xx. Convert to BifrostError for consistent handling.
-				if response.Type == schemas.ResponsesStreamResponseTypeFailed {
-					bifrostErr := &schemas.BifrostError{
-						Type:           schemas.Ptr(string(schemas.ResponsesStreamResponseTypeFailed)),
-						IsBifrostError: false,
-						Error:          &schemas.ErrorField{},
+				if response.Message != nil {
+					bifrostErr.Error.Message = *response.Message
+				}
+				if response.Param != nil {
+					bifrostErr.Error.Param = *response.Param
+				}
+				if response.Code != nil {
+					bifrostErr.Error.Code = response.Code
+				}
+				if response.Error != nil {
+					if response.Error.Message != "" && bifrostErr.Error.Message == "" {
+						bifrostErr.Error.Message = response.Error.Message
 					}
-					if response.Response != nil && response.Response.Error != nil {
+					if response.Error.Code != "" && (bifrostErr.Error.Code == nil || *bifrostErr.Error.Code == "") {
+						bifrostErr.Error.Code = &response.Error.Code
+					}
+				}
+				if response.Response != nil && response.Response.Error != nil {
+					if response.Response.Error.Message != "" && bifrostErr.Error.Message == "" {
 						bifrostErr.Error.Message = response.Response.Error.Message
-						bifrostErr.Error.Code = &response.Response.Error.Code
 					}
-					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, []byte(jsonData), sendBackRawRequest, sendBackRawResponse, latency), responseChan, logger, postHookSpanFinalizer)
-					return
+					if response.Response.Error.Code != "" && (bifrostErr.Error.Code == nil || *bifrostErr.Error.Code == "") {
+						bifrostErr.Error.Code = schemas.Ptr(response.Response.Error.Code)
+					}
 				}
 
-				response.ExtraFields.ChunkIndex = response.SequenceNumber
-				if response.Type == schemas.ResponsesStreamResponseTypeCompleted || response.Type == schemas.ResponsesStreamResponseTypeIncomplete {
-					// Set raw request if enabled
-					if sendBackRawRequest {
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, preserveCustomRawErrorFields(providerUtils.EnrichError(ctx, bifrostErr, jsonBody, []byte(jsonData), sendBackRawRequest, sendBackRawResponse, latency)), responseChan, logger, postHookSpanFinalizer)
+				return
+			}
+
+			// Some providers (e.g. Fireworks) send response.failed on HTTP 200 streams
+			// instead of a pre-stream 4xx. Convert to BifrostError for consistent handling.
+			if response.Type == schemas.ResponsesStreamResponseTypeFailed {
+				bifrostErr := &schemas.BifrostError{
+					Type:           schemas.Ptr(string(schemas.ResponsesStreamResponseTypeFailed)),
+					IsBifrostError: false,
+					Error:          &schemas.ErrorField{},
+				}
+				if response.Response != nil && response.Response.Error != nil {
+					bifrostErr.Error.Message = response.Response.Error.Message
+					bifrostErr.Error.Code = &response.Response.Error.Code
+				}
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, preserveCustomRawErrorFields(providerUtils.EnrichError(ctx, bifrostErr, jsonBody, []byte(jsonData), sendBackRawRequest, sendBackRawResponse, latency)), responseChan, logger, postHookSpanFinalizer)
+				return
+			}
+
+			response.ExtraFields.ChunkIndex = response.SequenceNumber
+			if response.Type == schemas.ResponsesStreamResponseTypeCompleted || response.Type == schemas.ResponsesStreamResponseTypeIncomplete {
+				// Set raw request if enabled
+				if sendBackRawRequest {
+					if rawRequest != nil {
+						response.ExtraFields.RawRequest = rawRequest
+					} else {
 						providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonBody)
 					}
-					response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
-					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-					providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, &response, nil, nil, nil), responseChan, postHookSpanFinalizer)
-					return
 				}
-
-				response.ExtraFields.Latency = time.Since(lastChunkTime).Milliseconds()
-				lastChunkTime = time.Now()
-
+				response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, &response, nil, nil, nil), responseChan, postHookSpanFinalizer)
+				return
 			}
+
+			response.ExtraFields.Latency = time.Since(lastChunkTime).Milliseconds()
+			lastChunkTime = time.Now()
+
+			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, &response, nil, nil, nil), responseChan, postHookSpanFinalizer)
 		}
 	}()
 
