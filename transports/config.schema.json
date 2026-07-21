@@ -245,6 +245,11 @@
           "description": "Allow callers to bypass the registered key pool by supplying x-bf-direct-key: true and the provider's raw API key in an Authorization (Bearer), x-api-key, or x-goog-api-key header.",
           "default": false
         },
+        "vk_rotation_cooldown": {
+          "type": ["string", "integer"],
+          "description": "Cooldown after virtual key rotation: grace period during which the previous key value still authenticates. Accepts a Go duration string (e.g. \"5m\", \"1h\"); integer values are nanoseconds (Go duration JSON encoding), so prefer strings. 0 disables the grace period (the old value stops working immediately). Maximum 30 days.",
+          "default": 0
+        },
         "mcp_agent_depth": {
           "type": "integer",
           "minimum": 1,
