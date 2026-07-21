@@ -30,6 +30,8 @@ type eventData struct {
 	ResultExpiresAt *time.Time             `json:"result_expires_at,omitempty"`
 	Response        json.RawMessage        `json:"response,omitempty"`
 	ResponseOmitted bool                   `json:"response_omitted,omitempty"`
+	Error           json.RawMessage        `json:"error,omitempty"`
+	ErrorOmitted    bool                   `json:"error_omitted,omitempty"`
 	ResultExpired   bool                   `json:"result_expired,omitempty"`
 }
 
@@ -85,9 +87,10 @@ func statusForEvent(event tables.WebhookEvent) schemas.AsyncJobStatus {
 }
 
 // renderPayload builds the delivery body for a live async job row. The
-// response is inlined only when the endpoint opted in and the stored response
-// fits within maxResponseBytes; an oversized response is dropped and flagged
-// with response_omitted so the receiver knows to fetch it instead.
+// job's response (on completion) or error (on failure) is inlined only when
+// the endpoint opted in and the stored value fits within maxResponseBytes;
+// an oversized value is dropped and flagged with response_omitted/
+// error_omitted so the receiver knows to fetch it instead.
 func renderPayload(job *logstore.AsyncJob, event tables.WebhookEvent, includeResponse bool, maxResponseBytes int, now time.Time) ([]byte, error) {
 	data := eventData{
 		JobID:           job.ID,
@@ -106,6 +109,13 @@ func renderPayload(job *logstore.AsyncJob, event tables.WebhookEvent, includeRes
 			data.Response = json.RawMessage(job.Response)
 		} else {
 			data.ResponseOmitted = true
+		}
+	}
+	if includeResponse && job.Error != "" {
+		if len(job.Error) <= maxResponseBytes {
+			data.Error = json.RawMessage(job.Error)
+		} else {
+			data.ErrorOmitted = true
 		}
 	}
 	return json.Marshal(eventEnvelope{Event: event, CreatedAt: now, Data: data})
