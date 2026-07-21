@@ -1,1 +1,3 @@
-- chore: upgraded core to v1.7.1 and framework to v1.5.1
+- fix: drop unsupported reasoning summary values for Azure model router
+- fix: use Anthropic endpoints in chat completion and responses for DeepSeek
+- chore: upgraded core to v1.7.2 and framework to v1.5.2
