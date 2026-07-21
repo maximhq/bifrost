@@ -1002,6 +1002,114 @@ func TestUpdateVirtualKey(t *testing.T) {
 	assert.False(t, result.IsActiveValue())
 }
 
+func TestUpdateVirtualKey_PreservesRotationStateOnPlainUpdate(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	vk := &tables.TableVirtualKey{
+		ID:       "vk-grace",
+		Name:     "Grace Key",
+		Value:    *schemas.NewSecretVar("vk-old-value"),
+		IsActive: schemas.Ptr(true),
+	}
+	require.NoError(t, store.CreateVirtualKey(ctx, vk))
+
+	// Rotation: RotatedAt set makes the grace-period fields authoritative.
+	now := time.Now().UTC()
+	exp := now.Add(5 * time.Minute)
+	vk.Value = *schemas.NewSecretVar("vk-new-value")
+	vk.PreviousValue = *schemas.NewSecretVar("vk-old-value")
+	vk.PreviousValueExpiresAt = &exp
+	vk.RotatedAt = &now
+	require.NoError(t, store.UpdateVirtualKey(ctx, vk))
+
+	stored, err := store.GetVirtualKey(ctx, "vk-grace")
+	require.NoError(t, err)
+	assert.Equal(t, "vk-new-value", stored.Value.GetValue())
+	assert.Equal(t, "vk-old-value", stored.PreviousValue.GetValue())
+	assert.NotEmpty(t, stored.PreviousValueHash)
+	require.NotNil(t, stored.PreviousValueExpiresAt)
+	require.NotNil(t, stored.RotatedAt)
+	assert.True(t, stored.HasActivePreviousValue(now))
+
+	// Plain update (RotatedAt nil) must not wipe the in-flight grace window.
+	plain := &tables.TableVirtualKey{
+		ID:       "vk-grace",
+		Name:     "Grace Key Renamed",
+		Value:    *schemas.NewSecretVar("vk-new-value"),
+		IsActive: schemas.Ptr(true),
+	}
+	require.NoError(t, store.UpdateVirtualKey(ctx, plain))
+
+	stored, err = store.GetVirtualKey(ctx, "vk-grace")
+	require.NoError(t, err)
+	assert.Equal(t, "Grace Key Renamed", stored.Name)
+	assert.Equal(t, "vk-old-value", stored.PreviousValue.GetValue())
+	require.NotNil(t, stored.PreviousValueExpiresAt)
+	require.NotNil(t, stored.RotatedAt)
+}
+
+func TestUpdateVirtualKey_RotationWithoutCooldownClearsPreviousValue(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	vk := &tables.TableVirtualKey{
+		ID:       "vk-nograce",
+		Name:     "No Grace Key",
+		Value:    *schemas.NewSecretVar("vk-first-value"),
+		IsActive: schemas.Ptr(true),
+	}
+	require.NoError(t, store.CreateVirtualKey(ctx, vk))
+
+	// First rotation with a grace window.
+	now := time.Now().UTC()
+	exp := now.Add(5 * time.Minute)
+	vk.Value = *schemas.NewSecretVar("vk-second-value")
+	vk.PreviousValue = *schemas.NewSecretVar("vk-first-value")
+	vk.PreviousValueExpiresAt = &exp
+	vk.RotatedAt = &now
+	require.NoError(t, store.UpdateVirtualKey(ctx, vk))
+
+	// Second rotation with cooldown disabled clears the grace state.
+	later := now.Add(time.Minute)
+	second := &tables.TableVirtualKey{
+		ID:        "vk-nograce",
+		Name:      "No Grace Key",
+		Value:     *schemas.NewSecretVar("vk-third-value"),
+		IsActive:  schemas.Ptr(true),
+		RotatedAt: &later,
+	}
+	second.ClearPreviousValue()
+	require.NoError(t, store.UpdateVirtualKey(ctx, second))
+
+	stored, err := store.GetVirtualKey(ctx, "vk-nograce")
+	require.NoError(t, err)
+	assert.Equal(t, "vk-third-value", stored.Value.GetValue())
+	assert.False(t, stored.PreviousValue.IsSet())
+	assert.Empty(t, stored.PreviousValueHash)
+	assert.Nil(t, stored.PreviousValueExpiresAt)
+	assert.False(t, stored.HasActivePreviousValue(later))
+}
+
+func TestVirtualKeyHasActivePreviousValue(t *testing.T) {
+	now := time.Now().UTC()
+	past := now.Add(-time.Minute)
+	future := now.Add(time.Minute)
+
+	vk := &tables.TableVirtualKey{}
+	assert.False(t, vk.HasActivePreviousValue(now), "no previous value")
+
+	vk.PreviousValue = *schemas.NewSecretVar("vk-prev")
+	assert.False(t, vk.HasActivePreviousValue(now), "no expiry set")
+
+	vk.PreviousValueExpiresAt = &future
+	assert.True(t, vk.HasActivePreviousValue(now), "inside grace window")
+	assert.False(t, vk.HasActivePreviousValue(future), "now == expiry is expired")
+
+	vk.PreviousValueExpiresAt = &past
+	assert.False(t, vk.HasActivePreviousValue(now), "past expiry")
+}
+
 func TestDeleteVirtualKey(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()

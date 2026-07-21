@@ -3414,8 +3414,18 @@ func (s *RDBConfigStore) UpdateVirtualKey(ctx context.Context, virtualKey *table
 		}
 	} else {
 		virtualKey.ID = existing.ID
+		// Rotation grace-period state travels with the row: unless the caller is
+		// itself performing a rotation (RotatedAt set), preserve the stored
+		// previous-value fields so a plain update cannot wipe an in-flight grace
+		// window (the Select below writes zero values).
+		if virtualKey.RotatedAt == nil {
+			virtualKey.PreviousValue = existing.PreviousValue
+			virtualKey.PreviousValueHash = existing.PreviousValueHash
+			virtualKey.PreviousValueExpiresAt = existing.PreviousValueExpiresAt
+			virtualKey.RotatedAt = existing.RotatedAt
+		}
 		if err := txDB.WithContext(ctx).
-			Select("name", "description", "value", "is_active", "expires_at", "team_id", "customer_id", "rate_limit_id", "calendar_aligned", "config_hash", "updated_at", "encryption_status", "value_hash").
+			Select("name", "description", "value", "is_active", "expires_at", "team_id", "customer_id", "rate_limit_id", "calendar_aligned", "config_hash", "updated_at", "encryption_status", "value_hash", "previous_value", "previous_value_hash", "previous_value_expires_at", "rotated_at").
 			Updates(virtualKey).Error; err != nil {
 			return s.parseGormError(err)
 		}
