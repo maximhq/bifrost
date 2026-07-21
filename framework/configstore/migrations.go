@@ -475,6 +475,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_ultrafast_pricing_columns"}, run: migrationAddUltrafastPricingColumns},
 	{IDs: []string{"add_image_size_quality_pricing_columns"}, run: migrationAddImageSizeQualityPricingColumns},
 	{IDs: []string{"add_batch_jobs_attribution_columns"}, run: migrationAddBatchJobsAttributionColumns},
+	{IDs: []string{"add_vk_rotation_cooldown_columns"}, run: migrationAddVKRotationCooldownColumns},
 }
 
 // migrationAddBatchJobsAttributionColumns adds the requester-identity columns to
@@ -10982,6 +10983,55 @@ func migrationAddSidekiqPartitioningKeyColumn(ctx context.Context, db *gorm.DB, 
 
 // migrationAddVirtualKeyExpiresAtColumn adds nullable expires_at to governance_virtual_keys.
 // No index: expiry is checked in-memory from the already-loaded VK, never queried by column.
+// migrationAddVKRotationCooldownColumns adds the rotation grace-period columns to
+// governance_virtual_keys: previous_value, previous_value_hash,
+// previous_value_expires_at, and rotated_at. All nullable and additive, no
+// backfill (NULL = no previous value = pre-cooldown behavior), so the migration
+// is safe during rolling upgrades; pgx cached-plan invalidation (0A000) after
+// ADD COLUMN is handled by the postgresconn retry pool.
+func migrationAddVKRotationCooldownColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_vk_rotation_cooldown_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	columns := []string{"previous_value", "previous_value_hash", "previous_value_expires_at", "rotated_at"}
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, column := range columns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableVirtualKey{}, column); err != nil {
+					return err
+				}
+			}
+			// AddColumn doesn't create indexes from struct tags; grace-period
+			// auth looks keys up by previous_value_hash, so upgraded databases
+			// need the index created explicitly. CreateIndex reads the struct
+			// tags so it is dialect-safe.
+			mg := tx.Migrator()
+			if !mg.HasIndex(&tables.TableVirtualKey{}, "idx_virtual_key_previous_value_hash") {
+				logger.Info("[configstore] %s: creating index PreviousValueHash on TableVirtualKey", migrationName)
+				if err := mg.CreateIndex(&tables.TableVirtualKey{}, "PreviousValueHash"); err != nil {
+					return fmt.Errorf("failed to create index on governance_virtual_keys.previous_value_hash: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, column := range columns {
+				if err := dropColumnIfExists(tx, logger, &tables.TableVirtualKey{}, column); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
 func migrationAddVirtualKeyExpiresAtColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
 	migrationName := "add_virtual_key_expires_at_column"
 	logger.Info("[configstore] starting migration %s", migrationName)
