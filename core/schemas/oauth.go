@@ -50,17 +50,17 @@ type OAuth2Provider interface {
 
 // OauthConfig represents OAuth client configuration
 type OAuth2Config struct {
-	ID              string   `json:"id"`
-	ClientID        string   `json:"client_id,omitempty"`        // Optional: Will be obtained via dynamic registration (RFC 7591) if not provided
-	ClientSecret    string   `json:"client_secret,omitempty"`    // Optional: For public clients using PKCE, or obtained via dynamic registration
-	AuthorizeURL    string   `json:"authorize_url,omitempty"`    // Optional: Will be discovered from ServerURL if not provided
-	TokenURL        string   `json:"token_url,omitempty"`        // Optional: Will be discovered from ServerURL if not provided
-	RegistrationURL *string  `json:"registration_url,omitempty"` // Optional: For dynamic client registration (RFC 7591), can be discovered
-	RedirectURI     string   `json:"redirect_uri"`               // Required
-	Scopes          []string `json:"scopes,omitempty"`           // Optional: Can be discovered
-	ServerURL       string   `json:"server_url"`                 // MCP server URL for OAuth discovery (required if URLs not provided)
-	Resource        string   `json:"resource,omitempty"`         // Optional OAuth resource indicator (RFC 8707); omitted when empty
-	UseDiscovery    bool     `json:"use_discovery,omitempty"`    // Deprecated: Discovery now happens automatically when URLs are missing
+	ID              string     `json:"id"`
+	ClientID        *SecretVar `json:"client_id,omitempty"`        // Optional: Will be obtained via dynamic registration (RFC 7591) if not provided. Supports env./vault. references.
+	ClientSecret    *SecretVar `json:"client_secret,omitempty"`    // Optional: For public clients using PKCE, or obtained via dynamic registration. Supports env./vault. references.
+	AuthorizeURL    string     `json:"authorize_url,omitempty"`    // Optional: Will be discovered from ServerURL if not provided
+	TokenURL        string     `json:"token_url,omitempty"`        // Optional: Will be discovered from ServerURL if not provided
+	RegistrationURL *string    `json:"registration_url,omitempty"` // Optional: For dynamic client registration (RFC 7591), can be discovered
+	RedirectURI     string     `json:"redirect_uri"`               // Required
+	Scopes          []string   `json:"scopes,omitempty"`           // Optional: Can be discovered
+	ServerURL       string     `json:"server_url"`                 // MCP server URL for OAuth discovery (required if URLs not provided)
+	Resource        string     `json:"resource,omitempty"`         // Optional OAuth resource indicator (RFC 8707); omitted when empty
+	UseDiscovery    bool       `json:"use_discovery,omitempty"`    // Deprecated: Discovery now happens automatically when URLs are missing
 }
 
 // OauthToken represents OAuth access and refresh tokens

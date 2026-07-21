@@ -365,21 +365,20 @@ func (h *MCPHandler) verifyMCPClientHeaders(ctx *fasthttp.RequestCtx) {
 }
 
 // pendingOAuthConfigToRequest converts the persisted shared-OAuth bootstrap
-// shape (plain strings on OAuth2Config) into the request shape consumed by
-// runOAuthBootstrap / InitiateOAuthFlow (*EnvVar on credentials). The
-// non-empty Val / empty EnvVar combination is the canonical "plaintext
-// value, not an env reference" form.
+// shape into the request shape consumed by runOAuthBootstrap /
+// InitiateOAuthFlow. Credentials are *SecretVar on both sides, so env./vault.
+// reference metadata passes through intact.
 func pendingOAuthConfigToRequest(cfg *schemas.OAuth2Config) *OAuthConfigRequest {
 	req := &OAuthConfigRequest{
 		AuthorizeURL: cfg.AuthorizeURL,
 		TokenURL:     cfg.TokenURL,
 		Scopes:       cfg.Scopes,
 	}
-	if cfg.ClientID != "" {
-		req.ClientID = &schemas.SecretVar{Val: cfg.ClientID}
+	if cfg.ClientID.IsSet() {
+		req.ClientID = cfg.ClientID
 	}
-	if cfg.ClientSecret != "" {
-		req.ClientSecret = &schemas.SecretVar{Val: cfg.ClientSecret}
+	if cfg.ClientSecret.IsSet() {
+		req.ClientSecret = cfg.ClientSecret
 	}
 	if cfg.RegistrationURL != nil {
 		req.RegistrationURL = *cfg.RegistrationURL
