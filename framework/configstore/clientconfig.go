@@ -28,6 +28,13 @@ const (
 	EnvKeyTypeMCPHeader     EnvKeyType = "mcp_header"
 )
 
+// MaxVKRotationCooldown is the hard ceiling on the virtual key rotation grace
+// period. Anything longer keeps a retired credential authenticating for over a
+// month, which defeats the point of rotating it. Enforced at every config
+// entry point (PUT /api/config and the config.json load path), mirroring
+// MaxAuthCodeTTL, and matching the maximum published in config.schema.json.
+const MaxVKRotationCooldown = 30 * 24 * time.Hour
+
 // EnvKeyInfo stores information about a key sourced from environment
 type EnvKeyInfo struct {
 	SecretVar  string                // The environment variable name (without env. prefix)

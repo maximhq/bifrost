@@ -3686,59 +3686,65 @@ func (s *RDBConfigStore) GetVirtualKey(ctx context.Context, id string) (*tables.
 	return &virtualKey, nil
 }
 
-// GetVirtualKeyByValue retrieves a virtual key by its value using hash-based lookup.
-func (s *RDBConfigStore) GetVirtualKeyByValue(ctx context.Context, value string) (*tables.TableVirtualKey, error) {
+// findVirtualKeyByValue resolves a virtual key from a presented value: the
+// current value hash first, then a rotation-grace previous value hash that is
+// still inside its window, then the plaintext fallback for rows not yet
+// migrated to hashed lookups.
+func (s *RDBConfigStore) findVirtualKeyByValue(baseQuery *gorm.DB, value string) (*tables.TableVirtualKey, error) {
 	valueHash := encrypt.HashSHA256(value)
 	var virtualKey tables.TableVirtualKey
-	query := preloadVirtualKeyBaseRelations(s.DB().WithContext(ctx))
-	// Use hash-based lookup if hash column is populated, fall back to plaintext for backward compat
-	if err := query.Where("value_hash = ?", valueHash).First(&virtualKey).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			if schemas.IsSecretRef(value) {
-				return nil, ErrNotFound
-			}
-			// Fallback: try plaintext lookup for rows not yet migrated
-			if err := query.Where("value = ?", value).First(&virtualKey).Error; err != nil {
-				if errors.Is(err, gorm.ErrRecordNotFound) {
-					return nil, ErrNotFound
-				}
-				return nil, err
-			}
-		} else {
-			return nil, err
+	err := baseQuery.Session(&gorm.Session{}).Where("value_hash = ?", valueHash).First(&virtualKey).Error
+	if err == nil {
+		return &virtualKey, nil
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, err
+	}
+	// Rotation grace period: a retired value keeps resolving until its expiry.
+	// Querying current hashes first guarantees a live value always beats
+	// another key's retired value. The window check stays in Go so the
+	// exclusive boundary has a single definition (HasActivePreviousValue)
+	// across SQL dialects and the in-memory governance store.
+	var graceKey tables.TableVirtualKey
+	graceErr := baseQuery.Session(&gorm.Session{}).
+		Where("previous_value_hash = ?", valueHash).
+		Order("previous_value_expires_at DESC").
+		First(&graceKey).Error
+	if graceErr == nil {
+		if graceKey.HasActivePreviousValue(time.Now().UTC()) {
+			return &graceKey, nil
 		}
+	} else if !errors.Is(graceErr, gorm.ErrRecordNotFound) {
+		return nil, graceErr
+	}
+	if schemas.IsSecretRef(value) {
+		return nil, ErrNotFound
+	}
+	// Fallback: try plaintext lookup for rows not yet migrated
+	if err := baseQuery.Session(&gorm.Session{}).Where("value = ?", value).First(&virtualKey).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, err
 	}
 	return &virtualKey, nil
+}
+
+// GetVirtualKeyByValue retrieves a virtual key by its value using hash-based lookup.
+func (s *RDBConfigStore) GetVirtualKeyByValue(ctx context.Context, value string) (*tables.TableVirtualKey, error) {
+	return s.findVirtualKeyByValue(preloadVirtualKeyBaseRelations(s.DB().WithContext(ctx)), value)
 }
 
 // GetVirtualKeyQuotaByValue retrieves budget, rate limit, and provider-level limit data for a virtual key.
 // This is a lean query that avoids loading Team, Customer, MCPConfigs, and provider Keys.
 func (s *RDBConfigStore) GetVirtualKeyQuotaByValue(ctx context.Context, value string) (*tables.TableVirtualKey, error) {
-	valueHash := encrypt.HashSHA256(value)
-	var virtualKey tables.TableVirtualKey
 	baseQuery := s.DB().WithContext(ctx).
 		Preload("Budgets").
 		Preload("RateLimit").
 		Preload("ProviderConfigs").
 		Preload("ProviderConfigs.Budgets").
 		Preload("ProviderConfigs.RateLimit")
-	if err := baseQuery.Session(&gorm.Session{}).Where("value_hash = ?", valueHash).First(&virtualKey).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			if schemas.IsSecretRef(value) {
-				return nil, ErrNotFound
-			}
-			// Fallback: try plaintext lookup for rows not yet migrated
-			if err := baseQuery.Session(&gorm.Session{}).Where("value = ?", value).First(&virtualKey).Error; err != nil {
-				if errors.Is(err, gorm.ErrRecordNotFound) {
-					return nil, ErrNotFound
-				}
-				return nil, err
-			}
-		} else {
-			return nil, err
-		}
-	}
-	return &virtualKey, nil
+	return s.findVirtualKeyByValue(baseQuery, value)
 }
 
 // CreateVirtualKey creates a new virtual key in the database.

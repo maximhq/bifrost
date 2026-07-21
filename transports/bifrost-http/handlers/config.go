@@ -328,7 +328,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "vk_rotation_cooldown must not be negative")
 		return
 	}
-	if payload.ClientConfig.VKRotationCooldown.D() > 30*24*time.Hour {
+	if payload.ClientConfig.VKRotationCooldown.D() > configstore.MaxVKRotationCooldown {
 		SendError(ctx, fasthttp.StatusBadRequest, "vk_rotation_cooldown must not exceed 30 days")
 		return
 	}
