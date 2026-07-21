@@ -976,10 +976,12 @@ func TestToResponsesRequest_NoResponseFormat(t *testing.T) {
 }
 
 func TestToChatRequest_TextFormat_JSONSchema(t *testing.T) {
-	schema := map[string]interface{}{
-		"type":     "object",
-		"required": []interface{}{"country"},
-	}
+	// "type" before "required" is non-alphabetical on purpose: a regression to
+	// sorted marshaling would reorder them and fail the exact-bytes assertion below.
+	schema := NewOrderedMapFromPairs(
+		KV("type", "object"),
+		KV("required", []interface{}{"country"}),
+	)
 	rr := &BifrostResponsesRequest{
 		Params: &ResponsesParameters{
 			Text: &ResponsesTextConfig{
@@ -988,7 +990,7 @@ func TestToChatRequest_TextFormat_JSONSchema(t *testing.T) {
 					Name:        Ptr("CityInfo"),
 					Description: Ptr("City schema"),
 					Strict:      Ptr(true),
-					JSONSchema:  &ResponsesTextConfigFormatJSONSchema{Schema: func() *any { v := any(schema); return &v }()},
+					JSONSchema:  &ResponsesTextConfigFormatJSONSchema{Schema: &JSONSchemaOrBool{SchemaMap: schema}},
 				},
 			},
 		},
@@ -1020,6 +1022,13 @@ func TestToChatRequest_TextFormat_JSONSchema(t *testing.T) {
 	}
 	if jsObj["schema"] == nil {
 		t.Fatal("expected schema to be set")
+	}
+	schemaBytes, err := MarshalSorted(jsObj["schema"])
+	if err != nil {
+		t.Fatalf("failed to marshal schema: %v", err)
+	}
+	if want := `{"type":"object","required":["country"]}`; string(schemaBytes) != want {
+		t.Fatalf("schema key order not preserved: want %s, got %s", want, string(schemaBytes))
 	}
 }
 
@@ -1156,7 +1165,12 @@ func TestToResponsesRequest_JSONSchema_NoDoubleNesting(t *testing.T) {
 // ResponsesTextConfigFormatJSONSchema (Schema==nil), ToChatRequest still
 // produces a valid response_format with a non-empty json_schema.schema body.
 func TestToChatRequest_TextFormat_TypedFields(t *testing.T) {
-	props := map[string]any{"name": map[string]any{"type": "string"}}
+	// "zip" before "age" is non-alphabetical on purpose: a regression to sorted
+	// marshaling would reorder them and fail the exact-bytes assertion below.
+	props := NewOrderedMapFromPairs(
+		KV("zip", map[string]any{"type": "string"}),
+		KV("age", map[string]any{"type": "integer"}),
+	)
 	rr := &BifrostResponsesRequest{
 		Params: &ResponsesParameters{
 			Text: &ResponsesTextConfig{
@@ -1167,9 +1181,9 @@ func TestToChatRequest_TextFormat_TypedFields(t *testing.T) {
 					// Schema is nil — fields are spread across typed fields (direct client path)
 					JSONSchema: &ResponsesTextConfigFormatJSONSchema{
 						Type:       Ptr("object"),
-						Properties: &props,
-						Required:   []string{"name"},
-						// Schema *any is intentionally nil here
+						Properties: props,
+						Required:   []string{"zip", "age"},
+						// Schema is intentionally nil here
 					},
 				},
 			},
@@ -1203,6 +1217,13 @@ func TestToChatRequest_TextFormat_TypedFields(t *testing.T) {
 	}
 	if schemaMap["type"] != "object" {
 		t.Fatalf("expected schema.type=object, got %v", schemaMap["type"])
+	}
+	propsBytes, err := MarshalSorted(schemaMap["properties"])
+	if err != nil {
+		t.Fatalf("failed to marshal properties: %v", err)
+	}
+	if want := `{"zip":{"type":"string"},"age":{"type":"integer"}}`; string(propsBytes) != want {
+		t.Fatalf("properties key order not preserved: want %s, got %s", want, string(propsBytes))
 	}
 }
 

@@ -20,7 +20,7 @@ func makeResponsesTextFormat(schemaName string) *schemas.ResponsesTextConfig {
 			Name: schemas.Ptr(schemaName),
 			JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
 				Type:       schemas.Ptr("object"),
-				Properties: &properties,
+				Properties: schemas.OrderedMapFromMap(properties),
 				Required:   []string{"color", "animal"},
 			},
 		},

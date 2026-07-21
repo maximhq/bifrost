@@ -2786,55 +2786,50 @@ func convertTextConfigToGenerationConfig(textConfig *schemas.ResponsesTextConfig
 
 // reconstructSchemaFromJSONSchema rebuilds a schema map from ResponsesTextConfigFormatJSONSchema
 func reconstructSchemaFromJSONSchema(jsonSchema *schemas.ResponsesTextConfigFormatJSONSchema) interface{} {
-	var schema map[string]interface{}
-
 	if jsonSchema.Schema != nil {
-		// If Schema field is set, use it directly
-		schemaMap, ok := (*jsonSchema.Schema).(map[string]interface{})
-		if !ok {
-			return *jsonSchema.Schema
-		}
-		schema = schemaMap
-	} else {
-		// New format: Schema is spread across individual fields
-		schema = make(map[string]interface{})
+		// If Schema field is set, use it directly. Normalize via the
+		// OrderedMap-aware path so the client's key order survives end-to-end.
+		return normalizeSchemaValueForGemini(jsonSchema.Schema)
+	}
 
-		if jsonSchema.Defs != nil {
-			schema["$defs"] = *jsonSchema.Defs
-		}
+	// New format: Schema is spread across individual fields
+	schema := make(map[string]interface{})
 
-		if jsonSchema.Type != nil {
-			schema["type"] = *jsonSchema.Type
-		}
+	if jsonSchema.Defs != nil {
+		schema["$defs"] = *jsonSchema.Defs
+	}
 
-		if jsonSchema.Properties != nil {
-			schema["properties"] = *jsonSchema.Properties
-		}
+	if jsonSchema.Type != nil {
+		schema["type"] = *jsonSchema.Type
+	}
 
-		if len(jsonSchema.Required) > 0 {
-			schema["required"] = jsonSchema.Required
-		}
+	if jsonSchema.Properties != nil {
+		schema["properties"] = *jsonSchema.Properties
+	}
 
-		if jsonSchema.Description != nil {
-			schema["description"] = *jsonSchema.Description
-		}
+	if len(jsonSchema.Required) > 0 {
+		schema["required"] = jsonSchema.Required
+	}
 
-		if jsonSchema.AdditionalProperties != nil {
-			schema["additionalProperties"] = *jsonSchema.AdditionalProperties
-		}
+	if jsonSchema.Description != nil {
+		schema["description"] = *jsonSchema.Description
+	}
 
-		if jsonSchema.Name != nil {
-			schema["title"] = *jsonSchema.Name
-		}
+	if jsonSchema.AdditionalProperties != nil {
+		schema["additionalProperties"] = *jsonSchema.AdditionalProperties
+	}
 
-		if len(jsonSchema.PropertyOrdering) > 0 {
-			schema["propertyOrdering"] = jsonSchema.PropertyOrdering
-		}
+	if jsonSchema.Name != nil {
+		schema["title"] = *jsonSchema.Name
+	}
 
-		// Return nil if no fields were populated
-		if len(schema) == 0 {
-			return nil
-		}
+	if len(jsonSchema.PropertyOrdering) > 0 {
+		schema["propertyOrdering"] = jsonSchema.PropertyOrdering
+	}
+
+	// Return nil if no fields were populated
+	if len(schema) == 0 {
+		return nil
 	}
 
 	// Normalize the schema for Gemini compatibility (handle union types, etc.)
