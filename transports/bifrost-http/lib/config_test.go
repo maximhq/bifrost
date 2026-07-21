@@ -2885,6 +2885,97 @@ func TestMergeMCPConfig_HashReconciliationUpdatesAndCreates(t *testing.T) {
 	require.NotEmpty(t, byName["filesystem_tools"].ConfigHash)
 }
 
+func TestPinMCPClientImmutableFields(t *testing.T) {
+	initTestLogger()
+
+	oauthID := "oauth-row-1"
+	baseExisting := func() *schemas.MCPClientConfig {
+		return &schemas.MCPClientConfig{
+			ID:               "mcp-1",
+			Name:             "notion",
+			ConnectionType:   schemas.MCPConnectionTypeHTTP,
+			ConnectionString: schemas.NewSecretVar("https://mcp.notion.so/sse"),
+			AuthType:         schemas.MCPAuthTypeOauth,
+			OauthConfigID:    &oauthID,
+			DiscoveredTools:  map[string]schemas.ChatTool{"notion-search": {}},
+		}
+	}
+	fileClientFor := func(existing *schemas.MCPClientConfig) *schemas.MCPClientConfig {
+		return &schemas.MCPClientConfig{
+			Name:             existing.Name,
+			ConnectionType:   existing.ConnectionType,
+			ConnectionString: schemas.NewSecretVar("https://mcp.notion.so/sse"),
+			AuthType:         existing.AuthType,
+		}
+	}
+
+	t.Run("immutable changes are pinned to stored values and reported", func(t *testing.T) {
+		existing := baseExisting()
+		fileClient := &schemas.MCPClientConfig{
+			Name:             "notion",
+			ConnectionType:   schemas.MCPConnectionTypeSSE,
+			ConnectionString: schemas.NewSecretVar("https://elsewhere.example.com"),
+			AuthType:         schemas.MCPAuthTypePerUserOauth,
+		}
+		changed := pinMCPClientImmutableFields(fileClient, existing, nil)
+		require.ElementsMatch(t, []string{"auth_type", "connection_type", "connection_string"}, changed)
+		require.Equal(t, existing.ConnectionType, fileClient.ConnectionType)
+		require.True(t, fileClient.ConnectionString.Equals(existing.ConnectionString))
+		require.Equal(t, schemas.MCPAuthTypeOauth, fileClient.AuthType)
+		require.Equal(t, &oauthID, fileClient.OauthConfigID, "server-side oauth link must be carried")
+		require.Len(t, fileClient.DiscoveredTools, 1, "discovered tools must be carried")
+	})
+
+	t.Run("unchanged entry reports nothing", func(t *testing.T) {
+		existing := baseExisting()
+		require.Empty(t, pinMCPClientImmutableFields(fileClientFor(existing), existing, nil))
+	})
+
+	t.Run("pending stash edits are detected and the stored stash kept", func(t *testing.T) {
+		existing := baseExisting()
+		existing.OauthConfigID = nil
+		existing.PendingOAuthConfig = &schemas.OAuth2Config{ClientID: "abc", Scopes: []string{"read"}}
+		fileClient := fileClientFor(existing)
+		fileClient.PendingOAuthConfig = &schemas.OAuth2Config{ClientID: "xyz", Scopes: []string{"read"}}
+		changed := pinMCPClientImmutableFields(fileClient, existing, nil)
+		require.Equal(t, []string{"oauth_config"}, changed)
+		require.Equal(t, "abc", fileClient.PendingOAuthConfig.ClientID)
+	})
+
+	t.Run("authorized oauth drift detected via oauth row, absent fields not drift", func(t *testing.T) {
+		existing := baseExisting()
+		row := &tables.TableOauthConfig{
+			ID:           oauthID,
+			ClientID:     schemas.NewSecretVar("dcr-client"),
+			AuthorizeURL: "https://auth.example.com/authorize",
+			Scopes:       `["read","write"]`,
+		}
+
+		// File omits client_id (DCR-provisioned) and reorders scopes — not drift.
+		fileClient := fileClientFor(existing)
+		fileClient.PendingOAuthConfig = &schemas.OAuth2Config{Scopes: []string{"write", "read"}}
+		require.Empty(t, pinMCPClientImmutableFields(fileClient, existing, row))
+		require.Nil(t, fileClient.PendingOAuthConfig, "authorized client keeps a cleared stash")
+
+		// An explicitly different client_id is drift.
+		fileClient = fileClientFor(existing)
+		fileClient.PendingOAuthConfig = &schemas.OAuth2Config{ClientID: "different"}
+		require.Equal(t, []string{"oauth_config"}, pinMCPClientImmutableFields(fileClient, existing, row))
+		require.Nil(t, fileClient.PendingOAuthConfig)
+	})
+
+	t.Run("per_user_headers key schema cannot be emptied", func(t *testing.T) {
+		existing := baseExisting()
+		existing.AuthType = schemas.MCPAuthTypePerUserHeaders
+		existing.OauthConfigID = nil
+		existing.DiscoveredTools = nil
+		existing.PerUserHeaderKeys = []string{"x-api-key"}
+		fileClient := fileClientFor(existing)
+		require.Empty(t, pinMCPClientImmutableFields(fileClient, existing, nil))
+		require.Equal(t, []string{"x-api-key"}, fileClient.PerUserHeaderKeys)
+	})
+}
+
 // TestSourceOfTruthConfigJSON_MCPMissingLeavesDBUntouched verifies missing mcp does not prune DB MCP clients.
 func TestSourceOfTruthConfigJSON_MCPMissingLeavesDBUntouched(t *testing.T) {
 	initTestLogger()

@@ -511,13 +511,19 @@ export default function MCPClientSheet({
 											onClick={handleStartBootstrap}
 											data-testid="mcp-authorize-bootstrap-btn"
 										>
-											{isInitiatingVerification ? "Starting…" : "Authorize"}
+											{isInitiatingVerification
+												? "Starting…"
+												: mcpClient.config.auth_type === "per_user_oauth"
+													? "Verify"
+													: "Authorize"}
 										</Button>
 									)}
 								</SheetTitle>
 								<SheetDescription>
 									{mcpClient.state === "pending_verification"
-										? "This client was declared in config.json and needs a one-time OAuth authorization before it can be used."
+										? mcpClient.config.auth_type === "per_user_oauth"
+											? "This client was declared in config.json. A one-time admin test login is needed to verify the OAuth setup and discover tools — each user will authenticate individually afterward."
+											: "This client was declared in config.json and needs a one-time OAuth authorization before it can be used."
 										: "MCP server configuration and available tools"}
 								</SheetDescription>
 							</div>
@@ -1552,7 +1558,13 @@ export default function MCPClientSheet({
 						open={!!bootstrapAuthorize}
 						onClose={() => setBootstrapAuthorize(null)}
 						onSuccess={() => {
-							toast({ title: "Success", description: "MCP client connected successfully" });
+							toast({
+								title: "Success",
+								description:
+									mcpClient.config.auth_type === "per_user_oauth"
+										? "OAuth setup verified successfully. Each user will authenticate individually."
+										: "MCP client connected successfully",
+							});
 							setBootstrapAuthorize(null);
 							onSubmitSuccess();
 							onClose();
@@ -1563,6 +1575,7 @@ export default function MCPClientSheet({
 						authorizeUrl={bootstrapAuthorize.authorizeUrl}
 						oauthConfigId={bootstrapAuthorize.oauthConfigId}
 						mcpClientId={bootstrapAuthorize.mcpClientId}
+						isPerUserOauth={mcpClient.config.auth_type === "per_user_oauth"}
 					/>
 				)}
 			</Sheet>
