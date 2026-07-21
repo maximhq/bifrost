@@ -6,14 +6,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { getErrorMessage, useGetWebhookDeliveriesQuery, useRedeliverWebhookDeliveryMutation } from "@/lib/store";
-import {
-	WEBHOOK_EVENT_COLORS,
-	WEBHOOK_TUNING_DEFAULTS,
-	WebhookDelivery,
-	WebhookDeliveryOutcome,
-	WebhookEndpoint,
-	WebhookEvent,
-} from "@/lib/types/webhooks";
+import { WEBHOOK_TUNING_DEFAULTS, WebhookDelivery, WebhookDeliveryOutcome, WebhookEndpoint, WebhookEvent } from "@/lib/types/webhooks";
 import { format, formatDistanceToNow } from "date-fns";
 import { ChevronDown, ChevronLeft, ChevronRight, Info, Loader2, RefreshCcw, Send } from "lucide-react";
 import { Fragment, useEffect, useMemo, useState } from "react";
@@ -227,7 +220,7 @@ export function WebhookDetailsSheet({ endpoint, isTesting, canManage, onTest, on
 							value={
 								<div className="flex flex-wrap gap-1">
 									{endpoint?.events.map((event) => (
-										<Badge key={event} variant="outline" className={`font-mono text-xs ${WEBHOOK_EVENT_COLORS[event]}`}>
+										<Badge key={event} variant="outline" className="font-mono text-xs">
 											{event}
 										</Badge>
 									))}
@@ -401,7 +394,7 @@ export function WebhookDetailsSheet({ endpoint, isTesting, canManage, onTest, on
 													)}
 												</TableCell>
 												<TableCell className="whitespace-nowrap">
-													<Badge variant="outline" className={`font-mono text-xs ${WEBHOOK_EVENT_COLORS[latest.event]}`}>
+													<Badge variant="outline" className="font-mono text-xs">
 														{latest.event}
 													</Badge>
 												</TableCell>
