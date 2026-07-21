@@ -13,7 +13,7 @@ This is a gateway-only feature and is not available in the Go SDK and requires a
 </Note>
 
 <Tip>
-Prefer to be notified instead of polling? Register a [Webhook](/features/webhooks) and Bifrost delivers a signed callback the moment a job completes or fails.
+Prefer to be notified instead of polling? Register a [Webhook](/features/webhooks) endpoint, then name it in the `x-bf-async-webhook` header on submit and Bifrost delivers a signed callback the moment that job completes or fails.
 </Tip>
 
 ## How It Works
@@ -66,6 +66,7 @@ curl -X POST http://localhost:8080/v1/async/chat/completions \
   -H "Content-Type: application/json" \
   -H "x-bf-vk: sk-bf-your-virtual-key" \
   -H "x-bf-async-job-result-ttl: 3600" \
+  -H "x-bf-async-webhook: order-events" \
   -d '{
     "model": "openai/gpt-4o-mini",
     "messages": [
@@ -164,6 +165,15 @@ curl -X GET http://localhost:8080/v1/async/chat/completions/1e89b165-d4fe-49e8-b
 - If the header is invalid or `<= 0`, Bifrost falls back to the default TTL.
 - Expired jobs return `404 Job not found or expired`.
 - Expired async jobs are cleaned up every minute.
+
+## Webhook Notifications
+
+No webhook fires by default, even if you have endpoints registered. Delivery is opt-in per request:
+
+- Pass `x-bf-async-webhook: <endpoint-name>` on the submit request, naming a [Webhook](/features/webhooks) endpoint you already created.
+- The name must resolve to an existing, enabled endpoint, otherwise the submit request itself fails.
+- The endpoint must also be subscribed to `async_job.completed`/`async_job.failed` at the time the job finishes. If it isn't, the submit request still succeeds, but no delivery happens.
+- The header only affects submission; it has no effect on the poll (`GET`) request.
 
 ## Virtual Key Authorization
 
