@@ -28,8 +28,10 @@ func setupPostgresDeadlockStore(t *testing.T) *RDBConfigStore {
 		t.Skipf("postgres not available: %v", err)
 	}
 
-	require.NoError(t, db.Exec("DROP SCHEMA public CASCADE").Error)
-	require.NoError(t, db.Exec("CREATE SCHEMA public").Error)
+	// Reset only this package's schema — other test packages share the same
+	// database and must not lose their tables.
+	require.NoError(t, db.Exec("DROP SCHEMA IF EXISTS "+pgTestSchema+" CASCADE").Error)
+	require.NoError(t, db.Exec("CREATE SCHEMA "+pgTestSchema).Error)
 	require.NoError(t, triggerMigrations(context.Background(), db, testMigrationLogger))
 
 	store := &RDBConfigStore{logger: bifrost.NewDefaultLogger(schemas.LogLevelInfo)}
