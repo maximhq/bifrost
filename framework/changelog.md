@@ -15,4 +15,4 @@
 - fix: replace fan-out attribution with single-owner additive rollup
 - fix: query creation from user input
 - fix: use `time.Now().Add` instead of channel receive for deadline
-- chore: upgraded core to v1.7.2
+- chore: upgraded core to v1.7.3
