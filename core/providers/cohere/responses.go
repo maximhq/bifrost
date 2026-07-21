@@ -1179,9 +1179,9 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int, sta
 // ConvertResponsesTextFormatToCohere converts Bifrost Responses Text.Format to Cohere's typed format
 // Responses format: Text.Format with type "json_schema", "json_object", or "text"
 // Cohere format: { type: "json_object", json_schema: {...} }
-func convertResponsesTextFormatToCohere(textFormat *schemas.ResponsesTextConfigFormat) *CohereResponseFormat {
+func convertResponsesTextFormatToCohere(textFormat *schemas.ResponsesTextConfigFormat) (*CohereResponseFormat, error) {
 	if textFormat == nil {
-		return nil
+		return nil, nil
 	}
 
 	cohereFormat := &CohereResponseFormat{}
@@ -1197,29 +1197,43 @@ func convertResponsesTextFormatToCohere(textFormat *schemas.ResponsesTextConfigF
 
 		// If schema is provided, extract it
 		if textFormat.JSONSchema != nil {
-			// Build schema map
-			schema := make(map[string]interface{})
-			if textFormat.JSONSchema.Type != nil {
-				schema["type"] = *textFormat.JSONSchema.Type
+			composite, acceptAll, err := textFormat.JSONSchema.CompositeSchema()
+			if err != nil {
+				return nil, err
 			}
-			if textFormat.JSONSchema.Properties != nil {
-				schema["properties"] = *textFormat.JSONSchema.Properties
-			}
-			if len(textFormat.JSONSchema.Required) > 0 {
-				schema["required"] = textFormat.JSONSchema.Required
-			}
-			if textFormat.JSONSchema.AdditionalProperties != nil {
-				schema["additionalProperties"] = *textFormat.JSONSchema.AdditionalProperties
-			}
+			switch {
+			case composite != nil:
+				// Composite object schema takes precedence over the decomposed fields
+				var schemaInterface interface{} = composite
+				cohereFormat.JSONSchema = &schemaInterface
+			case acceptAll:
+				// Boolean schema `true` accepts any value: json_object mode with
+				// no schema is exactly "any JSON object", the widest representable form
+			default:
+				// Build schema map from the decomposed typed fields
+				schema := make(map[string]interface{})
+				if textFormat.JSONSchema.Type != nil {
+					schema["type"] = *textFormat.JSONSchema.Type
+				}
+				if textFormat.JSONSchema.Properties != nil {
+					schema["properties"] = *textFormat.JSONSchema.Properties
+				}
+				if len(textFormat.JSONSchema.Required) > 0 {
+					schema["required"] = textFormat.JSONSchema.Required
+				}
+				if textFormat.JSONSchema.AdditionalProperties != nil {
+					schema["additionalProperties"] = *textFormat.JSONSchema.AdditionalProperties
+				}
 
-			var schemaInterface interface{} = schema
-			cohereFormat.JSONSchema = &schemaInterface
+				var schemaInterface interface{} = schema
+				cohereFormat.JSONSchema = &schemaInterface
+			}
 		}
 	default:
 		cohereFormat.Type = ResponseFormatTypeJSONObject
 	}
 
-	return cohereFormat
+	return cohereFormat, nil
 }
 
 // ToCohereResponsesRequest converts a BifrostRequest (Responses structure) to CohereChatRequest
@@ -1281,7 +1295,11 @@ func ToCohereResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) (*Coh
 		}
 
 		if bifrostReq.Params.Text != nil && bifrostReq.Params.Text.Format != nil {
-			cohereReq.ResponseFormat = convertResponsesTextFormatToCohere(bifrostReq.Params.Text.Format)
+			responseFormat, err := convertResponsesTextFormatToCohere(bifrostReq.Params.Text.Format)
+			if err != nil {
+				return nil, err
+			}
+			cohereReq.ResponseFormat = responseFormat
 		}
 		if bifrostReq.Params.ExtraParams != nil {
 			cohereReq.ExtraParams = bifrostReq.Params.ExtraParams

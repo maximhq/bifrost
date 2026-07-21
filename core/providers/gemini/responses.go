@@ -2757,20 +2757,24 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 }
 
 // convertTextConfigToGenerationConfig converts ResponsesTextConfig to Gemini's GenerationConfig fields
-func convertTextConfigToGenerationConfig(textConfig *schemas.ResponsesTextConfig, config *GenerationConfig) {
+func convertTextConfigToGenerationConfig(textConfig *schemas.ResponsesTextConfig, config *GenerationConfig) error {
 	if textConfig == nil || config == nil {
-		return
+		return nil
 	}
 
 	if textConfig.Format == nil {
-		return
+		return nil
 	}
 
 	switch textConfig.Format.Type {
 	case "json_schema":
 		config.ResponseMIMEType = "application/json"
 		if textConfig.Format.JSONSchema != nil {
-			if schema := reconstructSchemaFromJSONSchema(textConfig.Format.JSONSchema); schema != nil {
+			schema, err := reconstructSchemaFromJSONSchema(textConfig.Format.JSONSchema)
+			if err != nil {
+				return err
+			}
+			if schema != nil {
 				config.ResponseJSONSchema = schema
 			}
 			// no schema, mime type remains as is
@@ -2782,14 +2786,25 @@ func convertTextConfigToGenerationConfig(textConfig *schemas.ResponsesTextConfig
 	case "text":
 		config.ResponseMIMEType = "text/plain"
 	}
+	return nil
 }
 
 // reconstructSchemaFromJSONSchema rebuilds a schema map from ResponsesTextConfigFormatJSONSchema
-func reconstructSchemaFromJSONSchema(jsonSchema *schemas.ResponsesTextConfigFormatJSONSchema) interface{} {
-	if jsonSchema.Schema != nil {
-		// If Schema field is set, use it directly. Normalize via the
+func reconstructSchemaFromJSONSchema(jsonSchema *schemas.ResponsesTextConfigFormatJSONSchema) (interface{}, error) {
+	composite, acceptAll, err := jsonSchema.CompositeSchema()
+	if err != nil {
+		return nil, err
+	}
+	if composite != nil {
+		// Composite object schema: use it directly. Normalize via the
 		// OrderedMap-aware path so the client's key order survives end-to-end.
-		return normalizeSchemaValueForGemini(jsonSchema.Schema)
+		return normalizeSchemaValueForGemini(composite), nil
+	}
+	if acceptAll {
+		// Boolean schema `true` accepts any value. responseSchema must be a
+		// Schema object, so the widest representable form is an unconstrained
+		// object.
+		return map[string]interface{}{"type": "object"}, nil
 	}
 
 	// New format: Schema is spread across individual fields
@@ -2829,11 +2844,11 @@ func reconstructSchemaFromJSONSchema(jsonSchema *schemas.ResponsesTextConfigForm
 
 	// Return nil if no fields were populated
 	if len(schema) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	// Normalize the schema for Gemini compatibility (handle union types, etc.)
-	return normalizeSchemaForGemini(schema)
+	return normalizeSchemaForGemini(schema), nil
 }
 
 // convertParamsToGenerationConfigResponses converts ChatParameters to GenerationConfig for Responses
@@ -2904,7 +2919,9 @@ func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(param
 		}
 	}
 	if params.Text != nil {
-		convertTextConfigToGenerationConfig(params.Text, &config)
+		if err := convertTextConfigToGenerationConfig(params.Text, &config); err != nil {
+			return config, err
+		}
 	}
 
 	if params.ExtraParams != nil {
