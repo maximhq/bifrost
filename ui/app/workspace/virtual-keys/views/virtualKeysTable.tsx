@@ -421,10 +421,12 @@ export default function VirtualKeysTable({
 			setShowBulkRotateDialog(false);
 
 			const failureCount = result.errors ? Object.keys(result.errors).length : 0;
+			const graceUntil = result.virtual_keys.find((vk) => vk.previous_value_expires_at)?.previous_value_expires_at;
+			const graceNote = graceUntil ? ` Previous keys remain valid until ${new Date(graceUntil).toLocaleString()}.` : "";
 			if (failureCount > 0) {
-				toast.warning(`Rotated ${result.virtual_keys.length} virtual keys. ${failureCount} failed.`);
+				toast.warning(`Rotated ${result.virtual_keys.length} virtual keys. ${failureCount} failed.${graceNote}`);
 			} else {
-				toast.success(`Rotated ${result.virtual_keys.length} virtual keys`);
+				toast.success(`Rotated ${result.virtual_keys.length} virtual keys.${graceNote}`);
 			}
 		} catch (error) {
 			toast.error(getErrorMessage(error));

@@ -253,6 +253,100 @@ virtual-keys-by-id:
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
+virtual-keys-rotate:
+  post:
+    operationId: bulkRotateVirtualKeys
+    summary: Rotate multiple virtual keys
+    description: Generates a new value for each listed virtual key. When the client vk_rotation_cooldown setting is non-zero, each retired value keeps authenticating until previous_value_expires_at; otherwise it stops working immediately.
+    tags:
+      - Governance
+    security:
+      - ManagementBearerAuth: []
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required:
+              - ids
+            properties:
+              ids:
+                type: array
+                description: IDs of the virtual keys to rotate (duplicates are ignored)
+                items:
+                  type: string
+    responses:
+      '200':
+        description: Virtual keys rotated (partial failures reported per ID in errors)
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - message
+                - virtual_keys
+              properties:
+                message:
+                  type: string
+                virtual_keys:
+                  type: array
+                  items:
+                    $ref: '../../schemas/management/governance.yaml#/VirtualKey'
+                errors:
+                  type: object
+                  description: Map of virtual key ID to failure reason for keys that could not be rotated
+                  additionalProperties:
+                    type: string
+      '400':
+        description: Invalid request (empty or missing IDs)
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+virtual-keys-by-id-rotate:
+  post:
+    operationId: rotateVirtualKey
+    summary: Rotate virtual key
+    description: Generates a new value for the virtual key. When the client vk_rotation_cooldown setting is non-zero, the retired value keeps authenticating until previous_value_expires_at; otherwise it stops working immediately.
+    tags:
+      - Governance
+    parameters:
+      - name: vk_id
+        in: path
+        required: true
+        description: Virtual key ID
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Virtual key rotated successfully
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - message
+                - virtual_key
+              properties:
+                message:
+                  type: string
+                virtual_key:
+                  $ref: '../../schemas/management/governance.yaml#/VirtualKey'
+      '404':
+        description: Virtual key not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
 # Teams CRUD
 
 teams:

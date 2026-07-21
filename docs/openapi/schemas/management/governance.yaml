@@ -263,6 +263,14 @@ VirtualKey:
       type: [string, 'null']
       format: date-time
       description: Expiry timestamp. Requests using this virtual key are rejected once it passes. Null or absent means the key never expires.
+    previous_value_expires_at:
+      type: [string, 'null']
+      format: date-time
+      description: When set, the pre-rotation key value continues to authenticate until this timestamp (rotation grace period, configured via client vk_rotation_cooldown). Absent when no grace window is active.
+    rotated_at:
+      type: [string, 'null']
+      format: date-time
+      description: Timestamp of the most recent value rotation. Absent if the key has never been rotated.
     provider_configs:
       type: array
       items:

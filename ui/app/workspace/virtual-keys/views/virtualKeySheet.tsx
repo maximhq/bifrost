@@ -692,8 +692,13 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 			return;
 		}
 		try {
-			await rotateVirtualKey(virtualKey.id).unwrap();
-			toast.success("Virtual key rotated successfully");
+			const result = await rotateVirtualKey(virtualKey.id).unwrap();
+			const graceUntil = result.virtual_key?.previous_value_expires_at;
+			toast.success(
+				graceUntil
+					? `Virtual key rotated successfully. The previous key remains valid until ${new Date(graceUntil).toLocaleString()}.`
+					: "Virtual key rotated successfully",
+			);
 			setShowRotateWarning(false);
 			onSave();
 		} catch (error) {
