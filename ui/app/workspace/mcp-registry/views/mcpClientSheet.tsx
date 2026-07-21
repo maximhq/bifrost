@@ -31,7 +31,13 @@ import { useToast } from "@/hooks/use-toast";
 import { useDebouncedValue } from "@/hooks/useDebounce";
 import { useSheetNavigation } from "@/hooks/useSheetNavigation";
 import { MCP_STATUS_COLORS } from "@/lib/constants/config";
-import { getErrorMessage, useGetCoreConfigQuery, useGetVirtualKeysQuery, useUpdateMCPClientMutation } from "@/lib/store";
+import {
+	getErrorMessage,
+	useGetCoreConfigQuery,
+	useGetVirtualKeysQuery,
+	useInitiateMCPClientVerificationMutation,
+	useUpdateMCPClientMutation,
+} from "@/lib/store";
 import { MCPClient, MCPVKConfig } from "@/lib/types/mcp";
 import { mcpClientUpdateSchema, type MCPClientUpdateSchema } from "@/lib/types/schemas";
 import { parseArrayFromText } from "@/lib/utils/array";
@@ -92,13 +98,45 @@ export default function MCPClientSheet({
 }: MCPClientSheetProps) {
 	const hasUpdateMCPClientAccess = useRbac(RbacResource.MCPGateway, RbacOperation.Update);
 	const [updateMCPClient, { isLoading: isUpdating }] = useUpdateMCPClientMutation();
+	const [initiateVerification, { isLoading: isInitiatingVerification }] = useInitiateMCPClientVerificationMutation();
+
+	// Drives the OAuth2Authorizer dialog for a config.json-bootstrapped client
+	// sitting in pending_verification. The admin clicks Authorize → we hit
+	// initiate-verification → render the same popup-based flow the UI Create
+	// path uses.
+	const [bootstrapAuthorize, setBootstrapAuthorize] = useState<
+		| { authorizeUrl: string; oauthConfigId: string; mcpClientId: string }
+		| null
+	>(null);
+
+	const { toast } = useToast();
+
+	const handleStartBootstrap = useCallback(async () => {
+		try {
+			const response = await initiateVerification(mcpClient.config.client_id).unwrap();
+			if (response.status === "pending_oauth" && response.authorize_url) {
+				setBootstrapAuthorize({
+					authorizeUrl: response.authorize_url,
+					oauthConfigId: response.oauth_config_id,
+					mcpClientId: mcpClient.config.client_id,
+				});
+			} else {
+				toast({
+					title: "Authorization failed",
+					description: "Unexpected response from server. Please try again.",
+					variant: "destructive",
+				});
+			}
+		} catch (error) {
+			toast({ title: "Authorization failed", description: getErrorMessage(error), variant: "destructive" });
+		}
+	}, [initiateVerification, mcpClient.config.client_id, toast]);
 
 	const [pendingNavDirection, setPendingNavDirection] = useState<"prev" | "next" | null>(null);
 
 	const { data: bifrostConfig } = useGetCoreConfigQuery({ fromDB: true });
 	const globalToolSyncInterval = bifrostConfig?.client_config?.mcp_tool_sync_interval ?? 10;
 	const globalToolExecutionTimeout = bifrostConfig?.client_config?.mcp_tool_execution_timeout ?? 30;
-	const { toast } = useToast();
 	const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set());
 
 	// VK access management — search-based dropdown (limit 20), no pagination issue
@@ -214,16 +252,16 @@ export default function MCPClientSheet({
 			tools_to_auto_execute: mcpClient.config.tools_to_auto_execute || [],
 			tool_pricing: mcpClient.config.tool_pricing || {},
 			tool_sync_interval: toolSyncIntervalToMinutes(mcpClient.config.tool_sync_interval),
-				tool_execution_timeout: toolExecutionTimeoutToSeconds(mcpClient.config.tool_execution_timeout),
+			tool_execution_timeout: toolExecutionTimeoutToSeconds(mcpClient.config.tool_execution_timeout),
 			allowed_extra_headers: mcpClient.config.allowed_extra_headers || [],
 			oauth_config: supportsOAuthCredentialUpdate
 				? { client_id: mcpClient.config.oauth_client_id, client_secret: mcpClient.config.oauth_client_secret }
 				: undefined,
 			tls_config: mcpClient.config.tls_config
 				? {
-						insecure_skip_verify: mcpClient.config.tls_config.insecure_skip_verify,
-						ca_cert_pem: mcpClient.config.tls_config.ca_cert_pem,
-					}
+					insecure_skip_verify: mcpClient.config.tls_config.insecure_skip_verify,
+					ca_cert_pem: mcpClient.config.tls_config.ca_cert_pem,
+				}
 				: undefined,
 		},
 	});
@@ -243,16 +281,16 @@ export default function MCPClientSheet({
 			tools_to_auto_execute: mcpClient.config.tools_to_auto_execute || [],
 			tool_pricing: mcpClient.config.tool_pricing || {},
 			tool_sync_interval: toolSyncIntervalToMinutes(mcpClient.config.tool_sync_interval),
-				tool_execution_timeout: toolExecutionTimeoutToSeconds(mcpClient.config.tool_execution_timeout),
+			tool_execution_timeout: toolExecutionTimeoutToSeconds(mcpClient.config.tool_execution_timeout),
 			allowed_extra_headers: mcpClient.config.allowed_extra_headers || [],
 			oauth_config: supportsOAuthCredentialUpdate
 				? { client_id: mcpClient.config.oauth_client_id, client_secret: mcpClient.config.oauth_client_secret }
 				: undefined,
 			tls_config: mcpClient.config.tls_config
 				? {
-						insecure_skip_verify: mcpClient.config.tls_config.insecure_skip_verify,
-						ca_cert_pem: mcpClient.config.tls_config.ca_cert_pem,
-					}
+					insecure_skip_verify: mcpClient.config.tls_config.insecure_skip_verify,
+					ca_cert_pem: mcpClient.config.tls_config.ca_cert_pem,
+				}
 				: undefined,
 		});
 	}, [form, mcpClient]);
@@ -311,16 +349,16 @@ export default function MCPClientSheet({
 					allowed_extra_headers: data.allowed_extra_headers,
 					oauth_config: shouldRotateOAuthCredentials
 						? {
-								client_id: oauthClientID,
-								client_secret: oauthClientSecret,
-							}
+							client_id: oauthClientID,
+							client_secret: oauthClientSecret,
+						}
 						: undefined,
 					tls_config:
 						data.tls_config !== undefined
 							? {
-									insecure_skip_verify: data.tls_config.insecure_skip_verify ?? false,
-									ca_cert_pem: data.tls_config.ca_cert_pem,
-								}
+								insecure_skip_verify: data.tls_config.insecure_skip_verify ?? false,
+								ca_cert_pem: data.tls_config.ca_cert_pem,
+							}
 							: undefined,
 					vk_configs: vkConfigsDirty ? vkConfigs : undefined,
 				},
@@ -456,7 +494,7 @@ export default function MCPClientSheet({
 
 	return (
 		<>
-			<Sheet open onOpenChange={(open) => !open && !oauthFlow && onClose()}>
+			<Sheet open onOpenChange={(open) => !open && !oauthFlow && !bootstrapAuthorize && onClose()}>
 				<SheetContent className="flex w-full flex-col overflow-x-hidden pt-4 sm:max-w-[60%]">
 					<SheetHeader className="w-full p-0 px-8 py-4" showCloseButton={false} headerClassName="mb-0 sticky -top-4 bg-card z-10">
 						<div className="flex w-full items-center justify-between">
@@ -464,8 +502,24 @@ export default function MCPClientSheet({
 								<SheetTitle className="flex w-fit items-center gap-2 font-medium">
 									{mcpClient.config.name}
 									<Badge className={MCP_STATUS_COLORS[mcpClient.state]}>{mcpClient.state}</Badge>
+									{mcpClient.state === "pending_verification" && hasUpdateMCPClientAccess && (
+										<Button
+											type="button"
+											size="sm"
+											variant="default"
+											disabled={isInitiatingVerification}
+											onClick={handleStartBootstrap}
+											data-testid="mcp-authorize-bootstrap-btn"
+										>
+											{isInitiatingVerification ? "Starting…" : "Authorize"}
+										</Button>
+									)}
 								</SheetTitle>
-								<SheetDescription>MCP server configuration and available tools</SheetDescription>
+								<SheetDescription>
+									{mcpClient.state === "pending_verification"
+										? "This client was declared in config.json and needs a one-time OAuth authorization before it can be used."
+										: "MCP server configuration and available tools"}
+								</SheetDescription>
 							</div>
 							<SheetNavigationButtons
 								hasPrev={hasPrev}
@@ -531,7 +585,7 @@ export default function MCPClientSheet({
 											<span className="font-mono break-all">
 												{mcpClient.config.connection_type === "stdio"
 													? `${mcpClient.config.stdio_config?.command ?? ""} ${(mcpClient.config.stdio_config?.args ?? []).join(" ")}`.trim() ||
-														"-"
+													"-"
 													: mcpClient.config.connection_string?.type === "env" || mcpClient.config.connection_string?.type === "vault"
 														? mcpClient.config.connection_string.ref
 														: mcpClient.config.connection_string?.value || "-"}
@@ -550,7 +604,7 @@ export default function MCPClientSheet({
 															return [name, valueParts.join("=")];
 														}),
 													)}
-													onChange={() => {}}
+													onChange={() => { }}
 													fixedKeys={mcpClient.config.stdio_config.envs.map((env) => env.split("=")[0])}
 													valuePlaceholder="—"
 													label=""
@@ -948,9 +1002,9 @@ export default function MCPClientSheet({
 														onBlur={() => {
 															const parsed = allowedExtraHeadersRaw.trim()
 																? allowedExtraHeadersRaw
-																		.split(",")
-																		.map((h) => h.trim())
-																		.filter(Boolean)
+																	.split(",")
+																	.map((h) => h.trim())
+																	.filter(Boolean)
 																: [];
 															field.onChange(parsed);
 															field.onBlur();
@@ -1491,6 +1545,24 @@ export default function MCPClientSheet({
 						oauthConfigId={oauthFlow.oauthConfigId}
 						mcpClientId={oauthFlow.mcpClientId}
 						isPerUserOauth={oauthFlow.isPerUserOauth}
+					/>
+				)}
+				{bootstrapAuthorize && (
+					<OAuth2Authorizer
+						open={!!bootstrapAuthorize}
+						onClose={() => setBootstrapAuthorize(null)}
+						onSuccess={() => {
+							toast({ title: "Success", description: "MCP client connected successfully" });
+							setBootstrapAuthorize(null);
+							onSubmitSuccess();
+							onClose();
+						}}
+						onError={(error) => {
+							toast({ title: "Authorization failed", description: error, variant: "destructive" });
+						}}
+						authorizeUrl={bootstrapAuthorize.authorizeUrl}
+						oauthConfigId={bootstrapAuthorize.oauthConfigId}
+						mcpClientId={bootstrapAuthorize.mcpClientId}
 					/>
 				)}
 			</Sheet>
