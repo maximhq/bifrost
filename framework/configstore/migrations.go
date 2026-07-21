@@ -476,6 +476,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_image_size_quality_pricing_columns"}, run: migrationAddImageSizeQualityPricingColumns},
 	{IDs: []string{"add_batch_jobs_attribution_columns"}, run: migrationAddBatchJobsAttributionColumns},
 	{IDs: []string{"add_vk_rotation_cooldown_columns"}, run: migrationAddVKRotationCooldownColumns},
+	{IDs: []string{"add_vk_rotation_cooldown_client_column"}, run: migrationAddVKRotationCooldownClientColumn},
 }
 
 // migrationAddBatchJobsAttributionColumns adds the requester-identity columns to
@@ -10983,6 +10984,31 @@ func migrationAddSidekiqPartitioningKeyColumn(ctx context.Context, db *gorm.DB, 
 
 // migrationAddVirtualKeyExpiresAtColumn adds nullable expires_at to governance_virtual_keys.
 // No index: expiry is checked in-memory from the already-loaded VK, never queried by column.
+// migrationAddVKRotationCooldownClientColumn adds the vk_rotation_cooldown_ns
+// column to config_client. Nanosecond storage matches schemas.Duration's JSON
+// integer encoding; default 0 keeps the pre-cooldown immediate-flip behavior,
+// and the hash only covers non-zero values so existing rows show no drift.
+func migrationAddVKRotationCooldownClientColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_vk_rotation_cooldown_client_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, "vk_rotation_cooldown_ns")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "vk_rotation_cooldown_ns")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
 // migrationAddVKRotationCooldownColumns adds the rotation grace-period columns to
 // governance_virtual_keys: previous_value, previous_value_hash,
 // previous_value_expires_at, and rotated_at. All nullable and additive, no
