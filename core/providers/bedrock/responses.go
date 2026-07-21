@@ -2474,7 +2474,10 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 				// tool here and defer injection until after normal tool/tool_choice
 				// conversion so the forced structured-output tool choice is not
 				// overwritten.
-				responseFormatTool, _ := convertTextFormatToTool(ctx, bifrostReq.Model, bifrostReq.Params.Text)
+				responseFormatTool, _, err := convertTextFormatToTool(ctx, bifrostReq.Model, bifrostReq.Params.Text)
+				if err != nil {
+					return nil, err
+				}
 				if responseFormatTool != nil {
 					responsesStructuredOutputTool = responseFormatTool
 				}

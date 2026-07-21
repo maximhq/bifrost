@@ -3,6 +3,7 @@ package schemas
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -632,6 +633,36 @@ func (s *JSONSchemaOrBool) UnmarshalJSON(data []byte) error {
 	}
 
 	return fmt.Errorf("schema must be either a boolean or an object")
+}
+
+// ErrUnsatisfiableSchema is returned when a request carries the boolean JSON
+// Schema `false`, which no value can satisfy.
+var ErrUnsatisfiableSchema = errors.New("json schema is the boolean schema 'false', which no output can satisfy")
+
+// CompositeSchema resolves the composite Schema field (the wrapped
+// `format.schema.schema` position). Returns (schemaMap, acceptAll, err):
+//   - schemaMap non-nil: an object schema was provided; it takes precedence over
+//     the decomposed typed fields
+//   - acceptAll true: the boolean schema `true` (accept any value); providers
+//     that must re-encode the schema should emit their widest representable form
+//   - err non-nil: the boolean schema `false` (ErrUnsatisfiableSchema)
+//
+// The zero return (nil, false, nil) means no composite schema is set; callers
+// should build from the decomposed typed fields (Type, Properties, ...).
+func (s *ResponsesTextConfigFormatJSONSchema) CompositeSchema() (*OrderedMap, bool, error) {
+	if s == nil || s.Schema == nil {
+		return nil, false, nil
+	}
+	if s.Schema.SchemaMap != nil {
+		return s.Schema.SchemaMap, false, nil
+	}
+	if s.Schema.SchemaBool != nil {
+		if *s.Schema.SchemaBool {
+			return nil, true, nil
+		}
+		return nil, false, ErrUnsatisfiableSchema
+	}
+	return nil, false, nil
 }
 
 // JSONSchemaFromMap builds a ResponsesTextConfigFormatJSONSchema from a raw interface{}

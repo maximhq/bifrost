@@ -1956,14 +1956,37 @@ func convertChatResponseFormatToTool(ctx *schemas.BifrostContext, params *schema
 
 // convertResponsesTextFormatToTool converts a text config to an Anthropic tool for structured output
 // This is used when the provider is Vertex, which doesn't support native structured outputs
-func convertResponsesTextFormatToTool(ctx *schemas.BifrostContext, textConfig *schemas.ResponsesTextConfig) *AnthropicTool {
+func convertResponsesTextFormatToTool(ctx *schemas.BifrostContext, textConfig *schemas.ResponsesTextConfig) (*AnthropicTool, error) {
 	if textConfig == nil || textConfig.Format == nil {
-		return nil
+		return nil, nil
 	}
 
 	format := textConfig.Format
 	if format.Type != "json_schema" {
-		return nil
+		return nil, nil
+	}
+
+	if format.JSONSchema == nil {
+		return nil, nil // Schema is required for tooling
+	}
+
+	var schemaParams *schemas.ToolFunctionParameters
+	composite, acceptAll, err := format.JSONSchema.CompositeSchema()
+	if err != nil {
+		return nil, err
+	}
+	switch {
+	case composite != nil:
+		// Wrapped composite schema: normalize and convert it, mirroring the
+		// chat-path synthetic tool conversion.
+		schemaParams = convertMapToToolFunctionParameters(normalizeSchemaForAnthropic(composite.ToMap()))
+	case acceptAll:
+		// Boolean schema `true` accepts any value. Tool input_schema must be a
+		// JSON Schema object, so the widest representable form is an
+		// unconstrained object.
+		schemaParams = &schemas.ToolFunctionParameters{Type: "object"}
+	default:
+		schemaParams = convertJSONSchemaToToolParameters(format.JSONSchema)
 	}
 
 	toolName := "json_response"
@@ -1972,25 +1995,18 @@ func convertResponsesTextFormatToTool(ctx *schemas.BifrostContext, textConfig *s
 	}
 
 	description := "Returns structured JSON output"
-	if format.JSONSchema != nil && format.JSONSchema.Description != nil {
+	if format.JSONSchema.Description != nil {
 		description = *format.JSONSchema.Description
 	}
 
 	toolName = fmt.Sprintf("bf_so_%s", toolName)
 	ctx.SetValue(schemas.BifrostContextKeyStructuredOutputToolName, toolName)
 
-	var schemaParams *schemas.ToolFunctionParameters
-	if format.JSONSchema != nil {
-		schemaParams = convertJSONSchemaToToolParameters(format.JSONSchema)
-	} else {
-		return nil // Schema is required for tooling
-	}
-
 	return &AnthropicTool{
 		Name:        toolName,
 		Description: schemas.Ptr(description),
 		InputSchema: schemaParams,
-	}
+	}, nil
 }
 
 // convertJSONSchemaToToolParameters directly converts ResponsesTextConfigFormatJSONSchema to ToolFunctionParameters
