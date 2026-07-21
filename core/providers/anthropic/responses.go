@@ -3573,7 +3573,10 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 			// (output_config.format), so convert to a tool instead.
 			if bifrostReq.Provider == schemas.Vertex || bifrostReq.Provider == schemas.BedrockMantle || bifrostReq.Provider == schemas.Azure {
 				if bifrostReq.Params.Text.Format != nil {
-					responseFormatTool := convertResponsesTextFormatToTool(ctx, bifrostReq.Params.Text)
+					responseFormatTool, err := convertResponsesTextFormatToTool(ctx, bifrostReq.Params.Text)
+					if err != nil {
+						return nil, err
+					}
 					if responseFormatTool != nil {
 						if anthropicReq.Tools == nil {
 							anthropicReq.Tools = []AnthropicTool{}
