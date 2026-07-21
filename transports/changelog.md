@@ -1,3 +1,7 @@
+[feat]: add `--migrate-only` (run database migrations and exit, for one-shot migration jobs) and `--no-migrate` (skip migrations on startup, failing fast if any are pending) flags so multi-pod deployments can apply migrations out of band instead of racing on startup; also exposed as `BIFROST_MIGRATE_ONLY` / `BIFROST_NO_MIGRATE` env vars in the Docker image. The flags also cover logstore index maintenance (GIN/performance index builds and the dashboard backfill): `--migrate-only` runs it synchronously before exiting, `--no-migrate` skips it entirely, and the default single-process mode keeps building in the background
+
+[feat]: add `--matview-refresh-only` flag (refresh logstore materialized views once and exit, for cron jobs; implies `--no-migrate`, exposed as `BIFROST_MATVIEW_REFRESH_ONLY` in the Docker image) and support `matview_refresh_interval: "off"` to disable the in-server periodic matview refresher, so recurring refresh load can move to a k8s CronJob or pg_cron; `--migrate-only` now also runs the matview create/refresh pass synchronously instead of killing it mid-flight on exit
+
 ## ✨ Features
 
 - **Sarvam AI Provider** - Added Sarvam AI as a first-class provider with chat, text-to-speech, and speech-to-text support (thanks [@Purvi09](https://github.com/Purvi09)!)

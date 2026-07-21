@@ -279,7 +279,7 @@ Set `matview_refresh_interval` (Go duration string) to slow down refreshes when 
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `matview_refresh_interval` | `"1m"` | How often to refresh dashboard materialized views. Accepts any Go duration string (`"1m"`, `"5m"`, `"1h"`). Minimum `5s`. |
+| `matview_refresh_interval` | `"1m"` | How often to refresh dashboard materialized views. Accepts any Go duration string (`"1m"`, `"5m"`, `"1h"`). Minimum `5s`. Set to `"off"` (or `"0"`) to disable the periodic refresher and refresh out of band instead — e.g. a k8s CronJob running `--matview-refresh-only`, or `pg_cron`. The boot-time view create/repair and one initial refresh still run. |
 
 **Notes**
 

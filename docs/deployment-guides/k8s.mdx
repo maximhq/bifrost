@@ -29,6 +29,78 @@ If you are using Postgres/MySQL for config and log store, you can skip the Volum
 If you use PostgreSQL for `config_store` or `logs_store`, ensure the target database is UTF8 encoded. See [PostgreSQL UTF8 Requirement](../quickstart/gateway/setting-up#postgresql-utf8-requirement).
 </Note>
 
+## Database migrations in multi-replica deployments
+
+By default, every Bifrost pod applies database schema migrations at startup. On PostgreSQL an advisory lock serializes this across pods, but a slow migration can make sibling pods time out waiting for the lock and crash-loop during rollouts.
+
+For multi-replica deployments, apply migrations out of band instead:
+
+1. **Run migrations as a one-shot Job** using the `--migrate-only` flag (or the `BIFROST_MIGRATE_ONLY=1` environment variable). The pod applies all pending migrations, runs logstore index maintenance (GIN/performance index builds, dashboard backfill) synchronously, and exits.
+2. **Start server pods with `--no-migrate`** (or `BIFROST_NO_MIGRATE=1`). They skip migrations and index maintenance entirely and fail fast with a clear error if the schema is not current.
+
+<Warning>
+Avoid setting `activeDeadlineSeconds` on the migration Job (or set it generously). Index builds use `CREATE INDEX CONCURRENTLY`; killing the Job mid-build leaves an `INVALID` index that the next run has to drop and rebuild.
+</Warning>
+
+```yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: bifrost-migrate
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: bifrost-migrate
+          image: maximhq/bifrost:latest
+          env:
+            - name: BIFROST_MIGRATE_ONLY
+              value: "1"
+          # Mount the same config/secrets as the server pods so the Job
+          # migrates the same config and log stores.
+```
+
+Then set `BIFROST_NO_MIGRATE=1` in the server Deployment's environment. Run the Job before rolling out a new image version (e.g. as a pre-upgrade hook or pipeline step).
+
+<Note>
+Single-replica and SQLite deployments do not need this — the default startup migrations are safe there.
+</Note>
+
+### Moving materialized view refresh out of server pods
+
+By default every pod also refreshes the dashboard materialized views on a timer (`matview_refresh_interval`, default 1 minute; the refresh gate is per-process, so with steady traffic every replica refreshes on its own timer). To move this recurring database work out of the server pods:
+
+1. Set `matview_refresh_interval: "off"` in the PostgreSQL `logs_store` config. Server pods still create/repair the views and run one refresh at boot (so dashboards work immediately), but never refresh again.
+2. Run a CronJob with the `--matview-refresh-only` flag (or `BIFROST_MATVIEW_REFRESH_ONLY=1`). It refreshes all views once and exits, without running migrations or starting the server. Dashboard staleness is bounded by the CronJob schedule.
+
+```yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: bifrost-matview-refresh
+spec:
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: bifrost-matview-refresh
+              image: maximhq/bifrost:latest
+              env:
+                - name: BIFROST_MATVIEW_REFRESH_ONLY
+                  value: "1"
+              # Mount the same config/secrets as the server pods.
+```
+
+<Note>
+Each CronJob run pays a full pod spin-up and fresh database connections, so schedules faster than a few minutes create needless churn — at that point keep the in-server refresher, or schedule `REFRESH MATERIALIZED VIEW CONCURRENTLY` directly on the database with `pg_cron` instead.
+</Note>
+
 <Tabs>
 <Tab title="AWS">
 

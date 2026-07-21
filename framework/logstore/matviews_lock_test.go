@@ -16,6 +16,9 @@ func TestResolveMatViewRefreshIntervalDefaults(t *testing.T) {
 	assert.Equal(t, time.Minute, resolveMatViewRefreshInterval("not-a-duration", testLogger{}))
 	assert.Equal(t, minMatViewRefreshInterval, resolveMatViewRefreshInterval("1s", testLogger{}))
 	assert.Equal(t, 5*time.Minute, resolveMatViewRefreshInterval("5m", testLogger{}))
+	assert.Equal(t, time.Duration(0), resolveMatViewRefreshInterval("off", testLogger{}))
+	assert.Equal(t, time.Duration(0), resolveMatViewRefreshInterval("0", testLogger{}))
+	assert.Equal(t, time.Duration(0), resolveMatViewRefreshInterval("0s", testLogger{}))
 }
 
 func TestRefreshMatViewsAdvisoryLockLifecycle(t *testing.T) {

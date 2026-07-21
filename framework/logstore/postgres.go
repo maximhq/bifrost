@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/migrator"
 	"github.com/maximhq/bifrost/framework/postgresconn"
 
 	"gorm.io/gorm"
@@ -20,7 +21,10 @@ type PostgresConfig struct {
 	// material on the database instance — the matview path already has
 	// activity-gated short-circuiting (see matViewRefreshGate), so the longer
 	// interval mostly affects how quickly idle clusters notice the rolling
-	// 30-day filter window has aged.
+	// 30-day filter window has aged. Set to "off" (or "0") to disable the
+	// periodic refresher entirely and refresh out of band instead (a
+	// --matview-refresh-only cron job or pg_cron); the boot-time
+	// create/repair and initial refresh still run.
 	MatViewRefreshInterval string `json:"matview_refresh_interval,omitempty"`
 }
 
@@ -47,16 +51,22 @@ func resolveMatViewRefreshInterval(raw string, logger schemas.Logger) time.Durat
 	if raw == "" {
 		return defaultMatViewRefreshInterval
 	}
+	if raw == "off" || raw == "0" {
+		return 0
+	}
 	d, err := time.ParseDuration(raw)
 	if err != nil {
-		logger.Warn(fmt.Sprintf("logstore: invalid matview_refresh_interval %q (%s); using default %s", raw, err, defaultMatViewRefreshInterval))
+		logger.Warn("logstore: invalid matview_refresh_interval %q (%v); using default %s", raw, err, defaultMatViewRefreshInterval)
 		return defaultMatViewRefreshInterval
 	}
+	if d == 0 {
+		return 0
+	}
 	if d < minMatViewRefreshInterval {
-		logger.Warn(fmt.Sprintf("logstore: matview_refresh_interval %s is below floor %s; clamping to %s", d, minMatViewRefreshInterval, minMatViewRefreshInterval))
+		logger.Warn("logstore: matview_refresh_interval %s is below floor %s; clamping to %s", d, minMatViewRefreshInterval, minMatViewRefreshInterval)
 		return minMatViewRefreshInterval
 	}
-	logger.Info(fmt.Sprintf("logstore: matview refresh interval set to %s", d))
+	logger.Info("logstore: matview refresh interval set to %s", d)
 	return d
 }
 
@@ -153,11 +163,10 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 	logger.Info("logstore: runtime connection pool ready")
 	d := &RDBLogStore{db: db, logger: logger}
 
-	// Run all index builds sequentially in a single goroutine to prevent
-	// deadlocks from concurrent CREATE INDEX CONCURRENTLY on the same table.
-	// Each function is idempotent and acquires its own advisory lock for
-	// cross-node serialization. Running in a goroutine avoids blocking pod startup.
-	go func() {
+	// Run all index builds sequentially to prevent deadlocks from concurrent
+	// CREATE INDEX CONCURRENTLY on the same table. Each function is idempotent
+	// and the advisory lock serializes builds across cluster nodes.
+	runIndexMaintenance := func() {
 		if db.Dialector.Name() != "postgres" {
 			return
 		}
@@ -165,37 +174,57 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 		lock, err := acquireIndexLock(context.Background(), db, logger)
 		if err != nil {
 			// Lock is taken by another node, so we will skip the index build
+			logger.Warn("logstore: skipping index maintenance, could not acquire index lock: %v", err)
 			return
 		}
 		defer lock.release(context.Background())
 
 		if err := ensureMetadataGINIndex(context.Background(), lock.conn); err != nil {
-			logger.Warn(fmt.Sprintf("logstore: metadata GIN index build failed: %s (queries will still work without the index)", err))
+			logger.Warn("logstore: metadata GIN index build failed: %v (queries will still work without the index)", err)
 		} else {
 			logger.Info("logstore: metadata GIN index is ready")
 		}
 
 		if err := ensureMultiTeamBusinessUnitGINIndexes(context.Background(), lock.conn); err != nil {
-			logger.Warn(fmt.Sprintf("logstore: team/business-unit GIN index build failed: %s (filtering will still work without the index)", err))
+			logger.Warn("logstore: team/business-unit GIN index build failed: %v (filtering will still work without the index)", err)
 		} else {
 			logger.Info("logstore: team/business-unit GIN indexes are ready")
 		}
 
 		if err := ensureDashboardEnhancements(context.Background(), lock.conn); err != nil {
-			logger.Warn(fmt.Sprintf("logstore: dashboard enhancements failed: %s (dashboard will still work with partial data)", err))
+			logger.Warn("logstore: dashboard enhancements failed: %v (dashboard will still work with partial data)", err)
 		} else {
 			logger.Info("logstore: dashboard enhancements completed")
 		}
 
 		if err := ensurePerformanceIndexes(context.Background(), lock.conn, logger); err != nil {
-			logger.Warn(fmt.Sprintf("logstore: performance index build failed: %s (queries will still work without the indexes)", err))
+			logger.Warn("logstore: performance index build failed: %v (queries will still work without the indexes)", err)
 		} else {
 			logger.Info("logstore: performance indexes are ready")
 		}
-	}()
+	}
 
-	// Create materialized views and start periodic refresh for dashboard queries.
-	go func() {
+	switch {
+	case migrator.SkipStartupMigrations():
+		// Processes started with --no-migrate (server pods, the
+		// --matview-refresh-only job) leave index maintenance to the
+		// out-of-band --migrate-only job.
+		logger.Info("logstore: migrations disabled for this process; skipping index maintenance (owned by the --migrate-only job)")
+	case migrator.OneShotMaintenance():
+		// One-shot migration job owns index maintenance: run it synchronously
+		// so the process doesn't exit mid-CREATE INDEX CONCURRENTLY (a killed
+		// build leaves an INVALID index behind for the next run to rebuild).
+		logger.Info("logstore: running index maintenance synchronously (--migrate-only)")
+		runIndexMaintenance()
+	default:
+		// Default single-process mode: build in the background so index work
+		// never blocks startup.
+		go runIndexMaintenance()
+	}
+
+	// Create materialized views, run one initial refresh, and start the
+	// periodic refresher for dashboard queries (unless disabled).
+	runMatViewBoot := func() {
 		if db.Dialector.Name() != "postgres" {
 			return
 		}
@@ -227,8 +256,25 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 			// canUseMatView() returns false so all queries use raw tables.
 			d.matViewsReady.Store(true)
 		}
-		startMatViewRefresher(context.Background(), db, resolveMatViewRefreshInterval(config.MatViewRefreshInterval, logger), logger, &d.matViewsReady)
-	}()
+		if migrator.OneShotMaintenance() {
+			// One-shot job: the ensure + refresh above is the whole job; no ticker.
+			return
+		}
+		interval := resolveMatViewRefreshInterval(config.MatViewRefreshInterval, logger)
+		if interval == 0 {
+			logger.Info("logstore: periodic matview refresh disabled (matview_refresh_interval=off); refresh out of band, e.g. a --matview-refresh-only job or pg_cron")
+			return
+		}
+		startMatViewRefresher(context.Background(), db, interval, logger, &d.matViewsReady)
+	}
+	if migrator.OneShotMaintenance() {
+		// Run synchronously so the one-shot process (--migrate-only /
+		// --matview-refresh-only) completes the pass before exiting instead
+		// of killing it mid-DDL when the store closes.
+		runMatViewBoot()
+	} else {
+		go runMatViewBoot()
+	}
 
 	return d, nil
 }

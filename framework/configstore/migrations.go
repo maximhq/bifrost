@@ -640,6 +640,13 @@ func areThereAnyPendingMigrations(ctx context.Context, db *gorm.DB, logger schem
 
 // Migrate performs the necessary database migrations.
 func triggerMigrations(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	if migrator.SkipStartupMigrations() {
+		if areThereAnyPendingMigrations(ctx, db, logger) {
+			return fmt.Errorf("[configstore] schema migrations are pending but this process was started with --no-migrate; apply them out of band first (e.g. run bifrost with --migrate-only)")
+		}
+		logger.Info("[configstore] --no-migrate set and schema is current; skipping migration run")
+		return nil
+	}
 	if !areThereAnyPendingMigrations(ctx, db, logger) {
 		logger.Info("[configstore] no pending migrations; skipping migration run")
 		return nil
