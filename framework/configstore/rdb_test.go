@@ -1569,6 +1569,57 @@ func TestUpdateClientConfig(t *testing.T) {
 	assert.Equal(t, 100, result.InitialPoolSize)
 }
 
+func TestUpdateClientConfig_VKRotationCooldownRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	err := store.UpdateClientConfig(ctx, &ClientConfig{
+		EnableLogging:        new(true),
+		InitialPoolSize:      100,
+		LogRetentionDays:     30,
+		MaxRequestBodySizeMB: 50,
+		VKRotationCooldown:   schemas.Duration(5 * time.Minute),
+	})
+	require.NoError(t, err)
+
+	result, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 5*time.Minute, result.VKRotationCooldown.D())
+}
+
+func TestGenerateClientConfigHash_VKRotationCooldown(t *testing.T) {
+	base := &ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30}
+	baseHash, err := base.GenerateClientConfigHash()
+	require.NoError(t, err)
+
+	// Zero cooldown must not change the hash: existing deployments see no
+	// config drift after upgrade.
+	zero := &ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30, VKRotationCooldown: 0}
+	zeroHash, err := zero.GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.Equal(t, baseHash, zeroHash)
+
+	// A non-zero cooldown is a meaningful config change.
+	withCooldown := &ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30, VKRotationCooldown: schemas.Duration(5 * time.Minute)}
+	cooldownHash, err := withCooldown.GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.NotEqual(t, baseHash, cooldownHash)
+}
+
+func TestClientConfigVKRotationCooldown_UnmarshalDurationString(t *testing.T) {
+	var cfg ClientConfig
+	require.NoError(t, json.Unmarshal([]byte(`{"vk_rotation_cooldown": "5m"}`), &cfg))
+	assert.Equal(t, 5*time.Minute, cfg.VKRotationCooldown.D())
+
+	var cfgInt ClientConfig
+	require.NoError(t, json.Unmarshal([]byte(`{"vk_rotation_cooldown": 300000000000}`), &cfgInt))
+	assert.Equal(t, 5*time.Minute, cfgInt.VKRotationCooldown.D())
+
+	var cfgAbsent ClientConfig
+	require.NoError(t, json.Unmarshal([]byte(`{}`), &cfgAbsent))
+	assert.Equal(t, time.Duration(0), cfgAbsent.VKRotationCooldown.D())
+}
+
 func TestUpdateClientMetadata(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()

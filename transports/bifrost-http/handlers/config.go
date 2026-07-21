@@ -301,6 +301,17 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	// vk_rotation_cooldown bounds: negative is meaningless, and anything past 30
+	// days keeps a retired credential alive long enough to defeat the rotation.
+	if payload.ClientConfig.VKRotationCooldown < 0 {
+		SendError(ctx, fasthttp.StatusBadRequest, "vk_rotation_cooldown must not be negative")
+		return
+	}
+	if payload.ClientConfig.VKRotationCooldown.D() > 30*24*time.Hour {
+		SendError(ctx, fasthttp.StatusBadRequest, "vk_rotation_cooldown must not exceed 30 days")
+		return
+	}
+
 	// Validating framework config
 	if payload.FrameworkConfig.PricingURL != nil && *payload.FrameworkConfig.PricingURL != modelcatalog.DefaultPricingURL {
 		if err := checkURLAccessibility(*payload.FrameworkConfig.PricingURL); err != nil {
