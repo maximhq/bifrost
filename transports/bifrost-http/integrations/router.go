@@ -992,8 +992,14 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
 			return
 		}
+		if config.PostCallback != nil {
+			if err := config.PostCallback(ctx, req, listInferenceProfilesResponse); err != nil {
+				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to execute post-request callback"))
+				return
+			}
+		}
 		if listInferenceProfilesResponse == nil {
-			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Bifrost inference profiles response is nil"))
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Bifrost inference profiles response is nil after post-request callback"))
 			return
 		}
 		response, err = config.ListInferenceProfilesResponseConverter(bifrostCtx, listInferenceProfilesResponse)
@@ -1004,8 +1010,14 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
 			return
 		}
+		if config.PostCallback != nil {
+			if err := config.PostCallback(ctx, req, getInferenceProfileResponse); err != nil {
+				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to execute post-request callback"))
+				return
+			}
+		}
 		if getInferenceProfileResponse == nil {
-			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Bifrost inference profile response is nil"))
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Bifrost inference profile response is nil after post-request callback"))
 			return
 		}
 		response, err = config.GetInferenceProfileResponseConverter(bifrostCtx, getInferenceProfileResponse)

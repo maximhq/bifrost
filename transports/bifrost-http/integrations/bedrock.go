@@ -114,12 +114,20 @@ func createBedrockListInferenceProfilesRouteConfig(pathPrefix string) RouteConfi
 				if err != nil {
 					return fmt.Errorf("invalid maxResults: %w", err)
 				}
+				if maxResults < 1 || maxResults > 1000 {
+					return errors.New("maxResults must be between 1 and 1000")
+				}
 				bedrockReq.MaxResults = &maxResults
 			}
 			if nextToken := string(ctx.QueryArgs().Peek("nextToken")); nextToken != "" {
 				bedrockReq.NextToken = &nextToken
 			}
 			if profileType := string(ctx.QueryArgs().Peek("type")); profileType != "" {
+				switch profileType {
+				case "SYSTEM_DEFINED", "APPLICATION":
+				default:
+					return fmt.Errorf("invalid inference profile type %q", profileType)
+				}
 				bedrockReq.Type = &profileType
 			}
 			return nil
