@@ -53,6 +53,14 @@ func ConvertBifrostMessagesToOpenAIMessages(messages []schemas.ChatMessage) []Op
 				openaiMessages[i].ChatToolMessage = &toolMsgCopy
 			}
 		}
+		// The OpenAI wire format has no tool-error field; strip is_error so
+		// providers that reject unknown message parameters never see it. Clone
+		// first — ChatToolMessage is shared with the caller's input.
+		if openaiMessages[i].ChatToolMessage != nil && openaiMessages[i].ChatToolMessage.IsError != nil {
+			toolMsgCopy := *openaiMessages[i].ChatToolMessage
+			toolMsgCopy.IsError = nil
+			openaiMessages[i].ChatToolMessage = &toolMsgCopy
+		}
 		if message.ChatAssistantMessage != nil {
 			// Strip the same embedded signature from over-long assistant tool call IDs. Clone the
 			// slice only when a strip is actually needed so the caller's input is never mutated.
