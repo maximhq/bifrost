@@ -11,11 +11,11 @@ We have received some reports about JWT token for inference calls is not working
 
 ## Changelog
 
-Release on `transports/v1.6.5`. Ships identity-aware proxy authentication for inference (Cloudflare Access, AWS ALB, and generic JWKS proxies) with configurable dual-credential conflict handling, identity-scoped guardrail rules with streaming replay pacing, windowed audit log archival with S3 support, and cluster-wide async webhook delivery. Also picks up the new Wafer AI provider and reasoning token tracking from OSS.
+Release on `transports/v1.6.5`. Ships identity-aware proxy authentication for inference (Cloudflare Access, and generic JWKS proxies) with configurable dual-credential conflict handling, identity-scoped guardrail rules with streaming replay pacing, windowed audit log archival with S3 support, and cluster-wide async webhook delivery. Also picks up the new Wafer AI provider and reasoning token tracking from OSS.
 
 ## ✨ Features
 
-- **Identity-Aware Proxy Authentication** - New AuthProxy support for authenticating inference requests behind identity-aware proxies: Cloudflare Access, AWS ALB, and generic JWKS-based providers, with JWKS-explicit JWT validation, a `publicKeyBaseUrl` override for GovCloud and custom ALB partitions, and IAP configuration in the SCIM setup wizard UI.
+- **Identity-Aware Proxy Authentication** - New AuthProxy support for authenticating inference requests behind identity-aware proxies: Cloudflare Access, and generic JWKS-based providers, with JWKS-explicit JWT validation, a `publicKeyBaseUrl` override for GovCloud and custom ALB partitions, and IAP configuration in the SCIM setup wizard UI.
 - **Dual-Credential Conflict Behavior** - Configurable handling when an inference request carries both an identity provider access token and a virtual key: reject the request, prefer the virtual key, or prefer the IDP identity so governance attributes usage to the user instead of the virtual key.
 - **Identity Scoping in Guardrail Rules** - Guardrail CEL rules can now match on virtual key, team, customer, and user through searchable entity selectors, evaluated against resolved governance IDs rather than raw header values; provider and model fields also gained multi-select editors.
 - **Streaming Guardrail Replay Pacing** - New per-rule `streamReplayDurationMs` option controlling how buffered streaming responses are replayed to the client after guardrail approval, letting the delivery duration be tuned per rule; disabled by default.
