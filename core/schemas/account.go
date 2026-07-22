@@ -697,6 +697,10 @@ type BedrockKeyConfig struct {
 	ExternalID      *SecretVar `json:"external_id,omitempty"`
 	RoleSessionName *SecretVar `json:"session_name,omitempty"`
 
+	// BatchRoleARN is the service role passed to Bedrock batch jobs for S3 access.
+	// When set, it takes priority over any role_arn sent in the request.
+	BatchRoleARN *SecretVar `json:"batch_role_arn,omitempty"`
+
 	// ProjectID scopes the Bedrock Mantle sub-surface (OpenAI-compatible gpt-*/Gemma routing and the
 	// mantle catalog merge in ListModels) to a specific Bedrock project via the "OpenAI-Project"
 	// header. When empty, AWS routes to the account's default project. It has no effect on the

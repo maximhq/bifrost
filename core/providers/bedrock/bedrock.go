@@ -2956,10 +2956,14 @@ func (provider *BedrockProvider) BatchCreate(ctx *schemas.BifrostContext, key sc
 		return nil, err
 	}
 
-	// Require RoleArn in extra params
+	// Resolve the batch service role
 	roleArn := ""
-	// First we will honor the role_arn coming from the client side if present
-	if request.ExtraParams != nil {
+	// Server-configured batch role takes priority over the client-sent value
+	if key.BedrockKeyConfig.BatchRoleARN != nil {
+		roleArn = key.BedrockKeyConfig.BatchRoleARN.GetValue()
+	}
+	// Then we will honor the role_arn coming from the client side if present
+	if roleArn == "" && request.ExtraParams != nil {
 		if r, ok := request.ExtraParams["role_arn"].(string); ok {
 			roleArn = r
 		}
