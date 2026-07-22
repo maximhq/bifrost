@@ -1,8 +1,10 @@
 package azure
 
 import (
+	"encoding/json"
 	"strings"
 
+	"github.com/bytedance/sonic"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -64,4 +66,66 @@ func resolveAzureEndpoint(ctx *schemas.BifrostContext, key schemas.Key) string {
 		return key.AzureKeyConfig.Endpoint.GetValue()
 	}
 	return ""
+}
+
+// resolvePassthroughAlias rewrites a passthrough path and body so the
+// user-facing alias name is replaced by the wire deployment (alias model_id)
+// resolved for this attempt's key. Azure resolves the deployment from either
+// the /openai/deployments/{name} path segment or the top-level "model" body
+// field, so both are rewritten. No-op when no alias matched.
+func resolvePassthroughAlias(ctx *schemas.BifrostContext, path string, body []byte) (string, []byte) {
+	ra := schemas.GetResolvedAlias(ctx)
+	if ra == nil || ra.Config == nil || ra.Key == "" || ra.Config.ModelID == "" || ra.Config.ModelID == ra.Key {
+		return path, body
+	}
+	return rewriteDeploymentSegment(path, ra.Key, ra.Config.ModelID),
+		rewriteBodyModel(body, ra.Key, ra.Config.ModelID)
+}
+
+// rewriteDeploymentSegment replaces the path segment after "/deployments/"
+// when it equals the alias (case-insensitive, matching KeyAliases.ResolveConfig).
+func rewriteDeploymentSegment(path, alias, modelID string) string {
+	const seg = "/deployments/"
+	i := strings.Index(path, seg)
+	if i == -1 {
+		return path
+	}
+	name := path[i+len(seg):]
+	tail := ""
+	if j := strings.IndexByte(name, '/'); j != -1 {
+		name, tail = name[:j], name[j:]
+	}
+	if !strings.EqualFold(name, alias) {
+		return path
+	}
+	return path[:i+len(seg)] + modelID + tail
+}
+
+// rewriteBodyModel replaces the top-level "model" JSON field when it equals
+// the alias (case-insensitive). Non-JSON and modelless bodies pass through
+// untouched. ponytail: top-level JSON only — multipart passthrough routes
+// carry the deployment in the path, not the body.
+func rewriteBodyModel(body []byte, alias, modelID string) []byte {
+	if len(body) == 0 {
+		return body
+	}
+	var m map[string]json.RawMessage
+	if err := sonic.Unmarshal(body, &m); err != nil {
+		return body
+	}
+	var current string
+	raw, ok := m["model"]
+	if !ok || sonic.Unmarshal(raw, &current) != nil || !strings.EqualFold(current, alias) {
+		return body
+	}
+	quoted, err := sonic.Marshal(modelID)
+	if err != nil {
+		return body
+	}
+	m["model"] = quoted
+	out, err := sonic.Marshal(m)
+	if err != nil {
+		return body
+	}
+	return out
 }

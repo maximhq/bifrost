@@ -3416,7 +3416,8 @@ func (provider *AzureProvider) Passthrough(
 	key schemas.Key,
 	req *schemas.BifrostPassthroughRequest,
 ) (*schemas.BifrostPassthroughResponse, *schemas.BifrostError) {
-	url, err := provider.buildPassthroughURL(ctx, key, req.Path, req.RawQuery)
+	path, body := resolvePassthroughAlias(ctx, req.Path, req.Body)
+	url, err := provider.buildPassthroughURL(ctx, key, path, req.RawQuery)
 	if err != nil {
 		return nil, providerUtils.NewConfigurationError(fmt.Sprintf("failed to build passthrough URL: %s", err.Error()))
 	}
@@ -3443,7 +3444,7 @@ func (provider *AzureProvider) Passthrough(
 		fasthttpReq.Header.Set(k, v)
 	}
 
-	fasthttpReq.SetBody(req.Body)
+	fasthttpReq.SetBody(body)
 
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, fasthttpReq, resp)
 	defer wait()
@@ -3454,20 +3455,20 @@ func (provider *AzureProvider) Passthrough(
 	headers := providerUtils.ExtractPassthroughProviderResponseHeaders(resp)
 	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, headers)
 
-	body, err := providerUtils.CheckAndDecodeBody(resp)
+	respBody, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError("failed to decode response body", err)
 	}
 
 	var passthroughUsage *schemas.BifrostPassthroughUsage
 	if resp.StatusCode() >= 200 && resp.StatusCode() < 300 {
-		passthroughUsage = extractAzurePassthroughUsage(req.Method, req.Path, req.Body, body, req.Model)
+		passthroughUsage = extractAzurePassthroughUsage(req.Method, req.Path, req.Body, respBody, req.Model)
 	}
 
 	bifrostResponse := &schemas.BifrostPassthroughResponse{
 		StatusCode: resp.StatusCode(),
 		Headers:    headers,
-		Body:       body,
+		Body:       respBody,
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Latency:                 latency.Milliseconds(),
 			ProviderResponseHeaders: headers,
@@ -3488,7 +3489,8 @@ func (provider *AzureProvider) PassthroughStream(
 	key schemas.Key,
 	req *schemas.BifrostPassthroughRequest,
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	url, err := provider.buildPassthroughURL(ctx, key, req.Path, req.RawQuery)
+	path, body := resolvePassthroughAlias(ctx, req.Path, req.Body)
+	url, err := provider.buildPassthroughURL(ctx, key, path, req.RawQuery)
 	if err != nil {
 		return nil, providerUtils.NewConfigurationError(fmt.Sprintf("failed to build passthrough URL: %s", err.Error()))
 	}
@@ -3517,7 +3519,7 @@ func (provider *AzureProvider) PassthroughStream(
 		fasthttpReq.Header.Set(k, v)
 	}
 
-	fasthttpReq.SetBody(req.Body)
+	fasthttpReq.SetBody(body)
 
 	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.streamingClient, resp)
 	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)
