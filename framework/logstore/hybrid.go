@@ -256,10 +256,13 @@ func prepareDBEntry(dbEntry *Log, excluded map[string]struct{}) {
 	dbEntry.ContentSummary = truncateTag(dbEntry.ContentSummary, maxContentSummaryBytes)
 
 	// Serialize last user message before ClearPayload zeros everything.
-	// msgs[idx:idx+1] reuses the backing array — no heap alloc, no struct copy.
+	// Attachment payloads (base64 images/files/audio, media URLs) are replaced
+	// with a placeholder so they never bloat the DB row; the full message stays
+	// in object storage and is merged back on read.
 	var lastUserMessage string
 	if idx >= 0 {
-		lastUserMessage, _ = sonic.MarshalString(dbEntry.InputHistoryParsed[idx : idx+1])
+		stripped := stripChatMessageAttachments(&dbEntry.InputHistoryParsed[idx])
+		lastUserMessage, _ = sonic.MarshalString([]schemas.ChatMessage{stripped})
 	}
 
 	// Responses API requests carry their history in responses_input_history
@@ -270,7 +273,8 @@ func prepareDBEntry(dbEntry *Log, excluded map[string]struct{}) {
 	var lastUserResponsesMessage string
 	if idx < 0 {
 		if responsesIdx := findLastUserResponsesMessageIndex(dbEntry.ResponsesInputHistoryParsed); responsesIdx >= 0 {
-			lastUserResponsesMessage, _ = sonic.MarshalString(dbEntry.ResponsesInputHistoryParsed[responsesIdx : responsesIdx+1])
+			stripped := stripResponsesMessageAttachments(&dbEntry.ResponsesInputHistoryParsed[responsesIdx])
+			lastUserResponsesMessage, _ = sonic.MarshalString([]schemas.ResponsesMessage{stripped})
 		}
 	}
 

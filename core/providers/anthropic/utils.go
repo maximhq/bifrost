@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"sort"
 	"strings"
 
 	"github.com/bytedance/sonic"
@@ -351,6 +352,33 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 			}
 		}
 	}
+	// A credit token is bound to the platform that minted it, so it is meaningless
+	// (and rejected as an unknown field) on a provider without the feature.
+	if !features.FallbackCredit {
+		req.FallbackCreditToken = nil
+	}
+	// Server-side fallback boundary markers are Anthropic-only. Replaying history that
+	// contains them onto a provider without the feature (e.g. a gateway fallback from
+	// Anthropic to Vertex) would forward an unknown content block and 400. The marker
+	// carries no user content, so dropping it is lossless for the conversation.
+	if !features.ServerSideFallback {
+		for mi := range req.Messages {
+			blocks := req.Messages[mi].Content.ContentBlocks
+			if len(blocks) == 0 {
+				continue
+			}
+			kept := make([]AnthropicContentBlock, 0, len(blocks))
+			for _, b := range blocks {
+				if b.Type == AnthropicContentBlockTypeFallback {
+					continue
+				}
+				kept = append(kept, b)
+			}
+			if len(kept) != len(blocks) {
+				req.Messages[mi].Content.ContentBlocks = kept
+			}
+		}
+	}
 	if req.ContextManagement != nil {
 		// Gate edits by their type — compaction vs context-editing flags.
 		kept := make([]ContextManagementEdit, 0, len(req.ContextManagement.Edits))
@@ -471,6 +499,48 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "service_tier")
 		if err != nil {
 			return nil, fmt.Errorf("strip raw service_tier: %w", err)
+		}
+	}
+
+	// fallback_credit_token — bound to the minting platform, so a provider without
+	// the feature rejects it as an unknown field.
+	if !features.FallbackCredit {
+		var err error
+		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "fallback_credit_token")
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// fallback content blocks — server-side fallback boundary markers replayed in
+	// history. Anthropic-only; forwarding them to a provider without the feature
+	// (e.g. a gateway fallback from Anthropic to Vertex) sends an unknown content
+	// block. The marker carries no user content, so dropping it is lossless.
+	if !features.ServerSideFallback {
+		if msgs := providerUtils.GetJSONField(jsonBody, "messages"); msgs.IsArray() {
+			for mi, msg := range msgs.Array() {
+				content := msg.Get("content")
+				if !content.IsArray() {
+					continue
+				}
+				kept := make([]string, 0, len(content.Array()))
+				dropped := false
+				for _, block := range content.Array() {
+					if block.Get("type").String() == string(AnthropicContentBlockTypeFallback) {
+						dropped = true
+						continue
+					}
+					kept = append(kept, block.Raw)
+				}
+				if !dropped {
+					continue
+				}
+				// Message indices are stable (only content arrays are replaced).
+				jsonBody, err = sjson.SetRawBytes(jsonBody, fmt.Sprintf("messages.%d.content", mi), []byte("["+strings.Join(kept, ",")+"]"))
+				if err != nil {
+					return nil, fmt.Errorf("strip raw fallback blocks: %w", err)
+				}
+			}
 		}
 	}
 
@@ -1155,6 +1225,18 @@ func AddMissingBetaHeadersToContext(ctx *schemas.BifrostContext, req *AnthropicM
 			headers = appendUniqueHeader(headers, AnthropicFastModeBetaHeader)
 		}
 	}
+	// A fallback entry can override speed for its own attempt, so a fast-mode request
+	// can carry no top-level speed at all. Gate on the entry's own model — that is the
+	// one that would run fast — and take it verbatim rather than alias-resolving it,
+	// since it names an Anthropic model directly, not a Bifrost alias.
+	if !hasProvider || features.FastMode {
+		for _, fb := range req.nativeFallbacks() {
+			if fb.Speed != nil && SupportsFastMode(fb.Model) {
+				headers = appendUniqueHeader(headers, AnthropicFastModeBetaHeader)
+				break
+			}
+		}
+	}
 	// Check for task budget
 	if req.OutputConfig != nil && req.OutputConfig.TaskBudget != nil {
 		if !hasProvider || features.TaskBudgets {
@@ -1171,6 +1253,20 @@ func AddMissingBetaHeadersToContext(ctx *schemas.BifrostContext, req *AnthropicM
 	if req.Diagnostics != nil {
 		if !hasProvider || features.Diagnostics {
 			headers = appendUniqueHeader(headers, AnthropicCacheDiagnosisBetaHeader)
+		}
+	}
+	// Check for native server-side fallback ("fallbacks" object entries)
+	if len(req.nativeFallbacks()) > 0 {
+		if !hasProvider || features.ServerSideFallback {
+			headers = appendUniqueHeader(headers, AnthropicServerSideFallbackBetaHeader)
+		}
+	}
+	// Check for fallback credit redemption (fallback_credit_token present). The
+	// canonical date is added here; FilterBetaHeadersForProvider rewrites it to the
+	// AWS date on Bedrock/Mantle.
+	if req.FallbackCreditToken != nil {
+		if !hasProvider || features.FallbackCredit {
+			headers = appendUniqueHeader(headers, AnthropicFallbackCreditBetaHeader)
 		}
 	}
 	// Check for cache control with scope in system message (only if not already found)
@@ -1273,6 +1369,63 @@ var betaHeaderPrefixKnown = []string{
 	AnthropicEagerInputStreamingBetaHeaderPrefix,
 	AnthropicAdvisorBetaHeaderPrefix,
 	AnthropicCacheDiagnosisBetaHeaderPrefix,
+	AnthropicServerSideFallbackBetaHeaderPrefix,
+	AnthropicFallbackCreditBetaHeaderPrefix,
+}
+
+// betaHeaderProviderVersion rewrites a beta header's version date on providers
+// that ship the same feature under a different date. Keyed by provider, then by
+// the known prefix the token matched. Applied in FilterBetaHeadersForProvider
+// after the support check, so it covers both transports (HTTP header and the
+// body-side anthropic_beta array).
+var betaHeaderProviderVersion = map[schemas.ModelProvider]map[string]string{
+	// AWS-operated surfaces trail the Claude API on fallback credit.
+	schemas.Bedrock:       {AnthropicFallbackCreditBetaHeaderPrefix: AnthropicFallbackCreditBetaHeaderAWS},
+	schemas.BedrockMantle: {AnthropicFallbackCreditBetaHeaderPrefix: AnthropicFallbackCreditBetaHeaderAWS},
+}
+
+// stripBifrostFallbacksFromBody removes Bifrost cross-provider fallback entries
+// (JSON strings) from the request-level "fallbacks" array, which Anthropic does
+// not understand. Anthropic native server-side fallback entries (JSON objects)
+// are kept only when the target provider supports the feature; on providers that
+// don't (Bedrock incl. bedrock-mantle, Vertex, Azure) they are stripped
+// fail-closed, since AddMissingBetaHeadersToContext withholds the required beta
+// header there and forwarding the field alone 400s with
+// "fallbacks: Extra inputs are not permitted". The field is deleted entirely
+// when no entries remain.
+func stripBifrostFallbacksFromBody(jsonBody []byte, provider schemas.ModelProvider) ([]byte, error) {
+	fb := gjson.GetBytes(jsonBody, "fallbacks")
+	if !fb.Exists() {
+		return jsonBody, nil
+	}
+	if !fb.IsArray() {
+		return sjson.DeleteBytes(jsonBody, "fallbacks")
+	}
+	// Unknown/custom providers keep native entries, mirroring the
+	// "!hasProvider || feature" gating in AddMissingBetaHeadersToContext.
+	features, known := ProviderFeatures[provider]
+	keepNative := !known || features.ServerSideFallback
+	var native [][]byte
+	if keepNative {
+		for _, el := range fb.Array() {
+			if el.IsObject() {
+				native = append(native, []byte(el.Raw))
+			}
+		}
+	}
+	if len(native) == 0 {
+		return sjson.DeleteBytes(jsonBody, "fallbacks")
+	}
+	var buf bytes.Buffer
+	buf.WriteByte('[')
+	for i, n := range native {
+		if i > 0 {
+			buf.WriteByte(',')
+		}
+		buf.Write(n)
+	}
+	buf.WriteByte(']')
+	return sjson.SetRawBytes(jsonBody, "fallbacks", buf.Bytes())
 }
 
 // betaHeaderPrefixExists checks if any header in existing shares a known prefix with newHeader.
@@ -1597,6 +1750,8 @@ var betaHeaderPrefixToFeature = map[string]func(ProviderFeatureSupport) bool{
 	AnthropicEagerInputStreamingBetaHeaderPrefix: func(f ProviderFeatureSupport) bool { return f.EagerInputStreaming },
 	AnthropicAdvisorBetaHeaderPrefix:             func(f ProviderFeatureSupport) bool { return f.AdvisorTool },
 	AnthropicCacheDiagnosisBetaHeaderPrefix:      func(f ProviderFeatureSupport) bool { return f.Diagnostics },
+	AnthropicServerSideFallbackBetaHeaderPrefix:  func(f ProviderFeatureSupport) bool { return f.ServerSideFallback },
+	AnthropicFallbackCreditBetaHeaderPrefix:      func(f ProviderFeatureSupport) bool { return f.FallbackCredit },
 }
 
 // MergeBetaHeaders collects anthropic-beta values from provider ExtraHeaders and
@@ -1706,6 +1861,11 @@ func FilterBetaHeadersForProvider(headers []string, provider schemas.ModelProvid
 			if !supported {
 				continue
 			}
+			if rewrites, ok := betaHeaderProviderVersion[provider]; ok {
+				if replacement, ok := rewrites[matchedPrefix]; ok {
+					token = replacement
+				}
+			}
 			filtered = append(filtered, token)
 		}
 	}
@@ -1767,10 +1927,11 @@ func convertChatResponseFormatToTool(ctx *schemas.BifrostContext, params *schema
 		toolName = "json_response"
 	}
 
-	schemaObj, ok := jsonSchemaObj["schema"].(map[string]interface{})
+	schemaOrdered, ok := schemas.SafeExtractOrderedMap(jsonSchemaObj["schema"])
 	if !ok {
 		return nil
 	}
+	schemaObj := schemaOrdered.ToMap() // shallow: nested OrderedMap values keep their order
 
 	// Extract description from schema if available
 	description := "Returns structured JSON output"
@@ -1795,14 +1956,37 @@ func convertChatResponseFormatToTool(ctx *schemas.BifrostContext, params *schema
 
 // convertResponsesTextFormatToTool converts a text config to an Anthropic tool for structured output
 // This is used when the provider is Vertex, which doesn't support native structured outputs
-func convertResponsesTextFormatToTool(ctx *schemas.BifrostContext, textConfig *schemas.ResponsesTextConfig) *AnthropicTool {
+func convertResponsesTextFormatToTool(ctx *schemas.BifrostContext, textConfig *schemas.ResponsesTextConfig) (*AnthropicTool, error) {
 	if textConfig == nil || textConfig.Format == nil {
-		return nil
+		return nil, nil
 	}
 
 	format := textConfig.Format
 	if format.Type != "json_schema" {
-		return nil
+		return nil, nil
+	}
+
+	if format.JSONSchema == nil {
+		return nil, nil // Schema is required for tooling
+	}
+
+	var schemaParams *schemas.ToolFunctionParameters
+	composite, acceptAll, err := format.JSONSchema.CompositeSchema()
+	if err != nil {
+		return nil, err
+	}
+	switch {
+	case composite != nil:
+		// Wrapped composite schema: normalize and convert it, mirroring the
+		// chat-path synthetic tool conversion.
+		schemaParams = convertMapToToolFunctionParameters(normalizeSchemaForAnthropic(composite.ToMap()))
+	case acceptAll:
+		// Boolean schema `true` accepts any value. Tool input_schema must be a
+		// JSON Schema object, so the widest representable form is an
+		// unconstrained object.
+		schemaParams = &schemas.ToolFunctionParameters{Type: "object"}
+	default:
+		schemaParams = convertJSONSchemaToToolParameters(format.JSONSchema)
 	}
 
 	toolName := "json_response"
@@ -1811,25 +1995,18 @@ func convertResponsesTextFormatToTool(ctx *schemas.BifrostContext, textConfig *s
 	}
 
 	description := "Returns structured JSON output"
-	if format.JSONSchema != nil && format.JSONSchema.Description != nil {
+	if format.JSONSchema.Description != nil {
 		description = *format.JSONSchema.Description
 	}
 
 	toolName = fmt.Sprintf("bf_so_%s", toolName)
 	ctx.SetValue(schemas.BifrostContextKeyStructuredOutputToolName, toolName)
 
-	var schemaParams *schemas.ToolFunctionParameters
-	if format.JSONSchema != nil {
-		schemaParams = convertJSONSchemaToToolParameters(format.JSONSchema)
-	} else {
-		return nil // Schema is required for tooling
-	}
-
 	return &AnthropicTool{
 		Name:        toolName,
 		Description: schemas.Ptr(description),
 		InputSchema: schemaParams,
-	}
+	}, nil
 }
 
 // convertJSONSchemaToToolParameters directly converts ResponsesTextConfigFormatJSONSchema to ToolFunctionParameters
@@ -2738,88 +2915,153 @@ func normalizeSchemaForAnthropic(schema map[string]interface{}) map[string]inter
 	}
 
 	// Recursively normalize properties
-	if properties, ok := schema["properties"].(map[string]interface{}); ok {
+	switch properties := schema["properties"].(type) {
+	case map[string]interface{}:
 		newProps := make(map[string]interface{})
 		for key, prop := range properties {
-			if propMap, ok := prop.(map[string]interface{}); ok {
-				newProps[key] = normalizeSchemaForAnthropic(propMap)
-			} else {
-				newProps[key] = prop
-			}
+			newProps[key] = normalizeSchemaValueForAnthropic(prop)
 		}
+		normalized["properties"] = newProps
+	case *schemas.OrderedMap:
+		newProps := schemas.NewOrderedMapWithCapacity(properties.Len())
+		properties.Range(func(key string, prop interface{}) bool {
+			newProps.Set(key, normalizeSchemaValueForAnthropic(prop))
+			return true
+		})
+		normalized["properties"] = newProps
+	case schemas.OrderedMap:
+		newProps := schemas.NewOrderedMapWithCapacity(properties.Len())
+		properties.Range(func(key string, prop interface{}) bool {
+			newProps.Set(key, normalizeSchemaValueForAnthropic(prop))
+			return true
+		})
 		normalized["properties"] = newProps
 	}
 
 	// Recursively normalize items (for arrays)
-	if items, ok := schema["items"].(map[string]interface{}); ok {
-		normalized["items"] = normalizeSchemaForAnthropic(items)
+	switch schema["items"].(type) {
+	case map[string]interface{}, *schemas.OrderedMap, schemas.OrderedMap:
+		normalized["items"] = normalizeSchemaValueForAnthropic(schema["items"])
 	}
 
-	// Recursively normalize anyOf
-	if anyOf, ok := schema["anyOf"].([]interface{}); ok {
-		newAnyOf := make([]interface{}, 0, len(anyOf))
-		for _, item := range anyOf {
-			if itemMap, ok := item.(map[string]interface{}); ok {
-				newAnyOf = append(newAnyOf, normalizeSchemaForAnthropic(itemMap))
-			} else {
-				newAnyOf = append(newAnyOf, item)
-			}
+	// Recursively normalize composition fields (anyOf, oneOf, allOf), which may
+	// be []interface{} (JSON-decoded) or []schemas.OrderedMap (typed struct fields).
+	for _, key := range []string{"anyOf", "oneOf", "allOf"} {
+		switch schema[key].(type) {
+		case []interface{}, []schemas.OrderedMap:
+			normalized[key] = normalizeSchemaValueForAnthropic(schema[key])
 		}
-		normalized["anyOf"] = newAnyOf
-	}
-
-	// Recursively normalize oneOf
-	if oneOf, ok := schema["oneOf"].([]interface{}); ok {
-		newOneOf := make([]interface{}, 0, len(oneOf))
-		for _, item := range oneOf {
-			if itemMap, ok := item.(map[string]interface{}); ok {
-				newOneOf = append(newOneOf, normalizeSchemaForAnthropic(itemMap))
-			} else {
-				newOneOf = append(newOneOf, item)
-			}
-		}
-		normalized["oneOf"] = newOneOf
-	}
-
-	// Recursively normalize allOf
-	if allOf, ok := schema["allOf"].([]interface{}); ok {
-		newAllOf := make([]interface{}, 0, len(allOf))
-		for _, item := range allOf {
-			if itemMap, ok := item.(map[string]interface{}); ok {
-				newAllOf = append(newAllOf, normalizeSchemaForAnthropic(itemMap))
-			} else {
-				newAllOf = append(newAllOf, item)
-			}
-		}
-		normalized["allOf"] = newAllOf
 	}
 
 	// Recursively normalize definitions/defs
-	if definitions, ok := schema["definitions"].(map[string]interface{}); ok {
+	switch definitions := schema["definitions"].(type) {
+	case map[string]interface{}:
 		newDefs := make(map[string]interface{})
 		for key, def := range definitions {
-			if defMap, ok := def.(map[string]interface{}); ok {
-				newDefs[key] = normalizeSchemaForAnthropic(defMap)
-			} else {
-				newDefs[key] = def
-			}
+			newDefs[key] = normalizeSchemaValueForAnthropic(def)
 		}
+		normalized["definitions"] = newDefs
+	case *schemas.OrderedMap:
+		newDefs := schemas.NewOrderedMapWithCapacity(definitions.Len())
+		definitions.Range(func(key string, def interface{}) bool {
+			newDefs.Set(key, normalizeSchemaValueForAnthropic(def))
+			return true
+		})
+		normalized["definitions"] = newDefs
+	case schemas.OrderedMap:
+		newDefs := schemas.NewOrderedMapWithCapacity(definitions.Len())
+		definitions.Range(func(key string, def interface{}) bool {
+			newDefs.Set(key, normalizeSchemaValueForAnthropic(def))
+			return true
+		})
 		normalized["definitions"] = newDefs
 	}
 
-	if defs, ok := schema["$defs"].(map[string]interface{}); ok {
+	switch defs := schema["$defs"].(type) {
+	case map[string]interface{}:
 		newDefs := make(map[string]interface{})
 		for key, def := range defs {
-			if defMap, ok := def.(map[string]interface{}); ok {
-				newDefs[key] = normalizeSchemaForAnthropic(defMap)
-			} else {
-				newDefs[key] = def
-			}
+			newDefs[key] = normalizeSchemaValueForAnthropic(def)
 		}
+		normalized["$defs"] = newDefs
+	case *schemas.OrderedMap:
+		newDefs := schemas.NewOrderedMapWithCapacity(defs.Len())
+		defs.Range(func(key string, def interface{}) bool {
+			newDefs.Set(key, normalizeSchemaValueForAnthropic(def))
+			return true
+		})
+		normalized["$defs"] = newDefs
+	case schemas.OrderedMap:
+		newDefs := schemas.NewOrderedMapWithCapacity(defs.Len())
+		defs.Range(func(key string, def interface{}) bool {
+			newDefs.Set(key, normalizeSchemaValueForAnthropic(def))
+			return true
+		})
 		normalized["$defs"] = newDefs
 	}
 
 	return normalized
+}
+
+// normalizeSchemaValueForAnthropic applies normalizeSchemaForAnthropic to a schema
+// value that may be a plain map or an order-preserving OrderedMap; other values
+// pass through unchanged.
+func normalizeSchemaValueForAnthropic(v interface{}) interface{} {
+	switch tv := v.(type) {
+	case []interface{}:
+		out := make([]interface{}, len(tv))
+		for i, item := range tv {
+			out[i] = normalizeSchemaValueForAnthropic(item)
+		}
+		return out
+	case []schemas.OrderedMap:
+		out := make([]schemas.OrderedMap, len(tv))
+		for i := range tv {
+			if normalized := normalizeOrderedSchemaForAnthropic(&tv[i]); normalized != nil {
+				out[i] = *normalized
+			} else {
+				out[i] = tv[i]
+			}
+		}
+		return out
+	case map[string]interface{}:
+		return normalizeSchemaForAnthropic(tv)
+	case *schemas.OrderedMap:
+		return normalizeOrderedSchemaForAnthropic(tv)
+	case schemas.OrderedMap:
+		if normalized := normalizeOrderedSchemaForAnthropic(&tv); normalized != nil {
+			return *normalized
+		}
+		return tv
+	}
+	return v
+}
+
+// normalizeOrderedSchemaForAnthropic runs normalizeSchemaForAnthropic over an
+// OrderedMap schema while preserving the original key order. Keys added by
+// normalization (e.g. anyOf replacing a union type) are appended after the
+// original keys in sorted order for determinism.
+func normalizeOrderedSchemaForAnthropic(om *schemas.OrderedMap) *schemas.OrderedMap {
+	if om == nil {
+		return nil
+	}
+	normalized := normalizeSchemaForAnthropic(om.ToMap())
+	out := schemas.NewOrderedMapWithCapacity(om.Len())
+	for _, key := range om.Keys() {
+		if value, ok := normalized[key]; ok {
+			out.Set(key, value)
+			delete(normalized, key)
+		}
+	}
+	added := make([]string, 0, len(normalized))
+	for key := range normalized {
+		added = append(added, key)
+	}
+	sort.Strings(added)
+	for _, key := range added {
+		out.Set(key, normalized[key])
+	}
+	return out
 }
 
 // convertChatResponseFormatToAnthropicOutputFormat converts OpenAI Chat Completions response_format
@@ -2872,10 +3114,9 @@ func convertChatResponseFormatToAnthropicOutputFormat(responseFormat *interface{
 		"type": formatType,
 	}
 
-	if schema, ok := jsonSchemaObj["schema"].(map[string]interface{}); ok {
+	if schema, ok := schemas.SafeExtractOrderedMap(jsonSchemaObj["schema"]); ok {
 		// Normalize the schema to handle type arrays like ["string", "null"]
-		normalizedSchema := normalizeSchemaForAnthropic(schema)
-		outputFormat["schema"] = normalizedSchema
+		outputFormat["schema"] = normalizeOrderedSchemaForAnthropic(schema)
 	}
 
 	result, err := providerUtils.MarshalSorted(outputFormat)
@@ -2990,11 +3231,13 @@ func convertAnthropicOutputFormatToResponsesTextConfig(outputFormat json.RawMess
 		return nil
 	}
 
-	// Unmarshal to map
-	var formatMap map[string]interface{}
-	if err := sonic.Unmarshal(outputFormat, &formatMap); err != nil {
+	// Unmarshal into an OrderedMap so nested schema objects keep the client's
+	// key order (a plain map would lose it before it can be preserved).
+	var formatOrdered schemas.OrderedMap
+	if err := sonic.Unmarshal(outputFormat, &formatOrdered); err != nil {
 		return nil
 	}
+	formatMap := formatOrdered.ToMap() // shallow: nested values stay ordered
 
 	// Extract type
 	formatType, ok := formatMap["type"].(string)
@@ -3013,16 +3256,17 @@ func convertAnthropicOutputFormatToResponsesTextConfig(outputFormat json.RawMess
 		format.Name = schemas.Ptr("output_format")
 	}
 
-	// Extract schema if present
-	if schemaMap, ok := formatMap["schema"].(map[string]interface{}); ok {
+	// Extract schema if present (an *OrderedMap after the ordered decode)
+	if schemaOrdered, ok := schemas.SafeExtractOrderedMap(formatMap["schema"]); ok {
+		schemaMap := schemaOrdered.ToMap() // shallow: nested values stay ordered
 		jsonSchema := &schemas.ResponsesTextConfigFormatJSONSchema{}
 
 		if schemaType, ok := schemaMap["type"].(string); ok {
 			jsonSchema.Type = &schemaType
 		}
 
-		if properties, ok := schemaMap["properties"].(map[string]interface{}); ok {
-			jsonSchema.Properties = &properties
+		if properties, ok := schemas.SafeExtractOrderedMap(schemaMap["properties"]); ok {
+			jsonSchema.Properties = properties
 		}
 
 		if required, ok := schemaMap["required"].([]interface{}); ok {
@@ -3055,13 +3299,13 @@ func convertAnthropicOutputFormatToResponsesTextConfig(outputFormat json.RawMess
 		}
 
 		// Extract $defs (JSON Schema draft 2019-09+)
-		if defs, ok := schemaMap["$defs"].(map[string]interface{}); ok {
-			jsonSchema.Defs = &defs
+		if defs, ok := schemas.SafeExtractOrderedMap(schemaMap["$defs"]); ok {
+			jsonSchema.Defs = defs
 		}
 
 		// Extract definitions (legacy JSON Schema draft-07)
-		if definitions, ok := schemaMap["definitions"].(map[string]interface{}); ok {
-			jsonSchema.Definitions = &definitions
+		if definitions, ok := schemas.SafeExtractOrderedMap(schemaMap["definitions"]); ok {
+			jsonSchema.Definitions = definitions
 		}
 
 		// Extract $ref
@@ -3070,8 +3314,8 @@ func convertAnthropicOutputFormatToResponsesTextConfig(outputFormat json.RawMess
 		}
 
 		// Extract items (array element schema)
-		if items, ok := schemaMap["items"].(map[string]interface{}); ok {
-			jsonSchema.Items = &items
+		if items, ok := schemas.SafeExtractOrderedMap(schemaMap["items"]); ok {
+			jsonSchema.Items = items
 		}
 
 		// Extract minItems
@@ -3086,10 +3330,10 @@ func convertAnthropicOutputFormatToResponsesTextConfig(outputFormat json.RawMess
 
 		// Extract anyOf
 		if anyOf, ok := schemaMap["anyOf"].([]interface{}); ok {
-			anyOfMaps := make([]map[string]any, 0, len(anyOf))
+			anyOfMaps := make([]schemas.OrderedMap, 0, len(anyOf))
 			for _, item := range anyOf {
-				if m, ok := item.(map[string]interface{}); ok {
-					anyOfMaps = append(anyOfMaps, m)
+				if om, ok := schemas.SafeExtractOrderedMap(item); ok {
+					anyOfMaps = append(anyOfMaps, *om)
 				}
 			}
 			if len(anyOfMaps) > 0 {
@@ -3099,10 +3343,10 @@ func convertAnthropicOutputFormatToResponsesTextConfig(outputFormat json.RawMess
 
 		// Extract oneOf
 		if oneOf, ok := schemaMap["oneOf"].([]interface{}); ok {
-			oneOfMaps := make([]map[string]any, 0, len(oneOf))
+			oneOfMaps := make([]schemas.OrderedMap, 0, len(oneOf))
 			for _, item := range oneOf {
-				if m, ok := item.(map[string]interface{}); ok {
-					oneOfMaps = append(oneOfMaps, m)
+				if om, ok := schemas.SafeExtractOrderedMap(item); ok {
+					oneOfMaps = append(oneOfMaps, *om)
 				}
 			}
 			if len(oneOfMaps) > 0 {
@@ -3112,10 +3356,10 @@ func convertAnthropicOutputFormatToResponsesTextConfig(outputFormat json.RawMess
 
 		// Extract allOf
 		if allOf, ok := schemaMap["allOf"].([]interface{}); ok {
-			allOfMaps := make([]map[string]any, 0, len(allOf))
+			allOfMaps := make([]schemas.OrderedMap, 0, len(allOf))
 			for _, item := range allOf {
-				if m, ok := item.(map[string]interface{}); ok {
-					allOfMaps = append(allOfMaps, m)
+				if om, ok := schemas.SafeExtractOrderedMap(item); ok {
+					allOfMaps = append(allOfMaps, *om)
 				}
 			}
 			if len(allOfMaps) > 0 {

@@ -1,0 +1,12 @@
+---
+title: "v2.1.31"
+description: "Helm v2.1.31 changelog - 2026-07-21"
+---
+
+<Update label="Bifrost Helm" description="v2.1.31">
+
+## Changelog
+
+- Added `bifrost.guardrails.rules[].stream_replay_event_interval_ms` (default `0`, range 0-1000) to configure the delay in milliseconds between consecutive buffered events after block-capable streaming output guardrails allow the response; `0` sends the buffered events immediately. Renders into `guardrails.rules[].stream_replay_event_interval_ms`.
+
+</Update>

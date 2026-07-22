@@ -62,7 +62,11 @@ func (s *Store) CalculateCostForUsage(usage *schemas.BifrostLLMUsage, provider s
 
 	return s.computeCostFromInput(
 		input,
-		schemas.RoutingInfo{Provider: provider, Model: model},
+		schemas.RoutingInfo{
+			Provider:                provider,
+			Model:                   model,
+			ServerSideFallbackModel: usage.ServerSideFallbackModel,
+		},
 		normalizeStreamRequestType(requestType),
 		lookupScopes,
 	)
@@ -1132,10 +1136,13 @@ func populateOutputImageCount(imageUsage *schemas.ImageUsage, dataLen int) {
 // resolvePricing resolves the pricing entry for a request directly from the
 // RoutingInfo populated on the response/error by core.bifrost at request time.
 //
-// Lookup precedence — AliasModelName → AliasModelID → ModelName. Each
-// non-empty candidate is tried against the base catalog in order; the first
-// hit wins.
+// Lookup precedence — ServerSideFallbackModel → AliasModelName → AliasModelID →
+// ModelName. Each non-empty candidate is tried against the base catalog in
+// order; the first hit wins.
 //
+//   - ServerSideFallbackModel is the model that produced the response when the
+//     provider swapped models inside one call (Anthropic server-side fallback).
+//     Ranked first: the tokens being priced are its own. Nil on ordinary responses.
 //   - AliasModelName (RoutingInfo.ResolvedKeyAlias.ModelName) is the canonical
 //     model name the admin tagged on the matched alias. Catches the
 //     opaque-deployment-ID case where the wire model wouldn't hit the catalog
@@ -1145,9 +1152,12 @@ func populateOutputImageCount(imageUsage *schemas.ImageUsage, dataLen int) {
 //   - ModelName (RoutingInfo.Model) is the model string the caller sent — the
 //     alias key when an alias matched, or the raw user input when none did.
 //
-// Overrides are applied keyed by the wire model (AliasModelID when an alias
-// matched, otherwise ModelName) so per-deployment override pricing stays
-// addressable in either flow.
+// Overrides are applied keyed by the wire model (ServerSideFallbackModel when the
+// provider handed off mid-call, else AliasModelID when an alias matched, otherwise
+// ModelName) so per-deployment override pricing stays addressable in either flow.
+// A fallback-served turn keys on the serving model so base rates and overrides
+// agree: an override negotiated for the model that actually ran is the one that
+// applies.
 func (s *Store) resolvePricing(routingInfo schemas.RoutingInfo, requestType schemas.RequestType, scopes LookupScopes) *configstoreTables.TableModelPricing {
 	provider := string(routingInfo.Provider)
 	var aliasModelID, aliasModelName string
@@ -1157,7 +1167,14 @@ func (s *Store) resolvePricing(routingInfo schemas.RoutingInfo, requestType sche
 			aliasModelName = *rka.ModelName
 		}
 	}
-	overrideKey := aliasModelID
+	var serverSideFallbackModel string
+	if routingInfo.ServerSideFallbackModel != nil {
+		serverSideFallbackModel = *routingInfo.ServerSideFallbackModel
+	}
+	overrideKey := serverSideFallbackModel
+	if overrideKey == "" {
+		overrideKey = aliasModelID
+	}
 	if overrideKey == "" {
 		overrideKey = routingInfo.Model
 	}
@@ -1167,7 +1184,7 @@ func (s *Store) resolvePricing(routingInfo schemas.RoutingInfo, requestType sche
 		scopes.Provider = provider
 	}
 
-	for _, candidate := range []string{aliasModelName, aliasModelID, routingInfo.Model} {
+	for _, candidate := range []string{serverSideFallbackModel, aliasModelName, aliasModelID, routingInfo.Model} {
 		if candidate == "" {
 			continue
 		}
