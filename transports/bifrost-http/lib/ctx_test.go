@@ -23,6 +23,7 @@ func (s testHandlerStore) GetProvidersForModel(_ string) []schemas.ModelProvider
 func (s testHandlerStore) GetStreamChunkInterceptor() StreamChunkInterceptor     { return nil }
 func (s testHandlerStore) GetAsyncJobExecutor() *logstore.AsyncJobExecutor       { return nil }
 func (s testHandlerStore) GetAsyncJobResultTTL() int                             { return 0 }
+func (s testHandlerStore) GetStreamKeepAliveInterval() int                       { return 0 }
 func (s testHandlerStore) GetKVStore() *kvstore.Store                            { return nil }
 func (s testHandlerStore) GetMCPHeaderCombinedAllowlist() schemas.WhiteList {
 	return schemas.WhiteList{}

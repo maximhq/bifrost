@@ -1,0 +1,1 @@
+- feat: add opt-in client.stream_keepalive_interval for SSE keepalives (0 = disabled) [@jeremym-tanium](https://github.com/jeremym-tanium)

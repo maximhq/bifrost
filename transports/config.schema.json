@@ -257,6 +257,12 @@
           "description": "DEPRECATED: Timeout for individual MCP tool execution in seconds. Use mcp.tool_manager_config.tool_execution_timeout.",
           "default": 30
         },
+        "stream_keepalive_interval": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Interval in seconds between SSE keepalive comments during provider silence. Opt-in: 0 (the default) disables the keepalive.",
+          "default": 0
+        },
         "mcp_code_mode_binding_level": {
           "type": "string",
           "enum": ["server", "tool"],

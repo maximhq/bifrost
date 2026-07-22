@@ -263,6 +263,7 @@ func (s *RDBConfigStore) UpdateClientConfig(ctx context.Context, config *ClientC
 		AllowedOrigins:                        config.AllowedOrigins,
 		AllowedHeaders:                        config.AllowedHeaders,
 		MaxRequestBodySizeMB:                  config.MaxRequestBodySizeMB,
+		StreamKeepAliveInterval:               config.StreamKeepAliveInterval,
 		CompatConvertTextToChat:               config.Compat.ConvertTextToChat,
 		CompatConvertChatToResponses:          config.Compat.ConvertChatToResponses,
 		CompatShouldDropParams:                config.Compat.ShouldDropParams,
@@ -531,6 +532,7 @@ func (s *RDBConfigStore) GetClientConfig(ctx context.Context) (*ClientConfig, er
 		AllowedOrigins:                 dbConfig.AllowedOrigins,
 		AllowedHeaders:                 dbConfig.AllowedHeaders,
 		MaxRequestBodySizeMB:           dbConfig.MaxRequestBodySizeMB,
+		StreamKeepAliveInterval:        dbConfig.StreamKeepAliveInterval,
 		Compat: CompatConfig{
 			ConvertTextToChat:      dbConfig.CompatConvertTextToChat,
 			ConvertChatToResponses: dbConfig.CompatConvertChatToResponses,

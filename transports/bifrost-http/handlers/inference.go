@@ -1917,6 +1917,18 @@ func (h *CompletionHandler) handleStreamingTranscriptionRequest(ctx *fasthttp.Re
 // The cancel function is called ONLY when client disconnects are detected via write errors.
 // Bifrost handles cleanup internally for normal completion and errors, so we only cancel
 // upstream streams when write errors indicate the client has disconnected.
+// sendKeepAliveIfIdle emits a bare-comment SSE keepalive if the client has gone >=
+// interval without a write; returns the new last-write time, false if disconnected.
+func sendKeepAliveIfIdle(reader *lib.SSEStreamReader, lastWrite time.Time, interval time.Duration) (time.Time, bool) {
+	if interval <= 0 || time.Since(lastWrite) < interval {
+		return lastWrite, true
+	}
+	if !reader.Send([]byte(": keep-alive\n")) {
+		return lastWrite, false
+	}
+	return time.Now(), true
+}
+
 func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, getStream func() (chan *schemas.BifrostStreamChunk, *schemas.BifrostError), cancel context.CancelFunc) {
 	// Get the streaming channel — called BEFORE setting SSE headers so that
 	// provider errors return proper HTTP status codes + JSON content type.
@@ -2032,8 +2044,35 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 		var includeEventType bool
 		var skipDoneMarker bool
 
-		// Process streaming responses
-		for chunk := range stream {
+		// Emit a bare-comment SSE keepalive when the client has gone keepAliveInterval
+		// without a write; a plain range over stream would starve it on non-emitting chunks.
+		keepAliveInterval := time.Duration(h.config.GetStreamKeepAliveInterval()) * time.Second
+		var hbTicker *time.Ticker
+		var hbC <-chan time.Time
+		if keepAliveInterval > 0 {
+			hbTicker = time.NewTicker(keepAliveInterval)
+			defer hbTicker.Stop()
+			hbC = hbTicker.C
+		}
+		lastClientWrite := time.Now()
+	streamLoop:
+		for {
+			var chunk *schemas.BifrostStreamChunk
+			select {
+			case c, ok := <-stream:
+				if !ok {
+					break streamLoop
+				}
+				chunk = c
+			case <-hbC:
+			}
+			var alive bool
+			if lastClientWrite, alive = sendKeepAliveIfIdle(reader, lastClientWrite, keepAliveInterval); !alive {
+				cancel()
+				for range stream {
+				}
+				return
+			}
 			if chunk == nil {
 				continue
 			}
@@ -2115,6 +2154,11 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 				for range stream {
 				}
 				return
+			}
+			lastClientWrite = time.Now()
+			if hbTicker != nil {
+				// Reset so the max idle before a keepalive is strictly keepAliveInterval.
+				hbTicker.Reset(keepAliveInterval)
 			}
 		}
 
