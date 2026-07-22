@@ -10129,7 +10129,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"contents\": [{\"parts\":[{\"text\":\"What was announced at Google I/O 2026?\"}]}],\n  \"tools\": [{ \"googleSearch\": {} }]\n}"
+                  "raw": "{\n  \"contents\": [{\"parts\":[{\"text\":\"What is the current population of Tokyo? Answer briefly using Google Search.\"}]}],\n  \"tools\": [{ \"googleSearch\": {} }]\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/genai/v1beta/models/{{genaiModel}}:generateContent",
@@ -21516,6 +21516,44 @@
                 "body": {
                   "mode": "raw",
                   "raw": "{\n  \"model\": \"vertex/claude-sonnet-4-6\",\n  \"messages\": [{\"role\":\"system\",\"content\":\"Extract the city information from the user's message.\"},{\"role\":\"user\",\"content\":\"I visited Paris, France last summer.\"}],\n  \"response_format\": {\"type\":\"json_schema\",\"json_schema\":{\"name\":\"CityInfo\",\"strict\":true,\"schema\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"},\"country\":{\"type\":\"string\"}},\"required\":[\"name\",\"country\"],\"additionalProperties\":false}}}\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/chat/completions",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "chat",
+                    "completions"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "Azure Claude: structured output (json_schema)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if (pm.response.code < 400) { pm.test('Structured output: schema-compliant JSON (CityInfo)', function () { var j = pm.response.json(); var c = ''; if (j.choices && j.choices[0] && j.choices[0].message) { c = j.choices[0].message.content || ''; } if (!c && Array.isArray(j.content)) { var tb = j.content.find(function (b) { return b.type === 'text' && b.text; }); c = tb ? tb.text : ''; } pm.expect(c, 'content was empty').to.be.a('string').and.not.empty; var p; try { p = JSON.parse(c); } catch (e) { pm.expect.fail('content not JSON: ' + e.message + ' (got: ' + c.slice(0,120) + ')'); return; } pm.expect(p).to.have.property('name').that.is.a('string'); pm.expect(p).to.have.property('country').that.is.a('string'); pm.expect(p.name.toLowerCase(), 'expected Paris').to.include('paris'); }); }"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"azure/claude-haiku-4-5\",\n  \"messages\": [{\"role\":\"system\",\"content\":\"Extract the city information from the user's message.\"},{\"role\":\"user\",\"content\":\"I visited Paris, France last summer.\"}],\n  \"response_format\": {\"type\":\"json_schema\",\"json_schema\":{\"name\":\"CityInfo\",\"strict\":true,\"schema\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"},\"country\":{\"type\":\"string\"}},\"required\":[\"name\",\"country\"],\"additionalProperties\":false}}}\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/v1/chat/completions",
@@ -35333,7 +35371,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\"model\": \"openrouter/google/gemini-2.5-pro\", \"max_tokens\": 64, \"messages\": [{\"role\": \"system\", \"content\": [{\"type\": \"text\", \"text\": \"You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant.\", \"cache_control\": {\"type\": \"ephemeral\"}}]}, {\"role\": \"user\", \"content\": \"Reply with one word.\"}]}"
+              "raw": "{\"model\": \"openrouter/google/gemini-2.5-pro\", \"max_tokens\": 2048, \"messages\": [{\"role\": \"system\", \"content\": [{\"type\": \"text\", \"text\": \"You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant.\", \"cache_control\": {\"type\": \"ephemeral\"}}]}, {\"role\": \"user\", \"content\": \"Reply with one word.\"}]}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
@@ -40044,7 +40082,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What was a major world news headline this week? Answer in one short sentence, using Google Search for current information.\"\n    }\n  ],\n  \"web_search_options\": {},\n  \"max_tokens\": 300\n}"
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What was a major world news headline this week? Answer in one short sentence, using Google Search for current information.\"\n    }\n  ],\n  \"web_search_options\": {},\n  \"max_tokens\": 2000\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
@@ -40097,7 +40135,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What was a major world news headline this week? Answer in one short sentence, using Google Search for current information.\"\n    }\n  ],\n  \"web_search_options\": {},\n  \"stream\": true,\n  \"max_tokens\": 300\n}"
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What was a major world news headline this week? Answer in one short sentence, using Google Search for current information.\"\n    }\n  ],\n  \"web_search_options\": {},\n  \"stream\": true,\n  \"max_tokens\": 2000\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
@@ -40729,6 +40767,693 @@
               }
             }
           ]
+        }
+      ]
+    },
+    {
+      "name": "26. Anthropic Native Server-Side Fallback (fallbacks shape overload)",
+      "description": "Pins the overloaded request-level `fallbacks` wire key on /anthropic/v1/messages.\nTwo unrelated features share the key and are disambiguated by element shape:\n  - array of STRINGS  (\"provider/model\") = Bifrost cross-provider gateway fallback.\n  - array of OBJECTS  ([{\"model\": \"...\"}]) = Anthropic native server-side fallback\n    (beta server-side-fallback-2026-06-01, refusal fallback).\n\nRegressions pinned:\n  1. Object-form fallbacks used to fail Bifrost-side unmarshalling with 'Invalid JSON'\n     because AnthropicMessageRequest.Fallbacks was typed []string. It is now a shape\n     tolerant union, so both forms parse.\n  2. Native (object) fallbacks are Anthropic-only. Forwarding them to Vertex, Bedrock,\n     Bedrock Mantle or Azure produced a live 400 'fallbacks: Extra inputs are not\n     permitted', because AddMissingBetaHeadersToContext correctly withholds the beta\n     header there while the field was still forwarded. Bifrost now strips native\n     entries fail-closed for providers whose ProviderFeatures.ServerSideFallback is\n     false. Note bedrock_mantle is NOT supported: it is Bedrock's native Anthropic\n     surface, but feature availability still follows Amazon Bedrock.\n  3. Bifrost string-form fallbacks must keep working and must never leak to a provider.\n\nBoth the Claude Code passthrough path (claude-cli User-Agent -> raw request body) and\nthe normalized path are covered, since the strip runs on the shared egress tail.\n\nNot covered here: the `fallback` content block and stop_reason 'refusal'. Those only\noccur when a safety classifier actually declines a request, which is non-deterministic\nand inappropriate to provoke in a live sweep; they are covered by Go unit tests in\ncore/providers/anthropic/serversidefallback_test.go.",
+      "item": [
+        {
+          "name": "vertex/claude-opus-4-7 · native object fallbacks stripped for unsupported provider",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-opus-4-7\",\n  \"max_tokens\": 64,\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }],\n  \"fallbacks\": [{ \"model\": \"claude-opus-4-8\" }]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Infra noise (auth / rate limit / upstream 5xx) skips so it does not false-fail.",
+                  "// 400 is deliberately NOT guarded here - a 400 IS the regression signature for this folder.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var raw = pm.response.text() || '';",
+                  "pm.test('vertex/claude-opus-4-7: native fallbacks parsed and stripped, no provider rejection', function () {",
+                  "  // Original report: object-form fallbacks failed to unmarshal into []string -> 'Invalid JSON'.",
+                  "  pm.expect(raw.toLowerCase().indexOf('invalid json'), 'Bifrost failed to parse the fallbacks field: ' + raw).to.equal(-1);",
+                  "  // Live 400 signature when the field reaches a target that does not accept it.",
+                  "  pm.expect(raw.indexOf('Extra inputs are not permitted'), 'fallbacks reached a target that rejects it: ' + raw).to.equal(-1);",
+                  "  // The provider does not support server-side fallback, so Bifrost must strip the",
+                  "  // native entries before egress (the beta header is withheld there too).",
+                  "  pm.expect(pm.response.code, 'request failed: ' + raw).to.be.below(400);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "vertex/claude-opus-4-7 · native object fallbacks stripped on Claude Code passthrough (claude-cli UA)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/1.0"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-opus-4-7\",\n  \"max_tokens\": 64,\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }],\n  \"fallbacks\": [{ \"model\": \"claude-opus-4-8\" }]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Infra noise (auth / rate limit / upstream 5xx) skips so it does not false-fail.",
+                  "// 400 is deliberately NOT guarded here - a 400 IS the regression signature for this folder.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var raw = pm.response.text() || '';",
+                  "pm.test('vertex/claude-opus-4-7 Claude Code passthrough: native fallbacks stripped from the raw body', function () {",
+                  "  // Original report: object-form fallbacks failed to unmarshal into []string -> 'Invalid JSON'.",
+                  "  pm.expect(raw.toLowerCase().indexOf('invalid json'), 'Bifrost failed to parse the fallbacks field: ' + raw).to.equal(-1);",
+                  "  // Live 400 signature when the field reaches a target that does not accept it.",
+                  "  pm.expect(raw.indexOf('Extra inputs are not permitted'), 'fallbacks reached a target that rejects it: ' + raw).to.equal(-1);",
+                  "  // A claude-cli User-Agent puts Bifrost on the raw-request-body passthrough path.",
+                  "  // If newman strips the custom User-Agent this still exercises the normalized path;",
+                  "  // either way the native fallbacks must not reach Vertex.",
+                  "  pm.expect(pm.response.code, 'request failed: ' + raw).to.be.below(400);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock/global.anthropic.claude-opus-4-7 · native object fallbacks stripped for unsupported provider",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-opus-4-7\",\n  \"max_tokens\": 64,\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }],\n  \"fallbacks\": [{ \"model\": \"claude-opus-4-8\" }]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Infra noise (auth / rate limit / upstream 5xx) skips so it does not false-fail.",
+                  "// 400 is deliberately NOT guarded here - a 400 IS the regression signature for this folder.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var raw = pm.response.text() || '';",
+                  "pm.test('bedrock/global.anthropic.claude-opus-4-7: native fallbacks parsed and stripped', function () {",
+                  "  // Original report: object-form fallbacks failed to unmarshal into []string -> 'Invalid JSON'.",
+                  "  pm.expect(raw.toLowerCase().indexOf('invalid json'), 'Bifrost failed to parse the fallbacks field: ' + raw).to.equal(-1);",
+                  "  // Live 400 signature when the field reaches a target that does not accept it.",
+                  "  pm.expect(raw.indexOf('Extra inputs are not permitted'), 'fallbacks reached a target that rejects it: ' + raw).to.equal(-1);",
+                  "  // The provider does not support server-side fallback, so Bifrost must strip the",
+                  "  // native entries before egress (the beta header is withheld there too).",
+                  "  pm.expect(pm.response.code, 'request failed: ' + raw).to.be.below(400);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock_mantle/anthropic.claude-opus-4-8 · native object fallbacks stripped (mantle is not supported)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock_mantle/anthropic.claude-opus-4-8\",\n  \"max_tokens\": 64,\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }],\n  \"fallbacks\": [{ \"model\": \"claude-opus-4-8\" }]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Infra noise (auth / rate limit / upstream 5xx) skips so it does not false-fail.",
+                  "// 400 is deliberately NOT guarded here - a 400 IS the regression signature for this folder.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var raw = pm.response.text() || '';",
+                  "pm.test('bedrock_mantle/anthropic.claude-opus-4-8: native fallbacks stripped (Bedrock feature set)', function () {",
+                  "  // Original report: object-form fallbacks failed to unmarshal into []string -> 'Invalid JSON'.",
+                  "  pm.expect(raw.toLowerCase().indexOf('invalid json'), 'Bifrost failed to parse the fallbacks field: ' + raw).to.equal(-1);",
+                  "  // Live 400 signature when the field reaches a target that does not accept it.",
+                  "  pm.expect(raw.indexOf('Extra inputs are not permitted'), 'fallbacks reached a target that rejects it: ' + raw).to.equal(-1);",
+                  "  // bedrock_mantle reaches Claude through the native Anthropic Messages surface, but",
+                  "  // server-side fallback follows Amazon Bedrock availability, i.e. unsupported.",
+                  "  pm.expect(pm.response.code, 'request failed: ' + raw).to.be.below(400);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "anthropic/claude-opus-4-7 · Bifrost string fallbacks are not leaked to the provider",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-opus-4-7\",\n  \"max_tokens\": 64,\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }],\n  \"fallbacks\": [\"anthropic/claude-sonnet-4-6\"]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Infra noise (auth / rate limit / upstream 5xx) skips so it does not false-fail.",
+                  "// 400 is deliberately NOT guarded here - a 400 IS the regression signature for this folder.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var raw = pm.response.text() || '';",
+                  "pm.test('anthropic/claude-opus-4-7: Bifrost string fallbacks consumed by the gateway, not forwarded', function () {",
+                  "  // Original report: object-form fallbacks failed to unmarshal into []string -> 'Invalid JSON'.",
+                  "  pm.expect(raw.toLowerCase().indexOf('invalid json'), 'Bifrost failed to parse the fallbacks field: ' + raw).to.equal(-1);",
+                  "  // Live 400 signature when the field reaches a target that does not accept it.",
+                  "  pm.expect(raw.indexOf('Extra inputs are not permitted'), 'fallbacks reached a target that rejects it: ' + raw).to.equal(-1);",
+                  "  // String entries are Bifrost gateway failover targets; Anthropic never sees them.",
+                  "  pm.expect(pm.response.code, 'request failed: ' + raw).to.be.below(400);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "anthropic/claude-fable-5 · native object fallbacks forwarded with server-side-fallback beta",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-fable-5\",\n  \"max_tokens\": 64,\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }],\n  \"fallbacks\": [{ \"model\": \"claude-opus-4-8\" }]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Infra noise (auth / rate limit / upstream 5xx) skips so it does not false-fail.",
+                  "// 400 is deliberately NOT guarded here - a 400 IS the regression signature for this folder.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var raw = pm.response.text() || '';",
+                  "pm.test('anthropic/claude-fable-5: native fallbacks accepted (beta header auto-injected)', function () {",
+                  "  // Original report: object-form fallbacks failed to unmarshal into []string -> 'Invalid JSON'.",
+                  "  pm.expect(raw.toLowerCase().indexOf('invalid json'), 'Bifrost failed to parse the fallbacks field: ' + raw).to.equal(-1);",
+                  "  // Live 400 signature when the field reaches a target that does not accept it.",
+                  "  pm.expect(raw.indexOf('Extra inputs are not permitted'), 'fallbacks reached a target that rejects it: ' + raw).to.equal(-1);",
+                  "  // Anthropic is the only provider with ServerSideFallback=true, so the field is",
+                  "  // forwarded and Bifrost auto-injects server-side-fallback-2026-06-01. A rejection",
+                  "  // of the field itself would mean the beta header was not injected.",
+                  "  pm.expect(pm.response.code, 'request failed: ' + raw).to.be.below(400);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "27. Anthropic Fallback Credit Strip + Fallback Entry Fields",
+      "description": "Fallback credit (fallback-credit-2026-06-01; -2026-06-09 on the AWS surfaces) is a different feature from server-side fallback and has the INVERSE support matrix: the fallbacks parameter is Claude-API-only, while fallback_credit_token is supported nearly everywhere. A fallback entry also accepts output_config and speed, which were unmodelled and therefore dropped on the typed path.\n\nSCOPE NOTE: this folder covers only what a 2xx-asserting suite can observe. Proving that fallback_credit_token is FORWARDED needs a token the platform will evaluate, and an invalid one is rejected with a 400 by design - which the collection-level \"Status code is 2xx\" test treats as a failure. Forwarding, the per-provider beta gating and the AWS beta-date rewrite are therefore covered by unit tests in core/providers/anthropic instead. Response-side shapes (the fallback content block and its trigger, stop_details.fallback_credit_token / fallback_has_prefill_claim) are also unit-tested: reproducing them here would require provoking a safety classifier, which is non-deterministic and inappropriate for a shared suite.",
+      "item": [
+        {
+          "name": "anthropic/claude-opus-4-8 · count_tokens strips fallback_credit_token",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-opus-4-8\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello\"\n    }\n  ],\n  \"fallback_credit_token\": \"bifrost-harness-probe-token\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages/count_tokens",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages",
+                "count_tokens"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Infra noise (auth / rate limit / upstream 5xx) skips so it does not false-fail.",
+                  "// 400 is deliberately NOT guarded - a 400 IS the regression signature for this folder.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var raw = pm.response.text() || '';",
+                  "var lower = raw.toLowerCase();",
+                  "pm.test('anthropic/claude-opus-4-8: count_tokens succeeds with the credit token stripped', function () {",
+                  "  // The token is rejected outright on this endpoint, so the gateway must remove it.",
+                  "  // The token here is intentionally not a real one: if the strip regresses, the",
+                  "  // request fails on the unexpected field before its value is ever evaluated.",
+                  "  pm.expect(raw.indexOf('Extra inputs are not permitted'), 'fallback_credit_token survived into count_tokens: ' + raw).to.equal(-1);",
+                  "  pm.expect(lower.indexOf('fallback_credit_token'), 'fallback_credit_token survived into count_tokens: ' + raw).to.equal(-1);",
+                  "  pm.expect(pm.response.code, 'count_tokens failed: ' + raw).to.be.below(400);",
+                  "  pm.expect(pm.response.json()).to.have.property('input_tokens');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "anthropic/claude-fable-5 · fallback entry carries speed + output_config",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-fable-5\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello\"\n    }\n  ],\n  \"fallbacks\": [\n    {\n      \"model\": \"claude-opus-4-8\",\n      \"max_tokens\": 64,\n      \"speed\": \"standard\",\n      \"output_config\": {\n        \"effort\": \"low\"\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Infra noise (auth / rate limit / upstream 5xx) skips so it does not false-fail.",
+                  "// 400 is deliberately NOT guarded - a 400 IS the regression signature for this folder.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var raw = pm.response.text() || '';",
+                  "var lower = raw.toLowerCase();",
+                  "pm.test('anthropic/claude-fable-5: fallback entry keeps every documented key', function () {",
+                  "  // A fallback entry accepts model, max_tokens, thinking, output_config and speed.",
+                  "  // output_config and speed were unmodelled, so the typed path silently discarded them",
+                  "  // and the retry ran without the overrides the caller asked for. A serialization",
+                  "  // mistake on either new key surfaces here as a rejected request.",
+                  "  pm.expect(lower.indexOf('invalid json'), 'gateway failed to parse the fallback entry: ' + raw).to.equal(-1);",
+                  "  pm.expect(raw.indexOf('Extra inputs are not permitted'), 'a fallback entry key was rejected: ' + raw).to.equal(-1);",
+                  "  pm.expect(pm.response.code, 'request failed: ' + raw).to.be.below(400);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "anthropic/claude-fable-5 · fallback entry keys preserved on Claude Code passthrough (claude-cli UA)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/1.0"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-fable-5\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello\"\n    }\n  ],\n  \"fallbacks\": [\n    {\n      \"model\": \"claude-opus-4-8\",\n      \"max_tokens\": 64,\n      \"speed\": \"standard\",\n      \"output_config\": {\n        \"effort\": \"low\"\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Infra noise (auth / rate limit / upstream 5xx) skips so it does not false-fail.",
+                  "// 400 is deliberately NOT guarded - a 400 IS the regression signature for this folder.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var raw = pm.response.text() || '';",
+                  "var lower = raw.toLowerCase();",
+                  "pm.test('anthropic/claude-fable-5: fallback entry survives the raw-body passthrough path', function () {",
+                  "  // A fallback entry accepts model, max_tokens, thinking, output_config and speed.",
+                  "  // output_config and speed were unmodelled, so the typed path silently discarded them",
+                  "  // and the retry ran without the overrides the caller asked for. A serialization",
+                  "  // mistake on either new key surfaces here as a rejected request.",
+                  "  pm.expect(lower.indexOf('invalid json'), 'gateway failed to parse the fallback entry: ' + raw).to.equal(-1);",
+                  "  pm.expect(raw.indexOf('Extra inputs are not permitted'), 'a fallback entry key was rejected: ' + raw).to.equal(-1);",
+                  "  pm.expect(pm.response.code, 'request failed: ' + raw).to.be.below(400);",
+                  "});",
+                  "// The CLI user-agent routes this through the raw-body path, where the entry is",
+                  "// rewritten by the gjson/sjson strip rather than the typed marshaller - a separate",
+                  "// code path with its own way to corrupt the array."
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "28. Bedrock reasoning double-emission on additionalModelRequestFields (#5108 / PR #5109)",
+      "description": "Regression for the #5108 follow-on fixed in PR #5109. A reasoning key (reasoning_config / thinking / Nova reasoningConfig) consumed into Params.Reasoning on Bedrock Converse ingress was ALSO forwarded verbatim via additionalModelRequestFieldPaths. The Bedrock egress then carried two copies (the re-synthesized thinking plus the passthrough reasoning_config, which Bedrock expands into thinking), and Converse rejected the collision: \"The additional field thinking/type conflicts with an existing field\". The fix strips the consumed reasoning key from the verbatim passthrough so exactly one reasoning field reaches Bedrock. Cases 1-3 pin the integration route (/bedrock converse) that actually reproduced the bug; case 4 is a native /v1 control (the native path has no passthrough, so it never collided) guarding the invariant from that entry point.",
+      "item": [
+        {
+          "name": "Bedrock reasoning_config no double-emission (Sonnet 4.6, /bedrock converse) - #5108",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Regression #5108 / PR #5109. Exact user repro: client sends reasoning_config inside",
+                  "// additionalModelRequestFields on the /bedrock Converse route. Before the fix the egress",
+                  "// forwarded reasoning_config verbatim alongside the emitted thinking -> Converse collision.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('no thinking/reasoning double-emission collision on converse egress - #5108', function () {",
+                  "  var t = pm.response.text() || '';",
+                  "  pm.expect(t, 'Bedrock rejected a duplicated reasoning field: ' + t).to.not.match(/conflicts with an existing field/i);",
+                  "  pm.expect(t, 'Bedrock asked to remove a duplicated thinking field: ' + t).to.not.match(/Remove thinking\\//i);",
+                  "});",
+                  "pm.test('converse request succeeded - #5108', function () {",
+                  "  pm.expect(pm.response.code, 'expected success, got ' + pm.response.code + ': ' + pm.response.text()).to.be.below(400);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"What's my best offer?\"\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 4096\n  },\n  \"additionalModelRequestFields\": {\n    \"reasoning_config\": {\n      \"type\": \"enabled\",\n      \"budget_tokens\": 1500\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/global.anthropic.claude-sonnet-4-6/converse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "global.anthropic.claude-sonnet-4-6",
+                "converse"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Bedrock reasoning_config no double-emission (Sonnet 4.6, /bedrock converse-stream) - #5108",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Regression #5108 / PR #5109 (streaming). The collision is request-validation, so it",
+                  "// surfaces as a synchronous 400 even on converse-stream. Assert it does not occur.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('no thinking/reasoning double-emission collision on converse-stream egress - #5108', function () {",
+                  "  var t = pm.response.text() || '';",
+                  "  pm.expect(t, 'Bedrock rejected a duplicated reasoning field: ' + t).to.not.match(/conflicts with an existing field/i);",
+                  "  pm.expect(t, 'Bedrock asked to remove a duplicated thinking field: ' + t).to.not.match(/Remove thinking\\//i);",
+                  "});",
+                  "pm.test('converse-stream request succeeded - #5108', function () {",
+                  "  pm.expect(pm.response.code, 'expected success, got ' + pm.response.code + ': ' + pm.response.text()).to.be.below(400);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"What's my best offer?\"\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 4096\n  },\n  \"additionalModelRequestFields\": {\n    \"reasoning_config\": {\n      \"type\": \"enabled\",\n      \"budget_tokens\": 1500\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/global.anthropic.claude-sonnet-4-6/converse-stream",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "global.anthropic.claude-sonnet-4-6",
+                "converse-stream"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Bedrock thinking spelling no double-emission (Sonnet 4.6, /bedrock converse) - #5108",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Regression #5108 / PR #5109. The fix strips the consumed key for ALL spellings; this",
+                  "// pins that the native `thinking` spelling is still delivered to Bedrock (not dropped)",
+                  "// and does not collide with the re-synthesized thinking.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('no thinking/reasoning double-emission collision on converse egress - #5108', function () {",
+                  "  var t = pm.response.text() || '';",
+                  "  pm.expect(t, 'Bedrock rejected a duplicated reasoning field: ' + t).to.not.match(/conflicts with an existing field/i);",
+                  "  pm.expect(t, 'Bedrock asked to remove a duplicated thinking field: ' + t).to.not.match(/Remove thinking\\//i);",
+                  "});",
+                  "pm.test('converse request succeeded - #5108', function () {",
+                  "  pm.expect(pm.response.code, 'expected success, got ' + pm.response.code + ': ' + pm.response.text()).to.be.below(400);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"What's my best offer?\"\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 4096\n  },\n  \"additionalModelRequestFields\": {\n    \"thinking\": {\n      \"type\": \"enabled\",\n      \"budget_tokens\": 1500\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/global.anthropic.claude-sonnet-4-6/converse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "global.anthropic.claude-sonnet-4-6",
+                "converse"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Native /v1 chat -> bedrock reasoning single thinking (Sonnet 4.6) - #5108",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Regression #5108 / PR #5109 (native entry point). The native path carries no",
+                  "// additionalModelRequestFields passthrough, so it never collided - this is a control",
+                  "// that guards the invariant from the native side and that reasoning still reaches Bedrock.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('native reasoning to bedrock: no collision - #5108', function () {",
+                  "  var t = pm.response.text() || '';",
+                  "  pm.expect(t, 'Bedrock rejected a duplicated reasoning field: ' + t).to.not.match(/conflicts with an existing field/i);",
+                  "  pm.expect(t, 'Bedrock asked to remove a duplicated thinking field: ' + t).to.not.match(/Remove thinking\\//i);",
+                  "});",
+                  "pm.test('native chat request succeeded - #5108', function () {",
+                  "  pm.expect(pm.response.code, 'expected success, got ' + pm.response.code + ': ' + pm.response.text()).to.be.below(400);",
+                  "  if (pm.response.code < 400) {",
+                  "    var j = pm.response.json();",
+                  "    var cnt = (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || '';",
+                  "    pm.expect(cnt, 'expected non-empty content').to.be.a('string').and.not.empty;",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-6\",\n  \"max_tokens\": 4096,\n  \"thinking\": {\n    \"type\": \"enabled\",\n    \"budget_tokens\": 1500\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What's my best offer?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
         }
       ]
     }

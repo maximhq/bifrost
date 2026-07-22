@@ -41,6 +41,9 @@ The plugin supports multiple trace formats to match your observability platform:
 | `headers` | `object` | ❌ No | Custom headers for authentication — values support `env.VAR_NAME` |
 | `tls_ca_cert` | `string` | ❌ No | File path to client CA certificate for TLS. Optional. Works with both gRPC and HTTP protocol |
 | `group_traces_by_session` | `boolean` | ❌ No | Group requests sharing the same `x-bf-session-id` into one trace (default: `false`). See [Grouping Traces by Session](#grouping-traces-by-session) |
+| `disable_content_logging` | `boolean` | ❌ No | Drop message content from exported spans (default: `false`). See [Controlling Exported Content](#controlling-exported-content) |
+| `disable_root_span_content` | `boolean` | ❌ No | Drop content from the **root span only**, keeping it on child spans (default: `false`). Overridden by `disable_content_logging`, which drops content from every span. See [Controlling Exported Content](#controlling-exported-content) |
+| `request_headers` | `string[]` | ❌ No | Request-header name patterns whose values are attached to the root span as `http.request.header.*` attributes. Supports exact names and wildcards (`x-custom-*`, `*`) |
 
 ### Environment Variable Substitution
 
@@ -746,6 +749,33 @@ Each trace includes comprehensive LLM operation metadata following OpenTelemetry
 - Tool calls and results
 
 When Enterprise guardrail redaction is enabled, Bifrost applies trace redaction replacements before exporting completed traces to OTel. Exported span content receives the redacted or placeholderized value, but reversible reveal mappings are not exported. For the full mode matrix, see [Guardrail Redaction](/enterprise/guardrails/redaction).
+
+### Controlling Exported Content
+
+Two profile-level flags control how much message content leaves Bifrost:
+
+| Flag | Effect |
+|------|--------|
+| `disable_content_logging` | Drops input/output message content, prompt and instructions, model reasoning, tool definitions, and tool call arguments/results from **every** exported span. Metadata is still exported, including model, provider, tokens, cost, latency, status, and governance attribution. |
+| `disable_root_span_content` | When used alone, drops content from the **root span only**. Bifrost duplicates input/output onto the root span for trace-level display; this removes that duplication while child spans keep full content. Useful when your backend indexes root-span attributes and you want to limit the blast radius without losing detail. `disable_content_logging` takes precedence: when it is enabled, child spans lose their content too. |
+
+```json
+{
+  "name": "otel",
+  "config": {
+    "collector_url": "http://localhost:4318",
+    "trace_type": "genai_extension",
+    "protocol": "http",
+    "disable_content_logging": true
+  }
+}
+```
+
+<Warning>
+These flags are **independent** of the global `client.disable_content_logging`, which governs the Bifrost log store only. Setting the client flag does not stop content from being exported to your OTLP collector. Set `disable_content_logging` on the OTel profile as well.
+
+Values captured via `request_headers` are attached to the root span **regardless** of either flag. Only enable header capture for headers you intend to export.
+</Warning>
 
 ### Performance Metrics
 

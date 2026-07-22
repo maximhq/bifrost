@@ -65,6 +65,8 @@ type eventEnvelope struct {
 		ResultExpiresAt *time.Time      `json:"result_expires_at,omitempty"` // after which result_url is dead
 		Response        json.RawMessage `json:"response,omitempty"`          // inlined only if the endpoint opted in
 		ResponseOmitted bool            `json:"response_omitted,omitempty"`  // response too large to inline; fetch it
+		Error           json.RawMessage `json:"error,omitempty"`             // inlined only if the endpoint opted in (failed jobs)
+		ErrorOmitted    bool            `json:"error_omitted,omitempty"`     // error too large to inline; fetch it
 		ResultExpired   bool            `json:"result_expired,omitempty"`    // result gone before delivery; nothing to fetch
 	} `json:"data"`
 }

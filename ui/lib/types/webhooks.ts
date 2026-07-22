@@ -117,13 +117,6 @@ export interface RedeliverWebhookResponse {
 	webhook_id: string;
 }
 
-// Soft tints for event badges, matching the delivery-outcome color language
-// (green = completed/delivered, red = failed).
-export const WEBHOOK_EVENT_COLORS: Record<WebhookEvent, string> = {
-	"async_job.completed": "bg-green-100 text-green-800",
-	"async_job.failed": "bg-red-100 text-red-800",
-};
-
 // Delivery worker defaults, shown as placeholders for unset (0) knobs.
 export const WEBHOOK_TUNING_DEFAULTS = {
 	max_retries: 4,

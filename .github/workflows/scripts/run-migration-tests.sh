@@ -719,6 +719,78 @@ EOF
   log_info "Generated faker SQL: $output_file"
 }
 
+# Generate v1.6.3-era config-store coverage rows for SQLite.
+generate_v163_config_store_insert_sqlite() {
+  local output_file="$1"
+  local config_db="$2"
+
+  if [ ! -f "$config_db" ]; then
+    return
+  fi
+
+  echo "" >> "$output_file"
+  echo "-- v1.6.3-era config-store coverage rows (SQLite-only)" >> "$output_file"
+
+  if column_exists_sqlite "$config_db" "config_client" "mcp_server_auth_mode"; then
+    echo "UPDATE config_client SET mcp_server_auth_mode = 'headers' WHERE id = 1;" >> "$output_file"
+  fi
+  if column_exists_sqlite "$config_db" "config_client" "oauth2_server_config_json"; then
+    echo "UPDATE config_client SET oauth2_server_config_json = '{\"auth_code_ttl\":300,\"access_token_ttl\":600}' WHERE id = 1;" >> "$output_file"
+  fi
+
+  for col in bedrock_mantle_access_key bedrock_mantle_secret_key bedrock_mantle_session_token bedrock_mantle_region bedrock_mantle_role_arn bedrock_mantle_external_id bedrock_mantle_role_session_name; do
+    if column_exists_sqlite "$config_db" "config_keys" "$col"; then
+      echo "UPDATE config_keys SET $col = NULL WHERE name = 'migration-test-key-anthropic';" >> "$output_file"
+    fi
+  done
+
+  if column_exists_sqlite "$config_db" "governance_model_pricing" "is_deprecated"; then
+    echo "UPDATE governance_model_pricing SET is_deprecated = 0 WHERE model = 'gpt-4';" >> "$output_file"
+    echo "UPDATE governance_model_pricing SET is_deprecated = 1 WHERE model = 'claude-3-opus';" >> "$output_file"
+  fi
+
+  if column_exists_sqlite "$config_db" "governance_virtual_keys" "expires_at"; then
+    echo "UPDATE governance_virtual_keys SET expires_at = datetime('now', '+1 day') WHERE id = 'vk-migration-test-1';" >> "$output_file"
+    echo "UPDATE governance_virtual_keys SET expires_at = datetime('now', '+2 day') WHERE id = 'vk-migration-test-2';" >> "$output_file"
+  fi
+}
+
+# Generate v1.6.3-era OAuth2 coverage rows for SQLite.
+generate_v163_oauth2_insert_sqlite() {
+  local now="$1"
+  local output_file="$2"
+  local config_db="$3"
+
+  if [ ! -f "$config_db" ]; then
+    return
+  fi
+
+  # oauth2_clients, oauth2_authorize_requests, and oauth2_refresh_tokens are each guarded
+  # individually rather than assuming presence of one implies presence of the others.
+  local oauth2_clients_exists oauth2_authorize_requests_exists oauth2_refresh_tokens_exists
+  oauth2_clients_exists=$(sqlite3 "$config_db" "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='oauth2_clients';" 2>/dev/null || echo "0")
+  oauth2_authorize_requests_exists=$(sqlite3 "$config_db" "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='oauth2_authorize_requests';" 2>/dev/null || echo "0")
+  oauth2_refresh_tokens_exists=$(sqlite3 "$config_db" "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='oauth2_refresh_tokens';" 2>/dev/null || echo "0")
+
+  if [ "$oauth2_clients_exists" = "1" ]; then
+    echo "" >> "$output_file"
+    echo "-- oauth2_clients" >> "$output_file"
+    echo "INSERT INTO oauth2_clients (id, client_id, client_name, redirect_uris_json, grant_types_json, scope, created_at) VALUES ('oauth2-client-migration-test-001', 'oauth2-client-migration-test-001', 'Migration Test OAuth2 Client', '[\"https://bifrost.example.com/oauth/callback\"]', '[\"authorization_code\",\"refresh_token\"]', 'openid profile', $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+  fi
+
+  if [ "$oauth2_authorize_requests_exists" = "1" ] && [ "$oauth2_clients_exists" = "1" ]; then
+    echo "" >> "$output_file"
+    echo "-- oauth2_authorize_requests" >> "$output_file"
+    echo "INSERT INTO oauth2_authorize_requests (id, client_id, redirect_uri, state, scope, resource, code_challenge, code_challenge_method, status, bf_mode, bf_sub, code_hash, expires_at, created_at, updated_at) VALUES ('oauth2-authorize-migration-test-001', 'oauth2-client-migration-test-001', 'https://bifrost.example.com/oauth/callback', 'oauth2-state-migration-test-001', 'openid profile', 'https://mcp.example.com', 'migration-test-code-challenge', 'S256', 'pending', 'vk', 'vk-migration-test-1', NULL, datetime('now', '+15 minutes'), $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+  fi
+
+  if [ "$oauth2_refresh_tokens_exists" = "1" ] && [ "$oauth2_clients_exists" = "1" ]; then
+    echo "" >> "$output_file"
+    echo "-- oauth2_refresh_tokens" >> "$output_file"
+    echo "INSERT INTO oauth2_refresh_tokens (id, token_hash, family_id, client_id, bf_mode, bf_sub, scope, resource, revoked_at, last_used_at, created_at) VALUES ('oauth2-refresh-migration-test-001', 'migration-test-refresh-token-hash-001', 'oauth2-authorize-migration-test-001', 'oauth2-client-migration-test-001', 'vk', 'vk-migration-test-1', 'openid profile', 'https://mcp.example.com', NULL, NULL, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+  fi
+}
+
 # Append dynamic INSERTs to faker SQL based on current schema
 # Must be called AFTER the database schema is created (e.g., after bifrost starts/stops)
 # Handles columns that may not exist in older schema versions
@@ -746,12 +818,15 @@ append_dynamic_mcp_clients_insert() {
     generate_pricing_overrides_insert_postgres "$now" "$faker_sql"
     generate_mcp_library_insert_postgres "$now" "$faker_sql"
     generate_skills_repo_tables_insert_postgres "$now" "$faker_sql"
+    generate_sidekiq_insert_postgres "$now" "$faker_sql"
     append_dynamic_columns_postgres "$now" "$past" "$faker_sql"
   else
     now="datetime('now')"
     future="datetime('now', '+1 hour')"
     past="datetime('now', '-1 day')"
     generate_mcp_clients_insert_sqlite "$now" "$faker_sql" "$config_db"
+    generate_v163_config_store_insert_sqlite "$faker_sql" "$config_db"
+    generate_v163_oauth2_insert_sqlite "$now" "$faker_sql" "$config_db"
     generate_async_jobs_insert_sqlite "$now" "$future" "$faker_sql"
     generate_prompt_repo_tables_insert_sqlite "$now" "$faker_sql" "$config_db"
     generate_per_user_oauth_tables_insert_sqlite "$now" "$faker_sql" "$config_db"
@@ -763,6 +838,7 @@ append_dynamic_mcp_clients_insert() {
     generate_pricing_overrides_insert_sqlite "$now" "$faker_sql" "$config_db"
     generate_mcp_library_insert_sqlite "$now" "$faker_sql" "$config_db"
     generate_skills_repo_tables_insert_sqlite "$now" "$faker_sql" "$config_db"
+    generate_sidekiq_insert_sqlite "$now" "$faker_sql" "$config_db"
     append_dynamic_columns_sqlite "$now" "$past" "$faker_sql" "$config_db"
   fi
 }
@@ -1902,6 +1978,104 @@ append_dynamic_columns_postgres() {
     echo "UPDATE logs SET alias_model_family = NULL WHERE id = 'log-migration-test-002';" >> "$output_file"
     echo "UPDATE logs SET alias_model_family = NULL WHERE id = 'log-migration-test-003';" >> "$output_file"
   fi
+
+  # -------------------------------------------------------------------------
+  # v1.6.3 columns and tables - config store / OAuth2 / governance
+  # -------------------------------------------------------------------------
+
+  if column_exists_postgres "config_client" "mcp_server_auth_mode"; then
+    echo "UPDATE config_client SET mcp_server_auth_mode = 'headers' WHERE id = 1;" >> "$output_file"
+  fi
+  if column_exists_postgres "config_client" "oauth2_server_config_json"; then
+    echo "UPDATE config_client SET oauth2_server_config_json = '{\"auth_code_ttl\":300,\"access_token_ttl\":600}' WHERE id = 1;" >> "$output_file"
+  fi
+
+  for col in bedrock_mantle_access_key bedrock_mantle_secret_key bedrock_mantle_session_token bedrock_mantle_region bedrock_mantle_role_arn bedrock_mantle_external_id bedrock_mantle_role_session_name; do
+    if column_exists_postgres "config_keys" "$col"; then
+      echo "UPDATE config_keys SET $col = NULL WHERE name = 'migration-test-key-anthropic';" >> "$output_file"
+    fi
+  done
+
+  if column_exists_postgres "config_mcp_clients" "tool_execution_timeout"; then
+    echo "UPDATE config_mcp_clients SET tool_execution_timeout = 30 WHERE client_id = 'mcp-migration-test-001';" >> "$output_file"
+  fi
+
+  if column_exists_postgres "governance_model_pricing" "is_deprecated"; then
+    echo "UPDATE governance_model_pricing SET is_deprecated = false WHERE model = 'gpt-4';" >> "$output_file"
+    echo "UPDATE governance_model_pricing SET is_deprecated = true WHERE model = 'claude-3-opus';" >> "$output_file"
+  fi
+
+  if column_exists_postgres "governance_virtual_keys" "expires_at"; then
+    echo "UPDATE governance_virtual_keys SET expires_at = NOW() + INTERVAL '1 day' WHERE id = 'vk-migration-test-1';" >> "$output_file"
+    echo "UPDATE governance_virtual_keys SET expires_at = NOW() + INTERVAL '2 day' WHERE id = 'vk-migration-test-2';" >> "$output_file"
+  fi
+
+  # oauth2_clients, oauth2_authorize_requests, and oauth2_refresh_tokens are each guarded
+  # individually rather than assuming presence of one implies presence of the others.
+  local oauth2_clients_exists=0
+  if column_exists_postgres "oauth2_clients" "id"; then
+    oauth2_clients_exists=1
+    {
+      echo ""
+      echo "-- oauth2_clients"
+      echo "INSERT INTO oauth2_clients (id, client_id, client_name, redirect_uris_json, grant_types_json, scope, created_at) VALUES ('oauth2-client-migration-test-001', 'oauth2-client-migration-test-001', 'Migration Test OAuth2 Client', '[\"https://bifrost.example.com/oauth/callback\"]', '[\"authorization_code\",\"refresh_token\"]', 'openid profile', NOW()) ON CONFLICT DO NOTHING;"
+    } >> "$output_file"
+  fi
+
+  if [ "$oauth2_clients_exists" = "1" ] && column_exists_postgres "oauth2_authorize_requests" "id"; then
+    {
+      echo ""
+      echo "-- oauth2_authorize_requests"
+      echo "INSERT INTO oauth2_authorize_requests (id, client_id, redirect_uri, state, scope, resource, code_challenge, code_challenge_method, status, bf_mode, bf_sub, code_hash, expires_at, created_at, updated_at) VALUES ('oauth2-authorize-migration-test-001', 'oauth2-client-migration-test-001', 'https://bifrost.example.com/oauth/callback', 'oauth2-state-migration-test-001', 'openid profile', 'https://mcp.example.com', 'migration-test-code-challenge', 'S256', 'pending', 'vk', 'vk-migration-test-1', NULL, NOW() + INTERVAL '15 minutes', NOW(), NOW()) ON CONFLICT DO NOTHING;"
+    } >> "$output_file"
+  fi
+
+  if [ "$oauth2_clients_exists" = "1" ] && column_exists_postgres "oauth2_refresh_tokens" "id"; then
+    {
+      echo ""
+      echo "-- oauth2_refresh_tokens"
+      echo "INSERT INTO oauth2_refresh_tokens (id, token_hash, family_id, client_id, bf_mode, bf_sub, scope, resource, revoked_at, last_used_at, created_at) VALUES ('oauth2-refresh-migration-test-001', 'migration-test-refresh-token-hash-001', 'oauth2-authorize-migration-test-001', 'oauth2-client-migration-test-001', 'vk', 'vk-migration-test-1', 'openid profile', 'https://mcp.example.com', NULL, NULL, NOW()) ON CONFLICT DO NOTHING;"
+    } >> "$output_file"
+  fi
+
+  # -------------------------------------------------------------------------
+  # v1.6.4 columns - config store / governance / log store tables
+  # -------------------------------------------------------------------------
+
+  # config_keys.vertex_force_single_region (added via add_vertex_force_single_region_column)
+  if column_exists_postgres "config_keys" "vertex_force_single_region"; then
+    echo "UPDATE config_keys SET vertex_force_single_region = false WHERE name = 'migration-test-key-openai';" >> "$output_file"
+    echo "UPDATE config_keys SET vertex_force_single_region = true WHERE name = 'migration-test-key-anthropic';" >> "$output_file"
+  fi
+
+  # config_keys.bedrock_project_id, bedrock_mantle_project_id (added via add_bedrock_project_id_columns)
+  if column_exists_postgres "config_keys" "bedrock_project_id"; then
+    echo "UPDATE config_keys SET bedrock_project_id = NULL WHERE name = 'migration-test-key-anthropic';" >> "$output_file"
+  fi
+  if column_exists_postgres "config_keys" "bedrock_mantle_project_id"; then
+    echo "UPDATE config_keys SET bedrock_mantle_project_id = NULL WHERE name = 'migration-test-key-anthropic';" >> "$output_file"
+  fi
+
+  # governance_model_pricing fast-mode, flex/priority 272k-tier, and inference-geo pricing columns
+  # (added via add_fast_mode_pricing_columns, add_fast_mode_cache_pricing_columns,
+  # add_inference_geo_multiplier_column, add_flex_and_cache_creation_272k_pricing_columns)
+  for col in input_cost_per_token_flex_above_272k_tokens output_cost_per_token_flex_above_272k_tokens \
+    cache_read_input_token_cost_flex_above_272k_tokens cache_creation_input_token_cost_above_272k_tokens \
+    cache_creation_input_token_cost_flex cache_creation_input_token_cost_flex_above_272k_tokens \
+    cache_creation_input_token_cost_priority cache_creation_input_token_cost_fast \
+    cache_creation_input_token_cost_above_1hr_fast cache_read_input_token_cost_fast inference_geo_us_multiplier; do
+    if column_exists_postgres "governance_model_pricing" "$col"; then
+      echo "UPDATE governance_model_pricing SET $col = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET $col = NULL WHERE id = 2;" >> "$output_file"
+    fi
+  done
+
+  # logs.redaction_mapping (added via logs_add_redaction_mapping_column)
+  if column_exists_postgres "logs" "redaction_mapping"; then
+    echo "UPDATE logs SET redaction_mapping = '' WHERE id = 'log-migration-test-001';" >> "$output_file"
+    echo "UPDATE logs SET redaction_mapping = '' WHERE id = 'log-migration-test-002';" >> "$output_file"
+    echo "UPDATE logs SET redaction_mapping = '' WHERE id = 'log-migration-test-003';" >> "$output_file"
+  fi
 }
 
 # Append dynamic column UPDATEs for columns that may not exist in older schemas (SQLite)
@@ -2989,6 +3163,47 @@ append_dynamic_columns_sqlite() {
     echo "UPDATE logs SET alias_model_family = NULL WHERE id = 'log-migration-test-002';" >> "$output_file"
     echo "UPDATE logs SET alias_model_family = NULL WHERE id = 'log-migration-test-003';" >> "$output_file"
   fi
+
+  # -------------------------------------------------------------------------
+  # v1.6.4 columns - config store / governance / log store tables
+  # -------------------------------------------------------------------------
+
+  if [ -f "$config_db" ]; then
+    # config_keys.vertex_force_single_region (added via add_vertex_force_single_region_column)
+    if column_exists_sqlite "$config_db" "config_keys" "vertex_force_single_region"; then
+      echo "UPDATE config_keys SET vertex_force_single_region = 0 WHERE name = 'migration-test-key-openai';" >> "$output_file"
+      echo "UPDATE config_keys SET vertex_force_single_region = 1 WHERE name = 'migration-test-key-anthropic';" >> "$output_file"
+    fi
+
+    # config_keys.bedrock_project_id, bedrock_mantle_project_id (added via add_bedrock_project_id_columns)
+    if column_exists_sqlite "$config_db" "config_keys" "bedrock_project_id"; then
+      echo "UPDATE config_keys SET bedrock_project_id = NULL WHERE name = 'migration-test-key-anthropic';" >> "$output_file"
+    fi
+    if column_exists_sqlite "$config_db" "config_keys" "bedrock_mantle_project_id"; then
+      echo "UPDATE config_keys SET bedrock_mantle_project_id = NULL WHERE name = 'migration-test-key-anthropic';" >> "$output_file"
+    fi
+
+    # governance_model_pricing fast-mode, flex/priority 272k-tier, and inference-geo pricing columns
+    # (added via add_fast_mode_pricing_columns, add_fast_mode_cache_pricing_columns,
+    # add_inference_geo_multiplier_column, add_flex_and_cache_creation_272k_pricing_columns)
+    for col in input_cost_per_token_flex_above_272k_tokens output_cost_per_token_flex_above_272k_tokens \
+      cache_read_input_token_cost_flex_above_272k_tokens cache_creation_input_token_cost_above_272k_tokens \
+      cache_creation_input_token_cost_flex cache_creation_input_token_cost_flex_above_272k_tokens \
+      cache_creation_input_token_cost_priority cache_creation_input_token_cost_fast \
+      cache_creation_input_token_cost_above_1hr_fast cache_read_input_token_cost_fast inference_geo_us_multiplier; do
+      if column_exists_sqlite "$config_db" "governance_model_pricing" "$col"; then
+        echo "UPDATE governance_model_pricing SET $col = NULL WHERE id = 1;" >> "$output_file"
+        echo "UPDATE governance_model_pricing SET $col = NULL WHERE id = 2;" >> "$output_file"
+      fi
+    done
+  fi
+
+  # logs.redaction_mapping (added via logs_add_redaction_mapping_column)
+  if column_exists_sqlite "$logs_db" "logs" "redaction_mapping"; then
+    echo "UPDATE logs SET redaction_mapping = '' WHERE id = 'log-migration-test-001';" >> "$output_file"
+    echo "UPDATE logs SET redaction_mapping = '' WHERE id = 'log-migration-test-002';" >> "$output_file"
+    echo "UPDATE logs SET redaction_mapping = '' WHERE id = 'log-migration-test-003';" >> "$output_file"
+  fi
 }
 
 # ============================================================================
@@ -3005,15 +3220,15 @@ extract_faker_columns() {
 
   # Extract INSERT statements and parse table/columns
   # Handles both "INSERT INTO table (cols)" and "INSERT INTO table (cols) SELECT ..."
-  grep -E "^INSERT INTO [a-z_]+ \(" "$faker_sql" | \
-    sed -E 's/INSERT INTO ([a-z_]+) \(([^)]+)\).*/\1:\2/' | \
+  grep -E "^INSERT INTO [a-z0-9_]+ \(" "$faker_sql" | \
+    sed -E 's/INSERT INTO ([a-z0-9_]+) \(([^)]+)\).*/\1:\2/' | \
     tr -d ' ' | sort -u > "$output_file"
 
   # Also extract UPDATE SET columns (for dynamically added columns)
   # Pattern: UPDATE table SET col = value WHERE ...
   # Note: Column names can contain digits (e.g., input_cost_per_token_above_128k_tokens)
-  grep -E "^UPDATE [a-z_]+ SET [a-z0-9_]+" "$faker_sql" | \
-    sed -E 's/UPDATE ([a-z_]+) SET ([a-z0-9_]+) =.*/\1:\2/' | \
+  grep -E "^UPDATE [a-z0-9_]+ SET [a-z0-9_]+" "$faker_sql" | \
+    sed -E 's/UPDATE ([a-z0-9_]+) SET ([a-z0-9_]+) =.*/\1:\2/' | \
     tr -d ' ' | sort -u >> "$output_file"
 }
 
@@ -3068,6 +3283,11 @@ generate_mcp_clients_insert_postgres() {
   if column_exists_postgres "config_mcp_clients" "oauth_config_id"; then
     cols="$cols, oauth_config_id"
     vals="$vals, 'oauth-config-migration-test-001'"
+  fi
+
+  if column_exists_postgres "config_mcp_clients" "tool_execution_timeout"; then
+    cols="$cols, tool_execution_timeout"
+    vals="$vals, 30"
   fi
 
   # config_mcp_clients.encryption_status (added in v1.4.8)
@@ -3334,6 +3554,11 @@ generate_mcp_clients_insert_sqlite() {
   if column_exists_sqlite "$config_db" "config_mcp_clients" "oauth_config_id"; then
     cols="$cols, oauth_config_id"
     vals="$vals, 'oauth-config-migration-test-001'"
+  fi
+
+  if column_exists_sqlite "$config_db" "config_mcp_clients" "tool_execution_timeout"; then
+    cols="$cols, tool_execution_timeout"
+    vals="$vals, 30"
   fi
 
   # config_mcp_clients.encryption_status (added in v1.4.8)
@@ -3629,6 +3854,44 @@ generate_skills_repo_tables_insert_sqlite() {
   echo "-- skill_files (a file pointer for a skill version; points to a blob or external storage)" >> "$output_file"
   echo "INSERT INTO skill_files (id, skill_version_id, path, source_type, source_url, storage_key, blob_id, mime_type, file_size_bytes, created_at, updated_at) VALUES ('skill-file-migration-001', 'skill-version-migration-001', 'scripts/run.sh', 'blob', NULL, NULL, 'skill-blob-migration-001', 'text/x-shellscript', 18, $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
   echo "INSERT INTO skill_files (id, skill_version_id, path, source_type, source_url, storage_key, blob_id, mime_type, file_size_bytes, created_at, updated_at) VALUES ('skill-file-migration-002', 'skill-version-migration-002', 'reference/doc.md', 'url', 'https://example.com/doc.md', 'skills/skill-002/doc.md', NULL, 'text/markdown', 0, $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+}
+
+# Generate sidekiq (durable background-job) table INSERTs for PostgreSQL.
+# Table added in v1.6.4-era via migrationAddSidekiqTable; no FKs.
+generate_sidekiq_insert_postgres() {
+  local now="$1"
+  local output_file="$2"
+
+  if ! column_exists_postgres "sidekiq" "id"; then
+    return
+  fi
+
+  echo "" >> "$output_file"
+  echo "-- sidekiq (durable background-job queue)" >> "$output_file"
+  echo "INSERT INTO sidekiq (id, kind, status, runner_id, metadata, attempts, last_error, created_at, updated_at, started_at, created_by_user_id, completed_at) VALUES ('sidekiq-migration-test-001', 'migration-test-job', 'completed', 'runner-migration-test-001', '{}', 1, '', $now, $now, $now, 'migration-tester', $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+  echo "INSERT INTO sidekiq (id, kind, status, runner_id, metadata, attempts, last_error, created_at, updated_at, started_at, created_by_user_id, completed_at) VALUES ('sidekiq-migration-test-002', 'migration-test-job', 'pending', NULL, '{}', 0, NULL, $now, $now, NULL, NULL, NULL) ON CONFLICT DO NOTHING;" >> "$output_file"
+}
+
+# Generate sidekiq (durable background-job) table INSERTs for SQLite.
+generate_sidekiq_insert_sqlite() {
+  local now="$1"
+  local output_file="$2"
+  local config_db="$3"
+
+  if [ ! -f "$config_db" ]; then
+    return
+  fi
+
+  local table_exists
+  table_exists=$(sqlite3 "$config_db" "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='sidekiq';" 2>/dev/null || echo "0")
+  if [ "$table_exists" != "1" ]; then
+    return
+  fi
+
+  echo "" >> "$output_file"
+  echo "-- sidekiq (durable background-job queue)" >> "$output_file"
+  echo "INSERT INTO sidekiq (id, kind, status, runner_id, metadata, attempts, last_error, created_at, updated_at, started_at, created_by_user_id, completed_at) VALUES ('sidekiq-migration-test-001', 'migration-test-job', 'completed', 'runner-migration-test-001', '{}', 1, '', $now, $now, $now, 'migration-tester', $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+  echo "INSERT INTO sidekiq (id, kind, status, runner_id, metadata, attempts, last_error, created_at, updated_at, started_at, created_by_user_id, completed_at) VALUES ('sidekiq-migration-test-002', 'migration-test-job', 'pending', NULL, '{}', 0, NULL, $now, $now, NULL, NULL, NULL) ON CONFLICT DO NOTHING;" >> "$output_file"
 }
 
 # Generate per-user OAuth tables INSERTs for PostgreSQL
@@ -4582,6 +4845,39 @@ compare_postgres_snapshots() {
         print out
       }
     ' | sort > "$after_comparable"
+
+    # governance_rate_limits: ratelimit-migration-test-1 has a 1-minute reset window, so
+    # PerformStartupResets may legitimately zero its usage counters and advance its
+    # last_reset timestamps on startup. Blank out only those four fields for that one row
+    # (on both sides) instead of skipping the whole row, so immutable fields like
+    # token_max_limit / token_reset_duration are still verified for it. ratelimit-migration-test-2
+    # (1-day window, never expected to reset) is compared unchanged, including its usage/reset
+    # columns.
+    if [ "$table" = "governance_rate_limits" ]; then
+      local reset_field_idx=""
+      local reset_field_pos=1
+      for compare_col in $compare_cols; do
+        case "$compare_col" in
+          token_current_usage|token_last_reset|request_current_usage|request_last_reset)
+            reset_field_idx="${reset_field_idx:+$reset_field_idx }$reset_field_pos"
+            ;;
+        esac
+        reset_field_pos=$((reset_field_pos + 1))
+      done
+      if [ -n "$reset_field_idx" ]; then
+        for comparable_file in "$before_comparable" "$after_comparable"; do
+          awk -F'|' -v OFS='|' -v idxs="$reset_field_idx" '
+            BEGIN { n = split(idxs, arr, " ") }
+            {
+              if ($1 == "ratelimit-migration-test-1") {
+                for (i = 1; i <= n; i++) $arr[i] = "<reset-managed>"
+              }
+              print
+            }
+          ' "$comparable_file" > "${comparable_file}.tmp" && mv "${comparable_file}.tmp" "$comparable_file"
+        done
+      fi
+    fi
 
     # For grow-allowed tables, restrict the value comparison to the seeded test rows. The
     # migration-added rows carry random UUID ids and are not part of the data contract, so
