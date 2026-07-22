@@ -15,15 +15,6 @@ This guide covers [Cloudflare Access](https://www.cloudflare.com/zero-trust/prod
 
 ## How it works
 
-```mermaid
-graph LR
-    U[User] --> CF[Cloudflare Access]
-    CF -->|validates identity<br/>against your IdP| CF
-    CF -->|Cf-Access-Jwt-Assertion header| B[Bifrost]
-    B -->|verify signature vs<br/>team-domain JWKS| B
-    B -->|authenticate + authorize| APP[Dashboard / Inference APIs]
-```
-
 1. A user requests a Bifrost URL protected by a Cloudflare Access application.
 2. Cloudflare authenticates the user against your configured identity provider and enforces your Access policies.
 3. Cloudflare forwards the request to Bifrost with the `Cf-Access-Jwt-Assertion` header — a short-lived RS256 JWT signed by your team domain.
@@ -32,7 +23,7 @@ graph LR
 Because Bifrost validates the proxy's token (not the IdP's), both the dashboard and the inference APIs are protected by the same upstream authentication layer.
 
 <Warning>
-  **Isolate the Bifrost origin.** When the proxy header is absent, Bifrost falls back to its normal bearer/cookie login — so if Bifrost is reachable directly (bypassing Cloudflare), a client can skip your Access policies. Restrict network access so Bifrost is only reachable through Cloudflare (e.g. via a [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) or by allowlisting Cloudflare IPs), and ensure the proxy strips any client-supplied `Cf-Access-Jwt-Assertion` header before injecting its own.
+  When the proxy header is absent, Bifrost falls back to the IDP login - so if Bifrost is reachable directly (bypassing Cloudflare), a client can skip your Access policies. Restrict network access so Bifrost is only reachable through Cloudflare (e.g. via a [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) or by allowlisting Cloudflare IPs), and ensure the proxy strips any client-supplied `Cf-Access-Jwt-Assertion` header before injecting its own.
 </Warning>
 
 ---
