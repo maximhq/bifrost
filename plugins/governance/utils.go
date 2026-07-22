@@ -55,7 +55,7 @@ func IsModelRequiredForRequest(requestType schemas.RequestType) bool {
 	// Cached content list/retrieve/update/delete target a resource name (cachedContents/{id}),
 	// not a model, so they carry no model to filter on; only create binds a cache to a model.
 	// Responses retrieve/delete/cancel/input_items target a response_id, not a model.
-	if requestType == schemas.ListModelsRequest || requestType == schemas.MCPToolExecutionRequest || requestType == schemas.BatchCreateRequest || requestType == schemas.BatchListRequest || requestType == schemas.BatchRetrieveRequest || requestType == schemas.BatchCancelRequest || requestType == schemas.BatchResultsRequest || requestType == schemas.FileUploadRequest || requestType == schemas.FileListRequest || requestType == schemas.FileRetrieveRequest || requestType == schemas.FileDeleteRequest || requestType == schemas.FileContentRequest || requestType == schemas.ContainerCreateRequest || requestType == schemas.ContainerListRequest || requestType == schemas.ContainerRetrieveRequest || requestType == schemas.ContainerDeleteRequest || requestType == schemas.ContainerFileCreateRequest || requestType == schemas.ContainerFileListRequest || requestType == schemas.ContainerFileRetrieveRequest || requestType == schemas.ContainerFileContentRequest || requestType == schemas.ContainerFileDeleteRequest || requestType == schemas.CachedContentListRequest || requestType == schemas.CachedContentRetrieveRequest || requestType == schemas.CachedContentUpdateRequest || requestType == schemas.CachedContentDeleteRequest || requestType == schemas.ResponsesRetrieveRequest || requestType == schemas.ResponsesDeleteRequest || requestType == schemas.ResponsesCancelRequest || requestType == schemas.ResponsesInputItemsRequest || requestType == schemas.VideoRetrieveRequest || requestType == schemas.VideoDownloadRequest || requestType == schemas.VideoListRequest || requestType == schemas.VideoDeleteRequest || requestType == schemas.VideoRemixRequest || requestType == schemas.PassthroughRequest || requestType == schemas.PassthroughStreamRequest {
+	if requestType == schemas.ListModelsRequest || requestType == schemas.ListInferenceProfilesRequest || requestType == schemas.MCPToolExecutionRequest || requestType == schemas.BatchCreateRequest || requestType == schemas.BatchListRequest || requestType == schemas.BatchRetrieveRequest || requestType == schemas.BatchCancelRequest || requestType == schemas.BatchResultsRequest || requestType == schemas.FileUploadRequest || requestType == schemas.FileListRequest || requestType == schemas.FileRetrieveRequest || requestType == schemas.FileDeleteRequest || requestType == schemas.FileContentRequest || requestType == schemas.ContainerCreateRequest || requestType == schemas.ContainerListRequest || requestType == schemas.ContainerRetrieveRequest || requestType == schemas.ContainerDeleteRequest || requestType == schemas.ContainerFileCreateRequest || requestType == schemas.ContainerFileListRequest || requestType == schemas.ContainerFileRetrieveRequest || requestType == schemas.ContainerFileContentRequest || requestType == schemas.ContainerFileDeleteRequest || requestType == schemas.CachedContentListRequest || requestType == schemas.CachedContentRetrieveRequest || requestType == schemas.CachedContentUpdateRequest || requestType == schemas.CachedContentDeleteRequest || requestType == schemas.ResponsesRetrieveRequest || requestType == schemas.ResponsesDeleteRequest || requestType == schemas.ResponsesCancelRequest || requestType == schemas.ResponsesInputItemsRequest || requestType == schemas.VideoRetrieveRequest || requestType == schemas.VideoDownloadRequest || requestType == schemas.VideoListRequest || requestType == schemas.VideoDeleteRequest || requestType == schemas.VideoRemixRequest || requestType == schemas.PassthroughRequest || requestType == schemas.PassthroughStreamRequest {
 		return false
 	}
 	return true
@@ -162,6 +162,32 @@ func (p *GovernancePlugin) filterModelsForVirtualKey(
 	}
 
 	return filteredModels
+}
+
+// filterInferenceProfilesForVirtualKey applies virtual-key model policy to the
+// inference profile identifier callers submit to Bedrock runtime endpoints.
+func (p *GovernancePlugin) filterInferenceProfilesForVirtualKey(
+	ctx context.Context,
+	profiles []schemas.BifrostInferenceProfileSummary,
+	virtualKeyValue string,
+) []schemas.BifrostInferenceProfileSummary {
+	models := make([]schemas.Model, 0, len(profiles))
+	for _, profile := range profiles {
+		models = append(models, schemas.Model{ID: string(schemas.Bedrock) + "/" + profile.InferenceProfileID})
+	}
+	filteredModels := p.filterModelsForVirtualKey(ctx, models, virtualKeyValue)
+	allowed := make(map[string]struct{}, len(filteredModels))
+	for _, model := range filteredModels {
+		_, modelID := schemas.ParseModelString(model.ID, "")
+		allowed[modelID] = struct{}{}
+	}
+	filteredProfiles := make([]schemas.BifrostInferenceProfileSummary, 0, len(profiles))
+	for _, profile := range profiles {
+		if _, ok := allowed[profile.InferenceProfileID]; ok {
+			filteredProfiles = append(filteredProfiles, profile)
+		}
+	}
+	return filteredProfiles
 }
 
 // validateRequiredHeaders checks that all configured required headers are present in the request.
