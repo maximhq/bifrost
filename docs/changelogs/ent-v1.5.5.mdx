@@ -5,6 +5,10 @@ description: "Enterprise v1.5.5 changelog - 2026-07-21"
 
 <Update label="Bifrost Enterprise" description="v1.5.5">
 
+<Warning>
+We have received some reports about JWT token is not workgin with 1.5.5 and 1.5.4. We are currently investigating the issue.
+</Warning>
+
 ## Changelog
 
 Release on `transports/v1.6.5`. Ships identity-aware proxy authentication for inference (Cloudflare Access, AWS ALB, and generic JWKS proxies) with configurable dual-credential conflict handling, identity-scoped guardrail rules with streaming replay pacing, windowed audit log archival with S3 support, and cluster-wide async webhook delivery. Also picks up the new Wafer AI provider and reasoning token tracking from OSS.
