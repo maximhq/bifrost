@@ -1764,6 +1764,21 @@ When using AWS Bedrock inference profiles or application inference profiles, you
 - **Control Plane**: `bedrock.{region}.amazonaws.com` (list models)
 - **Batch API**: Via bedrock-runtime
 
+### Inference Profile Discovery
+
+Bifrost's Bedrock compatibility surface also exposes the AWS control-plane
+routes used by Claude Code's native Bedrock mode:
+
+- `GET /bedrock/inference-profiles`
+- `GET /bedrock/inference-profiles/{inferenceProfileIdentifier}`
+
+The list route forwards AWS's `type`, `maxResults`, and `nextToken` query
+parameters and preserves AWS response fields and pagination tokens. Discovery
+uses the Bedrock key selected by Bifrost; returned profile identifiers are
+filtered by that key's model allow/deny policy and by the caller's virtual-key
+model policy. The detail route is model-aware, so requesting a profile by a
+known identifier cannot bypass those policies.
+
 ---
 
 # 12. Error Handling
