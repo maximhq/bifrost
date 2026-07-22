@@ -1421,7 +1421,7 @@ func TestDeleteVirtualKeys_PartialSuccess(t *testing.T) {
 	}
 }
 
-func TestDeleteVirtualKeys_RemoveFailureTriggersReload(t *testing.T) {
+func TestDeleteVirtualKeys_RemoveFailureAbortsDeletion(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	store := &mockRotateConfigStore{
@@ -1443,15 +1443,19 @@ func TestDeleteVirtualKeys_RemoveFailureTriggersReload(t *testing.T) {
 	if ctx.Response.StatusCode() != 500 {
 		t.Fatalf("expected status 500, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
 	}
-	if store.deletes != 1 {
-		t.Fatalf("expected database delete to succeed, got %d", store.deletes)
+	if store.deletes != 0 {
+		t.Fatalf("expected no database delete when memory removal fails, got %d", store.deletes)
 	}
 	if len(manager.removeIDs) != 1 || manager.removeIDs[0] != "vk-1" {
 		t.Fatalf("expected RemoveVirtualKey call for vk-1, got %#v", manager.removeIDs)
 	}
-	// Verify that the reload/compensation path was triggered!
-	if len(manager.reloadIDs) != 1 || manager.reloadIDs[0] != "vk-1" {
-		t.Fatalf("expected ReloadVirtualKey compensation call for vk-1, got %#v", manager.reloadIDs)
+	if len(manager.reloadIDs) != 0 {
+		t.Fatalf("expected no ReloadVirtualKey call when memory removal fails, got %#v", manager.reloadIDs)
+	}
+
+	vk, err := store.GetVirtualKey(ctx, "vk-1")
+	if err != nil || vk == nil {
+		t.Fatalf("expected vk-1 to still exist in database after memory removal failure")
 	}
 
 	var resp struct {
@@ -1470,6 +1474,60 @@ func TestDeleteVirtualKeys_RemoveFailureTriggersReload(t *testing.T) {
 	}
 	if !strings.Contains(resp.Errors["vk-1"], "failed to remove from memory: in-memory remove failed") {
 		t.Fatalf("expected fail message in errors, got %#v", resp.Errors)
+	}
+}
+
+func TestDeleteVirtualKeys_DBDeleteFailureTriggersReload(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	store := &mockRotateConfigStore{
+		virtualKeys: map[string]*configstoreTables.TableVirtualKey{
+			"vk-1": {ID: "vk-1", Name: "One", Value: *schemas.NewSecretVar("sk-bf-1")},
+		},
+		deleteErr: fmt.Errorf("database delete failed"),
+	}
+	manager := &mockRotateGovernanceManager{store: store}
+	h := &GovernanceHandler{configStore: store, governanceManager: manager}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetBodyString(`{"ids":["vk-1"]}`)
+
+	h.deleteVirtualKeys(ctx)
+
+	if ctx.Response.StatusCode() != 500 {
+		t.Fatalf("expected status 500, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	if len(manager.removeIDs) != 1 || manager.removeIDs[0] != "vk-1" {
+		t.Fatalf("expected RemoveVirtualKey call for vk-1, got %#v", manager.removeIDs)
+	}
+	if store.deletes != 0 {
+		t.Fatalf("expected no database delete when delete fails, got %d", store.deletes)
+	}
+	if len(manager.reloadIDs) != 1 || manager.reloadIDs[0] != "vk-1" {
+		t.Fatalf("expected ReloadVirtualKey compensation call for vk-1, got %#v", manager.reloadIDs)
+	}
+
+	vk, err := store.GetVirtualKey(ctx, "vk-1")
+	if err != nil || vk == nil {
+		t.Fatalf("expected vk-1 to still exist in database after failed deletion")
+	}
+
+	var resp struct {
+		Message string            `json:"message"`
+		Deleted int               `json:"deleted"`
+		Errors  map[string]string `json:"errors"`
+	}
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+	if resp.Message != "Failed to delete virtual keys" {
+		t.Fatalf("expected failure message, got %q", resp.Message)
+	}
+	if resp.Deleted != 0 {
+		t.Fatalf("expected deleted count to be 0, got %d", resp.Deleted)
+	}
+	if !strings.Contains(resp.Errors["vk-1"], "removed from memory but failed to delete from database: database delete failed") {
+		t.Fatalf("expected appropriate error message, got %#v", resp.Errors)
 	}
 }
 
