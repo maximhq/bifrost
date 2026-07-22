@@ -2,17 +2,27 @@ import { BaseProvider, ConcurrencyAndBufferSize, NetworkConfig } from "@/lib/typ
 import { ProviderName } from "./logs";
 
 /**
- * Parse a date string in YYYY-MM-DD format with strict validation.
- * Returns null if the string is empty, malformed, or represents an invalid date.
+ * Parse a trial expiry string with strict validation.
+ * Accepts either a bare date (YYYY-MM-DD) or a full RFC3339 timestamp
+ * (YYYY-MM-DDTHH:mm:ssZ) — the Docker build injects the latter, since the Go
+ * side needs an RFC3339 value. Only the calendar date is significant for the
+ * banner, so any time component is ignored and the date is taken at local
+ * midnight. Returns null if the string is empty, malformed, or represents an
+ * invalid date.
  */
 function parseTrialExpiry(dateStr: string | undefined): Date | null {
 	if (!dateStr || !dateStr.trim()) return null;
 
-	// Strict format check: YYYY-MM-DD
-	const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
-	if (!dateRegex.test(dateStr)) return null;
+	// Accept YYYY-MM-DD optionally followed by a time component (e.g. the
+	// RFC3339 "T00:00:00Z" suffix), and capture just the date part.
+	const dateRegex = /^(\d{4})-(\d{2})-(\d{2})(?:[T ].*)?$/;
+	const match = dateRegex.exec(dateStr.trim());
+	if (!match) return null;
 
-	const [year, month, day] = dateStr.split("-").map(Number);
+	const [, yearStr, monthStr, dayStr] = match;
+	const year = Number(yearStr);
+	const month = Number(monthStr);
+	const day = Number(dayStr);
 	const date = new Date(year, month - 1, day);
 
 	// Validate the date components match (catches invalid dates like 2024-02-30)
