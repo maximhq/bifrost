@@ -4,6 +4,8 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scrollArea";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Switch } from "@/components/ui/switch";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { TruncatedLabel } from "@/components/ui/truncatedLabel";
 import { RequestTypeLabels, RequestTypes, RoutingEngineUsedLabels, Statuses } from "@/lib/constants/logs";
 import { useGetAvailableFilterDataQuery, useGetProvidersQuery } from "@/lib/store";
@@ -44,7 +46,7 @@ export function LogsFilterSidebar({ filters, onFiltersChange }: LogsSidebarProps
 	}, []);
 
 	const activeFilterCount = useMemo(() => {
-		const excludedKeys = ["start_time", "end_time", "content_search", "metadata_filters", "period", "polling"];
+		const excludedKeys = ["start_time", "end_time", "content_search", "metadata_filters", "period", "polling", "inverse"];
 		let count = Object.entries(filters).reduce((c, [key, value]) => {
 			if (excludedKeys.includes(key)) return c;
 			if (Array.isArray(value)) return c + value.length;
@@ -90,6 +92,23 @@ export function LogsFilterSidebar({ filters, onFiltersChange }: LogsSidebarProps
 			<div className="flex h-11 items-center justify-between border-b pr-2 pl-5">
 				<span className="text-sm font-semibold">Filters</span>
 				<div className="flex items-center gap-1">
+					{/* Inverse toggle: flips every selected filter from include to exclude */}
+					<TooltipProvider>
+						<Tooltip>
+							<TooltipTrigger asChild>
+								<label className="flex cursor-pointer items-center gap-1.5 pr-0.5 select-none">
+									<span className={cn("text-xs", filters.inverse ? "text-destructive font-medium" : "text-muted-foreground")}>Exclude</span>
+									<Switch
+										checked={!!filters.inverse}
+										onCheckedChange={(checked) => onFiltersChange({ ...filters, inverse: checked })}
+										className="data-[state=checked]:bg-destructive scale-90"
+										aria-label="Exclude selected filters"
+									/>
+								</label>
+							</TooltipTrigger>
+							<TooltipContent side="bottom">Show logs that do NOT match your selected filters</TooltipContent>
+						</Tooltip>
+					</TooltipProvider>
 					{activeFilterCount > 0 && (
 						<Button variant="outline" size="sm" className="text-muted-foreground h-7 px-2 text-xs" onClick={handleReset}>
 							<RotateCcw className="size-3" />
