@@ -1,0 +1,193 @@
+---
+title: "Generic OIDC Proxy"
+description: "Front Bifrost Enterprise with any OIDC-based identity-aware proxy that injects a signed JWT header on every request."
+---
+
+Bifrost's identity-aware proxy support isn't limited to Cloudflare Access. Any upstream authenticating reverse proxy that presents an **OIDC-style JWT in a request header** — validated against a JWKS endpoint (or OIDC discovery) — can authenticate users for Bifrost. This covers proxies such as [oauth2-proxy](https://oauth2-proxy.github.io/oauth2-proxy/), [Pomerium](https://www.pomerium.com/), Google IAP-style gateways, service-mesh sidecars, and API gateways with JWT injection.
+
+<Info>
+  The auth proxy **fronts an existing identity provider** already configured in Bifrost. Set up your IdP first ([Okta](../setting-up-okta/oidc), [Generic OIDC](../setting-up-generic-oidc/oidc), etc.), then enable the Identity-Aware Proxy on that same provider. If you're using Cloudflare, follow the dedicated [Cloudflare ZTNA](./cloudflare-ztna) guide instead.
+</Info>
+
+---
+
+## How it works
+
+```mermaid
+graph LR
+    U[User] --> P[OIDC proxy]
+    P -->|validates identity<br/>against your IdP| P
+    P -->|signed JWT in a<br/>configurable header| B[Bifrost]
+    B -->|verify signature vs<br/>JWKS / OIDC discovery| B
+    B -->|authenticate + authorize| APP[Dashboard / Inference APIs]
+```
+
+1. The proxy authenticates the user against your identity provider.
+2. It forwards the request to Bifrost with a signed OIDC JWT in a header you choose (e.g. `X-Forwarded-Assertion`).
+3. Bifrost validates the token's signature against the configured **JWKS URL**, or discovers it from the **issuer** via `<issuer>/.well-known/openid-configuration`.
+4. Bifrost enforces the expected **audience**, then resolves the user from the identity claim (`email` by default).
+
+The token is validated against the **proxy's** keys — not the IdP's — so both the dashboard and the inference APIs are protected by the same upstream layer.
+
+<Warning>
+  **Isolate the Bifrost origin.** When the configured header is absent, Bifrost falls back to its normal bearer/cookie login — so if Bifrost is reachable directly (bypassing the proxy), a client can skip the proxy's access policy. Restrict network access so Bifrost is only reachable through the proxy (private network, service mesh, or firewall allowlist), and configure the proxy to strip any client-supplied assertion header before injecting its own signed token.
+</Warning>
+
+---
+
+## Modes
+
+The proxy runs in one of two modes:
+
+| Mode | What it does | When to use |
+| --- | --- | --- |
+| **Login only** *(default)* | Validates identity and authenticates an **already-provisioned** user (looked up by the configured identity claim, `email` by default). No role, team, or business unit is derived from the token. | You provision users and roles via SCIM or interactive OIDC login. |
+| **Full** | Validates the token **and** runs attribute → role / team / business-unit mapping from its claims. | You want role and team assignments derived from the proxy token. |
+
+<Warning>
+  **Full mode** requires the IdP claims used for mapping (e.g. `groups`) to be present in the proxy token. Configure your proxy to pass those claims through, otherwise role and team mapping will not match and login will be denied.
+</Warning>
+
+---
+
+## Prerequisites
+
+- An identity-aware proxy that injects a signed OIDC JWT header on every request
+- The proxy's **issuer URL** (and, optionally, an explicit **JWKS URL**)
+- The **audience** (`aud`) value the proxy stamps on its tokens
+- An identity provider already configured in Bifrost under **User Provisioning**
+- Bifrost [roles](../rbac) created for any roles you plan to map (full mode)
+
+---
+
+## Step 1: Configure your proxy
+
+<Steps>
+
+<Step title="Protect the Bifrost domain">
+
+Place the proxy in front of your Bifrost deployment so it authenticates every request to the dashboard and API surface, then forwards the request upstream to Bifrost.
+
+</Step>
+
+<Step title="Inject a signed JWT header">
+
+Configure the proxy to add a signed OIDC JWT to a request header — for example `X-Forwarded-Assertion`. Note the exact header name; you'll enter it in Bifrost.
+
+</Step>
+
+<Step title="Set an audience and pass through claims">
+
+Ensure the proxy stamps a stable `aud` (audience) claim that binds the token to Bifrost. For **full** mode, also include the IdP group/role claims you plan to map on.
+
+</Step>
+
+</Steps>
+
+---
+
+## Step 2: Enable the Identity-Aware Proxy in Bifrost
+
+<Steps>
+
+<Step title="Open your provider's configuration">
+
+Go to **Governance** → **User Provisioning**, open the identity provider you want to front, and continue to the **Provider Configuration** step. The **Identity-Aware Proxy (IAP)** section appears there.
+
+</Step>
+
+<Step title="Enable the proxy and select Generic OIDC proxy">
+
+Toggle **Identity-Aware Proxy (IAP)** on, then set **Proxy** to **Generic OIDC proxy**. The **Header name**, **Issuer URL**, and **Audience** fields appear below, along with the **Mode** selector.
+
+</Step>
+
+<Step title="Fill in the proxy fields">
+
+| Field | Value |
+| --- | --- |
+| **Header name** | The request header carrying the proxy-signed JWT, e.g. `X-Forwarded-Assertion`. **Required** for a generic proxy. |
+| **Issuer URL** | The proxy token issuer (`iss` claim). Bifrost discovers the JWKS via `<issuer>/.well-known/openid-configuration` unless you override it. Must be `https`. |
+| **Audience** | The expected `aud` claim binding the token to Bifrost. |
+
+Under **Advanced**, you can supply an explicit **JWKS URL** (skips OIDC discovery) and change the **identity claim** (defaults to `email`).
+
+</Step>
+
+<Step title="Choose a mode and save">
+
+Pick **Login only** or **Full** (see [Modes](#modes)), then save.
+
+IAP changes on an already-enabled provider — turning IAP on or off, or editing the header, issuer, JWKS, audience, or mode — are hot-reloaded and take effect immediately (and propagate to peer nodes in a cluster).
+
+</Step>
+
+</Steps>
+
+---
+
+## Configuration reference
+
+The Identity-Aware Proxy is stored as an `authProxy` block on the SSO provider's configuration. Fields marked **string (secret)** below accept a plain-text value, an `env.VAR_NAME` reference, or a `vault.path/to/secret` reference; `enabled`, `provider`, `mode`, and `allowedAudiences` are plain values.
+
+The `authProxy` block lives inside your SSO provider's `config` under the top-level `scim_config`, alongside that provider's own fields:
+
+```json
+{
+  "scim_config": {
+    "enabled": true,
+    "provider": "generic",
+    "config": {
+      ...
+      "authProxy": {
+        "enabled": true,
+        "provider": "generic",
+        "mode": "login_only",
+        "headerName": "X-Forwarded-Assertion",
+        "issuerUrl": "https://auth.company.com",
+        "audience": "bifrost"
+      }
+    }
+  }
+}
+```
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `enabled` | boolean | Yes | Turns the identity-aware proxy on. |
+| `provider` | string | Yes | Set to `generic`. |
+| `mode` | string | No | `login_only` (default) or `full`. |
+| `headerName` | string (secret) | Yes | Request header carrying the proxy-signed JWT. |
+| `issuerUrl` | string (secret) | Yes | Token issuer (`iss`). Used for OIDC discovery of the JWKS. Must be `https`. |
+| `jwksUrl` | string (secret) | No | Explicit JWKS URL. Skips OIDC discovery when set. Must be `https`. |
+| `audience` | string (secret) | Yes* | Expected `aud` claim binding the token to Bifrost. |
+| `allowedAudiences` | string[] | No | Accept any of several audiences instead of a single `audience`. |
+| `userIdClaim` | string (secret) | No | Token claim used as the user identity. Defaults to `email`. |
+
+<Note>
+  \*Either `audience` or a non-empty `allowedAudiences` is required — an unbound token would be accepted across applications. All URLs must use `https`.
+</Note>
+
+---
+
+## Troubleshooting
+
+### Every request returns 401 Unauthorized
+**Cause:** Signature, issuer, or audience validation failed.
+**Fix:** Confirm the **Header name** matches what your proxy injects, the **Issuer URL** matches the token's `iss` claim, and the **Audience** matches the token's `aud`. If OIDC discovery can't reach the issuer, set an explicit **JWKS URL** under Advanced.
+
+### The header is ignored and normal login is used instead
+**Cause:** Bifrost only uses the proxy path when the configured header is present. A missing or misnamed header falls back to the standard bearer/cookie flow.
+**Fix:** Verify the exact header name (case-insensitive) and that the proxy sets it on every request.
+
+### Users get 403 "not provisioned" in login-only mode
+**Cause:** Login-only mode never creates users.
+**Fix:** Provision the user via SCIM or a one-time interactive login, or use **Full** mode.
+
+---
+
+## Next steps
+
+- **[Cloudflare ZTNA (Access)](./cloudflare-ztna)** - front Bifrost with Cloudflare Zero Trust
+- **[RBAC](../rbac)** - define the roles the proxy authenticates against
+- **[User provisioning](../user-provisioning)** - SCIM and OIDC provider setup
