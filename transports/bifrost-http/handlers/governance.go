@@ -2139,6 +2139,9 @@ func (h *GovernanceHandler) deleteVirtualKeys(ctx *fasthttp.RequestCtx) {
 		if err := h.governanceManager.RemoveVirtualKey(ctx, id); err != nil {
 			logger.Error("failed to remove virtual key %s from memory: %v", id, err)
 			failures[id] = fmt.Sprintf("deleted from database but failed to remove from memory: %v", err)
+			if _, reloadErr := h.governanceManager.ReloadVirtualKey(ctx, id); reloadErr != nil {
+				logger.Error("failed to reload virtual key %s after runtime removal failure: %v", id, reloadErr)
+			}
 			continue
 		}
 		deleted++

@@ -820,7 +820,7 @@ export default function VirtualKeysTable({
 						)}
 						{selectedCount > 0 && (
 							<Button
-								variant="outline"
+								variant="destructive"
 								onClick={() => setShowBulkDeleteDialog(true)}
 								disabled={!hasDeleteAccess || isBulkDeleting}
 								data-testid="vk-bulk-delete-btn"
