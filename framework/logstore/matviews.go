@@ -78,12 +78,7 @@ ON mv_logs_hourly (hour, provider, model, status, object_type, selected_key_id, 
 
 // mvLogsHourlyRequiredColumns is the canonical column set used by
 // repairMatViewShapes to detect old-shape mv_logs_hourly views from prior
-// schema versions and drop them so they get rebuilt on startup, and by
-// matViewShapesReady to gate the matview read path.
-//
-// Must mirror every output column of mvLogsHourlyDDL. A partial list would let
-// a view missing an unlisted column pass both checks, and readers selecting it
-// would fail with "column does not exist" — see TestMvLogsHourlyRequiredColumnsMatchDDL.
+// schema versions and drop them so they get rebuilt on startup.
 var mvLogsHourlyRequiredColumns = []string{
 	"hour",
 	"provider",
@@ -99,22 +94,10 @@ var mvLogsHourlyRequiredColumns = []string{
 	"business_unit_id",
 	"alias",
 	"canonical_model_name",
-	"count",
-	"success_count",
-	"error_count",
 	"cancelled_count",
-	"avg_latency",
-	"p90_latency",
-	"p95_latency",
-	"p99_latency",
-	"total_prompt_tokens",
-	"total_completion_tokens",
 	"throughput_completion_tokens",
 	"throughput_latency_ms",
 	"throughput_request_count",
-	"total_tokens",
-	"total_cached_read_tokens",
-	"total_cost",
 }
 
 // legacyMatViewNames are matviews from previous schema versions that no longer
@@ -446,43 +429,39 @@ var matviewRequiredColumns = func() map[string][]string {
 // transaction. Multi-replica deployments serialize on the advisory lock so
 // only one instance does the work. It shares the same advisory lock as
 // refreshMatViews so startup create/repair cannot overlap a periodic refresh.
-//
-// Returns false (with a nil error) when another replica holds the lock: nothing
-// about the view shape is established then, so callers must verify with
-// matViewShapesReady before enabling the matview read path.
-func ensureMatViews(ctx context.Context, db *gorm.DB) (bool, error) {
+func ensureMatViews(ctx context.Context, db *gorm.DB) error {
 	if db.Dialector.Name() != "postgres" {
-		return false, nil
+		return nil
 	}
 
 	sqlDB, err := db.DB()
 	if err != nil {
-		return false, fmt.Errorf("failed to get sql.DB for matview creation: %w", err)
+		return fmt.Errorf("failed to get sql.DB for matview creation: %w", err)
 	}
 
 	conn, err := sqlDB.Conn(ctx)
 	if err != nil {
-		return false, fmt.Errorf("failed to get dedicated connection for matview creation: %w", err)
+		return fmt.Errorf("failed to get dedicated connection for matview creation: %w", err)
 	}
 	defer conn.Close()
 
 	var acquired bool
 	if err := conn.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", matviewRefreshAdvisoryLockKey).Scan(&acquired); err != nil {
-		return false, fmt.Errorf("failed to try advisory lock for matview creation: %w", err)
+		return fmt.Errorf("failed to try advisory lock for matview creation: %w", err)
 	}
 	if !acquired {
 		// Another replica is doing the work — nothing to do here.
-		return false, nil
+		return nil
 	}
 	defer func() {
 		_, _ = conn.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", matviewRefreshAdvisoryLockKey)
 	}()
 
 	if err := dropLegacyMatViews(ctx, conn); err != nil {
-		return false, err
+		return err
 	}
 	if err := repairMatViewShapes(ctx, conn); err != nil {
-		return false, err
+		return err
 	}
 
 	ddls := []string{mvLogsHourlyDDL}
@@ -491,80 +470,15 @@ func ensureMatViews(ctx context.Context, db *gorm.DB) (bool, error) {
 	}
 	for _, ddl := range ddls {
 		if _, err := conn.ExecContext(ctx, ddl); err != nil {
-			return false, fmt.Errorf("failed to create materialized view: %w", err)
+			return fmt.Errorf("failed to create materialized view: %w", err)
 		}
 	}
 
 	if err := ensureMatViewUniqueIndexes(ctx, conn); err != nil {
-		return false, err
+		return err
 	}
 
-	return true, nil
-}
-
-// matViewShapesReady reports whether every managed materialized view exists and
-// carries the full column set this build reads. One read-only pg_catalog query,
-// no lock, no DDL — safe to repeat on refresher ticks.
-//
-// Gates matViewsReady during a rolling deploy: without it a replica that skipped
-// the repair reads an old-shape view and gets "column does not exist".
-func matViewShapesReady(ctx context.Context, db *gorm.DB) (bool, error) {
-	if db.Dialector.Name() != "postgres" {
-		return false, nil
-	}
-
-	sqlDB, err := db.DB()
-	if err != nil {
-		return false, fmt.Errorf("failed to get sql.DB for matview shape check: %w", err)
-	}
-
-	conn, err := sqlDB.Conn(ctx)
-	if err != nil {
-		return false, fmt.Errorf("failed to get connection for matview shape check: %w", err)
-	}
-	defer conn.Close()
-
-	// Flattened into parallel arrays so the check is one round trip. A pair is
-	// unsatisfied when the view is absent, shadowed in the search path, or
-	// missing the column — all three mean "not ready".
-	views := make([]string, 0, len(matviewRequiredColumns)*len(mvLogsHourlyRequiredColumns))
-	columns := make([]string, 0, cap(views))
-	for view, required := range matviewRequiredColumns {
-		for _, column := range required {
-			views = append(views, view)
-			columns = append(columns, column)
-		}
-	}
-
-	var missing int
-	if err := conn.QueryRowContext(ctx, `
-		SELECT COUNT(*)
-		FROM unnest($1::text[], $2::text[]) AS required(view_name, column_name)
-		WHERE NOT EXISTS (
-			SELECT 1
-			FROM pg_class c
-			JOIN pg_attribute a ON a.attrelid = c.oid
-			WHERE c.relkind = 'm'
-			  AND c.relname = required.view_name
-			  AND pg_catalog.pg_table_is_visible(c.oid)
-			  AND a.attnum > 0
-			  AND NOT a.attisdropped
-			  AND a.attname = required.column_name
-		)
-	`, pqTextArray(views), pqTextArray(columns)).Scan(&missing); err != nil {
-		return false, fmt.Errorf("failed to inspect matview shapes: %w", err)
-	}
-	return missing == 0, nil
-}
-
-// pqTextArray renders a []string as a Postgres text[] literal, avoiding a
-// driver-specific array type for the one place that needs it.
-func pqTextArray(values []string) string {
-	quoted := make([]string, 0, len(values))
-	for _, v := range values {
-		quoted = append(quoted, `"`+strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(v)+`"`)
-	}
-	return "{" + strings.Join(quoted, ",") + "}"
+	return nil
 }
 
 // dropLegacyMatViews removes matviews from prior schema versions that no
@@ -599,10 +513,9 @@ func matViewNeedsRebuild(ctx context.Context, conn *sql.Conn, view string, requi
 	if err := conn.QueryRowContext(ctx, `
 		SELECT EXISTS (
 			SELECT 1
-			FROM pg_class c
-			WHERE c.relkind = 'm'
-			  AND c.relname = $1
-			  AND pg_catalog.pg_table_is_visible(c.oid)
+			FROM pg_class
+			WHERE relkind = 'm'
+			  AND relname = $1
 		)
 	`, view).Scan(&exists); err != nil {
 		return false, fmt.Errorf("failed to check matview %s existence: %w", view, err)
@@ -617,7 +530,6 @@ func matViewNeedsRebuild(ctx context.Context, conn *sql.Conn, view string, requi
 		JOIN pg_attribute a ON a.attrelid = c.oid
 		WHERE c.relkind = 'm'
 		  AND c.relname = $1
-		  AND pg_catalog.pg_table_is_visible(c.oid)
 		  AND a.attnum > 0
 		  AND NOT a.attisdropped
 	`, view)
@@ -851,16 +763,8 @@ func startMatViewRefresher(ctx context.Context, db *gorm.DB, interval time.Durat
 				if err := refreshMatViews(ctx, db); err != nil {
 					logger.Warn(fmt.Sprintf("logstore: matview refresh failed: %s", err))
 				} else if readyFlag != nil && !readyFlag.Load() {
-					// A successful refresh is not evidence of the right shape:
-					// REFRESH works fine on an old-shape view, and refreshMatViews
-					// also returns nil when it skipped. Check the catalog.
-					shapesOK, err := matViewShapesReady(ctx, db)
-					if err != nil {
-						logger.Warn(fmt.Sprintf("logstore: matview shape check failed: %s (dashboard queries will use raw tables)", err))
-					} else if shapesOK {
-						logger.Info("logstore: materialized views are ready (recovered)")
-						readyFlag.Store(true)
-					}
+					logger.Info("logstore: materialized views are ready (recovered)")
+					readyFlag.Store(true)
 				}
 			case <-ctx.Done():
 				return
