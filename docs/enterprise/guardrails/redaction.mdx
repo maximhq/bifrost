@@ -14,6 +14,7 @@ Bifrost-managed redaction is supported by:
 - [Secrets Detection](/enterprise/guardrails/secrets-detection)
 - [Microsoft Presidio](/integrations/guardrails/presidio)
 - [Azure AI Language PII](/integrations/guardrails/azure-language-pii)
+- [Lakera Guard](/integrations/guardrails/lakera)
 
 Each provider can produce findings with byte ranges and entity types such as `EMAIL`, `PHONE_NUMBER`, `AWS_ACCESS_TOKEN`, or a custom regex `entity_type`. Bifrost then applies the configured redaction action, strategy, and mode.
 
@@ -31,6 +32,8 @@ Bifrost-managed redaction is different from provider-managed transformation.
 Only one rewrite owner can apply to a given request or response phase. If the same phase produces both provider-managed transformed text and Bifrost-managed redaction findings, Bifrost fails closed with a guardrail intervention instead of trying to merge the two rewritten outputs. Bifrost also rejects multiple provider-managed transformed outputs for the same phase because the final replacement would be ambiguous.
 
 Detection-only and blocking guardrails can still run alongside Bifrost-managed redaction. The restriction applies when more than one guardrail path attempts to rewrite the same input or output content.
+
+Lakera Guard uses Bifrost-managed redaction, but its response shape is different from a local detector. Lakera returns optional message-content spans for supported findings, and Bifrost maps those spans back to the original text before applying the configured strategy and mode. Lakera documents maskable payload spans for PII, profanity, and custom regular-expression detectors. A flagged Lakera result without safely mappable spans fails closed instead of forwarding the original content.
 
 ## Actions
 
@@ -165,6 +168,7 @@ This section describes Bifrost's completed-trace export path. Integrations that 
 | Secrets Detection | `block` | `replace` | `runtime` |
 | Microsoft Presidio | `detect_only` | `replace` | `runtime` |
 | Azure AI Language PII | `detect_only` | `replace` | `runtime` |
+| Lakera Guard | `block` | `replace` | `runtime` |
 
 For redaction, set `action: "redact"` explicitly. Relying on defaults is usually the wrong move here, especially for Presidio and Azure AI Language PII.
 
@@ -174,5 +178,6 @@ For redaction, set `action: "redact"` explicitly. Relying on defaults is usually
 - Custom Regex uses Go's RE2-compatible regexp engine.
 - Overlapping findings are resolved into a non-overlapping set before replacement.
 - Bifrost-managed redaction cannot be combined with provider-managed transformed output for the same request or response phase.
+- Lakera tool-call arguments are screened but are not rewritten from Lakera message-content spans. A flagged argument that cannot be mapped safely fails closed in `redact` mode.
 - Input redaction cannot safely run together with raw-body passthrough transformations; Bifrost fails closed rather than forwarding an inconsistent payload.
 - If a request uses both input and output redaction, Bifrost carries replacements forward so raw log fields and exported trace content are redacted consistently.

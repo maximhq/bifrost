@@ -27,7 +27,7 @@ interface Props {
 
 // Batch API form field for all providers
 function BatchAPIFormField({ control }: { control: Control<any>; form: UseFormReturn<any> }) {
-	return (	
+	return (
 		<FormField
 			control={control}
 			name={`key.use_for_batch_api`}
@@ -60,8 +60,8 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 	const isVLLM = effectiveProvider === "vllm";
 	const isOllama = effectiveProvider === "ollama";
 	const isSGL = effectiveProvider === "sgl";
-    const isDeepseek = effectiveProvider === "deepseek";
-    const isFireworks = effectiveProvider === "fireworks";
+	const isDeepseek = effectiveProvider === "deepseek";
+	const isFireworks = effectiveProvider === "fireworks";
 	const isKeylessProvider = isOllama || isSGL;
 	const supportsBatchAPI = BATCH_SUPPORTED_PROVIDERS.includes(effectiveProvider);
 
@@ -777,12 +777,14 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 							<FormItem className="flex flex-row items-center justify-between rounded-sm border p-2">
 								<div className="space-y-1.5">
 									<FormLabel htmlFor="use-anthropic-endpoints-alias-override-switch">Use Anthropic Endpoints</FormLabel>
-									<FormDescription>
-										Routes chat completions and responses requests through Anthropic-compatible endpoints.
-									</FormDescription>
+									<FormDescription>Routes chat completions and responses requests through Anthropic-compatible endpoints.</FormDescription>
 								</div>
 								<FormControl>
-									<Switch id="use-anthropic-endpoints-alias-override-switch" checked={field.value ?? false} onCheckedChange={field.onChange} />
+									<Switch
+										id="use-anthropic-endpoints-alias-override-switch"
+										checked={field.value ?? false}
+										onCheckedChange={field.onChange}
+									/>
 								</FormControl>
 							</FormItem>
 						)}
