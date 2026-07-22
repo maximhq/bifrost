@@ -1,6 +1,7 @@
 package replicate
 
 import (
+	"fmt"
 	"strings"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -28,9 +29,9 @@ var modelInputImageFieldMap = map[string]string{
 }
 
 // ToReplicateImageGenerationInput converts a Bifrost image generation request to Replicate prediction input
-func ToReplicateImageGenerationInput(bifrostReq *schemas.BifrostImageGenerationRequest) *ReplicatePredictionRequest {
+func ToReplicateImageGenerationInput(bifrostReq *schemas.BifrostImageGenerationRequest) (*ReplicatePredictionRequest, error) {
 	if bifrostReq == nil || bifrostReq.Input == nil {
-		return nil
+		return nil, nil
 	}
 
 	input := &ReplicatePredictionRequestInput{
@@ -40,6 +41,19 @@ func ToReplicateImageGenerationInput(bifrostReq *schemas.BifrostImageGenerationR
 	// Map parameters if available
 	if bifrostReq.Params != nil {
 		params := bifrostReq.Params
+
+		// Map input images to the field name the target model expects
+		if len(params.InputImages) > 0 {
+			images := make([]string, 0, len(params.InputImages))
+			for _, img := range params.InputImages {
+				sanitizedURL, err := schemas.SanitizeImageURL(img)
+				if err != nil {
+					return nil, fmt.Errorf("invalid input image: %w", err)
+				}
+				images = append(images, sanitizedURL)
+			}
+			setInputImageField(input, bifrostReq.Model, images)
+		}
 
 		if bifrostReq.Params.N != nil {
 			input.NumberOfImages = bifrostReq.Params.N
@@ -111,7 +125,7 @@ func ToReplicateImageGenerationInput(bifrostReq *schemas.BifrostImageGenerationR
 		}
 	}
 
-	return request
+	return request, nil
 }
 
 // ToBifrostImageGenerationResponse converts a Replicate prediction response to Bifrost format
@@ -187,6 +201,28 @@ func getInputImageFieldName(model string) string {
 	return "input_images"
 }
 
+// setInputImageField assigns images to the input field the model expects.
+// Shared by the generation and edit paths so both stay in sync.
+func setInputImageField(input *ReplicatePredictionRequestInput, model string, images []string) {
+	switch getInputImageFieldName(model) {
+	case "image_prompt":
+		// For flux-1.1-pro variants: use first image as image_prompt
+		input.ImagePrompt = &images[0]
+
+	case "input_image":
+		// For flux-kontext variants: use first image as input_image
+		input.InputImage = &images[0]
+
+	case "image":
+		// For flux-dev variants: use first image as image field
+		input.Image = &images[0]
+
+	case "input_images":
+		// For all other models: use input_images array (preserves multi-image support)
+		input.InputImages = images
+	}
+}
+
 // ToReplicateImageEditInput converts a Bifrost image edit request to Replicate prediction input
 func ToReplicateImageEditInput(bifrostReq *schemas.BifrostImageEditRequest) *ReplicatePredictionRequest {
 	if bifrostReq == nil || bifrostReq.Input == nil {
@@ -207,26 +243,7 @@ func ToReplicateImageEditInput(bifrostReq *schemas.BifrostImageEditRequest) *Rep
 		}
 
 		if len(images) > 0 {
-			// Determine the appropriate field based on model
-			fieldName := getInputImageFieldName(bifrostReq.Model)
-
-			switch fieldName {
-			case "image_prompt":
-				// For flux-1.1-pro variants: use first image as image_prompt
-				input.ImagePrompt = &images[0]
-
-			case "input_image":
-				// For flux-kontext variants: use first image as input_image
-				input.InputImage = &images[0]
-
-			case "image":
-				// For flux-dev variants: use first image as image field
-				input.Image = &images[0]
-
-			case "input_images":
-				// For all other models: use input_images array (preserves multi-image support)
-				input.InputImages = images
-			}
+			setInputImageField(input, bifrostReq.Model, images)
 		}
 	}
 
