@@ -440,10 +440,19 @@ export default function VirtualKeysTable({
 
 		try {
 			const result = await bulkDeleteVirtualKeys({ ids }).unwrap();
-			setSelectedIds(new Set());
+			const failedIds = new Set(Object.keys(result.errors ?? {}));
+			setSelectedIds((prev) => {
+				const next = new Set(prev);
+				for (const id of ids) {
+					if (!failedIds.has(id)) {
+						next.delete(id);
+					}
+				}
+				return next;
+			});
 			setShowBulkDeleteDialog(false);
 
-			const failureCount = result.errors ? Object.keys(result.errors).length : 0;
+			const failureCount = failedIds.size;
 			if (failureCount > 0) {
 				toast.warning(`Deleted ${result.deleted} virtual keys. ${failureCount} failed.`);
 			} else {
