@@ -1,5 +1,7 @@
 import {
 	Budget,
+	BulkDeleteVirtualKeysRequest,
+	BulkDeleteVirtualKeysResponse,
 	BulkRotateVirtualKeysRequest,
 	BulkRotateVirtualKeysResponse,
 	CreateCustomerRequest,
@@ -126,6 +128,15 @@ export const governanceApi = baseApi.injectEndpoints({
 			query: (vkId) => ({
 				url: `/governance/virtual-keys/${vkId}`,
 				method: "DELETE",
+			}),
+			invalidatesTags: ["VirtualKeys", "ModelConfigs"],
+		}),
+
+		bulkDeleteVirtualKeys: builder.mutation<BulkDeleteVirtualKeysResponse, BulkDeleteVirtualKeysRequest>({
+			query: (data) => ({
+				url: "/governance/virtual-keys",
+				method: "DELETE",
+				body: data,
 			}),
 			invalidatesTags: ["VirtualKeys", "ModelConfigs"],
 		}),
@@ -864,6 +875,7 @@ export const {
 	useRotateVirtualKeyMutation,
 	useBulkRotateVirtualKeysMutation,
 	useDeleteVirtualKeyMutation,
+	useBulkDeleteVirtualKeysMutation,
 
 	// Teams
 	useGetTeamsQuery,

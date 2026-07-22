@@ -252,6 +252,10 @@ type BulkRotateVirtualKeysRequest struct {
 	IDs []string `json:"ids"`
 }
 
+type BulkDeleteVirtualKeysRequest struct {
+	IDs []string `json:"ids"`
+}
+
 // CreateBudgetRequest represents the request body for creating a budget
 type CreateBudgetRequest struct {
 	ID            string  `json:"id,omitempty"`
@@ -994,6 +998,7 @@ func (h *GovernanceHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 	r.GET("/api/governance/virtual-keys", lib.ChainMiddlewares(h.getVirtualKeys, middlewares...))
 	r.POST("/api/governance/virtual-keys", lib.ChainMiddlewares(h.createVirtualKey, middlewares...))
 	r.POST("/api/governance/virtual-keys/rotate", lib.ChainMiddlewares(h.rotateVirtualKeys, middlewares...))
+	r.DELETE("/api/governance/virtual-keys", lib.ChainMiddlewares(h.deleteVirtualKeys, middlewares...))
 	r.GET("/api/governance/virtual-keys/{vk_id}", lib.ChainMiddlewares(h.getVirtualKey, middlewares...))
 	r.PUT("/api/governance/virtual-keys/{vk_id}", lib.ChainMiddlewares(h.updateVirtualKey, middlewares...))
 	r.POST("/api/governance/virtual-keys/{vk_id}/rotate", lib.ChainMiddlewares(h.rotateVirtualKey, middlewares...))
@@ -2079,6 +2084,77 @@ func (h *GovernanceHandler) deleteVirtualKey(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, map[string]interface{}{
 		"message": "Virtual key deleted successfully",
 	})
+}
+
+// deleteVirtualKeys handles DELETE /api/governance/virtual-keys - Delete multiple virtual keys
+func (h *GovernanceHandler) deleteVirtualKeys(ctx *fasthttp.RequestCtx) {
+	var req BulkDeleteVirtualKeysRequest
+	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
+		SendError(ctx, 400, "Invalid JSON")
+		return
+	}
+	if len(req.IDs) == 0 {
+		SendError(ctx, 400, "At least one virtual key ID is required")
+		return
+	}
+
+	seen := make(map[string]struct{}, len(req.IDs))
+	ids := make([]string, 0, len(req.IDs))
+	for _, id := range req.IDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			SendError(ctx, 400, "Virtual key ID cannot be empty")
+			return
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+
+	deleted := 0
+	failures := make(map[string]string)
+	for _, id := range ids {
+		_, err := h.configStore.GetVirtualKey(ctx, id)
+		if err != nil {
+			if errors.Is(err, configstore.ErrNotFound) {
+				failures[id] = "virtual key not found"
+			} else {
+				failures[id] = err.Error()
+			}
+			continue
+		}
+
+		if err := h.configStore.DeleteVirtualKey(ctx, id); err != nil {
+			if errors.Is(err, configstore.ErrNotFound) {
+				failures[id] = "virtual key not found"
+			} else {
+				failures[id] = err.Error()
+			}
+			logger.Error("failed to delete virtual key %s: %v", id, err)
+			continue
+		}
+
+		if err := h.governanceManager.RemoveVirtualKey(ctx, id); err != nil {
+			logger.Error("failed to remove virtual key %s from memory: %v", id, err)
+		}
+		deleted++
+	}
+
+	response := map[string]interface{}{
+		"message": "Virtual keys deleted successfully",
+		"deleted": deleted,
+	}
+	if len(failures) > 0 {
+		response["errors"] = failures
+	}
+	if deleted == 0 {
+		response["message"] = "Failed to delete virtual keys"
+		SendJSONWithStatus(ctx, response, 500)
+		return
+	}
+	SendJSON(ctx, response)
 }
 
 // Team CRUD Operations

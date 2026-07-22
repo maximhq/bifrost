@@ -193,6 +193,16 @@ export interface BulkRotateVirtualKeysResponse {
 	errors?: Record<string, string>;
 }
 
+export interface BulkDeleteVirtualKeysRequest {
+	ids: string[];
+}
+
+export interface BulkDeleteVirtualKeysResponse {
+	message: string;
+	deleted: number;
+	errors?: Record<string, string>;
+}
+
 export interface CreateTeamRequest {
 	name: string;
 	customer_id?: string;
