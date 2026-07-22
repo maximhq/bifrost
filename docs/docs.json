@@ -331,7 +331,8 @@
                       "integrations/guardrails/google-model-armor",
                       "integrations/guardrails/crowdstrike-aidr",
                       "integrations/guardrails/grayswan",
-                      "integrations/guardrails/patronus-ai"
+                      "integrations/guardrails/patronus-ai",
+                      "integrations/guardrails/lakera"
                     ]
                   }
                 ]
@@ -560,7 +561,8 @@
               "integrations/guardrails/google-model-armor",
               "integrations/guardrails/crowdstrike-aidr",
               "integrations/guardrails/grayswan",
-              "integrations/guardrails/patronus-ai"
+              "integrations/guardrails/patronus-ai",
+              "integrations/guardrails/lakera"
             ]
           },
           {
