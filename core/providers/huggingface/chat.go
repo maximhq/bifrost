@@ -23,6 +23,13 @@ func sanitizeMessagesForHuggingFace(messages []schemas.ChatMessage) []schemas.Ch
 			Content:         msg.Content,
 			ChatToolMessage: msg.ChatToolMessage,
 		}
+		// The OpenAI-compatible wire has no tool-error field; strip is_error.
+		// Clone first — ChatToolMessage is shared with the caller's input.
+		if msg.ChatToolMessage != nil && msg.ChatToolMessage.IsError != nil {
+			toolMsgCopy := *msg.ChatToolMessage
+			toolMsgCopy.IsError = nil
+			sanitized[i].ChatToolMessage = &toolMsgCopy
+		}
 		// Only preserve ToolCalls from ChatAssistantMessage
 		if msg.ChatAssistantMessage != nil && len(msg.ChatAssistantMessage.ToolCalls) > 0 {
 			sanitized[i].ChatAssistantMessage = &schemas.ChatAssistantMessage{
