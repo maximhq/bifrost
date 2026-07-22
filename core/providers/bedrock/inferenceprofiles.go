@@ -19,7 +19,7 @@ const bedrockInferenceProfilesPath = "inference-profiles"
 // merge results from multiple keys: AWS pagination tokens belong to one
 // credential context and must be forwarded unchanged to the client.
 func (provider *BedrockProvider) ListInferenceProfiles(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostListInferenceProfilesRequest) (*schemas.BifrostListInferenceProfilesResponse, *schemas.BifrostError) {
-	if err := providerUtils.CheckOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.ListInferenceProfilesRequest); err != nil {
+	if err := providerUtils.CheckOperationAllowed(provider.GetProviderKey(), provider.customProviderConfig, schemas.ListInferenceProfilesRequest); err != nil {
 		return nil, err
 	}
 	if len(keys) == 0 {
@@ -33,7 +33,7 @@ func (provider *BedrockProvider) ListInferenceProfiles(ctx *schemas.BifrostConte
 // already selected key based on the profile identifier, so a guessed profile
 // cannot bypass normal model allow/deny policy.
 func (provider *BedrockProvider) GetInferenceProfile(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostGetInferenceProfileRequest) (*schemas.BifrostGetInferenceProfileResponse, *schemas.BifrostError) {
-	if err := providerUtils.CheckOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.GetInferenceProfileRequest); err != nil {
+	if err := providerUtils.CheckOperationAllowed(provider.GetProviderKey(), provider.customProviderConfig, schemas.GetInferenceProfileRequest); err != nil {
 		return nil, err
 	}
 	if !inferenceProfileAllowedForKey(request.InferenceProfileIdentifier, key) {
@@ -88,13 +88,8 @@ func (provider *BedrockProvider) listInferenceProfilesByKey(ctx *schemas.Bifrost
 	response.InferenceProfileSummaries = filterInferenceProfilesForKey(response.InferenceProfileSummaries, key)
 	response.ExtraFields.Latency = latency.Milliseconds()
 	response.ExtraFields.ProviderResponseHeaders = headers
-	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
-		var rawResponse interface{}
-		if err := sonic.Unmarshal(body, &rawResponse); err != nil {
-			return nil, providerUtils.NewBifrostOperationError("error parsing raw Bedrock inference profiles response", err)
-		}
-		response.ExtraFields.RawResponse = rawResponse
-	}
+	// Do not include the raw AWS response here. It contains unfiltered profiles
+	// and would bypass both provider-key and virtual-key model policy filtering.
 	return response, nil
 }
 

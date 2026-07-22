@@ -29,6 +29,7 @@ func TestListInferenceProfilesForwardsAWSQueryAndFiltersByKey(t *testing.T) {
 	defer server.Close()
 
 	provider := newTestProviderWithServer(t, server)
+	provider.sendBackRawResponse = true
 	key := testBedrockKey()
 	key.Models = schemas.WhiteList{"us.anthropic.claude-sonnet"}
 	maxResults := 1
@@ -46,6 +47,7 @@ func TestListInferenceProfilesForwardsAWSQueryAndFiltersByKey(t *testing.T) {
 	assert.Equal(t, "us.anthropic.claude-sonnet", response.InferenceProfileSummaries[0].InferenceProfileID)
 	require.NotNil(t, response.NextToken)
 	assert.Equal(t, "aws-next-token", *response.NextToken)
+	assert.Nil(t, response.ExtraFields.RawResponse, "raw AWS response must not bypass profile filtering")
 }
 
 func TestGetInferenceProfileUsesProfileIdentifierForPolicyAndAWSPath(t *testing.T) {
