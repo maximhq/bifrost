@@ -995,20 +995,17 @@ type BifrostMCPConnectRequest struct {
 // BifrostMCPPingRequest is intentionally empty: the wire ping rides over the existing
 // transport and has no per-call headers or parameters. Plugins observe via ClientName on
 // the parent BifrostMCPRequest and may short-circuit (synthetic healthy/unhealthy).
-type BifrostMCPPingRequest struct {
-}
+type BifrostMCPPingRequest struct{}
 
 // BifrostMCPListToolsRequest is intentionally empty for the same reason as ping: list_tools
 // reuses the existing transport's headers. Plugins observe via ClientName and may short-circuit
 // (e.g. cached tool list).
-type BifrostMCPListToolsRequest struct {
-}
+type BifrostMCPListToolsRequest struct{}
 
 // Keeping the stub for now, will be used from the next major bump when we remove the old ChatToolCall and ResponsesToolMessage fields.
 // Note that the tool name and arguments are not standardized in this struct yet since they are still being pulled from the old fields for backward compatibility,
 // but they will be standardized in the future when we remove the old fields.
-type BifrostMCPExecuteToolRequest struct {
-}
+type BifrostMCPExecuteToolRequest struct{}
 
 func (r *BifrostMCPRequest) GetToolName() string {
 	if r.ChatAssistantMessageToolCall != nil {
@@ -1619,8 +1616,7 @@ type MCPServerCapabilities struct {
 	Logging   bool `json:"logging"`   // server supports logging
 }
 
-type BifrostMCPPingResponse struct {
-}
+type BifrostMCPPingResponse struct{}
 
 type BifrostMCPListToolsResponse struct {
 	Tools           map[string]ChatTool // Discovered tools keyed by client-prefixed name
@@ -1638,8 +1634,7 @@ type SkippedMCPTool struct {
 
 // Keeping the stub for now, will be used from the next major bump when we move ChatMessage
 // and ResponsesMessage into this struct.
-type BifrostMCPExecuteToolResponse struct {
-}
+type BifrostMCPExecuteToolResponse struct{}
 
 // PopulateExtraFields backfills ExtraFields.{MCPRequestType, ClientName, ToolName}
 // when they aren't already set on the response. Mirrors BifrostResponse.PopulateExtraFields
@@ -1812,6 +1807,42 @@ type BifrostError struct {
 	AllowFallbacks *bool                   `json:"-"` // Optional: Controls fallback behavior (nil = true by default)
 	StreamControl  *StreamControl          `json:"-"` // Optional: Controls stream behavior
 	ExtraFields    BifrostErrorExtraFields `json:"extra_fields"`
+
+	// Response carries the full upstream Response object for a mid-stream
+	// OpenAI Responses-API "response.failed" event, so the client-facing SSE
+	// payload matches OpenAI's real wire shape (a "response" object, not a
+	// wrapped error) instead of being flattened into just .Error. Nil/omitted
+	// for every other error and provider — populated only by the OpenAI
+	// Responses-stream handler, and only for the native OpenAI provider.
+	Response *BifrostResponsesResponse `json:"response,omitempty"`
+
+	// SequenceNumber mirrors the upstream response.failed event's own
+	// sequence_number. Only meaningful (and only set) alongside Response.
+	SequenceNumber *int `json:"-"`
+}
+
+// MarshalJSON implements custom JSON marshaling for BifrostError.
+// When Response is set (currently only the OpenAI Responses-stream
+// response.failed case), the client-facing payload is OpenAI's own
+// "response.failed" event shape (type/response/sequence_number) instead of
+// Bifrost's generic wrapped-error envelope — the official SDK's typed
+// parsing for that event expects a "response" object, not .error/.extra_fields.
+// Every other error (Response nil) marshals exactly as before.
+func (e BifrostError) MarshalJSON() ([]byte, error) {
+	if e.Response != nil {
+		type responseFailedShape struct {
+			Type           *string                   `json:"type,omitempty"`
+			Response       *BifrostResponsesResponse `json:"response,omitempty"`
+			SequenceNumber *int                      `json:"sequence_number,omitempty"`
+		}
+		return MarshalSorted(&responseFailedShape{
+			Type:           e.Type,
+			Response:       e.Response,
+			SequenceNumber: e.SequenceNumber,
+		})
+	}
+	type Alias BifrostError
+	return MarshalSorted((Alias)(e))
 }
 
 // PopulateExtraFields sets RequestType, Provider, OriginalModelRequested, and ResolvedModelUsed on the

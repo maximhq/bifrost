@@ -1936,9 +1936,11 @@ func HandleOpenAIResponsesStreaming(
 						}
 					}
 
-					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+					// We don't close the stream here since OpenAI follow a mid-stream
+					// "error" event with a terminal "response.failed" event carrying
+					// the full Response object.
 					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, []byte(jsonData), sendBackRawRequest, sendBackRawResponse, latency), responseChan, logger, postHookSpanFinalizer)
-					return
+					continue
 				}
 
 				// Some providers (e.g. Fireworks) send response.failed on HTTP 200 streams
@@ -1952,6 +1954,8 @@ func HandleOpenAIResponsesStreaming(
 					if response.Response != nil && response.Response.Error != nil {
 						bifrostErr.Error.Message = response.Response.Error.Message
 						bifrostErr.Error.Code = &response.Response.Error.Code
+						bifrostErr.Response = response.Response
+						bifrostErr.SequenceNumber = new(response.SequenceNumber)
 					}
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, []byte(jsonData), sendBackRawRequest, sendBackRawResponse, latency), responseChan, logger, postHookSpanFinalizer)
