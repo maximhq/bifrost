@@ -2812,3 +2812,110 @@ func TestMigrationAddDualCredentialConflictBehaviorColumn(t *testing.T) {
 	require.NoError(t, migrationAddDualCredentialConflictBehaviorColumn(ctx, db, testMigrationLogger),
 		"re-running the migration should be idempotent")
 }
+
+func TestGenerateKeyHashGigaChatKeyConfigFields(t *testing.T) {
+	newKey := func() schemas.Key {
+		return schemas.Key{
+			Name:   "gigachat-key",
+			Value:  *schemas.NewSecretVar("unused"),
+			Weight: 1,
+			GigaChatKeyConfig: &schemas.GigaChatKeyConfig{
+				Credentials:  schemas.NewSecretVar("credentials"),
+				Scope:        schemas.DefaultGigaChatScope,
+				User:         schemas.NewSecretVar("user"),
+				Password:     schemas.NewSecretVar("password"),
+				AccessToken:  schemas.NewSecretVar("access-token"),
+				AuthURL:      "https://auth.example.com",
+				BaseURL:      "https://api.example.com",
+				CertFile:     "/tls/client.pem",
+				KeyFile:      "/tls/client.key",
+				CABundleFile: "/tls/ca.pem",
+			},
+		}
+	}
+
+	baseHash, err := GenerateKeyHash(newKey())
+	require.NoError(t, err)
+
+	tests := []struct {
+		name   string
+		mutate func(*schemas.GigaChatKeyConfig)
+	}{
+		{"credentials", func(config *schemas.GigaChatKeyConfig) { config.Credentials = schemas.NewSecretVar("new-credentials") }},
+		{"scope", func(config *schemas.GigaChatKeyConfig) { config.Scope = "GIGACHAT_API_CORP" }},
+		{"user", func(config *schemas.GigaChatKeyConfig) { config.User = schemas.NewSecretVar("new-user") }},
+		{"password", func(config *schemas.GigaChatKeyConfig) { config.Password = schemas.NewSecretVar("new-password") }},
+		{"access token", func(config *schemas.GigaChatKeyConfig) { config.AccessToken = schemas.NewSecretVar("new-access-token") }},
+		{"auth URL", func(config *schemas.GigaChatKeyConfig) { config.AuthURL = "https://new-auth.example.com" }},
+		{"base URL", func(config *schemas.GigaChatKeyConfig) { config.BaseURL = "https://new-api.example.com" }},
+		{"certificate file", func(config *schemas.GigaChatKeyConfig) { config.CertFile = "/tls/new-client.pem" }},
+		{"key file", func(config *schemas.GigaChatKeyConfig) { config.KeyFile = "/tls/new-client.key" }},
+		{"CA bundle file", func(config *schemas.GigaChatKeyConfig) { config.CABundleFile = "/tls/new-ca.pem" }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			key := newKey()
+			tt.mutate(key.GigaChatKeyConfig)
+			changedHash, err := GenerateKeyHash(key)
+			require.NoError(t, err)
+			require.NotEqual(t, baseHash, changedHash)
+		})
+	}
+}
+
+func TestMigrationAddGigaChatKeyConfigColumnBackfillsHashes(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&tables.TableKey{}))
+
+	weight := 1.0
+	enabled := true
+	gigaChatKey := tables.TableKey{
+		Name:       "gigachat-key",
+		ProviderID: 1,
+		Provider:   string(schemas.GigaChat),
+		KeyID:      "gigachat-key-id",
+		Value:      *schemas.NewSecretVar("unused"),
+		Models:     schemas.WhiteList{"*"},
+		Weight:     &weight,
+		Enabled:    &enabled,
+		GigaChatKeyConfig: &schemas.GigaChatKeyConfig{
+			Credentials:  schemas.NewSecretVar("credentials"),
+			AccessToken:  schemas.NewSecretVar("access-token"),
+			CertFile:     "/tls/client.pem",
+			KeyFile:      "/tls/client.key",
+			CABundleFile: "/tls/ca.pem",
+		},
+		ConfigHash: "stale-gigachat-hash",
+	}
+	require.NoError(t, db.Create(&gigaChatKey).Error)
+
+	openAIKey := tables.TableKey{
+		Name:       "openai-key",
+		ProviderID: 2,
+		Provider:   string(schemas.OpenAI),
+		KeyID:      "openai-key-id",
+		Value:      *schemas.NewSecretVar("sk-test"),
+		Models:     schemas.WhiteList{"*"},
+		Weight:     &weight,
+		Enabled:    &enabled,
+		ConfigHash: "untouched-openai-hash",
+	}
+	require.NoError(t, db.Create(&openAIKey).Error)
+
+	require.NoError(t, migrationAddGigaChatKeyConfigColumn(context.Background(), db, testMigrationLogger))
+
+	var migrated tables.TableKey
+	require.NoError(t, db.First(&migrated, gigaChatKey.ID).Error)
+	expectedHash, err := GenerateKeyHash(schemaKeyFromTableKey(migrated))
+	require.NoError(t, err)
+	require.Equal(t, expectedHash, migrated.ConfigHash)
+	require.NotEqual(t, "stale-gigachat-hash", migrated.ConfigHash)
+
+	var untouched tables.TableKey
+	require.NoError(t, db.First(&untouched, openAIKey.ID).Error)
+	require.Equal(t, "untouched-openai-hash", untouched.ConfigHash)
+}

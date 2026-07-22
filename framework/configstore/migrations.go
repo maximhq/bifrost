@@ -7255,6 +7255,26 @@ func migrationAddGigaChatKeyConfigColumn(ctx context.Context, db *gorm.DB, logge
 					return err
 				}
 			}
+
+			// GigaChatKeyConfig is part of GenerateKeyHash. Refresh existing GigaChat
+			// rows so reconciliation compares config.json against the complete stored
+			// key configuration after this column becomes available.
+			var affectedKeys []tables.TableKey
+			if err := tx.Where("provider = ?", string(schemas.GigaChat)).Find(&affectedKeys).Error; err != nil {
+				return fmt.Errorf("failed to fetch GigaChat keys for hash recomputation: %w", err)
+			}
+			logger.Info("[configstore] %s: processing %d affectedKeys", migrationName, len(affectedKeys))
+			for _, key := range affectedKeys {
+				hash, err := GenerateKeyHash(schemaKeyFromTableKey(key))
+				if err != nil {
+					return fmt.Errorf("failed to generate hash for GigaChat key %s: %w", key.Name, err)
+				}
+				if err := tx.Model(&tables.TableKey{}).
+					Where("id = ?", key.ID).
+					Update("config_hash", hash).Error; err != nil {
+					return fmt.Errorf("failed to update config_hash for GigaChat key %s: %w", key.Name, err)
+				}
+			}
 			return nil
 		},
 		Rollback: func(tx *gorm.DB) error {

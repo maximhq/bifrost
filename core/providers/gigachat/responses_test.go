@@ -735,14 +735,13 @@ func testGigaChatResponsesStructuredOutput(t *testing.T) {
 	strict := true
 	formatName := "WeatherAnswer"
 	formatDescription := "Weather response."
-	sourceSchema := map[string]interface{}{
-		"type": "object",
-		"properties": map[string]interface{}{
-			"answer": map[string]interface{}{"type": "string"},
-		},
-		"required": []interface{}{"answer"},
-	}
-	rawSchema := any(sourceSchema)
+	sourceSchema := schemas.NewOrderedMapFromPairs(
+		schemas.KV("type", "object"),
+		schemas.KV("properties", schemas.NewOrderedMapFromPairs(
+			schemas.KV("answer", schemas.NewOrderedMapFromPairs(schemas.KV("type", "string"))),
+		)),
+		schemas.KV("required", []string{"answer"}),
+	)
 	request := &schemas.BifrostResponsesRequest{
 		Model: "GigaChat-2-Pro",
 		Input: []schemas.ResponsesMessage{{
@@ -757,7 +756,7 @@ func testGigaChatResponsesStructuredOutput(t *testing.T) {
 					Description: &formatDescription,
 					Strict:      &strict,
 					JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
-						Schema: &rawSchema,
+						Schema: &schemas.JSONSchemaOrBool{SchemaMap: sourceSchema},
 					},
 				},
 			},
@@ -772,20 +771,23 @@ func testGigaChatResponsesStructuredOutput(t *testing.T) {
 	if responseFormat == nil || responseFormat.Type != "json_schema" || responseFormat.Strict == nil || !*responseFormat.Strict {
 		t.Fatalf("response format mismatch: %#v", responseFormat)
 	}
-	schemaMap, ok := responseFormat.Schema.(map[string]interface{})
+	schemaMap, ok := responseFormat.Schema.(*schemas.OrderedMap)
 	if !ok {
 		t.Fatalf("response schema has unexpected type: %#v", responseFormat.Schema)
 	}
-	if schemaMap["title"] != formatName || schemaMap["description"] != formatDescription {
+	title, _ := schemaMap.Get("title")
+	description, _ := schemaMap.Get("description")
+	if title != formatName || description != formatDescription {
 		t.Fatalf("schema metadata mismatch: %#v", schemaMap)
 	}
-	if schemaMap["type"] != "object" {
+	schemaType, _ := schemaMap.Get("type")
+	if schemaType != "object" {
 		t.Fatalf("schema type mismatch: %#v", schemaMap)
 	}
-	if _, exists := sourceSchema["title"]; exists {
+	if _, exists := sourceSchema.Get("title"); exists {
 		t.Fatalf("source schema was mutated with title metadata: %#v", sourceSchema)
 	}
-	if _, exists := sourceSchema["description"]; exists {
+	if _, exists := sourceSchema.Get("description"); exists {
 		t.Fatalf("source schema was mutated with description metadata: %#v", sourceSchema)
 	}
 }
