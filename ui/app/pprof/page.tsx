@@ -1,19 +1,7 @@
 import { useGetDevGoroutinesQuery, useGetDevPprofQuery } from "@/lib/store";
 import type { AllocationInfo, GoroutineGroup } from "@/lib/store/apis/devApi";
-import {
-	Activity,
-	AlertTriangle,
-	ArrowDown,
-	ArrowUp,
-	ChevronDown,
-	ChevronRight,
-	Cpu,
-	EyeOff,
-	HardDrive,
-	RefreshCw,
-	RotateCcw,
-	TrendingUp,
-} from "lucide-react";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Activity, AlertTriangle, ArrowDown, ArrowUp, Cpu, EyeOff, HardDrive, RefreshCw, RotateCcw, TrendingUp } from "lucide-react";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
@@ -256,14 +244,154 @@ function StatCard({
 	);
 }
 
+function StackTraceBlock({ stack }: { stack: string[] }) {
+	return (
+		<div>
+			<div className="mb-2 text-xs font-medium text-zinc-500">Stack Trace</div>
+			<div className="max-h-[52vh] space-y-0.5 overflow-y-auto rounded border border-zinc-800 bg-zinc-950 p-3 font-mono text-xs">
+				{stack.map((line, j) => (
+					<div key={j} className="break-all text-zinc-400">
+						{line}
+					</div>
+				))}
+			</div>
+		</div>
+	);
+}
+
+function DetailStat({ label, value, className = "text-zinc-300" }: { label: string; value: React.ReactNode; className?: string }) {
+	return (
+		<div className="rounded border border-zinc-800 bg-zinc-950 px-3 py-2">
+			<div className="text-xs text-zinc-500">{label}</div>
+			<div className={`mt-1 font-mono text-sm ${className}`}>{value}</div>
+		</div>
+	);
+}
+
+function AllocationDetailsDialog({
+	allocation,
+	title,
+	bytesColorClass = "text-rose-400",
+	onOpenChange,
+}: {
+	allocation: AllocationInfo | null;
+	title: string;
+	bytesColorClass?: string;
+	onOpenChange: (open: boolean) => void;
+}) {
+	return (
+		<Dialog open={allocation !== null} onOpenChange={onOpenChange}>
+			<DialogContent className="border-zinc-800 bg-zinc-900 text-zinc-100 sm:max-w-4xl">
+				{allocation && (
+					<>
+						<DialogHeader>
+							<DialogTitle>{title}</DialogTitle>
+							<DialogDescription>
+								<code className="break-all text-zinc-400">{allocation.function}</code>
+							</DialogDescription>
+						</DialogHeader>
+						<div className="grid gap-3 sm:grid-cols-3">
+							<DetailStat label="Bytes" value={formatBytes(allocation.bytes)} className={bytesColorClass} />
+							<DetailStat label="Count" value={allocation.count.toLocaleString()} />
+							<DetailStat label="File" value={`${allocation.file}:${allocation.line}`} />
+						</div>
+						<StackTraceBlock stack={allocation.stack ?? []} />
+					</>
+				)}
+			</DialogContent>
+		</Dialog>
+	);
+}
+
+function LeakDetailsDialog({ candidate, onOpenChange }: { candidate: LeakCandidate | null; onOpenChange: (open: boolean) => void }) {
+	return (
+		<Dialog open={candidate !== null} onOpenChange={onOpenChange}>
+			<DialogContent className="border-zinc-800 bg-zinc-900 text-zinc-100 sm:max-w-4xl">
+				{candidate && (
+					<>
+						<DialogHeader>
+							<DialogTitle>Potential Leak Details</DialogTitle>
+							<DialogDescription>
+								<code className="break-all text-zinc-400">{candidate.function}</code>
+							</DialogDescription>
+						</DialogHeader>
+						<div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+							<DetailStat
+								label="Severity"
+								value={
+									<span className={`rounded border px-2 py-0.5 text-xs uppercase ${getLeakSeverityClasses(candidate.severity)}`}>
+										{candidate.severity}
+									</span>
+								}
+							/>
+							<DetailStat label="Live" value={formatBytes(candidate.liveBytes)} className="text-emerald-400" />
+							<DetailStat label="Cumulative" value={formatBytes(candidate.cumulativeBytes)} />
+							<DetailStat
+								label="Retention"
+								value={`${(candidate.retention * 100).toFixed(1)}%`}
+								className={getRetentionColor(candidate.retention)}
+							/>
+							<DetailStat label="Live Count" value={candidate.liveCount.toLocaleString()} />
+							<DetailStat
+								label="Trend"
+								value={candidate.isGrowing ? `+${formatBytes(candidate.growthBytes)}` : "stable"}
+								className={candidate.isGrowing ? "text-rose-400" : "text-zinc-400"}
+							/>
+							<DetailStat label="File" value={`${candidate.file}:${candidate.line}`} />
+							{candidate.samples.length >= 2 && (
+								<DetailStat
+									label={`Last ${candidate.samples.length * 10}s`}
+									value={candidate.samples.map((b) => formatBytes(b)).join(" -> ")}
+								/>
+							)}
+						</div>
+						<StackTraceBlock stack={candidate.stack} />
+					</>
+				)}
+			</DialogContent>
+		</Dialog>
+	);
+}
+
+function GoroutineDetailsDialog({ group, onOpenChange }: { group: GoroutineGroup | null; onOpenChange: (open: boolean) => void }) {
+	return (
+		<Dialog open={group !== null} onOpenChange={onOpenChange}>
+			<DialogContent className="border-zinc-800 bg-zinc-900 text-zinc-100 sm:max-w-4xl">
+				{group && (
+					<>
+						<DialogHeader>
+							<DialogTitle>Goroutine Details</DialogTitle>
+							<DialogDescription>
+								<code className="break-all text-zinc-400">{group.top_func}</code>
+							</DialogDescription>
+						</DialogHeader>
+						<div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+							<DetailStat
+								label="Category"
+								value={<span className={`rounded border px-2 py-0.5 text-xs ${getCategoryColor(group.category)}`}>{group.category}</span>}
+							/>
+							<DetailStat label="Count" value={`${group.count}x`} />
+							<DetailStat label="State" value={group.state} />
+							{group.wait_minutes != null && group.wait_minutes > 0 && (
+								<DetailStat label="Waiting" value={`${group.wait_minutes}m`} className="text-amber-400" />
+							)}
+							{group.wait_reason && <DetailStat label="Wait Reason" value={group.wait_reason} className="text-amber-400" />}
+						</div>
+						<StackTraceBlock stack={group.stack} />
+					</>
+				)}
+			</DialogContent>
+		</Dialog>
+	);
+}
+
 // Allocation Table Component
 function AllocationTable({
 	allocations,
 	sortField,
 	sortDirection,
 	onSort,
-	expandedKeys,
-	onToggle,
+	onSelect,
 	bytesColorClass = "text-rose-400",
 	testIdPrefix = "pprof-sort",
 }: {
@@ -271,8 +399,7 @@ function AllocationTable({
 	sortField: AllocationSortField;
 	sortDirection: SortDirection;
 	onSort: (field: AllocationSortField) => void;
-	expandedKeys: Set<string>;
-	onToggle: (key: string) => void;
+	onSelect: (allocation: AllocationInfo) => void;
 	bytesColorClass?: string;
 	testIdPrefix?: string;
 }) {
@@ -301,7 +428,6 @@ function AllocationTable({
 			<table className="w-full">
 				<thead>
 					<tr className="border-b border-zinc-800">
-						<th scope="col" className="w-8 px-2 py-3" aria-label="Expand" />
 						<SortHeader field="function">Function</SortHeader>
 						<SortHeader field="file">File:Line</SortHeader>
 						<SortHeader field="bytes">Bytes</SortHeader>
@@ -312,72 +438,45 @@ function AllocationTable({
 					{allocations.map((alloc) => {
 						const hasStack = alloc.stack && alloc.stack.length > 0;
 						const key = hasStack ? makeStackKey(alloc.stack) : `${alloc.function}:${alloc.file}:${alloc.line}`;
-						const isExpanded = expandedKeys.has(key);
 						return (
-							<React.Fragment key={key}>
-								<tr
-									role={hasStack ? "button" : undefined}
-									tabIndex={hasStack ? 0 : undefined}
-									aria-expanded={hasStack ? isExpanded : undefined}
-									onClick={hasStack ? () => onToggle(key) : undefined}
-									onKeyDown={
-										hasStack
-											? (e) => {
-													if (e.key === "Enter" || e.key === " ") {
-														e.preventDefault();
-														onToggle(key);
-													}
+							<tr
+								key={key}
+								role={hasStack ? "button" : undefined}
+								tabIndex={hasStack ? 0 : undefined}
+								onClick={hasStack ? () => onSelect(alloc) : undefined}
+								onKeyDown={
+									hasStack
+										? (e) => {
+												if (e.key === "Enter" || e.key === " ") {
+													e.preventDefault();
+													onSelect(alloc);
 												}
-											: undefined
-									}
-									data-testid="pprof-alloc-row"
-									className={`border-b border-zinc-800/50 hover:bg-zinc-800/30 ${hasStack ? "cursor-pointer" : ""}`}
-								>
-									<td className="w-8 px-2 py-3 align-top">
-										{hasStack ? (
-											isExpanded ? (
-												<ChevronDown className="h-4 w-4 text-zinc-500" />
-											) : (
-												<ChevronRight className="h-4 w-4 text-zinc-500" />
-											)
-										) : null}
-									</td>
-									<td className="px-4 py-3">
-										<code className="text-sm break-all text-zinc-200">{alloc.function}</code>
-									</td>
-									<td className="px-4 py-3">
-										<code className="text-sm text-zinc-400">
-											{alloc.file}:{alloc.line}
-										</code>
-									</td>
-									<td className="px-4 py-3">
-										<span className={`font-mono text-sm ${bytesColorClass}`}>{formatBytes(alloc.bytes)}</span>
-									</td>
-									<td className="px-4 py-3">
-										<span className="font-mono text-sm text-zinc-300">{alloc.count.toLocaleString()}</span>
-									</td>
-								</tr>
-								{isExpanded && hasStack && (
-									<tr className="border-b border-zinc-800/50 bg-zinc-900/50">
-										<td />
-										<td colSpan={4} className="px-4 py-3">
-											<div className="mb-2 text-xs font-medium text-zinc-500">Stack Trace</div>
-											<div className="space-y-0.5 font-mono text-xs">
-												{alloc.stack.map((line, j) => (
-													<div key={j} className="break-all text-zinc-400">
-														{line}
-													</div>
-												))}
-											</div>
-										</td>
-									</tr>
-								)}
-							</React.Fragment>
+											}
+										: undefined
+								}
+								data-testid="pprof-alloc-row"
+								className={`border-b border-zinc-800/50 hover:bg-zinc-800/30 ${hasStack ? "cursor-pointer" : ""}`}
+							>
+								<td className="px-4 py-3">
+									<code className="text-sm break-all text-zinc-200">{alloc.function}</code>
+								</td>
+								<td className="px-4 py-3">
+									<code className="text-sm text-zinc-400">
+										{alloc.file}:{alloc.line}
+									</code>
+								</td>
+								<td className="px-4 py-3">
+									<span className={`font-mono text-sm ${bytesColorClass}`}>{formatBytes(alloc.bytes)}</span>
+								</td>
+								<td className="px-4 py-3">
+									<span className="font-mono text-sm text-zinc-300">{alloc.count.toLocaleString()}</span>
+								</td>
+							</tr>
 						);
 					})}
 					{allocations.length === 0 && (
 						<tr>
-							<td colSpan={5} className="px-4 py-8 text-center text-zinc-500">
+							<td colSpan={4} className="px-4 py-8 text-center text-zinc-500">
 								No allocations data available
 							</td>
 						</tr>
@@ -389,21 +488,12 @@ function AllocationTable({
 }
 
 // Leak Candidates Table
-function LeakTable({
-	candidates,
-	expandedKeys,
-	onToggle,
-}: {
-	candidates: LeakCandidate[];
-	expandedKeys: Set<string>;
-	onToggle: (key: string) => void;
-}) {
+function LeakTable({ candidates, onSelect }: { candidates: LeakCandidate[]; onSelect: (candidate: LeakCandidate) => void }) {
 	return (
 		<div className="overflow-x-auto">
 			<table className="w-full">
 				<thead>
 					<tr className="border-b border-zinc-800">
-						<th scope="col" className="w-8 px-2 py-3" aria-label="Expand" />
 						<th scope="col" className="px-4 py-3 text-left text-sm font-medium text-zinc-400">
 							Severity
 						</th>
@@ -430,93 +520,56 @@ function LeakTable({
 				<tbody>
 					{candidates.map((c) => {
 						const rowKey = c.key;
-						const isExpanded = expandedKeys.has(rowKey);
 						return (
-							<React.Fragment key={rowKey}>
-								<tr
-									role="button"
-									tabIndex={0}
-									aria-expanded={isExpanded}
-									onClick={() => onToggle(rowKey)}
-									onKeyDown={(e) => {
-										if (e.key === "Enter" || e.key === " ") {
-											e.preventDefault();
-											onToggle(rowKey);
-										}
-									}}
-									data-testid="pprof-leak-row"
-									className="cursor-pointer border-b border-zinc-800/50 hover:bg-zinc-800/30"
-								>
-									<td className="w-8 px-2 py-3 align-top">
-										{isExpanded ? <ChevronDown className="h-4 w-4 text-zinc-500" /> : <ChevronRight className="h-4 w-4 text-zinc-500" />}
-									</td>
-									<td className="px-4 py-3">
-										<span className={`rounded border px-2 py-0.5 text-xs uppercase ${getLeakSeverityClasses(c.severity)}`}>
-											{c.severity}
+							<tr
+								key={rowKey}
+								role="button"
+								tabIndex={0}
+								onClick={() => onSelect(c)}
+								onKeyDown={(e) => {
+									if (e.key === "Enter" || e.key === " ") {
+										e.preventDefault();
+										onSelect(c);
+									}
+								}}
+								data-testid="pprof-leak-row"
+								className="cursor-pointer border-b border-zinc-800/50 hover:bg-zinc-800/30"
+							>
+								<td className="px-4 py-3">
+									<span className={`rounded border px-2 py-0.5 text-xs uppercase ${getLeakSeverityClasses(c.severity)}`}>{c.severity}</span>
+								</td>
+								<td className="px-4 py-3">
+									<code className="text-sm break-all text-zinc-200">{c.function}</code>
+								</td>
+								<td className="px-4 py-3">
+									<code className="text-sm text-zinc-400">
+										{c.file}:{c.line}
+									</code>
+								</td>
+								<td className="px-4 py-3">
+									<span className="font-mono text-sm text-emerald-400">{formatBytes(c.liveBytes)}</span>
+								</td>
+								<td className="px-4 py-3">
+									<span className={`font-mono text-sm ${getRetentionColor(c.retention)}`}>{(c.retention * 100).toFixed(0)}%</span>
+								</td>
+								<td className="px-4 py-3">
+									{c.isGrowing ? (
+										<span className="flex items-center gap-1 text-xs text-rose-400">
+											<TrendingUp className="h-3 w-3" />+{formatBytes(c.growthBytes)}
 										</span>
-									</td>
-									<td className="px-4 py-3">
-										<code className="text-sm break-all text-zinc-200">{c.function}</code>
-									</td>
-									<td className="px-4 py-3">
-										<code className="text-sm text-zinc-400">
-											{c.file}:{c.line}
-										</code>
-									</td>
-									<td className="px-4 py-3">
-										<span className="font-mono text-sm text-emerald-400">{formatBytes(c.liveBytes)}</span>
-									</td>
-									<td className="px-4 py-3">
-										<span className={`font-mono text-sm ${getRetentionColor(c.retention)}`}>{(c.retention * 100).toFixed(0)}%</span>
-									</td>
-									<td className="px-4 py-3">
-										{c.isGrowing ? (
-											<span className="flex items-center gap-1 text-xs text-rose-400">
-												<TrendingUp className="h-3 w-3" />+{formatBytes(c.growthBytes)}
-											</span>
-										) : (
-											<span className="text-xs text-zinc-500">stable</span>
-										)}
-									</td>
-									<td className="px-4 py-3">
-										<span className="font-mono text-sm text-zinc-300">{c.liveCount.toLocaleString()}</span>
-									</td>
-								</tr>
-								{isExpanded && (
-									<tr className="border-b border-zinc-800/50 bg-zinc-900/50">
-										<td />
-										<td colSpan={7} className="px-4 py-3">
-											<div className="mb-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-zinc-500">
-												<span>
-													Cumulative: <span className="text-zinc-300">{formatBytes(c.cumulativeBytes)}</span>
-												</span>
-												<span>
-													Retained: <span className="text-zinc-300">{(c.retention * 100).toFixed(1)}%</span>
-												</span>
-												{c.samples.length >= 2 && (
-													<span>
-														Last {c.samples.length * 10}s:{" "}
-														<span className="text-zinc-300">{c.samples.map((b) => formatBytes(b)).join(" → ")}</span>
-													</span>
-												)}
-											</div>
-											<div className="mb-2 text-xs font-medium text-zinc-500">Stack Trace</div>
-											<div className="space-y-0.5 font-mono text-xs">
-												{c.stack.map((line, j) => (
-													<div key={j} className="break-all text-zinc-400">
-														{line}
-													</div>
-												))}
-											</div>
-										</td>
-									</tr>
-								)}
-							</React.Fragment>
+									) : (
+										<span className="text-xs text-zinc-500">stable</span>
+									)}
+								</td>
+								<td className="px-4 py-3">
+									<span className="font-mono text-sm text-zinc-300">{c.liveCount.toLocaleString()}</span>
+								</td>
+							</tr>
 						);
 					})}
 					{candidates.length === 0 && (
 						<tr>
-							<td colSpan={8} className="px-4 py-8 text-center text-zinc-500">
+							<td colSpan={7} className="px-4 py-8 text-center text-zinc-500">
 								No obvious leak signatures — all live allocations have normal retention ratios.
 							</td>
 						</tr>
@@ -528,37 +581,23 @@ function LeakTable({
 }
 
 // Goroutine Group Component
-function GoroutineGroupRow({
-	group,
-	isExpanded,
-	onToggle,
-	onSkip,
-}: {
-	group: GoroutineGroup;
-	isExpanded: boolean;
-	onToggle: () => void;
-	onSkip: (filePath: string) => void;
-}) {
+function GoroutineGroupRow({ group, onOpen, onSkip }: { group: GoroutineGroup; onOpen: () => void; onSkip: (filePath: string) => void }) {
 	return (
 		<div className="border-b border-zinc-800/50">
 			<div
 				role="button"
 				tabIndex={0}
-				onClick={onToggle}
+				onClick={onOpen}
 				onKeyDown={(e) => {
 					if (e.target !== e.currentTarget) return;
 					if (e.key === "Enter" || e.key === " ") {
 						e.preventDefault();
-						onToggle();
+						onOpen();
 					}
 				}}
-				aria-expanded={isExpanded}
 				data-testid="pprof-goroutine-toggle"
 				className="group flex w-full cursor-pointer items-start gap-3 px-4 py-3 hover:bg-zinc-800/30"
 			>
-				<div className="mt-1 shrink-0">
-					{isExpanded ? <ChevronDown className="h-4 w-4 text-zinc-500" /> : <ChevronRight className="h-4 w-4 text-zinc-500" />}
-				</div>
 				<div className="min-w-0 flex-1">
 					<div className="flex flex-wrap items-center gap-2">
 						<code className="text-sm break-all text-zinc-200">{group.top_func}</code>
@@ -591,18 +630,6 @@ function GoroutineGroupRow({
 					<EyeOff className="h-4 w-4" />
 				</button>
 			</div>
-			{isExpanded && (
-				<div className="border-t border-zinc-800/50 bg-zinc-900/50 px-4 py-3">
-					<div className="mb-2 text-xs font-medium text-zinc-500">Stack Trace</div>
-					<div className="space-y-0.5 font-mono text-xs">
-						{group.stack.map((line, j) => (
-							<div key={j} className="break-all text-zinc-400">
-								{line}
-							</div>
-						))}
-					</div>
-				</div>
-			)}
 		</div>
 	);
 }
@@ -612,14 +639,14 @@ function GoroutineGroupRow({
 // ============================================================================
 
 export default function PprofPage() {
-	const [expandedGoroutines, setExpandedGoroutines] = useState<Set<string>>(new Set());
 	const [skippedGoroutines, setSkippedGoroutines] = useState<Set<string>>(new Set());
 	const [hasLoadedSkipped, setHasLoadedSkipped] = useState(false);
 	const [allocationSort, setAllocationSort] = useState<AllocationSortState>({ field: "bytes", direction: "desc" });
 	const [inuseSort, setInuseSort] = useState<AllocationSortState>({ field: "bytes", direction: "desc" });
-	const [expandedAlloc, setExpandedAlloc] = useState<Set<string>>(new Set());
-	const [expandedInuse, setExpandedInuse] = useState<Set<string>>(new Set());
-	const [expandedLeaks, setExpandedLeaks] = useState<Set<string>>(new Set());
+	const [selectedAllocation, setSelectedAllocation] = useState<AllocationInfo | null>(null);
+	const [selectedInuseAllocation, setSelectedInuseAllocation] = useState<AllocationInfo | null>(null);
+	const [selectedLeak, setSelectedLeak] = useState<LeakCandidate | null>(null);
+	const [selectedGoroutine, setSelectedGoroutine] = useState<GoroutineGroup | null>(null);
 	const inuseHistoryRef = useRef<Map<string, number[]>>(new Map());
 	const lastInuseSnapshotRef = useRef<string | null>(null);
 	const [historyVersion, setHistoryVersion] = useState(0);
@@ -704,7 +731,10 @@ export default function PprofPage() {
 	}, [data?.timestamp, data?.inuse_allocations]);
 
 	const leakCandidates = useMemo(
-		() => detectLeaks(data?.top_allocations ?? [], data?.inuse_allocations ?? [], inuseHistoryRef.current),
+		() => {
+			void historyVersion;
+			return detectLeaks(data?.top_allocations ?? [], data?.inuse_allocations ?? [], inuseHistoryRef.current);
+		},
 		// historyVersion bumps when the ref is mutated; top/inuse refs change per poll
 		[data?.top_allocations, data?.inuse_allocations, historyVersion],
 	);
@@ -724,7 +754,7 @@ export default function PprofPage() {
 		const isGrowing = current > avg * 1.1;
 		const growthPercent = avg > 0 ? ((current - avg) / avg) * 100 : 0;
 		return { isGrowing, growthPercent, avg };
-	}, [data?.history, data?.runtime?.num_goroutine]);
+	}, [data?.history, data?.runtime]);
 
 	// Filter problem goroutines
 	const filteredGoroutines = useMemo(() => {
@@ -757,54 +787,6 @@ export default function PprofPage() {
 			field,
 			direction: prev.field === field && prev.direction === "desc" ? "asc" : "desc",
 		}));
-	}, []);
-
-	const toggleAllocExpand = useCallback((key: string) => {
-		setExpandedAlloc((prev) => {
-			const next = new Set(prev);
-			if (next.has(key)) {
-				next.delete(key);
-			} else {
-				next.add(key);
-			}
-			return next;
-		});
-	}, []);
-
-	const toggleInuseExpand = useCallback((key: string) => {
-		setExpandedInuse((prev) => {
-			const next = new Set(prev);
-			if (next.has(key)) {
-				next.delete(key);
-			} else {
-				next.add(key);
-			}
-			return next;
-		});
-	}, []);
-
-	const toggleLeakExpand = useCallback((key: string) => {
-		setExpandedLeaks((prev) => {
-			const next = new Set(prev);
-			if (next.has(key)) {
-				next.delete(key);
-			} else {
-				next.add(key);
-			}
-			return next;
-		});
-	}, []);
-
-	const toggleGoroutineExpand = useCallback((id: string) => {
-		setExpandedGoroutines((prev) => {
-			const next = new Set(prev);
-			if (next.has(id)) {
-				next.delete(id);
-			} else {
-				next.add(id);
-			}
-			return next;
-		});
 	}, []);
 
 	const handleSkipGoroutine = useCallback((filePath: string) => {
@@ -1064,7 +1046,7 @@ export default function PprofPage() {
 								upward over the last minute. Growth + high retention together is the strongest leak signal.
 							</p>
 						</div>
-						<LeakTable candidates={leakCandidates} expandedKeys={expandedLeaks} onToggle={toggleLeakExpand} />
+						<LeakTable candidates={leakCandidates} onSelect={setSelectedLeak} />
 					</div>
 
 					{/* Live Heap Allocations — what's currently consuming the heap */}
@@ -1075,17 +1057,14 @@ export default function PprofPage() {
 								<span className="font-medium text-zinc-300">Live Heap Allocations</span>
 								<span className="text-sm text-zinc-500">({sortedInuseAllocations.length} sites)</span>
 							</div>
-							<p className="mt-1 text-xs text-zinc-500">
-								Call stacks currently holding memory on the heap right now — expand a row to see the full stack.
-							</p>
+							<p className="mt-1 text-xs text-zinc-500">Call stacks currently holding memory on the heap right now.</p>
 						</div>
 						<AllocationTable
 							allocations={sortedInuseAllocations}
 							sortField={inuseSort.field}
 							sortDirection={inuseSort.direction}
 							onSort={handleInuseSort}
-							expandedKeys={expandedInuse}
-							onToggle={toggleInuseExpand}
+							onSelect={setSelectedInuseAllocation}
 							bytesColorClass="text-emerald-400"
 							testIdPrefix="pprof-inuse-sort"
 						/>
@@ -1099,17 +1078,14 @@ export default function PprofPage() {
 								<span className="font-medium text-zinc-300">Cumulative Memory Allocations</span>
 								<span className="text-sm text-zinc-500">({sortedAllocations.length} sites)</span>
 							</div>
-							<p className="mt-1 text-xs text-zinc-500">
-								Total bytes allocated since process start (includes memory already freed) — expand a row to see the full stack.
-							</p>
+							<p className="mt-1 text-xs text-zinc-500">Total bytes allocated since process start, including memory already freed.</p>
 						</div>
 						<AllocationTable
 							allocations={sortedAllocations}
 							sortField={allocationSort.field}
 							sortDirection={allocationSort.direction}
 							onSort={handleAllocationSort}
-							expandedKeys={expandedAlloc}
-							onToggle={toggleAllocExpand}
+							onSelect={setSelectedAllocation}
 						/>
 					</div>
 
@@ -1183,15 +1159,7 @@ export default function PprofPage() {
 						<div className="max-h-[600px] overflow-y-auto">
 							{filteredGoroutines.map((g) => {
 								const gid = getGoroutineId(g);
-								return (
-									<GoroutineGroupRow
-										key={gid}
-										group={g}
-										isExpanded={expandedGoroutines.has(gid)}
-										onToggle={() => toggleGoroutineExpand(gid)}
-										onSkip={handleSkipGoroutine}
-									/>
-								);
+								return <GoroutineGroupRow key={gid} group={g} onOpen={() => setSelectedGoroutine(g)} onSkip={handleSkipGoroutine} />;
 							})}
 							{filteredGoroutines.length === 0 && (
 								<div className="px-4 py-8 text-center text-zinc-500">
@@ -1202,6 +1170,20 @@ export default function PprofPage() {
 							)}
 						</div>
 					</div>
+
+					<LeakDetailsDialog candidate={selectedLeak} onOpenChange={(open) => !open && setSelectedLeak(null)} />
+					<AllocationDetailsDialog
+						allocation={selectedInuseAllocation}
+						title="Live Heap Allocation Details"
+						bytesColorClass="text-emerald-400"
+						onOpenChange={(open) => !open && setSelectedInuseAllocation(null)}
+					/>
+					<AllocationDetailsDialog
+						allocation={selectedAllocation}
+						title="Cumulative Allocation Details"
+						onOpenChange={(open) => !open && setSelectedAllocation(null)}
+					/>
+					<GoroutineDetailsDialog group={selectedGoroutine} onOpenChange={(open) => !open && setSelectedGoroutine(null)} />
 
 					{/* Runtime Info Footer */}
 					<div className="rounded-lg border border-zinc-800 bg-zinc-900 px-4 py-3">
