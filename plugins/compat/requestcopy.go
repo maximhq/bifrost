@@ -217,36 +217,36 @@ func cloneResponsesTextConfig(text *schemas.ResponsesTextConfig) *schemas.Respon
 		if text.Format.JSONSchema != nil {
 			jsonSchema := *text.Format.JSONSchema
 			if text.Format.JSONSchema.Schema != nil {
-				schema := cloneAnyValue(*text.Format.JSONSchema.Schema)
-				jsonSchema.Schema = &schema
+				schemaCopy := *text.Format.JSONSchema.Schema
+				if schemaCopy.SchemaBool != nil {
+					schemaCopy.SchemaBool = schemas.Ptr(*schemaCopy.SchemaBool)
+				}
+				schemaCopy.SchemaMap = cloneOrderedMap(schemaCopy.SchemaMap)
+				jsonSchema.Schema = &schemaCopy
 			}
 			if text.Format.JSONSchema.Properties != nil {
-				properties := cloneAnyMap(*text.Format.JSONSchema.Properties)
-				jsonSchema.Properties = &properties
+				jsonSchema.Properties = cloneOrderedMap(text.Format.JSONSchema.Properties)
 			}
 			if text.Format.JSONSchema.Required != nil {
 				jsonSchema.Required = slices.Clone(text.Format.JSONSchema.Required)
 			}
 			if text.Format.JSONSchema.Defs != nil {
-				defs := cloneAnyMap(*text.Format.JSONSchema.Defs)
-				jsonSchema.Defs = &defs
+				jsonSchema.Defs = cloneOrderedMap(text.Format.JSONSchema.Defs)
 			}
 			if text.Format.JSONSchema.Definitions != nil {
-				definitions := cloneAnyMap(*text.Format.JSONSchema.Definitions)
-				jsonSchema.Definitions = &definitions
+				jsonSchema.Definitions = cloneOrderedMap(text.Format.JSONSchema.Definitions)
 			}
 			if text.Format.JSONSchema.Items != nil {
-				items := cloneAnyMap(*text.Format.JSONSchema.Items)
-				jsonSchema.Items = &items
+				jsonSchema.Items = cloneOrderedMap(text.Format.JSONSchema.Items)
 			}
 			if text.Format.JSONSchema.AnyOf != nil {
-				jsonSchema.AnyOf = cloneAnyMapSlice(text.Format.JSONSchema.AnyOf)
+				jsonSchema.AnyOf = cloneOrderedMapSlice(text.Format.JSONSchema.AnyOf)
 			}
 			if text.Format.JSONSchema.OneOf != nil {
-				jsonSchema.OneOf = cloneAnyMapSlice(text.Format.JSONSchema.OneOf)
+				jsonSchema.OneOf = cloneOrderedMapSlice(text.Format.JSONSchema.OneOf)
 			}
 			if text.Format.JSONSchema.AllOf != nil {
-				jsonSchema.AllOf = cloneAnyMapSlice(text.Format.JSONSchema.AllOf)
+				jsonSchema.AllOf = cloneOrderedMapSlice(text.Format.JSONSchema.AllOf)
 			}
 			if text.Format.JSONSchema.Default != nil {
 				jsonSchema.Default = cloneAnyValue(text.Format.JSONSchema.Default)
@@ -358,7 +358,45 @@ func cloneAnyValue(value any) any {
 		cloned := make(map[string]string, len(typed))
 		maps.Copy(cloned, typed)
 		return cloned
+	case *schemas.OrderedMap:
+		return cloneOrderedMap(typed)
+	case schemas.OrderedMap:
+		if cloned := cloneOrderedMap(&typed); cloned != nil {
+			return *cloned
+		}
+		return typed
+	case []schemas.OrderedMap:
+		return cloneOrderedMapSlice(typed)
 	default:
 		return typed
 	}
+}
+
+// cloneOrderedMap deep-copies an OrderedMap, preserving key order and
+// recursively cloning nested values (including nested *OrderedMap).
+func cloneOrderedMap(input *schemas.OrderedMap) *schemas.OrderedMap {
+	if input == nil {
+		return nil
+	}
+
+	cloned := schemas.NewOrderedMapWithCapacity(input.Len())
+	input.Range(func(key string, value any) bool {
+		cloned.Set(key, cloneAnyValue(value))
+		return true
+	})
+	return cloned
+}
+
+func cloneOrderedMapSlice(input []schemas.OrderedMap) []schemas.OrderedMap {
+	if input == nil {
+		return nil
+	}
+
+	cloned := make([]schemas.OrderedMap, len(input))
+	for i := range input {
+		if c := cloneOrderedMap(&input[i]); c != nil {
+			cloned[i] = *c
+		}
+	}
+	return cloned
 }

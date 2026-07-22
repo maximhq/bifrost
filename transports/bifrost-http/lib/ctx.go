@@ -488,6 +488,18 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 			extraHeaders[labelName] = append(extraHeaders[labelName], string(value))
 			return true
 		}
+		// Async webhook header: names the webhook endpoint to notify when the
+		// async job finishes. Carried as-is; the submit path validates it.
+		// Handled before direct forwarding: an allowlist that matches this
+		// reserved header would otherwise forward-and-return below, dropping the
+		// endpoint name so the job runs with no notification.
+		if keyStr == "x-bf-async-webhook" {
+			valueStr := strings.TrimSpace(string(value))
+			if valueStr != "" {
+				bifrostCtx.SetValue(schemas.BifrostContextKeyAsyncWebhookEndpoint, valueStr)
+			}
+			return true
+		}
 		// Direct header forwarding: when allowlist is configured, any header explicitly
 		// in the allowlist can be forwarded directly without the x-bf-eh- prefix.
 		// This enables forwarding arbitrary headers like "anthropic-beta" directly.
@@ -559,13 +571,6 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 			}
 			return true
 		}
-		if keyStr == "x-bf-disable-content-logging" {
-			if b, err := strconv.ParseBool(string(value)); err == nil {
-				bifrostCtx.SetValue(schemas.BifrostContextKeyDisableContentLogging, b)
-			}
-			return true
-		}
-
 		// Compat header: per-request override of compat plugin settings.
 		// Accepts: "true" (enable all), JSON array of feature names, or ["*"] (enable all).
 		// An empty array [] or absent header means no overrides.

@@ -197,6 +197,8 @@ export const baseApi = createApi({
 		"AlertChannels",
 		"AlertRules",
 		"AlertHistory",
+		"WebhookEndpoints",
+		"WebhookDeliveries",
 	],
 	endpoints: () => ({}),
 });

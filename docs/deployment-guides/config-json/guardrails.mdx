@@ -400,7 +400,7 @@ Calls CrowdStrike AIDR's `guard_chat_completions` endpoint for policy-driven AI 
 }
 ```
 
-GraySwan requests automatically include sanitized incoming request headers in GraySwan `metadata.headers`; no extra `config` field is required. Credential-bearing headers such as `authorization`, `x-api-key`, API-key variants, cookies, and `grayswan-api-key` are excluded, while non-sensitive context headers such as `x-request-id`, `traceparent`, `x-tenant-id`, `content-type`, and `content-length` are included when present.
+Gray Swan requests automatically include sanitized incoming request headers in Gray Swan `metadata.headers`; no extra `config` field is required. Credential-bearing headers such as `authorization`, `x-api-key`, API-key variants, cookies, and `grayswan-api-key` are excluded, while non-sensitive context headers such as `x-request-id`, `traceparent`, `x-tenant-id`, `content-type`, and `content-length` are included when present.
 
 </Tab>
 </Tabs>
@@ -572,6 +572,8 @@ Any field marked **env.\* supported** accepts a bare `"env.VAR_NAME"` string in 
 
 Rules are CEL expressions that fire when their condition matches. Available CEL variables:
 
+For block-capable streaming output rules, `stream_replay_event_interval_ms` sets the delay between consecutive buffered events after the response is allowed. It defaults to `0`, which sends all buffered events immediately; the dashboard initializes it to `25` when pacing is enabled. When multiple matched block-capable rules specify different positive values, Bifrost uses the largest interval.
+
 | Variable | Type | Description |
 |----------|------|-------------|
 | `model` | `string` | Model name from the request |
@@ -605,6 +607,7 @@ Rules are CEL expressions that fire when their condition matches. Available CEL 
         "apply_to": "output",
         "sampling_rate": 100,
         "timeout": 15,
+        "stream_replay_event_interval_ms": 25,
         "provider_config_ids": [3]
       },
       {

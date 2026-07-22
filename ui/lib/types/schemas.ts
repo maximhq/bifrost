@@ -302,6 +302,7 @@ const aliasConfigObjectSchema = z.object({
 	inference_profile_arn: secretVarSchema.optional(),
 	// Replicate overrides
 	use_deployments_endpoint: z.boolean().optional(),
+	use_anthropic_endpoints: z.boolean().optional(),
 });
 
 // The Go server emits the legacy string wire shape (`{"my-alias": "model-id"}`)
@@ -348,6 +349,7 @@ export const modelProviderKeySchema = z
 		ollama_key_config: ollamaKeyConfigSchema.optional(),
 		sgl_key_config: sglKeyConfigSchema.optional(),
 		use_for_batch_api: z.boolean().optional(),
+		use_anthropic_endpoints: z.boolean().optional(),
 		enabled: z.boolean().optional(),
 	})
 	.refine(
@@ -414,6 +416,12 @@ export const networkConfigSchema = z
 			.min(5, "Stream idle timeout must be at least 5 seconds")
 			.max(3600, "Stream idle timeout must be at most 3600 seconds i.e. 60 minutes")
 			.optional(),
+		keep_alive_timeout_in_seconds: z
+			.number()
+			.int("Keep-alive timeout must be a whole number of seconds")
+			.min(1, "Keep-alive timeout must be at least 1 second")
+			.max(3600, "Keep-alive timeout must be at most 3600 seconds i.e. 60 minutes")
+			.optional(),
 		max_conns_per_host: z
 			.number()
 			.int("Max connections must be a whole number")
@@ -466,6 +474,12 @@ export const networkFormConfigSchema = z
 			.int("Stream idle timeout must be a whole number of seconds")
 			.min(5, "Stream idle timeout must be at least 5 seconds")
 			.max(3600, "Stream idle timeout must be at most 3600 seconds i.e. 60 minutes")
+			.optional(),
+		keep_alive_timeout_in_seconds: z.coerce
+			.number("Keep-alive timeout must be a number")
+			.int("Keep-alive timeout must be a whole number of seconds")
+			.min(1, "Keep-alive timeout must be at least 1 second")
+			.max(3600, "Keep-alive timeout must be at most 3600 seconds i.e. 60 minutes")
 			.optional(),
 		max_conns_per_host: z.coerce
 			.number("Max connections must be a number")

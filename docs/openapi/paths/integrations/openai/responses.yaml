@@ -175,3 +175,207 @@ responses-input-tokens:
     - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
+
+responses-by-id:
+  get:
+    operationId: openaiRetrieveResponse
+    summary: Retrieve a response (OpenAI format)
+    description: |
+      Retrieves a stored response by ID.
+
+      **Note:** This endpoint also works without the `/v1` prefix (e.g., `/openai/responses/{response_id}`).
+    tags:
+    - OpenAI Integration
+    parameters:
+    - name: response_id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: The ID of the response to retrieve
+    - name: provider
+      in: query
+      schema:
+        type: string
+      description: Provider the response was created with (defaults to `openai`)
+    - name: include
+      in: query
+      description: Additional fields to include (repeatable)
+      schema:
+        type: array
+        items:
+          type: string
+    - name: starting_after
+      in: query
+      description: Sequence number of the event after which to start the response
+      schema:
+        type: integer
+    - name: include_obfuscation
+      in: query
+      description: Whether to include obfuscation on the response
+      schema:
+        type: boolean
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/openai/responses.yaml#/OpenAIResponsesResponse'
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        $ref: '../../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+  delete:
+    operationId: openaiDeleteResponse
+    summary: Delete a response (OpenAI format)
+    description: |
+      Deletes a stored response.
+
+      **Note:** This endpoint also works without the `/v1` prefix (e.g., `/openai/responses/{response_id}`).
+    tags:
+    - OpenAI Integration
+    parameters:
+    - name: response_id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: The ID of the response to delete
+    - name: provider
+      in: query
+      schema:
+        type: string
+      description: Provider the response was created with (defaults to `openai`)
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/inference/responses.yaml#/BifrostResponsesDeleteResponse'
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        $ref: '../../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+
+responses-cancel:
+  post:
+    operationId: openaiCancelResponse
+    summary: Cancel a response (OpenAI format)
+    description: |
+      Cancels an in-flight response. Only responses created with `background: true`
+      can be cancelled.
+
+      **Note:** This endpoint also works without the `/v1` prefix (e.g., `/openai/responses/{response_id}/cancel`).
+    tags:
+    - OpenAI Integration
+    parameters:
+    - name: response_id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: The ID of the response to cancel
+    - name: provider
+      in: query
+      schema:
+        type: string
+      description: Provider the response was created with (defaults to `openai`)
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/openai/responses.yaml#/OpenAIResponsesResponse'
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        $ref: '../../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+
+responses-input-items:
+  get:
+    operationId: openaiListResponseInputItems
+    summary: List response input items (OpenAI format)
+    description: |
+      Lists the input items of a stored response.
+
+      **Note:** This endpoint also works without the `/v1` prefix (e.g., `/openai/responses/{response_id}/input_items`).
+    tags:
+    - OpenAI Integration
+    parameters:
+    - name: response_id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: The ID of the response
+    - name: provider
+      in: query
+      schema:
+        type: string
+      description: Provider the response was created with (defaults to `openai`)
+    - name: after
+      in: query
+      description: Cursor for pagination (item ID to list items after)
+      schema:
+        type: string
+    - name: include
+      in: query
+      description: Additional fields to include (repeatable)
+      schema:
+        type: array
+        items:
+          type: string
+    - name: limit
+      in: query
+      description: Maximum number of input items to return
+      schema:
+        type: integer
+        minimum: 1
+    - name: order
+      in: query
+      description: Sort order
+      schema:
+        type: string
+        enum: [asc, desc]
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/inference/responses.yaml#/BifrostResponsesInputItemsResponse'
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        $ref: '../../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []

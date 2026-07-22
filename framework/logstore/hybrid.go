@@ -234,6 +234,15 @@ func (h *HybridLogStore) enqueueRawUpload(logID string, timestamp time.Time, key
 // excluded set are kept intact in the DB row.
 // Must be called after SerializeFields() populates the Parsed fields.
 func prepareDBEntry(dbEntry *Log, excluded map[string]struct{}) {
+	// Hidden entries keep no content in the DB row at all: no summary, no
+	// last-user-message preview, and no exclusion-list carve-outs. The full
+	// payload lives only in object storage and is never hydrated back.
+	if dbEntry.ContentHidden {
+		ClearPayload(dbEntry)
+		dbEntry.ContentSummary = ""
+		return
+	}
+
 	idx := findLastUserMessageIndex(dbEntry.InputHistoryParsed)
 
 	// Content summary: extract text from the found user message.
@@ -247,10 +256,13 @@ func prepareDBEntry(dbEntry *Log, excluded map[string]struct{}) {
 	dbEntry.ContentSummary = truncateTag(dbEntry.ContentSummary, maxContentSummaryBytes)
 
 	// Serialize last user message before ClearPayload zeros everything.
-	// msgs[idx:idx+1] reuses the backing array — no heap alloc, no struct copy.
+	// Attachment payloads (base64 images/files/audio, media URLs) are replaced
+	// with a placeholder so they never bloat the DB row; the full message stays
+	// in object storage and is merged back on read.
 	var lastUserMessage string
 	if idx >= 0 {
-		lastUserMessage, _ = sonic.MarshalString(dbEntry.InputHistoryParsed[idx : idx+1])
+		stripped := stripChatMessageAttachments(&dbEntry.InputHistoryParsed[idx])
+		lastUserMessage, _ = sonic.MarshalString([]schemas.ChatMessage{stripped})
 	}
 
 	// Responses API requests carry their history in responses_input_history
@@ -261,7 +273,8 @@ func prepareDBEntry(dbEntry *Log, excluded map[string]struct{}) {
 	var lastUserResponsesMessage string
 	if idx < 0 {
 		if responsesIdx := findLastUserResponsesMessageIndex(dbEntry.ResponsesInputHistoryParsed); responsesIdx >= 0 {
-			lastUserResponsesMessage, _ = sonic.MarshalString(dbEntry.ResponsesInputHistoryParsed[responsesIdx : responsesIdx+1])
+			stripped := stripResponsesMessageAttachments(&dbEntry.ResponsesInputHistoryParsed[responsesIdx])
+			lastUserResponsesMessage, _ = sonic.MarshalString([]schemas.ResponsesMessage{stripped})
 		}
 	}
 
@@ -280,11 +293,21 @@ func prepareDBEntry(dbEntry *Log, excluded map[string]struct{}) {
 // object storage. The caller's entry is preserved on DB failure by writing to
 // a shallow copy; on success, only ContentSummary is propagated back so the
 // caller can observe what was persisted.
+// extractUploadPayload returns the payload map to offload for entry. Hidden
+// entries always upload the complete payload: the exclusion list exists to
+// keep fields DB-resident, and hidden rows must not retain content in the DB.
+func (h *HybridLogStore) extractUploadPayload(entry *Log) map[string]string {
+	if entry.ContentHidden {
+		return ExtractPayload(entry)
+	}
+	return ExtractPayloadFiltered(entry, h.excludedPayloadFields)
+}
+
 func (h *HybridLogStore) Create(ctx context.Context, entry *Log) error {
 	if err := entry.SerializeFields(); err != nil {
 		return fmt.Errorf("logstore: serialize before extract: %w", err)
 	}
-	payload := ExtractPayloadFiltered(entry, h.excludedPayloadFields)
+	payload := h.extractUploadPayload(entry)
 	tags := BuildTags(entry)
 	// Work on a shallow copy so the caller's entry is preserved on DB failure.
 	dbEntry := *entry
@@ -304,7 +327,7 @@ func (h *HybridLogStore) CreateIfNotExists(ctx context.Context, entry *Log) erro
 	if err := entry.SerializeFields(); err != nil {
 		return fmt.Errorf("logstore: serialize before extract: %w", err)
 	}
-	payload := ExtractPayloadFiltered(entry, h.excludedPayloadFields)
+	payload := h.extractUploadPayload(entry)
 	tags := BuildTags(entry)
 	// Work on a shallow copy so the caller's entry is preserved on DB failure.
 	dbEntry := *entry
@@ -341,7 +364,7 @@ func (h *HybridLogStore) BatchCreateIfNotExists(ctx context.Context, entries []*
 		if err := entry.SerializeFields(); err != nil {
 			return fmt.Errorf("logstore: serialize before extract: %w", err)
 		}
-		payload := ExtractPayloadFiltered(entry, h.excludedPayloadFields)
+		payload := h.extractUploadPayload(entry)
 		tags := BuildTags(entry)
 		// Work on a shallow copy so the caller's entries are preserved on DB failure.
 		dbEntry := *entry
@@ -392,7 +415,9 @@ func (h *HybridLogStore) FindByID(ctx context.Context, id string) (*Log, error) 
 // projection are kept after merge — unrequested payload fields are cleared to
 // honour projection semantics and avoid pulling large blobs unnecessarily.
 func (h *HybridLogStore) hydrateLog(ctx context.Context, log *Log, requestedFields ...string) {
-	if log == nil || !log.HasObject {
+	// ContentHidden is the read-side enforcement for hidden logs: the payload
+	// stays in object storage and is never fetched back into the serving path.
+	if log == nil || !log.HasObject || log.ContentHidden {
 		return
 	}
 	key := ObjectKey(h.prefix, log.Timestamp, log.ID)
@@ -675,6 +700,18 @@ func (h *HybridLogStore) GetProviderTokenHistogram(ctx context.Context, filters 
 // per-provider latency histogram bucketed by bucketSizeSeconds.
 func (h *HybridLogStore) GetProviderLatencyHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ProviderLatencyHistogramResult, error) {
 	return h.inner.GetProviderLatencyHistogram(ctx, filters, bucketSizeSeconds)
+}
+
+// GetThroughputHistogram delegates to the inner store and returns a
+// token-generation throughput (tokens/sec) histogram bucketed by bucketSizeSeconds.
+func (h *HybridLogStore) GetThroughputHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ThroughputHistogramResult, error) {
+	return h.inner.GetThroughputHistogram(ctx, filters, bucketSizeSeconds)
+}
+
+// GetProviderThroughputHistogram delegates to the inner store and returns a
+// per-provider throughput (tokens/sec) histogram bucketed by bucketSizeSeconds.
+func (h *HybridLogStore) GetProviderThroughputHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ProviderThroughputHistogramResult, error) {
+	return h.inner.GetProviderThroughputHistogram(ctx, filters, bucketSizeSeconds)
 }
 
 // GetModelRankings delegates to the inner store and returns ranked usage
@@ -1237,4 +1274,27 @@ func (h *HybridLogStore) DeleteExpiredAsyncJobs(ctx context.Context) (int64, err
 // DeleteStaleAsyncJobs deletes async jobs that have not been updated since the given time.
 func (h *HybridLogStore) DeleteStaleAsyncJobs(ctx context.Context, staleSince time.Time) (int64, error) {
 	return h.inner.DeleteStaleAsyncJobs(ctx, staleSince)
+}
+
+// Webhook Delivery methods — delegated directly; delivery history rows are
+// metadata-only and never carry offloadable payloads.
+
+// CreateWebhookDelivery appends one webhook delivery attempt record.
+func (h *HybridLogStore) CreateWebhookDelivery(ctx context.Context, delivery *WebhookDelivery) error {
+	return h.inner.CreateWebhookDelivery(ctx, delivery)
+}
+
+// FindWebhookDeliveryByID retrieves a webhook delivery attempt by its ID.
+func (h *HybridLogStore) FindWebhookDeliveryByID(ctx context.Context, id string) (*WebhookDelivery, error) {
+	return h.inner.FindWebhookDeliveryByID(ctx, id)
+}
+
+// SearchWebhookDeliveries returns one page of delivery history for an endpoint.
+func (h *HybridLogStore) SearchWebhookDeliveries(ctx context.Context, endpointID string, pagination PaginationOptions) (*WebhookDeliverySearchResult, error) {
+	return h.inner.SearchWebhookDeliveries(ctx, endpointID, pagination)
+}
+
+// DeleteExpiredWebhookDeliveries deletes delivery history whose expiry has passed.
+func (h *HybridLogStore) DeleteExpiredWebhookDeliveries(ctx context.Context) (int64, error) {
+	return h.inner.DeleteExpiredWebhookDeliveries(ctx)
 }

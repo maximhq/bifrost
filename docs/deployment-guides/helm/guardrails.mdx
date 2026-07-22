@@ -327,7 +327,7 @@ bifrost:
           sampling_rate: 100
 ```
 
-GraySwan requests automatically include sanitized incoming request headers in GraySwan `metadata.headers`; no extra Helm value is required. Credential-bearing headers such as `authorization`, `x-api-key`, API-key variants, cookies, and `grayswan-api-key` are excluded, while non-sensitive context headers such as `x-request-id`, `traceparent`, `x-tenant-id`, `content-type`, and `content-length` are included when present.
+Gray Swan requests automatically include sanitized incoming request headers in Gray Swan `metadata.headers`; no extra Helm value is required. Credential-bearing headers such as `authorization`, `x-api-key`, API-key variants, cookies, and `grayswan-api-key` are excluded, while non-sensitive context headers such as `x-request-id`, `traceparent`, `x-tenant-id`, `content-type`, and `content-length` are included when present.
 
 </Tab>
 </Tabs>
@@ -510,6 +510,7 @@ Rule fields:
 | `apply_to` | Yes | `"input"`, `"output"`, or `"both"` |
 | `sampling_rate` | No | `0`–`100`; percentage of requests to check (default: 100) |
 | `timeout` | No | Rule timeout in seconds |
+| `stream_replay_event_interval_ms` | No | Delay between buffered events after block-capable output guardrails allow a streaming response. Defaults to `0` (immediate delivery); the dashboard uses `25` when pacing is enabled. |
 | `provider_config_ids` | No | Provider `id`s to invoke when this rule matches |
 
 ```yaml
@@ -534,6 +535,7 @@ bifrost:
         apply_to: "output"
         sampling_rate: 100
         timeout: 15
+        stream_replay_event_interval_ms: 25
         provider_config_ids: [3]
 
       - id: 103

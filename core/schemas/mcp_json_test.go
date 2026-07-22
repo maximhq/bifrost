@@ -129,3 +129,48 @@ func TestMCPClientConfigUnmarshalToolExecutionTimeoutNegativeString(t *testing.T
 	}
 }
 
+
+// TestMCPClientConfigMarshalToolSyncIntervalEmitsNanoseconds pins the wire unit of
+// tool_sync_interval. MarshalJSON overrides tool_execution_timeout into a duration
+// string but lets tool_sync_interval fall through to time.Duration's default
+// nanosecond encoding, so the two fields leave in different units. Callers that echo
+// this value back into a PUT (which reads minutes) corrupt it — see issue #5026.
+// Change this test deliberately, together with the UI readers, never incidentally.
+func TestMCPClientConfigMarshalToolSyncIntervalEmitsNanoseconds(t *testing.T) {
+	cfg := MCPClientConfig{
+		Name:                 "demo",
+		ConnectionType:       MCPConnectionTypeHTTP,
+		ToolSyncInterval:     10 * time.Minute,
+		ToolExecutionTimeout: 30 * time.Second,
+	}
+	raw, err := sonic.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("unexpected marshal error: %v", err)
+	}
+	if !strings.Contains(string(raw), `"tool_sync_interval":600000000000`) {
+		t.Fatalf("expected tool_sync_interval as nanoseconds, got: %s", raw)
+	}
+	if !strings.Contains(string(raw), `"tool_execution_timeout":"30s"`) {
+		t.Fatalf("expected tool_execution_timeout as duration string, got: %s", raw)
+	}
+}
+
+// TestMCPClientConfigToolSyncIntervalRoundTrips guards the marshal/unmarshal pair
+// against drifting apart: UnmarshalJSON reads bare integers as nanoseconds, which is
+// only correct while MarshalJSON keeps emitting them.
+func TestMCPClientConfigToolSyncIntervalRoundTrips(t *testing.T) {
+	for _, interval := range []time.Duration{0, time.Minute, 10 * time.Minute, time.Hour} {
+		cfg := MCPClientConfig{Name: "demo", ConnectionType: MCPConnectionTypeHTTP, ToolSyncInterval: interval}
+		raw, err := sonic.Marshal(cfg)
+		if err != nil {
+			t.Fatalf("unexpected marshal error for %v: %v", interval, err)
+		}
+		var got MCPClientConfig
+		if err := sonic.Unmarshal(raw, &got); err != nil {
+			t.Fatalf("unexpected unmarshal error for %v: %v", interval, err)
+		}
+		if got.ToolSyncInterval != interval {
+			t.Fatalf("round-trip changed tool_sync_interval: want %v, got %v (wire: %s)", interval, got.ToolSyncInterval, raw)
+		}
+	}
+}

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -56,6 +58,8 @@ func setupRDBTestStore(t *testing.T) *RDBConfigStore {
 		&tables.TableMCPPerUserHeaderCredential{},
 		&tables.TableMCPPerUserHeaderFlow{},
 		&tables.TableOAuth2RefreshToken{},
+		&tables.TableWebhookEndpoint{},
+		&tables.TableWebhookJob{},
 	)
 	require.NoError(t, err, "Failed to migrate test database")
 
@@ -2312,4 +2316,769 @@ func TestUpsertModelParametersBatch_SQLite(t *testing.T) {
 	got, err = s.GetModelParameters(ctx)
 	require.NoError(t, err)
 	assert.Len(t, got, 3)
+}
+
+func testWebhookEndpoint(name string) *tables.TableWebhookEndpoint {
+	return &tables.TableWebhookEndpoint{
+		Name:   name,
+		URL:    "https://93.184.216.34/hook",
+		Events: []tables.WebhookEvent{tables.WebhookEventAsyncJobCompleted},
+	}
+}
+
+func TestWebhookEndpointsPaginated(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	billing := testWebhookEndpoint("billing-hook")
+	require.NoError(t, store.CreateWebhookEndpoint(ctx, billing))
+
+	alerts := testWebhookEndpoint("alerts-hook")
+	alerts.URL = "https://93.184.216.34/alerts"
+	alerts.Events = []tables.WebhookEvent{tables.WebhookEventAsyncJobFailed}
+	require.NoError(t, store.CreateWebhookEndpoint(ctx, alerts))
+
+	paused := testWebhookEndpoint("paused-hook")
+	paused.Disabled = true
+	require.NoError(t, store.CreateWebhookEndpoint(ctx, paused))
+
+	names := func(endpoints []tables.TableWebhookEndpoint) []string {
+		out := make([]string, 0, len(endpoints))
+		for _, e := range endpoints {
+			out = append(out, e.Name)
+		}
+		return out
+	}
+
+	// No filters: everything, creation order, full count.
+	all, total, err := store.GetWebhookEndpointsPaginated(ctx, WebhookEndpointsQueryParams{Limit: 10})
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), total)
+	assert.Equal(t, []string{"billing-hook", "alerts-hook", "paused-hook"}, names(all))
+
+	// Paging: total stays the full match count.
+	page, total, err := store.GetWebhookEndpointsPaginated(ctx, WebhookEndpointsQueryParams{Limit: 1, Offset: 1})
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), total)
+	assert.Equal(t, []string{"alerts-hook"}, names(page))
+
+	// Search matches name or URL, case-insensitively.
+	found, total, err := store.GetWebhookEndpointsPaginated(ctx, WebhookEndpointsQueryParams{Search: "ALERTS", Limit: 10})
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), total)
+	assert.Equal(t, []string{"alerts-hook"}, names(found))
+
+	// Disabled filter is tri-state.
+	enabledOnly := false
+	found, total, err = store.GetWebhookEndpointsPaginated(ctx, WebhookEndpointsQueryParams{Disabled: &enabledOnly, Limit: 10})
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), total)
+	assert.Equal(t, []string{"billing-hook", "alerts-hook"}, names(found))
+
+	// Event filter selects subscribers of any requested event.
+	found, total, err = store.GetWebhookEndpointsPaginated(ctx, WebhookEndpointsQueryParams{
+		Events: []string{string(tables.WebhookEventAsyncJobFailed)},
+		Limit:  10,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), total)
+	assert.Equal(t, []string{"alerts-hook"}, names(found))
+
+	// Filters compose with AND semantics.
+	found, total, err = store.GetWebhookEndpointsPaginated(ctx, WebhookEndpointsQueryParams{
+		Search:   "hook",
+		Disabled: &enabledOnly,
+		Events:   []string{string(tables.WebhookEventAsyncJobCompleted)},
+		Limit:    10,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), total)
+	assert.Equal(t, []string{"billing-hook"}, names(found))
+}
+
+func TestWebhookEndpointsSearchEscapesLikeWildcards(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, store.CreateWebhookEndpoint(ctx, testWebhookEndpoint("prod-hook")))
+	require.NoError(t, store.CreateWebhookEndpoint(ctx, testWebhookEndpoint("team_hook")))
+
+	names := func(endpoints []tables.TableWebhookEndpoint) []string {
+		out := make([]string, 0, len(endpoints))
+		for _, e := range endpoints {
+			out = append(out, e.Name)
+		}
+		return out
+	}
+
+	// A literal "_" must match only the name that contains one — not act as a
+	// single-character LIKE wildcard, which would also match "prod-hook".
+	found, total, err := store.GetWebhookEndpointsPaginated(ctx, WebhookEndpointsQueryParams{Search: "_", Limit: 10})
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), total)
+	assert.Equal(t, []string{"team_hook"}, names(found))
+}
+
+func TestWebhookEndpointCreate(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	endpoint := testWebhookEndpoint("create-test")
+	require.NoError(t, store.CreateWebhookEndpoint(ctx, endpoint))
+
+	// Server generates the ID and a Standard Webhooks style secret, and leaves
+	// the plaintext on the struct for one-time display.
+	assert.NotEmpty(t, endpoint.ID)
+	require.NotNil(t, endpoint.Secret)
+	secret := endpoint.Secret.GetValue()
+	assert.True(t, strings.HasPrefix(secret, "whsec_"), "secret %q missing whsec_ prefix", secret)
+	assert.Len(t, secret, len("whsec_")+44) // base64 of 32 bytes
+
+	fetched, err := store.GetWebhookEndpointByID(ctx, endpoint.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "create-test", fetched.Name)
+	assert.Equal(t, "https://93.184.216.34/hook", fetched.URL)
+	assert.Equal(t, []tables.WebhookEvent{tables.WebhookEventAsyncJobCompleted}, fetched.Events)
+	assert.Equal(t, secret, fetched.Secret.GetValue())
+
+	byName, err := store.GetWebhookEndpointByName(ctx, "create-test")
+	require.NoError(t, err)
+	assert.Equal(t, endpoint.ID, byName.ID)
+
+	// Distinct endpoints get distinct generated secrets.
+	second := testWebhookEndpoint("create-test-2")
+	require.NoError(t, store.CreateWebhookEndpoint(ctx, second))
+	assert.NotEqual(t, secret, second.Secret.GetValue())
+}
+
+func TestWebhookEndpointCreateDuplicateName(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, store.CreateWebhookEndpoint(ctx, testWebhookEndpoint("dup-name")))
+	err := store.CreateWebhookEndpoint(ctx, testWebhookEndpoint("dup-name"))
+	assert.ErrorIs(t, err, ErrAlreadyExists)
+}
+
+func TestWebhookEndpointCreateRejectsUnresolvedSecretRef(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	// An env reference that resolves to nothing must never be persisted —
+	// deliveries would sign with an empty key. The API never accepts a
+	// secret, so a reference can only arrive from config.json.
+	endpoint := testWebhookEndpoint("unresolved-ref")
+	endpoint.Secret = schemas.NewSecretVar("env.E2E_WEBHOOK_SECRET_THAT_DOES_NOT_EXIST")
+	require.True(t, endpoint.Secret.IsFromSecret())
+
+	err := store.CreateWebhookEndpoint(ctx, endpoint)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "did not resolve")
+
+	// A reference that resolves is kept as the signing key.
+	t.Setenv("E2E_WEBHOOK_SECRET_SET", "whsec_from_env")
+	resolved := testWebhookEndpoint("resolved-ref")
+	resolved.Secret = schemas.NewSecretVar("env.E2E_WEBHOOK_SECRET_SET")
+	require.NoError(t, store.CreateWebhookEndpoint(ctx, resolved))
+	assert.Equal(t, "whsec_from_env", resolved.Secret.GetValue())
+}
+
+func TestWebhookEndpointCreateFailureKeepsCallerPlaintext(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, store.CreateWebhookEndpoint(ctx, testWebhookEndpoint("plaintext-kept")))
+
+	// A failed create (duplicate name here) must leave the caller's secret
+	// as the plaintext it supplied — not the BeforeSave ciphertext — so a
+	// retry cannot double-encrypt and persist unusable key material.
+	retry := testWebhookEndpoint("plaintext-kept")
+	retry.Secret = schemas.NewSecretVar("whsec_caller_supplied")
+	err := store.CreateWebhookEndpoint(ctx, retry)
+	require.ErrorIs(t, err, ErrAlreadyExists)
+	assert.Equal(t, "whsec_caller_supplied", retry.Secret.GetValue())
+
+	// And the retry (under a fresh name) persists a working secret.
+	retry.Name = "plaintext-kept-2"
+	retry.ID = ""
+	require.NoError(t, store.CreateWebhookEndpoint(ctx, retry))
+	fetched, err := store.GetWebhookEndpointByID(ctx, retry.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "whsec_caller_supplied", fetched.Secret.GetValue())
+}
+
+func TestWebhookEndpointUpdate(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	endpoint := testWebhookEndpoint("update-test")
+	require.NoError(t, store.CreateWebhookEndpoint(ctx, endpoint))
+	originalSecret := endpoint.Secret.GetValue()
+
+	// Seed a failure streak without going through hooks.
+	require.NoError(t, store.DB().Model(&tables.TableWebhookEndpoint{}).
+		Where("id = ?", endpoint.ID).UpdateColumn("consecutive_failures", 7).Error)
+
+	// A non-URL change keeps the failure counter and the stored secret.
+	loaded, err := store.GetWebhookEndpointByID(ctx, endpoint.ID)
+	require.NoError(t, err)
+	loaded.IncludeResponse = true
+	loaded.Events = []tables.WebhookEvent{tables.WebhookEventAsyncJobCompleted, tables.WebhookEventAsyncJobFailed}
+	require.NoError(t, store.UpdateWebhookEndpoint(ctx, loaded))
+
+	fetched, err := store.GetWebhookEndpointByID(ctx, endpoint.ID)
+	require.NoError(t, err)
+	assert.True(t, fetched.IncludeResponse)
+	assert.Len(t, fetched.Events, 2)
+	assert.Equal(t, 7, fetched.ConsecutiveFailures)
+	assert.Equal(t, originalSecret, fetched.Secret.GetValue(), "update must not touch the signing secret")
+
+	// Changing the URL resets the failure counter.
+	fetched.URL = "https://93.184.216.35/hook"
+	require.NoError(t, store.UpdateWebhookEndpoint(ctx, fetched))
+	fetched, err = store.GetWebhookEndpointByID(ctx, endpoint.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "https://93.184.216.35/hook", fetched.URL)
+	assert.Equal(t, 0, fetched.ConsecutiveFailures)
+}
+
+func TestWebhookEndpointUpdateReenablePreservesFailureCounter(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	endpoint := testWebhookEndpoint("reenable-test")
+	require.NoError(t, store.CreateWebhookEndpoint(ctx, endpoint))
+
+	loaded, err := store.GetWebhookEndpointByID(ctx, endpoint.ID)
+	require.NoError(t, err)
+	loaded.Disabled = true
+	require.NoError(t, store.UpdateWebhookEndpoint(ctx, loaded))
+	require.NoError(t, store.DB().Model(&tables.TableWebhookEndpoint{}).
+		Where("id = ?", endpoint.ID).UpdateColumn("consecutive_failures", 25).Error)
+
+	disabled, err := store.GetWebhookEndpointByID(ctx, endpoint.ID)
+	require.NoError(t, err)
+	assert.True(t, disabled.Disabled)
+
+	disabled.Disabled = false
+	require.NoError(t, store.UpdateWebhookEndpoint(ctx, disabled))
+
+	// Re-enabling does not touch the failure counter — only a successful
+	// delivery (or a URL change) resets it.
+	reenabled, err := store.GetWebhookEndpointByID(ctx, endpoint.ID)
+	require.NoError(t, err)
+	assert.False(t, reenabled.Disabled)
+	assert.Equal(t, 25, reenabled.ConsecutiveFailures)
+}
+
+func TestWebhookEndpointUpdateNotFound(t *testing.T) {
+	store := setupRDBTestStore(t)
+
+	endpoint := testWebhookEndpoint("ghost")
+	endpoint.ID = "does-not-exist"
+	assert.ErrorIs(t, store.UpdateWebhookEndpoint(context.Background(), endpoint), ErrNotFound)
+}
+
+func TestWebhookEndpointDelete(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	endpoint := testWebhookEndpoint("delete-test")
+	require.NoError(t, store.CreateWebhookEndpoint(ctx, endpoint))
+
+	require.NoError(t, store.DeleteWebhookEndpoint(ctx, endpoint.ID))
+	_, err := store.GetWebhookEndpointByID(ctx, endpoint.ID)
+	assert.ErrorIs(t, err, ErrNotFound)
+	assert.ErrorIs(t, store.DeleteWebhookEndpoint(ctx, endpoint.ID), ErrNotFound)
+}
+
+func TestWebhookEndpointRotateSecret(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	endpoint := testWebhookEndpoint("rotate-test")
+	require.NoError(t, store.CreateWebhookEndpoint(ctx, endpoint))
+	originalSecret := endpoint.Secret.GetValue()
+
+	rotated, err := store.RotateWebhookEndpointSecret(ctx, endpoint.ID)
+	require.NoError(t, err)
+
+	newSecret := rotated.Secret.GetValue()
+	assert.True(t, strings.HasPrefix(newSecret, "whsec_"))
+	assert.NotEqual(t, originalSecret, newSecret)
+
+	// Rotation is immediate: only the new secret is stored.
+	fetched, err := store.GetWebhookEndpointByID(ctx, endpoint.ID)
+	require.NoError(t, err)
+	assert.Equal(t, newSecret, fetched.Secret.GetValue())
+
+	_, err = store.RotateWebhookEndpointSecret(ctx, "does-not-exist")
+	assert.ErrorIs(t, err, ErrNotFound)
+}
+
+func TestWebhookEndpointList(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	endpoints, err := store.GetWebhookEndpoints(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, endpoints)
+
+	require.NoError(t, store.CreateWebhookEndpoint(ctx, testWebhookEndpoint("list-a")))
+	require.NoError(t, store.CreateWebhookEndpoint(ctx, testWebhookEndpoint("list-b")))
+
+	endpoints, err = store.GetWebhookEndpoints(ctx)
+	require.NoError(t, err)
+	assert.Len(t, endpoints, 2)
+}
+
+func TestWebhookEndpointUpdatePersistsTuningAndHeaders(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	endpoint := testWebhookEndpoint("update-persist-test")
+	require.NoError(t, store.CreateWebhookEndpoint(ctx, endpoint))
+
+	loaded, err := store.GetWebhookEndpointByID(ctx, endpoint.ID)
+	require.NoError(t, err)
+	loaded.MaxRetries = 2
+	loaded.AttemptTimeoutSeconds = 7
+	loaded.MaxConcurrentDeliveries = 3
+	loaded.Headers = map[string]schemas.SecretVar{"Authorization": {Val: "Bearer tok"}}
+	require.NoError(t, store.UpdateWebhookEndpoint(ctx, loaded))
+
+	fetched, err := store.GetWebhookEndpointByID(ctx, endpoint.ID)
+	require.NoError(t, err)
+	assert.Equal(t, 2, fetched.MaxRetries, "updates must persist tuning knobs")
+	assert.Equal(t, 7, fetched.AttemptTimeoutSeconds)
+	assert.Equal(t, 3, fetched.MaxConcurrentDeliveries)
+	require.Len(t, fetched.Headers, 1)
+	auth := fetched.Headers["Authorization"]
+	assert.Equal(t, "Bearer tok", auth.GetValue())
+}
+
+func TestWebhookEndpointRecordFailureAndSuccess(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	endpoint := testWebhookEndpoint("counter-test")
+	require.NoError(t, store.CreateWebhookEndpoint(ctx, endpoint))
+
+	failures, err := store.RecordWebhookEndpointFailure(ctx, endpoint.ID)
+	require.NoError(t, err)
+	assert.Equal(t, 1, failures)
+	failures, err = store.RecordWebhookEndpointFailure(ctx, endpoint.ID)
+	require.NoError(t, err)
+	assert.Equal(t, 2, failures)
+
+	fetched, err := store.GetWebhookEndpointByID(ctx, endpoint.ID)
+	require.NoError(t, err)
+	assert.Equal(t, 2, fetched.ConsecutiveFailures)
+	assert.NotNil(t, fetched.LastFailureAt)
+	assert.Nil(t, fetched.LastSuccessAt)
+
+	require.NoError(t, store.RecordWebhookEndpointSuccess(ctx, endpoint.ID))
+	fetched, err = store.GetWebhookEndpointByID(ctx, endpoint.ID)
+	require.NoError(t, err)
+	assert.Equal(t, 0, fetched.ConsecutiveFailures)
+	assert.NotNil(t, fetched.LastSuccessAt)
+
+	_, err = store.RecordWebhookEndpointFailure(ctx, "does-not-exist")
+	assert.ErrorIs(t, err, ErrNotFound)
+	assert.ErrorIs(t, store.RecordWebhookEndpointSuccess(ctx, "does-not-exist"), ErrNotFound)
+}
+
+func TestWebhookEndpointCounterUpdatesLeaveConfigUntouched(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	endpoint := testWebhookEndpoint("counter-config-test")
+	require.NoError(t, store.CreateWebhookEndpoint(ctx, endpoint))
+	secret := endpoint.Secret.GetValue()
+
+	before, err := store.GetWebhookEndpointByID(ctx, endpoint.ID)
+	require.NoError(t, err)
+
+	_, err = store.RecordWebhookEndpointFailure(ctx, endpoint.ID)
+	require.NoError(t, err)
+	require.NoError(t, store.RecordWebhookEndpointSuccess(ctx, endpoint.ID))
+
+	after, err := store.GetWebhookEndpointByID(ctx, endpoint.ID)
+	require.NoError(t, err)
+	assert.Equal(t, before.UpdatedAt.UnixNano(), after.UpdatedAt.UnixNano(),
+		"operational counters must not touch updated_at")
+	assert.Equal(t, before.URL, after.URL)
+	assert.Equal(t, before.Events, after.Events)
+	assert.Equal(t, secret, after.Secret.GetValue(),
+		"operational counters must not touch the stored secret")
+}
+
+func testWebhookJob(id, endpointID string) *tables.TableWebhookJob {
+	return &tables.TableWebhookJob{
+		ID:         id,
+		EndpointID: endpointID,
+		AsyncJobID: "async-job-1",
+		Event:      tables.WebhookEventAsyncJobCompleted,
+	}
+}
+
+// getWebhookJob reads a queue row directly; the store deliberately exposes no
+// single-row getter, since workers only ever list-and-claim.
+func getWebhookJob(t *testing.T, store *RDBConfigStore, id string) *tables.TableWebhookJob {
+	t.Helper()
+	var job tables.TableWebhookJob
+	require.NoError(t, store.DB().Where("id = ?", id).First(&job).Error)
+	return &job
+}
+
+// setWebhookJobClaimedUntil forces a job's lease expiry to a fixed time so
+// lease expiry can be exercised deterministically without sleeping.
+func setWebhookJobClaimedUntil(t *testing.T, store *RDBConfigStore, id string, ts time.Time) {
+	t.Helper()
+	require.NoError(t, store.DB().Model(&tables.TableWebhookJob{}).
+		Where("id = ?", id).UpdateColumn("claimed_until", ts.UTC()).Error)
+}
+
+func TestWebhookJobCreateValidation(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	assert.Error(t, store.CreateWebhookJob(ctx, nil))
+	assert.Error(t, store.CreateWebhookJob(ctx, &tables.TableWebhookJob{EndpointID: "ep", AsyncJobID: "job", Event: tables.WebhookEventAsyncJobCompleted}))
+	assert.Error(t, store.CreateWebhookJob(ctx, &tables.TableWebhookJob{ID: "id", AsyncJobID: "job", Event: tables.WebhookEventAsyncJobCompleted}))
+	assert.Error(t, store.CreateWebhookJob(ctx, &tables.TableWebhookJob{ID: "id", EndpointID: "ep", Event: tables.WebhookEventAsyncJobCompleted}))
+	assert.Error(t, store.CreateWebhookJob(ctx, &tables.TableWebhookJob{ID: "id", EndpointID: "ep", AsyncJobID: "job", Event: "bogus.event"}))
+	// A new job must enter unattempted and unclaimed.
+	assert.Error(t, store.CreateWebhookJob(ctx, &tables.TableWebhookJob{ID: "id", EndpointID: "ep", AsyncJobID: "job", Event: tables.WebhookEventAsyncJobCompleted, AttemptCount: 1}))
+	assert.Error(t, store.CreateWebhookJob(ctx, &tables.TableWebhookJob{ID: "id", EndpointID: "ep", AsyncJobID: "job", Event: tables.WebhookEventAsyncJobCompleted, ClaimedBy: "node-a"}))
+}
+
+func TestWebhookJobCreateDefaultsAndDuplicate(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	job := testWebhookJob("job-1", "ep-1")
+	require.NoError(t, store.CreateWebhookJob(ctx, job))
+	assert.False(t, job.NextAttemptAt.IsZero(), "zero NextAttemptAt defaults to now (due immediately)")
+	assert.False(t, job.CreatedAt.IsZero())
+
+	stored := getWebhookJob(t, store, "job-1")
+	assert.Equal(t, 0, stored.AttemptCount)
+	assert.Empty(t, stored.ClaimedBy)
+	assert.Nil(t, stored.ClaimedUntil)
+
+	// The id doubles as the delivery's wire identifier and must stay unique
+	// while a delivery is in flight.
+	assert.ErrorIs(t, store.CreateWebhookJob(ctx, testWebhookJob("job-1", "ep-1")), ErrAlreadyExists)
+}
+
+func TestWebhookJobClaimRace(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	// Pin the pool to a single connection so both racers hit the same
+	// in-memory database; SQLite serializes writes on that connection, which
+	// is precisely the atomicity the conditional UPDATE relies on.
+	sqlDB, err := store.DB().DB()
+	require.NoError(t, err)
+	sqlDB.SetMaxOpenConns(1)
+
+	require.NoError(t, store.CreateWebhookJob(ctx, testWebhookJob("job-1", "ep-1")))
+
+	// Two nodes claim the same job simultaneously: both block on the barrier,
+	// then fire together. Exactly one conditional UPDATE may match the still-due
+	// row, so exactly one claimer must win.
+	nodes := []string{"node-a", "node-b"}
+	results := make([]bool, len(nodes))
+	errs := make([]error, len(nodes))
+	var start sync.WaitGroup
+	start.Add(1)
+	var done sync.WaitGroup
+	for i, node := range nodes {
+		done.Add(1)
+		go func(i int, node string) {
+			defer done.Done()
+			start.Wait()
+			results[i], errs[i] = store.ClaimWebhookJob(ctx, "job-1", node, time.Now().Add(time.Minute))
+		}(i, node)
+	}
+	start.Done()
+	done.Wait()
+
+	for i, node := range nodes {
+		require.NoErrorf(t, errs[i], "claim by %s errored", node)
+	}
+	wins := 0
+	for _, won := range results {
+		if won {
+			wins++
+		}
+	}
+	assert.Equal(t, 1, wins, "exactly one concurrent claimer must win")
+
+	stored := getWebhookJob(t, store, "job-1")
+	assert.Contains(t, nodes, stored.ClaimedBy, "the stored claim must belong to a racer")
+	require.NotNil(t, stored.ClaimedUntil)
+}
+
+func TestWebhookJobClaimLeaseExpiryReclaim(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, store.CreateWebhookJob(ctx, testWebhookJob("job-1", "ep-1")))
+	won, err := store.ClaimWebhookJob(ctx, "job-1", "node-a", time.Now().Add(time.Minute))
+	require.NoError(t, err)
+	require.True(t, won)
+
+	// The owner dies mid-attempt: its lease lapses and another node reclaims.
+	setWebhookJobClaimedUntil(t, store, "job-1", time.Now().Add(-time.Second))
+	won, err = store.ClaimWebhookJob(ctx, "job-1", "node-b", time.Now().Add(time.Minute))
+	require.NoError(t, err)
+	assert.True(t, won)
+	assert.Equal(t, "node-b", getWebhookJob(t, store, "job-1").ClaimedBy)
+}
+
+func TestWebhookJobClaimNotDueRejected(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	job := testWebhookJob("job-1", "ep-1")
+	job.NextAttemptAt = time.Now().Add(time.Hour)
+	require.NoError(t, store.CreateWebhookJob(ctx, job))
+
+	won, err := store.ClaimWebhookJob(ctx, "job-1", "node-a", time.Now().Add(time.Minute))
+	require.NoError(t, err)
+	assert.False(t, won)
+
+	won, err = store.ClaimWebhookJob(ctx, "missing-job", "node-a", time.Now().Add(time.Minute))
+	require.NoError(t, err)
+	assert.False(t, won)
+
+	// A non-future lease is rejected outright: winning with an already-expired
+	// lease would leave the job instantly reclaimable by another worker.
+	won, err = store.ClaimWebhookJob(ctx, "job-1", "node-a", time.Now().Add(-time.Second))
+	assert.Error(t, err)
+	assert.False(t, won)
+}
+
+func TestWebhookJobListDue(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	// Oldest due job, listed first.
+	oldest := testWebhookJob("due-oldest", "ep-1")
+	oldest.NextAttemptAt = time.Now().Add(-2 * time.Minute)
+	require.NoError(t, store.CreateWebhookJob(ctx, oldest))
+
+	newer := testWebhookJob("due-newer", "ep-1")
+	newer.NextAttemptAt = time.Now().Add(-time.Minute)
+	require.NoError(t, store.CreateWebhookJob(ctx, newer))
+
+	future := testWebhookJob("future", "ep-1")
+	future.NextAttemptAt = time.Now().Add(time.Hour)
+	require.NoError(t, store.CreateWebhookJob(ctx, future))
+
+	claimed := testWebhookJob("claimed-live", "ep-1")
+	claimed.NextAttemptAt = time.Now().Add(-time.Minute)
+	require.NoError(t, store.CreateWebhookJob(ctx, claimed))
+	won, err := store.ClaimWebhookJob(ctx, "claimed-live", "node-a", time.Now().Add(time.Minute))
+	require.NoError(t, err)
+	require.True(t, won)
+
+	expired := testWebhookJob("claimed-expired", "ep-1")
+	expired.NextAttemptAt = time.Now().Add(-3 * time.Minute)
+	require.NoError(t, store.CreateWebhookJob(ctx, expired))
+	won, err = store.ClaimWebhookJob(ctx, "claimed-expired", "node-a", time.Now().Add(time.Minute))
+	require.NoError(t, err)
+	require.True(t, won)
+	setWebhookJobClaimedUntil(t, store, "claimed-expired", time.Now().Add(-time.Second))
+
+	due, err := store.ListDueWebhookJobs(ctx, 0)
+	require.NoError(t, err)
+	ids := make([]string, 0, len(due))
+	for _, j := range due {
+		ids = append(ids, j.ID)
+	}
+	assert.Equal(t, []string{"claimed-expired", "due-oldest", "due-newer"}, ids)
+
+	due, err = store.ListDueWebhookJobs(ctx, 1)
+	require.NoError(t, err)
+	require.Len(t, due, 1)
+	assert.Equal(t, "claimed-expired", due[0].ID)
+}
+
+// TestWebhookJobUTCDueComparison guards the queue's time handling with the
+// UTC timestamps the dispatcher actually writes: SQLite compares datetimes
+// as strings, so a due check made with a local-zone now sees a future UTC
+// next_attempt_at as already due on any machine east of UTC — which made
+// retries fire on the next poll tick instead of after their backoff.
+func TestWebhookJobUTCDueComparison(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	future := testWebhookJob("utc-future", "ep-1")
+	future.NextAttemptAt = time.Now().UTC().Add(time.Hour)
+	require.NoError(t, store.CreateWebhookJob(ctx, future))
+
+	due, err := store.ListDueWebhookJobs(ctx, 0)
+	require.NoError(t, err)
+	assert.Empty(t, due, "a job due an hour from now must not be listed")
+
+	won, err := store.ClaimWebhookJob(ctx, "utc-future", "node-a", time.Now().UTC().Add(time.Minute))
+	require.NoError(t, err)
+	assert.False(t, won, "a job due an hour from now must not be claimable")
+}
+
+func TestWebhookJobReschedule(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, store.CreateWebhookJob(ctx, testWebhookJob("job-1", "ep-1")))
+	lease := time.Now().Add(time.Minute)
+	won, err := store.ClaimWebhookJob(ctx, "job-1", "node-a", lease)
+	require.NoError(t, err)
+	require.True(t, won)
+
+	// A non-owner cannot reschedule someone else's claim.
+	assert.Error(t, store.RescheduleWebhookJob(ctx, "job-1", "node-b", lease, time.Now().Add(5*time.Minute)))
+
+	next := time.Now().Add(5 * time.Minute)
+	require.NoError(t, store.RescheduleWebhookJob(ctx, "job-1", "node-a", lease, next))
+
+	stored := getWebhookJob(t, store, "job-1")
+	assert.Equal(t, 1, stored.AttemptCount)
+	assert.Empty(t, stored.ClaimedBy)
+	assert.Nil(t, stored.ClaimedUntil)
+	assert.WithinDuration(t, next, stored.NextAttemptAt, time.Second)
+
+	// The claim was released, so a second reschedule has nothing to fence on.
+	assert.Error(t, store.RescheduleWebhookJob(ctx, "job-1", "node-a", lease, next))
+}
+
+func TestWebhookJobDelete(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, store.CreateWebhookJob(ctx, testWebhookJob("job-1", "ep-1")))
+
+	// Only the current claim holder can retire a job.
+	assert.Error(t, store.DeleteWebhookJob(ctx, "job-1", "node-a", time.Now().Add(time.Minute)))
+
+	lease := time.Now().Add(time.Minute)
+	won, err := store.ClaimWebhookJob(ctx, "job-1", "node-a", lease)
+	require.NoError(t, err)
+	require.True(t, won)
+	assert.Error(t, store.DeleteWebhookJob(ctx, "job-1", "node-b", lease))
+	require.NoError(t, store.DeleteWebhookJob(ctx, "job-1", "node-a", lease))
+
+	var count int64
+	require.NoError(t, store.DB().Model(&tables.TableWebhookJob{}).Where("id = ?", "job-1").Count(&count).Error)
+	assert.Zero(t, count)
+}
+
+func TestWebhookJobClaimCycleWithEmptyRunnerID(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	// Single-node mode claims with an empty runner id; the lease alone
+	// fences, and fenced writes still match the empty claimed_by.
+	require.NoError(t, store.CreateWebhookJob(ctx, testWebhookJob("job-1", "ep-1")))
+	lease := time.Now().Add(time.Minute)
+	won, err := store.ClaimWebhookJob(ctx, "job-1", "", lease)
+	require.NoError(t, err)
+	require.True(t, won)
+
+	won, err = store.ClaimWebhookJob(ctx, "job-1", "", time.Now().Add(time.Minute))
+	require.NoError(t, err)
+	assert.False(t, won, "live lease must fence even without runner ids")
+
+	require.NoError(t, store.RescheduleWebhookJob(ctx, "job-1", "", lease, time.Now().Add(time.Minute)))
+	assert.Equal(t, 1, getWebhookJob(t, store, "job-1").AttemptCount)
+}
+
+func TestWebhookJobStaleOwnerAfterReclaimIsFenced(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	// Same runner reclaims a job after its first lease expired — the stale
+	// attempt still holds the OLD lease value, and runner identity alone
+	// cannot tell the two claims apart (the single-node runner id is empty).
+	require.NoError(t, store.CreateWebhookJob(ctx, testWebhookJob("job-1", "ep-1")))
+	staleLease := time.Now().Add(time.Minute)
+	won, err := store.ClaimWebhookJob(ctx, "job-1", "", staleLease)
+	require.NoError(t, err)
+	require.True(t, won)
+	setWebhookJobClaimedUntil(t, store, "job-1", time.Now().Add(-time.Second))
+
+	// The expired-lease value in the DB, exactly as the reclaim will see it.
+	expiredLease := *getWebhookJob(t, store, "job-1").ClaimedUntil
+
+	newLease := time.Now().Add(time.Minute)
+	won, err = store.ClaimWebhookJob(ctx, "job-1", "", newLease)
+	require.NoError(t, err)
+	require.True(t, won, "expired lease must be reclaimable")
+
+	// The stale owner's terminal mutations must match nothing.
+	assert.Error(t, store.RescheduleWebhookJob(ctx, "job-1", "", staleLease, time.Now().Add(time.Minute)))
+	assert.Error(t, store.RescheduleWebhookJob(ctx, "job-1", "", expiredLease, time.Now().Add(time.Minute)))
+	assert.Error(t, store.DeleteWebhookJob(ctx, "job-1", "", staleLease))
+	assert.Error(t, store.DeleteWebhookJob(ctx, "job-1", "", expiredLease))
+
+	stored := getWebhookJob(t, store, "job-1")
+	assert.Zero(t, stored.AttemptCount, "stale reschedule must not move the attempt counter")
+	require.NotNil(t, stored.ClaimedUntil, "stale delete must not release the live claim")
+
+	// The live claim holder still owns the job.
+	require.NoError(t, store.DeleteWebhookJob(ctx, "job-1", "", newLease))
+}
+
+func TestClientConfigWebhookConfigRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, store.UpdateClientConfig(ctx, &ClientConfig{
+		WebhookConfig: &tables.WebhookConfig{DeliveryHistoryRetentionDays: 90},
+	}))
+	loaded, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, loaded.WebhookConfig, "webhook settings must survive the database round-trip")
+	assert.Equal(t, 90, loaded.WebhookConfig.DeliveryHistoryRetentionDays)
+
+	// Absent settings stay absent rather than becoming a zero-value struct.
+	require.NoError(t, store.UpdateClientConfig(ctx, &ClientConfig{}))
+	loaded, err = store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Nil(t, loaded.WebhookConfig)
+}
+
+func TestWebhookEndpointTuningRoundTripAndHash(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	endpoint := testWebhookEndpoint("tuning-test")
+	endpoint.MaxRetries = 2
+	endpoint.RetryBackoffInitialSeconds = 5
+	endpoint.AttemptTimeoutSeconds = 3
+	require.NoError(t, endpoint.Validate())
+	require.NoError(t, store.CreateWebhookEndpoint(ctx, endpoint))
+
+	fetched, err := store.GetWebhookEndpointByID(ctx, endpoint.ID)
+	require.NoError(t, err)
+	assert.Equal(t, 2, fetched.MaxRetries)
+	assert.Equal(t, 5, fetched.RetryBackoffInitialSeconds)
+	assert.Equal(t, 3, fetched.AttemptTimeoutSeconds)
+	assert.Zero(t, fetched.MaxConcurrentDeliveries, "unset knobs stay zero (worker default)")
+
+	// Tuning participates in change detection for config.json sync.
+	baseHash, err := GenerateWebhookEndpointHash(fetched)
+	require.NoError(t, err)
+	fetched.MaxRetries = 7
+	changedHash, err := GenerateWebhookEndpointHash(fetched)
+	require.NoError(t, err)
+	assert.NotEqual(t, baseHash, changedHash)
+
+	// Negative knobs are rejected at validation.
+	invalid := testWebhookEndpoint("tuning-invalid")
+	invalid.MaxRetries = -1
+	assert.Error(t, invalid.Validate())
 }

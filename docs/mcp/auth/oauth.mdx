@@ -165,6 +165,7 @@ If your OAuth provider supports DCR, omit `client_id` and `client_secret` and pr
   "oauth_config": {
     "registration_url": "https://auth.example.com/oauth/register",
     "server_url":       "https://api.example.com",
+    "resource":         "https://api.example.com",
     "scopes": ["mcp:read", "mcp:write"]
   }
 }
@@ -173,8 +174,9 @@ If your OAuth provider supports DCR, omit `client_id` and `client_secret` and pr
 Bifrost will:
 
 1. Discover OAuth endpoints from `server_url` (if needed)
-2. Register a new client via `registration_url`
-3. Continue with the standard authorize / token exchange flow
+2. Send the OAuth `resource` indicator during authorization and token exchange only when `resource` is provided.
+3. Register a new client via `registration_url`
+4. Continue with the standard authorize / token exchange flow
 
 <Warning>
 The `redirect_uri` Bifrost registers with the upstream provider is locked to Bifrost's current public URL (`mcp_external_client_url`, or the request `Host` header if unset). If you change Bifrost's public URL later, the upstream provider will reject the next authorize call with **"Invalid redirect URI"**. To recover, clear the stored client credentials for the affected MCP server so Bifrost re-runs DCR with the new URL.
