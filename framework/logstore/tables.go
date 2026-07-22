@@ -72,6 +72,11 @@ type SearchFilters struct {
 	CacheHitTypes     []string          `json:"cache_hit_types,omitempty"` // For filtering by local-cache hit type ("direct", "semantic")
 	ContentSearch     string            `json:"content_search,omitempty"`
 	MetadataFilters   map[string]string `json:"metadata_filters,omitempty"` // key=metadataKey, value=metadataValue for filtering by metadata
+	// Inverse negates all categorical/array filters above (providers, models,
+	// objects, users, teams, metadata, etc.): each selected value becomes an
+	// exclusion (NOT IN) instead of an inclusion (IN), ANDed together. Range,
+	// time, and content-search predicates are unaffected. See applyFilters.
+	Inverse bool `json:"inverse,omitempty"`
 }
 
 // PaginationOptions represents pagination parameters

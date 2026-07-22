@@ -805,6 +805,12 @@ func startMatViewRefresher(ctx context.Context, db *gorm.DB, interval time.Durat
 // mv_logs_hourly. Per-row filters (content search, parent request ID, metadata,
 // numeric ranges) require the raw logs table.
 func canUseMatViewFilters(f SearchFilters) bool {
+	// Inverse (exclusion) filters negate categorical predicates; the hourly
+	// matview does not carry all the dimensions needed to evaluate the negated
+	// forms correctly, so force the raw-table path when inverse is set.
+	if f.Inverse {
+		return false
+	}
 	return f.ContentSearch == "" &&
 		f.ParentRequestID == "" &&
 		len(f.MetadataFilters) == 0 &&
