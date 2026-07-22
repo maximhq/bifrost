@@ -75,6 +75,7 @@ type SearchFilters struct {
 	CacheHitTypes     []string          `json:"cache_hit_types,omitempty"` // For filtering by local-cache hit type ("direct", "semantic")
 	ContentSearch     string            `json:"content_search,omitempty"`
 	MetadataFilters   map[string]string `json:"metadata_filters,omitempty"` // key=metadataKey, value=metadataValue for filtering by metadata
+<<<<<<< HEAD
 	// RankingLimit caps the number of rows returned by the ranking queries
 	// (GetModelRankings / GetUserRankings / GetDimensionRankings). nil means
 	// "use the store default" (defaultMaxRankingsLimit); a value <= 0 means
@@ -93,6 +94,13 @@ func (f SearchFilters) EffectiveRankingLimit(defaultLimit int) int {
 		return 0
 	}
 	return *f.RankingLimit
+=======
+	// Inverse negates all categorical/array filters above (providers, models,
+	// objects, users, teams, metadata, etc.): each selected value becomes an
+	// exclusion (NOT IN) instead of an inclusion (IN), ANDed together. Range,
+	// time, and content-search predicates are unaffected. See applyFilters.
+	Inverse bool `json:"inverse,omitempty"`
+>>>>>>> 4f186a940 (fix: inverse filters support for logs backend)
 }
 
 // PaginationOptions represents pagination parameters

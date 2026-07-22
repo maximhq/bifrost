@@ -712,6 +712,11 @@ func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
 			filters.MissingCostOnly = val
 		}
 	}
+	if inverse := string(ctx.QueryArgs().Peek("inverse")); inverse != "" {
+		if val, err := strconv.ParseBool(inverse); err == nil {
+			filters.Inverse = val
+		}
+	}
 	if cacheHitTypes := string(ctx.QueryArgs().Peek("cache_hit_types")); cacheHitTypes != "" {
 		filters.CacheHitTypes = parseCommaSeparated(cacheHitTypes)
 	}
@@ -968,6 +973,11 @@ func (h *LoggingHandler) getLogsStats(ctx *fasthttp.RequestCtx) {
 			filters.MissingCostOnly = val
 		}
 	}
+	if inverse := string(ctx.QueryArgs().Peek("inverse")); inverse != "" {
+		if val, err := strconv.ParseBool(inverse); err == nil {
+			filters.Inverse = val
+		}
+	}
 	if cacheHitTypes := string(ctx.QueryArgs().Peek("cache_hit_types")); cacheHitTypes != "" {
 		filters.CacheHitTypes = parseCommaSeparated(cacheHitTypes)
 	}
@@ -1131,6 +1141,11 @@ func parseHistogramFilters(ctx *fasthttp.RequestCtx) *logstore.SearchFilters {
 	if missingCost := string(ctx.QueryArgs().Peek("missing_cost_only")); missingCost != "" {
 		if val, err := strconv.ParseBool(missingCost); err == nil {
 			filters.MissingCostOnly = val
+		}
+	}
+	if inverse := string(ctx.QueryArgs().Peek("inverse")); inverse != "" {
+		if val, err := strconv.ParseBool(inverse); err == nil {
+			filters.Inverse = val
 		}
 	}
 	if cacheHitTypes := string(ctx.QueryArgs().Peek("cache_hit_types")); cacheHitTypes != "" {
