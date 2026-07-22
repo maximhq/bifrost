@@ -535,6 +535,15 @@
                   "enterprise/setting-up-generic-oidc/oidc",
                   "enterprise/setting-up-generic-oidc/scim"
                 ]
+              },
+              {
+                "group": "Auth Proxy",
+                "icon": "shield-halved",
+                "collapsed": true,
+                "pages": [
+                  "enterprise/auth-proxy/cloudflare-ztna",
+                  "enterprise/auth-proxy/generic-proxy"
+                ]
               }
             ]
           },
