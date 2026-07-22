@@ -1,0 +1,323 @@
+---
+title: "Lakera Guard"
+description: "Integrate Lakera Guard with Bifrost to screen prompts and responses, enforce Lakera policies, and redact supported findings."
+icon: "/media/lakera-logo-nav-v5.svg"
+---
+
+## Overview
+
+Bifrost Enterprise supports [**Lakera Guard**](https://www.lakera.ai/lakera-guard) as a third-party guardrail provider for screening LLM conversations.
+
+Lakera owns the project policy and detector decision. Bifrost owns when the policy runs and what happens next: it can block the interaction, record the detection without intervening, or redact supported matches before content continues through the gateway.
+
+Bifrost calls Lakera's `POST /v2/guard` endpoint with an OpenAI Chat Completions-style `messages` array. Chat Completions already use this shape; Bifrost normalizes Responses API and ordinary Anthropic Messages text into the same message format before screening.
+
+<Note>
+  **Streaming output:** For `output` and `both` rules, Bifrost holds the response until the stream is complete, screens the complete output once, and then blocks, redacts, or releases it. Lakera does not inspect individual response chunks in this integration.
+</Note>
+
+## Prerequisites
+
+- Bifrost Enterprise with guardrails enabled
+- A Lakera API key
+- A Lakera project with a policy assigned to it
+- Bifrost must be able to connect to the Lakera API over HTTPS. If your deployment restricts outbound connections, allow the configured Lakera API host.
+
+## Set Up Lakera
+
+1. Sign in to the [Lakera Platform](https://platform.lakera.ai/).
+2. Open **Policies** and create or select the policy you want Bifrost to enforce.
+3. Configure the policy's detectors and sensitivity.
+4. Open **Projects**, create or select a project, and assign the policy to it.
+5. Copy the project ID. Bifrost sends this value as `project_id` on every screening request.
+6. Open **API Access** and create an API key for Bifrost.
+
+<Frame>
+  <img src="/media/guardrails/lakera-policy-setup.png" alt="Lakera Policies page showing policies, detector coverage, sensitivity, and assigned projects" />
+</Frame>
+
+<Tip>
+  Use a separate Lakera project for each application and environment. The project selects the assigned policy, so sharing one project can unintentionally couple policy changes across workloads.
+</Tip>
+
+Lakera's default policy is intentionally strict. Review its enabled detectors and sensitivity before attaching it to production traffic.
+
+## How It Works
+
+1. Create a Lakera provider configuration in Bifrost.
+2. Attach the configuration to a guardrail rule.
+3. Set the rule to run on `input`, `output`, or `both`.
+4. When the rule matches, Bifrost converts the retained conversation into Lakera's OpenAI-style `messages` format.
+5. Bifrost sends the messages, Lakera project ID, breakdown request, and Bifrost request metadata to `POST /v2/guard`.
+6. Lakera evaluates the latest interaction using the earlier messages as context and returns a `flagged` decision.
+7. Bifrost applies the provider's configured `action`.
+8. Bifrost records detector summaries and Lakera's request UUID in guardrail diagnostics when available.
+
+When `action` is `redact`, Bifrost also sends `payload: true` so Lakera can return supported finding locations:
+
+```json
+{
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are a support assistant."
+    },
+    {
+      "role": "user",
+      "content": "Email me at alex@example.com"
+    }
+  ],
+  "project_id": "project-1234567890",
+  "payload": true,
+  "breakdown": true,
+  "metadata": {
+    "bifrost_source": "input",
+    "bifrost_provider": "openai",
+    "bifrost_model": "gpt-5.4"
+  }
+}
+```
+
+Both runtime screening and **Verify** use `POST /v2/guard`. Verification checks that Bifrost can make a normal screening request with the configured credentials and project, so it can appear in Lakera request logs. There is no separate no-event health-check call.
+
+## Configuration Fields
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `api_key` | string | Yes | - | Lakera API key. Supports `env.LAKERA_GUARD_API_KEY`. |
+| `project_id` | string | Yes | - | Lakera project ID. The policy assigned to this project controls screening behavior. |
+| `base_url` | string | No | `https://api.lakera.ai` | Lakera API base. Use a regional or enterprise base when required. Bifrost accepts the API root, `/v2`, or the full `/v2/guard` endpoint and normalizes it. |
+| `action` | enum | No | `block` | `block`, `detect_only`, or `redact`. |
+| `redaction_strategy` | enum | No | `replace` | Replacement strategy for non-reversible runtime redaction: `replace`, `mask`, or `hash`. |
+| `redaction_mode` | enum | No | `runtime` | `runtime`, `logs_only`, or `runtime_reversible`. See [Redaction Modes](/enterprise/guardrails/redaction). |
+| `timeout` | integer | No | `30` | Provider execution timeout in seconds. |
+
+## Configure Bifrost
+
+<Tabs group="lakera-config">
+<Tab title="Web UI">
+
+<Frame>
+  <img src="/media/guardrails/lakera-bifrost-config.png" alt="Lakera Guard configuration in Bifrost showing required credentials and redaction controls" />
+</Frame>
+
+1. Go to **Guardrails** > **Providers**.
+2. Select **Lakera Guard** and click **Add Configuration**.
+3. Enter a descriptive **Name**.
+4. Enter the required **API Key** and **Project ID**.
+5. Choose the Bifrost enforcement **Action**.
+6. For `redact`, choose the **Redaction mode** and **Redaction strategy**.
+7. Leave **Base URL** blank to use `https://api.lakera.ai`, or enter your Lakera regional or enterprise API base.
+8. Set the timeout, enable the configuration, and click **Verify**.
+9. Save the configuration and attach it to a rule under **Guardrails** > **Configuration**.
+
+</Tab>
+<Tab title="API">
+
+Create the provider configuration with the Bifrost management API:
+
+```bash
+curl -X POST http://localhost:8080/api/guardrails/lakera \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "lakera-production",
+    "enabled": true,
+    "config": {
+      "api_key": "env.LAKERA_GUARD_API_KEY",
+      "project_id": "project-1234567890",
+      "action": "block",
+      "base_url": "https://api.lakera.ai",
+      "timeout": 30
+    }
+  }'
+```
+
+Fetch the generated configuration ID:
+
+```bash
+curl -X GET http://localhost:8080/api/guardrails/lakera \
+  -H "Content-Type: application/json"
+```
+
+Attach it to a rule by referencing `lakera:<id>` in `selectedGuardrailProfiles`:
+
+```bash
+curl -X POST http://localhost:8080/api/guardrails/rules \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "lakera-all-model-input",
+    "description": "Screen all prompts with Lakera Guard",
+    "enabled": true,
+    "celExpression": "true",
+    "applyTo": "input",
+    "samplingRate": 100,
+    "timeout": 60,
+    "selectedGuardrailProfiles": ["lakera:25"]
+  }'
+```
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "guardrails_config": {
+    "guardrail_providers": [
+      {
+        "id": 25,
+        "provider_name": "lakera",
+        "policy_name": "lakera-production",
+        "enabled": true,
+        "timeout": 30,
+        "config": {
+          "api_key": "env.LAKERA_GUARD_API_KEY",
+          "project_id": "project-1234567890",
+          "base_url": "https://api.lakera.ai",
+          "action": "block"
+        }
+      }
+    ],
+    "guardrail_rules": [
+      {
+        "id": 251,
+        "name": "lakera-all-model-input",
+        "description": "Screen all prompts with Lakera Guard",
+        "enabled": true,
+        "cel_expression": "true",
+        "apply_to": "input",
+        "sampling_rate": 100,
+        "timeout": 60,
+        "provider_config_ids": [25]
+      }
+    ]
+  }
+}
+```
+
+</Tab>
+<Tab title="Helm">
+
+```yaml
+bifrost:
+  guardrails:
+    providers:
+      - id: 25
+        provider_name: "lakera"
+        policy_name: "lakera-production"
+        enabled: true
+        timeout: 30
+        config:
+          api_key: "env.LAKERA_GUARD_API_KEY"
+          project_id: "project-1234567890"
+          base_url: "https://api.lakera.ai"
+          action: "block"
+
+    rules:
+      - id: 251
+        name: "lakera-all-model-input"
+        description: "Screen all prompts with Lakera Guard"
+        enabled: true
+        cel_expression: "true"
+        apply_to: "input"
+        sampling_rate: 100
+        timeout: 60
+        provider_config_ids: [25]
+```
+
+</Tab>
+</Tabs>
+
+## Actions And Outcomes
+
+| Bifrost action | Lakera result | Bifrost behavior |
+|----------------|---------------|------------------|
+| `block` | `flagged: false` | Allows the original content unchanged. |
+| `block` | `flagged: true` | Returns HTTP `400` with `GUARDRAIL_INTERVENED`. |
+| `detect_only` | Either decision | Allows traffic and records Lakera's decision and detector diagnostics. |
+| `redact` | `flagged: true` with valid maskable payload spans | Applies the configured Bifrost redaction strategy and mode. |
+| `redact` | `flagged: true` without safely mappable payload spans | Fails closed with `GUARDRAIL_INTERVENED`. |
+| Any action | Timeout, non-2xx response, missing decision, or malformed response | Treats the provider call as failed. The rule's failure behavior determines whether traffic continues. |
+
+For a blocked request, Bifrost includes the detector summary when Lakera returns one. In **LLM Logs**, the request is marked **Error** and shows a message such as `Blocked by Lakera Guard: Prompt attack detected (confidence: very likely)`.
+
+```json
+{
+  "type": "guardrail_intervention",
+  "status_code": 400,
+  "error": {
+    "type": "guardrail_intervention",
+    "message": "Blocked by Lakera Guard: Pii email detected (confidence: confident)"
+  }
+}
+```
+
+## Redaction Behavior
+
+Lakera does not return a complete transformed prompt or response. For supported detectors, it returns finding locations in the optional payload. Bifrost maps those spans back to the original message text and performs the rewrite using the selected [redaction strategy and mode](/enterprise/guardrails/redaction).
+
+Lakera documents payload locations for PII, profanity, and custom detector regular-expression matches. Other flagged detectors, such as prompt attack, can produce a policy decision without a maskable payload. In `redact` mode, Bifrost blocks those findings because allowing the original unsafe content would defeat the rule.
+
+Bifrost also fails closed if a returned span is missing, malformed, crosses text boundaries, or cannot be mapped safely. This preserves existing block behavior for findings that cannot be transformed correctly.
+
+<Note>
+  Lakera's masking of PII in the Lakera dashboard is separate from Bifrost redaction. Dashboard masking controls how request details are displayed or stored in Lakera; it does not provide transformed content for Bifrost to forward.
+</Note>
+
+For Chat Completions and Text Completions with multiple output choices, Bifrost screens each choice independently. A blocking or unmaskable violation in any choice blocks the complete response. Maskable findings stay aligned with the choice that produced them.
+
+## Request Compatibility
+
+| Bifrost request surface | Supported | Behavior |
+|-------------------------|-----------|----------|
+| Chat Completions | Yes | Sends the retained OpenAI-style message history directly. |
+| Responses API | Yes | Normalizes ordinary text and standard function calls into Lakera's message format. |
+| Anthropic Messages | Yes | Normalizes ordinary message text and standard client tool use/result content into Lakera's message format. |
+| Streaming requests | Yes | Screens input before the LLM call; screens output after the complete stream is buffered. |
+| Direct MCP or A2A traffic | No | These proxy surfaces are not converted into Lakera guard requests. |
+
+The earlier retained messages provide conversation context; Lakera evaluates the latest interaction rather than independently reclassifying every old turn. Use the rule's `max_turns_to_send` setting to limit how much conversation history Bifrost includes.
+
+For output rules, Bifrost sends the retained request conversation together with the selected model output. Earlier history is context only and is not rewritten during the output pass.
+
+## Streaming Behavior
+
+Input screening happens before Bifrost calls the model, including when the client requested streaming output.
+
+For output screening, the Lakera provider requires the complete normalized conversation. Bifrost therefore buffers the full model response, calls Lakera once, and then:
+
+- returns a guardrail intervention if Lakera blocks it;
+- releases the transformed response if Bifrost can redact all findings; or
+- releases the original response when the policy allows it.
+
+This adds end-of-stream guardrail latency and means the client does not receive incremental chunks before the Lakera decision. See [Streaming Output Guardrails](/enterprise/guardrails#streaming-output-guardrails).
+
+## Observability
+
+When available, Bifrost records Lakera diagnostics such as:
+
+- `flagged`
+- detected count and detector types
+- policy IDs
+- Lakera `request_uuid`
+- number of Lakera screening requests, including per-choice output checks
+
+Assessment summaries do not include the original matched text. Use Lakera's request UUID to correlate Bifrost diagnostics with Lakera logs.
+
+## Troubleshooting
+
+| Symptom | What to check |
+|---------|---------------|
+| `401` or `403` from Lakera | Confirm the API key is current and available to the Bifrost process. |
+| Verification fails | Confirm both required fields, network access, API base, and that the project exists and is accessible to the API key. Verification makes a normal `/v2/guard` request. |
+| Unexpected detections | Review the policy assigned to the configured project, detector sensitivity, and the retained conversation history. |
+| `redact` blocks instead of rewriting | Check whether the flagged detector returns payload spans. Prompt attacks and other non-maskable findings intentionally fail closed. |
+| Streaming response arrives only after generation completes | This is expected for Lakera output rules because Bifrost screens the full buffered output. |
+| No content can be screened | Confirm the request contains ordinary text, a standard assistant function call, or a standard tool result. Images, files, and direct MCP/A2A traffic are not included. |
+
+## Related Documentation
+
+- [Lakera Guard API guide](https://docs.lakera.ai/docs/api/guard)
+- [Lakera `POST /v2/guard` reference](https://docs.lakera.ai/api-reference/lakera-api/guard/screen-content)
+- [Lakera platform concepts and caveats](https://docs.lakera.ai/docs/platform)
+- [Bifrost Guardrails](/enterprise/guardrails)
+- [Bifrost Guardrail Redaction](/enterprise/guardrails/redaction)
