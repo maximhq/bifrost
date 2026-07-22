@@ -13,15 +13,6 @@ Bifrost's identity-aware proxy support isn't limited to Cloudflare Access. Any u
 
 ## How it works
 
-```mermaid
-graph LR
-    U[User] --> P[OIDC proxy]
-    P -->|validates identity<br/>against your IdP| P
-    P -->|signed JWT in a<br/>configurable header| B[Bifrost]
-    B -->|verify signature vs<br/>JWKS / OIDC discovery| B
-    B -->|authenticate + authorize| APP[Dashboard / Inference APIs]
-```
-
 1. The proxy authenticates the user against your identity provider.
 2. It forwards the request to Bifrost with a signed OIDC JWT in a header you choose (e.g. `X-Forwarded-Assertion`).
 3. Bifrost validates the token's signature against the configured **JWKS URL**, or discovers it from the **issuer** via `<issuer>/.well-known/openid-configuration`.
@@ -30,7 +21,7 @@ graph LR
 The token is validated against the **proxy's** keys — not the IdP's — so both the dashboard and the inference APIs are protected by the same upstream layer.
 
 <Warning>
-  **Isolate the Bifrost origin.** When the configured header is absent, Bifrost falls back to its normal bearer/cookie login — so if Bifrost is reachable directly (bypassing the proxy), a client can skip the proxy's access policy. Restrict network access so Bifrost is only reachable through the proxy (private network, service mesh, or firewall allowlist), and configure the proxy to strip any client-supplied assertion header before injecting its own signed token.
+  When the configured header is absent, Bifrost falls back to the IDP login — so if Bifrost is reachable directly (bypassing the proxy), a client can skip the proxy's access policy. Restrict network access so Bifrost is only reachable through the proxy (private network, service mesh, or firewall allowlist), and configure the proxy to strip any client-supplied assertion header before injecting its own signed token.
 </Warning>
 
 ---
