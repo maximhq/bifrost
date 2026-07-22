@@ -453,6 +453,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_webhook_config_client_column"}, run: migrationAddWebhookConfigClientColumn},
 	{IDs: []string{"add_oauth_config_resource_column"}, run: migrationAddOauthConfigResourceColumn},
 	{IDs: []string{"add_use_anthropic_endpoints_column"}, run: migrationAddUseAnthropicEndpointsColumn},
+	{IDs: []string{"add_vk_rotation_cooldown_columns"}, run: migrationAddVKRotationCooldownColumns},
 }
 
 // quoteSQLiteIdentifier quotes a SQLite identifier, escaping any double quotes.
@@ -10602,6 +10603,44 @@ func migrationAddMCPClientToolExecutionTimeoutColumn(ctx context.Context, db *go
 
 // migrationAddVirtualKeyExpiresAtColumn adds nullable expires_at to governance_virtual_keys.
 // No index: expiry is checked in-memory from the already-loaded VK, never queried by column.
+// migrationAddVKRotationCooldownColumns adds the rotation grace-period columns to
+// governance_virtual_keys: previous_value, previous_value_hash,
+// previous_value_expires_at, and rotated_at. All nullable and additive, no
+// backfill (NULL = no previous value = pre-cooldown behavior), so the migration
+// is safe during rolling upgrades; pgx cached-plan invalidation (0A000) after
+// ADD COLUMN is handled by the postgresconn retry pool.
+func migrationAddVKRotationCooldownColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_vk_rotation_cooldown_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	columns := []string{"previous_value", "previous_value_hash", "previous_value_expires_at", "rotated_at"}
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, column := range columns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableVirtualKey{}, column); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, column := range columns {
+				if err := dropColumnIfExists(tx, logger, &tables.TableVirtualKey{}, column); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
 func migrationAddVirtualKeyExpiresAtColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
 	migrationName := "add_virtual_key_expires_at_column"
 	logger.Info("[configstore] starting migration %s", migrationName)
