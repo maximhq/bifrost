@@ -443,6 +443,48 @@ func (bifrost *Bifrost) ListModelsRequest(ctx *schemas.BifrostContext, req *sche
 	return resp.ListModelsResponse, nil
 }
 
+// ListInferenceProfilesRequest lists AWS Bedrock inference profiles through
+// the provider's normal queue, key selection, and plugin pipeline.
+func (bifrost *Bifrost) ListInferenceProfilesRequest(ctx *schemas.BifrostContext, req *schemas.BifrostListInferenceProfilesRequest) (*schemas.BifrostListInferenceProfilesResponse, *schemas.BifrostError) {
+	if req == nil || req.Provider == "" {
+		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "provider is required for list inference profiles request"}, ExtraFields: schemas.BifrostErrorExtraFields{RequestType: schemas.ListInferenceProfilesRequest}}
+	}
+	if ctx == nil {
+		ctx = bifrost.ctx
+	}
+	reqCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+	reqCtx.SetValue(schemas.BifrostContextKeySkipBudgetAndRateLimits, true)
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = schemas.ListInferenceProfilesRequest
+	bifrostReq.ListInferenceProfilesRequest = req
+	resp, err := bifrost.handleRequest(reqCtx, bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+	return resp.ListInferenceProfilesResponse, nil
+}
+
+// GetInferenceProfileRequest retrieves an AWS Bedrock inference profile through
+// the provider's normal queue, model policy, key selection, and plugin pipeline.
+func (bifrost *Bifrost) GetInferenceProfileRequest(ctx *schemas.BifrostContext, req *schemas.BifrostGetInferenceProfileRequest) (*schemas.BifrostGetInferenceProfileResponse, *schemas.BifrostError) {
+	if req == nil || req.Provider == "" || req.InferenceProfileIdentifier == "" {
+		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "provider and inference profile identifier are required for get inference profile request"}, ExtraFields: schemas.BifrostErrorExtraFields{RequestType: schemas.GetInferenceProfileRequest}}
+	}
+	if ctx == nil {
+		ctx = bifrost.ctx
+	}
+	reqCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+	reqCtx.SetValue(schemas.BifrostContextKeySkipBudgetAndRateLimits, true)
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = schemas.GetInferenceProfileRequest
+	bifrostReq.GetInferenceProfileRequest = req
+	resp, err := bifrost.handleRequest(reqCtx, bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+	return resp.GetInferenceProfileResponse, nil
+}
+
 // ListAllModels lists all models from all configured providers.
 // It accumulates responses from all providers with a limit of 1000 per provider to get all results.
 func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, req *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
@@ -6447,7 +6489,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		if providerRequiresKey(config.CustomProviderConfig) {
 			// ListModels needs all enabled/supported keys so providers can aggregate
 			// and report per-key statuses (KeyStatuses).
-			if req.RequestType == schemas.ListModelsRequest {
+			if req.RequestType == schemas.ListModelsRequest || req.RequestType == schemas.ListInferenceProfilesRequest {
 				keys, err = bifrost.getAllSupportedKeys(req.Context, provider.GetProviderKey(), baseProvider)
 				if err != nil {
 					bifrost.logger.Debug("error getting supported keys for list models: %v", err)
@@ -6850,6 +6892,26 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 			return nil, bifrostError
 		}
 		response.ListModelsResponse = listModelsResponse
+	case schemas.ListInferenceProfilesRequest:
+		inferenceProfiles, ok := provider.(schemas.InferenceProfileProvider)
+		if !ok {
+			return nil, providerUtils.NewUnsupportedOperationError(schemas.ListInferenceProfilesRequest, provider.GetProviderKey())
+		}
+		profilesResponse, bifrostError := inferenceProfiles.ListInferenceProfiles(req.Context, keys, req.BifrostRequest.ListInferenceProfilesRequest)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		response.ListInferenceProfilesResponse = profilesResponse
+	case schemas.GetInferenceProfileRequest:
+		inferenceProfiles, ok := provider.(schemas.InferenceProfileProvider)
+		if !ok {
+			return nil, providerUtils.NewUnsupportedOperationError(schemas.GetInferenceProfileRequest, provider.GetProviderKey())
+		}
+		profileResponse, bifrostError := inferenceProfiles.GetInferenceProfile(req.Context, key, req.BifrostRequest.GetInferenceProfileRequest)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		response.GetInferenceProfileResponse = profileResponse
 	case schemas.TextCompletionRequest:
 		if changeType, ok := req.Context.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType); ok && changeType == schemas.ChatCompletionRequest {
 			chatRequest := req.BifrostRequest.TextCompletionRequest.ToBifrostChatRequest()
@@ -8023,6 +8085,8 @@ func (bifrost *Bifrost) releaseChannelMessage(msg *ChannelMessage) {
 func resetBifrostRequest(req *schemas.BifrostRequest) {
 	req.RequestType = ""
 	req.ListModelsRequest = nil
+	req.ListInferenceProfilesRequest = nil
+	req.GetInferenceProfileRequest = nil
 	req.TextCompletionRequest = nil
 	req.ChatRequest = nil
 	req.ResponsesRequest = nil

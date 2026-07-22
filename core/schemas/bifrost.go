@@ -130,6 +130,8 @@ func (r RequestType) Value() (driver.Value, error) {
 
 const (
 	ListModelsRequest            RequestType = "list_models"
+	ListInferenceProfilesRequest RequestType = "list_inference_profiles"
+	GetInferenceProfileRequest   RequestType = "get_inference_profile"
 	TextCompletionRequest        RequestType = "text_completion"
 	TextCompletionStreamRequest  RequestType = "text_completion_stream"
 	ChatCompletionRequest        RequestType = "chat_completion"
@@ -498,6 +500,8 @@ type BifrostRequest struct {
 	RequestType RequestType
 
 	ListModelsRequest            *BifrostListModelsRequest
+	ListInferenceProfilesRequest *BifrostListInferenceProfilesRequest
+	GetInferenceProfileRequest   *BifrostGetInferenceProfileRequest
 	TextCompletionRequest        *BifrostTextCompletionRequest
 	ChatRequest                  *BifrostChatRequest
 	ResponsesRequest             *BifrostResponsesRequest
@@ -554,6 +558,10 @@ func (br *BifrostRequest) GetRequestFields() (provider ModelProvider, model stri
 	switch {
 	case br.ListModelsRequest != nil:
 		return br.ListModelsRequest.Provider, "", nil
+	case br.ListInferenceProfilesRequest != nil:
+		return br.ListInferenceProfilesRequest.Provider, "", nil
+	case br.GetInferenceProfileRequest != nil:
+		return br.GetInferenceProfileRequest.Provider, br.GetInferenceProfileRequest.InferenceProfileIdentifier, nil
 	case br.TextCompletionRequest != nil:
 		return br.TextCompletionRequest.Provider, br.TextCompletionRequest.Model, br.TextCompletionRequest.Fallbacks
 	case br.ChatRequest != nil:
@@ -705,6 +713,10 @@ func (br *BifrostRequest) SetProvider(provider ModelProvider) {
 	switch {
 	case br.ListModelsRequest != nil:
 		br.ListModelsRequest.Provider = provider
+	case br.ListInferenceProfilesRequest != nil:
+		br.ListInferenceProfilesRequest.Provider = provider
+	case br.GetInferenceProfileRequest != nil:
+		br.GetInferenceProfileRequest.Provider = provider
 	case br.TextCompletionRequest != nil:
 		br.TextCompletionRequest.Provider = provider
 	case br.ChatRequest != nil:
@@ -1039,6 +1051,8 @@ func (r *BifrostMCPRequest) GetToolArguments() interface{} {
 // BifrostResponse represents the complete result from any bifrost request.
 type BifrostResponse struct {
 	ListModelsResponse            *BifrostListModelsResponse
+	ListInferenceProfilesResponse *BifrostListInferenceProfilesResponse
+	GetInferenceProfileResponse   *BifrostGetInferenceProfileResponse
 	TextCompletionResponse        *BifrostTextCompletionResponse
 	ChatResponse                  *BifrostChatResponse
 	ResponsesResponse             *BifrostResponsesResponse
@@ -1092,6 +1106,10 @@ func (r *BifrostResponse) GetExtraFields() *BifrostResponseExtraFields {
 	switch {
 	case r.ListModelsResponse != nil:
 		return &r.ListModelsResponse.ExtraFields
+	case r.ListInferenceProfilesResponse != nil:
+		return &r.ListInferenceProfilesResponse.ExtraFields
+	case r.GetInferenceProfileResponse != nil:
+		return &r.GetInferenceProfileResponse.ExtraFields
 	case r.TextCompletionResponse != nil:
 		return &r.TextCompletionResponse.ExtraFields
 	case r.ChatResponse != nil:
@@ -1317,6 +1335,16 @@ func (r *BifrostResponse) PopulateExtraFields(requestType RequestType, provider 
 		r.ListModelsResponse.ExtraFields.Provider = provider
 		r.ListModelsResponse.ExtraFields.OriginalModelRequested = originalModelRequested
 		r.ListModelsResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+	case r.ListInferenceProfilesResponse != nil:
+		r.ListInferenceProfilesResponse.ExtraFields.RequestType = requestType
+		r.ListInferenceProfilesResponse.ExtraFields.Provider = provider
+		r.ListInferenceProfilesResponse.ExtraFields.OriginalModelRequested = originalModelRequested
+		r.ListInferenceProfilesResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+	case r.GetInferenceProfileResponse != nil:
+		r.GetInferenceProfileResponse.ExtraFields.RequestType = requestType
+		r.GetInferenceProfileResponse.ExtraFields.Provider = provider
+		r.GetInferenceProfileResponse.ExtraFields.OriginalModelRequested = originalModelRequested
+		r.GetInferenceProfileResponse.ExtraFields.ResolvedModelUsed = resolvedModel
 	case r.TextCompletionResponse != nil:
 		r.TextCompletionResponse.ExtraFields.RequestType = requestType
 		r.TextCompletionResponse.ExtraFields.Provider = provider
