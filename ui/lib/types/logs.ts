@@ -750,6 +750,7 @@ export interface LogFilters {
 	business_unit_ids?: string[];
 	apps?: string[]; // Backend-detected client apps
 	user_agents?: string[]; // Raw User-Agent strings; kept for backward compatibility/debug filtering
+	inverse?: boolean; // When true, all categorical/array filters above are applied as exclusions (NOT IN) instead of inclusions
 }
 
 export interface Pagination {
