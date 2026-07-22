@@ -1789,10 +1789,23 @@ func ToBedrockConverseStreamResponse(bifrostResp *schemas.BifrostResponsesStream
 		event.ContentBlockStop = true
 
 	case schemas.ResponsesStreamResponseTypeCompleted:
-		// Message stop - always set stopReason
+		// Message stop - always set stopReason.
+		// Derive stop reason: StopReason > IncompleteDetails > tool_use detection > end_turn,
+		// matching the non-streaming Converse converter.
 		stopReason := "end_turn"
-		if bifrostResp.Response != nil && bifrostResp.Response.IncompleteDetails != nil {
-			stopReason = bifrostResp.Response.IncompleteDetails.Reason
+		if bifrostResp.Response != nil {
+			if bifrostResp.Response.StopReason != nil {
+				stopReason = convertBifrostToBedrockStopReason(*bifrostResp.Response.StopReason)
+			} else if bifrostResp.Response.IncompleteDetails != nil {
+				stopReason = bifrostResp.Response.IncompleteDetails.Reason
+			} else {
+				for _, msg := range bifrostResp.Response.Output {
+					if msg.Type != nil && *msg.Type == schemas.ResponsesMessageTypeFunctionCall {
+						stopReason = "tool_use"
+						break
+					}
+				}
+			}
 		}
 		event.StopReason = &stopReason
 
