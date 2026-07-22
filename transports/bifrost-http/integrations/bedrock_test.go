@@ -168,12 +168,14 @@ func Test_createBedrockRouteConfigs(t *testing.T) {
 	handlerStore := &mockHandlerStore{}
 	routes := CreateBedrockRouteConfigs("/bedrock", handlerStore)
 
-	assert.Len(t, routes, 6, "should have 6 bedrock routes")
+	assert.Len(t, routes, 8, "should have 8 bedrock routes")
 
 	expectedRoutes := []struct {
 		path   string
 		method string
 	}{
+		{"/bedrock/inference-profiles", "GET"},
+		{"/bedrock/inference-profiles/{inferenceProfileIdentifier}", "GET"},
 		{"/bedrock/model/{modelId}/converse", "POST"},
 		{"/bedrock/model/{modelId}/converse-stream", "POST"},
 		{"/bedrock/model/{modelId}/invoke-with-response-stream", "POST"},

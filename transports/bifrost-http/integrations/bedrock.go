@@ -20,6 +20,16 @@ type BedrockRouter struct {
 	*GenericRouter
 }
 
+type bedrockListInferenceProfilesRequest struct {
+	MaxResults *int
+	NextToken  *string
+	Type       *string
+}
+
+type bedrockGetInferenceProfileRequest struct {
+	InferenceProfileIdentifier string
+}
+
 // S3 context keys for storing request parameters
 
 const (
@@ -60,6 +70,105 @@ func createBedrockConverseRouteConfig(pathPrefix string, handlerStore lib.Handle
 			return bedrock.ToBedrockError(err)
 		},
 		PreCallback: bedrockPreCallback(handlerStore),
+	}
+}
+
+// createBedrockListInferenceProfilesRouteConfig handles the AWS Bedrock
+// control-plane GET /inference-profiles endpoint used by Claude Code discovery.
+func createBedrockListInferenceProfilesRouteConfig(pathPrefix string) RouteConfig {
+	return RouteConfig{
+		Type:   RouteConfigTypeBedrock,
+		Path:   pathPrefix + "/inference-profiles",
+		Method: "GET",
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.ListInferenceProfilesRequest
+		},
+		GetRequestTypeInstance: func(context.Context) interface{} {
+			return &bedrockListInferenceProfilesRequest{}
+		},
+		RequestConverter: func(_ *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
+			bedrockReq, ok := req.(*bedrockListInferenceProfilesRequest)
+			if !ok {
+				return nil, errors.New("invalid Bedrock list inference profiles request")
+			}
+			return &schemas.BifrostRequest{ListInferenceProfilesRequest: &schemas.BifrostListInferenceProfilesRequest{
+				Provider:   schemas.Bedrock,
+				MaxResults: bedrockReq.MaxResults,
+				NextToken:  bedrockReq.NextToken,
+				Type:       bedrockReq.Type,
+			}}, nil
+		},
+		ListInferenceProfilesResponseConverter: func(_ *schemas.BifrostContext, resp *schemas.BifrostListInferenceProfilesResponse) (interface{}, error) {
+			return struct {
+				InferenceProfileSummaries []schemas.BifrostInferenceProfileSummary `json:"inferenceProfileSummaries"`
+				NextToken                 *string                                  `json:"nextToken,omitempty"`
+			}{InferenceProfileSummaries: resp.InferenceProfileSummaries, NextToken: resp.NextToken}, nil
+		},
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+			return bedrock.ToBedrockError(err)
+		},
+		PreCallback: func(ctx *fasthttp.RequestCtx, _ *schemas.BifrostContext, req interface{}) error {
+			bedrockReq := req.(*bedrockListInferenceProfilesRequest)
+			if rawMaxResults := string(ctx.QueryArgs().Peek("maxResults")); rawMaxResults != "" {
+				maxResults, err := strconv.Atoi(rawMaxResults)
+				if err != nil {
+					return fmt.Errorf("invalid maxResults: %w", err)
+				}
+				bedrockReq.MaxResults = &maxResults
+			}
+			if nextToken := string(ctx.QueryArgs().Peek("nextToken")); nextToken != "" {
+				bedrockReq.NextToken = &nextToken
+			}
+			if profileType := string(ctx.QueryArgs().Peek("type")); profileType != "" {
+				bedrockReq.Type = &profileType
+			}
+			return nil
+		},
+	}
+}
+
+// createBedrockGetInferenceProfileRouteConfig handles AWS Bedrock's
+// GET /inference-profiles/{inferenceProfileIdentifier} endpoint.
+func createBedrockGetInferenceProfileRouteConfig(pathPrefix string) RouteConfig {
+	return RouteConfig{
+		Type:   RouteConfigTypeBedrock,
+		Path:   pathPrefix + "/inference-profiles/{inferenceProfileIdentifier}",
+		Method: "GET",
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.GetInferenceProfileRequest
+		},
+		GetRequestTypeInstance: func(context.Context) interface{} {
+			return &bedrockGetInferenceProfileRequest{}
+		},
+		RequestConverter: func(_ *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
+			bedrockReq, ok := req.(*bedrockGetInferenceProfileRequest)
+			if !ok {
+				return nil, errors.New("invalid Bedrock get inference profile request")
+			}
+			return &schemas.BifrostRequest{GetInferenceProfileRequest: &schemas.BifrostGetInferenceProfileRequest{
+				Provider:                   schemas.Bedrock,
+				InferenceProfileIdentifier: bedrockReq.InferenceProfileIdentifier,
+			}}, nil
+		},
+		GetInferenceProfileResponseConverter: func(_ *schemas.BifrostContext, resp *schemas.BifrostGetInferenceProfileResponse) (interface{}, error) {
+			return resp.BifrostInferenceProfileSummary, nil
+		},
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+			return bedrock.ToBedrockError(err)
+		},
+		PreCallback: func(ctx *fasthttp.RequestCtx, _ *schemas.BifrostContext, req interface{}) error {
+			bedrockReq := req.(*bedrockGetInferenceProfileRequest)
+			identifier, ok := ctx.UserValue("inferenceProfileIdentifier").(string)
+			if !ok || identifier == "" {
+				return errors.New("inferenceProfileIdentifier is required")
+			}
+			decodedIdentifier, err := url.PathUnescape(identifier)
+			if err != nil {
+				return fmt.Errorf("invalid inferenceProfileIdentifier: %w", err)
+			}
+			bedrockReq.InferenceProfileIdentifier = decodedIdentifier
+			return nil
+		},
 	}
 }
 
@@ -351,6 +460,8 @@ func createBedrockCountTokensRouteConfig(pathPrefix string, handlerStore lib.Han
 // CreateBedrockRouteConfigs creates route configurations for Bedrock endpoints
 func CreateBedrockRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) []RouteConfig {
 	return []RouteConfig{
+		createBedrockListInferenceProfilesRouteConfig(pathPrefix),
+		createBedrockGetInferenceProfileRouteConfig(pathPrefix),
 		createBedrockConverseRouteConfig(pathPrefix, handlerStore),
 		createBedrockConverseStreamRouteConfig(pathPrefix, handlerStore),
 		createBedrockInvokeWithResponseStreamRouteConfig(pathPrefix, handlerStore),

@@ -79351,6 +79351,12 @@
                   "list_models": {
                     "type": "boolean"
                   },
+                  "list_inference_profiles": {
+                    "type": "boolean"
+                  },
+                  "get_inference_profile": {
+                    "type": "boolean"
+                  },
                   "text_completion": {
                     "type": "boolean"
                   },
@@ -79540,6 +79546,12 @@
                   "list_models": {
                     "type": "boolean"
                   },
+                  "list_inference_profiles": {
+                    "type": "boolean"
+                  },
+                  "get_inference_profile": {
+                    "type": "boolean"
+                  },
                   "text_completion": {
                     "type": "boolean"
                   },
@@ -79685,6 +79697,12 @@
                 "description": "Allowed request types for custom providers",
                 "properties": {
                   "list_models": {
+                    "type": "boolean"
+                  },
+                  "list_inference_profiles": {
+                    "type": "boolean"
+                  },
+                  "get_inference_profile": {
                     "type": "boolean"
                   },
                   "text_completion": {
