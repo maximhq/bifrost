@@ -358,9 +358,13 @@ func TestResolvePassthroughAlias(t *testing.T) {
 		}
 	})
 
-	t.Run("non-JSON body untouched", func(t *testing.T) {
+	// Multipart bodies must not reach sjson.SetBytes: given a non-JSON input it
+	// discards the body and returns a bare {"model":...} object, which would
+	// destroy the uploaded file. The leading-'{' guard is what prevents that.
+	t.Run("multipart body with model form field untouched", func(t *testing.T) {
 		t.Parallel()
-		body := []byte("--boundary\r\nnot json\r\n--boundary--")
+		body := []byte("--b\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\n" +
+			alias + "\r\n--b\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.mp3\"\r\n\r\nBINARY\r\n--b--")
 		_, gotBody := resolvePassthroughAlias(aliasCtx(), "/openai/deployments/"+alias+"/audio/transcriptions", body)
 		if string(gotBody) != string(body) {
 			t.Errorf("got %s, want unchanged %s", gotBody, body)
