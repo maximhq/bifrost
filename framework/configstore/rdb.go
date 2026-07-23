@@ -4874,6 +4874,9 @@ func (s *RDBConfigStore) GetModelConfigsPaginated(ctx context.Context, params Mo
 	if params.Scope != "" {
 		baseQuery = baseQuery.Where("scope = ?", params.Scope)
 	}
+	if params.ScopeID != "" {
+		baseQuery = baseQuery.Where("scope_id = ?", params.ScopeID)
+	}
 	if params.Provider != "" {
 		baseQuery = baseQuery.Where("provider = ?", params.Provider)
 	}

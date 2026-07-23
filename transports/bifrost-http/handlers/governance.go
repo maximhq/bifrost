@@ -3011,6 +3011,7 @@ func (h *GovernanceHandler) getModelConfigs(ctx *fasthttp.RequestCtx) {
 		}
 		search := string(ctx.QueryArgs().Peek("search"))
 		scopeFilter := string(ctx.QueryArgs().Peek("scope"))
+		scopeIDFilter := string(ctx.QueryArgs().Peek("scope_id"))
 		providerFilter := string(ctx.QueryArgs().Peek("provider"))
 		// Deep-copy into a value slice: top-level struct copy + nested pointer/slice fields
 		// so we never alias or mutate live governance state during serialization.
@@ -3024,6 +3025,11 @@ func (h *GovernanceHandler) getModelConfigs(ctx *fasthttp.RequestCtx) {
 			}
 			if scopeFilter != "" && mc.Scope != scopeFilter {
 				continue
+			}
+			if scopeIDFilter != "" {
+				if mc.ScopeID == nil || *mc.ScopeID != scopeIDFilter {
+					continue
+				}
 			}
 			if providerFilter != "" {
 				if mc.Provider == nil || *mc.Provider != providerFilter {
@@ -3086,13 +3092,15 @@ func (h *GovernanceHandler) getModelConfigs(ctx *fasthttp.RequestCtx) {
 	offsetStr := string(ctx.QueryArgs().Peek("offset"))
 	search := string(ctx.QueryArgs().Peek("search"))
 	scope := string(ctx.QueryArgs().Peek("scope"))
+	scopeID := string(ctx.QueryArgs().Peek("scope_id"))
 	provider := string(ctx.QueryArgs().Peek("provider"))
 
-	if limitStr != "" || offsetStr != "" || search != "" || scope != "" || provider != "" {
+	if limitStr != "" || offsetStr != "" || search != "" || scope != "" || scopeID != "" || provider != "" {
 		// Paginated path
 		params := configstore.ModelConfigsQueryParams{
 			Search:   search,
 			Scope:    scope,
+			ScopeID:  scopeID,
 			Provider: provider,
 		}
 		if limitStr != "" {

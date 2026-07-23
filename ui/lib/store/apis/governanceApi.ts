@@ -509,6 +509,7 @@ export const governanceApi = baseApi.injectEndpoints({
 					...(params?.offset !== undefined && { offset: params.offset }),
 					...(params?.search && { search: params.search }),
 					...(params?.scope && { scope: params.scope }),
+					...(params?.scope_id && { scope_id: params.scope_id }),
 					...(params?.provider && { provider: params.provider }),
 				},
 			}),
@@ -540,6 +541,7 @@ export const governanceApi = baseApi.injectEndpoints({
 						const args = entry.originalArgs as GetModelConfigsParams | undefined;
 						if (args?.search && !mc.model_name.toLowerCase().includes(args.search.toLowerCase())) continue;
 						if (args?.scope && mc.scope !== args.scope) continue;
+						if (args?.scope_id && mc.scope_id !== args.scope_id) continue;
 						if (args?.provider && mc.provider !== args.provider) continue;
 						dispatch(
 							governanceApi.util.updateQueryData("getModelConfigs", entry.originalArgs, (draft) => {
