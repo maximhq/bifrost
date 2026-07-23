@@ -1,3 +1,4 @@
+import { BudgetOverrideDialog } from "@/components/budgetOverrideDialog";
 import { SheetNavigationButtons } from "@/components/sheetNavigationButtons";
 import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
@@ -9,10 +10,18 @@ import { useSheetNavigation } from "@/hooks/useSheetNavigation";
 import { supportsCalendarAlignment } from "@/lib/constants/governance";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
-import { VirtualKey } from "@/lib/types/governance";
+import { useRemoveVirtualKeyBudgetOverrideMutation, useSetVirtualKeyBudgetOverrideMutation } from "@/lib/store/apis/governanceApi";
+import { BudgetOverrideRequest, VirtualKey } from "@/lib/types/governance";
 import { cn } from "@/lib/utils";
-import { calculateUsagePercentage, formatCurrency, parseResetPeriod } from "@/lib/utils/governance";
+import {
+	calculateUsagePercentage,
+	formatCurrency,
+	getEffectiveBudgetLimit,
+	hasActiveBudgetOverride,
+	parseResetPeriod,
+} from "@/lib/utils/governance";
 import ManagedVirtualKeyNotice from "@enterprise/components/access-profiles/managedVirtualKeyNotice";
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { formatDistanceToNow } from "date-fns";
 import { Users } from "lucide-react";
 import { useVirtualKeyUsage } from "../hooks/useVirtualKeyUsage";
@@ -63,6 +72,15 @@ export default function VirtualKeyDetailSheet({
 }: VirtualKeyDetailSheetProps) {
 	const { assignedUsers, isManagedByProfile, managingProfile, hasApRateLimit, displayBudgets, displayRateLimit } =
 		useVirtualKeyUsage(virtualKey);
+	const canUpdateVirtualKeys = useRbac(RbacResource.VirtualKeys, RbacOperation.Update);
+	const [setBudgetOverride] = useSetVirtualKeyBudgetOverrideMutation();
+	const [removeBudgetOverride] = useRemoveVirtualKeyBudgetOverrideMutation();
+	const saveBudgetOverride = async (budgetId: string, data: BudgetOverrideRequest) => {
+		await setBudgetOverride({ vkId: virtualKey.id, budgetId, data }).unwrap();
+	};
+	const clearBudgetOverride = async (budgetId: string) => {
+		await removeBudgetOverride({ vkId: virtualKey.id, budgetId }).unwrap();
+	};
 
 	const { prev: prevKeys, next: nextKeys } = useSheetNavigation({
 		enabled: true,
@@ -85,7 +103,7 @@ export default function VirtualKeyDetailSheet({
 
 	const isExhausted =
 		// Budget exhausted (AP-mirrored when managed, VK-own otherwise)
-		displayBudgets?.some((b) => b.current_usage >= b.max_limit) ||
+		displayBudgets?.some((b) => b.current_usage >= getEffectiveBudgetLimit(b)) ||
 		// Rate limits exhausted
 		(displayRateLimit?.token_current_usage &&
 			displayRateLimit?.token_max_limit &&
@@ -290,7 +308,23 @@ export default function VirtualKeyDetailSheet({
 															<h4 className="text-sm font-medium">Provider Budgets</h4>
 															{config.budgets.map((b, bIdx) => (
 																<div key={bIdx} className="space-y-2">
-																	<UsageLine current={b.current_usage} max={b.max_limit} format={formatCurrency} />
+																	{!isManagedByProfile && b.id ? (
+																		<div className="flex justify-end">
+																			<BudgetOverrideDialog
+																				budget={b}
+																				onSave={(data) => saveBudgetOverride(b.id, data)}
+																				onRemove={() => clearBudgetOverride(b.id)}
+																				disabled={!canUpdateVirtualKeys}
+																				calendarAligned={virtualKey.calendar_aligned}
+																			/>
+																		</div>
+																	) : null}
+																	<UsageLine current={b.current_usage} max={getEffectiveBudgetLimit(b)} format={formatCurrency} />
+																	{hasActiveBudgetOverride(b) ? (
+																		<p className="text-muted-foreground text-xs">
+																			Base {formatCurrency(b.max_limit)} + {formatCurrency(b.override_amount ?? 0)} override
+																		</p>
+																	) : null}
 																	<div className="text-muted-foreground flex items-center justify-between text-xs">
 																		<span>
 																			Resets {parseResetPeriod(b.reset_duration)}
@@ -446,7 +480,24 @@ export default function VirtualKeyDetailSheet({
 							<div className="space-y-4">
 								{displayBudgets.map((b, bIdx) => (
 									<div key={bIdx} className="space-y-2 rounded-lg border p-4">
-										<UsageLine current={b.current_usage} max={b.max_limit} format={formatCurrency} />
+										{!isManagedByProfile && b.id ? (
+											<div className="flex justify-end">
+												<BudgetOverrideDialog
+													budget={b}
+													onSave={(data) => saveBudgetOverride(b.id, data)}
+													onRemove={() => clearBudgetOverride(b.id)}
+													disabled={!canUpdateVirtualKeys}
+													calendarAligned={virtualKey.calendar_aligned}
+												/>
+											</div>
+										) : null}
+										<UsageLine current={b.current_usage} max={getEffectiveBudgetLimit(b)} format={formatCurrency} />
+										{hasActiveBudgetOverride(b) ? (
+											<p className="text-muted-foreground text-xs">
+												Base {formatCurrency(b.max_limit)} + {formatCurrency(b.override_amount ?? 0)} override
+												{b.override_mode === "cycles" ? ` · ${b.override_cycles_remaining} cycles remaining` : " · until removed"}
+											</p>
+										) : null}
 										<div className="text-muted-foreground flex items-center justify-between text-xs">
 											<span>
 												Resets {parseResetPeriod(b.reset_duration)}

@@ -1262,6 +1262,18 @@ export const routingRuleSchema = z
 		path: ["scope_id"],
 	});
 
+// Budget override form schema (BudgetOverrideDialog)
+export const budgetOverrideFormSchema = z
+	.object({
+		amount: z.number("Additional budget must be greater than 0.").positive("Additional budget must be greater than 0."),
+		mode: z.enum(["cycles", "forever"]),
+		cycles: z.number().optional(),
+	})
+	.refine((data) => data.mode !== "cycles" || (data.cycles !== undefined && Number.isSafeInteger(data.cycles) && data.cycles > 0), {
+		message: "Reset cycles must be a positive whole number.",
+		path: ["cycles"],
+	});
+
 // Export type inference helpers
 export type SecretVar = z.infer<typeof secretVarSchema>;
 export type MCPClientUpdateSchema = z.infer<typeof mcpClientUpdateSchema>;
@@ -1285,3 +1297,4 @@ export type GlobalProxyFormSchema = z.infer<typeof globalProxyFormSchema>;
 export type GlobalHeaderFilterConfigSchema = z.infer<typeof globalHeaderFilterConfigSchema>;
 export type GlobalHeaderFilterFormSchema = z.infer<typeof globalHeaderFilterFormSchema>;
 export type RoutingRuleSchema = z.infer<typeof routingRuleSchema>;
+export type BudgetOverrideFormSchema = z.infer<typeof budgetOverrideFormSchema>;
