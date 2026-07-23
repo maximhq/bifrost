@@ -272,7 +272,7 @@ var defaultBifrostLabelNames = []string{
 	"routing_rule_id",
 	"routing_rule_name",
 	"complexity_tier",
-	"routing_mechanism",
+	"complexity_mechanism",
 	"selected_key_id",
 	"selected_key_name",
 	"fallback_index",
@@ -918,7 +918,7 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	routingRuleID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceRoutingRuleID)
 	routingRuleName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceRoutingRuleName)
 	complexityTier := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceComplexityTier)
-	routingMechanism := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceRoutingMechanism)
+	complexityMechanism := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceComplexityMechanism)
 
 	selectedKeyID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyID)
 	selectedKeyName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyName)
@@ -942,26 +942,26 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 
 	// Extract ALL context values BEFORE spawning the goroutine.
 	labelValues := map[string]string{
-		"provider":            string(provider),
-		"model":               model,
-		"alias":               alias,
-		"method":              string(requestType),
-		"virtual_key_id":      virtualKeyID,
-		"virtual_key_name":    virtualKeyName,
-		"routing_engine_used": routingEngineUsed,
-		"routing_rule_id":     routingRuleID,
-		"routing_rule_name":   routingRuleName,
-		"complexity_tier":     complexityTier,
-		"routing_mechanism":   routingMechanism,
-		"selected_key_id":     selectedKeyID,
-		"selected_key_name":   selectedKeyName,
-		"fallback_index":      strconv.Itoa(fallbackIndex),
-		"team_id":             teamID,
-		"team_name":           teamName,
-		"customer_id":         customerID,
-		"customer_name":       customerName,
-		"business_unit_id":    businessUnitID,
-		"business_unit_name":  businessUnitName,
+		"provider":             string(provider),
+		"model":                model,
+		"alias":                alias,
+		"method":               string(requestType),
+		"virtual_key_id":       virtualKeyID,
+		"virtual_key_name":     virtualKeyName,
+		"routing_engine_used":  routingEngineUsed,
+		"routing_rule_id":      routingRuleID,
+		"routing_rule_name":    routingRuleName,
+		"complexity_tier":      complexityTier,
+		"complexity_mechanism": complexityMechanism,
+		"selected_key_id":      selectedKeyID,
+		"selected_key_name":    selectedKeyName,
+		"fallback_index":       strconv.Itoa(fallbackIndex),
+		"team_id":              teamID,
+		"team_name":            teamName,
+		"customer_id":          customerID,
+		"customer_name":        customerName,
+		"business_unit_id":     businessUnitID,
+		"business_unit_name":   businessUnitName,
 	}
 
 	// Get all custom prometheus labels from context BEFORE the goroutine.

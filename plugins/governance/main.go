@@ -697,6 +697,7 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 				if p.logger != nil {
 					p.logger.Debug("[Governance] Complexity analysis skipped: unsupported request type")
 				}
+				ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexityMechanism, complexity.MechanismSkipped)
 				ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelInfo, "Complexity analysis skipped: no supported text-bearing input detected")
 				return nil
 			}
@@ -706,6 +707,7 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 				if p.logger != nil {
 					p.logger.Debug("[Governance] %s", noComplexitySignalLog)
 				}
+				ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexityMechanism, complexity.MechanismSkipped)
 				ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelDebug, noComplexitySignalLog)
 				return nil
 			}
@@ -717,6 +719,9 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 					result.WordCount,
 				)
 			}
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexityTier, result.Tier)
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexityScore, result.Score)
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexityMechanism, complexity.MechanismLexical)
 			ctx.AppendRoutingEngineLog(
 				schemas.RoutingEngineRoutingRule,
 				schemas.LogLevelInfo,

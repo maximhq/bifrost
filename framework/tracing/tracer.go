@@ -355,8 +355,8 @@ func (t *Tracer) PopulateLLMResponseAttributes(ctx *schemas.BifrostContext, hand
 	if tier, ok := ctx.Value(schemas.BifrostContextKeyGovernanceComplexityTier).(string); ok && tier != "" {
 		span.SetAttribute(schemas.AttrBifrostComplexityTier, tier)
 	}
-	if mechanism, ok := ctx.Value(schemas.BifrostContextKeyGovernanceRoutingMechanism).(string); ok && mechanism != "" {
-		span.SetAttribute(schemas.AttrBifrostRoutingMechanism, mechanism)
+	if mechanism, ok := ctx.Value(schemas.BifrostContextKeyGovernanceComplexityMechanism).(string); ok && mechanism != "" {
+		span.SetAttribute(schemas.AttrBifrostComplexityMechanism, mechanism)
 	}
 
 	// Populate cost attribute using pricing manager
