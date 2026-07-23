@@ -780,6 +780,36 @@ func TestCreateBudgetWithOverride(t *testing.T) {
 	}
 }
 
+// TestUpdateBudgetOverridePreservesBudgetState verifies the partial update cannot clobber usage or base configuration.
+func TestUpdateBudgetOverridePreservesBudgetState(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	budget := &tables.TableBudget{
+		ID:            "budget-override-partial-update",
+		MaxLimit:      100,
+		ResetDuration: "1d",
+		CurrentUsage:  40,
+	}
+	require.NoError(t, store.CreateBudget(ctx, budget))
+
+	updated, err := store.UpdateBudgetOverride(ctx, budget.ID, 25, tables.BudgetOverrideModeCycles, 4)
+	require.NoError(t, err)
+	assert.Equal(t, 100.0, updated.MaxLimit)
+	assert.Equal(t, "1d", updated.ResetDuration)
+	assert.Equal(t, 40.0, updated.CurrentUsage)
+	assert.Equal(t, 25.0, updated.OverrideAmount)
+	assert.Equal(t, tables.BudgetOverrideModeCycles, updated.OverrideMode)
+	assert.Equal(t, 4, updated.OverrideCyclesRemaining)
+
+	cleared, err := store.UpdateBudgetOverride(ctx, budget.ID, 0, "", 0)
+	require.NoError(t, err)
+	assert.Equal(t, 100.0, cleared.MaxLimit)
+	assert.Equal(t, 40.0, cleared.CurrentUsage)
+	assert.Zero(t, cleared.OverrideAmount)
+	assert.Empty(t, cleared.OverrideMode)
+	assert.Zero(t, cleared.OverrideCyclesRemaining)
+}
+
 func TestGetBudgets(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()
