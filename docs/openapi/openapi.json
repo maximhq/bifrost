@@ -67957,6 +67957,22 @@
             }
           },
           {
+            "name": "complexity_tiers",
+            "in": "query",
+            "description": "Comma-separated list of routing complexity tiers to filter by (SIMPLE, MEDIUM, COMPLEX)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "complexity_mechanisms",
+            "in": "query",
+            "description": "Comma-separated list of complexity classification mechanisms to filter by (lexical, skipped)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "start_time",
             "in": "query",
             "description": "Start time filter (RFC3339 format)",
@@ -68537,6 +68553,22 @@
             }
           },
           {
+            "name": "complexity_tiers",
+            "in": "query",
+            "description": "Comma-separated list of routing complexity tiers to filter by (SIMPLE, MEDIUM, COMPLEX)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "complexity_mechanisms",
+            "in": "query",
+            "description": "Comma-separated list of complexity classification mechanisms to filter by (lexical, skipped)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "start_time",
             "in": "query",
             "description": "Start time filter (RFC3339 format)",
@@ -68857,6 +68889,22 @@
             "name": "stop_reasons",
             "in": "query",
             "description": "Comma-separated list of stop reasons to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "complexity_tiers",
+            "in": "query",
+            "description": "Comma-separated list of routing complexity tiers to filter by (SIMPLE, MEDIUM, COMPLEX)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "complexity_mechanisms",
+            "in": "query",
+            "description": "Comma-separated list of complexity classification mechanisms to filter by (lexical, skipped)",
             "schema": {
               "type": "string"
             }
@@ -97371,6 +97419,44 @@
           "routing_rule_name": {
             "type": "string",
             "nullable": true
+          },
+          "complexity_tier": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "SIMPLE",
+                  "MEDIUM",
+                  "COMPLEX"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Complexity tier used for routing; null when no routing rule referenced complexity_tier, or when classification was demanded but skipped (see complexity_mechanism)"
+          },
+          "complexity_mechanism": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How the complexity tier was classified (lexical, or skipped when classification was demanded but produced no tier)"
+          },
+          "complexity_score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Raw complexity score behind the tier"
           },
           "stream": {
             "type": "boolean"
