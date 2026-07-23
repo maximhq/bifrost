@@ -1479,6 +1479,88 @@ func TestSonic_ChatTool_DeepCopy_NilAnnotationsStaysNil(t *testing.T) {
 	assert.Nil(t, copied.Annotations, "Annotations should stay nil when original has none")
 }
 
+// --- ProviderOverride credential-safety serialisation ---
+//
+// ProviderOverride carries per-request API credentials. Marshalling either the
+// override or the enclosing BifrostRequest into JSON must never expose the Key —
+// dropping the json:"-" tag in a future merge or refactor would silently leak
+// credentials into request logs, traces, or anything else that JSON-encodes
+// requests. These tests pin the contract.
+
+func TestProviderOverride_KeyOmittedFromJSON(t *testing.T) {
+	// BaseURL is plugin-supplied and may carry userinfo or query tokens
+	// (e.g. https://user:tok@host or ?access_token=...). Don't pin its raw
+	// presence in the JSON output here — that would lock in unsafe
+	// serialisation. Only assert the credential-bearing Key fields are absent.
+	override := ProviderOverride{
+		Key:     &Key{ID: "leak-canary", Value: *NewSecretVar("sk-secret-do-not-leak")},
+		BaseURL: "https://eu.api.openai.com",
+	}
+
+	data, err := json.Marshal(override)
+	require.NoError(t, err)
+	body := string(data)
+
+	assert.NotContains(t, body, "leak-canary", "ProviderOverride.Key.ID must not appear in JSON")
+	assert.NotContains(t, body, "sk-secret-do-not-leak", "ProviderOverride.Key.Value must not appear in JSON")
+}
+
+func TestBifrostRequest_ProviderOverrideOmittedFromJSON(t *testing.T) {
+	req := BifrostRequest{
+		RequestType: ChatCompletionRequest,
+		ChatRequest: &BifrostChatRequest{
+			Provider: OpenAI,
+			Model:    "gpt-4o",
+		},
+		ProviderOverride: &ProviderOverride{
+			Key:     &Key{ID: "leak-canary", Value: *NewSecretVar("sk-secret-do-not-leak")},
+			BaseURL: "https://override.example.com",
+		},
+	}
+
+	data, err := json.Marshal(req)
+	require.NoError(t, err)
+	body := string(data)
+
+	assert.NotContains(t, body, "leak-canary", "ProviderOverride must not appear when BifrostRequest is marshalled")
+	assert.NotContains(t, body, "sk-secret-do-not-leak", "credential value must not appear in BifrostRequest JSON")
+	assert.NotContains(t, body, "https://override.example.com", "ProviderOverride.BaseURL must not leak via the BifrostRequest envelope")
+	assert.NotContains(t, body, "provider_override", "ProviderOverride field must be entirely omitted (json:\"-\")")
+}
+
+// --- Update* helper nil-receiver guards ---
+//
+// All Update* helpers must tolerate a nil *BifrostRequest receiver without panicking.
+// Plugin authors call these from PreLLMHook code paths where a defensive nil check on
+// the helper means one fewer thing for the caller to worry about. Removing these
+// guards in a future refactor would crash any plugin that operates on a possibly-nil
+// request.
+
+func TestBifrostRequest_NilReceiverGuards(t *testing.T) {
+	var req *BifrostRequest
+
+	// The Update* helpers are the documented plugin-facing API and must tolerate a
+	// nil receiver. SetProvider/SetModel are internal — Update* delegate to them
+	// after the nil check, so plugin authors should not call Set* directly on a
+	// possibly-nil request.
+	assert.NotPanics(t, func() { req.UpdateAPIKey(Key{}) }, "UpdateAPIKey on nil *BifrostRequest must not panic")
+	assert.NotPanics(t, func() { req.UpdateProviderBaseURL("https://x") }, "UpdateProviderBaseURL on nil *BifrostRequest must not panic")
+	assert.NotPanics(t, func() { req.UpdateProviderNetworkConfig(ProviderNetworkConfigOverride{}) }, "UpdateProviderNetworkConfig on nil *BifrostRequest must not panic")
+
+	// Methods returning errors must surface a non-nil error rather than panicking.
+	if err := req.UpdateProvider(OpenAI); err == nil {
+		t.Errorf("UpdateProvider on nil *BifrostRequest must return a non-nil error")
+	}
+	if err := req.UpdateModel("gpt-4o"); err == nil {
+		t.Errorf("UpdateModel on nil *BifrostRequest must return a non-nil error")
+	}
+
+	// Clone on nil receiver returns a zero-value BifrostRequest rather than panicking.
+	assert.NotPanics(t, func() {
+		_ = req.Clone()
+	}, "Clone on nil *BifrostRequest must not panic")
+}
+
 func TestSonic_ChatTool_DeepCopy_PreservesFullParameterSchema(t *testing.T) {
 	ref := "#/$defs/Preferences"
 	minItems := int64(1)

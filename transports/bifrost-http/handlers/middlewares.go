@@ -397,8 +397,20 @@ func TransportInterceptorMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 				next(ctx)
 				return
 			}
-			// Get or create BifrostContext from fasthttp context
-			bifrostCtx := getBifrostContextFromFastHTTP(ctx)
+			// Establish the shared request-scoped context up front so the pre-hook,
+			// the inner request pipeline, and the post-hook all operate on the same
+			// context (see ensureSharedBifrostContext).
+			bifrostCtx, cancelBifrostCtx := ensureSharedBifrostContext(ctx)
+			// Release the context on return, EXCEPT on the streaming path: there the
+			// response is still being produced after this handler returns, and the
+			// streaming machinery owns cancellation (it cancels at stream end). Firing
+			// cancel here would abort the in-flight stream.
+			streamingDeferred := false
+			defer func() {
+				if !streamingDeferred {
+					cancelBifrostCtx()
+				}
+			}()
 			// Acquire pooled request
 			req := schemas.AcquireHTTPRequest()
 			defer schemas.ReleaseHTTPRequest(req)
@@ -449,6 +461,9 @@ func TransportInterceptorMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 			// after the response body stream completes. All needed data is eagerly captured
 			// here (while ctx is still valid) and passed through the closure.
 			if deferred, ok := ctx.UserValue(schemas.BifrostContextKeyDeferTraceCompletion).(bool); ok && deferred {
+				// The stream outlives this handler; the streaming machinery owns
+				// context cancellation (at stream end). Don't release it here.
+				streamingDeferred = true
 				// Verify the completer slot exists before allocating pooled snapshots.
 				// The streaming handler pre-allocates this *atomic.Value; if absent,
 				// skip work to avoid leaking pooled HTTPRequest/HTTPResponse objects.
@@ -599,9 +614,38 @@ func runTransportPostHooksCaptured(capturedReq *schemas.HTTPRequest, capturedRes
 	return allLogs, nil
 }
 
-// getBifrostContextFromFastHTTP gets or creates a BifrostContext from fasthttp context.
-func getBifrostContextFromFastHTTP(ctx *fasthttp.RequestCtx) *schemas.BifrostContext {
-	return schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+// ensureSharedBifrostContext returns the request-scoped BifrostContext for ctx,
+// creating it and storing it on the fasthttp request when absent so that the
+// inner request pipeline (lib.ConvertToBifrostContext) reuses the SAME context
+// instead of building its own. A single shared context per request is what lets
+// a plugin read, in its transport post-hook, a value that was written on the
+// context earlier in the pipeline — for example, to attach a response header.
+//
+// It stores the cancel func alongside the context so ConvertToBifrostContext
+// takes its reuse path and adopts this exact context. The returned CancelFunc
+// releases the context; it is idempotent, so the inner pipeline calling it as
+// well is harmless.
+func ensureSharedBifrostContext(ctx *fasthttp.RequestCtx) (*schemas.BifrostContext, context.CancelFunc) {
+	if existing, ok := ctx.UserValue(lib.FastHTTPUserValueBifrostContext).(*schemas.BifrostContext); ok && existing != nil {
+		if cancel, ok := ctx.UserValue(lib.FastHTTPUserValueBifrostCancel).(context.CancelFunc); ok && cancel != nil {
+			return existing, cancel
+		}
+	}
+	// Probe Done() defensively: a zero-value fasthttp.RequestCtx panics on
+	// Done(), mirroring lib.ConvertToBifrostContext's own guard.
+	parent := context.Context(ctx)
+	func() {
+		defer func() {
+			if recover() != nil {
+				parent = context.Background()
+			}
+		}()
+		_ = ctx.Done()
+	}()
+	bifrostCtx, cancel := schemas.NewBifrostContextWithCancel(parent)
+	ctx.SetUserValue(lib.FastHTTPUserValueBifrostContext, bifrostCtx)
+	ctx.SetUserValue(lib.FastHTTPUserValueBifrostCancel, cancel)
+	return bifrostCtx, cancel
 }
 
 // fasthttpToHTTPRequest populates a pooled HTTPRequest from fasthttp context.

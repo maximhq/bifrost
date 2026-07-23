@@ -60,6 +60,67 @@ func TestApplyLargePayloadRequestBodyWithModelNormalization(t *testing.T) {
 	}
 }
 
+func TestSetExtraHeaders_AppliesProviderOverrideAndSkipsCaseInsensitive(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyProviderOverride, &schemas.ProviderOverride{
+		NetworkConfig: &schemas.ProviderNetworkConfigOverride{
+			ExtraHeaders: map[string]string{
+				"Authorization": "Bearer override",
+				"X-Tenant":      "override",
+			},
+		},
+	})
+
+	req := &fasthttp.Request{}
+	SetExtraHeaders(ctx, req, map[string]string{
+		"authorization": "Bearer static",
+		"X-Tenant":      "static",
+		"X-Static":      "yes",
+	}, []string{"authorization"})
+
+	if got := string(req.Header.Peek("Authorization")); got != "" {
+		t.Fatalf("Authorization header = %q, want skipped", got)
+	}
+	if got := string(req.Header.Peek("X-Tenant")); got != "override" {
+		t.Fatalf("X-Tenant header = %q, want provider override", got)
+	}
+	if got := string(req.Header.Peek("X-Static")); got != "yes" {
+		t.Fatalf("X-Static header = %q, want static header", got)
+	}
+}
+
+func TestSetExtraHeadersHTTP_AppliesProviderOverrideAndSkipsCaseInsensitive(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyProviderOverride, &schemas.ProviderOverride{
+		NetworkConfig: &schemas.ProviderNetworkConfigOverride{
+			ExtraHeaders: map[string]string{
+				"Authorization": "Bearer override",
+				"X-Tenant":      "override",
+			},
+		},
+	})
+
+	req, err := http.NewRequest(http.MethodGet, "https://example.com", nil)
+	if err != nil {
+		t.Fatalf("NewRequest failed: %v", err)
+	}
+	SetExtraHeadersHTTP(ctx, req, map[string]string{
+		"authorization": "Bearer static",
+		"X-Tenant":      "static",
+		"X-Static":      "yes",
+	}, []string{"authorization"})
+
+	if got := req.Header.Get("Authorization"); got != "" {
+		t.Fatalf("Authorization header = %q, want skipped", got)
+	}
+	if got := req.Header.Get("X-Tenant"); got != "override" {
+		t.Fatalf("X-Tenant header = %q, want provider override", got)
+	}
+	if got := req.Header.Get("X-Static"); got != "yes" {
+		t.Fatalf("X-Static header = %q, want static header", got)
+	}
+}
+
 // TestHandleProviderAPIError_RawResponseIncluded verifies that HandleProviderAPIError
 // always includes the raw response body in BifrostError.ExtraFields.RawResponse
 func TestHandleProviderAPIError_RawResponseIncluded(t *testing.T) {
@@ -467,6 +528,7 @@ func TestGetRequestPath(t *testing.T) {
 	tests := []struct {
 		name                 string
 		contextPath          *string
+		providerOverride     *schemas.ProviderOverride
 		customProviderConfig *schemas.CustomProviderConfig
 		defaultPath          string
 		requestType          schemas.RequestType
@@ -573,6 +635,77 @@ func TestGetRequestPath(t *testing.T) {
 			expectedPath:  "/context/path",
 			expectedIsURL: false,
 		},
+		// ProviderOverride.BaseURL cases
+		{
+			name:             "BaseURL override combines with default path",
+			providerOverride: &schemas.ProviderOverride{BaseURL: "https://eu.api.openai.com"},
+			defaultPath:      "/v1/chat/completions",
+			requestType:      schemas.ChatCompletionRequest,
+			expectedPath:     "https://eu.api.openai.com/v1/chat/completions",
+			expectedIsURL:    true,
+		},
+		{
+			name:             "BaseURL override combines with RequestPathOverrides path",
+			providerOverride: &schemas.ProviderOverride{BaseURL: "https://custom.host.com"},
+			customProviderConfig: &schemas.CustomProviderConfig{
+				RequestPathOverrides: map[schemas.RequestType]string{
+					schemas.ChatCompletionRequest: "/v2/chat",
+				},
+			},
+			defaultPath:   "/v1/chat/completions",
+			requestType:   schemas.ChatCompletionRequest,
+			expectedPath:  "https://custom.host.com/v2/chat",
+			expectedIsURL: true,
+		},
+		{
+			name:             "BaseURL override with absolute RequestPathOverrides returns override path directly",
+			providerOverride: &schemas.ProviderOverride{BaseURL: "https://custom.host.com"},
+			customProviderConfig: &schemas.CustomProviderConfig{
+				RequestPathOverrides: map[schemas.RequestType]string{
+					schemas.ChatCompletionRequest: "https://other.host.com/v1/completions",
+				},
+			},
+			defaultPath:   "/v1/chat/completions",
+			requestType:   schemas.ChatCompletionRequest,
+			expectedPath:  "https://other.host.com/v1/completions",
+			expectedIsURL: true,
+		},
+		{
+			name:             "Context path takes precedence over RequestPathOverrides when BaseURL is set",
+			contextPath:      schemas.Ptr("/context/path"),
+			providerOverride: &schemas.ProviderOverride{BaseURL: "https://custom.host.com"},
+			customProviderConfig: &schemas.CustomProviderConfig{
+				RequestPathOverrides: map[schemas.RequestType]string{
+					schemas.ChatCompletionRequest: "/config/path",
+				},
+			},
+			defaultPath:   "/v1/chat/completions",
+			requestType:   schemas.ChatCompletionRequest,
+			expectedPath:  "https://custom.host.com/context/path",
+			expectedIsURL: true,
+		},
+		{
+			name:             "BaseURL with path lacking leading slash gets slash added",
+			providerOverride: &schemas.ProviderOverride{BaseURL: "https://custom.host.com"},
+			defaultPath:      "v1/chat/completions",
+			requestType:      schemas.ChatCompletionRequest,
+			expectedPath:     "https://custom.host.com/v1/chat/completions",
+			expectedIsURL:    true,
+		},
+		{
+			name:             "Empty context path does not count as pathFromContext — RequestPathOverrides still applied",
+			contextPath:      schemas.Ptr(""),
+			providerOverride: &schemas.ProviderOverride{BaseURL: "https://custom.host.com"},
+			customProviderConfig: &schemas.CustomProviderConfig{
+				RequestPathOverrides: map[schemas.RequestType]string{
+					schemas.ChatCompletionRequest: "/v2/chat",
+				},
+			},
+			defaultPath:   "/v1/chat/completions",
+			requestType:   schemas.ChatCompletionRequest,
+			expectedPath:  "https://custom.host.com/v2/chat",
+			expectedIsURL: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -580,6 +713,9 @@ func TestGetRequestPath(t *testing.T) {
 			ctx := context.Background()
 			if tt.contextPath != nil {
 				ctx = context.WithValue(ctx, schemas.BifrostContextKeyURLPath, *tt.contextPath)
+			}
+			if tt.providerOverride != nil {
+				ctx = context.WithValue(ctx, schemas.BifrostContextKeyProviderOverride, tt.providerOverride)
 			}
 
 			path, isURL := GetRequestPath(ctx, tt.defaultPath, tt.customProviderConfig, tt.requestType)
@@ -1829,6 +1965,69 @@ func assertRange(t *testing.T, low, high, got int, label string) {
 	}
 }
 
+// TestGetStreamIdleTimeout_OverridePrecedenceWithoutPersisting pins the B-phase
+// fix for the override leak across fallback attempts: a per-request
+// ProviderOverride stream idle timeout is read at GetStreamIdleTimeout time and
+// must never be written into BifrostContextKeyStreamIdleTimeout. The override
+// ctx key is cleared and re-set per attempt, so each attempt observes only its
+// own override; the shared timeout ctx key carries only transport/config values.
+func TestGetStreamIdleTimeout_OverridePrecedenceWithoutPersisting(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	primarySeconds := 7
+	ctx.SetValue(schemas.BifrostContextKeyProviderOverride, &schemas.ProviderOverride{
+		NetworkConfig: &schemas.ProviderNetworkConfigOverride{StreamIdleTimeoutInSeconds: &primarySeconds},
+	})
+
+	// Provider config writes its own value into the shared ctx key; the override
+	// must NOT be persisted there.
+	SetStreamIdleTimeoutIfEmpty(ctx, 60)
+	if got, _ := ctx.Value(schemas.BifrostContextKeyStreamIdleTimeout).(time.Duration); got != 60*time.Second {
+		t.Fatalf("ctx stream idle timeout = %v, want 60s from provider config (override must not be written to ctx)", got)
+	}
+
+	// The override outranks the ctx value at read time.
+	if got := GetStreamIdleTimeout(ctx); got != 7*time.Second {
+		t.Fatalf("GetStreamIdleTimeout with override = %v, want 7s", got)
+	}
+
+	// Simulate a fallback attempt: the per-attempt override is cleared and
+	// replaced. The fallback's own override must win; the primary's 7s must not
+	// linger anywhere.
+	fallbackSeconds := 9
+	ctx.ClearValue(schemas.BifrostContextKeyProviderOverride)
+	ctx.SetValue(schemas.BifrostContextKeyProviderOverride, &schemas.ProviderOverride{
+		NetworkConfig: &schemas.ProviderNetworkConfigOverride{StreamIdleTimeoutInSeconds: &fallbackSeconds},
+	})
+	if got := GetStreamIdleTimeout(ctx); got != 9*time.Second {
+		t.Fatalf("GetStreamIdleTimeout after fallback override swap = %v, want 9s (primary attempt's override leaked)", got)
+	}
+
+	// A fallback attempt with no override of its own falls back to the shared
+	// ctx value, not the primary's override.
+	ctx.ClearValue(schemas.BifrostContextKeyProviderOverride)
+	if got := GetStreamIdleTimeout(ctx); got != 60*time.Second {
+		t.Fatalf("GetStreamIdleTimeout with override cleared = %v, want 60s ctx value (primary attempt's override leaked)", got)
+	}
+}
+
+// TestSetStreamIdleTimeoutIfEmpty_RespectsExistingValue pins that a timeout set
+// upstream (transport/header) wins over the provider config fallback, and that
+// GetStreamIdleTimeout returns DefaultStreamIdleTimeout when nothing is set.
+func TestSetStreamIdleTimeoutIfEmpty_RespectsExistingValue(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyStreamIdleTimeout, 5*time.Second)
+
+	SetStreamIdleTimeoutIfEmpty(ctx, 60)
+	if got := GetStreamIdleTimeout(ctx); got != 5*time.Second {
+		t.Fatalf("GetStreamIdleTimeout = %v, want 5s (upstream value must be respected)", got)
+	}
+
+	empty := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	if got := GetStreamIdleTimeout(empty); got != DefaultStreamIdleTimeout {
+		t.Fatalf("GetStreamIdleTimeout on empty ctx = %v, want default %v", got, DefaultStreamIdleTimeout)
+	}
+}
+
 // TestExtractProviderResponseHeaders_StripsProviderSecrets verifies that provider auth headers
 // Bifrost injects upstream (and some upstreams echo back, e.g. Google's file-download 302) are
 // never forwarded to clients via the response header map, while normal headers pass through.
@@ -2148,4 +2347,157 @@ func TestProcessAndSendResponse_CompletesSpanWhenFinalSendFails(t *testing.T) {
 	if tracer.endStatus != schemas.SpanStatusOk {
 		t.Errorf("successful stream whose delivery failed should end as %q, got %q", schemas.SpanStatusOk, tracer.endStatus)
 	}
+}
+
+// TestMakeRequestWithContext_RequestTimeoutOverride pins the per-request
+// timeout mechanism for dynamic providers: the override rides the request via
+// fasthttp Request.SetTimeout inside MakeRequestWithContext — the shared
+// fasthttp client's construction-time timeout is only a transport ceiling and
+// is never touched. Because fasthttp enforces the deadline inside client.Do,
+// the call (INCLUDING the wait() rendezvous) must return at the deadline —
+// not when the slow upstream finally responds.
+func TestMakeRequestWithContext_RequestTimeoutOverride(t *testing.T) {
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(2 * time.Second)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer slow.Close()
+
+	// Generous client timeout — stands in for the dynamic-provider transport
+	// ceiling. The per-request override below must fire long before it.
+	client := &fasthttp.Client{ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second}
+
+	newReq := func() (*fasthttp.Request, *fasthttp.Response) {
+		req := fasthttp.AcquireRequest()
+		req.SetRequestURI(slow.URL)
+		req.Header.SetMethod(http.MethodGet)
+		return req, fasthttp.AcquireResponse()
+	}
+
+	t.Run("OverrideShorterThanUpstreamLatencyYields504", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		timeoutSeconds := 1
+		ctx.SetValue(schemas.BifrostContextKeyProviderOverride, &schemas.ProviderOverride{
+			NetworkConfig: &schemas.ProviderNetworkConfigOverride{RequestTimeoutInSeconds: &timeoutSeconds},
+		})
+		req, resp := newReq()
+
+		start := time.Now()
+		_, bifrostErr, wait := MakeRequestWithContext(ctx, client, req, resp)
+		// Elapsed includes wait() deliberately: SetTimeout makes client.Do
+		// itself return at the deadline, so there is no abandoned background
+		// goroutine for wait() to block on — the FULL caller-visible path
+		// must be bounded by the override, not by the 2s upstream sleep.
+		wait()
+		elapsed := time.Since(start)
+		fasthttp.ReleaseRequest(req)
+		fasthttp.ReleaseResponse(resp)
+
+		if bifrostErr == nil {
+			t.Fatal("expected timeout error, got success")
+		}
+		if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 504 {
+			t.Fatalf("status = %v, want 504 from per-request timeout override", bifrostErr.StatusCode)
+		}
+		if elapsed > 1900*time.Millisecond {
+			t.Fatalf("request returned after %v; the 1s override deadline did not bound the call", elapsed)
+		}
+	})
+
+	t.Run("OverrideLongerThanUpstreamLatencySucceeds", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		timeoutSeconds := 10
+		ctx.SetValue(schemas.BifrostContextKeyProviderOverride, &schemas.ProviderOverride{
+			NetworkConfig: &schemas.ProviderNetworkConfigOverride{RequestTimeoutInSeconds: &timeoutSeconds},
+		})
+		req, resp := newReq()
+
+		_, bifrostErr, wait := MakeRequestWithContext(ctx, client, req, resp)
+		wait()
+		status := resp.StatusCode()
+		fasthttp.ReleaseRequest(req)
+		fasthttp.ReleaseResponse(resp)
+
+		if bifrostErr != nil {
+			t.Fatalf("unexpected error with generous override: %+v", bifrostErr)
+		}
+		if status != http.StatusOK {
+			t.Fatalf("status = %d, want 200", status)
+		}
+	})
+
+	t.Run("NoOverrideUsesClientTransportTimeout", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		req, resp := newReq()
+
+		_, bifrostErr, wait := MakeRequestWithContext(ctx, client, req, resp)
+		wait()
+		status := resp.StatusCode()
+		fasthttp.ReleaseRequest(req)
+		fasthttp.ReleaseResponse(resp)
+
+		if bifrostErr != nil {
+			t.Fatalf("unexpected error without override: %+v", bifrostErr)
+		}
+		if status != http.StatusOK {
+			t.Fatalf("status = %d, want 200", status)
+		}
+	})
+}
+
+func TestEffectiveBetaHeaderOverridesFromContext(t *testing.T) {
+	mkCtx := func(overrides map[string]bool) *schemas.BifrostContext {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		if overrides != nil {
+			ctx.SetValue(schemas.BifrostContextKeyProviderOverride, &schemas.ProviderOverride{
+				NetworkConfig: &schemas.ProviderNetworkConfigOverride{
+					BetaHeaderOverrides: overrides,
+				},
+			})
+		}
+		return ctx
+	}
+
+	t.Run("no override returns base unchanged", func(t *testing.T) {
+		base := map[string]bool{"tool-examples-2025-10-29": true}
+		got := EffectiveBetaHeaderOverridesFromContext(mkCtx(nil), base)
+		if len(got) != 1 || !got["tool-examples-2025-10-29"] {
+			t.Fatalf("got %v, want base map unchanged", got)
+		}
+	})
+
+	t.Run("nil base with override returns override keys", func(t *testing.T) {
+		got := EffectiveBetaHeaderOverridesFromContext(mkCtx(map[string]bool{"redact-thinking-": true}), nil)
+		if !got["redact-thinking-"] {
+			t.Fatalf("got %v, want override key present", got)
+		}
+	})
+
+	t.Run("override key wins over base", func(t *testing.T) {
+		base := map[string]bool{"redact-thinking-": true}
+		got := EffectiveBetaHeaderOverridesFromContext(mkCtx(map[string]bool{"redact-thinking-": false}), base)
+		if got["redact-thinking-"] != false {
+			t.Fatalf("override did not win: got true, want false")
+		}
+	})
+
+	t.Run("base key absent from override is preserved", func(t *testing.T) {
+		base := map[string]bool{"tool-examples-2025-10-29": true}
+		got := EffectiveBetaHeaderOverridesFromContext(mkCtx(map[string]bool{"redact-thinking-": false}), base)
+		if !got["tool-examples-2025-10-29"] {
+			t.Fatalf("base-only key dropped: %v", got)
+		}
+		if got["redact-thinking-"] != false {
+			t.Fatalf("override key missing: %v", got)
+		}
+	})
+
+	t.Run("merge does not mutate base map", func(t *testing.T) {
+		base := map[string]bool{"tool-examples-2025-10-29": true}
+		EffectiveBetaHeaderOverridesFromContext(mkCtx(map[string]bool{"redact-thinking-": false}), base)
+		if _, ok := base["redact-thinking-"]; ok {
+			t.Fatal("EffectiveBetaHeaderOverridesFromContext mutated the caller's base map")
+		}
+	})
 }

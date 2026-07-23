@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"strconv"
 )
 
@@ -375,6 +376,7 @@ const (
 	BifrostContextKeySupportsAssistantPrefill            BifrostContextKey = "bifrost-supports-assistant-prefill"         // bool (set by compat plugin) - if model supports assistant prefill
 	BifrostContextKeyAttemptTrail                        BifrostContextKey = "bifrost-attempt-trail"                      // []KeyAttemptRecord (set by bifrost - DO NOT SET THIS MANUALLY) - per-attempt key selection history
 	BifrostContextKeyDimensions                          BifrostContextKey = "bifrost-dimensions"                         // map[string]string (set by HTTP transport from x-bf-dim-* headers) BifrostContextKeyDimensions holds per-request key/value dimensions supplied via x-bf-dim-<key> request headers. These dimensions are forwarded to internal logs (as metadata)
+	BifrostContextKeyProviderOverride                    BifrostContextKey = "bifrost-provider-override"                  // *ProviderOverride (set by bifrost from BifrostRequest.ProviderOverride before dispatch - DO NOT SET THIS MANUALLY)
 	IsAPIKeyAuthContextKey                               BifrostContextKey = "is_api_key_auth"
 	IsLocalAdminContextKey                               BifrostContextKey = "is_local_admin"                // bool (set by auth middleware when password-based auth succeeds - local admin user bypasses RBAC)
 	BifrostContextKeyPassthroughOverridesPresent         BifrostContextKey = "passthrough_overrides_present" // bool (set by HTTP transport) - passthrough raw request requested
@@ -389,6 +391,26 @@ const (
 	// used by transport guards when no enterprise threshold is present on context.
 	DefaultLargePayloadRequestThresholdBytes = 10 * 1024 * 1024 // 10MB
 )
+
+// ProviderOverride carries per-request credential, URL, and network overrides injected by
+// plugin hooks. It is used internally by Bifrost; plugin developers should not construct it
+// directly. Use req.Update* methods instead.
+type ProviderOverride struct {
+	// Key is the API credential for this request. If nil, key-pool selection applies normally.
+	// Excluded from JSON serialization to prevent accidental credential exposure.
+	Key *Key `json:"-"`
+	// BaseURL overrides NetworkConfig.BaseURL for this request.
+	// Provide the scheme, host, and port only -- no path prefix.
+	// Bifrost appends the provider's full default path (e.g. "/v1/chat/completions").
+	// Example: "https://eu.api.openai.com" (not "https://eu.api.openai.com/v1").
+	// Use RequestPathOverrides in CustomProviderConfig to change the path suffix.
+	// Honoured only by providers that use GetRequestPath internally (OpenAI, Anthropic,
+	// Cohere, HuggingFace, Replicate). Other providers construct their URLs directly.
+	BaseURL string `json:"base_url,omitempty"`
+	// NetworkConfig carries request-scoped network overrides. Nil fields inherit the
+	// provider's configured NetworkConfig after defaults have been applied.
+	NetworkConfig *ProviderNetworkConfigOverride `json:"network_config,omitempty"`
+}
 
 // RoutingEngine constants
 const (
@@ -547,6 +569,12 @@ type BifrostRequest struct {
 	ContainerFileContentRequest  *BifrostContainerFileContentRequest
 	ContainerFileDeleteRequest   *BifrostContainerFileDeleteRequest
 	PassthroughRequest           *BifrostPassthroughRequest
+
+	// ProviderOverride holds per-request credential and URL overrides set via
+	// UpdateAPIKey and UpdateProviderBaseURL. It is read by Bifrost internally and
+	// should not be set directly; use the Update* methods instead.
+	// Excluded from JSON to prevent accidental serialization of override metadata.
+	ProviderOverride *ProviderOverride `json:"-"`
 }
 
 // GetRequestFields returns the provider, model, and fallbacks from the request.
@@ -751,6 +779,16 @@ func (br *BifrostRequest) SetProvider(provider ModelProvider) {
 		br.VideoDeleteRequest.Provider = provider
 	case br.VideoRemixRequest != nil:
 		br.VideoRemixRequest.Provider = provider
+	case br.FileUploadRequest != nil:
+		br.FileUploadRequest.Provider = provider
+	case br.FileListRequest != nil:
+		br.FileListRequest.Provider = provider
+	case br.FileRetrieveRequest != nil:
+		br.FileRetrieveRequest.Provider = provider
+	case br.FileDeleteRequest != nil:
+		br.FileDeleteRequest.Provider = provider
+	case br.FileContentRequest != nil:
+		br.FileContentRequest.Provider = provider
 	case br.CachedContentCreateRequest != nil:
 		br.CachedContentCreateRequest.Provider = provider
 	case br.CachedContentListRequest != nil:
@@ -761,6 +799,38 @@ func (br *BifrostRequest) SetProvider(provider ModelProvider) {
 		br.CachedContentUpdateRequest.Provider = provider
 	case br.CachedContentDeleteRequest != nil:
 		br.CachedContentDeleteRequest.Provider = provider
+	case br.BatchCreateRequest != nil:
+		br.BatchCreateRequest.Provider = provider
+	case br.BatchListRequest != nil:
+		br.BatchListRequest.Provider = provider
+	case br.BatchRetrieveRequest != nil:
+		br.BatchRetrieveRequest.Provider = provider
+	case br.BatchCancelRequest != nil:
+		br.BatchCancelRequest.Provider = provider
+	case br.BatchResultsRequest != nil:
+		br.BatchResultsRequest.Provider = provider
+	case br.BatchDeleteRequest != nil:
+		br.BatchDeleteRequest.Provider = provider
+	case br.ContainerCreateRequest != nil:
+		br.ContainerCreateRequest.Provider = provider
+	case br.ContainerListRequest != nil:
+		br.ContainerListRequest.Provider = provider
+	case br.ContainerRetrieveRequest != nil:
+		br.ContainerRetrieveRequest.Provider = provider
+	case br.ContainerDeleteRequest != nil:
+		br.ContainerDeleteRequest.Provider = provider
+	case br.ContainerFileCreateRequest != nil:
+		br.ContainerFileCreateRequest.Provider = provider
+	case br.ContainerFileListRequest != nil:
+		br.ContainerFileListRequest.Provider = provider
+	case br.ContainerFileRetrieveRequest != nil:
+		br.ContainerFileRetrieveRequest.Provider = provider
+	case br.ContainerFileContentRequest != nil:
+		br.ContainerFileContentRequest.Provider = provider
+	case br.ContainerFileDeleteRequest != nil:
+		br.ContainerFileDeleteRequest.Provider = provider
+	case br.PassthroughRequest != nil:
+		br.PassthroughRequest.Provider = provider
 	}
 }
 
@@ -794,10 +864,16 @@ func (br *BifrostRequest) SetModel(model string) {
 		br.ImageVariationRequest.Model = model
 	case br.VideoGenerationRequest != nil:
 		br.VideoGenerationRequest.Model = model
-	case br.BatchCreateRequest != nil:
-		if br.BatchCreateRequest.Model != nil {
-			br.BatchCreateRequest.Model = new(model)
-		}
+	case br.FileUploadRequest != nil:
+		br.FileUploadRequest.Model = &model
+	case br.FileListRequest != nil:
+		br.FileListRequest.Model = &model
+	case br.FileRetrieveRequest != nil:
+		br.FileRetrieveRequest.Model = &model
+	case br.FileDeleteRequest != nil:
+		br.FileDeleteRequest.Model = &model
+	case br.FileContentRequest != nil:
+		br.FileContentRequest.Model = &model
 	case br.CachedContentCreateRequest != nil:
 		br.CachedContentCreateRequest.Model = model
 	case br.CachedContentListRequest != nil:
@@ -816,6 +892,20 @@ func (br *BifrostRequest) SetModel(model string) {
 		if br.CachedContentDeleteRequest.Model != nil {
 			br.CachedContentDeleteRequest.Model = new(model)
 		}
+	case br.BatchCreateRequest != nil:
+		br.BatchCreateRequest.Model = &model
+	case br.BatchListRequest != nil:
+		br.BatchListRequest.Model = &model
+	case br.BatchRetrieveRequest != nil:
+		br.BatchRetrieveRequest.Model = &model
+	case br.BatchCancelRequest != nil:
+		br.BatchCancelRequest.Model = &model
+	case br.BatchResultsRequest != nil:
+		br.BatchResultsRequest.Model = &model
+	case br.BatchDeleteRequest != nil:
+		br.BatchDeleteRequest.Model = &model
+	case br.PassthroughRequest != nil:
+		br.PassthroughRequest.Model = model
 	}
 }
 
@@ -903,6 +993,291 @@ func (br *BifrostRequest) SetRawRequestBody(rawRequestBody []byte) {
 	case br.CachedContentDeleteRequest != nil:
 		br.CachedContentDeleteRequest.RawRequestBody = rawRequestBody
 	}
+}
+
+// Clone returns a copy of the request suitable for use in prepareFallbackRequest.
+//
+// What IS independently copied:
+//   - ProviderOverride struct (so niling it on the clone does not affect the original)
+//   - The one active inner request struct (so SetProvider/UpdateModel writes to the
+//     clone's Provider/Model scalars without aliasing the original's inner pointer)
+//   - The Params struct for the request types that carry it as a pointer
+//     (TextCompletion, Chat, Responses). Bifrost's own MCP tool injection writes
+//     Params.Tools through that pointer on each attempt; without the copy, a
+//     fallback attempt's tool injection would mutate the caller-owned original.
+//
+// What is NOT deep-copied, and why:
+//   - Slice and map fields inside the inner request struct (e.g. Input []ChatMessage,
+//     Tools []Tool, Fallbacks []Fallback, ExtraParams map[string]interface{}).
+//     These share the same underlying array/map with the original.
+//     This is intentional: Clone() exists only to let prepareFallbackRequest write
+//     routing metadata (Provider, Model) independently per fallback attempt.
+//     Plugin hooks MUST NOT mutate content fields (messages, tools, metadata);
+//     they may only rewrite routing metadata through the Update* methods.
+//     (MCP tool injection is safe despite sharing: it builds a new Tools slice
+//     with append-on-copy semantics and assigns it to the clone's own Params.)
+//     Deep-copying content across all 35 request types would add significant
+//     complexity and per-fallback heap allocation for no practical benefit.
+//   - ProviderOverride.Key (pointer): safe to share because prepareFallbackRequest
+//     immediately nils ProviderOverride after Clone(), and hooks create a fresh one
+//     via req.UpdateAPIKey if needed.
+func (br *BifrostRequest) Clone() BifrostRequest {
+	if br == nil {
+		return BifrostRequest{}
+	}
+	clone := *br
+	if br.ProviderOverride != nil {
+		ovr := *br.ProviderOverride // copies BaseURL by value
+		if br.ProviderOverride.NetworkConfig != nil {
+			networkOverride := *br.ProviderOverride.NetworkConfig
+			if br.ProviderOverride.NetworkConfig.ExtraHeaders != nil {
+				networkOverride.ExtraHeaders = maps.Clone(br.ProviderOverride.NetworkConfig.ExtraHeaders)
+			}
+			ovr.NetworkConfig = &networkOverride
+		}
+		clone.ProviderOverride = &ovr
+	}
+	switch {
+	case br.ListModelsRequest != nil:
+		tmp := *br.ListModelsRequest
+		clone.ListModelsRequest = &tmp
+	case br.TextCompletionRequest != nil:
+		tmp := *br.TextCompletionRequest
+		if tmp.Params != nil {
+			params := *tmp.Params
+			tmp.Params = &params
+		}
+		clone.TextCompletionRequest = &tmp
+	case br.ChatRequest != nil:
+		tmp := *br.ChatRequest
+		if tmp.Params != nil {
+			params := *tmp.Params
+			tmp.Params = &params
+		}
+		clone.ChatRequest = &tmp
+	case br.ResponsesRequest != nil:
+		tmp := *br.ResponsesRequest
+		if tmp.Params != nil {
+			params := *tmp.Params
+			tmp.Params = &params
+		}
+		clone.ResponsesRequest = &tmp
+	case br.ResponsesRetrieveRequest != nil:
+		tmp := *br.ResponsesRetrieveRequest
+		clone.ResponsesRetrieveRequest = &tmp
+	case br.ResponsesDeleteRequest != nil:
+		tmp := *br.ResponsesDeleteRequest
+		clone.ResponsesDeleteRequest = &tmp
+	case br.ResponsesCancelRequest != nil:
+		tmp := *br.ResponsesCancelRequest
+		clone.ResponsesCancelRequest = &tmp
+	case br.ResponsesInputItemsRequest != nil:
+		tmp := *br.ResponsesInputItemsRequest
+		clone.ResponsesInputItemsRequest = &tmp
+	case br.CountTokensRequest != nil:
+		tmp := *br.CountTokensRequest
+		clone.CountTokensRequest = &tmp
+	case br.CompactionRequest != nil:
+		tmp := *br.CompactionRequest
+		clone.CompactionRequest = &tmp
+	case br.EmbeddingRequest != nil:
+		tmp := *br.EmbeddingRequest
+		clone.EmbeddingRequest = &tmp
+	case br.RerankRequest != nil:
+		tmp := *br.RerankRequest
+		clone.RerankRequest = &tmp
+	case br.OCRRequest != nil:
+		tmp := *br.OCRRequest
+		clone.OCRRequest = &tmp
+	case br.SpeechRequest != nil:
+		tmp := *br.SpeechRequest
+		clone.SpeechRequest = &tmp
+	case br.TranscriptionRequest != nil:
+		tmp := *br.TranscriptionRequest
+		clone.TranscriptionRequest = &tmp
+	case br.ImageGenerationRequest != nil:
+		tmp := *br.ImageGenerationRequest
+		clone.ImageGenerationRequest = &tmp
+	case br.ImageEditRequest != nil:
+		tmp := *br.ImageEditRequest
+		clone.ImageEditRequest = &tmp
+	case br.ImageVariationRequest != nil:
+		tmp := *br.ImageVariationRequest
+		clone.ImageVariationRequest = &tmp
+	case br.VideoGenerationRequest != nil:
+		tmp := *br.VideoGenerationRequest
+		clone.VideoGenerationRequest = &tmp
+	case br.VideoRetrieveRequest != nil:
+		tmp := *br.VideoRetrieveRequest
+		clone.VideoRetrieveRequest = &tmp
+	case br.VideoDownloadRequest != nil:
+		tmp := *br.VideoDownloadRequest
+		clone.VideoDownloadRequest = &tmp
+	case br.VideoListRequest != nil:
+		tmp := *br.VideoListRequest
+		clone.VideoListRequest = &tmp
+	case br.VideoDeleteRequest != nil:
+		tmp := *br.VideoDeleteRequest
+		clone.VideoDeleteRequest = &tmp
+	case br.VideoRemixRequest != nil:
+		tmp := *br.VideoRemixRequest
+		clone.VideoRemixRequest = &tmp
+	case br.FileUploadRequest != nil:
+		tmp := *br.FileUploadRequest
+		clone.FileUploadRequest = &tmp
+	case br.FileListRequest != nil:
+		tmp := *br.FileListRequest
+		clone.FileListRequest = &tmp
+	case br.FileRetrieveRequest != nil:
+		tmp := *br.FileRetrieveRequest
+		clone.FileRetrieveRequest = &tmp
+	case br.FileDeleteRequest != nil:
+		tmp := *br.FileDeleteRequest
+		clone.FileDeleteRequest = &tmp
+	case br.FileContentRequest != nil:
+		tmp := *br.FileContentRequest
+		clone.FileContentRequest = &tmp
+	case br.CachedContentCreateRequest != nil:
+		tmp := *br.CachedContentCreateRequest
+		clone.CachedContentCreateRequest = &tmp
+	case br.CachedContentListRequest != nil:
+		tmp := *br.CachedContentListRequest
+		clone.CachedContentListRequest = &tmp
+	case br.CachedContentRetrieveRequest != nil:
+		tmp := *br.CachedContentRetrieveRequest
+		clone.CachedContentRetrieveRequest = &tmp
+	case br.CachedContentUpdateRequest != nil:
+		tmp := *br.CachedContentUpdateRequest
+		clone.CachedContentUpdateRequest = &tmp
+	case br.CachedContentDeleteRequest != nil:
+		tmp := *br.CachedContentDeleteRequest
+		clone.CachedContentDeleteRequest = &tmp
+	case br.BatchCreateRequest != nil:
+		tmp := *br.BatchCreateRequest
+		clone.BatchCreateRequest = &tmp
+	case br.BatchListRequest != nil:
+		tmp := *br.BatchListRequest
+		clone.BatchListRequest = &tmp
+	case br.BatchRetrieveRequest != nil:
+		tmp := *br.BatchRetrieveRequest
+		clone.BatchRetrieveRequest = &tmp
+	case br.BatchCancelRequest != nil:
+		tmp := *br.BatchCancelRequest
+		clone.BatchCancelRequest = &tmp
+	case br.BatchResultsRequest != nil:
+		tmp := *br.BatchResultsRequest
+		clone.BatchResultsRequest = &tmp
+	case br.BatchDeleteRequest != nil:
+		tmp := *br.BatchDeleteRequest
+		clone.BatchDeleteRequest = &tmp
+	case br.ContainerCreateRequest != nil:
+		tmp := *br.ContainerCreateRequest
+		clone.ContainerCreateRequest = &tmp
+	case br.ContainerListRequest != nil:
+		tmp := *br.ContainerListRequest
+		clone.ContainerListRequest = &tmp
+	case br.ContainerRetrieveRequest != nil:
+		tmp := *br.ContainerRetrieveRequest
+		clone.ContainerRetrieveRequest = &tmp
+	case br.ContainerDeleteRequest != nil:
+		tmp := *br.ContainerDeleteRequest
+		clone.ContainerDeleteRequest = &tmp
+	case br.ContainerFileCreateRequest != nil:
+		tmp := *br.ContainerFileCreateRequest
+		clone.ContainerFileCreateRequest = &tmp
+	case br.ContainerFileListRequest != nil:
+		tmp := *br.ContainerFileListRequest
+		clone.ContainerFileListRequest = &tmp
+	case br.ContainerFileRetrieveRequest != nil:
+		tmp := *br.ContainerFileRetrieveRequest
+		clone.ContainerFileRetrieveRequest = &tmp
+	case br.ContainerFileContentRequest != nil:
+		tmp := *br.ContainerFileContentRequest
+		clone.ContainerFileContentRequest = &tmp
+	case br.ContainerFileDeleteRequest != nil:
+		tmp := *br.ContainerFileDeleteRequest
+		clone.ContainerFileDeleteRequest = &tmp
+	case br.PassthroughRequest != nil:
+		tmp := *br.PassthroughRequest
+		clone.PassthroughRequest = &tmp
+	}
+	return clone
+}
+
+// UpdateProvider sets the provider for this request. It is equivalent to changing the
+// Provider field on the underlying request type but works regardless of request type.
+// If provider is empty, the request's existing provider is used unchanged.
+// The provider must be a built-in name (or statically configured); built-in providers
+// without static config auto-initialise with default settings on first use.
+func (br *BifrostRequest) UpdateProvider(provider ModelProvider) error {
+	if br == nil {
+		return errors.New("bifrost request is nil")
+	}
+	if provider == "" {
+		return nil
+	}
+	br.SetProvider(provider)
+	return nil
+}
+
+// UpdateModel sets the model for this request. It is equivalent to changing the Model
+// field on the underlying request type but works regardless of request type.
+func (br *BifrostRequest) UpdateModel(model string) error {
+	if br == nil {
+		return errors.New("bifrost request is nil")
+	}
+	if model == "" {
+		return nil
+	}
+	br.SetModel(model)
+	return nil
+}
+
+// UpdateAPIKey sets a per-request API credential, bypassing the key pool for this request.
+// This is the recommended way for plugins to inject dynamic credentials at request time.
+func (br *BifrostRequest) UpdateAPIKey(key Key) {
+	if br == nil {
+		return
+	}
+	if br.ProviderOverride == nil {
+		br.ProviderOverride = &ProviderOverride{}
+	}
+	br.ProviderOverride.Key = &key
+}
+
+// UpdateProviderBaseURL overrides the provider's base URL for this request, enabling
+// routing to geo-specific or tenant-specific endpoints (e.g. "https://eu.api.openai.com").
+// The URL should be the scheme + host only, without a trailing slash or path prefix.
+//
+// Note: BaseURL override is honoured only by providers that resolve their request URL
+// via GetRequestPath (OpenAI, Anthropic, Cohere, HuggingFace, Replicate). Providers that
+// construct their URLs directly (Gemini, Groq, Mistral, etc.) ignore this field; for those,
+// set a full URL on the BifrostContext before calling the API method:
+//
+//	ctx.SetValue(schemas.BifrostContextKeyURLPath, "https://custom.host.com/v1/chat")
+//
+// Note: BifrostContextKeyURLPath is a restricted key and cannot be set inside a PreLLMHook
+// via ctx.SetValue. Set it on the request context before invoking the Bifrost API method.
+func (br *BifrostRequest) UpdateProviderBaseURL(baseURL string) {
+	if br == nil {
+		return
+	}
+	if br.ProviderOverride == nil {
+		br.ProviderOverride = &ProviderOverride{}
+	}
+	br.ProviderOverride.BaseURL = baseURL
+}
+
+// UpdateProviderNetworkConfig sets request-scoped network config overrides.
+// Fields left nil inherit the provider's configured NetworkConfig.
+func (br *BifrostRequest) UpdateProviderNetworkConfig(networkConfig ProviderNetworkConfigOverride) {
+	if br == nil {
+		return
+	}
+	if br.ProviderOverride == nil {
+		br.ProviderOverride = &ProviderOverride{}
+	}
+	br.ProviderOverride.NetworkConfig = &networkConfig
 }
 
 type MCPRequestType string

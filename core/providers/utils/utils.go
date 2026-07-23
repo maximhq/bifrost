@@ -211,6 +211,23 @@ var UnsupportedSpeechStreamModels = []string{"tts-1", "tts-1-hd"}
 // noop is a reusable no-op function returned by MakeRequestWithContext on the normal path.
 var noop = func() {}
 
+func providerNetworkOverrideFromContext(ctx context.Context) *schemas.ProviderNetworkConfigOverride {
+	if ctx == nil {
+		return nil
+	}
+	override, ok := ctx.Value(schemas.BifrostContextKeyProviderOverride).(*schemas.ProviderOverride)
+	if !ok || override == nil {
+		return nil
+	}
+	return override.NetworkConfig
+}
+
+// EffectiveNetworkConfigFromContext applies request-scoped network overrides to
+// a provider NetworkConfig. Nil override fields leave the provider config intact.
+func EffectiveNetworkConfigFromContext(ctx context.Context, base schemas.NetworkConfig) schemas.NetworkConfig {
+	return schemas.ApplyProviderNetworkConfigOverride(base, providerNetworkOverrideFromContext(ctx))
+}
+
 // SetErrorLatency stamps provider/request latency onto an error so downstream
 // logging and client-facing error details can show timing even without a response.
 func SetErrorLatency(bifrostErr *schemas.BifrostError, latency time.Duration) *schemas.BifrostError {
@@ -218,6 +235,25 @@ func SetErrorLatency(bifrostErr *schemas.BifrostError, latency time.Duration) *s
 		bifrostErr.ExtraFields.Latency = latency.Milliseconds()
 	}
 	return bifrostErr
+}
+
+// EffectiveBetaHeaderOverridesFromContext returns the beta-header override map
+// for this request: the provider's base map with any request-scoped overrides
+// merged on top. Keys in the override win; keys absent from the override keep
+// the provider default. Returns base unchanged when no override is set.
+func EffectiveBetaHeaderOverridesFromContext(ctx context.Context, base map[string]bool) map[string]bool {
+	override := providerNetworkOverrideFromContext(ctx)
+	if override == nil || override.BetaHeaderOverrides == nil {
+		return base
+	}
+	merged := make(map[string]bool, len(base)+len(override.BetaHeaderOverrides))
+	for k, v := range base {
+		merged[k] = v
+	}
+	for k, v := range override.BetaHeaderOverrides {
+		merged[k] = v
+	}
+	return merged
 }
 
 // makeRequestWithDoFunc is the shared core behind MakeRequestWithContext and
@@ -317,21 +353,47 @@ func makeRequestWithDoFunc(ctx context.Context, do func() error) (time.Duration,
 	}
 }
 
+// applyRequestTimeoutOverride stamps the per-request timeout from a
+// ProviderNetworkConfigOverride (if any) onto the fasthttp request. This is
+// THE enforcement point for per-request timeouts: dynamic (auto-initialised)
+// providers serve many tenants through one shared fasthttp client whose
+// construction-time timeout is only a transport ceiling, so the tenant's real
+// timeout must ride the request. fasthttp enforces Request.SetTimeout inside
+// client.Do as connection read/write deadlines, so the call RETURNS at the
+// deadline (ErrTimeout → 504) — unlike a context deadline, which would leave
+// the abandoned client.Do goroutine holding req/resp until the upstream or
+// the transport ceiling let go (the wait() contract blocks the caller for
+// exactly that long). Streaming calls never come through here — SSE handlers
+// drive client.Do directly and per-chunk progress is enforced by
+// NewIdleTimeoutReader via the StreamIdleTimeoutInSeconds override.
+//
+// req.SetTimeout is per-transaction: client-level RetryIf re-dials keep the
+// original overall deadline (fasthttp recomputes remaining time per attempt),
+// but DoRedirects re-arms the full timeout per redirect hop.
+func applyRequestTimeoutOverride(ctx context.Context, req *fasthttp.Request) {
+	if override := providerNetworkOverrideFromContext(ctx); override != nil && override.RequestTimeoutInSeconds != nil && *override.RequestTimeoutInSeconds > 0 {
+		req.SetTimeout(time.Duration(*override.RequestTimeoutInSeconds) * time.Second)
+	}
+}
+
 // MakeRequestWithContext makes a request with a context and returns the latency, error, and a
 // wait function. The wait function MUST be called (typically via defer) before releasing the
 // request or response objects. On the normal path it is a no-op. On the context-cancellation
 // path it blocks until the background client.Do goroutine finishes, preventing a data race
 // between the still-running goroutine and the caller's release of req/resp.
+//
+// A per-request ProviderOverride timeout (RequestTimeoutInSeconds) is honoured
+// via Request.SetTimeout; deadline hits surface as HTTP 504.
 func MakeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *fasthttp.Request, resp *fasthttp.Response) (time.Duration, *schemas.BifrostError, func()) {
-	latency, bifrostErr, wait := makeRequestWithDoFunc(ctx, func() error { return client.Do(req, resp) })
-	return latency, bifrostErr, wait
+	applyRequestTimeoutOverride(ctx, req)
+	return makeRequestWithDoFunc(ctx, func() error { return client.Do(req, resp) })
 }
 
 // MakeRequestWithContextFollowRedirects is like MakeRequestWithContext but follows up to
 // maxRedirects HTTP redirects automatically (equivalent to curl's -L flag).
 func MakeRequestWithContextFollowRedirects(ctx context.Context, client *fasthttp.Client, req *fasthttp.Request, resp *fasthttp.Response, maxRedirects int) (time.Duration, *schemas.BifrostError, func()) {
-	latency, bifrostErr, wait := makeRequestWithDoFunc(ctx, func() error { return client.DoRedirects(req, resp, maxRedirects) })
-	return latency, bifrostErr, wait
+	applyRequestTimeoutOverride(ctx, req)
+	return makeRequestWithDoFunc(ctx, func() error { return client.DoRedirects(req, resp, maxRedirects) })
 }
 
 // Deprecated: ConfigureRetry is now handled internally by ConfigureDialer.
@@ -753,22 +815,14 @@ func ExtractProviderResponseHeadersFromHTTP(resp *http.Response) map[string]stri
 // It accepts a list of headers (all canonicalized) to skip for security reasons.
 // Headers are only set if they don't already exist on the request to avoid overwriting important headers.
 func SetExtraHeaders(ctx context.Context, req *fasthttp.Request, extraHeaders map[string]string, skipHeaders []string) {
-	for key, value := range extraHeaders {
-		canonicalKey := textproto.CanonicalMIMEHeaderKey(key)
-		if skipHeaders != nil {
-			if slices.Contains(skipHeaders, key) {
-				continue
-			}
-		}
-		// Only set the header if it doesn't already exist to avoid overwriting important headers
-		if len(req.Header.Peek(canonicalKey)) == 0 {
-			req.Header.Set(canonicalKey, value)
-		}
+	if override := providerNetworkOverrideFromContext(ctx); override != nil && override.ExtraHeaders != nil {
+		setExtraHeadersMap(req, override.ExtraHeaders, skipHeaders)
 	}
+	setExtraHeadersMap(req, extraHeaders, skipHeaders)
 	// Give priority to extra headers in the context
 	if extraHeaders, ok := (ctx).Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string); ok {
 		for k, values := range filterHeaders(extraHeaders) {
-			if skipHeaders != nil && slices.Contains(skipHeaders, strings.ToLower(k)) {
+			if shouldSkipHeader(textproto.CanonicalMIMEHeaderKey(k), skipHeaders) {
 				continue
 			}
 			for i, v := range values {
@@ -780,6 +834,28 @@ func SetExtraHeaders(ctx context.Context, req *fasthttp.Request, extraHeaders ma
 			}
 		}
 	}
+}
+
+func setExtraHeadersMap(req *fasthttp.Request, extraHeaders map[string]string, skipHeaders []string) {
+	for key, value := range extraHeaders {
+		canonicalKey := textproto.CanonicalMIMEHeaderKey(key)
+		if shouldSkipHeader(canonicalKey, skipHeaders) {
+			continue
+		}
+		// Only set the header if it doesn't already exist to avoid overwriting important headers.
+		if len(req.Header.Peek(canonicalKey)) == 0 {
+			req.Header.Set(canonicalKey, value)
+		}
+	}
+}
+
+func shouldSkipHeader(canonicalKey string, skipHeaders []string) bool {
+	for _, skipHeader := range skipHeaders {
+		if strings.EqualFold(skipHeader, canonicalKey) {
+			return true
+		}
+	}
+	return false
 }
 
 // GetPathFromContext gets the path from the context, if it exists, otherwise returns the default path.
@@ -794,17 +870,53 @@ func GetPathFromContext(ctx context.Context, defaultPath string) string {
 // It returns the resolved value and a boolean indicating whether the value is a full absolute URL.
 // If the boolean is false, the returned string is a path (leading slash ensured).
 func GetRequestPath(ctx context.Context, defaultPath string, customProviderConfig *schemas.CustomProviderConfig, requestType schemas.RequestType) (string, bool) {
-	// If path/url set in context, return it.
+	// Track whether the path came from the per-request context so that static
+	// RequestPathOverrides do not overwrite an explicitly provided context path.
+	pathFromContext := false
+
+	// If an explicit path/URL is set in context, handle it before checking ProviderOverride.
+	// Absolute URLs short-circuit entirely. Relative paths update defaultPath so the
+	// ProviderOverride.BaseURL join logic below can still combine them into a full URL.
 	if pathInContext, ok := ctx.Value(schemas.BifrostContextKeyURLPath).(string); ok {
 		trimmed := strings.TrimSpace(pathInContext)
 		if u, err := url.Parse(trimmed); err == nil && u != nil && u.IsAbs() && u.Host != "" {
 			return trimmed, true
 		}
-		return trimmed, false
+		// Relative path: do not return yet. If a ProviderOverride.BaseURL is also set,
+		// it should be joined with this path rather than the provider's static base URL.
+		if trimmed != "" {
+			defaultPath = trimmed
+			pathFromContext = true
+		}
 	}
 
-	// If path override set in custom provider config, return it.
-	if customProviderConfig != nil && customProviderConfig.RequestPathOverrides != nil {
+	// If a ProviderOverride with a BaseURL is set, combine with the effective path and return
+	// as a complete absolute URL, bypassing the provider's static NetworkConfig.BaseURL.
+	// Respect RequestPathOverrides for the path suffix when configured, but only when the
+	// path was not already set explicitly via context (pathFromContext = false).
+	// BaseURL is used unconditionally: a non-empty value is an explicit developer choice.
+	// If it is malformed the concatenated result is returned as-is so the transport surfaces
+	// a clear error rather than silently routing to the static provider endpoint.
+	if override, ok := ctx.Value(schemas.BifrostContextKeyProviderOverride).(*schemas.ProviderOverride); ok && override != nil && override.BaseURL != "" {
+		path := defaultPath
+		if !pathFromContext && customProviderConfig != nil && customProviderConfig.RequestPathOverrides != nil {
+			if raw, ok := customProviderConfig.RequestPathOverrides[requestType]; ok && strings.TrimSpace(raw) != "" {
+				path = strings.TrimSpace(raw)
+				// If the path override is itself an absolute URL, return it directly.
+				if pu, perr := url.Parse(path); perr == nil && pu != nil && pu.IsAbs() && pu.Host != "" {
+					return path, true
+				}
+			}
+		}
+		if !strings.HasPrefix(path, "/") {
+			path = "/" + path
+		}
+		return strings.TrimRight(override.BaseURL, "/") + path, true
+	}
+
+	// If path override set in custom provider config, return it (only when path was not
+	// already provided via context).
+	if !pathFromContext && customProviderConfig != nil && customProviderConfig.RequestPathOverrides != nil {
 		if raw, ok := customProviderConfig.RequestPathOverrides[requestType]; ok {
 			override := strings.TrimSpace(raw)
 			if override == "" {
@@ -824,7 +936,11 @@ func GetRequestPath(ctx context.Context, defaultPath string, customProviderConfi
 		}
 	}
 
-	// Return default path.
+	// Ensure a leading slash on relative paths before returning so buildRequestURL
+	// does not produce a malformed URL when concatenating with a base URL.
+	if defaultPath != "" && !strings.HasPrefix(defaultPath, "/") {
+		defaultPath = "/" + defaultPath
+	}
 	return defaultPath, false
 }
 
@@ -1389,23 +1505,15 @@ func CheckContextAndGetRequestBody(ctx context.Context, request RequestBodyGette
 // It accepts a list of headers (all canonicalized) to skip for security reasons.
 // Headers are only set if they don't already exist on the request to avoid overwriting important headers.
 func SetExtraHeadersHTTP(ctx context.Context, req *http.Request, extraHeaders map[string]string, skipHeaders []string) {
-	for key, value := range extraHeaders {
-		canonicalKey := textproto.CanonicalMIMEHeaderKey(key)
-		if skipHeaders != nil {
-			if slices.Contains(skipHeaders, key) {
-				continue
-			}
-		}
-		// Only set the header if it doesn't already exist to avoid overwriting important headers
-		if req.Header.Get(canonicalKey) == "" {
-			req.Header.Set(canonicalKey, value)
-		}
+	if override := providerNetworkOverrideFromContext(ctx); override != nil && override.ExtraHeaders != nil {
+		setExtraHeadersHTTPMap(req, override.ExtraHeaders, skipHeaders)
 	}
+	setExtraHeadersHTTPMap(req, extraHeaders, skipHeaders)
 
 	// Give priority to extra headers in the context
 	if extraHeaders, ok := (ctx).Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string); ok {
 		for k, values := range filterHeaders(extraHeaders) {
-			if skipHeaders != nil && slices.Contains(skipHeaders, strings.ToLower(k)) {
+			if shouldSkipHeader(textproto.CanonicalMIMEHeaderKey(k), skipHeaders) {
 				continue
 			}
 			for i, v := range values {
@@ -1415,6 +1523,19 @@ func SetExtraHeadersHTTP(ctx context.Context, req *http.Request, extraHeaders ma
 					req.Header.Add(k, v)
 				}
 			}
+		}
+	}
+}
+
+func setExtraHeadersHTTPMap(req *http.Request, extraHeaders map[string]string, skipHeaders []string) {
+	for key, value := range extraHeaders {
+		canonicalKey := textproto.CanonicalMIMEHeaderKey(key)
+		if shouldSkipHeader(canonicalKey, skipHeaders) {
+			continue
+		}
+		// Only set the header if it doesn't already exist to avoid overwriting important headers.
+		if req.Header.Get(canonicalKey) == "" {
+			req.Header.Set(canonicalKey, value)
 		}
 	}
 }
@@ -2430,9 +2551,20 @@ func SetStreamIdleTimeoutIfEmpty(ctx *schemas.BifrostContext, configSeconds int)
 	}
 }
 
-// GetStreamIdleTimeout reads the per-chunk idle timeout from context,
-// falling back to DefaultStreamIdleTimeout if not set.
+// GetStreamIdleTimeout reads the per-chunk idle timeout, falling back to
+// DefaultStreamIdleTimeout if not set.
+//
+// A per-request ProviderOverride takes highest precedence. It is checked here at
+// read time — never written into BifrostContextKeyStreamIdleTimeout — because that
+// ctx key is shared across fallback attempts: persisting an override value there
+// would let the primary attempt's override poison fallback attempts (and mask the
+// fallback's own override). The ProviderOverride ctx key, by contrast, is cleared
+// and re-set per attempt by tryRequest/tryStreamRequest, so reading it here always
+// observes the current attempt's value.
 func GetStreamIdleTimeout(ctx *schemas.BifrostContext) time.Duration {
+	if override := providerNetworkOverrideFromContext(ctx); override != nil && override.StreamIdleTimeoutInSeconds != nil && *override.StreamIdleTimeoutInSeconds > 0 {
+		return time.Duration(*override.StreamIdleTimeoutInSeconds) * time.Second
+	}
 	if timeout, ok := ctx.Value(schemas.BifrostContextKeyStreamIdleTimeout).(time.Duration); ok && timeout > 0 {
 		return timeout
 	}

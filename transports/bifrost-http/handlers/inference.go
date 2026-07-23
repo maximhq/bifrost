@@ -613,17 +613,19 @@ func enableRawRequestResponseForContainer(bifrostCtx *schemas.BifrostContext) {
 	bifrostCtx.SetValue(schemas.BifrostContextKeyStoreRawRequestResponse, true)
 }
 
-// parseFallbacks extracts fallbacks from string array and converts to Fallback structs
+// parseFallbacks extracts fallbacks from string array and converts to Fallback
+// structs. Empty Provider is preserved so a plugin can re-route before dispatch.
 func parseFallbacks(fallbackStrings []string) ([]schemas.Fallback, error) {
 	fallbacks := make([]schemas.Fallback, 0, len(fallbackStrings))
 	for _, fallback := range fallbackStrings {
 		fallbackProvider, fallbackModelName := schemas.ParseModelString(fallback, "")
-		if fallbackProvider != "" && fallbackModelName != "" {
-			fallbacks = append(fallbacks, schemas.Fallback{
-				Provider: fallbackProvider,
-				Model:    fallbackModelName,
-			})
+		if fallbackModelName == "" {
+			continue
 		}
+		fallbacks = append(fallbacks, schemas.Fallback{
+			Provider: fallbackProvider,
+			Model:    fallbackModelName,
+		})
 	}
 	return fallbacks, nil
 }

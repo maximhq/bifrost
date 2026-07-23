@@ -477,3 +477,36 @@ func TestNewBifrostContext_WatchdogRaceWithReleasedScope(t *testing.T) {
 		_, _ = c.Deadline()
 	}
 }
+
+// TestBifrostContext_ClearValue_MasksParentValue pins the tombstone semantics
+// of ClearValue: after clearing a key, Value must return nil rather than
+// falling through to the parent context chain. Security-sensitive scrub sites
+// (clearCtxForFallback, key-identity scrubbing) rely on this — delete
+// semantics would re-expose a value the caller stashed on the parent context.
+func TestBifrostContext_ClearValue_MasksParentValue(t *testing.T) {
+	parent := context.WithValue(context.Background(), BifrostContextKeySelectedKeyID, "parent-key-id")
+	ctx := NewBifrostContext(parent, NoDeadline)
+
+	ctx.SetValue(BifrostContextKeySelectedKeyID, "child-key-id")
+	if got := ctx.Value(BifrostContextKeySelectedKeyID); got != "child-key-id" {
+		t.Fatalf("Value before ClearValue = %v, want child-key-id", got)
+	}
+
+	ctx.ClearValue(BifrostContextKeySelectedKeyID)
+	if got := ctx.Value(BifrostContextKeySelectedKeyID); got != nil {
+		t.Fatalf("Value after ClearValue = %v, want nil — ClearValue must mask, not re-expose the parent context's value", got)
+	}
+}
+
+// TestBifrostContext_ClearValue_NeverSetKey pins that clearing a key that was
+// never set on this context still masks the parent's value rather than being
+// a no-op on the local map.
+func TestBifrostContext_ClearValue_NeverSetKey(t *testing.T) {
+	parent := context.WithValue(context.Background(), BifrostContextKeySelectedKeyID, "parent-key-id")
+	ctx := NewBifrostContext(parent, NoDeadline)
+
+	ctx.ClearValue(BifrostContextKeySelectedKeyID)
+	if got := ctx.Value(BifrostContextKeySelectedKeyID); got != nil {
+		t.Fatalf("Value after ClearValue of never-set key = %v, want nil", got)
+	}
+}
