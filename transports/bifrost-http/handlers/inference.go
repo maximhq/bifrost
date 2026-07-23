@@ -875,8 +875,8 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 	}
 
 	enrichListModelsResponse(resp, h.config.ModelCatalog)
-	if resp != nil && resp.ExtraFields.ProviderResponseHeaders != nil {
-		forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
+	if resp != nil {
+		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
 	}
 	// Send successful response
 	SendJSON(ctx, resp)
@@ -998,8 +998,8 @@ func (h *CompletionHandler) textCompletion(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if resp != nil && resp.ExtraFields.ProviderResponseHeaders != nil {
-		forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
+	if resp != nil {
+		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
 	}
 
 	if streamLargeResponseIfActive(ctx, bifrostCtx) {
@@ -1072,8 +1072,8 @@ func (h *CompletionHandler) chatCompletion(ctx *fasthttp.RequestCtx) {
 		SendBifrostError(ctx, bifrostErr)
 		return
 	}
-	if resp != nil && resp.ExtraFields.ProviderResponseHeaders != nil {
-		forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
+	if resp != nil {
+		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
 	}
 
 	if streamLargeResponseIfActive(ctx, bifrostCtx) {
@@ -1144,8 +1144,8 @@ func (h *CompletionHandler) responses(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if resp != nil && resp.ExtraFields.ProviderResponseHeaders != nil {
-		forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
+	if resp != nil {
+		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
 	}
 	if streamLargeResponseIfActive(ctx, bifrostCtx) {
 		return
@@ -1198,8 +1198,8 @@ func (h *CompletionHandler) embeddings(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if resp != nil && resp.ExtraFields.ProviderResponseHeaders != nil {
-		forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
+	if resp != nil {
+		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
 	}
 	if streamLargeResponseIfActive(ctx, bifrostCtx) {
 		return
@@ -1265,8 +1265,8 @@ func (h *CompletionHandler) rerank(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if resp != nil && resp.ExtraFields.ProviderResponseHeaders != nil {
-		forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
+	if resp != nil {
+		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
 	}
 
 	if streamLargeResponseIfActive(ctx, bifrostCtx) {
@@ -1328,8 +1328,8 @@ func (h *CompletionHandler) ocr(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if resp != nil && resp.ExtraFields.ProviderResponseHeaders != nil {
-		forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
+	if resp != nil {
+		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
 	}
 
 	if streamLargeResponseIfActive(ctx, bifrostCtx) {
@@ -1443,8 +1443,8 @@ func (h *CompletionHandler) speech(ctx *fasthttp.RequestCtx) {
 		bifrostCtx.SetValue(schemas.BifrostContextKeyLargeResponseContentDisposition, "attachment; filename="+attachmentFilename)
 	}
 
-	if resp != nil && resp.ExtraFields.ProviderResponseHeaders != nil {
-		forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
+	if resp != nil {
+		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
 	}
 
 	if streamLargeResponseIfActive(ctx, bifrostCtx) {
@@ -1571,8 +1571,8 @@ func (h *CompletionHandler) transcription(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if resp != nil && resp.ExtraFields.ProviderResponseHeaders != nil {
-		forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
+	if resp != nil {
+		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
 	}
 	if streamLargeResponseIfActive(ctx, bifrostCtx) {
 		return
@@ -1603,7 +1603,7 @@ func (h *CompletionHandler) countTokens(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	forwardProviderHeaders(ctx, response.ExtraFields.ProviderResponseHeaders)
+	lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, response.ExtraFields)
 	// Send successful response
 	if streamLargeResponseIfActive(ctx, bifrostCtx) {
 		return
@@ -1699,8 +1699,8 @@ func (h *CompletionHandler) responsesRetrieve(ctx *fasthttp.RequestCtx) {
 		SendBifrostError(ctx, bifrostErr)
 		return
 	}
-	if resp != nil && resp.ExtraFields.ProviderResponseHeaders != nil {
-		forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
+	if resp != nil {
+		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
 	}
 	if streamLargeResponseIfActive(ctx, bifrostCtx) {
 		return
@@ -1730,8 +1730,8 @@ func (h *CompletionHandler) compaction(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if response != nil && response.ExtraFields.ProviderResponseHeaders != nil {
-		forwardProviderHeaders(ctx, response.ExtraFields.ProviderResponseHeaders)
+	if response != nil {
+		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, response.ExtraFields)
 	}
 	if streamLargeResponseIfActive(ctx, bifrostCtx) {
 		return
@@ -1762,8 +1762,8 @@ func (h *CompletionHandler) responsesDelete(ctx *fasthttp.RequestCtx) {
 		SendBifrostError(ctx, bifrostErr)
 		return
 	}
-	if resp != nil && resp.ExtraFields.ProviderResponseHeaders != nil {
-		forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
+	if resp != nil {
+		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
 	}
 	if streamLargeResponseIfActive(ctx, bifrostCtx) {
 		return
@@ -1794,8 +1794,8 @@ func (h *CompletionHandler) responsesCancel(ctx *fasthttp.RequestCtx) {
 		SendBifrostError(ctx, bifrostErr)
 		return
 	}
-	if resp != nil && resp.ExtraFields.ProviderResponseHeaders != nil {
-		forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
+	if resp != nil {
+		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
 	}
 	if streamLargeResponseIfActive(ctx, bifrostCtx) {
 		return
@@ -1844,8 +1844,8 @@ func (h *CompletionHandler) responsesInputItems(ctx *fasthttp.RequestCtx) {
 		SendBifrostError(ctx, bifrostErr)
 		return
 	}
-	if resp != nil && resp.ExtraFields.ProviderResponseHeaders != nil {
-		forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
+	if resp != nil {
+		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
 	}
 	if streamLargeResponseIfActive(ctx, bifrostCtx) {
 		return
@@ -2267,8 +2267,8 @@ func (h *CompletionHandler) imageGeneration(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if resp != nil && resp.ExtraFields.ProviderResponseHeaders != nil {
-		forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
+	if resp != nil {
+		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
 	}
 	if streamLargeResponseIfActive(ctx, bifrostCtx) {
 		return
@@ -2474,8 +2474,8 @@ func (h *CompletionHandler) imageEdit(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if resp != nil && resp.ExtraFields.ProviderResponseHeaders != nil {
-		forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
+	if resp != nil {
+		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
 	}
 	if streamLargeResponseIfActive(ctx, bifrostCtx) {
 		return
@@ -2611,8 +2611,8 @@ func (h *CompletionHandler) imageVariation(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if resp != nil && resp.ExtraFields.ProviderResponseHeaders != nil {
-		forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
+	if resp != nil {
+		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
 	}
 	if streamLargeResponseIfActive(ctx, bifrostCtx) {
 		return
@@ -2679,8 +2679,8 @@ func (h *CompletionHandler) videoGeneration(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if resp != nil && resp.ExtraFields.ProviderResponseHeaders != nil {
-		forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
+	if resp != nil {
+		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
 	}
 	if streamLargeResponseIfActive(ctx, bifrostCtx) {
 		return
@@ -2732,8 +2732,8 @@ func (h *CompletionHandler) videoRetrieve(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if resp != nil && resp.ExtraFields.ProviderResponseHeaders != nil {
-		forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
+	if resp != nil {
+		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
 	}
 	if streamLargeResponseIfActive(ctx, bifrostCtx) {
 		return
@@ -2790,8 +2790,8 @@ func (h *CompletionHandler) videoDownload(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if resp != nil && resp.ExtraFields.ProviderResponseHeaders != nil {
-		forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
+	if resp != nil {
+		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
 	}
 	if streamLargeResponseIfActive(ctx, bifrostCtx) {
 		return
@@ -2852,8 +2852,8 @@ func (h *CompletionHandler) videoList(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if resp != nil && resp.ExtraFields.ProviderResponseHeaders != nil {
-		forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
+	if resp != nil {
+		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
 	}
 	if streamLargeResponseIfActive(ctx, bifrostCtx) {
 		return
@@ -2903,8 +2903,8 @@ func (h *CompletionHandler) videoDelete(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if resp != nil && resp.ExtraFields.ProviderResponseHeaders != nil {
-		forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
+	if resp != nil {
+		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
 	}
 	if streamLargeResponseIfActive(ctx, bifrostCtx) {
 		return
@@ -2980,8 +2980,8 @@ func (h *CompletionHandler) videoRemix(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if resp != nil && resp.ExtraFields.ProviderResponseHeaders != nil {
-		forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
+	if resp != nil {
+		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
 	}
 	if streamLargeResponseIfActive(ctx, bifrostCtx) {
 		return
@@ -3073,8 +3073,8 @@ func (h *CompletionHandler) batchCreate(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if resp != nil && resp.ExtraFields.ProviderResponseHeaders != nil {
-		forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
+	if resp != nil {
+		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
 	}
 	if streamLargeResponseIfActive(ctx, bifrostCtx) {
 		return
@@ -3133,8 +3133,8 @@ func (h *CompletionHandler) batchList(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if resp != nil && resp.ExtraFields.ProviderResponseHeaders != nil {
-		forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
+	if resp != nil {
+		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
 	}
 	if streamLargeResponseIfActive(ctx, bifrostCtx) {
 		return
@@ -3184,8 +3184,8 @@ func (h *CompletionHandler) batchRetrieve(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if resp != nil && resp.ExtraFields.ProviderResponseHeaders != nil {
-		forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
+	if resp != nil {
+		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
 	}
 	if streamLargeResponseIfActive(ctx, bifrostCtx) {
 		return
@@ -3235,8 +3235,8 @@ func (h *CompletionHandler) batchCancel(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if resp != nil && resp.ExtraFields.ProviderResponseHeaders != nil {
-		forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
+	if resp != nil {
+		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
 	}
 	if streamLargeResponseIfActive(ctx, bifrostCtx) {
 		return
@@ -3286,8 +3286,8 @@ func (h *CompletionHandler) batchResults(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if resp != nil && resp.ExtraFields.ProviderResponseHeaders != nil {
-		forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
+	if resp != nil {
+		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
 	}
 	if streamLargeResponseIfActive(ctx, bifrostCtx) {
 		return
@@ -3442,9 +3442,7 @@ func (h *CompletionHandler) fileUpload(ctx *fasthttp.RequestCtx) {
 
 	if resp != nil {
 		resp.ID = encodeStorageFileID(resp.ID)
-		if resp.ExtraFields.ProviderResponseHeaders != nil {
-			forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
-		}
+		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
 	}
 	if streamLargeResponseIfActive(ctx, bifrostCtx) {
 		return
@@ -3538,9 +3536,7 @@ func (h *CompletionHandler) fileList(ctx *fasthttp.RequestCtx) {
 		for i := range resp.Data {
 			resp.Data[i].ID = encodeStorageFileID(resp.Data[i].ID)
 		}
-		if resp.ExtraFields.ProviderResponseHeaders != nil {
-			forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
-		}
+		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
 	}
 	if streamLargeResponseIfActive(ctx, bifrostCtx) {
 		return
@@ -3592,9 +3588,7 @@ func (h *CompletionHandler) fileRetrieve(ctx *fasthttp.RequestCtx) {
 
 	if resp != nil {
 		resp.ID = encodeStorageFileID(resp.ID)
-		if resp.ExtraFields.ProviderResponseHeaders != nil {
-			forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
-		}
+		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
 	}
 	if streamLargeResponseIfActive(ctx, bifrostCtx) {
 		return
@@ -3646,9 +3640,7 @@ func (h *CompletionHandler) fileDelete(ctx *fasthttp.RequestCtx) {
 
 	if resp != nil {
 		resp.ID = encodeStorageFileID(resp.ID)
-		if resp.ExtraFields.ProviderResponseHeaders != nil {
-			forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
-		}
+		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
 	}
 	if streamLargeResponseIfActive(ctx, bifrostCtx) {
 		return
@@ -3760,8 +3752,8 @@ func (h *CompletionHandler) containerCreate(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if resp != nil && resp.ExtraFields.ProviderResponseHeaders != nil {
-		forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
+	if resp != nil {
+		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
 	}
 	if streamLargeResponseIfActive(ctx, bifrostCtx) {
 		return
@@ -3819,8 +3811,8 @@ func (h *CompletionHandler) containerList(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if resp != nil && resp.ExtraFields.ProviderResponseHeaders != nil {
-		forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
+	if resp != nil {
+		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
 	}
 	if streamLargeResponseIfActive(ctx, bifrostCtx) {
 		return
@@ -3866,8 +3858,8 @@ func (h *CompletionHandler) containerRetrieve(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if resp != nil && resp.ExtraFields.ProviderResponseHeaders != nil {
-		forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
+	if resp != nil {
+		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
 	}
 	if streamLargeResponseIfActive(ctx, bifrostCtx) {
 		return
@@ -3913,8 +3905,8 @@ func (h *CompletionHandler) containerDelete(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if resp != nil && resp.ExtraFields.ProviderResponseHeaders != nil {
-		forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
+	if resp != nil {
+		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
 	}
 	if streamLargeResponseIfActive(ctx, bifrostCtx) {
 		return
@@ -4010,8 +4002,8 @@ func (h *CompletionHandler) containerFileCreate(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if resp != nil && resp.ExtraFields.ProviderResponseHeaders != nil {
-		forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
+	if resp != nil {
+		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
 	}
 	if streamLargeResponseIfActive(ctx, bifrostCtx) {
 		return
@@ -4070,8 +4062,8 @@ func (h *CompletionHandler) containerFileList(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if resp != nil && resp.ExtraFields.ProviderResponseHeaders != nil {
-		forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
+	if resp != nil {
+		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
 	}
 	if streamLargeResponseIfActive(ctx, bifrostCtx) {
 		return
@@ -4125,8 +4117,8 @@ func (h *CompletionHandler) containerFileRetrieve(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if resp != nil && resp.ExtraFields.ProviderResponseHeaders != nil {
-		forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
+	if resp != nil {
+		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
 	}
 	if streamLargeResponseIfActive(ctx, bifrostCtx) {
 		return
@@ -4235,8 +4227,8 @@ func (h *CompletionHandler) containerFileDelete(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if resp != nil && resp.ExtraFields.ProviderResponseHeaders != nil {
-		forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
+	if resp != nil {
+		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
 	}
 	if streamLargeResponseIfActive(ctx, bifrostCtx) {
 		return
