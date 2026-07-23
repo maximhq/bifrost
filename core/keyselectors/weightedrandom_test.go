@@ -43,6 +43,9 @@ func TestWeightedRandomFractionalWeightIsSelectable(t *testing.T) {
 	if share > 0.025 {
 		t.Errorf("canary share %.4f is far above the configured 0.005", share)
 	}
+	if share < 0.001 {
+		t.Errorf("canary share %.4f is far below the configured 0.005", share)
+	}
 }
 
 // TestWeightedRandomAllFractionalWeightsKeepProportions covers the silent
@@ -93,8 +96,29 @@ func TestWeightedRandomZeroWeightsFallBackToUniform(t *testing.T) {
 	const draws = 10000
 	counts := selectionCounts(t, keys, draws)
 
-	if counts["a"] == 0 || counts["b"] == 0 {
-		t.Errorf("uniform fallback should select every key, got %v", counts)
+	shareA := float64(counts["a"]) / draws
+	if math.Abs(shareA-0.5) > 0.05 {
+		t.Errorf("uniform fallback share for key a is %.4f, want ~0.50", shareA)
+	}
+}
+
+// TestWeightedRandomExtremeWeightsDoNotOverflow guards the normalization: two
+// near-MaxFloat64 weights would overflow a naive running sum to +Inf, after
+// which no draw satisfies the cumulative comparison and every selection falls
+// back to the first key.
+func TestWeightedRandomExtremeWeightsDoNotOverflow(t *testing.T) {
+	keys := []schemas.Key{
+		{ID: "half", Weight: math.MaxFloat64 / 2},
+		{ID: "full", Weight: math.MaxFloat64},
+	}
+
+	const draws = 100000
+	counts := selectionCounts(t, keys, draws)
+
+	// Configured proportions are 1:2, so "full" should get ~2/3 of traffic.
+	share := float64(counts["full"]) / draws
+	if math.Abs(share-2.0/3.0) > 0.05 {
+		t.Errorf("full share %.4f, want ~0.67", share)
 	}
 }
 
