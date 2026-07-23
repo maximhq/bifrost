@@ -1,11 +1,12 @@
 package azure
 
 import (
-	"encoding/json"
+	"bytes"
 	"strings"
 
-	"github.com/bytedance/sonic"
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 // getAzureScopes returns the configured scopes or the default scope if none are valid.
@@ -106,24 +107,16 @@ func rewriteDeploymentSegment(path, alias, modelID string) string {
 // untouched. ponytail: top-level JSON only — multipart passthrough routes
 // carry the deployment in the path, not the body.
 func rewriteBodyModel(body []byte, alias, modelID string) []byte {
-	if len(body) == 0 {
+	// JSON objects only: gjson/sjson do not validate, and a multipart body
+	// carrying a "model" form field would otherwise get corrupted.
+	if trimmed := bytes.TrimLeft(body, " \t\r\n"); len(trimmed) == 0 || trimmed[0] != '{' {
 		return body
 	}
-	var m map[string]json.RawMessage
-	if err := sonic.Unmarshal(body, &m); err != nil {
+	current := gjson.GetBytes(body, "model")
+	if current.Type != gjson.String || !strings.EqualFold(current.Str, alias) {
 		return body
 	}
-	var current string
-	raw, ok := m["model"]
-	if !ok || sonic.Unmarshal(raw, &current) != nil || !strings.EqualFold(current, alias) {
-		return body
-	}
-	quoted, err := sonic.Marshal(modelID)
-	if err != nil {
-		return body
-	}
-	m["model"] = quoted
-	out, err := sonic.Marshal(m)
+	out, err := sjson.SetBytes(body, "model", modelID)
 	if err != nil {
 		return body
 	}
