@@ -1929,9 +1929,8 @@ func TestMergeGovernanceConfig_SyncsComplexityAnalyzerConfig(t *testing.T) {
 	}
 	fileConfig := &configstore.ComplexityAnalyzerConfig{
 		TierBoundaries: configstore.ComplexityTierBoundaries{
-			SimpleMedium:     0.11,
-			MediumComplex:    0.33,
-			ComplexReasoning: 0.77,
+			SimpleMedium:  0.11,
+			MediumComplex: 0.33,
 		},
 		Keywords: configstore.ComplexityEditableKeywordConfig{
 			CodeKeywords:      []string{" Function ", "api", "API", "file-code-seed"},
@@ -1951,7 +1950,8 @@ func TestMergeGovernanceConfig_SyncsComplexityAnalyzerConfig(t *testing.T) {
 	stored, err := store.GetComplexityAnalyzerConfig(context.Background())
 	require.NoError(t, err)
 	require.NotNil(t, stored)
-	require.Equal(t, 0.77, stored.TierBoundaries.ComplexReasoning)
+	require.Equal(t, 0.11, stored.TierBoundaries.SimpleMedium)
+	require.Equal(t, 0.33, stored.TierBoundaries.MediumComplex)
 	defaults := complexity.DefaultAnalyzerConfig()
 	require.Equal(t, expectedMergedComplexityKeywords(defaults.Keywords.CodeKeywords, fileConfig.Keywords.CodeKeywords), stored.Keywords.CodeKeywords)
 	require.Equal(t, expectedMergedComplexityKeywords(defaults.Keywords.ReasoningKeywords, fileConfig.Keywords.ReasoningKeywords), stored.Keywords.ReasoningKeywords)
@@ -2213,9 +2213,8 @@ func TestMergeGovernanceConfig_SourceOfTruthConfigJSONMissingComplexityLeavesDBC
 func testRuntimeComplexityAnalyzerConfig() *configstore.ComplexityAnalyzerConfig {
 	return &configstore.ComplexityAnalyzerConfig{
 		TierBoundaries: configstore.ComplexityTierBoundaries{
-			SimpleMedium:     0.10,
-			MediumComplex:    0.30,
-			ComplexReasoning: 0.70,
+			SimpleMedium:  0.10,
+			MediumComplex: 0.30,
 		},
 		Keywords: configstore.ComplexityEditableKeywordConfig{
 			CodeKeywords:      []string{"runtime-code"},
@@ -2229,9 +2228,8 @@ func testRuntimeComplexityAnalyzerConfig() *configstore.ComplexityAnalyzerConfig
 func testFileComplexityAnalyzerConfig() *configstore.ComplexityAnalyzerConfig {
 	return &configstore.ComplexityAnalyzerConfig{
 		TierBoundaries: configstore.ComplexityTierBoundaries{
-			SimpleMedium:     0.20,
-			MediumComplex:    0.40,
-			ComplexReasoning: 0.80,
+			SimpleMedium:  0.20,
+			MediumComplex: 0.40,
 		},
 		Keywords: configstore.ComplexityEditableKeywordConfig{
 			CodeKeywords:      []string{"file-code"},
@@ -2468,6 +2466,24 @@ func TestLoadConfig_AuthCodeTTLAboveMaxFailsBoot(t *testing.T) {
 	}
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "auth_code_ttl")
+}
+
+// TestConfigDataUnmarshalJSONAcceptsLegacyComplexReasoningBoundary verifies the
+// retired boundary is detected for a warning but omitted from typed runtime data.
+func TestConfigDataUnmarshalJSONAcceptsLegacyComplexReasoningBoundary(t *testing.T) {
+	raw := []byte(`{"governance":{"complexity_analyzer_config":{"tier_boundaries":{"simple_medium":0.2,"medium_complex":0.4,"complex_reasoning":0.6},"keywords":{"code_keywords":["api"],"reasoning_keywords":["tradeoffs"],"technical_keywords":["latency"],"simple_keywords":["hello"]}}}}`)
+
+	var configData ConfigData
+	require.NoError(t, json.Unmarshal(raw, &configData))
+	require.True(t, configData.hasLegacyComplexReasoningBoundary)
+	require.NotNil(t, configData.Governance)
+	require.NotNil(t, configData.Governance.ComplexityAnalyzerConfig)
+	require.Equal(t, 0.2, configData.Governance.ComplexityAnalyzerConfig.TierBoundaries.SimpleMedium)
+	require.Equal(t, 0.4, configData.Governance.ComplexityAnalyzerConfig.TierBoundaries.MediumComplex)
+
+	typedConfig, err := json.Marshal(configData.Governance.ComplexityAnalyzerConfig)
+	require.NoError(t, err)
+	require.NotContains(t, string(typedConfig), "complex_reasoning")
 }
 
 // TestConfigDataSourceOfTruthDefaultsToSplit verifies omitted source_of_truth uses split mode.
@@ -18047,6 +18063,9 @@ var excludedSchemaFields = map[string]map[string]bool{
 	},
 	"governance.virtual_keys.mcp_configs": {
 		"mcp_client_name": true, // Config-file format; captured via custom UnmarshalJSON and resolved to mcp_client_id at startup
+	},
+	"governance.complexity_analyzer_config.tier_boundaries": {
+		"complex_reasoning": true, // Deprecated config.json/Helm compatibility field; ignored by the runtime.
 	},
 	"mcp": {
 		"tool_groups": true, // Enterprise governance feature; not in OSS MCPConfig

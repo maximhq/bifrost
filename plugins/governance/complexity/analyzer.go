@@ -91,6 +91,13 @@ func (a *ComplexityAnalyzer) Analyze(input ComplexityInput) *ComplexityResult {
 		if isContinuation {
 			lastWeight = referentialLastMessageBlendWeight
 			contextWeight = referentialConversationBlendWeight
+			if !hasPositiveSignal {
+				// The follow-up adds no content of its own ("why?", "fix it"),
+				// so blending against it would only dilute the conversation
+				// score. The conversation is the request; inherit its score.
+				lastWeight = 0.0
+				contextWeight = 1.0
+			}
 		}
 
 		weightedBlend := (lastMsgScore * lastWeight) + (convScore * contextWeight)
@@ -101,13 +108,15 @@ func (a *ComplexityAnalyzer) Analyze(input ComplexityInput) *ComplexityResult {
 
 	finalScore := clamp(blended, 0.0, 1.0)
 
-	// Tier classification with reasoning override.
+	// Tier classification with reasoning override: strong reasoning signals
+	// promote the request to COMPLEX even when the blended score falls below
+	// the medium/complex boundary.
 	strongCount := lastSignals.strongReasoningCount
 	tier := a.classifyTier(finalScore)
 	if strongCount >= 2 {
-		tier = TierReasoning
+		tier = TierComplex
 	} else if strongCount >= 1 && (userCodeScore > 0.5 || userTechnicalScore > 0.5) {
-		tier = TierReasoning
+		tier = TierComplex
 	}
 
 	return &ComplexityResult{
@@ -156,11 +165,23 @@ func hasPositiveSignal(signals textSignalCounts) bool {
 	return signals.codeCount > 0 || signals.reasoningCount > 0 || signals.technicalCount > 0
 }
 
+// isContinuationFollowup reports whether the last message should lean on
+// conversation context. Two triggers, both gated on the conversation actually
+// carrying meaningful technical context (convScore): an explicit continuation
+// phrase, or a message short enough that brevity itself is the signal ("yes
+// but make it faster"). The short-message path defers to simple-keyword
+// matches so conversation closers like "thanks!" keep classifying as SIMPLE
+// instead of inheriting the conversation's complexity.
 func isContinuationFollowup(signals textSignalCounts, convScore float64) bool {
 	if convScore < referentialMinContextScore {
 		return false
 	}
-	return signals.continuationPhraseCount > 0
+	if signals.continuationPhraseCount > 0 {
+		return true
+	}
+	return signals.wordCount > 0 &&
+		signals.wordCount <= referentialShortMessageMaxWords &&
+		signals.simpleCount == 0
 }
 
 func (a *ComplexityAnalyzer) classifyTier(score float64) string {
@@ -169,9 +190,7 @@ func (a *ComplexityAnalyzer) classifyTier(score float64) string {
 		return TierSimple
 	case score < a.tierBoundaries.MediumComplex:
 		return TierMedium
-	case score < a.tierBoundaries.ComplexReasoning:
-		return TierComplex
 	default:
-		return TierReasoning
+		return TierComplex
 	}
 }

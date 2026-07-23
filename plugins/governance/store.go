@@ -4615,6 +4615,14 @@ func (gs *LocalGovernanceStore) GetRoutingProgram(ctx context.Context, rule *con
 		expr = "true"
 	}
 
+	// Deprecation shim: rules referencing a removed complexity tier are not
+	// migrated in the DB or config.json; alias the tier in-memory at compile
+	// time so they keep matching, and warn so the rule gets updated.
+	if rewritten, changed := NormalizeDeprecatedComplexityTierLiterals(expr); changed {
+		gs.logger.Warn("routing rule %s (%s): %s", rule.ID, rule.Name, ReasoningTierDeprecationWarning)
+		expr = rewritten
+	}
+
 	// Normalize header and param keys to lowercase so CEL expressions match normalized map keys
 	expr = routing.NormalizeMapKeysInCEL(expr)
 
