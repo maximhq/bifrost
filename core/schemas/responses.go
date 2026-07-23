@@ -61,7 +61,9 @@ type BifrostResponsesRetrieveRequest struct {
 	Include            []string      `json:"include,omitempty"`
 	StartingAfter      *int          `json:"starting_after,omitempty"`
 	IncludeObfuscation *bool         `json:"include_obfuscation,omitempty"`
-	RawRequestBody     []byte        `json:"-"`
+	// Stream replays the stored response as an SSE stream (OpenAI GET /v1/responses/{id}?stream=true).
+	Stream         *bool  `json:"stream,omitempty"`
+	RawRequestBody []byte `json:"-"`
 }
 
 // GetRawRequestBody implements raw body passthrough when enabled on context.
@@ -70,6 +72,11 @@ func (r *BifrostResponsesRetrieveRequest) GetRawRequestBody() []byte {
 		return nil
 	}
 	return r.RawRequestBody
+}
+
+// IsStreamingRequested reports whether the caller asked for a streamed retrieve.
+func (r *BifrostResponsesRetrieveRequest) IsStreamingRequested() bool {
+	return r != nil && r.Stream != nil && *r.Stream
 }
 
 // BifrostResponsesDeleteRequest deletes a stored response (OpenAI DELETE /v1/responses/{id}).

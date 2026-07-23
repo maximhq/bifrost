@@ -1687,12 +1687,26 @@ func (h *CompletionHandler) responsesRetrieve(ctx *fasthttp.RequestCtx) {
 		}
 		bifrostReq.IncludeObfuscation = &b
 	}
+	streaming := false
+	if raw := ctx.QueryArgs().Peek("stream"); len(raw) > 0 {
+		b, err := strconv.ParseBool(string(raw))
+		if err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, "stream must be a boolean")
+			return
+		}
+		bifrostReq.Stream = &b
+		streaming = b
+	}
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.config)
-	defer cancel()
 	if bifrostCtx == nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
+	if streaming {
+		h.handleStreamingResponsesRetrieve(ctx, bifrostReq, bifrostCtx, cancel)
+		return
+	}
+	defer cancel()
 	resp, bifrostErr := h.client.ResponsesRetrieveRequest(bifrostCtx, bifrostReq)
 	if bifrostErr != nil {
 		forwardProviderHeadersFromContext(ctx, bifrostCtx)
@@ -1889,6 +1903,16 @@ func (h *CompletionHandler) handleStreamingResponses(ctx *fasthttp.RequestCtx, r
 	h.handleStreamingResponse(ctx, bifrostCtx, schemas.ResponsesStreamRequest, getStream, cancel)
 }
 
+// handleStreamingResponsesRetrieve handles streaming retrieval of a stored response (GET
+// /v1/responses/{id}?stream=true) using Server-Sent Events (SSE).
+func (h *CompletionHandler) handleStreamingResponsesRetrieve(ctx *fasthttp.RequestCtx, req *schemas.BifrostResponsesRetrieveRequest, bifrostCtx *schemas.BifrostContext, cancel context.CancelFunc) {
+	getStream := func() (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+		return h.client.ResponsesRetrieveStreamRequest(bifrostCtx, req)
+	}
+
+	h.handleStreamingResponse(ctx, bifrostCtx, schemas.ResponsesRetrieveStreamRequest, getStream, cancel)
+}
+
 // handleStreamingSpeech handles streaming speech requests using Server-Sent Events (SSE)
 func (h *CompletionHandler) handleStreamingSpeech(ctx *fasthttp.RequestCtx, req *schemas.BifrostSpeechRequest, bifrostCtx *schemas.BifrostContext, cancel context.CancelFunc) {
 	// Use the cancellable context from ConvertToBifrostContext
@@ -2045,7 +2069,7 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 			includeEventType = false
 			if chunk.BifrostResponsesStreamResponse != nil ||
 				chunk.BifrostImageGenerationStreamResponse != nil ||
-				(chunk.BifrostError != nil && (chunk.BifrostError.ExtraFields.RequestType == schemas.ResponsesStreamRequest || chunk.BifrostError.ExtraFields.RequestType == schemas.ImageGenerationStreamRequest || chunk.BifrostError.ExtraFields.RequestType == schemas.ImageEditStreamRequest)) {
+				(chunk.BifrostError != nil && (chunk.BifrostError.ExtraFields.RequestType == schemas.ResponsesStreamRequest || chunk.BifrostError.ExtraFields.RequestType == schemas.ResponsesRetrieveStreamRequest || chunk.BifrostError.ExtraFields.RequestType == schemas.ImageGenerationStreamRequest || chunk.BifrostError.ExtraFields.RequestType == schemas.ImageEditStreamRequest)) {
 				includeEventType = true
 			}
 
