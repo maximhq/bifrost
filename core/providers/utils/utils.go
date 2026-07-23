@@ -3398,6 +3398,9 @@ func completeDeferredSpan(ctx *schemas.BifrostContext, result *schemas.BifrostRe
 	} else if result != nil {
 		// Fall back to final chunk if no accumulated data (shouldn't happen normally)
 		tracer.PopulateLLMResponseAttributes(ctx, handle, result, err)
+	} else if err != nil {
+		// Stream failed before the first chunk — still stamp error attributes.
+		tracer.PopulateLLMResponseAttributes(ctx, handle, nil, err)
 	}
 
 	// Finalize aggregated post-hook spans before ending the LLM span
