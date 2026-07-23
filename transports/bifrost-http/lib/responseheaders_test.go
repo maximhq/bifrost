@@ -174,3 +174,76 @@ func TestApplyBifrostResponseHeaders(t *testing.T) {
 		assert.Empty(t, string(ctx.Response.Header.Peek(HeaderBifrostRoutingInfoServerSideFallbackModel)))
 	})
 }
+
+// TestApplyBifrostStreamResponseHeaders covers the streaming variant: identity
+// comes from the RoutingInfo snapshot core stashes in the context at stream
+// setup, since no chunk (and hence no ExtraFields) exists at header-write time.
+func TestApplyBifrostStreamResponseHeaders(t *testing.T) {
+	newBifrostCtx := func() *schemas.BifrostContext {
+		return schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	}
+
+	t.Run("context snapshot emits identity and derived deprecated headers", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		bifrostCtx := newBifrostCtx()
+
+		bifrostCtx.SetValue(schemas.BifrostContextKeyRoutingInfo, schemas.RoutingInfo{
+			Provider: schemas.Bedrock,
+			Model:    "claude-sonnet-4-6",
+			Key:      "prod-key-1",
+			ResolvedKeyAlias: &schemas.ResolvedKeyAlias{
+				ModelID: "us.anthropic.claude-sonnet-4-6",
+			},
+		})
+
+		ApplyBifrostStreamResponseHeaders(ctx, bifrostCtx, schemas.ChatCompletionStreamRequest)
+
+		assert.Equal(t, string(schemas.ChatCompletionStreamRequest), string(ctx.Response.Header.Peek(HeaderBifrostRequestType)))
+		assert.Equal(t, "bedrock", string(ctx.Response.Header.Peek(HeaderBifrostRoutingInfoProvider)))
+		assert.Equal(t, "claude-sonnet-4-6", string(ctx.Response.Header.Peek(HeaderBifrostRoutingInfoModel)))
+		assert.Equal(t, "prod-key-1", string(ctx.Response.Header.Peek(HeaderBifrostRoutingInfoKey)))
+		assert.Equal(t, "us.anthropic.claude-sonnet-4-6", string(ctx.Response.Header.Peek(HeaderBifrostRoutingInfoAliasModelID)))
+		// Deprecated triplet derived from RoutingInfo via the shared sync rules.
+		assert.Equal(t, "bedrock", string(ctx.Response.Header.Peek(HeaderBifrostProvider)))
+		assert.Equal(t, "claude-sonnet-4-6", string(ctx.Response.Header.Peek(HeaderBifrostOriginalModel)))
+		assert.Equal(t, "us.anthropic.claude-sonnet-4-6", string(ctx.Response.Header.Peek(HeaderBifrostResolvedModel)))
+	})
+
+	t.Run("fallback-layered snapshot emits fallback headers", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		bifrostCtx := newBifrostCtx()
+
+		primaryProvider := schemas.Anthropic
+		primaryModel := "claude-sonnet-4-6"
+		bifrostCtx.SetValue(schemas.BifrostContextKeyRoutingInfo, schemas.RoutingInfo{
+			Provider:        schemas.Bedrock,
+			Model:           "us.anthropic.claude-sonnet-4-6",
+			Key:             "bedrock-key",
+			IsFallback:      true,
+			PrimaryProvider: &primaryProvider,
+			PrimaryModel:    &primaryModel,
+		})
+		bifrostCtx.SetValue(schemas.BifrostContextKeyFallbackIndex, 1)
+
+		ApplyBifrostStreamResponseHeaders(ctx, bifrostCtx, schemas.ChatCompletionStreamRequest)
+
+		assert.Equal(t, "true", string(ctx.Response.Header.Peek(HeaderBifrostRoutingInfoIsFallback)))
+		assert.Equal(t, "anthropic", string(ctx.Response.Header.Peek(HeaderBifrostRoutingInfoPrimaryProvider)))
+		assert.Equal(t, "claude-sonnet-4-6", string(ctx.Response.Header.Peek(HeaderBifrostRoutingInfoPrimaryModel)))
+		assert.Equal(t, "1", string(ctx.Response.Header.Peek(HeaderBifrostFallbackIndex)))
+		// Deprecated original-model derives from the primary on fallback.
+		assert.Equal(t, "claude-sonnet-4-6", string(ctx.Response.Header.Peek(HeaderBifrostOriginalModel)))
+		assert.Equal(t, "us.anthropic.claude-sonnet-4-6", string(ctx.Response.Header.Peek(HeaderBifrostResolvedModel)))
+	})
+
+	t.Run("missing snapshot emits only request type", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		bifrostCtx := newBifrostCtx()
+
+		ApplyBifrostStreamResponseHeaders(ctx, bifrostCtx, schemas.ResponsesStreamRequest)
+
+		assert.Equal(t, string(schemas.ResponsesStreamRequest), string(ctx.Response.Header.Peek(HeaderBifrostRequestType)))
+		assert.Empty(t, string(ctx.Response.Header.Peek(HeaderBifrostRoutingInfoProvider)))
+		assert.Empty(t, string(ctx.Response.Header.Peek(HeaderBifrostProvider)))
+	})
+}
