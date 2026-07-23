@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
@@ -259,6 +260,11 @@ const (
 	HeaderBifrostResolvedModel = "x-bifrost-resolved-model"
 	HeaderBifrostFallbackIndex = "x-bifrost-fallback-index"
 	HeaderBifrostRequestType   = "x-bifrost-request-type"
+	// Cumulative milliseconds this request spent blocked on upstream sockets,
+	// summed across every attempt and fallback. Subtract from the caller's own
+	// elapsed time to get what Bifrost cost. Distinct from the per-attempt
+	// latency in the response body's extra_fields, which only holds the last try.
+	HeaderBifrostUpstreamLatency = "x-bifrost-upstream-latency-ms"
 )
 
 // applyBifrostResponseHeaders writes both the upstream provider response
@@ -290,6 +296,10 @@ func applyBifrostResponseHeaders(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.B
 	if bifrostCtx != nil {
 		if idx, ok := bifrostCtx.Value(schemas.BifrostContextKeyFallbackIndex).(int); ok && idx > 0 {
 			ctx.Response.Header.Set(HeaderBifrostFallbackIndex, strconv.Itoa(idx))
+		}
+		if upstream, ok := schemas.GetUpstreamLatency(bifrostCtx); ok {
+			ctx.Response.Header.Set(HeaderBifrostUpstreamLatency,
+				strconv.FormatFloat(float64(upstream)/float64(time.Millisecond), 'f', 3, 64))
 		}
 	}
 }
