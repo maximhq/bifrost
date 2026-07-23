@@ -332,7 +332,8 @@
                       "integrations/guardrails/crowdstrike-aidr",
                       "integrations/guardrails/grayswan",
                       "integrations/guardrails/patronus-ai",
-                      "integrations/guardrails/lakera"
+                      "integrations/guardrails/lakera",
+                      "integrations/guardrails/repello-argus"
                     ]
                   }
                 ]
@@ -553,7 +554,8 @@
               "integrations/guardrails/crowdstrike-aidr",
               "integrations/guardrails/grayswan",
               "integrations/guardrails/patronus-ai",
-              "integrations/guardrails/lakera"
+              "integrations/guardrails/lakera",
+              "integrations/guardrails/repello-argus"
             ]
           },
           {

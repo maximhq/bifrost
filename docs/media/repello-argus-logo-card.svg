@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" role="img" aria-label="Repello Argus">
+  <style>.bg { fill: #ffffff; } @media (prefers-color-scheme: dark) { .bg { fill: #090d0d; } }</style>
+  <rect class="bg" width="200" height="200"/>
+  <g fill="#07C983">
+    <path d="m32 61 55-11 37 31-52 13v60l-40-32z"/>
+    <path d="m134 51 40 31v62l-55 11-39-32 54-12z"/>
+  </g>
+</svg>
