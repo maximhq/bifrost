@@ -20,6 +20,7 @@ Virtual Keys are the primary governance entity in Bifrost. Users and application
 **Key Features:**
 - **Access Control** - Model and provider filtering
 - **Cost Management** - Independent budgets (checked along with team/customer budgets if attached)
+- **Budget Overrides** - Temporarily add spending capacity without changing the base budget
 - **Rate Limiting** - Token and request-based throttling (VK-level only)
 - **Key Restrictions** - Limit VK to specific provider API keys (if configured, VK can only use those keys)
 - **Exclusive Attachment** - Belongs to either one team OR one customer OR neither (mutually exclusive)
@@ -489,6 +490,37 @@ curl -X DELETE http://localhost:8080/api/governance/customers/{customer_id}
 
 
 ## Usage
+
+### Budget Overrides
+
+Budget overrides add temporary spending capacity to an existing virtual-key budget without changing its base limit, current usage, or reset schedule. While an override is active, Bifrost calculates the effective limit as:
+
+```text
+Effective limit = Base budget + Override amount
+```
+
+For example, adding a `$100` override to a `$1,000` budget raises its effective limit to `$1,100`.
+
+1. Go to **Virtual Keys**, open a virtual key, and scroll to **Budget Information**.
+2. Click **Add override** on the budget you want to increase.
+
+![Add a virtual-key budget override](../../media/vk-budget-override-add-override.png)
+
+3. Enter the **Additional budget**, then choose a duration:
+   - **For a number of reset cycles**: Enter one or more cycles. The current cycle counts as the first cycle, and the dialog shows the date and time until which the override is expected to remain valid.
+   - **Until removed**: Keep the override active across resets until it is removed manually.
+
+![Configure the budget override amount and duration](../../media/vk-budget-override-add-override-dialog.png)
+
+4. Click **Add override**. The budget card displays the effective limit, its base and override amounts, and either the remaining reset cycles or **until removed**.
+
+![Virtual-key budget with an active override](../../media/vk-override-budget-overriden-budget-view.png)
+
+To change or remove an active override, click **Edit override** on the budget card. For programmatic configuration, see the **Virtual Keys** section of the [API Reference](/api-reference).
+
+<Note>
+Overrides are available after a budget has been created. Budgets inherited from an enterprise [access profile](/enterprise/access-profiles) must be overridden from that access profile instead of from the virtual key.
+</Note>
 
 ### Making Virtual Keys Mandatory
 
