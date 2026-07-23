@@ -834,6 +834,19 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				return nil, errors.New("invalid responses retrieve request")
 			},
 			ResponsesResponseConverter: openAIResponsesWireConverter,
+			StreamConfig: &StreamConfig{
+				ResponsesStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesStreamResponse) (string, interface{}, error) {
+					if resp.ExtraFields.Provider == schemas.OpenAI {
+						if resp.ExtraFields.RawResponse != nil {
+							return string(resp.Type), resp.ExtraFields.RawResponse, nil
+						}
+					}
+					return string(resp.Type), resp, nil
+				},
+				ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+					return err
+				},
+			},
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return err
 			},
@@ -2490,6 +2503,13 @@ func extractResponsesLifecycleFromPath(_ lib.HandlerStore) PreRequestCallback {
 					return fmt.Errorf("include_obfuscation must be a boolean")
 				}
 				r.IncludeObfuscation = &b
+			}
+			if raw := ctx.QueryArgs().Peek("stream"); len(raw) > 0 {
+				b, err := strconv.ParseBool(string(raw))
+				if err != nil {
+					return fmt.Errorf("stream must be a boolean")
+				}
+				r.Stream = &b
 			}
 		case *schemas.BifrostResponsesDeleteRequest:
 			r.ResponseID = idStr

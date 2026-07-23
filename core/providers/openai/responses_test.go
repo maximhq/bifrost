@@ -2,6 +2,7 @@ package openai
 
 import (
 	"encoding/json"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -2296,4 +2297,59 @@ func TestToOpenAIResponsesRequest_FallbackBlockDropped(t *testing.T) {
 			t.Fatalf("expected the fallback-only message to be skipped, got %#v", result.Input.OpenAIResponsesRequestInputArray)
 		}
 	})
+}
+
+func TestBuildResponsesRetrieveQuery_Stream(t *testing.T) {
+	t.Run("emits stream=true and other params when set", func(t *testing.T) {
+		req := &schemas.BifrostResponsesRetrieveRequest{
+			ResponseID:         "resp_123",
+			Include:            []string{"reasoning.encrypted_content"},
+			StartingAfter:      schemas.Ptr(7),
+			IncludeObfuscation: schemas.Ptr(false),
+			Stream:             schemas.Ptr(true),
+		}
+		parsed, err := url.ParseQuery(buildResponsesRetrieveQuery(req))
+		if err != nil {
+			t.Fatalf("query did not parse: %v", err)
+		}
+		if got := parsed.Get("stream"); got != "true" {
+			t.Fatalf("stream = %q, want \"true\"", got)
+		}
+		if got := parsed.Get("starting_after"); got != "7" {
+			t.Fatalf("starting_after = %q, want \"7\"", got)
+		}
+		if got := parsed.Get("include_obfuscation"); got != "false" {
+			t.Fatalf("include_obfuscation = %q, want \"false\"", got)
+		}
+		if got := parsed.Get("include"); got != "reasoning.encrypted_content" {
+			t.Fatalf("include = %q, want \"reasoning.encrypted_content\"", got)
+		}
+	})
+
+	t.Run("omits stream when unset (unary retrieve)", func(t *testing.T) {
+		req := &schemas.BifrostResponsesRetrieveRequest{ResponseID: "resp_123"}
+		if strings.Contains(buildResponsesRetrieveQuery(req), "stream") {
+			t.Fatalf("unary retrieve query must not contain stream: %q", buildResponsesRetrieveQuery(req))
+		}
+	})
+}
+
+func TestBifrostResponsesRetrieveRequest_IsStreamingRequested(t *testing.T) {
+	cases := []struct {
+		name string
+		req  *schemas.BifrostResponsesRetrieveRequest
+		want bool
+	}{
+		{"nil request", nil, false},
+		{"stream unset", &schemas.BifrostResponsesRetrieveRequest{}, false},
+		{"stream false", &schemas.BifrostResponsesRetrieveRequest{Stream: schemas.Ptr(false)}, false},
+		{"stream true", &schemas.BifrostResponsesRetrieveRequest{Stream: schemas.Ptr(true)}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.req.IsStreamingRequested(); got != tc.want {
+				t.Fatalf("IsStreamingRequested() = %v, want %v", got, tc.want)
+			}
+		})
+	}
 }

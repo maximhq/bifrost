@@ -2576,6 +2576,9 @@ func (g *GenericRouter) handleStreamingRequest(ctx *fasthttp.RequestCtx, config 
 	} else if bifrostReq.ResponsesRequest != nil {
 		requestType = schemas.ResponsesStreamRequest
 		stream, bifrostErr = g.client.ResponsesStreamRequest(bifrostCtx, bifrostReq.ResponsesRequest)
+	} else if bifrostReq.ResponsesRetrieveRequest != nil {
+		requestType = schemas.ResponsesRetrieveStreamRequest
+		stream, bifrostErr = g.client.ResponsesRetrieveStreamRequest(bifrostCtx, bifrostReq.ResponsesRetrieveRequest)
 	} else if bifrostReq.SpeechRequest != nil {
 		requestType = schemas.SpeechStreamRequest
 		stream, bifrostErr = g.client.SpeechStreamRequest(bifrostCtx, bifrostReq.SpeechRequest)
