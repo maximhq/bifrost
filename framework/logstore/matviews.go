@@ -62,11 +62,33 @@ SELECT
     COALESCE(COUNT(*) FILTER (WHERE latency > 0), 0) AS throughput_request_count,
     COALESCE(SUM(total_tokens), 0) AS total_tokens,
     COALESCE(SUM(cached_read_tokens), 0) AS total_cached_read_tokens,
-    COALESCE(SUM(cost), 0) AS total_cost
+    COALESCE(SUM(cost), 0) AS total_cost,
+    -- Cache-hit measures precomputed from cache_debug so /api/logs/stats can
+    -- serve them from the hybrid instead of a full-window raw scan. Safe to
+    -- materialize: cache_debug is written with the terminal status and never
+    -- mutated afterwards. cache_debug_count exists to preserve the raw path's
+    -- nil contract (see getStatsFromMatView): it distinguishes "no rows had
+    -- valid cache_debug at all" (fields omitted) from "cache rows exist but
+    -- none were direct/semantic" (explicit zeros).
+    SUM(CASE WHEN ` + cacheDebugJSONGuard + `
+             AND ` + cacheDebugHitTypeExpr + ` = 'direct' THEN 1 ELSE 0 END) AS direct_cache_hits,
+    SUM(CASE WHEN ` + cacheDebugJSONGuard + `
+             AND ` + cacheDebugHitTypeExpr + ` = 'semantic' THEN 1 ELSE 0 END) AS semantic_cache_hits,
+    COUNT(*) FILTER (WHERE ` + cacheDebugJSONGuard + `) AS cache_debug_count
 FROM logs
 WHERE status IN ('success', 'error', 'cancelled')
 GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14
 `
+
+// cacheDebugJSONGuard matches rows whose cache_debug column holds a loose
+// JSON object. Shared by the matview DDL, the hybrid boundary aggregate, and
+// aggregateCacheHits' postgres branch so every classifier selects the same
+// population.
+const cacheDebugJSONGuard = `cache_debug IS NOT NULL AND cache_debug <> '' AND cache_debug ~ '^\s*\{.*\}\s*$'`
+
+// cacheDebugHitTypeExpr extracts the hit_type value from the cache_debug
+// JSON. POSIX regex only, so it is valid inside a matview definition.
+const cacheDebugHitTypeExpr = `substring(cache_debug from '"hit_type"[[:space:]]*:[[:space:]]*"([^"]+)"')`
 
 // mvLogsHourlyUniqueIdx is required for REFRESH MATERIALIZED VIEW CONCURRENTLY.
 // CONCURRENTLY avoids the AccessExclusiveLock that the plain form would take
@@ -98,6 +120,9 @@ var mvLogsHourlyRequiredColumns = []string{
 	"throughput_completion_tokens",
 	"throughput_latency_ms",
 	"throughput_request_count",
+	"direct_cache_hits",
+	"semantic_cache_hits",
+	"cache_debug_count",
 }
 
 // legacyMatViewNames are matviews from previous schema versions that no longer
@@ -1083,13 +1108,16 @@ func (s *RDBLogStore) countRawNonTerminal(ctx context.Context, filters SearchFil
 // the total latency over counted rows (SUM(avg_latency*count) on the matview,
 // SUM(latency) on raw), divided once at the end for the combined average.
 type matViewStatsAgg struct {
-	Count            int64   `gorm:"column:total_count"`
-	SuccessCount     int64   `gorm:"column:success_count"`
-	LatencySum       float64 `gorm:"column:latency_sum"`
-	TotalTokens      int64   `gorm:"column:total_tokens"`
-	PromptTokens     int64   `gorm:"column:prompt_tokens"`
-	CompletionTokens int64   `gorm:"column:completion_tokens"`
-	TotalCost        float64 `gorm:"column:total_cost"`
+	Count             int64   `gorm:"column:total_count"`
+	SuccessCount      int64   `gorm:"column:success_count"`
+	LatencySum        float64 `gorm:"column:latency_sum"`
+	TotalTokens       int64   `gorm:"column:total_tokens"`
+	PromptTokens      int64   `gorm:"column:prompt_tokens"`
+	CompletionTokens  int64   `gorm:"column:completion_tokens"`
+	TotalCost         float64 `gorm:"column:total_cost"`
+	DirectCacheHits   int64   `gorm:"column:direct_cache_hits"`
+	SemanticCacheHits int64   `gorm:"column:semantic_cache_hits"`
+	CacheDebugCount   int64   `gorm:"column:cache_debug_count"`
 }
 
 func (a *matViewStatsAgg) add(b matViewStatsAgg) {
@@ -1100,6 +1128,9 @@ func (a *matViewStatsAgg) add(b matViewStatsAgg) {
 	a.PromptTokens += b.PromptTokens
 	a.CompletionTokens += b.CompletionTokens
 	a.TotalCost += b.TotalCost
+	a.DirectCacheHits += b.DirectCacheHits
+	a.SemanticCacheHits += b.SemanticCacheHits
+	a.CacheDebugCount += b.CacheDebugCount
 }
 
 // matViewInteriorStatsAgg sums the additive stat fields over the hour buckets
@@ -1116,7 +1147,10 @@ func (s *RDBLogStore) matViewInteriorStatsAgg(ctx context.Context, dimFilters Se
 		COALESCE(SUM(total_tokens), 0) AS total_tokens,
 		COALESCE(SUM(total_prompt_tokens), 0) AS prompt_tokens,
 		COALESCE(SUM(total_completion_tokens), 0) AS completion_tokens,
-		COALESCE(SUM(total_cost), 0) AS total_cost
+		COALESCE(SUM(total_cost), 0) AS total_cost,
+		COALESCE(SUM(direct_cache_hits), 0) AS direct_cache_hits,
+		COALESCE(SUM(semantic_cache_hits), 0) AS semantic_cache_hits,
+		COALESCE(SUM(cache_debug_count), 0) AS cache_debug_count
 	`).Scan(&agg).Error
 	return agg, err
 }
@@ -1140,7 +1174,10 @@ func (s *RDBLogStore) rawTerminalStatsAgg(ctx context.Context, dimFilters Search
 		COALESCE(SUM(total_tokens), 0) AS total_tokens,
 		COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
 		COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
-		COALESCE(SUM(cost), 0) AS total_cost
+		COALESCE(SUM(cost), 0) AS total_cost,
+		COALESCE(SUM(CASE WHEN ` + cacheDebugJSONGuard + ` AND ` + cacheDebugHitTypeExpr + ` = 'direct' THEN 1 ELSE 0 END), 0) AS direct_cache_hits,
+		COALESCE(SUM(CASE WHEN ` + cacheDebugJSONGuard + ` AND ` + cacheDebugHitTypeExpr + ` = 'semantic' THEN 1 ELSE 0 END), 0) AS semantic_cache_hits,
+		COUNT(*) FILTER (WHERE ` + cacheDebugJSONGuard + `) AS cache_debug_count
 	`).Scan(&agg).Error
 	return agg, err
 }
@@ -1217,18 +1254,16 @@ func (s *RDBLogStore) getStatsFromMatView(ctx context.Context, filters SearchFil
 		CacheHitRateTotalRequests: &completed,
 	}
 
-	// cache_debug is not stored in the matview — query the raw logs table
-	// directly over the exact window. The denominator (the hybrid terminal
-	// count) is exact-range now, so no hour alignment is needed; this also
-	// avoids Go-side time.Truncate, which would misalign with the SQL
-	// date_trunc grid on servers with fractional-hour timezone offsets.
-	cacheBase := s.ScopedDB(ctx).Model(&Log{}).Where("status IN ?", terminalLogStatuses)
-	direct, semantic, err := s.aggregateCacheHits(ctx, cacheBase, filters)
-	if err != nil {
-		s.logger.Warn(fmt.Sprintf("logstore: failed to aggregate cache-hit stats, skipping: %s", err))
-	} else if direct != nil || semantic != nil {
-		stats.DirectCacheHits = direct
-		stats.SemanticCacheHits = semantic
+	// Cache hits come from the same hybrid aggregate (materialized in
+	// mv_logs_hourly for interior buckets, classified raw for the slivers) -
+	// no more full-window raw scan. CacheDebugCount reproduces
+	// aggregateCacheHits' nil contract: when no row in the window carried
+	// valid cache_debug JSON, the fields stay nil so they are omitted from
+	// the JSON payload, matching the raw path.
+	if agg.CacheDebugCount > 0 {
+		direct, semantic := agg.DirectCacheHits, agg.SemanticCacheHits
+		stats.DirectCacheHits = &direct
+		stats.SemanticCacheHits = &semantic
 	}
 
 	return stats, nil
@@ -2102,7 +2137,7 @@ func (s *RDBLogStore) getModelRankingsFromMatView(ctx context.Context, filters S
 		COALESCE(SUM(CASE WHEN status = 'success' THEN throughput_completion_tokens ELSE 0 END), 0) AS tp_completion_tokens,
 		COALESCE(SUM(CASE WHEN status = 'success' THEN throughput_latency_ms ELSE 0 END), 0) AS tp_latency_ms
 	`).Group("model, provider").
-		Order("total DESC").
+		Order("total DESC, model ASC, provider ASC").
 		Find(&results).Error; err != nil {
 		return nil, err
 	}
@@ -2214,7 +2249,7 @@ func (s *RDBLogStore) getUserRankingsFromMatView(ctx context.Context, filters Se
 		SUM(total_tokens) AS total_tkns,
 		SUM(total_cost) AS total_cost
 	`).Group("user_id").
-		Order("total DESC").
+		Order("total DESC, user_id ASC").
 		Find(&results).Error; err != nil {
 		return nil, err
 	}
@@ -2310,7 +2345,7 @@ func (s *RDBLogStore) getDimensionRankingsFromMatView(ctx context.Context, filte
 		SUM(total_tokens) AS total_tkns,
 		SUM(total_cost) AS total_cost
 	`, idCol)).Group(idCol).
-		Order("total DESC").
+		Order(fmt.Sprintf("total DESC, %s ASC", idCol)).
 		Find(&results).Error; err != nil {
 		return nil, err
 	}
