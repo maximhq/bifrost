@@ -217,6 +217,7 @@ func tableKeyFromSchemaKey(provider tables.TableProvider, key schemas.Key) (tabl
 		dbKey.BedrockRoleARN = key.BedrockKeyConfig.RoleARN
 		dbKey.BedrockExternalID = key.BedrockKeyConfig.ExternalID
 		dbKey.BedrockRoleSessionName = key.BedrockKeyConfig.RoleSessionName
+		dbKey.BedrockBatchRoleARN = key.BedrockKeyConfig.BatchRoleARN
 		if key.BedrockKeyConfig.BatchS3Config != nil {
 			data, err := sonic.Marshal(key.BedrockKeyConfig.BatchS3Config)
 			if err != nil {
@@ -760,6 +761,7 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 				dbKey.BedrockRoleARN = key.BedrockKeyConfig.RoleARN
 				dbKey.BedrockExternalID = key.BedrockKeyConfig.ExternalID
 				dbKey.BedrockRoleSessionName = key.BedrockKeyConfig.RoleSessionName
+				dbKey.BedrockBatchRoleARN = key.BedrockKeyConfig.BatchRoleARN
 				if key.BedrockKeyConfig.BatchS3Config != nil {
 					data, err := sonic.Marshal(key.BedrockKeyConfig.BatchS3Config)
 					if err != nil {
@@ -991,6 +993,7 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 			dbKey.BedrockRoleARN = key.BedrockKeyConfig.RoleARN
 			dbKey.BedrockExternalID = key.BedrockKeyConfig.ExternalID
 			dbKey.BedrockRoleSessionName = key.BedrockKeyConfig.RoleSessionName
+			dbKey.BedrockBatchRoleARN = key.BedrockKeyConfig.BatchRoleARN
 			if key.BedrockKeyConfig.BatchS3Config != nil {
 				data, err := sonic.Marshal(key.BedrockKeyConfig.BatchS3Config)
 				if err != nil {
@@ -1130,6 +1133,7 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 			dbKey.BedrockRoleARN = key.BedrockKeyConfig.RoleARN
 			dbKey.BedrockExternalID = key.BedrockKeyConfig.ExternalID
 			dbKey.BedrockRoleSessionName = key.BedrockKeyConfig.RoleSessionName
+			dbKey.BedrockBatchRoleARN = key.BedrockKeyConfig.BatchRoleARN
 			if key.BedrockKeyConfig.BatchS3Config != nil {
 				data, err := sonic.Marshal(key.BedrockKeyConfig.BatchS3Config)
 				if err != nil {
