@@ -7,10 +7,14 @@ import (
 )
 
 func WeightedRandom(ctx *schemas.BifrostContext, keys []schemas.Key, providerKey schemas.ModelProvider, model string) (schemas.Key, error) {
-	// Use a weighted random selection based on key weights
-	totalWeight := 0
+	// Use a weighted random selection based on key weights. Weights stay
+	// float64 throughout: integer bucketing truncates any weight below the
+	// bucket size to zero, silently starving that key.
+	totalWeight := 0.0
 	for _, key := range keys {
-		totalWeight += int(key.Weight * 100) // Convert float to int for better performance
+		if key.Weight > 0 {
+			totalWeight += key.Weight
+		}
 	}
 
 	// If all keys have zero weight, fall back to uniform random selection
@@ -19,12 +23,14 @@ func WeightedRandom(ctx *schemas.BifrostContext, keys []schemas.Key, providerKey
 	}
 
 	// Use global thread-safe random (Go 1.20+) - no allocation, no syscall
-	randomValue := rand.Intn(totalWeight)
+	randomValue := rand.Float64() * totalWeight
 
 	// Select key based on weight
-	currentWeight := 0
+	currentWeight := 0.0
 	for _, key := range keys {
-		currentWeight += int(key.Weight * 100)
+		if key.Weight > 0 {
+			currentWeight += key.Weight
+		}
 		if randomValue < currentWeight {
 			return key, nil
 		}
