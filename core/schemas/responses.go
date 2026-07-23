@@ -1345,9 +1345,14 @@ func responsesToolArgumentsToString(raw json.RawMessage) string {
 	return string(raw)
 }
 
-// MarshalJSON preserves OpenAI's per-item argument shape after UnmarshalJSON
-// normalizes both forms into the internal string field.
+// MarshalJSON re-emits preserved tool_search / additional_tools items verbatim
+// and otherwise preserves OpenAI's per-item argument shape after UnmarshalJSON
+// normalizes both string and object forms into the internal string field.
 func (m ResponsesMessage) MarshalJSON() ([]byte, error) {
+	if m.rawPreserved != nil {
+		return m.rawPreserved, nil
+	}
+
 	type Alias ResponsesMessage
 
 	// Re-emit the raw tools captured during unmarshal so the type discriminator survives.
