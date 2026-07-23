@@ -65265,7 +65265,7 @@
         "name": "x-bf-async-webhook",
         "in": "header",
         "required": false,
-        "description": "Name of a registered webhook endpoint to notify when this job reaches a terminal\nstate (`completed` or `failed`). The endpoint must already exist and be enabled, and\nmust be subscribed to the resulting event; otherwise the submission is rejected with\nHTTP 400. When omitted, no webhook is sent for the job and results are retrieved by\npolling. See the Webhooks management API to register endpoints.\n",
+        "description": "Name of a registered webhook endpoint to notify when this job reaches a terminal\nstate (`completed` or `failed`). The endpoint must already exist and be enabled;\notherwise the submission is rejected with HTTP 400. If the endpoint is not subscribed\nto the resulting event, the job still completes normally but no delivery is enqueued.\nWhen omitted, no webhook is sent for the job and results are retrieved by polling.\nSee the Webhooks management API to register endpoints.\n",
         "schema": {
           "type": "string"
         }
