@@ -1287,7 +1287,7 @@ func (provider *ReplicateProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 
 	// Make the streaming request
 	startTime = time.Now()
-	streamErr := provider.streamingClient.Do(req, resp)
+	streamErr := providerUtils.DoStreamingRequest(ctx, provider.streamingClient, req, resp)
 	latency = time.Since(startTime)
 	if streamErr != nil {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)

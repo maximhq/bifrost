@@ -60,7 +60,7 @@ func FetchAndEncodeURL(ctx context.Context, resourceURL string) (mediaType strin
 	}
 	req.Header.Set("User-Agent", "bifrost-fetch/1")
 
-	resp, err := client.Do(req)
+	resp, err := DoHTTPRequest(client, req)
 	if err != nil {
 		return "", "", fmt.Errorf("failed to fetch from %q: %w", resourceURL, err)
 	}

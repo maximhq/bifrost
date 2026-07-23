@@ -382,6 +382,7 @@ const (
 	BifrostContextKeyTempTokenScope                      BifrostContextKey = "bifrost-temp-token-scope"       // string (set by auth middleware when a temp token authorized the request - names the scope from the temptoken registry)
 	BifrostContextKeyTempTokenResourceID                 BifrostContextKey = "bifrost-temp-token-resource-id" // string (set by auth middleware alongside the scope - the resource_id the token is bound to, e.g. an OAuth flow ID for mcp_auth)
 	BifrostContextKeyAsyncWebhookEndpoint                BifrostContextKey = "bifrost-async-webhook-endpoint" // string (webhook endpoint name to notify when an async job finishes - carried as-is from the x-bf-async-webhook header; the submit path resolves and validates it before the job is created)
+	BifrostContextKeyUpstreamLatency                     BifrostContextKey = "bifrost-upstream-latency"       // *atomic.Int64 nanoseconds (set by bifrost - DO NOT SET THIS MANUALLY) - cumulative time blocked on provider sockets across every attempt; subtract from total to get Bifrost overhead
 )
 
 const (
@@ -1678,6 +1679,11 @@ type BifrostResponseExtraFields struct {
 	// consumers should read from RoutingInfo.
 	ResolvedModelUsed         string             `json:"resolved_model_used,omitempty"`
 	Latency                   int64              `json:"latency"`     // in milliseconds (for streaming responses this will be each chunk latency, and the last chunk latency will be the total latency)
+	// UpstreamLatency is the total time spent blocked on upstream sockets across
+	// every attempt, in milliseconds. Unlike Latency it survives retries and
+	// fallbacks, so total-UpstreamLatency is Bifrost's own cost. Nil when the
+	// request never accumulated one; nil means unknown, not zero.
+	UpstreamLatency           *int64             `json:"upstream_latency,omitempty"`
 	ChunkIndex                int                `json:"chunk_index"` // used for streaming responses to identify the chunk index, will be 0 for non-streaming responses
 	RawRequest                interface{}        `json:"raw_request,omitempty"`
 	RawResponse               interface{}        `json:"raw_response,omitempty"`

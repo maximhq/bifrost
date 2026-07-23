@@ -55,6 +55,7 @@ type MetricsExporter struct {
 
 	// Bifrost metrics - histograms
 	upstreamLatencySeconds         *syncFloat64Histogram
+	overheadLatencySeconds         *syncFloat64Histogram
 	streamFirstTokenLatencySeconds *syncFloat64Histogram
 	streamInterTokenLatencySeconds *syncFloat64Histogram
 	requestRetries                 *syncFloat64Histogram
@@ -131,6 +132,17 @@ var (
 	upstreamLatencyBuckets = []float64{
 		.005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5,
 		10, 15, 30, 45, 60, 90, 120, 180, 300, 600, 900,
+	}
+
+	// overheadLatencyBuckets: Bifrost's own processing cost, i.e. total minus time
+	// blocked on upstream sockets. A different scale entirely from upstream latency —
+	// healthy values are sub-millisecond to low tens of ms, dominated by request and
+	// response marshalling. Reusing upstreamLatencyBuckets would pile almost every
+	// request into the first two buckets and make regressions invisible. The long
+	// tail up to 30s exists to catch queue saturation and pathological payloads.
+	overheadLatencyBuckets = []float64{
+		.0001, .00025, .0005, .001, .0025, .005, .01, .025, .05, .1,
+		.25, .5, 1, 2.5, 5, 10, 30,
 	}
 
 	// firstTokenLatencyBuckets: TTFT. Bimodal - sub-second for fast streaming
@@ -392,6 +404,14 @@ func (m *MetricsExporter) initMetrics() {
 		boundaries: upstreamLatencyBuckets,
 	}
 
+	m.overheadLatencySeconds = &syncFloat64Histogram{
+		name:       "bifrost_overhead_latency_seconds",
+		desc:       "Latency added by Bifrost itself: total request time minus time blocked on upstream providers",
+		unit:       "s",
+		meter:      m.meter,
+		boundaries: overheadLatencyBuckets,
+	}
+
 	m.streamFirstTokenLatencySeconds = &syncFloat64Histogram{
 		name:       "bifrost_stream_first_token_latency_seconds",
 		desc:       "Latency of the first token of a stream response",
@@ -524,6 +544,13 @@ func (m *MetricsExporter) RecordCost(ctx context.Context, cost float64, attrs ..
 // RecordUpstreamLatency records upstream latency metric
 func (m *MetricsExporter) RecordUpstreamLatency(ctx context.Context, latencySeconds float64, attrs ...attribute.KeyValue) {
 	m.upstreamLatencySeconds.Record(ctx, latencySeconds, metric.WithAttributes(attrs...))
+}
+
+// RecordOverheadLatency records the latency Bifrost itself added to a request.
+// Recorded once per trace (off the root span), not once per attempt — the
+// underlying accumulator already spans every retry and fallback.
+func (m *MetricsExporter) RecordOverheadLatency(ctx context.Context, overheadSeconds float64, attrs ...attribute.KeyValue) {
+	m.overheadLatencySeconds.Record(ctx, overheadSeconds, metric.WithAttributes(attrs...))
 }
 
 // RecordStreamFirstTokenLatency records first token latency metric
