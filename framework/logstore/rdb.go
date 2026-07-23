@@ -46,6 +46,12 @@ const (
 
 var terminalLogStatuses = []string{"success", "error", "cancelled"}
 
+// nonTerminalLogStatuses are the in-flight statuses structurally absent from
+// mv_logs_hourly (its DDL filters to terminalLogStatuses). Matview-backed
+// counts add these back from the raw table so totals match the row list and
+// the raw aggregate paths, which do not exclude in-flight rows.
+var nonTerminalLogStatuses = []string{"processing"}
+
 // RDBLogStore represents a log store that uses a SQLite database.
 type RDBLogStore struct {
 	db            *gorm.DB
@@ -1183,7 +1189,7 @@ func (s *RDBLogStore) GetHistogram(ctx context.Context, filters SearchFilters, b
 	if bucketSizeSeconds <= 0 {
 		bucketSizeSeconds = 3600 // Default to 1 hour
 	}
-	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 {
+	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 && bucketSizeSeconds%3600 == 0 {
 		return s.getHistogramFromMatView(ctx, filters, bucketSizeSeconds)
 	}
 
@@ -1295,7 +1301,7 @@ func (s *RDBLogStore) GetTokenHistogram(ctx context.Context, filters SearchFilte
 	if bucketSizeSeconds <= 0 {
 		bucketSizeSeconds = 3600 // Default to 1 hour
 	}
-	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 {
+	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 && bucketSizeSeconds%3600 == 0 {
 		return s.getTokenHistogramFromMatView(ctx, filters, bucketSizeSeconds)
 	}
 
@@ -1414,7 +1420,7 @@ func (s *RDBLogStore) GetThroughputHistogram(ctx context.Context, filters Search
 	if bucketSizeSeconds <= 0 {
 		bucketSizeSeconds = 3600 // Default to 1 hour
 	}
-	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 {
+	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 && bucketSizeSeconds%3600 == 0 {
 		return s.getThroughputHistogramFromMatView(ctx, filters, bucketSizeSeconds)
 	}
 
@@ -1501,7 +1507,7 @@ func (s *RDBLogStore) GetProviderThroughputHistogram(ctx context.Context, filter
 	if bucketSizeSeconds <= 0 {
 		bucketSizeSeconds = 3600
 	}
-	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 {
+	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 && bucketSizeSeconds%3600 == 0 {
 		return s.getProviderThroughputHistogramFromMatView(ctx, filters, bucketSizeSeconds)
 	}
 
@@ -1594,7 +1600,7 @@ func (s *RDBLogStore) GetCostHistogram(ctx context.Context, filters SearchFilter
 	if bucketSizeSeconds <= 0 {
 		bucketSizeSeconds = 3600 // Default to 1 hour
 	}
-	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 {
+	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 && bucketSizeSeconds%3600 == 0 {
 		return s.getCostHistogramFromMatView(ctx, filters, bucketSizeSeconds)
 	}
 
@@ -1700,7 +1706,7 @@ func (s *RDBLogStore) GetModelHistogram(ctx context.Context, filters SearchFilte
 	if bucketSizeSeconds <= 0 {
 		bucketSizeSeconds = 3600 // Default to 1 hour
 	}
-	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 {
+	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 && bucketSizeSeconds%3600 == 0 {
 		return s.getModelHistogramFromMatView(ctx, filters, bucketSizeSeconds)
 	}
 
@@ -1839,7 +1845,7 @@ func (s *RDBLogStore) GetLatencyHistogram(ctx context.Context, filters SearchFil
 	if bucketSizeSeconds <= 0 {
 		bucketSizeSeconds = 3600
 	}
-	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 {
+	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 && bucketSizeSeconds%3600 == 0 {
 		return s.getLatencyHistogramFromMatView(ctx, filters, bucketSizeSeconds)
 	}
 
@@ -2571,7 +2577,7 @@ func (s *RDBLogStore) GetProviderCostHistogram(ctx context.Context, filters Sear
 	if bucketSizeSeconds <= 0 {
 		bucketSizeSeconds = 3600
 	}
-	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 {
+	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 && bucketSizeSeconds%3600 == 0 {
 		return s.getProviderCostHistogramFromMatView(ctx, filters, bucketSizeSeconds)
 	}
 
@@ -2666,7 +2672,7 @@ func (s *RDBLogStore) GetProviderTokenHistogram(ctx context.Context, filters Sea
 	if bucketSizeSeconds <= 0 {
 		bucketSizeSeconds = 3600
 	}
-	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 {
+	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 && bucketSizeSeconds%3600 == 0 {
 		return s.getProviderTokenHistogramFromMatView(ctx, filters, bucketSizeSeconds)
 	}
 
@@ -2773,7 +2779,7 @@ func (s *RDBLogStore) GetProviderLatencyHistogram(ctx context.Context, filters S
 	if bucketSizeSeconds <= 0 {
 		bucketSizeSeconds = 3600
 	}
-	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 {
+	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 && bucketSizeSeconds%3600 == 0 {
 		return s.getProviderLatencyHistogramFromMatView(ctx, filters, bucketSizeSeconds)
 	}
 
@@ -3137,7 +3143,7 @@ func (s *RDBLogStore) GetDimensionCostHistogram(ctx context.Context, filters Sea
 		dimValueExpr = bucketedIDExpr(dimCol)
 		groupCol = dimValueExpr
 	}
-	if !bucketed && dialect == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 {
+	if !bucketed && dialect == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 && bucketSizeSeconds%3600 == 0 {
 		return s.getDimensionCostHistogramFromMatView(ctx, filters, bucketSizeSeconds, dimension)
 	}
 	baseQuery := s.ScopedDB(ctx).Model(&Log{})
@@ -3237,7 +3243,7 @@ func (s *RDBLogStore) GetDimensionTokenHistogram(ctx context.Context, filters Se
 		dimValueExpr = bucketedIDExpr(dimCol)
 		groupCol = dimValueExpr
 	}
-	if !bucketed && dialect == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 {
+	if !bucketed && dialect == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 && bucketSizeSeconds%3600 == 0 {
 		return s.getDimensionTokenHistogramFromMatView(ctx, filters, bucketSizeSeconds, dimension)
 	}
 	baseQuery := s.ScopedDB(ctx).Model(&Log{})
@@ -3346,7 +3352,7 @@ func (s *RDBLogStore) GetDimensionLatencyHistogram(ctx context.Context, filters 
 	if bucketSizeSeconds <= 0 {
 		bucketSizeSeconds = 3600
 	}
-	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 {
+	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 && bucketSizeSeconds%3600 == 0 {
 		return s.getDimensionLatencyHistogramFromMatView(ctx, filters, bucketSizeSeconds, dimension)
 	}
 	dialect := s.db.Dialector.Name()
