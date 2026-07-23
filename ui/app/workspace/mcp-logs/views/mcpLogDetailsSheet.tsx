@@ -21,11 +21,13 @@ import {
 import { DottedSeparator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Status, StatusColors, Statuses } from "@/lib/constants/logs";
 import { useGetMCPLogByIdQuery } from "@/lib/store";
 import type { MCPToolLogEntry } from "@/lib/types/logs";
 import { downloadAsJson } from "@/lib/utils/browser-download";
 import { applyRedactionMappingToValue, hasRedactionMappingEntries, mergeRedactionMappings } from "@/lib/utils/redaction";
+import PluginLogsView from "@/app/workspace/logs/views/pluginLogsView";
 import { Link } from "@tanstack/react-router";
 import { addMilliseconds, format, isValid } from "date-fns";
 import { SheetNavigationButtons } from "@/components/sheetNavigationButtons";
@@ -70,6 +72,17 @@ const getValidatedStatus = (status: string): Status => {
 	// Fallback to "processing" for unknown statuses
 	return "processing";
 };
+
+function getPluginLogCount(pluginLogs?: string): number {
+	if (!pluginLogs) return 0;
+	try {
+		const parsed: unknown = JSON.parse(pluginLogs);
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return 0;
+		return Object.values(parsed).reduce<number>((count, entries) => count + (Array.isArray(entries) ? entries.length : 0), 0);
+	} catch {
+		return 0;
+	}
+}
 
 export function MCPLogDetailSheet({
 	log,
@@ -131,6 +144,7 @@ export function MCPLogDetailSheet({
 	const displayedArguments = applyRedactionMappingToValue(displayLog.arguments, inputRevealMapping);
 	const displayedResult = applyRedactionMappingToValue(displayLog.result, outputRevealMapping);
 	const displayedErrorDetails = applyRedactionMappingToValue(displayLog.error_details, mixedRevealMapping);
+	const pluginLogCount = getPluginLogCount(displayLog.plugin_logs);
 
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
@@ -332,68 +346,96 @@ export function MCPLogDetailSheet({
 					</div>
 				</div>
 
-				{/* Arguments */}
-				{displayedArguments && (
-					<div className="w-full rounded-sm border">
-						<div className="border-b px-6 py-2 text-sm font-medium">Arguments</div>
-						<CodeEditor
-							className="z-0 w-full"
-							shouldAdjustInitialHeight={true}
-							maxHeight={250}
-							wrap={true}
-							code={typeof displayedArguments === "string" ? displayedArguments : JSON.stringify(displayedArguments, null, 2)}
-							lang="json"
-							readonly={true}
-							options={{ scrollBeyondLastLine: false, collapsibleBlocks: true, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
-						/>
-					</div>
-				)}
+				<Tabs key={displayLog.id} defaultValue="execution" className="gap-2">
+					<TabsList className="bg-muted/60 h-10 w-fit">
+						<TabsTrigger value="execution" className="px-3">
+							Execution
+						</TabsTrigger>
+						<TabsTrigger value="plugins" className="px-3">
+							Plugin Logs
+							{pluginLogCount > 0 ? (
+								<span className="bg-background text-muted-foreground ml-1.5 rounded-sm border px-2 py-0.5 text-[10px] tabular-nums">
+									{pluginLogCount}
+								</span>
+							) : null}
+						</TabsTrigger>
+					</TabsList>
 
-				{/* Result */}
-				{displayedResult && displayLog.status !== "processing" && (
-					<div className="w-full rounded-sm border">
-						<div className="border-b px-6 py-2 text-sm font-medium">Result</div>
-						<CodeEditor
-							className="z-0 w-full"
-							shouldAdjustInitialHeight={true}
-							maxHeight={350}
-							wrap={true}
-							code={typeof displayedResult === "string" ? displayedResult : JSON.stringify(displayedResult, null, 2)}
-							lang="json"
-							readonly={true}
-							options={{ scrollBeyondLastLine: false, collapsibleBlocks: true, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
-						/>
-					</div>
-				)}
+					<TabsContent value="execution" className="space-y-4">
+						{/* Arguments */}
+						{displayedArguments && (
+							<div className="w-full rounded-sm border">
+								<div className="border-b px-6 py-2 text-sm font-medium">Arguments</div>
+								<CodeEditor
+									className="z-0 w-full"
+									shouldAdjustInitialHeight={true}
+									maxHeight={250}
+									wrap={true}
+									code={typeof displayedArguments === "string" ? displayedArguments : JSON.stringify(displayedArguments, null, 2)}
+									lang="json"
+									readonly={true}
+									options={{ scrollBeyondLastLine: false, collapsibleBlocks: true, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
+								/>
+							</div>
+						)}
 
-				{/* Metadata */}
-				{displayLog.metadata && Object.keys(displayLog.metadata).length > 0 && (
-					<div className="space-y-4 rounded-sm border px-6 py-4">
-						<BlockHeader title="Metadata" />
-						<div className="grid w-full grid-cols-3 items-start justify-between gap-4">
-							{Object.entries(displayLog.metadata).map(([key, value]) => (
-								<LogEntryDetailsView key={key} className="w-full" label={key} value={String(value)} />
-							))}
-						</div>
-					</div>
-				)}
+						{/* Result */}
+						{displayedResult && displayLog.status !== "processing" && (
+							<div className="w-full rounded-sm border">
+								<div className="border-b px-6 py-2 text-sm font-medium">Result</div>
+								<CodeEditor
+									className="z-0 w-full"
+									shouldAdjustInitialHeight={true}
+									maxHeight={350}
+									wrap={true}
+									code={typeof displayedResult === "string" ? displayedResult : JSON.stringify(displayedResult, null, 2)}
+									lang="json"
+									readonly={true}
+									options={{ scrollBeyondLastLine: false, collapsibleBlocks: true, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
+								/>
+							</div>
+						)}
 
-				{/* Error Details */}
-				{displayedErrorDetails && (
-					<div className="border-destructive/50 w-full rounded-sm border">
-						<div className="border-destructive/50 text-destructive border-b px-6 py-2 text-sm font-medium">Error Details</div>
-						<CodeEditor
-							className="z-0 w-full"
-							shouldAdjustInitialHeight={true}
-							maxHeight={250}
-							wrap={true}
-							code={JSON.stringify(displayedErrorDetails, null, 2)}
-							lang="json"
-							readonly={true}
-							options={{ scrollBeyondLastLine: false, collapsibleBlocks: true, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
-						/>
-					</div>
-				)}
+						{/* Metadata */}
+						{displayLog.metadata && Object.keys(displayLog.metadata).length > 0 && (
+							<div className="space-y-4 rounded-sm border px-6 py-4">
+								<BlockHeader title="Metadata" />
+								<div className="grid w-full grid-cols-3 items-start justify-between gap-4">
+									{Object.entries(displayLog.metadata).map(([key, value]) => (
+										<LogEntryDetailsView key={key} className="w-full" label={key} value={String(value)} />
+									))}
+								</div>
+							</div>
+						)}
+
+						{/* Error Details */}
+						{displayedErrorDetails && (
+							<div className="border-destructive/50 w-full rounded-sm border">
+								<div className="border-destructive/50 text-destructive border-b px-6 py-2 text-sm font-medium">Error Details</div>
+								<CodeEditor
+									className="z-0 w-full"
+									shouldAdjustInitialHeight={true}
+									maxHeight={250}
+									wrap={true}
+									code={JSON.stringify(displayedErrorDetails, null, 2)}
+									lang="json"
+									readonly={true}
+									options={{ scrollBeyondLastLine: false, collapsibleBlocks: true, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
+								/>
+							</div>
+						)}
+					</TabsContent>
+
+					<TabsContent value="plugins" className="space-y-3">
+						{displayLog.plugin_logs ? (
+							<PluginLogsView pluginLogs={displayLog.plugin_logs} />
+						) : (
+							<div className="text-muted-foreground rounded-sm border border-dashed p-5 text-center text-sm">
+								No plugin logs for this request.
+							</div>
+						)}
+					</TabsContent>
+				</Tabs>
 			</SheetContent>
 		</Sheet>
 	);
