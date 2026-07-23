@@ -281,6 +281,7 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 			menuClassName="!z-[100] max-h-[300px] overflow-y-auto w-full cursor-pointer custom-scrollbar"
 			isClearable={clearable}
 			closeMenuOnSelect={isSingleSelect}
+			hideSearchIcon={props.hideSearchIcon}
 			menuPlacement="auto"
 			menuPosition={props.menuPosition}
 			menuPortalTarget={props.menuPortalTarget}
