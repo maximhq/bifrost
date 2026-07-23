@@ -1712,9 +1712,8 @@ func TestMergeGovernanceConfig_SyncsComplexityAnalyzerConfig(t *testing.T) {
 	}
 	fileConfig := &configstore.ComplexityAnalyzerConfig{
 		TierBoundaries: configstore.ComplexityTierBoundaries{
-			SimpleMedium:     0.11,
-			MediumComplex:    0.33,
-			ComplexReasoning: 0.77,
+			SimpleMedium:  0.11,
+			MediumComplex: 0.33,
 		},
 		Keywords: configstore.ComplexityEditableKeywordConfig{
 			CodeKeywords:      []string{" Function ", "api", "API", "file-code-seed"},
@@ -1734,7 +1733,8 @@ func TestMergeGovernanceConfig_SyncsComplexityAnalyzerConfig(t *testing.T) {
 	stored, err := store.GetComplexityAnalyzerConfig(context.Background())
 	require.NoError(t, err)
 	require.NotNil(t, stored)
-	require.Equal(t, 0.77, stored.TierBoundaries.ComplexReasoning)
+	require.Equal(t, 0.11, stored.TierBoundaries.SimpleMedium)
+	require.Equal(t, 0.33, stored.TierBoundaries.MediumComplex)
 	defaults := complexity.DefaultAnalyzerConfig()
 	require.Equal(t, expectedMergedComplexityKeywords(defaults.Keywords.CodeKeywords, fileConfig.Keywords.CodeKeywords), stored.Keywords.CodeKeywords)
 	require.Equal(t, expectedMergedComplexityKeywords(defaults.Keywords.ReasoningKeywords, fileConfig.Keywords.ReasoningKeywords), stored.Keywords.ReasoningKeywords)
@@ -1996,9 +1996,8 @@ func TestMergeGovernanceConfig_SourceOfTruthConfigJSONMissingComplexityLeavesDBC
 func testRuntimeComplexityAnalyzerConfig() *configstore.ComplexityAnalyzerConfig {
 	return &configstore.ComplexityAnalyzerConfig{
 		TierBoundaries: configstore.ComplexityTierBoundaries{
-			SimpleMedium:     0.10,
-			MediumComplex:    0.30,
-			ComplexReasoning: 0.70,
+			SimpleMedium:  0.10,
+			MediumComplex: 0.30,
 		},
 		Keywords: configstore.ComplexityEditableKeywordConfig{
 			CodeKeywords:      []string{"runtime-code"},
@@ -2012,9 +2011,8 @@ func testRuntimeComplexityAnalyzerConfig() *configstore.ComplexityAnalyzerConfig
 func testFileComplexityAnalyzerConfig() *configstore.ComplexityAnalyzerConfig {
 	return &configstore.ComplexityAnalyzerConfig{
 		TierBoundaries: configstore.ComplexityTierBoundaries{
-			SimpleMedium:     0.20,
-			MediumComplex:    0.40,
-			ComplexReasoning: 0.80,
+			SimpleMedium:  0.20,
+			MediumComplex: 0.40,
 		},
 		Keywords: configstore.ComplexityEditableKeywordConfig{
 			CodeKeywords:      []string{"file-code"},

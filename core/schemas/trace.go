@@ -795,6 +795,8 @@ const (
 	AttrBifrostFallbackIndex       = "bifrost.fallback_index"
 	AttrBifrostAlias               = "bifrost.alias"               // original requested model when it differs from the resolved model
 	AttrBifrostRoutingEngineUsed   = "bifrost.routing_engine_used" // comma-joined routing engines that handled the request
+	AttrBifrostComplexityTier      = "bifrost.complexity_tier"     // complexity tier used for routing (SIMPLE/MEDIUM/COMPLEX); absent when no rule referenced complexity_tier
+	AttrBifrostRoutingMechanism    = "bifrost.routing_mechanism"   // how the complexity tier was classified (lexical, skipped; later semantic, llm)
 	AttrBifrostStopSequencesJoined = "bifrost.request.stop_sequences"
 
 	// OTel general semconv (no gen_ai prefix). Emitted alongside the legacy

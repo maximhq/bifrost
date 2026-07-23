@@ -9,9 +9,8 @@ import (
 
 // ComplexityTierBoundaries defines score thresholds for complexity tier classification.
 type ComplexityTierBoundaries struct {
-	SimpleMedium     float64 `json:"simple_medium"`
-	MediumComplex    float64 `json:"medium_complex"`
-	ComplexReasoning float64 `json:"complex_reasoning"`
+	SimpleMedium  float64 `json:"simple_medium"`
+	MediumComplex float64 `json:"medium_complex"`
 }
 
 // Validate checks that tier boundaries are ordered and inside the analyzer score range.
@@ -21,11 +20,10 @@ func (b *ComplexityTierBoundaries) Validate() error {
 	}
 	if !(0 < b.SimpleMedium &&
 		b.SimpleMedium < b.MediumComplex &&
-		b.MediumComplex < b.ComplexReasoning &&
-		b.ComplexReasoning < 1) {
+		b.MediumComplex < 1) {
 		return fmt.Errorf(
-			"tier boundaries must satisfy 0 < simple_medium (%.4f) < medium_complex (%.4f) < complex_reasoning (%.4f) < 1",
-			b.SimpleMedium, b.MediumComplex, b.ComplexReasoning,
+			"tier boundaries must satisfy 0 < simple_medium (%.4f) < medium_complex (%.4f) < 1",
+			b.SimpleMedium, b.MediumComplex,
 		)
 	}
 	return nil
