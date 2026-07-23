@@ -2869,53 +2869,65 @@ func TestMigrationAddGigaChatKeyConfigColumnBackfillsHashes(t *testing.T) {
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
 	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&tables.TableKey{}))
 
-	weight := 1.0
-	enabled := true
-	gigaChatKey := tables.TableKey{
-		Name:       "gigachat-key",
-		ProviderID: 1,
-		Provider:   string(schemas.GigaChat),
-		KeyID:      "gigachat-key-id",
-		Value:      *schemas.NewSecretVar("unused"),
-		Models:     schemas.WhiteList{"*"},
-		Weight:     &weight,
-		Enabled:    &enabled,
-		GigaChatKeyConfig: &schemas.GigaChatKeyConfig{
-			Credentials:  schemas.NewSecretVar("credentials"),
-			AccessToken:  schemas.NewSecretVar("access-token"),
-			CertFile:     "/tls/client.pem",
-			KeyFile:      "/tls/client.key",
-			CABundleFile: "/tls/ca.pem",
-		},
-		ConfigHash: "stale-gigachat-hash",
-	}
-	require.NoError(t, db.Create(&gigaChatKey).Error)
+	require.NoError(t, db.Exec(`CREATE TABLE migrations (id VARCHAR(255) PRIMARY KEY)`).Error)
+	require.NoError(t, db.Exec(`
+		CREATE TABLE config_keys (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name VARCHAR(255) NOT NULL UNIQUE,
+			provider_id INTEGER NOT NULL,
+			provider VARCHAR(50),
+			key_id VARCHAR(255) NOT NULL UNIQUE,
+			value TEXT NOT NULL,
+			models_json TEXT,
+			blacklisted_models_json TEXT,
+			weight REAL,
+			enabled BOOLEAN DEFAULT true,
+			created_at DATETIME NOT NULL,
+			updated_at DATETIME NOT NULL,
+			config_hash VARCHAR(255),
+			use_for_batch_api BOOLEAN DEFAULT false,
+			use_anthropic_endpoints BOOLEAN DEFAULT false,
+			status VARCHAR(50) DEFAULT 'unknown',
+			description TEXT,
+			encryption_status VARCHAR(20) DEFAULT 'plain_text'
+		)
+	`).Error)
+	require.False(t, db.Migrator().HasColumn(&tables.TableKey{}, "gigachat_key_config_json"),
+		"precondition: legacy config_keys schema must not contain gigachat_key_config_json")
 
-	openAIKey := tables.TableKey{
-		Name:       "openai-key",
-		ProviderID: 2,
-		Provider:   string(schemas.OpenAI),
-		KeyID:      "openai-key-id",
-		Value:      *schemas.NewSecretVar("sk-test"),
-		Models:     schemas.WhiteList{"*"},
-		Weight:     &weight,
-		Enabled:    &enabled,
-		ConfigHash: "untouched-openai-hash",
-	}
-	require.NoError(t, db.Create(&openAIKey).Error)
+	now := time.Now()
+	require.NoError(t, db.Exec(`
+		INSERT INTO config_keys (
+			name, provider_id, provider, key_id, value, models_json, weight, enabled,
+			created_at, updated_at, config_hash, encryption_status
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`,
+		"gigachat-key", 1, string(schemas.GigaChat), "gigachat-key-id", "unused", `["*"]`, 1.0, true,
+		now, now, "stale-gigachat-hash", tables.EncryptionStatusPlainText,
+	).Error)
+	require.NoError(t, db.Exec(`
+		INSERT INTO config_keys (
+			name, provider_id, provider, key_id, value, models_json, weight, enabled,
+			created_at, updated_at, config_hash, encryption_status
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`,
+		"openai-key", 2, string(schemas.OpenAI), "openai-key-id", "sk-test", `["*"]`, 1.0, true,
+		now, now, "untouched-openai-hash", tables.EncryptionStatusPlainText,
+	).Error)
 
 	require.NoError(t, migrationAddGigaChatKeyConfigColumn(context.Background(), db, testMigrationLogger))
+	require.True(t, db.Migrator().HasColumn(&tables.TableKey{}, "gigachat_key_config_json"),
+		"migration should add gigachat_key_config_json to the legacy schema")
 
 	var migrated tables.TableKey
-	require.NoError(t, db.First(&migrated, gigaChatKey.ID).Error)
+	require.NoError(t, db.Where("key_id = ?", "gigachat-key-id").First(&migrated).Error)
 	expectedHash, err := GenerateKeyHash(schemaKeyFromTableKey(migrated))
 	require.NoError(t, err)
 	require.Equal(t, expectedHash, migrated.ConfigHash)
 	require.NotEqual(t, "stale-gigachat-hash", migrated.ConfigHash)
 
 	var untouched tables.TableKey
-	require.NoError(t, db.First(&untouched, openAIKey.ID).Error)
+	require.NoError(t, db.Where("key_id = ?", "openai-key-id").First(&untouched).Error)
 	require.Equal(t, "untouched-openai-hash", untouched.ConfigHash)
 }
