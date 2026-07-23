@@ -4539,13 +4539,18 @@ func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx conte
 					// Data-URL media type is applied below and can refine further
 					// (OpenAI file parts often omit file_type and only put MIME in
 					// the data: URL — same #5472 failure mode as chat completions).
+					// Unrecognized MIME (e.g. application/octet-stream) must still
+					// fall back to the filename so report.xlsx does not stay pdf.
 					isTextFile := false
+					formatSet := false
 					if block.ResponsesInputMessageContentBlockFile.FileType != nil {
 						if format, text, ok := bedrockDocumentFormatFromMediaType(*block.ResponsesInputMessageContentBlockFile.FileType); ok {
 							doc.Format = format
 							isTextFile = text
+							formatSet = true
 						}
-					} else if block.ResponsesInputMessageContentBlockFile.Filename != nil {
+					}
+					if !formatSet && block.ResponsesInputMessageContentBlockFile.Filename != nil {
 						if format, text, ok := bedrockDocumentFormatFromFilename(*block.ResponsesInputMessageContentBlockFile.Filename); ok {
 							doc.Format = format
 							isTextFile = text
