@@ -39,17 +39,15 @@ type TierBoundaryKey = keyof TierBoundaries;
 
 const KEYWORD_COLLAPSED_LIMIT = 8;
 
-// Four progressive shades of --primary: faintest → full
+// Three progressive shades of --primary: faintest → full
 const P1 = "color-mix(in oklch, var(--primary) 30%, transparent)";
 const P2 = "color-mix(in oklch, var(--primary) 55%, transparent)";
-const P3 = "color-mix(in oklch, var(--primary) 75%, transparent)";
 const P4 = "var(--primary)";
 
 const TIER_PALETTE = {
 	simple: { color: P1, name: "SIMPLE" },
 	medium: { color: P2, name: "MEDIUM" },
-	complex: { color: P3, name: "COMPLEX" },
-	reasoning: { color: P4, name: "REASONING" },
+	complex: { color: P4, name: "COMPLEX" },
 } as const;
 
 interface BoundaryFieldConfig {
@@ -75,19 +73,10 @@ const BOUNDARY_FIELDS: BoundaryFieldConfig[] = [
 	{
 		key: "medium_complex",
 		label: "Medium → Complex",
-		description: "Scores above simple_medium and at or below this are MEDIUM.",
+		description: "Scores above simple_medium and at or below this are MEDIUM. Everything above is COMPLEX.",
 		fromTier: "MEDIUM",
 		toTier: "COMPLEX",
 		fromColor: P2,
-		toColor: P3,
-	},
-	{
-		key: "complex_reasoning",
-		label: "Complex → Reasoning",
-		description: "Scores above this are REASONING. Everything in between is COMPLEX.",
-		fromTier: "COMPLEX",
-		toTier: "REASONING",
-		fromColor: P3,
 		toColor: P4,
 	},
 ];
@@ -99,18 +88,10 @@ const analyzerConfigSchema = z.object({
 		.object({
 			simple_medium: boundaryField,
 			medium_complex: boundaryField,
-			complex_reasoning: boundaryField,
 		})
 		.superRefine((data, ctx) => {
 			if (Number.isFinite(data.medium_complex) && Number.isFinite(data.simple_medium) && data.medium_complex <= data.simple_medium) {
 				ctx.addIssue({ code: "custom", message: "Must be greater than Simple → Medium", path: ["medium_complex"] });
-			}
-			if (
-				Number.isFinite(data.complex_reasoning) &&
-				Number.isFinite(data.medium_complex) &&
-				data.complex_reasoning <= data.medium_complex
-			) {
-				ctx.addIssue({ code: "custom", message: "Must be greater than Medium → Complex", path: ["complex_reasoning"] });
 			}
 		}),
 	keywords: z.object({
@@ -182,19 +163,16 @@ function normalizeBoundaryInput(event: ChangeEvent<HTMLInputElement>) {
 function TierSpectrumBar({ boundaries }: { boundaries: TierBoundaries }) {
 	const sm = clampUnit(finiteBoundaryValue(boundaries?.simple_medium, DEFAULT_TIER_BOUNDARIES.simple_medium));
 	const mc = clampUnit(finiteBoundaryValue(boundaries?.medium_complex, DEFAULT_TIER_BOUNDARIES.medium_complex));
-	const cr = clampUnit(finiteBoundaryValue(boundaries?.complex_reasoning, DEFAULT_TIER_BOUNDARIES.complex_reasoning));
 
 	const segments = [
 		{ tier: "SIMPLE", width: Math.max(0, sm * 100), color: TIER_PALETTE.simple.color },
 		{ tier: "MEDIUM", width: Math.max(0, (mc - sm) * 100), color: TIER_PALETTE.medium.color },
-		{ tier: "COMPLEX", width: Math.max(0, (cr - mc) * 100), color: TIER_PALETTE.complex.color },
-		{ tier: "REASONING", width: Math.max(0, (1 - cr) * 100), color: TIER_PALETTE.reasoning.color },
+		{ tier: "COMPLEX", width: Math.max(0, (1 - mc) * 100), color: TIER_PALETTE.complex.color },
 	];
 
 	const markers = [
 		{ key: "simple-medium", pos: sm, value: sm.toFixed(2) },
 		{ key: "medium-complex", pos: mc, value: mc.toFixed(2) },
-		{ key: "complex-reasoning", pos: cr, value: cr.toFixed(2) },
 	];
 
 	return (
@@ -375,7 +353,7 @@ export default function ComplexityRouterPage() {
 				<div className="space-y-3">
 					<h2 className="text-sm font-semibold">Tier Boundaries</h2>
 
-					<div className="grid gap-3 md:grid-cols-3">
+					<div className="grid gap-3 md:grid-cols-2">
 						{BOUNDARY_FIELDS.map(({ key, label, description, fromTier, toTier, fromColor, toColor }) => {
 							const fieldError = boundaryErrors?.[key];
 							const inputId = `boundary-${key}`;
@@ -387,21 +365,13 @@ export default function ComplexityRouterPage() {
 									if (!Number.isFinite(value)) return "Enter a number between 0 and 1";
 									if (value <= 0) return "Must be greater than 0";
 									if (value >= 1) return "Must be less than 1";
-									const { simple_medium, medium_complex } = liveBoundaries;
+									const { simple_medium } = liveBoundaries;
 									if (key === "medium_complex" && Number.isFinite(simple_medium) && value <= simple_medium) {
 										return "Must be greater than Simple → Medium";
 									}
-									if (key === "complex_reasoning" && Number.isFinite(medium_complex) && value <= medium_complex) {
-										return "Must be greater than Medium → Complex";
-									}
 									return true;
 								},
-								deps:
-									key === "simple_medium"
-										? ["tier_boundaries.medium_complex"]
-										: key === "medium_complex"
-											? ["tier_boundaries.complex_reasoning"]
-											: undefined,
+								deps: key === "simple_medium" ? ["tier_boundaries.medium_complex"] : undefined,
 							});
 
 							return (

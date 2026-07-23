@@ -4115,6 +4115,10 @@ func (h *GovernanceHandler) createRoutingRule(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, err.Error())
 		return
 	}
+	// Accept the removed REASONING tier as a deprecated alias of COMPLEX:
+	// normalize before validating so the rule is persisted already rewritten.
+	celExpression, celDeprecationWarning := normalizeDeprecatedRoutingCELExpression(req.CelExpression, req.Name)
+	req.CelExpression = celExpression
 	// Reject malformed CEL at write time instead of it silently failing at first evaluation.
 	if err := governance.ValidateRoutingCELExpression(req.CelExpression); err != nil {
 		SendError(ctx, 400, fmt.Sprintf("invalid CEL expression: %s", err.Error()))
@@ -4193,10 +4197,14 @@ func (h *GovernanceHandler) createRoutingRule(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	SendJSON(ctx, map[string]interface{}{
+	response := map[string]interface{}{
 		"message": "Routing rule created successfully",
 		"rule":    rule,
-	})
+	}
+	if celDeprecationWarning != "" {
+		response["warning"] = celDeprecationWarning
+	}
+	SendJSON(ctx, response)
 }
 
 // updateRoutingRule updates an existing routing rule
@@ -4234,14 +4242,19 @@ func (h *GovernanceHandler) updateRoutingRule(ctx *fasthttp.RequestCtx) {
 	if req.ChainRule != nil {
 		rule.ChainRule = *req.ChainRule
 	}
+	var celDeprecationWarning string
 	if req.CelExpression != nil {
+		// Accept the removed REASONING tier as a deprecated alias of COMPLEX:
+		// normalize before validating so the rule is persisted already rewritten.
+		celExpression, warning := normalizeDeprecatedRoutingCELExpression(*req.CelExpression, rule.Name)
+		celDeprecationWarning = warning
 		// Validate only when the field is supplied, so unrelated updates (e.g. toggling
 		// enabled) never start failing on a pre-existing malformed expression.
-		if err := governance.ValidateRoutingCELExpression(*req.CelExpression); err != nil {
+		if err := governance.ValidateRoutingCELExpression(celExpression); err != nil {
 			SendError(ctx, 400, fmt.Sprintf("invalid CEL expression: %s", err.Error()))
 			return
 		}
-		rule.CelExpression = *req.CelExpression
+		rule.CelExpression = celExpression
 	}
 	if req.Targets != nil {
 		if len(req.Targets) == 0 {
@@ -4315,10 +4328,28 @@ func (h *GovernanceHandler) updateRoutingRule(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	SendJSON(ctx, map[string]interface{}{
+	response := map[string]interface{}{
 		"message": "Routing rule updated successfully",
 		"rule":    rule,
-	})
+	}
+	if celDeprecationWarning != "" {
+		response["warning"] = celDeprecationWarning
+	}
+	SendJSON(ctx, response)
+}
+
+// normalizeDeprecatedRoutingCELExpression rewrites comparisons against the
+// removed REASONING complexity tier (merged into COMPLEX) before a rule
+// expression is validated and persisted. It returns the normalized expression
+// and, when a rewrite happened, a deprecation warning for the API response.
+func normalizeDeprecatedRoutingCELExpression(expr, ruleName string) (string, string) {
+	normalized, changed := governance.NormalizeDeprecatedComplexityTierLiterals(expr)
+	if !changed {
+		return expr, ""
+	}
+	warning := "cel_expression compared complexity_tier against the removed REASONING tier, which was merged into COMPLEX; the rule was saved with COMPLEX instead. Stop using REASONING — this compatibility rewrite is deprecated"
+	logger.Warn("routing rule %q: %s", ruleName, warning)
+	return normalized, warning
 }
 
 // deleteRoutingRule deletes a routing rule

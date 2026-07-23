@@ -6,7 +6,6 @@
 export interface TierBoundaries {
 	simple_medium: number;
 	medium_complex: number;
-	complex_reasoning: number;
 }
 
 export interface EditableKeywordConfig {
@@ -23,7 +22,7 @@ export interface AnalyzerConfig {
 
 export type KeywordListKey = keyof EditableKeywordConfig;
 
-export const COMPLEXITY_TIER_VALUES = ["SIMPLE", "MEDIUM", "COMPLEX", "REASONING"] as const;
+export const COMPLEXITY_TIER_VALUES = ["SIMPLE", "MEDIUM", "COMPLEX"] as const;
 
 export const KEYWORD_LIST_DEFINITIONS: Array<{
 	key: KeywordListKey;
@@ -48,12 +47,11 @@ export const KEYWORD_LIST_DEFINITIONS: Array<{
 	{
 		key: "reasoning_keywords",
 		label: "Reasoning keywords",
-		description: "Strong reasoning triggers. Matching these phrases can override tier selection toward the REASONING tier.",
+		description: "Strong reasoning triggers. Matching these phrases can override tier selection toward the COMPLEX tier.",
 	},
 ];
 
 export const DEFAULT_TIER_BOUNDARIES: TierBoundaries = {
-	simple_medium: 0.15,
-	medium_complex: 0.35,
-	complex_reasoning: 0.6,
+	simple_medium: 0.17,
+	medium_complex: 0.39,
 };

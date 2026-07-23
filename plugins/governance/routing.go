@@ -629,8 +629,23 @@ func ValidateRoutingCELExpression(expr string) error {
 		return err
 	}
 
-	if _, issues := routingValidationEnv.Compile(normalized); issues != nil && issues.Err() != nil {
+	ast, issues := routingValidationEnv.Compile(normalized)
+	if issues != nil && issues.Err() != nil {
 		return fmt.Errorf("CEL compile error: %s", issues.Err().Error())
+	}
+
+	// Semantic lint: complexity_tier has a closed value set, and a comparison
+	// against anything else compiles fine but can never match at runtime.
+	validTiers := map[string]struct{}{
+		complexity.TierSimple:  {},
+		complexity.TierMedium:  {},
+		complexity.TierComplex: {},
+	}
+	if invalid := invalidComplexityTierLiterals(ast, validTiers); len(invalid) > 0 {
+		return fmt.Errorf(
+			"complexity_tier is compared against invalid value(s): %q; valid tiers are %s, %s, and %s",
+			invalid, complexity.TierSimple, complexity.TierMedium, complexity.TierComplex,
+		)
 	}
 	return nil
 }

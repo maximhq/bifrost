@@ -2022,14 +2022,9 @@
                       "type": "number",
                       "exclusiveMinimum": 0,
                       "exclusiveMaximum": 1
-                    },
-                    "complex_reasoning": {
-                      "type": "number",
-                      "exclusiveMinimum": 0,
-                      "exclusiveMaximum": 1
                     }
                   },
-                  "required": ["simple_medium", "medium_complex", "complex_reasoning"],
+                  "required": ["simple_medium", "medium_complex"],
                   "additionalProperties": false
                 },
                 "keywords": {

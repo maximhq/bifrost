@@ -181,7 +181,11 @@ type ConfigData struct {
 
 	presentSections           map[string]bool
 	presentGovernanceSections map[string]bool
-	SkillsRegistry            *SkillsRegistryConfig `json:"skills_registry,omitempty"`
+	// hasLegacyComplexReasoningBoundary records that config.json still carries
+	// the removed "complex_reasoning" tier boundary (REASONING merged into
+	// COMPLEX), so config load can surface a deprecation notice.
+	hasLegacyComplexReasoningBoundary bool
+	SkillsRegistry                    *SkillsRegistryConfig `json:"skills_registry,omitempty"`
 }
 
 // SkillsRegistryConfig defines declarative skill definitions in config.json.
@@ -459,12 +463,21 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 	cd.WebSocket = temp.WebSocket
 	cd.FeatureFlags = temp.FeatureFlags
 	cd.presentGovernanceSections = nil
+	cd.hasLegacyComplexReasoningBoundary = false
 	if rawGovernance, ok := raw["governance"]; ok && len(rawGovernance) > 0 {
 		var rawGovernanceFields map[string]json.RawMessage
 		if err := json.Unmarshal(rawGovernance, &rawGovernanceFields); err == nil {
 			cd.presentGovernanceSections = make(map[string]bool, len(rawGovernanceFields))
 			for key := range rawGovernanceFields {
 				cd.presentGovernanceSections[key] = true
+			}
+			if rawComplexity, ok := rawGovernanceFields["complexity_analyzer_config"]; ok {
+				var rawBoundaries struct {
+					TierBoundaries map[string]json.RawMessage `json:"tier_boundaries"`
+				}
+				if err := json.Unmarshal(rawComplexity, &rawBoundaries); err == nil {
+					_, cd.hasLegacyComplexReasoningBoundary = rawBoundaries.TierBoundaries["complex_reasoning"]
+				}
 			}
 		}
 	}
@@ -2210,7 +2223,23 @@ func loadGovernanceConfig(ctx context.Context, config *Config, configData *Confi
 	}
 
 	if governanceConfig != nil && configData.Governance != nil {
+		warnFileRoutingRulesReferenceReasoningTier(configData)
 		mergeGovernanceConfig(ctx, config, configData, governanceConfig)
+	}
+}
+
+// warnFileRoutingRulesReferenceReasoningTier flags config.json routing rules
+// that still compare complexity_tier against the removed REASONING tier.
+// Rules are deliberately not rewritten anywhere they are stored: the runtime
+// compile path aliases REASONING to COMPLEX, so these rules keep matching,
+// but the alias is deprecated and the file is user-authored — only the user
+// can fix it.
+func warnFileRoutingRulesReferenceReasoningTier(configData *ConfigData) {
+	for i := range configData.Governance.RoutingRules {
+		rule := &configData.Governance.RoutingRules[i]
+		if _, changed := governance.NormalizeDeprecatedComplexityTierLiterals(rule.CelExpression); changed {
+			logger.Warn("config.json routing rule %q compares complexity_tier against the removed REASONING tier, which was merged into COMPLEX; it is evaluated as COMPLEX. Update the rule's cel_expression — this compatibility alias is deprecated", rule.Name)
+		}
 	}
 }
 
@@ -2915,6 +2944,9 @@ func planComplexityAnalyzerConfigUpdate(config *Config, configData *ConfigData) 
 // complexityAnalyzerConfigFromFile validates the file-backed analyzer config and
 // returns the canonical section hashes used to detect whether config.json changed.
 func complexityAnalyzerConfigFromFile(configData *ConfigData) (*configstore.ComplexityAnalyzerConfig, configstore.ComplexityAnalyzerConfigHashes, bool) {
+	if configData.hasLegacyComplexReasoningBoundary {
+		logger.Warn("config.json sets governance.complexity_analyzer_config.tier_boundaries.complex_reasoning, which no longer exists: the REASONING tier was merged into COMPLEX. The value is ignored; remove it from config.json")
+	}
 	fileConfig, err := complexity.ValidateAndNormalize(configData.Governance.ComplexityAnalyzerConfig)
 	if err != nil {
 		logger.Error("invalid complexity analyzer config in config file: %v", err)

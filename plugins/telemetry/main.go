@@ -271,6 +271,8 @@ var defaultBifrostLabelNames = []string{
 	"routing_engine_used",
 	"routing_rule_id",
 	"routing_rule_name",
+	"complexity_tier",
+	"routing_mechanism",
 	"selected_key_id",
 	"selected_key_name",
 	"fallback_index",
@@ -915,6 +917,8 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	virtualKeyName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyName)
 	routingRuleID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceRoutingRuleID)
 	routingRuleName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceRoutingRuleName)
+	complexityTier := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceComplexityTier)
+	routingMechanism := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceRoutingMechanism)
 
 	selectedKeyID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyID)
 	selectedKeyName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyName)
@@ -947,6 +951,8 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		"routing_engine_used": routingEngineUsed,
 		"routing_rule_id":     routingRuleID,
 		"routing_rule_name":   routingRuleName,
+		"complexity_tier":     complexityTier,
+		"routing_mechanism":   routingMechanism,
 		"selected_key_id":     selectedKeyID,
 		"selected_key_name":   selectedKeyName,
 		"fallback_index":      strconv.Itoa(fallbackIndex),
