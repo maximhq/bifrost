@@ -1344,3 +1344,73 @@ func TestListModels_KeyBlacklistIsCaseInsensitive(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateProviderKeyURL_GigaChat(t *testing.T) {
+	tests := []struct {
+		name    string
+		key     schemas.Key
+		wantErr bool
+	}{
+		{
+			name: "credentials config without key value is valid",
+			key: schemas.Key{
+				GigaChatKeyConfig: &schemas.GigaChatKeyConfig{
+					Credentials: schemas.NewSecretVar("env.GIGACHAT_CREDENTIALS"),
+				},
+			},
+		},
+		{
+			name: "plain key value is valid",
+			key: schemas.Key{
+				Value: *schemas.NewSecretVar("legacy-api-key"),
+			},
+		},
+		{
+			name: "client certificate config without key value is valid",
+			key: schemas.Key{
+				GigaChatKeyConfig: &schemas.GigaChatKeyConfig{
+					CertFile: "/secure/client.pem",
+					KeyFile:  "/secure/client.key",
+				},
+			},
+		},
+		{
+			name:    "missing auth material is invalid",
+			key:     schemas.Key{},
+			wantErr: true,
+		},
+		{
+			name: "partial user password config is invalid",
+			key: schemas.Key{
+				GigaChatKeyConfig: &schemas.GigaChatKeyConfig{
+					User: schemas.NewSecretVar("env.GIGACHAT_USER"),
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "partial certificate config is invalid",
+			key: schemas.Key{
+				GigaChatKeyConfig: &schemas.GigaChatKeyConfig{
+					CertFile: "/tmp/client.crt",
+				},
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateProviderKeyURL(schemas.GigaChat, tt.key)
+			if tt.wantErr && err == nil {
+				t.Fatalf("expected error")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tt.key.GigaChatKeyConfig != nil && tt.key.GigaChatKeyConfig.Scope == "" {
+				t.Fatalf("expected default GigaChat scope to be applied")
+			}
+		})
+	}
+}

@@ -1175,6 +1175,7 @@ func TestTriggerMigrations_FreshDB(t *testing.T) {
 	for _, table := range criticalTables {
 		assert.True(t, migrator.HasTable(table), "table should exist: %T", table)
 	}
+	assert.True(t, migrator.HasColumn(&tables.TableKey{}, "gigachat_key_config_json"), "GigaChat key config column should exist")
 	assert.True(t, migrator.HasColumn(&tables.TableModelPricing{}, "is_deprecated"), "model pricing is_deprecated column should exist")
 }
 
@@ -2810,4 +2811,123 @@ func TestMigrationAddDualCredentialConflictBehaviorColumn(t *testing.T) {
 	// Idempotency: re-running the migration is a no-op and must not error.
 	require.NoError(t, migrationAddDualCredentialConflictBehaviorColumn(ctx, db, testMigrationLogger),
 		"re-running the migration should be idempotent")
+}
+
+func TestGenerateKeyHashGigaChatKeyConfigFields(t *testing.T) {
+	newKey := func() schemas.Key {
+		return schemas.Key{
+			Name:   "gigachat-key",
+			Value:  *schemas.NewSecretVar("unused"),
+			Weight: 1,
+			GigaChatKeyConfig: &schemas.GigaChatKeyConfig{
+				Credentials:  schemas.NewSecretVar("credentials"),
+				Scope:        schemas.DefaultGigaChatScope,
+				User:         schemas.NewSecretVar("user"),
+				Password:     schemas.NewSecretVar("password"),
+				AccessToken:  schemas.NewSecretVar("access-token"),
+				AuthURL:      "https://auth.example.com",
+				BaseURL:      "https://api.example.com",
+				CertFile:     "/tls/client.pem",
+				KeyFile:      "/tls/client.key",
+				CABundleFile: "/tls/ca.pem",
+			},
+		}
+	}
+
+	baseHash, err := GenerateKeyHash(newKey())
+	require.NoError(t, err)
+
+	tests := []struct {
+		name   string
+		mutate func(*schemas.GigaChatKeyConfig)
+	}{
+		{"credentials", func(config *schemas.GigaChatKeyConfig) { config.Credentials = schemas.NewSecretVar("new-credentials") }},
+		{"scope", func(config *schemas.GigaChatKeyConfig) { config.Scope = "GIGACHAT_API_CORP" }},
+		{"user", func(config *schemas.GigaChatKeyConfig) { config.User = schemas.NewSecretVar("new-user") }},
+		{"password", func(config *schemas.GigaChatKeyConfig) { config.Password = schemas.NewSecretVar("new-password") }},
+		{"access token", func(config *schemas.GigaChatKeyConfig) { config.AccessToken = schemas.NewSecretVar("new-access-token") }},
+		{"auth URL", func(config *schemas.GigaChatKeyConfig) { config.AuthURL = "https://new-auth.example.com" }},
+		{"base URL", func(config *schemas.GigaChatKeyConfig) { config.BaseURL = "https://new-api.example.com" }},
+		{"certificate file", func(config *schemas.GigaChatKeyConfig) { config.CertFile = "/tls/new-client.pem" }},
+		{"key file", func(config *schemas.GigaChatKeyConfig) { config.KeyFile = "/tls/new-client.key" }},
+		{"CA bundle file", func(config *schemas.GigaChatKeyConfig) { config.CABundleFile = "/tls/new-ca.pem" }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			key := newKey()
+			tt.mutate(key.GigaChatKeyConfig)
+			changedHash, err := GenerateKeyHash(key)
+			require.NoError(t, err)
+			require.NotEqual(t, baseHash, changedHash)
+		})
+	}
+}
+
+func TestMigrationAddGigaChatKeyConfigColumnBackfillsHashes(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, db.Exec(`CREATE TABLE migrations (id VARCHAR(255) PRIMARY KEY)`).Error)
+	require.NoError(t, db.Exec(`
+		CREATE TABLE config_keys (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name VARCHAR(255) NOT NULL UNIQUE,
+			provider_id INTEGER NOT NULL,
+			provider VARCHAR(50),
+			key_id VARCHAR(255) NOT NULL UNIQUE,
+			value TEXT NOT NULL,
+			models_json TEXT,
+			blacklisted_models_json TEXT,
+			weight REAL,
+			enabled BOOLEAN DEFAULT true,
+			created_at DATETIME NOT NULL,
+			updated_at DATETIME NOT NULL,
+			config_hash VARCHAR(255),
+			use_for_batch_api BOOLEAN DEFAULT false,
+			use_anthropic_endpoints BOOLEAN DEFAULT false,
+			status VARCHAR(50) DEFAULT 'unknown',
+			description TEXT,
+			encryption_status VARCHAR(20) DEFAULT 'plain_text'
+		)
+	`).Error)
+	require.False(t, db.Migrator().HasColumn(&tables.TableKey{}, "gigachat_key_config_json"),
+		"precondition: legacy config_keys schema must not contain gigachat_key_config_json")
+
+	now := time.Now()
+	require.NoError(t, db.Exec(`
+		INSERT INTO config_keys (
+			name, provider_id, provider, key_id, value, models_json, weight, enabled,
+			created_at, updated_at, config_hash, encryption_status
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`,
+		"gigachat-key", 1, string(schemas.GigaChat), "gigachat-key-id", "unused", `["*"]`, 1.0, true,
+		now, now, "stale-gigachat-hash", tables.EncryptionStatusPlainText,
+	).Error)
+	require.NoError(t, db.Exec(`
+		INSERT INTO config_keys (
+			name, provider_id, provider, key_id, value, models_json, weight, enabled,
+			created_at, updated_at, config_hash, encryption_status
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`,
+		"openai-key", 2, string(schemas.OpenAI), "openai-key-id", "sk-test", `["*"]`, 1.0, true,
+		now, now, "untouched-openai-hash", tables.EncryptionStatusPlainText,
+	).Error)
+
+	require.NoError(t, migrationAddGigaChatKeyConfigColumn(context.Background(), db, testMigrationLogger))
+	require.True(t, db.Migrator().HasColumn(&tables.TableKey{}, "gigachat_key_config_json"),
+		"migration should add gigachat_key_config_json to the legacy schema")
+
+	var migrated tables.TableKey
+	require.NoError(t, db.Where("key_id = ?", "gigachat-key-id").First(&migrated).Error)
+	expectedHash, err := GenerateKeyHash(schemaKeyFromTableKey(migrated))
+	require.NoError(t, err)
+	require.Equal(t, expectedHash, migrated.ConfigHash)
+	require.NotEqual(t, "stale-gigachat-hash", migrated.ConfigHash)
+
+	var untouched tables.TableKey
+	require.NoError(t, db.Where("key_id = ?", "openai-key-id").First(&untouched).Error)
+	require.Equal(t, "untouched-openai-hash", untouched.ConfigHash)
 }

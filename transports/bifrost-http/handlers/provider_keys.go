@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"strings"
 
 	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
@@ -481,6 +482,51 @@ func (h *ProviderHandler) mergeUpdatedKey(oldRawKey, updateKey schemas.Key) (sch
 		}
 	}
 
+	if mergedKey.GigaChatKeyConfig != nil {
+		var credentials, user, password, accessToken *schemas.SecretVar
+		var certFile, keyFile, caBundleFile string
+		if oldRawKey.GigaChatKeyConfig != nil {
+			credentials = oldRawKey.GigaChatKeyConfig.Credentials
+			user = oldRawKey.GigaChatKeyConfig.User
+			password = oldRawKey.GigaChatKeyConfig.Password
+			accessToken = oldRawKey.GigaChatKeyConfig.AccessToken
+			certFile = oldRawKey.GigaChatKeyConfig.CertFile
+			keyFile = oldRawKey.GigaChatKeyConfig.KeyFile
+			caBundleFile = oldRawKey.GigaChatKeyConfig.CABundleFile
+		}
+		for _, item := range []struct {
+			incoming *schemas.SecretVar
+			stored   *schemas.SecretVar
+			field    string
+		}{
+			{mergedKey.GigaChatKeyConfig.Credentials, credentials, "gigachat_key_config.credentials"},
+			{mergedKey.GigaChatKeyConfig.User, user, "gigachat_key_config.user"},
+			{mergedKey.GigaChatKeyConfig.Password, password, "gigachat_key_config.password"},
+			{mergedKey.GigaChatKeyConfig.AccessToken, accessToken, "gigachat_key_config.access_token"},
+		} {
+			if err := preserve(item.incoming, item.stored, item.field); err != nil {
+				return schemas.Key{}, err
+			}
+		}
+		for _, item := range []struct {
+			incoming *string
+			stored   string
+			field    string
+		}{
+			{&mergedKey.GigaChatKeyConfig.CertFile, certFile, "gigachat_key_config.cert_file"},
+			{&mergedKey.GigaChatKeyConfig.KeyFile, keyFile, "gigachat_key_config.key_file"},
+			{&mergedKey.GigaChatKeyConfig.CABundleFile, caBundleFile, "gigachat_key_config.ca_bundle_file"},
+		} {
+			if *item.incoming != "<REDACTED>" {
+				continue
+			}
+			if strings.TrimSpace(item.stored) == "" {
+				return schemas.Key{}, fmt.Errorf("masked preview cannot be used for %s without a stored value", item.field)
+			}
+			*item.incoming = item.stored
+		}
+	}
+
 	mergedKey.ConfigHash = oldRawKey.ConfigHash
 	mergedKey.Status = oldRawKey.Status
 
@@ -519,6 +565,15 @@ func validateProviderKeyURL(provider schemas.ModelProvider, key schemas.Key) err
 	case schemas.SGL:
 		if key.SGLKeyConfig == nil || !key.SGLKeyConfig.URL.IsSet() {
 			return fmt.Errorf("sgl_key_config.url is required for SGL keys")
+		}
+	case schemas.GigaChat:
+		if key.GigaChatKeyConfig != nil {
+			if err := key.GigaChatKeyConfig.Validate(); err != nil {
+				return err
+			}
+		}
+		if !key.Value.IsSet() && (key.GigaChatKeyConfig == nil || (!key.GigaChatKeyConfig.HasAuthMaterial() && !key.GigaChatKeyConfig.HasClientCertificateMaterial())) {
+			return fmt.Errorf("gigachat key requires value access token, gigachat_key_config bearer auth material, or gigachat_key_config mTLS client certificate material")
 		}
 	case schemas.Azure:
 		if key.AzureKeyConfig == nil || !key.AzureKeyConfig.Endpoint.IsSet() {

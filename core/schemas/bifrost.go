@@ -60,6 +60,7 @@ const (
 	Cerebras      ModelProvider = "cerebras"
 	DeepSeek      ModelProvider = "deepseek"
 	Gemini        ModelProvider = "gemini"
+	GigaChat      ModelProvider = "gigachat"
 	OpenRouter    ModelProvider = "openrouter"
 	Elevenlabs    ModelProvider = "elevenlabs"
 	HuggingFace   ModelProvider = "huggingface"
@@ -95,6 +96,7 @@ var StandardProviders = []ModelProvider{
 	Cohere,
 	DeepSeek,
 	Gemini,
+	GigaChat,
 	Groq,
 	Mistral,
 	Ollama,

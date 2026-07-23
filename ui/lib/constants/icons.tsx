@@ -594,6 +594,20 @@ export const ProviderIcons = {
 			</svg>
 		);
 	},
+	gigachat: ({ size = "md", className = "" }: IconProps) => {
+		const resolvedSize = resolveSize(size);
+		return (
+			<img
+				src="/images/gigachat.svg"
+				alt="GigaChat"
+				width={resolvedSize}
+				height={resolvedSize}
+				loading="lazy"
+				decoding="async"
+				className={className}
+			/>
+		);
+	},
 
 	openrouter: ({ size = "md", className = "" }: IconProps) => {
 		const resolvedSize = resolveSize(size);

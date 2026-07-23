@@ -1214,6 +1214,15 @@ func TestTableKey_AllProviderConfigs_EncryptDecrypt(t *testing.T) {
 			Region:       schemas.NewSecretVar("eu-west-1"),
 			ARN:          schemas.NewSecretVar("arn:aws:bedrock:eu-west-1:123:role"),
 		},
+		GigaChatKeyConfig: &schemas.GigaChatKeyConfig{
+			Credentials:  schemas.NewSecretVar("gigachat-credentials"),
+			Scope:        schemas.DefaultGigaChatScope,
+			BaseURL:      "https://api.giga.chat",
+			AuthURL:      "https://ngw.devices.sberbank.ru:9443/api/v2/oauth",
+			CertFile:     "/secure/client.pem",
+			KeyFile:      "/secure/client.key",
+			CABundleFile: "/secure/ca.pem",
+		},
 		BedrockMantleKeyConfig: &schemas.BedrockMantleKeyConfig{
 			AccessKey: *schemas.NewSecretVar("AKIA-MANTLE"),
 			SecretKey: *schemas.NewSecretVar("wJalr-MANTLE"),
@@ -1234,6 +1243,18 @@ func TestTableKey_AllProviderConfigs_EncryptDecrypt(t *testing.T) {
 	assert.NotEqual(t, "us-central1", raw["vertex_region"])
 	assert.NotEqual(t, "eu-west-1", raw["bedrock_region"])
 	assert.NotEqual(t, "arn:aws:bedrock:eu-west-1:123:role", raw["bedrock_arn"])
+	rawGigaChatVal := raw["gigachat_key_config_json"]
+	require.NotNil(t, rawGigaChatVal, "gigachat_key_config_json should be present in raw row")
+	var rawGigaChatStr string
+	switch v := rawGigaChatVal.(type) {
+	case string:
+		rawGigaChatStr = v
+	case []byte:
+		rawGigaChatStr = string(v)
+	}
+	require.NotEmpty(t, rawGigaChatStr, "gigachat_key_config_json should not be empty")
+	assert.NotContains(t, rawGigaChatStr, "gigachat-credentials")
+	assert.NotContains(t, rawGigaChatStr, "/secure/client.pem")
 	assert.NotEqual(t, "proj_mantle456", raw["bedrock_mantle_project_id"])
 	rawAliasesVal2 := raw["aliases_json"]
 	require.NotNil(t, rawAliasesVal2, "aliases_json should be present in raw row")
@@ -1275,6 +1296,16 @@ func TestTableKey_AllProviderConfigs_EncryptDecrypt(t *testing.T) {
 	assert.Equal(t, "eu-west-1", found.BedrockKeyConfig.Region.GetValue())
 	require.NotNil(t, found.BedrockKeyConfig.ARN)
 	assert.Equal(t, "arn:aws:bedrock:eu-west-1:123:role", found.BedrockKeyConfig.ARN.GetValue())
+
+	require.NotNil(t, found.GigaChatKeyConfig)
+	require.NotNil(t, found.GigaChatKeyConfig.Credentials)
+	assert.Equal(t, "gigachat-credentials", found.GigaChatKeyConfig.Credentials.GetValue())
+	assert.Equal(t, schemas.DefaultGigaChatScope, found.GigaChatKeyConfig.Scope)
+	assert.Equal(t, "https://api.giga.chat", found.GigaChatKeyConfig.BaseURL)
+	assert.Equal(t, "https://ngw.devices.sberbank.ru:9443/api/v2/oauth", found.GigaChatKeyConfig.AuthURL)
+	assert.Equal(t, "/secure/client.pem", found.GigaChatKeyConfig.CertFile)
+	assert.Equal(t, "/secure/client.key", found.GigaChatKeyConfig.KeyFile)
+	assert.Equal(t, "/secure/ca.pem", found.GigaChatKeyConfig.CABundleFile)
 
 	require.NotNil(t, found.BedrockMantleKeyConfig)
 	assert.Equal(t, "AKIA-MANTLE", found.BedrockMantleKeyConfig.AccessKey.GetValue())

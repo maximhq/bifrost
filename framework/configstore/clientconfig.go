@@ -665,6 +665,10 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			sglConfig.URL = *key.SGLKeyConfig.URL.Redacted()
 			redactedConfig.Keys[i].SGLKeyConfig = sglConfig
 		}
+
+		if key.GigaChatKeyConfig != nil {
+			redactedConfig.Keys[i].GigaChatKeyConfig = key.GigaChatKeyConfig.Redacted()
+		}
 	}
 	return &redactedConfig
 }
@@ -850,6 +854,14 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 	// Hash SGLKeyConfig
 	if key.SGLKeyConfig != nil {
 		data, err := sonic.Marshal(key.SGLKeyConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+	// Hash GigaChatKeyConfig
+	if key.GigaChatKeyConfig != nil {
+		data, err := sonic.Marshal(key.GigaChatKeyConfig)
 		if err != nil {
 			return "", err
 		}

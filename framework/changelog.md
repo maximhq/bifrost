@@ -1,0 +1,1 @@
+- fix: include GigaChat authentication and TLS configuration in key reconciliation hashes [@krakenalt](https://github.com/krakenalt)

@@ -142,6 +142,7 @@
                   "providers/supported-providers/elevenlabs",
                   "providers/supported-providers/fireworks",
                   "providers/supported-providers/gemini",
+                  "providers/supported-providers/gigachat",
                   "providers/supported-providers/groq",
                   "providers/supported-providers/huggingface",
                   "providers/supported-providers/mistral",

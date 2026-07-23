@@ -5983,6 +5983,9 @@ func (c *Config) GetAllKeys() ([]configstoreTables.TableKey, error) {
 				cfg.URL = *cfg.URL.Redacted()
 				configStoreKey.SGLKeyConfig = &cfg
 			}
+			if key.GigaChatKeyConfig != nil {
+				configStoreKey.GigaChatKeyConfig = key.GigaChatKeyConfig.Redacted()
+			}
 			keys = append(keys, configStoreKey)
 		}
 	}

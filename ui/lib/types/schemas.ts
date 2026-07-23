@@ -74,6 +74,10 @@ function isSecretVarSet(v: { value?: string; ref?: string } | undefined): boolea
 	return !!v.value?.trim() || !!v.ref?.trim();
 }
 
+function isStringSet(v: string | undefined): boolean {
+	return !!v?.trim();
+}
+
 // Azure key config schema
 export const azureKeyConfigSchema = z
 	.object({
@@ -266,6 +270,59 @@ export const sglKeyConfigSchema = z
 		path: ["url"],
 	});
 
+// GigaChat key config schema
+export const gigachatKeyConfigSchema = z
+	.object({
+		_auth_type: z.enum(["credentials", "access_token", "password", "mtls"]).optional(),
+		credentials: secretVarSchema.optional(),
+		scope: z.string().optional(),
+		user: secretVarSchema.optional(),
+		password: secretVarSchema.optional(),
+		access_token: secretVarSchema.optional(),
+		auth_url: z.string().optional(),
+		base_url: z.string().optional(),
+		cert_file: z.string().optional(),
+		key_file: z.string().optional(),
+		ca_bundle_file: z.string().optional(),
+	})
+	.superRefine((data, ctx) => {
+		const hasUser = isSecretVarSet(data.user);
+		const hasPassword = isSecretVarSet(data.password);
+		if (hasUser !== hasPassword) {
+			ctx.addIssue({
+				code: "custom",
+				message: "User and password must be set together",
+				path: hasUser ? ["password"] : ["user"],
+			});
+		}
+
+		const hasCertFile = isStringSet(data.cert_file);
+		const hasKeyFile = isStringSet(data.key_file);
+		if (hasCertFile !== hasKeyFile) {
+			ctx.addIssue({
+				code: "custom",
+				message: "Cert file and key file must be set together",
+				path: hasCertFile ? ["key_file"] : ["cert_file"],
+			});
+		}
+	});
+
+type GigaChatKeyConfigSchema = z.infer<typeof gigachatKeyConfigSchema>;
+
+function isGigaChatAuthConfigured(config: GigaChatKeyConfigSchema | undefined): boolean {
+	if (!config) return false;
+	return (
+		isSecretVarSet(config.credentials) ||
+		isSecretVarSet(config.access_token) ||
+		(isSecretVarSet(config.user) && isSecretVarSet(config.password))
+	);
+}
+
+function isGigaChatMTLSConfigured(config: GigaChatKeyConfigSchema | undefined): boolean {
+	if (!config) return false;
+	return isStringSet(config.cert_file) && isStringSet(config.key_file);
+}
+
 // Model family enum schema — must mirror schemas.ModelFamily in Go.
 export const modelFamilySchema = z.enum([
 	"anthropic",
@@ -349,6 +406,7 @@ export const modelProviderKeySchema = z
 		replicate_key_config: replicateKeyConfigSchema.optional(),
 		ollama_key_config: ollamaKeyConfigSchema.optional(),
 		sgl_key_config: sglKeyConfigSchema.optional(),
+		gigachat_key_config: gigachatKeyConfigSchema.optional(),
 		use_for_batch_api: z.boolean().optional(),
 		use_anthropic_endpoints: z.boolean().optional(),
 		enabled: z.boolean().optional(),
@@ -358,6 +416,14 @@ export const modelProviderKeySchema = z
 			// Providers with dedicated config that never need a top-level API key
 			if (data.vllm_key_config || data.replicate_key_config || data.ollama_key_config || data.sgl_key_config) {
 				return true;
+			}
+			// GigaChat can use OAuth credentials, access token, user/password, mTLS, or a top-level token.
+			if (data.gigachat_key_config) {
+				return (
+					isGigaChatAuthConfigured(data.gigachat_key_config) ||
+					isGigaChatMTLSConfigured(data.gigachat_key_config) ||
+					isSecretVarSet(data.value)
+				);
 			}
 			// Bedrock Mantle authenticates via SigV4 (its key config) or a Bearer key — only require
 			// a top-level API key when the user explicitly chose the api_key auth method.
