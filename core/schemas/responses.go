@@ -1202,17 +1202,8 @@ const (
 	ResponsesMessageTypeItemReference        ResponsesMessageType = "item_reference"
 	ResponsesMessageTypeRefusal              ResponsesMessageType = "refusal"
 	ResponsesMessageTypeCompaction           ResponsesMessageType = "compaction"
-	// Codex deferred-tool discovery (tool_search) and code-mode tool
-	// declarations (additional_tools). OpenAI's Responses API supports these
-	// item types natively; Bifrost preserves them verbatim because its typed
-	// schema doesn't model them (tool_search_call's `arguments` is a JSON
-	// object — unlike function_call's string — and tool_search_output /
-	// additional_tools carry `tools` arrays whose entries don't fit any typed
-	// tool shape). See ResponsesMessage's (Un)MarshalJSON.
-	ResponsesMessageTypeToolSearchCall   ResponsesMessageType = "tool_search_call"
-	ResponsesMessageTypeToolSearchOutput ResponsesMessageType = "tool_search_output"
-	ResponsesMessageTypeAdditionalTools  ResponsesMessageType = "additional_tools"
-	ResponsesMessageTypeAdvisorCall      ResponsesMessageType = "advisor_call" // Anthropic advisor server tool (server_tool_use + advisor_tool_result)
+	ResponsesMessageTypeAdditionalTools      ResponsesMessageType = "additional_tools"
+	ResponsesMessageTypeAdvisorCall          ResponsesMessageType = "advisor_call" // Anthropic advisor server tool (server_tool_use + advisor_tool_result)
 )
 
 // ResponsesMessage is a union type that can contain different types of input items
@@ -1340,17 +1331,6 @@ func (m *ResponsesMessage) setToolArguments(raw json.RawMessage) {
 		m.ResponsesToolMessage = &ResponsesToolMessage{}
 	}
 	m.Arguments = &args
-}
-
-// MarshalJSON re-emits preserved tool_search items verbatim and defers every
-// other item type to the default (sorted-key) struct encoding.
-
-func (m ResponsesMessage) MarshalJSON() ([]byte, error) {
-	if m.rawPreserved != nil {
-		return m.rawPreserved, nil
-	}
-	type alias ResponsesMessage
-	return MarshalSorted(alias(m))
 }
 
 // responsesToolArgumentsToString normalizes a function/tool-call `arguments`
