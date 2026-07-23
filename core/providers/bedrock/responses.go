@@ -1797,7 +1797,7 @@ func ToBedrockConverseStreamResponse(bifrostResp *schemas.BifrostResponsesStream
 			if bifrostResp.Response.StopReason != nil {
 				stopReason = convertBifrostToBedrockStopReason(*bifrostResp.Response.StopReason)
 			} else if bifrostResp.Response.IncompleteDetails != nil {
-				stopReason = bifrostResp.Response.IncompleteDetails.Reason
+				stopReason = convertIncompleteReasonToBedrockStopReason(bifrostResp.Response.IncompleteDetails.Reason)
 			} else {
 				for _, msg := range bifrostResp.Response.Output {
 					if msg.Type != nil && *msg.Type == schemas.ResponsesMessageTypeFunctionCall {
@@ -2822,7 +2822,7 @@ func ToBedrockConverseResponse(bifrostResp *schemas.BifrostResponsesResponse) (*
 	if bifrostResp.StopReason != nil {
 		stopReason = convertBifrostToBedrockStopReason(*bifrostResp.StopReason)
 	} else if bifrostResp.IncompleteDetails != nil {
-		stopReason = bifrostResp.IncompleteDetails.Reason
+		stopReason = convertIncompleteReasonToBedrockStopReason(bifrostResp.IncompleteDetails.Reason)
 	} else if hasToolUse {
 		stopReason = "tool_use"
 	}

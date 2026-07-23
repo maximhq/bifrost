@@ -156,6 +156,40 @@ func TestConverseStreamEndTurnStopReason(t *testing.T) {
 	}
 }
 
+// TestConverseStreamIncompleteDetailsStopReason covers completed responses that
+// carry no StopReason but flag truncation or filtering via IncompleteDetails:
+// the reason must be translated to Bedrock's stopReason vocabulary, not passed
+// through verbatim.
+func TestConverseStreamIncompleteDetailsStopReason(t *testing.T) {
+	for reason, want := range map[string]string{
+		schemas.ResponsesResponseIncompleteReasonMaxOutputTokens: "max_tokens",
+		schemas.ResponsesResponseIncompleteReasonContentFilter:   "content_filtered",
+	} {
+		t.Run(reason, func(t *testing.T) {
+			chunks := []*schemas.BifrostResponsesStreamResponse{
+				{Type: schemas.ResponsesStreamResponseTypeCreated},
+				{
+					Type:         schemas.ResponsesStreamResponseTypeOutputTextDelta,
+					ContentIndex: schemas.Ptr(0),
+					Delta:        schemas.Ptr("truncat"),
+				},
+				{
+					Type: schemas.ResponsesStreamResponseTypeCompleted,
+					Response: &schemas.BifrostResponsesResponse{
+						IncompleteDetails: &schemas.ResponsesResponseIncompleteDetails{Reason: reason},
+					},
+				},
+			}
+
+			events := encodeConverseStream(t, chunks)
+
+			if got := messageStopReason(t, events); got != want {
+				t.Errorf("messageStop stopReason: want %q, got %q", want, got)
+			}
+		})
+	}
+}
+
 // TestConverseStreamLengthStopReason ensures a truncation stop reason maps to
 // Bedrock's max_tokens on messageStop.
 func TestConverseStreamLengthStopReason(t *testing.T) {
