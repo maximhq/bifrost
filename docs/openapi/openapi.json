@@ -39885,13 +39885,24 @@
       "get": {
         "operationId": "getModelParameters",
         "summary": "Get model parameters",
-        "description": "Returns the available parameter definitions for models.",
+        "description": "Returns the available parameter definitions for a model. The model ID is resolved against the model-parameters catalog with fallbacks, so provider-qualified IDs returned by /v1/models (e.g. \"openai/gpt-4o\", \"openrouter/openai/gpt-4o\") and bare aliases of provider-qualified catalog entries resolve to the same record as the stored key.",
         "tags": [
           "Providers"
         ],
         "security": [
           {
             "ManagementBearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "model",
+            "in": "query",
+            "required": true,
+            "description": "Model ID to get parameters for; provider-qualified IDs are resolved automatically",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -39902,6 +39913,16 @@
                 "schema": {
                   "type": "object",
                   "additionalProperties": true
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
                 }
               }
             }
@@ -65837,6 +65858,27 @@
               },
               "frequency_penalty": {
                 "type": "number"
+              }
+            }
+          },
+          "reasoning": {
+            "type": "object",
+            "description": "Reasoning capabilities advertised by the provider's list-models API (e.g. OpenRouter's per-model reasoning object). Fields are omitted when the provider does not report them; supported_efforts and default_effort are absent for models whose reasoning has no selectable effort level.",
+            "properties": {
+              "mandatory": {
+                "type": "boolean"
+              },
+              "default_enabled": {
+                "type": "boolean"
+              },
+              "supported_efforts": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "default_effort": {
+                "type": "string"
               }
             }
           },
