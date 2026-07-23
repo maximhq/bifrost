@@ -261,6 +261,7 @@ const (
 	BifrostContextKeyNumberOfRetries                     BifrostContextKey = "bifrost-number-of-retries"              // int (to store the number of retries (set by bifrost - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyFallbackIndex                       BifrostContextKey = "bifrost-fallback-index"                 // int (to store the fallback index (set by bifrost - DO NOT SET THIS MANUALLY)) 0 for primary, 1 for first fallback, etc.
 	BifrostContextKeyResolvedAlias                       BifrostContextKey = "bifrost-resolved-alias"                 // *ResolvedAlias (set by bifrost after key-level alias resolution — providers read this for model_family routing and provider-specific overrides; nil/absent when no alias matched)
+	BifrostContextKeyRoutingInfo                         BifrostContextKey = "bifrost-routing-info"                   // RoutingInfo (set by bifrost per stream attempt - DO NOT SET THIS MANUALLY) - streams carry RoutingInfo only on chunks, so the transport reads this snapshot to emit routed-identity response headers before the first chunk
 	BifrostContextKeyStreamEndIndicator                  BifrostContextKey = "bifrost-stream-end-indicator"           // bool (set by bifrost - DO NOT SET THIS MANUALLY)
 	BifrostContextKeyStreamGated                         BifrostContextKey = "bifrost-stream-gated"                   // bool (set by ctx.PauseStream/ResumeStream/EndStream when a plugin first engages the pause/resume gate; provider helpers use this as a fast-path check to skip Tracer.GateSend on streams that never engage the gate)
 	BifrostContextKeyStreamIdleTimeout                   BifrostContextKey = "bifrost-stream-idle-timeout"            // time.Duration (per-chunk idle timeout for streaming)
@@ -1255,6 +1256,19 @@ func (e *BifrostError) PopulateRoutingInfo(info RoutingInfo) {
 	}
 	e.ExtraFields.RoutingInfo = info
 	syncDeprecatedFromRoutingInfo(info, &e.ExtraFields.Provider, &e.ExtraFields.OriginalModelRequested, &e.ExtraFields.ResolvedModelUsed)
+}
+
+// ToExtraFields builds a response-shaped ExtraFields snapshot from a finalized
+// RoutingInfo, deriving the deprecated triplet via the same rules as the
+// response path. Used by the transport to emit routed-identity headers for
+// streams, where per-chunk ExtraFields don't exist yet at header-write time.
+func (ri RoutingInfo) ToExtraFields(requestType RequestType) BifrostResponseExtraFields {
+	extra := BifrostResponseExtraFields{
+		RequestType: requestType,
+		RoutingInfo: ri,
+	}
+	syncDeprecatedFromRoutingInfo(ri, &extra.Provider, &extra.OriginalModelRequested, &extra.ResolvedModelUsed)
+	return extra
 }
 
 // SetFallbackRoutingInfo marks the active sub-response's RoutingInfo as a

@@ -55,6 +55,23 @@ const (
 	HeaderBifrostRoutingInfoServerSideFallbackModel = "x-bifrost-routing-info-server-side-fallback-model"
 )
 
+// ApplyBifrostStreamResponseHeaders emits the routed-identity headers for a
+// streaming response, before the first SSE write. Streams only carry
+// ExtraFields on chunks — none exist at header-write time — so the identity
+// comes from the RoutingInfo snapshot core stashes in the context at stream
+// setup (BifrostContextKeyRoutingInfo). Absent snapshot (e.g. a plugin
+// short-circuited the stream) emits only the request-type header.
+func ApplyBifrostStreamResponseHeaders(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, requestType schemas.RequestType) {
+	if bifrostCtx == nil {
+		return
+	}
+	extra := schemas.BifrostResponseExtraFields{RequestType: requestType}
+	if ri, ok := bifrostCtx.Value(schemas.BifrostContextKeyRoutingInfo).(schemas.RoutingInfo); ok {
+		extra = ri.ToExtraFields(requestType)
+	}
+	ApplyBifrostResponseHeaders(ctx, bifrostCtx, extra)
+}
+
 // ApplyBifrostResponseHeaders writes both the upstream provider response
 // headers (forwarded verbatim) and the bifrost-level `x-bifrost-*` routing
 // identity headers onto the fasthttp response. Empty fields are skipped so
