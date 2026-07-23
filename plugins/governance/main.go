@@ -1337,6 +1337,9 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		// filter models which are not supported on this virtual key
 		result.ListModelsResponse.Data = p.filterModelsForVirtualKey(ctx, result.ListModelsResponse.Data, virtualKey)
 	}
+	if requestType == schemas.ListInferenceProfilesRequest && result != nil && result.ListInferenceProfilesResponse != nil && virtualKey != "" {
+		result.ListInferenceProfilesResponse.InferenceProfileSummaries = p.filterInferenceProfilesForVirtualKey(ctx, result.ListInferenceProfilesResponse.InferenceProfileSummaries, virtualKey)
+	}
 
 	isFinalChunk := bifrost.IsFinalChunk(ctx)
 

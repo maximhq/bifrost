@@ -323,6 +323,8 @@ func (pc *ProxyConfig) Redacted() *ProxyConfig {
 // A non-nil value only allows fields set to true; omitted or false fields are disallowed.
 type AllowedRequests struct {
 	ListModels            bool `json:"list_models"`
+	ListInferenceProfiles bool `json:"list_inference_profiles"`
+	GetInferenceProfile   bool `json:"get_inference_profile"`
 	TextCompletion        bool `json:"text_completion"`
 	TextCompletionStream  bool `json:"text_completion_stream"`
 	ChatCompletion        bool `json:"chat_completion"`
@@ -393,6 +395,10 @@ func (ar *AllowedRequests) IsOperationAllowed(operation RequestType) bool {
 	switch operation {
 	case ListModelsRequest:
 		return ar.ListModels
+	case ListInferenceProfilesRequest:
+		return ar.ListInferenceProfiles
+	case GetInferenceProfileRequest:
+		return ar.GetInferenceProfile
 	case TextCompletionRequest:
 		return ar.TextCompletion
 	case TextCompletionStreamRequest:
@@ -727,6 +733,15 @@ type Provider interface {
 	Passthrough(ctx *BifrostContext, key Key, req *BifrostPassthroughRequest) (*BifrostPassthroughResponse, *BifrostError)
 	// PassthroughStream executes a streaming passthrough, forwarding raw response bytes as BifrostStreamChunks.
 	PassthroughStream(ctx *BifrostContext, postHookRunner PostHookRunner, postHookSpanFinalizer func(context.Context), key Key, req *BifrostPassthroughRequest) (chan *BifrostStreamChunk, *BifrostError)
+}
+
+// InferenceProfileProvider is an optional provider capability for AWS Bedrock's
+// control-plane inference profile APIs. It is intentionally separate from the
+// broad Provider interface because inference profiles are not a cross-provider
+// primitive.
+type InferenceProfileProvider interface {
+	ListInferenceProfiles(ctx *BifrostContext, keys []Key, request *BifrostListInferenceProfilesRequest) (*BifrostListInferenceProfilesResponse, *BifrostError)
+	GetInferenceProfile(ctx *BifrostContext, key Key, request *BifrostGetInferenceProfileRequest) (*BifrostGetInferenceProfileResponse, *BifrostError)
 }
 
 // ResponsesLifecycleProvider is an optional interface for OpenAI-style Responses API

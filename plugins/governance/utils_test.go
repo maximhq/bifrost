@@ -3,8 +3,18 @@ package governance
 import (
 	"testing"
 
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
+
+func TestIsModelRequiredForRequest_InferenceProfiles(t *testing.T) {
+	if IsModelRequiredForRequest(schemas.ListInferenceProfilesRequest) {
+		t.Fatal("listing inference profiles must not require a model")
+	}
+	if !IsModelRequiredForRequest(schemas.GetInferenceProfileRequest) {
+		t.Fatal("getting an inference profile must enforce model policy")
+	}
+}
 
 // A virtual key presented via Azure's native "api-key" header (used by the
 // Azure OpenAI SDK on passthrough) must be parsed the same way as the HTTP

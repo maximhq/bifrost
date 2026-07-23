@@ -178,6 +178,14 @@ type RequestConverter func(ctx *schemas.BifrostContext, req interface{}) (*schem
 // It takes a BifrostListModelsResponse and returns the format expected by the specific integration.
 type ListModelsResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostListModelsResponse) (interface{}, error)
 
+// ListInferenceProfilesResponseConverter converts a Bifrost inference-profile
+// list response to the format expected by an integration.
+type ListInferenceProfilesResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostListInferenceProfilesResponse) (interface{}, error)
+
+// GetInferenceProfileResponseConverter converts a Bifrost inference-profile
+// detail response to the format expected by an integration.
+type GetInferenceProfileResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostGetInferenceProfileResponse) (interface{}, error)
+
 // TextResponseConverter is a function that converts BifrostTextCompletionResponse to integration-specific format.
 // It takes a BifrostTextCompletionResponse and returns the format expected by the specific integration.
 type TextResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostTextCompletionResponse) (interface{}, error)
@@ -461,6 +469,8 @@ type RouteConfig struct {
 	CachedContentUpdateResponseConverter   CachedContentUpdateResponseConverter   // Optional response converter for cached content update
 	CachedContentDeleteResponseConverter   CachedContentDeleteResponseConverter   // Optional response converter for cached content delete
 	ListModelsResponseConverter            ListModelsResponseConverter            // Function to convert BifrostListModelsResponse to integration format (SHOULD NOT BE NIL)
+	ListInferenceProfilesResponseConverter ListInferenceProfilesResponseConverter // Function to convert BifrostListInferenceProfilesResponse to integration format
+	GetInferenceProfileResponseConverter   GetInferenceProfileResponseConverter   // Function to convert BifrostGetInferenceProfileResponse to integration format
 	TextResponseConverter                  TextResponseConverter                  // Function to convert BifrostTextCompletionResponse to integration format (SHOULD NOT BE NIL)
 	ChatResponseConverter                  ChatResponseConverter                  // Function to convert BifrostChatResponse to integration format (SHOULD NOT BE NIL)
 	AsyncChatResponseConverter             AsyncChatResponseConverter             // Function to convert AsyncJobResponse to integration format (SHOULD NOT BE NIL)
@@ -957,6 +967,42 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 
 		response, err = config.ListModelsResponseConverter(bifrostCtx, listModelsResponse)
 		bifrostExtraFields = listModelsResponse.ExtraFields
+	case bifrostReq.ListInferenceProfilesRequest != nil:
+		listInferenceProfilesResponse, bifrostErr := g.client.ListInferenceProfilesRequest(bifrostCtx, bifrostReq.ListInferenceProfilesRequest)
+		if bifrostErr != nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
+			return
+		}
+		if config.PostCallback != nil {
+			if err := config.PostCallback(ctx, req, listInferenceProfilesResponse); err != nil {
+				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to execute post-request callback"))
+				return
+			}
+		}
+		if listInferenceProfilesResponse == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Bifrost inference profiles response is nil after post-request callback"))
+			return
+		}
+		response, err = config.ListInferenceProfilesResponseConverter(bifrostCtx, listInferenceProfilesResponse)
+		bifrostExtraFields = listInferenceProfilesResponse.ExtraFields
+	case bifrostReq.GetInferenceProfileRequest != nil:
+		getInferenceProfileResponse, bifrostErr := g.client.GetInferenceProfileRequest(bifrostCtx, bifrostReq.GetInferenceProfileRequest)
+		if bifrostErr != nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
+			return
+		}
+		if config.PostCallback != nil {
+			if err := config.PostCallback(ctx, req, getInferenceProfileResponse); err != nil {
+				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to execute post-request callback"))
+				return
+			}
+		}
+		if getInferenceProfileResponse == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Bifrost inference profile response is nil after post-request callback"))
+			return
+		}
+		response, err = config.GetInferenceProfileResponseConverter(bifrostCtx, getInferenceProfileResponse)
+		bifrostExtraFields = getInferenceProfileResponse.ExtraFields
 	case bifrostReq.TextCompletionRequest != nil:
 		textCompletionResponse, bifrostErr := g.client.TextCompletionRequest(bifrostCtx, bifrostReq.TextCompletionRequest)
 		if bifrostErr != nil {

@@ -168,12 +168,14 @@ func Test_createBedrockRouteConfigs(t *testing.T) {
 	handlerStore := &mockHandlerStore{}
 	routes := CreateBedrockRouteConfigs("/bedrock", handlerStore)
 
-	assert.Len(t, routes, 6, "should have 6 bedrock routes")
+	assert.Len(t, routes, 8, "should have 8 bedrock routes")
 
 	expectedRoutes := []struct {
 		path   string
 		method string
 	}{
+		{"/bedrock/inference-profiles", "GET"},
+		{"/bedrock/inference-profiles/{inferenceProfileIdentifier}", "GET"},
 		{"/bedrock/model/{modelId}/converse", "POST"},
 		{"/bedrock/model/{modelId}/converse-stream", "POST"},
 		{"/bedrock/model/{modelId}/invoke-with-response-stream", "POST"},
@@ -189,6 +191,78 @@ func Test_createBedrockRouteConfigs(t *testing.T) {
 		assert.NotNil(t, routes[i].GetRequestTypeInstance, "route %d GetRequestTypeInstance should not be nil", i)
 		assert.NotNil(t, routes[i].ErrorConverter, "route %d ErrorConverter should not be nil", i)
 	}
+}
+
+func TestBedrockListInferenceProfilesRouteConfig(t *testing.T) {
+	route := createBedrockListInferenceProfilesRouteConfig("/bedrock")
+	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	validCases := []struct {
+		name        string
+		query       string
+		maxResults  int
+		nextToken   string
+		profileType string
+	}{
+		{name: "system defined", query: "maxResults=1&nextToken=next-page&type=SYSTEM_DEFINED", maxResults: 1, nextToken: "next-page", profileType: "SYSTEM_DEFINED"},
+		{name: "application", query: "maxResults=1000&type=APPLICATION", maxResults: 1000, profileType: "APPLICATION"},
+	}
+	for _, tt := range validCases {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.URI().SetQueryString(tt.query)
+			req := route.GetRequestTypeInstance(context.Background()).(*bedrockListInferenceProfilesRequest)
+
+			require.NoError(t, route.PreCallback(ctx, bifrostCtx, req))
+			converted, err := route.RequestConverter(bifrostCtx, req)
+			require.NoError(t, err)
+			require.NotNil(t, converted.ListInferenceProfilesRequest)
+			assert.Equal(t, schemas.Bedrock, converted.ListInferenceProfilesRequest.Provider)
+			require.NotNil(t, converted.ListInferenceProfilesRequest.MaxResults)
+			assert.Equal(t, tt.maxResults, *converted.ListInferenceProfilesRequest.MaxResults)
+			if tt.nextToken == "" {
+				assert.Nil(t, converted.ListInferenceProfilesRequest.NextToken)
+			} else {
+				require.NotNil(t, converted.ListInferenceProfilesRequest.NextToken)
+				assert.Equal(t, tt.nextToken, *converted.ListInferenceProfilesRequest.NextToken)
+			}
+			require.NotNil(t, converted.ListInferenceProfilesRequest.Type)
+			assert.Equal(t, tt.profileType, *converted.ListInferenceProfilesRequest.Type)
+		})
+	}
+
+	for _, query := range []string{"maxResults=0", "maxResults=-1", "maxResults=1001", "maxResults=not-a-number", "type=OTHER"} {
+		t.Run("rejects "+query, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.URI().SetQueryString(query)
+			req := route.GetRequestTypeInstance(context.Background()).(*bedrockListInferenceProfilesRequest)
+			assert.Error(t, route.PreCallback(ctx, bifrostCtx, req))
+		})
+	}
+}
+
+func TestBedrockGetInferenceProfileRouteConfig(t *testing.T) {
+	route := createBedrockGetInferenceProfileRouteConfig("/bedrock")
+	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	t.Run("requires identifier", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		req := route.GetRequestTypeInstance(context.Background()).(*bedrockGetInferenceProfileRequest)
+		assert.Error(t, route.PreCallback(ctx, bifrostCtx, req))
+	})
+
+	t.Run("decodes and converts identifier", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.SetUserValue("inferenceProfileIdentifier", "us.anthropic.claude%2Fsonnet")
+		req := route.GetRequestTypeInstance(context.Background()).(*bedrockGetInferenceProfileRequest)
+
+		require.NoError(t, route.PreCallback(ctx, bifrostCtx, req))
+		converted, err := route.RequestConverter(bifrostCtx, req)
+		require.NoError(t, err)
+		require.NotNil(t, converted.GetInferenceProfileRequest)
+		assert.Equal(t, schemas.Bedrock, converted.GetInferenceProfileRequest.Provider)
+		assert.Equal(t, "us.anthropic.claude/sonnet", converted.GetInferenceProfileRequest.InferenceProfileIdentifier)
+	})
 }
 
 func Test_createBedrockConverseRouteConfig(t *testing.T) {
