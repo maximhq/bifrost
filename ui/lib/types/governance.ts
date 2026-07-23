@@ -391,6 +391,7 @@ export interface GetModelConfigsParams {
 	offset?: number;
 	search?: string;
 	scope?: string;
+	scope_id?: string;
 	provider?: string;
 }
 
