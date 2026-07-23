@@ -1740,3 +1740,26 @@ func TestSonic_ResponsesStreamCompleted_CapturesPromptCacheAndCacheWrite(t *test
 	assert.Equal(t, 80, stream.Response.Usage.InputTokensDetails.CachedWriteTokens)
 	assert.Equal(t, 1920, stream.Response.Usage.InputTokensDetails.CachedReadTokens)
 }
+
+// --- ChatContentBlock video_url ---
+
+// Regression: video_url content parts (vLLM/Qwen-style multimodal video input)
+// previously had no struct field, so the payload was silently dropped at
+// unmarshal and OpenAI-compatible backends received `{"type":"video_url"}`
+// with no body, failing validation ("video_url Field required").
+func TestSonic_ChatContentBlock_VideoURLRoundTrip(t *testing.T) {
+	input := `{"type":"video_url","video_url":{"url":"data:video/mp4;base64,AAAA"}}`
+
+	var block ChatContentBlock
+	err := Unmarshal([]byte(input), &block)
+	require.NoError(t, err)
+
+	assert.Equal(t, ChatContentBlockTypeVideo, block.Type)
+	require.NotNil(t, block.VideoURLStruct, "video_url payload must survive unmarshal")
+	assert.Equal(t, "data:video/mp4;base64,AAAA", block.VideoURLStruct.URL)
+
+	output, err := Marshal(block)
+	require.NoError(t, err)
+	assert.Contains(t, string(output), `"video_url"`)
+	assert.Contains(t, string(output), `data:video/mp4;base64,AAAA`)
+}
