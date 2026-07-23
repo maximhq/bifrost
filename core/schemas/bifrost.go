@@ -1766,6 +1766,32 @@ const (
 	ProviderConnectionFailed = "provider_connection_failed"
 )
 
+// Canonical BifrostError.Error.Type vocabulary — OpenAI's own error.type/code
+// values (per OpenAI's published OpenAPI spec), used as the pivot vocabulary every
+// provider/plugin's raw error is normalized onto (Stage 1), and translated
+// back out of for non-OpenAI routes (Stage 2). Constants marked
+// no_openai_equivalent are Bifrost-internal conditions OpenAI has no concept
+// of (governance policy, internal connection failures) — still routed through
+// this same field so Stage 2 translators have one thing to switch on.
+const (
+	ErrorTypeInvalidRequest         = "invalid_request_error"
+	ErrorTypeContextLengthExceeded  = "context_length_exceeded"
+	ErrorTypeContentPolicyViolation = "content_policy_violation"
+	ErrorTypeAuthentication         = "authentication_error"
+	ErrorTypePermissionDenied       = "permission_denied"
+	ErrorTypeNotFound               = "not_found_error"
+	ErrorTypeRateLimitExceeded      = "rate_limit_exceeded"
+	ErrorTypeInsufficientQuota      = "insufficient_quota"
+	ErrorTypeUnprocessableEntity    = "unprocessable_entity"
+	ErrorTypeRequestTimeout         = "request_timeout"
+	ErrorTypeServerError            = "server_error"
+	ErrorTypeServiceUnavailable     = "service_unavailable"
+	ErrorTypeBadGateway             = "bad_gateway"               // no_openai_equivalent
+	ErrorTypeAPIConnection          = "api_connection_error"      // no_openai_equivalent
+	ErrorTypeResponseValidation     = "response_validation_error" // no_openai_equivalent
+	ErrorTypeGovernanceBlocked      = "governance_blocked"        // no_openai_equivalent
+)
+
 // BifrostStreamChunk represents a stream of responses from the Bifrost system.
 // Either BifrostResponse or BifrostError will be non-nil.
 type BifrostStreamChunk struct {

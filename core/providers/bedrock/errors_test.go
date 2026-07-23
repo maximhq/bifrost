@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -36,8 +37,11 @@ func TestExecuteBedrockRequest_SurfacesExceptionType(t *testing.T) {
 	require.NotNil(t, bifrostErr.Type, "top-level type must be recovered from the header")
 	assert.Equal(t, "ResourceNotFoundException", *bifrostErr.Type)
 	require.NotNil(t, bifrostErr.Error)
+	// error.type now carries the OpenAI-canonical value (Stage 1 normalization,
+	// see normalizeBedrockErrorType) rather than the raw AWS exception name —
+	// top-level .Type above still carries the raw name unchanged.
 	require.NotNil(t, bifrostErr.Error.Type, "nested error.type must be populated for OpenAI-shaped consumers")
-	assert.Equal(t, "ResourceNotFoundException", *bifrostErr.Error.Type)
+	assert.Equal(t, "not_found_error", *bifrostErr.Error.Type)
 	assert.Contains(t, bifrostErr.Error.Message, "reached the end of its life")
 }
 
@@ -95,8 +99,9 @@ func TestParseBedrockHTTPError_PopulatesNestedErrorType(t *testing.T) {
 	require.NotNil(t, bifrostErr.Type)
 	assert.Equal(t, "ValidationException", *bifrostErr.Type, "top-level type must still be set")
 	require.NotNil(t, bifrostErr.Error)
+	// error.type now carries the OpenAI-canonical value (Stage 1 normalization).
 	require.NotNil(t, bifrostErr.Error.Type, "nested error.type must be populated for OpenAI-shaped consumers")
-	assert.Equal(t, "ValidationException", *bifrostErr.Error.Type)
+	assert.Equal(t, "invalid_request_error", *bifrostErr.Error.Type)
 }
 
 // TestParseBedrockHTTPError_NestedTypeFromBodyType verifies the nested
@@ -109,8 +114,9 @@ func TestParseBedrockHTTPError_NestedTypeFromBodyType(t *testing.T) {
 
 	require.NotNil(t, bifrostErr)
 	require.NotNil(t, bifrostErr.Error)
+	// error.type now carries the OpenAI-canonical value (Stage 1 normalization).
 	require.NotNil(t, bifrostErr.Error.Type)
-	assert.Equal(t, "ThrottlingException", *bifrostErr.Error.Type)
+	assert.Equal(t, "rate_limit_exceeded", *bifrostErr.Error.Type)
 }
 
 // TestParseBedrockHTTPError_HeaderTypeQualifierStripped ensures the trailing
@@ -265,4 +271,142 @@ func TestParseBedrockHTTPError_NoTypeFallsBack(t *testing.T) {
 	require.NotNil(t, bedrockErr)
 	assert.Equal(t, "InternalServerError", bedrockErr.Type)
 	assert.Equal(t, "something went wrong", bedrockErr.Message)
+}
+
+// TestNormalizeBedrockErrorType_RateLimitVsQuota verifies Stage 1 keeps
+// Bedrock's cleanest rate-limit/quota split intact — ThrottlingException and
+// ServiceQuotaExceededException are genuinely distinct AWS exceptions and
+// must not collapse onto the same canonical key or status.
+func TestNormalizeBedrockErrorType_RateLimitVsQuota(t *testing.T) {
+	canonicalType, statusCode, recognized := normalizeBedrockErrorType("ThrottlingException")
+	assert.True(t, recognized)
+	assert.Equal(t, "rate_limit_exceeded", canonicalType)
+	assert.Equal(t, http.StatusTooManyRequests, statusCode)
+
+	canonicalType, statusCode, recognized = normalizeBedrockErrorType("ServiceQuotaExceededException")
+	assert.True(t, recognized)
+	assert.Equal(t, "insufficient_quota", canonicalType)
+	// 402, not 429: deterministic account-level quota exhaustion is a
+	// PERMANENT per-key retry failure in core/utils.go's
+	// perKeyFailureStatusCodes, matching Anthropic's billing_error and
+	// governance's DecisionBudgetExceeded for the same canonical type.
+	assert.Equal(t, http.StatusPaymentRequired, statusCode)
+}
+
+// TestNormalizeBedrockErrorType_CaseInsensitive verifies the same exception
+// name normalizes identically whether it arrives in AWS's PascalCase
+// (InvokeModel-style HTTP errors) or camelCase (EventStream in-stream
+// exceptions) form.
+func TestNormalizeBedrockErrorType_CaseInsensitive(t *testing.T) {
+	pascalType, pascalStatus, _ := normalizeBedrockErrorType("ThrottlingException")
+	camelType, camelStatus, _ := normalizeBedrockErrorType("throttlingException")
+	assert.Equal(t, pascalType, camelType)
+	assert.Equal(t, pascalStatus, camelStatus)
+}
+
+// TestBedrockStage1Stage2RoundTrip verifies every recognized Bedrock
+// exception survives a Stage 1 (normalize-to-OpenAI) -> Stage 2
+// (translate-from-OpenAI) round trip unchanged, when the route provider
+// matches the actual serving provider (Bedrock -> /bedrock). Mirrors
+// anthropic/errors_test.go's TestStage1Stage2RoundTrip.
+func TestBedrockStage1Stage2RoundTrip(t *testing.T) {
+	exceptions := []string{
+		"ThrottlingException", "ServiceQuotaExceededException", "ValidationException",
+		"AccessDeniedException", "ResourceNotFoundException", "ModelTimeoutException",
+		"InternalServerException", "ServiceUnavailableException",
+	}
+	for _, original := range exceptions {
+		t.Run(original, func(t *testing.T) {
+			canonicalType, _, _ := normalizeBedrockErrorType(original)
+			bifrostErr := &schemas.BifrostError{
+				Type:  &original,
+				Error: &schemas.ErrorField{Type: &canonicalType, Message: "test"},
+			}
+			result := ToBedrockError(bifrostErr)
+			if result.Type != original {
+				t.Errorf("round trip broke: %q -> canonical %q -> %q, want %q",
+					original, canonicalType, result.Type, original)
+			}
+		})
+	}
+}
+
+// TestBedrockErrorTranslation_CrossProvider verifies a canonical error
+// sourced from a DIFFERENT provider (Anthropic, or Bifrost-internal
+// governance) — i.e. no genuine Bedrock exception name on the top-level
+// .Type field — gets correctly translated into Bedrock's vocabulary via
+// openAIToBedrockException, rather than falling through to the generic
+// "InternalServerError" default. This is the exact gap this fix closes:
+// ToBedrockError previously never read .Error.Type at all.
+func TestBedrockErrorTranslation_CrossProvider(t *testing.T) {
+	tests := []struct {
+		name         string
+		canonical    string
+		expectedType string
+	}{
+		{"rate limit from another provider", "rate_limit_exceeded", "ThrottlingException"},
+		{"budget/quota from another provider", "insufficient_quota", "ServiceQuotaExceededException"},
+		{"governance-sourced block", "governance_blocked", "AccessDeniedException"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// No top-level .Type set — simulates Anthropic's parser (never
+			// sets it) or a value that isn't a recognized Bedrock exception
+			// (governance's raw Decision string).
+			bifrostErr := &schemas.BifrostError{
+				Error: &schemas.ErrorField{Type: &tt.canonical, Message: "test"},
+			}
+			result := ToBedrockError(bifrostErr)
+			assert.Equal(t, tt.expectedType, result.Type)
+		})
+	}
+}
+
+// TestParseBedrockHTTPError_UnrecognizedExceptionPreservesRealStatusCode is a
+// regression test (found via codex review) for a fallback-path bug: Stage 1
+// normalization must NOT clobber an already-correct, real HTTP status with
+// normalizeBedrockErrorType's generic 500 fallback when AWS sends an
+// exception name this table doesn't recognize yet (AWS has many more
+// exceptions than the ~19 entries in bedrockExceptionToOpenAICanonicalType).
+// The real status HandleProviderAPIError already extracted from the HTTP
+// response (e.g. a genuine 403) must survive unchanged.
+func TestParseBedrockHTTPError_UnrecognizedExceptionPreservesRealStatusCode(t *testing.T) {
+	headers := http.Header{}
+	headers.Set("X-Amzn-Errortype", "SomeFutureBedrockExceptionNotYetMapped")
+	body := []byte(`{"message":"a new AWS exception we don't know about yet"}`)
+
+	bifrostErr := parseBedrockHTTPError(http.StatusForbidden, headers, body)
+
+	require.NotNil(t, bifrostErr)
+	require.NotNil(t, bifrostErr.StatusCode, "StatusCode must still be set")
+	assert.Equal(t, http.StatusForbidden, *bifrostErr.StatusCode, "real HTTP status must survive an unrecognized exception name, not be downgraded to the generic 500 fallback")
+	require.NotNil(t, bifrostErr.Error)
+	require.NotNil(t, bifrostErr.Error.Type)
+	assert.Equal(t, "server_error", *bifrostErr.Error.Type, "canonical type still falls back to server_error for unrecognized values — only the status must be preserved")
+}
+
+// TestParseBedrockHTTPError_TimeoutExceptionsNormalizeTo408 is a regression
+// test (found via greptile review): ModelTimeoutException and
+// RequestTimeoutException normalize to a deterministic HTTP 408
+// (request_timeout), and 408 must be present in core/utils.go's
+// transientServerStatusCodes (verified separately in
+// core.TestTransientServerStatusCodes) or these Bedrock timeouts would stop
+// being retried by the internal retry engine.
+func TestParseBedrockHTTPError_TimeoutExceptionsNormalizeTo408(t *testing.T) {
+	for _, exceptionType := range []string{"ModelTimeoutException", "RequestTimeoutException"} {
+		t.Run(exceptionType, func(t *testing.T) {
+			headers := http.Header{}
+			headers.Set("X-Amzn-Errortype", exceptionType)
+			body := []byte(`{"message":"the model took too long to respond"}`)
+
+			bifrostErr := parseBedrockHTTPError(http.StatusGatewayTimeout, headers, body)
+
+			require.NotNil(t, bifrostErr)
+			require.NotNil(t, bifrostErr.StatusCode)
+			assert.Equal(t, http.StatusRequestTimeout, *bifrostErr.StatusCode, "%s must normalize to 408, which core/utils.go treats as transient/retryable", exceptionType)
+			require.NotNil(t, bifrostErr.Error)
+			require.NotNil(t, bifrostErr.Error.Type)
+			assert.Equal(t, "request_timeout", *bifrostErr.Error.Type)
+		})
+	}
 }

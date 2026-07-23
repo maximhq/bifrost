@@ -6221,7 +6221,7 @@ func executeRequestWithRetries[T any](
 				bifrostError.Error.Message == schemas.ErrProviderNetworkError) {
 			shouldRetry = true
 			logger.Debug("detected request HTTP/network error, will retry: %s", errMessage)
-		} else if (bifrostError.StatusCode != nil && transientServerStatusCodes[*bifrostError.StatusCode]) || isPerKeyFailure {
+		} else if (bifrostError.StatusCode != nil && isTransientServerStatus(providerKey, *bifrostError.StatusCode)) || isPerKeyFailure {
 			shouldRetry = true
 			logger.Debug("encountered error that should be retried: %s", errMessage)
 		}

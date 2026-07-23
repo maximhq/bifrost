@@ -1009,6 +1009,12 @@ type ResponsesResponseConversationStruct struct {
 type ResponsesResponseError struct {
 	Code    string `json:"code"`    // The error code for the response
 	Message string `json:"message"` // A human-readable description of the error
+	// Type is not part of OpenAI's own ResponseError schema (which only
+	// defines code/message) -- kept optional/permissive for OpenAI-compatible
+	// backends that reuse the Chat Completions error.type convention on a
+	// Responses-shaped stream event instead of a schema-enumerated code.
+	// Found via greptile review on the error-normalization PR.
+	Type string `json:"type,omitempty"`
 }
 
 type ResponsesResponseIncompleteDetails struct {

@@ -621,7 +621,13 @@ func TestHandleProviderRequest_OCROperationNotAllowed(t *testing.T) {
 // Test that transientServerStatusCodes are properly defined.
 // These are upstream-side failures unrelated to the credential — the same key is retried.
 func TestTransientServerStatusCodes(t *testing.T) {
-	expected := []int{500, 502, 503, 504}
+	// 408 (Request Timeout) is included: a timeout isn't credential-bound, so
+	// it's retried with the same key like the 5xx set. Added after Bedrock's
+	// ModelTimeoutException/RequestTimeoutException started normalizing to a
+	// deterministic 408 (previously these fell through as raw passthrough
+	// statuses); without this, Bedrock timeouts stopped retrying. Found via
+	// greptile review on the error-normalization PR.
+	expected := []int{408, 500, 502, 503, 504}
 	for _, code := range expected {
 		if !transientServerStatusCodes[code] {
 			t.Errorf("status code %d should be in transientServerStatusCodes", code)
@@ -635,6 +641,32 @@ func TestTransientServerStatusCodes(t *testing.T) {
 		if transientServerStatusCodes[code] {
 			t.Errorf("status code %d should not be in transientServerStatusCodes", code)
 		}
+	}
+}
+
+// Test that isTransientServerStatus scopes the 529 (Anthropic "overloaded")
+// exception to Anthropic only, and still honors the base
+// transientServerStatusCodes map for every provider.
+func TestIsTransientServerStatus_AnthropicOverloadedException(t *testing.T) {
+	if !isTransientServerStatus(schemas.Anthropic, 529) {
+		t.Error("Anthropic + 529 should be treated as transient (real native overloaded_error status)")
+	}
+	if isTransientServerStatus(schemas.OpenAI, 529) {
+		t.Error("OpenAI + 529 should NOT be transient — the 529 exception is scoped to Anthropic only")
+	}
+	if isTransientServerStatus(schemas.Bedrock, 529) {
+		t.Error("Bedrock + 529 should NOT be transient — the 529 exception is scoped to Anthropic only")
+	}
+	for _, code := range []int{500, 502, 503, 504} {
+		if !isTransientServerStatus(schemas.Anthropic, code) {
+			t.Errorf("Anthropic + %d should still be transient via the base transientServerStatusCodes map", code)
+		}
+		if !isTransientServerStatus(schemas.OpenAI, code) {
+			t.Errorf("OpenAI + %d should still be transient via the base transientServerStatusCodes map", code)
+		}
+	}
+	if isTransientServerStatus(schemas.Anthropic, 429) {
+		t.Error("Anthropic + 429 should NOT be transient — 429 is a per-key failure, not a server-transient one")
 	}
 }
 

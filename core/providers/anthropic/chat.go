@@ -1582,11 +1582,21 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream(ctx *schemas.Bi
 
 	case AnthropicStreamEventTypeError:
 		if chunk.Error != nil {
-			// Send error through channel before closing
+			// Send error through channel before closing. Mid-stream errors
+			// carry no HTTP status of their own (the connection already
+			// returned 200) — Stage 1 normalization (see errors.go) derives
+			// the canonical type + status from Anthropic's error.type, same
+			// as the non-streaming parseAnthropicError path.
+			// No real HTTP status to preserve here (mid-stream SSE event) —
+			// the unconditional 500-fallback concern that applies to
+			// parseAnthropicError's HTTP path doesn't apply, so `recognized`
+			// is safely ignored.
+			canonicalType, statusCode, _ := normalizeAnthropicErrorType(chunk.Error.Type)
 			bifrostErr := &schemas.BifrostError{
 				IsBifrostError: false,
+				StatusCode:     new(statusCode),
 				Error: &schemas.ErrorField{
-					Type:    &chunk.Error.Type,
+					Type:    new(canonicalType),
 					Message: chunk.Error.Message,
 				},
 			}

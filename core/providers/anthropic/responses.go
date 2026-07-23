@@ -2409,11 +2409,17 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 
 	case AnthropicStreamEventTypeError:
 		if chunk.Error != nil {
-			// Send error event
+			// Send error event. Mid-stream errors carry no HTTP status of
+			// their own — Stage 1 normalization (see errors.go) derives the
+			// canonical type + status from Anthropic's error.type, same as
+			// the non-streaming parseAnthropicError path. No real status to
+			// preserve here, so `recognized` is safely ignored.
+			canonicalType, statusCode, _ := normalizeAnthropicErrorType(chunk.Error.Type)
 			bifrostErr := &schemas.BifrostError{
 				IsBifrostError: false,
+				StatusCode:     new(statusCode),
 				Error: &schemas.ErrorField{
-					Type:    &chunk.Error.Type,
+					Type:    new(canonicalType),
 					Message: chunk.Error.Message,
 				},
 			}

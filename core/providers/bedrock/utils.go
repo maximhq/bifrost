@@ -2028,6 +2028,37 @@ func convertToolCallToContentBlock(ctx context.Context, toolCall schemas.ChatAss
 	}
 }
 
+// openAIToBedrockException maps OpenAI-canonical error types (the vocabulary
+// every BifrostError.Error.Type carries after Stage 1, regardless of which
+// provider actually raised it) onto AWS Bedrock's named exception vocabulary
+// — Stage 2 (translate-from-OpenAI) of the two-stage design, for the
+// /bedrock route. This is the inverse of bedrockExceptionToOpenAICanonicalType
+// (core/providers/bedrock/errors.go) for entries sourced from Bedrock itself,
+// plus best-fit mappings for canonical keys with no distinct Bedrock-native
+// exception. Several Stage 1 exceptions collapse onto the same canonical key
+// (e.g. NotAuthorized/ExpiredTokenException/UnrecognizedClientException all
+// -> authentication_error) so the inverse can only pick one representative —
+// UnrecognizedClientException is AWS's most common bad-credentials name.
+var openAIToBedrockException = map[string]string{
+	schemas.ErrorTypeRateLimitExceeded:      "ThrottlingException",
+	schemas.ErrorTypeInsufficientQuota:      "ServiceQuotaExceededException",
+	schemas.ErrorTypeInvalidRequest:         "ValidationException",
+	schemas.ErrorTypeAuthentication:         "UnrecognizedClientException",
+	schemas.ErrorTypePermissionDenied:       "AccessDeniedException",
+	schemas.ErrorTypeNotFound:               "ResourceNotFoundException",
+	schemas.ErrorTypeContextLengthExceeded:  "ValidationException", // no distinct Bedrock type
+	schemas.ErrorTypeContentPolicyViolation: "ValidationException",
+	schemas.ErrorTypeUnprocessableEntity:    "ValidationException",
+	schemas.ErrorTypeRequestTimeout:         "ModelTimeoutException",
+	schemas.ErrorTypeServerError:            "InternalServerException",
+	schemas.ErrorTypeServiceUnavailable:     "ServiceUnavailableException",
+	schemas.ErrorTypeBadGateway:             "InternalServerException", // Bifrost-internal, no Bedrock-native equivalent
+	schemas.ErrorTypeAPIConnection:          "InternalServerException", // Bifrost-internal
+	schemas.ErrorTypeResponseValidation:     "InternalServerException", // Bifrost-internal
+	schemas.RequestCancelled:                "InternalServerException", // Bedrock has no cancelled type
+	schemas.ErrorTypeGovernanceBlocked:      "AccessDeniedException",   // Bifrost-internal, closest Bedrock bucket
+}
+
 // ToBedrockError converts a BifrostError to BedrockError
 // This is a standalone function similar to ToAnthropicChatCompletionError
 func ToBedrockError(bifrostErr *schemas.BifrostError) *BedrockError {
@@ -2048,13 +2079,46 @@ func ToBedrockError(bifrostErr *schemas.BifrostError) *BedrockError {
 		Message: message,
 	}
 
-	// Map error type/code
+	// Map error type/code.
+	//
+	// .Code is populated independently of which branch resolves .Type below
+	// — it's a raw passthrough of whatever AWS `code` value the body carried,
+	// not something Stage 1/2 normalize, so it shouldn't disappear just
+	// because .Error.Type happened to resolve first.
 	if bifrostErr.Error != nil && bifrostErr.Error.Code != nil {
-		bedrockErr.Type = *bifrostErr.Error.Code
 		bedrockErr.Code = bifrostErr.Error.Code
-	} else if bifrostErr.Type != nil {
+	}
+	// Priority 1: if the top-level .Type is a genuine, recognized Bedrock
+	// exception name, forward it VERBATIM — preserves whichever casing
+	// convention the original source actually used (PascalCase for
+	// InvokeModel-style HTTP errors, camelCase for EventStream in-stream
+	// exceptions — see isRecognizedBedrockException). This is the
+	// same-provider passthrough case (Case A): a genuine Bedrock error
+	// should round-trip byte-for-byte, not get rewritten through the
+	// canonical vocabulary and lose its original casing.
+	if bifrostErr.Type != nil && isRecognizedBedrockException(*bifrostErr.Type) {
 		bedrockErr.Type = *bifrostErr.Type
-	} else {
+	}
+	// Priority 2: Stage 2 (translate-from-OpenAI) — .Error.Type carries the
+	// canonical vocabulary after Stage 1 (bedrock/errors.go's
+	// normalizeBedrockErrorType, or any OTHER provider's Stage 1 for
+	// cross-provider requests routed through /bedrock, or governance's
+	// canonical assignment). This is the cross-provider / Bifrost-internal
+	// case (Case B): there's no genuine Bedrock exception name to preserve,
+	// so translate the canonical value into Bedrock's vocabulary via
+	// openAIToBedrockException.
+	if bedrockErr.Type == "" && bifrostErr.Error != nil && bifrostErr.Error.Type != nil {
+		if translated, ok := openAIToBedrockException[*bifrostErr.Error.Type]; ok {
+			bedrockErr.Type = translated
+		}
+	}
+	if bedrockErr.Type == "" && bifrostErr.Error != nil && bifrostErr.Error.Code != nil {
+		bedrockErr.Type = *bifrostErr.Error.Code
+	}
+	if bedrockErr.Type == "" && bifrostErr.Type != nil {
+		bedrockErr.Type = *bifrostErr.Type
+	}
+	if bedrockErr.Type == "" {
 		bedrockErr.Type = "InternalServerError"
 	}
 

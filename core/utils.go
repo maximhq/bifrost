@@ -29,10 +29,39 @@ const (
 // retried with the *same* key (a different credential gains nothing against a flaky
 // server). Distinct from perKeyFailureStatusCodes which trigger key rotation.
 var transientServerStatusCodes = map[int]bool{
+	408: true, // Request Timeout — a timeout isn't credential-bound, so retry the
+	// same key (matches Bedrock's ModelTimeoutException/RequestTimeoutException,
+	// which normalize to 408; previously these fell through as raw passthrough
+	// statuses that happened to already be transient/5xx-ish, so this is a
+	// distinct code needed since Stage 1 normalization started assigning it
+	// deterministically. Found via greptile review on the error-normalization PR).
 	500: true, // Internal Server Error
 	502: true, // Bad Gateway
 	503: true, // Service Unavailable
 	504: true, // Gateway Timeout
+}
+
+// anthropicOverloadedStatusCode mirrors
+// core/providers/anthropic/errors.go's AnthropicOverloadedStatusCode (not
+// imported directly to avoid a core<->providers/anthropic dependency here).
+const anthropicOverloadedStatusCode = 529
+
+// isTransientServerStatus reports whether statusCode should be retried with
+// the same key for the given provider. 529 (Anthropic's real, non-standard
+// "overloaded" status) is deliberately NOT in transientServerStatusCodes
+// globally — adding it there would affect every provider, and 529 isn't a
+// registered status any other provider uses. It's scoped to Anthropic only
+// here so the retry engine still treats it as transient (matching the old
+// behavior from when Stage 1 used to canonicalize 529 into 503), while the
+// client still receives the real 529 Anthropic sent
+// (core/providers/anthropic/errors.go preserves it verbatim so
+// anthropic-python's status-code-based SDK dispatch raises OverloadedError
+// instead of a generic InternalServerError).
+func isTransientServerStatus(providerKey schemas.ModelProvider, statusCode int) bool {
+	if transientServerStatusCodes[statusCode] {
+		return true
+	}
+	return providerKey == schemas.Anthropic && statusCode == anthropicOverloadedStatusCode
 }
 
 // perKeyFailureStatusCodes are failures bound to the specific key/account rather than
