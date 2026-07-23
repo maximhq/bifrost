@@ -6176,6 +6176,10 @@ func executeRequestWithRetries[T any](
 				}
 				resp.PopulateExtraFields(requestType, providerKey, model, resolvedModelUsed)
 				tracer.PopulateLLMResponseAttributes(ctx, handle, resp, bifrostError)
+			} else if bifrostError != nil {
+				// Failed stream requests carry a chan result and miss the cast above;
+				// stamp error attributes explicitly so spans don't report unknown.
+				tracer.PopulateLLMResponseAttributes(ctx, handle, nil, bifrostError)
 			}
 
 			// End span with appropriate status
