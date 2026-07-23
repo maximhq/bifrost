@@ -26,6 +26,7 @@ import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { resetDurationLabels } from "@/lib/constants/governance";
 import {
 	getErrorMessage,
+	useBulkDeleteVirtualKeysMutation,
 	useBulkRotateVirtualKeysMutation,
 	useDeleteVirtualKeyMutation,
 	useGetVirtualKeyQuery,
@@ -311,6 +312,7 @@ export default function VirtualKeysTable({
 	const [exportMaxLimit, setExportMaxLimit] = useState("");
 	const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 	const [showBulkRotateDialog, setShowBulkRotateDialog] = useState(false);
+	const [showBulkDeleteDialog, setShowBulkDeleteDialog] = useState(false);
 	const [fetchVirtualKeys, { isFetching: isExporting }] = useLazyGetVirtualKeysQuery();
 
 	// Derive objects from props so they stay in sync with RTK cache updates
@@ -342,6 +344,7 @@ export default function VirtualKeysTable({
 	const [deleteVirtualKey, { isLoading: isDeleting }] = useDeleteVirtualKeyMutation();
 	const [updateVirtualKey] = useUpdateVirtualKeyMutation();
 	const [bulkRotateVirtualKeys, { isLoading: isBulkRotating }] = useBulkRotateVirtualKeysMutation();
+	const [bulkDeleteVirtualKeys, { isLoading: isBulkDeleting }] = useBulkDeleteVirtualKeysMutation();
 
 	const visibleIds = useMemo(() => virtualKeys.map((vk) => vk.id), [virtualKeys]);
 	const selectedVisibleIds = useMemo(() => visibleIds.filter((id) => selectedIds.has(id)), [selectedIds, visibleIds]);
@@ -425,6 +428,35 @@ export default function VirtualKeysTable({
 				toast.warning(`Rotated ${result.virtual_keys.length} virtual keys. ${failureCount} failed.`);
 			} else {
 				toast.success(`Rotated ${result.virtual_keys.length} virtual keys`);
+			}
+		} catch (error) {
+			toast.error(getErrorMessage(error));
+		}
+	};
+
+	const handleBulkDelete = async () => {
+		const ids = Array.from(selectedIds);
+		if (ids.length === 0) return;
+
+		try {
+			const result = await bulkDeleteVirtualKeys({ ids }).unwrap();
+			const failedIds = new Set(Object.keys(result.errors ?? {}));
+			setSelectedIds((prev) => {
+				const next = new Set(prev);
+				for (const id of ids) {
+					if (!failedIds.has(id)) {
+						next.delete(id);
+					}
+				}
+				return next;
+			});
+			setShowBulkDeleteDialog(false);
+
+			const failureCount = failedIds.size;
+			if (failureCount > 0) {
+				toast.warning(`Deleted ${result.deleted} virtual keys. ${failureCount} failed.`);
+			} else {
+				toast.success(`Deleted ${result.deleted} virtual keys`);
 			}
 		} catch (error) {
 			toast.error(getErrorMessage(error));
@@ -746,6 +778,28 @@ export default function VirtualKeysTable({
 				</AlertDialogContent>
 			</AlertDialog>
 
+			<AlertDialog open={showBulkDeleteDialog} onOpenChange={setShowBulkDeleteDialog}>
+				<AlertDialogContent>
+					<AlertDialogHeader>
+						<AlertDialogTitle>Delete selected virtual keys?</AlertDialogTitle>
+						<AlertDialogDescription>
+							This will permanently delete {selectedCount} selected virtual {selectedCount === 1 ? "key" : "keys"}. This action cannot be undone.
+						</AlertDialogDescription>
+					</AlertDialogHeader>
+					<AlertDialogFooter>
+						<AlertDialogCancel data-testid="vk-bulk-delete-cancel-btn">Cancel</AlertDialogCancel>
+						<AlertDialogAction
+							onClick={handleBulkDelete}
+							disabled={isBulkDeleting || selectedCount === 0}
+							className="bg-destructive hover:bg-destructive/90"
+							data-testid="vk-bulk-delete-confirm-btn"
+						>
+							{isBulkDeleting ? "Deleting..." : "Delete Selected"}
+						</AlertDialogAction>
+					</AlertDialogFooter>
+				</AlertDialogContent>
+			</AlertDialog>
+
 			<div className="flex min-h-0 w-full grow flex-col overflow-hidden">
 				<div className="mb-4 flex shrink-0 items-center justify-between">
 					<div>
@@ -762,6 +816,17 @@ export default function VirtualKeysTable({
 							>
 								<RotateCcw className="h-4 w-4" />
 								Rotate selected ({selectedCount})
+							</Button>
+						)}
+						{selectedCount > 0 && (
+							<Button
+								variant="destructive"
+								onClick={() => setShowBulkDeleteDialog(true)}
+								disabled={!hasDeleteAccess || isBulkDeleting}
+								data-testid="vk-bulk-delete-btn"
+							>
+								<Trash2 className="h-4 w-4" />
+								Delete selected ({selectedCount})
 							</Button>
 						)}
 						<Button variant="outline" onClick={openExportDialog} disabled={virtualKeys.length === 0} data-testid="vk-export-btn">
