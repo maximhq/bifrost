@@ -206,6 +206,7 @@ func TestMCPToolLogPayload_RoundTripFullLog(t *testing.T) {
 		MetadataParsed: map[string]interface{}{
 			"trace": "abc",
 		},
+		PluginLogs: `{"guardrails":[{"plugin_name":"guardrails","level":"info","message":"arguments redacted","timestamp":1}]}`,
 		RedactionData: &schemas.RedactionData{
 			ReversibleMappings: schemas.RedactionMapsByPhase{Input: map[string]string{"EMAIL-1": "private@example.com"}},
 		},
@@ -230,6 +231,7 @@ func TestMCPToolLogPayload_RoundTripFullLog(t *testing.T) {
 	assert.Equal(t, true, dbEntry.ResultParsed.(map[string]interface{})["ok"])
 	assert.Equal(t, "stored for round trip", dbEntry.ErrorDetailsParsed.Error.Message)
 	assert.Equal(t, "abc", dbEntry.MetadataParsed["trace"])
+	assert.Equal(t, entry.PluginLogs, dbEntry.PluginLogs)
 	assert.Equal(t, entry.RedactionMapping, dbEntry.RedactionMapping)
 	assert.Nil(t, dbEntry.RedactionData)
 }
@@ -276,6 +278,7 @@ func TestPrepareMCPToolDBEntry_KeepsOnlyInputPreview(t *testing.T) {
 		MetadataParsed: map[string]interface{}{
 			"trace": "abc",
 		},
+		PluginLogs: `{"guardrails":[{"message":"arguments redacted"}]}`,
 	}
 
 	PrepareMCPToolDBEntry(entry)
@@ -290,6 +293,7 @@ func TestPrepareMCPToolDBEntry_KeepsOnlyInputPreview(t *testing.T) {
 	assert.Nil(t, entry.ErrorDetailsParsed)
 	assert.NotEmpty(t, entry.Arguments)
 	assert.NotEmpty(t, entry.Metadata)
+	assert.Equal(t, `{"guardrails":[{"message":"arguments redacted"}]}`, entry.PluginLogs)
 
 	var preview string
 	require.NoError(t, sonic.Unmarshal([]byte(entry.Arguments), &preview))
