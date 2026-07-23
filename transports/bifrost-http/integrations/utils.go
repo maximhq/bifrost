@@ -7,7 +7,6 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
@@ -241,69 +240,6 @@ func (g *GenericRouter) sendError(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.
 	ctx.SetBody(errorBody)
 }
 
-// HTTP response header names for the routed identity. Set on every successful
-// response from any integration so callers can recover the actual provider /
-// model that handled the request — even when the integration converts the
-// body to a provider-native shape (Anthropic, OpenAI, Bedrock) that has no
-// place to surface Bifrost's `extra_fields`.
-//
-// Header values are derived from BifrostResponseExtraFields (populated by
-// PopulateExtraFields at the end of every request path, including after
-// fallback / routing-rule resolution). FallbackIndex is read from the
-// BifrostContext because it isn't a field on the response struct.
-//
-// Naming follows the existing `x-bf-*` request-side convention (see
-// `x-bf-vk`, `x-bf-key-id`, etc.).
-const (
-	HeaderBifrostProvider      = "x-bifrost-provider"
-	HeaderBifrostOriginalModel = "x-bifrost-original-model"
-	HeaderBifrostResolvedModel = "x-bifrost-resolved-model"
-	HeaderBifrostFallbackIndex = "x-bifrost-fallback-index"
-	HeaderBifrostRequestType   = "x-bifrost-request-type"
-	// Cumulative milliseconds this request spent blocked on upstream sockets,
-	// summed across every attempt and fallback. Subtract from the caller's own
-	// elapsed time to get what Bifrost cost. Distinct from the per-attempt
-	// latency in the response body's extra_fields, which only holds the last try.
-	HeaderBifrostUpstreamLatency = "x-bifrost-upstream-latency-ms"
-)
-
-// applyBifrostResponseHeaders writes both the upstream provider response
-// headers (forwarded verbatim) and the bifrost-level `x-bifrost-*` routing
-// identity headers onto the fasthttp response. Empty fields are skipped so
-// the headers never appear with a blank value. Safe to call when the case
-// didn't populate `extra` — the zero value for ExtraFields produces no
-// headers.
-func applyBifrostResponseHeaders(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, extra schemas.BifrostResponseExtraFields) {
-	for key, value := range extra.ProviderResponseHeaders {
-		ctx.Response.Header.Set(key, value)
-	}
-	if extra.Provider != "" {
-		ctx.Response.Header.Set(HeaderBifrostProvider, string(extra.Provider))
-	}
-	if extra.OriginalModelRequested != "" {
-		ctx.Response.Header.Set(HeaderBifrostOriginalModel, extra.OriginalModelRequested)
-	}
-	if extra.ResolvedModelUsed != "" {
-		ctx.Response.Header.Set(HeaderBifrostResolvedModel, extra.ResolvedModelUsed)
-	}
-	if extra.RequestType != "" {
-		ctx.Response.Header.Set(HeaderBifrostRequestType, string(extra.RequestType))
-	}
-	// Fallback index lives on the request context, not the response struct.
-	// 0 = primary provider succeeded; non-zero = which fallback fired
-	// (1-indexed). Only emit when non-zero so the absence of the header is
-	// the unambiguous "no fallback fired" signal.
-	if bifrostCtx != nil {
-		if idx, ok := bifrostCtx.Value(schemas.BifrostContextKeyFallbackIndex).(int); ok && idx > 0 {
-			ctx.Response.Header.Set(HeaderBifrostFallbackIndex, strconv.Itoa(idx))
-		}
-		if upstream, ok := schemas.GetUpstreamLatency(bifrostCtx); ok {
-			ctx.Response.Header.Set(HeaderBifrostUpstreamLatency,
-				strconv.FormatFloat(float64(upstream)/float64(time.Millisecond), 'f', 3, 64))
-		}
-	}
-}
-
 // sendSuccess sends a successful response with HTTP 200 status and JSON body.
 func (g *GenericRouter) sendSuccess(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, errorConverter ErrorConverter, response interface{}, extraHeaders map[string]string) {
 	ctx.SetStatusCode(fasthttp.StatusOK)
@@ -327,11 +263,16 @@ func (g *GenericRouter) sendSuccess(ctx *fasthttp.RequestCtx, bifrostCtx *schema
 // tryStreamLargeResponse checks if large response mode was activated by the provider,
 // sets the transport marker, and streams the response directly to the client.
 // Returns true if the response was handled (caller should return).
-func (g *GenericRouter) tryStreamLargeResponse(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext) bool {
+// extra carries the routed identity of the response being streamed; callers
+// without one (pre-chunk streaming paths) pass the zero value, which emits nothing.
+func (g *GenericRouter) tryStreamLargeResponse(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, extra schemas.BifrostResponseExtraFields) bool {
 	isLargeResponse, ok := bifrostCtx.Value(schemas.BifrostContextKeyLargeResponseMode).(bool)
 	if !ok || !isLargeResponse {
 		return false
 	}
+	// Routed-identity headers — large-response branches return early and skip
+	// the common footer that normally emits them.
+	lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, extra)
 	// Forward provider response headers before streaming — providers store them in
 	// context via BifrostContextKeyProviderResponseHeaders, but some early-return
 	// branches in the router skip the common footer that normally forwards them.
