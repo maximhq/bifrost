@@ -383,7 +383,7 @@ func (h *ProviderHandler) mergeUpdatedKey(oldRawKey, updateKey schemas.Key) (sch
 	}
 
 	if mergedKey.BedrockKeyConfig != nil {
-		var accessKey, secretKey, sessionToken, region, arn, roleARN, externalID, sessionName *schemas.SecretVar
+		var accessKey, secretKey, sessionToken, region, arn, roleARN, externalID, sessionName, batchRoleARN *schemas.SecretVar
 		if oldRawKey.BedrockKeyConfig != nil {
 			accessKey = &oldRawKey.BedrockKeyConfig.AccessKey
 			secretKey = &oldRawKey.BedrockKeyConfig.SecretKey
@@ -393,6 +393,7 @@ func (h *ProviderHandler) mergeUpdatedKey(oldRawKey, updateKey schemas.Key) (sch
 			roleARN = oldRawKey.BedrockKeyConfig.RoleARN
 			externalID = oldRawKey.BedrockKeyConfig.ExternalID
 			sessionName = oldRawKey.BedrockKeyConfig.RoleSessionName
+			batchRoleARN = oldRawKey.BedrockKeyConfig.BatchRoleARN
 		}
 		for _, item := range []struct {
 			incoming *schemas.SecretVar
@@ -407,6 +408,7 @@ func (h *ProviderHandler) mergeUpdatedKey(oldRawKey, updateKey schemas.Key) (sch
 			{mergedKey.BedrockKeyConfig.RoleARN, roleARN, "bedrock_key_config.role_arn"},
 			{mergedKey.BedrockKeyConfig.ExternalID, externalID, "bedrock_key_config.external_id"},
 			{mergedKey.BedrockKeyConfig.RoleSessionName, sessionName, "bedrock_key_config.session_name"},
+			{mergedKey.BedrockKeyConfig.BatchRoleARN, batchRoleARN, "bedrock_key_config.batch_role_arn"},
 		} {
 			if err := preserve(item.incoming, item.stored, item.field); err != nil {
 				return schemas.Key{}, err
