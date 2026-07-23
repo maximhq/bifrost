@@ -35,6 +35,7 @@ type ModelConfigsQueryParams struct {
 	Offset   int
 	Search   string
 	Scope    string // optional; filters to an exact scope value (e.g. "global", "virtual_key")
+	ScopeID  string // optional; filters to an exact scope target (e.g. a virtual key or user ID)
 	Provider string // optional; filters to an exact provider value (e.g. "openai")
 }
 

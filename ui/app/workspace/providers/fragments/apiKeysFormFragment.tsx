@@ -1013,6 +1013,28 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 							</FormItem>
 						)}
 					/>
+					{supportsBatchAPI && (
+						<FormField
+							control={control}
+							name={`key.bedrock_key_config.batch_role_arn`}
+							render={({ field }) => (
+								<FormItem>
+									<FormLabel>Batch Role ARN (Optional)</FormLabel>
+									<FormDescription>
+										Service role Bedrock assumes for batch S3 access. When set, it takes priority over the role_arn sent in requests.
+									</FormDescription>
+									<FormControl>
+										<SecretVarInput
+											data-testid="apikey-bedrock-batch-role-arn-input"
+											placeholder="arn:aws:iam::123456789:role/BatchRole or env.AWS_BATCH_ROLE_ARN"
+											{...field}
+										/>
+									</FormControl>
+									<FormMessage />
+								</FormItem>
+							)}
+						/>
+					)}
 					{supportsBatchAPI && <BatchAPIFormField control={control} form={form} />}
 				</div>
 			)}
