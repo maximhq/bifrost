@@ -40,6 +40,26 @@ func TestTableBudgetSetOverrideRestoresPreviousState(t *testing.T) {
 	assert.Equal(t, 2, budget.OverrideCyclesRemaining)
 }
 
+// TestTableBudgetConsumeOverrideCycle verifies finite overrides expire while permanent overrides survive resets.
+func TestTableBudgetConsumeOverrideCycle(t *testing.T) {
+	finite := &TableBudget{MaxLimit: 100}
+	require.NoError(t, finite.SetOverride(25, BudgetOverrideModeCycles, 2))
+
+	finite.ConsumeOverrideCycle()
+	assert.Equal(t, 1, finite.OverrideCyclesRemaining)
+	assert.Equal(t, 125.0, finite.EffectiveMaxLimit())
+
+	finite.ConsumeOverrideCycle()
+	assert.False(t, finite.HasActiveOverride())
+	assert.Equal(t, 100.0, finite.EffectiveMaxLimit())
+
+	permanent := &TableBudget{MaxLimit: 100}
+	require.NoError(t, permanent.SetOverride(50, BudgetOverrideModeForever, 0))
+	permanent.ConsumeOverrideCycle()
+	assert.True(t, permanent.HasActiveOverride())
+	assert.Equal(t, 150.0, permanent.EffectiveMaxLimit())
+}
+
 // TestTableBudgetValidateOverride verifies that persisted override fields cannot form an ambiguous state.
 func TestTableBudgetValidateOverride(t *testing.T) {
 	tests := []struct {

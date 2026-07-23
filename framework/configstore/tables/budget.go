@@ -114,6 +114,18 @@ func (b *TableBudget) ClearOverride() {
 	b.OverrideCyclesRemaining = 0
 }
 
+// ConsumeOverrideCycle advances a finite override by one completed budget reset cycle.
+func (b *TableBudget) ConsumeOverrideCycle() {
+	if b == nil || b.OverrideMode != BudgetOverrideModeCycles || !b.HasActiveOverride() {
+		return
+	}
+	if b.OverrideCyclesRemaining == 1 {
+		b.ClearOverride()
+		return
+	}
+	b.OverrideCyclesRemaining--
+}
+
 // validateOverride checks that the persisted override fields form one unambiguous state.
 func (b *TableBudget) validateOverride() error {
 	if math.IsNaN(b.OverrideAmount) || math.IsInf(b.OverrideAmount, 0) {
