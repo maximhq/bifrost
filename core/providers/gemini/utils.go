@@ -555,6 +555,12 @@ func convertSchemaToOrderedMap(schema *Schema) *schemas.OrderedMap {
 	if schema.MaxItems != nil {
 		result.Set("maxItems", *schema.MaxItems)
 	}
+	if schema.MinProperties != nil {
+		result.Set("minProperties", *schema.MinProperties)
+	}
+	if schema.MaxProperties != nil {
+		result.Set("maxProperties", *schema.MaxProperties)
+	}
 	if schema.Minimum != nil {
 		result.Set("minimum", *schema.Minimum)
 	}
