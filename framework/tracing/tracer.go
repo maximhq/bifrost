@@ -734,6 +734,11 @@ func (t *Tracer) CompleteAndFlushTrace(traceID string) {
 		// here covers all connectors.
 		exportTrace := completedTrace.SnapshotForExport()
 
+		// Stamp Bifrost's overhead onto the snapshot's root span now that it has
+		// ended. Done here — one write, before any connector reads the snapshot —
+		// so every trace connector sees the same value on the root span.
+		exportTrace.StampOverheadDuration()
+
 		var obsPlugins []schemas.ObservabilityPlugin
 		if loaded := t.obsPlugins.Load(); loaded != nil {
 			obsPlugins = *loaded
