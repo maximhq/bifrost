@@ -35,6 +35,7 @@ type ModelConfigsQueryParams struct {
 	Offset   int
 	Search   string
 	Scope    string // optional; filters to an exact scope value (e.g. "global", "virtual_key")
+	ScopeID  string // optional; filters to an exact scope target (e.g. a virtual key or user ID)
 	Provider string // optional; filters to an exact provider value (e.g. "openai")
 }
 
@@ -60,6 +61,16 @@ type RoutingRulesQueryParams struct {
 	Limit  int
 	Offset int
 	Search string
+}
+
+// WebhookEndpointsQueryParams holds pagination, filtering, and search
+// parameters for webhook endpoint queries.
+type WebhookEndpointsQueryParams struct {
+	Limit    int
+	Offset   int
+	Search   string   // matches name or url (case-insensitive)
+	Events   []string // endpoints subscribed to any of these events, OR semantics
+	Disabled *bool    // nil = no filter; true/false = filter on disabled
 }
 
 // MCPClientsQueryParams holds pagination, filtering, and search parameters for MCP client queries.
@@ -662,6 +673,37 @@ type ConfigStore interface {
 	UpdatePromptSession(ctx context.Context, session *tables.TablePromptSession) error
 	RenamePromptSession(ctx context.Context, id uint, name string) error
 	DeletePromptSession(ctx context.Context, id uint) error
+
+	// Sidekiq - generic durable background jobs
+	CreateSidekiqJob(ctx context.Context, job *tables.TableSidekiqJob) error
+	GetSidekiqJob(ctx context.Context, id string) (*tables.TableSidekiqJob, error)
+	ClaimSidekiqJob(ctx context.Context, id, runnerID string, staleBefore time.Time) (bool, error)
+	HeartbeatSidekiqJob(ctx context.Context, id, runnerID string) (bool, error)
+	UpdateSidekiqJobProgress(ctx context.Context, id, runnerID, metadata string) error
+	CompleteSidekiqJob(ctx context.Context, id, runnerID, metadata string) error
+	FailSidekiqJob(ctx context.Context, id, runnerID, metadata, lastErr string) error
+	ListClaimableSidekiqJobs(ctx context.Context, staleBefore time.Time) ([]tables.TableSidekiqJob, error)
+	GetInFlightSidekiqJobByKind(ctx context.Context, kind string) (*tables.TableSidekiqJob, error)
+	MarkStaleSidekiqJobsFailed(ctx context.Context, staleBefore time.Time) (int64, error)
+
+	// Webhook Endpoints
+	GetWebhookEndpoints(ctx context.Context) ([]tables.TableWebhookEndpoint, error)
+	GetWebhookEndpointsPaginated(ctx context.Context, params WebhookEndpointsQueryParams) ([]tables.TableWebhookEndpoint, int64, error)
+	GetWebhookEndpointByID(ctx context.Context, id string) (*tables.TableWebhookEndpoint, error)
+	GetWebhookEndpointByName(ctx context.Context, name string) (*tables.TableWebhookEndpoint, error)
+	CreateWebhookEndpoint(ctx context.Context, endpoint *tables.TableWebhookEndpoint) error
+	UpdateWebhookEndpoint(ctx context.Context, endpoint *tables.TableWebhookEndpoint) error
+	DeleteWebhookEndpoint(ctx context.Context, id string) error
+	RotateWebhookEndpointSecret(ctx context.Context, id string) (*tables.TableWebhookEndpoint, error)
+	RecordWebhookEndpointSuccess(ctx context.Context, id string) error
+	RecordWebhookEndpointFailure(ctx context.Context, id string) (int, error)
+
+	// Webhook Jobs - in-flight webhook delivery work queue
+	CreateWebhookJob(ctx context.Context, job *tables.TableWebhookJob) error
+	ListDueWebhookJobs(ctx context.Context, limit int) ([]tables.TableWebhookJob, error)
+	ClaimWebhookJob(ctx context.Context, id, runnerID string, leaseUntil time.Time) (bool, error)
+	RescheduleWebhookJob(ctx context.Context, id, runnerID string, leaseUntil, nextAttemptAt time.Time) error
+	DeleteWebhookJob(ctx context.Context, id, runnerID string, leaseUntil time.Time) error
 
 	// DB returns the underlying database connection.
 	DB() *gorm.DB

@@ -210,6 +210,7 @@ func (h *ConfigHandler) getConfig(ctx *fasthttp.RequestCtx) {
 	mapConfig["is_git_available"] = CheckGitAvailability()
 	mapConfig["is_cache_connected"] = h.store.VectorStore != nil
 	mapConfig["is_logs_connected"] = h.store.LogsStore != nil
+	mapConfig["is_object_storage_connected"] = h.store.LogsStoreConfig != nil && h.store.LogsStoreConfig.ObjectStorage != nil
 	// Fetching proxy config
 	if h.store.ConfigStore != nil {
 		proxyConfig, err := h.store.ConfigStore.GetProxyConfig(ctx)
@@ -494,6 +495,8 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	// No restart needed - logging plugin holds a live pointer to ClientConfig.DisableContentLogging,
 	// and ReloadClientConfigFromConfigStore mutates the struct in place so the next request picks up the new value.
 	updatedConfig.DisableContentLogging = payload.ClientConfig.DisableContentLogging
+	// No restart needed - logging plugin holds a live pointer to ClientConfig.RetainContentInObjectStorage.
+	updatedConfig.RetainContentInObjectStorage = payload.ClientConfig.RetainContentInObjectStorage
 	updatedConfig.DisableDBPingsInHealth = payload.ClientConfig.DisableDBPingsInHealth
 	// No restart needed - ReloadClientConfigFromConfigStore calls CorsMiddleware.UpdateConfig,
 	// which atomically swaps in a fresh immutable snapshot carrying the new value.
@@ -503,6 +506,11 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	// Sync deprecated columns to match new field so they stay consistent in the DB
 	updatedConfig.EnforceGovernanceHeader = payload.ClientConfig.EnforceAuthOnInference
 	updatedConfig.EnforceSCIMAuth = payload.ClientConfig.EnforceAuthOnInference
+
+	// Only update when explicitly provided to avoid clearing the stored default (prefer_idp)
+	if payload.ClientConfig.DualCredentialConflictBehavior != "" {
+		updatedConfig.DualCredentialConflictBehavior = payload.ClientConfig.DualCredentialConflictBehavior
+	}
 
 	// Only update MaxRequestBodySizeMB if explicitly provided (> 0) to avoid clearing stored value
 	if payload.ClientConfig.MaxRequestBodySizeMB > 0 {
@@ -626,14 +634,14 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	}
 	updatedConfig.LogRetentionDays = payload.ClientConfig.LogRetentionDays
 
-	// Update the store with the new config
-	h.store.ClientConfig = updatedConfig
-
 	if err := h.store.ConfigStore.UpdateClientConfig(ctx, updatedConfig); err != nil {
 		logger.Warn("failed to save configuration: %v", err)
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to save configuration: %v", err))
 		return
 	}
+
+	// Apply the in-memory change only after persistence succeeds.
+	h.store.ClientConfig = updatedConfig
 	// Reloading client config from config store
 	if err := h.configManager.ReloadClientConfigFromConfigStore(ctx); err != nil {
 		logger.Warn("failed to reload client config from config store: %v", err)

@@ -17,5 +17,9 @@ func parseCohereError(resp *fasthttp.Response) *schemas.BifrostError {
 	if errorResp.Code != nil {
 		bifrostErr.Error.Code = errorResp.Code
 	}
+	if errorResp.Type != "" && bifrostErr.Error.Type == nil {
+		typeCopy := errorResp.Type
+		bifrostErr.Error.Type = &typeCopy
+	}
 	return bifrostErr
 }

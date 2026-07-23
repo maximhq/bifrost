@@ -1,0 +1,331 @@
+---
+title: "Pub/Sub"
+description: "Publish Bifrost request traces as JSON to a Google Cloud Pub/Sub topic for custom analytics, archival, and downstream processing"
+icon: "database"
+---
+
+<Note>
+The Pub/Sub connector is an **Enterprise** feature. It requires a Bifrost Enterprise license.
+</Note>
+
+## Overview
+
+The **Pub/Sub connector** publishes completed Bifrost request traces as JSON messages to a Google Cloud Pub/Sub topic. Each message carries the full trace and is stamped with a `trace_id` attribute, so subscribers can filter and route without parsing the payload.
+
+Use the Pub/Sub connector when you want to:
+
+- **Stream traces** into your own data platform (BigQuery, Dataflow, ClickHouse, etc.) via Pub/Sub subscriptions
+- **Archive LLM request logs** to cold storage through a push or pull subscription
+- **Build custom dashboards** on top of raw trace data without the built-in log store
+- **Fan out** to multiple downstream systems using independent subscriptions on the same topic
+
+---
+
+## How it works
+
+After each request completes, the connector serializes the full trace — including all spans, attributes, and optionally request headers — to JSON and publishes it to the configured topic as a single message. Each message carries a `trace_id` attribute set to the trace ID. Publishing is non-blocking, so it has zero impact on request latency: the message is handed to the Pub/Sub client, which batches and sends it in the background, and publish failures are surfaced asynchronously in the Bifrost logs.
+
+---
+
+## Setup
+
+<Tabs group="config-method">
+<Tab title="Web UI">
+
+1. Navigate to **Observability** in the sidebar.
+2. Select **Pub/Sub** from the connector list.
+3. Enter your **GCP Project ID** and **Topic ID** (the topic ID only, not the full resource name).
+4. Provide credentials: paste a **service account key** (or reference it via an environment variable), or leave it empty to use **Application Default Credentials (ADC)**.
+5. Configure optional settings: auto-create topic and content logging.
+6. Toggle **Enabled** on, then click **Save** to apply the configuration.
+
+Use the **Configure Plugin Tracing** button in the top-right to control which plugin spans are included in published trace payloads. See [Filtering plugin spans](#filtering-plugin-spans).
+
+</Tab>
+
+<Tab title="config.json">
+
+Minimal configuration (uses Application Default Credentials):
+
+```json
+{
+  "plugins": [
+    {
+      "enabled": true,
+      "name": "pubsub",
+      "config": {
+        "project_id": "my-gcp-project",
+        "topic_id": "bifrost-traces"
+      }
+    }
+  ]
+}
+```
+
+Full example with an explicit service account key and content filtering:
+
+```json
+{
+  "plugins": [
+    {
+      "enabled": true,
+      "name": "pubsub",
+      "config": {
+        "project_id": "my-gcp-project",
+        "topic_id": "bifrost-traces",
+        "service_account_key": "env.PUBSUB_SERVICE_ACCOUNT_KEY",
+        "auto_create_topic": false,
+        "disable_content_logging": false,
+        "request_headers": ["x-tenant-id", "x-request-source"],
+        "plugin_span_filter": {
+          "mode": "exclude",
+          "plugins": ["logging", "telemetry", "compat", "pubsub"]
+        }
+      }
+    }
+  ]
+}
+```
+
+</Tab>
+</Tabs>
+
+---
+
+## Configuration reference
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `project_id` | `string` | ✅ | — | The GCP project ID that contains the Pub/Sub topic. |
+| `topic_id` | `string` | ✅ | — | The Pub/Sub topic ID — just the ID, not the full `projects/.../topics/...` resource name. |
+| `service_account_key` | `string \| SecretVar` | ❌ | — | Service account JSON key used to authenticate. Omit to use Application Default Credentials. Supports `env.VAR_NAME`. |
+| `auto_create_topic` | `boolean` | ❌ | `false` | Create the topic at startup if it does not exist. Requires the `pubsub.topics.create` permission. |
+| `disable_content_logging` | `boolean` | ❌ | `false` | Strip input/output message content from traces before publishing. |
+| `request_headers` | `string[]` | ❌ | — | Request-header name patterns to capture and embed in traces. Supports wildcards (e.g. `x-custom-*`). |
+| `plugin_span_filter` | `object` | ❌ | — | Controls which plugin spans are included in published payloads. See [Filtering plugin spans](#filtering-plugin-spans). |
+
+---
+
+## Authentication
+
+The connector authenticates to Google Cloud in one of two ways:
+
+### Application Default Credentials (ADC)
+
+Omit `service_account_key` to use [Application Default Credentials](https://cloud.google.com/docs/authentication/application-default-credentials). This is the recommended approach when Bifrost runs on GCP infrastructure (GKE Workload Identity, Compute Engine, Cloud Run) where credentials are provided by the environment. No key material is stored in Bifrost.
+
+```json
+{
+  "project_id": "my-gcp-project",
+  "topic_id": "bifrost-traces"
+}
+```
+
+### Explicit service account key
+
+Supply a service account JSON key via `service_account_key` when running outside GCP or when you need a dedicated identity. The service account needs the `pubsub.topics.publish` permission on the topic (the `roles/pubsub.publisher` role), plus `pubsub.topics.create` if `auto_create_topic` is enabled.
+
+```json
+{
+  "project_id": "my-gcp-project",
+  "topic_id": "bifrost-traces",
+  "service_account_key": "env.PUBSUB_SERVICE_ACCOUNT_KEY"
+}
+```
+
+<Warning>
+Always reference `service_account_key` via an environment variable (`env.PUBSUB_SERVICE_ACCOUNT_KEY`) rather than embedding the JSON key directly in `config.json` or the database.
+</Warning>
+
+---
+
+## Filtering traces
+
+### Stripping message content
+
+When `disable_content_logging` is `true`, the connector removes all input and output message content from spans before serializing to JSON. Span metadata — timing, token counts, model, provider, cost, and status — is preserved.
+
+This is useful when downstream subscribers should not have access to the actual prompt and completion text for compliance or access-control reasons.
+
+<Note>
+This flag is independent of the global `client.disable_content_logging`, which governs the Bifrost log store only. Set both if content must be suppressed everywhere.
+</Note>
+
+### Capturing request headers
+
+By default, no request headers are embedded in the trace payload. Set `request_headers` to a list of header name patterns to include:
+
+```json
+{
+  "request_headers": ["x-tenant-id", "x-request-source", "x-custom-*"]
+}
+```
+
+Patterns support exact names and wildcards: `x-custom-*` captures all headers with that prefix. `*` captures every header including `Authorization` — use with caution.
+
+Captured headers appear under `RequestHeaders` in the published JSON.
+
+### Filtering plugin spans
+
+By default every plugin hook generates a span in the trace, which can add significant noise (e.g. 8 built-in plugins × 2 hooks = 16 spans per request). Use `plugin_span_filter` to control which plugin spans are published:
+
+```json
+{
+  "plugin_span_filter": {
+    "mode": "exclude",
+    "plugins": ["logging", "telemetry", "compat", "pubsub"]
+  }
+}
+```
+
+| Mode | Behaviour |
+|------|-----------|
+| `include` | Publish spans only for the listed plugins |
+| `exclude` | Publish spans for all plugins except those listed |
+
+Plugin names match the `<name>` segment in span names like `plugin.<name>.prerequesthook`, `plugin.<name>.prehook`, and `plugin.<name>.posthook`. Use the **Configure Plugin Tracing** button on the Pub/Sub connector page in the UI to toggle individual plugins instead of editing config directly.
+
+When a plugin span is filtered out, its children are automatically re-parented to the nearest surviving ancestor so the span tree stays connected.
+
+---
+
+## Trace payload format
+
+Each Pub/Sub message data is a JSON-serialized trace, and the message carries a `trace_id` attribute set to the `TraceID`. Use the `trace_id` attribute for [subscription filtering](https://cloud.google.com/pubsub/docs/subscription-message-filter) without decoding the payload.
+
+The `RootSpan` is the inbound HTTP request span. The `Spans` array contains every span in the trace — including the root span as its first element — followed by plugin hook spans and the `llm.call` span. `RequestHeaders` is `null` when no headers are captured. `PluginLogs` may be `null` or an empty array `[]` when no plugin logs were emitted — subscribers should treat both as "no logs."
+
+```json
+{
+  "RequestID": "d2791ef1-3386-4ec8-9861-87bdaaac72a8",
+  "TraceID": "0e8b9293a69d4652804d2ab61121c1f2",
+  "ParentID": "",
+  "StartTime": "2026-06-29T17:34:38.435383+05:30",
+  "EndTime": "2026-06-29T17:34:39.555003+05:30",
+  "Attributes": {},
+  "RequestHeaders": null,
+  "PluginLogs": [],
+  "RootSpan": {
+    "SpanID": "40cd8047c2cb44c6",
+    "ParentID": "",
+    "TraceID": "0e8b9293a69d4652804d2ab61121c1f2",
+    "Name": "/v1/chat/completions",
+    "Kind": "http.request",
+    "StartTime": "2026-06-29T17:34:38.436463+05:30",
+    "EndTime": "2026-06-29T17:34:39.554577+05:30",
+    "Status": "ok",
+    "StatusMsg": "",
+    "Attributes": {
+      "http.method": "POST",
+      "http.url": "/v1/chat/completions",
+      "http.status_code": 200,
+      "http.user_agent": "bruno-runtime/3.5.0",
+      "gen_ai.provider.name": "openai",
+      "gen_ai.request.model": "gpt-4o-mini",
+      "gen_ai.response.model": "gpt-4o-mini-2024-07-18",
+      "gen_ai.input.messages": "hello",
+      "gen_ai.output.messages": "Hello! How can I assist you today?",
+      "gen_ai.response.finish_reasons": ["stop"]
+    },
+    "Events": []
+  },
+  "Spans": [
+    {
+      "SpanID": "40cd8047c2cb44c6",
+      "Name": "/v1/chat/completions",
+      "Kind": "http.request",
+      "...": "(root span repeated as first element)"
+    },
+    {
+      "SpanID": "5bf3c4f42fe448cc",
+      "ParentID": "40cd8047c2cb44c6",
+      "Name": "plugin.telemetry.prerequesthook",
+      "Kind": "plugin",
+      "StartTime": "2026-06-29T17:34:38.445065+05:30",
+      "EndTime": "2026-06-29T17:34:38.445073+05:30",
+      "Status": "ok",
+      "StatusMsg": "",
+      "Attributes": {},
+      "Events": []
+    },
+    {
+      "...": "(additional plugin.*.prerequesthook → plugin.*.prehook spans)"
+    },
+    {
+      "SpanID": "6e51fa290a2e43d0",
+      "ParentID": "8e3ac231d1d64907",
+      "Name": "chat gpt-4o-mini",
+      "Kind": "llm.call",
+      "StartTime": "2026-06-29T17:34:38.450939+05:30",
+      "EndTime": "2026-06-29T17:34:39.551269+05:30",
+      "Status": "ok",
+      "StatusMsg": "",
+      "Attributes": {
+        "gen_ai.provider.name": "openai",
+        "gen_ai.request.model": "gpt-4o-mini",
+        "gen_ai.response.model": "gpt-4o-mini-2024-07-18",
+        "gen_ai.usage.prompt_tokens": 8,
+        "gen_ai.usage.completion_tokens": 9,
+        "gen_ai.usage.total_tokens": 17,
+        "gen_ai.usage.cost": 160.0000054,
+        "gen_ai.input.messages": "[{\"role\":\"user\",\"content\":\"hello\"}]",
+        "gen_ai.output.messages": "[{\"role\":\"assistant\",\"content\":\"Hello! How can I assist you today?\"}]",
+        "gen_ai.response.finish_reason": "stop",
+        "bifrost.virtual_key.name": "my-vk",
+        "bifrost.retries": 0
+      },
+      "Events": []
+    },
+    {
+      "...": "(plugin.*.posthook spans follow)"
+    }
+  ]
+}
+```
+
+`RequestHeaders` is populated only for headers matched by your `request_headers` patterns — it is `null` otherwise. If `disable_content_logging` is `true`, `gen_ai.input.*` and `gen_ai.output.*` attributes are stripped from all spans before publishing.
+
+---
+
+## Troubleshooting
+
+### Topic does not exist at startup
+
+**Symptom:** Plugin fails to initialize with an error that the topic was not found.
+
+**Fix:** Either create the topic manually before starting Bifrost, or set `auto_create_topic: true` to have the connector create it automatically on startup (requires the `pubsub.topics.create` permission).
+
+### Permission denied on publish
+
+**Symptom:** `pubsub plugin: failed to publish trace ...` with a `PermissionDenied` error in the Bifrost logs.
+
+**Checks:**
+- Confirm the identity (ADC or service account) has the `pubsub.topics.publish` permission on the topic, i.e. the `roles/pubsub.publisher` role.
+- If `auto_create_topic` is enabled, the identity also needs `pubsub.topics.create`.
+
+### Authentication / credentials failure
+
+**Symptom:** Plugin fails to initialize while creating the Pub/Sub client.
+
+**Checks:**
+- When using a service account key, verify the `env.PUBSUB_SERVICE_ACCOUNT_KEY` variable resolves to the full, valid JSON key.
+- When using ADC, confirm the runtime environment actually provides credentials (Workload Identity binding, attached service account, or `GOOGLE_APPLICATION_CREDENTIALS`).
+- Verify `project_id` matches the project that owns the topic.
+
+### Messages not appearing in the subscription
+
+**Symptom:** Plugin initializes but no messages arrive.
+
+**Checks:**
+- Publishing is asynchronous — check Bifrost logs for `pubsub plugin: failed to publish trace ...` errors.
+- Confirm the plugin entry has `"enabled": true`.
+- Confirm your subscription is attached to the same topic and, if it uses a filter, that the filter matches the `trace_id` attribute.
+
+---
+
+## Next steps
+
+- **[Kafka](./kafka)** - Stream the same trace payloads to a Kafka topic
+- **[BigQuery](./bigquery)** - Write traces directly to a BigQuery table
+- **[OpenTelemetry](./otel)** - Send traces to Grafana, Datadog, New Relic, and other OTLP backends
+- **[Built-in observability](./default)** - Query logs directly from the Bifrost dashboard

@@ -102,9 +102,13 @@ ENV GOGC="" \
 # UID 1001 is the Red Hat recommended non-root numeric UID for certified containers.
 # We avoid creating a named user (adduser) since UBI minimal may not have useradd,
 # and Red Hat Preflight expects a numeric USER instruction.
-RUN mkdir -p $APP_DIR/logs && \
-  chown -R 1001:0 /app /licenses && \
+# Guard the group-writable chmod so it never applies when APP_DIR resolves to
+# /app itself (e.g. --build-arg ARG_APP_DIR=/app), which would make the binary
+# group-0-writable. /app and /licenses already get g=u above.
+RUN mkdir -p "$APP_DIR/logs" && \
+  chown -R 1001:0 /app /licenses "$APP_DIR" && \
   chmod -R g=u /app /licenses && \
+  { [ "$APP_DIR" = "/app" ] || chmod -R g=rwX "$APP_DIR"; } && \
   chmod +x /app/docker-entrypoint.sh
 
 USER 1001

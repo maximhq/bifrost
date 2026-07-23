@@ -319,7 +319,8 @@ func (p *LoggerPlugin) updateLogEntry(
 	}
 
 	if data.ErrorDetails != nil {
-		tempEntry.ErrorDetailsParsed = data.ErrorDetails
+		shouldStoreRaw, _ := ctx.Value(schemas.BifrostContextKeyShouldStoreRawInLogs).(bool)
+		tempEntry.ErrorDetailsParsed = sanitizeErrorForLogging(data.ErrorDetails, contentLoggingEnabled, shouldStoreRaw)
 		needsSerialization = true
 	}
 
@@ -386,11 +387,7 @@ func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamRe
 	// Handle error case first
 	if streamResponse.Data.ErrorDetails != nil {
 		entry.Status = logStatusForError(streamResponse.Data.ErrorDetails)
-		entry.ErrorDetailsParsed = streamResponse.Data.ErrorDetails
-		// Serialize error details immediately to avoid use-after-free with pooled errors
-		if data, err := sonic.Marshal(streamResponse.Data.ErrorDetails); err == nil {
-			entry.ErrorDetails = string(data)
-		}
+		entry.ErrorDetailsParsed = sanitizeErrorForLogging(streamResponse.Data.ErrorDetails, contentLoggingEnabled, shouldStoreRaw)
 		latF := float64(streamResponse.Data.Latency)
 		entry.Latency = &latF
 	} else {
@@ -1075,6 +1072,16 @@ func (p *LoggerPlugin) GetProviderLatencyHistogram(ctx context.Context, filters 
 	return p.store.GetProviderLatencyHistogram(ctx, filters, bucketSizeSeconds)
 }
 
+// GetThroughputHistogram returns time-bucketed token-generation throughput (tokens/sec) for the given filters
+func (p *LoggerPlugin) GetThroughputHistogram(ctx context.Context, filters logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.ThroughputHistogramResult, error) {
+	return p.store.GetThroughputHistogram(ctx, filters, bucketSizeSeconds)
+}
+
+// GetProviderThroughputHistogram returns time-bucketed tokens/sec with provider breakdown for the given filters
+func (p *LoggerPlugin) GetProviderThroughputHistogram(ctx context.Context, filters logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.ProviderThroughputHistogramResult, error) {
+	return p.store.GetProviderThroughputHistogram(ctx, filters, bucketSizeSeconds)
+}
+
 func (p *LoggerPlugin) GetModelRankings(ctx context.Context, filters logstore.SearchFilters) (*logstore.ModelRankingResult, error) {
 	return p.store.GetModelRankings(ctx, filters)
 }
@@ -1267,8 +1274,11 @@ func (p *LoggerPlugin) RecalculateCostsWithProgress(ctx context.Context, filters
 		limit = 1000
 	}
 
-	// Always scope to logs that don't have cost populated
-	filters.MissingCostOnly = true
+	// filters.MissingCostOnly controls the scope:
+	//   true  -> only rows without a cost are visited (the result set shrinks as we
+	//            update, so we only advance the offset past rows that stay missing)
+	//   false -> every row matching the filters is visited (the result set is stable,
+	//            so we advance the offset by the full batch size)
 	pagination := logstore.PaginationOptions{
 		Limit: limit,
 		// Always look at the oldest requests first
@@ -1329,7 +1339,14 @@ func (p *LoggerPlugin) RecalculateCostsWithProgress(ctx context.Context, filters
 			result.Updated += len(costUpdates)
 		}
 
-		remainingOffset += stillMissingInBatch
+		if filters.MissingCostOnly {
+			// Updated rows drop out of the result set, so only advance past rows
+			// that remain missing (skipped / zero-cost) to avoid skipping fresh work.
+			remainingOffset += stillMissingInBatch
+		} else {
+			// Result set is stable across updates, so advance by the full batch.
+			remainingOffset += len(searchResult.Logs)
+		}
 		if progress != nil {
 			progress(RecalculateCostProgress{
 				TotalMatched: result.TotalMatched,
@@ -1343,8 +1360,11 @@ func (p *LoggerPlugin) RecalculateCostsWithProgress(ctx context.Context, filters
 		}
 	}
 
-	// Re-count how many logs still match the missing-cost filter after updates
-	remainingResult, err := p.store.SearchLogs(ctx, filters, logstore.PaginationOptions{
+	// Re-count how many logs still have no cost after updates. This is meaningful
+	// regardless of the scope chosen above, so always count with MissingCostOnly set.
+	remainingFilters := filters
+	remainingFilters.MissingCostOnly = true
+	remainingResult, err := p.store.SearchLogs(ctx, remainingFilters, logstore.PaginationOptions{
 		Limit:  1, // we only need stats.TotalRequests for the count
 		Offset: 0,
 		SortBy: "timestamp",
@@ -1429,6 +1449,22 @@ func (p *LoggerPlugin) calculateCostForLog(logEntry *logstore.Log) (float64, err
 		OriginalModelRequested: originalModelRequested,
 		ResolvedModelUsed:      logEntry.Model,
 		CacheDebug:             cacheDebug,
+		RoutingInfo: schemas.RoutingInfo{
+			Provider: schemas.ModelProvider(logEntry.Provider),
+			Model:    originalModelRequested,
+		},
+	}
+
+	// Reconstruct the resolved alias from the stored log columns so recalc feeds
+	// pricing the same routing info live logging had. Without this the canonical
+	// model name is dropped and pricing only tries the wire model / alias name,
+	// nulling costs that live logging resolved via the canonical name.
+	if logEntry.CanonicalModelName != nil && *logEntry.CanonicalModelName != "" {
+		canonical := *logEntry.CanonicalModelName
+		extraFields.RoutingInfo.ResolvedKeyAlias = &schemas.ResolvedKeyAlias{
+			ModelID:   logEntry.Model,
+			ModelName: &canonical,
+		}
 	}
 
 	resp := buildResponseForRequestType(requestType, usage, extraFields)

@@ -1,0 +1,365 @@
+audit-logs:
+  get:
+    operationId: getAuditLogs
+    summary: List audit logs
+    description: |
+      Retrieves CADF-compliant audit log events with filtering, search, and
+      pagination via query parameters. Most filter dimensions accept either a
+      single value (singular parameter, e.g. `action`) or a JSON-encoded array
+      of values (plural parameter, e.g. `actions`); when both are supplied the
+      plural array takes precedence.
+    tags:
+      - Audit Logs
+    parameters:
+      - name: page
+        in: query
+        description: Page number for offset-based pagination (default 1).
+        schema:
+          type: integer
+          default: 1
+          minimum: 1
+      - name: limit
+        in: query
+        description: Number of events to return per page (default 100, max 1000).
+        schema:
+          type: integer
+          default: 100
+          maximum: 1000
+      - name: cursor
+        in: query
+        description: Opaque cursor for cursor-based pagination (from `next_cursor`).
+        schema:
+          type: string
+      - name: search
+        in: query
+        description: Free-text search across audit event fields.
+        schema:
+          type: string
+      - name: action
+        in: query
+        description: Filter by a single CADF action.
+        schema:
+          $ref: '../../schemas/management/auditlogs.yaml#/AuditAction'
+      - name: actions
+        in: query
+        description: JSON array of CADF actions to filter by (OR match).
+        schema:
+          type: string
+        example: '["create","update"]'
+      - name: outcome
+        in: query
+        description: Filter by a single outcome.
+        schema:
+          $ref: '../../schemas/management/auditlogs.yaml#/AuditOutcome'
+      - name: outcomes
+        in: query
+        description: JSON array of outcomes to filter by (OR match).
+        schema:
+          type: string
+        example: '["success","failure"]'
+      - name: event_type
+        in: query
+        description: Filter by a single event type.
+        schema:
+          $ref: '../../schemas/management/auditlogs.yaml#/AuditEventType'
+      - name: event_types
+        in: query
+        description: JSON array of event types to filter by (OR match).
+        schema:
+          type: string
+        example: '["activity","control"]'
+      - name: initiator_id
+        in: query
+        description: Filter by a single initiator ID.
+        schema:
+          type: string
+      - name: initiator_ids
+        in: query
+        description: JSON array of initiator IDs to filter by (OR match).
+        schema:
+          type: string
+      - name: initiator_type
+        in: query
+        description: Filter by a single initiator resource type.
+        schema:
+          $ref: '../../schemas/management/auditlogs.yaml#/AuditResourceType'
+      - name: initiator_types
+        in: query
+        description: JSON array of initiator resource types to filter by (OR match).
+        schema:
+          type: string
+      - name: target_id
+        in: query
+        description: Filter by a single target ID.
+        schema:
+          type: string
+      - name: target_ids
+        in: query
+        description: JSON array of target IDs to filter by (OR match).
+        schema:
+          type: string
+      - name: target_type
+        in: query
+        description: Filter by a single target resource type.
+        schema:
+          $ref: '../../schemas/management/auditlogs.yaml#/AuditResourceType'
+      - name: target_types
+        in: query
+        description: JSON array of target resource types to filter by (OR match).
+        schema:
+          type: string
+      - name: start_date
+        in: query
+        description: Filter events at or after this time (RFC3339 or `YYYY-MM-DD`).
+        schema:
+          type: string
+      - name: end_date
+        in: query
+        description: Filter events at or before this time (RFC3339 or `YYYY-MM-DD`; a date is treated as end-of-day).
+        schema:
+          type: string
+      - name: period
+        in: query
+        description: Relative time window that overrides `start_date`/`end_date` when set (e.g. `24h`, `7d`).
+        schema:
+          type: string
+      - name: request_method
+        in: query
+        description: Filter by a single HTTP request method.
+        schema:
+          type: string
+      - name: request_methods
+        in: query
+        description: JSON array of HTTP request methods to filter by (OR match).
+        schema:
+          type: string
+      - name: request_path
+        in: query
+        description: Filter by a single request path prefix.
+        schema:
+          type: string
+      - name: request_paths
+        in: query
+        description: JSON array of request path prefixes to filter by (OR match).
+        schema:
+          type: string
+      - name: request_ip
+        in: query
+        description: Filter by a single client IP address.
+        schema:
+          type: string
+      - name: request_ips
+        in: query
+        description: JSON array of client IP addresses to filter by (OR match).
+        schema:
+          type: string
+      - name: tags
+        in: query
+        description: JSON array of tags to filter by (any match).
+        schema:
+          type: string
+        example: '["security","auth"]'
+      - name: sort_by
+        in: query
+        description: Field to sort by (default `event_time`).
+        schema:
+          type: string
+          default: event_time
+      - name: sort_order
+        in: query
+        description: Sort direction.
+        schema:
+          type: string
+          enum: [asc, desc]
+          default: desc
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/auditlogs.yaml#/AuditLogsResult'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+audit-logs-filterdata:
+  get:
+    operationId: getAuditLogsFilterData
+    summary: Get audit log filter data
+    description: |
+      Returns the distinct values available for each audit log filter dimension,
+      used to populate filter dropdowns in the dashboard.
+    tags:
+      - Audit Logs
+    parameters:
+      - name: dimensions
+        in: query
+        description: |
+          Comma-separated list of dimensions to return. When omitted, all
+          dimensions are returned. Unknown dimensions are ignored.
+        schema:
+          type: string
+          example: actions,outcomes,initiators
+        # Valid dimensions: actions, outcomes, event_types, initiator_types,
+        # target_types, request_methods, initiators, targets, request_paths,
+        # request_ips, tags
+      - name: q
+        in: query
+        description: Optional case-insensitive substring filter applied to dimension values.
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/auditlogs.yaml#/AuditFilterDataResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+audit-logs-export:
+  get:
+    operationId: exportAuditLogs
+    summary: Export audit logs
+    description: |
+      Streams audit log events matching the supplied filters as a downloadable
+      file. Accepts the same filter query parameters as `GET /api/audit-logs`.
+      The response is returned as an attachment with a generated filename.
+    tags:
+      - Audit Logs
+    parameters:
+      - name: format
+        in: query
+        description: |
+          Export format. Defaults to `json` when omitted or unrecognized.
+          - `json`: a JSON array of events
+          - `jsonl`: JSON Lines, one event per line
+          - `syslog`: RFC 5424 syslog format
+        schema:
+          type: string
+          enum: [json, jsonl, syslog]
+          default: json
+      - name: search
+        in: query
+        description: Free-text search across audit event fields.
+        schema:
+          type: string
+      - name: actions
+        in: query
+        description: JSON array of CADF actions to filter by (OR match).
+        schema:
+          type: string
+      - name: outcomes
+        in: query
+        description: JSON array of outcomes to filter by (OR match).
+        schema:
+          type: string
+      - name: event_types
+        in: query
+        description: JSON array of event types to filter by (OR match).
+        schema:
+          type: string
+      - name: start_date
+        in: query
+        description: Filter events at or after this time (RFC3339 or `YYYY-MM-DD`).
+        schema:
+          type: string
+      - name: end_date
+        in: query
+        description: Filter events at or before this time (RFC3339 or `YYYY-MM-DD`).
+        schema:
+          type: string
+      - name: period
+        in: query
+        description: Relative time window that overrides `start_date`/`end_date` when set (e.g. `24h`, `7d`).
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: A streamed export of the matching audit logs.
+        content:
+          application/json:
+            schema:
+              type: string
+          application/x-ndjson:
+            schema:
+              type: string
+          text/plain:
+            schema:
+              type: string
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+audit-logs-by-id:
+  get:
+    operationId: getAuditLogById
+    summary: Get audit log by ID
+    description: Retrieves a single audit log event by its unique ID.
+    tags:
+      - Audit Logs
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: The unique identifier of the audit log event.
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/auditlogs.yaml#/AuditLogResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+audit-logs-verify:
+  get:
+    operationId: verifyAuditLogSignature
+    summary: Verify audit log signature
+    description: |
+      Recomputes the HMAC-SHA256 signature for a single audit log event and
+      compares it (in constant time) against the stored signature to detect
+      tampering.
+    tags:
+      - Audit Logs
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: The unique identifier of the audit log event to verify.
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/auditlogs.yaml#/AuditVerifyResult'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'

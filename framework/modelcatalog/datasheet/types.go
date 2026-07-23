@@ -122,8 +122,10 @@ type Options struct {
 	// Costs - 272k Tier
 	InputCostPerTokenAbove272kTokens          *float64 `json:"input_cost_per_token_above_272k_tokens,omitempty"`
 	InputCostPerTokenAbove272kTokensPriority  *float64 `json:"input_cost_per_token_above_272k_tokens_priority,omitempty"`
+	InputCostPerTokenFlexAbove272kTokens      *float64 `json:"input_cost_per_token_flex_above_272k_tokens,omitempty"`
 	OutputCostPerTokenAbove272kTokens         *float64 `json:"output_cost_per_token_above_272k_tokens,omitempty"`
 	OutputCostPerTokenAbove272kTokensPriority *float64 `json:"output_cost_per_token_above_272k_tokens_priority,omitempty"`
+	OutputCostPerTokenFlexAbove272kTokens     *float64 `json:"output_cost_per_token_flex_above_272k_tokens,omitempty"`
 
 	// Costs - Cache
 	CacheCreationInputTokenCost                        *float64 `json:"cache_creation_input_token_cost,omitempty"`
@@ -139,6 +141,16 @@ type Options struct {
 	CacheReadInputImageTokenCost                       *float64 `json:"cache_read_input_image_token_cost,omitempty"`
 	CacheReadInputTokenCostAbove272kTokens             *float64 `json:"cache_read_input_token_cost_above_272k_tokens,omitempty"`
 	CacheReadInputTokenCostAbove272kTokensPriority     *float64 `json:"cache_read_input_token_cost_above_272k_tokens_priority,omitempty"`
+	CacheReadInputTokenCostFlexAbove272kTokens         *float64 `json:"cache_read_input_token_cost_flex_above_272k_tokens,omitempty"`
+	// OpenAI cache-write (cache-creation) tiered rates, added with gpt-5.6.
+	CacheCreationInputTokenCostAbove272kTokens     *float64 `json:"cache_creation_input_token_cost_above_272k_tokens,omitempty"`
+	CacheCreationInputTokenCostFlex                *float64 `json:"cache_creation_input_token_cost_flex,omitempty"`
+	CacheCreationInputTokenCostFlexAbove272kTokens *float64 `json:"cache_creation_input_token_cost_flex_above_272k_tokens,omitempty"`
+	CacheCreationInputTokenCostPriority            *float64 `json:"cache_creation_input_token_cost_priority,omitempty"`
+	// Fast mode (Anthropic) cache rates — flat across the full context window, no tiering.
+	CacheCreationInputTokenCostFast         *float64 `json:"cache_creation_input_token_cost_fast,omitempty"`
+	CacheCreationInputTokenCostAbove1hrFast *float64 `json:"cache_creation_input_token_cost_above_1hr_fast,omitempty"`
+	CacheReadInputTokenCostFast             *float64 `json:"cache_read_input_token_cost_fast,omitempty"`
 
 	// Costs - Image
 	InputCostPerImage                             *float64 `json:"input_cost_per_image,omitempty"`
@@ -174,6 +186,7 @@ type Options struct {
 	// represents it as a tiered object. See Entry.UnmarshalJSON.
 	SearchContextCostPerQuery     *float64 `json:"search_context_cost_per_query,omitempty"`
 	CodeInterpreterCostPerSession *float64 `json:"code_interpreter_cost_per_session,omitempty"`
+	InferenceGeoUSMultiplier      *float64 `json:"inference_geo_us_multiplier,omitempty"`
 
 	// Costs - OCR
 	OCRCostPerPage        *float64 `json:"ocr_cost_per_page,omitempty"`
@@ -252,6 +265,8 @@ type serviceTier struct {
 	isPriority bool // true when service_tier == "priority"
 	isFlex     bool // true when service_tier == "flex"
 	isFast     bool // true when usage.speed == "fast" (Anthropic fast mode)
+	// true when usage.inference_geo == "us" (Anthropic data residency 1.1x multiplier)
+	inferenceGeoUS bool
 }
 
 // costInput holds the extracted usage data from a BifrostResponse,
@@ -371,6 +386,22 @@ func normalizeRequestType(reqType schemas.RequestType) string {
 		return "container_create"
 	}
 	return "unknown"
+}
+
+// chatResponsesFallbackMode returns the counterpart pricing mode for request
+// types that providers serve over both the chat-completions and the responses
+// API. Many models carry a datasheet row under only one of the two modes (e.g.
+// bedrock's openai.gpt-5.5 ships as responses-only), so a lookup that misses in
+// its own mode retries under the counterpart rather than pricing at zero.
+// Returns false for request types with no such counterpart.
+func chatResponsesFallbackMode(reqType schemas.RequestType) (string, bool) {
+	switch reqType {
+	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest, schemas.WebSocketResponsesRequest, schemas.RealtimeRequest, schemas.CompactionRequest:
+		return normalizeRequestType(schemas.ChatCompletionRequest), true
+	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
+		return normalizeRequestType(schemas.ResponsesRequest), true
+	}
+	return "", false
 }
 
 // normalizeStreamRequestType maps a stream variant to its non-stream base type.
@@ -571,8 +602,10 @@ func convertEntryToTablePricing(modelKey string, entry Entry) configstoreTables.
 		OutputCostPerTokenAbove200kTokensPriority: entry.OutputCostPerTokenAbove200kTokensPriority,
 		InputCostPerTokenAbove272kTokens:          entry.InputCostPerTokenAbove272kTokens,
 		InputCostPerTokenAbove272kTokensPriority:  entry.InputCostPerTokenAbove272kTokensPriority,
+		InputCostPerTokenFlexAbove272kTokens:      entry.InputCostPerTokenFlexAbove272kTokens,
 		OutputCostPerTokenAbove272kTokens:         entry.OutputCostPerTokenAbove272kTokens,
 		OutputCostPerTokenAbove272kTokensPriority: entry.OutputCostPerTokenAbove272kTokensPriority,
+		OutputCostPerTokenFlexAbove272kTokens:     entry.OutputCostPerTokenFlexAbove272kTokens,
 		InputCostPerCharacter:                     entry.InputCostPerCharacter,
 		InputCostPerTokenAbove128kTokens:          entry.InputCostPerTokenAbove128kTokens,
 		InputCostPerImageAbove128kTokens:          entry.InputCostPerImageAbove128kTokens,
@@ -593,6 +626,14 @@ func convertEntryToTablePricing(modelKey string, entry Entry) configstoreTables.
 		CacheReadInputImageTokenCost:                       entry.CacheReadInputImageTokenCost,
 		CacheReadInputTokenCostAbove272kTokens:             entry.CacheReadInputTokenCostAbove272kTokens,
 		CacheReadInputTokenCostAbove272kTokensPriority:     entry.CacheReadInputTokenCostAbove272kTokensPriority,
+		CacheReadInputTokenCostFlexAbove272kTokens:         entry.CacheReadInputTokenCostFlexAbove272kTokens,
+		CacheCreationInputTokenCostAbove272kTokens:         entry.CacheCreationInputTokenCostAbove272kTokens,
+		CacheCreationInputTokenCostFlex:                    entry.CacheCreationInputTokenCostFlex,
+		CacheCreationInputTokenCostFlexAbove272kTokens:     entry.CacheCreationInputTokenCostFlexAbove272kTokens,
+		CacheCreationInputTokenCostPriority:                entry.CacheCreationInputTokenCostPriority,
+		CacheCreationInputTokenCostFast:                    entry.CacheCreationInputTokenCostFast,
+		CacheCreationInputTokenCostAbove1hrFast:            entry.CacheCreationInputTokenCostAbove1hrFast,
+		CacheReadInputTokenCostFast:                        entry.CacheReadInputTokenCostFast,
 
 		InputCostPerImage:                             entry.InputCostPerImage,
 		InputCostPerPixel:                             entry.InputCostPerPixel,
@@ -622,6 +663,7 @@ func convertEntryToTablePricing(modelKey string, entry Entry) configstoreTables.
 
 		SearchContextCostPerQuery:     entry.SearchContextCostPerQuery,
 		CodeInterpreterCostPerSession: entry.CodeInterpreterCostPerSession,
+		InferenceGeoUSMultiplier:      entry.InferenceGeoUSMultiplier,
 
 		OCRCostPerPage:        entry.OCRCostPerPage,
 		AnnotationCostPerPage: entry.AnnotationCostPerPage,
@@ -648,8 +690,10 @@ func convertTablePricingToEntry(pricing *configstoreTables.TableModelPricing) *E
 		OutputCostPerTokenAbove200kTokensPriority: pricing.OutputCostPerTokenAbove200kTokensPriority,
 		InputCostPerTokenAbove272kTokens:          pricing.InputCostPerTokenAbove272kTokens,
 		InputCostPerTokenAbove272kTokensPriority:  pricing.InputCostPerTokenAbove272kTokensPriority,
+		InputCostPerTokenFlexAbove272kTokens:      pricing.InputCostPerTokenFlexAbove272kTokens,
 		OutputCostPerTokenAbove272kTokens:         pricing.OutputCostPerTokenAbove272kTokens,
 		OutputCostPerTokenAbove272kTokensPriority: pricing.OutputCostPerTokenAbove272kTokensPriority,
+		OutputCostPerTokenFlexAbove272kTokens:     pricing.OutputCostPerTokenFlexAbove272kTokens,
 		InputCostPerCharacter:                     pricing.InputCostPerCharacter,
 		InputCostPerTokenAbove128kTokens:          pricing.InputCostPerTokenAbove128kTokens,
 		InputCostPerImageAbove128kTokens:          pricing.InputCostPerImageAbove128kTokens,
@@ -670,6 +714,14 @@ func convertTablePricingToEntry(pricing *configstoreTables.TableModelPricing) *E
 		CacheReadInputImageTokenCost:                       pricing.CacheReadInputImageTokenCost,
 		CacheReadInputTokenCostAbove272kTokens:             pricing.CacheReadInputTokenCostAbove272kTokens,
 		CacheReadInputTokenCostAbove272kTokensPriority:     pricing.CacheReadInputTokenCostAbove272kTokensPriority,
+		CacheReadInputTokenCostFlexAbove272kTokens:         pricing.CacheReadInputTokenCostFlexAbove272kTokens,
+		CacheCreationInputTokenCostAbove272kTokens:         pricing.CacheCreationInputTokenCostAbove272kTokens,
+		CacheCreationInputTokenCostFlex:                    pricing.CacheCreationInputTokenCostFlex,
+		CacheCreationInputTokenCostFlexAbove272kTokens:     pricing.CacheCreationInputTokenCostFlexAbove272kTokens,
+		CacheCreationInputTokenCostPriority:                pricing.CacheCreationInputTokenCostPriority,
+		CacheCreationInputTokenCostFast:                    pricing.CacheCreationInputTokenCostFast,
+		CacheCreationInputTokenCostAbove1hrFast:            pricing.CacheCreationInputTokenCostAbove1hrFast,
+		CacheReadInputTokenCostFast:                        pricing.CacheReadInputTokenCostFast,
 
 		InputCostPerImage:                             pricing.InputCostPerImage,
 		InputCostPerPixel:                             pricing.InputCostPerPixel,
@@ -699,6 +751,7 @@ func convertTablePricingToEntry(pricing *configstoreTables.TableModelPricing) *E
 
 		SearchContextCostPerQuery:     pricing.SearchContextCostPerQuery,
 		CodeInterpreterCostPerSession: pricing.CodeInterpreterCostPerSession,
+		InferenceGeoUSMultiplier:      pricing.InferenceGeoUSMultiplier,
 
 		OCRCostPerPage:        pricing.OCRCostPerPage,
 		AnnotationCostPerPage: pricing.AnnotationCostPerPage,

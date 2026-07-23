@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -2079,4 +2080,220 @@ func TestToOpenAIResponsesRequest_StripsThoughtSignatureFromCallID(t *testing.T)
 	if *req.Input[1].ResponsesToolMessage.CallID != embeddedID {
 		t.Error("original function_call_output call_id was mutated")
 	}
+}
+
+func TestToOpenAIResponsesRequest_OmitsRoleFromNonMessageInputItems(t *testing.T) {
+	assistant := schemas.ResponsesInputMessageRoleAssistant
+	user := schemas.ResponsesInputMessageRoleUser
+	messageType := schemas.ResponsesMessageTypeMessage
+	functionCallType := schemas.ResponsesMessageTypeFunctionCall
+	req := &schemas.BifrostResponsesRequest{
+		Model: "gpt-4o",
+		Input: []schemas.ResponsesMessage{
+			{
+				Type:    &messageType,
+				Role:    &user,
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+			},
+			{
+				Type: &functionCallType,
+				Role: &assistant,
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID:    schemas.Ptr("call_123"),
+					Name:      schemas.Ptr("search"),
+					Arguments: schemas.Ptr(`{"query":"bifrost"}`),
+				},
+			},
+		},
+	}
+
+	converted := ToOpenAIResponsesRequest(nil, req)
+	if converted == nil {
+		t.Fatal("ToOpenAIResponsesRequest returned nil")
+	}
+	wire, err := sonic.Marshal(converted)
+	if err != nil {
+		t.Fatalf("marshal wire request: %v", err)
+	}
+
+	var payload struct {
+		Input []json.RawMessage `json:"input"`
+	}
+	if err := sonic.Unmarshal(wire, &payload); err != nil {
+		t.Fatalf("unmarshal wire request: %v", err)
+	}
+
+	items := make(map[string]map[string]json.RawMessage, len(payload.Input))
+	for _, raw := range payload.Input {
+		var item map[string]json.RawMessage
+		if err := sonic.Unmarshal(raw, &item); err != nil {
+			t.Fatalf("unmarshal input item: %v", err)
+		}
+		var itemType string
+		if err := sonic.Unmarshal(item["type"], &itemType); err != nil {
+			t.Fatalf("unmarshal input item type: %v", err)
+		}
+		items[itemType] = item
+	}
+
+	message := items["message"]
+	var messageRole string
+	if err := sonic.Unmarshal(message["role"], &messageRole); err != nil || messageRole != "user" {
+		t.Errorf("message role: got %q, want %q (err=%v)", messageRole, "user", err)
+	}
+	functionCall := items["function_call"]
+	if _, ok := functionCall["role"]; ok {
+		t.Error("function_call role present in wire request")
+	}
+	for field, want := range map[string]string{"call_id": "call_123", "name": "search", "arguments": `{"query":"bifrost"}`} {
+		var got string
+		if err := sonic.Unmarshal(functionCall[field], &got); err != nil || got != want {
+			t.Errorf("function_call %s: got %q, want %q (err=%v)", field, got, want, err)
+		}
+	}
+	if req.Input[0].Role == nil || req.Input[1].Role == nil {
+		t.Error("original input roles were mutated")
+	}
+}
+
+// TestToOpenAIResponsesRequest_DefaultsImageDetail verifies input_image blocks
+// missing the detail field get "auto" on the wire (OpenAI's schema requires it
+// and strict validators like vLLM reject requests without it), explicit values
+// are preserved, and the caller's input is never mutated.
+func TestToOpenAIResponsesRequest_DefaultsImageDetail(t *testing.T) {
+	imageURL := "data:image/png;base64,iVBORw0KGgo="
+	bifrostReq := &schemas.BifrostResponsesRequest{
+		Model: "gpt-4o",
+		Input: []schemas.ResponsesMessage{
+			{
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{
+						{
+							Type: schemas.ResponsesInputMessageContentBlockTypeText,
+							Text: schemas.Ptr("what is in this image?"),
+						},
+						{
+							Type: schemas.ResponsesInputMessageContentBlockTypeImage,
+							ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{
+								ImageURL: &imageURL,
+							},
+						},
+						{
+							Type: schemas.ResponsesInputMessageContentBlockTypeImage,
+							ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{
+								ImageURL: &imageURL,
+								Detail:   schemas.Ptr("high"),
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	req := ToOpenAIResponsesRequest(nil, bifrostReq)
+	if req == nil {
+		t.Fatal("converted request is nil")
+	}
+
+	blocks := req.Input.OpenAIResponsesRequestInputArray[0].Content.ContentBlocks
+	if len(blocks) != 3 {
+		t.Fatalf("content blocks: got %d, want 3", len(blocks))
+	}
+	if blocks[1].ResponsesInputMessageContentBlockImage.Detail == nil ||
+		*blocks[1].ResponsesInputMessageContentBlockImage.Detail != "auto" {
+		t.Errorf("missing detail not defaulted to auto: %v", blocks[1].ResponsesInputMessageContentBlockImage.Detail)
+	}
+	if blocks[2].ResponsesInputMessageContentBlockImage.Detail == nil ||
+		*blocks[2].ResponsesInputMessageContentBlockImage.Detail != "high" {
+		t.Errorf("explicit detail not preserved: %v", blocks[2].ResponsesInputMessageContentBlockImage.Detail)
+	}
+
+	// Wire-level: the marshaled JSON must carry detail on every input_image.
+	data, err := sonic.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal converted request: %v", err)
+	}
+	if strings.Count(string(data), `"detail"`) != 2 {
+		t.Errorf("wire JSON does not carry detail on both image blocks: %s", data)
+	}
+
+	// Caller's input must remain untouched.
+	original := bifrostReq.Input[0].Content.ContentBlocks[1].ResponsesInputMessageContentBlockImage
+	if original.Detail != nil {
+		t.Errorf("caller's input was mutated: detail = %q", *original.Detail)
+	}
+}
+
+// TestToOpenAIResponsesRequest_FallbackBlockDropped verifies that Anthropic's
+// server-side fallback boundary marker never reaches OpenAI. Unlike a compaction
+// block (which is promoted to text), it carries no user content, so it is dropped.
+func TestToOpenAIResponsesRequest_FallbackBlockDropped(t *testing.T) {
+	t.Run("fallback block is dropped, surrounding content survives", func(t *testing.T) {
+		bifrostReq := &schemas.BifrostResponsesRequest{
+			Model: "gpt-5.5",
+			Input: []schemas.ResponsesMessage{{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{
+						{
+							Type: schemas.ResponsesOutputMessageContentTypeFallback,
+							ResponsesOutputMessageContentFallback: &schemas.ResponsesOutputMessageContentFallback{
+								FromModel: "claude-fable-5",
+								ToModel:   "claude-opus-4-8",
+							},
+						},
+						{Type: schemas.ResponsesOutputMessageContentTypeText, Text: schemas.Ptr("Hi there")},
+					},
+				},
+			}},
+		}
+
+		result := ToOpenAIResponsesRequest(nil, bifrostReq)
+		if result == nil || len(result.Input.OpenAIResponsesRequestInputArray) != 1 {
+			t.Fatalf("expected one converted input message, got %#v", result)
+		}
+		msg := result.Input.OpenAIResponsesRequestInputArray[0]
+		if msg.Content == nil {
+			t.Fatal("expected converted message to retain content")
+		}
+		for _, b := range msg.Content.ContentBlocks {
+			if b.Type == schemas.ResponsesOutputMessageContentTypeFallback {
+				t.Fatalf("fallback block leaked to OpenAI: %#v", msg.Content.ContentBlocks)
+			}
+			// The marker must not be smuggled through as text either.
+			if b.Text != nil && strings.Contains(*b.Text, "claude-fable-5") {
+				t.Fatalf("fallback marker rendered as text: %q", *b.Text)
+			}
+		}
+		if len(msg.Content.ContentBlocks) != 1 || msg.Content.ContentBlocks[0].Text == nil || *msg.Content.ContentBlocks[0].Text != "Hi there" {
+			t.Fatalf("expected only the surviving text block, got %#v", msg.Content.ContentBlocks)
+		}
+	})
+
+	t.Run("message with only a fallback block is skipped entirely", func(t *testing.T) {
+		bifrostReq := &schemas.BifrostResponsesRequest{
+			Model: "gpt-5.5",
+			Input: []schemas.ResponsesMessage{{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+						Type: schemas.ResponsesOutputMessageContentTypeFallback,
+						ResponsesOutputMessageContentFallback: &schemas.ResponsesOutputMessageContentFallback{
+							FromModel: "claude-fable-5",
+							ToModel:   "claude-opus-4-8",
+						},
+					}},
+				},
+			}},
+		}
+
+		result := ToOpenAIResponsesRequest(nil, bifrostReq)
+		if result != nil && len(result.Input.OpenAIResponsesRequestInputArray) != 0 {
+			t.Fatalf("expected the fallback-only message to be skipped, got %#v", result.Input.OpenAIResponsesRequestInputArray)
+		}
+	})
 }

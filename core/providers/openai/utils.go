@@ -162,17 +162,19 @@ func supportsOpenAIXHighReasoningEffort(model string) bool {
 	return strings.HasPrefix(modelLower, "gpt-5.2") ||
 		strings.HasPrefix(modelLower, "gpt-5.3-codex") ||
 		strings.HasPrefix(modelLower, "gpt-5.4") ||
-		strings.HasPrefix(modelLower, "gpt-5.5")
+		strings.HasPrefix(modelLower, "gpt-5.5") ||
+		strings.HasPrefix(modelLower, "gpt-5.6")
 }
 
-// supportsMaxReasoningEffort reports models that natively accept "max" effort (e.g. DeepSeek V4, GLM-5.2).
+// supportsMaxReasoningEffort reports models that natively accept "max" effort (e.g. GPT-5.6, DeepSeek V4, GLM-5.2).
 func supportsMaxReasoningEffort(model string) bool {
 	_, parsedModel := schemas.ParseModelString(model, schemas.OpenAI)
 	if parsedModel != "" {
 		model = parsedModel
 	}
 	modelLower := strings.ToLower(model)
-	return strings.HasPrefix(modelLower, "deepseek-v4") ||
+	return strings.HasPrefix(modelLower, "gpt-5.6") ||
+		strings.HasPrefix(modelLower, "deepseek-v4") ||
 		strings.HasPrefix(modelLower, "glm-5.2")
 }
 

@@ -2,17 +2,27 @@ import { BaseProvider, ConcurrencyAndBufferSize, NetworkConfig } from "@/lib/typ
 import { ProviderName } from "./logs";
 
 /**
- * Parse a date string in YYYY-MM-DD format with strict validation.
- * Returns null if the string is empty, malformed, or represents an invalid date.
+ * Parse a trial expiry string with strict validation.
+ * Accepts either a bare date (YYYY-MM-DD) or a full RFC3339 timestamp
+ * (YYYY-MM-DDTHH:mm:ssZ) — the Docker build injects the latter, since the Go
+ * side needs an RFC3339 value. Only the calendar date is significant for the
+ * banner, so any time component is ignored and the date is taken at local
+ * midnight. Returns null if the string is empty, malformed, or represents an
+ * invalid date.
  */
 function parseTrialExpiry(dateStr: string | undefined): Date | null {
 	if (!dateStr || !dateStr.trim()) return null;
 
-	// Strict format check: YYYY-MM-DD
-	const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
-	if (!dateRegex.test(dateStr)) return null;
+	// Accept YYYY-MM-DD optionally followed by a time component (e.g. the
+	// RFC3339 "T00:00:00Z" suffix), and capture just the date part.
+	const dateRegex = /^(\d{4})-(\d{2})-(\d{2})(?:[T ].*)?$/;
+	const match = dateRegex.exec(dateStr.trim());
+	if (!match) return null;
 
-	const [year, month, day] = dateStr.split("-").map(Number);
+	const [, yearStr, monthStr, dayStr] = match;
+	const year = Number(yearStr);
+	const month = Number(monthStr);
+	const day = Number(dayStr);
 	const date = new Date(year, month - 1, day);
 
 	// Validate the date components match (catches invalid dates like 2024-02-30)
@@ -54,6 +64,8 @@ export const ModelPlaceholders = {
 	runway: "e.g. gen4_turbo_image_to_video, gen3a_turbo_image_to_video",
 	runware: "e.g. runware:100@1, runware:101@1",
 	fireworks: "e.g. accounts/fireworks/models/deepseek-v3p2",
+	sarvam: "e.g. sarvam-30b, sarvam-105b",
+	wafer: "e.g. glm-5.2, kimi-k2.6",
 };
 
 export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
@@ -85,6 +97,8 @@ export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
 	runware: true,
 	vllm: false,
 	fireworks: true,
+	sarvam: true,
+	wafer: true,
 };
 
 export const DefaultNetworkConfig = {
@@ -96,6 +110,7 @@ export const DefaultNetworkConfig = {
 	insecure_skip_verify: false,
 	ca_cert_pem: { value: "", ref: "" },
 	stream_idle_timeout_in_seconds: 120,
+	keep_alive_timeout_in_seconds: 30,
 	max_conns_per_host: 5000,
 	enforce_http2: false,
 	allow_private_network: false,

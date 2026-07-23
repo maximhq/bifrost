@@ -2,14 +2,17 @@ package tracing
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
 type testRealtimeObservabilityPlugin struct {
-	injected chan *schemas.Trace
+	injected        chan *schemas.Trace
+	injectedPayload chan string
 }
 
 func (p *testRealtimeObservabilityPlugin) GetName() string { return "test-observability" }
@@ -24,6 +27,14 @@ func (p *testRealtimeObservabilityPlugin) PostLLMHook(_ *schemas.BifrostContext,
 	return resp, bifrostErr, nil
 }
 func (p *testRealtimeObservabilityPlugin) Inject(_ context.Context, trace *schemas.Trace) error {
+	if p.injectedPayload != nil {
+		serialized, err := sonic.MarshalString(trace)
+		if err != nil {
+			return err
+		}
+		p.injectedPayload <- serialized
+		return nil
+	}
 	if trace == nil {
 		p.injected <- nil
 		return nil
@@ -59,6 +70,91 @@ func TestTracer_CompleteAndFlushTraceInjectsObservabilityPlugins(t *testing.T) {
 
 	if got := tracer.store.GetTrace(traceID); got != nil {
 		t.Fatalf("trace %q was not released after flush", traceID)
+	}
+}
+
+func TestTracer_CompleteAndFlushTraceRedactsContentBeforeInject(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+
+	tracer := NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	traceID := tracer.CreateTrace("")
+	plugin := &testRealtimeObservabilityPlugin{
+		injectedPayload: make(chan string, 1),
+	}
+	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{plugin})
+
+	// Store replacements before output attributes are populated. This mirrors
+	// streaming, where the final accumulated output lands near trace completion.
+	tracer.SetTraceRedactionReplacements(traceID, schemas.RedactionPhaseInput, map[string]string{
+		"alex@example.com": "[EMAIL-INPUT]",
+	})
+	tracer.SetTraceRedactionReplacements(traceID, schemas.RedactionPhaseOutput, map[string]string{
+		"alex@example.com": "[EMAIL-OUTPUT]",
+	})
+
+	ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyTraceID, traceID)
+	rootCtx, rootHandle := tracer.StartSpan(ctx, "http-request", schemas.SpanKindHTTPRequest)
+	tracer.SetAttribute(rootHandle, schemas.AttrInputMessages, `{"content":"email alex@example.com"}`)
+	_, childHandle := tracer.StartSpan(rootCtx, "llm-call", schemas.SpanKindLLMCall)
+	tracer.SetAttribute(childHandle, schemas.AttrOutputMessages, `{"content":"reply alex@example.com"}`)
+	tracer.SetAttribute(childHandle, schemas.AttrRequestModel, "gpt-4o-mini")
+
+	tracer.CompleteAndFlushTrace(traceID)
+
+	select {
+	case payload := <-plugin.injectedPayload:
+		if strings.Contains(payload, "alex@example.com") {
+			t.Fatalf("injected trace leaked raw content: %s", payload)
+		}
+		if !strings.Contains(payload, "[EMAIL-INPUT]") {
+			t.Fatalf("injected trace missing input redacted placeholder: %s", payload)
+		}
+		if !strings.Contains(payload, "[EMAIL-OUTPUT]") {
+			t.Fatalf("injected trace missing output redacted placeholder: %s", payload)
+		}
+		if !strings.Contains(payload, "gpt-4o-mini") {
+			t.Fatalf("injected trace should retain non-content attributes: %s", payload)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for observability inject")
+	}
+}
+
+func TestTracer_SetTraceRedactionReplacementsSurvivesLaterObservabilityPlugins(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+
+	tracer := NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	traceID := tracer.CreateTrace("")
+	tracer.SetTraceRedactionReplacements(traceID, schemas.RedactionPhaseInput, map[string]string{
+		"alex@example.com": "[EMAIL-1]",
+	})
+
+	plugin := &testRealtimeObservabilityPlugin{
+		injectedPayload: make(chan string, 1),
+	}
+	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{plugin})
+
+	ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyTraceID, traceID)
+	_, rootHandle := tracer.StartSpan(ctx, "http-request", schemas.SpanKindHTTPRequest)
+	tracer.SetAttribute(rootHandle, schemas.AttrInputMessages, `{"content":"email alex@example.com"}`)
+	tracer.CompleteAndFlushTrace(traceID)
+
+	select {
+	case payload := <-plugin.injectedPayload:
+		if strings.Contains(payload, "alex@example.com") {
+			t.Fatalf("trace redaction replacements should survive later observability plugin registration: %s", payload)
+		}
+		if !strings.Contains(payload, "[EMAIL-1]") {
+			t.Fatalf("injected trace missing redacted placeholder: %s", payload)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for observability inject")
 	}
 }
 

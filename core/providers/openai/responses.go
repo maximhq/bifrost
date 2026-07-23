@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"encoding/json"
 	"strings"
 
 	"github.com/maximhq/bifrost/core/providers/utils"
@@ -45,26 +46,29 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 
 	var messages []schemas.ResponsesMessage
 	// OpenAI models (except for gpt-oss) do not support reasoning content blocks, so we need to convert them to summaries, if there are any
-	// OpenAI also doesn't support compaction content blocks, so we need to convert them to text blocks
+	// OpenAI also doesn't support compaction content blocks, so we need to convert them to text blocks,
+	// nor Anthropic's server-side fallback boundary markers, which are dropped outright.
 	messages = make([]schemas.ResponsesMessage, 0, len(bifrostReq.Input))
 	for _, message := range bifrostReq.Input {
-		// First, check if message has compaction content blocks and convert them to text
+		// First, check if message has compaction/fallback content blocks and rewrite them
 		if message.Content != nil && len(message.Content.ContentBlocks) > 0 {
-			hasCompaction := false
+			needsRewrite := false
 			for _, block := range message.Content.ContentBlocks {
-				if block.Type == schemas.ResponsesOutputMessageContentTypeCompaction {
-					hasCompaction = true
+				if block.Type == schemas.ResponsesOutputMessageContentTypeCompaction ||
+					block.Type == schemas.ResponsesOutputMessageContentTypeFallback {
+					needsRewrite = true
 					break
 				}
 			}
 
-			if hasCompaction {
+			if needsRewrite {
 				// Create a new message with converted content blocks
 				newMessage := message
 				newContentBlocks := make([]schemas.ResponsesMessageContentBlock, 0, len(message.Content.ContentBlocks))
 
 				for _, block := range message.Content.ContentBlocks {
-					if block.Type == schemas.ResponsesOutputMessageContentTypeCompaction {
+					switch block.Type {
+					case schemas.ResponsesOutputMessageContentTypeCompaction:
 						// Convert compaction block to text block
 						if block.ResponsesOutputMessageContentCompaction != nil && block.ResponsesOutputMessageContentCompaction.Summary != "" {
 							newContentBlocks = append(newContentBlocks, schemas.ResponsesMessageContentBlock{
@@ -73,8 +77,12 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 							})
 						}
 						// If summary is empty, skip the block entirely
-					} else {
-						// Keep non-compaction blocks as-is
+					case schemas.ResponsesOutputMessageContentTypeFallback:
+						// Anthropic-only server-side fallback boundary marker. Unlike
+						// compaction it carries no user content (only from/to model
+						// names), so drop it rather than rendering it as text.
+					default:
+						// Keep every other block as-is
 						newContentBlocks = append(newContentBlocks, block)
 					}
 				}
@@ -86,11 +94,17 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 					}
 					message = newMessage
 				} else {
-					// If all blocks were compaction with empty summaries, skip message
+					// Nothing survived (empty-summary compaction and/or fallback markers)
 					continue
 				}
 			}
 		}
+
+		// OpenAI's Responses schema requires "detail" on input_image items, and strict
+		// downstream validators (e.g. vLLM importing the official OpenAI types) reject
+		// requests without it. Blocks converted from non-OpenAI surfaces (Anthropic,
+		// Gemini, Cohere, chat bridge) never carry one, so default missing values to "auto".
+		message = defaultImageDetail(message)
 
 		// Strip provider reasoning signatures (e.g. Gemini thoughtSignatures smuggled into
 		// call_id as "<baseID>_ts_<sig>") from tool call IDs, but only when the id exceeds
@@ -104,6 +118,12 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 				toolMsgCopy.CallID = &stripped
 				message.ResponsesToolMessage = &toolMsgCopy
 			}
+		}
+
+		// OpenAI accepts role only on message input items.
+		if (message.Type != nil && *message.Type != schemas.ResponsesMessageTypeMessage) ||
+			(message.Type == nil && message.ResponsesReasoning != nil) {
+			message.Role = nil
 		}
 
 		if message.ResponsesReasoning != nil {
@@ -147,8 +167,6 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 				// Clone the embedded pointer to avoid mutating the original input
 				reasoningCopy := *message.ResponsesReasoning
 				message.ResponsesReasoning = &reasoningCopy
-				// OpenAI's Responses API does not accept 'role' on reasoning items
-				message.Role = nil
 				// Strip cross-provider encrypted content that non-reasoning models cannot decrypt.
 				// Reasoning models (o1/o3/o4/GPT-5) may use EncryptedContent for multi-turn state.
 				// Compaction items always carry encrypted_content and must never be stripped.
@@ -325,6 +343,47 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 }
 
 // filterUnsupportedTools removes tool types that OpenAI doesn't support
+// defaultImageDetail fills "auto" into any input_image content block missing the
+// detail field. Clones content on write — the Content pointer and the image block
+// pointers inside it are shared with the caller's input.
+func defaultImageDetail(message schemas.ResponsesMessage) schemas.ResponsesMessage {
+	if message.Content == nil || len(message.Content.ContentBlocks) == 0 {
+		return message
+	}
+
+	needsDetail := func(block schemas.ResponsesMessageContentBlock) bool {
+		return block.Type == schemas.ResponsesInputMessageContentBlockTypeImage &&
+			block.ResponsesInputMessageContentBlockImage != nil &&
+			block.ResponsesInputMessageContentBlockImage.Detail == nil
+	}
+
+	fixNeeded := false
+	for _, block := range message.Content.ContentBlocks {
+		if needsDetail(block) {
+			fixNeeded = true
+			break
+		}
+	}
+	if !fixNeeded {
+		return message
+	}
+
+	newBlocks := make([]schemas.ResponsesMessageContentBlock, len(message.Content.ContentBlocks))
+	copy(newBlocks, message.Content.ContentBlocks)
+	for i, block := range newBlocks {
+		if needsDetail(block) {
+			imageCopy := *block.ResponsesInputMessageContentBlockImage
+			imageCopy.Detail = schemas.Ptr("auto")
+			newBlocks[i].ResponsesInputMessageContentBlockImage = &imageCopy
+		}
+	}
+
+	contentCopy := *message.Content
+	contentCopy.ContentBlocks = newBlocks
+	message.Content = &contentCopy
+	return message
+}
+
 func (resp *OpenAIResponsesRequest) filterUnsupportedTools() {
 	if len(resp.Tools) == 0 {
 		return
@@ -437,12 +496,35 @@ type OpenAICompactionRequest struct {
 	PreviousResponseID   *string                     `json:"previous_response_id,omitempty"`
 	PromptCacheKey       *string                     `json:"prompt_cache_key,omitempty"`
 	PromptCacheRetention *string                     `json:"prompt_cache_retention,omitempty"`
+	PromptCacheOptions   *schemas.PromptCacheOptions `json:"prompt_cache_options,omitempty"`
 	ServiceTier          *schemas.BifrostServiceTier `json:"service_tier,omitempty"`
 	ExtraParams          map[string]interface{}      `json:"-"`
 }
 
 // GetExtraParams implements RequestBodyWithExtraParams.
 func (r *OpenAICompactionRequest) GetExtraParams() map[string]interface{} { return r.ExtraParams }
+
+// MarshalJSON serializes the compaction request. The embedded Input is shadowed
+// by a json.RawMessage so the OpenAIResponsesRequestInput union is written via
+// its own MarshalJSON (a pointer-receiver method that default struct encoding of
+// the value field would skip, emitting `input` as an object the endpoint
+// rejects). Empty input is omitted, since a previous_response_id-only compaction
+// is valid. Mirrors OpenAIResponsesRequest.MarshalJSON.
+func (r *OpenAICompactionRequest) MarshalJSON() ([]byte, error) {
+	type Alias OpenAICompactionRequest
+	var input json.RawMessage
+	if r.Input.OpenAIResponsesRequestInputStr != nil || r.Input.OpenAIResponsesRequestInputArray != nil {
+		b, err := r.Input.MarshalJSON()
+		if err != nil {
+			return nil, err
+		}
+		input = json.RawMessage(b)
+	}
+	return utils.MarshalSorted(struct {
+		*Alias
+		Input json.RawMessage `json:"input,omitempty"`
+	}{Alias: (*Alias)(r), Input: input})
+}
 
 // ToOpenAICompactionRequest converts a BifrostCompactionRequest to the OpenAI wire format.
 func ToOpenAICompactionRequest(ctx *schemas.BifrostContext, req *schemas.BifrostCompactionRequest) *OpenAICompactionRequest {
@@ -455,6 +537,7 @@ func ToOpenAICompactionRequest(ctx *schemas.BifrostContext, req *schemas.Bifrost
 		PreviousResponseID:   req.PreviousResponseID,
 		PromptCacheKey:       req.PromptCacheKey,
 		PromptCacheRetention: req.PromptCacheRetention,
+		PromptCacheOptions:   req.PromptCacheOptions,
 		ServiceTier:          req.ServiceTier,
 		ExtraParams:          req.ExtraParams,
 	}
@@ -497,6 +580,7 @@ func (r *OpenAICompactionRequest) ToBifrostCompactionRequest(ctx *schemas.Bifros
 		PreviousResponseID:   r.PreviousResponseID,
 		PromptCacheKey:       r.PromptCacheKey,
 		PromptCacheRetention: r.PromptCacheRetention,
+		PromptCacheOptions:   r.PromptCacheOptions,
 		ServiceTier:          r.ServiceTier,
 		ExtraParams:          r.ExtraParams,
 	}

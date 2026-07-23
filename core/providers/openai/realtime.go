@@ -320,14 +320,38 @@ func normalizeRealtimeClientSecretsRequest(
 	if marshalErr != nil {
 		return nil, "", newRealtimeClientSecretError(fasthttp.StatusInternalServerError, "server_error", "failed to encode normalized model", marshalErr)
 	}
-	session["model"] = modelJSON
-	StripNestedModelPrefixes(session)
-	if _, ok := session["type"]; !ok {
-		typeJSON, marshalErr := json.Marshal("realtime")
-		if marshalErr != nil {
-			return nil, "", newRealtimeClientSecretError(fasthttp.StatusInternalServerError, "server_error", "failed to encode realtime session type", marshalErr)
+
+	if schemas.IsGATranscriptionSessionBody(root) {
+		// RealtimeTranscriptionSessionCreateRequestGA has no top-level session.model
+		// field at all — the model lives only at session.audio.input.transcription.model.
+		// Writing a bogus top-level session.model here would send OpenAI a field its
+		// transcription-session schema doesn't define. Also strip any stray
+		// session.model a permissive client sent alongside the transcription
+		// shape — IsGATranscriptionSessionBody's classification (checked
+		// against root, not session, before we ever get here) guarantees
+		// session.model was absent when the shape was decided, but delete it
+		// defensively in case a caller constructs the map directly.
+		delete(session, "model")
+		if bifrostErr := writeGASessionTranscriptionModel(session, modelJSON); bifrostErr != nil {
+			return nil, "", bifrostErr
 		}
-		session["type"] = typeJSON
+		if _, ok := session["type"]; !ok {
+			typeJSON, marshalErr := json.Marshal("transcription")
+			if marshalErr != nil {
+				return nil, "", newRealtimeClientSecretError(fasthttp.StatusInternalServerError, "server_error", "failed to encode transcription session type", marshalErr)
+			}
+			session["type"] = typeJSON
+		}
+	} else {
+		session["model"] = modelJSON
+		StripNestedModelPrefixes(session)
+		if _, ok := session["type"]; !ok {
+			typeJSON, marshalErr := json.Marshal("realtime")
+			if marshalErr != nil {
+				return nil, "", newRealtimeClientSecretError(fasthttp.StatusInternalServerError, "server_error", "failed to encode realtime session type", marshalErr)
+			}
+			session["type"] = typeJSON
+		}
 	}
 	delete(root, "model")
 
@@ -343,6 +367,51 @@ func normalizeRealtimeClientSecretsRequest(
 	}
 
 	return normalizedBody, normalizedModel, nil
+}
+
+// writeGASessionTranscriptionModel sets session.audio.input.transcription.model
+// to the already-bare, already-resolved model, creating the object if the
+// client's transcription config was otherwise empty.
+func writeGASessionTranscriptionModel(session map[string]json.RawMessage, modelJSON json.RawMessage) *schemas.BifrostError {
+	audioJSON, ok := session["audio"]
+	if !ok {
+		return newRealtimeClientSecretError(fasthttp.StatusBadRequest, "invalid_request_error", "session.audio is required for transcription sessions", nil)
+	}
+	var audio map[string]json.RawMessage
+	if err := json.Unmarshal(audioJSON, &audio); err != nil {
+		return newRealtimeClientSecretError(fasthttp.StatusBadRequest, "invalid_request_error", "session.audio must be an object", err)
+	}
+	inputJSON, ok := audio["input"]
+	if !ok {
+		return newRealtimeClientSecretError(fasthttp.StatusBadRequest, "invalid_request_error", "session.audio.input is required for transcription sessions", nil)
+	}
+	var input map[string]json.RawMessage
+	if err := json.Unmarshal(inputJSON, &input); err != nil {
+		return newRealtimeClientSecretError(fasthttp.StatusBadRequest, "invalid_request_error", "session.audio.input must be an object", err)
+	}
+	transcription := map[string]json.RawMessage{}
+	if transJSON, ok := input["transcription"]; ok && len(transJSON) > 0 && !bytes.Equal(transJSON, []byte("null")) {
+		if err := json.Unmarshal(transJSON, &transcription); err != nil {
+			return newRealtimeClientSecretError(fasthttp.StatusBadRequest, "invalid_request_error", "session.audio.input.transcription must be an object", err)
+		}
+	}
+	transcription["model"] = modelJSON
+	transcriptionJSON, err := json.Marshal(transcription)
+	if err != nil {
+		return newRealtimeClientSecretError(fasthttp.StatusInternalServerError, "server_error", "failed to encode session.audio.input.transcription", err)
+	}
+	input["transcription"] = transcriptionJSON
+	inputJSON, err = json.Marshal(input)
+	if err != nil {
+		return newRealtimeClientSecretError(fasthttp.StatusInternalServerError, "server_error", "failed to encode session.audio.input", err)
+	}
+	audio["input"] = inputJSON
+	audioJSON, err = json.Marshal(audio)
+	if err != nil {
+		return newRealtimeClientSecretError(fasthttp.StatusInternalServerError, "server_error", "failed to encode session.audio", err)
+	}
+	session["audio"] = audioJSON
+	return nil
 }
 
 func normalizeRealtimeSessionsRequest(

@@ -114,6 +114,68 @@ func TestSecretVar_UnmarshalJSON_BackwardCompat(t *testing.T) {
 	os.Setenv("MY_KEY", "resolved-value")
 	defer os.Unsetenv("MY_KEY")
 
+	t.Run("from_env without value field", func(t *testing.T) {
+		input := `{"env_var":"MY_KEY","from_env":true}`
+		var sv SecretVar
+		if err := sv.UnmarshalJSON([]byte(input)); err != nil {
+			t.Fatalf("UnmarshalJSON failed: %v", err)
+		}
+		if sv.GetRawRef() != "env.MY_KEY" {
+			t.Errorf("expected ref %q, got %q", "env.MY_KEY", sv.GetRawRef())
+		}
+		if !sv.IsFromSecret() {
+			t.Error("expected IsFromSecret=true")
+		}
+		if sv.Val != "resolved-value" {
+			t.Errorf("expected Val=%q, got %q", "resolved-value", sv.Val)
+		}
+	})
+
+	t.Run("ref+type without value field", func(t *testing.T) {
+		input := `{"ref":"env.MY_KEY","type":"env"}`
+		var sv SecretVar
+		if err := sv.UnmarshalJSON([]byte(input)); err != nil {
+			t.Fatalf("UnmarshalJSON failed: %v", err)
+		}
+		if sv.GetRawRef() != "env.MY_KEY" {
+			t.Errorf("expected ref %q, got %q", "env.MY_KEY", sv.GetRawRef())
+		}
+		if !sv.IsFromSecret() {
+			t.Error("expected IsFromSecret=true")
+		}
+		if sv.Val != "resolved-value" {
+			t.Errorf("expected Val=%q, got %q", "resolved-value", sv.Val)
+		}
+	})
+
+	t.Run("ref without type is treated as literal JSON, not a secret", func(t *testing.T) {
+		input := `{"ref":"project-id"}`
+		var sv SecretVar
+		if err := sv.UnmarshalJSON([]byte(input)); err != nil {
+			t.Fatalf("UnmarshalJSON failed: %v", err)
+		}
+		if sv.IsFromSecret() {
+			t.Error("expected IsFromSecret=false for ref-only without type")
+		}
+		if sv.Val != `{"ref":"project-id"}` {
+			t.Errorf("expected Val to be raw JSON string, got %q", sv.Val)
+		}
+	})
+
+	t.Run("env_var without from_env is treated as literal JSON, not a secret", func(t *testing.T) {
+		input := `{"env_var":"MY_KEY"}`
+		var sv SecretVar
+		if err := sv.UnmarshalJSON([]byte(input)); err != nil {
+			t.Fatalf("UnmarshalJSON failed: %v", err)
+		}
+		if sv.IsFromSecret() {
+			t.Error("expected IsFromSecret=false for env_var without from_env")
+		}
+		if sv.Val != `{"env_var":"MY_KEY"}` {
+			t.Errorf("expected Val to be raw JSON string, got %q", sv.Val)
+		}
+	})
+
 	t.Run("old env_var/from_env format", func(t *testing.T) {
 		input := `{"value":"my-api-key","env_var":"env.MY_KEY","from_env":true}`
 		var secretVar SecretVar
@@ -218,6 +280,22 @@ func TestNewSecretVar_SecretVarReference(t *testing.T) {
 				t.Errorf("Expected IsFromSecret()=%v, got %v", tt.expectedFromSecret, secretVar.IsFromSecret())
 			}
 		})
+	}
+}
+
+func TestNewSecretVar_FromEnvWithoutValueField(t *testing.T) {
+	os.Setenv("MY_KEY", "resolved-value")
+	defer os.Unsetenv("MY_KEY")
+
+	sv := NewSecretVar(`{"env_var":"MY_KEY","from_env":true}`)
+	if sv.GetRawRef() != "env.MY_KEY" {
+		t.Errorf("expected ref %q, got %q", "env.MY_KEY", sv.GetRawRef())
+	}
+	if !sv.IsFromSecret() {
+		t.Error("expected IsFromSecret=true")
+	}
+	if sv.Val != "resolved-value" {
+		t.Errorf("expected Val=%q, got %q", "resolved-value", sv.Val)
 	}
 }
 
@@ -658,6 +736,30 @@ func TestSecretVar_IsSet_VaultRef(t *testing.T) {
 	}
 	if unset.IsSet() {
 		t.Error("IsSet() = true for empty vault ref, want false")
+	}
+}
+
+func TestSecretVar_IsMaskedPlaceholder(t *testing.T) {
+	tests := []struct {
+		name  string
+		value *SecretVar
+		want  bool
+	}{
+		{name: "nil", value: nil, want: false},
+		{name: "empty", value: NewSecretVar(""), want: false},
+		{name: "plain", value: NewSecretVar("sk-real-credential"), want: false},
+		{name: "masked", value: NewSecretVar("abcd************************wxyz"), want: true},
+		{name: "redacted sentinel", value: NewSecretVar("<redacted>"), want: true},
+		{name: "env reference", value: NewSecretVar("env.NEW_KEY"), want: false},
+		{name: "vault reference", value: NewSecretVar("vault.path/to/key"), want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.value.IsMaskedPlaceholder(); got != tt.want {
+				t.Fatalf("IsMaskedPlaceholder() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 

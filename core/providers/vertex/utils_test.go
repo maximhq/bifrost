@@ -210,10 +210,11 @@ func TestGetVertexModelAwareAPIHost(t *testing.T) {
 	})
 
 	tests := []struct {
-		name     string
-		region   string
-		model    string
-		expected string
+		name              string
+		region            string
+		model             string
+		forceSingleRegion bool
+		expected          string
 	}{
 		{
 			name:     "global endpoint ignores model flag",
@@ -275,13 +276,27 @@ func TestGetVertexModelAwareAPIHost(t *testing.T) {
 			model:    "claude-sonnet-4-5",
 			expected: "us-central1-aiplatform.googleapis.com",
 		},
+		{
+			name:              "force single region skips us pool promotion for flagged model",
+			region:            "us-east5",
+			model:             "claude-opus-4-7",
+			forceSingleRegion: true,
+			expected:          "us-east5-aiplatform.googleapis.com",
+		},
+		{
+			name:              "force single region skips eu pool promotion for flagged model",
+			region:            "europe-west1",
+			model:             "claude-opus-4-7",
+			forceSingleRegion: true,
+			expected:          "europe-west1-aiplatform.googleapis.com",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			actual := getVertexModelAwareAPIHost(tt.region, tt.model)
+			actual := getVertexModelAwareAPIHost(tt.region, tt.model, tt.forceSingleRegion, nil)
 			if actual != tt.expected {
 				t.Fatalf("expected %q, got %q", tt.expected, actual)
 			}
@@ -299,10 +314,11 @@ func TestGetVertexModelAwarePublisherModelURL(t *testing.T) {
 	})
 
 	tests := []struct {
-		name     string
-		region   string
-		model    string
-		expected string
+		name              string
+		region            string
+		model             string
+		forceSingleRegion bool
+		expected          string
 	}{
 		{
 			name:     "us multi-region flagged model gets rep host URL",
@@ -340,13 +356,20 @@ func TestGetVertexModelAwarePublisherModelURL(t *testing.T) {
 			model:    "claude-3-5-sonnet",
 			expected: "https://us-central1-aiplatform.googleapis.com/v1/projects/project-123/locations/us-central1/publishers/anthropic/models/claude-3-5-sonnet:rawPredict",
 		},
+		{
+			name:              "force single region keeps flagged model on requested region host and path",
+			region:            "us-east5",
+			model:             "claude-opus-4-7",
+			forceSingleRegion: true,
+			expected:          "https://us-east5-aiplatform.googleapis.com/v1/projects/project-123/locations/us-east5/publishers/anthropic/models/claude-opus-4-7:rawPredict",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			actual := getVertexModelAwarePublisherModelURL(tt.region, "v1", "project-123", "anthropic", tt.model, ":rawPredict")
+			actual := getVertexModelAwarePublisherModelURL(tt.region, "v1", "project-123", "anthropic", tt.model, ":rawPredict", tt.forceSingleRegion, nil)
 			if actual != tt.expected {
 				t.Fatalf("expected %q, got %q", tt.expected, actual)
 			}
@@ -527,6 +550,69 @@ func TestResolveVertexProjectNumber_AliasOverride(t *testing.T) {
 	})
 	if got := resolveVertexProjectNumber(ctx2, key); got != keyNumber {
 		t.Errorf("empty alias ProjectNumber should fall through: got %q, want %q", got, keyNumber)
+	}
+}
+
+// TestResolveVertexForceSingleRegion_AliasOverride verifies the per-alias
+// VertexAliasCfg.ForceSingleRegion (*bool) override: an explicit alias-level
+// value wins over the key-level bool — including an alias false overriding a key
+// true — while a nil alias value falls through to the key-level bool.
+func TestResolveVertexForceSingleRegion_AliasOverride(t *testing.T) {
+	keyForceTrue := schemas.Key{
+		VertexKeyConfig: &schemas.VertexKeyConfig{ForceSingleRegion: true},
+	}
+	keyForceFalse := schemas.Key{
+		VertexKeyConfig: &schemas.VertexKeyConfig{ForceSingleRegion: false},
+	}
+
+	// nil ctx uses the key-level value.
+	if got := resolveVertexForceSingleRegion(nil, keyForceTrue); !got {
+		t.Errorf("nil ctx: got %v, want key-level true", got)
+	}
+
+	// empty ctx (no resolved alias) uses the key-level value.
+	ctx0 := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	if got := resolveVertexForceSingleRegion(ctx0, keyForceFalse); got {
+		t.Errorf("empty ctx: got %v, want key-level false", got)
+	}
+
+	// Alias-level true overrides key-level false.
+	ctxTrue := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	ctxTrue.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{
+		Key: "best-claude",
+		Config: &schemas.AliasConfig{
+			ModelID:        "claude-opus-4-7",
+			VertexAliasCfg: &schemas.VertexAliasCfg{ForceSingleRegion: schemas.Ptr(true)},
+		},
+	})
+	if got := resolveVertexForceSingleRegion(ctxTrue, keyForceFalse); !got {
+		t.Errorf("alias true should win over key false: got %v, want true", got)
+	}
+
+	// Alias-level false overrides key-level true (explicit set beats nil).
+	ctxFalse := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	ctxFalse.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{
+		Key: "best-claude",
+		Config: &schemas.AliasConfig{
+			ModelID:        "claude-opus-4-7",
+			VertexAliasCfg: &schemas.VertexAliasCfg{ForceSingleRegion: schemas.Ptr(false)},
+		},
+	})
+	if got := resolveVertexForceSingleRegion(ctxFalse, keyForceTrue); got {
+		t.Errorf("alias false should win over key true: got %v, want false", got)
+	}
+
+	// Alias present but ForceSingleRegion nil falls through to the key-level value.
+	ctxNil := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	ctxNil.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{
+		Key: "best-claude",
+		Config: &schemas.AliasConfig{
+			ModelID:        "claude-opus-4-7",
+			VertexAliasCfg: &schemas.VertexAliasCfg{ForceSingleRegion: nil},
+		},
+	})
+	if got := resolveVertexForceSingleRegion(ctxNil, keyForceTrue); !got {
+		t.Errorf("nil alias value should fall through to key true: got %v, want true", got)
 	}
 }
 

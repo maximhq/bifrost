@@ -322,17 +322,24 @@ func (f *HTTPClientFactory) configureFasthttpProxy(client *fasthttp.Client) {
 	if dialFunc != nil {
 		client.Dial = func(addr string) (net.Conn, error) {
 			if proxyCfg.NoProxy != "" {
-				host := strings.Split(addr, ":")[0]
-				if host == "" {
-					host = addr
-				}
-				if shouldBypassProxy(host, proxyCfg.NoProxy) {
+				if shouldBypassProxy(dialAddrHost(addr), proxyCfg.NoProxy) {
 					return net.Dial("tcp", addr)
 				}
 			}
 			return dialFunc(addr)
 		}
 	}
+}
+
+// dialAddrHost extracts the host from a dial target for no_proxy matching.
+// SplitHostPort unwraps IPv6 brackets ("[::1]:8080" -> "::1"); naive splitting
+// on ":" would mangle IPv6 literals.
+func dialAddrHost(addr string) string {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil || host == "" {
+		host = strings.Trim(addr, "[]")
+	}
+	return host
 }
 
 // createHTTPClient creates a new standard net/http client with appropriate proxy settings

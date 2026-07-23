@@ -420,7 +420,7 @@ func (s *TraceStore) startCleanup() {
 	}()
 }
 
-// cleanupOldTraces removes traces that have exceeded the TTL
+// cleanupOldTraces removes traces and deferred spans that have exceeded the TTL
 func (s *TraceStore) cleanupOldTraces() {
 	cutoff := time.Now().Add(-s.ttl)
 	count := 0
@@ -436,8 +436,24 @@ func (s *TraceStore) cleanupOldTraces() {
 		return true
 	})
 
-	if count > 0 && s.logger != nil {
-		s.logger.Debug("tracing: cleaned up %d orphaned traces", count)
+	// Deferred spans are normally removed by CompleteTrace or ClearDeferredSpan.
+	// A streaming request that never reaches either (e.g. the final chunk send
+	// fails without a cancelled context, or the producer goroutine dies before
+	// the trace completer runs) would otherwise leave its entry — and the
+	// accumulated response it pins — in the map forever.
+	deferredCount := 0
+	s.deferredSpans.Range(func(key, value any) bool {
+		info := value.(*DeferredSpanInfo)
+		if info.StartTime.Before(cutoff) {
+			if _, ok := s.deferredSpans.LoadAndDelete(key); ok {
+				deferredCount++
+			}
+		}
+		return true
+	})
+
+	if (count > 0 || deferredCount > 0) && s.logger != nil {
+		s.logger.Debug("tracing: cleaned up %d orphaned traces and %d orphaned deferred spans", count, deferredCount)
 	}
 }
 

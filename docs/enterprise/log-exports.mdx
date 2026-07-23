@@ -173,6 +173,14 @@ Typical use cases:
 - **Data residency**: keep raw prompts and responses inside the DB (which may itself sit inside a controlled VPC) while still benefiting from offload for less sensitive fields.
 - **Operational queries**: keep `input_history` in the DB so SQL queries and the UI's search can run against the full conversation without paying an object-fetch round trip.
 
+### Guardrail redaction
+
+When Enterprise guardrail redaction is enabled, object storage receives the same persisted log payload fields that Bifrost logs use. That means redacted fields are offloaded as redacted fields.
+
+For reversible modes such as `logs_only` and `runtime_reversible`, the offloaded payload contains placeholders like `[EMAIL-1]`. The reveal mapping stays with the Bifrost log row and is not written into the offloaded object. If `disable_content_logging` is enabled, Bifrost skips content logging and does not persist reveal data.
+
+For the full mode matrix, see [Guardrail Redaction](/enterprise/guardrails/redaction).
+
 ## Retention policy
 
 Bifrost ships a background log cleaner that deletes old logs on a fixed schedule.

@@ -26,6 +26,23 @@ func addAnthropicHeaders(headers map[string]string) map[string]string {
 	return out
 }
 
+// resolveProjectID returns the Bedrock project configured for this attempt, or "" when none is set
+// (AWS then routes to the account's default project). The value is sent as the OpenAI-Project or
+// anthropic-workspace-id header depending on the request surface.
+// Priority: per-alias AliasConfig.ProjectID > key-level BedrockMantleKeyConfig.ProjectID. The
+// per-alias override lets one credential scope different aliased models to different projects.
+func resolveProjectID(ctx *schemas.BifrostContext, key schemas.Key) string {
+	if ra := schemas.GetResolvedAlias(ctx); ra != nil && ra.Config != nil && ra.Config.ProjectID != nil {
+		if v := ra.Config.ProjectID.GetValue(); v != "" {
+			return v
+		}
+	}
+	if key.BedrockMantleKeyConfig != nil && key.BedrockMantleKeyConfig.ProjectID != nil {
+		return key.BedrockMantleKeyConfig.ProjectID.GetValue()
+	}
+	return ""
+}
+
 // parseBedrockRegionAndModel splits a model string that optionally carries an AWS region prefix
 // into its region and bare model ID components.
 // If no region prefix is present the returned region is empty and bareModel equals model.

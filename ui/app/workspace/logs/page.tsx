@@ -36,6 +36,7 @@ export default function LogsPage() {
 	const hasCheckedEmptyState = useRef(false);
 
 	const hasDeleteAccess = useRbac(RbacResource.Logs, RbacOperation.Delete);
+	const hasRevealAccess = useRbac(RbacResource.Logs, RbacOperation.Reveal);
 
 	const [deleteLogs] = useDeleteLogsMutation();
 	// Lazy query kept only for handleLogNavigate (fetches adjacent pages on demand)
@@ -191,15 +192,23 @@ export default function LogsPage() {
 	// Helper to update filters in URL
 	const setFilters = useCallback(
 		(newFilters: LogFilters) => {
-			// Mark time range as user-modified only if start_time or end_time actually changed
-			const timeChanged = newFilters.start_time !== filters.start_time || newFilters.end_time !== filters.end_time;
+			// The sidebar/header only manage dimension filters, never the time range: in
+			// period mode `newFilters` carries no start/end, so only touch time when an
+			// explicit range is actually provided — otherwise we'd wipe the active period/range.
+			const hasExplicitTime = !!newFilters.start_time && !!newFilters.end_time;
+			const timeChanged =
+				hasExplicitTime && (newFilters.start_time !== filters.start_time || newFilters.end_time !== filters.end_time);
 			if (timeChanged) {
 				userModifiedTimeRange.current = true;
 			}
 
 			setUrlState({
-				// Clear the period whenever an absolute range is applied via setFilters
-				...(timeChanged && { period: "" }),
+				// Clear the period and apply the absolute range only when an explicit one is provided
+				...(timeChanged && {
+					period: "",
+					start_time: dateUtils.toUnixTimestamp(new Date(newFilters.start_time!)),
+					end_time: dateUtils.toUnixTimestamp(new Date(newFilters.end_time!)),
+				}),
 				parent_request_id: newFilters.parent_request_id || "",
 				providers: newFilters.providers || [],
 				models: newFilters.models || [],
@@ -216,8 +225,6 @@ export default function LogsPage() {
 				customer_ids: newFilters.customer_ids || [],
 				business_unit_ids: newFilters.business_unit_ids || [],
 				content_search: newFilters.content_search || "",
-				start_time: newFilters.start_time ? dateUtils.toUnixTimestamp(new Date(newFilters.start_time)) : undefined,
-				end_time: newFilters.end_time ? dateUtils.toUnixTimestamp(new Date(newFilters.end_time)) : undefined,
 				missing_cost_only: newFilters.missing_cost_only ?? false,
 				cache_hit_types: newFilters.cache_hit_types || [],
 				metadata_filters: newFilters.metadata_filters ? JSON.stringify(newFilters.metadata_filters) : "",
@@ -434,6 +441,15 @@ export default function LogsPage() {
 				title: "Total Tokens",
 				value: <NumberFlow value={stats?.total_tokens ?? 0} format={COMPACT_NUMBER_FORMAT} />,
 				icon: <Hash className="size-4" />,
+				subValue: (
+					<>
+						<NumberFlow value={stats?.prompt_tokens ?? 0} format={COMPACT_NUMBER_FORMAT} />
+						<span> in / </span>
+						<NumberFlow value={stats?.completion_tokens ?? 0} format={COMPACT_NUMBER_FORMAT} />
+						<span> out</span>
+					</>
+				),
+				description: "Total tokens used, split into input (prompt) and output (completion) tokens.",
 			},
 			{
 				title: "Total Cost",
@@ -627,6 +643,7 @@ export default function LogsPage() {
 								onPollToggle={handlePollToggle}
 								period={period}
 								onPeriodChange={handlePeriodChange}
+								totalLogs={totalItems}
 								columnEntries={columnEntries}
 								columnLabels={COLUMN_LABELS}
 								onToggleColumnVisibility={toggleColumnVisibility}
@@ -659,6 +676,9 @@ export default function LogsPage() {
 												)}
 											</div>
 											<div className="truncate font-mono text-xl font-medium sm:text-2xl">{card.value}</div>
+											{"subValue" in card && card.subValue && (
+												<div className="truncate font-mono text-[10.5px] tabular-nums">{card.subValue}</div>
+											)}
 										</div>
 									</CardContent>
 								</Card>
@@ -722,6 +742,7 @@ export default function LogsPage() {
 						open={selectedLog !== null}
 						onOpenChange={(open) => !open && setUrlState({ selected_log: "" })}
 						handleDelete={hasDeleteAccess ? handleDelete : undefined}
+						canReveal={hasRevealAccess}
 						onNavigate={handleLogNavigate}
 						hasPrev={selectedLogIndex > 0 || (selectedLogIndex !== -1 && pagination.offset > 0)}
 						hasNext={selectedLogIndex !== -1 && (selectedLogIndex < logs.length - 1 || pagination.offset + pagination.limit < totalItems)}

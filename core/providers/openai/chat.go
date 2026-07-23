@@ -10,12 +10,16 @@ import (
 // ToBifrostChatRequest converts an OpenAI chat request to Bifrost format
 func (req *OpenAIChatRequest) ToBifrostChatRequest(ctx *schemas.BifrostContext) *schemas.BifrostChatRequest {
 	provider, model := schemas.ParseModelString(req.Model, "")
+	params := req.ChatParameters
+	if params.MaxCompletionTokens == nil && req.MaxTokens != nil {
+		params.MaxCompletionTokens = req.MaxTokens
+	}
 
 	return &schemas.BifrostChatRequest{
 		Provider:  provider,
 		Model:     model,
 		Input:     ConvertOpenAIMessagesToBifrostMessages(req.Messages),
-		Params:    &req.ChatParameters,
+		Params:    &params,
 		Fallbacks: schemas.ParseFallbacks(req.Fallbacks),
 	}
 }
@@ -63,7 +67,7 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 	case schemas.OpenAI, schemas.Azure:
 		openaiReq.normalizeReasoningEffort(capModel)
 		return openaiReq
-	case schemas.Cerebras, schemas.DeepSeek:
+	case schemas.Cerebras, schemas.DeepSeek, schemas.Wafer:
 		openaiReq.filterOpenAISpecificParameters(capModel)
 		openaiReq.stripReasoningDetails()
 		return openaiReq
@@ -131,6 +135,9 @@ func (req *OpenAIChatRequest) filterOpenAISpecificParameters(capModel string) {
 	}
 	if req.ChatParameters.PromptCacheRetention != nil {
 		req.ChatParameters.PromptCacheRetention = nil
+	}
+	if req.ChatParameters.PromptCacheOptions != nil {
+		req.ChatParameters.PromptCacheOptions = nil
 	}
 	if req.ChatParameters.Verbosity != nil {
 		req.ChatParameters.Verbosity = nil

@@ -449,6 +449,7 @@ func createResponsesResponseWithExecutedToolsAndNonAutoExecutableCalls(
 		Prompt:               originalResponse.Prompt,
 		PromptCacheKey:       originalResponse.PromptCacheKey,
 		PromptCacheRetention: originalResponse.PromptCacheRetention,
+		PromptCacheOptions:   originalResponse.PromptCacheOptions,
 		Reasoning:            originalResponse.Reasoning,
 		SafetyIdentifier:     originalResponse.SafetyIdentifier,
 		ServiceTier:          originalResponse.ServiceTier,

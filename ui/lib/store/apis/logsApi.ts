@@ -14,9 +14,12 @@ import {
 	Pagination,
 	ProviderCostHistogramResponse,
 	ProviderLatencyHistogramResponse,
+	ProviderThroughputHistogramResponse,
 	ProviderTokenHistogramResponse,
 	RankingDimension,
+	RecalcJobStatus,
 	RecalculateCostResponse,
+	ThroughputHistogramResponse,
 	TokenHistogramResponse,
 } from "@/lib/types/logs";
 import { baseApi } from "./baseApi";
@@ -232,6 +235,34 @@ export const logsApi = baseApi.injectEndpoints({
 			providesTags: ["Logs"],
 		}),
 
+		// Get throughput (tokens/sec) histogram
+		getLogsThroughputHistogram: builder.query<
+			ThroughputHistogramResponse,
+			{
+				filters: LogFilters;
+			}
+		>({
+			query: ({ filters }) => ({
+				url: "/logs/histogram/throughput",
+				params: buildFilterParams(filters),
+			}),
+			providesTags: ["Logs"],
+		}),
+
+		// Get provider throughput (tokens/sec) histogram with provider breakdown
+		getLogsProviderThroughputHistogram: builder.query<
+			ProviderThroughputHistogramResponse,
+			{
+				filters: LogFilters;
+			}
+		>({
+			query: ({ filters }) => ({
+				url: "/logs/histogram/throughput/by-provider",
+				params: buildFilterParams(filters),
+			}),
+			providesTags: ["Logs"],
+		}),
+
 		// Get provider cost histogram with provider breakdown
 		getLogsProviderCostHistogram: builder.query<
 			ProviderCostHistogramResponse,
@@ -364,6 +395,15 @@ export const logsApi = baseApi.injectEndpoints({
 			invalidatesTags: ["Logs"],
 		}),
 
+		// Status of a background cost-recalculation job. Intended to be polled with a
+		// pollingInterval while a job is active; omit id to get the latest in-flight job.
+		getRecalculateCostStatus: builder.query<RecalcJobStatus, { id?: string } | void>({
+			query: (arg) => ({
+				url: "/logs/recalculate-cost/status",
+				params: arg?.id ? { id: arg.id } : {},
+			}),
+		}),
+
 		// Get a single log entry by ID (includes raw_request and raw_response)
 		getLogById: builder.query<LogEntry, string>({
 			query: (id) => `/logs/${encodeURIComponent(id)}`,
@@ -383,6 +423,8 @@ export const {
 	useGetLogsProviderCostHistogramQuery,
 	useGetLogsProviderTokenHistogramQuery,
 	useGetLogsProviderLatencyHistogramQuery,
+	useGetLogsThroughputHistogramQuery,
+	useGetLogsProviderThroughputHistogramQuery,
 	useGetLogSessionSummaryByIdQuery,
 	useGetDroppedRequestsQuery,
 	useGetAvailableFilterDataQuery,
@@ -397,6 +439,8 @@ export const {
 	useLazyGetLogsProviderCostHistogramQuery,
 	useLazyGetLogsProviderTokenHistogramQuery,
 	useLazyGetLogsProviderLatencyHistogramQuery,
+	useLazyGetLogsThroughputHistogramQuery,
+	useLazyGetLogsProviderThroughputHistogramQuery,
 	useGetModelRankingsQuery,
 	useGetDimensionRankingsQuery,
 	useLazyGetModelRankingsQuery,
@@ -405,6 +449,7 @@ export const {
 	useLazyGetAvailableFilterDataQuery,
 	useDeleteLogsMutation,
 	useRecalculateLogCostsMutation,
+	useGetRecalculateCostStatusQuery,
 	useLazyGetLogByIdQuery,
 	useGetLogByIdQuery,
 } = logsApi;

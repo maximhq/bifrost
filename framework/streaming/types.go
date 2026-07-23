@@ -140,6 +140,8 @@ type StreamAccumulator struct {
 
 	// TerminalErrorChunkIndex holds the reserved chunk index for the terminal error (-1 = unset); reused across plugin calls for correct dedup.
 	TerminalErrorChunkIndex int
+	// TerminalResponseChunkIndex holds the reserved index for a terminal response event when providers omit or reuse sequence numbers.
+	TerminalResponseChunkIndex int
 
 	// Passthrough streaming accumulation
 	PassthroughBody       []byte            // Accumulated body bytes from passthrough streaming chunks
@@ -162,16 +164,17 @@ type StreamAccumulator struct {
 	// gatePendingTerminal is set when an isFinal or isHardErr chunk arrived
 	// while Paused. The flusher consumes this flag after Resume drains the
 	// buffer and transitions the gate to Ended.
-	gatePendingTerminal bool
-	gateSeq             int                              // monotonic, bumped on every GateSend
-	gateReplayBuf       []*schemas.BifrostStreamChunk    // wire-format chunks captured while paused
-	gateReplayBufBytes  int64                            // sum of MarshalJSON sizes of chunks in gateReplayBuf; capped by gateReplayBufMaxBytes
-	gateCond            *sync.Cond                       // wakes flusher on Resume / End / append-while-active
-	gateEndError        *schemas.BifrostError            // delivered as terminal chunk if EndStream(err) was called with non-nil
-	gateFlusherCh       chan *schemas.BifrostStreamChunk // captured on first GateSend; reused by flusher
-	gateFlusherCtx      *schemas.BifrostContext          // captured on first GateSend
-	gateFlusherOn       bool                             // flusher goroutine running
-	gateFlusherDone     chan struct{}                    // closed when the most recent flusher exits; nil when no flusher has ever started
+	gatePendingTerminal     bool
+	gateSeq                 int                              // monotonic, bumped on every GateSend
+	gateReplayBuf           []*schemas.BifrostStreamChunk    // wire-format chunks captured while paused
+	gateReplayBufBytes      int64                            // sum of MarshalJSON sizes of chunks in gateReplayBuf; capped by gateReplayBufMaxBytes
+	gateReplayEventInterval time.Duration                    // delay between buffered events after paced resume is armed
+	gateCond                *sync.Cond                       // wakes flusher on Resume / End / append-while-active
+	gateEndError            *schemas.BifrostError            // delivered as terminal chunk if EndStream(err) was called with non-nil
+	gateFlusherCh           chan *schemas.BifrostStreamChunk // captured on first GateSend; reused by flusher
+	gateFlusherCtx          *schemas.BifrostContext          // captured on first GateSend
+	gateFlusherOn           bool                             // flusher goroutine running
+	gateFlusherDone         chan struct{}                    // closed when the most recent flusher exits; nil when no flusher has ever started
 	// gatePendingCleanup is set by cleanupStreamAccumulator when the caller
 	// requested teardown but the gate is still busy (flusher running or
 	// Paused). The flusher's exit defer checks this flag and re-runs cleanup
@@ -211,6 +214,25 @@ func (sa *StreamAccumulator) getLastChatChunkLocked() *ChatStreamChunk {
 		}
 	}
 	return nil
+}
+
+// getChatFinishReasonLocked returns the finish_reason of the highest-index
+// chunk that actually carries one. The highest-index chunk overall can have a
+// nil finish_reason (a usage-only chunk, or the synthetic terminal chunk the
+// OpenAI-compatible handler appends after forwarding finish_reason on a content
+// chunk), so reading it blindly drops the value for providers that send
+// finish_reason together with content.
+// MUST be called with sa.mu already held.
+func (sa *StreamAccumulator) getChatFinishReasonLocked() *string {
+	var finishReason *string
+	maxIdx := -1
+	for _, chunk := range sa.ChatStreamChunks {
+		if chunk.FinishReason != nil && chunk.ChunkIndex > maxIdx {
+			finishReason = chunk.FinishReason
+			maxIdx = chunk.ChunkIndex
+		}
+	}
+	return finishReason
 }
 
 // getLastResponsesChunk returns the chunk with the highest ChunkIndex (contains metadata like TokenUsage, Cost)

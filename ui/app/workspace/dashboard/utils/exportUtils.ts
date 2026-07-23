@@ -24,8 +24,8 @@ import type {
 type CSVData = { headers: string[]; rows: unknown[][] };
 
 export function overviewVolumeToCSV(data: LogsHistogramResponse | null): CSVData {
-	const headers = ["Timestamp", "Total Requests", "Success", "Error"];
-	const rows = (data?.buckets ?? []).map((b) => [b.timestamp, b.count, b.success, b.error]);
+	const headers = ["Timestamp", "Total Requests", "Success", "Error", "Cancelled"];
+	const rows = (data?.buckets ?? []).map((b) => [b.timestamp, b.count, b.success, b.error, b.cancelled ?? 0]);
 	return { headers, rows };
 }
 
@@ -44,13 +44,13 @@ export function overviewCostToCSV(data: CostHistogramResponse | null): CSVData {
 
 export function overviewModelUsageToCSV(data: ModelHistogramResponse | null): CSVData {
 	const models = data?.models ?? [];
-	const modelHeaders = models.flatMap((m) => [`${m} Total`, `${m} Success`, `${m} Error`]);
+	const modelHeaders = models.flatMap((m) => [`${m} Total`, `${m} Success`, `${m} Error`, `${m} Cancelled`]);
 	const headers = ["Timestamp", ...modelHeaders];
 	const rows = (data?.buckets ?? []).map((b) => [
 		b.timestamp,
 		...models.flatMap((m) => {
 			const stats = b.by_model?.[m];
-			return [stats?.total ?? 0, stats?.success ?? 0, stats?.error ?? 0];
+			return [stats?.total ?? 0, stats?.success ?? 0, stats?.error ?? 0, stats?.cancelled ?? 0];
 		}),
 	]);
 	return { headers, rows };
@@ -107,6 +107,7 @@ export function providerLatencyToCSV(data: ProviderLatencyHistogramResponse | nu
 export function modelRankingsToCSV(data: ModelRankingsResponse | null): CSVData {
 	const headers = [
 		"Model",
+		"Canonical Model",
 		"Provider",
 		"Total Requests",
 		"Success Count",
@@ -114,13 +115,16 @@ export function modelRankingsToCSV(data: ModelRankingsResponse | null): CSVData 
 		"Total Tokens",
 		"Total Cost ($)",
 		"Avg Latency (ms)",
+		"Throughput (tok/s)",
 		"Requests Trend (%)",
 		"Tokens Trend (%)",
 		"Cost Trend (%)",
 		"Latency Trend (%)",
+		"Throughput Trend (%)",
 	];
 	const rows = (data?.rankings ?? []).map((r) => [
 		r.model,
+		r.canonical_model_name ?? "",
 		r.provider,
 		r.total_requests,
 		r.success_count,
@@ -128,10 +132,12 @@ export function modelRankingsToCSV(data: ModelRankingsResponse | null): CSVData 
 		r.total_tokens,
 		r.total_cost,
 		r.avg_latency,
+		r.throughput,
 		r.trend.has_previous_period ? r.trend.requests_trend : "N/A",
 		r.trend.has_previous_period ? r.trend.tokens_trend : "N/A",
 		r.trend.has_previous_period ? r.trend.cost_trend : "N/A",
 		r.trend.has_previous_period ? r.trend.latency_trend : "N/A",
+		r.trend.has_previous_period ? r.trend.throughput_trend : "N/A",
 	]);
 	return { headers, rows };
 }

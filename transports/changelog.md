@@ -1,1 +1,0 @@
-- fix: honor model_parameters_url changes in config.json like pricing_url [@jeremym-tanium](https://github.com/jeremym-tanium)

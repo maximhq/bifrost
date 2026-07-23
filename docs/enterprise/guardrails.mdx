@@ -1,6 +1,6 @@
 ---
-title: "Guardrails"
-description: "Enterprise-grade content safety and security validation with support for native regex and secrets detection, AWS Bedrock Guardrails, Azure Content Safety, Google Model Armor, CrowdStrike AIDR, GraySwan Cygnal, and Patronus AI."
+title: "Overview"
+description: "Enterprise-grade content safety and security validation with native regex, secrets detection, Presidio, Azure AI Language PII, AWS Bedrock Guardrails, Azure Content Safety, Google Model Armor, CrowdStrike AIDR, Gray Swan Cygnal, Patronus AI, and Lakera Guard."
 icon: "road-barrier"
 ---
 
@@ -21,6 +21,12 @@ icon: "road-barrier"
   <Card title="Custom Regex" icon="code" href="/enterprise/guardrails/custom-regex">
     In-process regex guardrails, including the built-in PII Detection template.
   </Card>
+  <Card title="Microsoft Presidio" icon="microsoft" href="/integrations/guardrails/presidio">
+    Presidio Analyzer based PII detection, blocking, and redaction.
+  </Card>
+  <Card title="Azure AI Language PII" icon="microsoft" href="/integrations/guardrails/azure-language-pii">
+    Azure Language PII entity recognition with configurable categories and redaction.
+  </Card>
   <Card title="AWS Bedrock Guardrails" icon="aws" href="/integrations/guardrails/aws-bedrock">
     Enterprise content filtering, PII detection, and prompt attack prevention.
   </Card>
@@ -33,11 +39,14 @@ icon: "road-barrier"
   <Card title="CrowdStrike AIDR" icon="/media/crowdstrike-card.svg" href="/integrations/guardrails/crowdstrike-aidr">
     Inline AI threat detection, policy enforcement, redaction, and AIDR audit visibility.
   </Card>
-  <Card title="GraySwan Cygnal" icon="/media/grayswan-logo-card.svg" href="/integrations/guardrails/grayswan">
+  <Card title="Gray Swan Cygnal" icon="/media/grayswan-logo-card.svg" href="/integrations/guardrails/grayswan">
     AI safety monitoring with natural language rule definitions.
   </Card>
   <Card title="Patronus AI" icon="/media/patronus-logo-card.svg" href="/integrations/guardrails/patronus-ai">
     LLM security, hallucination detection, and safety evaluation.
+  </Card>
+  <Card title="Lakera Guard" icon="/media/lakera-logo-card-v5.svg" href="/integrations/guardrails/lakera">
+    Threat detection for LLM conversations, including prompt injection and sensitive data exposure.
   </Card>
 </CardGroup>
 
@@ -48,7 +57,7 @@ Bifrost Guardrails are built around two core concepts that work together to prov
 | Concept | Description |
 |---------|-------------|
 | **Rules** | Custom policies defined using CEL (Common Expression Language) that determine what content to validate and when. Rules can apply to inputs, outputs, or both, and can be linked to one or more profiles for evaluation. |
-| **Profiles** | Configurations for guardrail providers, including Bifrost-native providers (Custom Regex, Secrets Detection) and external providers (AWS Bedrock, Azure Content Safety, Google Model Armor, CrowdStrike AIDR, GraySwan, Patronus AI). Profiles are reusable and can be shared across multiple rules. |
+| **Profiles** | Configurations for guardrail providers, including Bifrost-native providers (Custom Regex, Secrets Detection) and external providers (Presidio, Azure AI Language PII, AWS Bedrock, Azure Content Safety, Google Model Armor, CrowdStrike AIDR, Gray Swan, Patronus AI). Profiles are reusable and can be shared across multiple rules. |
 
 **How They Work Together:**
 - **Profiles** define *how* content is evaluated using native Bifrost checks or external provider capabilities
@@ -60,14 +69,25 @@ Bifrost Guardrails are built around two core concepts that work together to prov
 
 | Feature | Description |
 |---------|-------------|
-| **Multi-Provider Support** | Bifrost-native Custom Regex and Secrets Detection, plus AWS Bedrock, Azure Content Safety, Google Model Armor, CrowdStrike AIDR, GraySwan, and Patronus AI integrations |
+| **Multi-Provider Support** | Bifrost-native Custom Regex and Secrets Detection, plus Presidio, Azure AI Language PII, AWS Bedrock, Azure Content Safety, Google Model Armor, CrowdStrike AIDR, Gray Swan, Patronus AI, and Lakera Guard integrations |
 | **Dual-Stage Validation** | Guard both inputs (prompts) and outputs (responses) |
 | **Real-Time Processing** | Synchronous and asynchronous validation modes |
 | **CEL-Based Rules** | Define custom policies using Common Expression Language |
 | **Reusable Profiles** | Configure providers once, use across multiple rules |
 | **Sampling Control** | Apply rules to a percentage of requests for performance tuning |
-| **Automatic Remediation** | Block, redact, or modify content based on policy |
+| **Automatic Remediation** | Detect, block, redact, or modify content based on policy |
+| **Bifrost-Managed Redaction** | Redact runtime payloads, Bifrost logs, and trace-export connector content for supported providers |
 | **Comprehensive Logging** | Detailed audit trails for compliance |
+
+### Redaction
+
+Supported providers can redact detected text instead of only detecting or blocking it. Bifrost supports three redaction modes:
+
+- **Runtime** (`runtime`) redacts the live request or response and stores redacted values in logs.
+- **Logs only** (`logs_only`) leaves runtime content raw but redacts Bifrost logs and trace-export connector content.
+- **Runtime + reversible logs** (`runtime_reversible`) redacts runtime content and logs with reversible placeholders.
+
+For the full behavior matrix, reveal permissions, and connector export caveats, see [Guardrail Redaction](/enterprise/guardrails/redaction).
 
 ### Navigating Guardrails in the UI
 
@@ -104,11 +124,13 @@ flowchart TB
         Profile1[AWS Bedrock Profile]
         Profile2[Azure Content Safety Profile]
         Profile3[Patronus AI Profile]
-        Profile4[GraySwan Profile]
+        Profile4[Gray Swan Profile]
         Profile5[Secrets Detection Profile]
         Profile6[Custom Regex Profile]
         Profile7[CrowdStrike AIDR Profile]
         Profile8[Google Model Armor Profile]
+        Profile9[Presidio Profile]
+        Profile10[Azure AI Language PII Profile]
     end
 
     InputValidation --> Rule1
@@ -119,6 +141,8 @@ flowchart TB
     OutputValidation --> Rule2
 
     Rule1 --> Profile6
+    Rule1 --> Profile9
+    Rule1 --> Profile10
     Rule2 --> Profile2
     Rule2 --> Profile3
     Rule3 --> Profile1
@@ -138,18 +162,22 @@ flowchart TB
 
 ## Streaming Output Guardrails
 
-When an output guardrail is used with a streaming response, Bifrost accumulates the response until the model is done generating it, then checks the full response. If the response passes, Bifrost sends it to the client. If a guardrail blocks or changes the response, Bifrost applies that result instead.
+Streaming delivery depends on what the matched output guardrails can do:
 
-This adds time before the client receives output: Bifrost waits for response generation and guardrail evaluation to finish. The added wait depends on the model's generation time and the configured guardrail profiles.
+- Detect-only and logs-only rules observe the stream without delaying client delivery.
+- Runtime redaction checks buffered text segments and releases the resulting safe text as the response is generated.
+- If any matched rule can block, Bifrost holds the complete stream until generation and guardrail evaluation finish. If `stream_replay_event_interval_ms` is positive, an allowed stream is replayed with that delay between buffered events; otherwise, it is delivered immediately. A blocked stream returns the guardrail intervention instead.
 
-Input guardrails check the request before Bifrost sends it to the LLM provider.
+Replay pacing is disabled by default. The dashboard initializes the event interval to `25` milliseconds when pacing is enabled, while `0` sends all buffered events immediately. If multiple matched block-capable rules configure different intervals, Bifrost uses the largest value. This behavior applies to streaming Chat Completions, Text Completions, and Responses API requests.
+
+Input guardrails still check the request before Bifrost sends it to the LLM provider.
 
 <Note>
-  GraySwan is a tool-call-specific exception. Text-only streams are delivered directly to the client and are not sent to Cygnal. See [GraySwan Cygnal](/integrations/guardrails/grayswan#streaming-output-and-tool-calls) for the full behavior.
+  Gray Swan is a tool-call-specific exception. Text-only streams are delivered directly to the client and are not sent to Cygnal. See [Gray Swan Cygnal](/integrations/guardrails/grayswan#streaming-output-and-tool-calls) for the full behavior.
 </Note>
 
 <Note>
-  If the same rule also uses another output guardrail profile, Bifrost waits for that profile to check the completed response. GraySwan's text-only behavior only skips the GraySwan call; it does not bypass the other profile.
+  If the same rule also uses another output guardrail profile, Bifrost waits for that profile to check the completed response. Gray Swan's text-only behavior only skips the Gray Swan call; it does not bypass the other profile.
 </Note>
 
 ---
@@ -332,26 +360,28 @@ curl -X DELETE http://localhost:8080/api/guardrails/rules/1
 <Tab title="Helm">
 
 ```yaml
-guardrails_config:
-  guardrail_rules:
-    - id: 1
-      name: "Block PII in Prompts"
-      description: "Prevent PII from being sent to LLM providers"
-      enabled: true
-      cel_expression: "request.messages.exists(m, m.role == 'user')"
-      apply_to: "input"
-      sampling_rate: 100
-      timeout: 5000
-      provider_config_ids: [1, 2]
-    - id: 2
-      name: "Content Filter for Responses"
-      description: "Filter harmful content from LLM responses"
-      enabled: true
-      cel_expression: "true"
-      apply_to: "output"
-      sampling_rate: 100
-      timeout: 3000
-      provider_config_ids: [2]
+bifrost:
+  guardrails:
+    rules:
+      - id: 1
+        name: "Block PII in Prompts"
+        description: "Prevent PII from being sent to LLM providers"
+        enabled: true
+        cel_expression: "request.messages.exists(m, m.role == 'user')"
+        apply_to: "input"
+        sampling_rate: 100
+        timeout: 5000
+        provider_config_ids: [1, 2]
+      - id: 2
+        name: "Content Filter for Responses"
+        description: "Filter harmful content from LLM responses"
+        enabled: true
+        cel_expression: "true"
+        apply_to: "output"
+        sampling_rate: 100
+        timeout: 3000
+        stream_replay_event_interval_ms: 25
+        provider_config_ids: [2]
 ```
 
 </Tab>
@@ -401,10 +431,10 @@ Rules can be linked to multiple profiles for comprehensive validation:
 
 **Best Practices:**
 - Link credential-leakage rules to [Secrets Detection](/enterprise/guardrails/secrets-detection)
-- Link PII detection rules to profiles with PII capabilities (Custom Regex PII template, Bedrock, Patronus)
-- Link content filtering rules to profiles with content safety features (Azure, Bedrock, GraySwan)
-- Use GraySwan for custom natural language rules when you need flexible, readable policies
-- Use multiple profiles for defense-in-depth (e.g., Bedrock + Patronus for PII, Azure + GraySwan for content)
+- Link PII detection rules to profiles with PII capabilities (Custom Regex PII template, Presidio, Azure AI Language PII, Bedrock, Patronus)
+- Link content filtering rules to profiles with content safety features (Azure, Bedrock, Gray Swan)
+- Use Gray Swan for custom natural language rules when you need flexible, readable policies
+- Use multiple profiles for defense-in-depth (e.g., Bedrock + Patronus for PII, Azure + Gray Swan for content)
 - Set appropriate timeouts when using multiple profiles
 
 ---
@@ -422,7 +452,7 @@ Profiles are reusable configurations for guardrail providers. External providers
 | Property | Type | Required | Description |
 |----------|------|----------|-------------|
 | `id` | integer | Yes | Unique identifier for the profile |
-| `provider_name` | string | Yes | Provider type: `regex`, `secrets`, `bedrock`, `azure`, `model-armor`, `crowdstrike-aidr`, `grayswan`, `patronus-ai` |
+| `provider_name` | string | Yes | Provider type: `regex`, `secrets`, `presidio`, `azure-pii`, `bedrock`, `azure`, `model-armor`, `crowdstrike-aidr`, `grayswan`, `patronus-ai` |
 | `policy_name` | string | Yes | Descriptive name for the policy |
 | `enabled` | boolean | Yes | Whether the profile is active |
 | `config` | object | No | Provider-specific configuration |
@@ -441,7 +471,7 @@ Profiles are reusable configurations for guardrail providers. External providers
 </Frame>
 
 2. **Select Provider Type**
-   - Choose from: Secrets Detection, Custom Regex, AWS Bedrock, Azure Content Safety, Google Model Armor, CrowdStrike AIDR, GraySwan, or Patronus AI
+   - Choose a supported native or external provider, including Lakera Guard
 
 3. **Configure Provider Settings**
    - Enter credentials and endpoint information for external providers, or local settings for native providers
@@ -455,7 +485,7 @@ Profiles are reusable configurations for guardrail providers. External providers
 </Tab>
 <Tab title="API">
 
-Profiles are managed per provider type at `/api/guardrails/{provider}`, where `{provider}` is one of `secrets`, `regex`, `bedrock`, `azure`, `model-armor`, `crowdstrike-aidr`, `grayswan`, or `patronus-ai`. The API assigns the configuration ID after creation.
+Profiles are managed per provider type at `/api/guardrails/{provider}`, where `{provider}` is one of `secrets`, `regex`, `presidio`, `azure-pii`, `bedrock`, `azure`, `model-armor`, `crowdstrike-aidr`, `grayswan`, `patronus-ai`, or `lakera`. The API assigns the configuration ID after creation.
 
 **Create a Profile:**
 ```bash
@@ -643,96 +673,97 @@ curl -X DELETE http://localhost:8080/api/guardrails/bedrock \
 <Tab title="Helm">
 
 ```yaml
-guardrails_config:
-  guardrail_providers:
-    - id: 1
-      provider_name: "secrets"
-      policy_name: "Block Leaked Credentials"
-      enabled: true
-      config:
-        ignored_secret_keywords:
-          - "example"
-          - "dummy"
-    - id: 2
-      provider_name: "regex"
-      policy_name: "PII Detection"
-      enabled: true
-      config:
-        patterns:
-          - pattern: "\\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}\\b"
-            description: "Email address"
-            flags: "i"
-          - pattern: "\\b\\d{3}-\\d{2}-\\d{4}\\b"
-            description: "US Social Security Number"
-    - id: 3
-      provider_name: "bedrock"
-      policy_name: "PII Detection Profile"
-      enabled: true
-      config:
-        guardrail_arn: "arn:aws:bedrock:us-east-1:123456789:guardrail/abc123"
-        guardrail_version: "1"
-        region: "us-east-1"
-        # AWS Authentication (choose one method):
-        # Option 1: Explicit credentials
-        access_key: "env.AWS_ACCESS_KEY_ID"
-        secret_key: "env.AWS_SECRET_ACCESS_KEY"
-        # Option 2: IAM Role - omit access_key and secret_key
-        # (Bifrost will use IAM credentials from the environment)
-    - id: 4
-      provider_name: "azure"
-      policy_name: "Content Safety Profile"
-      enabled: true
-      config:
-        endpoint: "https://your-resource.cognitiveservices.azure.com/"
-        api_key: "env.AZURE_CONTENT_SAFETY_API_KEY"
-        analyze_enabled: true
-        analyze_severity_threshold: "medium"
-        jailbreak_shield_enabled: true
-    - id: 5
-      provider_name: "model-armor"
-      policy_name: "Google Model Armor Production"
-      enabled: true
-      timeout: 30
-      config:
-        auth_type: "default_credential"
-        project_id: "env.GCP_PROJECT_ID"
-        location: "env.GCP_LOCATION"
-        template_id: "env.GMA_TEMPLATE_ID"
-    - id: 6
-      provider_name: "crowdstrike-aidr"
-      policy_name: "CrowdStrike AIDR Production"
-      enabled: true
-      timeout: 30
-      config:
-        api_key: "env.CS_AIDR_TOKEN"
-        base_url: "env.CS_AIDR_BASE_URL"
-        app_id: "bifrost-production"
-        collector_instance_id: "prod-us-east-1"
-    - id: 7
-      provider_name: "grayswan"
-      policy_name: "Custom Safety Rules"
-      enabled: true
-      config:
-        api_key: "env.GRAYSWAN_API_KEY"
-        violation_threshold: 0.5
-        reasoning_mode: "hybrid"
-        rules:
-          no_pii: "Do not allow personally identifiable information"
-          professional_tone: "Ensure responses maintain a professional tone"
-    - id: 8
-      provider_name: "patronus-ai"
-      policy_name: "Patronus Quality Checks"
-      enabled: true
-      config:
-        api_key: "env.PATRONUS_API_KEY"
-        base_url: "https://api.patronus.ai"
-        evaluators:
-          - evaluator: "pii"
-            explain_strategy: "on-fail"
-          - evaluator: "judge"
-            criteria: "patronus:is-concise"
-            explain_strategy: "on-fail"
-        capture: "none"
+bifrost:
+  guardrails:
+    providers:
+      - id: 1
+        provider_name: "secrets"
+        policy_name: "Block Leaked Credentials"
+        enabled: true
+        config:
+          ignored_secret_keywords:
+            - "example"
+            - "dummy"
+      - id: 2
+        provider_name: "regex"
+        policy_name: "PII Detection"
+        enabled: true
+        config:
+          patterns:
+            - pattern: "\\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}\\b"
+              description: "Email address"
+              flags: "i"
+            - pattern: "\\b\\d{3}-\\d{2}-\\d{4}\\b"
+              description: "US Social Security Number"
+      - id: 3
+        provider_name: "bedrock"
+        policy_name: "PII Detection Profile"
+        enabled: true
+        config:
+          guardrail_arn: "arn:aws:bedrock:us-east-1:123456789:guardrail/abc123"
+          guardrail_version: "1"
+          region: "us-east-1"
+          # AWS Authentication (choose one method):
+          # Option 1: Explicit credentials
+          access_key: "env.AWS_ACCESS_KEY_ID"
+          secret_key: "env.AWS_SECRET_ACCESS_KEY"
+          # Option 2: IAM Role - omit access_key and secret_key
+          # (Bifrost will use IAM credentials from the environment)
+      - id: 4
+        provider_name: "azure"
+        policy_name: "Content Safety Profile"
+        enabled: true
+        config:
+          endpoint: "https://your-resource.cognitiveservices.azure.com/"
+          api_key: "env.AZURE_CONTENT_SAFETY_API_KEY"
+          analyze_enabled: true
+          analyze_severity_threshold: "medium"
+          jailbreak_shield_enabled: true
+      - id: 5
+        provider_name: "model-armor"
+        policy_name: "Google Model Armor Production"
+        enabled: true
+        timeout: 30
+        config:
+          auth_type: "default_credential"
+          project_id: "env.GCP_PROJECT_ID"
+          location: "env.GCP_LOCATION"
+          template_id: "env.GMA_TEMPLATE_ID"
+      - id: 6
+        provider_name: "crowdstrike-aidr"
+        policy_name: "CrowdStrike AIDR Production"
+        enabled: true
+        timeout: 30
+        config:
+          api_key: "env.CS_AIDR_TOKEN"
+          base_url: "env.CS_AIDR_BASE_URL"
+          app_id: "bifrost-production"
+          collector_instance_id: "prod-us-east-1"
+      - id: 7
+        provider_name: "grayswan"
+        policy_name: "Custom Safety Rules"
+        enabled: true
+        config:
+          api_key: "env.GRAYSWAN_API_KEY"
+          violation_threshold: 0.5
+          reasoning_mode: "hybrid"
+          rules:
+            no_pii: "Do not allow personally identifiable information"
+            professional_tone: "Ensure responses maintain a professional tone"
+      - id: 8
+        provider_name: "patronus-ai"
+        policy_name: "Patronus Quality Checks"
+        enabled: true
+        config:
+          api_key: "env.PATRONUS_API_KEY"
+          base_url: "https://api.patronus.ai"
+          evaluators:
+            - evaluator: "pii"
+              explain_strategy: "on-fail"
+            - evaluator: "judge"
+              criteria: "patronus:is-concise"
+              explain_strategy: "on-fail"
+          capture: "none"
 ```
 
 </Tab>
@@ -740,25 +771,30 @@ guardrails_config:
 
 ### Provider Capabilities
 
-Third-party guardrail providers offer different capabilities. Bifrost-native providers are documented separately: [Secrets Detection](/enterprise/guardrails/secrets-detection) covers credential leakage, and [Custom Regex](/enterprise/guardrails/custom-regex) covers deterministic pattern checks, including the PII Detection template.
+Third-party guardrail providers offer different capabilities. Bifrost-native providers are documented separately: [Secrets Detection](/enterprise/guardrails/secrets-detection) covers credential leakage, [Custom Regex](/enterprise/guardrails/custom-regex) covers deterministic pattern checks, and [Guardrail Redaction](/enterprise/guardrails/redaction) covers Bifrost-managed redaction modes.
 
-| Capability | AWS Bedrock | Azure Content Safety | Google Model Armor | CrowdStrike AIDR | GraySwan | Patronus AI |
-|------------|-------------|----------------------|--------------------|------------------|----------|-------------|
-| PII Detection | Yes | No | Yes | Policy-dependent | No | Yes |
-| Content Filtering | Yes | Yes | Yes | Policy-dependent | Yes | Yes |
-| Prompt Injection | Yes | Yes | Yes | Policy-dependent | Yes | Yes |
-| Hallucination Detection | No | No | No | No | No | Yes |
-| Toxicity Screening | Yes | Yes | Yes | Policy-dependent | Yes | Yes |
-| Custom Policies | Yes | Yes | Yes | Policy-dependent | Yes | Yes |
-| Custom Natural Language Rules | No | No | No | No | Yes | No |
-| Image Support | Yes | No | No | No | No | No |
-| IPI Detection | No | Yes | Yes | Policy-dependent | Yes | No |
-| Mutation Detection | No | No | No | No | Yes | No |
-| Output Redaction | Yes | No | Yes | Yes | No | No |
+| Capability | AWS Bedrock | Azure Content Safety | Google Model Armor | CrowdStrike AIDR | Gray Swan | Patronus AI | Lakera Guard | Azure AI Language PII | Presidio |
+|------------|-------------|----------------------|--------------------|------------------|-----------|-------------|--------------|-----------------------|----------|
+| PII Detection | Yes | No | Yes | Policy-dependent | No | Yes | Yes | Yes | Yes |
+| Content Filtering | Yes | Yes | Yes | Policy-dependent | Yes | Yes | Yes | No | No |
+| Prompt Injection | Yes | Yes | Yes | Policy-dependent | Yes | Yes | Yes | No | No |
+| Hallucination Detection | No | No | No | No | No | Yes | No | No | No |
+| Toxicity Screening | Yes | Yes | Yes | Policy-dependent | Yes | Yes | Policy-dependent | No | No |
+| Custom Policies | Yes | Yes | Yes | Policy-dependent | Yes | Yes | Yes | Category filters | Entity filters |
+| Custom Natural Language Rules | No | No | No | No | Yes | No | No | No | No |
+| Image Support | Yes | No | No | No | No | No | No | No | No |
+| IPI Detection | No | Yes | Yes | Policy-dependent | Yes | No | Policy-dependent | No | No |
+| Mutation Detection | No | No | No | No | Yes | No | No | No | No |
+| Bifrost-managed Redaction | No | No | No | No | No | No | Yes | Yes | Yes |
+| Provider-managed Transformation | Yes | No | Yes | Policy-dependent | No | No | No | No | No |
 
 <Note>
   CrowdStrike AIDR capabilities depend on the AIDR policy and detectors configured in CrowdStrike. Bifrost sends the request to AIDR, then enforces the returned `blocked` or `transformed` decision.
 </Note>
+
+<Warning>
+  Do not configure provider-managed transformations and Bifrost-managed redaction to rewrite the same input or output phase. Bifrost fails closed when a phase produces both provider-managed transformed text and Bifrost-managed redaction findings, because there is no safe unambiguous way to merge two rewritten outputs. Detection-only and blocking guardrails can still run alongside redaction.
+</Warning>
 
 ### Best Practices
 

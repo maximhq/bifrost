@@ -346,34 +346,9 @@ func (provider *GeminiProvider) downloadBatchResultsFile(ctx context.Context, ke
 				Message: resultLine.Error.Message,
 			}
 		} else if resultLine.Response != nil {
-			// Convert the response to a map for the Body field
-			respBody := make(map[string]interface{})
-			if len(resultLine.Response.Candidates) > 0 {
-				candidate := resultLine.Response.Candidates[0]
-				if candidate.Content != nil && len(candidate.Content.Parts) > 0 {
-					var textParts []string
-					for _, part := range candidate.Content.Parts {
-						if part.Text != "" {
-							textParts = append(textParts, part.Text)
-						}
-					}
-					if len(textParts) > 0 {
-						respBody["text"] = strings.Join(textParts, "")
-					}
-				}
-				respBody["finish_reason"] = string(candidate.FinishReason)
-			}
-			if resultLine.Response.UsageMetadata != nil {
-				respBody["usage"] = map[string]interface{}{
-					"prompt_tokens":     resultLine.Response.UsageMetadata.PromptTokenCount,
-					"completion_tokens": resultLine.Response.UsageMetadata.CandidatesTokenCount,
-					"total_tokens":      resultLine.Response.UsageMetadata.TotalTokenCount,
-				}
-			}
-
 			resultItem.Response = &schemas.BatchResultResponse{
 				StatusCode: 200,
-				Body:       respBody,
+				Body:       geminiGenerateContentToBatchResultBody(resultLine.Response),
 			}
 		}
 
@@ -382,6 +357,86 @@ func (provider *GeminiProvider) downloadBatchResultsFile(ctx context.Context, ke
 	})
 
 	return results, parseResult.Errors, nil
+}
+
+// geminiBatchOutput extracts the batch output (a responses file name or inline responses)
+// from a Gemini batch job response. The generativelanguage REST API reports the output
+// under the Operation's top-level `response` field, mirrored in `metadata.output`; the
+// `dest` field is a client-SDK-only abstraction and is never present on the wire. The
+// top-level response is preferred, with metadata.output as a fallback.
+func geminiBatchOutput(resp *GeminiBatchJobResponse) (fileName string, inlined []GeminiInlinedResponse) {
+	if resp == nil {
+		return "", nil
+	}
+	if resp.Response != nil {
+		fileName = resp.Response.ResponsesFile
+		if resp.Response.InlinedResponses != nil {
+			inlined = resp.Response.InlinedResponses.InlinedResponses
+		}
+	}
+	if fileName == "" && len(inlined) == 0 && resp.Metadata != nil && resp.Metadata.Output != nil {
+		fileName = resp.Metadata.Output.ResponsesFile
+		if resp.Metadata.Output.InlinedResponses != nil {
+			inlined = resp.Metadata.Output.InlinedResponses.InlinedResponses
+		}
+	}
+	return fileName, inlined
+}
+
+// geminiGenerateContentToBatchResultBody flattens a Gemini GenerateContentResponse into
+// the compact result body shape shared by the inline and file-based batch result paths.
+func geminiGenerateContentToBatchResultBody(resp *GenerateContentResponse) map[string]interface{} {
+	body := make(map[string]interface{})
+	if resp == nil {
+		return body
+	}
+	if len(resp.Candidates) > 0 {
+		candidate := resp.Candidates[0]
+		if candidate.Content != nil && len(candidate.Content.Parts) > 0 {
+			var textParts []string
+			for _, part := range candidate.Content.Parts {
+				if part.Text != "" {
+					textParts = append(textParts, part.Text)
+				}
+			}
+			if len(textParts) > 0 {
+				body["text"] = strings.Join(textParts, "")
+			}
+		}
+		body["finish_reason"] = string(candidate.FinishReason)
+	}
+	if resp.UsageMetadata != nil {
+		body["usage"] = map[string]interface{}{
+			"prompt_tokens":     resp.UsageMetadata.PromptTokenCount,
+			"completion_tokens": resp.UsageMetadata.CandidatesTokenCount,
+			"total_tokens":      resp.UsageMetadata.TotalTokenCount,
+		}
+	}
+	return body
+}
+
+// geminiInlineResponseToBatchResultItem converts a single Gemini inline batch response
+// into a Bifrost BatchResultItem. customIDFallback is used when the response carries no
+// metadata key.
+func geminiInlineResponseToBatchResultItem(inlineResp GeminiInlinedResponse, customIDFallback string) schemas.BatchResultItem {
+	customID := customIDFallback
+	if inlineResp.Metadata != nil && inlineResp.Metadata.Key != "" {
+		customID = inlineResp.Metadata.Key
+	}
+
+	resultItem := schemas.BatchResultItem{CustomID: customID}
+	if inlineResp.Error != nil {
+		resultItem.Error = &schemas.BatchResultError{
+			Code:    fmt.Sprintf("%d", inlineResp.Error.Code),
+			Message: inlineResp.Error.Message,
+		}
+	} else if inlineResp.Response != nil {
+		resultItem.Response = &schemas.BatchResultResponse{
+			StatusCode: 200,
+			Body:       geminiGenerateContentToBatchResultBody(inlineResp.Response),
+		}
+	}
+	return resultItem
 }
 
 // extractGeminiUsageMetadata extracts usage metadata (as ints) from Gemini response

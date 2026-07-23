@@ -10,11 +10,22 @@ icon: "star-of-life"
 
 | Version | Released   |
 | ------- | ---------- |
+| 2.1.212 | 2026-07-17 |
 | 2.1.143 | 2026-05-15 |
 | 2.1.132 | 2026-05-06 |
 | 2.1.131 | 2026-05-06 |
 | 2.1.129 | 2026-05-05 |
 | 2.1.128 | 2026-05-04 |
+
+<Warning>
+    Since version 2.1.212, Anthropic has enforced the anthropic-version header along with some others.
+
+    Go to **Settings > Client Settings** and add them as a comma-separated list:
+  
+    ```
+    anthropic-dangerous-direct-browser-access, anthropic-version, content-type, user-agent, x-api-key, x-stainless-arch, x-stainless-helper-method, x-stainless-lang, x-stainless-os, x-stainless-package-version, x-stainless-retry-count, x-stainless-runtime, x-stainless-runtime-version, x-stainless-timeout
+    ```
+</Warning>
 
 <Note>
 	If your Allowed Headers are already set to `*`, you can skip this note. If not and you face issues integrating Bifrost with Claude Code,
@@ -346,9 +357,18 @@ Run `/mcp` inside Claude Code. `bifrost` should appear as connected with a tool 
 		Unexpected identifier "Method". Raw body: Method Not Allowed
 		```
 
-		This is cosmetic and has no functional impact in the default `headers` [auth mode](../mcp/gateway-auth). Claude Code probes `/register` (RFC 7591 Dynamic Client Registration) when you click **Re-authenticate**, but registration and discovery aren't served in that mode, so the SDK logs the parse error. The `/mcp` connection itself works fine. In `both` / `oauth` mode Bifrost serves real Dynamic Client Registration and this error doesn't appear.
+		This appears whenever the [gateway auth mode](../mcp/gateway-auth) is `headers`: clicking **Re-authenticate** makes Claude Code probe `/register` (RFC 7591 Dynamic Client Registration), but registration and discovery aren't served in that mode, so the SDK logs the parse error. The `/mcp` connection itself keeps working.
 
-		To refresh tools from Bifrost in `headers` mode, click **Reconnect** in the `/mcp` panel instead of Re-authenticate. See the upstream [Claude Code bug report](https://github.com/anthropics/claude-code/issues/46640) for context.
+		To make Re-authenticate work, switch `mcp_server_auth_mode` to `both` or `oauth` — Bifrost then serves real Dynamic Client Registration and the error disappears. If you're staying on `headers`, use **Reconnect** in the `/mcp` panel to refresh tools instead. See the upstream [Claude Code bug report](https://github.com/anthropics/claude-code/issues/46640) for context.
+	</Accordion>
+
+	<Accordion title="`Got new credentials, but bifrost rejected them on reconnect`">
+		Claude Code completed an OAuth flow, but the token it presented to `/mcp` was rejected. Two common causes:
+
+		1. **You recently switched `mcp_server_auth_mode`.** Claude Code caches OAuth state per server, and tokens issued under the old mode are no longer accepted. Remove and re-add the server (`claude mcp remove bifrost`, then add it again).
+		2. **A VK header is being sent alongside the OAuth token.** Bifrost rejects requests carrying two credential types at once (`conflicting credentials`). This typically happens in `both` mode when the VK is configured under a non-standard header: Claude Code only treats a configured `Authorization` header as "use header auth" — with `x-bf-vk` or `X-Api-Key` it may still run the OAuth flow and then send the OAuth token *and* your VK header together, which Bifrost rejects.
+
+		In `both` mode, configure the VK as `Authorization: Bearer <vk>` (not `x-bf-vk` / `X-Api-Key`), or drop the header entirely and authenticate via OAuth.
 	</Accordion>
 
 	<Accordion title="`Failed to reconnect to bifrost.` and the MCP shows status `failed`">
@@ -373,6 +393,10 @@ Run `/mcp` inside Claude Code. `bifrost` should appear as connected with a tool 
 		Expected behavior for `per_user_oauth` and `per_user_headers` MCPs. Open the URL surfaced in the tool result — for OAuth flows it points at the upstream provider's consent page; for headers flows it points at a Bifrost form to enter your values. Bifrost stores the credential against your identity and the next tool call executes normally. See [Per-User OAuth](/mcp/auth/per-user-oauth) and [Per-User Headers](/mcp/auth/per-user-headers).
 	</Accordion>
 </AccordionGroup>
+
+<Note>
+	If Claude Code behaves unexpectedly after any change to Bifrost's MCP auth settings, remove and re-add the server — Claude Code caches auth tokens per MCP server, and stale cached credentials can survive Reconnect.
+</Note>
 
 ## Checklist
 

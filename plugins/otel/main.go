@@ -7,6 +7,7 @@ import (
 	"maps"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -675,6 +676,7 @@ func (p *OtelPlugin) Inject(ctx context.Context, trace *schemas.Trace) error {
 			}
 			if t.metricsExporter != nil {
 				p.recordMetricsFromTrace(ctx, t.metricsExporter, trace)
+				p.recordMCPMetricsFromTrace(ctx, t.metricsExporter, trace)
 			}
 		}(t)
 	}
@@ -745,6 +747,41 @@ func getFloat64Attr(attrs map[string]any, key string) float64 {
 	return 0
 }
 
+// getFloat64AttrOK is getFloat64Attr with presence reporting. Needed where zero
+// is a meaningful value distinct from "absent" — an upstream total of 0 (a cache
+// hit, or a request rejected before any provider call) means all of the elapsed
+// time was Bifrost's, whereas a missing attribute means it was never measured.
+// overheadSecondsFromTrace reads Bifrost's own cost off the root span, where the
+// tracer stamps it as AttrBifrostOverheadDurationMs (root duration minus the
+// upstream total). Reading the stamped value rather than recomputing keeps the
+// overhead metric and the span attribute in lockstep. Returns false when the
+// request carried no measurement; absent must not be reported as zero overhead.
+func overheadSecondsFromTrace(trace *schemas.Trace) (float64, bool) {
+	if trace == nil || trace.RootSpan == nil {
+		return 0, false
+	}
+	overheadMs, ok := getFloat64AttrOK(trace.RootSpan.Attributes, schemas.AttrBifrostOverheadDurationMs)
+	if !ok {
+		return 0, false
+	}
+	return overheadMs / 1000.0, true
+}
+
+func getFloat64AttrOK(attrs map[string]any, key string) (float64, bool) {
+	if attrs == nil {
+		return 0, false
+	}
+	switch v := attrs[key].(type) {
+	case float64:
+		return v, true
+	case int:
+		return float64(v), true
+	case int64:
+		return float64(v), true
+	}
+	return 0, false
+}
+
 // buildSpanAttrs extracts metric dimension attrs from a single attempt span.
 func buildSpanAttrs(span *schemas.Span) []attribute.KeyValue {
 	attrs := span.Attributes
@@ -793,6 +830,76 @@ func buildContextAttrs(ctx context.Context, resp *schemas.BifrostResponse, bifro
 	)
 }
 
+// buildMCPSpanAttrs builds the duration-metric dimensions: semconv attrs + governance
+// identity. error.type is appended by the caller on failure. Empty optionals skipped.
+func buildMCPSpanAttrs(span *schemas.Span) []attribute.KeyValue {
+	attrs := span.Attributes
+	out := []attribute.KeyValue{
+		attribute.String(schemas.AttrMCPMethodName, getStringAttr(attrs, schemas.AttrMCPMethodName)),
+	}
+	if tool := getStringAttr(attrs, schemas.AttrToolName); tool != "" {
+		out = append(out, attribute.String(schemas.AttrToolName, tool))
+	}
+	if transport := getStringAttr(attrs, schemas.AttrNetworkTransport); transport != "" {
+		out = append(out, attribute.String(schemas.AttrNetworkTransport, transport))
+	}
+	// Governance identity: bifrost.* span attrs → flat metric label names.
+	for spanKey, labelKey := range mcpGovernanceLabelMap {
+		if v := getStringAttr(attrs, spanKey); v != "" {
+			out = append(out, attribute.String(labelKey, v))
+		}
+	}
+	return out
+}
+
+// mcpGovernanceLabelMap maps bifrost.* span attr keys to the flat metric label names.
+var mcpGovernanceLabelMap = map[string]string{
+	schemas.AttrBifrostVirtualKeyID:     "virtual_key_id",
+	schemas.AttrBifrostVirtualKeyName:   "virtual_key_name",
+	schemas.AttrBifrostTeamID:           "team_id",
+	schemas.AttrBifrostTeamName:         "team_name",
+	schemas.AttrBifrostCustomerID:       "customer_id",
+	schemas.AttrBifrostCustomerName:     "customer_name",
+	schemas.AttrBifrostBusinessUnitID:   "business_unit_id",
+	schemas.AttrBifrostBusinessUnitName: "business_unit_name",
+}
+
+// recordMCPMetricsFromTrace records the duration metric once per MCP client span. Called
+// from Inject alongside recordMetricsFromTrace.
+func (p *OtelPlugin) recordMCPMetricsFromTrace(ctx context.Context, exporter *MetricsExporter, trace *schemas.Trace) {
+	if trace == nil || exporter == nil {
+		return
+	}
+	for _, span := range trace.Spans {
+		// Both MCP kinds are client operations for mcp.client.operation.duration:
+		// SpanKindMCPTool (tool calls) and SpanKindMCPClient (ping/list_tools/connect).
+		if span == nil || (span.Kind != schemas.SpanKindMCPClient && span.Kind != schemas.SpanKindMCPTool) {
+			continue
+		}
+		// Skip un-enriched spans so we never emit an empty mcp.method.name dimension.
+		if getStringAttr(span.Attributes, schemas.AttrMCPMethodName) == "" {
+			continue
+		}
+		mcpAttrs := buildMCPSpanAttrs(span)
+		if span.Status == schemas.SpanStatusError {
+			errorType := getStringAttr(span.Attributes, schemas.AttrErrorTypeSpec)
+			if errorType == "" {
+				errorType = "_OTHER"
+			}
+			mcpAttrs = append(mcpAttrs, attribute.String(schemas.AttrErrorTypeSpec, errorType))
+		}
+		// Prefer tool-execution (CallTool) latency over span wall-time (which covers PostHooks).
+		// Fall back to wall-time when it's absent (e.g. the op failed before returning one).
+		var durationSeconds float64
+		if toolMs := getIntAttr(span.Attributes, schemas.AttrBifrostMCPToolDurationMs); toolMs > 0 {
+			durationSeconds = float64(toolMs) / 1000.0
+		} else if !span.StartTime.IsZero() && !span.EndTime.IsZero() {
+			durationSeconds = span.EndTime.Sub(span.StartTime).Seconds()
+		}
+		exporter.RecordMCPOperationDuration(ctx, durationSeconds, mcpAttrs...)
+	}
+}
+
 // recordMetricsFromTrace extracts metrics data from a completed trace and records them
 // via the OTEL metrics exporter. This is called from Inject after trace emission.
 //
@@ -821,7 +928,12 @@ func (p *OtelPlugin) recordMetricsFromTrace(ctx context.Context, exporter *Metri
 		}
 
 		if span.Status == schemas.SpanStatusError {
-			exporter.RecordErrorRequest(ctx, spanAttrs...)
+			statusCode := "unknown"
+			if code := getIntAttr(span.Attributes, schemas.AttrHTTPResponseStatusCode); code != 0 {
+				statusCode = strconv.Itoa(code)
+			}
+			errorAttrs := append(spanAttrs[:len(spanAttrs):len(spanAttrs)], attribute.String("status_code", statusCode))
+			exporter.RecordErrorRequest(ctx, errorAttrs...)
 		} else {
 			exporter.RecordSuccessRequest(ctx, spanAttrs...)
 		}
@@ -829,6 +941,21 @@ func (p *OtelPlugin) recordMetricsFromTrace(ctx context.Context, exporter *Metri
 		if finalSpan == nil || span.EndTime.After(finalSpan.EndTime) {
 			finalSpan = span
 		}
+	}
+
+	// Bifrost's own overhead. Derived once per trace from the root span, which is
+	// the only span whose duration covers the whole request — including queue
+	// wait, plugin hooks and transport work that no llm.call span sees.
+	//
+	// Labelled off the final attempt span so provider/model dimensions match the
+	// other per-request metrics (retries, tokens, cost). The root span carries
+	// only HTTP attributes.
+	if overheadSeconds, ok := overheadSecondsFromTrace(trace); ok {
+		labelSpan := finalSpan
+		if labelSpan == nil {
+			labelSpan = trace.RootSpan
+		}
+		exporter.RecordOverheadLatency(ctx, overheadSeconds, buildSpanAttrs(labelSpan)...)
 	}
 
 	if finalSpan == nil {

@@ -12,8 +12,12 @@ Want to see Bifrost's performance in your specific environment? The [**Bifrost B
 - **Custom Instance Sizes** - Test on your preferred AWS/GCP/Azure instances  
 - **Your Workload Patterns** - Use your actual request/response sizes
 - **Different Configurations** - Compare various Bifrost settings
-- **Provider Comparisons** - Benchmark against other AI gateways
+- **Provider Comparisons** - Benchmark against other AI gateways or raw OpenAI
 - **Load Scenarios** - Test burst loads, sustained traffic, and endurance
+
+The repo also ships two companion tools:
+- **[mocker](https://github.com/maximhq/bifrost-benchmarking/tree/main/mocker)** — a mock LLM provider server with configurable latency, failures, and rate limits. Point your gateways at it to measure pure gateway overhead with zero API costs.
+- **[hitter](https://github.com/maximhq/bifrost-benchmarking/tree/main/hitter)** — a load generator for stress-testing a single Bifrost deployment with realistic multi-model/streaming traffic.
 
 > **💡 Open Source**: The benchmarking tool is completely open source! Feel free to submit pull requests if you think anything is missing or could be improved.
 
@@ -23,9 +27,9 @@ Want to see Bifrost's performance in your specific environment? The [**Bifrost B
 
 Before running benchmarks, ensure you have:
 
-- **Go 1.26.1+** installed on your testing machine
+- **Go 1.24+** installed on your testing machine
 - **Bifrost instance** running and accessible
-- **Target API providers** configured (OpenAI, Anthropic, etc.)
+- **Target providers** configured in Bifrost (real providers, or the [mocker](https://github.com/maximhq/bifrost-benchmarking/tree/main/mocker) for cost-free runs)
 - **Network access** between benchmark tool and Bifrost
 - **Sufficient resources** on the testing machine to generate load
 
@@ -48,39 +52,68 @@ go build benchmark.go
 
 This creates a `benchmark` executable (or `benchmark.exe` on Windows).
 
-### **3. Run Your First Benchmark**
+### **3. Configure Gateway Ports**
+
+Create a `.env` file in the repo root with the port of each gateway you plan to benchmark — the tool reads ports from here, not from flags:
+
+```env
+BIFROST_PORT=8080
+OPENAI_API_KEY=sk-...   # only needed when benchmarking raw OpenAI
+```
+
+To compare against other gateways, add their port variables too — the [repo README](https://github.com/maximhq/bifrost-benchmarking#readme) lists every supported gateway and its `.env` variable.
+
+### **4. Run Your First Benchmark**
+
+Either `-rate` (fixed RPS) or `-users` (fixed concurrency) is required:
 
 ```bash
 # Basic benchmark: 500 RPS for 10 seconds
-./benchmark -provider bifrost -port 8080
+./benchmark -provider bifrost -rate 500
 
-# Custom benchmark: 1000 RPS for 30 seconds  
-./benchmark -provider bifrost -port 8080 -rate 1000 -duration 30 -output my_results.json
+# Custom benchmark: 1000 RPS for 30 seconds
+./benchmark -provider bifrost -rate 1000 -duration 30 -output my_results.json
 ```
+
+> **⚠️ Note**: Omitting `-provider` benchmarks **all** providers sequentially — including `openai`, which sends real requests to `api.openai.com` using your `OPENAI_API_KEY`.
 
 ---
 
 ## Configuration Options
 
-The benchmark tool offers extensive configuration through command-line flags:
-
 ### **Basic Configuration**
 
 | Flag | Required | Description | Default |
 |------|----------|-------------|---------|
-| `-provider <name>` | ✅ | Provider name (e.g., `bifrost`, `litellm`) | None |
-| `-port <number>` | ✅ | Port number of your Bifrost instance | None |
-| `-endpoint <path>` | ❌ | API endpoint path | `v1/chat/completions` |
-| `-rate <number>` | ❌ | Requests per second | `500` |
+| `-rate <number>` | ✅* | Requests per second (mutually exclusive with `-users`) | None |
+| `-users <number>` | ✅* | Concurrent users to maintain (mutually exclusive with `-rate`) | None |
+| `-provider <name>` | ❌ | Gateway to benchmark: `bifrost`, `openai`, or another supported gateway (full list in the [repo README](https://github.com/maximhq/bifrost-benchmarking#readme)); empty runs all | None (all) |
 | `-duration <seconds>` | ❌ | Test duration in seconds | `10` |
 | `-output <filename>` | ❌ | Results output file | `results.json` |
+| `-big-payload` | ❌ | Use a ~10KB request payload instead of the ~200B default | `false` |
+
+\* Exactly one of `-rate` or `-users` must be provided.
 
 ### **Advanced Configuration**
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `-include-provider-in-request` | Include provider name in request payload | `false` |
-| `-big-payload` | Use larger, more complex request payloads | `false` |
+| `-timeout <seconds>` | Request timeout — set to duration + expected backend latency | `300` |
+| `-cooldown <seconds>` | Cooldown between provider tests | `60` |
+| `-model <name>` | Model to put in the request payload | `gpt-4o-mini` |
+| `-host <address>` | Host address of the gateway servers | `localhost` |
+| `-path <path>` | API path to hit (e.g. `chat/completions`, `embeddings`) | `chat/completions` |
+| `-suffix <suffix>` | URL route suffix prepended to the path | `v1` |
+| `-request-type <type>` | `chat` or `embedding` — controls payload shape | `chat` |
+| `-prompt-file <path>` | File whose content is used as the prompt (for large-prompt tests) | `""` |
+| `-ramp-up` | Gradually ramp users up (only with `-users`) | `false` |
+| `-ramp-up-duration <seconds>` | Seconds to ramp from 1 to `-users` users | `0` |
+| `-debug` | Detailed logging and periodic status updates | `false` |
+
+### **Rate vs. Users Mode**
+
+- **`-rate`** sends requests at a constant RPS regardless of response times — best for measuring throughput capacity and latency under a known load.
+- **`-users`** keeps exactly N requests in flight at all times; as one completes, the next is dispatched. Throughput becomes ≈ `users / avg_latency` — best for simulating connection pools and realistic client behavior.
 
 ---
 
@@ -91,7 +124,7 @@ The benchmark tool offers extensive configuration through command-line flags:
 Test standard performance with typical request sizes:
 
 ```bash
-./benchmark -provider bifrost -port 8080 -rate 1000 -duration 60 -output basic_test.json
+./benchmark -provider bifrost -rate 1000 -duration 60 -output basic_test.json
 ```
 
 **Use Case**: General performance validation
@@ -101,7 +134,7 @@ Test standard performance with typical request sizes:
 Push your instance to its limits:
 
 ```bash
-./benchmark -provider bifrost -port 8080 -rate 5000 -duration 120 -output stress_test.json
+./benchmark -provider bifrost -rate 5000 -duration 120 -output stress_test.json
 ```
 
 **Use Case**: Capacity planning and SLA validation
@@ -111,7 +144,7 @@ Push your instance to its limits:
 Test with bigger request/response sizes:
 
 ```bash
-./benchmark -provider bifrost -port 8080 -rate 500 -duration 60 -big-payload=true -output large_payload.json
+./benchmark -provider bifrost -rate 500 -duration 60 -big-payload -output large_payload.json
 ```
 
 **Use Case**: Document processing, code generation workloads
@@ -121,59 +154,64 @@ Test with bigger request/response sizes:
 Long-running stability test:
 
 ```bash
-./benchmark -provider bifrost -port 8080 -rate 1000 -duration 1800 -output endurance_test.json
+./benchmark -provider bifrost -rate 1000 -duration 1800 -timeout 2100 -output endurance_test.json
 ```
 
 **Use Case**: Production readiness validation (30-minute test)
 
-### **5. Comparative Benchmarking**
+### **5. Concurrent Users with Ramp-Up**
 
-Compare Bifrost against other providers:
+Simulate realistic traffic that gradually builds:
+
+```bash
+./benchmark -provider bifrost -users 500 -duration 600 -ramp-up -ramp-up-duration 120 -output rampup_test.json
+```
+
+**Use Case**: Realistic user behavior — ramps from 1 to 500 concurrent users over 2 minutes, then holds
+
+### **6. Comparative Benchmarking**
+
+Compare Bifrost against other gateways (each gateway's port comes from `.env`):
 
 ```bash
 # Test Bifrost
-./benchmark -provider bifrost -port 8080 -rate 1000 -duration 60 -output bifrost_results.json
+./benchmark -provider bifrost -rate 1000 -duration 60 -output bifrost_results.json
 
-# Test LiteLLM
-./benchmark -provider litellm -port 8000 -rate 1000 -duration 60 -output litellm_results.json
+# Test another gateway (its port configured in .env — supported gateways listed in the repo README)
+./benchmark -provider <gateway> -rate 1000 -duration 60 -output gateway_results.json
 
-# Test direct OpenAI (if available)
-./benchmark -provider openai -port 443 -endpoint chat/completions -rate 1000 -duration 60 -output openai_results.json
+# Test direct OpenAI (needs OPENAI_API_KEY in .env; note the explicit path)
+./benchmark -provider openai -path v1/chat/completions -rate 100 -duration 60 -output openai_results.json
 ```
 
 ---
 
 ## Understanding Results
 
-The benchmark tool generates detailed JSON results with comprehensive metrics:
+The benchmark tool writes per-provider metrics to the output file (keyed by provider, latest run per provider):
 
 ### **Key Metrics Explained**
 
 ```json
 {
   "bifrost": {
-    "request_counts": {
-      "total_sent": 30000,
-      "successful": 30000,
-      "failed": 0
-    },
-    "success_rate": 100.0,
-    "latency_metrics": {
-      "mean_ms": 245.5,
-      "p50_ms": 230.2,
-      "p99_ms": 520.8,
-      "max_ms": 845.3
-    },
-    "throughput_rps": 5000.0,
-    "memory_usage": {
-      "before_mb": 512.5,
-      "after_mb": 1312.8,
-      "peak_mb": 1405.2,
-      "average_mb": 1156.7
-    },
+    "requests": 30000,
+    "rate": 500.12,
+    "success_rate": 99.8,
+    "mean_latency_ms": 45.2,
+    "p50_latency_ms": 42.1,
+    "p99_latency_ms": 156.7,
+    "max_latency_ms": 203.4,
+    "throughput_rps": 498.5,
     "timestamp": "2025-01-14T10:30:00Z",
-    "status_codes": {
-      "200": 30000
+    "status_code_counts": {
+      "200": 29940,
+      "500": 60
+    },
+    "server_peak_memory_mb": 256.7,
+    "server_avg_memory_mb": 189.3,
+    "drop_reasons": {
+      "HTTP 500": 60
     }
   }
 }
@@ -191,9 +229,10 @@ The benchmark tool generates detailed JSON results with comprehensive metrics:
 - **Mean**: Overall average performance
 
 **Memory Usage:**
-- **Peak**: Maximum memory consumption
-- **Average**: Sustained memory usage
-- **After - Before**: Memory growth during test
+- **Peak / Average**: server-side RSS sampled during the run — the tool finds the gateway process by its configured port, so run the benchmark on the same machine as the gateway to capture memory stats
+
+**Drop Reasons:**
+- Categorized failure analysis (timeouts, HTTP errors, connection failures)
 
 ---
 
@@ -237,38 +276,37 @@ Simulate traffic spikes:
 
 ```bash
 # Normal load
-./benchmark -provider bifrost -port 8080 -rate 1000 -duration 300 -output normal_load.json
+./benchmark -provider bifrost -rate 1000 -duration 300 -output normal_load.json
 
 # Burst load (simulate 5x spike)
-./benchmark -provider bifrost -port 8080 -rate 5000 -duration 60 -output burst_load.json
+./benchmark -provider bifrost -rate 5000 -duration 60 -output burst_load.json
 ```
 
 ### **Multi-Instance Testing**
 
-Test horizontal scaling:
+Test horizontal scaling — environment variables override `.env`, so you can target multiple instances in parallel:
 
 ```bash
 # Instance 1
-./benchmark -provider bifrost-1 -port 8080 -rate 2500 -duration 120 -output instance_1.json &
+BIFROST_PORT=8080 ./benchmark -provider bifrost -rate 2500 -duration 120 -output instance_1.json &
 
-# Instance 2  
-./benchmark -provider bifrost-2 -port 8081 -rate 2500 -duration 120 -output instance_2.json &
+# Instance 2
+BIFROST_PORT=8081 ./benchmark -provider bifrost -rate 2500 -duration 120 -output instance_2.json &
 
 # Wait for both to complete
 wait
 ```
 
-### **Different Payload Sizes**
+### **Embeddings Benchmarking**
 
-Compare performance across payload sizes:
+Benchmark embeddings endpoints, optionally with very large prompts from a file:
 
 ```bash
-# Small payloads (default)
-./benchmark -provider bifrost -port 8080 -rate 1000 -duration 60 -output small_payload.json
-
-# Large payloads
-./benchmark -provider bifrost -port 8080 -rate 1000 -duration 60 -big-payload=true -output large_payload.json
+./benchmark -provider bifrost -request-type embedding -path embeddings \
+  -model text-embedding-3-small -prompt-file 10kbprompt.txt -rate 10 -duration 30
 ```
+
+The repo root includes `10kbprompt.txt` and `50kbprompt.txt` as ready-made fixtures.
 
 ---
 
@@ -287,9 +325,9 @@ OUTPUT_DIR="benchmarks/$DATE"
 mkdir -p $OUTPUT_DIR
 
 # Run standard benchmarks
-./benchmark -provider bifrost -port 8080 -rate 1000 -duration 300 -output "$OUTPUT_DIR/standard.json"
-./benchmark -provider bifrost -port 8080 -rate 3000 -duration 180 -output "$OUTPUT_DIR/high_load.json"  
-./benchmark -provider bifrost -port 8080 -rate 500 -duration 600 -big-payload=true -output "$OUTPUT_DIR/large_payload.json"
+./benchmark -provider bifrost -rate 1000 -duration 300 -output "$OUTPUT_DIR/standard.json"
+./benchmark -provider bifrost -rate 3000 -duration 180 -output "$OUTPUT_DIR/high_load.json"
+./benchmark -provider bifrost -rate 500 -duration 600 -big-payload -output "$OUTPUT_DIR/large_payload.json"
 
 echo "Benchmarks completed: $OUTPUT_DIR"
 ```
@@ -308,6 +346,9 @@ Monitor key metrics over time:
 
 ### **Common Issues**
 
+**"Either --rate or --users flag must be provided":**
+- Exactly one of `-rate` or `-users` is required; they are mutually exclusive.
+
 **Connection Refused:**
 ```bash
 # Check if Bifrost is running
@@ -316,7 +357,13 @@ curl http://localhost:8080/health
 # Verify port configuration
 netstat -an | grep 8080
 ```
-- Check PORT is defined in `.env` file at root.
+- Check the provider's port (e.g. `BIFROST_PORT`) is defined in the `.env` file at the repo root.
+
+**"No process found on port":**
+- The gateway isn't running, or the `.env` port is wrong. The benchmark still runs; only memory stats are skipped.
+
+**"Attack for [Provider] timed out":**
+- Raise `-timeout`; it must cover `duration + backend latency`.
 
 **High Error Rates:**
 - Check provider API key limits
@@ -324,17 +371,12 @@ netstat -an | grep 8080
 - Monitor upstream provider status
 - Reduce request rate for baseline test
 
-**Memory Issues:**
-- Monitor system resources during testing
-- Check for memory leaks in long tests
-- Adjust Bifrost pool sizes
-
 **Inconsistent Results:**
 - Run multiple test iterations
 - Account for network variability  
 - Use longer test durations (60+ seconds)
 - Isolate testing environment
-- Try hitting gateway requests to a Mock provider
+- Point the gateway at the repo's [mock provider](https://github.com/maximhq/bifrost-benchmarking/tree/main/mocker) to eliminate upstream variability
 
 ---
 

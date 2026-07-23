@@ -85,6 +85,26 @@ func (e *MCPAuthRequiredError) Error() string {
 	return e.Message
 }
 
+// MCPAuthTempTokenReminder is appended to MCPAuthRequiredError.Message when the
+// auth URL carries a `#t=<token>` temp-token fragment (see
+// MCPAuthURLHasTempTokenFragment). The fragment is deliberately never sent to
+// the server (unlike a query param, it's not logged or forwarded as a
+// Referer), but that also makes it easy for an LLM relaying the link to a
+// human to mistake it for a non-essential anchor and drop it, breaking the
+// link. Spelling this out in the message itself is the cheapest way to stop
+// that from happening.
+const MCPAuthTempTokenReminder = " IMPORTANT: this link includes a required fragment after the '#' character (a one-time auth token). Copy and share the ENTIRE URL exactly as given, including everything after the '#' — the link will not work without it."
+
+// MCPAuthURLHasTempTokenFragment reports whether authURL carries the `#t=`
+// temp-token fragment minted by InitiateUserOAuthFlow /
+// InitiateUserSubmissionFlow. Callers use this to decide whether
+// MCPAuthTempTokenReminder applies — the mint is best-effort (see those
+// functions' docs), so the fragment isn't always present even when
+// MCPEnableTempTokenAuth is on.
+func MCPAuthURLHasTempTokenFragment(authURL string) bool {
+	return strings.Contains(authURL, "#t=")
+}
+
 // MCPUserOAuthRequiredError is an alias retained for backward compatibility
 // with callers that referenced the OAuth-only error type before headers auth
 // was added. New code should use MCPAuthRequiredError directly.
@@ -510,6 +530,19 @@ const (
 	MCPConnectionTypeSSE       MCPConnectionType = "sse"       // Server-Sent Events connection
 	MCPConnectionTypeInProcess MCPConnectionType = "inprocess" // In-process (in-memory) connection
 )
+
+// OTelNetworkTransport returns the OTel semconv network.transport value: stdio→"pipe",
+// http/sse→"tcp". InProcess has none, so it returns "" and callers omit the attribute.
+func (c MCPConnectionType) OTelNetworkTransport() string {
+	switch c {
+	case MCPConnectionTypeSTDIO:
+		return "pipe"
+	case MCPConnectionTypeHTTP, MCPConnectionTypeSSE:
+		return "tcp"
+	default:
+		return ""
+	}
+}
 
 // MCPStdioConfig defines how to launch a STDIO-based MCP server.
 type MCPStdioConfig struct {

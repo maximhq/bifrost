@@ -964,20 +964,22 @@ type Schema struct {
 	Format string `json:"format,omitempty"`
 	// Optional. SCHEMA FIELDS FOR TYPE ARRAY Schema of the elements of Type.ARRAY.
 	Items *Schema `json:"items,omitempty"`
+	// Integer constraints below marshal as JSON numbers (not the Go SDK's proto-quoted
+	// `,string` form) so they stay valid JSON Schema inside parametersJsonSchema.
 	// Optional. Maximum number of the elements for Type.ARRAY.
-	MaxItems *int64 `json:"maxItems,omitempty,string"`
+	MaxItems *int64 `json:"maxItems,omitempty"`
 	// Optional. Maximum length of the Type.STRING
-	MaxLength *int64 `json:"maxLength,omitempty,string"`
+	MaxLength *int64 `json:"maxLength,omitempty"`
 	// Optional. Maximum number of the properties for Type.OBJECT.
-	MaxProperties *int64 `json:"maxProperties,omitempty,string"`
+	MaxProperties *int64 `json:"maxProperties,omitempty"`
 	// Optional. Maximum value of the Type.INTEGER and Type.NUMBER
 	Maximum *float64 `json:"maximum,omitempty"`
 	// Optional. Minimum number of the elements for Type.ARRAY.
-	MinItems *int64 `json:"minItems,omitempty,string"`
+	MinItems *int64 `json:"minItems,omitempty"`
 	// Optional. SCHEMA FIELDS FOR TYPE STRING Minimum length of the Type.STRING
-	MinLength *int64 `json:"minLength,omitempty,string"`
+	MinLength *int64 `json:"minLength,omitempty"`
 	// Optional. Minimum number of the properties for Type.OBJECT.
-	MinProperties *int64 `json:"minProperties,omitempty,string"`
+	MinProperties *int64 `json:"minProperties,omitempty"`
 	// Optional. Minimum value of the Type.INTEGER and Type.NUMBER.
 	Minimum *float64 `json:"minimum,omitempty"`
 	// Optional. Indicates if the value may be null.
@@ -2261,7 +2263,8 @@ type GeminiBatchMetadataInputConfig struct {
 
 // GeminiBatchMetadataOutputConfig represents the output config in batch job metadata.
 type GeminiBatchMetadataOutputConfig struct {
-	ResponsesFile string `json:"responsesFile,omitempty"`
+	ResponsesFile    string                  `json:"responsesFile,omitempty"`
+	InlinedResponses *GeminiInlinedResponses `json:"inlinedResponses,omitempty"`
 }
 
 // GeminiBatchMetadata contains metadata for tracking batch requests.
@@ -2290,18 +2293,26 @@ type GeminiBatchJobResponse struct {
 	Response *GeminiBatchOutput    `json:"response,omitempty"`
 }
 
-// GeminiBatchOutput represents the output of a successful batch job.
+// GeminiBatchOutput represents the output of a successful batch job. It mirrors the
+// GenerateContentBatchOutput union returned under the Operation's response field
+// (and metadata.output): either a responses file or a set of inline responses.
 type GeminiBatchOutput struct {
-	Type          string `json:"@type,omitempty"`
-	ResponsesFile string `json:"responsesFile,omitempty"`
+	Type             string                  `json:"@type,omitempty"`
+	ResponsesFile    string                  `json:"responsesFile,omitempty"`
+	InlinedResponses *GeminiInlinedResponses `json:"inlinedResponses,omitempty"`
 }
 
-// GeminiBatchDest contains the destination/output of a batch job.
-// For inline requests, results are in InlinedResponses.
-// For file-based input, results are in a file referenced by FileName.
+// GeminiBatchDest is the client-SDK-facing output shape (dest.fileName) emitted when
+// converting a Bifrost batch response back to Gemini format. The raw REST API reports
+// output under the Operation's response / metadata.output fields, not dest.
 type GeminiBatchDest struct {
+	FileName string `json:"fileName,omitempty"`
+}
+
+// GeminiInlinedResponses wraps the array of inline batch responses. The REST API nests
+// the array one level deep: response.inlinedResponses.inlinedResponses[].
+type GeminiInlinedResponses struct {
 	InlinedResponses []GeminiInlinedResponse `json:"inlinedResponses,omitempty"`
-	FileName         string                  `json:"fileName,omitempty"`
 }
 
 // GeminiInlinedResponse represents a single response in the batch output.

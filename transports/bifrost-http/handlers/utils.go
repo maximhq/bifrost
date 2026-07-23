@@ -5,6 +5,8 @@ package handlers
 import (
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/url"
 	"regexp"
 	"strings"
 	"sync"
@@ -202,13 +204,20 @@ func IsOriginAllowed(origin string, allowedOrigins []string) bool {
 	return false
 }
 
-// isLocalhostOrigin checks if the given origin is a localhost origin
+// isLocalhostOrigin checks if the given origin is a localhost origin.
+// Covers hostname "localhost" plus IPv4/IPv6 loopback and unspecified
+// literals (127.0.0.1, ::1, 0.0.0.0, ::), bracketed or not.
 func isLocalhostOrigin(origin string) bool {
-	return strings.HasPrefix(origin, "http://localhost:") ||
-		strings.HasPrefix(origin, "https://localhost:") ||
-		strings.HasPrefix(origin, "http://127.0.0.1:") ||
-		strings.HasPrefix(origin, "http://0.0.0.0:") ||
-		strings.HasPrefix(origin, "https://127.0.0.1:")
+	parsed, err := url.Parse(origin)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return false
+	}
+	host := parsed.Hostname() // unwraps IPv6 brackets
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && (ip.IsLoopback() || ip.IsUnspecified())
 }
 
 // wildcardRegexpCache caches compiled regexps for wildcard origin patterns.

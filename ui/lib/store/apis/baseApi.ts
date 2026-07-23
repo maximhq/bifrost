@@ -194,6 +194,11 @@ export const baseApi = createApi({
 		"OAuth2Grants",
 		"CircuitBreakerPolicies",
 		"CircuitBreakerState",
+		"AlertChannels",
+		"AlertRules",
+		"AlertHistory",
+		"WebhookEndpoints",
+		"WebhookDeliveries",
 	],
 	endpoints: () => ({}),
 });

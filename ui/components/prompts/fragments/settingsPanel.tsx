@@ -8,12 +8,13 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { getProviderLabel } from "@/lib/constants/logs";
 import { Input } from "@/components/ui/input";
 import { useGetVirtualKeysQuery } from "@/lib/store";
+import { useGetCoreConfigQuery } from "@/lib/store/apis/configApi";
 import { useGetAllKeysQuery, useGetProvidersQuery } from "@/lib/store/apis/providersApi";
 import { ModelProviderName } from "@/lib/types/config";
 import { ModelParams } from "@/lib/types/prompts";
 import { cn } from "@/lib/utils";
 import { PromptDeploymentsAccordionItem } from "@enterprise/components/prompt-deployments/promptDeploymentsAccordionItem";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { ApiKeySelectorView } from "../components/apiKeySelectorView";
 import { VariablesTableView } from "../components/variablesTableView";
 import { usePromptContext } from "../context";
@@ -55,6 +56,8 @@ export function SettingsPanel() {
 	// Dynamic providers
 	const { data: providers, isLoading: isLoadingProviders } = useGetProvidersQuery();
 	const { data: virtualKeysData } = useGetVirtualKeysQuery();
+	const { data: coreConfig } = useGetCoreConfigQuery({});
+	const enforceVirtualKeys = coreConfig?.client_config?.enforce_auth_on_inference ?? false;
 	// Keys for the API Key selector (from /api/keys endpoint, provider-filtered)
 	const { data: allKeys, isSuccess: hasLoadedAllKeys } = useGetAllKeysQuery();
 
@@ -98,15 +101,23 @@ export function SettingsPanel() {
 		});
 	}, [virtualKeysData, provider]);
 
+	useEffect(() => {
+		if (!enforceVirtualKeys) return;
+		if (providerKeys.some((k) => k.key_id === apiKeyId)) {
+			setApiKeyId("__auto__");
+		}
+	}, [apiKeyId, enforceVirtualKeys, providerKeys, setApiKeyId]);
+
 	// Separate keys/vks to pass to model fetch for filtering.
 	const filterKeys = useMemo(() => {
+		if (enforceVirtualKeys) return undefined;
 		const isProviderKey = providerKeys.some((k) => k.key_id === apiKeyId);
 		if (isProviderKey) return [apiKeyId];
-		const isVirtualKey = providerVirtualKeys.some((vk) => vk.id === apiKeyId);
+		const isVirtualKey = providerVirtualKeys.some((vk) => vk.value === apiKeyId);
 		if (isVirtualKey) return undefined;
 		// Auto: pass all provider key IDs
 		return providerKeys.map((k) => k.key_id);
-	}, [apiKeyId, providerKeys, providerVirtualKeys]);
+	}, [apiKeyId, enforceVirtualKeys, providerKeys, providerVirtualKeys]);
 
 	const filterVks = useMemo(() => {
 		const virtualKey = providerVirtualKeys.find((vk) => vk.value === apiKeyId);
@@ -115,7 +126,7 @@ export function SettingsPanel() {
 	}, [apiKeyId, providerVirtualKeys]);
 
 	const handleModelParamsChange = useCallback(
-		(params: Record<string, any>) => {
+		(params: Record<string, unknown>) => {
 			onModelParamsChange(params as ModelParams);
 		},
 		[onModelParamsChange],
@@ -200,13 +211,14 @@ export function SettingsPanel() {
 									/>
 								</div>
 
-								{(providerKeys.length > 0 || providerVirtualKeys.length > 0) && !!provider && (
+								{!!provider && (enforceVirtualKeys ? providerVirtualKeys.length > 0 : true) && (
 									<ApiKeySelectorView
 										providerKeys={providerKeys}
 										virtualKeys={providerVirtualKeys}
 										value={apiKeyId}
 										onValueChange={(v) => onApiKeyIdChange(v ?? "__auto__")}
 										disabled={!provider}
+										requireVirtualKey={enforceVirtualKeys}
 									/>
 								)}
 

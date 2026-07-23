@@ -93,12 +93,20 @@
     APP_DIR=$ARG_APP_DIR
 
 
+  # adduser -D (no -u) on this alpine base assigns the first free UID, which is
+  # 1000 on a fresh image — so the numeric USER 1000:0 below resolves to appuser.
+  # Guard the group-writable chmod so it never applies when APP_DIR resolves to
+  # /app itself (e.g. --build-arg ARG_APP_DIR=/app), which would make the binary
+  # group-0-writable.
   RUN mkdir -p "$APP_DIR/logs" && \
     adduser -D -s /bin/sh appuser && \
     chown -R appuser:appuser /app && \
-    { [ "$APP_DIR" = "/app" ] || [ "${APP_DIR#/app/}" != "$APP_DIR" ] || chown -R appuser:appuser "$APP_DIR"; } && \
+    chown -R appuser:0 "$APP_DIR" && \
+    { [ "$APP_DIR" = "/app" ] || chmod -R g=rwX "$APP_DIR"; } && \
     chmod +x /app/docker-entrypoint.sh
-  USER appuser
+  # Numeric USER (uid:gid) so kubelet can verify runAsNonRoot; group 0 grants
+  # write access to the group-0-owned data dir under arbitrary OpenShift UIDs.
+  USER 1000:0
 
 
   # Declare volume for data persistence

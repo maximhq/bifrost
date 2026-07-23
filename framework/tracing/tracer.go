@@ -18,13 +18,13 @@ import (
 // framework's TraceStore implementation.
 // It also embeds a streaming.Accumulator for centralized streaming chunk accumulation.
 type Tracer struct {
-	store              *TraceStore
-	accumulator        *streaming.Accumulator
-	pricingManager     *modelcatalog.ModelCatalog
-	logger             schemas.Logger
-	obsPlugins         atomic.Pointer[[]schemas.ObservabilityPlugin]
-	cachedHdrPatterns  atomic.Pointer[[]string]
-	flushWG            sync.WaitGroup
+	store             *TraceStore
+	accumulator       *streaming.Accumulator
+	pricingManager    *modelcatalog.ModelCatalog
+	logger            schemas.Logger
+	obsPlugins        atomic.Pointer[[]schemas.ObservabilityPlugin]
+	cachedHdrPatterns atomic.Pointer[[]string]
+	flushWG           sync.WaitGroup
 }
 
 // NewTracer creates a new Tracer wrapping the given TraceStore.
@@ -108,6 +108,18 @@ func (t *Tracer) SetTraceRequestHeaders(traceID string, headers map[string]strin
 // directly off the completed trace.
 func (t *Tracer) SetTraceAttribute(traceID string, key string, value any) {
 	t.store.SetTraceAttribute(traceID, key, value)
+}
+
+// SetTraceRedactionReplacements stores phase-scoped connector-facing replacements on a trace.
+func (t *Tracer) SetTraceRedactionReplacements(traceID string, phase schemas.RedactionPhase, replacements map[string]string) {
+	if t == nil || t.store == nil || strings.TrimSpace(traceID) == "" || len(replacements) == 0 {
+		return
+	}
+	trace := t.store.GetTrace(strings.TrimSpace(traceID))
+	if trace == nil {
+		return
+	}
+	trace.SetRedactionReplacements(phase, replacements)
 }
 
 // CreateTrace creates a new trace with optional parent ID and returns the trace ID.
@@ -324,6 +336,23 @@ func (t *Tracer) PopulateLLMResponseAttributes(ctx *schemas.BifrostContext, hand
 	for k, v := range PopulateErrorAttributes(err) {
 		span.SetAttribute(k, v)
 	}
+
+	// Enrichment dimensions derivable only post-response, attached here so every
+	// connector reads them from one place (see core/schemas EnrichmentDims):
+	//   - alias: the originally requested model when it differs from the resolved
+	//     model (an alias was matched or a fallback swapped the model).
+	//   - routing_engine_used: the comma-joined set of routing engines that handled
+	//     the request; the context list is only complete once routing has run.
+	if resp != nil {
+		ef := resp.GetExtraFields()
+		if ef.ResolvedModelUsed != "" && ef.ResolvedModelUsed != ef.OriginalModelRequested && ef.OriginalModelRequested != "" {
+			span.SetAttribute(schemas.AttrBifrostAlias, ef.OriginalModelRequested)
+		}
+	}
+	if engines, ok := ctx.Value(schemas.BifrostContextKeyRoutingEnginesUsed).([]string); ok && len(engines) > 0 {
+		span.SetAttribute(schemas.AttrBifrostRoutingEngineUsed, strings.Join(engines, ","))
+	}
+
 	// Populate cost attribute using pricing manager
 	if t.pricingManager != nil && resp != nil {
 		cost := t.pricingManager.CalculateCost(resp, modelcatalog.PricingLookupScopesFromContext(ctx, string(resp.GetExtraFields().Provider)))
@@ -445,6 +474,22 @@ func (t *Tracer) ResumeStream(traceID string) {
 		return
 	}
 	t.accumulator.ResumeStream(traceID)
+}
+
+// ResumeStreamWithReplayInterval arms fixed-interval replay after the in-flight chunk reaches the core gate.
+func (t *Tracer) ResumeStreamWithReplayInterval(traceID string, eventInterval time.Duration) bool {
+	if traceID == "" || t.accumulator == nil {
+		return false
+	}
+	return t.accumulator.ResumeStreamWithReplayInterval(traceID, eventInterval)
+}
+
+// ClearPausedStreamBuffer drops chunks buffered while traceID is paused.
+func (t *Tracer) ClearPausedStreamBuffer(traceID string) error {
+	if traceID == "" || t.accumulator == nil {
+		return nil
+	}
+	return t.accumulator.ClearPausedStreamBuffer(traceID)
 }
 
 // EndStream terminates the streaming response. Any buffered chunks are flushed
@@ -679,6 +724,21 @@ func (t *Tracer) CompleteAndFlushTrace(traceID string) {
 		// trace object and takes down the whole process.
 		defer t.ReleaseTrace(completedTrace)
 
+		completedTrace.ApplyRedactionReplacements()
+
+		// Give every connector a private, lock-safe snapshot. Late writers may
+		// still mutate the pooled spans under the span lock (streaming
+		// finalization, redaction), and connectors iterate the attribute maps
+		// (directly or via Marshal) — racing them fatals with "concurrent map
+		// iteration and map write", which recover() can't catch. One snapshot
+		// here covers all connectors.
+		exportTrace := completedTrace.SnapshotForExport()
+
+		// Stamp Bifrost's overhead onto the snapshot's root span now that it has
+		// ended. Done here — one write, before any connector reads the snapshot —
+		// so every trace connector sees the same value on the root span.
+		exportTrace.StampOverheadDuration()
+
 		var obsPlugins []schemas.ObservabilityPlugin
 		if loaded := t.obsPlugins.Load(); loaded != nil {
 			obsPlugins = *loaded
@@ -702,7 +762,7 @@ func (t *Tracer) CompleteAndFlushTrace(traceID string) {
 					return
 				}
 				seen[name] = struct{}{}
-				if err := plugin.Inject(context.Background(), completedTrace); err != nil && t.logger != nil {
+				if err := plugin.Inject(context.Background(), exportTrace); err != nil && t.logger != nil {
 					t.logger.Warn("observability plugin %s failed to inject trace: %v", name, err)
 				}
 			}(plugin)

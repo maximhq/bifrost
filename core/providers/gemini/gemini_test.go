@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/internal/llmtests"
@@ -659,6 +661,80 @@ func TestGeminiGenerationRequestUnmarshalAcceptsSchemaIntegerConstraints(t *test
 			}`), &req)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "invalid schema integer constraint")
+		})
+	}
+}
+
+// TestGenAIToolSchemaConstraintsRoundTripAsNumbers verifies integer constraints (string,
+// array, and object-property) survive the genai -> Bifrost -> Gemini round trip as JSON
+// numbers, since parametersJsonSchema is validated as strict JSON Schema upstream (issue #5433).
+func TestGenAIToolSchemaConstraintsRoundTripAsNumbers(t *testing.T) {
+	bodyTemplate := `{
+		"contents": [{"role": "user", "parts": [{"text": "test"}]}],
+		"tools": [{
+			"functionDeclarations": [{
+				"name": "test_tool",
+				"description": "test",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"query": {"type": "string", "description": "text", "minLength": %[1]s, "maxLength": %[2]s},
+						"tags": {"type": "array", "items": {"type": "string"}, "minItems": %[3]s, "maxItems": %[4]s}
+					},
+					"anyOf": [{
+						"type": "object",
+						"minProperties": %[5]s,
+						"maxProperties": %[6]s,
+						"properties": {
+							"meta": {"type": "object", "minProperties": %[7]s}
+						}
+					}],
+					"required": ["query"]
+				}
+			}]
+		}]
+	}`
+
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "numeric constraints", body: fmt.Sprintf(bodyTemplate, "1", "100", "1", "5", "1", "3", "2")},
+		{name: "quoted constraints", body: fmt.Sprintf(bodyTemplate, `"1"`, `"100"`, `"1"`, `"5"`, `"1"`, `"3"`, `"2"`)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var req gemini.GeminiGenerationRequest
+			require.NoError(t, sonic.Unmarshal([]byte(tt.body), &req))
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			bifrostReq := req.ToBifrostResponsesRequest(ctx)
+			require.NotNil(t, bifrostReq)
+
+			out, err := gemini.ToGeminiResponsesRequest(ctx, bifrostReq)
+			require.NoError(t, err)
+			require.Len(t, out.Tools, 1)
+			require.Len(t, out.Tools[0].FunctionDeclarations, 1)
+
+			params := parseToolParams(t, out.Tools[0].FunctionDeclarations[0])
+			query := getSchemaProperty(t, params, "query")
+			assert.Equal(t, float64(1), query["minLength"], "minLength must be a JSON number")
+			assert.Equal(t, float64(100), query["maxLength"], "maxLength must be a JSON number")
+			tags := getSchemaProperty(t, params, "tags")
+			assert.Equal(t, float64(1), tags["minItems"], "minItems must be a JSON number")
+			assert.Equal(t, float64(5), tags["maxItems"], "maxItems must be a JSON number")
+
+			// Object-property constraints flow through convertSchemaToOrderedMap (anyOf/items)
+			anyOf, ok := params["anyOf"].([]interface{})
+			require.True(t, ok, "anyOf must survive the round trip")
+			require.Len(t, anyOf, 1)
+			variant, ok := anyOf[0].(map[string]interface{})
+			require.True(t, ok, "anyOf variant must be an object")
+			assert.Equal(t, float64(1), variant["minProperties"], "minProperties must be a JSON number")
+			assert.Equal(t, float64(3), variant["maxProperties"], "maxProperties must be a JSON number")
+			meta := getSchemaProperty(t, variant, "meta")
+			assert.Equal(t, float64(2), meta["minProperties"], "nested minProperties must be a JSON number")
 		})
 	}
 }
@@ -1377,10 +1453,12 @@ func TestStructuredOutputConversion(t *testing.T) {
 				require.Len(t, anyOfSlice, 2, "anyOf should have 2 branches for string and integer")
 
 				// Verify the anyOf branches
-				stringBranch := anyOfSlice[0].(map[string]interface{})
+				stringBranch, ok := asPlainMap(t, anyOfSlice[0])
+				require.True(t, ok, "anyOf branch should be a map")
 				assert.Equal(t, "string", stringBranch["type"])
 
-				integerBranch := anyOfSlice[1].(map[string]interface{})
+				integerBranch, ok := asPlainMap(t, anyOfSlice[1])
+				require.True(t, ok, "anyOf branch should be a map")
 				assert.Equal(t, "integer", integerBranch["type"])
 
 				// Validate status property - should remain unchanged
@@ -1421,9 +1499,12 @@ func TestStructuredOutputConversion(t *testing.T) {
 				},
 			},
 			validate: func(t *testing.T, result *gemini.GeminiGenerationRequest) {
-				schemaMap := result.GenerationConfig.ResponseJSONSchema.(map[string]interface{})
-				properties := schemaMap["properties"].(map[string]interface{})
-				name := properties["name"].(map[string]interface{})
+				schemaMap, ok := asPlainMap(t, result.GenerationConfig.ResponseJSONSchema)
+				require.True(t, ok, "ResponseJSONSchema should be a map")
+				properties, ok := asPlainMap(t, schemaMap["properties"])
+				require.True(t, ok, "properties should be a map")
+				name, ok := asPlainMap(t, properties["name"])
+				require.True(t, ok, "name should be a map")
 
 				// Nullable types should be kept as array (Gemini supports this)
 				typeVal := name["type"]
@@ -1666,6 +1747,25 @@ func TestStructuredOutputWithToolsConflict(t *testing.T) {
 }
 
 // TestResponsesStructuredOutputConversion tests that Responses API text config with union types is properly handled
+
+// asPlainMap normalizes schema objects that may be either plain maps or
+// order-preserving OrderedMaps (schema fields preserve client key order).
+func asPlainMap(t *testing.T, v interface{}) (map[string]interface{}, bool) {
+	t.Helper()
+	switch m := v.(type) {
+	case map[string]interface{}:
+		return m, true
+	case *schemas.OrderedMap:
+		if m == nil {
+			return nil, false
+		}
+		return m.ToMap(), true
+	case schemas.OrderedMap:
+		return m.ToMap(), true
+	}
+	return nil, false
+}
+
 func TestResponsesStructuredOutputConversion(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -1693,7 +1793,7 @@ func TestResponsesStructuredOutputConversion(t *testing.T) {
 							Name: schemas.Ptr("UserInfo"),
 							JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
 								Type: schemas.Ptr("object"),
-								Properties: &map[string]interface{}{
+								Properties: schemas.OrderedMapFromMap(map[string]interface{}{
 									"user_id": map[string]interface{}{
 										"type":        []interface{}{"string", "integer"},
 										"description": "User ID as string or integer",
@@ -1702,7 +1802,7 @@ func TestResponsesStructuredOutputConversion(t *testing.T) {
 										"type": "string",
 										"enum": []interface{}{"active", "inactive"},
 									},
-								},
+								}),
 								Required: []string{"user_id", "status"},
 								AdditionalProperties: &schemas.AdditionalPropertiesStruct{
 									AdditionalPropertiesBool: schemas.Ptr(false),
@@ -1718,14 +1818,14 @@ func TestResponsesStructuredOutputConversion(t *testing.T) {
 				assert.NotNil(t, result.GenerationConfig.ResponseJSONSchema)
 
 				// Validate the schema structure
-				schemaMap, ok := result.GenerationConfig.ResponseJSONSchema.(map[string]interface{})
+				schemaMap, ok := asPlainMap(t, result.GenerationConfig.ResponseJSONSchema)
 				require.True(t, ok, "ResponseJSONSchema should be a map")
 
-				properties, ok := schemaMap["properties"].(map[string]interface{})
+				properties, ok := asPlainMap(t, schemaMap["properties"])
 				require.True(t, ok, "properties should be a map")
 
 				// Validate user_id property - should be converted to anyOf
-				userID, ok := properties["user_id"].(map[string]interface{})
+				userID, ok := asPlainMap(t, properties["user_id"])
 				require.True(t, ok, "user_id should exist in properties")
 
 				// user_id should have anyOf instead of type array
@@ -1737,10 +1837,12 @@ func TestResponsesStructuredOutputConversion(t *testing.T) {
 				require.Len(t, anyOfSlice, 2, "anyOf should have 2 branches for string and integer")
 
 				// Verify the anyOf branches
-				stringBranch := anyOfSlice[0].(map[string]interface{})
+				stringBranch, ok := asPlainMap(t, anyOfSlice[0])
+				require.True(t, ok, "anyOf branch should be a map")
 				assert.Equal(t, "string", stringBranch["type"])
 
-				integerBranch := anyOfSlice[1].(map[string]interface{})
+				integerBranch, ok := asPlainMap(t, anyOfSlice[1])
+				require.True(t, ok, "anyOf branch should be a map")
 				assert.Equal(t, "integer", integerBranch["type"])
 			},
 		},
@@ -1765,20 +1867,23 @@ func TestResponsesStructuredOutputConversion(t *testing.T) {
 							Name: schemas.Ptr("NullableData"),
 							JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
 								Type: schemas.Ptr("object"),
-								Properties: &map[string]interface{}{
+								Properties: schemas.OrderedMapFromMap(map[string]interface{}{
 									"name": map[string]interface{}{
 										"type": []interface{}{"string", "null"},
 									},
-								},
+								}),
 							},
 						},
 					},
 				},
 			},
 			validate: func(t *testing.T, result *gemini.GeminiGenerationRequest) {
-				schemaMap := result.GenerationConfig.ResponseJSONSchema.(map[string]interface{})
-				properties := schemaMap["properties"].(map[string]interface{})
-				name := properties["name"].(map[string]interface{})
+				schemaMap, ok := asPlainMap(t, result.GenerationConfig.ResponseJSONSchema)
+				require.True(t, ok, "ResponseJSONSchema should be a map")
+				properties, ok := asPlainMap(t, schemaMap["properties"])
+				require.True(t, ok, "properties should be a map")
+				name, ok := asPlainMap(t, properties["name"])
+				require.True(t, ok, "name should be a map")
 
 				// Nullable types should be kept as array (Gemini supports this)
 				typeVal := name["type"]
@@ -3465,6 +3570,7 @@ func TestThinkingBudgetValidation_Chat(t *testing.T) {
 		wantDisabled bool   // budget=0: expect IncludeThoughts=false
 		wantDynamic  bool   // budget=-1: expect ThinkingBudget=-1
 		wantBudget   *int32 // expected ThinkingBudget value when no error
+		wantNoConfig bool
 	}{
 		// gemini-2.5-pro: valid range [128, 32768]
 		{
@@ -3551,10 +3657,16 @@ func TestThinkingBudgetValidation_Chat(t *testing.T) {
 
 		// Special values — exempt from range checks on any model.
 		{
-			name:         "budget_zero_disables_thinking",
-			model:        "gemini-2.5-pro",
+			name:         "flash_budget_zero_disables_thinking",
+			model:        "gemini-2.5-flash",
 			budget:       0,
 			wantDisabled: true,
+		},
+		{
+			name:         "pro_budget_zero_omits_thinking_config",
+			model:        "gemini-2.5-pro",
+			budget:       0,
+			wantNoConfig: true,
 		},
 		{
 			name:        "budget_minus_one_dynamic",
@@ -3585,6 +3697,10 @@ func TestThinkingBudgetValidation_Chat(t *testing.T) {
 
 			require.NoError(t, err)
 			require.NotNil(t, result)
+			if tt.wantNoConfig {
+				assert.Nil(t, result.GenerationConfig.ThinkingConfig)
+				return
+			}
 			require.NotNil(t, result.GenerationConfig.ThinkingConfig, "ThinkingConfig should be set")
 
 			tc := result.GenerationConfig.ThinkingConfig
@@ -3615,6 +3731,7 @@ func TestThinkingBudgetValidation_Responses(t *testing.T) {
 		wantDisabled bool
 		wantDynamic  bool
 		wantBudget   *int32
+		wantNoConfig bool
 	}{
 		// gemini-2.5-pro
 		{
@@ -3658,6 +3775,12 @@ func TestThinkingBudgetValidation_Responses(t *testing.T) {
 			wantDisabled: true,
 		},
 		{
+			name:         "pro_budget_zero_omits_thinking_config",
+			model:        "gemini-2.5-pro",
+			budget:       0,
+			wantNoConfig: true,
+		},
+		{
 			name:        "budget_minus_one_dynamic",
 			model:       "gemini-2.5-pro",
 			budget:      -1,
@@ -3685,6 +3808,10 @@ func TestThinkingBudgetValidation_Responses(t *testing.T) {
 
 			require.NoError(t, err)
 			require.NotNil(t, result)
+			if tt.wantNoConfig {
+				assert.Nil(t, result.GenerationConfig.ThinkingConfig)
+				return
+			}
 			require.NotNil(t, result.GenerationConfig.ThinkingConfig, "ThinkingConfig should be set")
 
 			tc := result.GenerationConfig.ThinkingConfig
@@ -3702,6 +3829,25 @@ func TestThinkingBudgetValidation_Responses(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestThinkingBudgetZeroUnsupportedForProResponses(t *testing.T) {
+	effortNone := "none"
+
+	req := &schemas.BifrostResponsesRequest{
+		Model: "gemini-2.5-pro",
+		Params: &schemas.ResponsesParameters{
+			Reasoning: &schemas.ResponsesParametersReasoning{
+				Effort: &effortNone,
+			},
+		},
+	}
+
+	result, err := gemini.ToGeminiResponsesRequest(nil, req)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Nil(t, result.GenerationConfig.ThinkingConfig)
 }
 
 // TestThinkingBudgetEffortUsesModelRange verifies that effort-based budget
@@ -4412,4 +4558,169 @@ func TestImagenImageEditSizeRoundtrip(t *testing.T) {
 	assert.Equal(t, "2K", *imagenReq.Parameters.SampleImageSize)
 	require.NotNil(t, imagenReq.Parameters.AspectRatio, "AspectRatio must be derived from Size on edit path")
 	assert.Equal(t, "1:1", *imagenReq.Parameters.AspectRatio)
+}
+
+func TestWebSearchOptionsMapsToGoogleSearchTool(t *testing.T) {
+	baseReq := func(params *schemas.ChatParameters) *schemas.BifrostChatRequest {
+		return &schemas.BifrostChatRequest{
+			Model: "gemini-2.5-flash",
+			Input: []schemas.ChatMessage{
+				{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("who won the euro 2024?")}},
+			},
+			Params: params,
+		}
+	}
+
+	t.Run("web_search_options adds googleSearch tool", func(t *testing.T) {
+		result, err := gemini.ToGeminiChatCompletionRequest(nil, baseReq(&schemas.ChatParameters{
+			WebSearchOptions: &schemas.ChatWebSearchOptions{},
+		}))
+		require.NoError(t, err)
+		require.Len(t, result.Tools, 1)
+		assert.NotNil(t, result.Tools[0].GoogleSearch)
+	})
+
+	t.Run("appends alongside function tools", func(t *testing.T) {
+		result, err := gemini.ToGeminiChatCompletionRequest(nil, baseReq(&schemas.ChatParameters{
+			WebSearchOptions: &schemas.ChatWebSearchOptions{SearchContextSize: schemas.Ptr("high")},
+			Tools: []schemas.ChatTool{
+				{
+					Type: schemas.ChatToolTypeFunction,
+					Function: &schemas.ChatToolFunction{
+						Name:       "get_weather",
+						Parameters: &schemas.ToolFunctionParameters{Type: "object"},
+					},
+				},
+			},
+		}))
+		require.NoError(t, err)
+		require.Len(t, result.Tools, 2)
+		assert.NotEmpty(t, result.Tools[0].FunctionDeclarations)
+		assert.NotNil(t, result.Tools[1].GoogleSearch)
+	})
+
+	t.Run("filters map to excludeDomains and timeRangeFilter", func(t *testing.T) {
+		start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+		end := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+		result, err := gemini.ToGeminiChatCompletionRequest(nil, baseReq(&schemas.ChatParameters{
+			WebSearchOptions: &schemas.ChatWebSearchOptions{
+				Filters: &schemas.ChatWebSearchOptionsFilters{
+					AllowedDomains:  []string{"uefa.com"}, // no Gemini equivalent — dropped
+					BlockedDomains:  []string{"pinterest.com", "reddit.com"},
+					TimeRangeFilter: &schemas.Interval{StartTime: start, EndTime: end},
+				},
+			},
+		}))
+		require.NoError(t, err)
+		require.Len(t, result.Tools, 1)
+		require.NotNil(t, result.Tools[0].GoogleSearch)
+		assert.Equal(t, []string{"pinterest.com", "reddit.com"}, result.Tools[0].GoogleSearch.ExcludeDomains)
+		require.NotNil(t, result.Tools[0].GoogleSearch.TimeRangeFilter)
+		assert.Equal(t, start, result.Tools[0].GoogleSearch.TimeRangeFilter.StartTime)
+		assert.Equal(t, end, result.Tools[0].GoogleSearch.TimeRangeFilter.EndTime)
+	})
+
+	t.Run("absent web_search_options adds no tool", func(t *testing.T) {
+		result, err := gemini.ToGeminiChatCompletionRequest(nil, baseReq(&schemas.ChatParameters{}))
+		require.NoError(t, err)
+		assert.Empty(t, result.Tools)
+	})
+}
+
+func TestGroundingMetadataToChatAnnotations(t *testing.T) {
+	groundingMetadata := &gemini.GroundingMetadata{
+		WebSearchQueries: []string{"euro 2024 winner"},
+		GroundingChunks: []*gemini.GroundingChunk{
+			{Web: &gemini.GroundingChunkWeb{URI: "https://example.com/spain", Title: "uefa.com"}},
+			{Web: &gemini.GroundingChunkWeb{URI: "https://example.com/final", Title: "wikipedia.org"}},
+			{RetrievedContext: &gemini.GroundingChunkRetrievedContext{URI: "ctx://ignored"}}, // no Web — skipped
+		},
+		GroundingSupports: []*gemini.GroundingSupport{
+			{
+				Segment:               &gemini.Segment{StartIndex: 0, EndIndex: 34, Text: "Spain won Euro 2024"},
+				GroundingChunkIndices: []int32{0},
+			},
+			{
+				Segment:               &gemini.Segment{StartIndex: 35, EndIndex: 80, Text: "beating England 2-1 in the final"},
+				GroundingChunkIndices: []int32{0, 1, 2, 99}, // 2 has no Web, 99 out of range
+			},
+			{
+				GroundingChunkIndices: []int32{1}, // no segment — skipped
+			},
+		},
+	}
+
+	response := &gemini.GenerateContentResponse{
+		ResponseID:   "grounding-test",
+		ModelVersion: "gemini-2.5-flash",
+		Candidates: []*gemini.Candidate{
+			{
+				FinishReason:      gemini.FinishReasonStop,
+				GroundingMetadata: groundingMetadata,
+				Content: &gemini.Content{
+					Role:  string(gemini.RoleModel),
+					Parts: []*gemini.Part{{Text: "Spain won Euro 2024, beating England 2-1 in the final."}},
+				},
+			},
+		},
+		UsageMetadata: &gemini.GenerateContentResponseUsageMetadata{TotalTokenCount: 10},
+	}
+
+	t.Run("non-stream", func(t *testing.T) {
+		bifrostResp := response.ToBifrostChatResponse()
+		require.Len(t, bifrostResp.Choices, 1)
+		message := bifrostResp.Choices[0].ChatNonStreamResponseChoice.Message
+		require.NotNil(t, message.ChatAssistantMessage)
+
+		annotations := message.ChatAssistantMessage.Annotations
+		require.Len(t, annotations, 3, "one annotation per valid (support, chunk) pair")
+		for _, annotation := range annotations {
+			assert.Equal(t, "url_citation", annotation.Type)
+		}
+		assert.Equal(t, 0, annotations[0].URLCitation.StartIndex)
+		assert.Equal(t, 34, annotations[0].URLCitation.EndIndex)
+		assert.Equal(t, "uefa.com", annotations[0].URLCitation.Title)
+		require.NotNil(t, annotations[0].URLCitation.URL)
+		assert.Equal(t, "https://example.com/spain", *annotations[0].URLCitation.URL)
+		require.NotNil(t, annotations[0].URLCitation.Text)
+		assert.Equal(t, "Spain won Euro 2024", *annotations[0].URLCitation.Text)
+		// Second support fans out to both web chunks
+		assert.Equal(t, 35, annotations[1].URLCitation.StartIndex)
+		assert.Equal(t, "https://example.com/spain", *annotations[1].URLCitation.URL)
+		assert.Equal(t, "https://example.com/final", *annotations[2].URLCitation.URL)
+		assert.Equal(t, "wikipedia.org", annotations[2].URLCitation.Title)
+	})
+
+	t.Run("stream emits annotations on the finish-reason chunk", func(t *testing.T) {
+		state := gemini.NewGeminiStreamState()
+		bifrostResp, bifrostErr, isLast := response.ToBifrostChatCompletionStream(state)
+		require.Nil(t, bifrostErr)
+		assert.True(t, isLast)
+		require.Len(t, bifrostResp.Choices, 1)
+		delta := bifrostResp.Choices[0].ChatStreamResponseChoice.Delta
+		require.Len(t, delta.Annotations, 3)
+		assert.Equal(t, "url_citation", delta.Annotations[0].Type)
+		assert.Equal(t, "https://example.com/spain", *delta.Annotations[0].URLCitation.URL)
+	})
+
+	t.Run("stream ignores grounding before the finish chunk", func(t *testing.T) {
+		intermediate := &gemini.GenerateContentResponse{
+			ResponseID:   "grounding-intermediate",
+			ModelVersion: "gemini-2.5-flash",
+			Candidates: []*gemini.Candidate{
+				{
+					GroundingMetadata: groundingMetadata,
+					Content: &gemini.Content{
+						Role:  string(gemini.RoleModel),
+						Parts: []*gemini.Part{{Text: "Spain won"}},
+					},
+				},
+			},
+		}
+		bifrostResp, bifrostErr, isLast := intermediate.ToBifrostChatCompletionStream(gemini.NewGeminiStreamState())
+		require.Nil(t, bifrostErr)
+		assert.False(t, isLast)
+		require.Len(t, bifrostResp.Choices, 1)
+		assert.Empty(t, bifrostResp.Choices[0].ChatStreamResponseChoice.Delta.Annotations)
+	})
 }

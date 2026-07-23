@@ -2276,6 +2276,27 @@
         "citations"
       ],
       "icon_url": "/images/mcp-servers/perplexity.png"
+    },
+    {
+      "name": "Xquik",
+      "description": "Connect AI tools to Xquik for X data workflows including tweet search, user lookup, media download, monitoring, and writes. Hosted remotely by Xquik.",
+      "category": "Developer Tools",
+      "connection_type": "http",
+      "connection_url": "https://xquik.com/mcp",
+      "auth_type": "headers",
+      "required_header_keys": [
+        "Authorization"
+      ],
+      "docs_url": "https://docs.xquik.com/mcp/overview",
+      "publisher": "Xquik",
+      "tags": [
+        "x",
+        "twitter",
+        "social",
+        "tweets",
+        "automation"
+      ],
+      "icon_url": "https://xquik.com/icons/mcp/xquik.png"
     }
   ]
 }

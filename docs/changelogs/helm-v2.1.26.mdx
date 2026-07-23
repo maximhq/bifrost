@@ -1,0 +1,17 @@
+---
+title: "v2.1.26"
+description: "Helm v2.1.26 changelog - 2026-07-06"
+---
+
+<Update label="Bifrost Helm" description="v2.1.26">
+
+## Changelog
+
+- `bifrost.client.mcpServerAuthMode` (`headers` | `both` | `oauth`) and `bifrost.client.oauth2ServerConfig` (`issuerUrl`, `authCodeTtl`, `accessTokenTtl`, `disableVkIdentity`) to control how `/mcp` authenticates inbound MCP clients. `authCodeTtl` is capped at 900 seconds. Render into `client.mcp_server_auth_mode` and `client.oauth2_server_config`.
+- ClickHouse logs store: set `storage.logsStore.type: clickhouse` with a `storage.logsStore.clickhouse` block (`host` required; optional `port`, `database`, `username`, `password`, `protocol`, `secure`, `dialTimeout`, `cluster`).
+- `bedrock_mantle` provider with `bedrock_mantle_key_config` (`region` required; optional `access_key`, `secret_key`, `session_token`, `role_arn`, `external_id`, `session_name`).
+- `deepseek` provider support via the generic provider passthrough.
+- `toolExecutionTimeout` on `bifrost.mcp.clientConfigs[]` — a per-server override of the global `toolManagerConfig.toolExecutionTimeout`. Accepts a Go duration string (e.g. `"30s"`) or a bare integer treated as seconds.
+- `expires_at` on `bifrost.governance.virtualKeys[]` — optional RFC3339 timestamp after which requests using the virtual key are rejected. Omit for a key that never expires.
+
+</Update>

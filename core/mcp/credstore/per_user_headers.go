@@ -97,6 +97,10 @@ func (r *perUserHeadersResolver) buildAuthRequiredError(ctx *schemas.BifrostCont
 	if err != nil {
 		return fmt.Errorf("failed to initiate per-user headers submission flow for %s: %w", config.Name, err)
 	}
+	message := fmt.Sprintf("Authentication required for %s. Visit %s to submit the required headers.", config.Name, initiation.FrontendURL)
+	if schemas.MCPAuthURLHasTempTokenFragment(initiation.FrontendURL) {
+		message += schemas.MCPAuthTempTokenReminder
+	}
 	return &schemas.MCPAuthRequiredError{
 		Kind:               schemas.MCPAuthRequiredKindHeaders,
 		MCPClientID:        config.ID,
@@ -108,7 +112,7 @@ func (r *perUserHeadersResolver) buildAuthRequiredError(ctx *schemas.BifrostCont
 		// Include the URL in the message so plain-text clients (curl, basic
 		// SDK wrappers) that don't parse extra_fields still get an actionable
 		// hint. Matches per_user_oauth.go's behavior.
-		Message: fmt.Sprintf("Authentication required for %s. Visit %s to submit the required headers.", config.Name, initiation.FrontendURL),
+		Message: message,
 	}
 }
 

@@ -232,26 +232,32 @@ func TestResponsesMessageToolCallArguments(t *testing.T) {
 	// Real tool_search_call frames captured from api.openai.com by replaying
 	// Codex's request (which enables the `tool_search` tool). These are the exact
 	// frames that triggered the production "Mismatch type string with value
-	// object" failure.
+	// object" failure. tool_search items are preserved verbatim (see
+	// rawPreserved), so the item must decode without error and re-encode
+	// byte-identically, object-form arguments included.
 	t.Run("real tool_search_call frames from openai", func(t *testing.T) {
-		frames := map[string]string{
-			"in_progress (empty object)":   `{"type":"response.output_item.added","output_index":1,"sequence_number":4,"item":{"id":"tsc_01429bcd111d3db1016a3abc8e12948191a9efb0edcbd7f68a","type":"tool_search_call","status":"in_progress","arguments":{},"call_id":"call_OYgDGFxcFL8POxRYssDHUsaM","execution":"client"}}`,
-			"completed (populated object)": `{"type":"response.output_item.done","output_index":1,"sequence_number":5,"item":{"id":"tsc_01429bcd111d3db1016a3abc8e12948191a9efb0edcbd7f68a","type":"tool_search_call","status":"completed","arguments":{"query":"observability_repro sentry grafana websocket responses","limit":10},"call_id":"call_OYgDGFxcFL8POxRYssDHUsaM","execution":"client"}}`,
+		items := map[string]string{
+			"in_progress (empty object)":   `{"id":"tsc_01429bcd111d3db1016a3abc8e12948191a9efb0edcbd7f68a","type":"tool_search_call","status":"in_progress","arguments":{},"call_id":"call_OYgDGFxcFL8POxRYssDHUsaM","execution":"client"}`,
+			"completed (populated object)": `{"id":"tsc_01429bcd111d3db1016a3abc8e12948191a9efb0edcbd7f68a","type":"tool_search_call","status":"completed","arguments":{"query":"observability_repro sentry grafana websocket responses","limit":10},"call_id":"call_OYgDGFxcFL8POxRYssDHUsaM","execution":"client"}`,
 		}
-		want := map[string]string{
-			"in_progress (empty object)":   `{}`,
-			"completed (populated object)": `{"query":"observability_repro sentry grafana websocket responses","limit":10}`,
+		events := map[string]string{
+			"in_progress (empty object)":   `{"type":"response.output_item.added","output_index":1,"sequence_number":4,"item":` + items["in_progress (empty object)"] + `}`,
+			"completed (populated object)": `{"type":"response.output_item.done","output_index":1,"sequence_number":5,"item":` + items["completed (populated object)"] + `}`,
 		}
-		for name, raw := range frames {
+		for name, raw := range events {
 			var resp BifrostResponsesStreamResponse
 			if err := Unmarshal([]byte(raw), &resp); err != nil {
 				t.Fatalf("[%s] unmarshal tool_search_call frame: %v", name, err)
 			}
-			if resp.Item == nil || resp.Item.ResponsesToolMessage == nil || resp.Item.Arguments == nil {
-				t.Fatalf("[%s] expected tool_search_call arguments to be set, got %#v", name, resp.Item)
+			if resp.Item == nil || resp.Item.Type == nil || *resp.Item.Type != ResponsesMessageTypeToolSearchCall {
+				t.Fatalf("[%s] expected tool_search_call item, got %#v", name, resp.Item)
 			}
-			if *resp.Item.Arguments != want[name] {
-				t.Fatalf("[%s] expected arguments %q, got %q", name, want[name], *resp.Item.Arguments)
+			encoded, err := MarshalSorted(resp.Item)
+			if err != nil {
+				t.Fatalf("[%s] marshal preserved tool_search_call item: %v", name, err)
+			}
+			if string(encoded) != items[name] {
+				t.Fatalf("[%s] expected item to round-trip verbatim\nwant: %s\ngot:  %s", name, items[name], encoded)
 			}
 		}
 	})
@@ -446,6 +452,43 @@ func TestDeepCopyResponsesMessagePreservesToolSearchFields(t *testing.T) {
 	}
 	if copied.Execution == nil || *copied.Execution != execution {
 		t.Fatalf("expected execution to survive copy, got %#v", copied.ResponsesToolMessage)
+=======
+// TestResponsesMessagePreservesAdditionalTools verifies that codex
+// `additional_tools` input items (sent for code-mode models such as
+// gpt-5.6-sol) round-trip byte-identically. These items carry a `tools` array
+// whose entries have their own `type` discriminators (custom / function /
+// namespace with nested tool lists); a typed decode promotes the array into
+// the embedded mcp_list_tools fields and strips `type`, making OpenAI reject
+// the forwarded request with "Missing required parameter:
+// 'input[0].tools[0].type'".
+func TestResponsesMessagePreservesAdditionalTools(t *testing.T) {
+	raw := `{"type":"additional_tools","role":"developer","tools":[{"type":"custom","name":"apply_patch","description":"Apply a patch"},{"type":"function","name":"shell","description":"Runs a shell command","parameters":{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}},{"type":"namespace","name":"repo_tools","description":"Repository helper tools","tools":[{"type":"function","name":"open_file","description":"Open a file","parameters":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}}]}]}`
+
+	var msg ResponsesMessage
+	if err := Unmarshal([]byte(raw), &msg); err != nil {
+		t.Fatalf("unmarshal additional_tools item: %v", err)
+	}
+	if msg.Type == nil || *msg.Type != ResponsesMessageTypeAdditionalTools {
+		t.Fatalf("expected additional_tools item, got %#v", msg.Type)
+	}
+	encoded, err := MarshalSorted(msg)
+	if err != nil {
+		t.Fatalf("marshal preserved additional_tools item: %v", err)
+	}
+	if string(encoded) != raw {
+		t.Fatalf("expected item to round-trip verbatim\nwant: %s\ngot:  %s", raw, encoded)
+	}
+
+	// A reused receiver must not leak preserved bytes into the next decode.
+	if err := Unmarshal([]byte(`{"type":"message","role":"user","content":"hi"}`), &msg); err != nil {
+		t.Fatalf("unmarshal follow-up message: %v", err)
+	}
+	encoded, err = MarshalSorted(msg)
+	if err != nil {
+		t.Fatalf("marshal follow-up message: %v", err)
+	}
+	if strings.Contains(string(encoded), "additional_tools") {
+		t.Fatalf("expected reused receiver to drop preserved bytes, got %s", encoded)
 	}
 }
 

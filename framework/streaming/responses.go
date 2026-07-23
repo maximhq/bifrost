@@ -359,6 +359,15 @@ func deepCopyResponsesMessage(original schemas.ResponsesMessage) schemas.Respons
 			}
 		}
 
+		if original.ResponsesToolMessage.Caller != nil {
+			copyCaller := *original.ResponsesToolMessage.Caller
+			if original.ResponsesToolMessage.Caller.ToolID != nil {
+				copyToolID := *original.ResponsesToolMessage.Caller.ToolID
+				copyCaller.ToolID = &copyToolID
+			}
+			copy.ResponsesToolMessage.Caller = &copyCaller
+		}
+
 		// Deep copy embedded tool call structs
 		if original.ResponsesToolMessage.ResponsesFileSearchToolCall != nil {
 			copyToolCall := *original.ResponsesToolMessage.ResponsesFileSearchToolCall
@@ -410,6 +419,23 @@ func deepCopyResponsesMessage(original schemas.ResponsesMessage) schemas.Respons
 				}
 			}
 			copy.ResponsesToolMessage.ResponsesComputerToolCallOutput = &copyOutput
+		}
+
+		if original.ResponsesToolMessage.ResponsesWebFetchCall != nil {
+			copyCall := *original.ResponsesToolMessage.ResponsesWebFetchCall
+			if original.ResponsesToolMessage.ResponsesWebFetchCall.Document != nil {
+				docCopy := *original.ResponsesToolMessage.ResponsesWebFetchCall.Document
+				if original.ResponsesToolMessage.ResponsesWebFetchCall.Document.Source != nil {
+					srcCopy := *original.ResponsesToolMessage.ResponsesWebFetchCall.Document.Source
+					docCopy.Source = &srcCopy
+				}
+				if original.ResponsesToolMessage.ResponsesWebFetchCall.Document.Citations != nil {
+					citationsCopy := *original.ResponsesToolMessage.ResponsesWebFetchCall.Document.Citations
+					docCopy.Citations = &citationsCopy
+				}
+				copyCall.Document = &docCopy
+			}
+			copy.ResponsesToolMessage.ResponsesWebFetchCall = &copyCall
 		}
 
 		if original.ResponsesToolMessage.ResponsesCodeInterpreterToolCall != nil {
@@ -673,6 +699,33 @@ func (a *Accumulator) buildCompleteMessageFromResponsesStreamChunks(chunks []*Re
 					block.ResponsesOutputMessageContentText = &schemas.ResponsesOutputMessageContentText{}
 				}
 				builderFor(getAccum(idx).cbText, *resp.ContentIndex, block.Text).WriteString(*resp.Delta)
+			}
+
+		case schemas.ResponsesStreamResponseTypeOutputTextAnnotationAdded:
+			// Attach a streamed annotation (citation) to its text content block so
+			// the accumulated message keeps the citation provenance that the
+			// non-stream path already preserves on
+			// ResponsesOutputMessageContentText.Annotations. Route by ItemID when
+			// present (parallel/multiple output items), else the most recent message.
+			if resp.Annotation != nil && resp.ContentIndex != nil {
+				idx := len(messages) - 1
+				if resp.ItemID != nil {
+					idx = -1
+					for i := len(messages) - 1; i >= 0; i-- {
+						if messages[i].ID != nil && *messages[i].ID == *resp.ItemID {
+							idx = i
+							break
+						}
+					}
+				}
+				if idx >= 0 {
+					ensureContentBlock(&messages[idx], *resp.ContentIndex, schemas.ResponsesOutputMessageContentTypeText)
+					block := &messages[idx].Content.ContentBlocks[*resp.ContentIndex]
+					if block.ResponsesOutputMessageContentText == nil {
+						block.ResponsesOutputMessageContentText = &schemas.ResponsesOutputMessageContentText{}
+					}
+					block.ResponsesOutputMessageContentText.Annotations = append(block.ResponsesOutputMessageContentText.Annotations, *resp.Annotation)
+				}
 			}
 
 		case schemas.ResponsesStreamResponseTypeRefusalDelta:
@@ -987,13 +1040,7 @@ func (a *Accumulator) processResponsesStreamingResponse(ctx *schemas.BifrostCont
 		// Assign a stable trailing index; reuse on duplicate plugin calls so dedup fires correctly.
 		accumulator := a.getOrCreateStreamAccumulator(requestID)
 		accumulator.mu.Lock()
-		if accumulator.TerminalErrorChunkIndex >= 0 {
-			chunk.ChunkIndex = accumulator.TerminalErrorChunkIndex
-		} else {
-			accumulator.MaxResponsesChunkIndex++
-			chunk.ChunkIndex = accumulator.MaxResponsesChunkIndex
-			accumulator.TerminalErrorChunkIndex = chunk.ChunkIndex
-		}
+		chunk.ChunkIndex = accumulator.reserveTerminalChunkIndex(&accumulator.TerminalErrorChunkIndex, chunk.ChunkIndex)
 		accumulator.mu.Unlock()
 	} else if result != nil && result.ResponsesStreamResponse != nil {
 		if result.ResponsesStreamResponse.ExtraFields.RawResponse != nil {

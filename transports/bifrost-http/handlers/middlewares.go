@@ -150,6 +150,10 @@ func (c *CorsMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 					if traceID, ok := ctx.UserValue(schemas.BifrostContextKeyTraceID).(string); ok && traceID != "" {
 						logBuilder = logBuilder.Str("trace_id", traceID)
 					}
+					// Emit the request ID alongside trace_id
+					if requestID := string(ctx.Request.Header.Peek("x-request-id")); requestID != "" {
+						logBuilder = logBuilder.Str("request_id", requestID)
+					}
 					if cfg.dumpErrorsInConsoleLogs {
 						if statusCode >= 400 && !ctx.Response.IsBodyStream() {
 							if body := ctx.Response.Body(); len(body) > 0 {
@@ -1211,6 +1215,10 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 			inheritedTraceID := tracing.ExtractParentID(&ctx.Request.Header)
 			// Create trace in store - only ID returned (trace data stays in store)
 			traceID := tracer.CreateTrace(inheritedTraceID, requestID)
+			// Surface correlation IDs back to the caller so a request can be pivoted
+			// into its logs (Loki) and trace (Tempo) in Grafana and similar stacks.
+			ctx.Response.Header.Set("x-request-id", requestID)
+			ctx.Response.Header.Set("x-bifrost-trace-id", traceID)
 			// Store dimensions and session ID at the trace level (not as span
 			// attributes) so connectors like BigQuery can export them without
 			// changing the OTEL/Datadog span payloads.

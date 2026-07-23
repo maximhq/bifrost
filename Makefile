@@ -823,18 +823,19 @@ test-framework: install-gotestsum ## Run framework tests
 	@$(EXPOSE_ENV); \
 	$(ECHO) "$(GREEN)Running framework tests...$(NC)"; \
 	mkdir -p $(TEST_REPORTS_DIR); \
+	rm -f $(TEST_REPORTS_DIR)/.framework-failed; \
 	cd framework && find . -name "*.go" -path "*/tests/*" -o -name "*_test.go" | head -1 > /dev/null && \
 		for dir in $$(find . -name "*_test.go" -exec dirname {} \; | sort -u); do \
 			pkg_name=$$(echo $$dir | sed 's|^\./||' | sed 's|/|-|g'); \
 			$(ECHO) "Testing $$dir..."; \
-			cd $$dir && gotestsum \
+			( cd $$dir && gotestsum \
 				--format=$(GOTESTSUM_FORMAT) \
-				--junitfile=../../$(TEST_REPORTS_DIR)/framework-$$pkg_name.xml \
-				-- -v ./... && cd - > /dev/null; \
+				--junitfile=$(CURDIR)/$(TEST_REPORTS_DIR)/framework-$$pkg_name.xml \
+				-- -v ./... ) || touch $(CURDIR)/$(TEST_REPORTS_DIR)/.framework-failed; \
 			if [ -z "$$CI" ] && [ -z "$$GITHUB_ACTIONS" ] && [ -z "$$GITLAB_CI" ] && [ -z "$$CIRCLECI" ] && [ -z "$$JENKINS_HOME" ]; then \
 				if which junit-viewer > /dev/null 2>&1; then \
 					$(ECHO) "$(YELLOW)Generating HTML report for $$pkg_name...$(NC)"; \
-					junit-viewer --results=../$(TEST_REPORTS_DIR)/framework-$$pkg_name.xml --save=../$(TEST_REPORTS_DIR)/framework-$$pkg_name.html 2>/dev/null || true; \
+					junit-viewer --results=$(CURDIR)/$(TEST_REPORTS_DIR)/framework-$$pkg_name.xml --save=$(CURDIR)/$(TEST_REPORTS_DIR)/framework-$$pkg_name.html 2>/dev/null || true; \
 				fi; \
 			fi; \
 		done || $(ECHO) "No framework tests found"
@@ -848,6 +849,10 @@ test-framework: install-gotestsum ## Run framework tests
 		SUMMARY_LABEL="Framework" \
 		SUMMARY_STRIP="framework-" \
 		SUMMARY_FILES="$(TEST_REPORTS_DIR)/framework-*.xml"
+	@if [ -f $(TEST_REPORTS_DIR)/.framework-failed ]; then \
+		rm -f $(TEST_REPORTS_DIR)/.framework-failed; \
+		exit 1; \
+	fi
 
 # Internal: render a table of test reports + a final pass/fail scenario.
 # Usage: $(MAKE) print-test-summary SUMMARY_LABEL="Framework" SUMMARY_STRIP="framework-" SUMMARY_FILES="<glob or files>"

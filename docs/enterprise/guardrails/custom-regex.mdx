@@ -20,12 +20,12 @@ Custom Regex runs in-process and uses Go's RE2-compatible regexp engine. It does
 2. You add one or more regex patterns.
 3. You attach that provider to a guardrail rule.
 4. The rule decides when to run the provider and whether to scan `input`, `output`, or `both`.
-5. If any pattern matches any evaluated text block, Bifrost returns `GUARDRAIL_INTERVENED`.
+5. If a pattern matches, Bifrost applies that pattern's `action`: detect only, block, or redact.
 
 Custom Regex currently evaluates text content. It does not inspect image pixels or binary file contents.
 
 <Note>
-  **Streaming output:** When this profile is used in an `output` or `both` rule, Bifrost accumulates the stream until the model response is complete, then checks the full response. It does not check individual stream chunks. See [Streaming Output Guardrails](/enterprise/guardrails#streaming-output-guardrails) for details.
+  **Streaming output:** Delivery depends on whether the matched patterns detect, redact, or can block. See [Streaming Output Guardrails](/enterprise/guardrails#streaming-output-guardrails) for details.
 </Note>
 
 ## Pattern Fields
@@ -34,7 +34,11 @@ Custom Regex currently evaluates text content. It does not inspect image pixels 
 |-------|----------|-------------|
 | `pattern` | Yes | RE2-compatible regex pattern |
 | `description` | No | Human-readable label used in the intervention reason |
+| `entity_type` | No | Redaction token to use for matches. Defaults to `description` when set, otherwise `REGEX_MATCH`. |
 | `flags` | No | Optional flag or flag combination. Leave empty for no flag. |
+| `action` | No | `detect_only`, `block`, or `redact`. Defaults to `block`. |
+| `redaction_strategy` | No | `replace`, `mask`, or `hash`. Defaults to `replace`. Used when `action` is `redact`. |
+| `redaction_mode` | No | `runtime`, `logs_only`, or `runtime_reversible`. Defaults to `runtime`. Used when `action` is `redact`. |
 
 The Web UI exposes these flag choices:
 
@@ -66,6 +70,16 @@ The exact template patterns are shown in the `config.json` and Helm examples bel
 <Warning>
 The PII Detection template is pattern-based. It is fast and transparent, but it is not semantic PII classification. Expect some false positives and false negatives, especially for international phone numbers and unformatted values. For national IDs outside the US, add your own Custom Regex patterns for the exact country and format you need to enforce.
 </Warning>
+
+## Redaction
+
+Set a pattern's `action` to `redact` when matching text should be rewritten instead of blocked. Custom Regex supports all Bifrost-managed redaction modes:
+
+- `runtime` redacts the live request or response and stores the redacted value in logs.
+- `logs_only` leaves runtime content raw but redacts Bifrost logs and trace-export connector content.
+- `runtime_reversible` redacts runtime content and logs with reversible placeholders.
+
+For the full behavior matrix, including reveal permissions and connector export behavior, see [Guardrail Redaction](/enterprise/guardrails/redaction).
 
 ## Configuration
 
@@ -103,23 +117,43 @@ curl -X POST http://localhost:8080/api/guardrails/regex \
         {
           "pattern": "\\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}\\b",
           "description": "Email address",
-          "flags": "i"
+          "entity_type": "EMAIL",
+          "flags": "i",
+          "action": "redact",
+          "redaction_strategy": "replace",
+          "redaction_mode": "runtime_reversible"
         },
         {
           "pattern": "\\b(?:\\+?1[-.\\s]?)?(?:\\(?\\d{3}\\)?[-.\\s]?)\\d{3}[-.\\s]?\\d{4}\\b",
-          "description": "US phone number"
+          "description": "US phone number",
+          "entity_type": "PHONE_NUMBER",
+          "action": "redact",
+          "redaction_strategy": "replace",
+          "redaction_mode": "runtime_reversible"
         },
         {
           "pattern": "\\b\\d{3}-\\d{2}-\\d{4}\\b",
-          "description": "US Social Security Number"
+          "description": "US Social Security Number",
+          "entity_type": "US_SSN",
+          "action": "redact",
+          "redaction_strategy": "replace",
+          "redaction_mode": "runtime_reversible"
         },
         {
           "pattern": "\\b(?:\\d[ -]?){13,19}\\b",
-          "description": "Credit card-like number"
+          "description": "Credit card-like number",
+          "entity_type": "CREDIT_CARD",
+          "action": "redact",
+          "redaction_strategy": "replace",
+          "redaction_mode": "runtime_reversible"
         },
         {
           "pattern": "\\b(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)(?:\\.(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)){3}\\b",
-          "description": "IPv4 address"
+          "description": "IPv4 address",
+          "entity_type": "IP_ADDRESS",
+          "action": "redact",
+          "redaction_strategy": "replace",
+          "redaction_mode": "runtime_reversible"
         }
       ]
     }
@@ -146,23 +180,43 @@ To attach it through the API, fetch the generated ID with `GET /api/guardrails/r
             {
               "pattern": "\\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}\\b",
               "description": "Email address",
-              "flags": "i"
+              "entity_type": "EMAIL",
+              "flags": "i",
+              "action": "redact",
+              "redaction_strategy": "replace",
+              "redaction_mode": "runtime_reversible"
             },
             {
               "pattern": "\\b(?:\\+?1[-.\\s]?)?(?:\\(?\\d{3}\\)?[-.\\s]?)\\d{3}[-.\\s]?\\d{4}\\b",
-              "description": "US phone number"
+              "description": "US phone number",
+              "entity_type": "PHONE_NUMBER",
+              "action": "redact",
+              "redaction_strategy": "replace",
+              "redaction_mode": "runtime_reversible"
             },
             {
               "pattern": "\\b\\d{3}-\\d{2}-\\d{4}\\b",
-              "description": "US Social Security Number"
+              "description": "US Social Security Number",
+              "entity_type": "US_SSN",
+              "action": "redact",
+              "redaction_strategy": "replace",
+              "redaction_mode": "runtime_reversible"
             },
             {
               "pattern": "\\b(?:\\d[ -]?){13,19}\\b",
-              "description": "Credit card-like number"
+              "description": "Credit card-like number",
+              "entity_type": "CREDIT_CARD",
+              "action": "redact",
+              "redaction_strategy": "replace",
+              "redaction_mode": "runtime_reversible"
             },
             {
               "pattern": "\\b(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)(?:\\.(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)){3}\\b",
-              "description": "IPv4 address"
+              "description": "IPv4 address",
+              "entity_type": "IP_ADDRESS",
+              "action": "redact",
+              "redaction_strategy": "replace",
+              "redaction_mode": "runtime_reversible"
             }
           ]
         }
@@ -212,15 +266,35 @@ bifrost:
           patterns:
             - pattern: "\\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}\\b"
               description: "Email address"
+              entity_type: "EMAIL"
               flags: "i"
+              action: "redact"
+              redaction_strategy: "replace"
+              redaction_mode: "runtime_reversible"
             - pattern: "\\b(?:\\+?1[-.\\s]?)?(?:\\(?\\d{3}\\)?[-.\\s]?)\\d{3}[-.\\s]?\\d{4}\\b"
               description: "US phone number"
+              entity_type: "PHONE_NUMBER"
+              action: "redact"
+              redaction_strategy: "replace"
+              redaction_mode: "runtime_reversible"
             - pattern: "\\b\\d{3}-\\d{2}-\\d{4}\\b"
               description: "US Social Security Number"
+              entity_type: "US_SSN"
+              action: "redact"
+              redaction_strategy: "replace"
+              redaction_mode: "runtime_reversible"
             - pattern: "\\b(?:\\d[ -]?){13,19}\\b"
               description: "Credit card-like number"
+              entity_type: "CREDIT_CARD"
+              action: "redact"
+              redaction_strategy: "replace"
+              redaction_mode: "runtime_reversible"
             - pattern: "\\b(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)(?:\\.(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)){3}\\b"
               description: "IPv4 address"
+              entity_type: "IP_ADDRESS"
+              action: "redact"
+              redaction_strategy: "replace"
+              redaction_mode: "runtime_reversible"
 
     rules:
       - id: 201

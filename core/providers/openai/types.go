@@ -73,6 +73,49 @@ func (r *OpenAIEmbeddingRequest) SetExtraParams(params map[string]interface{}) {
 	r.EmbeddingParameters.ExtraParams = params
 }
 
+// OpenAIRerankRequest represents an OpenAI-compatible rerank request
+type OpenAIRerankRequest struct {
+	Model           string                   `json:"model"`
+	Query           string                   `json:"query"`
+	Documents       []schemas.RerankDocument `json:"documents"`
+	TopN            *int                     `json:"top_n,omitempty"`
+	MaxTokensPerDoc *int                     `json:"max_tokens_per_doc,omitempty"`
+	Priority        *int                     `json:"priority,omitempty"`
+	ExtraParams     map[string]interface{}   `json:"-"` // Optional: Extra parameters
+}
+
+func (r *OpenAIRerankRequest) GetExtraParams() map[string]interface{} {
+	return r.ExtraParams
+}
+
+// OpenAIRerankResponse represents an OpenAI-compatible rerank response
+type OpenAIRerankResponse struct {
+	ID      string                       `json:"id"`
+	Results []OpenAIRerankResponseResult `json:"results"`
+	Meta    *OpenAIRerankMeta            `json:"meta,omitempty"`
+	Usage   *schemas.BifrostLLMUsage     `json:"usage,omitempty"`
+}
+
+// OpenAIRerankResponseResult represents a single ranked document in a rerank response
+type OpenAIRerankResponseResult struct {
+	Index          int             `json:"index"`
+	RelevanceScore float64         `json:"relevance_score"`
+	Document       json.RawMessage `json:"document,omitempty"`
+}
+
+// OpenAIRerankMeta captures Cohere-style rerank billing/token metadata
+type OpenAIRerankMeta struct {
+	BilledUnits *OpenAIRerankTokenUsage `json:"billed_units,omitempty"`
+	Tokens      *OpenAIRerankTokenUsage `json:"tokens,omitempty"`
+}
+
+// OpenAIRerankTokenUsage represents token/billing counts reported by rerank upstreams
+type OpenAIRerankTokenUsage struct {
+	InputTokens  *int64 `json:"input_tokens,omitempty"`
+	OutputTokens *int64 `json:"output_tokens,omitempty"`
+	SearchUnits  *int64 `json:"search_units,omitempty"`
+}
+
 // OpenAIChatRequest represents an OpenAI chat completion request
 type OpenAIChatRequest struct {
 	Model    string          `json:"model"`
@@ -167,6 +210,27 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 
 			// Copy message
 			processedMessages[i] = msg
+
+			// Strip the Bifrost-extension citation text from assistant annotations
+			if msg.OpenAIChatAssistantMessage != nil {
+				needsAnnotationStrip := false
+				for _, annotation := range msg.OpenAIChatAssistantMessage.Annotations {
+					if annotation.URLCitation.Text != nil {
+						needsAnnotationStrip = true
+						break
+					}
+				}
+				if needsAnnotationStrip {
+					assistantCopy := *msg.OpenAIChatAssistantMessage
+					assistantCopy.Annotations = make([]schemas.ChatAssistantMessageAnnotation, len(msg.OpenAIChatAssistantMessage.Annotations))
+					for j, annotation := range msg.OpenAIChatAssistantMessage.Annotations {
+						annotationCopy := annotation
+						annotationCopy.URLCitation.Text = nil
+						assistantCopy.Annotations[j] = annotationCopy
+					}
+					processedMessages[i].OpenAIChatAssistantMessage = &assistantCopy
+				}
+			}
 
 			// Strip CacheControl and FileType from content blocks if needed
 			if msg.Content != nil && msg.Content.ContentBlocks != nil {
@@ -264,6 +328,8 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 		// Shadow the embedded "reasoning" field and omit it
 		Reasoning       *schemas.ChatReasoning `json:"reasoning,omitempty"`
 		ReasoningEffort *string                `json:"reasoning_effort,omitempty"`
+		// Shadow the embedded "web_search_options" field to strip the Bifrost-extension filters
+		WebSearchOptions *schemas.ChatWebSearchOptions `json:"web_search_options,omitempty"`
 	}{
 		Alias:    (*Alias)(req),
 		Messages: processedMessages,
@@ -274,6 +340,15 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 
 	if req.Reasoning != nil && req.Reasoning.Effort != nil {
 		aux.ReasoningEffort = req.Reasoning.Effort
+	}
+
+	if req.ChatParameters.WebSearchOptions != nil {
+		aux.WebSearchOptions = req.ChatParameters.WebSearchOptions
+		if aux.WebSearchOptions.Filters != nil {
+			optionsCopy := *req.ChatParameters.WebSearchOptions
+			optionsCopy.Filters = nil
+			aux.WebSearchOptions = &optionsCopy
+		}
 	}
 
 	return providerUtils.MarshalSorted(aux)
@@ -608,6 +683,13 @@ func hasFieldsToStripInChatMessage(msg OpenAIMessage, keepCacheControl bool) boo
 			}
 		}
 	}
+	if msg.OpenAIChatAssistantMessage != nil {
+		for _, annotation := range msg.OpenAIChatAssistantMessage.Annotations {
+			if annotation.URLCitation.Text != nil {
+				return true
+			}
+		}
+	}
 	return false
 }
 
@@ -844,6 +926,8 @@ func (resp *OpenAIResponsesRequest) MarshalJSON() ([]byte, error) {
 			Effort:          resp.Reasoning.Effort,
 			GenerateSummary: resp.Reasoning.GenerateSummary,
 			Summary:         resp.Reasoning.Summary,
+			Context:         resp.Reasoning.Context,
+			Mode:            resp.Reasoning.Mode,
 			MaxTokens:       nil, // Always set to nil
 		}
 	}

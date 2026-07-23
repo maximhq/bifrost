@@ -81,6 +81,10 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal logging plugin config: %w", err)
 		}
+		if loggingConfig != nil {
+			loggingConfig.ObjectStorageEnabled = bifrostConfig.LogsStoreConfig != nil &&
+				bifrostConfig.LogsStoreConfig.ObjectStorage != nil
+		}
 		return logging.Init(ctx, loggingConfig, logger, bifrostConfig.LogsStore,
 			bifrostConfig.ModelCatalog, bifrostConfig.MCPCatalog)
 
@@ -196,8 +200,9 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 	// 3. Logging (if enabled)
 	if (s.Config.ClientConfig.EnableLogging == nil || *s.Config.ClientConfig.EnableLogging) && s.Config.LogsStore != nil {
 		config := &logging.Config{
-			DisableContentLogging: &s.Config.ClientConfig.DisableContentLogging,
-			LoggingHeaders:        &s.Config.ClientConfig.LoggingHeaders,
+			DisableContentLogging:        &s.Config.ClientConfig.DisableContentLogging,
+			RetainContentInObjectStorage: &s.Config.ClientConfig.RetainContentInObjectStorage,
+			LoggingHeaders:               &s.Config.ClientConfig.LoggingHeaders,
 		}
 		if s.Config.LogsStoreConfig != nil {
 			config.Writer = s.Config.LogsStoreConfig.Writer

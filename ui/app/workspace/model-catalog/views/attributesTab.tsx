@@ -10,6 +10,7 @@ import { RenderProviderIcon } from "@/lib/constants/icons";
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
 import { ModelDetails, useGetModelDetailsQuery, useGetProvidersQuery } from "@/lib/store";
 import { KnownProvider } from "@/lib/types/config";
+import { formatTokenPriceCompact } from "@/lib/utils/numbers";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { ChevronLeft, ChevronRight, Edit, Search } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
@@ -27,12 +28,12 @@ function DescriptionCell({ description }: { description?: string }) {
 	if (!description) return <span className="text-muted-foreground text-sm">—</span>;
 	const truncated = description.length > 80;
 	const text = truncated ? `${description.slice(0, 80)}…` : description;
-	if (!truncated) return <span className="text-sm">{text}</span>;
+	if (!truncated) return <span className="block truncate text-sm">{text}</span>;
 	return (
 		<TooltipProvider>
 			<Tooltip>
 				<TooltipTrigger asChild>
-					<span className="text-sm">{text}</span>
+					<span className="block truncate text-sm">{text}</span>
 				</TooltipTrigger>
 				<TooltipContent className="max-w-md">{description}</TooltipContent>
 			</Tooltip>
@@ -143,20 +144,24 @@ export default function AttributesTab({ hasAccess }: AttributesTabProps) {
 				</div>
 
 				<div className="mb-2 min-h-0 grow overflow-hidden rounded-sm border" data-testid="model-catalog-attributes-table">
-					<Table containerClassName="h-full overflow-auto">
+					<Table containerClassName="h-full overflow-y-auto overflow-x-hidden" className="table-fixed">
 						<TableHeader className="bg-muted sticky top-0 z-20">
 							<TableRow className="hover:bg-transparent">
-								<TableHead className="font-medium">Provider</TableHead>
+								<TableHead className="w-[116px] font-medium">Provider</TableHead>
 								<TableHead className="font-medium">Model</TableHead>
+								<TableHead className="w-[72px] px-2 text-right font-medium">Input</TableHead>
+								<TableHead className="w-[76px] px-2 text-right font-medium">Output</TableHead>
+								<TableHead className="w-[86px] px-2 text-right font-medium">Cache Write</TableHead>
+								<TableHead className="w-[80px] px-2 text-right font-medium">Cache Read</TableHead>
 								<TableHead className="font-medium">Description</TableHead>
-								<TableHead className="font-medium">Other</TableHead>
-								<TableHead className="w-[60px]"></TableHead>
+								<TableHead className="w-[68px] font-medium">Other</TableHead>
+								<TableHead className="w-[40px] px-1"></TableHead>
 							</TableRow>
 						</TableHeader>
 						<TableBody>
 							{models.length === 0 ? (
 								<TableRow>
-									<TableCell colSpan={5} className="h-24 text-center">
+									<TableCell colSpan={9} className="h-24 text-center">
 										<span className="text-muted-foreground text-sm">
 											{!debouncedSearch && !providerFilter ? "No models loaded yet." : "No matching models."}
 										</span>
@@ -170,13 +175,27 @@ export default function AttributesTab({ hasAccess }: AttributesTabProps) {
 									return (
 										<TableRow key={`${m.provider}|${m.name}`} data-testid={`model-catalog-row-${testKey}`}>
 											<TableCell className="py-3">
-												<div className="flex items-center gap-2">
+												<div className="flex min-w-0 items-center gap-2">
 													<RenderProviderIcon provider={m.provider as KnownProvider} size="sm" className="h-4 w-4" />
-													<span className="text-sm">{ProviderLabels[m.provider as ProviderName] || m.provider}</span>
+													<span className="truncate text-sm">{ProviderLabels[m.provider as ProviderName] || m.provider}</span>
 												</div>
 											</TableCell>
-											<TableCell className="py-3 font-mono text-sm">{m.name}</TableCell>
-											<TableCell className="max-w-[400px] py-3">
+											<TableCell className="truncate py-3 font-mono text-sm" title={m.name}>
+												{m.name}
+											</TableCell>
+											<TableCell className="px-2 py-3 text-right font-mono text-sm">
+												{formatTokenPriceCompact(m.input_cost_per_token)}
+											</TableCell>
+											<TableCell className="px-2 py-3 text-right font-mono text-sm">
+												{formatTokenPriceCompact(m.output_cost_per_token)}
+											</TableCell>
+											<TableCell className="px-2 py-3 text-right font-mono text-sm">
+												{formatTokenPriceCompact(m.cache_creation_input_token_cost)}
+											</TableCell>
+											<TableCell className="px-2 py-3 text-right font-mono text-sm">
+												{formatTokenPriceCompact(m.cache_read_input_token_cost)}
+											</TableCell>
+											<TableCell className="py-3">
 												<DescriptionCell description={attrs.description} />
 											</TableCell>
 											<TableCell className="py-3">
@@ -188,11 +207,11 @@ export default function AttributesTab({ hasAccess }: AttributesTabProps) {
 													</Badge>
 												)}
 											</TableCell>
-											<TableCell className="py-3">
+											<TableCell className="px-1 py-3">
 												<Button
 													variant="ghost"
 													size="icon"
-													className="h-8 w-8"
+													className="h-7 w-7"
 													disabled={!hasUpdateAccess}
 													onClick={() => setEditing(m)}
 													aria-label={`Edit attributes for ${m.name}`}

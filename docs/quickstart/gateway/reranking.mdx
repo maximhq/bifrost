@@ -62,6 +62,10 @@ curl --location 'http://localhost:8080/v1/rerank' \
 
 When using a `vllm/...` model, Bifrost sends rerank requests to `/v1/rerank` first and automatically retries `/rerank` when the upstream endpoint responds with `404`, `405`, or `501`.
 
+## Custom OpenAI-Compatible Providers
+
+Custom providers built on the `openai` base type can serve reranking against any OpenAI-compatible endpoint that exposes a Cohere-style rerank contract. It follows the standard `allowed_requests` behavior: allowed when `allowed_requests` is omitted, otherwise it must be explicitly enabled with `rerank: true`. Requests are sent to `/v1/rerank` by default; override the path with a `rerank` entry in `request_path_overrides`. See [Custom Providers](../../providers/custom-providers) for configuration details.
+
 ## Response Shape
 
 ```json

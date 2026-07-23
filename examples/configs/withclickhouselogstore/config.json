@@ -1,0 +1,34 @@
+{
+    "$schema": "https://www.getbifrost.ai/schema",
+    "config_store": {
+        "enabled": true,
+        "type": "sqlite",
+        "config": {
+            "path": "../../examples/configs/withclickhouselogstore/config.db"
+        }
+    },
+    "logs_store": {
+        "enabled": true,
+        "type": "clickhouse",
+        "retention_days": 30,
+        "config": {
+            "host": "localhost",
+            "port": "9001",
+            "database": "bifrost",
+            "username": "bifrost",
+            "password": "bifrost_password"
+        }
+    },
+    "providers": {
+        "openai": {
+            "keys": [
+                {
+                    "name": "openai-key-1",
+                    "value": "sk-proj-abc",
+                    "weight": 1,
+                    "models": ["*"]
+                }
+            ]
+        }
+    }
+}

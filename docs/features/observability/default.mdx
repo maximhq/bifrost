@@ -31,6 +31,18 @@ Bifrost traces comprehensive information for every request, without any changes 
 - **Performance Metrics**: Latency and token usage
 - **Status Information**: Success or error details
 
+### **Guardrail Redaction**
+
+When Enterprise guardrail redaction is enabled, Bifrost logs store the redacted form of any content that the guardrail provider detected:
+
+- `runtime` mode stores the same redacted content sent at runtime.
+- `logs_only` mode leaves runtime content raw but stores reversible placeholders in logs.
+- `runtime_reversible` mode stores the same reversible placeholders used at runtime.
+
+Log detail responses include `redaction_mapping` only for users with `Logs:Reveal`. If `disable_content_logging` is enabled, Bifrost skips request/response content and does not persist reveal data for that log.
+
+For the full mode matrix, see [Guardrail Redaction](/enterprise/guardrails/redaction).
+
 ### **Retry & Key Selection** <sup>v1.5.0-prerelease4+</sup>
 
 When Bifrost retries a request (per-key failure or transient network/5xx error) the following fields are recorded:

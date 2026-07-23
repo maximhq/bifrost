@@ -28,9 +28,15 @@ import (
 // functions directly.
 var testMigrationLogger = bifrost.NewDefaultLogger(schemas.LogLevelInfo)
 
+// pgTestSchema is this package's dedicated Postgres schema. Test packages
+// (configstore, configstore/tables, logstore) run in parallel against the same
+// database, so each one works in its own schema to avoid clobbering the
+// others' tables and rows.
+const pgTestSchema = "configstore_test"
+
 // postgresDSN matches the postgres service in tests/docker-compose.yml and
 // framework/docker-compose.yml.
-const postgresDSN = "host=localhost user=bifrost password=bifrost_password dbname=bifrost port=5432 sslmode=disable"
+const postgresDSN = "host=localhost user=bifrost password=bifrost_password dbname=bifrost port=5432 sslmode=disable search_path=" + pgTestSchema
 
 // namedDB pairs a backend name with its GORM connection for use in subtests.
 type namedDB struct {
@@ -622,14 +628,17 @@ func trySetupPostgresDBWithoutStoreRawColumn(t *testing.T, testSuffix string) *g
 		return nil
 	}
 
+	// All objects live in this package's dedicated schema (via search_path in
+	// the DSN), isolated from other test packages sharing the same database.
+	if err := db.Exec("CREATE SCHEMA IF NOT EXISTS " + pgTestSchema).Error; err != nil {
+		return nil
+	}
+
 	// Drop config_providers to start fresh (for this specific test).
 	// Use CASCADE to drop dependent objects (composite types, sequences, etc.).
 	db.Exec("DROP TABLE IF EXISTS config_providers CASCADE")
 
-	// Clear migration tracking without dropping the table — other test packages
-	// (e.g. logstore) may share this Postgres instance and use the same table
-	// concurrently.  CREATE IF NOT EXISTS is safe even if the table already
-	// exists from a previous test or a concurrent package.
+	// Clear migration tracking so the migration under test always runs.
 	db.Exec(`CREATE TABLE IF NOT EXISTS migrations (
 		id VARCHAR(255) PRIMARY KEY
 	)`)
@@ -662,8 +671,7 @@ func trySetupPostgresDBWithoutStoreRawColumn(t *testing.T, testSuffix string) *g
 		return nil
 	}
 
-	// Clean up after the test — drop config_providers but leave migrations
-	// intact for concurrent test packages.
+	// Clean up after the test so later tests in this package start fresh.
 	t.Cleanup(func() {
 		db.Exec("DELETE FROM migrations")
 		db.Exec("DROP TABLE IF EXISTS config_providers CASCADE")
@@ -1904,6 +1912,94 @@ func TestMigrationBackfillAllowedModelsWildcard(t *testing.T) {
 	assert.NotEmpty(t, keyHash, "key config_hash should be recomputed")
 }
 
+// TestProviderConfigWildcardRoundTrip verifies the current write path persists a
+// WhiteList/BlackList wildcard as the JSON array '["*"]' (never the bare byte '*')
+// and reads it back intact — the round-trip that issue #4318's corrupted rows broke.
+func TestProviderConfigWildcardRoundTrip(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&tables.TableVirtualKeyProviderConfig{}))
+
+	pc := tables.TableVirtualKeyProviderConfig{
+		VirtualKeyID:      "vk-roundtrip",
+		Provider:          "zai",
+		AllowedModels:     schemas.WhiteList{"*"},
+		BlacklistedModels: schemas.BlackList{"*"},
+	}
+	require.NoError(t, db.Create(&pc).Error)
+
+	// Raw column bytes must be the JSON array, not the bare character.
+	var allowedRaw, blacklistedRaw string
+	require.NoError(t, db.Table("governance_virtual_key_provider_configs").
+		Select("allowed_models").Where("virtual_key_id = ?", "vk-roundtrip").Scan(&allowedRaw).Error)
+	require.NoError(t, db.Table("governance_virtual_key_provider_configs").
+		Select("blacklisted_models").Where("virtual_key_id = ?", "vk-roundtrip").Scan(&blacklistedRaw).Error)
+	assert.Equal(t, `["*"]`, allowedRaw)
+	assert.Equal(t, `["*"]`, blacklistedRaw)
+
+	// Model read must deserialize cleanly back to the wildcard slice.
+	var got tables.TableVirtualKeyProviderConfig
+	require.NoError(t, db.Where("virtual_key_id = ?", "vk-roundtrip").First(&got).Error)
+	assert.True(t, got.AllowedModels.IsUnrestricted())
+	assert.True(t, got.BlacklistedModels.IsBlockAll())
+}
+
+// TestMigrationRepairBareWildcardAllowedModels verifies the repair migration heals
+// legacy rows whose allowed_models / blacklisted_models column holds the bare byte
+// '*' (issue #4318). Without the repair, loading such a row aborts the GORM json
+// deserializer and poisons the provider admin surface.
+func TestMigrationRepairBareWildcardAllowedModels(t *testing.T) {
+	_, db := setupFullMigrationDB(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	// Clear migration tracking so it runs again against the seeded rows.
+	db.Exec(`DELETE FROM migrations WHERE id = 'repair_bare_wildcard_allowed_models'`)
+
+	err := db.Exec(`INSERT INTO governance_virtual_keys (id, name, value, is_active, encryption_status, created_at, updated_at)
+		VALUES ('vk-bare-1', 'bare-vk', 'vk-val', true, 'plain_text', ?, ?)`, now, now).Error
+	require.NoError(t, err)
+
+	// Row A: corrupted allowed_models, valid blacklisted_models.
+	err = db.Exec(`INSERT INTO governance_virtual_key_provider_configs (virtual_key_id, provider, allowed_models, blacklisted_models, allow_all_keys)
+		VALUES ('vk-bare-1', 'zai', '*', '[]', true)`).Error
+	require.NoError(t, err)
+	// Row B: valid allowed_models, corrupted blacklisted_models.
+	err = db.Exec(`INSERT INTO governance_virtual_key_provider_configs (virtual_key_id, provider, allowed_models, blacklisted_models, allow_all_keys)
+		VALUES ('vk-bare-1', 'openai', '["*"]', '*', true)`).Error
+	require.NoError(t, err)
+
+	// Pre-condition: the bare '*' rows cannot be loaded through the GORM model.
+	var pre []tables.TableVirtualKeyProviderConfig
+	preErr := db.Where("virtual_key_id = ?", "vk-bare-1").Find(&pre).Error
+	require.Error(t, preErr, "bare '*' rows should fail to deserialize before repair")
+
+	require.NoError(t, migrationRepairBareWildcardAllowedModels(ctx, db, testMigrationLogger))
+
+	// Both columns are now canonical JSON arrays.
+	var allowedA, blacklistedB string
+	require.NoError(t, db.Table("governance_virtual_key_provider_configs").
+		Select("allowed_models").Where("virtual_key_id = ? AND provider = ?", "vk-bare-1", "zai").Scan(&allowedA).Error)
+	require.NoError(t, db.Table("governance_virtual_key_provider_configs").
+		Select("blacklisted_models").Where("virtual_key_id = ? AND provider = ?", "vk-bare-1", "openai").Scan(&blacklistedB).Error)
+	assert.Equal(t, `["*"]`, allowedA, "bare '*' allowed_models should be repaired to wildcard array")
+	assert.Equal(t, `["*"]`, blacklistedB, "bare '*' blacklisted_models should be repaired to wildcard array")
+
+	// Post-condition: the rows now load cleanly through the GORM model.
+	var post []tables.TableVirtualKeyProviderConfig
+	require.NoError(t, db.Where("virtual_key_id = ?", "vk-bare-1").Find(&post).Error,
+		"repaired rows should deserialize without error")
+	require.Len(t, post, 2)
+	byProvider := map[string]tables.TableVirtualKeyProviderConfig{}
+	for _, pc := range post {
+		byProvider[pc.Provider] = pc
+	}
+	assert.True(t, byProvider["zai"].AllowedModels.IsUnrestricted(), "repaired allowed_models should be unrestricted")
+	assert.True(t, byProvider["openai"].BlacklistedModels.IsBlockAll(), "repaired blacklisted_models should block all")
+}
+
 func TestMigrationRemoveServerPrefixFromMCPTools(t *testing.T) {
 	_, db := setupFullMigrationDB(t)
 	ctx := context.Background()
@@ -2678,4 +2774,83 @@ func TestFullMigration_UpgradeFromPreDumpErrorsSchema(t *testing.T) {
 	require.NoError(t, db.Raw("SELECT config_hash FROM config_client WHERE id = ?", seed.ID).Scan(&gotHash).Error)
 	assert.NotEmpty(t, gotHash)
 	assert.NotEqual(t, "stale-hash", gotHash, "config_hash should have been recomputed by the chain")
+}
+
+// TestMigrationAddDualCredentialConflictBehaviorColumn verifies that upgrading a
+// config_client that predates dual_credential_conflict_behavior re-adds the column
+// and backfills existing rows with the NOT NULL default ('prefer_idp'). Without the
+// migration, an upgraded deployment would carry a struct column the physical table
+// lacks and fail the config save/sync path.
+func TestMigrationAddDualCredentialConflictBehaviorColumn(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	// Build the current schema, seed a row, then drop the column to simulate a
+	// pre-feature config_client.
+	require.NoError(t, db.AutoMigrate(&tables.TableClientConfig{}))
+	seed := &tables.TableClientConfig{ConfigHash: "seed-hash"}
+	require.NoError(t, db.Create(seed).Error)
+
+	require.NoError(t, db.Migrator().DropColumn(&tables.TableClientConfig{}, "dual_credential_conflict_behavior"))
+	require.False(t, db.Migrator().HasColumn(&tables.TableClientConfig{}, "dual_credential_conflict_behavior"),
+		"precondition: dual_credential_conflict_behavior must be absent to reproduce the upgrade path")
+
+	require.NoError(t, migrationAddDualCredentialConflictBehaviorColumn(ctx, db, testMigrationLogger),
+		"migration should re-add the column")
+
+	require.True(t, db.Migrator().HasColumn(&tables.TableClientConfig{}, "dual_credential_conflict_behavior"),
+		"migration should have added dual_credential_conflict_behavior")
+
+	// The pre-existing row must be backfilled with the prefer_idp default so upgraded
+	// deployments retain the pre-feature behavior.
+	var got string
+	require.NoError(t, db.Raw("SELECT dual_credential_conflict_behavior FROM config_client WHERE id = ?", seed.ID).Scan(&got).Error)
+	assert.Equal(t, "prefer_idp", got, "existing rows should default to prefer_idp after migration")
+
+	// Idempotency: re-running the migration is a no-op and must not error.
+	require.NoError(t, migrationAddDualCredentialConflictBehaviorColumn(ctx, db, testMigrationLogger),
+		"re-running the migration should be idempotent")
+}
+
+// TestMigrationAddBudgetOverrideColumns verifies legacy budgets receive inactive override defaults.
+func TestMigrationAddBudgetOverrideColumns(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	require.NoError(t, db.AutoMigrate(&tables.TableBudget{}))
+	seed := &tables.TableBudget{
+		ID:            "legacy-budget",
+		MaxLimit:      100,
+		ResetDuration: "1h",
+	}
+	require.NoError(t, db.Create(seed).Error)
+
+	for _, column := range []string{"override_cycles_remaining", "override_mode", "override_amount"} {
+		require.NoError(t, db.Migrator().DropColumn(&tables.TableBudget{}, column))
+		require.False(t, db.Migrator().HasColumn(&tables.TableBudget{}, column),
+			"precondition: %s must be absent to reproduce the upgrade path", column)
+	}
+
+	require.NoError(t, migrationAddBudgetOverrideColumns(ctx, db, testMigrationLogger))
+
+	for _, column := range []string{"override_amount", "override_mode", "override_cycles_remaining"} {
+		require.True(t, db.Migrator().HasColumn(&tables.TableBudget{}, column),
+			"migration should have added %s", column)
+	}
+
+	var got struct {
+		OverrideAmount          float64
+		OverrideMode            tables.BudgetOverrideMode
+		OverrideCyclesRemaining int
+	}
+	require.NoError(t, db.Table("governance_budgets").
+		Select("override_amount, override_mode, override_cycles_remaining").
+		Where("id = ?", seed.ID).
+		Scan(&got).Error)
+	assert.Zero(t, got.OverrideAmount)
+	assert.Empty(t, got.OverrideMode)
+	assert.Zero(t, got.OverrideCyclesRemaining)
+
+	require.NoError(t, migrationAddBudgetOverrideColumns(ctx, db, testMigrationLogger),
+		"re-running the migration should be idempotent")
 }

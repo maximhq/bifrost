@@ -106,6 +106,20 @@ func lookupScopeNameResolver(scope string) (ScopeNameResolver, bool) {
 	return fn, ok
 }
 
+// ExternalQuotaBudgetResolver returns budgets that govern a VK but whose usage is
+// tracked OUTSIDE the VK's own budget rows
+type ExternalQuotaBudgetResolver func(ctx context.Context, vk *configstoreTables.TableVirtualKey) (*ExternalQuotaBudgetResult, error)
+
+// ExternalQuotaBudgetResult is what an external resolver returns for a VK whose
+// authoritative usage lives outside its own budget rows.
+type ExternalQuotaBudgetResult struct {
+	// Budgets replaces the VK's own budget rows in the quota response.
+	Budgets []configstoreTables.TableBudget
+	// UsageUserID, when non-empty, scopes the per_model_usage query to this user id
+	// instead of the VK id.
+	UsageUserID string
+}
+
 type GovernanceHandler struct {
 	configStore       configstore.ConfigStore
 	governanceManager GovernanceManager
@@ -113,15 +127,22 @@ type GovernanceHandler struct {
 	// endpoint's model_usage breakdown. Optional: nil when the logging plugin is
 	// not enabled, in which case the breakdown is simply omitted.
 	logManager logging.LogManager
+	// externalQuotaBudgetResolver, when non-nil, supplies budgets that govern a VK
+	// but whose usage lives outside the VK's own budget rows (enterprise
+	// access-profile-managed VKs). Injected at construction; nil on OSS builds.
+	externalQuotaBudgetResolver ExternalQuotaBudgetResolver
 }
 
 // NewGovernanceHandler creates a new governance handler instance.
 // logManager is optional (may be nil); when supplied it powers the quota
 // endpoint's per-budget actual per-model usage breakdown.
+// externalQuotaBudgetResolver is optional (may be nil); when supplied the quota
+// endpoint uses it to resolve budgets/usage for VKs whose authoritative usage
+// is tracked outside their own budget rows.
 // Side effect: ensures the default virtual_key scope-name resolver is
 // registered against the supplied configStore, so resolveModelConfigScopeName
 // can render VK names for OSS-only builds without further wiring.
-func NewGovernanceHandler(manager GovernanceManager, configStore configstore.ConfigStore, logManager logging.LogManager) (*GovernanceHandler, error) {
+func NewGovernanceHandler(manager GovernanceManager, configStore configstore.ConfigStore, logManager logging.LogManager, externalQuotaBudgetResolver ExternalQuotaBudgetResolver) (*GovernanceHandler, error) {
 	if manager == nil {
 		return nil, fmt.Errorf("governance manager is required")
 	}
@@ -136,9 +157,10 @@ func NewGovernanceHandler(manager GovernanceManager, configStore configstore.Con
 		return vk.Name, true
 	})
 	return &GovernanceHandler{
-		governanceManager: manager,
-		configStore:       configStore,
-		logManager:        logManager,
+		governanceManager:           manager,
+		configStore:                 configStore,
+		logManager:                  logManager,
+		externalQuotaBudgetResolver: externalQuotaBudgetResolver,
 	}, nil
 }
 
@@ -449,8 +471,8 @@ func (h *GovernanceHandler) reconcileModelConfigBudgets(ctx context.Context, tx 
 		if b.MaxLimit < 0 {
 			return &badRequestError{err: fmt.Errorf("budget max_limit cannot be negative: %.2f", b.MaxLimit)}
 		}
-		if _, err := configstoreTables.ParseDuration(b.ResetDuration); err != nil {
-			return &badRequestError{err: fmt.Errorf("invalid reset duration format: %s", b.ResetDuration)}
+		if d, err := configstoreTables.ParseDuration(b.ResetDuration); err != nil || d <= 0 {
+			return &badRequestError{err: fmt.Errorf("invalid reset duration (must be a positive duration): %s", b.ResetDuration)}
 		}
 		if seenDurations[b.ResetDuration] {
 			return &badRequestError{err: fmt.Errorf("duplicate reset_duration in budgets: %s", b.ResetDuration)}
@@ -517,8 +539,8 @@ func (h *GovernanceHandler) reconcileCustomerBudgets(ctx context.Context, tx *go
 		if b.MaxLimit < 0 {
 			return &badRequestError{err: fmt.Errorf("budget max_limit cannot be negative: %.2f", b.MaxLimit)}
 		}
-		if _, err := configstoreTables.ParseDuration(b.ResetDuration); err != nil {
-			return &badRequestError{err: fmt.Errorf("invalid reset duration format: %s", b.ResetDuration)}
+		if d, err := configstoreTables.ParseDuration(b.ResetDuration); err != nil || d <= 0 {
+			return &badRequestError{err: fmt.Errorf("invalid reset duration (must be a positive duration): %s", b.ResetDuration)}
 		}
 		if seenDurations[b.ResetDuration] {
 			return &badRequestError{err: fmt.Errorf("duplicate reset_duration in budgets: %s", b.ResetDuration)}
@@ -1262,8 +1284,8 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 				SendError(ctx, 400, fmt.Sprintf("Budget max_limit cannot be negative: %.2f", b.MaxLimit))
 				return
 			}
-			if _, err := configstoreTables.ParseDuration(b.ResetDuration); err != nil {
-				SendError(ctx, 400, fmt.Sprintf("Invalid reset duration format: %s", b.ResetDuration))
+			if d, err := configstoreTables.ParseDuration(b.ResetDuration); err != nil || d <= 0 {
+				SendError(ctx, 400, fmt.Sprintf("Invalid reset duration (must be a positive duration): %s", b.ResetDuration))
 				return
 			}
 			if seenDurations[b.ResetDuration] {
@@ -2170,8 +2192,8 @@ func (h *GovernanceHandler) createTeam(ctx *fasthttp.RequestCtx) {
 			if b.MaxLimit < 0 {
 				return &badRequestError{err: fmt.Errorf("budget max_limit cannot be negative: %.2f", b.MaxLimit)}
 			}
-			if _, err := configstoreTables.ParseDuration(b.ResetDuration); err != nil {
-				return &badRequestError{err: fmt.Errorf("invalid reset duration format: %s", b.ResetDuration)}
+			if d, err := configstoreTables.ParseDuration(b.ResetDuration); err != nil || d <= 0 {
+				return &badRequestError{err: fmt.Errorf("invalid reset duration (must be a positive duration): %s", b.ResetDuration)}
 			}
 			if seenDurations[b.ResetDuration] {
 				return &badRequestError{err: fmt.Errorf("duplicate reset_duration in budgets: %s", b.ResetDuration)}
@@ -2222,7 +2244,13 @@ func (h *GovernanceHandler) createTeam(ctx *fasthttp.RequestCtx) {
 
 // getTeam handles GET /api/governance/teams/{team_id} - Get a specific team
 func (h *GovernanceHandler) getTeam(ctx *fasthttp.RequestCtx) {
-	teamID := ctx.UserValue("team_id").(string)
+	// The router matches on the raw (percent-encoded) path, so SCIM/IdP-synced team
+	// IDs containing spaces or other URL-sensitive characters arrive still encoded.
+	teamID, err := url.PathUnescape(ctx.UserValue("team_id").(string))
+	if err != nil {
+		SendError(ctx, 400, "Invalid team ID encoding")
+		return
+	}
 	team, err := h.configStore.GetTeam(ctx, teamID)
 	if err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
@@ -2239,7 +2267,13 @@ func (h *GovernanceHandler) getTeam(ctx *fasthttp.RequestCtx) {
 
 // updateTeam handles PUT /api/governance/teams/{team_id} - Update a team
 func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
-	teamID := ctx.UserValue("team_id").(string)
+	// The router matches on the raw (percent-encoded) path, so SCIM/IdP-synced team
+	// IDs containing spaces or other URL-sensitive characters arrive still encoded.
+	teamID, err := url.PathUnescape(ctx.UserValue("team_id").(string))
+	if err != nil {
+		SendError(ctx, 400, "Invalid team ID encoding")
+		return
+	}
 
 	var req UpdateTeamRequest
 	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
@@ -2294,8 +2328,8 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 				if b.MaxLimit < 0 {
 					return &badRequestError{err: fmt.Errorf("budget max_limit cannot be negative: %.2f", b.MaxLimit)}
 				}
-				if _, err := configstoreTables.ParseDuration(b.ResetDuration); err != nil {
-					return &badRequestError{err: fmt.Errorf("invalid reset duration format: %s", b.ResetDuration)}
+				if d, err := configstoreTables.ParseDuration(b.ResetDuration); err != nil || d <= 0 {
+					return &badRequestError{err: fmt.Errorf("invalid reset duration (must be a positive duration): %s", b.ResetDuration)}
 				}
 				if seenDurations[b.ResetDuration] {
 					return &badRequestError{err: fmt.Errorf("duplicate reset_duration in budgets: %s", b.ResetDuration)}
@@ -2477,7 +2511,13 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 
 // deleteTeam handles DELETE /api/governance/teams/{team_id} - Delete a team
 func (h *GovernanceHandler) deleteTeam(ctx *fasthttp.RequestCtx) {
-	teamID := ctx.UserValue("team_id").(string)
+	// The router matches on the raw (percent-encoded) path, so SCIM/IdP-synced team
+	// IDs containing spaces or other URL-sensitive characters arrive still encoded.
+	teamID, err := url.PathUnescape(ctx.UserValue("team_id").(string))
+	if err != nil {
+		SendError(ctx, 400, "Invalid team ID encoding")
+		return
+	}
 	team, err := h.configStore.GetTeam(ctx, teamID)
 	if err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
@@ -2909,8 +2949,8 @@ func validateRateLimit(rateLimit *configstoreTables.TableRateLimit) error {
 		if rateLimit.TokenResetDuration == nil {
 			return fmt.Errorf("rate limit token reset duration is required")
 		}
-		if _, err := configstoreTables.ParseDuration(*rateLimit.TokenResetDuration); err != nil {
-			return fmt.Errorf("invalid rate limit token reset duration format: %s", *rateLimit.TokenResetDuration)
+		if d, err := configstoreTables.ParseDuration(*rateLimit.TokenResetDuration); err != nil || d <= 0 {
+			return fmt.Errorf("invalid rate limit token reset duration (must be a positive duration): %s", *rateLimit.TokenResetDuration)
 		}
 	}
 	if rateLimit.RequestMaxLimit != nil && (*rateLimit.RequestMaxLimit < 0 || *rateLimit.RequestMaxLimit == 0) {
@@ -2921,8 +2961,8 @@ func validateRateLimit(rateLimit *configstoreTables.TableRateLimit) error {
 		if rateLimit.RequestResetDuration == nil {
 			return fmt.Errorf("rate limit request reset duration is required")
 		}
-		if _, err := configstoreTables.ParseDuration(*rateLimit.RequestResetDuration); err != nil {
-			return fmt.Errorf("invalid rate limit request reset duration format: %s", *rateLimit.RequestResetDuration)
+		if d, err := configstoreTables.ParseDuration(*rateLimit.RequestResetDuration); err != nil || d <= 0 {
+			return fmt.Errorf("invalid rate limit request reset duration (must be a positive duration): %s", *rateLimit.RequestResetDuration)
 		}
 	}
 	return nil
@@ -2952,8 +2992,8 @@ func validateBudget(budget *configstoreTables.TableBudget) error {
 	if budget.ResetDuration == "" {
 		return fmt.Errorf("budget reset duration is required")
 	}
-	if _, err := configstoreTables.ParseDuration(budget.ResetDuration); err != nil {
-		return fmt.Errorf("invalid budget reset duration format: %s", budget.ResetDuration)
+	if d, err := configstoreTables.ParseDuration(budget.ResetDuration); err != nil || d <= 0 {
+		return fmt.Errorf("invalid budget reset duration (must be a positive duration): %s", budget.ResetDuration)
 	}
 	return nil
 }
@@ -2971,6 +3011,7 @@ func (h *GovernanceHandler) getModelConfigs(ctx *fasthttp.RequestCtx) {
 		}
 		search := string(ctx.QueryArgs().Peek("search"))
 		scopeFilter := string(ctx.QueryArgs().Peek("scope"))
+		scopeIDFilter := string(ctx.QueryArgs().Peek("scope_id"))
 		providerFilter := string(ctx.QueryArgs().Peek("provider"))
 		// Deep-copy into a value slice: top-level struct copy + nested pointer/slice fields
 		// so we never alias or mutate live governance state during serialization.
@@ -2984,6 +3025,11 @@ func (h *GovernanceHandler) getModelConfigs(ctx *fasthttp.RequestCtx) {
 			}
 			if scopeFilter != "" && mc.Scope != scopeFilter {
 				continue
+			}
+			if scopeIDFilter != "" {
+				if mc.ScopeID == nil || *mc.ScopeID != scopeIDFilter {
+					continue
+				}
 			}
 			if providerFilter != "" {
 				if mc.Provider == nil || *mc.Provider != providerFilter {
@@ -3046,13 +3092,15 @@ func (h *GovernanceHandler) getModelConfigs(ctx *fasthttp.RequestCtx) {
 	offsetStr := string(ctx.QueryArgs().Peek("offset"))
 	search := string(ctx.QueryArgs().Peek("search"))
 	scope := string(ctx.QueryArgs().Peek("scope"))
+	scopeID := string(ctx.QueryArgs().Peek("scope_id"))
 	provider := string(ctx.QueryArgs().Peek("provider"))
 
-	if limitStr != "" || offsetStr != "" || search != "" || scope != "" || provider != "" {
+	if limitStr != "" || offsetStr != "" || search != "" || scope != "" || scopeID != "" || provider != "" {
 		// Paginated path
 		params := configstore.ModelConfigsQueryParams{
 			Search:   search,
 			Scope:    scope,
+			ScopeID:  scopeID,
 			Provider: provider,
 		}
 		if limitStr != "" {
@@ -3238,8 +3286,8 @@ func (h *GovernanceHandler) createModelConfig(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, 400, fmt.Sprintf("Budget max_limit cannot be negative: %.2f", req.Budgets[i].MaxLimit))
 			return
 		}
-		if _, err := configstoreTables.ParseDuration(req.Budgets[i].ResetDuration); err != nil {
-			SendError(ctx, 400, fmt.Sprintf("Invalid reset duration format: %s", req.Budgets[i].ResetDuration))
+		if d, err := configstoreTables.ParseDuration(req.Budgets[i].ResetDuration); err != nil || d <= 0 {
+			SendError(ctx, 400, fmt.Sprintf("Invalid reset duration (must be a positive duration): %s", req.Budgets[i].ResetDuration))
 			return
 		}
 		if seenDurations[req.Budgets[i].ResetDuration] {
@@ -3964,6 +4012,11 @@ func (h *GovernanceHandler) createRoutingRule(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, err.Error())
 		return
 	}
+	// Reject malformed CEL at write time instead of it silently failing at first evaluation.
+	if err := governance.ValidateRoutingCELExpression(req.CelExpression); err != nil {
+		SendError(ctx, 400, fmt.Sprintf("invalid CEL expression: %s", err.Error()))
+		return
+	}
 
 	// Set defaults and normalize scope/scope_id
 	scope := req.Scope
@@ -3982,6 +4035,9 @@ func (h *GovernanceHandler) createRoutingRule(ctx *fasthttp.RequestCtx) {
 		req.ScopeID = nil // normalize: global rules must not have scope_id
 	} else if req.ScopeID == nil || *req.ScopeID == "" {
 		SendError(ctx, 400, "scope_id field is required when scope is not global")
+		return
+	} else if err := h.validateRoutingScopeID(ctx, scope, *req.ScopeID); err != nil {
+		sendRoutingScopeIDValidationError(ctx, err)
 		return
 	}
 
@@ -4076,6 +4132,12 @@ func (h *GovernanceHandler) updateRoutingRule(ctx *fasthttp.RequestCtx) {
 		rule.ChainRule = *req.ChainRule
 	}
 	if req.CelExpression != nil {
+		// Validate only when the field is supplied, so unrelated updates (e.g. toggling
+		// enabled) never start failing on a pre-existing malformed expression.
+		if err := governance.ValidateRoutingCELExpression(*req.CelExpression); err != nil {
+			SendError(ctx, 400, fmt.Sprintf("invalid CEL expression: %s", err.Error()))
+			return
+		}
 		rule.CelExpression = *req.CelExpression
 	}
 	if req.Targets != nil {
@@ -4129,6 +4191,13 @@ func (h *GovernanceHandler) updateRoutingRule(ctx *fasthttp.RequestCtx) {
 	} else if rule.ScopeID == nil || *rule.ScopeID == "" {
 		SendError(ctx, 400, "scope_id field is required when scope is not global")
 		return
+	} else if req.Scope != nil || req.ScopeID != nil {
+		// Only re-validate when scope or scope_id actually changed in this request;
+		// avoids re-checking on every unrelated update (e.g. toggling enabled).
+		if err := h.validateRoutingScopeID(ctx, rule.Scope, *rule.ScopeID); err != nil {
+			sendRoutingScopeIDValidationError(ctx, err)
+			return
+		}
 	}
 
 	// Update in database
@@ -4551,6 +4620,55 @@ var validRoutingScopes = map[string]bool{
 	"virtual_key": true,
 }
 
+// errRoutingScopeIDNotFound marks a validateRoutingScopeID failure as a genuine
+// "entity doesn't exist" rejection, as opposed to a store error (DB down, timeout,
+// context cancellation). Callers use errors.Is to tell the two apart: the former
+// is a 400 (bad request data), the latter a 500 (server couldn't verify).
+var errRoutingScopeIDNotFound = errors.New("routing rule scope_id not found")
+
+// validateRoutingScopeID checks that scopeID resolves to an existing entity of the
+// given scope type. A rule whose scope_id doesn't resolve silently matches zero
+// requests (the routing engine caches rules keyed by the real entity ID), so this
+// must be rejected at write time rather than left to fail invisibly at eval time.
+func (h *GovernanceHandler) validateRoutingScopeID(ctx context.Context, scope string, scopeID string) error {
+	switch scope {
+	case "virtual_key":
+		if _, err := h.configStore.GetVirtualKey(ctx, scopeID); err != nil {
+			if errors.Is(err, configstore.ErrNotFound) {
+				return fmt.Errorf("virtual key '%s' not found: %w", scopeID, errRoutingScopeIDNotFound)
+			}
+			return fmt.Errorf("failed to verify virtual key: %w", err)
+		}
+	case "team":
+		if _, err := h.configStore.GetTeam(ctx, scopeID); err != nil {
+			if errors.Is(err, configstore.ErrNotFound) {
+				return fmt.Errorf("team '%s' not found: %w", scopeID, errRoutingScopeIDNotFound)
+			}
+			return fmt.Errorf("failed to verify team: %w", err)
+		}
+	case "customer":
+		if _, err := h.configStore.GetCustomer(ctx, scopeID); err != nil {
+			if errors.Is(err, configstore.ErrNotFound) {
+				return fmt.Errorf("customer '%s' not found: %w", scopeID, errRoutingScopeIDNotFound)
+			}
+			return fmt.Errorf("failed to verify customer: %w", err)
+		}
+	}
+	return nil
+}
+
+// sendRoutingScopeIDValidationError maps a validateRoutingScopeID error to the
+// right HTTP status: 400 when scope_id genuinely doesn't resolve, 500 when the
+// store itself failed and existence couldn't be determined.
+func sendRoutingScopeIDValidationError(ctx *fasthttp.RequestCtx, err error) {
+	if errors.Is(err, errRoutingScopeIDNotFound) {
+		SendError(ctx, 400, err.Error())
+		return
+	}
+	logger.Error("failed to validate routing rule scope_id: %v", err)
+	SendError(ctx, 500, "Failed to verify scope_id")
+}
+
 // validateRoutingScope validates that the scope value is one of the allowed values
 func validateRoutingScope(scope string) error {
 	if scope == "" {
@@ -4685,29 +4803,28 @@ type quotaBudget struct {
 	Models []quotaModelSpend `json:"per_model_usage"`
 }
 
-// buildVKBudgetsWithUsage wraps each hydrated VK budget with its per-model actual usage,
-// queried from request logs over that budget's current cycle [last_reset, now]. Per-budget
-// because a VK's budgets can have independent reset cycles (e.g. daily + monthly). When
-// logging is disabled (logManager == nil) the budgets are returned with an empty models list
-// — that is the only case where per_model_usage is empty. A log-store query failure instead
-// returns an error so the endpoint fails closed (500) rather than reporting empty usage that
-// callers cannot distinguish from "logging disabled". Callers must hydrate vk.Budgets (via
-// collectVKModelUsage) before calling this.
-func (h *GovernanceHandler) buildVKBudgetsWithUsage(ctx context.Context, vk *configstoreTables.TableVirtualKey, now time.Time) ([]quotaBudget, error) {
-	out := make([]quotaBudget, 0, len(vk.Budgets))
-	for i := range vk.Budgets {
-		b := &vk.Budgets[i]
+// buildBudgetsWithUsage wraps each budget with its per-model actual usage, queried from
+// request logs over that budget's current cycle
+func (h *GovernanceHandler) buildBudgetsWithUsage(ctx context.Context, vkID, usageUserID string, budgets []configstoreTables.TableBudget, now time.Time) ([]quotaBudget, error) {
+	out := make([]quotaBudget, 0, len(budgets))
+	for i := range budgets {
+		b := &budgets[i]
 		entry := quotaBudget{TableBudget: *b, Models: []quotaModelSpend{}}
 		if h.logManager != nil {
 			start := b.LastReset
 			if b.CreatedAt.After(start) {
 				start = b.CreatedAt
 			}
-			ranking, err := h.logManager.GetModelRankings(ctx, &logstore.SearchFilters{
-				VirtualKeyIDs: []string{vk.ID},
-				StartTime:     &start,
-				EndTime:       &now,
-			})
+			filters := &logstore.SearchFilters{
+				StartTime: &start,
+				EndTime:   &now,
+			}
+			if usageUserID != "" {
+				filters.UserIDs = []string{usageUserID}
+			} else {
+				filters.VirtualKeyIDs = []string{vkID}
+			}
+			ranking, err := h.logManager.GetModelRankings(ctx, filters)
 			if err != nil {
 				logger.Error("failed to load per-model usage for VK quota (budget %s): %v", b.ID, err)
 				return nil, err
@@ -4741,7 +4858,7 @@ func (h *GovernanceHandler) getVirtualKeyQuota(ctx *fasthttp.RequestCtx) {
 		vkValue = *v
 	}
 	if vkValue == "" {
-		SendError(ctx, 401, "Missing virtual key. Provide it via x-bf-vk header, Authorization Bearer, x-api-key, or x-goog-api-key header.")
+		SendError(ctx, 401, "Missing virtual key. Provide it via x-bf-vk header, Authorization Bearer, x-api-key, x-goog-api-key, or api-key header.")
 		return
 	}
 
@@ -4765,9 +4882,23 @@ func (h *GovernanceHandler) getVirtualKeyQuota(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	budgetRows := vk.Budgets
+	usageUserID := ""
+	if resolve := h.externalQuotaBudgetResolver; resolve != nil {
+		ext, err := resolve(ctx, vk)
+		if err != nil {
+			SendError(ctx, 500, "Failed to load access-profile usage")
+			return
+		}
+		if ext != nil {
+			budgetRows = ext.Budgets
+			usageUserID = ext.UsageUserID
+		}
+	}
+
 	// Each budget carries its actual per-model spend (from request logs) for the current
 	// cycle. Must run after collectVKModelUsage, which hydrates vk.Budgets.
-	budgets, err := h.buildVKBudgetsWithUsage(ctx, vk, time.Now())
+	budgets, err := h.buildBudgetsWithUsage(ctx, vk.ID, usageUserID, budgetRows, time.Now())
 	if err != nil {
 		SendError(ctx, 500, "Failed to load per-model usage")
 		return

@@ -189,10 +189,10 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
                     "claude-3-5-sonnet": "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
                 },
                 BedrockKeyConfig: &schemas.BedrockKeyConfig{
-                    AccessKey:    *schemas.NewEnvVar("env.AWS_ACCESS_KEY_ID"),
-                    SecretKey:    *schemas.NewEnvVar("env.AWS_SECRET_ACCESS_KEY"),
-                    SessionToken: schemas.NewEnvVar("env.AWS_SESSION_TOKEN"),
-                    Region:       schemas.NewEnvVar("us-east-1"),
+                    AccessKey:    *schemas.NewSecretVar("env.AWS_ACCESS_KEY_ID"),
+                    SecretKey:    *schemas.NewSecretVar("env.AWS_SECRET_ACCESS_KEY"),
+                    SessionToken: schemas.NewSecretVar("env.AWS_SESSION_TOKEN"),
+                    Region:       schemas.NewSecretVar("us-east-1"),
                 },
             },
         }, nil
@@ -331,10 +331,10 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
                 },
                 BedrockKeyConfig: &schemas.BedrockKeyConfig{
                     // Leave AccessKey and SecretKey empty - resolved from IRSA/instance profile/env vars
-                    Region:          schemas.NewEnvVar("us-east-1"),
-                    RoleARN:         schemas.NewEnvVar("env.AWS_ROLE_ARN"),         // optional
-                    ExternalID:      schemas.NewEnvVar("env.AWS_EXTERNAL_ID"),      // optional
-                    RoleSessionName: schemas.NewEnvVar("bifrost-session"),          // optional
+                    Region:          schemas.NewSecretVar("us-east-1"),
+                    RoleARN:         schemas.NewSecretVar("env.AWS_ROLE_ARN"),         // optional
+                    ExternalID:      schemas.NewSecretVar("env.AWS_EXTERNAL_ID"),      // optional
+                    RoleSessionName: schemas.NewSecretVar("bifrost-session"),          // optional
                 },
             },
         }, nil
@@ -428,11 +428,11 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
     case schemas.Bedrock:
         return []schemas.Key{
             {
-                Value:  *schemas.NewEnvVar("env.BEDROCK_API_KEY"),
+                Value:  *schemas.NewSecretVar("env.BEDROCK_API_KEY"),
                 Models: []string{"*"},
                 Weight: 1.0,
                 BedrockKeyConfig: &schemas.BedrockKeyConfig{
-                    Region: schemas.NewEnvVar("us-east-1"),
+                    Region: schemas.NewSecretVar("us-east-1"),
                 },
             },
         }, nil

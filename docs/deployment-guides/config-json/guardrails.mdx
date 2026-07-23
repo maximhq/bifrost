@@ -24,7 +24,7 @@ Guardrails are configured under `guardrails_config` in `config.json`. The config
 <Tabs>
 <Tab title="Regex">
 
-Runs entirely in-process with no external dependency. Patterns use RE2 syntax. Supports optional per-pattern flags: `i` (case-insensitive), `m` (multiline), `s` (dot-all).
+Runs entirely in-process with no external dependency. Patterns use RE2 syntax. Supports optional per-pattern flags: `i` (case-insensitive), `m` (multiline), `s` (dot-all). Each pattern can `detect_only`, `block`, or `redact`.
 
 ```json
 {
@@ -33,14 +33,28 @@ Runs entirely in-process with no external dependency. Patterns use RE2 syntax. S
       {
         "id": 1,
         "provider_name": "regex",
-        "policy_name": "block-secrets",
+        "policy_name": "redact-sensitive-patterns",
         "enabled": true,
         "timeout": 5,
         "config": {
           "patterns": [
-            { "pattern": "sk-[A-Za-z0-9]{20,}", "description": "OpenAI API key" },
-            { "pattern": "AKIA[0-9A-Z]{16}", "description": "AWS access key" },
-            { "pattern": "gh[ps]_[A-Za-z0-9]{36}", "description": "GitHub token", "flags": "i" }
+            {
+              "pattern": "[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}",
+              "description": "Email address",
+              "entity_type": "EMAIL",
+              "flags": "i",
+              "action": "redact",
+              "redaction_strategy": "replace",
+              "redaction_mode": "runtime_reversible"
+            },
+            {
+              "pattern": "AKIA[0-9A-Z]{16}",
+              "description": "AWS access key",
+              "entity_type": "AWS_ACCESS_TOKEN",
+              "action": "redact",
+              "redaction_strategy": "replace",
+              "redaction_mode": "logs_only"
+            }
           ],
           "sampling_rate": 100
         }
@@ -50,7 +64,7 @@ Runs entirely in-process with no external dependency. Patterns use RE2 syntax. S
 }
 ```
 
-The Web UI's PII Detection template is also a `regex` provider configuration. See [Custom Regex](/enterprise/guardrails/custom-regex) for the full `config.json` and Helm examples.
+The Web UI's PII Detection template is also a `regex` provider configuration. See [Custom Regex](/enterprise/guardrails/custom-regex) for the full examples, and [Guardrail Redaction](/enterprise/guardrails/redaction) for redaction mode behavior.
 
 </Tab>
 <Tab title="Secrets">
@@ -68,7 +82,10 @@ Runs entirely in-process with no external dependency. Uses the embedded default 
         "enabled": true,
         "timeout": 5,
         "config": {
-          "ignored_secret_keywords": ["example", "dummy", "sample-token"]
+          "ignored_secret_keywords": ["example", "dummy", "sample-token"],
+          "action": "redact",
+          "redaction_strategy": "replace",
+          "redaction_mode": "logs_only"
         }
       }
     ]
@@ -77,6 +94,74 @@ Runs entirely in-process with no external dependency. Uses the embedded default 
 ```
 
 `ignored_secret_keywords` is optional. It suppresses a detection when the matched secret value contains one of the listed substrings. Keep these values narrow so real leaked credentials are not hidden.
+
+</Tab>
+<Tab title="Presidio">
+
+Calls a Microsoft Presidio Analyzer service for PII detection. Use `action: "redact"` to apply Bifrost-managed redaction to Presidio findings.
+
+```json
+{
+  "guardrails_config": {
+    "guardrail_providers": [
+      {
+        "id": 3,
+        "provider_name": "presidio",
+        "policy_name": "presidio-pii-redaction",
+        "enabled": true,
+        "timeout": 10,
+        "config": {
+          "analyzer_url": "https://presidio.company.com",
+          "api_key": "env.PRESIDIO_API_KEY",
+          "language": "en",
+          "score_threshold": 0.75,
+          "entities": ["EMAIL_ADDRESS", "PHONE_NUMBER", "PERSON"],
+          "action": "redact",
+          "redaction_strategy": "replace",
+          "redaction_mode": "runtime_reversible"
+        }
+      }
+    ]
+  }
+}
+```
+
+See [Microsoft Presidio](/integrations/guardrails/presidio) for provider setup details.
+
+</Tab>
+<Tab title="Azure AI Language PII">
+
+Calls Azure AI Language PII Entity Recognition. This is separate from Azure Content Safety and is focused on PII categories.
+
+```json
+{
+  "guardrails_config": {
+    "guardrail_providers": [
+      {
+        "id": 4,
+        "provider_name": "azure-pii",
+        "policy_name": "azure-language-pii-redaction",
+        "enabled": true,
+        "timeout": 10,
+        "config": {
+          "endpoint": "env.AZURE_LANGUAGE_ENDPOINT",
+          "auth_type": "api_key",
+          "api_key": "env.AZURE_LANGUAGE_KEY",
+          "language": "en",
+          "domain": "none",
+          "pii_categories": ["Email", "PhoneNumber", "USSocialSecurityNumber"],
+          "action": "redact",
+          "redaction_strategy": "replace",
+          "redaction_mode": "runtime_reversible",
+          "logging_opt_out": true
+        }
+      }
+    ]
+  }
+}
+```
+
+See [Azure AI Language PII](/integrations/guardrails/azure-language-pii) for authentication modes and category filtering.
 
 </Tab>
 <Tab title="AWS Bedrock">
@@ -315,7 +400,38 @@ Calls CrowdStrike AIDR's `guard_chat_completions` endpoint for policy-driven AI 
 }
 ```
 
-GraySwan requests automatically include sanitized incoming request headers in GraySwan `metadata.headers`; no extra `config` field is required. Credential-bearing headers such as `authorization`, `x-api-key`, API-key variants, cookies, and `grayswan-api-key` are excluded, while non-sensitive context headers such as `x-request-id`, `traceparent`, `x-tenant-id`, `content-type`, and `content-length` are included when present.
+Gray Swan requests automatically include sanitized incoming request headers in Gray Swan `metadata.headers`; no extra `config` field is required. Credential-bearing headers such as `authorization`, `x-api-key`, API-key variants, cookies, and `grayswan-api-key` are excluded, while non-sensitive context headers such as `x-request-id`, `traceparent`, `x-tenant-id`, `content-type`, and `content-length` are included when present.
+
+</Tab>
+<Tab title="Lakera Guard">
+
+Calls Lakera Guard's `POST /v2/guard` endpoint with an OpenAI-style conversation. The Lakera project selects the policy; Bifrost controls whether a flagged result blocks, is recorded, or is redacted from supported payload spans.
+
+```json
+{
+  "guardrails_config": {
+    "guardrail_providers": [
+      {
+        "id": 7,
+        "provider_name": "lakera",
+        "policy_name": "lakera-production",
+        "enabled": true,
+        "timeout": 30,
+        "config": {
+          "api_key": "env.LAKERA_GUARD_API_KEY",
+          "project_id": "project-1234567890",
+          "base_url": "https://api.lakera.ai",
+          "action": "redact",
+          "redaction_strategy": "replace",
+          "redaction_mode": "runtime_reversible"
+        }
+      }
+    ]
+  }
+}
+```
+
+`base_url` is optional and defaults to `https://api.lakera.ai`. For `action: "redact"`, Lakera supplies supported message-content spans and Bifrost performs the transformation. See [Lakera Guard](/integrations/guardrails/lakera) for request compatibility and fail-closed behavior.
 
 </Tab>
 </Tabs>
@@ -325,7 +441,7 @@ GraySwan requests automatically include sanitized incoming request headers in Gr
 | Field | Required | Description |
 |-------|----------|-------------|
 | `id` | Yes | Unique integer ID - referenced by rules via `provider_config_ids` |
-| `provider_name` | Yes | Backend: `"regex"`, `"secrets"`, `"bedrock"`, `"azure"`, `"model-armor"`, `"crowdstrike-aidr"`, `"patronus-ai"`, `"grayswan"` |
+| `provider_name` | Yes | Backend: `"regex"`, `"secrets"`, `"presidio"`, `"azure-pii"`, `"bedrock"`, `"azure"`, `"model-armor"`, `"crowdstrike-aidr"`, `"patronus-ai"`, `"grayswan"`, `"lakera"` |
 | `policy_name` | Yes | Human-readable policy label |
 | `enabled` | Yes | `true` to activate |
 | `timeout` | No | Execution timeout in seconds |
@@ -374,6 +490,43 @@ Any field marked **env.\* supported** accepts a bare `"env.VAR_NAME"` string in 
 | `scopes` | No | **Plain only** | OAuth scopes (string array) |
 | `blocklist_names` | No | **Plain only** | Blocklist names to apply (string array) |
 | `sampling_rate` | No | **Plain only** | `0`–`100`; percentage of requests to evaluate (default: `100`) |
+| `timeout` | No | **Plain only** | Execution timeout in seconds |
+
+### Microsoft Presidio
+
+| Field | Required | env.\* supported | Notes |
+|-------|----------|-----------------|-------|
+| `analyzer_url` | Yes | **Plain only** | Presidio Analyzer base URL. Bifrost appends `/analyze` |
+| `api_key` | No | Yes | Optional API key for the Analyzer service |
+| `language` | No | **Plain only** | Language sent to Presidio (default: `en`) |
+| `score_threshold` | No | **Plain only** | `0`-`1`; minimum score to keep (default: `0.5`) |
+| `entities` | No | **Plain only** | Presidio entity types to detect |
+| `action` | No | **Plain only** | `detect_only` \| `block` \| `redact` (default: `detect_only`) |
+| `redaction_strategy` | No | **Plain only** | `replace` \| `mask` \| `hash` (default: `replace`) |
+| `redaction_mode` | No | **Plain only** | `runtime` \| `logs_only` \| `runtime_reversible` (default: `runtime`) |
+| `timeout` | No | **Plain only** | Execution timeout in seconds |
+
+### Azure AI Language PII
+
+| Field | Required | env.\* supported | Notes |
+|-------|----------|-----------------|-------|
+| `endpoint` | Yes | Yes | Azure AI Language endpoint |
+| `auth_type` | No | Yes | `api_key` \| `default_credential` \| `entra_id` (default: `api_key`) |
+| `api_key` | Conditional | Yes | Required when `auth_type="api_key"` |
+| `client_id` | Conditional | Yes | Required when `auth_type="entra_id"` |
+| `client_secret` | Conditional | Yes | Required when `auth_type="entra_id"` |
+| `tenant_id` | Conditional | Yes | Required when `auth_type="entra_id"` |
+| `scopes` | No | **Plain only** | OAuth scopes for token authentication |
+| `api_version` | No | **Plain only** | Azure Language API version (default: `2026-05-01`) |
+| `language` | No | **Plain only** | Document language (default: `en`) |
+| `model_version` | No | **Plain only** | Azure model version (default: `latest`) |
+| `domain` | No | **Plain only** | `none` \| `phi` (default: `none`) |
+| `pii_categories` | No | **Plain only** | Azure PII categories to detect |
+| `action` | No | **Plain only** | `detect_only` \| `block` \| `redact` (default: `detect_only`) |
+| `redaction_strategy` | No | **Plain only** | `replace` \| `mask` \| `hash` (default: `replace`) |
+| `redaction_mode` | No | **Plain only** | `runtime` \| `logs_only` \| `runtime_reversible` (default: `runtime`) |
+| `logging_opt_out` | No | **Plain only** | Requests Azure not to log input text when supported |
+| `string_index_type` | No | **Plain only** | Must be `UnicodeCodePoint` |
 | `timeout` | No | **Plain only** | Execution timeout in seconds |
 
 ### Google Model Armor
@@ -425,11 +578,26 @@ Any field marked **env.\* supported** accepts a bare `"env.VAR_NAME"` string in 
 | `sampling_rate` | No | **Plain only** | `0`–`100`; percentage of requests to evaluate (default: `100`) |
 | `timeout` | No | **Plain only** | Execution timeout in seconds |
 
+### Lakera Guard
+
+| Field | Required | env.\* supported | Notes |
+|-------|----------|-----------------|-------|
+| `api_key` | Yes | Yes | Lakera API key |
+| `project_id` | Yes | **Plain only** | Lakera project ID whose assigned policy controls screening |
+| `base_url` | No | Yes | Lakera API base. Defaults to `https://api.lakera.ai` |
+| `action` | No | **Plain only** | `block` \| `detect_only` \| `redact` (default: `block`) |
+| `redaction_strategy` | No | **Plain only** | `replace` \| `mask` \| `hash` (default: `replace`) |
+| `redaction_mode` | No | **Plain only** | `runtime` \| `logs_only` \| `runtime_reversible` (default: `runtime`) |
+| `timeout` | No | **Plain only** | Provider-level execution timeout in seconds |
+
 ### Regex
 
 | Field | Required | env.\* supported | Notes |
 |-------|----------|-----------------|-------|
-| `patterns` | Yes | **Plain only** | Array of `{ pattern, description?, flags? }` objects |
+| `patterns` | Yes | **Plain only** | Array of `{ pattern, description?, entity_type?, flags?, action?, redaction_strategy?, redaction_mode? }` objects |
+| `patterns[].action` | No | **Plain only** | `detect_only` \| `block` \| `redact` (default: `block`) |
+| `patterns[].redaction_strategy` | No | **Plain only** | `replace` \| `mask` \| `hash` (default: `replace`) |
+| `patterns[].redaction_mode` | No | **Plain only** | `runtime` \| `logs_only` \| `runtime_reversible` (default: `runtime`) |
 | `sampling_rate` | No | **Plain only** | `0`–`100`; percentage of requests to evaluate (default: `100`) |
 
 ### Secrets
@@ -437,12 +605,17 @@ Any field marked **env.\* supported** accepts a bare `"env.VAR_NAME"` string in 
 | Field | Required | env.\* supported | Notes |
 |-------|----------|-----------------|-------|
 | `ignored_secret_keywords` | No | **Plain only** | String array of substrings used to suppress known false-positive secret matches |
+| `action` | No | **Plain only** | `detect_only` \| `block` \| `redact` (default: `block`) |
+| `redaction_strategy` | No | **Plain only** | `replace` \| `mask` \| `hash` (default: `replace`) |
+| `redaction_mode` | No | **Plain only** | `runtime` \| `logs_only` \| `runtime_reversible` (default: `runtime`) |
 
 ---
 
 ## Rules
 
 Rules are CEL expressions that fire when their condition matches. Available CEL variables:
+
+For block-capable streaming output rules, `stream_replay_event_interval_ms` sets the delay between consecutive buffered events after the response is allowed. It defaults to `0`, which sends all buffered events immediately; the dashboard initializes it to `25` when pacing is enabled. When multiple matched block-capable rules specify different positive values, Bifrost uses the largest interval.
 
 | Variable | Type | Description |
 |----------|------|-------------|
@@ -477,6 +650,7 @@ Rules are CEL expressions that fire when their condition matches. Available CEL 
         "apply_to": "output",
         "sampling_rate": 100,
         "timeout": 15,
+        "stream_replay_event_interval_ms": 25,
         "provider_config_ids": [3]
       },
       {

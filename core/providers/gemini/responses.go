@@ -112,9 +112,20 @@ func ToGeminiResponsesRequestWithImageURLSchemes(ctx *schemas.BifrostContext, bi
 				return nil, err
 			}
 
-			// Convert tool choice if present
+			// Convert tool choice if present, but only when function declarations exist.
+			// Gemini rejects functionCallingConfig without function_declarations
+			// (e.g. a web-search-only request has GoogleSearch but no declarations).
 			if bifrostReq.Params.ToolChoice != nil {
-				geminiReq.ToolConfig = convertResponsesToolChoiceToGemini(bifrostReq.Params.ToolChoice)
+				hasFunctionDeclarations := false
+				for _, tool := range geminiReq.Tools {
+					if len(tool.FunctionDeclarations) > 0 {
+						hasFunctionDeclarations = true
+						break
+					}
+				}
+				if hasFunctionDeclarations {
+					geminiReq.ToolConfig = convertResponsesToolChoiceToGemini(bifrostReq.Params.ToolChoice)
+				}
 			}
 		}
 
@@ -924,6 +935,7 @@ func (state *GeminiResponsesStreamState) flush() {
 	state.TextItemClosed = false
 	state.HasStartedText = false
 	state.HasStartedToolCall = false
+	state.HasEmittedWebSearch = false
 	state.TextBuffer.Reset()
 }
 
@@ -2270,10 +2282,10 @@ func convertGeminiFileDataToContentBlock(fileData *FileData) *schemas.ResponsesM
 		return nil
 	}
 
+	// Preserve the caller's MIME as-is; do NOT fabricate a default. A wrong default
+	// (application/pdf) on a non-PDF file propagates to the outgoing request and makes
+	// Gemini reject it with INVALID_ARGUMENT. An empty MIME lets Gemini use the stored type.
 	mimeType := fileData.MIMEType
-	if mimeType == "" {
-		mimeType = "application/pdf"
-	}
 
 	// Handle images
 	if isImageMimeType(mimeType) {
@@ -2293,8 +2305,10 @@ func convertGeminiFileDataToContentBlock(fileData *FileData) *schemas.ResponsesM
 		},
 	}
 
-	// Set FileType if available
-	block.ResponsesInputMessageContentBlockFile.FileType = &mimeType
+	// Only carry a MIME type when the caller actually provided one.
+	if mimeType != "" {
+		block.ResponsesInputMessageContentBlockFile.FileType = &mimeType
+	}
 
 	return block
 }
@@ -2743,20 +2757,24 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 }
 
 // convertTextConfigToGenerationConfig converts ResponsesTextConfig to Gemini's GenerationConfig fields
-func convertTextConfigToGenerationConfig(textConfig *schemas.ResponsesTextConfig, config *GenerationConfig) {
+func convertTextConfigToGenerationConfig(textConfig *schemas.ResponsesTextConfig, config *GenerationConfig) error {
 	if textConfig == nil || config == nil {
-		return
+		return nil
 	}
 
 	if textConfig.Format == nil {
-		return
+		return nil
 	}
 
 	switch textConfig.Format.Type {
 	case "json_schema":
 		config.ResponseMIMEType = "application/json"
 		if textConfig.Format.JSONSchema != nil {
-			if schema := reconstructSchemaFromJSONSchema(textConfig.Format.JSONSchema); schema != nil {
+			schema, err := reconstructSchemaFromJSONSchema(textConfig.Format.JSONSchema)
+			if err != nil {
+				return err
+			}
+			if schema != nil {
 				config.ResponseJSONSchema = schema
 			}
 			// no schema, mime type remains as is
@@ -2768,63 +2786,69 @@ func convertTextConfigToGenerationConfig(textConfig *schemas.ResponsesTextConfig
 	case "text":
 		config.ResponseMIMEType = "text/plain"
 	}
+	return nil
 }
 
 // reconstructSchemaFromJSONSchema rebuilds a schema map from ResponsesTextConfigFormatJSONSchema
-func reconstructSchemaFromJSONSchema(jsonSchema *schemas.ResponsesTextConfigFormatJSONSchema) interface{} {
-	var schema map[string]interface{}
+func reconstructSchemaFromJSONSchema(jsonSchema *schemas.ResponsesTextConfigFormatJSONSchema) (interface{}, error) {
+	composite, acceptAll, err := jsonSchema.CompositeSchema()
+	if err != nil {
+		return nil, err
+	}
+	if composite != nil {
+		// Composite object schema: use it directly. Normalize via the
+		// OrderedMap-aware path so the client's key order survives end-to-end.
+		return normalizeSchemaValueForGemini(composite), nil
+	}
+	if acceptAll {
+		// Boolean schema `true` accepts any value. responseSchema must be a
+		// Schema object, so the widest representable form is an unconstrained
+		// object.
+		return map[string]interface{}{"type": "object"}, nil
+	}
 
-	if jsonSchema.Schema != nil {
-		// If Schema field is set, use it directly
-		schemaMap, ok := (*jsonSchema.Schema).(map[string]interface{})
-		if !ok {
-			return *jsonSchema.Schema
-		}
-		schema = schemaMap
-	} else {
-		// New format: Schema is spread across individual fields
-		schema = make(map[string]interface{})
+	// New format: Schema is spread across individual fields
+	schema := make(map[string]interface{})
 
-		if jsonSchema.Defs != nil {
-			schema["$defs"] = *jsonSchema.Defs
-		}
+	if jsonSchema.Defs != nil {
+		schema["$defs"] = *jsonSchema.Defs
+	}
 
-		if jsonSchema.Type != nil {
-			schema["type"] = *jsonSchema.Type
-		}
+	if jsonSchema.Type != nil {
+		schema["type"] = *jsonSchema.Type
+	}
 
-		if jsonSchema.Properties != nil {
-			schema["properties"] = *jsonSchema.Properties
-		}
+	if jsonSchema.Properties != nil {
+		schema["properties"] = *jsonSchema.Properties
+	}
 
-		if len(jsonSchema.Required) > 0 {
-			schema["required"] = jsonSchema.Required
-		}
+	if len(jsonSchema.Required) > 0 {
+		schema["required"] = jsonSchema.Required
+	}
 
-		if jsonSchema.Description != nil {
-			schema["description"] = *jsonSchema.Description
-		}
+	if jsonSchema.Description != nil {
+		schema["description"] = *jsonSchema.Description
+	}
 
-		if jsonSchema.AdditionalProperties != nil {
-			schema["additionalProperties"] = *jsonSchema.AdditionalProperties
-		}
+	if jsonSchema.AdditionalProperties != nil {
+		schema["additionalProperties"] = *jsonSchema.AdditionalProperties
+	}
 
-		if jsonSchema.Name != nil {
-			schema["title"] = *jsonSchema.Name
-		}
+	if jsonSchema.Name != nil {
+		schema["title"] = *jsonSchema.Name
+	}
 
-		if len(jsonSchema.PropertyOrdering) > 0 {
-			schema["propertyOrdering"] = jsonSchema.PropertyOrdering
-		}
+	if len(jsonSchema.PropertyOrdering) > 0 {
+		schema["propertyOrdering"] = jsonSchema.PropertyOrdering
+	}
 
-		// Return nil if no fields were populated
-		if len(schema) == 0 {
-			return nil
-		}
+	// Return nil if no fields were populated
+	if len(schema) == 0 {
+		return nil, nil
 	}
 
 	// Normalize the schema for Gemini compatibility (handle union types, etc.)
-	return normalizeSchemaForGemini(schema)
+	return normalizeSchemaForGemini(schema), nil
 }
 
 // convertParamsToGenerationConfigResponses converts ChatParameters to GenerationConfig for Responses
@@ -2855,16 +2879,14 @@ func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(param
 
 		// Handle "none" effort explicitly (only if max_tokens not present)
 		if !hasMaxTokens && hasEffort && *params.Reasoning.Effort == "none" {
-			config.ThinkingConfig.IncludeThoughts = false
-			config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(0))
+			setThinkingBudgetZeroIfSupported(&config, capModel)
 		} else if hasMaxTokens {
 			// User provided max_tokens - use thinkingBudget (all Gemini models support this)
 			// If both max_tokens and effort are present, we ignore effort and use ONLY max_tokens
 			budget := *params.Reasoning.MaxTokens
 			switch budget {
 			case 0:
-				config.ThinkingConfig.IncludeThoughts = false
-				config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(0))
+				setThinkingBudgetZeroIfSupported(&config, capModel)
 			case DynamicReasoningBudget: // Special case: -1 means dynamic budget
 				config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(DynamicReasoningBudget))
 			default:
@@ -2897,7 +2919,9 @@ func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(param
 		}
 	}
 	if params.Text != nil {
-		convertTextConfigToGenerationConfig(params.Text, &config)
+		if err := convertTextConfigToGenerationConfig(params.Text, &config); err != nil {
+			return config, err
+		}
 	}
 
 	if params.ExtraParams != nil {
@@ -3441,6 +3465,12 @@ func convertContentBlockToGeminiPart(block schemas.ResponsesMessageContentBlock,
 			}
 		}
 
+	case schemas.ResponsesOutputMessageContentTypeFallback:
+		// Anthropic-specific server-side fallback boundary marker. Unlike compaction it
+		// carries no user content (only from/to model names), so drop it rather than
+		// rendering it as text.
+		return nil, nil
+
 	case schemas.ResponsesInputMessageContentBlockTypeImage:
 		if block.ResponsesInputMessageContentBlockImage != nil && block.ResponsesInputMessageContentBlockImage.ImageURL != nil {
 			imageURL := *block.ResponsesInputMessageContentBlockImage.ImageURL
@@ -3516,19 +3546,12 @@ func convertContentBlockToGeminiPart(block schemas.ResponsesMessageContentBlock,
 
 			// Handle FileURL (URI-based file)
 			if fileBlock.FileURL != nil {
-				mimeType := "application/pdf"
+				// Only set MIMEType when the caller provided one
+				fileData := &FileData{FileURI: *fileBlock.FileURL}
 				if fileBlock.FileType != nil {
-					mimeType = *fileBlock.FileType
+					fileData.MIMEType = *fileBlock.FileType
 				}
-
-				part := &Part{
-					FileData: &FileData{
-						MIMEType: mimeType,
-						FileURI:  *fileBlock.FileURL,
-					},
-				}
-
-				return part, nil
+				return &Part{FileData: fileData}, nil
 			}
 
 			// Handle FileData (inline file data)

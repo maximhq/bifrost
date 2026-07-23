@@ -108,9 +108,26 @@ func applyLargePayloadPreviewsToEntry(ctx *schemas.BifrostContext, entry *logsto
 	}
 }
 
+// attachLogRedactionData copies guardrail redaction data into the log entry for async writers.
+func attachLogRedactionData(ctx *schemas.BifrostContext, entry *logstore.Log, contentLoggingEnabled bool) {
+	if ctx == nil || entry == nil || !contentLoggingEnabled {
+		return
+	}
+	if data, ok := schemas.RedactionDataFromContext(ctx); ok {
+		snapshot := data.Clone()
+		entry.RedactionData = &snapshot
+	}
+}
+
 // sanitizeErrorForLogging returns a shallow copy of err with ExtraFields.RawRequest and
 // RawResponse cleared when raw-byte persistence is disabled, preventing raw bytes from
-// leaking into entry.ErrorDetails via JSON serialization.
+// leaking into the store via JSON serialization.
+//
+// Every assignment to ErrorDetailsParsed (Log and MCPToolLog alike) must go through this
+// function: logstore's SerializeFields, which runs on every write path (BeforeCreate hook,
+// hybrid store, rdb batch writes), serializes ErrorDetailsParsed into the error_details
+// column and overwrites anything a caller put in ErrorDetails. Callers set only the
+// sanitized ErrorDetailsParsed and leave the string serialization to SerializeFields.
 func sanitizeErrorForLogging(err *schemas.BifrostError, contentLoggingEnabled, shouldStoreRaw bool) *schemas.BifrostError {
 	if err == nil {
 		return nil
@@ -124,19 +141,58 @@ func sanitizeErrorForLogging(err *schemas.BifrostError, contentLoggingEnabled, s
 	return &cloned
 }
 
-// contentLoggingEnabled returns true if content (messages, params, tool results) should be
-// recorded for this request. The BifrostContextKeyDisableContentLogging per-request override is
-// only honored when BifrostContextKeyAllowPerRequestStorageOverride is true in context (set by
-// ConvertToBifrostContext from allow_per_request_content_storage_override config).
-func (p *LoggerPlugin) contentLoggingEnabled(ctx *schemas.BifrostContext) bool {
+// contentPolicy is the resolved per-request content handling decision.
+type contentPolicy struct {
+	// storeContent: content (messages, params, tool results) is populated on
+	// the log entry and persisted.
+	storeContent bool
+	// hidden: the entry is stamped ContentHidden — the hybrid store keeps the
+	// DB row content-free and the payload is only retained in object storage,
+	// never hydrated back on reads.
+	hidden bool
+}
+
+// visible reports whether logged content is served back through the API/UI.
+func (c contentPolicy) visible() bool { return c.storeContent && !c.hidden }
+
+// resolveContentPolicy resolves content handling for this request. Content
+// logging is disabled either by the static disable_content_logging config or
+// by the x-bf-disable-content-logging header (honored only when
+// BifrostContextKeyAllowPerRequestStorageOverride is true in context, set by
+// ConvertToBifrostContext from allow_per_request_content_storage_override
+// config). What "disabled" means depends on retain_content_in_object_storage:
+//   - off (default) → content is not persisted anywhere.
+//   - on → content is offloaded to object storage as hidden: the DB row stays
+//     content-free and reads never hydrate the payload back, but the object
+//     store keeps the full payload. Requires an object-storage-backed log
+//     store; degrades to not-persisted otherwise.
+func (p *LoggerPlugin) resolveContentPolicy(ctx *schemas.BifrostContext) contentPolicy {
+	disabled := p.disableContentLogging != nil && *p.disableContentLogging
 	if ctx != nil {
 		if perRequestAllowed, _ := ctx.Value(schemas.BifrostContextKeyAllowPerRequestStorageOverride).(bool); perRequestAllowed {
 			if override, ok := ctx.Value(schemas.BifrostContextKeyDisableContentLogging).(bool); ok {
-				return !override
+				disabled = override
 			}
 		}
 	}
-	return p.disableContentLogging == nil || !*p.disableContentLogging
+	if !disabled {
+		return contentPolicy{storeContent: true}
+	}
+	if p.retainContentInObjectStorage != nil && *p.retainContentInObjectStorage {
+		if p.objectStorageEnabled {
+			return contentPolicy{storeContent: true, hidden: true}
+		}
+		p.retainWarnOnce.Do(func() {
+			p.logger.Warn("retain_content_in_object_storage is enabled but the log store has no object storage configured; content-disabled requests are dropped entirely")
+		})
+	}
+	return contentPolicy{}
+}
+
+// contentLoggingEnabled returns true if content (messages, params, tool results) should be
+// recorded on the log entry for this request.
+func (p *LoggerPlugin) contentLoggingEnabled(ctx *schemas.BifrostContext) bool {
+	return p.resolveContentPolicy(ctx).storeContent
 }
 
 // applyMCPGovernanceFieldsToEntry stamps MCP log ownership from the request context.
@@ -322,9 +378,11 @@ type LogCallback func(ctx context.Context, logEntry *logstore.Log)
 type MCPToolLogCallback func(*logstore.MCPToolLog)
 
 type Config struct {
-	DisableContentLogging *bool                  `json:"disable_content_logging"`
-	LoggingHeaders        *[]string              `json:"logging_headers"` // Pointer to live config slice; changes are reflected immediately without restart
-	Writer                *logstore.WriterConfig `json:"writer,omitempty"`
+	DisableContentLogging        *bool                  `json:"disable_content_logging"`
+	RetainContentInObjectStorage *bool                  `json:"retain_content_in_object_storage"` // Pointer to live config value; when true, content-disabled requests are offloaded to object storage as hidden instead of dropped
+	LoggingHeaders               *[]string              `json:"logging_headers"`                  // Pointer to live config slice; changes are reflected immediately without restart
+	Writer                       *logstore.WriterConfig `json:"writer,omitempty"`
+	ObjectStorageEnabled         bool                   `json:"-"` // Set by the server from the logstore config; required for retain_content_in_object_storage to take effect
 }
 
 func validateWriterConfig(config logstore.WriterConfig) error {
@@ -355,35 +413,38 @@ func validateWriterConfig(config logstore.WriterConfig) error {
 
 // LoggerPlugin implements the schemas.LLMPlugin and schemas.MCPPlugin interfaces
 type LoggerPlugin struct {
-	ctx                    context.Context
-	store                  logstore.LogStore
-	disableContentLogging  *bool
-	loggingHeaders         *[]string // Pointer to live config slice for headers to capture in metadata
-	pricingManager         *modelcatalog.ModelCatalog
-	mcpCatalog             *mcpcatalog.MCPCatalog // MCP catalog for tool cost calculation
-	mu                     sync.Mutex
-	done                   chan struct{}
-	cleanupOnce            sync.Once // Ensures cleanup only runs once
-	wg                     sync.WaitGroup
-	logger                 schemas.Logger
-	logCallback            LogCallback
-	mcpToolLogCallback     MCPToolLogCallback // Callback for MCP tool log entries
-	droppedRequests        atomic.Int64
-	cleanupTicker          *time.Ticker          // Ticker for cleaning up old processing logs
-	logMsgPool             sync.Pool             // Pool for reusing LogMessage structs
-	updateDataPool         sync.Pool             // Pool for reusing UpdateLogData structs
-	pendingLogsEntries     sync.Map              // Maps requestID -> *PendingLogData (PreLLMHook input data awaiting PostLLMHook)
-	pendingLogsToInject    sync.Map              // Maps traceID -> *pendingInjectEntries (log entries to inject, supports multiple per trace)
-	pendingMCPLogsToInject sync.Map              // Maps mcpLogID -> *logstore.MCPToolLog (PreMCPHook input data awaiting PostMCPHook)
-	writerConfig           logstore.WriterConfig // Resolved async writer queue and batch settings
-	writeQueue             chan *writeQueueEntry // Buffered channel for batch write queue
-	closed                 atomic.Bool           // Set during cleanup to prevent sends on closed writeQueue
-	deferredUsageSem       chan struct{}         // Limits concurrent deferred usage DB updates
-	clusterNodeID          atomic.Value          // Cluster node ID (string) for log attribution in clustered deployments
-	batchCtx               context.Context       // Cancelled by Cleanup to stop the batchWriter goroutine before any further DB work
-	batchCancel            context.CancelFunc    // Cancels batchCtx
-	batchWriterDone        chan struct{}         // Closed by batchWriter on exit; receiving from it transfers writeQueue ownership to Cleanup
-	recoveredBatch         []*writeQueueEntry    // batchWriter parks its in-memory batch here before exiting; safe to read after batchWriterDone closes (happens-before)
+	ctx                          context.Context
+	store                        logstore.LogStore
+	disableContentLogging        *bool
+	retainContentInObjectStorage *bool     // Pointer to live config value; when true, content-disabled requests are stored hidden instead of dropped
+	objectStorageEnabled         bool      // Log store offloads payloads to object storage; required for retain_content_in_object_storage
+	retainWarnOnce               sync.Once // Warns once when retention is configured without object storage
+	loggingHeaders               *[]string // Pointer to live config slice for headers to capture in metadata
+	pricingManager               *modelcatalog.ModelCatalog
+	mcpCatalog                   *mcpcatalog.MCPCatalog // MCP catalog for tool cost calculation
+	mu                           sync.Mutex
+	done                         chan struct{}
+	cleanupOnce                  sync.Once // Ensures cleanup only runs once
+	wg                           sync.WaitGroup
+	logger                       schemas.Logger
+	logCallback                  LogCallback
+	mcpToolLogCallback           MCPToolLogCallback // Callback for MCP tool log entries
+	droppedRequests              atomic.Int64
+	cleanupTicker                *time.Ticker          // Ticker for cleaning up old processing logs
+	logMsgPool                   sync.Pool             // Pool for reusing LogMessage structs
+	updateDataPool               sync.Pool             // Pool for reusing UpdateLogData structs
+	pendingLogsEntries           sync.Map              // Maps requestID -> *PendingLogData (PreLLMHook input data awaiting PostLLMHook)
+	pendingLogsToInject          sync.Map              // Maps traceID -> *pendingInjectEntries (log entries to inject, supports multiple per trace)
+	pendingMCPLogsToInject       sync.Map              // Maps mcpLogID -> *logstore.MCPToolLog (PreMCPHook input data awaiting PostMCPHook)
+	writerConfig                 logstore.WriterConfig // Resolved async writer queue and batch settings
+	writeQueue                   chan *writeQueueEntry // Buffered channel for batch write queue
+	closed                       atomic.Bool           // Set during cleanup to prevent sends on closed writeQueue
+	deferredUsageSem             chan struct{}         // Limits concurrent deferred usage DB updates
+	clusterNodeID                atomic.Value          // Cluster node ID (string) for log attribution in clustered deployments
+	batchCtx                     context.Context       // Cancelled by Cleanup to stop the batchWriter goroutine before any further DB work
+	batchCancel                  context.CancelFunc    // Cancels batchCtx
+	batchWriterDone              chan struct{}         // Closed by batchWriter on exit; receiving from it transfers writeQueue ownership to Cleanup
+	recoveredBatch               []*writeQueueEntry    // batchWriter parks its in-memory batch here before exiting; safe to read after batchWriterDone closes (happens-before)
 }
 
 // Init creates new logger plugin with given log store
@@ -415,20 +476,22 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger, logsStore 
 
 	batchCtx, batchCancel := context.WithCancel(ctx)
 	plugin := &LoggerPlugin{
-		ctx:                   ctx,
-		store:                 logsStore,
-		pricingManager:        pricingManager,
-		mcpCatalog:            mcpCatalog,
-		disableContentLogging: config.DisableContentLogging,
-		loggingHeaders:        config.LoggingHeaders,
-		done:                  make(chan struct{}),
-		logger:                logger,
-		writerConfig:          writerConfig,
-		writeQueue:            make(chan *writeQueueEntry, writerConfig.WriteQueueCapacity),
-		deferredUsageSem:      make(chan struct{}, writerConfig.DeferredUsageConcurrency),
-		batchCtx:              batchCtx,
-		batchCancel:           batchCancel,
-		batchWriterDone:       make(chan struct{}),
+		ctx:                          ctx,
+		store:                        logsStore,
+		pricingManager:               pricingManager,
+		mcpCatalog:                   mcpCatalog,
+		disableContentLogging:        config.DisableContentLogging,
+		retainContentInObjectStorage: config.RetainContentInObjectStorage,
+		objectStorageEnabled:         config.ObjectStorageEnabled,
+		loggingHeaders:               config.LoggingHeaders,
+		done:                         make(chan struct{}),
+		logger:                       logger,
+		writerConfig:                 writerConfig,
+		writeQueue:                   make(chan *writeQueueEntry, writerConfig.WriteQueueCapacity),
+		deferredUsageSem:             make(chan struct{}, writerConfig.DeferredUsageConcurrency),
+		batchCtx:                     batchCtx,
+		batchCancel:                  batchCancel,
+		batchWriterDone:              make(chan struct{}),
 		logMsgPool: sync.Pool{
 			New: func() any {
 				return &LogMessage{}
@@ -921,10 +984,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			}
 			applyModelAlias(entry, originalModelRequested, resolvedModelUsed)
 			applyResolvedAliasInfo(entry, resolvedKeyAlias)
-			if data, err := sonic.Marshal(sanitizeErrorForLogging(bifrostErr, contentLoggingEnabled, shouldStoreRaw)); err == nil {
-				entry.ErrorDetails = string(data)
-			}
-			entry.ErrorDetailsParsed = bifrostErr
+			entry.ErrorDetailsParsed = sanitizeErrorForLogging(bifrostErr, contentLoggingEnabled, shouldStoreRaw)
 			if nodeID, _ := p.clusterNodeID.Load().(string); nodeID != "" {
 				entry.ClusterNodeID = &nodeID
 			}
@@ -995,11 +1055,24 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	if result != nil {
 		ef := result.GetExtraFields()
 		latency = ef.Latency
+		// Model that actually served the turn when the provider swapped models inside
+		// one call. entry.Model still names what the caller asked for.
+		if ef.RoutingInfo.ServerSideFallbackModel != nil {
+			served := *ef.RoutingInfo.ServerSideFallbackModel
+			entry.ServerSideFallbackModel = &served
+		}
 		if ef.CacheDebug != nil && ef.CacheDebug.CacheHit && ef.CacheDebug.CacheHitLatency != nil {
 			latency = *ef.CacheDebug.CacheHitLatency
 		}
 	} else if bifrostErr != nil {
 		latency = bifrostErr.ExtraFields.Latency
+	}
+
+	if entry.ServerSideFallbackModel == nil && bifrostErr != nil && bifrostErr.ExtraFields.BilledUsage != nil {
+		if served := bifrostErr.ExtraFields.BilledUsage.ServerSideFallbackModel; served != nil {
+			m := *served
+			entry.ServerSideFallbackModel = &m
+		}
 	}
 	applyOutputFieldsToEntry(entry, selectedKeyID, selectedKeyName, virtualKeyID, virtualKeyName, routingRuleID, routingRuleName, selectedPromptID, selectedPromptName, selectedPromptVersion, teamID, teamName, customerID, customerName, userID, userName, businessUnitID, businessUnitName, numberOfRetries, latency, attemptTrail)
 	applyResolvedAliasInfo(entry, resolvedKeyAlias)
@@ -1058,13 +1131,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			tracer.CleanupStreamAccumulator(traceID)
 		}
 
-		// Serialize error details immediately since bifrostErr may be released
-		// back to the pool before the async batch writer processes this entry.
-		// Also set ErrorDetailsParsed for UI callback (JSON serialization uses this field).
-		if data, err := sonic.Marshal(sanitizeErrorForLogging(bifrostErr, contentLoggingEnabled, shouldStoreRaw)); err == nil {
-			entry.ErrorDetails = string(data)
-		}
-		entry.ErrorDetailsParsed = bifrostErr
+		entry.ErrorDetailsParsed = sanitizeErrorForLogging(bifrostErr, contentLoggingEnabled, shouldStoreRaw)
 		if shouldStoreRaw && contentLoggingEnabled {
 			if bifrostErr.ExtraFields.RawRequest != nil {
 				rawReqBytes, err := sonic.Marshal(bifrostErr.ExtraFields.RawRequest)
@@ -1105,10 +1172,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			entry.Status = logStatusForError(bifrostErr)
 			entry.Stream = true
 			applyModelAlias(entry, originalModelRequested, resolvedModelUsed)
-			if data, err := sonic.Marshal(sanitizeErrorForLogging(bifrostErr, contentLoggingEnabled, shouldStoreRaw)); err == nil {
-				entry.ErrorDetails = string(data)
-			}
-			entry.ErrorDetailsParsed = bifrostErr
+			entry.ErrorDetailsParsed = sanitizeErrorForLogging(bifrostErr, contentLoggingEnabled, shouldStoreRaw)
 			// Backfill raw request/response on streaming-error path so cancellation/timeout
 			// log entries still carry raw payloads when content logging + raw storage are
 			// enabled. Mirrors the non-streaming Path A pattern at line 872. Prefer the
@@ -1151,7 +1215,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			entry.Stream = true
 			p.applyStreamingOutputToEntry(entry, streamResponse, shouldStoreRaw, contentLoggingEnabled)
 		}
-		if entry.ErrorDetails != "" || entry.ErrorDetailsParsed != nil {
+		if entry.ErrorDetailsParsed != nil {
 			entry.Status = logStatusForError(entry.ErrorDetailsParsed)
 		}
 		// Backfill passthrough status_code from response (streaming path)
@@ -1187,13 +1251,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	if bifrostErr != nil {
 		entry.Status = logStatusForError(bifrostErr)
 		applyModelAlias(entry, originalModelRequested, resolvedModelUsed)
-		// Serialize error details immediately since bifrostErr may be released
-		// back to the pool before the async batch writer processes this entry.
-		// Also set ErrorDetailsParsed for UI callback (JSON serialization uses this field).
-		if data, err := sonic.Marshal(sanitizeErrorForLogging(bifrostErr, contentLoggingEnabled, shouldStoreRaw)); err == nil {
-			entry.ErrorDetails = string(data)
-		}
-		entry.ErrorDetailsParsed = bifrostErr
+		entry.ErrorDetailsParsed = sanitizeErrorForLogging(bifrostErr, contentLoggingEnabled, shouldStoreRaw)
 		// Realtime turns that fail mid-stream still need their input transcript
 		// surfaced — backfill from bifrostErr.ExtraFields.RawRequest if present.
 		if requestType == schemas.RealtimeRequest {
@@ -1333,6 +1391,14 @@ drainQueue:
 // retrieval by Inject(), or enqueues directly if no traceID is available (Go SDK path).
 // Multiple entries per traceID are supported (e.g. fallback/retry attempts within the same trace).
 func (p *LoggerPlugin) storeOrEnqueueEntry(ctx *schemas.BifrostContext, entry *logstore.Log, callback func(entry *logstore.Log)) {
+	policy := p.resolveContentPolicy(ctx)
+	// ContentHidden marks entries whose content the API/UI never serves back —
+	// both the retained-in-object-storage case and the dropped-entirely case.
+	entry.ContentHidden = !policy.visible()
+	// Redaction mappings exist to reveal redacted content on permitted UI
+	// reads; hidden entries serve no content back, so attach only when the
+	// content is actually visible.
+	attachLogRedactionData(ctx, entry, policy.visible())
 	traceID, _ := ctx.Value(schemas.BifrostContextKeyTraceID).(string)
 	if traceID != "" {
 		// Append to slice for Inject() to pick up — supports multiple attempts per trace
@@ -1487,8 +1553,9 @@ func (p *LoggerPlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	}
 	applyMCPGovernanceFieldsToEntry(ctx, entry)
 
-	// Set arguments if content logging is enabled
-	if p.contentLoggingEnabled(ctx) {
+	// Set arguments if content logging is enabled. MCP tool logs have no
+	// hidden-content mode, so content is only stored when it is also visible.
+	if p.resolveContentPolicy(ctx).visible() {
 		entry.ArgumentsParsed = arguments
 	}
 
@@ -1597,10 +1664,13 @@ func (p *LoggerPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.Bi
 
 	if bifrostErr != nil {
 		entry.Status = "error"
-		entry.ErrorDetailsParsed = bifrostErr
+		shouldStoreRaw, _ := ctx.Value(schemas.BifrostContextKeyShouldStoreRawInLogs).(bool)
+		entry.ErrorDetailsParsed = sanitizeErrorForLogging(bifrostErr, p.resolveContentPolicy(ctx).visible(), shouldStoreRaw)
 	} else if resp != nil {
 		entry.Status = "success"
-		if p.contentLoggingEnabled(ctx) {
+		// MCP tool logs have no hidden-content mode, so content is only
+		// stored when it is also visible.
+		if p.resolveContentPolicy(ctx).visible() {
 			var result interface{}
 			if resp.ChatMessage != nil {
 				if resp.ChatMessage.Content != nil && resp.ChatMessage.Content.ContentStr != nil {

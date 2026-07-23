@@ -145,7 +145,7 @@ export const governanceApi = baseApi.injectEndpoints({
 		}),
 
 		getTeam: builder.query<{ team: Team }, string>({
-			query: (teamId) => `/governance/teams/${teamId}`,
+			query: (teamId) => `/governance/teams/${encodeURIComponent(teamId)}`,
 			providesTags: (result, error, teamId) => [{ type: "Teams", id: teamId }],
 		}),
 
@@ -180,7 +180,7 @@ export const governanceApi = baseApi.injectEndpoints({
 
 		updateTeam: builder.mutation<{ message: string; team: Team }, { teamId: string; data: UpdateTeamRequest }>({
 			query: ({ teamId, data }) => ({
-				url: `/governance/teams/${teamId}`,
+				url: `/governance/teams/${encodeURIComponent(teamId)}`,
 				method: "PUT",
 				body: data,
 			}),
@@ -213,7 +213,7 @@ export const governanceApi = baseApi.injectEndpoints({
 
 		deleteTeam: builder.mutation<{ message: string }, string>({
 			query: (teamId) => ({
-				url: `/governance/teams/${teamId}`,
+				url: `/governance/teams/${encodeURIComponent(teamId)}`,
 				method: "DELETE",
 			}),
 			async onQueryStarted(teamId, { dispatch, getState, queryFulfilled }) {
@@ -509,6 +509,7 @@ export const governanceApi = baseApi.injectEndpoints({
 					...(params?.offset !== undefined && { offset: params.offset }),
 					...(params?.search && { search: params.search }),
 					...(params?.scope && { scope: params.scope }),
+					...(params?.scope_id && { scope_id: params.scope_id }),
 					...(params?.provider && { provider: params.provider }),
 				},
 			}),
@@ -540,6 +541,7 @@ export const governanceApi = baseApi.injectEndpoints({
 						const args = entry.originalArgs as GetModelConfigsParams | undefined;
 						if (args?.search && !mc.model_name.toLowerCase().includes(args.search.toLowerCase())) continue;
 						if (args?.scope && mc.scope !== args.scope) continue;
+						if (args?.scope_id && mc.scope_id !== args.scope_id) continue;
 						if (args?.provider && mc.provider !== args.provider) continue;
 						dispatch(
 							governanceApi.util.updateQueryData("getModelConfigs", entry.originalArgs, (draft) => {

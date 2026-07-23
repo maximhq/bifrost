@@ -87,11 +87,11 @@ Refer to the API documentation for [Provider Keys Management](https://docs.getbi
 case schemas.VLLM:
     return []schemas.Key{{
         Name:   "vllm-local",
-        Value:  *schemas.NewEnvVar(""),
+        Value:  *schemas.NewSecretVar(""),
         Models: []string{"meta-llama/Llama-3.2-1B-Instruct"},
         Weight: 1.0,
         VLLMKeyConfig: &schemas.VLLMKeyConfig{
-            URL:       *schemas.NewEnvVar("http://localhost:8000"),
+            URL:       *schemas.NewSecretVar("http://localhost:8000"),
             ModelName: "meta-llama/Llama-3.2-1B-Instruct",
         },
     }}, nil

@@ -24,3 +24,22 @@ export function formatCurrencyNumber(value: number, maximumFractionDigits = 2): 
 		maximumFractionDigits,
 	}).format(value);
 }
+
+const TOKEN_PRICE_MULTIPLIER = 1_000_000;
+
+function formatTokenPriceValue(cost: number): string {
+	return `$${(cost * TOKEN_PRICE_MULTIPLIER).toLocaleString(undefined, {
+		minimumFractionDigits: 2,
+		maximumFractionDigits: 2,
+	})}`;
+}
+
+export function formatTokenPriceCompact(cost?: number): string {
+	if (cost === undefined || cost === null) return "—";
+	return formatTokenPriceValue(cost);
+}
+
+export function formatTokenPriceFull(cost?: number): string {
+	if (cost === undefined || cost === null) return "Not available";
+	return `${formatTokenPriceValue(cost)} / 1M tokens`;
+}

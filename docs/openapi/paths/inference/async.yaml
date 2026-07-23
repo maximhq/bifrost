@@ -14,6 +14,7 @@ async-chat-completions:
     - Async Jobs
     parameters:
     - $ref: '#/components/parameters/AsyncResultTTL'
+    - $ref: '#/components/parameters/AsyncWebhookEndpoint'
     requestBody:
       required: true
       content:
@@ -49,6 +50,7 @@ async-text-completions:
     - Async Jobs
     parameters:
     - $ref: '#/components/parameters/AsyncResultTTL'
+    - $ref: '#/components/parameters/AsyncWebhookEndpoint'
     requestBody:
       required: true
       content:
@@ -84,6 +86,7 @@ async-responses:
     - Async Jobs
     parameters:
     - $ref: '#/components/parameters/AsyncResultTTL'
+    - $ref: '#/components/parameters/AsyncWebhookEndpoint'
     requestBody:
       required: true
       content:
@@ -118,6 +121,7 @@ async-embeddings:
     - Async Jobs
     parameters:
     - $ref: '#/components/parameters/AsyncResultTTL'
+    - $ref: '#/components/parameters/AsyncWebhookEndpoint'
     requestBody:
       required: true
       content:
@@ -153,6 +157,7 @@ async-speech:
     - Async Jobs
     parameters:
     - $ref: '#/components/parameters/AsyncResultTTL'
+    - $ref: '#/components/parameters/AsyncWebhookEndpoint'
     requestBody:
       required: true
       content:
@@ -188,6 +193,7 @@ async-transcriptions:
     - Async Jobs
     parameters:
     - $ref: '#/components/parameters/AsyncResultTTL'
+    - $ref: '#/components/parameters/AsyncWebhookEndpoint'
     requestBody:
       required: true
       content:
@@ -223,6 +229,7 @@ async-image-generation:
     - Async Jobs
     parameters:
     - $ref: '#/components/parameters/AsyncResultTTL'
+    - $ref: '#/components/parameters/AsyncWebhookEndpoint'
     requestBody:
       required: true
       content:
@@ -258,6 +265,7 @@ async-image-edit:
     - Async Jobs
     parameters:
     - $ref: '#/components/parameters/AsyncResultTTL'
+    - $ref: '#/components/parameters/AsyncWebhookEndpoint'
     requestBody:
       required: true
       content:
@@ -292,6 +300,7 @@ async-image-variation:
     - Async Jobs
     parameters:
     - $ref: '#/components/parameters/AsyncResultTTL'
+    - $ref: '#/components/parameters/AsyncWebhookEndpoint'
     requestBody:
       required: true
       content:
@@ -652,6 +661,7 @@ async-rerank:
     - Async Jobs
     parameters:
     - $ref: '#/components/parameters/AsyncResultTTL'
+    - $ref: '#/components/parameters/AsyncWebhookEndpoint'
     requestBody:
       required: true
       content:
@@ -731,3 +741,16 @@ components:
       schema:
         type: integer
         default: 3600
+    AsyncWebhookEndpoint:
+      name: x-bf-async-webhook
+      in: header
+      required: false
+      description: |
+        Name of a registered webhook endpoint to notify when this job reaches a terminal
+        state (`completed` or `failed`). The endpoint must already exist and be enabled;
+        otherwise the submission is rejected with HTTP 400. If the endpoint is not subscribed
+        to the resulting event, the job still completes normally but no delivery is enqueued.
+        When omitted, no webhook is sent for the job and results are retrieved by polling.
+        See the Webhooks management API to register endpoints.
+      schema:
+        type: string

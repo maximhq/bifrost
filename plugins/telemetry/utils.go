@@ -8,6 +8,7 @@ import (
 	"math"
 	"strings"
 
+	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/valyala/fasthttp"
 )
@@ -33,6 +34,11 @@ func getPrometheusLabelValues(expectedLabels []string, headerValues map[string]s
 // Returns a map of all label values
 func collectPrometheusKeyValues(ctx *fasthttp.RequestCtx) map[string]string {
 	path := string(ctx.Path())
+	// Prefer the matched route template over the raw path, whose embedded model names
+	// and resource IDs would explode metric cardinality.
+	if route, ok := ctx.UserValue(string(schemas.BifrostContextKeyHTTPRoute)).(string); ok && route != "" {
+		path = route
+	}
 	method := string(ctx.Method())
 
 	// Initialize with default metrics

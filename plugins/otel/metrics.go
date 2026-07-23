@@ -55,9 +55,14 @@ type MetricsExporter struct {
 
 	// Bifrost metrics - histograms
 	upstreamLatencySeconds         *syncFloat64Histogram
+	overheadLatencySeconds         *syncFloat64Histogram
 	streamFirstTokenLatencySeconds *syncFloat64Histogram
 	streamInterTokenLatencySeconds *syncFloat64Histogram
 	requestRetries                 *syncFloat64Histogram
+
+	// OTel MCP semconv duration histogram. _count gives call volume and error.type gives
+	// the error rate, so no separate MCP counters are needed.
+	mcpClientOperationDuration *syncFloat64Histogram
 
 	// HTTP metrics
 	httpRequestsTotal     *syncInt64Counter
@@ -129,6 +134,17 @@ var (
 		10, 15, 30, 45, 60, 90, 120, 180, 300, 600, 900,
 	}
 
+	// overheadLatencyBuckets: Bifrost's own processing cost, i.e. total minus time
+	// blocked on upstream sockets. A different scale entirely from upstream latency —
+	// healthy values are sub-millisecond to low tens of ms, dominated by request and
+	// response marshalling. Reusing upstreamLatencyBuckets would pile almost every
+	// request into the first two buckets and make regressions invisible. The long
+	// tail up to 30s exists to catch queue saturation and pathological payloads.
+	overheadLatencyBuckets = []float64{
+		.0001, .00025, .0005, .001, .0025, .005, .01, .025, .05, .1,
+		.25, .5, 1, 2.5, 5, 10, 30,
+	}
+
 	// firstTokenLatencyBuckets: TTFT. Bimodal - sub-second for fast streaming
 	// providers, tens to hundreds of seconds for reasoning models. Purely additive
 	// over the prior SDK-default fallback so historical queries remain valid.
@@ -150,6 +166,11 @@ var (
 	// payload over 10KB into +Inf.
 	httpBodySizeBuckets = []float64{
 		100, 1_000, 10_000, 100_000, 1_000_000, 10_000_000, 100_000_000, 1_000_000_000,
+	}
+
+	// mcpOperationDurationBuckets: boundaries recommended by the MCP semconv.
+	mcpOperationDurationBuckets = []float64{
+		0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 30, 60, 120, 300,
 	}
 )
 
@@ -383,6 +404,14 @@ func (m *MetricsExporter) initMetrics() {
 		boundaries: upstreamLatencyBuckets,
 	}
 
+	m.overheadLatencySeconds = &syncFloat64Histogram{
+		name:       "bifrost_overhead_latency_seconds",
+		desc:       "Latency added by Bifrost itself: total request time minus time blocked on upstream providers",
+		unit:       "s",
+		meter:      m.meter,
+		boundaries: overheadLatencyBuckets,
+	}
+
 	m.streamFirstTokenLatencySeconds = &syncFloat64Histogram{
 		name:       "bifrost_stream_first_token_latency_seconds",
 		desc:       "Latency of the first token of a stream response",
@@ -405,6 +434,15 @@ func (m *MetricsExporter) initMetrics() {
 		unit:       "{retry}",
 		meter:      m.meter,
 		boundaries: []float64{0, 1, 2, 3, 5, 10},
+	}
+
+	// Dotted name is intentional: the exact semconv metric name, not a bifrost_* metric.
+	m.mcpClientOperationDuration = &syncFloat64Histogram{
+		name:       "mcp.client.operation.duration",
+		desc:       "Duration of an MCP request as observed by the client (Bifrost) from send until the response is received",
+		unit:       "s",
+		meter:      m.meter,
+		boundaries: mcpOperationDurationBuckets,
 	}
 
 	// HTTP metrics
@@ -508,6 +546,13 @@ func (m *MetricsExporter) RecordUpstreamLatency(ctx context.Context, latencySeco
 	m.upstreamLatencySeconds.Record(ctx, latencySeconds, metric.WithAttributes(attrs...))
 }
 
+// RecordOverheadLatency records the latency Bifrost itself added to a request.
+// Recorded once per trace (off the root span), not once per attempt — the
+// underlying accumulator already spans every retry and fallback.
+func (m *MetricsExporter) RecordOverheadLatency(ctx context.Context, overheadSeconds float64, attrs ...attribute.KeyValue) {
+	m.overheadLatencySeconds.Record(ctx, overheadSeconds, metric.WithAttributes(attrs...))
+}
+
 // RecordStreamFirstTokenLatency records first token latency metric
 func (m *MetricsExporter) RecordStreamFirstTokenLatency(ctx context.Context, latencySeconds float64, attrs ...attribute.KeyValue) {
 	m.streamFirstTokenLatencySeconds.Record(ctx, latencySeconds, metric.WithAttributes(attrs...))
@@ -522,6 +567,11 @@ func (m *MetricsExporter) RecordStreamInterTokenLatency(ctx context.Context, lat
 // Recorded once per request (off the final span), not once per attempt.
 func (m *MetricsExporter) RecordRequestRetries(ctx context.Context, retries float64, attrs ...attribute.KeyValue) {
 	m.requestRetries.Record(ctx, retries, metric.WithAttributes(attrs...))
+}
+
+// RecordMCPOperationDuration records the mcp.client.operation.duration metric for one op.
+func (m *MetricsExporter) RecordMCPOperationDuration(ctx context.Context, durationSeconds float64, attrs ...attribute.KeyValue) {
+	m.mcpClientOperationDuration.Record(ctx, durationSeconds, metric.WithAttributes(attrs...))
 }
 
 // RecordHTTPRequest records an HTTP request metric

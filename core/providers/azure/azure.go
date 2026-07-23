@@ -178,7 +178,7 @@ func NewAzureProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*A
 		ReadTimeout:         requestTimeout,
 		WriteTimeout:        requestTimeout,
 		MaxConnsPerHost:     config.NetworkConfig.MaxConnsPerHost,
-		MaxIdleConnDuration: 30 * time.Second,
+		MaxIdleConnDuration: time.Second * time.Duration(config.NetworkConfig.KeepAliveTimeoutInSeconds),
 		MaxConnWaitTimeout:  requestTimeout,
 		MaxConnDuration:     time.Second * time.Duration(schemas.DefaultMaxConnDurationInSeconds),
 		ConnPoolStrategy:    fasthttp.FIFO,
@@ -671,6 +671,11 @@ func (provider *AzureProvider) Speech(ctx *schemas.BifrostContext, key schemas.K
 		return nil, providerUtils.NewConfigurationError("endpoint not set")
 	}
 
+	authHeader, bifrostErr := provider.getAzureAuthHeaders(ctx, key, false)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
 	url := fmt.Sprintf("%s/openai/v1/audio/speech", endpoint)
 
 	response, err := openai.HandleOpenAISpeechRequest(
@@ -680,6 +685,7 @@ func (provider *AzureProvider) Speech(ctx *schemas.BifrostContext, key schemas.K
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,
+		authHeader,
 		provider.GetProviderKey(),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
@@ -771,7 +777,7 @@ func (provider *AzureProvider) SpeechStream(ctx *schemas.BifrostContext, postHoo
 
 	startTime := time.Now()
 	// Make the request
-	requestErr := provider.client.Do(req, resp)
+	requestErr := providerUtils.DoStreamingRequest(ctx, provider.client, req, resp)
 	latency := time.Since(startTime)
 	if requestErr != nil {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
@@ -1008,6 +1014,11 @@ func (provider *AzureProvider) Transcription(ctx *schemas.BifrostContext, key sc
 	if endpoint == "" {
 		return nil, providerUtils.NewConfigurationError("endpoint not set")
 	}
+	authHeader, bifrostErr := provider.getAzureAuthHeaders(ctx, key, false)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
 	url := fmt.Sprintf("%s/openai/deployments/%s/audio/transcriptions?api-version=%s", endpoint, request.Model, resolveAPIVersion(ctx, DefaultAzureAPIVersion))
 
 	response, err := openai.HandleOpenAITranscriptionRequest(
@@ -1017,6 +1028,7 @@ func (provider *AzureProvider) Transcription(ctx *schemas.BifrostContext, key sc
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,
+		authHeader,
 		provider.GetProviderKey(),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		nil,
@@ -1045,6 +1057,11 @@ func (provider *AzureProvider) ImageGeneration(ctx *schemas.BifrostContext, key 
 		return nil, providerUtils.NewConfigurationError("endpoint not set")
 	}
 
+	authHeader, bifrostErr := provider.getAzureAuthHeaders(ctx, key, false)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
 	response, err := openai.HandleOpenAIImageGenerationRequest(
 		ctx,
 		provider.client,
@@ -1052,6 +1069,7 @@ func (provider *AzureProvider) ImageGeneration(ctx *schemas.BifrostContext, key 
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,
+		authHeader,
 		provider.GetProviderKey(),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
@@ -1115,6 +1133,11 @@ func (provider *AzureProvider) ImageEdit(ctx *schemas.BifrostContext, key schema
 		return nil, providerUtils.NewConfigurationError("endpoint not set")
 	}
 
+	authHeader, bifrostErr := provider.getAzureAuthHeaders(ctx, key, false)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
 	url := fmt.Sprintf("%s/openai/v1/images/edits", endpoint)
 	response, err := openai.HandleOpenAIImageEditRequest(
 		ctx,
@@ -1123,6 +1146,7 @@ func (provider *AzureProvider) ImageEdit(ctx *schemas.BifrostContext, key schema
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,
+		authHeader,
 		false,
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
@@ -1184,6 +1208,11 @@ func (provider *AzureProvider) VideoGeneration(ctx *schemas.BifrostContext, key 
 		return nil, providerUtils.NewConfigurationError("endpoint not set")
 	}
 
+	authHeader, bifrostErr := provider.getAzureAuthHeaders(ctx, key, false)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
 	// Build Azure URL for OpenAI-compatible video generation endpoint
 	url := fmt.Sprintf("%s/openai/v1/videos", endpoint)
 
@@ -1194,6 +1223,7 @@ func (provider *AzureProvider) VideoGeneration(ctx *schemas.BifrostContext, key 
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,
+		authHeader,
 		provider.GetProviderKey(),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
@@ -1329,6 +1359,11 @@ func (provider *AzureProvider) VideoDelete(ctx *schemas.BifrostContext, key sche
 		return nil, providerUtils.NewConfigurationError("endpoint not set")
 	}
 
+	authHeader, bifrostErr := provider.getAzureAuthHeaders(ctx, key, false)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
 	// Build Azure URL
 	url := fmt.Sprintf("%s/openai/v1/videos/%s", endpoint, videoID)
 
@@ -1339,6 +1374,7 @@ func (provider *AzureProvider) VideoDelete(ctx *schemas.BifrostContext, key sche
 		videoID,
 		key,
 		provider.networkConfig.ExtraHeaders,
+		authHeader,
 		providerName,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
@@ -1358,6 +1394,11 @@ func (provider *AzureProvider) VideoList(ctx *schemas.BifrostContext, key schema
 		return nil, providerUtils.NewConfigurationError("endpoint not set")
 	}
 
+	authHeader, bifrostErr := provider.getAzureAuthHeaders(ctx, key, false)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
 	// Build Azure URL
 	baseURL := fmt.Sprintf("%s/openai/v1/videos", endpoint)
 
@@ -1368,6 +1409,7 @@ func (provider *AzureProvider) VideoList(ctx *schemas.BifrostContext, key schema
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,
+		authHeader,
 		provider.GetProviderKey(),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
@@ -3482,7 +3524,7 @@ func (provider *AzureProvider) PassthroughStream(
 
 	startTime := time.Now()
 
-	err = activeClient.Do(fasthttpReq, resp)
+	err = providerUtils.DoStreamingRequest(ctx, activeClient, fasthttpReq, resp)
 	latency := time.Since(startTime)
 	if err != nil {
 		providerUtils.ReleaseStreamingResponse(ctx, resp)

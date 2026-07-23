@@ -1,4 +1,5 @@
 // Chart utility functions for the dashboard
+import { formatCompactNumber } from "@/lib/utils/numbers";
 
 // Format timestamp based on bucket size
 export function formatTimestamp(timestamp: string, bucketSizeSeconds: number): string {
@@ -69,6 +70,17 @@ export const OTHER_SERIES_KEY = "__other__";
 export const OTHER_SERIES_LABEL = "Other";
 export const OTHER_SERIES_COLOR = "#94a3b8"; // slate-400
 
+export const UNNAMED_MODEL_LABEL = "(unnamed)";
+
+// Resolves a raw model value to its display label: the canonical model name
+// when one is known (e.g. Bedrock inference-profile IDs mapped via key
+// aliases), the raw value otherwise.
+export function displayModelLabel(model: string, labels?: Record<string, string>): string {
+	if (model === OTHER_SERIES_KEY) return OTHER_SERIES_LABEL;
+	if (model === "") return UNNAMED_MODEL_LABEL;
+	return labels?.[model] ?? model;
+}
+
 export function pickTopSeries<T>(
 	buckets: T[],
 	seriesLabels: string[],
@@ -99,6 +111,16 @@ export const LATENCY_COLORS = {
 	p99: "#ef4444", // red-500
 };
 
+// Format token-generation throughput (tokens/sec) with compact units (1k, 5k, 1M).
+// Uses a non-breaking space so the value and unit never wrap onto two lines.
+export function formatTokensPerSecond(tps: number): string {
+	if (!Number.isFinite(tps) || tps <= 0) return "0 tok/s";
+	return `${formatCompactNumber(tps, 1)} tok/s`;
+}
+
+// Throughput chart color
+export const THROUGHPUT_COLOR = "#10b981"; // emerald-500
+
 // Shared CSS class constants for chart card headers
 export const CHART_HEADER_ACTIONS_CLASS = "flex min-w-0 w-full flex-col-reverse gap-2";
 export const CHART_HEADER_LEGEND_CLASS = "flex min-h-5 min-w-0 flex-wrap items-center gap-2 pl-2 text-xs";
@@ -108,6 +130,7 @@ export const CHART_HEADER_CONTROLS_CLASS = "flex items-center justify-end gap-2"
 export const CHART_COLORS = {
 	success: "#10b981", // emerald-500
 	error: "#ef4444", // red-500
+	cancelled: "#a1a1aa", // zinc-400
 	promptTokens: "#3b82f6", // blue-500
 	completionTokens: "#10b981", // emerald-500
 	totalTokens: "#8b5cf6", // violet-500

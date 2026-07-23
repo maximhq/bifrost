@@ -61,6 +61,12 @@ type LogManager interface {
 	// GetProviderLatencyHistogram returns time-bucketed latency percentiles with provider breakdown for the given filters
 	GetProviderLatencyHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.ProviderLatencyHistogramResult, error)
 
+	// GetThroughputHistogram returns time-bucketed token-generation throughput (tokens/sec) for the given filters
+	GetThroughputHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.ThroughputHistogramResult, error)
+
+	// GetProviderThroughputHistogram returns time-bucketed tokens/sec with provider breakdown for the given filters
+	GetProviderThroughputHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.ProviderThroughputHistogramResult, error)
+
 	// GetModelRankings returns models ranked by usage with trend comparison
 	GetModelRankings(ctx context.Context, filters *logstore.SearchFilters) (*logstore.ModelRankingResult, error)
 
@@ -125,6 +131,14 @@ type LogManager interface {
 	RecalculateCosts(ctx context.Context, filters *logstore.SearchFilters, limit int) (*RecalculateCostResult, error)
 	// RecalculateCostsWithProgress recomputes missing costs and emits batch progress updates
 	RecalculateCostsWithProgress(ctx context.Context, filters *logstore.SearchFilters, limit int, progress func(RecalculateCostProgress)) (*RecalculateCostResult, error)
+	// BuildCostRecalcJobMeta counts the in-scope rows and returns the initial
+	// metadata JSON for a background cost-recalculation job. The caller must have
+	// already resolved any period into filters.StartTime/EndTime.
+	BuildCostRecalcJobMeta(ctx context.Context, filters logstore.SearchFilters, missingCostOnly bool) (string, error)
+	// RunCostRecalcJob executes one background cost-recalculation job, resuming
+	// from the cursor in metaJSON and checkpointing after each batch. It returns
+	// the final metadata JSON to persist.
+	RunCostRecalcJob(ctx context.Context, metaJSON string, checkpoint func(string) error) (string, error)
 
 	// MCP Tool Log methods
 	// GetMCPToolLog retrieves a single MCP tool log entry by ID.
@@ -254,6 +268,20 @@ func (p *PluginLogManager) GetProviderLatencyHistogram(ctx context.Context, filt
 	return p.plugin.GetProviderLatencyHistogram(ctx, *filters, bucketSizeSeconds)
 }
 
+func (p *PluginLogManager) GetThroughputHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.ThroughputHistogramResult, error) {
+	if filters == nil {
+		return nil, fmt.Errorf("filters cannot be nil")
+	}
+	return p.plugin.GetThroughputHistogram(ctx, *filters, bucketSizeSeconds)
+}
+
+func (p *PluginLogManager) GetProviderThroughputHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.ProviderThroughputHistogramResult, error) {
+	if filters == nil {
+		return nil, fmt.Errorf("filters cannot be nil")
+	}
+	return p.plugin.GetProviderThroughputHistogram(ctx, *filters, bucketSizeSeconds)
+}
+
 func (p *PluginLogManager) GetModelRankings(ctx context.Context, filters *logstore.SearchFilters) (*logstore.ModelRankingResult, error) {
 	if filters == nil {
 		return nil, fmt.Errorf("filters cannot be nil")
@@ -376,6 +404,20 @@ func (p *PluginLogManager) RecalculateCostsWithProgress(ctx context.Context, fil
 		return nil, fmt.Errorf("filters cannot be nil")
 	}
 	return p.plugin.RecalculateCostsWithProgress(ctx, *filters, limit, progress)
+}
+
+func (p *PluginLogManager) BuildCostRecalcJobMeta(ctx context.Context, filters logstore.SearchFilters, missingCostOnly bool) (string, error) {
+	if p.plugin == nil {
+		return "", fmt.Errorf("logging plugin not initialized")
+	}
+	return p.plugin.BuildCostRecalcJobMeta(ctx, filters, missingCostOnly)
+}
+
+func (p *PluginLogManager) RunCostRecalcJob(ctx context.Context, metaJSON string, checkpoint func(string) error) (string, error) {
+	if p.plugin == nil {
+		return metaJSON, fmt.Errorf("logging plugin not initialized")
+	}
+	return p.plugin.RunCostRecalcJob(ctx, metaJSON, checkpoint)
 }
 
 // GetMCPToolLog retrieves a single MCP tool log entry by ID.

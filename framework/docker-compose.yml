@@ -8,6 +8,11 @@
 #             For production, use cloud service with PINECONE_API_KEY and PINECONE_INDEX_HOST
 #             See: https://docs.pinecone.io/guides/operations/local-development
 #
+# Supported Log Stores:
+# - Postgres: shared with configstore (port 5432)
+# - ClickHouse: native protocol on host port 9001 (container 9000; host 9000 is
+#               taken by Weaviate), HTTP on 8123. Used by logstore clickhouse tests.
+#
 services:
   postgres:
     image: postgres:16-alpine
@@ -23,6 +28,31 @@ services:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U bifrost -d bifrost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - bifrost_network
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8-alpine
+    container_name: bifrost-clickhouse-fw
+    environment:
+      CLICKHOUSE_DB: bifrost
+      CLICKHOUSE_USER: bifrost
+      CLICKHOUSE_PASSWORD: bifrost_password
+    ports:
+      - "9001:9000"
+      - "8123:8123"
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8123/ping"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -111,6 +141,8 @@ networks:
 
 volumes:
   postgres_data:
+    driver: local
+  clickhouse_data:
     driver: local
   weaviate_data:
     driver: local

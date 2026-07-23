@@ -33,6 +33,8 @@ A single setting, `mcp_server_auth_mode`, controls which credential types `/mcp`
 - **`both`** — `/mcp` accepts header credentials **and** Bifrost-issued JWTs. Discovery is served so OAuth clients can connect.
 - **`oauth`** — `/mcp` accepts Bifrost-issued JWTs only; header credentials are rejected.
 
+A request must carry **exactly one** credential type. If an OAuth access token and a header credential (`x-bf-vk`, `X-Api-Key`, or a Bearer VK) arrive on the same request, Bifrost rejects it with a `conflicting credentials` error — even in `both` mode. `both` means either credential is accepted, not both at once.
+
 <Warning>
 In `oauth` mode, clients that authenticate with a virtual key or API key header can no longer reach `/mcp`. Use `both` if you need header and OAuth clients to coexist.
 </Warning>
@@ -225,6 +227,11 @@ In `headers` mode these endpoints return `404`.
 **Symptom:** A virtual key or API key that worked before now gets a `401`.
 **Cause:** `mcp_server_auth_mode` is `oauth`, which accepts JWTs only.
 **Fix:** Use `both` to accept header credentials alongside OAuth.
+
+### Conflicting credentials on /mcp
+**Symptom:** `conflicting credentials: an OAuth token and a virtual key header were both provided`.
+**Cause:** The client completed an OAuth flow but is also configured with a VK header, so both arrive on one request. Claude Code does this in `both` mode when the VK is set under `x-bf-vk` / `X-Api-Key` instead of `Authorization`.
+**Fix:** Send only one credential — remove the VK header, or configure it as `Authorization: Bearer <vk>` so the client uses header auth and skips OAuth.
 
 ### Client keeps re-opening the browser
 **Symptom:** The consent flow runs on every connection.

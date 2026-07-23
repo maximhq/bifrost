@@ -40,6 +40,7 @@ func setupTestDB(t *testing.T) *gorm.DB {
 		&TableOauthConfig{},
 		&TableOauthToken{},
 		&TableVectorStoreConfig{},
+		&TableWebhookEndpoint{},
 	)
 	require.NoError(t, err)
 	return db
@@ -184,6 +185,7 @@ func TestTableKey_BedrockFieldsEncryptDecrypt(t *testing.T) {
 			SecretKey: *schemas.NewSecretVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
 			Region:    schemas.NewSecretVar("us-west-2"),
 			ARN:       schemas.NewSecretVar("arn:aws:iam::123456789:role/test"),
+			ProjectID: schemas.NewSecretVar("proj_bedrock123"),
 			BatchS3Config: &schemas.BatchS3Config{
 				Buckets: []schemas.S3BucketConfig{
 					{BucketName: "my-batch-bucket", Prefix: "jobs/", IsDefault: true},
@@ -200,6 +202,7 @@ func TestTableKey_BedrockFieldsEncryptDecrypt(t *testing.T) {
 	assert.NotEqual(t, "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", raw["bedrock_secret_key"])
 	assert.NotEqual(t, "us-west-2", raw["bedrock_region"])
 	assert.NotEqual(t, "arn:aws:iam::123456789:role/test", raw["bedrock_arn"])
+	assert.NotEqual(t, "proj_bedrock123", raw["bedrock_project_id"])
 	rawAliasesVal := raw["aliases_json"]
 	require.NotNil(t, rawAliasesVal, "aliases_json should be present in raw row")
 	var rawAliasesStr string
@@ -224,6 +227,8 @@ func TestTableKey_BedrockFieldsEncryptDecrypt(t *testing.T) {
 	assert.Equal(t, "us-west-2", found.BedrockKeyConfig.Region.GetValue())
 	require.NotNil(t, found.BedrockKeyConfig.ARN)
 	assert.Equal(t, "arn:aws:iam::123456789:role/test", found.BedrockKeyConfig.ARN.GetValue())
+	require.NotNil(t, found.BedrockKeyConfig.ProjectID)
+	assert.Equal(t, "proj_bedrock123", found.BedrockKeyConfig.ProjectID.GetValue())
 	assert.Equal(t, "profile-a", found.Aliases["model-a"].ModelID)
 	require.NotNil(t, found.BedrockKeyConfig.BatchS3Config)
 	require.Len(t, found.BedrockKeyConfig.BatchS3Config.Buckets, 1)
@@ -832,6 +837,39 @@ func TestTableKey_BedrockSessionTokenEncryptDecrypt(t *testing.T) {
 	assert.Equal(t, "us-east-1", found.BedrockKeyConfig.Region.GetValue())
 }
 
+// TestTableKey_BedrockMantleProjectID_RoundTrip verifies the bedrock_mantle_project_id column
+// encrypts, persists, and reconstructs onto BedrockMantleKeyConfig.ProjectID.
+func TestTableKey_BedrockMantleProjectID_RoundTrip(t *testing.T) {
+	db := setupTestDB(t)
+
+	key := &TableKey{
+		Name:       "bedrock-mantle-proj-key",
+		ProviderID: 1,
+		Provider:   "bedrock_mantle",
+		KeyID:      "bedrock-mantle-proj-uuid",
+		Value:      *schemas.NewSecretVar("mantle-val"),
+		BedrockMantleKeyConfig: &schemas.BedrockMantleKeyConfig{
+			AccessKey: *schemas.NewSecretVar("AKIA-MANTLE-PROJ"),
+			SecretKey: *schemas.NewSecretVar("wJalr-MANTLE-PROJ"),
+			Region:    schemas.NewSecretVar("us-east-1"),
+			ProjectID: schemas.NewSecretVar("proj_elvsngya7ixv4dkb26xe"),
+		},
+	}
+
+	require.NoError(t, db.Create(key).Error)
+
+	raw := rawRow(t, db, "config_keys", key.ID)
+	assert.Equal(t, "encrypted", raw["encryption_status"])
+	assert.NotEqual(t, "proj_elvsngya7ixv4dkb26xe", raw["bedrock_mantle_project_id"])
+
+	var found TableKey
+	require.NoError(t, db.First(&found, key.ID).Error)
+	require.NotNil(t, found.BedrockMantleKeyConfig)
+	require.NotNil(t, found.BedrockMantleKeyConfig.ProjectID)
+	assert.Equal(t, "proj_elvsngya7ixv4dkb26xe", found.BedrockMantleKeyConfig.ProjectID.GetValue())
+	assert.Equal(t, "us-east-1", found.BedrockMantleKeyConfig.Region.GetValue())
+}
+
 // ============================================================================
 // MCP — edge cases for connection string / headers combinations
 // ============================================================================
@@ -1176,6 +1214,12 @@ func TestTableKey_AllProviderConfigs_EncryptDecrypt(t *testing.T) {
 			Region:       schemas.NewSecretVar("eu-west-1"),
 			ARN:          schemas.NewSecretVar("arn:aws:bedrock:eu-west-1:123:role"),
 		},
+		BedrockMantleKeyConfig: &schemas.BedrockMantleKeyConfig{
+			AccessKey: *schemas.NewSecretVar("AKIA-MANTLE"),
+			SecretKey: *schemas.NewSecretVar("wJalr-MANTLE"),
+			Region:    schemas.NewSecretVar("us-east-1"),
+			ProjectID: schemas.NewSecretVar("proj_mantle456"),
+		},
 	}
 
 	require.NoError(t, db.Create(key).Error)
@@ -1190,6 +1234,7 @@ func TestTableKey_AllProviderConfigs_EncryptDecrypt(t *testing.T) {
 	assert.NotEqual(t, "us-central1", raw["vertex_region"])
 	assert.NotEqual(t, "eu-west-1", raw["bedrock_region"])
 	assert.NotEqual(t, "arn:aws:bedrock:eu-west-1:123:role", raw["bedrock_arn"])
+	assert.NotEqual(t, "proj_mantle456", raw["bedrock_mantle_project_id"])
 	rawAliasesVal2 := raw["aliases_json"]
 	require.NotNil(t, rawAliasesVal2, "aliases_json should be present in raw row")
 	var rawAliasesStr2 string
@@ -1230,6 +1275,13 @@ func TestTableKey_AllProviderConfigs_EncryptDecrypt(t *testing.T) {
 	assert.Equal(t, "eu-west-1", found.BedrockKeyConfig.Region.GetValue())
 	require.NotNil(t, found.BedrockKeyConfig.ARN)
 	assert.Equal(t, "arn:aws:bedrock:eu-west-1:123:role", found.BedrockKeyConfig.ARN.GetValue())
+
+	require.NotNil(t, found.BedrockMantleKeyConfig)
+	assert.Equal(t, "AKIA-MANTLE", found.BedrockMantleKeyConfig.AccessKey.GetValue())
+	assert.Equal(t, "wJalr-MANTLE", found.BedrockMantleKeyConfig.SecretKey.GetValue())
+	require.NotNil(t, found.BedrockMantleKeyConfig.ProjectID)
+	assert.Equal(t, "proj_mantle456", found.BedrockMantleKeyConfig.ProjectID.GetValue())
+
 	assert.Equal(t, "profile-claude", found.Aliases["claude-3"].ModelID)
 }
 
@@ -1494,9 +1546,15 @@ func TestTableVectorStoreConfig_EncryptionDisabled_StoresPlaintext(t *testing.T)
 // Multi-backend helpers — run the same tests on SQLite and Postgres
 // ============================================================================
 
+// pgTestSchema is this package's dedicated Postgres schema. Test packages
+// (configstore, configstore/tables, logstore) run in parallel against the same
+// database, so each one works in its own schema to avoid clobbering the
+// others' tables and rows.
+const pgTestSchema = "configstore_tables_test"
+
 // postgresDSN matches the postgres service in tests/docker-compose.yml and
 // framework/docker-compose.yml.
-const postgresDSN = "host=localhost user=bifrost password=bifrost_password dbname=bifrost port=5432 sslmode=disable"
+const postgresDSN = "host=localhost user=bifrost password=bifrost_password dbname=bifrost port=5432 sslmode=disable search_path=" + pgTestSchema
 
 // namedDB pairs a backend name with its GORM connection for use in subtests.
 type namedDB struct {
@@ -1532,6 +1590,12 @@ func trySetupPostgresDB(t *testing.T) *gorm.DB {
 		return nil
 	}
 	if err := sqlDB.Ping(); err != nil {
+		return nil
+	}
+
+	// All objects live in this package's dedicated schema (via search_path in
+	// the DSN), isolated from other test packages sharing the same database.
+	if err := db.Exec("CREATE SCHEMA IF NOT EXISTS " + pgTestSchema).Error; err != nil {
 		return nil
 	}
 

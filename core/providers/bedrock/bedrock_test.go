@@ -2640,7 +2640,7 @@ func TestGuardrailTraceResponseRoundTrip(t *testing.T) {
 }
 
 func TestToBedrockResponsesRequest_AnthropicTextFormatUsesOutputConfig(t *testing.T) {
-	schemaObj := any(schemas.NewOrderedMapFromPairs(
+	schemaObj := schemas.NewOrderedMapFromPairs(
 		schemas.KV("type", "object"),
 		schemas.KV("properties", schemas.NewOrderedMapFromPairs(
 			schemas.KV("topic", schemas.NewOrderedMapFromPairs(
@@ -2648,7 +2648,7 @@ func TestToBedrockResponsesRequest_AnthropicTextFormatUsesOutputConfig(t *testin
 			)),
 		)),
 		schemas.KV("required", []string{"topic"}),
-	))
+	)
 
 	req := &schemas.BifrostResponsesRequest{
 		Model: "bedrock/anthropic.claude-3-sonnet-20240229-v1:0",
@@ -2658,7 +2658,7 @@ func TestToBedrockResponsesRequest_AnthropicTextFormatUsesOutputConfig(t *testin
 					Type: "json_schema",
 					Name: schemas.Ptr("classification"),
 					JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
-						Schema: &schemaObj,
+						Schema: &schemas.JSONSchemaOrBool{SchemaMap: schemaObj},
 					},
 				},
 			},
@@ -2686,7 +2686,7 @@ func TestToBedrockResponsesRequest_AnthropicTextFormatUsesOutputConfig(t *testin
 }
 
 func TestToBedrockResponsesRequest_NonAnthropicTextFormatStillUsesToolConversion(t *testing.T) {
-	schemaObj := any(schemas.NewOrderedMapFromPairs(
+	schemaObj := schemas.NewOrderedMapFromPairs(
 		schemas.KV("type", "object"),
 		schemas.KV("properties", schemas.NewOrderedMapFromPairs(
 			schemas.KV("topic", schemas.NewOrderedMapFromPairs(
@@ -2694,7 +2694,7 @@ func TestToBedrockResponsesRequest_NonAnthropicTextFormatStillUsesToolConversion
 			)),
 		)),
 		schemas.KV("required", []string{"topic"}),
-	))
+	)
 
 	req := &schemas.BifrostResponsesRequest{
 		Model: "bedrock/amazon.nova-pro-v1:0",
@@ -2704,7 +2704,7 @@ func TestToBedrockResponsesRequest_NonAnthropicTextFormatStillUsesToolConversion
 					Type: "json_schema",
 					Name: schemas.Ptr("classification"),
 					JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
-						Schema: &schemaObj,
+						Schema: &schemas.JSONSchemaOrBool{SchemaMap: schemaObj},
 					},
 				},
 			},
@@ -2729,7 +2729,7 @@ func TestToBedrockResponsesRequest_NonAnthropicTextFormatStillUsesToolConversion
 }
 
 func TestToBedrockResponsesRequest_NonAnthropicTextFormatPreservedWithUserTools(t *testing.T) {
-	schemaObj := any(schemas.NewOrderedMapFromPairs(
+	schemaObj := schemas.NewOrderedMapFromPairs(
 		schemas.KV("type", "object"),
 		schemas.KV("properties", schemas.NewOrderedMapFromPairs(
 			schemas.KV("topic", schemas.NewOrderedMapFromPairs(
@@ -2737,7 +2737,7 @@ func TestToBedrockResponsesRequest_NonAnthropicTextFormatPreservedWithUserTools(
 			)),
 		)),
 		schemas.KV("required", []string{"topic"}),
-	))
+	)
 
 	toolParams := schemas.ToolFunctionParameters{
 		Type: "object",
@@ -2756,7 +2756,7 @@ func TestToBedrockResponsesRequest_NonAnthropicTextFormatPreservedWithUserTools(
 					Type: "json_schema",
 					Name: schemas.Ptr("classification"),
 					JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
-						Schema: &schemaObj,
+						Schema: &schemas.JSONSchemaOrBool{SchemaMap: schemaObj},
 					},
 				},
 			},
@@ -3849,7 +3849,7 @@ func TestBedrockAnthropicChatStructuredOutputUsesSyntheticTool(t *testing.T) {
 // (`client.messages.create`), routed via /v1/messages -> ToBifrostResponsesRequest
 // -> ToBedrockResponsesRequest with Params.Text.Format set.
 func TestToBedrockResponsesRequest_AnthropicStructuredOutputUsesSyntheticTool(t *testing.T) {
-	schemaObj := any(schemas.NewOrderedMapFromPairs(
+	schemaObj := schemas.NewOrderedMapFromPairs(
 		schemas.KV("type", "object"),
 		schemas.KV("properties", schemas.NewOrderedMapFromPairs(
 			schemas.KV("isNewTopic", schemas.NewOrderedMapFromPairs(schemas.KV("type", "boolean"))),
@@ -3857,7 +3857,7 @@ func TestToBedrockResponsesRequest_AnthropicStructuredOutputUsesSyntheticTool(t 
 			schemas.KV("result", schemas.NewOrderedMapFromPairs(schemas.KV("type", "number"))),
 		)),
 		schemas.KV("required", []string{"isNewTopic", "title", "result"}),
-	))
+	)
 
 	req := &schemas.BifrostResponsesRequest{
 		Model: "anthropic.claude-opus-4-7-v1:0",
@@ -3867,7 +3867,7 @@ func TestToBedrockResponsesRequest_AnthropicStructuredOutputUsesSyntheticTool(t 
 					Type: "json_schema",
 					Name: schemas.Ptr("classification"),
 					JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
-						Schema: &schemaObj,
+						Schema: &schemas.JSONSchemaOrBool{SchemaMap: schemaObj},
 					},
 				},
 			},
@@ -5446,13 +5446,13 @@ func TestBedrockNonLlamaChatStructuredOutputForcesToolChoice(t *testing.T) {
 // rather than Params.ResponseFormat, but lands at the same Bedrock Converse
 // constraint: toolChoice.tool is rejected on Llama.
 func TestToBedrockResponsesRequest_LlamaStructuredOutputOmitsForcedToolChoice(t *testing.T) {
-	schemaObj := any(schemas.NewOrderedMapFromPairs(
+	schemaObj := schemas.NewOrderedMapFromPairs(
 		schemas.KV("type", "object"),
 		schemas.KV("properties", schemas.NewOrderedMapFromPairs(
 			schemas.KV("intent", schemas.NewOrderedMapFromPairs(schemas.KV("type", "string"))),
 		)),
 		schemas.KV("required", []string{"intent"}),
-	))
+	)
 
 	req := &schemas.BifrostResponsesRequest{
 		Model: "us.meta.llama4-maverick-17b-instruct-v1:0",
@@ -5462,7 +5462,7 @@ func TestToBedrockResponsesRequest_LlamaStructuredOutputOmitsForcedToolChoice(t 
 					Type: "json_schema",
 					Name: schemas.Ptr("PlannerOutput"),
 					JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
-						Schema: &schemaObj,
+						Schema: &schemas.JSONSchemaOrBool{SchemaMap: schemaObj},
 					},
 				},
 			},
@@ -6819,4 +6819,116 @@ func TestNoLeadingSystemBlockReminderInlined(t *testing.T) {
 		}
 	}
 	assert.True(t, inlined, "the mid-conversation reminder must be inlined as a wrapped user message")
+}
+
+// TestReasoningConfigSurvivesHTTPUnmarshal guards against reasoning_config /
+// thinking being silently dropped when a Bedrock Converse body is unmarshaled
+// from JSON (nested objects decode to *OrderedMap, not map[string]interface{})
+// and then translated to a non-Bedrock target.
+func TestReasoningConfigSurvivesHTTPUnmarshal(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	t.Run("reasoning_config", func(t *testing.T) {
+		body := []byte(`{
+			"messages": [{"role": "user", "content": [{"text": "Think step-by-step."}]}],
+			"inferenceConfig": {"maxTokens": 2012, "temperature": 1.0},
+			"additionalModelRequestFields": {
+				"reasoning_config": {"type": "enabled", "budget_tokens": 1500}
+			}
+		}`)
+
+		var req bedrock.BedrockConverseRequest
+		require.NoError(t, json.Unmarshal(body, &req))
+		req.ModelID = "anthropic/claude-sonnet-4-5-20250929"
+
+		out, err := req.ToBifrostResponsesRequest(ctx)
+		require.NoError(t, err)
+		require.NotNil(t, out.Params, "Params is nil")
+		require.NotNil(t, out.Params.Reasoning, "reasoning_config was silently dropped")
+		require.NotNil(t, out.Params.Reasoning.MaxTokens)
+		assert.Equal(t, 1500, *out.Params.Reasoning.MaxTokens)
+	})
+
+	t.Run("nova_reasoningConfig", func(t *testing.T) {
+		body := []byte(`{
+			"messages": [{"role": "user", "content": [{"text": "Think step-by-step."}]}],
+			"inferenceConfig": {"maxTokens": 2012},
+			"additionalModelRequestFields": {
+				"reasoningConfig": {"type": "enabled", "maxReasoningEffort": "high"}
+			}
+		}`)
+
+		var req bedrock.BedrockConverseRequest
+		require.NoError(t, json.Unmarshal(body, &req))
+		req.ModelID = "amazon.nova-premier-v1:0"
+
+		out, err := req.ToBifrostResponsesRequest(ctx)
+		require.NoError(t, err)
+		require.NotNil(t, out.Params, "Params is nil")
+		require.NotNil(t, out.Params.Reasoning, "nova reasoningConfig was silently dropped")
+		require.NotNil(t, out.Params.Reasoning.Effort)
+		assert.Equal(t, "high", *out.Params.Reasoning.Effort)
+	})
+}
+
+// TestReasoningConfigNoDoubleEmissionOnEgress guards against issue #5108's
+// follow-on regression: a reasoning key consumed into Params.Reasoning on ingress
+// must not also be forwarded verbatim via additionalModelRequestFieldPaths, or the
+// Bedrock egress carries two copies and Converse rejects the collision
+// ("The additional field thinking/type conflicts with an existing field").
+func TestReasoningConfigNoDoubleEmissionOnEgress(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	cases := []struct {
+		name        string
+		model       string
+		inputField  string
+		inputConfig string
+		wantKey     string // the single reasoning key expected on egress
+	}{
+		{"anthropic_reasoning_config", "us.anthropic.claude-haiku-4-5-20251001-v1:0", "reasoning_config", `{"type": "enabled", "budget_tokens": 1500}`, "thinking"},
+		{"anthropic_thinking", "us.anthropic.claude-haiku-4-5-20251001-v1:0", "thinking", `{"type": "enabled", "budget_tokens": 1500}`, "thinking"},
+		{"nova_reasoningConfig", "amazon.nova-premier-v1:0", "reasoningConfig", `{"type": "enabled", "maxReasoningEffort": "high"}`, "reasoningConfig"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := []byte(`{
+				"messages": [{"role": "user", "content": [{"text": "What's my best offer?"}]}],
+				"inferenceConfig": {"maxTokens": 4096},
+				"additionalModelRequestFields": {"` + tc.inputField + `": ` + tc.inputConfig + `}
+			}`)
+
+			var req bedrock.BedrockConverseRequest
+			require.NoError(t, json.Unmarshal(body, &req))
+			req.ModelID = tc.model
+
+			// Ingress: Bedrock Converse -> Bifrost
+			mid, err := req.ToBifrostResponsesRequest(ctx)
+			require.NoError(t, err)
+			require.NotNil(t, mid.Params, "Params is nil")
+			require.NotNil(t, mid.Params.Reasoning, "reasoning was not consumed on ingress")
+
+			// Egress: Bifrost -> Bedrock Converse
+			out, err := bedrock.ToBedrockResponsesRequest(ctx, mid)
+			require.NoError(t, err)
+			require.NotNil(t, out.AdditionalModelRequestFields)
+
+			// Exactly one reasoning key on the wire, and never both spellings.
+			_, hasThinking := out.AdditionalModelRequestFields.Get("thinking")
+			_, hasReasoningConfig := out.AdditionalModelRequestFields.Get("reasoning_config")
+			_, hasNova := out.AdditionalModelRequestFields.Get("reasoningConfig")
+
+			assert.False(t, hasThinking && hasReasoningConfig,
+				"both thinking and reasoning_config emitted — Bedrock would reject the collision")
+
+			switch tc.wantKey {
+			case "thinking":
+				assert.True(t, hasThinking, "expected thinking on egress")
+				assert.False(t, hasReasoningConfig, "reasoning_config must not be forwarded verbatim once consumed")
+			case "reasoningConfig":
+				assert.True(t, hasNova, "expected Nova reasoningConfig on egress")
+			}
+		})
+	}
 }

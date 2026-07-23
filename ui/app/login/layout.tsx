@@ -54,6 +54,23 @@ export const Route = createFileRoute("/login")({
 			// Fetch failed — fall through to login page
 		}
 		if (data && (!data.is_auth_enabled || data.has_valid_token)) {
+			// If auth is disabled but SSO is configured (restart pending), stay on
+			// the login page so the user sees the restart notice instead of looping.
+			if (!data.is_auth_enabled) {
+				try {
+					const authTypeRes = await fetch(`${getApiBaseUrl()}/auth/type`, {
+						credentials: "include",
+					});
+					if (authTypeRes.ok) {
+						const authType: { type: string } = await authTypeRes.json();
+						if (authType.type === "sso") {
+							return; // SSO configured — show login form with restart notice
+						}
+					}
+				} catch {
+					// Ignore — fall through to the workspace redirect
+				}
+			}
 			throw redirect({ href: postLoginPath });
 		}
 	},

@@ -46,7 +46,7 @@ func NewBedrockMantleProvider(config *schemas.ProviderConfig, logger schemas.Log
 		ReadTimeout:         requestTimeout,
 		WriteTimeout:        requestTimeout,
 		MaxConnsPerHost:     config.NetworkConfig.MaxConnsPerHost,
-		MaxIdleConnDuration: 30 * time.Second,
+		MaxIdleConnDuration: time.Second * time.Duration(config.NetworkConfig.KeepAliveTimeoutInSeconds),
 		MaxConnWaitTimeout:  requestTimeout,
 		MaxConnDuration:     time.Second * time.Duration(schemas.DefaultMaxConnDurationInSeconds),
 		ConnPoolStrategy:    fasthttp.FIFO,
@@ -122,7 +122,9 @@ func (provider *BedrockMantleProvider) listModelsByKey(ctx *schemas.BifrostConte
 	region := provider.resolveRegion(ctx, key, "")
 	mURL := mantleOpenAIURL(region, "", "models")
 
-	extraHeaders := provider.networkConfig.ExtraHeaders
+	// Scope the catalog to the configured project via the OpenAI-Project header (default project
+	// when unset). It is a plain header, so it does not need to be part of the SigV4 SignedHeaders.
+	extraHeaders := bedrock.WithMantleProject(provider.networkConfig.ExtraHeaders, bedrock.MantleOpenAIProjectHeader, resolveProjectID(ctx, key))
 	if key.Value.GetValue() == "" {
 		// SigV4: sign the GET and overlay the signed headers; OpenAI's ListModelsByKey only sets
 		// a Bearer header when the key carries a value, so the SigV4 Authorization wins here.
@@ -130,8 +132,8 @@ func (provider *BedrockMantleProvider) listModelsByKey(ctx *schemas.BifrostConte
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
-		merged := make(map[string]string, len(provider.networkConfig.ExtraHeaders)+len(sigHeaders))
-		maps.Copy(merged, provider.networkConfig.ExtraHeaders)
+		merged := make(map[string]string, len(extraHeaders)+len(sigHeaders))
+		maps.Copy(merged, extraHeaders)
 		maps.Copy(merged, sigHeaders)
 		extraHeaders = merged
 	}
@@ -184,7 +186,7 @@ func (provider *BedrockMantleProvider) ChatCompletion(ctx *schemas.BifrostContex
 				ShouldSendBackRawResponse: provider.sendBackRawResponse,
 			},
 			openai.BearerAuthHeader(key),
-			addAnthropicHeaders(provider.networkConfig.ExtraHeaders),
+			addAnthropicHeaders(bedrock.WithMantleProject(provider.networkConfig.ExtraHeaders, bedrock.MantleAnthropicProjectHeader, resolveProjectID(ctx, key))),
 			provider.mantleSigner(ctx, key, url, "application/json", region),
 			provider.logger,
 		)
@@ -197,7 +199,7 @@ func (provider *BedrockMantleProvider) ChatCompletion(ctx *schemas.BifrostContex
 		url,
 		request,
 		openai.BearerAuthHeader(key),
-		provider.networkConfig.ExtraHeaders,
+		bedrock.WithMantleProject(provider.networkConfig.ExtraHeaders, bedrock.MantleOpenAIProjectHeader, resolveProjectID(ctx, key)),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
@@ -237,7 +239,7 @@ func (provider *BedrockMantleProvider) ChatCompletionStream(ctx *schemas.Bifrost
 			url,
 			jsonData,
 			openai.BearerAuthHeader(key),
-			addAnthropicHeaders(provider.networkConfig.ExtraHeaders),
+			addAnthropicHeaders(bedrock.WithMantleProject(provider.networkConfig.ExtraHeaders, bedrock.MantleAnthropicProjectHeader, resolveProjectID(ctx, key))),
 			provider.networkConfig.StreamIdleTimeoutInSeconds,
 			provider.networkConfig.BetaHeaderOverrides,
 			providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
@@ -254,7 +256,7 @@ func (provider *BedrockMantleProvider) ChatCompletionStream(ctx *schemas.Bifrost
 	url := mantleOpenAIURL(region, schemas.ResolveCanonicalModel(ctx, request.Model), "chat/completions")
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx, provider.mantleStreamingClient, url, request,
-		openai.BearerAuthHeader(key), provider.networkConfig.ExtraHeaders,
+		openai.BearerAuthHeader(key), bedrock.WithMantleProject(provider.networkConfig.ExtraHeaders, bedrock.MantleOpenAIProjectHeader, resolveProjectID(ctx, key)),
 		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
@@ -290,7 +292,7 @@ func (provider *BedrockMantleProvider) Responses(ctx *schemas.BifrostContext, ke
 				ShouldSendBackRawResponse: provider.sendBackRawResponse,
 			},
 			openai.BearerAuthHeader(key),
-			addAnthropicHeaders(provider.networkConfig.ExtraHeaders),
+			addAnthropicHeaders(bedrock.WithMantleProject(provider.networkConfig.ExtraHeaders, bedrock.MantleAnthropicProjectHeader, resolveProjectID(ctx, key))),
 			provider.mantleSigner(ctx, key, url, "application/json", region),
 			provider.logger,
 		)
@@ -303,7 +305,7 @@ func (provider *BedrockMantleProvider) Responses(ctx *schemas.BifrostContext, ke
 		url,
 		request,
 		openai.BearerAuthHeader(key),
-		provider.networkConfig.ExtraHeaders,
+		bedrock.WithMantleProject(provider.networkConfig.ExtraHeaders, bedrock.MantleOpenAIProjectHeader, resolveProjectID(ctx, key)),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
@@ -343,7 +345,7 @@ func (provider *BedrockMantleProvider) ResponsesStream(ctx *schemas.BifrostConte
 			url,
 			jsonData,
 			openai.BearerAuthHeader(key),
-			addAnthropicHeaders(provider.networkConfig.ExtraHeaders),
+			addAnthropicHeaders(bedrock.WithMantleProject(provider.networkConfig.ExtraHeaders, bedrock.MantleAnthropicProjectHeader, resolveProjectID(ctx, key))),
 			provider.networkConfig.StreamIdleTimeoutInSeconds,
 			provider.networkConfig.BetaHeaderOverrides,
 			providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
@@ -360,7 +362,7 @@ func (provider *BedrockMantleProvider) ResponsesStream(ctx *schemas.BifrostConte
 	url := mantleOpenAIURL(region, schemas.ResolveCanonicalModel(ctx, request.Model), "responses")
 	return openai.HandleOpenAIResponsesStreaming(
 		ctx, provider.mantleStreamingClient, url, request,
-		openai.BearerAuthHeader(key), provider.networkConfig.ExtraHeaders,
+		openai.BearerAuthHeader(key), bedrock.WithMantleProject(provider.networkConfig.ExtraHeaders, bedrock.MantleOpenAIProjectHeader, resolveProjectID(ctx, key)),
 		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),

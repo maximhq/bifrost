@@ -1146,6 +1146,7 @@ bifrost:
         apply_to: "input"
         sampling_rate: 100
         timeout: 1000
+        stream_replay_event_interval_ms: 25
         provider_config_ids:
           - 1
     providers:
@@ -1167,6 +1168,7 @@ assert_field_value 'guardrails rule[0].enabled' '.guardrails_config.guardrail_ru
 assert_field_value 'guardrails rule[0].apply_to' '.guardrails_config.guardrail_rules.[0].apply_to' '"input"'
 assert_field_value 'guardrails rule[0].sampling_rate' '.guardrails_config.guardrail_rules.[0].sampling_rate' '100'
 assert_field_value 'guardrails rule[0].timeout' '.guardrails_config.guardrail_rules.[0].timeout' '1000'
+assert_field_value 'guardrails rule[0].stream_replay_event_interval_ms' '.guardrails_config.guardrail_rules.[0].stream_replay_event_interval_ms' '25'
 assert_field 'guardrails rule[0].provider_config_ids' '.guardrails_config.guardrail_rules.[0].provider_config_ids'
 
 assert_field 'guardrails_config.guardrail_providers' '.guardrails_config.guardrail_providers'

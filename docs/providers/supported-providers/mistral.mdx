@@ -87,7 +87,7 @@ Refer to the API documentation for [Provider Keys Management](https://docs.getbi
 case schemas.Mistral:
     return []schemas.Key{{
         Name:   "mistral-key-1",
-        Value:  *schemas.NewEnvVar("env.MISTRAL_API_KEY"),
+        Value:  *schemas.NewSecretVar("env.MISTRAL_API_KEY"),
         Models: []string{"*"},
         Weight: 1.0,
     }}, nil

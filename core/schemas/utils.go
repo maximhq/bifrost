@@ -757,6 +757,10 @@ func DeepCopyChatMessage(original ChatMessage) ChatMessage {
 					copyURL := *annotation.URLCitation.URL
 					copyAnnotation.URLCitation.URL = &copyURL
 				}
+				if annotation.URLCitation.Text != nil {
+					copyText := *annotation.URLCitation.Text
+					copyAnnotation.URLCitation.Text = &copyText
+				}
 				if annotation.URLCitation.Sources != nil {
 					copySources := *annotation.URLCitation.Sources
 					copyAnnotation.URLCitation.Sources = &copySources
@@ -791,6 +795,9 @@ func DeepCopyChatMessage(original ChatMessage) ChatMessage {
 					copyName := *toolCall.Function.Name
 					copyToolCall.Function.Name = &copyName
 				}
+				if len(toolCall.ExtraContent) > 0 {
+					copyToolCall.ExtraContent = append(json.RawMessage(nil), toolCall.ExtraContent...)
+				}
 				copy.ChatAssistantMessage.ToolCalls[i] = copyToolCall
 			}
 		}
@@ -818,6 +825,10 @@ func deepCopyChatContentBlock(original ChatContentBlock) ChatContentBlock {
 	if original.ImageURLStruct != nil {
 		copyImage := ChatInputImage{
 			URL: original.ImageURLStruct.URL,
+		}
+		if original.ImageURLStruct.FileID != nil {
+			copyFileID := *original.ImageURLStruct.FileID
+			copyImage.FileID = &copyFileID
 		}
 		if original.ImageURLStruct.Detail != nil {
 			copyDetail := *original.ImageURLStruct.Detail
@@ -1394,6 +1405,15 @@ func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {
 			}
 		}
 
+		if original.ResponsesToolMessage.Caller != nil {
+			copyCaller := *original.ResponsesToolMessage.Caller
+			if original.ResponsesToolMessage.Caller.ToolID != nil {
+				copyToolID := *original.ResponsesToolMessage.Caller.ToolID
+				copyCaller.ToolID = &copyToolID
+			}
+			copy.ResponsesToolMessage.Caller = &copyCaller
+		}
+
 		// Deep copy embedded tool call structs (simplified version - add more as needed)
 		if original.ResponsesToolMessage.ResponsesFileSearchToolCall != nil {
 			copyToolCall := *original.ResponsesToolMessage.ResponsesFileSearchToolCall
@@ -1405,6 +1425,23 @@ func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {
 				}
 			}
 			copy.ResponsesToolMessage.ResponsesFileSearchToolCall = &copyToolCall
+		}
+
+		if original.ResponsesToolMessage.ResponsesWebFetchCall != nil {
+			copyCall := *original.ResponsesToolMessage.ResponsesWebFetchCall
+			if original.ResponsesToolMessage.ResponsesWebFetchCall.Document != nil {
+				docCopy := *original.ResponsesToolMessage.ResponsesWebFetchCall.Document
+				if original.ResponsesToolMessage.ResponsesWebFetchCall.Document.Source != nil {
+					srcCopy := *original.ResponsesToolMessage.ResponsesWebFetchCall.Document.Source
+					docCopy.Source = &srcCopy
+				}
+				if original.ResponsesToolMessage.ResponsesWebFetchCall.Document.Citations != nil {
+					citationsCopy := *original.ResponsesToolMessage.ResponsesWebFetchCall.Document.Citations
+					docCopy.Citations = &citationsCopy
+				}
+				copyCall.Document = &docCopy
+			}
+			copy.ResponsesToolMessage.ResponsesWebFetchCall = &copyCall
 		}
 
 		// Add other embedded tool calls as needed...
@@ -1636,6 +1673,18 @@ func isOpenAIReasoningModel(model string) bool {
 	return len(name) == 2 || name[2] == '-'
 }
 
+// IsAzureModelRouter reports whether model is Azure's model-router model.
+func IsAzureModelRouter(model string) bool {
+	return strings.Contains(model, "model-router")
+}
+
+// IsElevenlabsSoundModel checks if the model targets ElevenLabs' text-to-sound
+// effects API (POST /v1/sound-generation, e.g. "eleven_text_to_sound_v2")
+// rather than text-to-speech. These models are not tied to a voice.
+func IsElevenlabsSoundModel(model string) bool {
+	return strings.Contains(model, "eleven_text_to_sound")
+}
+
 // BedrockModelSupportsCachePoints reports whether the Bedrock model supports
 // explicit prompt-caching cache points in the Converse API request.
 func BedrockModelSupportsCachePoints(model string) bool {
@@ -1694,6 +1743,11 @@ func IsCohereModel(model string) bool {
 // Bedrock identifier prefix ("amazon.titan-*").
 func IsTitanModel(model string) bool {
 	return strings.Contains(model, "titan")
+}
+
+// IsGrokModel checks if the model is an xAI Grok model.
+func IsGrokModel(model string) bool {
+	return strings.Contains(model, "grok")
 }
 
 // List of grok reasoning models

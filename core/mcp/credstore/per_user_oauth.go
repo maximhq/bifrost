@@ -68,6 +68,10 @@ func (r *perUserOAuthResolver) ConnectionHeaders(ctx *schemas.BifrostContext, co
 		if flowErr != nil {
 			return nil, fmt.Errorf("failed to initiate per-user OAuth flow for %s: %w", config.Name, flowErr)
 		}
+		message := fmt.Sprintf("Authentication required for %s. Visit %s to connect your account.", config.Name, flowInitiation.AuthorizeURL)
+		if schemas.MCPAuthURLHasTempTokenFragment(flowInitiation.AuthorizeURL) {
+			message += schemas.MCPAuthTempTokenReminder
+		}
 		return nil, &schemas.MCPAuthRequiredError{
 			Kind:          schemas.MCPAuthRequiredKindOAuth,
 			MCPClientID:   config.ID,
@@ -80,7 +84,7 @@ func (r *perUserOAuthResolver) ConnectionHeaders(ctx *schemas.BifrostContext, co
 			// to them. The URL is already exposed via
 			// extra_fields.mcp_auth_required.authorize_url, so embedding it
 			// here doesn't widen the surface.
-			Message: fmt.Sprintf("Authentication required for %s. Visit %s to connect your account.", config.Name, flowInitiation.AuthorizeURL),
+			Message: message,
 		}
 	}
 

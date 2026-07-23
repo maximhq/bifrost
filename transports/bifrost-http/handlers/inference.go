@@ -4,7 +4,6 @@ package handlers
 
 import (
 	"context"
-
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -737,6 +736,9 @@ func (h *CompletionHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 	r.POST("/v1/embeddings", lib.ChainMiddlewares(h.embeddings, baseMiddlewares...))
 	r.POST("/v1/rerank", lib.ChainMiddlewares(h.rerank, baseMiddlewares...))
 	r.POST("/v1/ocr", lib.ChainMiddlewares(h.ocr, baseMiddlewares...))
+	// ElevenLabs sound-effect models also flow through /v1/audio/speech; the
+	// provider routes them to /v1/sound-generation by model id, keeping SDK and
+	// transport APIs at parity (no separate sound-effects endpoint).
 	r.POST("/v1/audio/speech", lib.ChainMiddlewares(h.speech, baseMiddlewares...))
 	r.POST("/v1/audio/transcriptions", lib.ChainMiddlewares(h.transcription, baseMiddlewares...))
 	r.POST("/v1/images/generations", lib.ChainMiddlewares(h.imageGeneration, baseMiddlewares...))
@@ -872,7 +874,7 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	enrichAndFilterListModelsResponse(resp, h.config.ModelCatalog)
+	enrichListModelsResponse(resp, h.config.ModelCatalog)
 	if resp != nil && resp.ExtraFields.ProviderResponseHeaders != nil {
 		forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
 	}
@@ -880,28 +882,24 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, resp)
 }
 
-func enrichAndFilterListModelsResponse(resp *schemas.BifrostListModelsResponse, catalog *modelcatalog.ModelCatalog) {
+func enrichListModelsResponse(resp *schemas.BifrostListModelsResponse, catalog *modelcatalog.ModelCatalog) {
 	if resp == nil || len(resp.Data) == 0 {
 		return
 	}
 
 	if catalog == nil {
-		resp.FilterDeprecatedModels()
 		return
 	}
 
-	models := resp.Data[:0]
-	for _, modelEntry := range resp.Data {
+	for i := range resp.Data {
+		modelEntry := resp.Data[i]
 		provider, modelName := schemas.ParseModelString(modelEntry.ID, "")
 		pricingEntry := catalog.GetPricingEntryForModel(modelName, provider)
 		if pricingEntry == nil && modelEntry.Alias != nil {
 			pricingEntry = catalog.GetPricingEntryForModel(*modelEntry.Alias, provider)
 		}
-		if modelEntry.IsDeprecated || (pricingEntry != nil && pricingEntry.IsDeprecated) {
-			continue
-		}
 		if pricingEntry != nil {
-			modelEntry.IsDeprecated = false
+			modelEntry.IsDeprecated = modelEntry.IsDeprecated || pricingEntry.IsDeprecated
 			if pricingEntry.BaseModel != "" && modelEntry.NormalizedName == nil {
 				modelEntry.NormalizedName = bifrost.Ptr(providerUtils.NormalizeBaseModelSlug(pricingEntry.BaseModel))
 			}
@@ -945,9 +943,8 @@ func enrichAndFilterListModelsResponse(resp *schemas.BifrostListModelsResponse, 
 				modelEntry.Pricing = pricing
 			}
 		}
-		models = append(models, modelEntry)
+		resp.Data[i] = modelEntry
 	}
-	resp.Data = models
 }
 
 // prepareTextCompletionRequest prepares a BifrostTextCompletionRequest from the HTTP request body
@@ -1351,8 +1348,24 @@ func prepareSpeechRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*Speech
 	if req.SpeechInput == nil || req.SpeechInput.Input == "" {
 		return nil, nil, fmt.Errorf("input is required for speech completion")
 	}
-	if req.SpeechParameters == nil || req.VoiceConfig == nil || (req.VoiceConfig.Voice == nil && len(req.VoiceConfig.MultiVoiceConfig) == 0) {
-		return nil, nil, fmt.Errorf("voice is required for speech completion")
+	// Voice is required for text-to-speech, but the transport layer cannot resolve
+	// virtual-key aliases, so it cannot distinguish a voice-less ElevenLabs
+	// sound-effect model (eleven_text_to_sound_*, including aliases that resolve to
+	// one) from a text-to-speech model that simply omitted its voice. A name-based
+	// check here (IsElevenlabsSoundModel(base.ModelName)) matches only literal
+	// model ids, so an alias like "my-sfx" → "eleven_text_to_sound_v2" would be
+	// wrongly rejected before reaching the provider. For ElevenLabs we therefore
+	// defer the voice check to ElevenlabsProvider.Speech, which runs after alias
+	// resolution: it routes sound models to /v1/sound-generation and still rejects
+	// voice-less text-to-speech with "voice parameter is required". Every other
+	// provider keeps the original handler-level 400, so TTS behavior is unchanged.
+	if base.Provider != schemas.Elevenlabs {
+		if req.SpeechParameters == nil || req.VoiceConfig == nil || (req.VoiceConfig.Voice == nil && len(req.VoiceConfig.MultiVoiceConfig) == 0) {
+			return nil, nil, fmt.Errorf("voice is required for speech completion")
+		}
+	}
+	if req.SpeechParameters == nil {
+		req.SpeechParameters = &schemas.SpeechParameters{}
 	}
 	req.SpeechParameters.ExtraParams = base.ExtraParams
 	return req, &schemas.BifrostSpeechRequest{
@@ -1364,13 +1377,45 @@ func prepareSpeechRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*Speech
 	}, nil
 }
 
-// speech handles POST /v1/audio/speech - Process speech completion requests
+// speechAttachmentFilename derives the download filename from the requested
+// audio format so non-MP3 responses aren't mislabeled as "speech.mp3". The
+// format may be OpenAI-style ("opus", "wav", "flac", ...) or ElevenLabs-style
+// with a codec/rate prefix ("mp3_22050_32", "pcm_16000", "ulaw_8000"). Unknown
+// or empty formats fall back to mp3 (the API default).
+func speechAttachmentFilename(responseFormat string) string {
+	ext := "mp3"
+	switch {
+	case strings.HasPrefix(responseFormat, "opus"):
+		ext = "opus"
+	case strings.HasPrefix(responseFormat, "aac"):
+		ext = "aac"
+	case strings.HasPrefix(responseFormat, "flac"):
+		ext = "flac"
+	case strings.HasPrefix(responseFormat, "wav"):
+		ext = "wav"
+	case strings.HasPrefix(responseFormat, "pcm"):
+		ext = "pcm"
+	case strings.HasPrefix(responseFormat, "ulaw"):
+		ext = "ulaw"
+	case strings.HasPrefix(responseFormat, "alaw"):
+		ext = "alaw"
+	}
+	return "speech." + ext
+}
+
+// speech handles POST /v1/audio/speech - Process speech completion requests.
+// ElevenLabs sound-effect models (e.g. "eleven_text_to_sound_v2") also flow
+// through here; the provider routes them to /v1/sound-generation by model id,
+// so they reuse the speech request type and virtual-key governance unchanged.
 func (h *CompletionHandler) speech(ctx *fasthttp.RequestCtx) {
 	req, bifrostSpeechReq, err := prepareSpeechRequest(ctx, h.config)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
 	}
+	// Filename tracks the requested audio format (prepareSpeechRequest guarantees
+	// req.SpeechParameters is non-nil, so ResponseFormat is safe to read here).
+	attachmentFilename := speechAttachmentFilename(req.ResponseFormat)
 
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.config)
 	if bifrostCtx == nil {
@@ -1395,7 +1440,7 @@ func (h *CompletionHandler) speech(ctx *fasthttp.RequestCtx) {
 	// Preserve the attachment header through the large-response shortcut; the
 	// normal binary path sets this explicitly after the stream check.
 	if !(bifrostSpeechReq.Provider == schemas.Elevenlabs && req.WithTimestamps != nil && *req.WithTimestamps) {
-		bifrostCtx.SetValue(schemas.BifrostContextKeyLargeResponseContentDisposition, "attachment; filename=speech.mp3")
+		bifrostCtx.SetValue(schemas.BifrostContextKeyLargeResponseContentDisposition, "attachment; filename="+attachmentFilename)
 	}
 
 	if resp != nil && resp.ExtraFields.ProviderResponseHeaders != nil {
@@ -1422,7 +1467,7 @@ func (h *CompletionHandler) speech(ctx *fasthttp.RequestCtx) {
 	}
 
 	ctx.Response.Header.Set("Content-Type", "audio/mpeg")
-	ctx.Response.Header.Set("Content-Disposition", "attachment; filename=speech.mp3")
+	ctx.Response.Header.Set("Content-Disposition", "attachment; filename="+attachmentFilename)
 	ctx.Response.Header.Set("Content-Length", strconv.Itoa(len(resp.Audio)))
 	ctx.Response.SetBody(resp.Audio)
 }
@@ -3313,10 +3358,12 @@ func (h *CompletionHandler) fileUpload(ctx *fasthttp.RequestCtx) {
 	// when omitted, the provider mints an upload session URL instead of receiving bytes)
 	var fileData []byte
 	var filename string
+	var filePartContentType string
 	fileHeaders := form.File["file"]
 	if len(fileHeaders) > 0 {
 		fileHeader := fileHeaders[0]
 		filename = fileHeader.Filename
+		filePartContentType = strings.TrimSpace(fileHeader.Header.Get("Content-Type"))
 
 		// Open and read the file
 		file, err := fileHeader.Open()
@@ -3342,6 +3389,8 @@ func (h *CompletionHandler) fileUpload(ctx *fasthttp.RequestCtx) {
 	var contentType *string
 	if len(form.Value["content_type"]) > 0 && form.Value["content_type"][0] != "" {
 		contentType = &form.Value["content_type"][0]
+	} else if filePartContentType != "" {
+		contentType = &filePartContentType
 	}
 
 	// GCS storage location for Vertex uploads: sent as individual multipart fields,

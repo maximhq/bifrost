@@ -18,11 +18,12 @@ func TestVKBudgetExceeded(t *testing.T) {
 		Method: "POST",
 		Path:   "/api/governance/virtual-keys",
 		Body: CreateVirtualKeyRequest{
-			Name: vkName,
-			Budget: &BudgetRequest{
+			Name:            vkName,
+			ProviderConfigs: defaultProviderConfigs(),
+			Budgets: []BudgetRequest{{
 				MaxLimit:      vkBudget,
 				ResetDuration: "1h",
-			},
+			}},
 		},
 	})
 

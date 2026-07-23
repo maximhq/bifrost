@@ -52,6 +52,71 @@ func TestKeyAliasesUnmarshalRichShape(t *testing.T) {
 	}
 }
 
+// TestKeyAliasesProjectIDFlatRoundTrip verifies the per-alias project_id override is a single
+// top-level field: it deserializes from the flat {"model_id":..., "project_id":{...}} shape,
+// round-trips byte-stably, and (critically) is NOT dropped by an embedded-field name collision.
+// project_id lives on AliasConfig itself (like region) rather than inside each provider sub-config
+// precisely so multiple same-depth promoted fields don't silently cancel each other out.
+func TestKeyAliasesProjectIDFlatRoundTrip(t *testing.T) {
+	in := []byte(`{"chirp-alias":{"model_id":"chirp","project_id":{"value":"proj_elvsngya7ixv4dkb26xe","type":"plain_text"}}}`)
+	var ka KeyAliases
+	if err := json.Unmarshal(in, &ka); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	got := ka["chirp-alias"]
+	if got.ModelID != "chirp" {
+		t.Fatalf("ModelID mismatch: %q", got.ModelID)
+	}
+	if got.ProjectID == nil {
+		t.Fatalf("ProjectID was dropped on unmarshal (embedded field collision regression?)")
+	}
+	if v := got.ProjectID.GetValue(); v != "proj_elvsngya7ixv4dkb26xe" {
+		t.Fatalf("ProjectID value mismatch: %q", v)
+	}
+	out, err := json.Marshal(ka)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	// Re-unmarshal and compare structurally (map key order in the SecretVar object is not stable).
+	var back KeyAliases
+	if err := json.Unmarshal(out, &back); err != nil {
+		t.Fatalf("re-unmarshal: %v", err)
+	}
+	if bp := back["chirp-alias"].ProjectID; bp == nil || bp.GetValue() != "proj_elvsngya7ixv4dkb26xe" {
+		t.Fatalf("ProjectID did not survive marshal round-trip: %s", out)
+	}
+	// project_id alone (besides model_id) must force the rich object shape, not the legacy string.
+	if len(out) == 0 || !strings.Contains(string(out), `"project_id"`) {
+		t.Fatalf("expected project_id in serialized output, got %s", out)
+	}
+}
+
+// TestKeyAliasesLegacyVertexProjectIDPromotedOnMarshal guards the back-compat
+// shim: a Go-constructed alias that sets only the deprecated VertexAliasCfg.ProjectID
+// (json:"-") must not lose its project on a marshal/unmarshal round-trip. MarshalJSON
+// promotes it to the top-level project_id so it survives persistence and the config hash.
+func TestKeyAliasesLegacyVertexProjectIDPromotedOnMarshal(t *testing.T) {
+	ka := KeyAliases{"vtx-alias": {
+		ModelID:        "gemini-2.0-flash-001",
+		VertexAliasCfg: &VertexAliasCfg{ProjectID: NewSecretVar("legacy-gcp-project")},
+	}}
+	out, err := json.Marshal(ka)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(out), `"project_id"`) {
+		t.Fatalf("expected legacy VertexAliasCfg.ProjectID promoted to top-level project_id, got %s", out)
+	}
+	var back KeyAliases
+	if err := json.Unmarshal(out, &back); err != nil {
+		t.Fatalf("re-unmarshal: %v", err)
+	}
+	bp := back["vtx-alias"].ProjectID
+	if bp == nil || bp.GetValue() != "legacy-gcp-project" {
+		t.Fatalf("legacy Vertex project did not survive round-trip: %s", out)
+	}
+}
+
 func TestKeyAliasesUnmarshalMixedShape(t *testing.T) {
 	in := []byte(`{
         "legacy":  "gpt-4-deployment",

@@ -289,7 +289,14 @@ func MergePayloadFromJSON(l *Log, data []byte) error {
 	// Metadata is intentionally NOT restored from the snapshot: the copy
 	// written there (see ExtractPayload) is for external object consumers
 	// only, and the DB row stays authoritative.
-	return l.DeserializeFields()
+	if err := l.DeserializeFields(); err != nil {
+		return err
+	}
+	// Rebuild content summary from freshly deserialized Parsed fields so it
+	// reflects the correct data from object storage, not a potentially
+	// corrupted DB value (e.g. from client/server encoding mismatch).
+	l.ContentSummary = l.BuildContentSummary()
+	return nil
 }
 
 // ExtractPayloadFiltered is like ExtractPayload but omits fields present in
@@ -470,6 +477,87 @@ func extractResponsesMessageText(msg *schemas.ResponsesMessage) string {
 	return ""
 }
 
+// attachmentStrippedPlaceholder replaces attachment payloads (base64 data,
+// image/file URLs, audio data) in the last-user-message preview kept in the
+// DB row. The untouched original always lives in object storage.
+const attachmentStrippedPlaceholder = "[attachment stripped]"
+
+// stripChatMessageAttachments returns a copy of msg with attachment payloads
+// replaced by attachmentStrippedPlaceholder so the DB preview stays
+// lightweight. Copy-on-write: msg, its blocks slice, and nested structs are
+// shared with the caller's entry and are never mutated.
+func stripChatMessageAttachments(msg *schemas.ChatMessage) schemas.ChatMessage {
+	out := *msg
+	if msg.Content == nil || len(msg.Content.ContentBlocks) == 0 {
+		return out
+	}
+	blocks := make([]schemas.ChatContentBlock, len(msg.Content.ContentBlocks))
+	copy(blocks, msg.Content.ContentBlocks)
+	for i := range blocks {
+		if img := blocks[i].ImageURLStruct; img != nil && img.URL != "" {
+			imgCopy := *img
+			imgCopy.URL = attachmentStrippedPlaceholder
+			blocks[i].ImageURLStruct = &imgCopy
+		}
+		if audio := blocks[i].InputAudio; audio != nil && audio.Data != "" {
+			audioCopy := *audio
+			audioCopy.Data = attachmentStrippedPlaceholder
+			blocks[i].InputAudio = &audioCopy
+		}
+		if file := blocks[i].File; file != nil && (file.FileData != nil || file.FileURL != nil) {
+			fileCopy := *file
+			if fileCopy.FileData != nil {
+				fileCopy.FileData = schemas.Ptr(attachmentStrippedPlaceholder)
+			}
+			if fileCopy.FileURL != nil {
+				fileCopy.FileURL = schemas.Ptr(attachmentStrippedPlaceholder)
+			}
+			blocks[i].File = &fileCopy
+		}
+	}
+	content := *msg.Content
+	content.ContentBlocks = blocks
+	out.Content = &content
+	return out
+}
+
+// stripResponsesMessageAttachments mirrors stripChatMessageAttachments for
+// the Responses API message shape. Copy-on-write for the same reason.
+func stripResponsesMessageAttachments(msg *schemas.ResponsesMessage) schemas.ResponsesMessage {
+	out := *msg
+	if msg.Content == nil || len(msg.Content.ContentBlocks) == 0 {
+		return out
+	}
+	blocks := make([]schemas.ResponsesMessageContentBlock, len(msg.Content.ContentBlocks))
+	copy(blocks, msg.Content.ContentBlocks)
+	for i := range blocks {
+		if img := blocks[i].ResponsesInputMessageContentBlockImage; img != nil && img.ImageURL != nil && *img.ImageURL != "" {
+			imgCopy := *img
+			imgCopy.ImageURL = schemas.Ptr(attachmentStrippedPlaceholder)
+			blocks[i].ResponsesInputMessageContentBlockImage = &imgCopy
+		}
+		if file := blocks[i].ResponsesInputMessageContentBlockFile; file != nil && (file.FileData != nil || file.FileURL != nil) {
+			fileCopy := *file
+			if fileCopy.FileData != nil {
+				fileCopy.FileData = schemas.Ptr(attachmentStrippedPlaceholder)
+			}
+			if fileCopy.FileURL != nil {
+				fileCopy.FileURL = schemas.Ptr(attachmentStrippedPlaceholder)
+			}
+			blocks[i].ResponsesInputMessageContentBlockFile = &fileCopy
+		}
+		if audio := blocks[i].Audio; audio != nil && audio.Data != "" {
+			audioCopy := *audio
+			audioCopy.Data = attachmentStrippedPlaceholder
+			blocks[i].Audio = &audioCopy
+		}
+	}
+	content := *msg.Content
+	content.ContentBlocks = blocks
+	out.Content = &content
+	return out
+}
+
 // findLastUserMessageIndex returns the index of the last ChatMessage with
 // role "user", or -1 if none exists. Used by both BuildInputContentSummary
 // and prepareDBEntry to avoid scanning the slice twice.
@@ -608,10 +696,12 @@ func fieldsNeedHydration(fields []string) bool {
 	return false
 }
 
-// ensureHydrationFields appends id, timestamp, and has_object to the
-// projection if not already present, so hydrateLog can function correctly.
+// ensureHydrationFields appends id, timestamp, has_object, and content_hidden
+// to the projection if not already present, so hydrateLog can function
+// correctly. content_hidden must always be selected: a projection that omits
+// it would zero-value the flag and hydrate a hidden log.
 func ensureHydrationFields(fields []string) []string {
-	required := [3]string{"id", "timestamp", "has_object"}
+	required := [4]string{"id", "timestamp", "has_object", "content_hidden"}
 	have := make(map[string]struct{}, len(fields))
 	for _, f := range fields {
 		have[f] = struct{}{}

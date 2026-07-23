@@ -82,7 +82,9 @@ func TestTeamOrBUFanoutFrom(t *testing.T) {
 func TestCanUseMatViewFilters_ExcludesTeamBU(t *testing.T) {
 	assert.True(t, canUseMatViewFilters(SearchFilters{}), "empty filters → matview eligible")
 	assert.True(t, canUseMatViewFilters(SearchFilters{Providers: []string{"openai"}}), "provider filter stays matview-eligible")
+	assert.True(t, canUseMatViewFilters(SearchFilters{Status: []string{"cancelled"}}), "cancelled is materialized as a terminal status")
 
+	assert.False(t, canUseMatViewFilters(SearchFilters{Status: []string{"processing"}}), "processing is not present in mv_logs_hourly")
 	assert.False(t, canUseMatViewFilters(SearchFilters{TeamIDs: []string{"t1"}}), "team filter must force the raw path")
 	assert.False(t, canUseMatViewFilters(SearchFilters{BusinessUnitIDs: []string{"bu1"}}), "BU filter must force the raw path")
 	assert.False(t, canUseMatViewFilters(SearchFilters{CustomerIDs: []string{"c1"}}), "customer filter must force the raw path")

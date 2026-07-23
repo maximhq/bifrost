@@ -13,6 +13,8 @@ variable "config_json" {
 
 variable "config_json_file" { default = null }
 
+variable "schema_url" { default = null }
+
 variable "encryption_key" {
   type      = string
   default   = null

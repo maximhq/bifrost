@@ -1545,3 +1545,198 @@ func TestSonic_ToolFunctionParameters_DeepCopy_KeyOrderIndependent(t *testing.T)
 	assert.NotEqual(t, original.keyOrder.keys[0], copied.keyOrder.keys[0], "copy must not share JSONKeyOrder.keys backing array")
 	assert.Equal(t, "$defs", copied.keyOrder.keys[0])
 }
+
+// --- ChatPromptTokensDetails / ResponsesResponseInputTokens cached_tokens ---
+// Per the OpenAI spec, cached_tokens counts prompt tokens read from the cache. Cache
+// writes must not be folded in, or spec consumers price cache writes as cache reads.
+
+func TestSonic_ChatPromptTokensDetails_CachedTokensExcludesWrites(t *testing.T) {
+	// Fresh-cache turn: write only, no read. cached_tokens must stay 0.
+	out, err := Marshal(ChatPromptTokensDetails{CachedWriteTokens: 9106})
+	require.NoError(t, err)
+	var m map[string]any
+	require.NoError(t, json.Unmarshal(out, &m))
+	assert.Equal(t, float64(0), m["cached_tokens"])
+	assert.Equal(t, float64(9106), m["cached_write_tokens"])
+	assert.Equal(t, float64(9106), m["cache_write_tokens"]) // OpenAI SDK reads this name
+
+	// Cache-hit turn with a concurrent write: cached_tokens must equal reads only.
+	out, err = Marshal(ChatPromptTokensDetails{CachedReadTokens: 500, CachedWriteTokens: 100})
+	require.NoError(t, err)
+	m = nil
+	require.NoError(t, json.Unmarshal(out, &m))
+	assert.Equal(t, float64(500), m["cached_tokens"])
+	assert.Equal(t, float64(500), m["cached_read_tokens"])
+	assert.Equal(t, float64(100), m["cached_write_tokens"])
+	assert.Equal(t, float64(100), m["cache_write_tokens"])
+}
+
+func TestSonic_ChatPromptTokensDetails_CachedTokensRoundTrip(t *testing.T) {
+	// Round-trip must preserve the read/write split; the bare cached_tokens fallback
+	// in UnmarshalJSON only applies when the split fields are absent.
+	in := ChatPromptTokensDetails{CachedReadTokens: 500, CachedWriteTokens: 100}
+	out, err := Marshal(in)
+	require.NoError(t, err)
+	var back ChatPromptTokensDetails
+	require.NoError(t, Unmarshal(out, &back))
+	assert.Equal(t, in.CachedReadTokens, back.CachedReadTokens)
+	assert.Equal(t, in.CachedWriteTokens, back.CachedWriteTokens)
+
+	// OpenAI-spec providers send only cached_tokens; it maps to reads.
+	var d ChatPromptTokensDetails
+	require.NoError(t, Unmarshal([]byte(`{"cached_tokens":42}`), &d))
+	assert.Equal(t, 42, d.CachedReadTokens)
+	assert.Equal(t, 0, d.CachedWriteTokens)
+}
+
+func TestSonic_ResponsesResponseInputTokens_CachedTokensExcludesWrites(t *testing.T) {
+	// Fresh-cache turn: write only, no read. cached_tokens must stay 0.
+	out, err := Marshal(ResponsesResponseInputTokens{CachedWriteTokens: 9106})
+	require.NoError(t, err)
+	var m map[string]any
+	require.NoError(t, json.Unmarshal(out, &m))
+	assert.Equal(t, float64(0), m["cached_tokens"])
+	assert.Equal(t, float64(9106), m["cached_write_tokens"])
+	assert.Equal(t, float64(9106), m["cache_write_tokens"]) // OpenAI SDK reads this name
+
+	// Cache-hit turn with a concurrent write: cached_tokens must equal reads only.
+	out, err = Marshal(ResponsesResponseInputTokens{CachedReadTokens: 500, CachedWriteTokens: 100})
+	require.NoError(t, err)
+	m = nil
+	require.NoError(t, json.Unmarshal(out, &m))
+	assert.Equal(t, float64(500), m["cached_tokens"])
+	assert.Equal(t, float64(500), m["cached_read_tokens"])
+	assert.Equal(t, float64(100), m["cached_write_tokens"])
+	assert.Equal(t, float64(100), m["cache_write_tokens"])
+}
+
+func TestSonic_ResponsesResponseInputTokens_CachedTokensRoundTrip(t *testing.T) {
+	in := ResponsesResponseInputTokens{CachedReadTokens: 500, CachedWriteTokens: 100}
+	out, err := Marshal(in)
+	require.NoError(t, err)
+	var back ResponsesResponseInputTokens
+	require.NoError(t, Unmarshal(out, &back))
+	assert.Equal(t, in.CachedReadTokens, back.CachedReadTokens)
+	assert.Equal(t, in.CachedWriteTokens, back.CachedWriteTokens)
+
+	var d ResponsesResponseInputTokens
+	require.NoError(t, Unmarshal([]byte(`{"cached_tokens":42}`), &d))
+	assert.Equal(t, 42, d.CachedReadTokens)
+	assert.Equal(t, 0, d.CachedWriteTokens)
+}
+
+// OpenAI's Responses API reports cache writes under cache_write_tokens (distinct
+// from Bifrost's cached_write_tokens); it must map into CachedWriteTokens.
+func TestSonic_ResponsesResponseInputTokens_OpenAICacheWriteTokensAlias(t *testing.T) {
+	// Fresh-cache Responses turn: OpenAI sends cache_write_tokens with cached_tokens:0.
+	var d ResponsesResponseInputTokens
+	require.NoError(t, Unmarshal([]byte(`{"cached_tokens":0,"cache_write_tokens":28003}`), &d))
+	assert.Equal(t, 28003, d.CachedWriteTokens)
+	assert.Equal(t, 0, d.CachedReadTokens)
+
+	// Bifrost's own cached_write_tokens takes precedence when both are present.
+	var d2 ResponsesResponseInputTokens
+	require.NoError(t, Unmarshal([]byte(`{"cached_write_tokens":100,"cache_write_tokens":28003}`), &d2))
+	assert.Equal(t, 100, d2.CachedWriteTokens)
+}
+
+func TestSonic_ChatPromptTokensDetails_OpenAICacheWriteTokensAlias(t *testing.T) {
+	var d ChatPromptTokensDetails
+	require.NoError(t, Unmarshal([]byte(`{"cached_tokens":0,"cache_write_tokens":28003}`), &d))
+	assert.Equal(t, 28003, d.CachedWriteTokens)
+	assert.Equal(t, 0, d.CachedReadTokens)
+
+	var d2 ChatPromptTokensDetails
+	require.NoError(t, Unmarshal([]byte(`{"cached_write_tokens":100,"cache_write_tokens":28003}`), &d2))
+	assert.Equal(t, 100, d2.CachedWriteTokens)
+}
+
+// --- prompt_cache_options / prompt_cache_breakpoint (OpenAI gpt-5.6+) ---
+
+func TestSonic_PromptCacheOptions_RoundTrip(t *testing.T) {
+	mode := "explicit"
+	ttl := "30m"
+
+	// Responses request params serialize the object to the wire.
+	out, err := Marshal(ResponsesParameters{PromptCacheOptions: &PromptCacheOptions{Mode: &mode, TTL: &ttl}})
+	require.NoError(t, err)
+	var m map[string]any
+	require.NoError(t, json.Unmarshal(out, &m))
+	pco, ok := m["prompt_cache_options"].(map[string]any)
+	require.True(t, ok, "prompt_cache_options must serialize on ResponsesParameters")
+	assert.Equal(t, "explicit", pco["mode"])
+	assert.Equal(t, "30m", pco["ttl"])
+
+	// Chat request params round-trip (through ChatParameters' custom unmarshaler).
+	out, err = Marshal(ChatParameters{PromptCacheOptions: &PromptCacheOptions{Mode: &mode, TTL: &ttl}})
+	require.NoError(t, err)
+	var cp ChatParameters
+	require.NoError(t, Unmarshal(out, &cp))
+	require.NotNil(t, cp.PromptCacheOptions)
+	assert.Equal(t, "explicit", *cp.PromptCacheOptions.Mode)
+	assert.Equal(t, "30m", *cp.PromptCacheOptions.TTL)
+
+	// Response echo: OpenAI returns prompt_cache_options on the response object.
+	var resp BifrostResponsesResponse
+	require.NoError(t, Unmarshal([]byte(`{"prompt_cache_options":{"mode":"implicit","ttl":"30m"}}`), &resp))
+	require.NotNil(t, resp.PromptCacheOptions)
+	assert.Equal(t, "implicit", *resp.PromptCacheOptions.Mode)
+	assert.Equal(t, "30m", *resp.PromptCacheOptions.TTL)
+}
+
+func TestSonic_PromptCacheBreakpoint_RoundTrip(t *testing.T) {
+	mode := "explicit"
+
+	// Responses content block serializes the breakpoint to the wire.
+	out, err := Marshal(ResponsesMessageContentBlock{
+		Type:                  ResponsesInputMessageContentBlockTypeText,
+		PromptCacheBreakpoint: &PromptCacheBreakpoint{Mode: &mode},
+	})
+	require.NoError(t, err)
+	var m map[string]any
+	require.NoError(t, json.Unmarshal(out, &m))
+	bp, ok := m["prompt_cache_breakpoint"].(map[string]any)
+	require.True(t, ok, "prompt_cache_breakpoint must serialize on ResponsesMessageContentBlock")
+	assert.Equal(t, "explicit", bp["mode"])
+
+	// Chat content block round-trips through its custom unmarshaler.
+	out, err = Marshal(ChatContentBlock{
+		Type:                  ChatContentBlockTypeText,
+		PromptCacheBreakpoint: &PromptCacheBreakpoint{Mode: &mode},
+	})
+	require.NoError(t, err)
+	var cb ChatContentBlock
+	require.NoError(t, Unmarshal(out, &cb))
+	require.NotNil(t, cb.PromptCacheBreakpoint)
+	assert.Equal(t, "explicit", *cb.PromptCacheBreakpoint.Mode)
+}
+
+// A native Responses stream's response.completed event carries the full response
+// object; prompt_cache_options and cache_write_tokens usage must survive parsing.
+func TestSonic_ResponsesStreamCompleted_CapturesPromptCacheAndCacheWrite(t *testing.T) {
+	event := `{
+		"type": "response.completed",
+		"sequence_number": 42,
+		"response": {
+			"id": "resp_1",
+			"object": "response",
+			"prompt_cache_options": {"mode": "implicit", "ttl": "30m"},
+			"usage": {
+				"input_tokens": 2006,
+				"input_tokens_details": {"cached_tokens": 1920, "cache_write_tokens": 80},
+				"output_tokens": 300,
+				"total_tokens": 2306
+			}
+		}
+	}`
+	var stream BifrostResponsesStreamResponse
+	require.NoError(t, Unmarshal([]byte(event), &stream))
+	require.NotNil(t, stream.Response)
+	require.NotNil(t, stream.Response.PromptCacheOptions)
+	assert.Equal(t, "implicit", *stream.Response.PromptCacheOptions.Mode)
+	assert.Equal(t, "30m", *stream.Response.PromptCacheOptions.TTL)
+	require.NotNil(t, stream.Response.Usage)
+	require.NotNil(t, stream.Response.Usage.InputTokensDetails)
+	assert.Equal(t, 80, stream.Response.Usage.InputTokensDetails.CachedWriteTokens)
+	assert.Equal(t, 1920, stream.Response.Usage.InputTokensDetails.CachedReadTokens)
+}

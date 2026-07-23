@@ -641,6 +641,10 @@ type ModelDetailsResponse struct {
 	ContextLength        *int                  `json:"context_length,omitempty"`
 	MaxInputTokens       *int                  `json:"max_input_tokens,omitempty"`
 	MaxOutputTokens      *int                  `json:"max_output_tokens,omitempty"`
+	InputCostPerToken    *float64              `json:"input_cost_per_token,omitempty"`
+	OutputCostPerToken   *float64              `json:"output_cost_per_token,omitempty"`
+	CacheWriteCost       *float64              `json:"cache_creation_input_token_cost,omitempty"`
+	CacheReadCost        *float64              `json:"cache_read_input_token_cost,omitempty"`
 	Architecture         *schemas.Architecture `json:"architecture,omitempty"`
 	IsDeprecated         bool                  `json:"is_deprecated,omitempty"`
 	AdditionalAttributes map[string]string     `json:"additional_attributes,omitempty"`
@@ -757,6 +761,10 @@ func (h *ProviderHandler) listModelDetails(ctx *fasthttp.RequestCtx) {
 			details.ContextLength = capabilities.ContextLength
 			details.MaxInputTokens = capabilities.MaxInputTokens
 			details.MaxOutputTokens = capabilities.MaxOutputTokens
+			details.InputCostPerToken = capabilities.InputCostPerToken
+			details.OutputCostPerToken = capabilities.OutputCostPerToken
+			details.CacheWriteCost = capabilities.CacheCreationInputTokenCost
+			details.CacheReadCost = capabilities.CacheReadInputTokenCost
 			details.Architecture = capabilities.Architecture
 			details.IsDeprecated = capabilities.IsDeprecated
 			details.AdditionalAttributes = capabilities.AdditionalAttributes
@@ -869,9 +877,6 @@ func (h *ProviderHandler) listManagementModels(query modelListQuery) ([]listedMo
 	for _, provider := range providers {
 		models = append(models, h.listManagementModelsForProvider(provider, query)...)
 	}
-	models = slices.DeleteFunc(models, func(model listedModel) bool {
-		return h.isModelDeprecated(model.Name, model.Provider)
-	})
 
 	total := len(models)
 	if query.Offset > 0 {
@@ -1144,7 +1149,7 @@ func (h *ProviderHandler) listBaseModels(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	baseModels := modelCatalog.GetDistinctActiveBaseModelNames()
+	baseModels := modelCatalog.GetDistinctBaseModelNames()
 	sort.Strings(baseModels)
 
 	// Apply query filter if provided

@@ -10,7 +10,7 @@ import { AliasConfig, ModelFamily, ModelFamilyValues } from "@/lib/types/config"
 import { SecretVar } from "@/lib/types/schemas";
 import { cn } from "@/lib/utils";
 import { ChevronDown, ChevronRight, Trash } from "lucide-react";
-import { useMemo, useRef, useState } from "react";
+import { useId, useMemo, useRef, useState } from "react";
 
 type DeploymentsValue = Record<string, AliasConfig> | undefined | null;
 
@@ -125,6 +125,51 @@ interface ProviderSectionProps {
 	disabled?: boolean;
 }
 
+// Three-way control for boolean overrides that inherit a key-level toggle when
+// unset: undefined = use the key's setting, true/false = explicit override. A
+// plain switch can't express "explicitly off while the key-level toggle is on".
+function TriStateOverrideRow({
+	label,
+	hint,
+	value,
+	onChange,
+	disabled,
+	testId,
+}: {
+	label: string;
+	hint: string;
+	value: boolean | undefined;
+	onChange: (next: boolean | undefined) => void;
+	disabled?: boolean;
+	testId?: string;
+}) {
+	const id = useId();
+	const hintId = `${id}-hint`;
+	const selectValue = value === undefined ? "inherit" : value ? "on" : "off";
+	return (
+		<div className="flex items-start justify-between gap-4 rounded-md border p-3">
+			<div className="space-y-0.5">
+				<label htmlFor={id} className="text-sm font-medium">
+					{label}
+				</label>
+				<p id={hintId} className="text-muted-foreground text-xs">
+					{hint}
+				</p>
+			</div>
+			<Select value={selectValue} onValueChange={(v) => onChange(v === "inherit" ? undefined : v === "on")} disabled={disabled}>
+				<SelectTrigger id={id} aria-describedby={hintId} className="w-fit min-w-44 shrink-0" data-testid={testId}>
+					<SelectValue />
+				</SelectTrigger>
+				<SelectContent>
+					<SelectItem value="inherit">Use key setting</SelectItem>
+					<SelectItem value="on">On</SelectItem>
+					<SelectItem value="off">Off</SelectItem>
+				</SelectContent>
+			</Select>
+		</div>
+	);
+}
+
 function AzureSection({ config, onChange, disabled }: ProviderSectionProps) {
 	return (
 		<div className="space-y-4">
@@ -183,7 +228,7 @@ function VertexSection({ config, onChange, disabled }: ProviderSectionProps) {
 					disabled={disabled}
 				/>
 			</FieldRow>
-			<FieldRow label="Region">
+			<FieldRow label="Region" hint="Multi-region-only models are auto-routed to a multi-region endpoint unless Force single region is on.">
 				<SecretVarField
 					value={config.region}
 					onChange={(v) => onChange({ region: v })}
@@ -191,6 +236,19 @@ function VertexSection({ config, onChange, disabled }: ProviderSectionProps) {
 					disabled={disabled}
 				/>
 			</FieldRow>
+			<div className="flex items-start justify-between gap-4 rounded-md border p-3">
+				<div className="space-y-0.5">
+					<label className="text-sm font-medium">Force single region</label>
+					<p className="text-muted-foreground text-xs">
+						Call the region above as-is and skip multi-region promotion of multi-region-only models. Use for provisioned throughput.
+					</p>
+				</div>
+				<Switch
+					checked={config.force_single_region ?? false}
+					onCheckedChange={(checked) => onChange({ force_single_region: checked })}
+					disabled={disabled}
+				/>
+			</div>
 		</div>
 	);
 }
@@ -218,6 +276,47 @@ function BedrockSection({ config, onChange, disabled }: ProviderSectionProps) {
 					disabled={disabled}
 				/>
 			</FieldRow>
+			<FieldRow
+				label="Project ID"
+				hint="Scope this deployment's Bedrock Mantle (gpt-*/Gemma) calls to a specific project via the OpenAI-Project header. Leave blank to use the key's project."
+			>
+				<SecretVarField
+					value={config.project_id}
+					onChange={(v) => onChange({ project_id: v })}
+					placeholder="proj_xxxxxxxx or env.BEDROCK_PROJECT_ID"
+					disabled={disabled}
+				/>
+			</FieldRow>
+		</div>
+	);
+}
+
+function BedrockMantleSection({ config, onChange, disabled }: ProviderSectionProps) {
+	return (
+		<div className="space-y-4">
+			<SectionHeader
+				title="Bedrock Mantle overrides"
+				description="Override key-level Bedrock Mantle defaults for this deployment. Leave blank to use the key's settings."
+			/>
+			<FieldRow label="Region">
+				<SecretVarField
+					value={config.region}
+					onChange={(v) => onChange({ region: v })}
+					placeholder="us-east-1 or env.BEDROCK_REGION"
+					disabled={disabled}
+				/>
+			</FieldRow>
+			<FieldRow
+				label="Project ID"
+				hint="Scope this deployment to a specific project via the OpenAI-Project / anthropic-workspace-id header. Leave blank to use the key's project."
+			>
+				<SecretVarField
+					value={config.project_id}
+					onChange={(v) => onChange({ project_id: v })}
+					placeholder="proj_xxxxxxxx or env.BEDROCK_PROJECT_ID"
+					disabled={disabled}
+				/>
+			</FieldRow>
 		</div>
 	);
 }
@@ -226,19 +325,30 @@ function ReplicateSection({ config, onChange, disabled }: ProviderSectionProps) 
 	return (
 		<div className="space-y-4">
 			<SectionHeader title="Replicate overrides" description="Override key-level Replicate defaults for this deployment." />
-			<div className="flex items-start justify-between gap-4 rounded-md border p-3">
-				<div className="space-y-0.5">
-					<label className="text-sm font-medium">Use deployments endpoint</label>
-					<p className="text-muted-foreground text-xs">
-						Route through Replicate&apos;s deployments endpoint instead of the models endpoint.
-					</p>
-				</div>
-				<Switch
-					checked={config.use_deployments_endpoint ?? false}
-					onCheckedChange={(checked) => onChange({ use_deployments_endpoint: checked ? true : undefined })}
-					disabled={disabled}
-				/>
-			</div>
+			<TriStateOverrideRow
+				label="Use deployments endpoint"
+				hint="Route through Replicate's deployments endpoint instead of the models endpoint."
+				value={config.use_deployments_endpoint}
+				onChange={(next) => onChange({ use_deployments_endpoint: next })}
+				disabled={disabled}
+				testId="deployment-use-deployments-endpoint"
+			/>
+		</div>
+	);
+}
+
+function UseAnthropicEndpointsToggleSection({ config, onChange, disabled, providerName }: ProviderSectionProps & { providerName: string }) {
+	return (
+		<div className="space-y-4">
+			<SectionHeader title={`${providerName} overrides`} description={`Override key-level ${providerName} defaults for this deployment.`} />
+			<TriStateOverrideRow
+				label="Use Anthropic endpoints"
+				hint="Route chat completions and responses requests through Anthropic-compatible endpoints."
+				value={config.use_anthropic_endpoints}
+				onChange={(next) => onChange({ use_anthropic_endpoints: next })}
+				disabled={disabled}
+				testId="deployment-use-anthropic-endpoints"
+			/>
 		</div>
 	);
 }
@@ -251,8 +361,18 @@ function ProviderSection({ providerName, ...props }: ProviderSectionProps & { pr
 			return <VertexSection {...props} />;
 		case "bedrock":
 			return <BedrockSection {...props} />;
+		case "bedrock_mantle":
+			return <BedrockMantleSection {...props} />;
 		case "replicate":
 			return <ReplicateSection {...props} />;
+		case "sgl":
+			return <UseAnthropicEndpointsToggleSection providerName="SGLang" {...props} />;
+		case "deepseek":
+			return <UseAnthropicEndpointsToggleSection providerName="Deepseek" {...props} />;
+		case "fireworks":
+			return <UseAnthropicEndpointsToggleSection providerName="Fireworks" {...props} />;
+		case "vllm":
+			return <UseAnthropicEndpointsToggleSection providerName="vLLM" {...props} />;
 		default:
 			return null;
 	}

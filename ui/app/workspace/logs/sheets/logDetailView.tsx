@@ -22,6 +22,7 @@ import {
 	DropdownMenuTrigger,
 } from "@/components/ui/dropdownMenu";
 import { DottedSeparator } from "@/components/ui/separator";
+import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
@@ -35,7 +36,7 @@ import { isJson } from "@/lib/utils/validation";
 import { Link } from "@tanstack/react-router";
 import { addMilliseconds, format } from "date-fns";
 import { AlertCircle, ChevronDown, Clipboard, Copy, Download, Loader2, MoreVertical, Trash2, Wrench } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import BlockHeader from "../views/blockHeader";
 import CollapsibleBox from "../views/collapsibleBox";
@@ -71,6 +72,18 @@ const getRealtimeTransportBadgeClass = (value: unknown): string => {
 	}
 };
 
+const hasRedactionMappingEntries = (mapping?: LogEntry["redaction_mapping"]): boolean =>
+	Boolean(mapping && (Object.keys(mapping.input ?? {}).length > 0 || Object.keys(mapping.output ?? {}).length > 0));
+
+const applyRedactionMapping = (text: string | undefined, mapping?: Record<string, string>): string => {
+	if (!text || !mapping) return text || "";
+	let result = text;
+	for (const [key, value] of Object.entries(mapping)) {
+		result = result.replaceAll(`[${key}]`, value);
+	}
+	return result;
+};
+
 const formatRealtimeSource = (value: unknown): string => {
 	const source = String(value ?? "").trim();
 	switch (source.toLowerCase()) {
@@ -83,28 +96,38 @@ const formatRealtimeSource = (value: unknown): string => {
 	}
 };
 
-const extractResponsesText = (msg: ResponsesMessage): string => {
+const extractResponsesText = (msg: ResponsesMessage, mapping?: Record<string, string>): string => {
+	let text: string;
 	if (msg.type === "reasoning") {
 		const summaryText = (msg.summary ?? [])
 			.map((s) => s.text)
 			.filter(Boolean)
 			.join("\n")
 			.trim();
-		if (summaryText) return summaryText;
-		if (msg.encrypted_content) return msg.encrypted_content;
-	}
-	if (typeof msg.content === "string") return msg.content;
-	if (Array.isArray(msg.content)) {
-		return msg.content
+		if (summaryText) text = summaryText;
+		else if (msg.encrypted_content) text = msg.encrypted_content;
+		else text = "";
+	} else if (typeof msg.content === "string") {
+		text = msg.content;
+	} else if (Array.isArray(msg.content)) {
+		text = msg.content
 			.filter(
 				(b: any) =>
 					b && b.text && (b.type === "input_text" || b.type === "output_text" || b.type === "reasoning_text" || b.type === "refusal"),
 			)
 			.map((b: any) => b.text as string)
 			.join("\n");
+	} else if (typeof (msg as any).arguments === "string") {
+		text = (msg as any).arguments as string;
+	} else {
+		text = "";
 	}
-	if (typeof (msg as any).arguments === "string") return (msg as any).arguments as string;
-	return "";
+	if (mapping && text) {
+		for (const [key, value] of Object.entries(mapping)) {
+			text = text.replaceAll(`[${key}]`, value);
+		}
+	}
+	return text;
 };
 
 type ReasoningParts = {
@@ -131,10 +154,10 @@ const collectReasoningFromBlocks = (blocks: any[]): { text: string; signatures: 
 	return { text: texts.join("\n"), signatures };
 };
 
-const extractReasoningParts = (msg: ResponsesMessage): ReasoningParts => {
-	const summaries = (msg.summary ?? []).map((s) => (s?.text ?? "").trim()).filter(Boolean);
+const extractReasoningParts = (msg: ResponsesMessage, mapping?: Record<string, string>): ReasoningParts => {
+	let summaries = (msg.summary ?? []).map((s) => (s?.text ?? "").trim()).filter(Boolean);
 	const encryptedRaw = (msg as any).encrypted_content?.trim?.();
-	const encrypted = encryptedRaw ? encryptedRaw : undefined;
+	let encrypted = encryptedRaw ? encryptedRaw : undefined;
 	const signatures: string[] = [];
 	let contentText = "";
 	if (typeof msg.content === "string") {
@@ -163,6 +186,24 @@ const extractReasoningParts = (msg: ResponsesMessage): ReasoningParts => {
 			"";
 		if (topText.trim()) contentText = topText;
 	}
+	if (mapping) {
+		summaries = summaries.map((s) => {
+			for (const [key, value] of Object.entries(mapping)) {
+				s = s.replaceAll(`[${key}]`, value);
+			}
+			return s;
+		});
+		if (encrypted) {
+			for (const [key, value] of Object.entries(mapping)) {
+				encrypted = encrypted.replaceAll(`[${key}]`, value);
+			}
+		}
+		if (contentText) {
+			for (const [key, value] of Object.entries(mapping)) {
+				contentText = contentText.replaceAll(`[${key}]`, value);
+			}
+		}
+	}
 	return {
 		summaries,
 		encrypted,
@@ -171,19 +212,24 @@ const extractReasoningParts = (msg: ResponsesMessage): ReasoningParts => {
 	};
 };
 
-const extractChatReasoning = (message: any): string => {
+const extractChatReasoning = (message: any, mapping?: Record<string, string>): string => {
 	if (!message) return "";
+	let text = "";
 	if (typeof message.reasoning === "string" && message.reasoning.trim()) {
-		return message.reasoning;
-	}
-	if (Array.isArray(message.reasoning_details)) {
+		text = message.reasoning;
+	} else if (Array.isArray(message.reasoning_details)) {
 		const parts = (message.reasoning_details as any[])
 			.map((d) => (typeof d?.text === "string" ? d.text : (d?.summary ?? "")))
 			.map((t: string) => (typeof t === "string" ? t.trim() : ""))
 			.filter(Boolean);
-		if (parts.length > 0) return parts.join("\n");
+		if (parts.length > 0) text = parts.join("\n");
 	}
-	return "";
+	if (mapping && text) {
+		for (const [key, value] of Object.entries(mapping)) {
+			text = text.replaceAll(`[${key}]`, value);
+		}
+	}
+	return text;
 };
 
 const getResponsesRole = (msg: ResponsesMessage): MessageRole => {
@@ -192,6 +238,8 @@ const getResponsesRole = (msg: ResponsesMessage): MessageRole => {
 		msg.type &&
 		(msg.type.endsWith("_call") ||
 			msg.type.endsWith("_call_output") ||
+			msg.type === "tool_search_output" ||
+			msg.type === "additional_tools" ||
 			msg.type === "mcp_list_tools" ||
 			msg.type === "mcp_approval_request" ||
 			msg.type === "mcp_approval_responses")
@@ -215,6 +263,37 @@ const isReasoningResponsesMessage = (m: ResponsesMessage): boolean => m.type ===
 // Streaming providers can emit a single logical assistant turn (or reasoning
 // item) as many small messages. Collapse adjacent ones so the UI shows one
 // bubble per turn instead of N "1 line" bubbles.
+// Expands namespace tool declarations into their callable children
+// (`namespace.tool` names), leaving plain declarations untouched.
+const flattenDeclaredTools = (tools: any[]): any[] =>
+	tools.flatMap((tool) =>
+		tool?.type === "namespace" && Array.isArray(tool.tools)
+			? (tool.tools as any[]).map((nested) => ({ ...nested, name: `${tool.name ?? "namespace"}.${nested?.name ?? ""}` }))
+			: [tool],
+	);
+
+// Later declarations of the same tool replace earlier ones — a conversation
+// history can carry multiple `additional_tools` items, each a point-in-time
+// update, so the effective tool set is last-write-wins by name. Unnamed
+// declarations are kept as-is.
+const dedupeDeclaredTools = (tools: any[]): any[] => {
+	const byName = new Map<string, number>();
+	const out: any[] = [];
+	for (const tool of tools) {
+		const name = tool?.name ?? tool?.function?.name;
+		if (typeof name === "string" && name) {
+			const idx = byName.get(name);
+			if (idx !== undefined) {
+				out[idx] = tool;
+				continue;
+			}
+			byName.set(name, out.length);
+		}
+		out.push(tool);
+	}
+	return out;
+};
+
 const coalesceResponsesMessages = (msgs: ResponsesMessage[]): ResponsesMessage[] => {
 	const out: ResponsesMessage[] = [];
 	for (const m of msgs) {
@@ -248,16 +327,25 @@ const coalesceResponsesMessages = (msgs: ResponsesMessage[]): ResponsesMessage[]
 	});
 };
 
-const extractMessageText = (message: any): string => {
+const extractMessageText = (message: any, mapping?: Record<string, string>): string => {
 	if (!message || message.content == null) return "";
-	if (typeof message.content === "string") return message.content;
-	if (Array.isArray(message.content)) {
-		return message.content
+	let text: string;
+	if (typeof message.content === "string") {
+		text = message.content;
+	} else if (Array.isArray(message.content)) {
+		text = message.content
 			.filter((block: any) => block && (block.type === "text" || block.type === "input_text" || block.type === "output_text") && block.text)
 			.map((block: any) => block.text)
 			.join("\n");
+	} else {
+		text = "";
 	}
-	return "";
+	if (mapping && text) {
+		for (const [key, value] of Object.entries(mapping)) {
+			text = text.replaceAll(`[${key}]`, value);
+		}
+	}
+	return text;
 };
 
 const formatJsonSafe = (str: string | undefined): string => {
@@ -511,6 +599,7 @@ interface LogDetailViewProps {
 	resolvedSelectedPromptName?: string; // Current prompt name from prompt-repo when `selected_prompt_id` is set; falls back to stored log name
 	loading?: boolean;
 	handleDelete?: (log: LogEntry) => void;
+	canReveal?: boolean;
 	onClose?: () => void;
 	headerAction?: ReactNode;
 	onFilterByParentRequestId?: (parentRequestId: string) => void;
@@ -521,6 +610,7 @@ export function LogDetailView({
 	resolvedSelectedPromptName,
 	loading = false,
 	handleDelete,
+	canReveal = false,
 	onClose,
 	headerAction,
 	onFilterByParentRequestId,
@@ -529,8 +619,23 @@ export function LogDetailView({
 		successMessage: "Request body copied to clipboard",
 		errorMessage: "Failed to copy request body",
 	});
+	const [showRevealedValues, setShowRevealedValues] = useState(false);
+	const revealMapping = log?.redaction_mapping;
+	const revealAvailable = canReveal && hasRedactionMappingEntries(revealMapping);
+	const revealEnabled = revealAvailable && showRevealedValues;
+	const activeInputRevealMapping = revealEnabled ? revealMapping?.input : undefined;
+	const activeOutputRevealMapping = revealEnabled ? revealMapping?.output : undefined;
+
+	useEffect(() => {
+		setShowRevealedValues(false);
+	}, [log?.id, revealAvailable]);
+
 	const allRoles: MessageRole[] = ["system", "user", "assistant", "tool", "reasoning"];
 	const [visibleRoles, setVisibleRoles] = useState<Set<MessageRole>>(new Set(allRoles));
+
+	const handleToggleReveal = (checked: boolean) => {
+		setShowRevealedValues(checked && revealAvailable);
+	};
 
 	if (!log) return null;
 
@@ -549,18 +654,26 @@ export function LogDetailView({
 			})
 		: null;
 
+	// Tools can also be declared inside Responses input items instead of the
+	// top-level tools param (codex code-mode models send an `additional_tools`
+	// input item with the tool definitions, including namespace groupings).
+	const inputDeclaredToolEntries = (log.responses_input_history ?? [])
+		.filter((m) => m.type === "additional_tools" && Array.isArray(m.tools))
+		.flatMap((m) => m.tools as any[]);
+	const inputDeclaredTools = flattenDeclaredTools(inputDeclaredToolEntries);
+	const declaredTools = dedupeDeclaredTools([...flattenDeclaredTools((log.params?.tools as any[]) ?? []), ...inputDeclaredTools]);
 	let toolsParameter = null;
-	if (log.params?.tools) {
+	if (declaredTools.length) {
 		try {
-			toolsParameter = JSON.stringify(log.params.tools, null, 2);
+			toolsParameter = JSON.stringify(declaredTools, null, 2);
 		} catch {}
 	}
 
 	const audioFormat = (log.params as any)?.audio?.format || (log.params as any)?.extra_params?.audio?.format || undefined;
-	const rawRequest = log.raw_request;
-	const rawResponse = log.raw_response;
-	const passthroughRequestBody = log.passthrough_request_body;
-	const passthroughResponseBody = log.passthrough_response_body;
+	const rawRequest = applyRedactionMapping(log.raw_request, activeInputRevealMapping);
+	const rawResponse = applyRedactionMapping(log.raw_response, activeOutputRevealMapping);
+	const passthroughRequestBody = applyRedactionMapping(log.passthrough_request_body, activeInputRevealMapping);
+	const passthroughResponseBody = applyRedactionMapping(log.passthrough_response_body, activeOutputRevealMapping);
 	const videoOutput = log.video_generation_output || log.video_retrieve_output || log.video_download_output;
 	const videoListOutput = log.video_list_output;
 	const pluginLogCount = (() => {
@@ -586,62 +699,73 @@ export function LogDetailView({
 					{headerAction}
 					<span className="text-foreground font-medium">Request details</span>
 				</div>
-				{onClose ? (
-					<AlertDialog>
-						<DropdownMenu>
-							<DropdownMenuTrigger asChild>
-								<Button variant="ghost" className="size-8" type="button" data-testid="logdetails-actions-button">
-									<MoreVertical className="h-3 w-3" />
-								</Button>
-							</DropdownMenuTrigger>
-							<DropdownMenuContent align="end">
-								{!isPassthrough && (
-									<DropdownMenuItem onClick={() => copyRequestBody(log, copyBody)} data-testid="logdetails-copy-request-body-button">
-										<Clipboard className="h-4 w-4" />
-										Copy request body
+				<div className="flex items-center gap-3">
+					{revealAvailable && (
+						<div className="flex items-center gap-2">
+							<span className="text-muted-foreground text-[11px] font-medium">Show original values</span>
+							<Switch
+								checked={revealEnabled}
+								onCheckedChange={handleToggleReveal}
+								data-testid="logdetails-reveal-toggle"
+							/>
+						</div>
+					)}
+					{onClose ? (
+						<AlertDialog>
+							<DropdownMenu>
+								<DropdownMenuTrigger asChild>
+									<Button variant="ghost" className="size-8" type="button" data-testid="logdetails-actions-button">
+										<MoreVertical className="h-3 w-3" />
+									</Button>
+								</DropdownMenuTrigger>
+								<DropdownMenuContent align="end">
+									{!isPassthrough && (
+										<DropdownMenuItem onClick={() => copyRequestBody(log, copyBody)} data-testid="logdetails-copy-request-body-button">
+											<Clipboard className="h-4 w-4" />
+											Copy request body
+										</DropdownMenuItem>
+									)}
+									<DropdownMenuItem
+										onClick={() => downloadAsJson(log, `log-${log.id ?? "export"}.json`)}
+										data-testid="logdetails-export-log-button"
+									>
+										<Download className="h-4 w-4" />
+										Export as JSON
 									</DropdownMenuItem>
-								)}
-								<DropdownMenuItem
-									onClick={() => downloadAsJson(log, `log-${log.id ?? "export"}.json`)}
-									data-testid="logdetails-export-log-button"
-								>
-									<Download className="h-4 w-4" />
-									Export as JSON
-								</DropdownMenuItem>
-
-								{handleDelete ? (
-									<>
-										<DropdownMenuSeparator />
-										<AlertDialogTrigger asChild>
-											<DropdownMenuItem variant="destructive" data-testid="logdetails-delete-item">
-												<Trash2 className="h-4 w-4" />
-												Delete log
-											</DropdownMenuItem>
-										</AlertDialogTrigger>{" "}
-									</>
-								) : null}
-							</DropdownMenuContent>
-						</DropdownMenu>
-						<AlertDialogContent>
-							<AlertDialogHeader>
-								<AlertDialogTitle>Are you sure you want to delete this log?</AlertDialogTitle>
-								<AlertDialogDescription>This action cannot be undone. This will permanently delete the log entry.</AlertDialogDescription>
-							</AlertDialogHeader>
-							<AlertDialogFooter>
-								<AlertDialogCancel data-testid="logdetails-delete-cancel-button">Cancel</AlertDialogCancel>
-								<AlertDialogAction
-									data-testid="logdetails-delete-confirm-button"
-									onClick={() => {
-										if (handleDelete) handleDelete(log);
-										onClose();
-									}}
-								>
-									Delete
-								</AlertDialogAction>
-							</AlertDialogFooter>
-						</AlertDialogContent>
-					</AlertDialog>
-				) : null}
+									{handleDelete ? (
+										<>
+											<DropdownMenuSeparator />
+											<AlertDialogTrigger asChild>
+												<DropdownMenuItem variant="destructive" data-testid="logdetails-delete-item">
+													<Trash2 className="h-4 w-4" />
+													Delete log
+												</DropdownMenuItem>
+											</AlertDialogTrigger>{" "}
+										</>
+									) : null}
+								</DropdownMenuContent>
+							</DropdownMenu>
+							<AlertDialogContent>
+								<AlertDialogHeader>
+									<AlertDialogTitle>Are you sure you want to delete this log?</AlertDialogTitle>
+									<AlertDialogDescription>This action cannot be undone. This will permanently delete the log entry.</AlertDialogDescription>
+								</AlertDialogHeader>
+								<AlertDialogFooter>
+									<AlertDialogCancel data-testid="logdetails-delete-cancel-button">Cancel</AlertDialogCancel>
+									<AlertDialogAction
+										data-testid="logdetails-delete-confirm-button"
+										onClick={() => {
+											if (handleDelete) handleDelete(log);
+											onClose();
+										}}
+									>
+										Delete
+									</AlertDialogAction>
+								</AlertDialogFooter>
+							</AlertDialogContent>
+						</AlertDialog>
+					) : null}
+				</div>
 			</div>
 			<div className="border-border rounded-sm border">
 				<div className="flex items-start justify-between gap-6 px-5 pt-5 pb-4">
@@ -660,7 +784,7 @@ export function LogDetailView({
 							{log.routing_rule && (
 								<Link
 									to="/workspace/logs"
-									search={{ routing_rule_ids: [log.routing_rule.id] }}
+									search={(prev) => ({ ...prev, offset: 0, selected_log: "", routing_rule_ids: [log.routing_rule!.id] })}
 									data-testid="logdetails-header-routing-rule-link"
 								>
 									<Badge variant="outline" className="bg-card text-muted-foreground rounded-sm px-2 py-0.5 font-normal hover:underline">
@@ -730,7 +854,7 @@ export function LogDetailView({
 								<div className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">Rule</div>
 								<Link
 									to="/workspace/logs"
-									search={{ routing_rule_ids: [log.routing_rule.id] }}
+									search={(prev) => ({ ...prev, offset: 0, selected_log: "", routing_rule_ids: [log.routing_rule!.id] })}
 									className="truncate text-[13px] font-medium text-blue-600 hover:underline dark:text-blue-400"
 									data-testid="logdetails-header-rule-link"
 								>
@@ -743,7 +867,7 @@ export function LogDetailView({
 								<div className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">Key</div>
 								<Link
 									to="/workspace/logs"
-									search={{ selected_key_ids: [log.selected_key_id] }}
+									search={(prev) => ({ ...prev, offset: 0, selected_log: "", selected_key_ids: [log.selected_key_id] })}
 									className="truncate font-mono text-[13px] text-blue-600 hover:underline dark:text-blue-400"
 									data-testid="logdetails-header-selected-key-link"
 								>
@@ -818,7 +942,7 @@ export function LogDetailView({
 					) : (
 						<HeroStat
 							label="Tools available"
-							value={(log.params?.tools?.length ?? 0).toString()}
+							value={declaredTools.length.toString()}
 							sub={(log.params as any)?.tool_choice != null ? `choice: ${formatToolChoice((log.params as any).tool_choice)}` : ""}
 						/>
 					)}
@@ -880,6 +1004,9 @@ export function LogDetailView({
 							)}
 							{!isContainer && log.alias_model_family && (
 								<LogEntryDetailsView className="w-full" label="Model Family" value={log.alias_model_family} />
+							)}
+							{!isContainer && log.server_side_fallback_model && (
+								<LogEntryDetailsView className="w-full" label="Served By (fallback)" value={log.server_side_fallback_model} />
 							)}
 							<LogEntryDetailsView
 								className="w-full"
@@ -943,7 +1070,7 @@ export function LogDetailView({
 									value={
 										<Link
 											to="/workspace/logs"
-											search={{ selected_key_ids: [log.selected_key_id] }}
+											search={(prev) => ({ ...prev, offset: 0, selected_log: "", selected_key_ids: [log.selected_key_id] })}
 											className="text-blue-600 hover:underline dark:text-blue-400"
 											data-testid="logdetails-selected-key-link"
 										>
@@ -987,7 +1114,7 @@ export function LogDetailView({
 												<Link
 													key={t.id}
 													to="/workspace/logs"
-													search={{ team_ids: [t.id] }}
+													search={(prev) => ({ ...prev, offset: 0, selected_log: "", team_ids: [t.id] })}
 													className="text-blue-600 hover:underline dark:text-blue-400"
 													data-testid={`logdetails-team-link-${t.id}`}
 												>
@@ -1012,7 +1139,7 @@ export function LogDetailView({
 												<Link
 													key={c.id}
 													to="/workspace/logs"
-													search={{ customer_ids: [c.id] }}
+													search={(prev) => ({ ...prev, offset: 0, selected_log: "", customer_ids: [c.id] })}
 													className="text-blue-600 hover:underline dark:text-blue-400"
 													data-testid={`logdetails-customer-link-${c.id}`}
 												>
@@ -1037,7 +1164,7 @@ export function LogDetailView({
 												<Link
 													key={b.id}
 													to="/workspace/logs"
-													search={{ business_unit_ids: [b.id] }}
+													search={(prev) => ({ ...prev, offset: 0, selected_log: "", business_unit_ids: [b.id] })}
 													className="text-blue-600 hover:underline dark:text-blue-400"
 													data-testid={`logdetails-business-unit-link-${b.id}`}
 												>
@@ -1058,7 +1185,7 @@ export function LogDetailView({
 											<TooltipTrigger asChild>
 												<Link
 													to="/workspace/logs"
-													search={{ user_ids: [log.user_id] }}
+													search={(prev) => ({ ...prev, offset: 0, selected_log: "", user_ids: [log.user_id] })}
 													className={`block min-w-0 cursor-pointer text-sm font-normal break-all text-blue-600 underline-offset-2 hover:underline dark:text-blue-400${log.user_name ? "" : " font-mono"}`}
 													data-testid="logdetails-user-link"
 												>
@@ -1118,7 +1245,7 @@ export function LogDetailView({
 									value={
 										<Link
 											to="/workspace/logs"
-											search={{ routing_rule_ids: [log.routing_rule.id] }}
+											search={(prev) => ({ ...prev, offset: 0, selected_log: "", routing_rule_ids: [log.routing_rule!.id] })}
 											className="text-blue-600 hover:underline dark:text-blue-400"
 											data-testid="logdetails-routing-rule-link"
 										>
@@ -1531,9 +1658,9 @@ export function LogDetailView({
 					{showTabs && !isPassthrough && !log.list_models_output && (
 						<TabsTrigger value="tools" className="px-3">
 							Tools
-							{log.params?.tools?.length ? (
+							{declaredTools.length ? (
 								<span className="bg-background text-muted-foreground ml-1.5 rounded-sm border px-2 py-0.5 text-[10px] tabular-nums">
-									{log.params.tools.length}
+									{declaredTools.length}
 								</span>
 							) : null}
 						</TabsTrigger>
@@ -1564,7 +1691,12 @@ export function LogDetailView({
 				</TabsList>
 
 				<TabsContent value="messages" className="space-y-4">
-					<div className="flex justify-end">
+					{log.content_hidden && (
+						<div className="text-muted-foreground rounded-sm border border-dashed p-5 text-center text-sm">
+							Content logging has been disabled for this request.
+						</div>
+					)}
+					<div className={cn("flex justify-end", log.content_hidden && "hidden")}>
 						<DropdownMenu>
 							<DropdownMenuTrigger asChild>
 								<button
@@ -1741,8 +1873,8 @@ export function LogDetailView({
 									: log.input_history?.filter(Boolean)
 								)?.flatMap((message, index) => {
 									const role = ((message.role as string) || "user") as MessageRole;
-									const text = extractMessageText(message);
-									const reasoningText = extractChatReasoning(message);
+									const text = extractMessageText(message, activeInputRevealMapping);
+									const reasoningText = extractChatReasoning(message, activeInputRevealMapping);
 									const showAll = visibleRoles.size === allRoles.length;
 									const showMain = showAll || visibleRoles.has(role);
 									const showReasoning = !!reasoningText && (showAll || visibleRoles.has("reasoning"));
@@ -1840,12 +1972,12 @@ export function LogDetailView({
 								{log.output_message &&
 									!log.error_details?.error.message &&
 									(() => {
-										const reasoningText = extractChatReasoning(log.output_message);
+										const reasoningText = extractChatReasoning(log.output_message, activeOutputRevealMapping);
 										const showReasoning = !!reasoningText && (visibleRoles.size === allRoles.length || visibleRoles.has("reasoning"));
 										const showAssistant = visibleRoles.has("assistant");
 										if (!showReasoning && !showAssistant) return null;
-										const text = extractMessageText(log.output_message);
-										const refusalText = log.output_message.refusal;
+										const text = extractMessageText(log.output_message, activeOutputRevealMapping);
+										const refusalText = applyRedactionMapping(log.output_message.refusal, activeOutputRevealMapping);
 										const isStopReasonRefusal =
 											log.stop_reason === "refusal" || log.stop_reason === "content_filter" || log.stop_reason === "safety";
 										const showRefusal = refusalText || (!text && isStopReasonRefusal);
@@ -1935,21 +2067,24 @@ export function LogDetailView({
 						const rawOutput = log.status !== "processing" && !log.error_details?.error.message ? (log.responses_output ?? []) : [];
 						const outputMsgs =
 							visibleRoles.size < allRoles.length ? rawOutput.filter((m) => visibleRoles.has(getResponsesRole(m))) : rawOutput;
-						const all: ResponsesMessage[] = coalesceResponsesMessages([...inputMsgs, ...outputMsgs]);
+						const all: Array<{ msg: ResponsesMessage; mapping?: Record<string, string> }> = [
+							...coalesceResponsesMessages(inputMsgs).map((msg) => ({ msg, mapping: activeInputRevealMapping })),
+							...coalesceResponsesMessages(outputMsgs).map((msg) => ({ msg, mapping: activeOutputRevealMapping })),
+						];
 						if (all.length === 0) return null;
 						return (
 							<div className="bg-card rounded-sm border p-5">
-								{all.map((msg, index) => {
+								{all.map(({ msg, mapping }, index) => {
 									const role = getResponsesRole(msg);
 									const isLast = index === all.length - 1;
-									const reasoningParts = role === "reasoning" ? extractReasoningParts(msg) : null;
+									const reasoningParts = role === "reasoning" ? extractReasoningParts(msg, mapping) : null;
 									const reasoningHasAny =
 										!!reasoningParts &&
 										(reasoningParts.summaries.length > 0 ||
 											!!reasoningParts.encrypted ||
 											!!reasoningParts.contentText ||
 											reasoningParts.signatures.length > 0);
-									const text = role === "reasoning" ? "" : extractResponsesText(msg);
+									const text = role === "reasoning" ? "" : extractResponsesText(msg, mapping);
 									const lineCount = text ? text.split("\n").length : 0;
 									const approxTokens = text ? Math.max(1, Math.round(text.length / 4)) : 0;
 									let meta: string | undefined;
@@ -1979,7 +2114,14 @@ export function LogDetailView({
 												? msg.name
 												: msg.type === "function_call_output" && msg.call_id
 													? msg.call_id
-													: msg.type || undefined;
+													: Array.isArray(msg.tools)
+														? (() => {
+																const callable = flattenDeclaredTools(msg.tools).length;
+																return callable !== msg.tools.length
+																	? `${msg.type} · ${msg.tools.length} declarations · ${callable} callable tools`
+																	: `${msg.type} · ${msg.tools.length} tool${msg.tools.length === 1 ? "" : "s"}`;
+															})()
+														: msg.type || undefined;
 									}
 									const usePlainText = role === "user" || role === "assistant";
 									return (
@@ -2027,6 +2169,10 @@ export function LogDetailView({
 													text={typeof msg.output === "string" ? msg.output : JSON.stringify(msg.output, null, 2)}
 													preview={3}
 												/>
+											) : Array.isArray(msg.tools) && msg.tools.length > 0 ? (
+												<CollapsibleCode text={JSON.stringify(msg.tools, null, 2)} preview={3} />
+											) : Array.isArray(msg.tools) ? (
+												<div className="text-muted-foreground text-[12px] italic">No tools declared</div>
 											) : (
 												<div className="text-muted-foreground text-[12px] italic">No content</div>
 											)}
@@ -2154,7 +2300,14 @@ export function LogDetailView({
 					{toolsParameter ? (
 						<div className="bg-card rounded-sm border p-5">
 							<div className="text-muted-foreground mb-3 text-[12px]">
-								{log.params?.tools?.length ?? 0} tools exposed to the model
+								{declaredTools.length} tools exposed to the model
+								{inputDeclaredTools.length ? (
+									<>
+										{" "}
+										· {inputDeclaredTools.length} via input items
+										{inputDeclaredTools.length !== inputDeclaredToolEntries.length ? " (namespaces expanded)" : ""}
+									</>
+								) : null}
 								{(log.params as any)?.tool_choice != null ? (
 									<>
 										{" "}
@@ -2164,8 +2317,8 @@ export function LogDetailView({
 								) : null}
 							</div>
 							<div className="grid grid-cols-1 gap-2 md:grid-cols-2">
-								{(log.params?.tools as any[]).map((tool, i) => {
-									const name = tool?.function?.name ?? tool?.name ?? `tool_${i}`;
+								{declaredTools.map((tool, i) => {
+									const name = tool?.name ?? tool?.function?.name ?? `tool_${i}`;
 									const description = tool?.function?.description ?? tool?.description ?? "";
 									const schema = tool?.function?.parameters ?? tool?.input_schema ?? tool?.parameters ?? null;
 									const schemaJson = schema != null ? JSON.stringify(schema, null, 2) : "";

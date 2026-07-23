@@ -14,8 +14,9 @@ type LogStoreType string
 
 // LogStoreTypeSQLite is the type of log store for SQLite.
 const (
-	LogStoreTypeSQLite   LogStoreType = "sqlite"
-	LogStoreTypePostgres LogStoreType = "postgres"
+	LogStoreTypeSQLite     LogStoreType = "sqlite"
+	LogStoreTypePostgres   LogStoreType = "postgres"
+	LogStoreTypeClickHouse LogStoreType = "clickhouse"
 )
 
 // LogStore is the interface for the log store.
@@ -42,6 +43,10 @@ type LogStore interface {
 	GetProviderCostHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ProviderCostHistogramResult, error)
 	GetProviderTokenHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ProviderTokenHistogramResult, error)
 	GetProviderLatencyHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ProviderLatencyHistogramResult, error)
+	// GetThroughputHistogram returns time-bucketed token-generation throughput (tokens/sec).
+	GetThroughputHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ThroughputHistogramResult, error)
+	// GetProviderThroughputHistogram returns time-bucketed tokens/sec with provider breakdown.
+	GetProviderThroughputHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ProviderThroughputHistogramResult, error)
 	GetModelRankings(ctx context.Context, filters SearchFilters) (*ModelRankingResult, error)
 	GetUserRankings(ctx context.Context, filters SearchFilters) (*UserRankingResult, error)
 	GetDimensionRankings(ctx context.Context, filters SearchFilters, dimension RankingDimension) (*DimensionRankingResult, error)
@@ -96,6 +101,12 @@ type LogStore interface {
 	UpdateAsyncJob(ctx context.Context, id string, updates map[string]interface{}) error
 	DeleteExpiredAsyncJobs(ctx context.Context) (int64, error)
 	DeleteStaleAsyncJobs(ctx context.Context, staleSince time.Time) (int64, error)
+
+	// Webhook Delivery methods
+	CreateWebhookDelivery(ctx context.Context, delivery *WebhookDelivery) error
+	FindWebhookDeliveryByID(ctx context.Context, id string) (*WebhookDelivery, error)
+	SearchWebhookDeliveries(ctx context.Context, endpointID string, pagination PaginationOptions) (*WebhookDeliverySearchResult, error)
+	DeleteExpiredWebhookDeliveries(ctx context.Context) (int64, error)
 }
 
 // NewLogStore creates a new log store based on the configuration.
@@ -121,6 +132,12 @@ func NewLogStore(ctx context.Context, config *Config, logger schemas.Logger) (Lo
 			inner, err = newPostgresLogStore(ctx, postgresConfig, logger)
 		} else {
 			return nil, fmt.Errorf("invalid postgres config: %T", config.Config)
+		}
+	case LogStoreTypeClickHouse:
+		if clickhouseConfig, ok := config.Config.(*ClickHouseConfig); ok {
+			inner, err = newClickHouseLogStore(ctx, clickhouseConfig, config.RetentionDays, logger)
+		} else {
+			return nil, fmt.Errorf("invalid clickhouse config: %T", config.Config)
 		}
 	default:
 		return nil, fmt.Errorf("unsupported log store type: %s", config.Type)

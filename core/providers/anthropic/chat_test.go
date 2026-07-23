@@ -929,13 +929,159 @@ func makeSOResponseFormat(schemaName string) interface{} {
 	}
 }
 
-// TestToAnthropicChatRequest_StructuredOutput_Vertex_NoThinking verifies that when
-// response_format=json_schema is passed to a Vertex-targeted request without thinking,
-// Bifrost adds a synthetic bf_so_* tool AND forces tool_choice to that tool.
-func TestToAnthropicChatRequest_StructuredOutput_Vertex_NoThinking(t *testing.T) {
+// toolConversionProviders are the providers whose Anthropic-Messages-compatible
+// endpoints reject native `output_config.format` and must instead receive
+// structured output as a synthetic bf_so_* tool call. Any provider added here
+// in the future must also be added to the branch under test in chat.go/responses.go.
+var toolConversionProviders = []schemas.ModelProvider{schemas.Vertex, schemas.BedrockMantle, schemas.Azure}
+
+// TestToAnthropicChatRequest_StructuredOutput_ToolConversion_NoThinking verifies that when
+// response_format=json_schema is sent to a provider whose native Anthropic endpoint rejects
+// output_config.format, Bifrost adds a synthetic bf_so_* tool AND forces tool_choice to it.
+func TestToAnthropicChatRequest_StructuredOutput_ToolConversion_NoThinking(t *testing.T) {
+	for _, provider := range toolConversionProviders {
+		t.Run(string(provider), func(t *testing.T) {
+			rf := makeSOResponseFormat("my_schema")
+			bifrostReq := &schemas.BifrostChatRequest{
+				Provider: provider,
+				Model:    "claude-opus-4-6",
+				Input: []schemas.ChatMessage{
+					{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello")}},
+				},
+				Params: &schemas.ChatParameters{
+					ResponseFormat: &rf,
+				},
+			}
+
+			ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel()
+			result, err := ToAnthropicChatRequest(ctx, bifrostReq)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if result.OutputConfig != nil {
+				t.Errorf("expected OutputConfig to stay unset for %s (native field unsupported), got %+v", provider, result.OutputConfig)
+			}
+
+			// A synthetic tool with the bf_so_ prefix must be present.
+			var soTool *AnthropicTool
+			for i := range result.Tools {
+				if len(result.Tools[i].Name) > 6 && result.Tools[i].Name[:6] == "bf_so_" {
+					soTool = &result.Tools[i]
+					break
+				}
+			}
+			if soTool == nil {
+				t.Fatalf("expected a synthetic bf_so_* tool to be added for %s structured output", provider)
+			}
+
+			// ToolChoice must be set and must point at the SO tool.
+			if result.ToolChoice == nil {
+				t.Fatal("expected ToolChoice to be set when thinking is disabled")
+			}
+			if result.ToolChoice.Type != "tool" {
+				t.Errorf("expected ToolChoice.Type=tool, got %q", result.ToolChoice.Type)
+			}
+			if result.ToolChoice.Name != soTool.Name {
+				t.Errorf("expected ToolChoice.Name=%q, got %q", soTool.Name, result.ToolChoice.Name)
+			}
+		})
+	}
+}
+
+// TestToAnthropicChatRequest_StructuredOutput_ToolConversion_ThinkingEffort verifies that when
+// response_format=json_schema + reasoning_effort='medium' is sent to a tool-conversion provider,
+// Bifrost still adds the synthetic tool but does NOT set tool_choice (to avoid Anthropic's
+// "Thinking may not be enabled when tool_choice forces tool use" 400 error).
+func TestToAnthropicChatRequest_StructuredOutput_ToolConversion_ThinkingEffort(t *testing.T) {
+	for _, provider := range toolConversionProviders {
+		t.Run(string(provider), func(t *testing.T) {
+			rf := makeSOResponseFormat("my_schema")
+			effort := "medium"
+			bifrostReq := &schemas.BifrostChatRequest{
+				Provider: provider,
+				Model:    "claude-opus-4-6",
+				Input: []schemas.ChatMessage{
+					{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello")}},
+				},
+				Params: &schemas.ChatParameters{
+					MaxCompletionTokens: new(16000),
+					ResponseFormat:      &rf,
+					Reasoning:           &schemas.ChatReasoning{Effort: &effort},
+				},
+			}
+
+			ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel()
+			result, err := ToAnthropicChatRequest(ctx, bifrostReq)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			// Synthetic tool must still be present so the model knows the schema.
+			found := false
+			for _, tool := range result.Tools {
+				if len(tool.Name) > 6 && tool.Name[:6] == "bf_so_" {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("expected synthetic bf_so_* tool to be present for %s even with thinking enabled", provider)
+			}
+
+			// ToolChoice must NOT be set — forcing it would trigger a 400 from Anthropic.
+			if result.ToolChoice != nil {
+				t.Errorf("expected ToolChoice to be nil when thinking is enabled (effort=%q) for %s, got %+v", effort, provider, result.ToolChoice)
+			}
+		})
+	}
+}
+
+// TestToAnthropicChatRequest_StructuredOutput_ToolConversion_ThinkingMaxTokens is the same as
+// the effort variant but uses explicit budget_tokens reasoning instead.
+func TestToAnthropicChatRequest_StructuredOutput_ToolConversion_ThinkingMaxTokens(t *testing.T) {
+	for _, provider := range toolConversionProviders {
+		t.Run(string(provider), func(t *testing.T) {
+			rf := makeSOResponseFormat("my_schema")
+			maxTok := 4000
+			bifrostReq := &schemas.BifrostChatRequest{
+				Provider: provider,
+				Model:    "claude-opus-4-6",
+				Input: []schemas.ChatMessage{
+					{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello")}},
+				},
+				Params: &schemas.ChatParameters{
+					MaxCompletionTokens: new(16000),
+					ResponseFormat:      &rf,
+					Reasoning:           &schemas.ChatReasoning{MaxTokens: &maxTok},
+				},
+			}
+
+			ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel()
+			result, err := ToAnthropicChatRequest(ctx, bifrostReq)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if result.ToolChoice != nil {
+				t.Errorf("expected ToolChoice to be nil when thinking (MaxTokens) is enabled for %s, got %+v", provider, result.ToolChoice)
+			}
+		})
+	}
+}
+
+// TestToAnthropicChatRequest_StructuredOutput_NativeOutputConfig_Anthropic verifies the
+// negative case: a provider whose native Anthropic endpoint DOES support output_config.format
+// (i.e. Anthropic itself) gets the native field set and no synthetic tool is added. This is
+// the control that the regression (Azure missing from toolConversionProviders) would have
+// broken in reverse — Azure incorrectly took this branch instead of the tool-conversion one.
+func TestToAnthropicChatRequest_StructuredOutput_NativeOutputConfig_Anthropic(t *testing.T) {
 	rf := makeSOResponseFormat("my_schema")
 	bifrostReq := &schemas.BifrostChatRequest{
-		Provider: schemas.Vertex,
+		Provider: schemas.Anthropic,
 		Model:    "claude-opus-4-6",
 		Input: []schemas.ChatMessage{
 			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello")}},
@@ -952,102 +1098,14 @@ func TestToAnthropicChatRequest_StructuredOutput_Vertex_NoThinking(t *testing.T)
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// A synthetic tool with the bf_so_ prefix must be present.
-	var soTool *AnthropicTool
-	for i := range result.Tools {
-		if len(result.Tools[i].Name) > 6 && result.Tools[i].Name[:6] == "bf_so_" {
-			soTool = &result.Tools[i]
-			break
-		}
-	}
-	if soTool == nil {
-		t.Fatal("expected a synthetic bf_so_* tool to be added for Vertex structured output")
+	if result.OutputConfig == nil || result.OutputConfig.Format == nil {
+		t.Fatal("expected OutputConfig.Format to be set natively for Anthropic")
 	}
 
-	// ToolChoice must be set and must point at the SO tool.
-	if result.ToolChoice == nil {
-		t.Fatal("expected ToolChoice to be set when thinking is disabled")
-	}
-	if result.ToolChoice.Type != "tool" {
-		t.Errorf("expected ToolChoice.Type=tool, got %q", result.ToolChoice.Type)
-	}
-	if result.ToolChoice.Name != soTool.Name {
-		t.Errorf("expected ToolChoice.Name=%q, got %q", soTool.Name, result.ToolChoice.Name)
-	}
-}
-
-// TestToAnthropicChatRequest_StructuredOutput_Vertex_ThinkingEffort verifies that when
-// response_format=json_schema + reasoning_effort='medium' is sent to Vertex, Bifrost
-// still adds the synthetic tool but does NOT set tool_choice (to avoid Anthropic's
-// "Thinking may not be enabled when tool_choice forces tool use" 400 error).
-func TestToAnthropicChatRequest_StructuredOutput_Vertex_ThinkingEffort(t *testing.T) {
-	rf := makeSOResponseFormat("my_schema")
-	effort := "medium"
-	bifrostReq := &schemas.BifrostChatRequest{
-		Provider: schemas.Vertex,
-		Model:    "claude-opus-4-6",
-		Input: []schemas.ChatMessage{
-			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello")}},
-		},
-		Params: &schemas.ChatParameters{
-			MaxCompletionTokens: new(16000),
-			ResponseFormat:      &rf,
-			Reasoning:           &schemas.ChatReasoning{Effort: &effort},
-		},
-	}
-
-	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
-	defer cancel()
-	result, err := ToAnthropicChatRequest(ctx, bifrostReq)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// Synthetic tool must still be present so the model knows the schema.
-	found := false
 	for _, tool := range result.Tools {
 		if len(tool.Name) > 6 && tool.Name[:6] == "bf_so_" {
-			found = true
-			break
+			t.Errorf("did not expect a synthetic bf_so_* tool for Anthropic, got %q", tool.Name)
 		}
-	}
-	if !found {
-		t.Fatal("expected synthetic bf_so_* tool to be present even with thinking enabled")
-	}
-
-	// ToolChoice must NOT be set — forcing it would trigger a 400 from Anthropic.
-	if result.ToolChoice != nil {
-		t.Errorf("expected ToolChoice to be nil when thinking is enabled (effort=%q), got %+v", effort, result.ToolChoice)
-	}
-}
-
-// TestToAnthropicChatRequest_StructuredOutput_Vertex_ThinkingMaxTokens is the same as
-// the effort variant but uses explicit budget_tokens reasoning instead.
-func TestToAnthropicChatRequest_StructuredOutput_Vertex_ThinkingMaxTokens(t *testing.T) {
-	rf := makeSOResponseFormat("my_schema")
-	maxTok := 4000
-	bifrostReq := &schemas.BifrostChatRequest{
-		Provider: schemas.Vertex,
-		Model:    "claude-opus-4-6",
-		Input: []schemas.ChatMessage{
-			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello")}},
-		},
-		Params: &schemas.ChatParameters{
-			MaxCompletionTokens: new(16000),
-			ResponseFormat:      &rf,
-			Reasoning:           &schemas.ChatReasoning{MaxTokens: &maxTok},
-		},
-	}
-
-	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
-	defer cancel()
-	result, err := ToAnthropicChatRequest(ctx, bifrostReq)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if result.ToolChoice != nil {
-		t.Errorf("expected ToolChoice to be nil when thinking (MaxTokens) is enabled, got %+v", result.ToolChoice)
 	}
 }
 

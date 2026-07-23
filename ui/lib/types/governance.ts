@@ -391,6 +391,7 @@ export interface GetModelConfigsParams {
 	offset?: number;
 	search?: string;
 	scope?: string;
+	scope_id?: string;
 	provider?: string;
 }
 
@@ -439,8 +440,10 @@ export interface PricingOverridePatch {
 	// 272k tier
 	input_cost_per_token_above_272k_tokens?: number;
 	input_cost_per_token_above_272k_tokens_priority?: number;
+	input_cost_per_token_flex_above_272k_tokens?: number;
 	output_cost_per_token_above_272k_tokens?: number;
 	output_cost_per_token_above_272k_tokens_priority?: number;
+	output_cost_per_token_flex_above_272k_tokens?: number;
 	// Cache
 	cache_creation_input_token_cost?: number;
 	cache_read_input_token_cost?: number;
@@ -455,6 +458,14 @@ export interface PricingOverridePatch {
 	cache_read_input_image_token_cost?: number;
 	cache_read_input_token_cost_above_272k_tokens?: number;
 	cache_read_input_token_cost_above_272k_tokens_priority?: number;
+	cache_read_input_token_cost_flex_above_272k_tokens?: number;
+	cache_creation_input_token_cost_above_272k_tokens?: number;
+	cache_creation_input_token_cost_flex?: number;
+	cache_creation_input_token_cost_flex_above_272k_tokens?: number;
+	cache_creation_input_token_cost_priority?: number;
+	cache_creation_input_token_cost_fast?: number;
+	cache_creation_input_token_cost_above_1hr_fast?: number;
+	cache_read_input_token_cost_fast?: number;
 	// Image
 	input_cost_per_image_token?: number;
 	output_cost_per_image_token?: number;
@@ -482,6 +493,7 @@ export interface PricingOverridePatch {
 	// Other
 	search_context_cost_per_query?: number;
 	code_interpreter_cost_per_session?: number;
+	inference_geo_us_multiplier?: number;
 	// OCR
 	ocr_cost_per_page?: number;
 	annotation_cost_per_page?: number;

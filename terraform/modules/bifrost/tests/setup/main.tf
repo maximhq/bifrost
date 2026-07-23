@@ -38,25 +38,26 @@ module "bifrost" {
   service        = var.service
 
   # Config
-  config_json    = var.config_json
-  config_json_file = var.config_json_file
-  encryption_key = var.encryption_key
-  auth_config    = var.auth_config
-  client         = var.client
-  framework      = var.framework
-  providers_config = var.providers_config
-  governance     = var.governance
-  mcp            = var.mcp
-  vector_store   = var.vector_store
-  config_store   = var.config_store
-  logs_store     = var.logs_store
-  cluster_config = var.cluster_config
-  scim_config    = var.scim_config
+  config_json          = var.config_json
+  config_json_file     = var.config_json_file
+  schema_url           = var.schema_url
+  encryption_key       = var.encryption_key
+  auth_config          = var.auth_config
+  client               = var.client
+  framework            = var.framework
+  providers_config     = var.providers_config
+  governance           = var.governance
+  mcp                  = var.mcp
+  vector_store         = var.vector_store
+  config_store         = var.config_store
+  logs_store           = var.logs_store
+  cluster_config       = var.cluster_config
+  scim_config          = var.scim_config
   load_balancer_config = var.load_balancer_config
-  guardrails_config = var.guardrails_config
-  plugins        = var.plugins
-  audit_logs     = var.audit_logs
-  websocket      = var.websocket
+  guardrails_config    = var.guardrails_config
+  plugins              = var.plugins
+  audit_logs           = var.audit_logs
+  websocket            = var.websocket
 
   # Image
   image_tag        = var.image_tag
@@ -97,7 +98,7 @@ module "bifrost" {
   volume_size_gb       = var.volume_size_gb
 
   # Cloud-specific
-  gcp_project_id           = var.gcp_project_id
+  gcp_project_id            = var.gcp_project_id
   azure_resource_group_name = var.azure_resource_group_name
 
   # Generic K8s

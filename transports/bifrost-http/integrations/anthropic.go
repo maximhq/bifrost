@@ -117,11 +117,20 @@ func createAnthropicMessagesRouteConfig(pathPrefix string, logger schemas.Logger
 				ResponsesStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesStreamResponse) (string, interface{}, error) {
 					soToolName, _ := ctx.Value(schemas.BifrostContextKeyStructuredOutputToolName).(string)
 					if soToolName == "" && shouldUsePassthrough(ctx, resp.ExtraFields.Provider, resp.ExtraFields.OriginalModelRequested, resp.ExtraFields.ResolvedModelUsed) {
+						anthropic.SetResponsesStreamPassthrough(ctx)
 						// Skip passthrough for ContentPartAdded: it's a synthetic bifrost event whose
 						// RawResponse carries the parent content_block_start already emitted by OutputItemAdded.
 						// Passing through here would produce a duplicate content_block_start that causes
 						// the Anthropic SDK to error and drop all subsequent content_block_delta events.
-						if resp.ExtraFields.RawResponse != nil && resp.Type != schemas.ResponsesStreamResponseTypeContentPartAdded {
+						//
+						// Also skip passthrough for frames the converter must renumber (see
+						// mustConvertInPassthrough): server tools (advisor, web_search, web_fetch,
+						// code_execution) expand one Responses item into several Anthropic content
+						// blocks, so forwarding their raw frames verbatim yields content_block indices
+						// the client never opened ("Content block not found" on strict clients).
+						if resp.ExtraFields.RawResponse != nil &&
+							resp.Type != schemas.ResponsesStreamResponseTypeContentPartAdded &&
+							!mustConvertInPassthrough(resp) {
 							raw, ok := resp.ExtraFields.RawResponse.(string)
 							if !ok {
 								return "", nil, fmt.Errorf("expected RawResponse string, got %T", resp.ExtraFields.RawResponse)
@@ -336,7 +345,11 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 				bifrostCtx.SetValue(schemas.BifrostContextKeyExtraHeaders, passthroughHeaders)
 			}
 		}
-		if provider == schemas.Vertex && (hasPromptCachingScopeBetaHeader(headers) || hasFastModeBetaHeader(headers) || hasOutputConfigFormat(req)) {
+		if provider == schemas.Vertex && (hasPromptCachingScopeBetaHeader(headers) || hasFastModeBetaHeader(headers)) {
+			bifrostCtx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
+			return nil
+		}
+		if (provider == schemas.Vertex || provider == schemas.BedrockMantle || provider == schemas.Azure) && hasOutputConfigFormat(req) {
 			bifrostCtx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
 			return nil
 		}
@@ -347,6 +360,72 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 // shouldUsePassthrough checks if the request should be sent to the passthrough endpoint.
 func shouldUsePassthrough(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, alias string) bool {
 	return anthropic.IsClaudeCodeRequest(ctx) && isClaudeModel(model, alias, string(provider))
+}
+
+// serverToolSynthesizesResultBlock reports whether an item's output_item.done
+// expands into a server_tool_use content_block_stop plus a synthesized
+// *_tool_result block (its own start+stop): advisor, web_search, web_fetch and
+// code_execution. For these the raw upstream result-block stop cannot be
+// forwarded verbatim — the client never saw a matching start — so the converter
+// must render the full sequence. Computer is excluded: it streams a single
+// content block and never synthesizes a result block.
+func serverToolSynthesizesResultBlock(item *schemas.ResponsesMessage) bool {
+	if item == nil || item.Type == nil {
+		return false
+	}
+	switch *item.Type {
+	case schemas.ResponsesMessageTypeAdvisorCall,
+		schemas.ResponsesMessageTypeWebSearchCall,
+		schemas.ResponsesMessageTypeWebFetchCall,
+		schemas.ResponsesMessageTypeCodeInterpreterCall:
+		return true
+	}
+	return false
+}
+
+// mustConvertInPassthrough reports whether a bifrost stream response must be
+// rendered via the normalized converter instead of forwarding its raw upstream
+// frame, even on the Anthropic passthrough path.
+//
+// Server tools (advisor, web_search, web_fetch, code_execution) map one Responses
+// item onto several Anthropic content blocks with re-numbered indices: the forward
+// converter swallows their intermediate frames (server_tool_use input delta/stop,
+// result-block start) and re-synthesizes the result block at output_item.done.
+// Forwarding the surviving raw frames verbatim therefore emits content_block_stop/
+// _delta for indices the client never opened, which strict clients (Claude Code)
+// reject with "API Error: Content block not found".
+//
+// Routing the following through the converter keeps its block-index allocation
+// authoritative and in lockstep with the surrounding raw frames:
+//   - every output_item.added runs the converter's allocator, so the block counter
+//     advances for each block in upstream order (server-tool starts otherwise took
+//     the raw path and desynced the counter);
+//   - server-tool output_item.done renders the server stop + synthesized result
+//     block start/stop at matching indices;
+//   - server-tool lifecycle events (no Anthropic equivalent) collapse to nothing,
+//     dropping the duplicate raw content_block frame they would otherwise carry.
+func mustConvertInPassthrough(resp *schemas.BifrostResponsesStreamResponse) bool {
+	switch resp.Type {
+	case schemas.ResponsesStreamResponseTypeOutputItemAdded:
+		return true
+	case schemas.ResponsesStreamResponseTypeOutputItemDone:
+		return serverToolSynthesizesResultBlock(resp.Item)
+	case schemas.ResponsesStreamResponseTypeWebSearchCallInProgress,
+		schemas.ResponsesStreamResponseTypeWebSearchCallSearching,
+		schemas.ResponsesStreamResponseTypeWebSearchCallCompleted,
+		schemas.ResponsesStreamResponseTypeWebSearchCallResultsAdded,
+		schemas.ResponsesStreamResponseTypeWebSearchCallResultsCompleted,
+		schemas.ResponsesStreamResponseTypeWebFetchCallInProgress,
+		schemas.ResponsesStreamResponseTypeWebFetchCallFetching,
+		schemas.ResponsesStreamResponseTypeWebFetchCallCompleted,
+		schemas.ResponsesStreamResponseTypeCodeInterpreterCallInProgress,
+		schemas.ResponsesStreamResponseTypeCodeInterpreterCallInterpreting,
+		schemas.ResponsesStreamResponseTypeCodeInterpreterCallCompleted,
+		schemas.ResponsesStreamResponseTypeCodeInterpreterCallCodeDelta,
+		schemas.ResponsesStreamResponseTypeCodeInterpreterCallCodeDone:
+		return true
+	}
+	return false
 }
 
 func isClaudeModel(model, alias, provider string) bool {
@@ -862,6 +941,11 @@ func CreateAnthropicFilesRouteConfigs(pathPrefix string, handlerStore lib.Handle
 			}
 			uploadReq.File = fileData
 			uploadReq.Filename = fileHeader.Filename
+			if contentTypeValues := form.Value["content_type"]; len(contentTypeValues) > 0 && contentTypeValues[0] != "" {
+				uploadReq.ContentType = &contentTypeValues[0]
+			} else if partContentType := strings.TrimSpace(fileHeader.Header.Get("Content-Type")); partContentType != "" {
+				uploadReq.ContentType = &partContentType
+			}
 			return nil
 		},
 		FileRequestConverter: func(ctx *schemas.BifrostContext, req any) (*FileRequest, error) {
@@ -877,10 +961,11 @@ func CreateAnthropicFilesRouteConfigs(pathPrefix string, handlerStore lib.Handle
 				return &FileRequest{
 					Type: schemas.FileUploadRequest,
 					UploadRequest: &schemas.BifrostFileUploadRequest{
-						File:     uploadReq.File,
-						Filename: uploadReq.Filename,
-						Purpose:  schemas.FilePurpose(uploadReq.Purpose),
-						Provider: provider,
+						File:        uploadReq.File,
+						Filename:    uploadReq.Filename,
+						Purpose:     schemas.FilePurpose(uploadReq.Purpose),
+						ContentType: uploadReq.ContentType,
+						Provider:    provider,
 					},
 				}, nil
 			}

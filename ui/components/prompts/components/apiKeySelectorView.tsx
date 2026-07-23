@@ -19,6 +19,7 @@ export function ApiKeySelectorView({
 	onValueChange,
 	disabled,
 	placeholder,
+	requireVirtualKey,
 }: {
 	providerKeys: DBKey[];
 	virtualKeys: VirtualKey[];
@@ -26,14 +27,16 @@ export function ApiKeySelectorView({
 	onValueChange: (v: string | null) => void;
 	disabled?: boolean;
 	placeholder?: string;
+	requireVirtualKey?: boolean;
 }) {
 	const [query, setQuery] = useState("");
 
 	const allOptions = useMemo(() => {
 		const apiKeyOpts = providerKeys.map((k) => ({ label: k.name, value: k.key_id, group: "api" as const }));
 		const vkOpts = virtualKeys.map((vk) => ({ label: vk.name, value: vk.value, group: "virtual" as const }));
+		if (requireVirtualKey) return vkOpts;
 		return [{ label: "Auto (default)", value: "__auto__", group: "api" as const }, ...apiKeyOpts, ...vkOpts];
-	}, [providerKeys, virtualKeys]);
+	}, [providerKeys, virtualKeys, requireVirtualKey]);
 
 	const filtered = useMemo(() => {
 		if (!query) return allOptions;
@@ -44,11 +47,19 @@ export function ApiKeySelectorView({
 	const filteredApiKeys = useMemo(() => filtered.filter((o) => o.group === "api"), [filtered]);
 	const filteredVirtualKeys = useMemo(() => filtered.filter((o) => o.group === "virtual"), [filtered]);
 
-	const getLabel = useCallback((val: string | null) => allOptions.find((o) => o.value === val)?.label ?? val ?? "", [allOptions]);
+	const getLabel = useCallback(
+		(val: string | null) => {
+			if (requireVirtualKey && val === "__auto__") return "";
+			return allOptions.find((o) => o.value === val)?.label ?? val ?? "";
+		},
+		[allOptions, requireVirtualKey],
+	);
 
 	return (
 		<div className="flex flex-col gap-2">
-			<Label className="text-muted-foreground text-xs font-medium uppercase">Virtual key/ API Key</Label>
+			<Label className="text-muted-foreground text-xs font-medium uppercase">
+				{requireVirtualKey ? "Virtual key" : "Virtual key / API Key"}
+			</Label>
 			<Combobox
 				value={value}
 				onValueChange={(v) => onValueChange(v)}
@@ -59,7 +70,12 @@ export function ApiKeySelectorView({
 				filter={null}
 				itemToStringLabel={getLabel}
 			>
-				<ComboboxInput placeholder={placeholder ?? "Select API key"} showClear={value !== "__auto__"} showTrigger disabled={disabled} />
+				<ComboboxInput
+					placeholder={placeholder ?? (requireVirtualKey ? "Select virtual key" : "Select API key")}
+					showClear={Boolean(value) && value !== "__auto__"}
+					showTrigger
+					disabled={disabled}
+				/>
 				<ComboboxContent>
 					<ComboboxList>
 						{filteredApiKeys.length > 0 && (
