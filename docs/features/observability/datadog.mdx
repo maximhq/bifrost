@@ -445,7 +445,13 @@ All metrics include your configured `custom_tags` plus automatic tags for:
 - `model` - Model name
 - `method` - Type of request (chat, embedding, etc.)
 - `bifrost_node` - Per-instance identity (`BIFROST_NODE_ID` if set, otherwise `hostname-pid`)
-- plus Bifrost-context tags when available (virtual key, selected key, team, customer, fallback index)
+- plus Bifrost-context tags when available (virtual key, selected key, team, customer, fallback index, complexity tier/mechanism)
+
+When a routing rule references `complexity_tier`, two additional tags are set:
+- `complexity_tier` - The complexity tier the request was classified into: `SIMPLE`, `MEDIUM`, or `COMPLEX` (Datadog normalizes tag values to lowercase, so query as `simple`/`medium`/`complex`)
+- `complexity_mechanism` - How the tier was classified: `lexical`, or `skipped` when classification ran but produced no tier
+
+Use them to attribute cost, latency, and volume to classified complexity, e.g. `sum:bifrost.request.cost.usd{complexity_tier:complex} by {model}`. The raw complexity score is not exported as a tag (its cardinality is unbounded); it is available only in the log store.
 
 ---
 
@@ -512,6 +518,7 @@ Values captured via `request_headers` are attached to spans regardless of this f
 - Selected key ID and name
 - Team ID and name
 - Customer ID and name
+- Complexity tier and mechanism (only when a routing rule references `complexity_tier`)
 - Retry count and fallback index
 
 ---
