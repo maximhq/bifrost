@@ -1383,6 +1383,7 @@ func responsesToolArgumentsToString(raw json.RawMessage) string {
 func (m ResponsesMessage) MarshalJSON() ([]byte, error) {
 	type Alias ResponsesMessage
 
+<<<<<<< HEAD
 	// Items decoded through the raw-preserved fast path are re-emitted byte for
 	// byte. That path deliberately skips field-level decoding, so the struct holds
 	// only Type plus the few fields surfaced for downstream readers — marshalling
@@ -1392,6 +1393,8 @@ func (m ResponsesMessage) MarshalJSON() ([]byte, error) {
 		return append([]byte(nil), m.rawPreserved...), nil
 	}
 
+=======
+>>>>>>> e3f989f45 (fix: preserve tool_search Responses API wire shape (#4711))
 	// Re-emit the raw tools captured during unmarshal so the type discriminator survives.
 	if m.Type != nil && *m.Type == ResponsesMessageTypeToolSearchOutput {
 		aux := &struct {
