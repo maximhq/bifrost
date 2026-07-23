@@ -3,16 +3,19 @@ package datasheet
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
 	"slices"
+	"strings"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/tidwall/gjson"
 )
@@ -249,4 +252,75 @@ func (s *Store) GetModelParametersByModel(ctx context.Context, model string) (*c
 		return nil, nil
 	}
 	return s.configStore.GetModelParametersByModel(ctx, model)
+}
+
+// ResolveModelParameters looks up a model-parameter row for model, falling
+// back through equivalent identifiers when the exact key has no row. The
+// model-parameters datasheet keys models inconsistently — some bare
+// ("gpt-5.5"), some provider-qualified ("openrouter/moonshotai/kimi-k2.5") —
+// so clients querying with the IDs returned by /v1/models need this
+// resolution to land on the stored key. Mirrors GetCapabilityEntry's
+// exact → stripped → base-model fallback chain.
+func (s *Store) ResolveModelParameters(ctx context.Context, model string) (*configstoreTables.TableModelParameters, error) {
+	if s.configStore == nil {
+		return nil, nil
+	}
+	var firstErr error
+	for _, candidate := range s.modelParameterCandidates(model) {
+		params, err := s.configStore.GetModelParametersByModel(ctx, candidate)
+		if err == nil {
+			return params, nil
+		}
+		if !errors.Is(err, configstore.ErrNotFound) {
+			return nil, err
+		}
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+	return nil, firstErr
+}
+
+// modelParameterCandidates returns the ordered lookup keys tried by
+// ResolveModelParameters: the exact model, each progressively
+// provider-stripped form ("openrouter/openai/gpt-5.5" → "openai/gpt-5.5" →
+// "gpt-5.5"), the canonical base name, and finally any datasheet keys that
+// qualify the bare name with a provider path ("kimi-k2.5" →
+// "openrouter/moonshotai/kimi-k2.5"). Suffix matches are sorted so
+// resolution is deterministic when multiple qualified keys exist.
+func (s *Store) modelParameterCandidates(model string) []string {
+	candidates := []string{model}
+	add := func(c string) {
+		if c != "" && !slices.Contains(candidates, c) {
+			candidates = append(candidates, c)
+		}
+	}
+
+	bare := model
+	for {
+		_, stripped := schemas.ParseModelString(bare, "")
+		if stripped == bare {
+			break
+		}
+		add(stripped)
+		bare = stripped
+	}
+
+	add(s.BaseModelName(model))
+
+	suffix := "/" + bare
+	var qualified []string
+	s.mu.RLock()
+	for key := range s.supportedParams {
+		if strings.HasSuffix(key, suffix) {
+			qualified = append(qualified, key)
+		}
+	}
+	s.mu.RUnlock()
+	slices.Sort(qualified)
+	for _, key := range qualified {
+		add(key)
+	}
+
+	return candidates
 }
