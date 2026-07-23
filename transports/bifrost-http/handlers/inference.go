@@ -2102,7 +2102,14 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 				} else if chunk.BifrostImageGenerationStreamResponse != nil {
 					eventType = string(chunk.BifrostImageGenerationStreamResponse.Type)
 				} else if chunk.BifrostError != nil {
-					eventType = string(schemas.ResponsesStreamResponseTypeError)
+					if chunk.BifrostError.Response != nil && chunk.BifrostError.Type != nil {
+						// Response-shaped errors carry their own real lifecycle
+						// event type — use it instead of the generic "error" event
+						// name, so SSE clients see "response.failed", not "error".
+						eventType = *chunk.BifrostError.Type
+					} else {
+						eventType = string(schemas.ResponsesStreamResponseTypeError)
+					}
 				}
 			}
 
