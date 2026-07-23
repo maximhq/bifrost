@@ -777,7 +777,7 @@ func (provider *AzureProvider) SpeechStream(ctx *schemas.BifrostContext, postHoo
 
 	startTime := time.Now()
 	// Make the request
-	requestErr := provider.client.Do(req, resp)
+	requestErr := providerUtils.DoStreamingRequest(ctx, provider.client, req, resp)
 	latency := time.Since(startTime)
 	if requestErr != nil {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
@@ -3524,7 +3524,7 @@ func (provider *AzureProvider) PassthroughStream(
 
 	startTime := time.Now()
 
-	err = activeClient.Do(fasthttpReq, resp)
+	err = providerUtils.DoStreamingRequest(ctx, activeClient, fasthttpReq, resp)
 	latency := time.Since(startTime)
 	if err != nil {
 		providerUtils.ReleaseStreamingResponse(ctx, resp)
