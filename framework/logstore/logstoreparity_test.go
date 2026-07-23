@@ -252,11 +252,13 @@ func canonicalizeOrder(key string, v any) any {
 			tv[i] = canonicalizeOrder("", tv[i])
 		}
 		if key == "rankings" {
-			keys := make([]string, len(tv))
-			for i, e := range tv {
-				keys[i] = canonicalEntryKey(e)
-			}
-			sort.SliceStable(tv, func(i, j int) bool { return keys[i] < keys[j] })
+			// Compute the key from the live element: a precomputed key slice
+			// would not be permuted alongside tv by SliceStable's swapper, so
+			// after the first swap the comparator would read stale keys and
+			// the final order would depend on the raw SQL row order.
+			sort.SliceStable(tv, func(i, j int) bool {
+				return canonicalEntryKey(tv[i]) < canonicalEntryKey(tv[j])
+			})
 		}
 		return tv
 	default:

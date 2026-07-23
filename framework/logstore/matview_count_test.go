@@ -109,12 +109,12 @@ func TestSearchLogsMatViewCountCanonicalModelFilter(t *testing.T) {
 	end := day.Add(35*time.Hour + 45*time.Minute) // 25h15m window, matview-eligible
 
 	canonical := "gpt-4o-mini"
-	interior := day.Add(18 * time.Hour) // deep inside the window, never a boundary sliver
-	insertCountTestModelLog(t, db, interior, "success", canonical, nil)                              // wire-model match
-	insertCountTestModelLog(t, db, interior.Add(time.Minute), "success", "prod-alias", &canonical)   // canonical-only match
-	insertCountTestModelLog(t, db, interior.Add(2*time.Minute), "success", "other-model", nil)       // no match
-	insertCountTestModelLog(t, db, start.Add(5*time.Minute), "success", "prod-alias", &canonical)    // canonical match in the head boundary sliver
-	insertCountTestModelLog(t, db, day.Add(9*time.Hour), "success", "prod-alias", &canonical)        // before start -> excluded
+	interior := day.Add(18 * time.Hour)                                                            // deep inside the window, never a boundary sliver
+	insertCountTestModelLog(t, db, interior, "success", canonical, nil)                            // wire-model match
+	insertCountTestModelLog(t, db, interior.Add(time.Minute), "success", "prod-alias", &canonical) // canonical-only match
+	insertCountTestModelLog(t, db, interior.Add(2*time.Minute), "success", "other-model", nil)     // no match
+	insertCountTestModelLog(t, db, start.Add(5*time.Minute), "success", "prod-alias", &canonical)  // canonical match in the head boundary sliver
+	insertCountTestModelLog(t, db, day.Add(9*time.Hour), "success", "prod-alias", &canonical)      // before start -> excluded
 
 	refreshTestMatViews(t, db)
 	store.matViewsReady.Store(true)
@@ -252,4 +252,95 @@ func TestGetHistogramMatViewTrimsBoundaryBuckets(t *testing.T) {
 		"first bar holds only the in-window sliver row, not the pre-start row from the same hour")
 	assert.Equal(t, int64(1), byBucket[day.Add(35*time.Hour).Unix()],
 		"last bar holds only the in-window sliver row, not the post-end row from the same hour")
+}
+
+// insertCacheTestLog inserts a terminal log with an explicit cache_debug
+// payload for the hybrid cache-hit tests. Pass nil for a row with no
+// cache_debug at all.
+func insertCacheTestLog(t *testing.T, db *gorm.DB, ts time.Time, cacheDebug *string) {
+	t.Helper()
+	err := db.Exec(`
+		INSERT INTO logs (id, timestamp, object_type, provider, model, status, cache_debug,
+			created_at, latency, cost, prompt_tokens, completion_tokens, total_tokens)
+		VALUES (?, ?, 'chat_completion', 'openai', 'gpt-4', 'success', ?, ?, 100, 0.01, 10, 5, 15)
+	`, uuid.New().String(), ts, cacheDebug, ts).Error
+	require.NoError(t, err, "failed to insert cache test log")
+}
+
+// TestGetStatsMatViewCacheHitsHybrid verifies cache-hit stats come from the
+// interior+boundary hybrid (materialized in mv_logs_hourly, classified raw in
+// the slivers) instead of a full-window raw scan, and that the matview path
+// agrees exactly with the raw path, including the nil contract: fields stay
+// nil when no row in the window carried valid cache_debug JSON, and are
+// explicit zeros when cache rows exist but none were direct/semantic.
+func TestGetStatsMatViewCacheHitsHybrid(t *testing.T) {
+	store, db := setupPerfTestDB(t)
+	ctx := context.Background()
+
+	day := time.Date(2026, 7, 20, 0, 0, 0, 0, time.UTC)
+	direct := `{"hit_type":"direct"}`
+	semantic := `{"hit_type":"semantic"}`
+	other := `{"hit_type":"external"}`
+	malformed := `not json`
+
+	// Main window: 10:30 -> next day 11:45.
+	start := day.Add(10*time.Hour + 30*time.Minute)
+	end := day.Add(35*time.Hour + 45*time.Minute)
+	insertCacheTestLog(t, db, day.Add(10*time.Hour+15*time.Minute), &direct)   // before start -> excluded
+	insertCacheTestLog(t, db, day.Add(10*time.Hour+45*time.Minute), &direct)   // head sliver -> raw classifier
+	insertCacheTestLog(t, db, day.Add(18*time.Hour), &semantic)                // interior -> matview column
+	insertCacheTestLog(t, db, day.Add(18*time.Hour+5*time.Minute), &other)     // counts as cache row, neither type
+	insertCacheTestLog(t, db, day.Add(19*time.Hour), &malformed)               // guard rejects -> not a cache row
+	insertCacheTestLog(t, db, day.Add(35*time.Hour+30*time.Minute), &direct)   // tail sliver -> raw classifier
+	insertCacheTestLog(t, db, day.Add(35*time.Hour+50*time.Minute), &semantic) // after end -> excluded
+
+	// Nil-contract window: 40h -> 70h holds one row with no cache_debug.
+	nilStart, nilEnd := day.Add(40*time.Hour), day.Add(70*time.Hour)
+	insertCacheTestLog(t, db, day.Add(50*time.Hour), nil)
+
+	// Zero-contract window: 80h -> 110h holds only an other-hit_type cache row.
+	zeroStart, zeroEnd := day.Add(80*time.Hour), day.Add(110*time.Hour)
+	insertCacheTestLog(t, db, day.Add(90*time.Hour), &other)
+
+	refreshTestMatViews(t, db)
+	store.matViewsReady.Store(true)
+
+	filters := SearchFilters{StartTime: &start, EndTime: &end}
+	require.True(t, store.canUseMatViewForFreshAggregate(filters))
+	stats, err := store.GetStats(ctx, filters)
+	require.NoError(t, err)
+	require.NotNil(t, stats.DirectCacheHits)
+	require.NotNil(t, stats.SemanticCacheHits)
+	assert.Equal(t, int64(2), *stats.DirectCacheHits, "head + tail sliver direct hits")
+	assert.Equal(t, int64(1), *stats.SemanticCacheHits, "interior semantic hit")
+
+	// The raw path over the identical filters must produce identical values.
+	store.matViewsReady.Store(false)
+	rawStats, err := store.GetStats(ctx, filters)
+	require.NoError(t, err)
+	require.NotNil(t, rawStats.DirectCacheHits)
+	require.NotNil(t, rawStats.SemanticCacheHits)
+	assert.Equal(t, *rawStats.DirectCacheHits, *stats.DirectCacheHits)
+	assert.Equal(t, *rawStats.SemanticCacheHits, *stats.SemanticCacheHits)
+	store.matViewsReady.Store(true)
+
+	// Nil contract: no valid cache_debug rows in the window -> fields omitted
+	// on both paths.
+	filters = SearchFilters{StartTime: &nilStart, EndTime: &nilEnd}
+	require.True(t, store.canUseMatViewForFreshAggregate(filters))
+	stats, err = store.GetStats(ctx, filters)
+	require.NoError(t, err)
+	assert.Nil(t, stats.DirectCacheHits, "no cache rows -> nil, matching the raw path contract")
+	assert.Nil(t, stats.SemanticCacheHits)
+
+	// Zero contract: cache rows exist but none direct/semantic -> explicit
+	// zeros on both paths.
+	filters = SearchFilters{StartTime: &zeroStart, EndTime: &zeroEnd}
+	require.True(t, store.canUseMatViewForFreshAggregate(filters))
+	stats, err = store.GetStats(ctx, filters)
+	require.NoError(t, err)
+	require.NotNil(t, stats.DirectCacheHits, "cache rows present -> explicit zeros, not omission")
+	require.NotNil(t, stats.SemanticCacheHits)
+	assert.Equal(t, int64(0), *stats.DirectCacheHits)
+	assert.Equal(t, int64(0), *stats.SemanticCacheHits)
 }
