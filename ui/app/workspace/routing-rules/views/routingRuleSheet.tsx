@@ -363,7 +363,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 								<Label htmlFor="chain_rule">Chain Rule</Label>
 								<p className="text-muted-foreground text-sm">
 									After this rule matches, re-evaluate routing rules using the resolved provider/model as the new context. Useful for
-									composing rules — e.g. normalize a model alias first, then route based on the canonical name.
+									composing rules, e.g. normalize a model alias first, then route based on the canonical name.
 								</p>
 							</div>
 							<Switch
@@ -777,7 +777,7 @@ function TargetRow({ target, index, providerOptions, allKeys, showRemove, onUpda
 			{target.provider && (availableKeys.length > 0 || target.key_id) && (
 				<div className="space-y-1.5">
 					<Label id={`routing-target-${index}-apikey-label`} className="text-xs">
-						API Key <span className="text-muted-foreground">(optional — leave unset for load-balanced selection)</span>
+						API Key <span className="text-muted-foreground">(optional; leave unset for load-balanced selection)</span>
 					</Label>
 					<div className="flex gap-1.5">
 						<Select value={target.key_id || ""} onValueChange={(value) => onUpdate(index, "key_id", value)}>

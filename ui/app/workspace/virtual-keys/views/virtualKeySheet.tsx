@@ -921,7 +921,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 								<Alert variant="info">
 									<Lock className="h-4 w-4" />
 									<AlertDescription>
-										This virtual key is managed by an access profile. Only the name and description can be modified — providers, budgets,
+										This virtual key is managed by an access profile. Only the name and description can be modified; providers, budgets,
 										rate limits, and MCP access are controlled by the profile.
 									</AlertDescription>
 								</Alert>
@@ -932,7 +932,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 									<Users className="h-4 w-4" />
 									<AlertDescription>
 										Creating this virtual key under team <span className="font-medium">{attachedTeam?.name ?? attachedTeamId}</span>. Team
-										assignment is pre-set — all other fields are editable.
+										assignment is pre-set; all other fields are editable.
 									</AlertDescription>
 								</Alert>
 							)}
@@ -1739,7 +1739,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 											<AlertDialogHeader>
 												<AlertDialogTitle>Reassign to a different team?</AlertDialogTitle>
 												<AlertDialogDescription>
-													This key is currently assigned to another team. Reassigning it will move budget tracking to this team — future
+													This key is currently assigned to another team. Reassigning it will move budget tracking to this team; future
 													requests through this key will count against this team’s budget, not the previous one.
 												</AlertDialogDescription>
 											</AlertDialogHeader>
@@ -1981,7 +1981,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 																<ComboboxSelect
 																	options={teams.map((team) => ({
 																		value: team.id,
-																		label: team.customer ? `${team.name} — ${team.customer.name}` : team.name,
+																		label: team.customer ? `${team.name} - ${team.customer.name}` : team.name,
 																	}))}
 																	value={field.value || null}
 																	onValueChange={(val) => {
