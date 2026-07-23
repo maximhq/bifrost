@@ -2811,3 +2811,46 @@ func TestMigrationAddDualCredentialConflictBehaviorColumn(t *testing.T) {
 	require.NoError(t, migrationAddDualCredentialConflictBehaviorColumn(ctx, db, testMigrationLogger),
 		"re-running the migration should be idempotent")
 }
+
+// TestMigrationAddBudgetOverrideColumns verifies legacy budgets receive inactive override defaults.
+func TestMigrationAddBudgetOverrideColumns(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	require.NoError(t, db.AutoMigrate(&tables.TableBudget{}))
+	seed := &tables.TableBudget{
+		ID:            "legacy-budget",
+		MaxLimit:      100,
+		ResetDuration: "1h",
+	}
+	require.NoError(t, db.Create(seed).Error)
+
+	for _, column := range []string{"override_cycles_remaining", "override_mode", "override_amount"} {
+		require.NoError(t, db.Migrator().DropColumn(&tables.TableBudget{}, column))
+		require.False(t, db.Migrator().HasColumn(&tables.TableBudget{}, column),
+			"precondition: %s must be absent to reproduce the upgrade path", column)
+	}
+
+	require.NoError(t, migrationAddBudgetOverrideColumns(ctx, db, testMigrationLogger))
+
+	for _, column := range []string{"override_amount", "override_mode", "override_cycles_remaining"} {
+		require.True(t, db.Migrator().HasColumn(&tables.TableBudget{}, column),
+			"migration should have added %s", column)
+	}
+
+	var got struct {
+		OverrideAmount          float64
+		OverrideMode            tables.BudgetOverrideMode
+		OverrideCyclesRemaining int
+	}
+	require.NoError(t, db.Table("governance_budgets").
+		Select("override_amount, override_mode, override_cycles_remaining").
+		Where("id = ?", seed.ID).
+		Scan(&got).Error)
+	assert.Zero(t, got.OverrideAmount)
+	assert.Empty(t, got.OverrideMode)
+	assert.Zero(t, got.OverrideCyclesRemaining)
+
+	require.NoError(t, migrationAddBudgetOverrideColumns(ctx, db, testMigrationLogger),
+		"re-running the migration should be idempotent")
+}

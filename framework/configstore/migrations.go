@@ -454,6 +454,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_oauth_config_resource_column"}, run: migrationAddOauthConfigResourceColumn},
 	{IDs: []string{"add_use_anthropic_endpoints_column"}, run: migrationAddUseAnthropicEndpointsColumn},
 	{IDs: []string{"add_bedrock_batch_role_arn_column"}, run: migrationAddBedrockBatchRoleARNColumn},
+  {IDs: []string{"add_budget_override_columns"}, run: migrationAddBudgetOverrideColumns},
 }
 
 // quoteSQLiteIdentifier quotes a SQLite identifier, escaping any double quotes.
@@ -3171,6 +3172,36 @@ func migrationAddUseAnthropicEndpointsColumn(ctx context.Context, db *gorm.DB, l
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running add_use_anthropic_endpoints_column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddBudgetOverrideColumns adds additive override state to governance budgets.
+func migrationAddBudgetOverrideColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_budget_override_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableBudget{}, "override_amount"); err != nil {
+				return fmt.Errorf("failed to add override_amount column: %w", err)
+			}
+			if err := addColumnIfNotExists(tx, logger, &tables.TableBudget{}, "override_mode"); err != nil {
+				return fmt.Errorf("failed to add override_mode column: %w", err)
+			}
+			if err := addColumnIfNotExists(tx, logger, &tables.TableBudget{}, "override_cycles_remaining"); err != nil {
+				return fmt.Errorf("failed to add override_cycles_remaining column: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return fmt.Errorf("add_budget_override_columns is non-rollbackable: dropping the override columns would permanently destroy saved budget override state; the columns are additive and older binaries safely ignore them")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
 	}
 	return nil
 }
