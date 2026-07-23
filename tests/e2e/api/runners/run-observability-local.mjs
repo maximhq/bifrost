@@ -8,6 +8,11 @@ const providerName = `otel-e2e-${process.pid}-${Date.now()}`;
 const modelName = "hello-world";
 const requestedModel = `${providerName}/${modelName}`;
 const requestID = `otel-e2e-request-${process.pid}-${Date.now()}`;
+const errorRequestID = `otel-e2e-error-${process.pid}-${Date.now()}`;
+const streamErrorRequestID = `otel-e2e-stream-error-${process.pid}-${Date.now()}`;
+
+// Message marker that makes the mock provider return a 404 error body.
+const ERROR_TRIGGER = "trigger-error";
 
 const state = {
   otelTraceRequests: [],
@@ -74,6 +79,19 @@ function createOpenAIMock() {
         headers: req.headers,
         body: body.toString("utf8"),
       });
+      // Error scenarios: the trigger marker gets a provider-style 404, streaming
+      // or not — this is the pre-first-chunk failure path.
+      if (body.toString("utf8").includes(ERROR_TRIGGER)) {
+        res.writeHead(404, { "content-type": "application/json" });
+        res.end(JSON.stringify({
+          error: {
+            message: "The model does not exist",
+            type: "invalid_request_error",
+            code: "model_not_found",
+          },
+        }));
+        return;
+      }
       const now = Math.floor(Date.now() / 1000);
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({
@@ -171,6 +189,7 @@ async function addLocalProvider(mockPort) {
       is_key_less: true,
       allowed_requests: {
         chat_completion: true,
+        chat_completion_stream: true,
       },
     },
     network_config: {
@@ -201,6 +220,24 @@ async function chatHelloWorld() {
   const content = res.json?.choices?.[0]?.message?.content;
   if (content !== "hello world") {
     throw new Error(`unexpected chat response content: ${JSON.stringify(content)}`);
+  }
+}
+
+// chatError fires a request the mock fails with a 404 error body; stream: true
+// exercises the pre-first-chunk stream failure path.
+async function chatError(id, stream) {
+  const res = await request("POST", "/v1/chat/completions", {
+    model: requestedModel,
+    messages: [{ role: "user", content: ERROR_TRIGGER }],
+    ...(stream ? { stream: true } : {}),
+  }, {
+    "x-request-id": id,
+  });
+  if (res.ok) {
+    throw new Error(`error request (stream=${stream}) unexpectedly succeeded: ${res.text}`);
+  }
+  if (res.status !== 404) {
+    throw new Error(`error request (stream=${stream}) status=${res.status}, want 404: ${res.text}`);
   }
 }
 
@@ -268,6 +305,46 @@ async function assertOtelMetricsReceived() {
     "method",
     "chat_completion",
   ]);
+}
+
+// assertOtelErrorTrace checks the error span export carries the provider error
+// attributes. The stream case pins core's deferred-span error stamping, which
+// regressed silently before (spans exported with no gen_ai.error.* when a
+// stream failed before its first chunk).
+async function assertOtelErrorTrace(id, label) {
+  const entry = await poll(`OTEL ${label} trace receiver`, 20000,
+    () => state.otelTraceRequests.find((item) => item.body.includes(Buffer.from(id))));
+  assertBufferContainsAll(`OTEL ${label} trace export`, entry.body, [
+    id,
+    "gen_ai.error.type",
+    "invalid_request_error",
+    "gen_ai.error.code",
+    "model_not_found",
+    "http.response.status_code",
+  ]);
+}
+
+// assertPrometheusErrorScrape checks bifrost_error_requests_total carries the
+// status_code label for both the non-stream and stream error calls.
+async function assertPrometheusErrorScrape() {
+  await poll("Prometheus error scrape", 20000, async () => {
+    const res = await request("GET", "/metrics");
+    if (!res.ok) {
+      throw new Error(`GET /metrics failed with ${res.status}: ${res.text}`);
+    }
+    const failures = [];
+    for (const method of ["chat_completion", "chat_completion_stream"]) {
+      const line = findPrometheusSample(res.text, "bifrost_error_requests_total",
+        { provider: providerName, method, status_code: "404" });
+      if (!line || parsePrometheusValue(line) < 1) {
+        failures.push(method);
+      }
+    }
+    if (failures.length > 0) {
+      throw new Error(`bifrost_error_requests_total{status_code="404"} missing for: ${failures.join(", ")}`);
+    }
+    return true;
+  });
 }
 
 function assertBufferContainsAll(name, body, values) {
@@ -414,9 +491,9 @@ function assertMetricsMatchLogs(metrics, log) {
   }
 }
 
-function assertMockProviderRequest() {
-  if (state.mockRequests.length !== 1) {
-    throw new Error(`expected exactly one mock provider request, got ${state.mockRequests.length}`);
+function assertMockProviderRequest(wantCount = 1) {
+  if (state.mockRequests.length !== wantCount) {
+    throw new Error(`expected ${wantCount} mock provider request(s), got ${state.mockRequests.length}`);
   }
   let body;
   try {
@@ -482,11 +559,22 @@ async function main() {
     const log = await assertLoggingTrace();
     assertMetricsMatchLogs(metrics, log);
 
+    // Error scenarios: non-stream provider 404, then a stream failing before
+    // its first chunk. Both must export gen_ai.error.* span attributes and a
+    // status_code-labeled error counter.
+    await chatError(errorRequestID, false);
+    await assertOtelErrorTrace(errorRequestID, "error");
+    await chatError(streamErrorRequestID, true);
+    await assertOtelErrorTrace(streamErrorRequestID, "stream-error");
+    await assertPrometheusErrorScrape();
+    assertMockProviderRequest(3);
+
     console.log(`  OTEL trace exports received: ${state.otelTraceRequests.length}`);
     console.log(`  OTEL metric exports received: ${state.otelMetricRequests.length}`);
     console.log(`  Prometheus scrape includes provider="${providerName}" model="${requestedModel}"`);
     console.log(`  Metrics/logs token usage reconciled (scrape == logs)`);
     console.log(`  Logging trace API returned id="${requestID}"`);
+    console.log(`  Error spans carry gen_ai.error.* and error counter has status_code (non-stream and stream).`);
     console.log("Local observability API check passed.");
   } finally {
     try {
