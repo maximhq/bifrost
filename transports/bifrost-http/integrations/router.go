@@ -1119,7 +1119,7 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 
 		bifrostExtraFields = speechResponse.ExtraFields
 
-		if g.tryStreamLargeResponse(ctx, bifrostCtx) {
+		if g.tryStreamLargeResponse(ctx, bifrostCtx, bifrostExtraFields) {
 			return
 		}
 
@@ -1129,9 +1129,12 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to convert speech response"))
 				return
 			}
+			// Early return skips the common footer — apply routed-identity headers here.
+			lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, bifrostExtraFields)
 			g.sendSuccess(ctx, bifrostCtx, config.ErrorConverter, response, nil)
 			return
 		} else {
+			lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, bifrostExtraFields)
 			ctx.Response.Header.Set("Content-Type", "audio/mpeg")
 			ctx.Response.Header.Set("Content-Disposition", "attachment; filename=speech.mp3")
 			ctx.Response.Header.Set("Content-Length", strconv.Itoa(len(speechResponse.Audio)))
@@ -1159,7 +1162,7 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 			return
 		}
 
-		if g.tryStreamLargeResponse(ctx, bifrostCtx) {
+		if g.tryStreamLargeResponse(ctx, bifrostCtx, transcriptionResponse.ExtraFields) {
 			return
 		}
 
@@ -1171,7 +1174,7 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 		// Used for plain-text transcription formats (text, srt, vtt).
 		if err == nil {
 			if rawBytes, ok := response.([]byte); ok {
-				applyBifrostResponseHeaders(ctx, bifrostCtx, bifrostExtraFields)
+				lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, bifrostExtraFields)
 				ctx.SetStatusCode(fasthttp.StatusOK)
 				ctx.SetBody(rawBytes)
 				return
@@ -1203,7 +1206,7 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 			return
 		}
 
-		if g.tryStreamLargeResponse(ctx, bifrostCtx) {
+		if g.tryStreamLargeResponse(ctx, bifrostCtx, imageGenerationResponse.ExtraFields) {
 			return
 		}
 
@@ -1236,7 +1239,7 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 			return
 		}
 
-		if g.tryStreamLargeResponse(ctx, bifrostCtx) {
+		if g.tryStreamLargeResponse(ctx, bifrostCtx, imageEditResponse.ExtraFields) {
 			return
 		}
 
@@ -1269,7 +1272,7 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 			return
 		}
 
-		if g.tryStreamLargeResponse(ctx, bifrostCtx) {
+		if g.tryStreamLargeResponse(ctx, bifrostCtx, imageVariationResponse.ExtraFields) {
 			return
 		}
 
@@ -1357,6 +1360,7 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 		// If converter returns binary content, write directly with content-type.
 		if err == nil {
 			if rawBytes, ok := response.([]byte); ok {
+				lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, bifrostExtraFields)
 				contentType := videoDownloadResponse.ContentType
 				if contentType == "" {
 					contentType = "application/octet-stream"
@@ -1605,9 +1609,9 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 
 	// Forward upstream provider response headers (filtered) plus the bifrost-level
 	// `x-bifrost-*` routing identity headers, only after conversion succeeds.
-	applyBifrostResponseHeaders(ctx, bifrostCtx, bifrostExtraFields)
+	lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, bifrostExtraFields)
 
-	if g.tryStreamLargeResponse(ctx, bifrostCtx) {
+	if g.tryStreamLargeResponse(ctx, bifrostCtx, bifrostExtraFields) {
 		return
 	}
 
@@ -1819,6 +1823,7 @@ func (g *GenericRouter) markDeprecatedListModelsResponse(resp *schemas.BifrostLi
 func (g *GenericRouter) handleBatchRequest(ctx *fasthttp.RequestCtx, config RouteConfig, req interface{}, batchReq *BatchRequest, bifrostCtx *schemas.BifrostContext) {
 	var response interface{}
 	var err error
+	var bifrostExtraFields schemas.BifrostResponseExtraFields
 
 	switch batchReq.Type {
 	case schemas.BatchCreateRequest:
@@ -1837,6 +1842,7 @@ func (g *GenericRouter) handleBatchRequest(ctx *fasthttp.RequestCtx, config Rout
 				return
 			}
 		}
+		bifrostExtraFields = batchResponse.ExtraFields
 		if config.BatchCreateResponseConverter != nil {
 			response, err = config.BatchCreateResponseConverter(bifrostCtx, batchResponse)
 		} else {
@@ -1859,6 +1865,7 @@ func (g *GenericRouter) handleBatchRequest(ctx *fasthttp.RequestCtx, config Rout
 				return
 			}
 		}
+		bifrostExtraFields = batchResponse.ExtraFields
 		if config.BatchListResponseConverter != nil {
 			response, err = config.BatchListResponseConverter(bifrostCtx, batchResponse)
 		} else {
@@ -1881,6 +1888,7 @@ func (g *GenericRouter) handleBatchRequest(ctx *fasthttp.RequestCtx, config Rout
 				return
 			}
 		}
+		bifrostExtraFields = batchResponse.ExtraFields
 		if config.BatchRetrieveResponseConverter != nil {
 			response, err = config.BatchRetrieveResponseConverter(bifrostCtx, batchResponse)
 		} else {
@@ -1903,6 +1911,7 @@ func (g *GenericRouter) handleBatchRequest(ctx *fasthttp.RequestCtx, config Rout
 				return
 			}
 		}
+		bifrostExtraFields = batchResponse.ExtraFields
 		if config.BatchCancelResponseConverter != nil {
 			response, err = config.BatchCancelResponseConverter(bifrostCtx, batchResponse)
 		} else {
@@ -1924,6 +1933,7 @@ func (g *GenericRouter) handleBatchRequest(ctx *fasthttp.RequestCtx, config Rout
 				return
 			}
 		}
+		bifrostExtraFields = batchResponse.ExtraFields
 		if config.BatchDeleteResponseConverter != nil {
 			response, err = config.BatchDeleteResponseConverter(bifrostCtx, batchResponse)
 		} else {
@@ -1946,6 +1956,7 @@ func (g *GenericRouter) handleBatchRequest(ctx *fasthttp.RequestCtx, config Rout
 				return
 			}
 		}
+		bifrostExtraFields = batchResponse.ExtraFields
 		if config.BatchResultsResponseConverter != nil {
 			response, err = config.BatchResultsResponseConverter(bifrostCtx, batchResponse)
 		} else {
@@ -1962,6 +1973,7 @@ func (g *GenericRouter) handleBatchRequest(ctx *fasthttp.RequestCtx, config Rout
 		return
 	}
 
+	lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, bifrostExtraFields)
 	g.sendSuccess(ctx, bifrostCtx, config.ErrorConverter, response, nil)
 }
 
@@ -1969,6 +1981,7 @@ func (g *GenericRouter) handleBatchRequest(ctx *fasthttp.RequestCtx, config Rout
 func (g *GenericRouter) handleFileRequest(ctx *fasthttp.RequestCtx, config RouteConfig, req interface{}, fileReq *FileRequest, bifrostCtx *schemas.BifrostContext) {
 	var response interface{}
 	var err error
+	var bifrostExtraFields schemas.BifrostResponseExtraFields
 
 	switch fileReq.Type {
 	case schemas.FileUploadRequest:
@@ -1987,6 +2000,7 @@ func (g *GenericRouter) handleFileRequest(ctx *fasthttp.RequestCtx, config Route
 				return
 			}
 		}
+		bifrostExtraFields = fileResponse.ExtraFields
 		if config.FileUploadResponseConverter != nil {
 			response, err = config.FileUploadResponseConverter(bifrostCtx, fileResponse)
 		} else {
@@ -2009,6 +2023,7 @@ func (g *GenericRouter) handleFileRequest(ctx *fasthttp.RequestCtx, config Route
 				return
 			}
 		}
+		bifrostExtraFields = fileResponse.ExtraFields
 		if config.FileListResponseConverter != nil {
 			response, err = config.FileListResponseConverter(bifrostCtx, fileResponse)
 			if err != nil {
@@ -2017,6 +2032,7 @@ func (g *GenericRouter) handleFileRequest(ctx *fasthttp.RequestCtx, config Route
 			}
 			// Handle raw byte responses (e.g., XML for S3 APIs)
 			if rawBytes, ok := response.([]byte); ok {
+				lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, bifrostExtraFields)
 				ctx.SetBody(rawBytes)
 				return
 			}
@@ -2040,6 +2056,7 @@ func (g *GenericRouter) handleFileRequest(ctx *fasthttp.RequestCtx, config Route
 				return
 			}
 		}
+		bifrostExtraFields = fileResponse.ExtraFields
 		if config.FileRetrieveResponseConverter != nil {
 			response, err = config.FileRetrieveResponseConverter(bifrostCtx, fileResponse)
 		} else {
@@ -2062,6 +2079,7 @@ func (g *GenericRouter) handleFileRequest(ctx *fasthttp.RequestCtx, config Route
 				return
 			}
 		}
+		bifrostExtraFields = fileResponse.ExtraFields
 		if config.FileDeleteResponseConverter != nil {
 			response, err = config.FileDeleteResponseConverter(bifrostCtx, fileResponse)
 		} else {
@@ -2085,12 +2103,15 @@ func (g *GenericRouter) handleFileRequest(ctx *fasthttp.RequestCtx, config Route
 			}
 		}
 		// For file content, handle binary response specially if no converter is set
+		bifrostExtraFields = fileResponse.ExtraFields
 		if config.FileContentResponseConverter != nil {
 			response, err = config.FileContentResponseConverter(bifrostCtx, fileResponse)
 			if err != nil {
 				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to convert file content response"))
 				return
 			}
+			// Early return skips the common footer — apply routed-identity headers here.
+			lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, bifrostExtraFields)
 			// Check if response is raw bytes - write directly without JSON encoding
 			if rawBytes, ok := response.([]byte); ok {
 				ctx.Response.Header.Set("Content-Type", fileResponse.ContentType)
@@ -2101,6 +2122,7 @@ func (g *GenericRouter) handleFileRequest(ctx *fasthttp.RequestCtx, config Route
 			}
 		} else {
 			// Return raw file content
+			lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, bifrostExtraFields)
 			ctx.Response.Header.Set("Content-Type", fileResponse.ContentType)
 			ctx.Response.Header.Set("Content-Length", strconv.Itoa(len(fileResponse.Content)))
 			ctx.Response.SetBody(fileResponse.Content)
@@ -2122,6 +2144,7 @@ func (g *GenericRouter) handleFileRequest(ctx *fasthttp.RequestCtx, config Route
 		return
 	}
 
+	lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, bifrostExtraFields)
 	g.sendSuccess(ctx, bifrostCtx, config.ErrorConverter, response, nil)
 }
 
@@ -2129,6 +2152,7 @@ func (g *GenericRouter) handleFileRequest(ctx *fasthttp.RequestCtx, config Route
 func (g *GenericRouter) handleContainerRequest(ctx *fasthttp.RequestCtx, config RouteConfig, req interface{}, containerReq *ContainerRequest, bifrostCtx *schemas.BifrostContext) {
 	var response interface{}
 	var err error
+	var bifrostExtraFields schemas.BifrostResponseExtraFields
 
 	switch containerReq.Type {
 	case schemas.ContainerCreateRequest:
@@ -2147,6 +2171,7 @@ func (g *GenericRouter) handleContainerRequest(ctx *fasthttp.RequestCtx, config 
 				return
 			}
 		}
+		bifrostExtraFields = containerResponse.ExtraFields
 		if config.ContainerCreateResponseConverter != nil {
 			response, err = config.ContainerCreateResponseConverter(bifrostCtx, containerResponse)
 		} else {
@@ -2169,6 +2194,7 @@ func (g *GenericRouter) handleContainerRequest(ctx *fasthttp.RequestCtx, config 
 				return
 			}
 		}
+		bifrostExtraFields = containerResponse.ExtraFields
 		if config.ContainerListResponseConverter != nil {
 			response, err = config.ContainerListResponseConverter(bifrostCtx, containerResponse)
 		} else {
@@ -2191,6 +2217,7 @@ func (g *GenericRouter) handleContainerRequest(ctx *fasthttp.RequestCtx, config 
 				return
 			}
 		}
+		bifrostExtraFields = containerResponse.ExtraFields
 		if config.ContainerRetrieveResponseConverter != nil {
 			response, err = config.ContainerRetrieveResponseConverter(bifrostCtx, containerResponse)
 		} else {
@@ -2213,6 +2240,7 @@ func (g *GenericRouter) handleContainerRequest(ctx *fasthttp.RequestCtx, config 
 				return
 			}
 		}
+		bifrostExtraFields = containerResponse.ExtraFields
 		if config.ContainerDeleteResponseConverter != nil {
 			response, err = config.ContainerDeleteResponseConverter(bifrostCtx, containerResponse)
 		} else {
@@ -2229,6 +2257,7 @@ func (g *GenericRouter) handleContainerRequest(ctx *fasthttp.RequestCtx, config 
 		return
 	}
 
+	lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, bifrostExtraFields)
 	g.sendSuccess(ctx, bifrostCtx, config.ErrorConverter, response, nil)
 }
 
@@ -2236,6 +2265,7 @@ func (g *GenericRouter) handleContainerRequest(ctx *fasthttp.RequestCtx, config 
 func (g *GenericRouter) handleContainerFileRequest(ctx *fasthttp.RequestCtx, config RouteConfig, req interface{}, containerFileReq *ContainerFileRequest, bifrostCtx *schemas.BifrostContext) {
 	var response interface{}
 	var err error
+	var bifrostExtraFields schemas.BifrostResponseExtraFields
 
 	switch containerFileReq.Type {
 	case schemas.ContainerFileCreateRequest:
@@ -2254,6 +2284,7 @@ func (g *GenericRouter) handleContainerFileRequest(ctx *fasthttp.RequestCtx, con
 				return
 			}
 		}
+		bifrostExtraFields = containerFileResponse.ExtraFields
 		if config.ContainerFileCreateResponseConverter != nil {
 			response, err = config.ContainerFileCreateResponseConverter(bifrostCtx, containerFileResponse)
 		} else {
@@ -2276,6 +2307,7 @@ func (g *GenericRouter) handleContainerFileRequest(ctx *fasthttp.RequestCtx, con
 				return
 			}
 		}
+		bifrostExtraFields = containerFileResponse.ExtraFields
 		if config.ContainerFileListResponseConverter != nil {
 			response, err = config.ContainerFileListResponseConverter(bifrostCtx, containerFileResponse)
 		} else {
@@ -2298,6 +2330,7 @@ func (g *GenericRouter) handleContainerFileRequest(ctx *fasthttp.RequestCtx, con
 				return
 			}
 		}
+		bifrostExtraFields = containerFileResponse.ExtraFields
 		if config.ContainerFileRetrieveResponseConverter != nil {
 			response, err = config.ContainerFileRetrieveResponseConverter(bifrostCtx, containerFileResponse)
 		} else {
@@ -2321,12 +2354,15 @@ func (g *GenericRouter) handleContainerFileRequest(ctx *fasthttp.RequestCtx, con
 			}
 		}
 		// For content requests, handle binary response specially if converter is set
+		bifrostExtraFields = containerFileResponse.ExtraFields
 		if config.ContainerFileContentResponseConverter != nil {
 			response, err = config.ContainerFileContentResponseConverter(bifrostCtx, containerFileResponse)
 			if err != nil {
 				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to convert container file content response"))
 				return
 			}
+			// Early return skips the common footer — apply routed-identity headers here.
+			lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, bifrostExtraFields)
 			// Check if response is raw bytes - write directly without JSON encoding
 			if rawBytes, ok := response.([]byte); ok {
 				ctx.Response.Header.Set("Content-Type", containerFileResponse.ContentType)
@@ -2337,6 +2373,7 @@ func (g *GenericRouter) handleContainerFileRequest(ctx *fasthttp.RequestCtx, con
 			}
 		} else {
 			// Return raw binary content
+			lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, bifrostExtraFields)
 			ctx.Response.Header.Set("Content-Type", containerFileResponse.ContentType)
 			ctx.Response.Header.Set("Content-Length", strconv.Itoa(len(containerFileResponse.Content)))
 			ctx.Response.SetBody(containerFileResponse.Content)
@@ -2359,6 +2396,7 @@ func (g *GenericRouter) handleContainerFileRequest(ctx *fasthttp.RequestCtx, con
 				return
 			}
 		}
+		bifrostExtraFields = containerFileResponse.ExtraFields
 		if config.ContainerFileDeleteResponseConverter != nil {
 			response, err = config.ContainerFileDeleteResponseConverter(bifrostCtx, containerFileResponse)
 		} else {
@@ -2375,6 +2413,7 @@ func (g *GenericRouter) handleContainerFileRequest(ctx *fasthttp.RequestCtx, con
 		return
 	}
 
+	lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, bifrostExtraFields)
 	g.sendSuccess(ctx, bifrostCtx, config.ErrorConverter, response, nil)
 }
 
@@ -2383,6 +2422,7 @@ func (g *GenericRouter) handleContainerFileRequest(ctx *fasthttp.RequestCtx, con
 func (g *GenericRouter) handleCachedContentRequest(ctx *fasthttp.RequestCtx, config RouteConfig, req interface{}, cachedReq *CachedContentRequest, bifrostCtx *schemas.BifrostContext) {
 	var response interface{}
 	var err error
+	var bifrostExtraFields schemas.BifrostResponseExtraFields
 
 	switch cachedReq.Type {
 	case schemas.CachedContentCreateRequest:
@@ -2401,6 +2441,7 @@ func (g *GenericRouter) handleCachedContentRequest(ctx *fasthttp.RequestCtx, con
 				return
 			}
 		}
+		bifrostExtraFields = bifrostResp.ExtraFields
 		if config.CachedContentCreateResponseConverter != nil {
 			response, err = config.CachedContentCreateResponseConverter(bifrostCtx, bifrostResp)
 		} else {
@@ -2423,6 +2464,7 @@ func (g *GenericRouter) handleCachedContentRequest(ctx *fasthttp.RequestCtx, con
 				return
 			}
 		}
+		bifrostExtraFields = bifrostResp.ExtraFields
 		if config.CachedContentListResponseConverter != nil {
 			response, err = config.CachedContentListResponseConverter(bifrostCtx, bifrostResp)
 		} else {
@@ -2445,6 +2487,7 @@ func (g *GenericRouter) handleCachedContentRequest(ctx *fasthttp.RequestCtx, con
 				return
 			}
 		}
+		bifrostExtraFields = bifrostResp.ExtraFields
 		if config.CachedContentRetrieveResponseConverter != nil {
 			response, err = config.CachedContentRetrieveResponseConverter(bifrostCtx, bifrostResp)
 		} else {
@@ -2467,6 +2510,7 @@ func (g *GenericRouter) handleCachedContentRequest(ctx *fasthttp.RequestCtx, con
 				return
 			}
 		}
+		bifrostExtraFields = bifrostResp.ExtraFields
 		if config.CachedContentUpdateResponseConverter != nil {
 			response, err = config.CachedContentUpdateResponseConverter(bifrostCtx, bifrostResp)
 		} else {
@@ -2489,6 +2533,7 @@ func (g *GenericRouter) handleCachedContentRequest(ctx *fasthttp.RequestCtx, con
 				return
 			}
 		}
+		bifrostExtraFields = bifrostResp.ExtraFields
 		if config.CachedContentDeleteResponseConverter != nil {
 			response, err = config.CachedContentDeleteResponseConverter(bifrostCtx, bifrostResp)
 		} else {
@@ -2505,6 +2550,7 @@ func (g *GenericRouter) handleCachedContentRequest(ctx *fasthttp.RequestCtx, con
 		return
 	}
 
+	lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, bifrostExtraFields)
 	g.sendSuccess(ctx, bifrostCtx, config.ErrorConverter, response, nil)
 }
 
@@ -2518,21 +2564,32 @@ func (g *GenericRouter) handleStreamingRequest(ctx *fasthttp.RequestCtx, config 
 	// We now get a cancellable context from ConvertToBifrostContext so we can cancel the upstream stream immediately when the client disconnects.
 	var stream chan *schemas.BifrostStreamChunk
 	var bifrostErr *schemas.BifrostError
+	var requestType schemas.RequestType
 
 	// Handle different request types
 	if bifrostReq.TextCompletionRequest != nil {
+		requestType = schemas.TextCompletionStreamRequest
 		stream, bifrostErr = g.client.TextCompletionStreamRequest(bifrostCtx, bifrostReq.TextCompletionRequest)
 	} else if bifrostReq.ChatRequest != nil {
+		requestType = schemas.ChatCompletionStreamRequest
 		stream, bifrostErr = g.client.ChatCompletionStreamRequest(bifrostCtx, bifrostReq.ChatRequest)
 	} else if bifrostReq.ResponsesRequest != nil {
+		requestType = schemas.ResponsesStreamRequest
 		stream, bifrostErr = g.client.ResponsesStreamRequest(bifrostCtx, bifrostReq.ResponsesRequest)
+	} else if bifrostReq.ResponsesRetrieveRequest != nil {
+		requestType = schemas.ResponsesRetrieveStreamRequest
+		stream, bifrostErr = g.client.ResponsesRetrieveStreamRequest(bifrostCtx, bifrostReq.ResponsesRetrieveRequest)
 	} else if bifrostReq.SpeechRequest != nil {
+		requestType = schemas.SpeechStreamRequest
 		stream, bifrostErr = g.client.SpeechStreamRequest(bifrostCtx, bifrostReq.SpeechRequest)
 	} else if bifrostReq.TranscriptionRequest != nil {
+		requestType = schemas.TranscriptionStreamRequest
 		stream, bifrostErr = g.client.TranscriptionStreamRequest(bifrostCtx, bifrostReq.TranscriptionRequest)
 	} else if bifrostReq.ImageGenerationRequest != nil {
+		requestType = schemas.ImageGenerationStreamRequest
 		stream, bifrostErr = g.client.ImageGenerationStreamRequest(bifrostCtx, bifrostReq.ImageGenerationRequest)
 	} else if bifrostReq.ImageEditRequest != nil {
+		requestType = schemas.ImageEditStreamRequest
 		stream, bifrostErr = g.client.ImageEditStreamRequest(bifrostCtx, bifrostReq.ImageEditRequest)
 	}
 
@@ -2559,8 +2616,12 @@ func (g *GenericRouter) handleStreamingRequest(ctx *fasthttp.RequestCtx, config 
 		}
 	}
 
+	// Routed-identity headers from the context snapshot — routing is final once
+	// the stream channel is returned, before any chunk arrives.
+	lib.ApplyBifrostStreamResponseHeaders(ctx, bifrostCtx, requestType)
+
 	// Large payload streaming passthrough — bypass SSE event processing, pipe raw upstream
-	if g.tryStreamLargeResponse(ctx, bifrostCtx) {
+	if g.tryStreamLargeResponse(ctx, bifrostCtx, schemas.BifrostResponseExtraFields{}) {
 		ctx.Response.Header.Set("Cache-Control", "no-cache")
 		ctx.Response.Header.Set("Connection", "keep-alive")
 		ctx.Response.Header.Set("Access-Control-Allow-Origin", "*")

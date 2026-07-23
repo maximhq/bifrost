@@ -531,7 +531,7 @@ export default function MCPView() {
                     <AlertTitle>OAuth discovery will be disabled</AlertTitle>
                     <AlertDescription>
                       All MCP clients that authenticated via the OAuth consent
-                      flow will lose access — their JWTs will be rejected and
+                      flow will lose access; their JWTs will be rejected and
                       their refresh tokens will become unusable. They will need
                       to reconfigure using a virtual key or api-key header.
                     </AlertDescription>

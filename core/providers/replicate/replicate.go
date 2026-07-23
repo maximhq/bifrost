@@ -1287,7 +1287,7 @@ func (provider *ReplicateProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 
 	// Make the streaming request
 	startTime = time.Now()
-	streamErr := provider.streamingClient.Do(req, resp)
+	streamErr := providerUtils.DoStreamingRequest(ctx, provider.streamingClient, req, resp)
 	latency = time.Since(startTime)
 	if streamErr != nil {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
@@ -1744,7 +1744,7 @@ func (provider *ReplicateProvider) ImageGeneration(ctx *schemas.BifrostContext, 
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return ToReplicateImageGenerationInput(request), nil
+			return ToReplicateImageGenerationInput(request)
 		})
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -1839,7 +1839,10 @@ func (provider *ReplicateProvider) ImageGenerationStream(ctx *schemas.BifrostCon
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			replicateReq := ToReplicateImageGenerationInput(request)
+			replicateReq, err := ToReplicateImageGenerationInput(request)
+			if err != nil {
+				return nil, err
+			}
 			replicateReq.Stream = schemas.Ptr(true)
 			return replicateReq, nil
 		})

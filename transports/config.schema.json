@@ -3888,6 +3888,10 @@
                   "type": "string",
                   "description": "Role session name for AssumeRole (can use env. prefix)"
                 },
+                "batch_role_arn": {
+                  "type": "string",
+                  "description": "Service role ARN passed to Bedrock batch jobs for S3 access; takes priority over any role_arn sent in the request (can use env. prefix)"
+                },
                 "project_id": {
                   "type": "string",
                   "description": "Bedrock project ID scoping the Mantle sub-surface (OpenAI-compatible gpt-*/Gemma routing) via the OpenAI-Project header. When empty, AWS routes to the account's default project. No effect on the Converse/bedrock-runtime paths (can use env. prefix)."

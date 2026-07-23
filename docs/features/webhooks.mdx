@@ -6,7 +6,7 @@ icon: "webhook"
 
 ## Overview
 
-Webhooks are the push half of [Async Inference](/features/async-inference). Instead of polling `GET /v1/async/.../{job_id}` until a job reaches a terminal state, register an endpoint once and Bifrost delivers a signed HTTP `POST` the moment the job completes or fails.
+Webhooks are the push half of [Async Inference](/features/async-inference). Instead of polling `GET /v1/async/.../{job_id}` until a job reaches a terminal state, register an endpoint and name it on submit, and Bifrost delivers a signed HTTP `POST` the moment that job completes or fails.
 
 Every delivery is signed in the [Standard Webhooks](https://www.standardwebhooks.com/) format so your receiver can verify it came from your Bifrost instance and was not altered in transit.
 
@@ -43,6 +43,26 @@ sequenceDiagram
 ```
 
 Delivery is **at-least-once**: a failed attempt is retried with exponential backoff, and every attempt for the same event reuses the same `webhook-id`. Your receiver must be idempotent — dedupe on `webhook-id`.
+
+---
+
+## Triggering a Delivery
+
+Registering an endpoint does not, by itself, cause any deliveries. Delivery is opt-in per async job: the submit request must carry an `x-bf-async-webhook` header naming the endpoint to notify.
+
+```bash
+curl -X POST http://localhost:8080/v1/async/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "x-bf-vk: sk-bf-your-virtual-key" \
+  -H "x-bf-async-webhook: order-events" \
+  -d '{ "model": "openai/gpt-4o-mini", "messages": [...] }'
+```
+
+- The name must resolve to an existing, enabled endpoint. If it doesn't, the submit request itself fails, rather than accepting the job and silently dropping the notification.
+- The endpoint must still be enabled and subscribed to the resulting event (`async_job.completed` or `async_job.failed`) when the job finishes. If it isn't, the job completes normally but no delivery is enqueued.
+- Jobs submitted without the header never trigger a webhook, regardless of how many endpoints are registered.
+
+See [Async Inference](/features/async-inference#webhook-notifications) for the full submit flow.
 
 ---
 

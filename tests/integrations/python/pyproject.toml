@@ -24,7 +24,7 @@ dependencies = [
     # AI/ML SDK dependencies
     "openai>=1.30.0",
     "anthropic>=0.25.0",
-    "litellm==1.80.5",
+    "litellm==1.84.0",
     "langchain-openai==1.1.14",
     "langchain-core>=1.3.3",
     "langchain-anthropic==1.3.0",
@@ -47,7 +47,7 @@ dependencies = [
     "langchain-community>=0.4.1",
     "langchain-aws>=1.1.0",
     "pytest-xdist>=3.8.0",
-    "pyasn1>=0.6.2",
+    "pyasn1>=0.6.4",
 ]
 
 [project.optional-dependencies]
@@ -123,4 +123,4 @@ exclude_lines = [
 
 
 [tool.uv]
-exclude-newer = "2026-06-02T00:00:00Z"
+exclude-newer = "2026-07-10T00:00:00Z"

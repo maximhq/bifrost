@@ -8,6 +8,22 @@ export interface Budget {
 	reset_duration: string; // e.g., "30s", "5m", "1h", "1d", "1w", "1M"
 	current_usage: number; // In dollars
 	last_reset: string; // ISO timestamp
+	override_amount?: number;
+	override_mode?: BudgetOverrideMode;
+	override_cycles_remaining?: number;
+}
+
+export type BudgetOverrideMode = "cycles" | "forever";
+
+export interface BudgetOverrideRequest {
+	amount: number;
+	mode: BudgetOverrideMode;
+	cycles?: number;
+}
+
+export interface BudgetOverrideResponse {
+	budget: Budget;
+	effective_max_limit: number;
 }
 
 export interface RateLimit {
@@ -391,6 +407,7 @@ export interface GetModelConfigsParams {
 	offset?: number;
 	search?: string;
 	scope?: string;
+	scope_id?: string;
 	provider?: string;
 }
 

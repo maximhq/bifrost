@@ -403,6 +403,37 @@ Calls CrowdStrike AIDR's `guard_chat_completions` endpoint for policy-driven AI 
 Gray Swan requests automatically include sanitized incoming request headers in Gray Swan `metadata.headers`; no extra `config` field is required. Credential-bearing headers such as `authorization`, `x-api-key`, API-key variants, cookies, and `grayswan-api-key` are excluded, while non-sensitive context headers such as `x-request-id`, `traceparent`, `x-tenant-id`, `content-type`, and `content-length` are included when present.
 
 </Tab>
+<Tab title="Lakera Guard">
+
+Calls Lakera Guard's `POST /v2/guard` endpoint with an OpenAI-style conversation. The Lakera project selects the policy; Bifrost controls whether a flagged result blocks, is recorded, or is redacted from supported payload spans.
+
+```json
+{
+  "guardrails_config": {
+    "guardrail_providers": [
+      {
+        "id": 7,
+        "provider_name": "lakera",
+        "policy_name": "lakera-production",
+        "enabled": true,
+        "timeout": 30,
+        "config": {
+          "api_key": "env.LAKERA_GUARD_API_KEY",
+          "project_id": "project-1234567890",
+          "base_url": "https://api.lakera.ai",
+          "action": "redact",
+          "redaction_strategy": "replace",
+          "redaction_mode": "runtime_reversible"
+        }
+      }
+    ]
+  }
+}
+```
+
+`base_url` is optional and defaults to `https://api.lakera.ai`. For `action: "redact"`, Lakera supplies supported message-content spans and Bifrost performs the transformation. See [Lakera Guard](/integrations/guardrails/lakera) for request compatibility and fail-closed behavior.
+
+</Tab>
 </Tabs>
 
 ### Provider Fields
@@ -410,7 +441,7 @@ Gray Swan requests automatically include sanitized incoming request headers in G
 | Field | Required | Description |
 |-------|----------|-------------|
 | `id` | Yes | Unique integer ID - referenced by rules via `provider_config_ids` |
-| `provider_name` | Yes | Backend: `"regex"`, `"secrets"`, `"presidio"`, `"azure-pii"`, `"bedrock"`, `"azure"`, `"model-armor"`, `"crowdstrike-aidr"`, `"patronus-ai"`, `"grayswan"` |
+| `provider_name` | Yes | Backend: `"regex"`, `"secrets"`, `"presidio"`, `"azure-pii"`, `"bedrock"`, `"azure"`, `"model-armor"`, `"crowdstrike-aidr"`, `"patronus-ai"`, `"grayswan"`, `"lakera"` |
 | `policy_name` | Yes | Human-readable policy label |
 | `enabled` | Yes | `true` to activate |
 | `timeout` | No | Execution timeout in seconds |
@@ -546,6 +577,18 @@ Any field marked **env.\* supported** accepts a bare `"env.VAR_NAME"` string in 
 | `rules` | No | **Plain only** | Inline rule map (`{ "rule_name": "description" }`) |
 | `sampling_rate` | No | **Plain only** | `0`–`100`; percentage of requests to evaluate (default: `100`) |
 | `timeout` | No | **Plain only** | Execution timeout in seconds |
+
+### Lakera Guard
+
+| Field | Required | env.\* supported | Notes |
+|-------|----------|-----------------|-------|
+| `api_key` | Yes | Yes | Lakera API key |
+| `project_id` | Yes | **Plain only** | Lakera project ID whose assigned policy controls screening |
+| `base_url` | No | Yes | Lakera API base. Defaults to `https://api.lakera.ai` |
+| `action` | No | **Plain only** | `block` \| `detect_only` \| `redact` (default: `block`) |
+| `redaction_strategy` | No | **Plain only** | `replace` \| `mask` \| `hash` (default: `replace`) |
+| `redaction_mode` | No | **Plain only** | `runtime` \| `logs_only` \| `runtime_reversible` (default: `runtime`) |
+| `timeout` | No | **Plain only** | Provider-level execution timeout in seconds |
 
 ### Regex
 

@@ -1,4 +1,5 @@
 import { useVirtualKeyUsage } from "@/app/workspace/virtual-keys/hooks/useVirtualKeyUsage";
+import { BudgetOverrideDialog } from "@/components/budgetOverrideDialog";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
@@ -43,10 +44,20 @@ import {
 	useGetMCPClientsQuery,
 	useGetProvidersQuery,
 	useRotateVirtualKeyMutation,
+	useRemoveVirtualKeyBudgetOverrideMutation,
+	useSetVirtualKeyBudgetOverrideMutation,
 	useUpdateVirtualKeyMutation,
 } from "@/lib/store";
 import { KnownProvider } from "@/lib/types/config";
-import { CreateVirtualKeyRequest, Customer, Team, UpdateVirtualKeyRequest, VirtualKey } from "@/lib/types/governance";
+import {
+	BudgetOverrideRequest,
+	CreateVirtualKeyRequest,
+	Customer,
+	Team,
+	UpdateVirtualKeyRequest,
+	VirtualKey,
+} from "@/lib/types/governance";
+import { formatCurrency, getEffectiveBudgetLimit, hasActiveBudgetOverride, parseResetPeriod } from "@/lib/utils/governance";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useNavigate } from "@tanstack/react-router";
@@ -271,9 +282,25 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 	const [createVirtualKey, { isLoading: isCreating }] = useCreateVirtualKeyMutation();
 	const [updateVirtualKey, { isLoading: isUpdating }] = useUpdateVirtualKeyMutation();
 	const [rotateVirtualKey, { isLoading: isRotating }] = useRotateVirtualKeyMutation();
+	const [setBudgetOverride] = useSetVirtualKeyBudgetOverrideMutation();
+	const [removeBudgetOverride] = useRemoveVirtualKeyBudgetOverrideMutation();
 	const { data: mcpClientsResponse, error: mcpClientsError } = useGetMCPClientsQuery();
 	const mcpClientsData = mcpClientsResponse?.clients || [];
 	const isLoading = isCreating || isUpdating || isRotating;
+	const persistedOverrideBudgets = [
+		...(virtualKey?.budgets ?? []).map((budget) => ({ budget, label: "Virtual key" })),
+		...(virtualKey?.provider_configs ?? []).flatMap((config) =>
+			(config.budgets ?? []).map((budget) => ({ budget, label: ProviderLabels[config.provider as ProviderName] ?? config.provider })),
+		),
+	];
+	const saveBudgetOverride = async (budgetId: string, data: BudgetOverrideRequest) => {
+		if (!virtualKey) throw new Error("Virtual key is required");
+		await setBudgetOverride({ vkId: virtualKey.id, budgetId, data }).unwrap();
+	};
+	const clearBudgetOverride = async (budgetId: string) => {
+		if (!virtualKey) throw new Error("Virtual key is required");
+		await removeBudgetOverride({ vkId: virtualKey.id, budgetId }).unwrap();
+	};
 
 	const availableKeys = keysData || [];
 	const availableProviders = providersData || [];
@@ -894,7 +921,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 								<Alert variant="info">
 									<Lock className="h-4 w-4" />
 									<AlertDescription>
-										This virtual key is managed by an access profile. Only the name and description can be modified — providers, budgets,
+										This virtual key is managed by an access profile. Only the name and description can be modified; providers, budgets,
 										rate limits, and MCP access are controlled by the profile.
 									</AlertDescription>
 								</Alert>
@@ -905,7 +932,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 									<Users className="h-4 w-4" />
 									<AlertDescription>
 										Creating this virtual key under team <span className="font-medium">{attachedTeam?.name ?? attachedTeamId}</span>. Team
-										assignment is pre-set — all other fields are editable.
+										assignment is pre-set; all other fields are editable.
 									</AlertDescription>
 								</Alert>
 							)}
@@ -1665,6 +1692,39 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 										showReset={isEditing && !!(virtualKey?.budgets?.length || (watchedBudgets && watchedBudgets.length > 0))}
 									/>
 
+									{isEditing && !isManagedByProfile && persistedOverrideBudgets.length > 0 ? (
+										<div className="space-y-3 rounded-sm border p-4" data-testid="vk-budget-overrides-section">
+											<div>
+												<h4 className="text-sm font-medium">Budget Overrides</h4>
+												<p className="text-muted-foreground text-xs">
+													Add temporary capacity without changing the configured base budgets above.
+												</p>
+											</div>
+											<div className="divide-y">
+												{persistedOverrideBudgets.map(({ budget, label }) => (
+													<div key={budget.id} className="flex items-center justify-between gap-4 py-3 first:pt-0 last:pb-0">
+														<div className="min-w-0">
+															<p className="truncate text-sm font-medium">
+																{label} · resets every {parseResetPeriod(budget.reset_duration)}
+															</p>
+															<p className="text-muted-foreground text-xs">
+																Base {formatCurrency(budget.max_limit)}
+																{hasActiveBudgetOverride(budget) ? ` · effective ${formatCurrency(getEffectiveBudgetLimit(budget))}` : ""}
+															</p>
+														</div>
+														<BudgetOverrideDialog
+															budget={budget}
+															onSave={(data) => saveBudgetOverride(budget.id, data)}
+															onRemove={() => clearBudgetOverride(budget.id)}
+															disabled={!hasUpdateAccess}
+															calendarAligned={virtualKey.calendar_aligned}
+														/>
+													</div>
+												))}
+											</div>
+										</div>
+									) : null}
+
 									{/* Reassign team confirmation dialog */}
 									<AlertDialog
 										open={showReassignTeamWarning}
@@ -1679,7 +1739,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 											<AlertDialogHeader>
 												<AlertDialogTitle>Reassign to a different team?</AlertDialogTitle>
 												<AlertDialogDescription>
-													This key is currently assigned to another team. Reassigning it will move budget tracking to this team — future
+													This key is currently assigned to another team. Reassigning it will move budget tracking to this team; future
 													requests through this key will count against this team’s budget, not the previous one.
 												</AlertDialogDescription>
 											</AlertDialogHeader>
@@ -1921,7 +1981,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 																<ComboboxSelect
 																	options={teams.map((team) => ({
 																		value: team.id,
-																		label: team.customer ? `${team.name} — ${team.customer.name}` : team.name,
+																		label: team.customer ? `${team.name} - ${team.customer.name}` : team.name,
 																	}))}
 																	value={field.value || null}
 																	onValueChange={(val) => {

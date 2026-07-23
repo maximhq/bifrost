@@ -255,7 +255,7 @@ export default function ModelProviderKeysTableView({ provider, className, header
 																	</button>
 																</TooltipTrigger>
 																<TooltipContent className="max-w-xs break-words">
-																	{key.description} — verify the secret reference is configured on the server
+																	{key.description}; verify the secret reference is configured on the server
 																</TooltipContent>
 															</Tooltip>
 														) : (

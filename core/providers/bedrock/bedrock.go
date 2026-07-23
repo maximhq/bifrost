@@ -310,7 +310,7 @@ func (provider *BedrockProvider) completeRequest(ctx *schemas.BifrostContext, js
 func (provider *BedrockProvider) executeBedrockRequest(req *http.Request) ([]byte, time.Duration, map[string]string, *schemas.BifrostError) {
 	// Execute the request and measure latency
 	startTime := time.Now()
-	resp, err := provider.client.Do(req)
+	resp, err := providerUtils.DoHTTPRequest(provider.client, req)
 	latency := time.Since(startTime)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -407,7 +407,7 @@ func (provider *BedrockProvider) completeAgentRuntimeRequest(ctx *schemas.Bifros
 	}
 
 	startTime := time.Now()
-	resp, err := provider.client.Do(req)
+	resp, err := providerUtils.DoHTTPRequest(provider.client, req)
 	latency := time.Since(startTime)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -509,7 +509,7 @@ func (provider *BedrockProvider) makeStreamingRequest(ctx *schemas.BifrostContex
 
 	// Make the request
 	startTime := time.Now()
-	resp, respErr := provider.streamingClient.Do(req)
+	resp, respErr := providerUtils.DoHTTPRequest(provider.streamingClient, req)
 	latency := time.Since(startTime)
 	if respErr != nil {
 		if errors.Is(respErr, context.Canceled) {
@@ -731,7 +731,7 @@ func (provider *BedrockProvider) listMantleModels(ctx *schemas.BifrostContext, k
 		return nil
 	}
 
-	resp, err := provider.client.Do(req)
+	resp, err := providerUtils.DoHTTPRequest(provider.client, req)
 	if err != nil {
 		provider.logger.Warn("mantle list-models request failed: %v", err)
 		return nil
@@ -812,7 +812,7 @@ func (provider *BedrockProvider) listModelsByKey(ctx *schemas.BifrostContext, ke
 	startTime := time.Now()
 
 	// Execute the request
-	resp, err := provider.client.Do(req)
+	resp, err := providerUtils.DoHTTPRequest(provider.client, req)
 	latency := time.Since(startTime)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -2480,7 +2480,7 @@ func (provider *BedrockProvider) FileUpload(ctx *schemas.BifrostContext, key sch
 
 	// Execute request
 	startTime := time.Now()
-	resp, err := provider.client.Do(httpReq)
+	resp, err := providerUtils.DoHTTPRequest(provider.client, httpReq)
 	latency := time.Since(startTime)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -2609,7 +2609,7 @@ func (provider *BedrockProvider) FileList(ctx *schemas.BifrostContext, keys []sc
 
 	// Execute request
 	startTime := time.Now()
-	resp, err := provider.client.Do(httpReq)
+	resp, err := providerUtils.DoHTTPRequest(provider.client, httpReq)
 	latency := time.Since(startTime)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -2721,7 +2721,7 @@ func (provider *BedrockProvider) FileRetrieve(ctx *schemas.BifrostContext, keys 
 
 		// Execute request
 		startTime := time.Now()
-		resp, err := provider.client.Do(httpReq)
+		resp, err := providerUtils.DoHTTPRequest(provider.client, httpReq)
 		latency := time.Since(startTime)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
@@ -2819,7 +2819,7 @@ func (provider *BedrockProvider) FileDelete(ctx *schemas.BifrostContext, keys []
 
 		// Execute request
 		startTime := time.Now()
-		resp, err := provider.client.Do(httpReq)
+		resp, err := providerUtils.DoHTTPRequest(provider.client, httpReq)
 		latency := time.Since(startTime)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
@@ -2900,7 +2900,7 @@ func (provider *BedrockProvider) FileContent(ctx *schemas.BifrostContext, keys [
 
 		// Execute request
 		startTime := time.Now()
-		resp, err := provider.client.Do(httpReq)
+		resp, err := providerUtils.DoHTTPRequest(provider.client, httpReq)
 		latency := time.Since(startTime)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
@@ -2956,10 +2956,14 @@ func (provider *BedrockProvider) BatchCreate(ctx *schemas.BifrostContext, key sc
 		return nil, err
 	}
 
-	// Require RoleArn in extra params
+	// Resolve the batch service role
 	roleArn := ""
-	// First we will honor the role_arn coming from the client side if present
-	if request.ExtraParams != nil {
+	// Server-configured batch role takes priority over the client-sent value
+	if key.BedrockKeyConfig.BatchRoleARN != nil {
+		roleArn = key.BedrockKeyConfig.BatchRoleARN.GetValue()
+	}
+	// Then we will honor the role_arn coming from the client side if present
+	if roleArn == "" && request.ExtraParams != nil {
 		if r, ok := request.ExtraParams["role_arn"].(string); ok {
 			roleArn = r
 		}
@@ -3105,7 +3109,7 @@ func (provider *BedrockProvider) BatchCreate(ctx *schemas.BifrostContext, key sc
 
 	// Execute request
 	startTime := time.Now()
-	resp, err := provider.client.Do(httpReq)
+	resp, err := providerUtils.DoHTTPRequest(provider.client, httpReq)
 	latency := time.Since(startTime)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -3230,7 +3234,7 @@ func (provider *BedrockProvider) BatchList(ctx *schemas.BifrostContext, keys []s
 
 	// Execute request
 	startTime := time.Now()
-	resp, err := provider.client.Do(httpReq)
+	resp, err := providerUtils.DoHTTPRequest(provider.client, httpReq)
 	latency := time.Since(startTime)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -3348,7 +3352,7 @@ func (provider *BedrockProvider) fetchBatchManifest(ctx *schemas.BifrostContext,
 		return nil
 	}
 
-	resp, err := provider.client.Do(httpReq)
+	resp, err := providerUtils.DoHTTPRequest(provider.client, httpReq)
 	if err != nil {
 		provider.logger.Error("failed to fetch manifest: %v", err)
 		return nil
@@ -3410,7 +3414,7 @@ func (provider *BedrockProvider) BatchRetrieve(ctx *schemas.BifrostContext, keys
 
 		// Execute request
 		startTime := time.Now()
-		resp, err := provider.client.Do(httpReq)
+		resp, err := providerUtils.DoHTTPRequest(provider.client, httpReq)
 		latency := time.Since(startTime)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
@@ -3554,7 +3558,7 @@ func (provider *BedrockProvider) BatchCancel(ctx *schemas.BifrostContext, keys [
 
 		// Execute request
 		startTime := time.Now()
-		resp, err := provider.client.Do(httpReq)
+		resp, err := providerUtils.DoHTTPRequest(provider.client, httpReq)
 		latency := time.Since(startTime)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {

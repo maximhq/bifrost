@@ -19,6 +19,6 @@
     "typescript": "5.3.3"
   },
   "overrides": {
-    "hono": "4.12.14"
+    "hono": "4.12.27"
   }
 }

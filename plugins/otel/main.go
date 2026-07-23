@@ -747,6 +747,41 @@ func getFloat64Attr(attrs map[string]any, key string) float64 {
 	return 0
 }
 
+// getFloat64AttrOK is getFloat64Attr with presence reporting. Needed where zero
+// is a meaningful value distinct from "absent" — an upstream total of 0 (a cache
+// hit, or a request rejected before any provider call) means all of the elapsed
+// time was Bifrost's, whereas a missing attribute means it was never measured.
+// overheadSecondsFromTrace reads Bifrost's own cost off the root span, where the
+// tracer stamps it as AttrBifrostOverheadDurationMs (root duration minus the
+// upstream total). Reading the stamped value rather than recomputing keeps the
+// overhead metric and the span attribute in lockstep. Returns false when the
+// request carried no measurement; absent must not be reported as zero overhead.
+func overheadSecondsFromTrace(trace *schemas.Trace) (float64, bool) {
+	if trace == nil || trace.RootSpan == nil {
+		return 0, false
+	}
+	overheadMs, ok := getFloat64AttrOK(trace.RootSpan.Attributes, schemas.AttrBifrostOverheadDurationMs)
+	if !ok {
+		return 0, false
+	}
+	return overheadMs / 1000.0, true
+}
+
+func getFloat64AttrOK(attrs map[string]any, key string) (float64, bool) {
+	if attrs == nil {
+		return 0, false
+	}
+	switch v := attrs[key].(type) {
+	case float64:
+		return v, true
+	case int:
+		return float64(v), true
+	case int64:
+		return float64(v), true
+	}
+	return 0, false
+}
+
 // buildSpanAttrs extracts metric dimension attrs from a single attempt span.
 func buildSpanAttrs(span *schemas.Span) []attribute.KeyValue {
 	attrs := span.Attributes
@@ -906,6 +941,21 @@ func (p *OtelPlugin) recordMetricsFromTrace(ctx context.Context, exporter *Metri
 		if finalSpan == nil || span.EndTime.After(finalSpan.EndTime) {
 			finalSpan = span
 		}
+	}
+
+	// Bifrost's own overhead. Derived once per trace from the root span, which is
+	// the only span whose duration covers the whole request — including queue
+	// wait, plugin hooks and transport work that no llm.call span sees.
+	//
+	// Labelled off the final attempt span so provider/model dimensions match the
+	// other per-request metrics (retries, tokens, cost). The root span carries
+	// only HTTP attributes.
+	if overheadSeconds, ok := overheadSecondsFromTrace(trace); ok {
+		labelSpan := finalSpan
+		if labelSpan == nil {
+			labelSpan = trace.RootSpan
+		}
+		exporter.RecordOverheadLatency(ctx, overheadSeconds, buildSpanAttrs(labelSpan)...)
 	}
 
 	if finalSpan == nil {
