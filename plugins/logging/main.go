@@ -1055,11 +1055,24 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	if result != nil {
 		ef := result.GetExtraFields()
 		latency = ef.Latency
+		// Model that actually served the turn when the provider swapped models inside
+		// one call. entry.Model still names what the caller asked for.
+		if ef.RoutingInfo.ServerSideFallbackModel != nil {
+			served := *ef.RoutingInfo.ServerSideFallbackModel
+			entry.ServerSideFallbackModel = &served
+		}
 		if ef.CacheDebug != nil && ef.CacheDebug.CacheHit && ef.CacheDebug.CacheHitLatency != nil {
 			latency = *ef.CacheDebug.CacheHitLatency
 		}
 	} else if bifrostErr != nil {
 		latency = bifrostErr.ExtraFields.Latency
+	}
+
+	if entry.ServerSideFallbackModel == nil && bifrostErr != nil && bifrostErr.ExtraFields.BilledUsage != nil {
+		if served := bifrostErr.ExtraFields.BilledUsage.ServerSideFallbackModel; served != nil {
+			m := *served
+			entry.ServerSideFallbackModel = &m
+		}
 	}
 	applyOutputFieldsToEntry(entry, selectedKeyID, selectedKeyName, virtualKeyID, virtualKeyName, routingRuleID, routingRuleName, selectedPromptID, selectedPromptName, selectedPromptVersion, teamID, teamName, customerID, customerName, userID, userName, businessUnitID, businessUnitName, numberOfRetries, latency, attemptTrail)
 	applyResolvedAliasInfo(entry, resolvedKeyAlias)
@@ -1379,7 +1392,9 @@ drainQueue:
 // Multiple entries per traceID are supported (e.g. fallback/retry attempts within the same trace).
 func (p *LoggerPlugin) storeOrEnqueueEntry(ctx *schemas.BifrostContext, entry *logstore.Log, callback func(entry *logstore.Log)) {
 	policy := p.resolveContentPolicy(ctx)
-	entry.ContentHidden = policy.hidden
+	// ContentHidden marks entries whose content the API/UI never serves back —
+	// both the retained-in-object-storage case and the dropped-entirely case.
+	entry.ContentHidden = !policy.visible()
 	// Redaction mappings exist to reveal redacted content on permitted UI
 	// reads; hidden entries serve no content back, so attach only when the
 	// content is actually visible.

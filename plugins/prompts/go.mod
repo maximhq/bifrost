@@ -3,8 +3,8 @@ module github.com/maximhq/bifrost/plugins/prompts
 go 1.26.4
 
 require (
-	github.com/maximhq/bifrost/core v1.7.1
-	github.com/maximhq/bifrost/framework v1.5.1
+	github.com/maximhq/bifrost/core v1.7.3
+	github.com/maximhq/bifrost/framework v1.5.3
 	github.com/stretchr/testify v1.11.1
 )
 

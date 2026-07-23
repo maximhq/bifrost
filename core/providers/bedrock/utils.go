@@ -1488,14 +1488,14 @@ func extractJSONSchemaObject(s *schemas.ResponsesTextConfigFormatJSONSchema) jso
 
 // convertTextFormatToTool converts a Responses text.format config to either a
 // synthetic Bedrock tool or an Anthropic-native output_config.format value.
-func convertTextFormatToTool(ctx *schemas.BifrostContext, model string, textConfig *schemas.ResponsesTextConfig) (*BedrockTool, any) {
+func convertTextFormatToTool(ctx *schemas.BifrostContext, model string, textConfig *schemas.ResponsesTextConfig) (*BedrockTool, any, error) {
 	if textConfig == nil || textConfig.Format == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	format := textConfig.Format
 	if format.Type != "json_schema" {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	toolName := "json_response"
@@ -1505,11 +1505,24 @@ func convertTextFormatToTool(ctx *schemas.BifrostContext, model string, textConf
 
 	description := "Returns structured JSON output"
 	if format.JSONSchema == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
-	schemaObj := extractJSONSchemaObject(format.JSONSchema)
+	_, acceptAll, err := format.JSONSchema.CompositeSchema()
+	if err != nil {
+		return nil, nil, err
+	}
+	var schemaObj json.RawMessage
+	if acceptAll {
+		// Boolean schema `true` accepts any value. Tool input schemas must be
+		// JSON Schema objects, so the widest representable form is an
+		// unconstrained object.
+		schemaObj = json.RawMessage(`{"type":"object"}`)
+	} else {
+		// Composite object schemas are handled inside extractJSONSchemaObject.
+		schemaObj = extractJSONSchemaObject(format.JSONSchema)
+	}
 	if schemaObj == nil {
-		return nil, nil // No schema info — neither composite Schema nor decomposed fields set
+		return nil, nil, nil // No schema info — neither composite Schema nor decomposed fields set
 	}
 	if format.JSONSchema.Description != nil {
 		description = *format.JSONSchema.Description
@@ -1523,7 +1536,7 @@ func convertTextFormatToTool(ctx *schemas.BifrostContext, model string, textConf
 
 	schemaObjBytes2, err := providerUtils.MarshalSorted(schemaObj)
 	if err != nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 	return &BedrockTool{
 		ToolSpec: &BedrockToolSpec{
@@ -1533,7 +1546,7 @@ func convertTextFormatToTool(ctx *schemas.BifrostContext, model string, textConf
 				JSON: json.RawMessage(schemaObjBytes2),
 			},
 		},
-	}, nil
+	}, nil, nil
 }
 
 // convertInferenceConfig converts Bifrost parameters to Bedrock inference config

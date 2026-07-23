@@ -132,6 +132,7 @@
                   "providers/supported-providers/overview",
                   "providers/supported-providers/anthropic",
                   "providers/supported-providers/azure",
+                  "providers/supported-providers/azure-model-router",
                   "providers/supported-providers/bedrock",
                   "providers/supported-providers/bedrock-mantle",
                   "providers/supported-providers/cerebras",
@@ -330,7 +331,8 @@
                       "integrations/guardrails/google-model-armor",
                       "integrations/guardrails/crowdstrike-aidr",
                       "integrations/guardrails/grayswan",
-                      "integrations/guardrails/patronus-ai"
+                      "integrations/guardrails/patronus-ai",
+                      "integrations/guardrails/lakera"
                     ]
                   }
                 ]
@@ -550,7 +552,8 @@
               "integrations/guardrails/google-model-armor",
               "integrations/guardrails/crowdstrike-aidr",
               "integrations/guardrails/grayswan",
-              "integrations/guardrails/patronus-ai"
+              "integrations/guardrails/patronus-ai",
+              "integrations/guardrails/lakera"
             ]
           },
           {
@@ -558,6 +561,7 @@
             "icon": "binoculars",
             "pages": [
               "features/observability/default",
+              "features/observability/content-logging",
               "features/observability/maxim",
               "features/observability/otel",
               "features/observability/prometheus",
@@ -663,6 +667,13 @@
         "icon": "code",
         "groups": [
           {
+            "group": "Authentication",
+            "icon": "key",
+            "pages": [
+              "api/procuring-api-keys"
+            ]
+          },
+          {
             "group": "API Reference",
             "openapi": "openapi/openapi.json"
           }
@@ -727,6 +738,7 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
+              "changelogs/v1.6.5",
               "changelogs/v2.0.0-prerelease2",
               "changelogs/v1.6.4",
               "changelogs/v2.0.0-prerelease1",
@@ -924,9 +936,10 @@
             "item": "Enterprise",
             "icon": "building",
             "pages": [
+              "changelogs/ent-v1.5.5",
               "changelogs/ent-v2.0.0-prerelease2",
-              "changelogs/ent-v2.0.0-prerelease1",
               "changelogs/ent-v1.5.4",
+              "changelogs/ent-v2.0.0-prerelease1",
               "changelogs/ent-v1.5.3",
               "changelogs/ent-v1.5.2",
               "changelogs/ent-v1.5.1",
@@ -1020,6 +1033,8 @@
             "item": "Helm",
             "icon": "box",
             "pages": [
+              "changelogs/helm-v2.1.31",
+              "changelogs/helm-v2.1.30",
               "changelogs/helm-v2.1.29",
               "changelogs/helm-v2.1.28",
               "changelogs/helm-v2.1.27",

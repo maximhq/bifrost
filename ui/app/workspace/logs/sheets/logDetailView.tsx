@@ -1005,6 +1005,9 @@ export function LogDetailView({
 							{!isContainer && log.alias_model_family && (
 								<LogEntryDetailsView className="w-full" label="Model Family" value={log.alias_model_family} />
 							)}
+							{!isContainer && log.server_side_fallback_model && (
+								<LogEntryDetailsView className="w-full" label="Served By (fallback)" value={log.server_side_fallback_model} />
+							)}
 							<LogEntryDetailsView
 								className="w-full"
 								label="Type"
@@ -1688,7 +1691,12 @@ export function LogDetailView({
 				</TabsList>
 
 				<TabsContent value="messages" className="space-y-4">
-					<div className="flex justify-end">
+					{log.content_hidden && (
+						<div className="text-muted-foreground rounded-sm border border-dashed p-5 text-center text-sm">
+							Content logging has been disabled for this request.
+						</div>
+					)}
+					<div className={cn("flex justify-end", log.content_hidden && "hidden")}>
 						<DropdownMenu>
 							<DropdownMenuTrigger asChild>
 								<button

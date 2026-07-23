@@ -46,26 +46,29 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 
 	var messages []schemas.ResponsesMessage
 	// OpenAI models (except for gpt-oss) do not support reasoning content blocks, so we need to convert them to summaries, if there are any
-	// OpenAI also doesn't support compaction content blocks, so we need to convert them to text blocks
+	// OpenAI also doesn't support compaction content blocks, so we need to convert them to text blocks,
+	// nor Anthropic's server-side fallback boundary markers, which are dropped outright.
 	messages = make([]schemas.ResponsesMessage, 0, len(bifrostReq.Input))
 	for _, message := range bifrostReq.Input {
-		// First, check if message has compaction content blocks and convert them to text
+		// First, check if message has compaction/fallback content blocks and rewrite them
 		if message.Content != nil && len(message.Content.ContentBlocks) > 0 {
-			hasCompaction := false
+			needsRewrite := false
 			for _, block := range message.Content.ContentBlocks {
-				if block.Type == schemas.ResponsesOutputMessageContentTypeCompaction {
-					hasCompaction = true
+				if block.Type == schemas.ResponsesOutputMessageContentTypeCompaction ||
+					block.Type == schemas.ResponsesOutputMessageContentTypeFallback {
+					needsRewrite = true
 					break
 				}
 			}
 
-			if hasCompaction {
+			if needsRewrite {
 				// Create a new message with converted content blocks
 				newMessage := message
 				newContentBlocks := make([]schemas.ResponsesMessageContentBlock, 0, len(message.Content.ContentBlocks))
 
 				for _, block := range message.Content.ContentBlocks {
-					if block.Type == schemas.ResponsesOutputMessageContentTypeCompaction {
+					switch block.Type {
+					case schemas.ResponsesOutputMessageContentTypeCompaction:
 						// Convert compaction block to text block
 						if block.ResponsesOutputMessageContentCompaction != nil && block.ResponsesOutputMessageContentCompaction.Summary != "" {
 							newContentBlocks = append(newContentBlocks, schemas.ResponsesMessageContentBlock{
@@ -74,8 +77,12 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 							})
 						}
 						// If summary is empty, skip the block entirely
-					} else {
-						// Keep non-compaction blocks as-is
+					case schemas.ResponsesOutputMessageContentTypeFallback:
+						// Anthropic-only server-side fallback boundary marker. Unlike
+						// compaction it carries no user content (only from/to model
+						// names), so drop it rather than rendering it as text.
+					default:
+						// Keep every other block as-is
 						newContentBlocks = append(newContentBlocks, block)
 					}
 				}
@@ -87,7 +94,7 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 					}
 					message = newMessage
 				} else {
-					// If all blocks were compaction with empty summaries, skip message
+					// Nothing survived (empty-summary compaction and/or fallback markers)
 					continue
 				}
 			}
