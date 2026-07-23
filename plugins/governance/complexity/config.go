@@ -19,16 +19,16 @@ type ComplexityResult struct {
 }
 
 const (
-	TierSimple    = "SIMPLE"
-	TierMedium    = "MEDIUM"
-	TierComplex   = "COMPLEX"
-	TierReasoning = "REASONING"
+	TierSimple  = "SIMPLE"
+	TierMedium  = "MEDIUM"
+	TierComplex = "COMPLEX"
 )
 
+// Default boundaries are tuned to the 1.00 positive-weight scale in
+// keywords.go; retune them together with the dimension weights.
 const (
-	simpleMediumBoundary     = 0.15
-	mediumComplexBoundary    = 0.35
-	complexReasoningBoundary = 0.60
+	simpleMediumBoundary  = 0.17
+	mediumComplexBoundary = 0.39
 )
 
 // TierBoundaries defines the score thresholds for tier classification.
@@ -52,9 +52,8 @@ type KeywordConfig struct {
 // DefaultTierBoundaries returns the built-in classification thresholds.
 func DefaultTierBoundaries() TierBoundaries {
 	return TierBoundaries{
-		SimpleMedium:     simpleMediumBoundary,
-		MediumComplex:    mediumComplexBoundary,
-		ComplexReasoning: complexReasoningBoundary,
+		SimpleMedium:  simpleMediumBoundary,
+		MediumComplex: mediumComplexBoundary,
 	}
 }
 

@@ -264,6 +264,8 @@ const (
 	BifrostContextKeyGovernanceScopedCustomerID          BifrostContextKey = "bifrost-governance-scoped-customer-id"  // string (resolved customer the request is scoped to via the x-bf-customer-id / x-bf-customer-name header on a team-VK path; set by the enterprise governance plugin - DO NOT SET THIS MANUALLY)
 	BifrostContextKeyGovernanceRoutingRuleID             BifrostContextKey = "bifrost-governance-routing-rule-id"     // string (to store the routing rule ID (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyGovernanceRoutingRuleName           BifrostContextKey = "bifrost-governance-routing-rule-name"   // string (to store the routing rule name (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyGovernanceComplexityTier            BifrostContextKey = "bifrost-governance-complexity-tier"     // string (complexity tier computed for routing, e.g. "SIMPLE"/"MEDIUM"/"COMPLEX"; only present when a routing rule referenced complexity_tier and classification produced a tier (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyGovernanceRoutingMechanism          BifrostContextKey = "bifrost-governance-routing-mechanism"   // string (how the complexity tier was classified; only present when a routing rule referenced complexity_tier (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyRoutingPinnedAPIKeyID               BifrostContextKey = "bifrost-routing-pinned-api-key-id"      // string (provider key ID pinned by a matched routing rule target; resolved against the configured key pool during key selection and takes precedence over a caller-supplied pin (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
 	BifrostContextKeySelectedPromptName                  BifrostContextKey = "bifrost-selected-prompt-name"           // string (display name of the selected prompt (set by prompts plugin - DO NOT SET THIS MANUALLY))
 	BifrostContextKeySelectedPromptVersion               BifrostContextKey = "bifrost-selected-prompt-version"        // string (numeric version as string, e.g. "3" (set by prompts plugin - DO NOT SET THIS MANUALLY))
@@ -1713,13 +1715,13 @@ type BifrostResponseExtraFields struct {
 	// matched (i.e. RoutingInfo.ResolvedKeyAlias != nil), otherwise
 	// RoutingInfo.Model. Still populated for backward compatibility; new
 	// consumers should read from RoutingInfo.
-	ResolvedModelUsed string     `json:"resolved_model_used,omitempty"`
-	Latency           int64      `json:"latency"` // in milliseconds (for streaming responses this will be each chunk latency, and the last chunk latency will be the total latency)
+	ResolvedModelUsed string `json:"resolved_model_used,omitempty"`
+	Latency           int64  `json:"latency"` // in milliseconds (for streaming responses this will be each chunk latency, and the last chunk latency will be the total latency)
 	// UpstreamLatency is the total time spent blocked on upstream sockets across
 	// every attempt, in milliseconds. Unlike Latency it survives retries and
 	// fallbacks, so total-UpstreamLatency is Bifrost's own cost. Nil when the
 	// request never accumulated one; nil means unknown, not zero.
-	UpstreamLatency           *int64             `json:"upstream_latency,omitempty"`
+	UpstreamLatency           *int64                 `json:"upstream_latency,omitempty"`
 	ChunkIndex                int                    `json:"chunk_index"` // used for streaming responses to identify the chunk index, will be 0 for non-streaming responses
 	RawRequest                interface{}            `json:"raw_request,omitempty"`
 	RawResponse               interface{}            `json:"raw_response,omitempty"`
@@ -1733,8 +1735,8 @@ type BifrostResponseExtraFields struct {
 	// web_search requested against a non-Nova Bedrock model). Currently populated
 	// only by the Bedrock provider.
 	DroppedUnsupportedTools []string          `json:"dropped_unsupported_tools,omitempty"`
-	ProviderResponseHeaders map[string]string     `json:"provider_response_headers,omitempty"` // HTTP response headers from the provider (filtered to exclude transport-level headers)
-	PassthroughPath         string                `json:"passthrough_path,omitempty"`          // Stripped provider path for passthrough requests, e.g. "/v1/chat/completions"
+	ProviderResponseHeaders map[string]string `json:"provider_response_headers,omitempty"` // HTTP response headers from the provider (filtered to exclude transport-level headers)
+	PassthroughPath         string            `json:"passthrough_path,omitempty"`          // Stripped provider path for passthrough requests, e.g. "/v1/chat/completions"
 }
 
 type RoutingInfo struct {
