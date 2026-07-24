@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -3098,6 +3099,51 @@ func (provider *GeminiProvider) BatchDelete(ctx *schemas.BifrostContext, keys []
 
 // processGeminiStreamChunk processes a single chunk from Gemini streaming response
 func processGeminiStreamChunk(jsonData []byte) (*GenerateContentResponse, error) {
+	jsonData = bytes.TrimSpace(jsonData)
+	if len(jsonData) == 0 {
+		return nil, fmt.Errorf("failed to parse Gemini stream response: empty payload")
+	}
+
+	if jsonData[0] == '[' {
+		var elements []json.RawMessage
+		if err := sonic.Unmarshal(jsonData, &elements); err != nil {
+			return nil, fmt.Errorf("failed to parse Gemini stream response: %v", err)
+		}
+
+		for _, element := range elements {
+			element = bytes.TrimSpace(element)
+			if len(element) > 0 && element[0] == '{' {
+				return processGeminiStreamObject(element)
+			}
+		}
+
+		return nil, fmt.Errorf("failed to parse Gemini stream response: JSON array contains no object elements")
+	}
+
+	if jsonData[0] != '{' {
+		var value interface{}
+		if err := sonic.Unmarshal(jsonData, &value); err != nil {
+			return nil, fmt.Errorf("failed to parse Gemini stream response: %v", err)
+		}
+
+		jsonType := "unknown"
+		switch value.(type) {
+		case string:
+			jsonType = "string"
+		case float64:
+			jsonType = "number"
+		case bool:
+			jsonType = "boolean"
+		case nil:
+			jsonType = "null"
+		}
+		return nil, fmt.Errorf("failed to parse Gemini stream response: unexpected JSON type %s", jsonType)
+	}
+
+	return processGeminiStreamObject(jsonData)
+}
+
+func processGeminiStreamObject(jsonData []byte) (*GenerateContentResponse, error) {
 	// Error chunks are rare; avoid a second decode in the common path.
 	if bytes.Contains(jsonData, []byte(`"error"`)) {
 		var errorResp GeminiGenerationError
