@@ -20,6 +20,8 @@ interface ModelMultiselectPropsBase {
 	loadModelsOnEmptyProvider?: boolean | "base_models";
 	/** Prepends an "Allow All Models" option (value: "*") to the dropdown */
 	allowAllOption?: boolean;
+	/** Hides the leading search icon in the control */
+	hideSearchIcon?: boolean;
 	/** id for the search input (accessibility) */
 	inputId?: string;
 	/** id of element that labels this control (accessibility) */
@@ -278,6 +280,7 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 			menuClassName="!z-[100] max-h-[300px] overflow-y-auto w-full cursor-pointer custom-scrollbar"
 			isClearable={clearable}
 			closeMenuOnSelect={isSingleSelect}
+			hideSearchIcon={props.hideSearchIcon}
 			menuPlacement="auto"
 			menuPosition={props.menuPosition}
 			menuPortalTarget={props.menuPortalTarget}
