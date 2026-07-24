@@ -448,4 +448,37 @@ func (m *dashboardLogManager) GetMCPCostHistogram(ctx context.Context, filters l
 func (m *dashboardLogManager) GetMCPTopTools(ctx context.Context, filters logstore.MCPToolLogSearchFilters, limit int) (*logstore.MCPTopToolsResult, error) {
 	return &logstore.MCPTopToolsResult{}, nil
 }
+
 func (m *dashboardLogManager) DeleteMCPToolLogs(ctx context.Context, ids []string) error { return nil }
+
+func (m *dashboardLogManager) CreateUserAgentMapping(ctx context.Context, mapping *logstore.UserAgentMapping) (*logstore.UserAgentMapping, error) {
+	return nil, nil
+}
+
+func (m *dashboardLogManager) DeleteUserAgentMapping(ctx context.Context, id string) error {
+	return nil
+}
+
+func (m *dashboardLogManager) UpdateUserAgentMapping(ctx context.Context, id string, mapping *logstore.UserAgentMapping) (*logstore.UserAgentMapping, error) {
+	return nil, nil
+}
+
+func (m *dashboardLogManager) ListUserAgentMappings(ctx context.Context) ([]logstore.UserAgentMapping, error) {
+	return nil, nil
+}
+
+func (m *dashboardLogManager) GetAvailableUserAgents(ctx context.Context, _ int, _ string) ([]string, error) {
+	return nil, nil
+}
+
+func (m *dashboardLogManager) GetAvailableApps(ctx context.Context, _ int, _ string) ([]string, error) {
+	return nil, nil
+}
+
+func (m *dashboardLogManager) GetAvailableMCPApps(ctx context.Context, _ int, _ string) ([]string, error) {
+	return nil, nil
+}
+
+func (m *dashboardLogManager) GetAvailableMCPUserAgents(ctx context.Context, _ int, _ string) ([]string, error) {
+	return nil, nil
+}

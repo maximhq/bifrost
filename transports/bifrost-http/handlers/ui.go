@@ -6,6 +6,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/fasthttp/router"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -13,16 +14,32 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+const uiDevServerAddr = "localhost:3000"
+
 // UIHandler handles UI routes.
 type UIHandler struct {
 	uiContent embed.FS
+	// uiDevClient proxies dashboard requests to the local Vite dev server.
+	// It is only set when dev mode is enabled (see NewUIHandler); nil otherwise.
+	uiDevClient *fasthttp.HostClient
 }
 
 // NewUIHandler creates a new UIHandler instance.
 func NewUIHandler(uiContent embed.FS) *UIHandler {
-	return &UIHandler{
+	h := &UIHandler{
 		uiContent: uiContent,
 	}
+	// Only wire the dev-server proxy client when running in dev mode. Timeouts
+	// guard against the local Vite server hanging dashboard requests if it is
+	// unresponsive, falling back to the embedded UI instead.
+	if IsDevMode() {
+		h.uiDevClient = &fasthttp.HostClient{
+			Addr:         uiDevServerAddr,
+			ReadTimeout:  5 * time.Second,
+			WriteTimeout: 5 * time.Second,
+		}
+	}
+	return h
 }
 
 // RegisterRoutes registers the UI routes with the provided router.
@@ -31,8 +48,12 @@ func (h *UIHandler) RegisterRoutes(router *router.Router, middlewares ...schemas
 	router.GET("/{filepath:*}", lib.ChainMiddlewares(h.serveDashboard, middlewares...))
 }
 
-// ServeDashboard serves the dashboard UI.
+// serveDashboard serves the dashboard UI.
 func (h *UIHandler) serveDashboard(ctx *fasthttp.RequestCtx) {
+	if IsDevMode() && h.serveDevDashboard(ctx) {
+		return
+	}
+
 	// Get the request path
 	requestPath := string(ctx.Path())
 
@@ -133,4 +154,27 @@ func (h *UIHandler) serveDashboard(ctx *fasthttp.RequestCtx) {
 
 	// Send the file content
 	ctx.SetBody(data)
+}
+
+// serveDevDashboard proxies dashboard requests to the local Vite dev server.
+func (h *UIHandler) serveDevDashboard(ctx *fasthttp.RequestCtx) bool {
+	if h.uiDevClient == nil {
+		return false
+	}
+
+	var req fasthttp.Request
+	var resp fasthttp.Response
+	ctx.Request.CopyTo(&req)
+	req.URI().SetScheme("http")
+	req.URI().SetHost(uiDevServerAddr)
+	req.Header.SetHost(uiDevServerAddr)
+
+	if err := h.uiDevClient.Do(&req, &resp); err != nil {
+		// Dev server unreachable (e.g. Vite not running); fall back to the
+		// embedded UI by signalling the caller to serve from uiContent.
+		return false
+	}
+
+	resp.CopyTo(&ctx.Response)
+	return true
 }

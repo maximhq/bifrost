@@ -357,11 +357,22 @@ params = {
     "order": "asc",
 }
 
+def logs_complete(logs):
+    # Log writes are fully async (single batched insert in PostLLMHook), so a
+    # row can be visible before its usage/cost are readable. Poll on the
+    # predicate we assert (every row has usage and cost), not just row count.
+    return all(
+        (item.get("token_usage") or {}).get("prompt_tokens") is not None
+        and (item.get("token_usage") or {}).get("completion_tokens") is not None
+        and item.get("cost") is not None
+        for item in logs
+    )
+
 logs = []
 for _ in range(60):
     payload = get_json("/api/logs", params)
     logs = payload.get("logs", [])
-    if len(logs) >= expected_count:
+    if len(logs) >= expected_count and logs_complete(logs):
         break
     time.sleep(1)
 

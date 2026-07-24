@@ -454,7 +454,12 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_oauth_config_resource_column"}, run: migrationAddOauthConfigResourceColumn},
 	{IDs: []string{"add_use_anthropic_endpoints_column"}, run: migrationAddUseAnthropicEndpointsColumn},
 	{IDs: []string{"add_bedrock_batch_role_arn_column"}, run: migrationAddBedrockBatchRoleARNColumn},
-  {IDs: []string{"add_budget_override_columns"}, run: migrationAddBudgetOverrideColumns},
+	{IDs: []string{"add_budget_override_columns"}, run: migrationAddBudgetOverrideColumns},
+	{IDs: []string{"add_vertex_force_single_region_column"}, run: migrationAddVertexForceSingleRegionColumn},
+	{IDs: []string{"add_sidekiq_table"}, run: migrationAddSidekiqTable},
+	{IDs: []string{"add_sidekiq_kind_status_created_index"}, run: migrationAddSidekiqKindStatusCreatedIndex},
+	{IDs: []string{"add_fast_mode_cache_pricing_columns"}, run: migrationAddFastModeCachePricingColumns},
+	{IDs: []string{"add_inference_geo_multiplier_column"}, run: migrationAddInferenceGeoMultiplierColumn},
 }
 
 // quoteSQLiteIdentifier quotes a SQLite identifier, escaping any double quotes.
@@ -10685,7 +10690,6 @@ func migrationAddSidekiqTable(ctx context.Context, db *gorm.DB, logger schemas.L
 	migrationName := "add_sidekiq_table"
 	logger.Info("[configstore] starting migration %s", migrationName)
 	defer logger.Info("[configstore] finished migration %s", migrationName)
-
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
@@ -10733,7 +10737,6 @@ func migrationAddSidekiqTable(ctx context.Context, db *gorm.DB, logger schemas.L
 				}
 				return nil
 			}
-
 			if err := tx.Exec(createTable).Error; err != nil {
 				return err
 			}

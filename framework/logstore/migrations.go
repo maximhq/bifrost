@@ -280,6 +280,11 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"webhook_deliveries_add_request_id_column"}, run: migrationAddWebhookDeliveryRequestIDColumn},
 	{IDs: []string{"logs_add_content_hidden_column"}, run: migrationAddContentHiddenColumn},
 	{IDs: []string{"logs_add_server_side_fallback_model_column"}, run: migrationAddServerSideFallbackModelColumn},
+	{IDs: []string{"logs_recreate_matviews_with_user_agent_column"}, run: migrationRecreateMatViewsWithUserAgentColumn},
+	{IDs: []string{"logs_add_user_agent_column"}, run: migrationAddUserAgentColumn},
+	{IDs: []string{"mcp_tool_logs_add_user_agent_column"}, run: migrationAddUserAgentColumnToMCPToolLogs},
+	{IDs: []string{"logs_recreate_matviews_with_app_column"}, run: migrationRecreateMatViewsWithUserAgentColumn},
+	{IDs: []string{"mcp_tool_logs_add_endpoint_columns"}, run: migrationAddEndpointColumnsToMCPToolLogs},
 }
 
 // areThereAnyPendingMigrations returns true if there are any pending migrations to be applied.
@@ -2686,6 +2691,16 @@ var performanceIndexes = []performanceIndexDef{
 		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_business_unit_id ON mcp_tool_logs(business_unit_id)",
 	},
 	{
+		table: "mcp_tool_logs",
+		name:  "idx_mcp_logs_device_id",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_device_id ON mcp_tool_logs(device_id)",
+	},
+	{
+		table: "mcp_tool_logs",
+		name:  "idx_mcp_logs_source",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_source ON mcp_tool_logs(source)",
+	},
+	{
 		table: "logs",
 		name:  "idx_logs_cluster_node_id",
 		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_cluster_node_id ON logs(cluster_node_id, timestamp) WHERE cluster_node_id IS NOT NULL",
@@ -3150,6 +3165,140 @@ func migrationRecreateMatViewsWithGovernanceColumns(ctx context.Context, db *gor
 	return nil
 }
 
+// migrationAddUserAgentColumn adds the user_agent and app columns to the logs table.
+// user_agent stores the raw HTTP User-Agent verbatim; app stores the backend-
+// detected client app (Claude Code, Codex, Cursor, ...).
+func migrationAddUserAgentColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_user_agent_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&Log{}, "user_agent") {
+				if err := migrator.AddColumn(&Log{}, "user_agent"); err != nil {
+					return err
+				}
+			}
+			if !migrator.HasColumn(&Log{}, "app") {
+				if err := migrator.AddColumn(&Log{}, "app"); err != nil {
+					return err
+				}
+			}
+			if !migrator.HasTable(&UserAgentMapping{}) {
+				if err := migrator.CreateTable(&UserAgentMapping{}); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasTable(&UserAgentMapping{}) {
+				if err := migrator.DropTable(&UserAgentMapping{}); err != nil {
+					return err
+				}
+			}
+			if migrator.HasColumn(&Log{}, "app") {
+				if err := migrator.DropColumn(&Log{}, "app"); err != nil {
+					return err
+				}
+			}
+			if migrator.HasColumn(&Log{}, "user_agent") {
+				if err := migrator.DropColumn(&Log{}, "user_agent"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding user_agent column: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddUserAgentColumnToMCPToolLogs adds the user_agent and app columns to
+// the mcp_tool_logs table, mirroring migrationAddUserAgentColumn for MCP tool calls.
+func migrationAddUserAgentColumnToMCPToolLogs(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "mcp_tool_logs_add_user_agent_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if !mg.HasColumn(&MCPToolLog{}, "user_agent") {
+				if err := mg.AddColumn(&MCPToolLog{}, "user_agent"); err != nil {
+					return err
+				}
+			}
+			if !mg.HasColumn(&MCPToolLog{}, "app") {
+				if err := mg.AddColumn(&MCPToolLog{}, "app"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if mg.HasColumn(&MCPToolLog{}, "app") {
+				if err := mg.DropColumn(&MCPToolLog{}, "app"); err != nil {
+					return err
+				}
+			}
+			if mg.HasColumn(&MCPToolLog{}, "user_agent") {
+				if err := mg.DropColumn(&MCPToolLog{}, "user_agent"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding user_agent column to mcp_tool_logs: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationRecreateMatViewsWithAppColumn is a marker migration: the actual
+// rebuild of mv_logs_hourly (now grouped by app, not raw user_agent) and the
+// creation of mv_filter_apps happen on the next PostgreSQL startup via
+// ensureMatViews / repairMatViewShapes, which detect the required app column
+// and drop+recreate the drifted view. The rebuild is intentionally deferred to
+// startup (not done inline here) to avoid heavy AccessExclusiveLock churn during
+// rolling deploys on large logs tables. The user_agent_mappings table guard
+// also runs here for local DBs that already recorded the edited column migration
+// before the table was added to it.
+func migrationRecreateMatViewsWithUserAgentColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_recreate_matviews_with_app_column",
+		Migrate: func(tx *gorm.DB) error {
+			migrator := tx.Migrator()
+			if !migrator.HasTable(&UserAgentMapping{}) {
+				if err := migrator.CreateTable(&UserAgentMapping{}); err != nil {
+					return fmt.Errorf("failed to create user_agent_mappings table: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			// No rollback needed — ensureMatViews recreates on next startup.
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while recreating matviews with app column: %s", err.Error())
+	}
+	return nil
+}
+
 // migrationSplitFilterDataMatView drops the legacy mv_logs_filterdata view so
 // ensureMatViews recreates it as per-dimension matviews (mv_filter_models,
 // mv_filter_selected_keys, ...). The old view DISTINCTed across 16 columns and
@@ -3492,6 +3641,47 @@ func migrationAddDACColumnsToMCPToolLogs(ctx context.Context, db *gorm.DB, logge
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while adding DAC columns to mcp_tool_logs: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddEndpointColumnsToMCPToolLogs adds the endpoint-agent context
+// columns (device_id, app_key, decision, source) to the mcp_tool_logs table so
+// tool calls observed on developer machines by the Bifrost Edge agent can be
+// stored alongside gateway-proxied calls.
+//
+// Indexes on device_id and source are built CONCURRENTLY by
+// ensurePerformanceIndexes (entries appended to performanceIndexes) so adding
+// them does not block writes on a populated table.
+func migrationAddEndpointColumnsToMCPToolLogs(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "mcp_tool_logs_add_endpoint_columns"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, col := range []string{"device_id", "app_key", "decision", "source"} {
+				if err := addColumnIfNotExists(tx, logger, &MCPToolLog{}, col); err != nil {
+					return fmt.Errorf("failed to add %s column to mcp_tool_logs: %w", col, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, col := range []string{"source", "decision", "app_key", "device_id"} {
+				if err := dropColumnIfExists(tx, logger, &MCPToolLog{}, col); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding endpoint columns to mcp_tool_logs: %w", err)
 	}
 	return nil
 }

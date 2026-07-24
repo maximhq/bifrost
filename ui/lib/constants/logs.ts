@@ -155,6 +155,72 @@ export const getProviderLabel = (provider: string): string => {
 	return provider;
 };
 
+// ClientApp is the display info for a client application resolved from a raw
+// User-Agent string. `icon`, when set, is a path under /public/images.
+export interface ClientApp {
+	name: string;
+	icon?: string;
+}
+
+// userAgentAppMatchers maps User-Agent substrings to a client app. The DB stores
+// the raw User-Agent verbatim and this is the single place the UI maps it to an
+// app for the logs table, the "App" filter, and metrics breakdowns.
+//
+// Matching is case-insensitive substring matching against the lowercased UA, and
+// is evaluated top-to-bottom: list more specific identifiers first (e.g. a Roo
+// fork "kilo" before "roo", "roo" before its "cline" ancestor). Versions change
+// every release, so never match on an exact string. Identifiers are best-effort
+// and meant to be extended as new clients appear.
+const userAgentAppMatchers: { identifiers: string[]; app: ClientApp }[] = [
+	{ identifiers: ["chatgpt-web"], app: { name: "ChatGPT Web", icon: "/images/openai.png" } },
+	{ identifiers: ["claude-chat-web", "claude-web"], app: { name: "Claude Chat Web", icon: "/images/claude-desktop.png" } },
+	{ identifiers: ["claude-desktop"], app: { name: "Claude Desktop", icon: "/images/claude-desktop.png" } },
+	{ identifiers: ["claude-code", "claude-cli", "claude-vscode"], app: { name: "Claude Code", icon: "/images/claude-code.png" } },
+	{ identifiers: ["codex-cli", "codex-tui"], app: { name: "Codex CLI", icon: "/images/codex.png" } },
+	{ identifiers: ["codex-desktop"], app: { name: "Codex Desktop", icon: "/images/codex.png" } },
+	{ identifiers: ["codex"], app: { name: "Codex Desktop", icon: "/images/codex.png" } },
+	{ identifiers: ["cursor"], app: { name: "Cursor", icon: "/images/cursor.png" } },
+	{ identifiers: ["kilo"], app: { name: "Kilo Code", icon: "/images/kilo-code.png" } },
+	{ identifiers: ["roo"], app: { name: "Roo Code", icon: "/images/roo-code.png" } },
+	{ identifiers: ["cline"], app: { name: "Cline", icon: "/images/cline.png" } },
+	{ identifiers: ["opencode"], app: { name: "OpenCode", icon: "/images/opencode.png" } },
+	{ identifiers: ["windsurf"], app: { name: "Windsurf", icon: "/images/windsurf.png" } },
+	{ identifiers: ["gemini", "geminicli"], app: { name: "Gemini CLI", icon: "/images/gemini-cli.png" } },
+	{ identifiers: ["qwencode", "qwen"], app: { name: "Qwen Code" } },
+];
+
+const appByName = new Map(userAgentAppMatchers.map((matcher) => [matcher.app.name, matcher.app]));
+
+export const mapAppToClientApp = (app?: string | null): ClientApp => {
+	if (!app || app.trim() === "") {
+		return { name: "Unknown" };
+	}
+	return appByName.get(app) || { name: app };
+};
+
+// mapUserAgentToApp resolves a raw User-Agent string to a client app for display.
+// Returns { name: "Unknown" } for an empty/absent UA and { name: "Other" } for a
+// UA that matches no known client (so it can still be grouped and filtered).
+export const mapUserAgentToApp = (userAgent?: string | null): ClientApp => {
+	if (!userAgent || userAgent.trim() === "") {
+		return { name: "Unknown" };
+	}
+	const ua = userAgent.toLowerCase();
+	for (const matcher of userAgentAppMatchers) {
+		if (matcher.identifiers.some((id) => ua.includes(id))) {
+			return matcher.app;
+		}
+	}
+	return { name: "Other" };
+};
+
+export const logAppDisplayName = (app: ClientApp, userAgent?: string | null): string => {
+	if ((app.name === "Unknown" || app.name === "Other") && userAgent?.trim()) {
+		return userAgent.trim();
+	}
+	return app.name;
+};
+
 export const StatusColors = {
 	success: "bg-green-100 text-green-800",
 	error: "bg-red-100 text-red-800",

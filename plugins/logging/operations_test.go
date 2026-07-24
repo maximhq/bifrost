@@ -44,6 +44,213 @@ func newTestStore(t *testing.T) logstore.LogStore {
 	return store
 }
 
+func TestUserAgentFromContextUsesRequestHeaders(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, map[string]string{
+		"user-agent": "codex-tui/1.0",
+	})
+	ctx.SetValue(schemas.BifrostContextKeyUserAgent, "fallback/1.0")
+
+	if got := userAgentFromContext(ctx); got != "codex-tui/1.0" {
+		t.Fatalf("expected request-header user agent, got %q", got)
+	}
+}
+
+func TestUserAgentFromContextUsesCanonicalRequestHeader(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, map[string]string{
+		"User-Agent": "Claude-Code/1.0",
+	})
+
+	if got := userAgentFromContext(ctx); got != "Claude-Code/1.0" {
+		t.Fatalf("expected canonical request-header user agent, got %q", got)
+	}
+}
+
+func TestUserAgentFromContextUsesUppercaseRequestHeader(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, map[string]string{
+		"USER-AGENT": "Cursor/0.47",
+	})
+
+	if got := userAgentFromContext(ctx); got != "Cursor/0.47" {
+		t.Fatalf("expected uppercase request-header user agent, got %q", got)
+	}
+}
+
+func TestUserAgentFromContextFallsBackWhenHeaderValueIsEmpty(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, map[string]string{
+		"user-agent": "",
+	})
+	ctx.SetValue(schemas.BifrostContextKeyUserAgent, "fallback/1.0")
+
+	if got := userAgentFromContext(ctx); got != "fallback/1.0" {
+		t.Fatalf("expected fallback user agent for empty header, got %q", got)
+	}
+}
+
+func TestUserAgentFromContextFallsBackToUserAgentKey(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyUserAgent, "cursor/0.47")
+
+	if got := userAgentFromContext(ctx); got != "cursor/0.47" {
+		t.Fatalf("expected fallback user agent, got %q", got)
+	}
+}
+
+func TestPreLLMHookSetsAppContextFromDetectedApp(t *testing.T) {
+	store := newTestStore(t)
+	defer store.Close(context.Background())
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if cleanupErr := plugin.Cleanup(); cleanupErr != nil {
+			t.Errorf("Cleanup() error = %v", cleanupErr)
+		}
+	})
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-app-context")
+	ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, map[string]string{
+		"user-agent":   "claude-cli/2.1.168 (external, cli)",
+		"x-bf-vk":      "vk-test",
+		"x-bf-user-id": "user-test",
+	})
+
+	_, _, err = plugin.PreLLMHook(ctx, &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o-mini",
+			Params:   &schemas.ChatParameters{},
+		},
+	})
+	if err != nil {
+		t.Fatalf("PreLLMHook() error = %v", err)
+	}
+	if got, _ := ctx.Value(schemas.BifrostContextKeyApp).(string); got != "claude-code" {
+		t.Fatalf("app context = %q, want claude-code", got)
+	}
+}
+
+// TestPreLLMHookContextKeyComesFromUserAgentNotAgentHeader replays the header
+// shape the desktop agent stamps for a Claude Cowork request: Cowork's runtime
+// shares Claude Code's CLI User-Agent, so the logging plugin derives
+// claude-code for the context key. Header-based app enforcement (X-Bf-App)
+// lives in the enterprise agent policy plugin, which prefers the header over
+// this context key.
+func TestPreLLMHookContextKeyComesFromUserAgentNotAgentHeader(t *testing.T) {
+	store := newTestStore(t)
+	defer store.Close(context.Background())
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if cleanupErr := plugin.Cleanup(); cleanupErr != nil {
+			t.Errorf("Cleanup() error = %v", cleanupErr)
+		}
+	})
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-cowork-context")
+	// Captured from the agent's MITM → GATEWAY forwarding of a Cowork request.
+	ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, map[string]string{
+		"user-agent":                "claude-cli/2.1.170 (external, local-agent, agent-sdk/0.3.170)",
+		"anthropic-client-platform": "desktop_app",
+		"x-app":                     "cli",
+		"x-bf-app":                  "claude-cowork",
+		"x-bifrost-agent":           "bifrost-agent/0.1.0",
+	})
+
+	_, _, err = plugin.PreLLMHook(ctx, &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.Anthropic,
+			Model:    "claude-opus-4-8",
+			Params:   &schemas.ChatParameters{},
+		},
+	})
+	if err != nil {
+		t.Fatalf("PreLLMHook() error = %v", err)
+	}
+	if got, _ := ctx.Value(schemas.BifrostContextKeyApp).(string); got != "claude-code" {
+		t.Fatalf("app context = %q, want claude-code (derived from User-Agent)", got)
+	}
+}
+
+func TestCustomUserAgentMappingOverridesBuiltInDetection(t *testing.T) {
+	store := newTestStore(t)
+	defer store.Close(context.Background())
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if cleanupErr := plugin.Cleanup(); cleanupErr != nil {
+			t.Errorf("Cleanup() error = %v", cleanupErr)
+		}
+	})
+
+	_, err = plugin.CreateUserAgentMapping(context.Background(), &logstore.UserAgentMapping{
+		Pattern:   `claude-cli/\d+\.\d+`,
+		MatchType: string(schemas.UserAgentMappingMatchTypeRegex),
+		App:       "Internal Claude Wrapper",
+		IsActive:  true,
+	})
+	if err != nil {
+		t.Fatalf("CreateUserAgentMapping() error = %v", err)
+	}
+
+	if got := plugin.detectAppFromUserAgent("claude-cli/2.1.168 (external, cli)"); got != "Internal Claude Wrapper" {
+		t.Fatalf("expected custom app mapping, got %q", got)
+	}
+}
+
+func TestPreLLMHookSetsAppContextFromCustomMapping(t *testing.T) {
+	store := newTestStore(t)
+	defer store.Close(context.Background())
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if cleanupErr := plugin.Cleanup(); cleanupErr != nil {
+			t.Errorf("Cleanup() error = %v", cleanupErr)
+		}
+	})
+	_, err = plugin.CreateUserAgentMapping(context.Background(), &logstore.UserAgentMapping{
+		Pattern:   `custom-wrapper/\d+`,
+		MatchType: string(schemas.UserAgentMappingMatchTypeRegex),
+		App:       "Internal Claude Wrapper",
+		IsActive:  true,
+	})
+	if err != nil {
+		t.Fatalf("CreateUserAgentMapping() error = %v", err)
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-custom-app-context")
+	ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, map[string]string{
+		"user-agent": "custom-wrapper/42",
+	})
+
+	_, _, err = plugin.PreLLMHook(ctx, &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o-mini",
+			Params:   &schemas.ChatParameters{},
+		},
+	})
+	if err != nil {
+		t.Fatalf("PreLLMHook() error = %v", err)
+	}
+	if got, _ := ctx.Value(schemas.BifrostContextKeyApp).(string); got != "internal-claude-wrapper" {
+		t.Fatalf("app context = %q, want internal-claude-wrapper", got)
+	}
+}
+
 func TestPostLLMHookNoPendingErrorPreservesMetadata(t *testing.T) {
 	store := newTestStore(t)
 	loggingHeaders := []string{"x-custom-log"}
@@ -725,6 +932,86 @@ func TestBuildInitialLogEntryPreservesMetadata(t *testing.T) {
 	}
 	if got := entry.MetadataParsed["tenant"]; got != "acme" {
 		t.Fatalf("expected tenant metadata acme, got %#v", got)
+	}
+}
+
+func TestBuildInitialLogEntryPreservesUserAgent(t *testing.T) {
+	userAgent := "codex-cli/1.0"
+	entry := buildInitialLogEntry(&PendingLogData{
+		RequestID:     "req-initial-user-agent",
+		Timestamp:     time.Now().UTC(),
+		FallbackIndex: 1,
+		InitialData: &InitialLogData{
+			Provider:  string(schemas.OpenAI),
+			Model:     "gpt-4o",
+			Object:    string(schemas.ChatCompletionRequest),
+			UserAgent: userAgent,
+		},
+	})
+
+	if entry.UserAgent == nil {
+		t.Fatalf("expected user agent on initial log entry")
+	}
+	if got := *entry.UserAgent; got != userAgent {
+		t.Fatalf("expected user agent %q, got %q", userAgent, got)
+	}
+	if entry.App == nil {
+		t.Fatalf("expected app on initial log entry")
+	}
+	if got := *entry.App; got != "Codex CLI" {
+		t.Fatalf("expected app Codex CLI, got %q", got)
+	}
+}
+
+func TestBuildCompleteLogEntryPreservesUserAgent(t *testing.T) {
+	userAgent := "cursor/0.47"
+	entry := buildCompleteLogEntryFromPending(&PendingLogData{
+		RequestID:     "req-complete-user-agent",
+		Timestamp:     time.Now().UTC(),
+		FallbackIndex: 1,
+		InitialData: &InitialLogData{
+			Provider:  string(schemas.OpenAI),
+			Model:     "gpt-4o",
+			Object:    string(schemas.ChatCompletionRequest),
+			UserAgent: userAgent,
+		},
+	})
+
+	if entry.UserAgent == nil {
+		t.Fatalf("expected user agent on complete log entry")
+	}
+	if got := *entry.UserAgent; got != userAgent {
+		t.Fatalf("expected user agent %q, got %q", userAgent, got)
+	}
+	if entry.App == nil {
+		t.Fatalf("expected app on complete log entry")
+	}
+	if got := *entry.App; got != "Cursor" {
+		t.Fatalf("expected app Cursor, got %q", got)
+	}
+}
+
+func TestBuildLogEntriesOmitEmptyUserAgent(t *testing.T) {
+	pending := &PendingLogData{
+		RequestID:     "req-empty-user-agent",
+		Timestamp:     time.Now().UTC(),
+		FallbackIndex: 1,
+		InitialData: &InitialLogData{
+			Provider: string(schemas.OpenAI),
+			Model:    "gpt-4o",
+			Object:   string(schemas.ChatCompletionRequest),
+		},
+	}
+
+	if entry := buildInitialLogEntry(pending); entry.UserAgent != nil {
+		t.Fatalf("expected nil initial user agent, got %#v", entry.UserAgent)
+	} else if entry.App != nil {
+		t.Fatalf("expected nil initial app, got %#v", entry.App)
+	}
+	if entry := buildCompleteLogEntryFromPending(pending); entry.UserAgent != nil {
+		t.Fatalf("expected nil complete user agent, got %#v", entry.UserAgent)
+	} else if entry.App != nil {
+		t.Fatalf("expected nil complete app, got %#v", entry.App)
 	}
 }
 

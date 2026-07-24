@@ -449,8 +449,8 @@ func TestConcurrencySemaphoreBound(t *testing.T) {
 	var inFlight sync.WaitGroup
 
 	r.Register("k", func(_ context.Context, _ tables.TableSidekiqJob, _ ProgressFunc) (string, error) {
-		inFlight.Done()   // signal that we entered the handler
-		<-gate            // block until the test releases us
+		inFlight.Done() // signal that we entered the handler
+		<-gate          // block until the test releases us
 		return "", nil
 	})
 
@@ -505,10 +505,10 @@ func TestInflightDedupPreventsDoubleSpawn(t *testing.T) {
 
 	// Release blocker and wait for its slot to free before dispatching again.
 	close(gate)
-	waitTerminal(t, store) // blocker done
+	waitTerminal(t, store)            // blocker done
 	time.Sleep(10 * time.Millisecond) // let deferred semaphore release run
 
-	r.dispatchOnce() // slot is now free — picks up waiter
+	r.dispatchOnce()       // slot is now free — picks up waiter
 	waitTerminal(t, store) // waiter done
 
 	store.mu.Lock()

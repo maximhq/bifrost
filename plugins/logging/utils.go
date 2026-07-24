@@ -97,6 +97,11 @@ type LogManager interface {
 	// GetAvailableStopReasons returns all unique stop reason values from logs
 	GetAvailableStopReasons(ctx context.Context, limit int, query string) ([]string, error)
 
+	// GetAvailableUserAgents returns all unique raw User-Agent strings from logs
+	GetAvailableUserAgents(ctx context.Context, limit int, query string) ([]string, error)
+	// GetAvailableApps returns all unique backend-detected app labels from logs
+	GetAvailableApps(ctx context.Context, limit int, query string) ([]string, error)
+
 	// GetAvailableTeams returns all unique team ID-Name pairs from logs
 	GetAvailableTeams(ctx context.Context, limit int, query string) ([]KeyPair, error)
 
@@ -156,6 +161,11 @@ type LogManager interface {
 	// GetAvailableServerLabels returns all unique server labels from MCP tool logs
 	GetAvailableServerLabels(ctx context.Context, limit int, query string) ([]string, error)
 
+	// GetAvailableMCPUserAgents returns all unique raw User-Agent strings from MCP tool logs
+	GetAvailableMCPUserAgents(ctx context.Context, limit int, query string) ([]string, error)
+	// GetAvailableMCPApps returns all unique backend-detected app labels from MCP tool logs
+	GetAvailableMCPApps(ctx context.Context, limit int, query string) ([]string, error)
+
 	// GetAvailableMCPVirtualKeys returns all unique virtual key ID-Name pairs from MCP tool logs
 	GetAvailableMCPVirtualKeys(ctx context.Context, limit int, query string) ([]KeyPair, error)
 
@@ -170,6 +180,11 @@ type LogManager interface {
 
 	// DeleteMCPToolLogs deletes multiple MCP tool log entries by their IDs
 	DeleteMCPToolLogs(ctx context.Context, ids []string) error
+
+	ListUserAgentMappings(ctx context.Context) ([]logstore.UserAgentMapping, error)
+	CreateUserAgentMapping(ctx context.Context, mapping *logstore.UserAgentMapping) (*logstore.UserAgentMapping, error)
+	UpdateUserAgentMapping(ctx context.Context, id string, mapping *logstore.UserAgentMapping) (*logstore.UserAgentMapping, error)
+	DeleteUserAgentMapping(ctx context.Context, id string) error
 }
 
 // PluginLogManager implements LogManager interface wrapping the plugin
@@ -329,6 +344,16 @@ func (p *PluginLogManager) GetAvailableStopReasons(ctx context.Context, limit in
 	return p.plugin.GetAvailableStopReasons(ctx, limit, query)
 }
 
+// GetAvailableUserAgents returns distinct raw User-Agent strings from logs for the logs "App" filter.
+func (p *PluginLogManager) GetAvailableUserAgents(ctx context.Context, limit int, query string) ([]string, error) {
+	return p.plugin.GetAvailableUserAgents(ctx, limit, query)
+}
+
+// GetAvailableApps returns distinct backend-detected app labels from logs for the logs "App" filter.
+func (p *PluginLogManager) GetAvailableApps(ctx context.Context, limit int, query string) ([]string, error) {
+	return p.plugin.GetAvailableApps(ctx, limit, query)
+}
+
 func (p *PluginLogManager) GetAvailableTeams(ctx context.Context, limit int, query string) ([]KeyPair, error) {
 	return p.plugin.GetAvailableTeams(ctx, limit, query)
 }
@@ -462,6 +487,22 @@ func (p *PluginLogManager) GetAvailableServerLabels(ctx context.Context, limit i
 	return p.plugin.store.GetAvailableServerLabels(ctx, limit, query)
 }
 
+// GetAvailableMCPUserAgents returns distinct raw User-Agent strings from MCP tool logs for the MCP "App" filter.
+func (p *PluginLogManager) GetAvailableMCPUserAgents(ctx context.Context, limit int, query string) ([]string, error) {
+	if p == nil || p.plugin == nil || p.plugin.store == nil {
+		return []string{}, nil
+	}
+	return p.plugin.store.GetAvailableMCPUserAgents(ctx, limit, query)
+}
+
+// GetAvailableMCPApps returns distinct backend-detected app labels from MCP tool logs for the MCP "App" filter.
+func (p *PluginLogManager) GetAvailableMCPApps(ctx context.Context, limit int, query string) ([]string, error) {
+	if p == nil || p.plugin == nil || p.plugin.store == nil {
+		return []string{}, nil
+	}
+	return p.plugin.store.GetAvailableMCPApps(ctx, limit, query)
+}
+
 func (p *PluginLogManager) GetAvailableMCPVirtualKeys(ctx context.Context, limit int, query string) ([]KeyPair, error) {
 	if p == nil || p.plugin == nil {
 		return []KeyPair{}, nil
@@ -499,6 +540,38 @@ func (p *PluginLogManager) DeleteMCPToolLogs(ctx context.Context, ids []string) 
 		return fmt.Errorf("log store not initialized")
 	}
 	return p.plugin.store.DeleteMCPToolLogs(ctx, ids)
+}
+
+// ListUserAgentMappings returns all custom User-Agent mappings.
+func (p *PluginLogManager) ListUserAgentMappings(ctx context.Context) ([]logstore.UserAgentMapping, error) {
+	return p.plugin.ListUserAgentMappings(ctx)
+}
+
+// CreateUserAgentMapping creates a custom User-Agent mapping through the logging plugin.
+func (p *PluginLogManager) CreateUserAgentMapping(ctx context.Context, mapping *logstore.UserAgentMapping) (*logstore.UserAgentMapping, error) {
+	if mapping == nil {
+		return nil, fmt.Errorf("%w: mapping cannot be nil", ErrInvalidUserAgentMapping)
+	}
+	return p.plugin.CreateUserAgentMapping(ctx, mapping)
+}
+
+// UpdateUserAgentMapping updates a custom User-Agent mapping through the logging plugin.
+func (p *PluginLogManager) UpdateUserAgentMapping(ctx context.Context, id string, mapping *logstore.UserAgentMapping) (*logstore.UserAgentMapping, error) {
+	if strings.TrimSpace(id) == "" {
+		return nil, fmt.Errorf("%w: id cannot be empty", ErrInvalidUserAgentMapping)
+	}
+	if mapping == nil {
+		return nil, fmt.Errorf("%w: mapping cannot be nil", ErrInvalidUserAgentMapping)
+	}
+	return p.plugin.UpdateUserAgentMapping(ctx, id, mapping)
+}
+
+// DeleteUserAgentMapping deletes a custom User-Agent mapping through the logging plugin.
+func (p *PluginLogManager) DeleteUserAgentMapping(ctx context.Context, id string) error {
+	if strings.TrimSpace(id) == "" {
+		return fmt.Errorf("%w: id cannot be empty", ErrInvalidUserAgentMapping)
+	}
+	return p.plugin.DeleteUserAgentMapping(ctx, id)
 }
 
 // GetPluginLogManager returns a LogManager interface for this plugin

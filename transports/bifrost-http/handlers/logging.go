@@ -24,6 +24,7 @@ import (
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 	"golang.org/x/sync/errgroup"
+	"gorm.io/gorm"
 )
 
 // LoggingHandler manages HTTP requests for logging operations
@@ -95,6 +96,8 @@ const (
 	filterDimRoutingRules   = "routing_rules"
 	filterDimRoutingEngines = "routing_engines"
 	filterDimStopReasons    = "stop_reasons"
+	filterDimApps           = "apps"
+	filterDimUserAgents     = "user_agents"
 	filterDimTeams          = "teams"
 	filterDimCustomers      = "customers"
 	filterDimUsers          = "users"
@@ -106,18 +109,20 @@ const (
 const (
 	mcpFilterDimToolNames    = "tool_names"
 	mcpFilterDimServerLabels = "server_labels"
+	mcpFilterDimApps         = "apps"
+	mcpFilterDimUserAgents   = "user_agents"
 	mcpFilterDimVirtualKeys  = "virtual_keys"
 )
 
 var allFilterDimensions = []string{
 	filterDimModels, filterDimAliases, filterDimSelectedKeys, filterDimVirtualKeys,
-	filterDimRoutingRules, filterDimRoutingEngines, filterDimStopReasons,
-	filterDimTeams, filterDimCustomers, filterDimUsers, filterDimBusinessUnits,
-	filterDimMetadataKeys,
+	filterDimRoutingRules, filterDimRoutingEngines, filterDimStopReasons, filterDimApps,
+	filterDimUserAgents, filterDimTeams, filterDimCustomers, filterDimUsers,
+	filterDimBusinessUnits, filterDimMetadataKeys,
 }
 
 var allMCPFilterDimensions = []string{
-	mcpFilterDimToolNames, mcpFilterDimServerLabels, mcpFilterDimVirtualKeys,
+	mcpFilterDimToolNames, mcpFilterDimServerLabels, mcpFilterDimApps, mcpFilterDimUserAgents, mcpFilterDimVirtualKeys,
 }
 
 // parseFilterDimensions returns the requested subset of dimensions in a
@@ -268,6 +273,10 @@ func (h *LoggingHandler) RegisterRoutes(r *router.Router, middlewares ...schemas
 	r.GET("/api/logs", lib.ChainMiddlewares(h.getLogs, middlewares...))
 	r.GET("/api/logs/sessions/{session_id}/summary", lib.ChainMiddlewares(h.getLogSessionSummaryByID, middlewares...))
 	r.GET("/api/logs/sessions/{session_id}", lib.ChainMiddlewares(h.getLogSessionByID, middlewares...))
+	r.GET("/api/logs/user-agent-mappings", lib.ChainMiddlewares(h.listUserAgentMappings, middlewares...))
+	r.POST("/api/logs/user-agent-mappings", lib.ChainMiddlewares(h.createUserAgentMapping, middlewares...))
+	r.PUT("/api/logs/user-agent-mappings/{id}", lib.ChainMiddlewares(h.updateUserAgentMapping, middlewares...))
+	r.DELETE("/api/logs/user-agent-mappings/{id}", lib.ChainMiddlewares(h.deleteUserAgentMapping, middlewares...))
 	r.GET("/api/logs/{id}", lib.ChainMiddlewares(h.getLogByID, middlewares...))
 	r.GET("/api/logs/stats", lib.ChainMiddlewares(h.getLogsStats, middlewares...))
 	r.GET("/api/logs/histogram", lib.ChainMiddlewares(h.getLogsHistogram, middlewares...))
@@ -302,6 +311,77 @@ func (h *LoggingHandler) RegisterRoutes(r *router.Router, middlewares ...schemas
 	r.GET("/api/mcp-logs/histogram/top-tools", lib.ChainMiddlewares(h.getMCPTopTools, middlewares...))
 	r.GET("/api/mcp-logs/{id}", lib.ChainMiddlewares(h.getMCPLogByID, middlewares...))
 	r.DELETE("/api/mcp-logs", lib.ChainMiddlewares(h.deleteMCPLogs, middlewares...))
+}
+
+func (h *LoggingHandler) listUserAgentMappings(ctx *fasthttp.RequestCtx) {
+	mappings, err := h.logManager.ListUserAgentMappings(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to list user agent mappings: %v", err))
+		return
+	}
+	SendJSON(ctx, map[string]any{"mappings": mappings})
+}
+
+func (h *LoggingHandler) createUserAgentMapping(ctx *fasthttp.RequestCtx) {
+	var mapping logstore.UserAgentMapping
+	if err := sonic.Unmarshal(ctx.PostBody(), &mapping); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid request format: %v", err))
+		return
+	}
+	created, err := h.logManager.CreateUserAgentMapping(ctx, &mapping)
+	if err != nil {
+		if errors.Is(err, logging.ErrInvalidUserAgentMapping) {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("failed to create user agent mapping: %v", err))
+			return
+		}
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to create user agent mapping: %v", err))
+		return
+	}
+	SendJSON(ctx, created)
+}
+
+func (h *LoggingHandler) updateUserAgentMapping(ctx *fasthttp.RequestCtx) {
+	id, ok := ctx.UserValue("id").(string)
+	if !ok || strings.TrimSpace(id) == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "id is required")
+		return
+	}
+	var mapping logstore.UserAgentMapping
+	if err := sonic.Unmarshal(ctx.PostBody(), &mapping); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid request format: %v", err))
+		return
+	}
+	updated, err := h.logManager.UpdateUserAgentMapping(ctx, id, &mapping)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			SendError(ctx, fasthttp.StatusNotFound, "user agent mapping not found")
+			return
+		}
+		if errors.Is(err, logging.ErrInvalidUserAgentMapping) {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("failed to update user agent mapping: %v", err))
+			return
+		}
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update user agent mapping: %v", err))
+		return
+	}
+	SendJSON(ctx, updated)
+}
+
+func (h *LoggingHandler) deleteUserAgentMapping(ctx *fasthttp.RequestCtx) {
+	id, ok := ctx.UserValue("id").(string)
+	if !ok || strings.TrimSpace(id) == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "id is required")
+		return
+	}
+	if err := h.logManager.DeleteUserAgentMapping(ctx, id); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			SendError(ctx, fasthttp.StatusNotFound, "user agent mapping not found")
+			return
+		}
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to delete user agent mapping: %v", err))
+		return
+	}
+	SendJSON(ctx, map[string]any{"success": true})
 }
 
 // getLogSessionByID handles GET /api/logs/sessions/{session_id} - Get logs in a single session.
@@ -475,6 +555,12 @@ func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
 	}
 	if stopReasons := string(ctx.QueryArgs().Peek("stop_reasons")); stopReasons != "" {
 		filters.StopReasons = parseCommaSeparated(stopReasons)
+	}
+	if userAgents := string(ctx.QueryArgs().Peek("user_agents")); userAgents != "" {
+		filters.UserAgents = parseStringArrayParam(userAgents)
+	}
+	if apps := string(ctx.QueryArgs().Peek("apps")); apps != "" {
+		filters.Apps = parseStringArrayParam(apps)
 	}
 	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
 		if t, err := time.Parse(time.RFC3339Nano, startTime); err == nil {
@@ -726,6 +812,12 @@ func (h *LoggingHandler) getLogsStats(ctx *fasthttp.RequestCtx) {
 	if stopReasons := string(ctx.QueryArgs().Peek("stop_reasons")); stopReasons != "" {
 		filters.StopReasons = parseCommaSeparated(stopReasons)
 	}
+	if userAgents := string(ctx.QueryArgs().Peek("user_agents")); userAgents != "" {
+		filters.UserAgents = parseStringArrayParam(userAgents)
+	}
+	if apps := string(ctx.QueryArgs().Peek("apps")); apps != "" {
+		filters.Apps = parseStringArrayParam(apps)
+	}
 	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
 		if t, err := time.Parse(time.RFC3339Nano, startTime); err == nil {
 			filters.StartTime = &t
@@ -884,6 +976,12 @@ func parseHistogramFilters(ctx *fasthttp.RequestCtx) *logstore.SearchFilters {
 	}
 	if stopReasons := string(ctx.QueryArgs().Peek("stop_reasons")); stopReasons != "" {
 		filters.StopReasons = parseCommaSeparated(stopReasons)
+	}
+	if userAgents := string(ctx.QueryArgs().Peek("user_agents")); userAgents != "" {
+		filters.UserAgents = parseStringArrayParam(userAgents)
+	}
+	if apps := string(ctx.QueryArgs().Peek("apps")); apps != "" {
+		filters.Apps = parseStringArrayParam(apps)
 	}
 	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
 		if t, err := time.Parse(time.RFC3339Nano, startTime); err == nil {
@@ -1438,6 +1536,8 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 		routingRules   []logging.KeyPair
 		routingEngines []string
 		stopReasons    []string
+		apps           []string
+		userAgents     []string
 		teams          []logging.KeyPair
 		customers      []logging.KeyPair
 		users          []logging.KeyPair
@@ -1531,6 +1631,30 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 			}
 			mu.Lock()
 			stopReasons = result
+			mu.Unlock()
+			return nil
+		})
+	}
+	if _, ok := want[filterDimApps]; ok {
+		g.Go(func() error {
+			result, err := h.logManager.GetAvailableApps(gCtx, defaultFilterDataLimit, query)
+			if err != nil {
+				return err
+			}
+			mu.Lock()
+			apps = result
+			mu.Unlock()
+			return nil
+		})
+	}
+	if _, ok := want[filterDimUserAgents]; ok {
+		g.Go(func() error {
+			result, err := h.logManager.GetAvailableUserAgents(gCtx, defaultFilterDataLimit, query)
+			if err != nil {
+				return err
+			}
+			mu.Lock()
+			userAgents = result
 			mu.Unlock()
 			return nil
 		})
@@ -1708,6 +1832,12 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 	}
 	if _, ok := want[filterDimStopReasons]; ok {
 		payload[filterDimStopReasons] = stopReasons
+	}
+	if _, ok := want[filterDimApps]; ok {
+		payload[filterDimApps] = apps
+	}
+	if _, ok := want[filterDimUserAgents]; ok {
+		payload[filterDimUserAgents] = userAgents
 	}
 	if _, ok := want[filterDimTeams]; ok {
 		payload[filterDimTeams] = teams
@@ -2011,6 +2141,31 @@ func parseCommaSeparated(s string) []string {
 	return result
 }
 
+// parseStringArrayParam decodes a list-valued query param losslessly. Values such
+// as raw User-Agent strings legitimately contain commas (e.g.
+// "Mozilla/5.0 ... KHTML, like Gecko"), so newer clients send a JSON array which
+// survives those commas intact. For backward compatibility with older clients (and
+// other list params) it falls back to comma-splitting when the value is not a JSON
+// array.
+func parseStringArrayParam(s string) []string {
+	if s == "" {
+		return nil
+	}
+	if trimmed := strings.TrimSpace(s); strings.HasPrefix(trimmed, "[") {
+		var values []string
+		if err := sonic.Unmarshal([]byte(trimmed), &values); err == nil {
+			result := make([]string, 0, len(values))
+			for _, v := range values {
+				if t := strings.TrimSpace(v); t != "" {
+					result = append(result, t)
+				}
+			}
+			return result
+		}
+	}
+	return parseCommaSeparated(s)
+}
+
 // parseMetadataFilters extracts metadata_* query params and sets them on the filters.
 func parseMetadataFilters(ctx *fasthttp.RequestCtx, filters *logstore.SearchFilters) {
 	var metadataFilters map[string]string
@@ -2062,6 +2217,12 @@ func parseMCPFiltersAndPagination(ctx *fasthttp.RequestCtx) (*logstore.MCPToolLo
 	}
 	if llmRequestIDs := string(ctx.QueryArgs().Peek("llm_request_ids")); llmRequestIDs != "" {
 		filters.LLMRequestIDs = parseCommaSeparated(llmRequestIDs)
+	}
+	if userAgents := string(ctx.QueryArgs().Peek("user_agents")); userAgents != "" {
+		filters.UserAgents = parseStringArrayParam(userAgents)
+	}
+	if apps := string(ctx.QueryArgs().Peek("apps")); apps != "" {
+		filters.Apps = parseStringArrayParam(apps)
 	}
 	var startTimeErr, endTimeErr error
 	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
@@ -2182,6 +2343,12 @@ func parseMCPFilters(ctx *fasthttp.RequestCtx) (*logstore.MCPToolLogSearchFilter
 	}
 	if llmRequestIDs := string(ctx.QueryArgs().Peek("llm_request_ids")); llmRequestIDs != "" {
 		filters.LLMRequestIDs = parseCommaSeparated(llmRequestIDs)
+	}
+	if userAgents := string(ctx.QueryArgs().Peek("user_agents")); userAgents != "" {
+		filters.UserAgents = parseStringArrayParam(userAgents)
+	}
+	if apps := string(ctx.QueryArgs().Peek("apps")); apps != "" {
+		filters.Apps = parseStringArrayParam(apps)
 	}
 	var timeParseErr error
 	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
@@ -2374,6 +2541,28 @@ func (h *LoggingHandler) getMCPLogsFilterData(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
+	var apps []string
+	if _, ok := want[mcpFilterDimApps]; ok {
+		var err error
+		apps, err = h.logManager.GetAvailableMCPApps(ctx, defaultFilterDataLimit, query)
+		if err != nil {
+			logger.Error("failed to get available MCP apps: %v", err)
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get available MCP apps: %v", err))
+			return
+		}
+	}
+
+	var userAgents []string
+	if _, ok := want[mcpFilterDimUserAgents]; ok {
+		var err error
+		userAgents, err = h.logManager.GetAvailableMCPUserAgents(ctx, defaultFilterDataLimit, query)
+		if err != nil {
+			logger.Error("failed to get available MCP user agents: %v", err)
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get available MCP user agents: %v", err))
+			return
+		}
+	}
+
 	var virtualKeysArray []tables.TableVirtualKey
 	if _, ok := want[mcpFilterDimVirtualKeys]; ok {
 		virtualKeys, err := h.logManager.GetAvailableMCPVirtualKeys(ctx, defaultFilterDataLimit, query)
@@ -2417,6 +2606,12 @@ func (h *LoggingHandler) getMCPLogsFilterData(ctx *fasthttp.RequestCtx) {
 	}
 	if _, ok := want[mcpFilterDimServerLabels]; ok {
 		payload[mcpFilterDimServerLabels] = serverLabels
+	}
+	if _, ok := want[mcpFilterDimApps]; ok {
+		payload[mcpFilterDimApps] = apps
+	}
+	if _, ok := want[mcpFilterDimUserAgents]; ok {
+		payload[mcpFilterDimUserAgents] = userAgents
 	}
 	if _, ok := want[mcpFilterDimVirtualKeys]; ok {
 		payload[mcpFilterDimVirtualKeys] = virtualKeysArray

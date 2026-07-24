@@ -68,12 +68,21 @@ type LogStore interface {
 	DeleteLogs(ctx context.Context, ids []string) error
 	DeleteLogsBatch(ctx context.Context, cutoff time.Time, batchSize int) (deletedCount int64, err error)
 
+	CreateUserAgentMapping(ctx context.Context, mapping *UserAgentMapping) error
+	UpdateUserAgentMapping(ctx context.Context, id string, mapping *UserAgentMapping) error
+	DeleteUserAgentMapping(ctx context.Context, id string) error
+	ListUserAgentMappings(ctx context.Context, activeOnly bool) ([]UserAgentMapping, error)
+
 	// Distinct value methods for filter data
 	GetDistinctModels(ctx context.Context, limit int, query string) ([]string, error)
 	GetDistinctAliases(ctx context.Context, limit int, query string) ([]string, error)
 	GetDistinctKeyPairs(ctx context.Context, idCol, nameCol string, limit int, query string) ([]KeyPairResult, error)
 	GetDistinctRoutingEngines(ctx context.Context, limit int, query string) ([]string, error)
 	GetDistinctStopReasons(ctx context.Context, limit int, query string) ([]string, error)
+	// GetDistinctUserAgents returns distinct raw User-Agent strings from logs for the "App" filter.
+	GetDistinctUserAgents(ctx context.Context, limit int, query string) ([]string, error)
+	// GetDistinctApps returns distinct backend-detected app labels from logs.
+	GetDistinctApps(ctx context.Context, limit int, query string) ([]string, error)
 	GetDistinctMetadataKeys(ctx context.Context, limit int, query string) (map[string][]string, error)
 
 	// MCP Tool Log histogram methods
@@ -93,6 +102,10 @@ type LogStore interface {
 	FlushMCPToolLogs(ctx context.Context, since time.Time) error
 	GetAvailableToolNames(ctx context.Context, limit int, query string) ([]string, error)
 	GetAvailableServerLabels(ctx context.Context, limit int, query string) ([]string, error)
+	// GetAvailableMCPUserAgents returns distinct raw User-Agent strings from MCP tool logs for the "App" filter.
+	GetAvailableMCPUserAgents(ctx context.Context, limit int, query string) ([]string, error)
+	// GetAvailableMCPApps returns distinct backend-detected app labels from MCP tool logs.
+	GetAvailableMCPApps(ctx context.Context, limit int, query string) ([]string, error)
 	GetAvailableMCPVirtualKeys(ctx context.Context, limit int, query string) ([]MCPToolLog, error)
 
 	// Async Job methods
