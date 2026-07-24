@@ -69,6 +69,10 @@ const (
 	// AnthropicServerSideFallbackBetaHeader is required for the native "fallbacks"
 	// request field (server-side refusal fallback). Anthropic API only.
 	AnthropicServerSideFallbackBetaHeader = "server-side-fallback-2026-06-01"
+	// AnthropicServerSideFallbackDefaultBetaHeader is the superset header required for
+	// the fallbacks:"default" form (Opus 5 default fallback routing); it also accepts
+	// the explicit-list form. Shares the server-side-fallback- prefix for dedup/filter.
+	AnthropicServerSideFallbackDefaultBetaHeader = "server-side-fallback-2026-07-01"
 	// AnthropicFallbackCreditBetaHeader is required to receive fallback_credit_token
 	// on a refusal and to redeem it on the retry. Unlike server-side fallback this is
 	// supported on every Anthropic-family surface — but AWS ships it under its own date.
@@ -77,6 +81,11 @@ const (
 	// AWS-operated surfaces (Bedrock Converse and Bedrock Mantle), which are a
 	// release behind the Claude API. See betaHeaderProviderVersion in utils.go.
 	AnthropicFallbackCreditBetaHeaderAWS = "fallback-credit-2026-06-09"
+	// AnthropicMidConversationToolChangesBetaHeader enables tool_addition / tool_removal
+	// blocks inside mid_conv_system messages, so tools can be offered/withdrawn mid-turn
+	// while the tools array (and the cached prefix) stays fixed. Native Anthropic surface
+	// (Claude API direct + Claude in Amazon Bedrock via Mantle); Bedrock is Opus 5 only.
+	AnthropicMidConversationToolChangesBetaHeader = "mid-conversation-tool-changes-2026-07-01"
 
 	// AnthropicComputerUseBetaHeader is required for computer use (version-specific).
 	// computer_20251124 (Opus 4.6, Sonnet 4.6, Opus 4.5) uses the newer beta header.
@@ -105,6 +114,8 @@ const (
 	AnthropicAdvisorBetaHeaderPrefix             = "advisor-tool-"
 	AnthropicServerSideFallbackBetaHeaderPrefix  = "server-side-fallback-"
 	AnthropicFallbackCreditBetaHeaderPrefix      = "fallback-credit-"
+	// Mid-conversation tool changes (Opus 5).
+	AnthropicMidConversationToolChangesBetaHeaderPrefix = "mid-conversation-tool-changes-"
 )
 
 // ProviderFeatureSupport defines which Anthropic features a given provider supports.
@@ -159,6 +170,7 @@ type ProviderFeatureSupport struct {
 	Diagnostics            bool // diagnostics request field — cache diagnostics (cache-diagnosis-2026-04-07 beta, diagnostics.previous_message_id). Claude API only per docs ("not supported on Amazon Bedrock or Vertex AI"); stripped elsewhere fail-closed. Azure rejects it.
 	ServerSideFallback     bool // native "fallbacks" request field — server-side-fallback-2026-06-01. Claude API only per docs ("not available on Amazon Bedrock, Google Cloud, or Microsoft Foundry").
 	FallbackCredit         bool // fallback_credit_token request field + stop_details credit fields — fallback-credit-2026-06-01 (AWS surfaces: -2026-06-09). Documented on the Claude API, Amazon Bedrock, Google Cloud and Microsoft Foundry, i.e. the inverse of ServerSideFallback.
+	MidConvToolChanges     bool // tool_addition/tool_removal blocks — mid-conversation-tool-changes-2026-07-01. Native Anthropic surface (Claude API + Bedrock Mantle); Bedrock is Opus 5 only, enforced upstream.
 }
 
 // ProviderFeatures maps each provider to its supported Anthropic features.
@@ -180,6 +192,7 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		Diagnostics:        true, // cache-diagnosis-2026-04-07 — Claude API only; only this provider keeps diagnostics.previous_message_id.
 		ServerSideFallback: true, // server-side-fallback-2026-06-01 — Claude API only.
 		FallbackCredit:     true, // fallback-credit-2026-06-01.
+		MidConvToolChanges: true, // mid-conversation-tool-changes-2026-07-01.
 	},
 	// Google Vertex AI — cite: A (overview table) and V-platform.
 	// Notably NOT supported: MCP (MCP-excl), Skills/container.skills,
@@ -266,6 +279,7 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		InputExamples:          true,
 		ServiceTier:            true,
 		FallbackCredit:         true, // fallback-credit-2026-06-09 (AWS date) per the Bedrock userguide
+		MidConvToolChanges:     true, // mid-conversation-tool-changes-2026-07-01 — Opus 5 on Bedrock, enforced upstream.
 	},
 	// Microsoft Azure AI Foundry — cite: A (most features azureAiBeta) +
 	// Az-platform ("supports most of Claude's features"). Excluded per
@@ -447,10 +461,11 @@ type AnthropicMessageRequest struct {
 	// Extra params for advanced use cases
 	ExtraParams map[string]interface{} `json:"-"`
 
-	// Fallbacks is the overloaded request-level "fallbacks" field. Its entries are
-	// either Bifrost cross-provider fallback strings ("provider/model") or Anthropic
-	// native server-side fallback objects ({"model": ...}); see AnthropicFallbackEntry.
-	Fallbacks []AnthropicFallbackEntry `json:"fallbacks,omitempty"`
+	// Fallbacks is the overloaded request-level "fallbacks" field, either an array of
+	// entries (Bifrost "provider/model" strings and/or native {"model": ...} objects)
+	// or the bare string preset "default" (Opus 5 default fallback routing). See
+	// AnthropicFallbacks, which models both shapes behind one type.
+	Fallbacks *AnthropicFallbacks `json:"fallbacks,omitempty"`
 
 	// Internal field to track whether to strip scope from cache control blocks (for Vertex + prompt caching scope)
 	stripCacheControlScope bool `json:"-"`
@@ -513,10 +528,44 @@ func (e AnthropicFallbackEntry) MarshalJSON() ([]byte, error) {
 	return sonic.Marshal(e.BifrostModel)
 }
 
+// AnthropicFallbacks models the overloaded request-level "fallbacks" field, which is
+// either an array of entries (AnthropicFallbackEntry) or a bare string preset —
+// currently only "default" (Opus 5 default fallback routing, which needs the superset
+// server-side-fallback-2026-07-01 beta header). Exactly one form is set; the custom
+// (Un)MarshalJSON lets it sit in the request struct and (de)serialize natively,
+// dispatching on wire shape the same way AnthropicFallbackEntry does per element.
+type AnthropicFallbacks struct {
+	Entries []AnthropicFallbackEntry // the array form
+	Preset  string                   // the bare-string form, e.g. "default"
+}
+
+// UnmarshalJSON dispatches on shape: a JSON string is a preset, an array is entries.
+func (f *AnthropicFallbacks) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || string(trimmed) == "null" {
+		return nil
+	}
+	if trimmed[0] == '"' {
+		return sonic.Unmarshal(trimmed, &f.Preset)
+	}
+	return sonic.Unmarshal(trimmed, &f.Entries)
+}
+
+// MarshalJSON re-emits whichever form is set (preset wins if both are somehow set).
+func (f AnthropicFallbacks) MarshalJSON() ([]byte, error) {
+	if f.Preset != "" {
+		return sonic.Marshal(f.Preset)
+	}
+	return sonic.Marshal(f.Entries)
+}
+
 // bifrostFallbackModels returns the Bifrost cross-provider fallback "provider/model" strings.
 func (req *AnthropicMessageRequest) bifrostFallbackModels() []string {
 	var out []string
-	for _, f := range req.Fallbacks {
+	if req.Fallbacks == nil {
+		return out
+	}
+	for _, f := range req.Fallbacks.Entries {
 		if f.Native == nil && f.BifrostModel != "" {
 			out = append(out, f.BifrostModel)
 		}
@@ -527,12 +576,22 @@ func (req *AnthropicMessageRequest) bifrostFallbackModels() []string {
 // nativeFallbacks returns the Anthropic native server-side fallback entries.
 func (req *AnthropicMessageRequest) nativeFallbacks() []AnthropicNativeFallback {
 	var out []AnthropicNativeFallback
-	for _, f := range req.Fallbacks {
+	if req.Fallbacks == nil {
+		return out
+	}
+	for _, f := range req.Fallbacks.Entries {
 		if f.Native != nil {
 			out = append(out, *f.Native)
 		}
 	}
 	return out
+}
+
+// fallbacksDefaultRouting reports whether the request uses the fallbacks:"default"
+// form (Opus 5 default fallback routing), which needs the superset
+// server-side-fallback-2026-07-01 beta header rather than -2026-06-01.
+func (req *AnthropicMessageRequest) fallbacksDefaultRouting() bool {
+	return req.Fallbacks != nil && req.Fallbacks.Preset == "default"
 }
 
 // SetStripCacheControlScope sets the stripCacheControlScope flag
