@@ -195,6 +195,25 @@ test.describe("Providers", () => {
       await expect(providerItem).toBeVisible({ timeout: 15000 });
     });
 
+    test("should create a custom ElevenLabs-compatible provider", async ({
+      providersPage,
+    }) => {
+      const providerData = createCustomProviderData({
+        name: `test-elevenlabs-${Date.now()}`,
+        baseProviderType: "elevenlabs",
+        baseUrl: "https://api.elevenlabs.io",
+      });
+
+      // Track for cleanup
+      createdProviders.push(providerData.name);
+
+      await providersPage.createProvider(providerData);
+
+      // Wait for provider to appear in sidebar
+      const providerItem = providersPage.getProviderItem(providerData.name);
+      await expect(providerItem).toBeVisible({ timeout: 15000 });
+    });
+
     test("should cancel custom provider creation", async ({
       providersPage,
     }) => {
