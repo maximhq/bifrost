@@ -38,8 +38,8 @@ const (
 // Default boundaries are tuned to the 1.00 positive-weight scale in
 // keywords.go; retune them together with the dimension weights.
 const (
-	simpleMediumBoundary  = 0.17
-	mediumComplexBoundary = 0.39
+	simpleMediumBoundary  = 0.20
+	mediumComplexBoundary = 0.40
 )
 
 // TierBoundaries defines the score thresholds for tier classification.
