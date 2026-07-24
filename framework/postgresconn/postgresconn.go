@@ -99,30 +99,28 @@ func BuildDSN(config *Config) string {
 
 // Open opens a *gorm.DB against the configured Postgres instance.
 func Open(dsn string, config *Config, logger gormlogger.Interface) (*gorm.DB, error) {
-	if config.PasswordCommand == nil {
-		return gorm.Open(postgres.New(postgres.Config{DSN: dsn}), &gorm.Config{
-			Logger: logger,
-		})
-	}
-
 	pgxConfig, err := pgx.ParseConfig(dsn)
 	if err != nil {
 		return nil, err
 	}
-	sqlDB := stdlib.OpenDB(*pgxConfig, stdlib.OptionBeforeConnect(func(ctx context.Context, connConfig *pgx.ConnConfig) error {
-		password, err := RunPasswordCommand(ctx, config.PasswordCommand)
-		if err != nil {
-			return err
-		}
-		connConfig.Password = password
-		return nil
-	}))
-	return openGormFromSQLDB(sqlDB, logger)
+	var opts []stdlib.OptionOpenDB
+	if config.PasswordCommand != nil {
+		opts = append(opts, stdlib.OptionBeforeConnect(func(ctx context.Context, connConfig *pgx.ConnConfig) error {
+			password, err := RunPasswordCommand(ctx, config.PasswordCommand)
+			if err != nil {
+				return err
+			}
+			connConfig.Password = password
+			return nil
+		}))
+	}
+	return openGormFromSQLDB(stdlib.OpenDB(*pgxConfig, opts...), logger)
 }
 
-// openGormFromSQLDB opens a GORM connection over an existing sql.DB.
+// openGormFromSQLDB opens a GORM connection over an existing sql.DB, wrapping
+// it so cached-plan invalidation errors after schema changes are retried.
 func openGormFromSQLDB(sqlDB *sql.DB, logger gormlogger.Interface) (*gorm.DB, error) {
-	db, err := gorm.Open(postgres.New(postgres.Config{Conn: sqlDB}), &gorm.Config{
+	db, err := gorm.Open(postgres.New(postgres.Config{Conn: newRetryConnPool(sqlDB)}), &gorm.Config{
 		Logger: logger,
 	})
 	if err != nil {
