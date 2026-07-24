@@ -108,6 +108,13 @@ spec:
                   name: {{ .Values.bifrost.encryptionKeySecret.name }}
                   key: {{ .Values.bifrost.encryptionKeySecret.key }}
             {{- end }}
+            {{- if .Values.bifrost.setupTokenSecret.name }}
+            - name: BIFROST_SETUP_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.bifrost.setupTokenSecret.name }}
+                  key: {{ .Values.bifrost.setupTokenSecret.key | default "setup-token" }}
+            {{- end }}
             {{- if and .Values.bifrost.plugins.semanticCache.enabled .Values.bifrost.plugins.semanticCache.secretRef .Values.bifrost.plugins.semanticCache.secretRef.name }}
             - name: SEMANTIC_CACHE_API_KEY
               valueFrom:

@@ -242,6 +242,19 @@ bifrost:
     name: ""
     key: "encryption-key"
 
+  # Operator-provisioned bootstrap secret required to create the very first admin account
+  # when no admin account exists yet. Identical across every node, so any node can authorize
+  # first-admin creation. Never persisted and never logged; when unset, creating the first
+  # admin account is rejected. Accepts a literal value, `env.<VAR>`, or `vault.<path>`.
+  # setupToken: "env.BIFROST_SETUP_TOKEN"
+
+  # Use an existing Kubernetes secret for the setup token.
+  # When `name` is set, takes precedence over `setupToken`: the chart injects
+  # BIFROST_SETUP_TOKEN into the pod via secretKeyRef, which Bifrost reads at startup.
+  setupTokenSecret:
+    name: ""
+    key: "setup-token"
+
   # Authentication configuration (top-level)
   # This controls authentication for Bifrost API and dashboard
   authConfig:
@@ -341,6 +354,13 @@ bifrost:
   # Server configuration
   server:
     readBufferSize: 65536 # Read buffer size in bytes for reading HTTP headers (default: 64 KiB)
+    # Hostnames, IPs, or CIDR ranges that custom plugin (.so) downloads may reach even when
+    # they resolve to a private/loopback/link-local/CGNAT address (blocked by default to
+    # prevent SSRF). Use only for trusted internal artifact hosts. Deploy-time only — read
+    # at startup, never settable via the plugin admin API.
+    # pluginDownloadPrivateAllowlist:
+    #   - "artifacts.internal.svc.cluster.local"
+    #   - "10.0.0.0/8"
 
   # Framework configuration
   framework:
@@ -862,6 +882,7 @@ bifrost:
       # - id: "override-1"
       #   name: "Provider key pricing override"
       #   scope_kind: "provider_key" # global|provider|provider_key|virtual_key|virtual_key_provider|virtual_key_provider_key
+      #   user_id: ""                # Optional user ID for user-scoped pricing overrides
       #   provider_key_name: ""      # Optional provider key name alias (resolved to internal provider key ID at load time)
       #   match_type: "exact"        # exact|wildcard
       #   pattern: "gpt-4o-mini"
@@ -870,9 +891,8 @@ bifrost:
     complexityAnalyzerConfig:
       null
       # tier_boundaries:
-      #   simple_medium: 0.15
-      #   medium_complex: 0.35
-      #   complex_reasoning: 0.60
+      #   simple_medium: 0.20   # Scores below this are SIMPLE
+      #   medium_complex: 0.40  # Scores below this (and >= simple_medium) are MEDIUM; at or above are COMPLEX
       # keywords:
       #   code_keywords: ["function", "class", "api", "debug", "deploy"]
       #   reasoning_keywords: ["step by step", "explain why", "tradeoffs", "root cause analysis"]
@@ -1408,7 +1428,7 @@ storage:
     # maxIdleConns: 5
     # maxOpenConns: 50
     # connMaxIdleTime: "5m"  # How long an idle connection is kept. Without this the idle cap alone controls pool size, so bursts above maxIdleConns churn physical connections. Note the config store and logs store open separate pools.
-    # matviewRefreshInterval: "30s"  # How often to refresh materialized views. Go duration string (e.g. '30s', '5m', '1h'). Minimum 5s.
+    # matviewRefreshInterval: "30s"  # How often to refresh materialized views. Go duration string (e.g. '30s', '5m', '1h'). Positive values below 5s are clamped up to 5s. Set "off" or a zero duration ("0s") to disable matview maintenance entirely — dashboard queries fall back to the raw tables.
     # matviewRefreshTimeout: "5m"  # Max time for one refresh pass (min 30s, max 30m). Unset derives 5x the interval, at least 5m. A cancelled refresh leaves the existing views intact and readable, just staler; the next tick retries.
     # ClickHouse connection settings (only applies when type is clickhouse)
     # clickhouse:
