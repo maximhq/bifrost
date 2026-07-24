@@ -1213,12 +1213,20 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 			// Extract trace ID from W3C traceparent header (if present)
 			// This is the 32-char trace ID that links all spans in a distributed trace
 			inheritedTraceID := tracing.ExtractParentID(&ctx.Request.Header)
-			// Create trace in store - only ID returned (trace data stays in store)
+			// Create trace in store - the returned value is a per-request store key,
+			// not necessarily the W3C trace ID (concurrent requests may share an
+			// inherited trace ID, so the store keys them uniquely).
 			traceID := tracer.CreateTrace(inheritedTraceID, requestID)
 			// Surface correlation IDs back to the caller so a request can be pivoted
 			// into its logs (Loki) and trace (Tempo) in Grafana and similar stacks.
+			// The header must carry the W3C trace ID (that is what Tempo indexes),
+			// which equals the store key only when no traceparent was inherited.
+			headerTraceID := inheritedTraceID
+			if headerTraceID == "" {
+				headerTraceID = traceID
+			}
 			ctx.Response.Header.Set("x-request-id", requestID)
-			ctx.Response.Header.Set("x-bifrost-trace-id", traceID)
+			ctx.Response.Header.Set("x-bifrost-trace-id", headerTraceID)
 			// Store dimensions and session ID at the trace level (not as span
 			// attributes) so connectors like BigQuery can export them without
 			// changing the OTEL/Datadog span payloads.

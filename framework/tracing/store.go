@@ -67,19 +67,27 @@ func NewTraceStore(ttl time.Duration, logger schemas.Logger) *TraceStore {
 	return store
 }
 
-// CreateTrace creates a new trace and stores it, returns trace ID only.
+// CreateTrace creates a new trace and stores it, returns the trace's store key.
 // The inheritedTraceID parameter is the trace ID from an incoming W3C traceparent header.
-// If provided, this trace will use that ID to continue the distributed trace.
-// If empty, a new trace ID will be generated.
+// If provided, the trace's exported TraceID uses that value to continue the
+// distributed trace. If empty, a new trace ID is generated.
+//
+// The returned key is unique per call, NOT the (possibly shared) W3C trace ID:
+// concurrent sibling requests of one distributed trace legitimately carry the
+// same inherited trace ID, and keying the store by it made siblings overwrite
+// each other — the first CompleteTrace stole the entry and the rest flushed
+// nothing (lost log rows, issue #5256). Callers treat the returned value as an
+// opaque handle; the W3C ID lives on trace.TraceID for span export and linking.
 // Note: The parent span ID (for linking to upstream spans) is handled separately
 // via context in StartSpan, not stored on the trace itself.
 func (s *TraceStore) CreateTrace(inheritedTraceID string, requestID ...string) string {
 	trace := s.tracePool.Get().(*schemas.Trace)
 	// Reset and initialize the trace
+	trace.InternalID = generateTraceID()
 	if inheritedTraceID != "" {
 		trace.TraceID = inheritedTraceID
 	} else {
-		trace.TraceID = generateTraceID()
+		trace.TraceID = trace.InternalID
 	}
 	// Note: trace.ParentID is intentionally not set here.
 	// Parent-child relationships are between spans, not traces.
@@ -109,8 +117,8 @@ func (s *TraceStore) CreateTrace(inheritedTraceID string, requestID ...string) s
 	// Reset request headers
 	trace.RequestHeaders = nil
 
-	s.traces.Store(trace.TraceID, trace)
-	return trace.TraceID
+	s.traces.Store(trace.InternalID, trace)
+	return trace.InternalID
 }
 
 // GetTrace retrieves a trace by ID
@@ -278,9 +286,11 @@ func (s *TraceStore) StartSpan(traceID, name string, kind schemas.SpanKind) *sch
 
 	span := s.spanPool.Get().(*schemas.Span)
 
-	// Reset and initialize the span
+	// Reset and initialize the span. Span.TraceID carries the exported W3C
+	// trace identity (shared across sibling requests of a distributed trace);
+	// store lookups use the unique key passed as traceID, never this field.
 	span.SpanID = generateSpanID()
-	span.TraceID = traceID
+	span.TraceID = trace.TraceID
 	span.Name = name
 	span.Kind = kind
 	span.StartTime = time.Now()
@@ -325,10 +335,11 @@ func (s *TraceStore) StartChildSpan(traceID, parentSpanID, name string, kind sch
 
 	span := s.spanPool.Get().(*schemas.Span)
 
-	// Reset and initialize the span
+	// Reset and initialize the span. As in StartSpan, Span.TraceID carries the
+	// exported W3C trace identity, not the store key.
 	span.SpanID = generateSpanID()
 	span.ParentID = parentSpanID
-	span.TraceID = traceID
+	span.TraceID = trace.TraceID
 	span.Name = name
 	span.Kind = kind
 	span.StartTime = time.Now()

@@ -11,7 +11,8 @@ import (
 // Trace represents a distributed trace that captures the full lifecycle of a request
 type Trace struct {
 	RequestID             string            // Request ID for the trace
-	TraceID               string            // Unique identifier for this trace
+	TraceID               string            // Exported trace identifier; inherited from the W3C traceparent header when present, so concurrent requests of one distributed trace may share it
+	InternalID            string            // Unique per-request handle the trace is stored under; unlike TraceID it is never shared across requests
 	ParentID              string            // Parent trace ID from incoming W3C traceparent header
 	RootSpan              *Span             // The root span of this trace
 	Spans                 []*Span           // All spans in this trace
@@ -171,6 +172,7 @@ func (t *Trace) SnapshotForExport() *Trace {
 	clone := &Trace{
 		RequestID:      t.RequestID,
 		TraceID:        t.TraceID,
+		InternalID:     t.InternalID,
 		ParentID:       t.ParentID,
 		StartTime:      t.StartTime,
 		EndTime:        t.EndTime,
@@ -254,6 +256,7 @@ func (t *Trace) Reset() {
 	defer t.mu.Unlock()
 	t.RequestID = ""
 	t.TraceID = ""
+	t.InternalID = ""
 	t.ParentID = ""
 	t.RootSpan = nil
 	for i := range t.Spans {

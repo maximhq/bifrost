@@ -171,10 +171,12 @@ func TestTracer_StartSpan_RootSpanWithW3CParent(t *testing.T) {
 	inheritedTraceID := "69538b980000000079943934f90c1d40"
 	externalParentSpanID := "aad09d1659b4c7e3"
 
-	// Create trace with inherited trace ID
+	// Create trace with inherited trace ID. The returned value is a unique
+	// per-request store key, not the inherited ID (issue #5256) — the W3C ID
+	// lives on trace.TraceID for export.
 	traceID := tracer.CreateTrace(inheritedTraceID)
-	if traceID != inheritedTraceID {
-		t.Errorf("CreateTrace() = %q, want inherited trace ID %q", traceID, inheritedTraceID)
+	if traceID == inheritedTraceID {
+		t.Errorf("CreateTrace() = %q, want a unique store key distinct from the inherited trace ID", traceID)
 	}
 
 	// Set up context with trace ID and parent span ID (as middleware would do)
@@ -202,9 +204,13 @@ func TestTracer_StartSpan_RootSpanWithW3CParent(t *testing.T) {
 		t.Errorf("Root span ParentID = %q, want external parent span ID %q", trace.RootSpan.ParentID, externalParentSpanID)
 	}
 
-	// Verify trace ID is preserved
+	// The exported W3C trace ID is preserved on both the trace and its spans;
+	// only the store key returned by CreateTrace is the per-request handle.
+	if trace.TraceID != inheritedTraceID {
+		t.Errorf("trace.TraceID = %q, want inherited %q", trace.TraceID, inheritedTraceID)
+	}
 	if trace.RootSpan.TraceID != inheritedTraceID {
-		t.Errorf("Root span TraceID = %q, want %q", trace.RootSpan.TraceID, inheritedTraceID)
+		t.Errorf("Root span TraceID = %q, want inherited %q", trace.RootSpan.TraceID, inheritedTraceID)
 	}
 
 	// Verify context has span ID for child span creation
@@ -624,9 +630,13 @@ func TestIntegration_FullDistributedTraceFlow(t *testing.T) {
 			pluginSpan.ParentID, llmSpan.SpanID)
 	}
 
-	// All spans should have the same trace ID
+	// All spans carry the inherited W3C trace identity; the store key returned
+	// by CreateTrace is a separate per-request handle.
 	if httpSpan.TraceID != inheritedTraceID || llmSpan.TraceID != inheritedTraceID || pluginSpan.TraceID != inheritedTraceID {
 		t.Error("All spans should have the inherited trace ID")
+	}
+	if trace.TraceID != inheritedTraceID {
+		t.Errorf("trace.TraceID = %q, want inherited %q", trace.TraceID, inheritedTraceID)
 	}
 
 	t.Logf("Trace structure (for Datadog):")

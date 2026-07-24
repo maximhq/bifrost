@@ -1422,8 +1422,16 @@ func (p *LoggerPlugin) Inject(_ context.Context, trace *schemas.Trace) error {
 	if trace == nil {
 		return nil
 	}
-	// Retrieve pending log entries built by PostLLMHook (stored by traceID)
-	entryVal, ok := p.pendingLogsToInject.LoadAndDelete(trace.TraceID)
+	// Retrieve pending log entries built by PostLLMHook. They are keyed by the
+	// trace's store key (BifrostContextKeyTraceID carries it), which is
+	// trace.InternalID — unique per request even when concurrent requests share
+	// an inherited W3C TraceID. Fall back to TraceID for traces created by
+	// paths that predate InternalID.
+	joinKey := trace.InternalID
+	if joinKey == "" {
+		joinKey = trace.TraceID
+	}
+	entryVal, ok := p.pendingLogsToInject.LoadAndDelete(joinKey)
 	if !ok {
 		return nil
 	}
