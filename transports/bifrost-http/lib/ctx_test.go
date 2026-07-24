@@ -322,6 +322,49 @@ func TestConvertToBifrostContext_EmptyBaggageSessionIDIgnored(t *testing.T) {
 	}
 }
 
+func TestConvertToBifrostContext_SessionHeaderPrecedence(t *testing.T) {
+	tests := []struct {
+		name         string
+		baggage      string
+		bifrost      string
+		conversation string
+		want         string
+	}{
+		{name: "workbuddy compatibility header", conversation: "conversation-123", want: "conversation-123"},
+		{name: "bifrost header beats compatibility header", bifrost: "bf-session", conversation: "conversation-123", want: "bf-session"},
+		{name: "bifrost header beats w3c baggage", baggage: "session-id=w3c-session", bifrost: "bf-session", conversation: "conversation-123", want: "bf-session"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.Set("baggage", tt.baggage)
+			ctx.Request.Header.Set("x-bf-session-id", tt.bifrost)
+			ctx.Request.Header.Set("x-conversation-id", tt.conversation)
+
+			bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
+			defer cancel()
+
+			if got, _ := bifrostCtx.Value(schemas.BifrostContextKeyParentRequestID).(string); got != tt.want {
+				t.Fatalf("parent request id = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestConvertToBifrostContext_ReplacesAllZeroRequestID(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("x-request-id", zeroRequestID)
+
+	bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
+	defer cancel()
+
+	got, _ := bifrostCtx.Value(schemas.BifrostContextKeyRequestID).(string)
+	if got == "" || got == zeroRequestID {
+		t.Fatalf("request id was not normalized: %q", got)
+	}
+}
+
 func TestConvertToBifrostContext_DimHeadersDoNotOverrideReservedContextKeys(t *testing.T) {
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.Header.Set("x-request-id", "trusted-request-id")

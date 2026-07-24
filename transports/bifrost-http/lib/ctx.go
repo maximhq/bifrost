@@ -15,7 +15,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/plugins/maxim"
@@ -211,15 +210,13 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 		ctx.SetUserValue(FastHTTPUserValueBifrostCancel, cancel)
 	}
 
-	// Preserve existing request-id if already present on the shared context.
-	if existingRequestID, ok := bifrostCtx.Value(schemas.BifrostContextKeyRequestID).(string); !ok || existingRequestID == "" {
-		// First, check if x-request-id header exists
-		requestID := string(ctx.Request.Header.Peek("x-request-id"))
-		if requestID == "" {
-			requestID = uuid.New().String()
-		}
-		bifrostCtx.SetValue(schemas.BifrostContextKeyRequestID, requestID)
+	// Preserve an existing usable request ID. Missing IDs and the all-zero
+	// sentinel used by some clients must be replaced to avoid log collisions.
+	requestID, _ := bifrostCtx.Value(schemas.BifrostContextKeyRequestID).(string)
+	if strings.TrimSpace(requestID) == "" || strings.TrimSpace(requestID) == zeroRequestID {
+		requestID = string(ctx.Request.Header.Peek("x-request-id"))
 	}
+	bifrostCtx.SetValue(schemas.BifrostContextKeyRequestID, NormalizeRequestID(requestID))
 	// Populating all user values from the request context
 	ctx.VisitUserValuesAll(func(key, value any) {
 		bifrostCtx.SetValue(key, value)
@@ -240,6 +237,20 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 	extraHeaders := make(map[string][]string)
 	// Initialize extra headers map for headers in the mcp header combined allowlist
 	mcpExtraHeaders := make(map[string][]string)
+
+	// The logging plugin groups related requests by ParentRequestID. Prefer
+	// Bifrost's own session header, then the standard W3C baggage value, and
+	// finally the compatibility header emitted by WorkBuddy/CodeBuddy clients.
+	parentRequestID := strings.TrimSpace(string(ctx.Request.Header.Peek("x-bf-session-id")))
+	if parentRequestID == "" {
+		parentRequestID = ParseSessionIDFromBaggage(string(ctx.Request.Header.Peek("baggage")))
+	}
+	if parentRequestID == "" {
+		parentRequestID = strings.TrimSpace(string(ctx.Request.Header.Peek("x-conversation-id")))
+	}
+	if parentRequestID != "" && len(parentRequestID) <= 255 {
+		bifrostCtx.SetValue(schemas.BifrostContextKeyParentRequestID, parentRequestID)
+	}
 	// Security denylist of header names that should never be accepted (case-insensitive)
 	// This denylist is always enforced regardless of user configuration
 	securityDenylist := map[string]bool{
@@ -272,9 +283,6 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 	ctx.Request.Header.All()(func(key, value []byte) bool {
 		keyStr := strings.ToLower(string(key))
 		if keyStr == "baggage" {
-			if sessionID := ParseSessionIDFromBaggage(string(value)); sessionID != "" {
-				bifrostCtx.SetValue(schemas.BifrostContextKeyParentRequestID, sessionID)
-			}
 			return true
 		}
 		if labelName, ok := strings.CutPrefix(keyStr, "x-bf-dim-"); ok && labelName != "" {
