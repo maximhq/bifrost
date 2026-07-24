@@ -2330,11 +2330,21 @@ type GeminiBatchErrorInfo struct {
 }
 
 // GeminiBatchFileResultLine represents a single line in the batch results JSONL file.
-// Used when batch results are returned as a file rather than inline responses.
+// Native Gemini files put a GenerateContentResponse directly in response, while
+// OpenAI-compatible integrations may wrap it as {status_code, body}. Preserve the
+// raw response so the decoder can accept both wire shapes.
 type GeminiBatchFileResultLine struct {
-	Key      string                   `json:"key,omitempty"`
-	Response *GenerateContentResponse `json:"response,omitempty"`
-	Error    *GeminiBatchErrorInfo    `json:"error,omitempty"`
+	CustomID string                 `json:"custom_id,omitempty"`
+	Key      string                 `json:"key,omitempty"`
+	Response sonic.NoCopyRawMessage `json:"response,omitempty"`
+	Error    *GeminiBatchErrorInfo  `json:"error,omitempty"`
+}
+
+// GeminiFileResponseLine represents the response field inside a Gemini batch
+// results JSONL line. It pairs a status code with an OpenAI-compatible body.
+type GeminiFileResponseLine struct {
+	StatusCode int                    `json:"status_code"`
+	Body       map[string]interface{} `json:"body"`
 }
 
 // GeminiBatchListResponse represents the response from listing batches.

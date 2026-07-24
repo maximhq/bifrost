@@ -2203,8 +2203,9 @@ func (provider *AnthropicProvider) BatchResults(ctx *schemas.BifrostContext, key
 		})
 
 		batchResultsResp := &schemas.BifrostBatchResultsResponse{
-			BatchID: request.BatchID,
-			Results: results,
+			BatchID:  request.BatchID,
+			Endpoint: schemas.BatchEndpointMessages,
+			Results:  results,
 			ExtraFields: schemas.BifrostResponseExtraFields{
 				Latency: latency.Milliseconds(),
 			},

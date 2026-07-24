@@ -1751,6 +1751,118 @@ type BifrostCost struct {
 	TotalCost           float64 `json:"total_cost,omitempty"`
 }
 
+// MergeBifrostLLMUsage returns a usage value containing the sum of base and add.
+// Nil inputs are treated as absent values; if both inputs are nil, nil is returned.
+func MergeBifrostLLMUsage(base, add *BifrostLLMUsage) *BifrostLLMUsage {
+	if add == nil {
+		return base
+	}
+	if base == nil {
+		return add
+	}
+
+	merged := &BifrostLLMUsage{
+		PromptTokens:     base.PromptTokens + add.PromptTokens,
+		CompletionTokens: base.CompletionTokens + add.CompletionTokens,
+		TotalTokens:      base.TotalTokens + add.TotalTokens,
+	}
+
+	if base.PromptTokensDetails != nil || add.PromptTokensDetails != nil {
+		baseDetails := base.PromptTokensDetails
+		addDetails := add.PromptTokensDetails
+		if baseDetails == nil {
+			baseDetails = &ChatPromptTokensDetails{}
+		}
+		if addDetails == nil {
+			addDetails = &ChatPromptTokensDetails{}
+		}
+		merged.PromptTokensDetails = &ChatPromptTokensDetails{
+			TextTokens:        baseDetails.TextTokens + addDetails.TextTokens,
+			AudioTokens:       baseDetails.AudioTokens + addDetails.AudioTokens,
+			ImageTokens:       baseDetails.ImageTokens + addDetails.ImageTokens,
+			CachedReadTokens:  baseDetails.CachedReadTokens + addDetails.CachedReadTokens,
+			CachedWriteTokens: baseDetails.CachedWriteTokens + addDetails.CachedWriteTokens,
+		}
+		if baseDetails.CachedWriteTokenDetails != nil || addDetails.CachedWriteTokenDetails != nil {
+			merged.PromptTokensDetails.CachedWriteTokenDetails = &ChatCachedWriteTokenDetails{
+				CachedWriteTokens5m: cachedWriteTokens5m(baseDetails) + cachedWriteTokens5m(addDetails),
+				CachedWriteTokens1h: cachedWriteTokens1h(baseDetails) + cachedWriteTokens1h(addDetails),
+			}
+		}
+	}
+
+	if base.CompletionTokensDetails != nil || add.CompletionTokensDetails != nil {
+		baseDetails := base.CompletionTokensDetails
+		addDetails := add.CompletionTokensDetails
+		if baseDetails == nil {
+			baseDetails = &ChatCompletionTokensDetails{}
+		}
+		if addDetails == nil {
+			addDetails = &ChatCompletionTokensDetails{}
+		}
+		merged.CompletionTokensDetails = &ChatCompletionTokensDetails{
+			TextTokens:               baseDetails.TextTokens + addDetails.TextTokens,
+			AcceptedPredictionTokens: baseDetails.AcceptedPredictionTokens + addDetails.AcceptedPredictionTokens,
+			AudioTokens:              baseDetails.AudioTokens + addDetails.AudioTokens,
+			ReasoningTokens:          baseDetails.ReasoningTokens + addDetails.ReasoningTokens,
+			RejectedPredictionTokens: baseDetails.RejectedPredictionTokens + addDetails.RejectedPredictionTokens,
+		}
+		merged.CompletionTokensDetails.CitationTokens = sumOptionalInts(baseDetails.CitationTokens, addDetails.CitationTokens)
+		merged.CompletionTokensDetails.NumSearchQueries = sumOptionalInts(baseDetails.NumSearchQueries, addDetails.NumSearchQueries)
+		merged.CompletionTokensDetails.ImageTokens = sumOptionalInts(baseDetails.ImageTokens, addDetails.ImageTokens)
+	}
+
+	if base.Cost != nil || add.Cost != nil {
+		baseCost := base.Cost
+		addCost := add.Cost
+		if baseCost == nil {
+			baseCost = &BifrostCost{}
+		}
+		if addCost == nil {
+			addCost = &BifrostCost{}
+		}
+		merged.Cost = &BifrostCost{
+			InputTokensCost:     baseCost.InputTokensCost + addCost.InputTokensCost,
+			OutputTokensCost:    baseCost.OutputTokensCost + addCost.OutputTokensCost,
+			ReasoningTokensCost: baseCost.ReasoningTokensCost + addCost.ReasoningTokensCost,
+			CitationTokensCost:  baseCost.CitationTokensCost + addCost.CitationTokensCost,
+			SearchQueriesCost:   baseCost.SearchQueriesCost + addCost.SearchQueriesCost,
+			RequestCost:         baseCost.RequestCost + addCost.RequestCost,
+			TotalCost:           baseCost.TotalCost + addCost.TotalCost,
+		}
+	}
+
+	return merged
+}
+
+func cachedWriteTokens5m(details *ChatPromptTokensDetails) int {
+	if details == nil || details.CachedWriteTokenDetails == nil {
+		return 0
+	}
+	return details.CachedWriteTokenDetails.CachedWriteTokens5m
+}
+
+func cachedWriteTokens1h(details *ChatPromptTokensDetails) int {
+	if details == nil || details.CachedWriteTokenDetails == nil {
+		return 0
+	}
+	return details.CachedWriteTokenDetails.CachedWriteTokens1h
+}
+
+func sumOptionalInts(base, add *int) *int {
+	if base == nil && add == nil {
+		return nil
+	}
+	sum := 0
+	if base != nil {
+		sum += *base
+	}
+	if add != nil {
+		sum += *add
+	}
+	return &sum
+}
+
 // UnmarshalJSON implements custom JSON unmarshalling for BifrostCost.
 func (bc *BifrostCost) UnmarshalJSON(data []byte) error {
 	// First, try to unmarshal as a direct float
