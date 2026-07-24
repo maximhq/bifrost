@@ -2296,6 +2296,17 @@ func ProcessAndSendResponse(
 		}
 	}
 
+	// Final chunk: the stream has drained, so upstream is complete. Stamp the body
+	// before post-hooks persist it (completeDeferredSpan handles the trace span).
+	if isFinalChunk := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator); isFinalChunk != nil {
+		if final, ok := isFinalChunk.(bool); ok && final && response != nil {
+			response.PopulateUpstreamLatency(ctx)
+			if ef := response.GetExtraFields(); ef != nil && ef.Latency > 0 {
+				response.PopulateOverheadLatency(ctx, time.Duration(ef.Latency)*time.Millisecond)
+			}
+		}
+	}
+
 	// Run post hooks on the response (note: accumulated chunks above contain pre-hook data)
 	processedResponse, processedError := postHookRunner(ctx, response, nil)
 

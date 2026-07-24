@@ -703,11 +703,7 @@ export function LogDetailView({
 					{revealAvailable && (
 						<div className="flex items-center gap-2">
 							<span className="text-muted-foreground text-[11px] font-medium">Show original values</span>
-							<Switch
-								checked={revealEnabled}
-								onCheckedChange={handleToggleReveal}
-								data-testid="logdetails-reveal-toggle"
-							/>
+							<Switch checked={revealEnabled} onCheckedChange={handleToggleReveal} data-testid="logdetails-reveal-toggle" />
 						</div>
 					)}
 					{onClose ? (
@@ -979,7 +975,20 @@ export function LogDetailView({
 							<LogEntryDetailsView
 								className="w-full"
 								label="Latency"
+								tooltip="Total end-to-end request time: upstream plus Bifrost overhead."
 								value={log.latency == null || isNaN(log.latency) ? "N/A" : <div>{log.latency.toFixed(2)}ms</div>}
+							/>
+							<LogEntryDetailsView
+								className="w-full"
+								label="Upstream Latency"
+								tooltip="Time spent waiting on the provider, summed across every attempt."
+								value={log.upstream_latency == null || isNaN(log.upstream_latency) ? "N/A" : <div>{log.upstream_latency.toFixed(2)}ms</div>}
+							/>
+							<LogEntryDetailsView
+								className="w-full"
+								label="Bifrost Overhead"
+								tooltip="Time added by Bifrost itself: routing, plugins, and processing."
+								value={log.overhead_latency == null || isNaN(log.overhead_latency) ? "N/A" : <div>{log.overhead_latency.toFixed(2)}ms</div>}
 							/>
 						</div>
 					</div>

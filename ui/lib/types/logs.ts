@@ -570,6 +570,8 @@ export interface LogEntry {
 	tools?: Tool[];
 	tool_calls?: ToolCall[];
 	latency?: number;
+	upstream_latency?: number; // provider socket time across all attempts, ms
+	overhead_latency?: number; // Bifrost overhead (total minus upstream), ms
 	token_usage?: LLMUsage;
 	cache_debug?: CacheDebug;
 	cost?: number; // Cost in dollars (total cost of the request - includes cache lookup cost)

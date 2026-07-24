@@ -280,6 +280,7 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"webhook_deliveries_add_request_id_column"}, run: migrationAddWebhookDeliveryRequestIDColumn},
 	{IDs: []string{"logs_add_content_hidden_column"}, run: migrationAddContentHiddenColumn},
 	{IDs: []string{"logs_add_server_side_fallback_model_column"}, run: migrationAddServerSideFallbackModelColumn},
+	{IDs: []string{"logs_add_upstream_and_overhead_latency_columns"}, run: migrationAddUpstreamAndOverheadLatencyColumns},
 }
 
 // areThereAnyPendingMigrations returns true if there are any pending migrations to be applied.
@@ -593,6 +594,43 @@ func migrationAddCostAndCacheDebugColumn(ctx context.Context, db *gorm.DB, logge
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while adding cost column: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddUpstreamAndOverheadLatencyColumns adds the upstream_latency and
+// overhead_latency columns to the logs table.
+func migrationAddUpstreamAndOverheadLatencyColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_add_upstream_and_overhead_latency_columns"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &Log{}, "upstream_latency"); err != nil {
+				return err
+			}
+			if err := addColumnIfNotExists(tx, logger, &Log{}, "overhead_latency"); err != nil {
+				return err
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &Log{}, "upstream_latency"); err != nil {
+				return err
+			}
+			if err := dropColumnIfExists(tx, logger, &Log{}, "overhead_latency"); err != nil {
+				return err
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding upstream/overhead latency columns: %s", err.Error())
 	}
 	return nil
 }
