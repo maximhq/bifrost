@@ -58,6 +58,7 @@ import {
 	VirtualKey,
 } from "@/lib/types/governance";
 import { formatCurrency, getEffectiveBudgetLimit, hasActiveBudgetOverride, parseResetPeriod } from "@/lib/utils/governance";
+import ManagedVirtualKeyActions from "@enterprise/components/access-profiles/managedVirtualKeyActions";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useNavigate } from "@tanstack/react-router";
@@ -261,7 +262,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 
 	// Detect AP-managed status via the managing profile's virtual_key_ids, not just by the presence
 	// of assignees — directly-attached users don't imply an access-profile relation.
-	const { assignedUsers, isManagedByProfile: isManagedByProfileHook } = useVirtualKeyUsage(virtualKey);
+	const { assignedUsers, isManagedByProfile: isManagedByProfileHook, managingProfile } = useVirtualKeyUsage(virtualKey);
 	const isManagedByProfile = isEditing && isManagedByProfileHook;
 	// Team attachment: when creating from a team context (defaultTeamId provided), the entity
 	// assignment is pre-set and locked. When editing an existing VK the assignment can be changed.
@@ -918,13 +919,16 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 					<form onSubmit={form.handleSubmit(onSubmit)} className="flex h-full flex-col gap-6">
 						<div className="grow space-y-4 px-8">
 							{isManagedByProfile && (
-								<Alert variant="info">
-									<Lock className="h-4 w-4" />
-									<AlertDescription>
-										This virtual key is managed by an access profile. Only the name and description can be modified; providers, budgets,
-										rate limits, and MCP access are controlled by the profile.
-									</AlertDescription>
-								</Alert>
+								<>
+									<Alert variant="info">
+										<Lock className="h-4 w-4" />
+										<AlertDescription>
+											This virtual key is managed by an access profile. Only the name and description can be modified; providers, budgets,
+											rate limits, and MCP access are controlled by the profile.
+										</AlertDescription>
+									</Alert>
+									<ManagedVirtualKeyActions managingProfile={managingProfile} />
+								</>
 							)}
 
 							{isTeamLocked && !isManagedByProfile && (
