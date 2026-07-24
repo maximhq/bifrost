@@ -80127,7 +80127,7 @@
             "type": "array",
             "description": "Budgets owned by this team",
             "items": {
-            "$ref": "#/components/schemas/Budget"
+              "$ref": "#/components/schemas/Budget"
             }
           },
           "virtual_keys": {
@@ -80212,7 +80212,7 @@
             "type": "array",
             "description": "Budgets to create for this team; reset durations must be unique",
             "items": {
-            "$ref": "#/components/schemas/CreateBudgetRequest"
+              "$ref": "#/components/schemas/CreateBudgetRequest"
             }
           }
         }
