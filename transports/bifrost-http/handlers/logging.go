@@ -29,10 +29,11 @@ import (
 
 // LoggingHandler manages HTTP requests for logging operations
 type LoggingHandler struct {
-	logManager                  logging.LogManager
-	redactedKeysManager         RedactedKeysManager
-	config                      *lib.Config
-	logRedactionMappingResolver LogRedactionMappingResolver
+	logManager                     logging.LogManager
+	redactedKeysManager            RedactedKeysManager
+	config                         *lib.Config
+	logRedactionMappingResolver    LogRedactionMappingResolver
+	mcpLogRedactionMappingResolver MCPLogRedactionMappingResolver
 
 	// filterDataCache memoizes /api/logs/filterdata response bodies. Filter
 	// dropdowns don't need request-fresh data and the underlying matview-backed
@@ -246,6 +247,14 @@ type LogRedactionMappingResolver interface {
 	ResolveLogRedactionMapping(ctx *fasthttp.RequestCtx, log *logstore.Log) (*schemas.RedactionMapsByPhase, error)
 }
 
+// MCPLogRedactionMappingResolver optionally exposes decoded redaction mappings on MCP log-detail responses.
+type MCPLogRedactionMappingResolver interface {
+	// ResolveMCPLogRedactionMapping returns phase-scoped placeholder-to-original mappings when the caller may reveal them.
+	// Implementations should return nil, nil when the caller is not authorized or no mapping is available.
+	// Errors are treated as reveal-data failures only; the base MCP log detail response is still served.
+	ResolveMCPLogRedactionMapping(ctx *fasthttp.RequestCtx, log *logstore.MCPToolLog) (*schemas.RedactionMapsByPhase, error)
+}
+
 // NewLoggingHandler creates a new logging handler instance
 func NewLoggingHandler(logManager logging.LogManager, redactedKeysManager RedactedKeysManager, config *lib.Config) *LoggingHandler {
 	return &LoggingHandler{
@@ -258,6 +267,11 @@ func NewLoggingHandler(logManager logging.LogManager, redactedKeysManager Redact
 // SetLogRedactionMappingResolver wires the optional resolver used by Enterprise log-detail reads.
 func (h *LoggingHandler) SetLogRedactionMappingResolver(resolver LogRedactionMappingResolver) {
 	h.logRedactionMappingResolver = resolver
+}
+
+// SetMCPLogRedactionMappingResolver wires the optional resolver used by Enterprise MCP log-detail reads.
+func (h *LoggingHandler) SetMCPLogRedactionMappingResolver(resolver MCPLogRedactionMappingResolver) {
+	h.mcpLogRedactionMappingResolver = resolver
 }
 
 func (h *LoggingHandler) shouldHideDeletedVirtualKeysInFilters() bool {
@@ -2464,6 +2478,14 @@ func (h *LoggingHandler) getMCPLogByID(ctx *fasthttp.RequestCtx) {
 		}
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get MCP log: %v", err))
 		return
+	}
+	if h.mcpLogRedactionMappingResolver != nil && log.RedactionMapping != "" {
+		mapping, resolveErr := h.mcpLogRedactionMappingResolver.ResolveMCPLogRedactionMapping(ctx, log)
+		if resolveErr != nil {
+			logger.Error("failed to resolve redaction mapping for MCP log %s: %v", id, resolveErr)
+		} else if mapping != nil && mapping.HasReplacements() {
+			log.RevealRedactionMapping = mapping
+		}
 	}
 
 	if log.VirtualKeyID != nil && log.VirtualKeyName != nil && *log.VirtualKeyID != "" && *log.VirtualKeyName != "" {

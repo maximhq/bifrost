@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/queryscope"
@@ -45,6 +47,63 @@ func TestShouldUseFilterDataCacheRejectsScopedContext(t *testing.T) {
 	})
 	if shouldUseFilterDataCache(ctx, "") {
 		t.Fatal("expected scoped request to bypass filterdata cache")
+	}
+}
+
+// TestGetMCPLogByIDRedactionMapping verifies raw mappings stay hidden and only resolver-approved mappings are returned.
+func TestGetMCPLogByIDRedactionMapping(t *testing.T) {
+	SetLogger(&mockLogger{})
+	revealed := &schemas.RedactionMapsByPhase{
+		Input: map[string]string{"EMAIL-1": "revealed@example.com"},
+	}
+	tests := []struct {
+		name        string
+		resolver    *staticMCPLogRedactionResolver
+		wantMapping bool
+		wantCalls   int
+	}{
+		{name: "no resolver"},
+		{name: "authorized mapping", resolver: &staticMCPLogRedactionResolver{mapping: revealed}, wantMapping: true, wantCalls: 1},
+		{name: "resolver error", resolver: &staticMCPLogRedactionResolver{err: errors.New("decode failed")}, wantCalls: 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			manager := &dashboardLogManager{mcpLog: &logstore.MCPToolLog{
+				ID:               "mcp-1",
+				RedactionMapping: `plain:{"input":{"EMAIL-1":"private@example.com"}}`,
+			}}
+			handler := &LoggingHandler{logManager: manager}
+			if tt.resolver != nil {
+				handler.SetMCPLogRedactionMappingResolver(tt.resolver)
+			}
+			ctx := &fasthttp.RequestCtx{}
+			ctx.SetUserValue("id", "mcp-1")
+
+			handler.getMCPLogByID(ctx)
+
+			if ctx.Response.StatusCode() != fasthttp.StatusOK {
+				t.Fatalf("status = %d, want %d", ctx.Response.StatusCode(), fasthttp.StatusOK)
+			}
+			var response struct {
+				RedactionMapping *schemas.RedactionMapsByPhase `json:"redaction_mapping"`
+			}
+			if err := json.Unmarshal(ctx.Response.Body(), &response); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if bytes.Contains(ctx.Response.Body(), []byte("private@example.com")) {
+				t.Fatalf("raw persisted mapping leaked in response: %s", ctx.Response.Body())
+			}
+			if tt.wantMapping != (response.RedactionMapping != nil) {
+				t.Fatalf("redaction mapping present = %t, want %t", response.RedactionMapping != nil, tt.wantMapping)
+			}
+			if tt.wantMapping && response.RedactionMapping.Input["EMAIL-1"] != "revealed@example.com" {
+				t.Fatalf("revealed mapping = %#v", response.RedactionMapping)
+			}
+			if tt.resolver != nil && tt.resolver.calls != tt.wantCalls {
+				t.Fatalf("resolver calls = %d, want %d", tt.resolver.calls, tt.wantCalls)
+			}
+		})
 	}
 }
 
@@ -293,6 +352,7 @@ func (s *fakeSidekiqStore) ListClaimableSidekiqJobs(ctx context.Context, staleBe
 
 type dashboardLogManager struct {
 	failStats              bool
+	mcpLog                 *logstore.MCPToolLog
 	lastLLMFilters         logstore.SearchFilters
 	lastMCPFilters         logstore.MCPToolLogSearchFilters
 	lastRecalculateFilters logstore.SearchFilters
@@ -421,7 +481,11 @@ func (m *dashboardLogManager) RunCostRecalcJob(ctx context.Context, metaJSON str
 	return metaJSON, nil
 }
 func (m *dashboardLogManager) GetMCPToolLog(ctx context.Context, id string) (*logstore.MCPToolLog, error) {
-	return nil, nil
+	if m.mcpLog == nil {
+		return nil, nil
+	}
+	entry := *m.mcpLog
+	return &entry, nil
 }
 func (m *dashboardLogManager) SearchMCPToolLogs(ctx context.Context, filters *logstore.MCPToolLogSearchFilters, pagination *logstore.PaginationOptions) (*logstore.MCPToolLogSearchResult, error) {
 	return nil, nil
@@ -450,6 +514,19 @@ func (m *dashboardLogManager) GetMCPTopTools(ctx context.Context, filters logsto
 }
 
 func (m *dashboardLogManager) DeleteMCPToolLogs(ctx context.Context, ids []string) error { return nil }
+
+// staticMCPLogRedactionResolver records calls and returns a configured reveal result.
+type staticMCPLogRedactionResolver struct {
+	mapping *schemas.RedactionMapsByPhase
+	err     error
+	calls   int
+}
+
+// ResolveMCPLogRedactionMapping returns the configured test result.
+func (r *staticMCPLogRedactionResolver) ResolveMCPLogRedactionMapping(_ *fasthttp.RequestCtx, _ *logstore.MCPToolLog) (*schemas.RedactionMapsByPhase, error) {
+	r.calls++
+	return r.mapping, r.err
+}
 
 func (m *dashboardLogManager) CreateUserAgentMapping(ctx context.Context, mapping *logstore.UserAgentMapping) (*logstore.UserAgentMapping, error) {
 	return nil, nil

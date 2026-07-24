@@ -252,6 +252,7 @@ func TestHybrid_CreateAndFindMCPToolLog(t *testing.T) {
 		ResultParsed: map[string]any{
 			"ok": true,
 		},
+		RedactionMapping: `plain:{"input":{"EMAIL-1":"private@example.com"}}`,
 	}
 
 	require.NoError(t, hybrid.CreateMCPToolLog(ctx, entry))
@@ -262,6 +263,7 @@ func TestHybrid_CreateAndFindMCPToolLog(t *testing.T) {
 	assert.True(t, dbOnly.HasObject)
 	assert.Empty(t, dbOnly.Result)
 	assert.Nil(t, dbOnly.ResultParsed)
+	assert.Equal(t, entry.RedactionMapping, dbOnly.RedactionMapping)
 	preview, ok := dbOnly.ArgumentsParsed.(string)
 	require.True(t, ok)
 	assert.Len(t, []rune(preview), 200)
@@ -271,6 +273,7 @@ func TestHybrid_CreateAndFindMCPToolLog(t *testing.T) {
 	assert.True(t, found.HasObject)
 	assert.Equal(t, longInput, found.ArgumentsParsed.(map[string]interface{})["input"])
 	assert.Equal(t, true, found.ResultParsed.(map[string]interface{})["ok"])
+	assert.Equal(t, entry.RedactionMapping, found.RedactionMapping)
 }
 
 func TestHybrid_BatchCreateMCPToolLogsIfNotExists(t *testing.T) {
@@ -364,7 +367,8 @@ func TestHybrid_UpdateMCPToolLogOffloadsFullLog(t *testing.T) {
 	waitForUploads(t, func() bool { return objStore.Len() == 1 })
 
 	require.NoError(t, hybrid.UpdateMCPToolLog(ctx, entry.ID, MCPToolLog{
-		Status: "success",
+		Status:           "success",
+		RedactionMapping: `plain:{"output":{"EMAIL-2":"result@example.com"}}`,
 		ResultParsed: map[string]any{
 			"answer": "done",
 		},
@@ -385,11 +389,13 @@ func TestHybrid_UpdateMCPToolLogOffloadsFullLog(t *testing.T) {
 	assert.Equal(t, "success", dbOnly.Status)
 	assert.Empty(t, dbOnly.Result)
 	assert.Nil(t, dbOnly.ResultParsed)
+	assert.Contains(t, dbOnly.RedactionMapping, "result@example.com")
 
 	found, err := hybrid.FindMCPToolLog(ctx, entry.ID)
 	require.NoError(t, err)
 	assert.Equal(t, "find this", found.ArgumentsParsed.(map[string]interface{})["query"])
 	assert.Equal(t, "done", found.ResultParsed.(map[string]interface{})["answer"])
+	assert.Equal(t, dbOnly.RedactionMapping, found.RedactionMapping)
 }
 
 func TestHybrid_UpdateMCPToolLogRequiresObjectHydration(t *testing.T) {
