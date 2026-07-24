@@ -4,13 +4,13 @@ import { memo, useMemo } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import {
 	CHART_COLORS,
+	computeDisplaySeries,
 	formatFullTimestamp,
 	formatTimestamp,
 	getModelColor,
 	OTHER_SERIES_COLOR,
 	OTHER_SERIES_KEY,
 	OTHER_SERIES_LABEL,
-	pickTopSeries,
 } from "../../utils/chartUtils";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import type { ChartType } from "./chartTypeToggle";
@@ -100,9 +100,8 @@ function ProviderTokenChartImpl({ data, chartType, startTime, endTime, selectedP
 		if (isSingleProvider) {
 			providers = [selectedProvider];
 		} else {
-			const top = pickTopSeries(data.buckets, data.providers, (b, p) => b.by_provider?.[p]?.total_tokens ?? 0);
-			hasOther = top.length < data.providers.length;
-			providers = hasOther ? [...top, OTHER_SERIES_KEY] : top;
+			providers = computeDisplaySeries(data.buckets, data.providers, (b, p) => b.by_provider?.[p]?.total_tokens ?? 0);
+			hasOther = providers[providers.length - 1] === OTHER_SERIES_KEY;
 		}
 		const topSet = new Set(providers);
 
