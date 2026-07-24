@@ -109,6 +109,18 @@ func ParseTranscriptionFormDataBodyFromRequest(writer *multipart.Writer, openaiR
 		sort.Strings(extraKeys)
 		for _, key := range extraKeys {
 			value := openaiReq.ExtraParams[key]
+			// Repeated form fields (e.g. known_speaker_names[]) are preserved as []string;
+			// re-emit them as repeated fields under the same key instead of JSON-encoding
+			// them into a single field, so the upstream provider sees the same shape the
+			// client sent.
+			if values, ok := value.([]string); ok {
+				for _, v := range values {
+					if err := writer.WriteField(key, v); err != nil {
+						return utils.NewBifrostOperationError(fmt.Sprintf("failed to write %s field", key), err)
+					}
+				}
+				continue
+			}
 			var fieldValue string
 			switch v := value.(type) {
 			case string:
