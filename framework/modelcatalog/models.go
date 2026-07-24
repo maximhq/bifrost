@@ -242,21 +242,21 @@ func (mc *ModelCatalog) GetProvidersForModel(model string) []schemas.ModelProvid
 // provider given an explicit allowedModels list (used by VK governance
 // checks, not by the static keyconfig allow set).
 //
-//   - allowedModels=["*"]: defer to GetProvidersForModel (with custom-provider
-//     fast path when list-models is disabled).
+//   - allowedModels=["*"]: custom providers are allowed unconditionally (the catalog
+//     can't enumerate a custom backend's models); native providers are cross-checked
+//     against the catalog via GetProvidersForModel.
 //   - allowedModels=[]: deny-by-default.
 //   - explicit allowedModels: direct or provider-prefixed match against the
 //     provider's catalog.
 func (mc *ModelCatalog) IsModelAllowedForProvider(provider schemas.ModelProvider, model string, providerConfig *configstore.ProviderConfig, allowedModels schemas.WhiteList) bool {
-	isCustomProvider := false
-	hasListModelsEndpointDisabled := false
-	if providerConfig != nil && providerConfig.CustomProviderConfig != nil {
-		isCustomProvider = true
-		hasListModelsEndpointDisabled = !providerConfig.CustomProviderConfig.IsOperationAllowed(schemas.ListModelsRequest)
-	}
+	isCustomProvider := providerConfig != nil && providerConfig.CustomProviderConfig != nil
 
 	if allowedModels.IsUnrestricted() {
-		if isCustomProvider && hasListModelsEndpointDisabled {
+		// A custom provider serves whatever its backend exposes, which the catalog can't fully
+		// enumerate even with list-models on, so a wildcard means "all models on this provider"
+		// (the operator's GUI selection), not just catalog-known ones. Native providers stay
+		// catalog-cross-checked so a wildcard can't spray a model to providers that don't serve it.
+		if isCustomProvider {
 			return true
 		}
 		return slices.Contains(mc.GetProvidersForModel(model), provider)
