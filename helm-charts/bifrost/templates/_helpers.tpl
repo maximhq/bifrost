@@ -609,6 +609,9 @@ false
 {{- if .Values.bifrost.cluster.region }}
 {{- $_ := set $cluster "region" .Values.bifrost.cluster.region }}
 {{- end }}
+{{- if .Values.bifrost.cluster.clusterName }}
+{{- $_ := set $cluster "cluster_name" .Values.bifrost.cluster.clusterName }}
+{{- end }}
 {{- if .Values.bifrost.cluster.gossip }}
 {{- $gossip := dict }}
 {{- if .Values.bifrost.cluster.gossip.port }}

@@ -882,6 +882,13 @@ bifrost:
   cluster:
     enabled: false
     # region: ""               # Region identifier for cluster
+    # clusterName: ""          # Gossip isolation label. Nodes only cluster with
+                               # peers sharing the same clusterName. Set a distinct
+                               # value per cluster when multiple bifrost clusters
+                               # share a network or pod CIDR (e.g. separate
+                               # namespaces in one Kubernetes cluster). When unset,
+                               # the kubernetes discovery namespace is used.
+    clusterName: ""
     peers: []
       # - "bifrost-0.bifrost-headless:7946"
       # - "bifrost-1.bifrost-headless:7946"
