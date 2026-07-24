@@ -953,7 +953,7 @@ func (s *RDBLogStore) listSelectColumns() string {
 		// rows it can carry the provider's full (unbounded) error payload, and 25+ such
 		// rows can push the /api/logs response past Cloud Run's 32MB body limit (500s).
 		// The full error is still served by the detail endpoint (GetLog / GET /api/logs/{id}).
-		"latency", "token_usage", "cost", "status", "stream",
+		"latency", "upstream_latency", "overhead_latency", "token_usage", "cost", "status", "stream",
 		fmt.Sprintf("substr(content_summary, 1, %d) AS content_summary", maxContentSummaryBytes),
 		"metadata", "cache_debug",
 		"is_large_payload_request", "is_large_payload_response",

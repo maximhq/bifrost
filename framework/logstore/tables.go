@@ -194,6 +194,8 @@ type Log struct {
 	VideoDeleteOutput       string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostVideoDeleteResponse
 	CacheDebug              string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostCacheDebug
 	Latency                 *float64  `gorm:"index:idx_logs_latency" json:"latency,omitempty"`
+	UpstreamLatency         *float64  `gorm:"index:idx_logs_upstream_latency" json:"upstream_latency,omitempty"`                          // Provider socket time across all attempts, ms; nil = unmeasured
+	OverheadLatency         *float64  `gorm:"index:idx_logs_overhead_latency" json:"overhead_latency,omitempty"`                          // Bifrost overhead (total minus upstream), ms; nil = unmeasured
 	TokenUsage              string    `gorm:"type:text" json:"-"`                                                                         // JSON serialized *schemas.LLMUsage
 	Cost                    *float64  `gorm:"index" json:"cost,omitempty"`                                                                // Cost in dollars (total cost of the request - includes cache lookup cost)
 	Status                  string    `gorm:"type:varchar(50);index;index:idx_logs_ts_provider_status,priority:3;not null" json:"status"` // "processing", "success", or "error"

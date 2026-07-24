@@ -4993,6 +4993,19 @@ func (bifrost *Bifrost) shouldContinueWithFallbacks(fallback schemas.Fallback, f
 	return true
 }
 
+// populateLatencyExtraFields stamps upstream and overhead onto resp's ExtraFields,
+// deriving overhead from the request-start time on ctx. No-ops when unmeasured, so
+// absent stays distinct from zero. Call before RunPostLLMHooks so logging sees it.
+func populateLatencyExtraFields(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse) {
+	if resp == nil {
+		return
+	}
+	resp.PopulateUpstreamLatency(ctx)
+	if start, ok := ctx.Value(schemas.BifrostContextKeyRequestStartTime).(time.Time); ok {
+		resp.PopulateOverheadLatency(ctx, time.Since(start))
+	}
+}
+
 // handleRequest handles the request to the provider based on the request type
 // It handles plugin hooks, request validation, response processing, and fallback providers.
 // If the primary provider fails, it will try each fallback provider in order until one succeeds.
@@ -5008,10 +5021,13 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 
 	// Reset first: bifrost.ctx is shared across every nil-ctx caller.
 	ctx.ResetUpstreamLatency()
-	// Stamp on the way out, after every attempt and fallback.
+	// Whole-request start for top-down overhead (total minus upstream). On ctx so
+	// tryRequest can stamp the response before post-hooks, where logging reads it.
+	ctx.SetValue(schemas.BifrostContextKeyRequestStartTime, time.Now())
+	// Backstop for the returned body if a post-hook replaced the response.
 	defer func() {
 		ctx.StampUpstreamLatency()
-		resp.PopulateUpstreamLatency(ctx)
+		populateLatencyExtraFields(ctx, resp)
 	}()
 
 	// Try the primary provider first
@@ -5145,6 +5161,9 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	}
 
 	ctx.ResetUpstreamLatency()
+	// Whole-request start for overhead on the streaming short-circuit path; the
+	// normal path derives its total from the final chunk.
+	ctx.SetValue(schemas.BifrostContextKeyRequestStartTime, time.Now())
 
 	// Try the primary provider first
 	ctx.SetValue(schemas.BifrostContextKeyFallbackIndex, 0)
@@ -5310,6 +5329,9 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 		// Handle short-circuit with response (success case)
 		if shortCircuit.Response != nil {
 			shortCircuit.Response.PopulateExtraFields(req.RequestType, provider, model, model)
+			// Cache hit / short-circuit: upstream 0, overhead is the whole request.
+			// Stamp before post-hooks for logging.
+			populateLatencyExtraFields(ctx, shortCircuit.Response)
 			resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, shortCircuit.Response, nil, preCount)
 			if bifrostErr != nil {
 				bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
@@ -5422,6 +5444,9 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 	pluginCount := len(*bifrost.llmPlugins.Load())
 	select {
 	case result = <-msg.Response:
+		// Accumulator is complete once the provider returns; stamp before post-hooks
+		// so logging reads it off ExtraFields.
+		populateLatencyExtraFields(msg.Context, result)
 		resp, bifrostErr := pipeline.RunPostLLMHooks(msg.Context, result, nil, pluginCount)
 		if bifrostErr != nil {
 			bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
@@ -5556,6 +5581,9 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 		// Handle short-circuit with response (success case)
 		if shortCircuit.Response != nil {
 			shortCircuit.Response.PopulateExtraFields(req.RequestType, provider, model, model)
+			// Cache hit / short-circuit: upstream 0, overhead is the whole request.
+			// Stamp before post-hooks for logging.
+			populateLatencyExtraFields(ctx, shortCircuit.Response)
 			resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, shortCircuit.Response, nil, preCount)
 			if bifrostErr != nil {
 				bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)

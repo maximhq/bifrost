@@ -285,6 +285,7 @@ const (
 	BifrostContextKeySpanID                              BifrostContextKey = "bifrost-span-id"                                  // string (current span ID for child span creation - set by tracer)
 	BifrostContextKeyParentSpanID                        BifrostContextKey = "bifrost-parent-span-id"                           // string (parent span ID from W3C traceparent header - set by tracing middleware)
 	BifrostContextKeyStreamStartTime                     BifrostContextKey = "bifrost-stream-start-time"                        // time.Time (start time for streaming TTFT calculation - set by bifrost)
+	BifrostContextKeyRequestStartTime                    BifrostContextKey = "bifrost-request-start-time"                       // time.Time (whole-request start for overhead - set by bifrost)
 	BifrostContextKeyTracer                              BifrostContextKey = "bifrost-tracer"                                   // Tracer (tracer instance for completing deferred spans - set by bifrost)
 	BifrostContextKeyDeferTraceCompletion                BifrostContextKey = "bifrost-defer-trace-completion"                   // bool (signals trace completion should be deferred for streaming - set by streaming handlers)
 	BifrostContextKeyTraceCompleter                      BifrostContextKey = "bifrost-trace-completer"                          // func([]PluginLogEntry) (callback to complete trace after streaming, receives transport plugin logs - set by tracing middleware)
@@ -1698,7 +1699,13 @@ type BifrostResponseExtraFields struct {
 	// every attempt, in milliseconds. Unlike Latency it survives retries and
 	// fallbacks, so total-UpstreamLatency is Bifrost's own cost. Nil when the
 	// request never accumulated one; nil means unknown, not zero.
-	UpstreamLatency           *int64             `json:"upstream_latency,omitempty"`
+	UpstreamLatency *int64 `json:"upstream_latency,omitempty"`
+	// OverheadLatency is Bifrost's own cost (total minus UpstreamLatency), in ms.
+	// Not serialized (json:"-"): at response time it can only be an estimate, since
+	// serializing this response is itself overhead. The authoritative value is
+	// stamped on the trace and logged at completion; this is only the untraced
+	// fallback. Nil means unknown.
+	OverheadLatency           *int64             `json:"-"`
 	ChunkIndex                int                `json:"chunk_index"` // used for streaming responses to identify the chunk index, will be 0 for non-streaming responses
 	RawRequest                interface{}        `json:"raw_request,omitempty"`
 	RawResponse               interface{}        `json:"raw_response,omitempty"`
