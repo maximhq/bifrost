@@ -1274,6 +1274,12 @@ func AddMissingBetaHeadersToContext(ctx *schemas.BifrostContext, req *AnthropicM
 			headers = appendUniqueHeader(headers, AnthropicServerSideFallbackBetaHeader)
 		}
 	}
+	// Default fallback routing (fallbacks:"default", Opus 5) needs the superset header.
+	if req.fallbacksDefaultRouting() {
+		if !hasProvider || features.ServerSideFallback {
+			headers = appendUniqueHeader(headers, AnthropicServerSideFallbackDefaultBetaHeader)
+		}
+	}
 	// Check for fallback credit redemption (fallback_credit_token present). The
 	// canonical date is added here; FilterBetaHeadersForProvider rewrites it to the
 	// AWS date on Bedrock/Mantle.
@@ -1384,6 +1390,7 @@ var betaHeaderPrefixKnown = []string{
 	AnthropicCacheDiagnosisBetaHeaderPrefix,
 	AnthropicServerSideFallbackBetaHeaderPrefix,
 	AnthropicFallbackCreditBetaHeaderPrefix,
+	AnthropicMidConversationToolChangesBetaHeaderPrefix,
 }
 
 // betaHeaderProviderVersion rewrites a beta header's version date on providers
@@ -1412,6 +1419,16 @@ func stripBifrostFallbacksFromBody(jsonBody []byte, provider schemas.ModelProvid
 		return jsonBody, nil
 	}
 	if !fb.IsArray() {
+		// Non-array "fallbacks": the string form (currently "default", Opus 5 default
+		// fallback routing) is kept on providers that support server-side fallback and
+		// stripped fail-closed elsewhere — mirroring the native-object gating below.
+		// Any other scalar shape is dropped (upstream would reject it).
+		if fb.Type == gjson.String {
+			features, known := ProviderFeatures[provider]
+			if !known || features.ServerSideFallback {
+				return jsonBody, nil
+			}
+		}
 		return sjson.DeleteBytes(jsonBody, "fallbacks")
 	}
 	// Unknown/custom providers keep native entries, mirroring the
@@ -1765,6 +1782,8 @@ var betaHeaderPrefixToFeature = map[string]func(ProviderFeatureSupport) bool{
 	AnthropicCacheDiagnosisBetaHeaderPrefix:      func(f ProviderFeatureSupport) bool { return f.Diagnostics },
 	AnthropicServerSideFallbackBetaHeaderPrefix:  func(f ProviderFeatureSupport) bool { return f.ServerSideFallback },
 	AnthropicFallbackCreditBetaHeaderPrefix:      func(f ProviderFeatureSupport) bool { return f.FallbackCredit },
+	// Long key kept in its own group so gofmt doesn't realign the block above.
+	AnthropicMidConversationToolChangesBetaHeaderPrefix: func(f ProviderFeatureSupport) bool { return f.MidConvToolChanges },
 }
 
 // MergeBetaHeaders collects anthropic-beta values from provider ExtraHeaders and

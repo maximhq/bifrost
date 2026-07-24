@@ -452,7 +452,9 @@ func TestDeepCopyResponsesMessagePreservesToolSearchFields(t *testing.T) {
 	}
 	if copied.Execution == nil || *copied.Execution != execution {
 		t.Fatalf("expected execution to survive copy, got %#v", copied.ResponsesToolMessage)
-=======
+	}
+}
+
 // TestResponsesMessagePreservesAdditionalTools verifies that codex
 // `additional_tools` input items (sent for code-mode models such as
 // gpt-5.6-sol) round-trip byte-identically. These items carry a `tools` array

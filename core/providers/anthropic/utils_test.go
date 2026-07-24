@@ -2283,7 +2283,7 @@ func TestToBifrostResponsesRequest_FallbacksRouting(t *testing.T) {
 		req := &AnthropicMessageRequest{
 			Model:     "claude-fable-5",
 			MaxTokens: 1024,
-			Fallbacks: []AnthropicFallbackEntry{{Native: &AnthropicNativeFallback{Model: "claude-opus-4-8"}}},
+			Fallbacks: &AnthropicFallbacks{Entries: []AnthropicFallbackEntry{{Native: &AnthropicNativeFallback{Model: "claude-opus-4-8"}}}},
 		}
 		out := req.ToBifrostResponsesRequest(nil)
 		if len(out.Fallbacks) != 0 {
@@ -2298,7 +2298,7 @@ func TestToBifrostResponsesRequest_FallbacksRouting(t *testing.T) {
 	t.Run("bifrost strings go to Fallbacks", func(t *testing.T) {
 		req := &AnthropicMessageRequest{
 			Model:     "anthropic/claude-sonnet-4-5",
-			Fallbacks: []AnthropicFallbackEntry{{BifrostModel: "openai/gpt-4o"}},
+			Fallbacks: &AnthropicFallbacks{Entries: []AnthropicFallbackEntry{{BifrostModel: "openai/gpt-4o"}}},
 		}
 		out := req.ToBifrostResponsesRequest(nil)
 		if len(out.Fallbacks) != 1 || out.Fallbacks[0].Provider != schemas.OpenAI || out.Fallbacks[0].Model != "gpt-4o" {
@@ -2317,7 +2317,7 @@ func TestAddMissingBetaHeadersToContext_ServerSideFallback(t *testing.T) {
 	t.Run("anthropic adds the beta header", func(t *testing.T) {
 		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
 		req := &AnthropicMessageRequest{
-			Fallbacks: []AnthropicFallbackEntry{{Native: &AnthropicNativeFallback{Model: "claude-opus-4-8"}}},
+			Fallbacks: &AnthropicFallbacks{Entries: []AnthropicFallbackEntry{{Native: &AnthropicNativeFallback{Model: "claude-opus-4-8"}}}},
 		}
 		AddMissingBetaHeadersToContext(ctx, req, schemas.Anthropic)
 		extraHeaders, _ := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
@@ -2329,7 +2329,7 @@ func TestAddMissingBetaHeadersToContext_ServerSideFallback(t *testing.T) {
 	t.Run("vertex does not add the beta header", func(t *testing.T) {
 		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
 		req := &AnthropicMessageRequest{
-			Fallbacks: []AnthropicFallbackEntry{{Native: &AnthropicNativeFallback{Model: "claude-opus-4-8"}}},
+			Fallbacks: &AnthropicFallbacks{Entries: []AnthropicFallbackEntry{{Native: &AnthropicNativeFallback{Model: "claude-opus-4-8"}}}},
 		}
 		AddMissingBetaHeadersToContext(ctx, req, schemas.Vertex)
 		extraHeaders, _ := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
@@ -2341,7 +2341,7 @@ func TestAddMissingBetaHeadersToContext_ServerSideFallback(t *testing.T) {
 	t.Run("bifrost string fallbacks do not add the beta header", func(t *testing.T) {
 		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
 		req := &AnthropicMessageRequest{
-			Fallbacks: []AnthropicFallbackEntry{{BifrostModel: "openai/gpt-4o"}},
+			Fallbacks: &AnthropicFallbacks{Entries: []AnthropicFallbackEntry{{BifrostModel: "openai/gpt-4o"}}},
 		}
 		AddMissingBetaHeadersToContext(ctx, req, schemas.Anthropic)
 		extraHeaders, _ := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
@@ -4060,5 +4060,33 @@ func TestConvertChatResponseFormatToTool_OrderedMapSchema(t *testing.T) {
 	}
 	if _, hasAnyOf := normalizedText.Get("anyOf"); !hasAnyOf {
 		t.Fatal("nested multi-type union must be normalized to anyOf (recursion must descend into OrderedMap values)")
+	}
+}
+
+// TestMidConversationToolChangesBetaHeaderRouting pins the Opus 5
+// mid-conversation-tool-changes beta header: forwarded on the native Anthropic
+// surfaces (Claude API + Bedrock Mantle) and dropped where the feature is
+// unsupported (Bedrock Converse, Vertex, Azure).
+func TestMidConversationToolChangesBetaHeaderRouting(t *testing.T) {
+	t.Parallel()
+
+	hdr := AnthropicMidConversationToolChangesBetaHeader
+	for _, tc := range []struct {
+		provider schemas.ModelProvider
+		want     bool
+	}{
+		{schemas.Anthropic, true},
+		{schemas.BedrockMantle, true},
+		{schemas.Bedrock, false},
+		{schemas.Vertex, false},
+		{schemas.Azure, false},
+	} {
+		t.Run(string(tc.provider), func(t *testing.T) {
+			t.Parallel()
+			got := FilterBetaHeadersForProvider([]string{hdr}, tc.provider)
+			if kept := slices.Contains(got, hdr); kept != tc.want {
+				t.Errorf("FilterBetaHeadersForProvider(%q) kept=%v, want %v (got %v)", tc.provider, kept, tc.want, got)
+			}
+		})
 	}
 }

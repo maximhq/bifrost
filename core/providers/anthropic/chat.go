@@ -389,6 +389,11 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 		if fbVal, exists := bifrostReq.Params.ExtraParams["fallbacks"]; exists {
 			var natives []AnthropicNativeFallback
 			switch v := fbVal.(type) {
+			case string:
+				// fallbacks:"default" (Opus 5 default fallback routing) — promote onto the
+				// typed field so it marshals natively and drives the -07-01 header.
+				delete(anthropicReq.ExtraParams, "fallbacks")
+				anthropicReq.Fallbacks = &AnthropicFallbacks{Preset: v}
 			case []AnthropicNativeFallback:
 				natives = v
 			default:
@@ -403,7 +408,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 					n := natives[i]
 					entries[i] = AnthropicFallbackEntry{Native: &n}
 				}
-				anthropicReq.Fallbacks = entries
+				anthropicReq.Fallbacks = &AnthropicFallbacks{Entries: entries}
 			}
 		}
 
