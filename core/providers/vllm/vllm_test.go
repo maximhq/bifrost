@@ -10,7 +10,9 @@ import (
 )
 
 func TestVLLM(t *testing.T) {
-	t.Skip("vLLM tests are disabled")
+	if os.Getenv("VLLM_ENABLED") != "1" {
+		t.Skip("Skipping vLLM tests: set VLLM_ENABLED=1 to enable (requires a live vLLM instance, see VLLM_BASE_URL)")
+	}
 	t.Parallel()
 	baseURL := strings.TrimSpace(os.Getenv("VLLM_BASE_URL"))
 	if baseURL == "" {
@@ -26,17 +28,29 @@ func TestVLLM(t *testing.T) {
 
 	chatModel := getEnvWithDefault("VLLM_CHAT_MODEL", "Qwen/Qwen3-0.6B")
 	textModel := getEnvWithDefault("VLLM_TEXT_MODEL", "Qwen/Qwen3-0.6B")
-	reasoningModel := getEnvWithDefault("VLLM_REASONING_MODEL", "Qwen/Qwen3-0.6B")
-	embeddingModel := getEnvWithDefault("VLLM_EMBEDDING_MODEL", "Qwen3-Embedding-0.6B")
+	// Reasoning/embedding/transcription/rerank each need a model actually
+	// capable of them, and a single vLLM server only ever serves one model -
+	// unset unless the caller points VLLM_*_BASE_URL at a dedicated instance
+	// for that role (see llmtests.GetKeysForProvider's VLLM case), matching
+	// the default chat/text pod (e.g. a reasoning-enabled deployment, or a
+	// dedicated embedding/rerank/transcription model).
+	reasoningModel := strings.TrimSpace(os.Getenv("VLLM_REASONING_MODEL"))
+	embeddingModel := strings.TrimSpace(os.Getenv("VLLM_EMBEDDING_MODEL"))
+	transcriptionModel := strings.TrimSpace(os.Getenv("VLLM_TRANSCRIPTION_MODEL"))
 	rerankModel := strings.TrimSpace(os.Getenv("VLLM_RERANK_MODEL"))
+	enableReasoningTests := reasoningModel != "" && strings.TrimSpace(os.Getenv("VLLM_REASONING_BASE_URL")) != ""
+	enableEmbeddingTests := embeddingModel != "" && strings.TrimSpace(os.Getenv("VLLM_EMBEDDING_BASE_URL")) != ""
+	enableRerankTests := rerankModel != "" && strings.TrimSpace(os.Getenv("VLLM_RERANK_BASE_URL")) != ""
+	enableTranscriptionTests := transcriptionModel != "" && strings.TrimSpace(os.Getenv("VLLM_TRANSCRIPTION_BASE_URL")) != ""
 
 	testConfig := llmtests.ComprehensiveTestConfig{
-		Provider:       schemas.VLLM,
-		ChatModel:      chatModel,
-		TextModel:      textModel,
-		ReasoningModel: reasoningModel,
-		EmbeddingModel: embeddingModel,
-		RerankModel:    rerankModel,
+		Provider:           schemas.VLLM,
+		ChatModel:          chatModel,
+		TextModel:          textModel,
+		ReasoningModel:     reasoningModel,
+		EmbeddingModel:     embeddingModel,
+		TranscriptionModel: transcriptionModel,
+		RerankModel:        rerankModel,
 		Scenarios: llmtests.TestScenarios{
 			TextCompletion:             true,
 			TextCompletionStream:       true,
@@ -53,14 +67,14 @@ func TestVLLM(t *testing.T) {
 			ImageBase64:                false,
 			MultipleImages:             false,
 			CompleteEnd2End:            true,
-			Embedding:                  true,
-			Rerank:                     rerankModel != "",
+			Embedding:                  enableEmbeddingTests,
+			Rerank:                     enableRerankTests,
 			ListModels:                 true,
-			Reasoning:                  true,
+			Reasoning:                  enableReasoningTests,
 			PassThroughExtraParams:     true,
 			SpeechSynthesis:            false,
 			SpeechSynthesisStream:      false,
-			Transcription:              true,
+			Transcription:              enableTranscriptionTests,
 			TranscriptionStream:        false,
 			ImageGeneration:            false,
 			ImageGenerationStream:      false,
