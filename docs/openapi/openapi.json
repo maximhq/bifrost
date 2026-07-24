@@ -80120,14 +80120,15 @@
           "customer_id": {
             "type": "string"
           },
-          "budget_id": {
-            "type": "string"
-          },
           "customer": {
             "$ref": "#/components/schemas/Customer"
           },
-          "budget": {
+          "budgets": {
+            "type": "array",
+            "description": "Budgets owned by this team",
+            "items": {
             "$ref": "#/components/schemas/Budget"
+            }
           },
           "virtual_keys": {
             "type": [
@@ -80207,8 +80208,12 @@
           "customer_id": {
             "type": "string"
           },
-          "budget": {
+          "budgets": {
+            "type": "array",
+            "description": "Budgets to create for this team; reset durations must be unique",
+            "items": {
             "$ref": "#/components/schemas/CreateBudgetRequest"
+            }
           }
         }
       },
@@ -80222,8 +80227,12 @@
           "customer_id": {
             "type": "string"
           },
-          "budget": {
-            "$ref": "#/components/schemas/UpdateBudgetRequest"
+          "budgets": {
+            "type": "array",
+            "description": "Replacement set of budgets for this team; reset durations must be unique",
+            "items": {
+              "$ref": "#/components/schemas/CreateBudgetRequest"
+            }
           }
         }
       },

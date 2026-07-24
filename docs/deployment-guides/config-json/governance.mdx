@@ -103,17 +103,17 @@ Virtual keys are issued to clients and act as scoped API tokens. Each key specif
 
 ## Budgets
 
-Budgets cap cumulative spend (in USD) for a virtual key or provider config over a rolling window:
+Budgets cap cumulative spend (in USD) for an owning governance entity over a rolling window. The owner is declared on the budget:
 
 ```json
 {
   "governance": {
     "budgets": [
       {
-        "id": "budget-platform-monthly",
+        "id": "budget-team-ml-monthly",
         "max_limit": 500.00,
         "reset_duration": "1M",
-        "virtual_key_id": "vk-team-platform"
+        "team_id": "team-ml"
       }
     ]
   }
@@ -125,8 +125,13 @@ Budgets cap cumulative spend (in USD) for a virtual key or provider config over 
 | `id` | Yes | Unique budget ID |
 | `max_limit` | Yes | Maximum spend in USD |
 | `reset_duration` | Yes | Window length: `"30s"`, `"5m"`, `"1h"`, `"1d"`, `"1w"`, `"1M"`, `"1Y"` |
-| `virtual_key_id` | No | Attach to a virtual key (mutually exclusive with `provider_config_id`) |
+| `team_id` | No | Attach to a team. Set this on the budget; teams do not have `budget_id` |
+| `virtual_key_id` | No | Attach to a virtual key |
 | `provider_config_id` | No | Attach to a provider config ID |
+| `model_config_id` | No | Attach to a model config ID |
+| `customer_id` | No | Attach to a customer |
+
+Set at most one owner field on a budget. A team can own multiple budgets with different reset durations.
 
 ---
 
@@ -266,7 +271,7 @@ Routing rules dynamically select the provider and model for each request based o
 
 ## Customers & Teams
 
-Define organizational entities and attach budgets or rate limits to them:
+Define organizational entities and attach rate limits directly. Team budgets reference their owner through `governance.budgets[].team_id`:
 
 ```json
 {
@@ -283,8 +288,15 @@ Define organizational entities and attach budgets or rate limits to them:
       {
         "id": "team-ml",
         "name": "ML Team",
-        "customer_id": "customer-acme",
-        "budget_id": "budget-team-ml"
+        "customer_id": "customer-acme"
+      }
+    ],
+    "budgets": [
+      {
+        "id": "budget-team-ml",
+        "max_limit": 500.00,
+        "reset_duration": "1M",
+        "team_id": "team-ml"
       }
     ]
   }
