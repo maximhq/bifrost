@@ -841,7 +841,11 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 							return string(resp.Type), resp.ExtraFields.RawResponse, nil
 						}
 					}
-					return string(resp.Type), resp, nil
+					converted := resp.WithDefaults()
+					if converted == nil {
+						return "", nil, nil
+					}
+					return string(resp.Type), converted, nil
 				},
 				ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 					return err
