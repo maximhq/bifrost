@@ -250,7 +250,7 @@ func RunResponsesStreamTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 						responseCount++
 
 						// Safety check to prevent infinite loops
-						if responseCount > 500 {
+						if responseCount > sarvamAdjustedMaxChunks(testConfig.Provider, 500) {
 							return ResponsesStreamValidationResult{
 								Passed: false,
 								Errors: []string{"❌ Received too many streaming chunks, something might be wrong"},
@@ -484,8 +484,12 @@ func RunResponsesStreamTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 						}
 					}
 
-					if responseCount > 100 {
-						goto toolStreamComplete
+					// Enforced as an explicit test failure, not a silent goto to the
+					// completion label: this loop doesn't use the validation retry
+					// framework, so a goto here would let a runaway/incomplete stream
+					// still pass whatever partial validation ran afterward.
+					if responseCount > sarvamAdjustedMaxChunks(testConfig.Provider, 500) {
+						t.Fatalf("❌ Received too many streaming chunks (over %d), something might be wrong", sarvamAdjustedMaxChunks(testConfig.Provider, 500))
 					}
 
 				case <-streamCtx.Done():
@@ -834,9 +838,16 @@ func RunResponsesStreamTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 							}
 						}
 
-						// Safety check to prevent infinite loops
-						if responseCount > 300 {
-							goto lifecycleComplete
+						// Safety check to prevent infinite loops, enforced as an
+						// explicit failure rather than a silent goto: a breached cap
+						// is always anomalous, regardless of which lifecycle events
+						// happened to arrive before it fired.
+						if responseCount > sarvamAdjustedMaxChunks(testConfig.Provider, 300) {
+							return ResponsesStreamValidationResult{
+								Passed:       false,
+								Errors:       []string{fmt.Sprintf("❌ Received too many streaming chunks (over %d), something might be wrong", sarvamAdjustedMaxChunks(testConfig.Provider, 300))},
+								ReceivedData: responseCount > 0,
+							}
 						}
 
 					case <-streamCtx.Done():

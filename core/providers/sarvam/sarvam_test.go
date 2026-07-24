@@ -35,9 +35,24 @@ func TestSarvam(t *testing.T) {
 			SimpleChat:            true,
 			MultiTurnConversation: true,
 			ListModels:            true,
-			// CompletionStream is left off: Sarvam's chat models are reasoning models that
-			// emit 500+ reasoning chunks, tripping the harness's 500-chunk safety cap.
-			// Streaming is delegated to the shared OpenAI handler and verified manually.
+			// CompletionStream also gates RunResponsesStreamTest. Sarvam's chat
+			// models are reasoning models with verbose default-on reasoning
+			// (~1400 chunks observed live for the harness's own long-form prompt) -
+			// the shared harness raises its generic safety cap specifically for
+			// schemas.Sarvam in chat_completion_stream.go/responses_stream.go
+			// instead of skipping these scenarios.
+			CompletionStream:      true,
+			ToolCalls:             true,
+			ToolCallsStreaming:    true,
+			AutomaticFunctionCall: true,
+			// MultipleToolCalls/MultipleToolCallsStreaming are left off: Sarvam
+			// models sometimes only call one of several offered tools in a single
+			// turn (observed live), a model-capability limitation rather than a
+			// mapping bug.
+			// End2EndToolCalling/CompleteEnd2End are left off: Sarvam is stricter
+			// than OpenAI about requiring `tools` to be re-sent on a follow-up
+			// request carrying tool-result messages ("Tool messages found but no
+			// tools provided") - see ISSUES.md.
 		},
 	}
 

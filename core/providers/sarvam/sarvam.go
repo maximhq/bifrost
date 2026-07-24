@@ -99,6 +99,7 @@ func (provider *SarvamProvider) TextCompletionStream(ctx *schemas.BifrostContext
 
 // ChatCompletion performs a chat completion request to the Sarvam API.
 func (provider *SarvamProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	request = normalizeRequest(request)
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
 		provider.client,
@@ -121,10 +122,11 @@ func (provider *SarvamProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 // Uses Sarvam's OpenAI-compatible streaming format.
 // Returns a channel containing BifrostStreamChunk objects representing the stream or an error if the request fails.
 func (provider *SarvamProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	request = normalizeRequest(request)
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
 		provider.streamingClient,
-		provider.networkConfig.BaseURL+"/v1/chat/completions",
+		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
 		request,
 		openai.BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
