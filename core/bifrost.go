@@ -5824,6 +5824,21 @@ func executeRequestWithRetries[T any](
 	req *schemas.BifrostRequest,
 	logger schemas.Logger,
 ) (result T, bifrostError *schemas.BifrostError) {
+	// These values are request-scoped outputs. Clear them even when capture is
+	// disabled so a reused BifrostContext cannot leak metadata from a prior request.
+	ctx.ClearValue(schemas.BifrostContextKeyProviderRequestID)
+	ctx.ClearValue(schemas.BifrostContextKeyProviderRequestIDHeader)
+	ctx.ClearValue(schemas.BifrostContextKeyProviderRequestIDTrail)
+
+	providerRequestIDHeader, providerRequestIDConfigErr := schemas.ResolveProviderRequestIDHeader(providerKey, config)
+	if providerRequestIDConfigErr != nil {
+		return result, newBifrostErrorFromMsg(providerRequestIDConfigErr.Error())
+	}
+	captureProviderRequestID := providerRequestIDHeader != ""
+	if captureProviderRequestID {
+		ctx.SetValue(schemas.BifrostContextKeyProviderRequestIDTrail, []schemas.ProviderRequestIDRecord{})
+	}
+
 	var attempts int
 
 	// Emit the terminal routing-engine entry on every return path — including
@@ -5868,6 +5883,12 @@ func executeRequestWithRetries[T any](
 
 	for attempts = 0; attempts <= config.NetworkConfig.MaxRetries; attempts++ {
 		ctx.SetValue(schemas.BifrostContextKeyNumberOfRetries, attempts)
+
+		if captureProviderRequestID {
+			ctx.ClearValue(schemas.BifrostContextKeyProviderResponseHeaders)
+			ctx.ClearValue(schemas.BifrostContextKeyProviderRequestID)
+			ctx.ClearValue(schemas.BifrostContextKeyProviderRequestIDHeader)
+		}
 
 		// Reset the trail on the first attempt so a reused or shared context (bifrost.ctx)
 		// doesn't carry over records from a previous request.
@@ -6183,6 +6204,20 @@ func executeRequestWithRetries[T any](
 		// Attempt the request
 		result, bifrostError = requestHandler(currentKey)
 
+		// Response headers are available as soon as the provider handler returns,
+		// including for streaming requests. Capture the current ID before inspecting
+		// the first SSE chunk so an embedded stream error cannot hide the header.
+		capturedProviderRequestID := ""
+		if captureProviderRequestID {
+			if headers, ok := ctx.Value(schemas.BifrostContextKeyProviderResponseHeaders).(map[string]string); ok {
+				capturedProviderRequestID = providerUtils.ExtractProviderRequestIDWithLogger(headers, providerRequestIDHeader, logger)
+				if capturedProviderRequestID != "" {
+					ctx.SetValue(schemas.BifrostContextKeyProviderRequestID, capturedProviderRequestID)
+					ctx.SetValue(schemas.BifrostContextKeyProviderRequestIDHeader, providerRequestIDHeader)
+				}
+			}
+		}
+
 		// For streaming requests that returned success, check if the first chunk
 		// is actually an error (e.g., rate limits sent as SSE events in HTTP 200).
 		// This enables retries and fallbacks for providers that embed errors in
@@ -6203,6 +6238,17 @@ func executeRequestWithRetries[T any](
 					result = any(checkedStream).(T)
 				}
 			}
+		}
+
+		if capturedProviderRequestID != "" {
+			var statusCode *int
+			if bifrostError != nil && bifrostError.StatusCode != nil {
+				status := *bifrostError.StatusCode
+				statusCode = &status
+			}
+			schemas.AppendToContextList(ctx, schemas.BifrostContextKeyProviderRequestIDTrail, schemas.ProviderRequestIDRecord{
+				Attempt: attempts, Provider: providerKey, RequestID: capturedProviderRequestID, HeaderName: providerRequestIDHeader, StatusCode: statusCode,
+			})
 		}
 
 		// Check if result is a streaming channel - if so, defer span completion
