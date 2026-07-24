@@ -1499,6 +1499,32 @@ type BifrostResponseChoice struct {
 	*ChatStreamResponseChoice
 }
 
+// MarshalJSON implements custom JSON marshalling for BifrostResponseChoice.
+// Beyond the default flattening of the embedded choice fields, it mirrors the
+// non-stream message's "reasoning" into "message.reasoning_content" so OpenAI-compatible
+// clients that only recognize "reasoning_content" (e.g. @ai-sdk/openai-compatible) can
+// read reasoning output without a Bifrost-specific response transform (issue #5325).
+// This type is response-only — unlike ChatMessage, which is also reused to build
+// outbound provider requests (Perplexity, HuggingFace, ...) — so the alias cannot leak
+// into request payloads. The streaming case is handled directly by
+// ChatStreamResponseChoiceDelta.MarshalJSON, since Delta is a plain named field here
+// (not anonymously embedded) and its own marshaller already fires normally.
+func (c BifrostResponseChoice) MarshalJSON() ([]byte, error) {
+	type Alias BifrostResponseChoice
+	data, err := MarshalSorted(Alias(c))
+	if err != nil {
+		return nil, err
+	}
+
+	if c.ChatNonStreamResponseChoice == nil || c.ChatNonStreamResponseChoice.Message == nil ||
+		c.ChatNonStreamResponseChoice.Message.ChatAssistantMessage == nil ||
+		c.ChatNonStreamResponseChoice.Message.ChatAssistantMessage.Reasoning == nil {
+		return data, nil
+	}
+
+	return sjson.SetBytes(data, "message.reasoning_content", *c.ChatNonStreamResponseChoice.Message.ChatAssistantMessage.Reasoning)
+}
+
 // BifrostFinishReason represents the reason why the model stopped generating.
 type BifrostFinishReason string
 
@@ -1617,6 +1643,20 @@ func (d *ChatStreamResponseChoiceDelta) UnmarshalJSON(data []byte) error {
 	}
 
 	return nil
+}
+
+// MarshalJSON implements custom marshalling for ChatStreamResponseChoiceDelta.
+// It mirrors "reasoning" into "reasoning_content" so OpenAI-compatible clients that only
+// recognize "reasoning_content" (e.g. @ai-sdk/openai-compatible) can read streamed
+// reasoning deltas without a Bifrost-specific response transform.
+func (d ChatStreamResponseChoiceDelta) MarshalJSON() ([]byte, error) {
+	type Alias ChatStreamResponseChoiceDelta
+	aux := struct {
+		Alias
+		ReasoningContent *string `json:"reasoning_content,omitempty"`
+	}{Alias: Alias(d), ReasoningContent: d.Reasoning}
+
+	return MarshalSorted(aux)
 }
 
 // LogProb represents the log probability of a token.
