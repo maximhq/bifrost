@@ -2035,6 +2035,9 @@ func (provider *BedrockProvider) Embedding(ctx *schemas.BifrostContext, key sche
 		}
 		bifrostResponse = converted
 		bifrostResponse.Model = request.Model
+		// Cohere embedding responses do not include token counts in the body.
+		// Bedrock returns them on the invoke response in X-Amzn-Bedrock-Input-Token-Count.
+		bifrostResponse.Usage = parseBedrockInvokeUsageFromHeaders(providerResponseHeaders)
 		// For embeddings_by_type responses preserve the raw Bedrock payload so the
 		// invoke-endpoint converter can return all encoding variants verbatim, since
 		// the internal BifrostEmbeddingResponse only has float32 and string fields.
