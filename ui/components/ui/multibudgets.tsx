@@ -114,7 +114,7 @@ export default function MultiBudgetLines({
 								variant="ghost"
 								size="icon"
 								type="button"
-								className="text-destructive mb-0.5 h-8 w-8 shrink-0"
+								className="text-muted-foreground mb-0.5 h-8 w-8 shrink-0 hover:text-red-400"
 								onClick={() => removeLine(index)}
 							>
 								<Trash2 className="h-4 w-4" />
