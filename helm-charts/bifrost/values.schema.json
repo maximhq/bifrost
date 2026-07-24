@@ -4313,13 +4313,18 @@
               }
             },
             {
-              "not": {
-                "required": ["password", "passwordCommand"]
-              }
-            },
-            {
-              "not": {
-                "required": ["existingSecret", "passwordCommand"]
+              "if": {
+                "required": ["passwordCommand"]
+              },
+              "then": {
+                "properties": {
+                  "password": {
+                    "maxLength": 0
+                  },
+                  "existingSecret": {
+                    "maxLength": 0
+                  }
+                }
               }
             }
           ]
