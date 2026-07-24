@@ -4,13 +4,21 @@ import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { getProviderLabel, ProviderName, RequestTypeColors, RequestTypeLabels, Status, StatusBarColors } from "@/lib/constants/logs";
-import { ChatMessageContent, LogEntry, ResponsesMessageContentBlock } from "@/lib/types/logs";
+import { ChatMessageContent, DisplayLogEntry, LogEntry, ResponsesMessageContentBlock } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
 import { formatCompactNumber } from "@/lib/utils/numbers";
 import { ColumnDef } from "@tanstack/react-table";
 import { format, formatDistanceToNow } from "date-fns";
-import { ArrowUpDown, MoreHorizontal, Trash2 } from "lucide-react";
+import { ArrowUpDown, ChevronRight, CornerDownRight, Loader2, MoreHorizontal, Trash2 } from "lucide-react";
 import { useState } from "react";
+
+// Passed to useReactTable({ meta }) by the logs page so the expander column can
+// read/toggle chain expansion without threading props through column factories.
+export interface LogsTableMeta {
+	expandedChainIds: Set<string>;
+	loadingChainIds: Set<string>;
+	onToggleChain: (log: LogEntry) => void;
+}
 
 function LogActionsMenu({ log, onDelete }: { log: LogEntry; onDelete: (log: LogEntry) => void }) {
 	const [isOpen, setIsOpen] = useState(false);
@@ -250,7 +258,51 @@ export const createColumns = (
 	onDelete: (log: LogEntry) => void,
 	hasDeleteAccess = true,
 	metadataKeys: string[] = [],
+	groupedView = false,
 ): ColumnDef<LogEntry>[] => {
+	// Chevron that expands a fallback chain in the grouped view. Child rows get a
+	// corner connector instead so the hierarchy stays readable in any column order.
+	const expandColumn: ColumnDef<LogEntry>[] = groupedView
+		? [
+			{
+				id: "expand",
+				header: "",
+				size: 52,
+				cell: ({ row, table }) => {
+					const meta = table.options.meta as LogsTableMeta | undefined;
+					const log = row.original as DisplayLogEntry;
+					if (log.__chainChild) {
+						return <CornerDownRight className="text-muted-foreground/70 mx-auto size-3.5" />;
+					}
+					const childCount = log.child_count ?? 0;
+					if (!childCount || !meta) return null;
+					const isExpanded = meta.expandedChainIds.has(log.id);
+					const isLoading = meta.loadingChainIds.has(log.id);
+					return (
+						<button
+							type="button"
+							data-testid="log-chain-expand-btn"
+							aria-label={isExpanded ? "Collapse fallback chain" : `Expand fallback chain (${childCount} attempts)`}
+							aria-expanded={isExpanded}
+							className="text-muted-foreground hover:text-foreground gap-1 rounded-sm transition-colors absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex items-center justify-center cursor-pointer"
+							onClick={(event) => {
+								event.stopPropagation();
+								meta.onToggleChain(log);
+							}}
+						>
+							{isLoading ? (
+								<Loader2 className="size-3.5 animate-spin" />
+							) : (
+								<ChevronRight className={cn("size-3.5 transition-transform", isExpanded && "rotate-90")} />
+							)}
+							<span className="font-mono text-[10.5px] tabular-nums">{childCount}</span>
+						</button>
+					);
+				},
+			},
+		]
+		: [];
+
 	const baseColumns: ColumnDef<LogEntry>[] = [
 		{
 			accessorKey: "status",
@@ -502,5 +554,5 @@ export const createColumns = (
 		]
 		: [];
 
-	return [...baseColumns, ...attributionColumns, ...metadataColumns, ...actionsColumn];
+	return [...expandColumn, ...baseColumns, ...attributionColumns, ...metadataColumns, ...actionsColumn];
 };

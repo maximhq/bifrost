@@ -18,8 +18,8 @@ import {
 	useGetLogsQuery,
 	useGetLogsStatsQuery,
 } from "@/lib/store";
-import { useLazyGetLogByIdQuery, useLazyGetLogsQuery } from "@/lib/store/apis/logsApi";
-import type { LogEntry, LogFilters, Pagination } from "@/lib/types/logs";
+import { useLazyGetLogByIdQuery, useLazyGetLogSessionByIdQuery, useLazyGetLogsQuery } from "@/lib/store/apis/logsApi";
+import type { DisplayLogEntry, LogEntry, LogFilters, Pagination } from "@/lib/types/logs";
 import { dateUtils } from "@/lib/types/logs";
 import { COMPACT_NUMBER_FORMAT } from "@/lib/utils/numbers";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
@@ -100,6 +100,7 @@ export default function LogsPage() {
 			cache_hit_types: parseAsSafeArrayOf.withDefault([]),
 			metadata_filters: parseAsString.withDefault(""),
 			selected_log: parseAsString.withDefault(""),
+			grouped: parseAsBoolean.withDefault(false),
 		},
 		{
 			history: "push",
@@ -111,6 +112,9 @@ export default function LogsPage() {
 	const selectedLogId = urlState.selected_log || null;
 	const activeLogFetchId = useRef<string | null>(null);
 	const polling = urlState.polling;
+	// Grouped view collapses fallback chains under their root. Disabled while a
+	// session filter is active — that view is already scoped to one chain/session.
+	const grouped = urlState.grouped && !urlState.parent_request_id;
 
 	// Convert URL state to filters and pagination for API calls
 	const filters: LogFilters = useMemo(
@@ -293,6 +297,7 @@ export default function LogsPage() {
 		{
 			filters,
 			pagination,
+			rootsOnly: grouped,
 		},
 		{
 			pollingInterval: showEmptyState || polling ? 10000 : 0,
@@ -350,6 +355,59 @@ export default function LogsPage() {
 			});
 		},
 		[filters, setFilters],
+	);
+
+	// --- Grouped view: chain expansion state -------------------------------
+	// Children of an expanded root, keyed by root log id. Loaded lazily via the
+	// sessions endpoint (a chain's "session id" is just the root log's id).
+	const [expandedChainIds, setExpandedChainIds] = useState<Set<string>>(new Set());
+	const [chainChildren, setChainChildren] = useState<Record<string, LogEntry[]>>({});
+	const [loadingChainIds, setLoadingChainIds] = useState<Set<string>>(new Set());
+	const [triggerGetChainChildren] = useLazyGetLogSessionByIdQuery();
+
+	// Collapse everything when the page of roots changes — expanded ids from the
+	// previous page are meaningless and cached children may be stale.
+	useEffect(() => {
+		setExpandedChainIds(new Set());
+		setChainChildren({});
+		setLoadingChainIds(new Set());
+	}, [filters, pagination, grouped]);
+
+	const handleToggleChain = useCallback(
+		(log: LogEntry) => {
+			const isExpanded = expandedChainIds.has(log.id);
+			setExpandedChainIds((prev) => {
+				const next = new Set(prev);
+				if (next.has(log.id)) {
+					next.delete(log.id);
+				} else {
+					next.add(log.id);
+				}
+				return next;
+			});
+			if (isExpanded || chainChildren[log.id] || loadingChainIds.has(log.id)) return;
+
+			setLoadingChainIds((prev) => new Set(prev).add(log.id));
+			triggerGetChainChildren({ sessionId: log.id, pagination: { limit: 500, offset: 0, order: "asc" } }).then((result) => {
+				setLoadingChainIds((prev) => {
+					const next = new Set(prev);
+					next.delete(log.id);
+					return next;
+				});
+				if (result.data) {
+					const children = result.data.logs;
+					setChainChildren((prevCache) => ({ ...prevCache, [log.id]: children }));
+				} else if (result.error) {
+					setExpandedChainIds((prev) => {
+						const next = new Set(prev);
+						next.delete(log.id);
+						return next;
+					});
+					setError(getErrorMessage(result.error));
+				}
+			});
+		},
+		[expandedChainIds, chainChildren, loadingChainIds, triggerGetChainChildren],
 	);
 
 	const handleDelete = useCallback(
@@ -479,7 +537,10 @@ export default function LogsPage() {
 		return Object.keys(filterData.metadata_keys).sort();
 	}, [filterData?.metadata_keys]);
 
-	const columns = useMemo(() => createColumns(handleDelete, hasDeleteAccess, metadataKeys), [handleDelete, hasDeleteAccess, metadataKeys]);
+	const columns = useMemo(
+		() => createColumns(handleDelete, hasDeleteAccess, metadataKeys, grouped),
+		[handleDelete, hasDeleteAccess, metadataKeys, grouped],
+	);
 
 	const columnIds = useMemo(
 		() => columns.map((col) => ("id" in col && col.id ? col.id : "accessorKey" in col ? String(col.accessorKey) : "")).filter(Boolean),
@@ -522,12 +583,36 @@ export default function LogsPage() {
 		paramName: "cols",
 		storageKey: "bifrost.logs.cols",
 		defaultHidden: DEFAULT_HIDDEN_COLUMNS,
-		fixedColumns: hasDeleteAccess ? { right: ["actions"] } : undefined,
+		fixedColumns: {
+			...(grouped ? { left: ["expand"] } : {}),
+			...(hasDeleteAccess ? { right: ["actions"] } : {}),
+		},
 	});
 
 	// Navigation for log detail sheet
 	const logs = logsData?.logs ?? [];
 	const totalItems = logsData?.stats?.total_requests ?? 0;
+
+	// Grouped view: splice loaded children in below their expanded root. Children
+	// are marked so the table can indent them; they don't affect pagination.
+	const displayLogs: DisplayLogEntry[] = useMemo(() => {
+		if (!grouped || expandedChainIds.size === 0) return logs;
+		const out: DisplayLogEntry[] = [];
+		for (const log of logs) {
+			out.push(log);
+			if (expandedChainIds.has(log.id)) {
+				for (const child of chainChildren[log.id] ?? []) {
+					out.push({ ...child, __chainChild: true });
+				}
+			}
+		}
+		return out;
+	}, [logs, grouped, expandedChainIds, chainChildren]);
+
+	const tableMeta = useMemo(
+		() => ({ expandedChainIds, loadingChainIds, onToggleChain: handleToggleChain }),
+		[expandedChainIds, loadingChainIds, handleToggleChain],
+	);
 	const selectedLogFromData = useMemo(
 		() => (selectedLogId ? (logs.find((l) => l.id === selectedLogId) ?? null) : null),
 		[selectedLogId, logs],
@@ -571,6 +656,7 @@ export default function LogsPage() {
 					triggerGetLogs({
 						filters,
 						pagination: { ...pagination, offset: newOffset },
+						rootsOnly: grouped,
 					}).then((result) => {
 						if (result.data?.logs?.length) {
 							const lastLog = result.data.logs[result.data.logs.length - 1];
@@ -596,6 +682,7 @@ export default function LogsPage() {
 					triggerGetLogs({
 						filters,
 						pagination: { ...pagination, offset: newOffset },
+						rootsOnly: grouped,
 					}).then((result) => {
 						if (result.data?.logs?.length) {
 							const firstLog = result.data.logs[0];
@@ -611,7 +698,7 @@ export default function LogsPage() {
 				}
 			}
 		},
-		[selectedLogId, selectedLogIndex, logs, pagination, totalItems, filters, setUrlState, triggerGetLogs],
+		[selectedLogId, selectedLogIndex, logs, pagination, totalItems, filters, grouped, setUrlState, triggerGetLogs],
 	);
 
 	return (
@@ -641,6 +728,8 @@ export default function LogsPage() {
 								loading={logsIsFetching}
 								polling={polling}
 								onPollToggle={handlePollToggle}
+								grouped={grouped}
+								onGroupedToggle={(enabled) => setUrlState({ grouped: enabled, offset: 0 })}
 								period={period}
 								onPeriodChange={handlePeriodChange}
 								totalLogs={totalItems}
@@ -712,7 +801,8 @@ export default function LogsPage() {
 						<div className="min-h-0 flex-1">
 							<LogsDataTable
 								columns={columns}
-								data={logs}
+								data={displayLogs}
+								tableMeta={tableMeta}
 								loading={logsIsFetching}
 								totalItems={totalItems}
 								pagination={pagination}

@@ -111,15 +111,18 @@ export const logsApi = baseApi.injectEndpoints({
 			{
 				filters: LogFilters;
 				pagination: Pagination;
+				/** Grouped view: hide fallback-child rows so each chain lists as its root */
+				rootsOnly?: boolean;
 			}
 		>({
-			query: ({ filters, pagination }) => ({
+			query: ({ filters, pagination, rootsOnly }) => ({
 				url: "/logs",
 				params: {
 					limit: pagination.limit,
 					offset: pagination.offset,
 					sort_by: pagination.sort_by,
 					order: pagination.order,
+					...(rootsOnly ? { roots_only: "true" } : {}),
 					...buildFilterParams(filters),
 				},
 			}),

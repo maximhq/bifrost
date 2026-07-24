@@ -533,6 +533,11 @@ func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
 	if contentSearch := string(ctx.QueryArgs().Peek("content_search")); contentSearch != "" {
 		filters.ContentSearch = contentSearch
 	}
+	if rootsOnly := string(ctx.QueryArgs().Peek("roots_only")); rootsOnly != "" {
+		if val, err := strconv.ParseBool(rootsOnly); err == nil {
+			filters.RootsOnly = val
+		}
+	}
 	parseMetadataFilters(ctx, filters)
 
 	// Extract pagination parameters

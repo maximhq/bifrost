@@ -807,6 +807,7 @@ func startMatViewRefresher(ctx context.Context, db *gorm.DB, interval time.Durat
 func canUseMatViewFilters(f SearchFilters) bool {
 	return f.ContentSearch == "" &&
 		f.ParentRequestID == "" &&
+		!f.RootsOnly &&
 		len(f.MetadataFilters) == 0 &&
 		canUseMatViewStatusFilter(f.Status) &&
 		len(f.RoutingEngineUsed) == 0 &&
