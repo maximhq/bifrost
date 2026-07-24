@@ -862,6 +862,11 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	numberOfRetries := bifrost.GetIntFromContext(ctx, schemas.BifrostContextKeyNumberOfRetries)
 	fallbackIndex := bifrost.GetIntFromContext(ctx, schemas.BifrostContextKeyFallbackIndex)
 	attemptTrail, _ := ctx.Value(schemas.BifrostContextKeyAttemptTrail).([]schemas.KeyAttemptRecord)
+	if selectedKeyID == "" && len(attemptTrail) > 0 {
+		last := attemptTrail[len(attemptTrail)-1]
+		selectedKeyID = last.KeyID
+		selectedKeyName = last.KeyName
+	}
 	// Get routing engines array and join into comma-separated string
 	routingEngines := []string{}
 	if engines, ok := ctx.Value(schemas.BifrostContextKeyRoutingEnginesUsed).([]string); ok {
