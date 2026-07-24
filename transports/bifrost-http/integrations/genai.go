@@ -1789,17 +1789,28 @@ func isImageGenerationRequest(req *gemini.GeminiGenerationRequest) bool {
 // isImageEditRequest checks if the request is for image edit
 // Image edit is detected by:
 // 1. Model is an Imagen model and has reference images
-// 2. Inline image data present in the first content part and response modalities contain IMAGE
+// 2. Inline image data present in any part of the first content (regardless of position within
+//    that content) and response modalities contain IMAGE. Scope is intentionally limited to the
+//    first content only, matching the original (pre-fix) detection target — this only fixes the
+//    within-content part-ordering bug. Reasoning about which content in a multi-turn conversation
+//    an image "belongs to" is inherently ambiguous (a stale historical image and an intentional
+//    continued-edit reference look identical) and out of scope here.
 func isImageEditRequest(req *gemini.GeminiGenerationRequest) bool {
 	if schemas.IsImagenModel(req.Model) && len(req.Instances) > 0 && req.Instances[0].ReferenceImages != nil {
 		return true
 	}
 
-	if len(req.Contents) > 0 && len(req.Contents[0].Parts) > 0 && req.Contents[0].Parts[0].InlineData != nil && strings.Contains(req.Contents[0].Parts[0].InlineData.MIMEType, "image") {
-		for _, modality := range req.GenerationConfig.ResponseModalities {
-			if modality == gemini.ModalityImage {
-				return true
-			}
+	if !slices.Contains(req.GenerationConfig.ResponseModalities, gemini.ModalityImage) {
+		return false
+	}
+
+	if len(req.Contents) == 0 {
+		return false
+	}
+
+	for _, part := range req.Contents[0].Parts {
+		if part != nil && part.InlineData != nil && strings.Contains(strings.ToLower(part.InlineData.MIMEType), "image") {
+			return true
 		}
 	}
 
