@@ -3284,6 +3284,10 @@ func (g *GenericRouter) handlePassthroughNonStream(
 			ctx.Response.Header.Set(k, v)
 		}
 	}
+	// Passthrough forwards provider bytes 1:1, so extra_fields can't ride the body —
+	identityFields := resp.ExtraFields
+	identityFields.ProviderResponseHeaders = nil
+	lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, identityFields)
 	ctx.Response.SetBody(resp.Body)
 }
 
@@ -3374,6 +3378,10 @@ func (g *GenericRouter) handlePassthroughStream(
 			ctx.Response.Header.Set(k, v)
 		}
 	}
+	// Routed identity via headers (passthrough body is provider bytes 1:1).
+	identityFields := passthroughResp.ExtraFields
+	identityFields.ProviderResponseHeaders = nil
+	lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, identityFields)
 
 	// Use SSEStreamReader to bypass fasthttp's internal pipe batching
 	reader := lib.NewSSEStreamReader()
