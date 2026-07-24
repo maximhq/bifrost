@@ -2949,6 +2949,12 @@ func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(param
 				config.StopSequences = val
 			}
 		}
+		if mediaResolution, ok := params.ExtraParams["media_resolution"]; ok {
+			delete(params.ExtraParams, "media_resolution")
+			if val, success := schemas.SafeExtractString(mediaResolution); success {
+				config.MediaResolution = val
+			}
+		}
 
 	}
 
