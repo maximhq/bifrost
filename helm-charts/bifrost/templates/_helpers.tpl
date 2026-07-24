@@ -1380,6 +1380,9 @@ false
 {{- if $inputConfig.protocol }}
 {{- $_ := set $otelConfig "protocol" $inputConfig.protocol }}
 {{- end }}
+{{- if $inputConfig.export_timeout }}
+{{- $_ := set $otelConfig "export_timeout" ($inputConfig.export_timeout | int) }}
+{{- end }}
 {{- if hasKey $inputConfig "metrics_enabled" }}
 {{- $_ := set $otelConfig "metrics_enabled" $inputConfig.metrics_enabled }}
 {{- end }}
