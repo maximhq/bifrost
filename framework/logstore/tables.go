@@ -997,6 +997,7 @@ type MCPToolLog struct {
 	Cost           *float64  `gorm:"index:idx_mcp_logs_cost" json:"cost,omitempty"`                               // Cost in dollars (per execution cost)
 	Status         string    `gorm:"type:varchar(50);index:idx_mcp_logs_status;not null" json:"status"`           // "processing", "success", or "error"
 	Metadata       string    `gorm:"type:text" json:"-"`                                                          // JSON serialized map[string]interface{}
+	PluginLogs     string    `gorm:"type:text" json:"plugin_logs,omitempty"`                                      // JSON serialized plugin logs grouped by plugin name
 	HasObject      bool      `gorm:"default:false" json:"-"`                                                      // True when payload is stored in object storage
 	CreatedAt      time.Time `gorm:"index;not null" json:"created_at"`
 

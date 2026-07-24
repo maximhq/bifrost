@@ -397,7 +397,7 @@ func estimateMCPToolLogEntrySize(log *logstore.MCPToolLog) int {
 	if log == nil {
 		return 0
 	}
-	return len(log.Arguments) + len(log.Result) + len(log.ErrorDetails) + len(log.Metadata) + 512
+	return len(log.Arguments) + len(log.Result) + len(log.ErrorDetails) + len(log.Metadata) + len(log.PluginLogs) + 512
 }
 
 // buildStaleMCPToolLogEntry converts a pending MCP processing row into a

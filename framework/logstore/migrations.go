@@ -286,6 +286,7 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"mcp_tool_logs_add_user_agent_column"}, run: migrationAddUserAgentColumnToMCPToolLogs},
 	{IDs: []string{"logs_recreate_matviews_with_app_column"}, run: migrationRecreateMatViewsWithUserAgentColumn},
 	{IDs: []string{"mcp_tool_logs_add_endpoint_columns"}, run: migrationAddEndpointColumnsToMCPToolLogs},
+	{IDs: []string{"mcp_tool_logs_add_plugin_logs_column"}, run: migrationAddMCPPluginLogsColumn},
 }
 
 // areThereAnyPendingMigrations returns true if there are any pending migrations to be applied.
@@ -2822,6 +2823,28 @@ func migrationAddPluginLogsColumn(ctx context.Context, db *gorm.DB, logger schem
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while adding plugin logs column: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddMCPPluginLogsColumn adds the plugin_logs column to MCP tool logs.
+func migrationAddMCPPluginLogsColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "mcp_tool_logs_add_plugin_logs_column"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return addColumnIfNotExists(tx.WithContext(ctx), logger, &MCPToolLog{}, "plugin_logs")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return dropColumnIfExists(tx.WithContext(ctx), logger, &MCPToolLog{}, "plugin_logs")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding MCP plugin logs column: %s", err.Error())
 	}
 	return nil
 }
