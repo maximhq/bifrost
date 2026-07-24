@@ -313,6 +313,14 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			if stripTopP {
 				req.ResponsesParameters.TopP = nil
 			}
+
+			// Only OpenAI/Azure's actual reasoning endpoints reject temperature outright;
+			// other providers hosting reasoning-named models (e.g. Fireworks/OpenRouter
+			// gpt-oss) don't share that restriction, so this is scoped to those two
+			// providers specifically, unlike the provider-agnostic top_p strip above.
+			if bifrostReq.Provider == schemas.OpenAI || bifrostReq.Provider == schemas.Azure {
+				req.ResponsesParameters.Temperature = nil
+			}
 		}
 
 		// Normalize function tool parameters for deterministic JSON serialization.
