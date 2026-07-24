@@ -5233,16 +5233,18 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 		if fallbackErr == nil {
 			// Layer Primary/IsFallback onto the ctx-stashed RoutingInfo (mirrors
 			// SetFallbackRoutingInfo) — chunks can't carry it (see above), but the
-			// transport's pre-stream response headers can.
+			// transport's pre-stream response headers can. Use SetRoutingInfoSnapshot
+			// (bypasses the restricted-writes guard) so this write isn't dropped when it
+			// races the streaming response's async per-chunk post-hooks.
 			if ri, ok := ctx.Value(schemas.BifrostContextKeyRoutingInfo).(schemas.RoutingInfo); ok {
 				ri.IsFallback = true
 				if provider != "" {
-					ri.PrimaryProvider = new(provider)
+					ri.PrimaryProvider = Ptr(provider)
 				}
 				if model != "" {
-					ri.PrimaryModel = new(model)
+					ri.PrimaryModel = Ptr(model)
 				}
-				ctx.SetValue(schemas.BifrostContextKeyRoutingInfo, ri)
+				ctx.SetRoutingInfoSnapshot(ri)
 			}
 			bifrost.logger.Debug(fmt.Sprintf("successfully used fallback provider %s with model %s", fallback.Provider, fallback.Model))
 			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Request served by fallback %s/%s (attempt %d/%d)", fallback.Provider, fallback.Model, i+1, len(fallbacks)))
@@ -6738,6 +6740,28 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				// alias while this attempt's provider goroutine is still emitting chunks.
 				attemptResolvedModel := resolvedModel
 				attemptRoutingInfo = schemas.BuildRoutingInfo(req.Context, provider.GetProviderKey(), originalModelRequested, k)
+				// Layer fallback identity here — the reliable write point. The orchestrator's
+				// post-hand-off ctx write (handleStreamRequest) races the streaming response's
+				// async per-chunk post-hooks, so set IsFallback/Primary on the per-attempt
+				// RoutingInfo instead. This flows into BOTH the header snapshot below and the
+				// per-chunk RoutingInfo (perAttemptRoutingInfo), so headers and SSE body agree.
+				// fallback index > 0 ⟺ this attempt is a fallback; Primary comes from the
+				// previous attempt's snapshot (the primary, or the carried-through primary on a
+				// later fallback — clearCtxForFallback keeps BifrostContextKeyRoutingInfo).
+				if fi, _ := req.Context.Value(schemas.BifrostContextKeyFallbackIndex).(int); fi > 0 {
+					attemptRoutingInfo.IsFallback = true
+					if prev, ok := req.Context.Value(schemas.BifrostContextKeyRoutingInfo).(schemas.RoutingInfo); ok {
+						if prev.IsFallback && prev.PrimaryProvider != nil {
+							attemptRoutingInfo.PrimaryProvider = prev.PrimaryProvider
+							attemptRoutingInfo.PrimaryModel = prev.PrimaryModel
+						} else if prev.Provider != "" {
+							pp := prev.Provider
+							pm := prev.Model
+							attemptRoutingInfo.PrimaryProvider = &pp
+							attemptRoutingInfo.PrimaryModel = &pm
+						}
+					}
+				}
 				// Stash for the transport: streams carry RoutingInfo only on chunks, but
 				// response headers must be written before the first chunk arrives. Each
 				// retry overwrites, so the winning attempt's snapshot survives.

@@ -20,6 +20,8 @@ interface ModelMultiselectPropsBase {
 	loadModelsOnEmptyProvider?: boolean | "base_models";
 	/** Prepends an "Allow All Models" option (value: "*") to the dropdown */
 	allowAllOption?: boolean;
+	/** Hides the search icon rendered inside the control */
+	hideSearchIcon?: boolean;
 	/** id for the search input (accessibility) */
 	inputId?: string;
 	/** id of element that labels this control (accessibility) */
@@ -259,6 +261,7 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 		<AsyncMultiSelect<ModelOption>
 			isSingleSelect={isSingleSelect}
 			hideSelectedOptions
+			hideSearchIcon={props.hideSearchIcon}
 			inputId={props.inputId}
 			ariaLabelledBy={props.ariaLabelledBy}
 			data-testid={props["data-testid"]}
@@ -327,7 +330,7 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 						>
 							<span className={cn("grow truncate text-sm", isDeprecated && "text-muted-foreground")}>{optionProps.data.label}</span>
 							{isDeprecated && (
-								<span className="text-muted-foreground border-border shrink-0 rounded-sm border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide">
+								<span className="text-muted-foreground border-border shrink-0 rounded-sm border px-1.5 py-0.5 text-[10px] font-medium tracking-wide uppercase">
 									Deprecated
 								</span>
 							)}

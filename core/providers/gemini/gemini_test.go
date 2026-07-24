@@ -3926,6 +3926,28 @@ func TestGenAIThinkingLevel_RoundTripPreservesLevelNotBudget(t *testing.T) {
 	assert.Nil(t, tc.ThinkingBudget, "round-trip must not synthesize thinkingBudget from level-only config")
 }
 
+// Regression: generationConfig.mediaResolution must survive Gemini → Bifrost → Gemini on the
+// GenAI generateContent path. It used to be dropped, so image token counts ignored the field.
+func TestGenAIMediaResolution_PreservedThroughBifrostRoundTrip(t *testing.T) {
+	geminiReq := &gemini.GeminiGenerationRequest{
+		Model: "gemini-2.5-flash",
+		GenerationConfig: gemini.GenerationConfig{
+			MediaResolution: "MEDIA_RESOLUTION_LOW",
+		},
+	}
+
+	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostReq := geminiReq.ToBifrostResponsesRequest(bifrostCtx)
+	require.NotNil(t, bifrostReq.Params)
+	assert.Equal(t, "MEDIA_RESOLUTION_LOW", bifrostReq.Params.ExtraParams["media_resolution"])
+
+	roundTrip, err := gemini.ToGeminiResponsesRequest(nil, bifrostReq)
+	require.NoError(t, err)
+	require.NotNil(t, roundTrip)
+	assert.Equal(t, "MEDIA_RESOLUTION_LOW", roundTrip.GenerationConfig.MediaResolution,
+		"mediaResolution must round-trip into the outbound generationConfig")
+}
+
 // Regression: MAX_TOKENS from Gemini must survive Gemini → Bifrost → Gemini on the GenAI path
 // (StopReason used to be dropped, so clients saw STOP instead of MAX_TOKENS).
 func TestGenAIFinishReasonMaxTokens_PersistsThroughBifrostRoundTrip(t *testing.T) {

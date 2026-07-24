@@ -166,6 +166,8 @@ func (g *GenericRouter) sendStreamError(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 			}
 		}
 	}
+	// Routed identity after provider headers so a chained upstream's x-bifrost-* can't overwrite it.
+	lib.ApplyBifrostErrorResponseHeaders(ctx, bifrostCtx, bifrostErr.ExtraFields)
 
 	// Set the HTTP status code from the provider error
 	if bifrostErr.StatusCode != nil {
@@ -209,6 +211,8 @@ func (g *GenericRouter) sendError(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.
 			}
 		}
 	}
+	// Routed identity after provider headers so a chained upstream's x-bifrost-* can't overwrite it.
+	lib.ApplyBifrostErrorResponseHeaders(ctx, bifrostCtx, bifrostErr.ExtraFields)
 
 	if bifrostErr.StatusCode != nil {
 		ctx.SetStatusCode(*bifrostErr.StatusCode)

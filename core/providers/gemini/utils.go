@@ -282,6 +282,9 @@ func (r *GeminiGenerationRequest) convertGenerationConfigToResponsesParameters()
 	if config.MaxOutputTokens > 0 {
 		params.MaxOutputTokens = schemas.Ptr(int(config.MaxOutputTokens))
 	}
+	if config.MediaResolution != "" {
+		params.ExtraParams["media_resolution"] = config.MediaResolution
+	}
 	if config.ThinkingConfig != nil {
 		params.Reasoning = &schemas.ResponsesParametersReasoning{}
 		if strings.Contains(r.Model, "openai") {

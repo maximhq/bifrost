@@ -1,6 +1,6 @@
 ---
 title: "Overview"
-description: "Enterprise-grade content safety and security validation with native regex, secrets detection, Presidio, Azure AI Language PII, AWS Bedrock Guardrails, Azure Content Safety, Google Model Armor, CrowdStrike AIDR, Gray Swan Cygnal, Patronus AI, and Lakera Guard."
+description: "Enterprise-grade content safety and security validation with native regex, secrets detection, Presidio, Azure AI Language PII, AWS Bedrock Guardrails, Azure Content Safety, Google Model Armor, CrowdStrike AIDR, Gray Swan Cygnal, Patronus AI, Lakera Guard, and Repello Argus."
 icon: "road-barrier"
 ---
 
@@ -48,6 +48,9 @@ icon: "road-barrier"
   <Card title="Lakera Guard" icon="/media/lakera-logo-card-v5.svg" href="/integrations/guardrails/lakera">
     Threat detection for LLM conversations, including prompt injection and sensitive data exposure.
   </Card>
+  <Card title="Repello Argus" icon="/media/repello-argus-logo-card.svg" href="/integrations/guardrails/repello-argus">
+    Asset-defined AI security policies for prompt injection, sensitive data, unsafe content, and policy violations.
+  </Card>
 </CardGroup>
 
 ### Core Concepts
@@ -57,7 +60,7 @@ Bifrost Guardrails are built around two core concepts that work together to prov
 | Concept | Description |
 |---------|-------------|
 | **Rules** | Custom policies defined using CEL (Common Expression Language) that determine what content to validate and when. Rules can apply to inputs, outputs, or both, and can be linked to one or more profiles for evaluation. |
-| **Profiles** | Configurations for guardrail providers, including Bifrost-native providers (Custom Regex, Secrets Detection) and external providers (Presidio, Azure AI Language PII, AWS Bedrock, Azure Content Safety, Google Model Armor, CrowdStrike AIDR, Gray Swan, Patronus AI). Profiles are reusable and can be shared across multiple rules. |
+| **Profiles** | Configurations for guardrail providers, including Bifrost-native providers (Custom Regex, Secrets Detection) and external providers (Presidio, Azure AI Language PII, AWS Bedrock, Azure Content Safety, Google Model Armor, CrowdStrike AIDR, Gray Swan, Patronus AI, Lakera Guard, and Repello Argus). Profiles are reusable and can be shared across multiple rules. |
 
 **How They Work Together:**
 - **Profiles** define *how* content is evaluated using native Bifrost checks or external provider capabilities
@@ -69,7 +72,7 @@ Bifrost Guardrails are built around two core concepts that work together to prov
 
 | Feature | Description |
 |---------|-------------|
-| **Multi-Provider Support** | Bifrost-native Custom Regex and Secrets Detection, plus Presidio, Azure AI Language PII, AWS Bedrock, Azure Content Safety, Google Model Armor, CrowdStrike AIDR, Gray Swan, Patronus AI, and Lakera Guard integrations |
+| **Multi-Provider Support** | Bifrost-native Custom Regex and Secrets Detection, plus Presidio, Azure AI Language PII, AWS Bedrock, Azure Content Safety, Google Model Armor, CrowdStrike AIDR, Gray Swan, Patronus AI, Lakera Guard, and Repello Argus integrations |
 | **Dual-Stage Validation** | Guard both inputs (prompts) and outputs (responses) |
 | **Real-Time Processing** | Synchronous and asynchronous validation modes |
 | **CEL-Based Rules** | Define custom policies using Common Expression Language |
@@ -773,20 +776,20 @@ bifrost:
 
 Third-party guardrail providers offer different capabilities. Bifrost-native providers are documented separately: [Secrets Detection](/enterprise/guardrails/secrets-detection) covers credential leakage, [Custom Regex](/enterprise/guardrails/custom-regex) covers deterministic pattern checks, and [Guardrail Redaction](/enterprise/guardrails/redaction) covers Bifrost-managed redaction modes.
 
-| Capability | AWS Bedrock | Azure Content Safety | Google Model Armor | CrowdStrike AIDR | Gray Swan | Patronus AI | Lakera Guard | Azure AI Language PII | Presidio |
-|------------|-------------|----------------------|--------------------|------------------|-----------|-------------|--------------|-----------------------|----------|
-| PII Detection | Yes | No | Yes | Policy-dependent | No | Yes | Yes | Yes | Yes |
-| Content Filtering | Yes | Yes | Yes | Policy-dependent | Yes | Yes | Yes | No | No |
-| Prompt Injection | Yes | Yes | Yes | Policy-dependent | Yes | Yes | Yes | No | No |
-| Hallucination Detection | No | No | No | No | No | Yes | No | No | No |
-| Toxicity Screening | Yes | Yes | Yes | Policy-dependent | Yes | Yes | Policy-dependent | No | No |
-| Custom Policies | Yes | Yes | Yes | Policy-dependent | Yes | Yes | Yes | Category filters | Entity filters |
-| Custom Natural Language Rules | No | No | No | No | Yes | No | No | No | No |
-| Image Support | Yes | No | No | No | No | No | No | No | No |
-| IPI Detection | No | Yes | Yes | Policy-dependent | Yes | No | Policy-dependent | No | No |
-| Mutation Detection | No | No | No | No | Yes | No | No | No | No |
-| Bifrost-managed Redaction | No | No | No | No | No | No | Yes | Yes | Yes |
-| Provider-managed Transformation | Yes | No | Yes | Policy-dependent | No | No | No | No | No |
+| Capability | AWS Bedrock | Azure Content Safety | Google Model Armor | CrowdStrike AIDR | Gray Swan | Patronus AI | Lakera Guard | Repello Argus | Azure AI Language PII | Presidio |
+|------------|-------------|----------------------|--------------------|------------------|-----------|-------------|--------------|---------------|-----------------------|----------|
+| PII Detection | Yes | No | Yes | Policy-dependent | No | Yes | Yes | Yes | Yes | Yes |
+| Content Filtering | Yes | Yes | Yes | Policy-dependent | Yes | Yes | Yes | Yes | No | No |
+| Prompt Injection | Yes | Yes | Yes | Policy-dependent | Yes | Yes | Yes | Yes | No | No |
+| Hallucination Detection | No | No | No | No | No | Yes | No | No | No | No |
+| Toxicity Screening | Yes | Yes | Yes | Policy-dependent | Yes | Yes | Policy-dependent | Yes | No | No |
+| Custom Policies | Yes | Yes | Yes | Policy-dependent | Yes | Yes | Yes | Yes | Category filters | Entity filters |
+| Custom Natural Language Rules | No | No | No | No | Yes | No | No | No | No | No |
+| Image Support | Yes | No | No | No | No | No | No | No | No | No |
+| IPI Detection | No | Yes | Yes | Policy-dependent | Yes | No | Policy-dependent | Policy-dependent | No | No |
+| Mutation Detection | No | No | No | No | Yes | No | No | No | No | No |
+| Bifrost-managed Redaction | No | No | No | No | No | No | Yes | No | Yes | Yes |
+| Provider-managed Transformation | Yes | No | Yes | Policy-dependent | No | No | No | No | No | No |
 
 <Note>
   CrowdStrike AIDR capabilities depend on the AIDR policy and detectors configured in CrowdStrike. Bifrost sends the request to AIDR, then enforces the returned `blocked` or `transformed` decision.

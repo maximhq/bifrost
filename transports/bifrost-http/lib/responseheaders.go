@@ -72,6 +72,24 @@ func ApplyBifrostStreamResponseHeaders(ctx *fasthttp.RequestCtx, bifrostCtx *sch
 	ApplyBifrostResponseHeaders(ctx, bifrostCtx, extra)
 }
 
+// ApplyBifrostErrorResponseHeaders emits the routed-identity headers on an
+// error response. Errors carry the same identity as successes — core populates
+// BifrostError.ExtraFields.RoutingInfo plus the deprecated triplet — so failed
+// and fallback-exhausted requests can still report which provider ran and
+// whether a fallback fired. This exists only to bridge the error's
+// BifrostErrorExtraFields to the shared writer (a different type than the
+// success path's BifrostResponseExtraFields); provider response headers are
+// forwarded separately by the caller.
+func ApplyBifrostErrorResponseHeaders(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, extra schemas.BifrostErrorExtraFields) {
+	ApplyBifrostResponseHeaders(ctx, bifrostCtx, schemas.BifrostResponseExtraFields{
+		RequestType:            extra.RequestType,
+		RoutingInfo:            extra.RoutingInfo,
+		Provider:               extra.Provider,
+		OriginalModelRequested: extra.OriginalModelRequested,
+		ResolvedModelUsed:      extra.ResolvedModelUsed,
+	})
+}
+
 // ApplyBifrostResponseHeaders writes both the upstream provider response
 // headers (forwarded verbatim) and the bifrost-level `x-bifrost-*` routing
 // identity headers onto the fasthttp response. Empty fields are skipped so
