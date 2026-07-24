@@ -192,70 +192,112 @@ func bucketedIDExpr(idCol string) string {
 	return fmt.Sprintf("COALESCE(NULLIF(%s, ''), '%s')", idCol, unassignedDimensionID)
 }
 
+// filterInClause builds an inclusion ("col IN ?") or, when inverse is true, an
+// exclusion ("col NOT IN ?") predicate for a scalar column. For nullable columns
+// the negated form is widened with "OR col IS NULL" so that excluding a value
+// does not also drop rows where the column is unset — e.g. "exclude user X" must
+// still surface rows that have no user_id.
+func filterInClause(col string, inverse, nullable bool) string {
+	if !inverse {
+		return col + " IN ?"
+	}
+	if nullable {
+		return "(" + col + " NOT IN ? OR " + col + " IS NULL)"
+	}
+	return col + " NOT IN ?"
+}
+
+// negateIfInverse wraps a positive predicate so that, under inverse, only rows
+// that do NOT match it are kept. COALESCE(...,false) collapses a NULL/unknown
+// result (e.g. no metadata, no cache_debug, no routing engines) to a definite
+// non-match, so NOT keeps those rows rather than dropping them. `false` is used
+// (not 0) so the boolean type is preserved across Postgres/SQLite/ClickHouse.
+func negateIfInverse(sql string, inverse bool) string {
+	if !inverse {
+		return sql
+	}
+	return "NOT COALESCE(" + sql + ", false)"
+}
+
 // applyFilters applies search filters to a GORM query. Callers are
 // responsible for starting from ScopedDB(ctx) when row visibility
 // should be respected; this helper only adds the per-call filter
 // predicates.
+//
+// When filters.Inverse is set, every categorical/array predicate below is
+// negated independently (IN → NOT IN, containment → NOT containment) and ANDed
+// together, so selecting {object_type: list_models, user_id: X} with Inverse
+// means "hide list_models AND hide user X". Range, time, and content-search
+// predicates are never inverted.
 func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *gorm.DB {
 	if len(filters.Providers) > 0 {
-		baseQuery = baseQuery.Where("provider IN ?", filters.Providers)
+		// provider is NOT NULL.
+		baseQuery = baseQuery.Where(filterInClause("provider", filters.Inverse, false), filters.Providers)
 	}
 	if len(filters.Models) > 0 {
 		// Match either the wire model or the canonical model name so that
 		// filtering by a canonical model (e.g. gpt-4o-mini) also surfaces
 		// requests routed through an alias whose wire model differs. Parens
 		// keep the OR grouped when GORM ANDs this with the other predicates.
-		baseQuery = baseQuery.Where("(model IN ? OR canonical_model_name IN ?)", filters.Models, filters.Models)
+		// Inverse excludes a model whether it appears as the wire or canonical
+		// name; canonical_model_name is nullable so NULL rows are kept.
+		if filters.Inverse {
+			baseQuery = baseQuery.Where("model NOT IN ? AND (canonical_model_name NOT IN ? OR canonical_model_name IS NULL)", filters.Models, filters.Models)
+		} else {
+			baseQuery = baseQuery.Where("(model IN ? OR canonical_model_name IN ?)", filters.Models, filters.Models)
+		}
 	}
 	if len(filters.Aliases) > 0 {
-		baseQuery = baseQuery.Where("alias IN ?", filters.Aliases)
+		baseQuery = baseQuery.Where(filterInClause("alias", filters.Inverse, true), filters.Aliases)
 	}
 	if len(filters.Status) > 0 {
-		baseQuery = baseQuery.Where("status IN ?", filters.Status)
+		// status is NOT NULL.
+		baseQuery = baseQuery.Where(filterInClause("status", filters.Inverse, false), filters.Status)
 	}
 	if len(filters.StopReasons) > 0 {
-		baseQuery = baseQuery.Where("stop_reason IN ?", filters.StopReasons)
+		baseQuery = baseQuery.Where(filterInClause("stop_reason", filters.Inverse, true), filters.StopReasons)
 	}
 	if len(filters.Objects) > 0 {
-		baseQuery = baseQuery.Where("object_type IN ?", filters.Objects)
+		// object_type is NOT NULL.
+		baseQuery = baseQuery.Where(filterInClause("object_type", filters.Inverse, false), filters.Objects)
 	}
 	if filters.ParentRequestID != "" {
 		baseQuery = baseQuery.Where("parent_request_id = ?", filters.ParentRequestID)
 	}
 	if len(filters.SelectedKeyIDs) > 0 {
-		baseQuery = baseQuery.Where("selected_key_id IN ?", filters.SelectedKeyIDs)
+		baseQuery = baseQuery.Where(filterInClause("selected_key_id", filters.Inverse, true), filters.SelectedKeyIDs)
 	}
 	if len(filters.VirtualKeyIDs) > 0 {
-		baseQuery = baseQuery.Where("virtual_key_id IN ?", filters.VirtualKeyIDs)
+		baseQuery = baseQuery.Where(filterInClause("virtual_key_id", filters.Inverse, true), filters.VirtualKeyIDs)
 	}
 	if len(filters.RoutingRuleIDs) > 0 {
-		baseQuery = baseQuery.Where("routing_rule_id IN ?", filters.RoutingRuleIDs)
+		baseQuery = baseQuery.Where(filterInClause("routing_rule_id", filters.Inverse, true), filters.RoutingRuleIDs)
 	}
 	if len(filters.TeamIDs) > 0 {
 		if s.db.Dialector.Name() == "postgres" {
 			sql, args := multiValueDimensionFilterSQL("team_id", "team_ids", filters.TeamIDs)
-			baseQuery = baseQuery.Where(sql, args...)
+			baseQuery = baseQuery.Where(negateIfInverse(sql, filters.Inverse), args...)
 		} else {
-			baseQuery = baseQuery.Where("team_id IN ?", filters.TeamIDs)
+			baseQuery = baseQuery.Where(filterInClause("team_id", filters.Inverse, true), filters.TeamIDs)
 		}
 	}
 	if len(filters.CustomerIDs) > 0 {
 		if s.db.Dialector.Name() == "postgres" {
 			sql, args := multiValueDimensionFilterSQL("customer_id", "customer_ids", filters.CustomerIDs)
-			baseQuery = baseQuery.Where(sql, args...)
+			baseQuery = baseQuery.Where(negateIfInverse(sql, filters.Inverse), args...)
 		} else {
-			baseQuery = baseQuery.Where("customer_id IN ?", filters.CustomerIDs)
+			baseQuery = baseQuery.Where(filterInClause("customer_id", filters.Inverse, true), filters.CustomerIDs)
 		}
 	}
 	if len(filters.UserIDs) > 0 {
-		baseQuery = baseQuery.Where("user_id IN ?", filters.UserIDs)
+		baseQuery = baseQuery.Where(filterInClause("user_id", filters.Inverse, true), filters.UserIDs)
 	}
 	if len(filters.BusinessUnitIDs) > 0 {
 		if s.db.Dialector.Name() == "postgres" {
 			sql, args := multiValueDimensionFilterSQL("business_unit_id", "business_unit_ids", filters.BusinessUnitIDs)
-			baseQuery = baseQuery.Where(sql, args...)
+			baseQuery = baseQuery.Where(negateIfInverse(sql, filters.Inverse), args...)
 		} else {
-			baseQuery = baseQuery.Where("business_unit_id IN ?", filters.BusinessUnitIDs)
+			baseQuery = baseQuery.Where(filterInClause("business_unit_id", filters.Inverse, true), filters.BusinessUnitIDs)
 		}
 	}
 	if len(filters.RoutingEngineUsed) > 0 {
@@ -272,6 +314,8 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 		}
 
 		if len(engines) > 0 {
+			var sql string
+			var whereArgs []interface{}
 			switch dialect {
 			case "postgres":
 				// Use array overlap operator which can leverage the GIN index on
@@ -282,14 +326,11 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 					placeholders[i] = "?"
 					args[i] = e
 				}
-				baseQuery = baseQuery.Where(
-					"string_to_array(routing_engines_used, ',') && ARRAY["+strings.Join(placeholders, ",")+"]::text[]",
-					args...,
-				)
+				sql = "string_to_array(routing_engines_used, ',') && ARRAY[" + strings.Join(placeholders, ",") + "]::text[]"
+				whereArgs = args
 			default:
 				// SQLite and others: use delimiter-aware LIKE matching
 				var engineConditions []string
-				var engineArgs []interface{}
 				var concatExpr string
 				if dialect == "sqlite" {
 					concatExpr = "',' || routing_engines_used || ','"
@@ -298,10 +339,14 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 				}
 				for _, engine := range engines {
 					engineConditions = append(engineConditions, concatExpr+" LIKE ?")
-					engineArgs = append(engineArgs, "%,"+engine+",%")
+					whereArgs = append(whereArgs, "%,"+engine+",%")
 				}
-				baseQuery = baseQuery.Where(strings.Join(engineConditions, " OR "), engineArgs...)
+				sql = "(" + strings.Join(engineConditions, " OR ") + ")"
 			}
+			// Under inverse, keep rows that use none of the selected engines.
+			// COALESCE collapses NULL/empty routing_engines_used to a non-match so
+			// those rows survive the negation instead of being dropped.
+			baseQuery = baseQuery.Where(negateIfInverse(sql, filters.Inverse), whereArgs...)
 		}
 	}
 	if filters.StartTime != nil {
@@ -341,21 +386,24 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 			}
 		}
 		if len(valid) > 0 {
+			// Under inverse, keep rows whose hit type is not selected — including
+			// rows with no cache_debug at all (the guard makes the positive
+			// predicate false, so negateIfInverse's COALESCE keeps them).
 			switch s.db.Dialector.Name() {
 			case "postgres":
 				// Match the same loose-JSON guard used by aggregateCacheHits so the regex extract is safe.
 				baseQuery = baseQuery.Where(
-					cacheDebugJSONGuard+" AND "+cacheDebugHitTypeExpr+" IN ?",
+					negateIfInverse(cacheDebugJSONGuard+" AND "+cacheDebugHitTypeExpr+" IN ?", filters.Inverse),
 					valid,
 				)
 			case "clickhouse":
 				baseQuery = baseQuery.Where(
-					"cache_debug IS NOT NULL AND cache_debug != '' AND isValidJSON(cache_debug) AND JSONExtractString(cache_debug, 'hit_type') IN ?",
+					negateIfInverse("cache_debug IS NOT NULL AND cache_debug != '' AND isValidJSON(cache_debug) AND JSONExtractString(cache_debug, 'hit_type') IN ?", filters.Inverse),
 					valid,
 				)
 			default:
 				baseQuery = baseQuery.Where(
-					"cache_debug IS NOT NULL AND cache_debug != '' AND json_valid(cache_debug) AND json_extract(cache_debug, '$.hit_type') IN ?",
+					negateIfInverse("cache_debug IS NOT NULL AND cache_debug != '' AND json_valid(cache_debug) AND json_extract(cache_debug, '$.hit_type') IN ?", filters.Inverse),
 					valid,
 				)
 			}
@@ -375,41 +423,59 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 		dialect := s.db.Dialector.Name()
 		// Guard must match the partial-index predicate so the planner uses the GIN index.
 		// SQLite does not support IS JSON OBJECT, so fall back to the equivalent json_type check.
+		var guard string
 		switch dialect {
 		case "postgres":
-			baseQuery = baseQuery.Where("metadata IS NOT NULL AND metadata IS JSON OBJECT")
+			guard = "metadata IS NOT NULL AND metadata IS JSON OBJECT"
 		case "clickhouse":
-			baseQuery = baseQuery.Where("metadata IS NOT NULL AND isValidJSON(metadata)")
+			guard = "metadata IS NOT NULL AND isValidJSON(metadata)"
 		default:
-			baseQuery = baseQuery.Where("metadata IS NOT NULL AND json_valid(metadata) AND json_type(metadata) = 'object'")
+			guard = "metadata IS NOT NULL AND json_valid(metadata) AND json_type(metadata) = 'object'"
+		}
+		// Include-mode adds the JSON guard once as a hard filter so the planner can
+		// use the partial GIN index. Under inverse we must NOT restrict to metadata
+		// rows up front (that would drop rows with no metadata, which should be
+		// kept); instead the guard is folded into each per-key predicate below and
+		// negated together via negateIfInverse.
+		if !filters.Inverse {
+			baseQuery = baseQuery.Where(guard)
 		}
 		for key, value := range filters.MetadataFilters {
 			if !isValidMetadataKey(key) {
 				continue
 			}
+			var matchSQL string
+			var matchArgs []interface{}
 			switch dialect {
 			case "postgres":
 				// Use @> containment operator to leverage GIN index on metadata::jsonb.
 				// Metadata values always originate from HTTP headers and are stored as JSON
 				// strings — always match as a string to avoid type mismatch with jsonb.
 				jsonFragment := fmt.Sprintf(`{%q: %q}`, key, value)
-				baseQuery = baseQuery.Where("metadata::jsonb @> ?::jsonb", jsonFragment)
+				matchSQL, matchArgs = "metadata::jsonb @> ?::jsonb", []interface{}{jsonFragment}
 			case "clickhouse":
 				// Metadata values are stored as JSON strings (see postgres note);
 				// match them as strings via JSONExtractString.
-				baseQuery = baseQuery.Where("JSONExtractString(metadata, ?) = ?", key, value)
+				matchSQL, matchArgs = "JSONExtractString(metadata, ?) = ?", []interface{}{key, value}
 			default:
 				// SQLite: quote the member name so dots/hyphens stay part of the key
 				path := `$."` + key + `"`
 				if value == "true" {
 					// json_extract returns 1 for true, but json_type returns 'true'
-					baseQuery = baseQuery.Where("json_type(metadata, ?) = 'true'", path)
+					matchSQL, matchArgs = "json_type(metadata, ?) = 'true'", []interface{}{path}
 				} else if value == "false" {
-					baseQuery = baseQuery.Where("json_type(metadata, ?) = 'false'", path)
+					matchSQL, matchArgs = "json_type(metadata, ?) = 'false'", []interface{}{path}
 				} else {
 					// Numeric and string values: compare both as-is and as text
-					baseQuery = baseQuery.Where("json_extract(metadata, ?) = ? OR CAST(json_extract(metadata, ?) AS TEXT) = ?", path, value, path, value)
+					matchSQL, matchArgs = "json_extract(metadata, ?) = ? OR CAST(json_extract(metadata, ?) AS TEXT) = ?", []interface{}{path, value, path, value}
 				}
+			}
+			if filters.Inverse {
+				// (guard AND match) is true only for rows that HAVE this key=value;
+				// negateIfInverse keeps the complement (including no-metadata rows).
+				baseQuery = baseQuery.Where(negateIfInverse("("+guard+" AND ("+matchSQL+"))", true), matchArgs...)
+			} else {
+				baseQuery = baseQuery.Where(matchSQL, matchArgs...)
 			}
 		}
 	}
