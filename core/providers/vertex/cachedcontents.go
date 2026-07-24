@@ -85,8 +85,16 @@ func expandVertexModelPath(model, projectID, region string) string {
 	return fmt.Sprintf("projects/%s/locations/%s/publishers/google/models/%s", projectID, region, model)
 }
 
-// vertexAuthHeaders pulls an OAuth bearer token from the key and applies it.
+// vertexAuthHeaders applies Vertex AI authentication to the request. When the key
+// carries an API key value, it is passed as the "key" query parameter (mirroring
+// the Gemini generation endpoints) and any Authorization header already set from
+// context extra headers is left intact. Otherwise an OAuth bearer token is fetched
+// from the key credentials and set on the Authorization header.
 func vertexAuthHeaders(req *fasthttp.Request, key schemas.Key) *schemas.BifrostError {
+	if key.Value.GetValue() != "" {
+		req.URI().QueryArgs().Set("key", key.Value.GetValue())
+		return nil
+	}
 	tokenSource, err := getAuthTokenSource(key)
 	if err != nil {
 		return providerUtils.NewBifrostOperationError("error creating auth token source", err)
