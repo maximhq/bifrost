@@ -113,6 +113,16 @@ export const baseRoutingFields: CELFieldDefinition[] = [
 		description: "Check budget usage as percentage. Checked against max of model and provider configs.",
 	},
 	{
+		name: "context_length",
+		label: "Context Length",
+		placeholder: "e.g., 8192",
+		inputType: "text",
+		valueEditorType: "number",
+		operators: ["=", "!=", ">", "<", ">=", "<="],
+		defaultOperator: ">=",
+		description: "Route based on the input context length of the request in tokens.",
+	},
+	{
 		name: "complexity_tier",
 		label: "Complexity Tier",
 		placeholder: "Select complexity tier",

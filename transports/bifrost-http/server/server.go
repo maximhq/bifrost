@@ -63,6 +63,10 @@ var enterprisePlugins = []string{
 	"kafka",
 }
 
+type countTokensRequestExecutorPlugin interface {
+	SetCountTokensRequestExecutor(governance.CountTokensRequestExecutor)
+}
+
 // ServerCallbacks is a interface that defines the callbacks for the server.
 type ServerCallbacks interface {
 	// Plugins callbacks
@@ -1347,6 +1351,9 @@ func (s *BifrostHTTPServer) ReloadPlugin(ctx context.Context, name string, path 
 	if semanticCachePlugin, ok := plugin.(*semanticcache.Plugin); ok {
 		semanticCachePlugin.SetEmbeddingRequestExecutor(s.Client.EmbeddingRequest)
 	}
+	if governancePlugin, ok := plugin.(countTokensRequestExecutorPlugin); ok && s.Client != nil {
+		governancePlugin.SetCountTokensRequestExecutor(s.Client.CountTokensRequest)
+	}
 	return s.SyncLoadedPlugin(ctx, name, plugin, placement, order)
 }
 
@@ -1940,6 +1947,10 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	semanticCachePlugin, err := lib.FindPluginAs[*semanticcache.Plugin](s.Config, semanticcache.PluginName)
 	if err == nil && semanticCachePlugin != nil {
 		semanticCachePlugin.SetEmbeddingRequestExecutor(s.Client.EmbeddingRequest)
+	}
+	governancePlugin, err := lib.FindPluginAs[countTokensRequestExecutorPlugin](s.Config, s.getGovernancePluginName())
+	if err == nil && governancePlugin != nil {
+		governancePlugin.SetCountTokensRequestExecutor(s.Client.CountTokensRequest)
 	}
 
 	// Initialize Sidekiq runner for background jobs

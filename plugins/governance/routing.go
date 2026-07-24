@@ -47,6 +47,7 @@ type RoutingContext struct {
 	QueryParams              map[string]string                   // Query parameters for dynamic routing
 	BudgetAndRateLimitStatus *BudgetAndRateLimitStatus           // Budget and rate limit status by provider/model
 	computeComplexity        func() *complexity.ComplexityResult // Lazy complexity computation; called at most once when a rule references "complexity_tier"
+	computeContextLength     func() (int64, bool)                // Lazy context-length computation; called at most once when a rule references "context_length"
 }
 
 type RoutingEngine struct {
@@ -127,7 +128,9 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 
 	var finalDecision *RoutingDecision
 	var complexityResult *complexity.ComplexityResult
+	var contextLengthResult *int64
 	computeComplexity := routingCtx.computeComplexity
+	computeContextLength := routingCtx.computeContextLength
 
 	for chainStep := 0; ; chainStep++ {
 		// TERMINATION 4: Chain exceeded configured max depth.
@@ -158,6 +161,9 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 		}
 		if complexityResult != nil {
 			variables["complexity_tier"] = complexityResult.Tier
+		}
+		if contextLengthResult != nil {
+			variables["context_length"] = *contextLengthResult
 		}
 
 		re.logger.Debug("[RoutingEngine] Chain Step: %d", chainStep)
@@ -190,6 +196,7 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 				re.logger.Debug("[RoutingEngine] Evaluating rule: name=%s, expression=%s", rule.Name, rule.CelExpression)
 
 				referencesComplexity := celExpressionReferencesIdentifier(rule.CelExpression, "complexity_tier")
+				referencesContextLength := celExpressionReferencesIdentifier(rule.CelExpression, "context_length")
 
 				// Lazy complexity: compute only when a rule references complexity and it hasn't been computed yet
 				if complexityResult == nil && computeComplexity != nil && referencesComplexity {
@@ -199,6 +206,13 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 						variables["complexity_tier"] = complexityResult.Tier
 					}
 				}
+				if contextLengthResult == nil && computeContextLength != nil && referencesContextLength {
+					if contextLength, ok := computeContextLength(); ok {
+						contextLengthResult = &contextLength
+						variables["context_length"] = contextLength
+					}
+					computeContextLength = nil // compute at most once
+				}
 
 				program, err := re.store.GetRoutingProgram(ctx, rule)
 				if err != nil {
@@ -207,12 +221,15 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 					continue
 				}
 
-				var unknowns []*cel.AttributePatternType
+				var unknownVariables []string
 				if referencesComplexity && complexityResult == nil {
-					unknowns = append(unknowns, cel.AttributePattern("complexity_tier"))
+					unknownVariables = append(unknownVariables, "complexity_tier")
+				}
+				if referencesContextLength && contextLengthResult == nil {
+					unknownVariables = append(unknownVariables, "context_length")
 				}
 
-				matched, err := evaluateCELExpression(program, variables, unknowns...)
+				matched, err := evaluateCELExpressionWithUnknowns(program, variables, unknownVariables...)
 				if err != nil {
 					re.logger.Warn("[RoutingEngine] Failed to evaluate rule %s: %v", rule.Name, err)
 					ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelError, fmt.Sprintf("Rule '%s' skipped: eval error: %v", rule.Name, err))
@@ -434,6 +451,25 @@ func evaluateCELExpression(program cel.Program, variables map[string]any, unknow
 	return matched, nil
 }
 
+func evaluateCELExpressionWithUnknowns(program cel.Program, variables map[string]any, unknownVariableNames ...string) (bool, error) {
+	if len(unknownVariableNames) == 0 {
+		return evaluateCELExpression(program, variables)
+	}
+
+	evalVariables := make(map[string]any, len(variables))
+	for k, v := range variables {
+		evalVariables[k] = v
+	}
+
+	unknowns := make([]*cel.AttributePatternType, 0, len(unknownVariableNames))
+	for _, name := range unknownVariableNames {
+		delete(evalVariables, name)
+		unknowns = append(unknowns, cel.AttributePattern(name))
+	}
+
+	return evaluateCELExpression(program, evalVariables, unknowns...)
+}
+
 // extractRoutingVariables builds a map of CEL variables from routing context
 // This map is used to evaluate CEL expressions in routing rules
 func extractRoutingVariables(ctx *RoutingContext) (map[string]interface{}, error) {
@@ -519,6 +555,7 @@ func extractRoutingVariables(ctx *RoutingContext) (map[string]interface{}, error
 	// actually references complexity_tier. If complexity is unavailable, it is
 	// evaluated as a CEL unknown so negative predicates do not accidentally match.
 	variables["complexity_tier"] = ""
+	variables["context_length"] = int64(0)
 
 	return variables, nil
 }
@@ -546,6 +583,7 @@ func buildNoMatchContext(expr string, variables map[string]any) string {
 		fmt.Sprintf("budget_used=%.1f%%", variables["budget_used"]),
 		fmt.Sprintf("tokens_used=%.1f%%", variables["tokens_used"]),
 		fmt.Sprintf("request=%.1f%%", variables["request"]),
+		fmt.Sprintf("context_length=%d", variables["context_length"]),
 	}
 	for _, mapName := range []string{"headers", "params"} {
 		keys := extractMapKeysFromCEL(expr, mapName)
@@ -659,6 +697,7 @@ func createCELEnvironment() (*cel.Env, error) {
 		cel.Variable("tokens_used", cel.DoubleType),
 		cel.Variable("request", cel.DoubleType),
 		cel.Variable("budget_used", cel.DoubleType),
+		cel.Variable("context_length", cel.IntType),
 
 		// Complexity tier. When analysis is unavailable, evaluation marks this
 		// variable as CEL unknown so complexity-dependent predicates do not match.

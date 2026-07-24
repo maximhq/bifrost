@@ -224,6 +224,15 @@ function convertRuleToCEL(rule: RuleType): string {
 		}
 	}
 
+	if (field === "context_length") {
+		const thresholdValue = String(value).trim();
+		if (thresholdValue) {
+			const numValue = parseFloat(thresholdValue);
+			const actualValue = !isNaN(numValue) ? numValue.toString() : thresholdValue;
+			return `${field} ${celOperator} ${actualValue}`;
+		}
+	}
+
 	// Handle other keyValue fields (headers, params) for other operators
 	if (isKeyValueField) {
 		const keyValuePair = parseKeyValue(String(value));
