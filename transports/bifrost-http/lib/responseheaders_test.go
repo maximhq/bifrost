@@ -247,3 +247,70 @@ func TestApplyBifrostStreamResponseHeaders(t *testing.T) {
 		assert.Empty(t, string(ctx.Response.Header.Peek(HeaderBifrostProvider)))
 	})
 }
+
+// TestApplyBifrostErrorResponseHeaders covers the error adapter used on failed /
+// fallback-exhausted requests: it bridges BifrostErrorExtraFields to the shared
+// writer so callers still learn which provider ran and whether a fallback fired.
+func TestApplyBifrostErrorResponseHeaders(t *testing.T) {
+	newBifrostCtx := func() *schemas.BifrostContext {
+		return schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	}
+
+	t.Run("fallback-exhausted error emits identity and fallback headers", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		bifrostCtx := newBifrostCtx()
+		bifrostCtx.SetValue(schemas.BifrostContextKeyFallbackIndex, 1)
+
+		primaryProvider := schemas.Anthropic
+		primaryModel := "claude-sonnet-4-6"
+		ApplyBifrostErrorResponseHeaders(ctx, bifrostCtx, schemas.BifrostErrorExtraFields{
+			RequestType:            schemas.ChatCompletionRequest,
+			Provider:               schemas.Bedrock,
+			OriginalModelRequested: "claude-sonnet-4-6",
+			ResolvedModelUsed:      "us.anthropic.claude-sonnet-4-6",
+			RoutingInfo: schemas.RoutingInfo{
+				Provider:        schemas.Bedrock,
+				Model:           "us.anthropic.claude-sonnet-4-6",
+				IsFallback:      true,
+				PrimaryProvider: &primaryProvider,
+				PrimaryModel:    &primaryModel,
+			},
+		})
+
+		assert.Equal(t, "bedrock", string(ctx.Response.Header.Peek(HeaderBifrostProvider)))
+		assert.Equal(t, "claude-sonnet-4-6", string(ctx.Response.Header.Peek(HeaderBifrostOriginalModel)))
+		assert.Equal(t, "us.anthropic.claude-sonnet-4-6", string(ctx.Response.Header.Peek(HeaderBifrostResolvedModel)))
+		assert.Equal(t, string(schemas.ChatCompletionRequest), string(ctx.Response.Header.Peek(HeaderBifrostRequestType)))
+		assert.Equal(t, "bedrock", string(ctx.Response.Header.Peek(HeaderBifrostRoutingInfoProvider)))
+		assert.Equal(t, "true", string(ctx.Response.Header.Peek(HeaderBifrostRoutingInfoIsFallback)))
+		assert.Equal(t, "anthropic", string(ctx.Response.Header.Peek(HeaderBifrostRoutingInfoPrimaryProvider)))
+		assert.Equal(t, "1", string(ctx.Response.Header.Peek(HeaderBifrostFallbackIndex)))
+	})
+
+	t.Run("nil ctx (native error path) emits identity but no ctx-only headers", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+
+		ApplyBifrostErrorResponseHeaders(ctx, nil, schemas.BifrostErrorExtraFields{
+			RequestType: schemas.ChatCompletionRequest,
+			Provider:    schemas.OpenAI,
+			RoutingInfo: schemas.RoutingInfo{Provider: schemas.OpenAI, Model: "gpt-5.6"},
+		})
+
+		assert.Equal(t, "openai", string(ctx.Response.Header.Peek(HeaderBifrostProvider)))
+		assert.Equal(t, "gpt-5.6", string(ctx.Response.Header.Peek(HeaderBifrostRoutingInfoModel)))
+		// ctx-only headers are absent when no context is threaded through.
+		assert.Empty(t, string(ctx.Response.Header.Peek(HeaderBifrostFallbackIndex)))
+		assert.Empty(t, string(ctx.Response.Header.Peek(HeaderBifrostUpstreamLatency)))
+	})
+
+	t.Run("empty error extra fields emit nothing", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		bifrostCtx := newBifrostCtx()
+
+		ApplyBifrostErrorResponseHeaders(ctx, bifrostCtx, schemas.BifrostErrorExtraFields{})
+
+		assert.Empty(t, string(ctx.Response.Header.Peek(HeaderBifrostProvider)))
+		assert.Empty(t, string(ctx.Response.Header.Peek(HeaderBifrostRequestType)))
+		assert.Empty(t, string(ctx.Response.Header.Peek(HeaderBifrostRoutingInfoProvider)))
+	})
+}
