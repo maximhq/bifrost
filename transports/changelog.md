@@ -1,3 +1,4 @@
+[feat]: support exact provider request ID filtering in log APIs [@qixiangyang](https://github.com/qixiangyang)
 [feat]: expose provider request ID capture settings through the HTTP management API [@qixiangyang](https://github.com/qixiangyang)
 
 ## ✨ Features
