@@ -745,10 +745,11 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
-              "changelogs/v1.6.5",
               "changelogs/v2.0.0-prerelease2",
-              "changelogs/v1.6.4",
               "changelogs/v2.0.0-prerelease1",
+              "changelogs/v1.6.5",
+              "changelogs/v1.6.5-opus-5",
+              "changelogs/v1.6.4",
               "changelogs/v1.6.3",
               "changelogs/v1.6.2",
               {
