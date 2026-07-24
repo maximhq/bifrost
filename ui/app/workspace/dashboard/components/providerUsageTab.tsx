@@ -8,7 +8,17 @@ import type {
 	ProviderThroughputHistogramResponse,
 	ProviderTokenHistogramResponse,
 } from "@/lib/types/logs";
-import { CHART_COLORS, CHART_HEADER_LEGEND_CLASS, LATENCY_COLORS, THROUGHPUT_COLOR, formatTokensPerSecond, getModelColor } from "../utils/chartUtils";
+import {
+	CHART_COLORS,
+	CHART_HEADER_LEGEND_CLASS,
+	LATENCY_COLORS,
+	OTHER_SERIES_COLOR,
+	OTHER_SERIES_KEY,
+	OTHER_SERIES_LABEL,
+	THROUGHPUT_COLOR,
+	formatTokensPerSecond,
+	getModelColor,
+} from "../utils/chartUtils";
 import { ChartCard } from "./charts/chartCard";
 import { type ChartType, ChartTypeToggle } from "./charts/chartTypeToggle";
 import { ProviderCostChart } from "./charts/providerCostChart";
@@ -202,8 +212,11 @@ function ProviderUsageTabImpl({
 												<div className="flex flex-col gap-1">
 													{providerCostProviders.slice(1).map((provider, idx) => (
 														<span key={provider} className="flex items-center gap-1">
-															<span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: getModelColor(idx + 1) }} />
-															{provider}
+															<span
+																className="h-2 w-2 shrink-0 rounded-full"
+																style={{ backgroundColor: provider === OTHER_SERIES_KEY ? OTHER_SERIES_COLOR : getModelColor(idx + 1) }}
+															/>
+															{provider === OTHER_SERIES_KEY ? OTHER_SERIES_LABEL : provider}
 														</span>
 													))}
 												</div>
@@ -287,8 +300,11 @@ function ProviderUsageTabImpl({
 												<div className="flex flex-col gap-1">
 													{providerTokenProviders.slice(1).map((provider, idx) => (
 														<span key={provider} className="flex items-center gap-1">
-															<span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: getModelColor(idx + 1) }} />
-															{provider}
+															<span
+																className="h-2 w-2 shrink-0 rounded-full"
+																style={{ backgroundColor: provider === OTHER_SERIES_KEY ? OTHER_SERIES_COLOR : getModelColor(idx + 1) }}
+															/>
+															{provider === OTHER_SERIES_KEY ? OTHER_SERIES_LABEL : provider}
 														</span>
 													))}
 												</div>
@@ -443,10 +459,14 @@ function ProviderUsageTabImpl({
 				testId="chart-provider-throughput"
 				totalLabel="Avg"
 				total={
-					providerThroughputAvg !== null ? <span className="truncate whitespace-nowrap">{formatTokensPerSecond(providerThroughputAvg)}</span> : undefined
+					providerThroughputAvg !== null ? (
+						<span className="truncate whitespace-nowrap">{formatTokensPerSecond(providerThroughputAvg)}</span>
+					) : undefined
 				}
 				totalTooltip={
-					providerThroughputAvg !== null ? `${providerThroughputAvg.toLocaleString("en-US", { maximumFractionDigits: 2 })} tokens/sec` : undefined
+					providerThroughputAvg !== null
+						? `${providerThroughputAvg.toLocaleString("en-US", { maximumFractionDigits: 2 })} tokens/sec`
+						: undefined
 				}
 				legend={
 					<div className={CHART_HEADER_LEGEND_CLASS}>
