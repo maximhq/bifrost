@@ -303,10 +303,18 @@ func (h *WSRealtimeHandler) runRealtimeSession(
 		clientConn.writeRealtimeError(headerErr)
 		return
 	}
+	// Some providers' RealtimeWebSocketURL embeds the credential itself (Gemini
+	// Live's `?key=` query param, since its protocol has no header-based auth
+	// option) — sanitize before it becomes the pool's Go map key / diagnostic
+	// value, and keep the real URL only as the dial target. This is a no-op for
+	// OpenAI/Azure (their `?model=`/`?deployment=` params aren't credential-shaped)
+	// and ElevenLabs (header auth, no query params at all).
+	poolEndpoint := bfws.SanitizeEndpointForPoolKey(wsURL)
 	upstream, err := h.pool.Get(bfws.PoolKey{
 		Provider: providerKey,
 		KeyID:    key.ID,
-		Endpoint: wsURL,
+		Endpoint: poolEndpoint,
+		DialURL:  wsURL,
 	}, mapToHTTPHeader(realtimeHeaders))
 	if err != nil {
 		clientConn.writeRealtimeError(newRealtimeWireBifrostError(502, "server_error", err.Error()))
@@ -394,7 +402,7 @@ func (h *WSRealtimeHandler) relayClientToRealtimeProvider(
 			}
 		}
 
-		sanitizeRealtimeSessionEventForProvider(event)
+		sanitizeRealtimeSessionEventForProvider(event, model)
 		providerEvent, err := provider.ToProviderRealtimeEvent(event)
 		if err != nil {
 			if startsTurn {
@@ -429,6 +437,45 @@ func (h *WSRealtimeHandler) relayClientToRealtimeProvider(
 			if inputSummary != "" {
 				session.RecordRealtimeInput(inputItemID, inputSummary, string(message))
 			}
+		}
+
+		// A nil/empty providerEvent means the provider intentionally dropped this
+		// client event (e.g. Gemini has no wire equivalent for it, and forwarding an
+		// empty/unrecognized payload risks the upstream closing the connection).
+		if len(providerEvent) == 0 {
+			// Defensive: no provider does this today (every ShouldStartRealtimeTurn
+			// trigger currently translates to a non-nil payload), but if one ever did,
+			// silently dropping a turn-starting event here would leave
+			// TryBeginRealtimeTurnHooks's turn-hooks slot occupied forever — every
+			// later turn on this connection would then be rejected as "already has an
+			// active response in progress" until the socket disconnects. Finalize with
+			// an error instead of leaking the slot.
+			//
+			// This writes the error and keeps the connection open (continue below),
+			// matching the existing convention for the `err != nil` branch above in this
+			// same function — the WS relay path tolerates a bad turn-starting event and
+			// lets the client retry, whereas webrtc_realtime.go's equivalent branch closes
+			// the whole relay. That's a pre-existing per-transport difference (present in
+			// the ToProviderRealtimeEvent-error branch too, unrelated to this guard), not
+			// something to "fix" into consistency here.
+			if startsTurn {
+				if finalizeErr := finalizeRealtimeTurnHooksWithError(
+					h.client,
+					bifrostCtx,
+					session,
+					providerKey,
+					model,
+					&key,
+					schemas.RTEventError,
+					nil,
+					newRealtimeWireBifrostError(400, "invalid_request_error", "provider dropped a turn-starting event"),
+				); finalizeErr != nil {
+					clientConn.writeRealtimeError(finalizeErr)
+					return nil
+				}
+				clientConn.writeRealtimeError(newRealtimeWireBifrostError(400, "invalid_request_error", "provider dropped a turn-starting event"))
+			}
+			continue
 		}
 
 		if err := upstream.WriteMessage(ws.TextMessage, providerEvent); err != nil {

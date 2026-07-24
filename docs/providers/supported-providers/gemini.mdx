@@ -30,6 +30,7 @@ Google Gemini's API has different structure from OpenAI. Bifrost performs extens
 | Files | ✅ | - | `/upload/storage/v1beta/files` |
 | Batch | ✅ | - | `/v1beta/batchJobs` |
 | List Models | ✅ | - | `/v1beta/models` |
+| Realtime (Live API) | ✅ | N/A (bidirectional) | `/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent` |
 
 ---
 
@@ -856,6 +857,68 @@ If Gemini filters content for safety, `status` is `failed` and `content_filter` 
 | Download | `GET /v1/videos/{id}/content` | Downloads from GCS URI or decodes base64 video |
 
 Video Delete, List, and Remix are not supported.
+
+---
+
+# 12. Realtime (Live API)
+
+Bifrost proxies Gemini Live (`BidiGenerateContent`) through the same generic realtime WebSocket endpoint used for OpenAI/Azure Realtime — connect with `model=gemini/<model>` and Bifrost handles translation transparently.
+
+<Tabs>
+<Tab title="Gateway">
+
+```js
+const ws = new WebSocket(
+  "ws://localhost:8080/v1/realtime?model=gemini/gemini-3.1-flash-live-preview"
+);
+
+ws.onopen = () => {
+  ws.send(JSON.stringify({ type: "session.update", session: { modalities: ["audio"] } }));
+};
+
+ws.onmessage = (event) => {
+  const msg = JSON.parse(event.data);
+  if (msg.setupComplete) {
+    ws.send(JSON.stringify({
+      type: "conversation.item.create",
+      item: { type: "message", role: "user", content: [{ type: "input_text", text: "Say hello in three words." }] },
+    }));
+    ws.send(JSON.stringify({ type: "response.create" }));
+  }
+};
+```
+
+</Tab>
+</Tabs>
+
+### Supported Modalities
+
+| Combination | Support | Notes |
+|-------------|---------|-------|
+| Text in → Audio out | ✅ | Native |
+| Audio in → Audio out | ✅ | Native |
+| Text in → Text out | ✅ | Via the `outputAudioTranscription` side-channel (see below) |
+| Audio in → Text out | ✅ | Via the `outputAudioTranscription` side-channel |
+| Video in | ❌ | Not supported — no canonical schema slot exists for video in Bifrost's realtime event model |
+
+<Note>
+Current Gemini Live models only support `AUDIO` as a response modality — requesting `TEXT` is rejected at setup time. Bifrost always requests `AUDIO` output and enables `inputAudioTranscription`/`outputAudioTranscription`, so a text transcript is delivered alongside the audio response for clients that only need text.
+</Note>
+
+### Not Supported
+
+- **WebRTC** (`/realtime/calls` SDP exchange) — Gemini Live has no public WebRTC SDP-exchange spec.
+- **Ephemeral client secrets** (`/realtime/client_secrets`, `/realtime/sessions`) — Gemini's Ephemeral Tokens API is shaped differently from OpenAI/Azure's; not yet implemented.
+
+### Wire Translation
+
+| Gemini message | Bifrost canonical event |
+|-----------------|--------------------------|
+| `setup` / `setupComplete` | `session.update` / `session.created` |
+| `clientContent` / `realtimeInput` | Client audio/text input |
+| `serverContent.modelTurn` (+ `outputTranscription`, if present in the same message) | `response.audio.delta` / `response.text.delta`, combined into one delta |
+| `serverContent.turnComplete` | `response.done` |
+| `toolCall` / `toolResponse` | Function-call item, standard tool-calling flow |
 
 ---
 

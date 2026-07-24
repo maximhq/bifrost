@@ -21,6 +21,16 @@ type PoolKey struct {
 	Provider schemas.ModelProvider
 	KeyID    string
 	Endpoint string
+
+	// DialURL is the actual URL to connect to, when it differs from Endpoint.
+	// Optional — leave empty and Endpoint is used for both identity and dialing
+	// (true for every provider that authenticates via headers: OpenAI, Azure,
+	// ElevenLabs). Set this when a provider's auth must ride on the URL itself
+	// (Gemini Live's `?key=` query param) so Endpoint can stay a sanitized
+	// identity/log value — see SanitizeEndpointForPoolKey — while the real
+	// credential-bearing URL is only ever used for the dial itself, never as a
+	// Go map key held for the pool's lifetime or in any diagnostic output.
+	DialURL string
 }
 
 // Pool manages a pool of upstream WebSocket connections keyed by (provider, keyID, endpoint).
@@ -181,11 +191,19 @@ func (p *Pool) Close() {
 
 // dial establishes a new WebSocket connection to the upstream endpoint
 // identified by key, forwarding the supplied HTTP headers during the handshake.
+// Dials key.DialURL when set (the real, possibly credential-bearing URL);
+// otherwise dials key.Endpoint directly, unchanged from before DialURL existed.
 func (p *Pool) dial(key PoolKey, headers http.Header) (*UpstreamConn, error) {
-	wsConn, resp, err := Dial(key.Endpoint, headers)
-	if err != nil {
-		return nil, fmt.Errorf("failed to dial upstream websocket %s: %w", key.Endpoint, wrapHandshakeError(resp, err))
+	dialTarget := key.Endpoint
+	if key.DialURL != "" {
+		dialTarget = key.DialURL
 	}
+	wsConn, resp, err := Dial(dialTarget, headers)
+	if err != nil {
+		return nil, fmt.Errorf("failed to dial upstream websocket %s: %w", redactURLForLog(dialTarget), wrapHandshakeError(resp, err))
+	}
+	// UpstreamConn stores the sanitized Endpoint, not the (potentially
+	// credential-bearing) dialTarget — see PoolKey.DialURL's doc comment.
 	return newUpstreamConn(wsConn, key.Provider, key.KeyID, key.Endpoint), nil
 }
 
