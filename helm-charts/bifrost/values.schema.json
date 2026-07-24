@@ -2337,6 +2337,11 @@
                         "type": "string",
                         "description": "JWT audience for validation (optional)"
                       },
+                      "additionalScopes": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Extra OAuth scopes requested on top of the base openid/profile/email/offline_access set. Primarily for Custom Authorization Servers where claims like 'groups' are gated behind a scope Bifrost does not request by default."
+                      },
                       "userIdField": {
                         "type": "string",
                         "description": "JWT claim field for user ID (default: 'sub')",
@@ -3226,7 +3231,79 @@
                           "type": "string"
                         }
                       },
+                      "required": ["id"],
                       "additionalProperties": false
+                    },
+                    "blacklisted_models": {
+                      "type": "array",
+                      "description": "Models blocked for this provider even if matched by allowed_models (denylist wins). Use [\"*\"] to block all.",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "weight": {
+                      "type": ["number", "null"],
+                      "description": "Load-balancer seed weight for this provider (null opts out of weighted routing).",
+                      "default": null
+                    },
+                    "model_budgets": {
+                      "type": "array",
+                      "description": "Per-model budgets and rate limits scoped to this provider.",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "model_name": {
+                            "type": "string"
+                          },
+                          "budgets": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "id": {
+                                  "type": "string"
+                                },
+                                "max_limit": {
+                                  "type": "number"
+                                },
+                                "reset_duration": {
+                                  "type": "string"
+                                },
+                                "calendar_aligned": {
+                                  "type": "boolean",
+                                  "default": false
+                                }
+                              },
+                              "required": ["id", "max_limit", "reset_duration"],
+                              "additionalProperties": false
+                            }
+                          },
+                          "rate_limit": {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "type": "string"
+                              },
+                              "token_max_limit": {
+                                "type": "integer"
+                              },
+                              "token_reset_duration": {
+                                "type": "string"
+                              },
+                              "request_max_limit": {
+                                "type": "integer"
+                              },
+                              "request_reset_duration": {
+                                "type": "string"
+                              }
+                            },
+                            "required": ["id"],
+                            "additionalProperties": false
+                          }
+                        },
+                        "required": ["model_name"],
+                        "additionalProperties": false
+                      }
                     },
                     "key_ids": {
                       "type": "array",

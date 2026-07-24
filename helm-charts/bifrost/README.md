@@ -4,9 +4,15 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.31
+**Latest Version:** 2.1.32
 
 ## Changelog
+
+### Upcoming
+
+- Extended `bifrost.accessProfiles[].provider_configs[]` with `blacklisted_models` (denylist that wins over `allowed_models`), `weight` (load-balancer seed weight; `null` opts out), and `model_budgets[]` (per-model budget groups, each with `budgets` and an optional `rate_limit`). These pass through into `access_profiles[].provider_configs[]`. Also synced into `transports/config.schema.json` so config.json seeded from Helm validates at startup.
+- Added `bifrost.scim.config.additionalScopes` (Okta) — an array of extra OAuth scopes requested on top of the base `openid/profile/email/offline_access` set, for Custom Authorization Servers where claims like `groups` are gated behind a scope Bifrost does not request by default. Passes through into `scim_config.config.additionalScopes`. (Also synced into the source-of-truth `transports/config.schema.json` so the generated config validates at startup.)
+- Documented and validated `bifrost.providers.<provider>.keys[*].bedrock_key_config.batch_role_arn` — the service role ARN passed to Bedrock batch jobs for S3 access, which takes priority over any `role_arn` sent in the request. Passes through into `bedrock_key_config.batch_role_arn`.
 
 ### 2.1.31
 
