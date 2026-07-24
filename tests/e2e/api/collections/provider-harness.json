@@ -134,6 +134,9 @@
           "    } else if (j.type === 'file_deleted' && typeof j.id === 'string') {",
           "        shape = 'anthropic-file-deleted';",
           "        hasContent = !!j.id;",
+          "    } else if (j.object === 'response.deleted' && typeof j.id === 'string') {",
+          "        shape = 'openai-responses-deleted';",
+          "        hasContent = j.deleted === true;",
           "    }",
           "    pm.expect(hasContent, 'expected non-empty content (shape=' + shape + ', body=' + JSON.stringify(j).slice(0, 200) + ')').to.be.true;",
           "  });",
@@ -41451,6 +41454,463 @@
                 "v1",
                 "chat",
                 "completions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "29. OpenAI Responses Lifecycle + Streaming Retrieve",
+      "description": "Pins the OpenAI Responses secondary-verb lifecycle on both the native /v1/responses/{id} routes and the /openai/v1 drop-in: retrieve, streaming retrieve (GET ?stream=true, newly added — BifrostResponsesRetrieveRequest.Stream -> ResponsesRetrieveStreamRequest -> provider.ResponsesRetrieveStream), input_items, and delete. Each chain creates a background + store + stream response (id parsed from the SSE create body, so streaming retrieve resumes an actually-streamed response), verifies the verbs against the captured id, and deletes it as cleanup. Cancel is omitted (it would abort the response the streaming retrieve replays).",
+      "item": [
+        {
+          "name": "openai/gpt-4o-mini native lifecycle: create streamed background response",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('native create (streamed bg): 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.test('native create (streamed bg): SSE content-type', function () { var ct = pm.response.headers.get('content-type') || ''; pm.expect(ct, 'expected text/event-stream, got ' + ct).to.include('text/event-stream'); });",
+                  "var body = pm.response.text() || '';",
+                  "var m = body.match(/\"id\":\"(resp_[A-Za-z0-9_-]+)\"/);",
+                  "pm.test('native create (streamed bg): captured streamed response id', function () { pm.expect(m, 'no resp_ id in SSE body head: ' + body.slice(0, 200)).to.not.equal(null); });",
+                  "if (m) { pm.collectionVariables.set('lcNativeRespId', m[1]); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"input\": \"Reply with exactly: lifecycle-ok\",\n  \"store\": true,\n  \"background\": true,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-4o-mini native lifecycle: retrieve",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('native retrieve: 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var j = pm.response.json();",
+                  "pm.test('native retrieve: id matches create', function () { pm.expect(j.id).to.eql(pm.collectionVariables.get('lcNativeRespId')); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses/{{lcNativeRespId}}?provider=openai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses",
+                "{{lcNativeRespId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-4o-mini native lifecycle: streaming retrieve (SSE)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('native stream retrieve: 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.test('native stream retrieve: SSE content-type', function () { var ct = pm.response.headers.get('content-type') || ''; pm.expect(ct, 'expected text/event-stream, got ' + ct).to.include('text/event-stream'); });",
+                  "pm.test('native stream retrieve: body is a responses SSE stream', function () { var body = pm.response.text() || ''; pm.expect(body.indexOf('data:'), 'expected SSE data lines').to.not.equal(-1); pm.expect(body.indexOf('response.'), 'expected response.* events').to.not.equal(-1); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses/{{lcNativeRespId}}?provider=openai&stream=true&starting_after=0",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses",
+                "{{lcNativeRespId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                },
+                {
+                  "key": "stream",
+                  "value": "true"
+                },
+                {
+                  "key": "starting_after",
+                  "value": "0"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-4o-mini native lifecycle: input_items",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('native input_items: 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var j = pm.response.json();",
+                  "pm.test('native input_items: object list', function () { pm.expect(j.object).to.eql('list'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses/{{lcNativeRespId}}/input_items?provider=openai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses",
+                "{{lcNativeRespId}}",
+                "input_items"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-4o-mini native lifecycle: delete (cleanup)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('native delete: 2xx', function () { pm.expect(pm.response.code, pm.response.text()).to.be.below(400); });",
+                  "var j = pm.response.json();",
+                  "pm.test('native delete: deleted true', function () { pm.expect(j.deleted).to.eql(true); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses/{{lcNativeRespId}}?provider=openai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses",
+                "{{lcNativeRespId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini drop-in lifecycle: create streamed background response",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('drop-in create (streamed bg): 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.test('drop-in create (streamed bg): SSE content-type', function () { var ct = pm.response.headers.get('content-type') || ''; pm.expect(ct, 'expected text/event-stream, got ' + ct).to.include('text/event-stream'); });",
+                  "var body = pm.response.text() || '';",
+                  "var m = body.match(/\"id\":\"(resp_[A-Za-z0-9_-]+)\"/);",
+                  "pm.test('drop-in create (streamed bg): captured streamed response id', function () { pm.expect(m, 'no resp_ id in SSE body head: ' + body.slice(0, 200)).to.not.equal(null); });",
+                  "if (m) { pm.collectionVariables.set('lcOpenaiRespId', m[1]); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{openaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"input\": \"Reply with exactly: lifecycle-ok\",\n  \"store\": true,\n  \"background\": true,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini drop-in lifecycle: retrieve",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('drop-in retrieve: 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var j = pm.response.json();",
+                  "pm.test('drop-in retrieve: id matches create', function () { pm.expect(j.id).to.eql(pm.collectionVariables.get('lcOpenaiRespId')); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{openaiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses/{{lcOpenaiRespId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses",
+                "{{lcOpenaiRespId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini drop-in lifecycle: streaming retrieve (SSE)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('drop-in stream retrieve: 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.test('drop-in stream retrieve: SSE content-type', function () { var ct = pm.response.headers.get('content-type') || ''; pm.expect(ct, 'expected text/event-stream, got ' + ct).to.include('text/event-stream'); });",
+                  "pm.test('drop-in stream retrieve: body is a responses SSE stream', function () { var body = pm.response.text() || ''; pm.expect(body.indexOf('data:'), 'expected SSE data lines').to.not.equal(-1); pm.expect(body.indexOf('response.'), 'expected response.* events').to.not.equal(-1); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{openaiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses/{{lcOpenaiRespId}}?stream=true&starting_after=0",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses",
+                "{{lcOpenaiRespId}}"
+              ],
+              "query": [
+                {
+                  "key": "stream",
+                  "value": "true"
+                },
+                {
+                  "key": "starting_after",
+                  "value": "0"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini drop-in lifecycle: input_items",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('drop-in input_items: 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var j = pm.response.json();",
+                  "pm.test('drop-in input_items: object list', function () { pm.expect(j.object).to.eql('list'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{openaiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses/{{lcOpenaiRespId}}/input_items",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses",
+                "{{lcOpenaiRespId}}",
+                "input_items"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini drop-in lifecycle: delete (cleanup)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('drop-in delete: 2xx', function () { pm.expect(pm.response.code, pm.response.text()).to.be.below(400); });",
+                  "var j = pm.response.json();",
+                  "pm.test('drop-in delete: deleted true', function () { pm.expect(j.deleted).to.eql(true); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{openaiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses/{{lcOpenaiRespId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses",
+                "{{lcOpenaiRespId}}"
               ]
             }
           }
