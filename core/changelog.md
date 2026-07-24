@@ -1,0 +1,1 @@
+- feat: opt-in HTTP/2 PING keepalives on the Bedrock provider via a configurable interval (0 = off) [@jeremym-tanium](https://github.com/jeremym-tanium)

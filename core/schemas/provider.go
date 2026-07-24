@@ -64,6 +64,7 @@ type NetworkConfig struct {
 	KeepAliveTimeoutInSeconds      int               `json:"keep_alive_timeout_in_seconds,omitempty"`  // Idle keep-alive for pooled connections; set below the upstream server's keep-alive to avoid reusing connections it has already closed. Default: 30s
 	MaxConnsPerHost                int               `json:"max_conns_per_host,omitempty"`             // Max TCP connections per provider host (default: 5000)
 	EnforceHTTP2                   bool              `json:"enforce_http2,omitempty"`                  // Force HTTP/2 on provider connections (relevant for net/http-based providers like Bedrock)
+	HTTP2PingIntervalInSeconds     int               `json:"http2_ping_interval_in_seconds,omitempty"` // Seconds of stream idle before an HTTP/2 keepalive PING (0 = disabled; only when enforce_http2)
 	BetaHeaderOverrides            map[string]bool   `json:"beta_header_overrides,omitempty"`          // Override default beta header support per provider (keys are prefixes like "redact-thinking-")
 	AllowPrivateNetwork            bool              `json:"allow_private_network,omitempty"`          // Allow connections to RFC 1918 private IPs (for k8s pods, LAN deployments). Link-local (169.254.x.x) is always blocked.
 }
@@ -89,6 +90,7 @@ func (nc *NetworkConfig) UnmarshalJSON(data []byte) error {
 		KeepAliveTimeoutInSeconds      int               `json:"keep_alive_timeout_in_seconds,omitempty"`
 		MaxConnsPerHost                int               `json:"max_conns_per_host,omitempty"`
 		EnforceHTTP2                   bool              `json:"enforce_http2,omitempty"`
+		HTTP2PingIntervalInSeconds     int               `json:"http2_ping_interval_in_seconds,omitempty"`
 		BetaHeaderOverrides            map[string]bool   `json:"beta_header_overrides,omitempty"`
 		AllowPrivateNetwork            bool              `json:"allow_private_network,omitempty"`
 	}
@@ -109,6 +111,7 @@ func (nc *NetworkConfig) UnmarshalJSON(data []byte) error {
 	nc.KeepAliveTimeoutInSeconds = alias.KeepAliveTimeoutInSeconds
 	nc.MaxConnsPerHost = alias.MaxConnsPerHost
 	nc.EnforceHTTP2 = alias.EnforceHTTP2
+	nc.HTTP2PingIntervalInSeconds = alias.HTTP2PingIntervalInSeconds
 	nc.BetaHeaderOverrides = alias.BetaHeaderOverrides
 	nc.AllowPrivateNetwork = alias.AllowPrivateNetwork
 
@@ -182,6 +185,7 @@ func (nc NetworkConfig) MarshalJSON() ([]byte, error) {
 		KeepAliveTimeoutInSeconds      int               `json:"keep_alive_timeout_in_seconds,omitempty"`
 		MaxConnsPerHost                int               `json:"max_conns_per_host,omitempty"`
 		EnforceHTTP2                   bool              `json:"enforce_http2,omitempty"`
+		HTTP2PingIntervalInSeconds     int               `json:"http2_ping_interval_in_seconds,omitempty"`
 		BetaHeaderOverrides            map[string]bool   `json:"beta_header_overrides,omitempty"`
 		AllowPrivateNetwork            bool              `json:"allow_private_network,omitempty"`
 	}
@@ -199,6 +203,7 @@ func (nc NetworkConfig) MarshalJSON() ([]byte, error) {
 		KeepAliveTimeoutInSeconds:  nc.KeepAliveTimeoutInSeconds,
 		MaxConnsPerHost:            nc.MaxConnsPerHost,
 		EnforceHTTP2:               nc.EnforceHTTP2,
+		HTTP2PingIntervalInSeconds: nc.HTTP2PingIntervalInSeconds,
 		BetaHeaderOverrides:        nc.BetaHeaderOverrides,
 		AllowPrivateNetwork:        nc.AllowPrivateNetwork,
 	}

@@ -5608,6 +5608,11 @@
           "type": "boolean",
           "description": "Force HTTP/2 on provider connections (relevant for Bedrock and other net/http-based providers)"
         },
+        "http2_ping_interval_in_seconds": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Seconds of stream idle before a client-initiated HTTP/2 keepalive PING (0 = disabled; only when enforce_http2)."
+        },
         "beta_header_overrides": {
           "type": "object",
           "additionalProperties": {

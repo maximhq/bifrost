@@ -1150,6 +1150,31 @@ func TestNetworkConfig_StreamIdleTimeoutRoundTrip(t *testing.T) {
 	assert.Contains(t, string(data), `"stream_idle_timeout_in_seconds":120`)
 }
 
+func TestNetworkConfig_HTTP2PingInterval(t *testing.T) {
+	nc := NetworkConfig{EnforceHTTP2: true, HTTP2PingIntervalInSeconds: 45}
+	data, err := json.Marshal(nc)
+	require.NoError(t, err)
+	var decoded NetworkConfig
+	require.NoError(t, json.Unmarshal(data, &decoded))
+	assert.Equal(t, 45, decoded.HTTP2PingIntervalInSeconds, "http2_ping_interval_in_seconds should round-trip")
+	assert.Contains(t, string(data), `"http2_ping_interval_in_seconds":45`)
+
+	// enforce_http2 set + interval unset -> left at zero (pings are opt-in, off by default)
+	cfgDefault := &ProviderConfig{NetworkConfig: NetworkConfig{EnforceHTTP2: true}}
+	cfgDefault.CheckAndSetDefaults()
+	assert.Equal(t, 0, cfgDefault.NetworkConfig.HTTP2PingIntervalInSeconds)
+
+	// explicit interval is preserved
+	cfgExplicit := &ProviderConfig{NetworkConfig: NetworkConfig{EnforceHTTP2: true, HTTP2PingIntervalInSeconds: 5}}
+	cfgExplicit.CheckAndSetDefaults()
+	assert.Equal(t, 5, cfgExplicit.NetworkConfig.HTTP2PingIntervalInSeconds)
+
+	// enforce_http2 off -> left at zero (no ping keepalive)
+	cfgOff := &ProviderConfig{}
+	cfgOff.CheckAndSetDefaults()
+	assert.Equal(t, 0, cfgOff.NetworkConfig.HTTP2PingIntervalInSeconds)
+}
+
 // TestNormalizeResponsesToolType verifies that versioned/provider-specific tool type
 // strings are normalized to their canonical ResponsesToolType values.
 func TestNormalizeResponsesToolType(t *testing.T) {
