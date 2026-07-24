@@ -29,6 +29,12 @@ func convertFunctionToolToAnthropic(tool schemas.ChatTool) AnthropicTool {
 	}
 
 	if anthropicTool.InputSchema != nil {
+		// Anthropic only rejects these JSON Schema keywords under strict
+		// (grammar-constrained) tool input validation; non-strict tool calls
+		// accept them without complaint, so only sanitize when strict is on.
+		if tool.Function.Strict != nil && *tool.Function.Strict {
+			anthropicTool.InputSchema = SanitizeToolSchemaForAnthropic(anthropicTool.InputSchema)
+		}
 		anthropicTool.InputSchema = anthropicTool.InputSchema.Normalized()
 	}
 

@@ -581,8 +581,10 @@ type ToolFunctionParameters struct {
 	MaxLength *int64  `json:"maxLength,omitempty"` // Maximum string length
 
 	// Number validation fields
-	Minimum *float64 `json:"minimum,omitempty"` // Minimum number value
-	Maximum *float64 `json:"maximum,omitempty"` // Maximum number value
+	Minimum          *float64 `json:"minimum,omitempty"`          // Minimum number value
+	Maximum          *float64 `json:"maximum,omitempty"`          // Maximum number value
+	ExclusiveMinimum *float64 `json:"exclusiveMinimum,omitempty"` // Exclusive minimum number value
+	ExclusiveMaximum *float64 `json:"exclusiveMaximum,omitempty"` // Exclusive maximum number value
 
 	// Misc fields
 	Title    *string     `json:"title,omitempty"`    // Schema title
@@ -743,7 +745,7 @@ func (t *ToolFunctionParameters) hasDefinedSchemaFields() bool {
 	if t.Format != nil || t.Pattern != nil || t.MinLength != nil || t.MaxLength != nil {
 		return true
 	}
-	if t.Minimum != nil || t.Maximum != nil {
+	if t.Minimum != nil || t.Maximum != nil || t.ExclusiveMinimum != nil || t.ExclusiveMaximum != nil {
 		return true
 	}
 	return t.Title != nil || t.Default != nil || t.Nullable != nil

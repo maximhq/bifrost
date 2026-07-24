@@ -7607,7 +7607,10 @@ func convertBifrostToolToAnthropic(model string, tool *schemas.ResponsesTool, pr
 		anthropicTool.Strict = tool.ResponsesToolFunction.Strict
 	}
 	if tool.ResponsesToolFunction != nil && tool.ResponsesToolFunction.Parameters != nil {
-		anthropicTool.InputSchema = tool.ResponsesToolFunction.Parameters
+		// Deep-copy before sanitizing: SanitizeToolSchemaForAnthropic mutates
+		// nested OrderedMap trees in place, and the caller-owned
+		// tool.ResponsesToolFunction.Parameters must never be mutated.
+		anthropicTool.InputSchema = schemas.DeepCopyToolFunctionParameters(tool.ResponsesToolFunction.Parameters)
 	} else {
 		// Anthropic requires input_schema for custom tools, provide empty object schema if missing
 		anthropicTool.InputSchema = &schemas.ToolFunctionParameters{
@@ -7616,13 +7619,22 @@ func convertBifrostToolToAnthropic(model string, tool *schemas.ResponsesTool, pr
 		}
 	}
 
-	// Normalize tool schema key ordering to ensure deterministic serialization.
-	// Clients (e.g. Claude Agent SDK) may send non-deterministic property orderings
-	// across turns, which breaks Anthropic's prefix-based prompt caching since tool
+	// Strip JSON Schema keywords Anthropic's input_schema does not support
+	// (see SanitizeToolSchemaForAnthropic) — only under strict (grammar-
+	// constrained) tool input validation, since non-strict tool calls accept
+	// these keywords without complaint — then normalize tool schema key
+	// ordering to ensure deterministic serialization. Clients (e.g. Claude
+	// Agent SDK) may send non-deterministic property orderings across turns,
+	// which breaks Anthropic's prefix-based prompt caching since tool
 	// definitions are part of the serialized request prefix.
-	// Normalized() returns a shallow copy with sorted key slices, so the
-	// caller-owned tool.ResponsesToolFunction.Parameters is never mutated.
+	// anthropicTool.InputSchema is already an owned copy at this point (from
+	// the DeepCopyToolFunctionParameters call above), so both Sanitize's
+	// in-place mutation and Normalized()'s shallow copy operate on it safely
+	// without touching the caller-owned tool.ResponsesToolFunction.Parameters.
 	if anthropicTool.InputSchema != nil {
+		if anthropicTool.Strict != nil && *anthropicTool.Strict {
+			anthropicTool.InputSchema = SanitizeToolSchemaForAnthropic(anthropicTool.InputSchema)
+		}
 		anthropicTool.InputSchema = anthropicTool.InputSchema.Normalized()
 	}
 

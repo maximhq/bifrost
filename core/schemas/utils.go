@@ -1184,6 +1184,14 @@ func DeepCopyToolFunctionParameters(original *ToolFunctionParameters) *ToolFunct
 		maximum := *original.Maximum
 		copyParams.Maximum = &maximum
 	}
+	if original.ExclusiveMinimum != nil {
+		exclusiveMinimum := *original.ExclusiveMinimum
+		copyParams.ExclusiveMinimum = &exclusiveMinimum
+	}
+	if original.ExclusiveMaximum != nil {
+		exclusiveMaximum := *original.ExclusiveMaximum
+		copyParams.ExclusiveMaximum = &exclusiveMaximum
+	}
 	if original.Title != nil {
 		title := *original.Title
 		copyParams.Title = &title
