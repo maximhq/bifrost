@@ -236,6 +236,8 @@ Most request-level Bifrost LLM metrics include these labels (the `bifrost_key_ro
 - `virtual_key_id` / `virtual_key_name` - Virtual key identifiers
 - `routing_engine_used` - Comma-separated list of routing engines that contributed to the decision (e.g. `governance`, `routing-rule`, `loadbalancing`, `model-catalog`, `core`). `core` is emitted when the Bifrost orchestrator itself makes a routing decision — fallback transitions or retry transitions.
 - `routing_rule_id` / `routing_rule_name` - Routing rule that matched the request
+- `complexity_tier` - Complexity tier used for routing (`SIMPLE` / `MEDIUM` / `COMPLEX`); empty when no routing rule referenced `complexity_tier`
+- `complexity_mechanism` - How the complexity tier was classified (`lexical`, or `skipped` when classification was demanded but produced no tier). The raw complexity score is deliberately not a label — it has unbounded cardinality and lives only in the request logs
 - `selected_key_id` / `selected_key_name` - API key that successfully served the request (`""` when all attempts failed)
 - `fallback_index` - Fallback position
 - `team_id` / `team_name` - Team identifiers (empty when governance is not used)

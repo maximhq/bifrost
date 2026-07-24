@@ -1247,7 +1247,7 @@ complexity:
   put:
     operationId: updateComplexityAnalyzerConfig
     summary: Update complexity analyzer config
-    description: Replaces the full complexity analyzer runtime config and hot-reloads the governance plugin. Tier thresholds must satisfy 0 < simple_medium < medium_complex < complex_reasoning < 1.
+    description: Replaces the full complexity analyzer runtime config and hot-reloads the governance plugin. Tier thresholds must satisfy 0 < simple_medium < medium_complex < 1.
     tags:
       - Governance
     requestBody:

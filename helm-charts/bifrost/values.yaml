@@ -862,9 +862,8 @@ bifrost:
     complexityAnalyzerConfig:
       null
       # tier_boundaries:
-      #   simple_medium: 0.15
-      #   medium_complex: 0.35
-      #   complex_reasoning: 0.60
+      #   simple_medium: 0.20
+      #   medium_complex: 0.40
       # keywords:
       #   code_keywords: ["function", "class", "api", "debug", "deploy"]
       #   reasoning_keywords: ["step by step", "explain why", "tradeoffs", "root cause analysis"]
