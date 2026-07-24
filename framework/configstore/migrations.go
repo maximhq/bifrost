@@ -343,6 +343,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"widen_encrypted_varchar_columns"}, run: migrationWidenEncryptedVarcharColumns},
 	{IDs: []string{"add_bedrock_assume_role_columns"}, run: migrationAddBedrockAssumeRoleColumns},
 	{IDs: []string{"add_store_raw_request_response_column"}, run: migrationAddStoreRawRequestResponseColumn},
+	{IDs: []string{"add_provider_request_id_config_column"}, run: migrationAddProviderRequestIDConfigColumn},
 	{IDs: []string{"add_pricing_refactor_columns"}, run: migrationAddPricingRefactorColumns},
 	{IDs: []string{"rename_truncated_pricing_column"}, run: migrationRenameTruncatedPricingColumn},
 	{IDs: []string{"add_image_quality_pricing_columns"}, run: migrationAddImageQualityPricingColumns},
@@ -10940,6 +10941,28 @@ func migrationAddBedrockBatchRoleARNColumn(ctx context.Context, db *gorm.DB, log
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running db migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddProviderRequestIDConfigColumn adds the JSON configuration column.
+func migrationAddProviderRequestIDConfigColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_provider_request_id_config_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return addColumnIfNotExists(tx, logger, &tables.TableProvider{}, "provider_request_id_config_json")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return dropColumnIfExists(tx, logger, &tables.TableProvider{}, "provider_request_id_config_json")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding provider request ID config column: %s", err.Error())
 	}
 	return nil
 }

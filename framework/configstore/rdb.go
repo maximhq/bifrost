@@ -674,6 +674,7 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 			StoreRawRequestResponse:  providerConfig.StoreRawRequestResponse,
 			CustomProviderConfig:     providerConfig.CustomProviderConfig,
 			OpenAIConfig:             providerConfig.OpenAIConfig,
+			ProviderRequestID:        providerConfig.ProviderRequestID,
 			ConfigHash:               providerConfig.ConfigHash,
 			Status:                   providerConfig.Status,
 			Description:              providerConfig.Description,
@@ -905,6 +906,7 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 	dbProvider.StoreRawRequestResponse = configCopy.StoreRawRequestResponse
 	dbProvider.CustomProviderConfig = configCopy.CustomProviderConfig
 	dbProvider.OpenAIConfig = configCopy.OpenAIConfig
+	dbProvider.ProviderRequestID = configCopy.ProviderRequestID
 	dbProvider.ConfigHash = configCopy.ConfigHash
 
 	// Save the updated provider
@@ -1078,6 +1080,7 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 		StoreRawRequestResponse:  configCopy.StoreRawRequestResponse,
 		CustomProviderConfig:     configCopy.CustomProviderConfig,
 		OpenAIConfig:             configCopy.OpenAIConfig,
+		ProviderRequestID:        configCopy.ProviderRequestID,
 		ConfigHash:               configCopy.ConfigHash,
 	}
 	// Create the provider
@@ -1239,6 +1242,7 @@ func (s *RDBConfigStore) GetProvidersConfig(ctx context.Context) (map[schemas.Mo
 			StoreRawRequestResponse:  dbProvider.StoreRawRequestResponse,
 			CustomProviderConfig:     dbProvider.CustomProviderConfig,
 			OpenAIConfig:             dbProvider.OpenAIConfig,
+			ProviderRequestID:        dbProvider.ProviderRequestID,
 			ConfigHash:               dbProvider.ConfigHash,
 			Status:                   dbProvider.Status,
 			Description:              dbProvider.Description,
@@ -1272,6 +1276,7 @@ func (s *RDBConfigStore) GetProviderConfig(ctx context.Context, provider schemas
 		StoreRawRequestResponse:  dbProvider.StoreRawRequestResponse,
 		CustomProviderConfig:     dbProvider.CustomProviderConfig,
 		OpenAIConfig:             dbProvider.OpenAIConfig,
+		ProviderRequestID:        dbProvider.ProviderRequestID,
 		ConfigHash:               dbProvider.ConfigHash,
 		Status:                   dbProvider.Status,
 		Description:              dbProvider.Description,

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"strings"
 	"time"
 )
 
@@ -532,20 +533,103 @@ func (cpc *CustomProviderConfig) IsOperationAllowed(operation RequestType) bool 
 	return cpc.AllowedRequests.IsOperationAllowed(operation)
 }
 
+// ProviderRequestIDConfig controls capture of the upstream provider request ID.
+type ProviderRequestIDConfig struct {
+	Enabled    bool   `json:"enabled"`
+	HeaderName string `json:"header_name,omitempty"`
+}
+
+var defaultProviderRequestIDHeaders = map[ModelProvider]string{
+	OpenAI:    "x-request-id",
+	Anthropic: "request-id",
+	Azure:     "apim-request-id",
+}
+
+const MaxProviderRequestIDLength = 512
+
+// ResolveProviderRequestIDHeader validates and resolves the configured response header.
+func ResolveProviderRequestIDHeader(provider ModelProvider, config *ProviderConfig) (string, error) {
+	if config == nil || config.ProviderRequestID == nil || !config.ProviderRequestID.Enabled {
+		return "", nil
+	}
+	header := strings.ToLower(strings.TrimSpace(config.ProviderRequestID.HeaderName))
+	if header == "" && config.CustomProviderConfig != nil {
+		header = defaultProviderRequestIDHeaders[config.CustomProviderConfig.BaseProviderType]
+	}
+	if header == "" {
+		header = defaultProviderRequestIDHeaders[provider]
+	}
+	if header == "" {
+		return "", fmt.Errorf("provider request ID header_name is required for provider %s", provider)
+	}
+	if !isHTTPHeaderToken(header) {
+		return "", fmt.Errorf("provider request ID header_name %q is not a valid HTTP header name", header)
+	}
+	if IsSensitiveHeader(header) {
+		return "", fmt.Errorf("provider request ID header_name %q is sensitive and cannot be captured", header)
+	}
+	return header, nil
+}
+
+// NormalizeProviderRequestIDConfig validates and stores the canonical lowercase header name.
+func NormalizeProviderRequestIDConfig(provider ModelProvider, config *ProviderConfig) error {
+	if config == nil || config.ProviderRequestID == nil {
+		return nil
+	}
+	if !config.ProviderRequestID.Enabled {
+		config.ProviderRequestID.HeaderName = strings.ToLower(strings.TrimSpace(config.ProviderRequestID.HeaderName))
+		if config.ProviderRequestID.HeaderName != "" {
+			if !isHTTPHeaderToken(config.ProviderRequestID.HeaderName) {
+				return fmt.Errorf("provider request ID header_name %q is not a valid HTTP header name", config.ProviderRequestID.HeaderName)
+			}
+			if IsSensitiveHeader(config.ProviderRequestID.HeaderName) {
+				return fmt.Errorf("provider request ID header_name %q is sensitive and cannot be captured", config.ProviderRequestID.HeaderName)
+			}
+		}
+		return nil
+	}
+	header, err := ResolveProviderRequestIDHeader(provider, config)
+	if err != nil {
+		return err
+	}
+	config.ProviderRequestID.HeaderName = header
+	return nil
+}
+
 // ProviderConfig represents the complete configuration for a provider.
 // An array of ProviderConfig needs to be provided in GetConfigForProvider
 // in your account interface implementation.
+
+func isHTTPHeaderToken(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') {
+			continue
+		}
+		switch c {
+		case '!', '#', '$', '%', '&', '\'', '*', '+', '-', '.', '^', '_', '`', '|', '~':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 type ProviderConfig struct {
 	NetworkConfig            NetworkConfig            `json:"network_config"`              // Network configuration
 	ConcurrencyAndBufferSize ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size"` // Concurrency settings
 	// Logger instance, can be provided by the user or bifrost default logger is used if not provided
-	Logger                  Logger                `json:"-"`
-	ProxyConfig             *ProxyConfig          `json:"proxy_config,omitempty"`     // Proxy configuration
-	SendBackRawRequest      bool                  `json:"send_back_raw_request"`      // Send raw request back in the bifrost response (default: false)
-	SendBackRawResponse     bool                  `json:"send_back_raw_response"`     // Send raw response back in the bifrost response (default: false)
-	StoreRawRequestResponse bool                  `json:"store_raw_request_response"` // Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)
-	CustomProviderConfig    *CustomProviderConfig `json:"custom_provider_config,omitempty"`
-	OpenAIConfig            *OpenAIConfig         `json:"openai_config,omitempty"`
+	Logger                  Logger                   `json:"-"`
+	ProxyConfig             *ProxyConfig             `json:"proxy_config,omitempty"`     // Proxy configuration
+	SendBackRawRequest      bool                     `json:"send_back_raw_request"`      // Send raw request back in the bifrost response (default: false)
+	SendBackRawResponse     bool                     `json:"send_back_raw_response"`     // Send raw response back in the bifrost response (default: false)
+	StoreRawRequestResponse bool                     `json:"store_raw_request_response"` // Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)
+	CustomProviderConfig    *CustomProviderConfig    `json:"custom_provider_config,omitempty"`
+	OpenAIConfig            *OpenAIConfig            `json:"openai_config,omitempty"`
+	ProviderRequestID       *ProviderRequestIDConfig `json:"provider_request_id,omitempty"`
 }
 
 // OpenAIConfig holds OpenAI-specific provider configuration.
