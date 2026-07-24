@@ -28,9 +28,15 @@ import (
 // functions directly.
 var testMigrationLogger = bifrost.NewDefaultLogger(schemas.LogLevelInfo)
 
+// pgTestSchema is this package's dedicated Postgres schema. Test packages
+// (configstore, configstore/tables, logstore) run in parallel against the same
+// database, so each one works in its own schema to avoid clobbering the
+// others' tables and rows.
+const pgTestSchema = "configstore_test"
+
 // postgresDSN matches the postgres service in tests/docker-compose.yml and
 // framework/docker-compose.yml.
-const postgresDSN = "host=localhost user=bifrost password=bifrost_password dbname=bifrost port=5432 sslmode=disable"
+const postgresDSN = "host=localhost user=bifrost password=bifrost_password dbname=bifrost port=5432 sslmode=disable search_path=" + pgTestSchema
 
 // namedDB pairs a backend name with its GORM connection for use in subtests.
 type namedDB struct {
@@ -622,14 +628,17 @@ func trySetupPostgresDBWithoutStoreRawColumn(t *testing.T, testSuffix string) *g
 		return nil
 	}
 
+	// All objects live in this package's dedicated schema (via search_path in
+	// the DSN), isolated from other test packages sharing the same database.
+	if err := db.Exec("CREATE SCHEMA IF NOT EXISTS " + pgTestSchema).Error; err != nil {
+		return nil
+	}
+
 	// Drop config_providers to start fresh (for this specific test).
 	// Use CASCADE to drop dependent objects (composite types, sequences, etc.).
 	db.Exec("DROP TABLE IF EXISTS config_providers CASCADE")
 
-	// Clear migration tracking without dropping the table — other test packages
-	// (e.g. logstore) may share this Postgres instance and use the same table
-	// concurrently.  CREATE IF NOT EXISTS is safe even if the table already
-	// exists from a previous test or a concurrent package.
+	// Clear migration tracking so the migration under test always runs.
 	db.Exec(`CREATE TABLE IF NOT EXISTS migrations (
 		id VARCHAR(255) PRIMARY KEY
 	)`)
@@ -662,8 +671,7 @@ func trySetupPostgresDBWithoutStoreRawColumn(t *testing.T, testSuffix string) *g
 		return nil
 	}
 
-	// Clean up after the test — drop config_providers but leave migrations
-	// intact for concurrent test packages.
+	// Clean up after the test so later tests in this package start fresh.
 	t.Cleanup(func() {
 		db.Exec("DELETE FROM migrations")
 		db.Exec("DROP TABLE IF EXISTS config_providers CASCADE")
@@ -2801,5 +2809,48 @@ func TestMigrationAddDualCredentialConflictBehaviorColumn(t *testing.T) {
 
 	// Idempotency: re-running the migration is a no-op and must not error.
 	require.NoError(t, migrationAddDualCredentialConflictBehaviorColumn(ctx, db, testMigrationLogger),
+		"re-running the migration should be idempotent")
+}
+
+// TestMigrationAddBudgetOverrideColumns verifies legacy budgets receive inactive override defaults.
+func TestMigrationAddBudgetOverrideColumns(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	require.NoError(t, db.AutoMigrate(&tables.TableBudget{}))
+	seed := &tables.TableBudget{
+		ID:            "legacy-budget",
+		MaxLimit:      100,
+		ResetDuration: "1h",
+	}
+	require.NoError(t, db.Create(seed).Error)
+
+	for _, column := range []string{"override_cycles_remaining", "override_mode", "override_amount"} {
+		require.NoError(t, db.Migrator().DropColumn(&tables.TableBudget{}, column))
+		require.False(t, db.Migrator().HasColumn(&tables.TableBudget{}, column),
+			"precondition: %s must be absent to reproduce the upgrade path", column)
+	}
+
+	require.NoError(t, migrationAddBudgetOverrideColumns(ctx, db, testMigrationLogger))
+
+	for _, column := range []string{"override_amount", "override_mode", "override_cycles_remaining"} {
+		require.True(t, db.Migrator().HasColumn(&tables.TableBudget{}, column),
+			"migration should have added %s", column)
+	}
+
+	var got struct {
+		OverrideAmount          float64
+		OverrideMode            tables.BudgetOverrideMode
+		OverrideCyclesRemaining int
+	}
+	require.NoError(t, db.Table("governance_budgets").
+		Select("override_amount, override_mode, override_cycles_remaining").
+		Where("id = ?", seed.ID).
+		Scan(&got).Error)
+	assert.Zero(t, got.OverrideAmount)
+	assert.Empty(t, got.OverrideMode)
+	assert.Zero(t, got.OverrideCyclesRemaining)
+
+	require.NoError(t, migrationAddBudgetOverrideColumns(ctx, db, testMigrationLogger),
 		"re-running the migration should be idempotent")
 }

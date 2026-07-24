@@ -1,4 +1,5 @@
 import { Budget, RateLimit, VirtualKey } from "@/lib/types/governance";
+import { getEffectiveBudgetLimit } from "@/lib/utils/governance";
 import { useGetUserAccessProfilesQuery } from "@enterprise/lib/store/apis/accessProfileApi";
 import { useGetVirtualKeyUsersQuery } from "@enterprise/lib/store/apis/virtualKeyUsersApi";
 import { UserAccessProfile } from "@enterprise/lib/types/accessProfile";
@@ -47,6 +48,9 @@ export function useVirtualKeyUsage(vk: VirtualKey | null | undefined): {
 				reset_duration: line.reset_duration,
 				current_usage: line.current_usage,
 				last_reset: line.last_reset,
+				override_amount: line.override_amount,
+				override_mode: line.override_mode,
+				override_cycles_remaining: line.override_cycles_remaining,
 			}))
 		: vk?.budgets;
 
@@ -71,7 +75,7 @@ export function useVirtualKeyUsage(vk: VirtualKey | null | undefined): {
 		: vk?.rate_limit;
 
 	const isExhausted =
-		(displayBudgets?.some((b) => b.current_usage >= b.max_limit) ?? false) ||
+		(displayBudgets?.some((b) => b.current_usage >= getEffectiveBudgetLimit(b)) ?? false) ||
 		(displayRateLimit?.token_current_usage != null &&
 			displayRateLimit?.token_max_limit != null &&
 			displayRateLimit.token_current_usage >= displayRateLimit.token_max_limit) ||

@@ -121,7 +121,7 @@ export default function MultiBudgetLines({
 							</Button>
 						</div>
 						{isDuplicate && (
-							<p className="text-destructive pl-0.5 text-xs">Duplicate reset period — each budget line must use a different interval.</p>
+							<p className="text-destructive pl-0.5 text-xs">Duplicate reset period; each budget line must use a different interval.</p>
 						)}
 					</div>
 				);

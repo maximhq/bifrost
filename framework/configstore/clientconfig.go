@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
-	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 )
@@ -73,6 +72,7 @@ type ClientConfig struct {
 	PrometheusLabels                      []string                              `json:"prometheus_labels"`                          // The labels to be used for prometheus metrics
 	EnableLogging                         *bool                                 `json:"enable_logging"`                             // Enable logging of requests and responses
 	DisableContentLogging                 bool                                  `json:"disable_content_logging"`                    // Disable logging of content
+	RetainContentInObjectStorage          bool                                  `json:"retain_content_in_object_storage"`           // When content logging is disabled (config or header), still offload content to object storage as hidden instead of dropping it
 	AllowPerRequestContentStorageOverride bool                                  `json:"allow_per_request_content_storage_override"` // Allow per-request override of content storage via x-bf-disable-content-logging header/context
 	AllowPerRequestRawOverride            bool                                  `json:"allow_per_request_raw_override"`             // Allow per-request override of raw request/response visibility via x-bf-send-back-raw-request and x-bf-send-back-raw-response headers
 	AllowDirectKeys                       bool                                  `json:"allow_direct_keys"`                          // Allow callers to bypass the registered key pool via x-bf-direct-key: true header
@@ -236,6 +236,11 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 	// Only hash non-default value to avoid legacy config hash churn on upgrade.
 	if c.AllowPerRequestContentStorageOverride {
 		hash.Write([]byte("allowPerRequestContentStorageOverride:true"))
+	}
+
+	// Only hash non-default value to avoid legacy config hash churn on upgrade.
+	if c.RetainContentInObjectStorage {
+		hash.Write([]byte("retainContentInObjectStorage:true"))
 	}
 
 	if c.AllowPerRequestRawOverride {
@@ -523,7 +528,13 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 		if key.UseForBatchAPI != nil {
 			redactedConfig.Keys[i].UseForBatchAPI = key.UseForBatchAPI
 		} else {
-			redactedConfig.Keys[i].UseForBatchAPI = bifrost.Ptr(false)
+			redactedConfig.Keys[i].UseForBatchAPI = new(false)
+		}
+		// Add back use anthropic endpoints
+		if key.UseAnthropicEndpoints != nil {
+			redactedConfig.Keys[i].UseAnthropicEndpoints = key.UseAnthropicEndpoints
+		} else {
+			redactedConfig.Keys[i].UseAnthropicEndpoints = new(false)
 		}
 
 		// Add model discovery status and error
@@ -586,6 +597,9 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			}
 			if key.BedrockKeyConfig.RoleSessionName != nil {
 				bedrockConfig.RoleSessionName = key.BedrockKeyConfig.RoleSessionName.Redacted()
+			}
+			if key.BedrockKeyConfig.BatchRoleARN != nil {
+				bedrockConfig.BatchRoleARN = key.BedrockKeyConfig.BatchRoleARN.Redacted()
 			}
 			// Mantle project ID is an identifier, not a credential — surface it in plaintext.
 			if key.BedrockKeyConfig.ProjectID != nil {
@@ -852,6 +866,14 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 	}
 	if useForBatchAPI {
 		hash.Write([]byte("useForBatchAPI:true"))
+	}
+	// Hash UseAnthropicEndpoints (nil = default false for new keys)
+	useAnthropicEndpoints := false
+	if key.UseAnthropicEndpoints != nil {
+		useAnthropicEndpoints = *key.UseAnthropicEndpoints
+	}
+	if useAnthropicEndpoints {
+		hash.Write([]byte("useAnthropicEndpoints:true"))
 	}
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }

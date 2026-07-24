@@ -73,6 +73,7 @@ export interface AliasConfig {
 	inference_profile_arn?: SecretVar;
 	// Replicate overrides
 	use_deployments_endpoint?: boolean;
+	use_anthropic_endpoints?: boolean;
 }
 
 // AzureKeyConfig matching Go's schemas.AzureKeyConfig
@@ -217,6 +218,7 @@ export interface ModelProviderKey {
 	weight: number;
 	enabled?: boolean;
 	use_for_batch_api?: boolean;
+	use_anthropic_endpoints?: boolean;
 	aliases?: Record<string, AliasConfig>;
 	azure_key_config?: AzureKeyConfig;
 	vertex_key_config?: VertexKeyConfig;
@@ -555,6 +557,7 @@ export interface BifrostConfig {
 	is_db_connected: boolean;
 	is_cache_connected: boolean;
 	is_logs_connected: boolean;
+	is_object_storage_connected?: boolean;
 	is_git_available: boolean;
 	auth_token?: string;
 	metadata?: Record<string, unknown>;
@@ -575,6 +578,7 @@ export interface CoreConfig {
 	prometheus_labels: string[];
 	enable_logging: boolean;
 	disable_content_logging: boolean;
+	retain_content_in_object_storage: boolean;
 	allow_per_request_content_storage_override: boolean;
 	allow_per_request_raw_override: boolean;
 	allow_direct_keys: boolean;
@@ -616,6 +620,7 @@ export const DefaultCoreConfig: CoreConfig = {
 	prometheus_labels: [],
 	enable_logging: true,
 	disable_content_logging: false,
+	retain_content_in_object_storage: false,
 	allow_per_request_content_storage_override: false,
 	allow_per_request_raw_override: false,
 	allow_direct_keys: false,

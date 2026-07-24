@@ -1058,7 +1058,7 @@ func (provider *HuggingFaceProvider) ImageGenerationStream(ctx *schemas.BifrostC
 
 	startTime := time.Now()
 	// Make the request
-	err := provider.streamingClient.Do(req, resp)
+	err := providerUtils.DoStreamingRequest(ctx, provider.streamingClient, req, resp)
 	latency := time.Since(startTime)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
@@ -1442,7 +1442,7 @@ func (provider *HuggingFaceProvider) ImageEditStream(ctx *schemas.BifrostContext
 
 	startTime := time.Now()
 	// Make the request
-	err := provider.streamingClient.Do(req, resp)
+	err := providerUtils.DoStreamingRequest(ctx, provider.streamingClient, req, resp)
 	latency := time.Since(startTime)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)

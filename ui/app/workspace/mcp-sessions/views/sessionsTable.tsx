@@ -133,7 +133,7 @@ export default function SessionsTable({
 							<>
 								<AlertDialogTitle>Revoke this MCP session?</AlertDialogTitle>
 								<AlertDialogDescription>
-									Bifrost will remove the stored credential for this binding. The upstream OAuth token is not revoked at the provider — it
+									Bifrost will remove the stored credential for this binding. The upstream OAuth token is not revoked at the provider; it
 									stays detached and expires naturally. Anyone using this binding will need to re-authenticate to obtain a fresh token.
 								</AlertDialogDescription>
 							</>
@@ -181,7 +181,7 @@ export default function SessionsTable({
 								<TableHead>
 									<HeaderWithTooltip
 										label="Type"
-										tooltip="OAuth: per-user OAuth credential — either a stored token from a completed sign-in, or a pending sign-in flow. Headers: per-user header values (API keys / signed tokens) — either stored or pending submission."
+										tooltip="OAuth: per-user OAuth credential, either a stored token from a completed sign-in, or a pending sign-in flow. Headers: per-user header values (API keys / signed tokens), either stored or pending submission."
 									/>
 								</TableHead>
 								<TableHead>

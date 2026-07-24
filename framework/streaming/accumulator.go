@@ -430,6 +430,8 @@ func (a *Accumulator) cleanupStreamAccumulator(requestID string, forceEndGate bo
 		// sendOrCancel(errChunk) path on an abandoned consumer channel.
 		acc.gatePendingTerminal = false
 		acc.gateEndError = nil
+		// Orphan cleanup drops the replay buffer, so discard its interval too.
+		acc.gateReplayEventInterval = 0
 		if acc.gateCond != nil {
 			acc.gateCond.Broadcast()
 		}
@@ -473,7 +475,7 @@ func (a *Accumulator) ProcessStreamingResponse(ctx *schemas.BifrostContext, resu
 
 	isAudioStreaming := requestType == schemas.SpeechStreamRequest || requestType == schemas.TranscriptionStreamRequest
 	isChatStreaming := requestType == schemas.ChatCompletionStreamRequest || requestType == schemas.TextCompletionStreamRequest
-	isResponsesStreaming := requestType == schemas.ResponsesStreamRequest || requestType == schemas.WebSocketResponsesRequest
+	isResponsesStreaming := requestType == schemas.ResponsesStreamRequest || requestType == schemas.ResponsesRetrieveStreamRequest || requestType == schemas.WebSocketResponsesRequest
 	// Edit images/ Image variation requests will be added here
 	isImageStreaming := requestType == schemas.ImageGenerationStreamRequest || requestType == schemas.ImageEditStreamRequest
 	isPassthroughStreaming := requestType == schemas.PassthroughStreamRequest

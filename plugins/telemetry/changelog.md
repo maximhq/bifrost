@@ -1,4 +1,0 @@
-- feat: add missing connector attributes
-- fix: reduce metrics cardinality explosion risk
-- fix: forward request id and trace id through telemetry
-- chore: upgraded core to v1.7.1 and framework to v1.5.1

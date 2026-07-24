@@ -23,7 +23,7 @@ import {
 	useTestWebhookEndpointMutation,
 	useUpdateWebhookEndpointMutation,
 } from "@/lib/store";
-import { WEBHOOK_EVENT_COLORS, WEBHOOK_EVENTS, WebhookEndpoint, WebhookEndpointRequest, WebhookEvent } from "@/lib/types/webhooks";
+import { WEBHOOK_EVENTS, WebhookEndpoint, WebhookEndpointRequest, WebhookEvent } from "@/lib/types/webhooks";
 import { useDebouncedValue } from "@/hooks/useDebounce";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { ChevronLeft, ChevronRight, MoreHorizontal, PencilIcon, Plus, RotateCcw, Trash2 } from "lucide-react";
@@ -381,8 +381,8 @@ export default function WebhooksView() {
 											</TableCell>
 											<TableCell>
 												<div className="flex flex-wrap gap-1">
-													{endpoint.events.map((event) => (
-														<Badge key={event} variant="outline" className={`font-mono text-xs ${WEBHOOK_EVENT_COLORS[event]}`}>
+													{[...endpoint.events].sort().map((event) => (
+														<Badge key={event} variant="outline" className="font-mono text-xs">
 															{event}
 														</Badge>
 													))}

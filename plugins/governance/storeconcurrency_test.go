@@ -97,6 +97,9 @@ func TestResetBudgetAt_ConcurrentResettersCollapse(t *testing.T) {
 	old := buildBudget(budgetID, 1000, "1h")
 	old.LastReset = time.Now().Add(-2 * time.Hour)
 	old.CurrentUsage = 999
+	old.OverrideAmount = 25
+	old.OverrideMode = "cycles"
+	old.OverrideCyclesRemaining = 5
 	store.budgets.Store(budgetID, old)
 
 	const goroutines = 128
@@ -120,4 +123,5 @@ func TestResetBudgetAt_ConcurrentResettersCollapse(t *testing.T) {
 	require.NotNil(t, final)
 	assert.Equal(t, 0.0, final.CurrentUsage)
 	assert.True(t, final.LastReset.Equal(newLastReset))
+	assert.Equal(t, 4, final.OverrideCyclesRemaining, "the single winning reset should consume exactly one override cycle")
 }

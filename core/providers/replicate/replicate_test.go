@@ -607,6 +607,60 @@ func TestBifrostToReplicateImageGenerationConversion(t *testing.T) {
 			},
 		},
 		{
+			name: "InputImages_SingleImageField",
+			input: &schemas.BifrostImageGenerationRequest{
+				Model: "black-forest-labs/flux-kontext-pro",
+				Input: &schemas.ImageGenerationInput{
+					Prompt: prompt,
+				},
+				Params: &schemas.ImageGenerationParameters{
+					InputImages: []string{"https://example.com/a.png", "https://example.com/b.png"},
+				},
+			},
+			validate: func(t *testing.T, result *replicate.ReplicatePredictionRequest) {
+				require.NotNil(t, result)
+				require.NotNil(t, result.Input)
+				require.NotNil(t, result.Input.InputImage)
+				assert.Equal(t, "https://example.com/a.png", *result.Input.InputImage)
+				assert.Nil(t, result.Input.InputImages)
+				assert.Nil(t, result.Input.ImagePrompt)
+				assert.Nil(t, result.Input.Image)
+			},
+		},
+		{
+			name: "InputImages_ArrayFieldWithBase64Normalization",
+			input: &schemas.BifrostImageGenerationRequest{
+				Model: "some-owner/some-model",
+				Input: &schemas.ImageGenerationInput{
+					Prompt: prompt,
+				},
+				Params: &schemas.ImageGenerationParameters{
+					InputImages: []string{"iVBORw0KGgoAAAANSUhEUg", "https://example.com/b.png"},
+				},
+			},
+			validate: func(t *testing.T, result *replicate.ReplicatePredictionRequest) {
+				require.NotNil(t, result)
+				require.NotNil(t, result.Input)
+				require.Len(t, result.Input.InputImages, 2)
+				assert.Equal(t, "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg", result.Input.InputImages[0])
+				assert.Equal(t, "https://example.com/b.png", result.Input.InputImages[1])
+				assert.Nil(t, result.Input.InputImage)
+			},
+		},
+		{
+			name: "InputImages_InvalidURL",
+			input: &schemas.BifrostImageGenerationRequest{
+				Model: "black-forest-labs/flux-dev",
+				Input: &schemas.ImageGenerationInput{
+					Prompt: prompt,
+				},
+				Params: &schemas.ImageGenerationParameters{
+					InputImages: []string{"file:///etc/passwd"},
+				},
+			},
+			wantErr: true,
+		},
+		{
 			name:    "NilRequest",
 			input:   nil,
 			wantErr: false, // Function returns nil, not error
@@ -629,10 +683,12 @@ func TestBifrostToReplicateImageGenerationConversion(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			actual := replicate.ToReplicateImageGenerationInput(tt.input)
+			actual, err := replicate.ToReplicateImageGenerationInput(tt.input)
 			if tt.wantErr {
+				assert.Error(t, err)
 				assert.Nil(t, actual)
 			} else {
+				require.NoError(t, err)
 				if tt.validate != nil {
 					tt.validate(t, actual)
 				}

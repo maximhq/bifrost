@@ -476,6 +476,14 @@ func (t *Tracer) ResumeStream(traceID string) {
 	t.accumulator.ResumeStream(traceID)
 }
 
+// ResumeStreamWithReplayInterval arms fixed-interval replay after the in-flight chunk reaches the core gate.
+func (t *Tracer) ResumeStreamWithReplayInterval(traceID string, eventInterval time.Duration) bool {
+	if traceID == "" || t.accumulator == nil {
+		return false
+	}
+	return t.accumulator.ResumeStreamWithReplayInterval(traceID, eventInterval)
+}
+
 // ClearPausedStreamBuffer drops chunks buffered while traceID is paused.
 func (t *Tracer) ClearPausedStreamBuffer(traceID string) error {
 	if traceID == "" || t.accumulator == nil {
@@ -725,6 +733,11 @@ func (t *Tracer) CompleteAndFlushTrace(traceID string) {
 		// iteration and map write", which recover() can't catch. One snapshot
 		// here covers all connectors.
 		exportTrace := completedTrace.SnapshotForExport()
+
+		// Stamp Bifrost's overhead onto the snapshot's root span now that it has
+		// ended. Done here — one write, before any connector reads the snapshot —
+		// so every trace connector sees the same value on the root span.
+		exportTrace.StampOverheadDuration()
 
 		var obsPlugins []schemas.ObservabilityPlugin
 		if loaded := t.obsPlugins.Load(); loaded != nil {

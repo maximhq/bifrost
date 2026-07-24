@@ -150,6 +150,8 @@ func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schem
 					kvStr(schemas.AttrBifrostRequestID, requestID),
 				)
 			}
+			// Overhead is stamped on the snapshot's root span by the tracer, so it
+			// flows through convertAttributesToKeyValues above like any other attr.
 			if len(p.instanceAttrs) > 0 {
 				otelSpan.Attributes = append(otelSpan.Attributes, p.instanceAttrs...)
 			}
@@ -222,7 +224,7 @@ func convertAttributesToKeyValues(attrs map[string]any, disableContentLogging bo
 	}
 	kvs := make([]*KeyValue, 0, len(attrs))
 	for k, v := range attrs {
-		if disableContentLogging && isContentAttribute(k) {
+		if disableContentLogging && schemas.IsContentAttribute(k) {
 			continue
 		}
 		kv := anyToKeyValue(k, v)
@@ -231,26 +233,6 @@ func convertAttributesToKeyValues(attrs map[string]any, disableContentLogging bo
 		}
 	}
 	return kvs
-}
-
-// isContentAttribute returns true if the attribute key contains message/input/output content
-// or tool definitions/arguments/results that should be filtered when content logging is disabled.
-func isContentAttribute(key string) bool {
-	switch key {
-	case schemas.AttrInputMessages, schemas.AttrOutputMessages,
-		schemas.AttrInputText, schemas.AttrInputSpeech,
-		schemas.AttrInputEmbedding:
-		return true
-	case schemas.AttrTools, schemas.AttrRespTools,
-		schemas.AttrToolName, schemas.AttrToolCallID,
-		schemas.AttrToolCallArguments, schemas.AttrToolCallResult,
-		schemas.AttrToolType,
-		schemas.AttrToolChoiceType, schemas.AttrToolChoiceName,
-		schemas.AttrRespToolChoiceType, schemas.AttrRespToolChoiceName:
-		return true
-	default:
-		return false
-	}
 }
 
 // anyToKeyValue converts any Go value to OTEL KeyValue

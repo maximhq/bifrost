@@ -964,20 +964,22 @@ type Schema struct {
 	Format string `json:"format,omitempty"`
 	// Optional. SCHEMA FIELDS FOR TYPE ARRAY Schema of the elements of Type.ARRAY.
 	Items *Schema `json:"items,omitempty"`
+	// Integer constraints below marshal as JSON numbers (not the Go SDK's proto-quoted
+	// `,string` form) so they stay valid JSON Schema inside parametersJsonSchema.
 	// Optional. Maximum number of the elements for Type.ARRAY.
-	MaxItems *int64 `json:"maxItems,omitempty,string"`
+	MaxItems *int64 `json:"maxItems,omitempty"`
 	// Optional. Maximum length of the Type.STRING
-	MaxLength *int64 `json:"maxLength,omitempty,string"`
+	MaxLength *int64 `json:"maxLength,omitempty"`
 	// Optional. Maximum number of the properties for Type.OBJECT.
-	MaxProperties *int64 `json:"maxProperties,omitempty,string"`
+	MaxProperties *int64 `json:"maxProperties,omitempty"`
 	// Optional. Maximum value of the Type.INTEGER and Type.NUMBER
 	Maximum *float64 `json:"maximum,omitempty"`
 	// Optional. Minimum number of the elements for Type.ARRAY.
-	MinItems *int64 `json:"minItems,omitempty,string"`
+	MinItems *int64 `json:"minItems,omitempty"`
 	// Optional. SCHEMA FIELDS FOR TYPE STRING Minimum length of the Type.STRING
-	MinLength *int64 `json:"minLength,omitempty,string"`
+	MinLength *int64 `json:"minLength,omitempty"`
 	// Optional. Minimum number of the properties for Type.OBJECT.
-	MinProperties *int64 `json:"minProperties,omitempty,string"`
+	MinProperties *int64 `json:"minProperties,omitempty"`
 	// Optional. Minimum value of the Type.INTEGER and Type.NUMBER.
 	Minimum *float64 `json:"minimum,omitempty"`
 	// Optional. Indicates if the value may be null.

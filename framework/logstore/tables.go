@@ -1,6 +1,7 @@
 package logstore
 
 import (
+	"database/sql/driver"
 	"strings"
 	"time"
 
@@ -137,6 +138,7 @@ type Log struct {
 	Alias                   *string   `gorm:"type:varchar(255);index" json:"alias,omitempty"`          // Set when model was resolved via alias mapping; the original name the caller used
 	CanonicalModelName      *string   `gorm:"type:varchar(255)" json:"canonical_model_name,omitempty"` // Canonical model name configured on the resolved alias, when set
 	AliasModelFamily        *string   `gorm:"type:varchar(255)" json:"alias_model_family,omitempty"`   // Model family configured on the resolved alias, when set
+	ServerSideFallbackModel *string   `gorm:"type:varchar(255)" json:"server_side_fallback_model,omitempty"`
 	NumberOfRetries         int       `gorm:"default:0" json:"number_of_retries"`
 	FallbackIndex           int       `gorm:"default:0" json:"fallback_index"`
 	SelectedKeyID           string    `gorm:"type:varchar(255);index:idx_logs_selected_key_id" json:"selected_key_id"`
@@ -208,7 +210,8 @@ type Log struct {
 	Metadata                *string   `gorm:"type:text" json:"-"`                                                                         // JSON serialized map[string]interface{}
 	IsLargePayloadRequest   bool      `gorm:"default:false" json:"is_large_payload_request"`
 	IsLargePayloadResponse  bool      `gorm:"default:false" json:"is_large_payload_response"`
-	HasObject               bool      `gorm:"default:false" json:"-"` // True when payload is stored in object storage
+	HasObject               bool      `gorm:"default:false" json:"-"`              // True when payload is stored in object storage
+	ContentHidden           bool      `gorm:"default:false" json:"content_hidden"` // True when content logging was disabled for the request, so the payload must never be served back through the API/UI (whether it was retained in object storage or dropped entirely)
 
 	RedactionData          *schemas.RedactionData        `gorm:"-" json:"-"`                           // Transient guardrail redaction data consumed by enterprise logstore wrappers
 	RedactionMapping       string                        `gorm:"type:text" json:"-"`                   // Reversible redaction mapping (encrypted when an encryption key is set), written by enterprise logstore wrappers; deleted with the row
@@ -1197,6 +1200,12 @@ const (
 	WebhookDeliveryOutcomeExhausted WebhookDeliveryOutcome = "exhausted"
 )
 
+// Value implements driver.Valuer so database drivers that append typed column
+// values (e.g. clickhouse-go batch inserts) can serialize the type.
+func (o WebhookDeliveryOutcome) Value() (driver.Value, error) {
+	return string(o), nil
+}
+
 // WebhookDelivery records one webhook delivery attempt. Rows are insert-only
 // — every attempt appends a new record and existing rows are never updated —
 // and carry delivery metadata only, never event payloads or receiver
@@ -1603,6 +1612,26 @@ var ValidHistogramDimensions = map[HistogramDimension]bool{
 	DimensionCustomer:     true,
 	DimensionUser:         true,
 	DimensionBusinessUnit: true,
+}
+
+// histogramDimensionColumn maps a validated dimension to its SQL column name.
+// Query builders must use the returned literal, never string(dimension): the
+// dimension value originates from a request query parameter, and returning a
+// compile-time constant here is what keeps user input out of SQL text.
+func histogramDimensionColumn(dimension HistogramDimension) (string, bool) {
+	switch dimension {
+	case DimensionProvider:
+		return "provider", true
+	case DimensionTeam:
+		return "team_id", true
+	case DimensionCustomer:
+		return "customer_id", true
+	case DimensionUser:
+		return "user_id", true
+	case DimensionBusinessUnit:
+		return "business_unit_id", true
+	}
+	return "", false
 }
 
 // Dimension-level histogram types (generic version of Provider histograms)

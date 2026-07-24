@@ -62,7 +62,11 @@ func (s *Store) CalculateCostForUsage(usage *schemas.BifrostLLMUsage, provider s
 
 	return s.computeCostFromInput(
 		input,
-		schemas.RoutingInfo{Provider: provider, Model: model},
+		schemas.RoutingInfo{
+			Provider:                provider,
+			Model:                   model,
+			ServerSideFallbackModel: usage.ServerSideFallbackModel,
+		},
 		normalizeStreamRequestType(requestType),
 		lookupScopes,
 	)
@@ -163,7 +167,58 @@ func (s *Store) calculateBaseCost(result *schemas.BifrostResponse, scopes Lookup
 		requestType = normalizeStreamRequestType(requestType)
 	}
 
+	// Azure Model Router bills a flat per-input-token surcharge on top of the
+	// real cost of whatever underlying model Azure actually routed to. The
+	// response's own model field carries that real model, distinct from the
+	// "model-router" deployment name on RoutingInfo.Model.
+	if result.PassthroughResponse == nil && routingInfo.Provider == schemas.Azure && schemas.IsAzureModelRouter(routingInfo.Model) &&
+		(requestType == schemas.TextCompletionRequest || requestType == schemas.ChatCompletionRequest || requestType == schemas.ResponsesRequest) {
+		return s.calculateAzureModelRouterCost(result, input, routingInfo, requestType, scopes)
+	}
+
 	return s.computeCostFromInput(input, routingInfo, requestType, scopes)
+}
+
+// calculateAzureModelRouterCost bills the Model Router deployment's own
+// pricing row (the flat per-input-token surcharge) plus the real cost of the
+// model it actually routed to, looked up fresh under the served model name so
+// regular per-token/tiered pricing applies to it exactly as if it had been
+// called directly.
+func (s *Store) calculateAzureModelRouterCost(result *schemas.BifrostResponse, input costInput, routingInfo schemas.RoutingInfo, requestType schemas.RequestType, scopes LookupScopes) float64 {
+	pricingRequestType := requestType
+	if pricingRequestType == schemas.TextCompletionRequest {
+		pricingRequestType = schemas.ChatCompletionRequest
+	}
+
+	cost := s.computeCostFromInput(input, routingInfo, pricingRequestType, scopes)
+
+	if servedModel := azureModelRouterServedModel(result); servedModel != "" && servedModel != routingInfo.Model {
+		underlyingRoutingInfo := schemas.RoutingInfo{
+			Provider: routingInfo.Provider,
+			Model:    servedModel,
+		}
+		cost += s.computeCostFromInput(input, underlyingRoutingInfo, pricingRequestType, scopes)
+	}
+
+	return cost
+}
+
+// azureModelRouterServedModel reads the model Azure Model Router actually
+// routed to off the response body's own model field separate from the "model-router"
+// deployment name carried on RoutingInfo.Model.
+func azureModelRouterServedModel(result *schemas.BifrostResponse) string {
+	switch {
+	case result.ChatResponse != nil:
+		return result.ChatResponse.Model
+	case result.ResponsesResponse != nil:
+		return result.ResponsesResponse.Model
+	case result.ResponsesStreamResponse != nil && result.ResponsesStreamResponse.Response != nil:
+		return result.ResponsesStreamResponse.Response.Model
+	case result.TextCompletionResponse != nil:
+		return result.TextCompletionResponse.Model
+	default:
+		return ""
+	}
 }
 
 // computeCostFromInput resolves pricing for the given routing info + request
@@ -1132,10 +1187,13 @@ func populateOutputImageCount(imageUsage *schemas.ImageUsage, dataLen int) {
 // resolvePricing resolves the pricing entry for a request directly from the
 // RoutingInfo populated on the response/error by core.bifrost at request time.
 //
-// Lookup precedence — AliasModelName → AliasModelID → ModelName. Each
-// non-empty candidate is tried against the base catalog in order; the first
-// hit wins.
+// Lookup precedence — ServerSideFallbackModel → AliasModelName → AliasModelID →
+// ModelName. Each non-empty candidate is tried against the base catalog in
+// order; the first hit wins.
 //
+//   - ServerSideFallbackModel is the model that produced the response when the
+//     provider swapped models inside one call (Anthropic server-side fallback).
+//     Ranked first: the tokens being priced are its own. Nil on ordinary responses.
 //   - AliasModelName (RoutingInfo.ResolvedKeyAlias.ModelName) is the canonical
 //     model name the admin tagged on the matched alias. Catches the
 //     opaque-deployment-ID case where the wire model wouldn't hit the catalog
@@ -1145,9 +1203,12 @@ func populateOutputImageCount(imageUsage *schemas.ImageUsage, dataLen int) {
 //   - ModelName (RoutingInfo.Model) is the model string the caller sent — the
 //     alias key when an alias matched, or the raw user input when none did.
 //
-// Overrides are applied keyed by the wire model (AliasModelID when an alias
-// matched, otherwise ModelName) so per-deployment override pricing stays
-// addressable in either flow.
+// Overrides are applied keyed by the wire model (ServerSideFallbackModel when the
+// provider handed off mid-call, else AliasModelID when an alias matched, otherwise
+// ModelName) so per-deployment override pricing stays addressable in either flow.
+// A fallback-served turn keys on the serving model so base rates and overrides
+// agree: an override negotiated for the model that actually ran is the one that
+// applies.
 func (s *Store) resolvePricing(routingInfo schemas.RoutingInfo, requestType schemas.RequestType, scopes LookupScopes) *configstoreTables.TableModelPricing {
 	provider := string(routingInfo.Provider)
 	var aliasModelID, aliasModelName string
@@ -1157,7 +1218,14 @@ func (s *Store) resolvePricing(routingInfo schemas.RoutingInfo, requestType sche
 			aliasModelName = *rka.ModelName
 		}
 	}
-	overrideKey := aliasModelID
+	var serverSideFallbackModel string
+	if routingInfo.ServerSideFallbackModel != nil {
+		serverSideFallbackModel = *routingInfo.ServerSideFallbackModel
+	}
+	overrideKey := serverSideFallbackModel
+	if overrideKey == "" {
+		overrideKey = aliasModelID
+	}
 	if overrideKey == "" {
 		overrideKey = routingInfo.Model
 	}
@@ -1167,7 +1235,7 @@ func (s *Store) resolvePricing(routingInfo schemas.RoutingInfo, requestType sche
 		scopes.Provider = provider
 	}
 
-	for _, candidate := range []string{aliasModelName, aliasModelID, routingInfo.Model} {
+	for _, candidate := range []string{serverSideFallbackModel, aliasModelName, aliasModelID, routingInfo.Model} {
 		if candidate == "" {
 			continue
 		}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -660,6 +661,80 @@ func TestGeminiGenerationRequestUnmarshalAcceptsSchemaIntegerConstraints(t *test
 			}`), &req)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "invalid schema integer constraint")
+		})
+	}
+}
+
+// TestGenAIToolSchemaConstraintsRoundTripAsNumbers verifies integer constraints (string,
+// array, and object-property) survive the genai -> Bifrost -> Gemini round trip as JSON
+// numbers, since parametersJsonSchema is validated as strict JSON Schema upstream (issue #5433).
+func TestGenAIToolSchemaConstraintsRoundTripAsNumbers(t *testing.T) {
+	bodyTemplate := `{
+		"contents": [{"role": "user", "parts": [{"text": "test"}]}],
+		"tools": [{
+			"functionDeclarations": [{
+				"name": "test_tool",
+				"description": "test",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"query": {"type": "string", "description": "text", "minLength": %[1]s, "maxLength": %[2]s},
+						"tags": {"type": "array", "items": {"type": "string"}, "minItems": %[3]s, "maxItems": %[4]s}
+					},
+					"anyOf": [{
+						"type": "object",
+						"minProperties": %[5]s,
+						"maxProperties": %[6]s,
+						"properties": {
+							"meta": {"type": "object", "minProperties": %[7]s}
+						}
+					}],
+					"required": ["query"]
+				}
+			}]
+		}]
+	}`
+
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "numeric constraints", body: fmt.Sprintf(bodyTemplate, "1", "100", "1", "5", "1", "3", "2")},
+		{name: "quoted constraints", body: fmt.Sprintf(bodyTemplate, `"1"`, `"100"`, `"1"`, `"5"`, `"1"`, `"3"`, `"2"`)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var req gemini.GeminiGenerationRequest
+			require.NoError(t, sonic.Unmarshal([]byte(tt.body), &req))
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			bifrostReq := req.ToBifrostResponsesRequest(ctx)
+			require.NotNil(t, bifrostReq)
+
+			out, err := gemini.ToGeminiResponsesRequest(ctx, bifrostReq)
+			require.NoError(t, err)
+			require.Len(t, out.Tools, 1)
+			require.Len(t, out.Tools[0].FunctionDeclarations, 1)
+
+			params := parseToolParams(t, out.Tools[0].FunctionDeclarations[0])
+			query := getSchemaProperty(t, params, "query")
+			assert.Equal(t, float64(1), query["minLength"], "minLength must be a JSON number")
+			assert.Equal(t, float64(100), query["maxLength"], "maxLength must be a JSON number")
+			tags := getSchemaProperty(t, params, "tags")
+			assert.Equal(t, float64(1), tags["minItems"], "minItems must be a JSON number")
+			assert.Equal(t, float64(5), tags["maxItems"], "maxItems must be a JSON number")
+
+			// Object-property constraints flow through convertSchemaToOrderedMap (anyOf/items)
+			anyOf, ok := params["anyOf"].([]interface{})
+			require.True(t, ok, "anyOf must survive the round trip")
+			require.Len(t, anyOf, 1)
+			variant, ok := anyOf[0].(map[string]interface{})
+			require.True(t, ok, "anyOf variant must be an object")
+			assert.Equal(t, float64(1), variant["minProperties"], "minProperties must be a JSON number")
+			assert.Equal(t, float64(3), variant["maxProperties"], "maxProperties must be a JSON number")
+			meta := getSchemaProperty(t, variant, "meta")
+			assert.Equal(t, float64(2), meta["minProperties"], "nested minProperties must be a JSON number")
 		})
 	}
 }
@@ -1378,10 +1453,12 @@ func TestStructuredOutputConversion(t *testing.T) {
 				require.Len(t, anyOfSlice, 2, "anyOf should have 2 branches for string and integer")
 
 				// Verify the anyOf branches
-				stringBranch := anyOfSlice[0].(map[string]interface{})
+				stringBranch, ok := asPlainMap(t, anyOfSlice[0])
+				require.True(t, ok, "anyOf branch should be a map")
 				assert.Equal(t, "string", stringBranch["type"])
 
-				integerBranch := anyOfSlice[1].(map[string]interface{})
+				integerBranch, ok := asPlainMap(t, anyOfSlice[1])
+				require.True(t, ok, "anyOf branch should be a map")
 				assert.Equal(t, "integer", integerBranch["type"])
 
 				// Validate status property - should remain unchanged
@@ -1422,9 +1499,12 @@ func TestStructuredOutputConversion(t *testing.T) {
 				},
 			},
 			validate: func(t *testing.T, result *gemini.GeminiGenerationRequest) {
-				schemaMap := result.GenerationConfig.ResponseJSONSchema.(map[string]interface{})
-				properties := schemaMap["properties"].(map[string]interface{})
-				name := properties["name"].(map[string]interface{})
+				schemaMap, ok := asPlainMap(t, result.GenerationConfig.ResponseJSONSchema)
+				require.True(t, ok, "ResponseJSONSchema should be a map")
+				properties, ok := asPlainMap(t, schemaMap["properties"])
+				require.True(t, ok, "properties should be a map")
+				name, ok := asPlainMap(t, properties["name"])
+				require.True(t, ok, "name should be a map")
 
 				// Nullable types should be kept as array (Gemini supports this)
 				typeVal := name["type"]
@@ -1667,6 +1747,25 @@ func TestStructuredOutputWithToolsConflict(t *testing.T) {
 }
 
 // TestResponsesStructuredOutputConversion tests that Responses API text config with union types is properly handled
+
+// asPlainMap normalizes schema objects that may be either plain maps or
+// order-preserving OrderedMaps (schema fields preserve client key order).
+func asPlainMap(t *testing.T, v interface{}) (map[string]interface{}, bool) {
+	t.Helper()
+	switch m := v.(type) {
+	case map[string]interface{}:
+		return m, true
+	case *schemas.OrderedMap:
+		if m == nil {
+			return nil, false
+		}
+		return m.ToMap(), true
+	case schemas.OrderedMap:
+		return m.ToMap(), true
+	}
+	return nil, false
+}
+
 func TestResponsesStructuredOutputConversion(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -1694,7 +1793,7 @@ func TestResponsesStructuredOutputConversion(t *testing.T) {
 							Name: schemas.Ptr("UserInfo"),
 							JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
 								Type: schemas.Ptr("object"),
-								Properties: &map[string]interface{}{
+								Properties: schemas.OrderedMapFromMap(map[string]interface{}{
 									"user_id": map[string]interface{}{
 										"type":        []interface{}{"string", "integer"},
 										"description": "User ID as string or integer",
@@ -1703,7 +1802,7 @@ func TestResponsesStructuredOutputConversion(t *testing.T) {
 										"type": "string",
 										"enum": []interface{}{"active", "inactive"},
 									},
-								},
+								}),
 								Required: []string{"user_id", "status"},
 								AdditionalProperties: &schemas.AdditionalPropertiesStruct{
 									AdditionalPropertiesBool: schemas.Ptr(false),
@@ -1719,14 +1818,14 @@ func TestResponsesStructuredOutputConversion(t *testing.T) {
 				assert.NotNil(t, result.GenerationConfig.ResponseJSONSchema)
 
 				// Validate the schema structure
-				schemaMap, ok := result.GenerationConfig.ResponseJSONSchema.(map[string]interface{})
+				schemaMap, ok := asPlainMap(t, result.GenerationConfig.ResponseJSONSchema)
 				require.True(t, ok, "ResponseJSONSchema should be a map")
 
-				properties, ok := schemaMap["properties"].(map[string]interface{})
+				properties, ok := asPlainMap(t, schemaMap["properties"])
 				require.True(t, ok, "properties should be a map")
 
 				// Validate user_id property - should be converted to anyOf
-				userID, ok := properties["user_id"].(map[string]interface{})
+				userID, ok := asPlainMap(t, properties["user_id"])
 				require.True(t, ok, "user_id should exist in properties")
 
 				// user_id should have anyOf instead of type array
@@ -1738,10 +1837,12 @@ func TestResponsesStructuredOutputConversion(t *testing.T) {
 				require.Len(t, anyOfSlice, 2, "anyOf should have 2 branches for string and integer")
 
 				// Verify the anyOf branches
-				stringBranch := anyOfSlice[0].(map[string]interface{})
+				stringBranch, ok := asPlainMap(t, anyOfSlice[0])
+				require.True(t, ok, "anyOf branch should be a map")
 				assert.Equal(t, "string", stringBranch["type"])
 
-				integerBranch := anyOfSlice[1].(map[string]interface{})
+				integerBranch, ok := asPlainMap(t, anyOfSlice[1])
+				require.True(t, ok, "anyOf branch should be a map")
 				assert.Equal(t, "integer", integerBranch["type"])
 			},
 		},
@@ -1766,20 +1867,23 @@ func TestResponsesStructuredOutputConversion(t *testing.T) {
 							Name: schemas.Ptr("NullableData"),
 							JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
 								Type: schemas.Ptr("object"),
-								Properties: &map[string]interface{}{
+								Properties: schemas.OrderedMapFromMap(map[string]interface{}{
 									"name": map[string]interface{}{
 										"type": []interface{}{"string", "null"},
 									},
-								},
+								}),
 							},
 						},
 					},
 				},
 			},
 			validate: func(t *testing.T, result *gemini.GeminiGenerationRequest) {
-				schemaMap := result.GenerationConfig.ResponseJSONSchema.(map[string]interface{})
-				properties := schemaMap["properties"].(map[string]interface{})
-				name := properties["name"].(map[string]interface{})
+				schemaMap, ok := asPlainMap(t, result.GenerationConfig.ResponseJSONSchema)
+				require.True(t, ok, "ResponseJSONSchema should be a map")
+				properties, ok := asPlainMap(t, schemaMap["properties"])
+				require.True(t, ok, "properties should be a map")
+				name, ok := asPlainMap(t, properties["name"])
+				require.True(t, ok, "name should be a map")
 
 				// Nullable types should be kept as array (Gemini supports this)
 				typeVal := name["type"]

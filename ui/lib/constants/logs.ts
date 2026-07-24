@@ -29,6 +29,7 @@ export const KnownProvidersNames = [
 	"runware",
 	"fireworks",
 	"sarvam",
+	"wafer",
 ] as const;
 
 // Local Provider type derived from KNOWN_PROVIDERS constant
@@ -66,6 +67,7 @@ export const RequestTypes = [
 	"responses",
 	"responses_stream",
 	"responses_retrieve",
+	"responses_retrieve_stream",
 	"responses_delete",
 	"responses_cancel",
 	"responses_input_items",
@@ -139,6 +141,7 @@ export const ProviderLabels: Record<ProviderName, string> = {
 	runware: "Runware",
 	fireworks: "Fireworks AI",
 	sarvam: "Sarvam AI",
+	wafer: "Wafer",
 } as const;
 
 // Helper function to get provider label, supporting custom providers
@@ -188,6 +191,7 @@ export const RequestTypeLabels = {
 	responses: "Responses",
 	responses_stream: "Responses Stream",
 	responses_retrieve: "Responses Retrieve",
+	responses_retrieve_stream: "Responses Retrieve Stream",
 	responses_delete: "Responses Delete",
 	responses_cancel: "Responses Cancel",
 	responses_input_items: "Responses Input Items",
@@ -275,6 +279,7 @@ export const RequestTypeColors = {
 	responses: "bg-teal-100 text-teal-800",
 	responses_stream: "bg-violet-100 text-violet-800",
 	responses_retrieve: "bg-teal-100 text-teal-800",
+	responses_retrieve_stream: "bg-violet-100 text-violet-800",
 	responses_delete: "bg-teal-100 text-teal-800",
 	responses_cancel: "bg-teal-100 text-teal-800",
 	responses_input_items: "bg-teal-100 text-teal-800",

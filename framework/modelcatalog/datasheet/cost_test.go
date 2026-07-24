@@ -3669,3 +3669,158 @@ func TestTieredCacheCreationRate_PriorityWinsOver200kBand(t *testing.T) {
 	// Non-priority at the same size still uses the standard >200k rate.
 	assert.Equal(t, 0.000002, tieredCacheCreationInputTokenRate(&p, 250000, serviceTier{}))
 }
+
+// ---------------------------------------------------------------------------
+// Anthropic server-side fallback: price the model that actually served
+// ---------------------------------------------------------------------------
+
+// seedFallbackPricing loads the real published Fable 5 / Opus 4.8 rates. Fable 5
+// is exactly 2x Opus 4.8 on both input and output, which is what makes pricing a
+// fallback-served turn against the requested model a clean doubling.
+func seedFallbackPricing(s *Store) {
+	s.pricingData[makeKey("claude-fable-5", "anthropic", "responses")] = configstoreTables.TableModelPricing{
+		Model: "claude-fable-5", Provider: "anthropic", Mode: "responses",
+		InputCostPerToken:  bifrost.Ptr(10.0 / 1_000_000),
+		OutputCostPerToken: bifrost.Ptr(50.0 / 1_000_000),
+	}
+	s.pricingData[makeKey("claude-opus-4-8", "anthropic", "responses")] = configstoreTables.TableModelPricing{
+		Model: "claude-opus-4-8", Provider: "anthropic", Mode: "responses",
+		InputCostPerToken:  bifrost.Ptr(5.0 / 1_000_000),
+		OutputCostPerToken: bifrost.Ptr(25.0 / 1_000_000),
+	}
+}
+
+// fallbackResponse mirrors a real server-side-fallback payload: the caller asked
+// for claude-fable-5, claude-opus-4-8 served, and the top-level usage mirrors the
+// serving attempt.
+func fallbackResponse(servingModel *string, in, out int) *schemas.BifrostResponse {
+	return &schemas.BifrostResponse{
+		ResponsesResponse: &schemas.BifrostResponsesResponse{
+			Model: "claude-opus-4-8",
+			Usage: &schemas.ResponsesResponseUsage{InputTokens: in, OutputTokens: out},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.ResponsesRequest,
+				RoutingInfo: schemas.RoutingInfo{
+					Provider:                schemas.Anthropic,
+					Model:                   "claude-fable-5",
+					ServerSideFallbackModel: servingModel,
+				},
+			},
+		},
+	}
+}
+
+func TestCalculateCost_ServerSideFallback_PricesServingModel(t *testing.T) {
+	s := newTestStore()
+	seedFallbackPricing(s)
+
+	// Real payload: 31 in / 257 out, served by Opus after Fable declined.
+	// Before the fix this returned the Fable figure, which is exactly double.
+	resp := fallbackResponse(bifrost.Ptr("claude-opus-4-8"), 31, 257)
+	assert.InDelta(t, 31*(5.0/1_000_000)+257*(25.0/1_000_000), s.CalculateCost(resp, nil), 1e-12,
+		"expected Opus 4.8 rates (the serving model), not Fable 5")
+}
+
+// No handoff — the overwhelming majority of responses — must be untouched, even
+// though the response's own model field names a different model.
+func TestCalculateCost_NoServerSideFallback_UsesRoutingModel(t *testing.T) {
+	s := newTestStore()
+	seedFallbackPricing(s)
+
+	resp := fallbackResponse(nil, 31, 257)
+	assert.InDelta(t, 31*(10.0/1_000_000)+257*(50.0/1_000_000), s.CalculateCost(resp, nil), 1e-12,
+		"without a recorded handoff, pricing must stay on the requested model")
+}
+
+// An unpriceable serving model falls through the candidate chain to the
+// requested model rather than collapsing the cost to zero.
+func TestCalculateCost_ServerSideFallback_UnknownServingModelFallsThrough(t *testing.T) {
+	s := newTestStore()
+	seedFallbackPricing(s)
+
+	resp := fallbackResponse(bifrost.Ptr("claude-not-in-catalog"), 31, 257)
+	cost := s.CalculateCost(resp, nil)
+	assert.InDelta(t, 31*(10.0/1_000_000)+257*(50.0/1_000_000), cost, 1e-12)
+	assert.NotZero(t, cost, "an unknown serving model must not zero the cost")
+}
+
+// A key alias would otherwise win the lookup; the serving model outranks it.
+func TestCalculateCost_ServerSideFallback_OutranksKeyAlias(t *testing.T) {
+	s := newTestStore()
+	seedFallbackPricing(s)
+
+	resp := fallbackResponse(bifrost.Ptr("claude-opus-4-8"), 31, 257)
+	resp.ResponsesResponse.ExtraFields.RoutingInfo.Model = "my-fast-alias"
+	resp.ResponsesResponse.ExtraFields.RoutingInfo.ResolvedKeyAlias = &schemas.ResolvedKeyAlias{
+		ModelID:   "claude-fable-5",
+		ModelName: bifrost.Ptr("claude-fable-5"),
+	}
+
+	assert.InDelta(t, 31*(5.0/1_000_000)+257*(25.0/1_000_000), s.CalculateCost(resp, nil), 1e-12,
+		"the alias must not outrank the model that actually served")
+}
+
+// Overrides follow the serving model, so a negotiated rate for the model that
+// actually ran is the one that applies.
+func TestCalculateCost_ServerSideFallback_OverridesKeyOnServingModel(t *testing.T) {
+	s := newTestStore()
+	seedFallbackPricing(s)
+	providerID := "anthropic"
+	require.NoError(t, s.SetOverrides([]configstoreTables.TablePricingOverride{{
+		ID:               "opus-negotiated-rate",
+		ScopeKind:        string(ScopeKindProvider),
+		ProviderID:       &providerID,
+		MatchType:        string(MatchTypeExact),
+		Pattern:          "claude-opus-4-8",
+		RequestTypes:     []schemas.RequestType{schemas.ResponsesRequest},
+		PricingPatchJSON: `{"input_cost_per_token":0.000001,"output_cost_per_token":0.000002}`,
+	}}))
+
+	resp := fallbackResponse(bifrost.Ptr("claude-opus-4-8"), 31, 257)
+	assert.InDelta(t, 31*0.000001+257*0.000002, s.CalculateCost(resp, nil), 1e-12,
+		"an override for the serving model must apply to a fallback-served turn")
+}
+
+// Streaming is billed through CalculateCostForUsage, which receives only
+// (usage, provider, requestedModel) and never sees RoutingInfo. A live
+// fallback-served stream (38 in / 345 out, served by Opus after Fable declined)
+// was reported at $0.01763 — exactly the Fable figure, i.e. double.
+func TestCalculateCostForUsage_ServerSideFallback_PricesServingModel(t *testing.T) {
+	s := newTestStore()
+	seedFallbackPricing(s)
+
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens:            38,
+		CompletionTokens:        345,
+		TotalTokens:             383,
+		ServerSideFallbackModel: bifrost.Ptr("claude-opus-4-8"),
+	}
+	got := s.CalculateCostForUsage(usage, schemas.Anthropic, "claude-fable-5", schemas.ResponsesRequest, nil)
+	assert.InDelta(t, 38*(5.0/1_000_000)+345*(25.0/1_000_000), got, 1e-12,
+		"expected Opus 4.8 rates for a fallback-served stream")
+	assert.InDelta(t, 0.008815, got, 1e-6, "expected the Opus figure, not the $0.01763 Fable one")
+}
+
+// Sticky-routed stream: a single fallback_message iteration, 38 in / 320 out,
+// reported live at $0.01638 (Fable). Should be $0.00819.
+func TestCalculateCostForUsage_ServerSideFallback_StickyStream(t *testing.T) {
+	s := newTestStore()
+	seedFallbackPricing(s)
+
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens: 38, CompletionTokens: 320, TotalTokens: 358,
+		ServerSideFallbackModel: bifrost.Ptr("claude-opus-4-8"),
+	}
+	assert.InDelta(t, 0.00819,
+		s.CalculateCostForUsage(usage, schemas.Anthropic, "claude-fable-5", schemas.ResponsesRequest, nil), 1e-6)
+}
+
+// No handoff: the bare-usage path must keep pricing the requested model.
+func TestCalculateCostForUsage_NoServerSideFallback_Unchanged(t *testing.T) {
+	s := newTestStore()
+	seedFallbackPricing(s)
+
+	usage := &schemas.BifrostLLMUsage{PromptTokens: 38, CompletionTokens: 345, TotalTokens: 383}
+	assert.InDelta(t, 38*(10.0/1_000_000)+345*(50.0/1_000_000),
+		s.CalculateCostForUsage(usage, schemas.Anthropic, "claude-fable-5", schemas.ResponsesRequest, nil), 1e-12)
+}

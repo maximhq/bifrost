@@ -163,6 +163,7 @@ type Model struct {
 	PerRequestLimits    *PerRequestLimits  `json:"per_request_limits,omitempty"`
 	SupportedParameters []string           `json:"supported_parameters,omitempty"`
 	DefaultParameters   *DefaultParameters `json:"default_parameters,omitempty"`
+	Reasoning           *ModelReasoning    `json:"reasoning,omitempty"`
 	HuggingFaceID       *string            `json:"hugging_face_id,omitempty"`
 	Description         *string            `json:"description,omitempty"`
 
@@ -213,6 +214,17 @@ type DefaultParameters struct {
 	Temperature      *float64 `json:"temperature,omitempty"`
 	TopP             *float64 `json:"top_p,omitempty"`
 	FrequencyPenalty *float64 `json:"frequency_penalty,omitempty"`
+}
+
+// ModelReasoning describes a model's reasoning capabilities as advertised by
+// the provider's list-models API (e.g. OpenRouter's per-model `reasoning`
+// object). All fields are optional — providers omit `supported_efforts` /
+// `default_effort` for models whose reasoning has no selectable effort level.
+type ModelReasoning struct {
+	Mandatory        *bool    `json:"mandatory,omitempty"`
+	DefaultEnabled   *bool    `json:"default_enabled,omitempty"`
+	SupportedEfforts []string `json:"supported_efforts,omitempty"`
+	DefaultEffort    *string  `json:"default_effort,omitempty"`
 }
 
 // paginationCursor represents the internal cursor structure for pagination.

@@ -115,3 +115,48 @@ func TestKeyStatusMarshalJSON_PreservesErrorFields(t *testing.T) {
 	assert.Contains(t, dataStr, `"original_model_requested":"gpt-4"`)
 	assert.Contains(t, dataStr, `"status_code":401`)
 }
+
+// TestModelReasoningRoundTrip verifies that provider list-models payloads
+// carrying an OpenRouter-style `reasoning` object survive decode/encode
+// through schemas.Model, including partial shapes with no effort levels.
+func TestModelReasoningRoundTrip(t *testing.T) {
+	payload := []byte(`{
+		"id": "google/gemini-3.6-flash",
+		"supported_parameters": ["reasoning", "include_reasoning"],
+		"reasoning": {
+			"mandatory": true,
+			"default_enabled": true,
+			"supported_efforts": ["high", "medium", "low", "minimal"],
+			"default_effort": "medium"
+		}
+	}`)
+
+	var model Model
+	require.NoError(t, json.Unmarshal(payload, &model))
+	require.NotNil(t, model.Reasoning)
+	assert.Equal(t, Ptr(true), model.Reasoning.Mandatory)
+	assert.Equal(t, Ptr(true), model.Reasoning.DefaultEnabled)
+	assert.Equal(t, []string{"high", "medium", "low", "minimal"}, model.Reasoning.SupportedEfforts)
+	assert.Equal(t, Ptr("medium"), model.Reasoning.DefaultEffort)
+
+	encoded, err := json.Marshal(model)
+	require.NoError(t, err)
+	var decoded Model
+	require.NoError(t, json.Unmarshal(encoded, &decoded))
+	assert.Equal(t, model.Reasoning, decoded.Reasoning)
+
+	// Partial shape: reasoning supported but no selectable effort.
+	var partial Model
+	require.NoError(t, json.Unmarshal([]byte(`{"id":"x","reasoning":{"mandatory":false,"default_enabled":true}}`), &partial))
+	require.NotNil(t, partial.Reasoning)
+	assert.Nil(t, partial.Reasoning.SupportedEfforts)
+	assert.Nil(t, partial.Reasoning.DefaultEffort)
+
+	// No reasoning object → field stays nil and is omitted on encode.
+	var absent Model
+	require.NoError(t, json.Unmarshal([]byte(`{"id":"x"}`), &absent))
+	assert.Nil(t, absent.Reasoning)
+	encoded, err = json.Marshal(absent)
+	require.NoError(t, err)
+	assert.NotContains(t, string(encoded), "reasoning")
+}

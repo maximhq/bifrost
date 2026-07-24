@@ -162,6 +162,7 @@ export const bedrockKeyConfigSchema = z
 		role_arn: secretVarSchema.optional(),
 		external_id: secretVarSchema.optional(),
 		session_name: secretVarSchema.optional(),
+		batch_role_arn: secretVarSchema.optional(),
 		arn: secretVarSchema.optional(),
 		project_id: secretVarSchema.optional(),
 		batch_s3_config: batchS3ConfigSchema.optional(),
@@ -302,6 +303,7 @@ const aliasConfigObjectSchema = z.object({
 	inference_profile_arn: secretVarSchema.optional(),
 	// Replicate overrides
 	use_deployments_endpoint: z.boolean().optional(),
+	use_anthropic_endpoints: z.boolean().optional(),
 });
 
 // The Go server emits the legacy string wire shape (`{"my-alias": "model-id"}`)
@@ -348,6 +350,7 @@ export const modelProviderKeySchema = z
 		ollama_key_config: ollamaKeyConfigSchema.optional(),
 		sgl_key_config: sglKeyConfigSchema.optional(),
 		use_for_batch_api: z.boolean().optional(),
+		use_anthropic_endpoints: z.boolean().optional(),
 		enabled: z.boolean().optional(),
 	})
 	.refine(
@@ -1259,6 +1262,18 @@ export const routingRuleSchema = z
 		path: ["scope_id"],
 	});
 
+// Budget override form schema (BudgetOverrideDialog)
+export const budgetOverrideFormSchema = z
+	.object({
+		amount: z.number("Additional budget must be greater than 0.").positive("Additional budget must be greater than 0."),
+		mode: z.enum(["cycles", "forever"]),
+		cycles: z.number().optional(),
+	})
+	.refine((data) => data.mode !== "cycles" || (data.cycles !== undefined && Number.isSafeInteger(data.cycles) && data.cycles > 0), {
+		message: "Reset cycles must be a positive whole number.",
+		path: ["cycles"],
+	});
+
 // Export type inference helpers
 export type SecretVar = z.infer<typeof secretVarSchema>;
 export type MCPClientUpdateSchema = z.infer<typeof mcpClientUpdateSchema>;
@@ -1282,3 +1297,4 @@ export type GlobalProxyFormSchema = z.infer<typeof globalProxyFormSchema>;
 export type GlobalHeaderFilterConfigSchema = z.infer<typeof globalHeaderFilterConfigSchema>;
 export type GlobalHeaderFilterFormSchema = z.infer<typeof globalHeaderFilterFormSchema>;
 export type RoutingRuleSchema = z.infer<typeof routingRuleSchema>;
+export type BudgetOverrideFormSchema = z.infer<typeof budgetOverrideFormSchema>;

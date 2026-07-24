@@ -278,6 +278,8 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"async_jobs_add_webhook_endpoint_id_column"}, run: migrationAddWebhookEndpointIDColumn},
 	{IDs: []string{"async_jobs_add_request_id_column"}, run: migrationAddAsyncJobRequestIDColumn},
 	{IDs: []string{"webhook_deliveries_add_request_id_column"}, run: migrationAddWebhookDeliveryRequestIDColumn},
+	{IDs: []string{"logs_add_content_hidden_column"}, run: migrationAddContentHiddenColumn},
+	{IDs: []string{"logs_add_server_side_fallback_model_column"}, run: migrationAddServerSideFallbackModelColumn},
 }
 
 // areThereAnyPendingMigrations returns true if there are any pending migrations to be applied.
@@ -2945,6 +2947,39 @@ func migrationAddHasObjectColumnToMCPToolLogs(ctx context.Context, db *gorm.DB, 
 	return nil
 }
 
+// migrationAddContentHiddenColumn adds the content_hidden boolean column to the logs table.
+// Marks logs whose payload is retained in object storage but must never be served back
+// through the API/UI.
+func migrationAddContentHiddenColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_add_content_hidden_column"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &Log{}, "content_hidden"); err != nil {
+				return err
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &Log{}, "content_hidden"); err != nil {
+				return err
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding content_hidden column: %w", err)
+	}
+	return nil
+}
+
 // migrationAddImageVariationInputColumn adds the image_variation_input column to the logs table.
 func migrationAddImageVariationInputColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
 	migrationName := "logs_add_image_variation_input_column"
@@ -3729,6 +3764,32 @@ func migrationRecreateFilterCustomersMatView(ctx context.Context, db *gorm.DB, l
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while recreating filter customers matview: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddServerSideFallbackModelColumn adds the server_side_fallback_model
+// column to the logs table. Records the model that actually produced the response
+// when the provider swapped models inside a single call (Anthropic server-side
+// fallback) — which routing never sees, so the log's model column still names what
+// the caller asked for.
+func migrationAddServerSideFallbackModelColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_add_server_side_fallback_model_column"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return addColumnIfNotExists(tx.WithContext(ctx), logger, &Log{}, "server_side_fallback_model")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return dropColumnIfExists(tx.WithContext(ctx), logger, &Log{}, "server_side_fallback_model")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding server side fallback model column: %s", err.Error())
 	}
 	return nil
 }
