@@ -122,6 +122,17 @@ ingress:
 #             pathType: Prefix
 #     tls: []
 
+httproute:
+  # Enable HTTPRoute for Gateway API (e.g., Istio, Contour, Traefik)
+  enabled: false
+  # apiVersion: gateway.networking.k8s.io/v1
+  # parentRefs:
+  #   - name: shared-gateway
+  #     namespace: default
+  # hostnames:
+  #   - bifrost.example.com
+  # annotations: {}
+
 resources:
   limits:
     cpu: 2000m
