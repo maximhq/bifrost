@@ -108,3 +108,72 @@ func TestThroughputHistogramMath(t *testing.T) {
 	require.InDelta(t, 200.0, tpByProvider["openai"], 1e-6)
 	require.InDelta(t, 100.0, tpByProvider["anthropic"], 1e-6)
 }
+
+// TestLatencyOverheadHistogramMath verifies GetLatencyHistogram returns overhead
+// avg/percentiles alongside latency, and that a row with a latency but no measured
+// overhead (an untraced or pre-migration row) still counts toward latency and
+// TotalRequests while being excluded from the overhead aggregation.
+func TestLatencyOverheadHistogramMath(t *testing.T) {
+	ctx := context.Background()
+	sq, err := newSqliteLogStore(ctx, &SQLiteConfig{
+		Path: filepath.Join(t.TempDir(), "latency_overhead.db"),
+	}, testLogger{})
+	require.NoError(t, err)
+
+	base := time.Now().UTC().Truncate(time.Second)
+	// All rows land in the same 1h bucket.
+	mk := func(id string, latencyMs float64, overheadMs *float64) *Log {
+		l := &Log{
+			ID:            id,
+			Timestamp:     base,
+			Object:        "chat.completion",
+			Provider:      "openai",
+			Model:         "gpt-4o",
+			Status:        "success",
+			SelectedKeyID: "sk1",
+			Latency:       f64PtrP(latencyMs),
+			CreatedAt:     base,
+		}
+		l.OverheadLatency = overheadMs
+		return l
+	}
+
+	// Five rows carry both latency and overhead; one carries latency only (overhead
+	// unmeasured). Latency aggregates over all six; overhead over the five measured.
+	require.NoError(t, sq.Create(ctx, mk("l1", 100, f64PtrP(10))))
+	require.NoError(t, sq.Create(ctx, mk("l2", 200, f64PtrP(20))))
+	require.NoError(t, sq.Create(ctx, mk("l3", 300, f64PtrP(30))))
+	require.NoError(t, sq.Create(ctx, mk("l4", 400, f64PtrP(40))))
+	require.NoError(t, sq.Create(ctx, mk("l5", 500, f64PtrP(50))))
+	require.NoError(t, sq.Create(ctx, mk("l6", 600, nil)))
+
+	window := SearchFilters{
+		StartTime: timePtrP(base.Add(-time.Hour)),
+		EndTime:   timePtrP(base.Add(time.Hour)),
+	}
+
+	res, err := sq.GetLatencyHistogram(ctx, window, 3600)
+	require.NoError(t, err)
+	var got *LatencyHistogramBucket
+	for i := range res.Buckets {
+		if res.Buckets[i].TotalRequests > 0 {
+			got = &res.Buckets[i]
+			break
+		}
+	}
+	require.NotNil(t, got, "expected a non-empty bucket")
+	require.Equal(t, int64(6), got.TotalRequests, "the overhead-less row still counts")
+
+	// Latency over [100,200,300,400,500,600] (n=6): computePercentile uses linear
+	// interpolation at rank p*(n-1).
+	require.InDelta(t, 350.0, got.AvgLatency, 1e-6)
+	require.InDelta(t, 550.0, got.P90Latency, 1e-6) // rank 4.5 -> 500*0.5 + 600*0.5
+	require.InDelta(t, 575.0, got.P95Latency, 1e-6) // rank 4.75 -> 500*0.25 + 600*0.75
+	require.InDelta(t, 595.0, got.P99Latency, 1e-6) // rank 4.95 -> 500*0.05 + 600*0.95
+
+	// Overhead over [10,20,30,40,50] (n=5) only: the nil-overhead row is skipped.
+	require.InDelta(t, 30.0, got.AvgOverhead, 1e-6)
+	require.InDelta(t, 46.0, got.P90Overhead, 1e-6) // rank 3.6 -> 40*0.4 + 50*0.6
+	require.InDelta(t, 48.0, got.P95Overhead, 1e-6) // rank 3.8 -> 40*0.2 + 50*0.8
+	require.InDelta(t, 49.6, got.P99Overhead, 1e-6) // rank 3.96 -> 40*0.04 + 50*0.96
+}
