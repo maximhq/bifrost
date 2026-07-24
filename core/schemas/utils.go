@@ -88,6 +88,37 @@ func IsKnownProvider(provider string) bool {
 	return knownProviders[provider]
 }
 
+// configMarshallersMu protects concurrent access to configMarshallers.
+var configMarshallersMu sync.RWMutex
+
+// configMarshallers is the process-wide set of config marshallers, keyed by plugin
+// name. Plugins that implement ConfigMarshallerPlugin register themselves here from
+// an init() so their stored config can still be redacted/normalized even when the
+// plugin is disabled or fails to initialize — no live instance is required because
+// the Marshal/Redact methods are stateless. Mirrors the RegisterKnownProvider pattern.
+var configMarshallers = map[string]ConfigMarshallerPlugin{}
+
+// RegisterConfigMarshaller registers a config marshaller for a plugin by name.
+// Intended to be called from a plugin package's init(). Safe for concurrent use.
+func RegisterConfigMarshaller(name string, cm ConfigMarshallerPlugin) {
+	configMarshallersMu.Lock()
+	defer configMarshallersMu.Unlock()
+	configMarshallers[name] = cm
+}
+
+// ConfigMarshallers returns a snapshot copy of all registered config marshallers.
+// Callers (e.g. the HTTP server at load time) use this to seed their per-instance
+// marshaller cache so disabled plugins can still redact/normalize stored config.
+func ConfigMarshallers() map[string]ConfigMarshallerPlugin {
+	configMarshallersMu.RLock()
+	defer configMarshallersMu.RUnlock()
+	out := make(map[string]ConfigMarshallerPlugin, len(configMarshallers))
+	for name, cm := range configMarshallers {
+		out[name] = cm
+	}
+	return out
+}
+
 // ParseModelString extracts provider and model from a model string.
 // For model strings like "anthropic/claude", it returns ("anthropic", "claude").
 // For model strings like "claude", it returns ("", "claude").

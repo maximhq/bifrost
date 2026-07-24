@@ -685,6 +685,14 @@ func (p *PrometheusPlugin) RedactConfig(raw map[string]any) (map[string]any, err
 	return result, nil
 }
 
+// Ensure PrometheusPlugin satisfies the marshaller contract, and self-register it so
+// the server can redact/normalize this plugin's stored config even when it is disabled.
+var _ schemas.ConfigMarshallerPlugin = (*PrometheusPlugin)(nil)
+
+func init() {
+	schemas.RegisterConfigMarshaller(PluginName, &PrometheusPlugin{})
+}
+
 // HTTPTransportPreHook is not used for this plugin
 func (p *PrometheusPlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
 	ctx.SetValue(transportStartTimeKey, time.Now())

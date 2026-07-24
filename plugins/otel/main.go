@@ -556,6 +556,14 @@ func (p *OtelPlugin) RedactConfig(raw map[string]any) (map[string]any, error) {
 	return result, nil
 }
 
+// Ensure OtelPlugin satisfies the marshaller contract, and self-register it so the
+// server can redact/normalize this plugin's stored config even when it is disabled.
+var _ schemas.ConfigMarshallerPlugin = (*OtelPlugin)(nil)
+
+func init() {
+	schemas.RegisterConfigMarshaller(PluginName, &OtelPlugin{})
+}
+
 // HTTPTransportPreHook is not used for this plugin
 func (p *OtelPlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
 	return nil, nil
