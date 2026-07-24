@@ -1010,11 +1010,15 @@ func convertToolMessages(ctx context.Context, msgs []schemas.ChatMessage) (Bedro
 		}
 
 		// Create tool result content block for this tool message
+		status := "success"
+		if msg.ChatToolMessage.IsError != nil && *msg.ChatToolMessage.IsError {
+			status = "error"
+		}
 		toolResultBlock := BedrockContentBlock{
 			ToolResult: &BedrockToolResult{
 				ToolUseID: *msg.ChatToolMessage.ToolCallID,
 				Content:   toolResultContent,
-				Status:    schemas.Ptr("success"), // Default to success
+				Status:    schemas.Ptr(status),
 			},
 		}
 
