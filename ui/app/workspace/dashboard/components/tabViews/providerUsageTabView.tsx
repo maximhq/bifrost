@@ -10,6 +10,7 @@ import {
 } from "@/lib/store";
 import type { LogFilters } from "@/lib/types/logs";
 import { forwardRef, useCallback, useImperativeHandle, useMemo } from "react";
+import { computeDisplaySeries } from "../../utils/chartUtils";
 import type { DashboardData } from "../../utils/exportUtils";
 import type { ChartType } from "../charts/chartTypeToggle";
 import { ProviderUsageTab } from "../providerUsageTab";
@@ -79,7 +80,10 @@ export const ProviderUsageTabView = forwardRef<ProviderUsageTabViewHandle, Provi
 	const { data: providerCostData, isLoading: loadingProviderCost } = useGetLogsProviderCostHistogramQuery(fetchArg, skipOpts);
 	const { data: providerTokenData, isLoading: loadingProviderTokens } = useGetLogsProviderTokenHistogramQuery(fetchArg, skipOpts);
 	const { data: providerLatencyData, isLoading: loadingProviderLatency } = useGetLogsProviderLatencyHistogramQuery(fetchArg, skipOpts);
-	const { data: providerThroughputData, isLoading: loadingProviderThroughput } = useGetLogsProviderThroughputHistogramQuery(fetchArg, skipOpts);
+	const { data: providerThroughputData, isLoading: loadingProviderThroughput } = useGetLogsProviderThroughputHistogramQuery(
+		fetchArg,
+		skipOpts,
+	);
 
 	const [triggerProviderCost] = useLazyGetLogsProviderCostHistogramQuery();
 	const [triggerProviderTokens] = useLazyGetLogsProviderTokenHistogramQuery();
@@ -118,12 +122,36 @@ export const ProviderUsageTabView = forwardRef<ProviderUsageTabViewHandle, Provi
 			]),
 		[providerCostData?.providers, providerTokenData?.providers, providerLatencyData?.providers, providerThroughputData?.providers],
 	);
-	const providerCostProviders = useMemo(() => sanitizeSeriesLabels(providerCostData?.providers), [providerCostData?.providers]);
-	const providerTokenProviders = useMemo(() => sanitizeSeriesLabels(providerTokenData?.providers), [providerTokenData?.providers]);
-	const providerLatencyProviders = useMemo(() => sanitizeSeriesLabels(providerLatencyData?.providers), [providerLatencyData?.providers]);
+	// Legend lists mirror each chart's display order (top-N by its own ranking
+	// metric, plus "Other" where the chart rolls up the tail) — index-based
+	// colors must match the drawn series, not the API's alphabetical order.
+	const providerCostProviders = useMemo(
+		() => computeDisplaySeries(providerCostData?.buckets, providerCostData?.providers, (b, p) => b.by_provider?.[p] ?? 0),
+		[providerCostData],
+	);
+	const providerTokenProviders = useMemo(
+		() => computeDisplaySeries(providerTokenData?.buckets, providerTokenData?.providers, (b, p) => b.by_provider?.[p]?.total_tokens ?? 0),
+		[providerTokenData],
+	);
+	const providerLatencyProviders = useMemo(
+		() =>
+			computeDisplaySeries(
+				providerLatencyData?.buckets,
+				providerLatencyData?.providers,
+				(b, p) => b.by_provider?.[p]?.total_requests ?? 0,
+				false,
+			),
+		[providerLatencyData],
+	);
 	const providerThroughputProviders = useMemo(
-		() => sanitizeSeriesLabels(providerThroughputData?.providers),
-		[providerThroughputData?.providers],
+		() =>
+			computeDisplaySeries(
+				providerThroughputData?.buckets,
+				providerThroughputData?.providers,
+				(b, p) => b.by_provider?.[p]?.total_requests ?? 0,
+				false,
+			),
+		[providerThroughputData],
 	);
 
 	return (
