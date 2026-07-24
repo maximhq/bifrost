@@ -860,8 +860,16 @@ type GeminiResponsesStreamState struct {
 	HasStartedToolCall bool            // Whether we've started a tool call
 	TextBuffer         strings.Builder // Accumulates text deltas for output_text.done
 
+	// Reasoning tracking
+	ReasoningOutputIndex int             // Output index of the open reasoning item (-1 when none)
+	ReasoningBuffer      strings.Builder // Accumulates thought text for the reasoning terminal events
+	ReasoningSignature   string          // Base64 thoughtSignature carried by a thought part
+
 	// Web search tracking
 	HasEmittedWebSearch bool // Whether web_search_call events have been emitted
+
+	// Output item bookkeeping so response.completed can carry the full output array
+	OutputItems map[int]*schemas.ResponsesMessage // Maps output_index to the latest emitted item
 }
 
 // geminiResponsesStreamStatePool provides a pool for Gemini responses stream state objects.
@@ -872,8 +880,10 @@ var geminiResponsesStreamStatePool = sync.Pool{
 			ToolCallIDs:          make(map[int]string),
 			ToolCallNames:        make(map[int]string),
 			ToolArgumentBuffers:  make(map[int]string),
+			OutputItems:          make(map[int]*schemas.ResponsesMessage),
 			CurrentOutputIndex:   0,
 			TextOutputIndex:      -1,
+			ReasoningOutputIndex: -1,
 			CreatedAt:            int(time.Now().Unix()),
 			HasEmittedCreated:    false,
 			HasEmittedInProgress: false,
@@ -923,8 +933,14 @@ func (state *GeminiResponsesStreamState) flush() {
 	} else {
 		clear(state.ToolArgumentBuffers)
 	}
+	if state.OutputItems == nil {
+		state.OutputItems = make(map[int]*schemas.ResponsesMessage)
+	} else {
+		clear(state.OutputItems)
+	}
 	state.CurrentOutputIndex = 0
 	state.TextOutputIndex = -1
+	state.ReasoningOutputIndex = -1
 	state.MessageID = nil
 	state.Model = nil
 	state.ResponseID = nil
@@ -937,6 +953,8 @@ func (state *GeminiResponsesStreamState) flush() {
 	state.HasStartedToolCall = false
 	state.HasEmittedWebSearch = false
 	state.TextBuffer.Reset()
+	state.ReasoningBuffer.Reset()
+	state.ReasoningSignature = ""
 }
 
 // closeTextItemIfOpen closes the text item if it's open and returns the responses.
@@ -946,6 +964,70 @@ func (state *GeminiResponsesStreamState) closeTextItemIfOpen(sequenceNumber int)
 		return closeGeminiTextItem(state, sequenceNumber)
 	}
 	return nil
+}
+
+// closeReasoningItemIfOpen closes the reasoning item if one is open and returns
+// the responses. Returns nil if no reasoning item was open.
+func (state *GeminiResponsesStreamState) closeReasoningItemIfOpen(sequenceNumber int) []*schemas.BifrostResponsesStreamResponse {
+	if state.ReasoningOutputIndex >= 0 {
+		return closeGeminiReasoningItem(state, sequenceNumber)
+	}
+	return nil
+}
+
+// trackOutputItems records the items carried by output_item.added and
+// output_item.done events so response.completed can carry the full output
+// array. Done events overwrite the added shells for the same output index,
+// and output_text.annotation.added events are folded into the tracked item's
+// text block so the snapshot keeps the grounding citations.
+func (state *GeminiResponsesStreamState) trackOutputItems(events []*schemas.BifrostResponsesStreamResponse) {
+	for _, event := range events {
+		if event == nil || event.OutputIndex == nil {
+			continue
+		}
+		switch event.Type {
+		case schemas.ResponsesStreamResponseTypeOutputItemAdded,
+			schemas.ResponsesStreamResponseTypeOutputItemDone:
+			if event.Item == nil {
+				continue
+			}
+			if state.OutputItems == nil {
+				state.OutputItems = make(map[int]*schemas.ResponsesMessage)
+			}
+			itemCopy := *event.Item
+			state.OutputItems[*event.OutputIndex] = &itemCopy
+		case schemas.ResponsesStreamResponseTypeOutputTextAnnotationAdded:
+			if event.Annotation == nil {
+				continue
+			}
+			item, exists := state.OutputItems[*event.OutputIndex]
+			if !exists || item.Content == nil || len(item.Content.ContentBlocks) == 0 {
+				continue
+			}
+			blockIndex := 0
+			if event.ContentIndex != nil && *event.ContentIndex < len(item.Content.ContentBlocks) {
+				blockIndex = *event.ContentIndex
+			}
+			// Copy on write: the tracked item shares inner structures with the
+			// already emitted done event, which must stay as it went out.
+			itemCopy := *item
+			contentCopy := *item.Content
+			blocks := make([]schemas.ResponsesMessageContentBlock, len(contentCopy.ContentBlocks))
+			copy(blocks, contentCopy.ContentBlocks)
+			block := blocks[blockIndex]
+			if block.ResponsesOutputMessageContentText != nil {
+				textCopy := *block.ResponsesOutputMessageContentText
+				annotations := make([]schemas.ResponsesOutputMessageContentTextAnnotation, len(textCopy.Annotations), len(textCopy.Annotations)+1)
+				copy(annotations, textCopy.Annotations)
+				textCopy.Annotations = append(annotations, *event.Annotation)
+				block.ResponsesOutputMessageContentText = &textCopy
+				blocks[blockIndex] = block
+				contentCopy.ContentBlocks = blocks
+				itemCopy.Content = &contentCopy
+				state.OutputItems[*event.OutputIndex] = &itemCopy
+			}
+		}
+	}
 }
 
 // nextOutputIndex returns the current output index and increments it for the next use.
@@ -1024,6 +1106,8 @@ func (response *GenerateContentResponse) ToBifrostResponsesStream(sequenceNumber
 				partResponses := processGeminiPart(part, state, sequenceNumber+len(responses))
 				responses = append(responses, partResponses...)
 			}
+			// Keep the emitted items so response.completed can carry them
+			state.trackOutputItems(responses)
 		}
 
 		// Check for finish reason (indicates end of generation)
@@ -1039,6 +1123,7 @@ func (response *GenerateContentResponse) ToBifrostResponsesStream(sequenceNumber
 					sequenceNumber+len(responses),
 				)
 				responses = append(responses, webSearchResponses...)
+				state.trackOutputItems(webSearchResponses)
 			}
 
 			// Close any open items
@@ -1087,6 +1172,11 @@ func processGeminiPart(part *Part, state *GeminiResponsesStreamState, sequenceNu
 // processGeminiTextPart handles regular text parts
 func processGeminiTextPart(part *Part, state *GeminiResponsesStreamState, sequenceNumber int) []*schemas.BifrostResponsesStreamResponse {
 	var responses []*schemas.BifrostResponsesStreamResponse
+
+	// Close reasoning item if open
+	if closeResponses := state.closeReasoningItemIfOpen(sequenceNumber); closeResponses != nil {
+		responses = append(responses, closeResponses...)
+	}
 
 	var outputIndex int
 	// If this is the first text, emit output_item.added and content_part.added
@@ -1166,7 +1256,10 @@ func processGeminiTextPart(part *Part, state *GeminiResponsesStreamState, sequen
 	return responses
 }
 
-// processGeminiThoughtPart handles reasoning/thought parts
+// processGeminiThoughtPart handles reasoning/thought parts. Consecutive thought
+// parts share one reasoning item: the first part opens it, later parts only
+// append summary text deltas, and the item is completed with the accumulated
+// text when another content type starts (or the stream closes).
 func processGeminiThoughtPart(part *Part, state *GeminiResponsesStreamState, sequenceNumber int) []*schemas.BifrostResponsesStreamResponse {
 	var responses []*schemas.BifrostResponsesStreamResponse
 
@@ -1175,35 +1268,49 @@ func processGeminiThoughtPart(part *Part, state *GeminiResponsesStreamState, seq
 		responses = append(responses, closeResponses...)
 	}
 
-	// For Gemini thoughts/reasoning, we emit them as reasoning summary text deltas
-	outputIndex := state.nextOutputIndex()
-	itemID := state.generateItemID("reasoning", outputIndex)
-	state.ItemIDs[outputIndex] = itemID
+	// A collected signature ends a signed segment: a following thought part
+	// starts a fresh reasoning item so every signed segment stays replayable
+	// with its own signature.
+	if state.ReasoningOutputIndex >= 0 && state.ReasoningSignature != "" {
+		responses = append(responses, closeGeminiReasoningItem(state, sequenceNumber+len(responses))...)
+	}
 
-	// Emit output_item.added for reasoning
-	responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-		Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
-		SequenceNumber: sequenceNumber + len(responses),
-		OutputIndex:    &outputIndex,
-		ItemID:         &itemID,
-		Item: &schemas.ResponsesMessage{
-			ID:   &itemID,
-			Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
-			Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
-		},
-	})
+	// Open a reasoning item on the first thought part, reuse it afterwards
+	if state.ReasoningOutputIndex < 0 {
+		outputIndex := state.nextOutputIndex()
+		itemID := state.generateItemID("reasoning", outputIndex)
+		state.ItemIDs[outputIndex] = itemID
+		state.ReasoningOutputIndex = outputIndex
 
-	// Emit reasoning summary part added
-	responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-		Type:           schemas.ResponsesStreamResponseTypeReasoningSummaryPartAdded,
-		SequenceNumber: sequenceNumber + len(responses),
-		OutputIndex:    &outputIndex,
-		ItemID:         &itemID,
-	})
+		// Emit output_item.added for reasoning
+		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+			Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
+			SequenceNumber: sequenceNumber + len(responses),
+			OutputIndex:    &outputIndex,
+			ItemID:         &itemID,
+			Item: &schemas.ResponsesMessage{
+				ID:   &itemID,
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+			},
+		})
+
+		// Emit reasoning summary part added
+		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+			Type:           schemas.ResponsesStreamResponseTypeReasoningSummaryPartAdded,
+			SequenceNumber: sequenceNumber + len(responses),
+			OutputIndex:    &outputIndex,
+			ItemID:         &itemID,
+		})
+	}
+
+	outputIndex := state.ReasoningOutputIndex
+	itemID := state.ItemIDs[outputIndex]
 
 	// Emit reasoning summary text delta with the thought content
 	if part.Text != "" {
 		text := part.Text
+		state.ReasoningBuffer.WriteString(text)
 		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
 			Type:           schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta,
 			SequenceNumber: sequenceNumber + len(responses),
@@ -1213,12 +1320,31 @@ func processGeminiThoughtPart(part *Part, state *GeminiResponsesStreamState, seq
 		})
 	}
 
-	// Emit reasoning summary text done
+	// Keep a thoughtSignature arriving on a thought part for the terminal events
+	if len(part.ThoughtSignature) > 0 {
+		state.ReasoningSignature = base64.StdEncoding.EncodeToString(part.ThoughtSignature)
+	}
+
+	return responses
+}
+
+// closeGeminiReasoningItem completes the open reasoning item with the
+// accumulated thought text (and thoughtSignature when one arrived), mirroring
+// how closeGeminiTextItem completes the text item.
+func closeGeminiReasoningItem(state *GeminiResponsesStreamState, sequenceNumber int) []*schemas.BifrostResponsesStreamResponse {
+	var responses []*schemas.BifrostResponsesStreamResponse
+
+	outputIndex := state.ReasoningOutputIndex
+	itemID := state.ItemIDs[outputIndex]
+	fullText := state.ReasoningBuffer.String()
+
+	// Emit reasoning summary text done with the accumulated text
 	responses = append(responses, &schemas.BifrostResponsesStreamResponse{
 		Type:           schemas.ResponsesStreamResponseTypeReasoningSummaryTextDone,
 		SequenceNumber: sequenceNumber + len(responses),
 		OutputIndex:    &outputIndex,
 		ItemID:         &itemID,
+		Text:           &fullText,
 	})
 
 	// Emit reasoning summary part done
@@ -1229,7 +1355,17 @@ func processGeminiThoughtPart(part *Part, state *GeminiResponsesStreamState, seq
 		ItemID:         &itemID,
 	})
 
-	// Emit output_item.done for reasoning
+	// Emit output_item.done for reasoning with the accumulated summary
+	reasoning := &schemas.ResponsesReasoning{
+		Summary: []schemas.ResponsesReasoningSummary{{
+			Type: schemas.ResponsesReasoningContentBlockTypeSummaryText,
+			Text: fullText,
+		}},
+	}
+	if state.ReasoningSignature != "" {
+		signature := state.ReasoningSignature
+		reasoning.EncryptedContent = &signature
+	}
 	statusCompleted := "completed"
 	responses = append(responses, &schemas.BifrostResponsesStreamResponse{
 		Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
@@ -1237,15 +1373,17 @@ func processGeminiThoughtPart(part *Part, state *GeminiResponsesStreamState, seq
 		OutputIndex:    &outputIndex,
 		ItemID:         &itemID,
 		Item: &schemas.ResponsesMessage{
-			ID:     &itemID,
-			Type:   schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
-			Role:   schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
-			Status: &statusCompleted,
-			ResponsesReasoning: &schemas.ResponsesReasoning{
-				Summary: []schemas.ResponsesReasoningSummary{},
-			},
+			ID:                 &itemID,
+			Type:               schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+			Role:               schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+			Status:             &statusCompleted,
+			ResponsesReasoning: reasoning,
 		},
 	})
+
+	state.ReasoningOutputIndex = -1
+	state.ReasoningBuffer.Reset()
+	state.ReasoningSignature = ""
 
 	return responses
 }
@@ -1256,6 +1394,11 @@ func processGeminiThoughtSignaturePart(part *Part, state *GeminiResponsesStreamS
 
 	// Close text item if open
 	if closeResponses := state.closeTextItemIfOpen(sequenceNumber); closeResponses != nil {
+		responses = append(responses, closeResponses...)
+	}
+
+	// Close reasoning item if open
+	if closeResponses := state.closeReasoningItemIfOpen(sequenceNumber + len(responses)); closeResponses != nil {
 		responses = append(responses, closeResponses...)
 	}
 
@@ -1312,6 +1455,11 @@ func processGeminiFunctionCallPart(part *Part, state *GeminiResponsesStreamState
 
 	// Close text item if open
 	if closeResponses := state.closeTextItemIfOpen(sequenceNumber); closeResponses != nil {
+		responses = append(responses, closeResponses...)
+	}
+
+	// Close reasoning item if open
+	if closeResponses := state.closeReasoningItemIfOpen(sequenceNumber + len(responses)); closeResponses != nil {
 		responses = append(responses, closeResponses...)
 	}
 
@@ -1424,6 +1572,11 @@ func processGeminiFunctionResponsePart(part *Part, state *GeminiResponsesStreamS
 		responses = append(responses, closeResponses...)
 	}
 
+	// Close reasoning item if open
+	if closeResponses := state.closeReasoningItemIfOpen(sequenceNumber + len(responses)); closeResponses != nil {
+		responses = append(responses, closeResponses...)
+	}
+
 	// Extract output from function response
 	output := extractFunctionResponseOutput(part.FunctionResponse)
 
@@ -1505,6 +1658,11 @@ func processGeminiInlineDataPart(part *Part, state *GeminiResponsesStreamState, 
 		responses = append(responses, closeResponses...)
 	}
 
+	// Close reasoning item if open
+	if closeResponses := state.closeReasoningItemIfOpen(sequenceNumber + len(responses)); closeResponses != nil {
+		responses = append(responses, closeResponses...)
+	}
+
 	// Convert inline data to content block
 	block := convertGeminiInlineDataToContentBlock(part.InlineData)
 	if block == nil {
@@ -1566,7 +1724,7 @@ func processGeminiInlineDataPart(part *Part, state *GeminiResponsesStreamState, 
 			Role:   schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
 			Status: &statusCompleted,
 			Content: &schemas.ResponsesMessageContent{
-				ContentBlocks: []schemas.ResponsesMessageContentBlock{},
+				ContentBlocks: []schemas.ResponsesMessageContentBlock{*block},
 			},
 		},
 	})
@@ -1580,6 +1738,11 @@ func processGeminiFileDataPart(part *Part, state *GeminiResponsesStreamState, se
 
 	// Close text item if open
 	if closeResponses := state.closeTextItemIfOpen(sequenceNumber); closeResponses != nil {
+		responses = append(responses, closeResponses...)
+	}
+
+	// Close reasoning item if open
+	if closeResponses := state.closeReasoningItemIfOpen(sequenceNumber + len(responses)); closeResponses != nil {
 		responses = append(responses, closeResponses...)
 	}
 
@@ -1644,7 +1807,7 @@ func processGeminiFileDataPart(part *Part, state *GeminiResponsesStreamState, se
 			Role:   schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
 			Status: &statusCompleted,
 			Content: &schemas.ResponsesMessageContent{
-				ContentBlocks: []schemas.ResponsesMessageContentBlock{},
+				ContentBlocks: []schemas.ResponsesMessageContentBlock{*block},
 			},
 		},
 	})
@@ -1736,6 +1899,11 @@ func closeGeminiOpenItems(state *GeminiResponsesStreamState, groundingMetadata *
 
 	// Close text item if still open
 	if closeResponses := state.closeTextItemIfOpen(sequenceNumber); closeResponses != nil {
+		responses = append(responses, closeResponses...)
+	}
+
+	// Close reasoning item if still open
+	if closeResponses := state.closeReasoningItemIfOpen(sequenceNumber + len(responses)); closeResponses != nil {
 		responses = append(responses, closeResponses...)
 	}
 
@@ -1903,6 +2071,20 @@ func closeGeminiOpenItems(state *GeminiResponsesStreamState, groundingMetadata *
 			failedStatus := "failed"
 			completedResp.Status = &failedStatus
 		}
+	}
+
+	// Populate the output array from the tracked items, sorted by output index,
+	// so response.completed carries the full final snapshot the way the
+	// non-streaming path does
+	state.trackOutputItems(responses)
+	if len(state.OutputItems) > 0 {
+		output := make([]schemas.ResponsesMessage, 0, len(state.OutputItems))
+		for i := 0; i < state.CurrentOutputIndex; i++ {
+			if item, exists := state.OutputItems[i]; exists {
+				output = append(output, *item)
+			}
+		}
+		completedResp.Output = output
 	}
 
 	responses = append(responses, &schemas.BifrostResponsesStreamResponse{
@@ -2429,7 +2611,26 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 						},
 						Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
 					}
+					// Keep a thoughtSignature arriving on the thought part
+					if len(part.ThoughtSignature) > 0 {
+						thoughtSig := base64.StdEncoding.EncodeToString(part.ThoughtSignature)
+						msg.ResponsesReasoning = &schemas.ResponsesReasoning{
+							Summary:          []schemas.ResponsesReasoningSummary{},
+							EncryptedContent: &thoughtSig,
+						}
+					}
 					messages = append(messages, msg)
+				} else if len(part.ThoughtSignature) > 0 {
+					// A thought-flagged part carrying only a signature
+					thoughtSig := base64.StdEncoding.EncodeToString(part.ThoughtSignature)
+					messages = append(messages, schemas.ResponsesMessage{
+						Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+						ResponsesReasoning: &schemas.ResponsesReasoning{
+							Summary:          []schemas.ResponsesReasoningSummary{},
+							EncryptedContent: &thoughtSig,
+						},
+					})
 				}
 
 			case part.Text != "":

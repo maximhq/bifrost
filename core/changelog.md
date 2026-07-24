@@ -1,0 +1,1 @@
+- fix: complete Gemini streaming Responses terminal events, response.completed now carries the output array and reasoning items keep their accumulated thought text and thoughtSignature (closes #5259) (thanks [@fus3r](https://github.com/fus3r)!)
