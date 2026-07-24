@@ -2002,6 +2002,17 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		}
 		return fmt.Errorf("failed to initialize inference routes: %v", err)
 	}
+	// Keep the /mcp gateway's tool registry in sync with live client tool state.
+	// Without this, the registry only refreshes on admin config mutations (add/update/
+	// remove/enable/disable), leaving boot-time discovery, reconnects, and periodic
+	// tool-sync drift unreflected in tools/list until an unrelated admin action happens
+	// to trigger a resync. Must be wired before ConnectConfiguredMCPClients below so
+	// the very first boot-time discovery is covered.
+	s.Client.SetOnMCPToolsUpdated(func() {
+		if err := s.MCPServerHandler.SyncAllMCPServers(context.Background()); err != nil {
+			logger.Warn("failed to sync MCP servers after tools update: %v", err)
+		}
+	})
 	// Dial configured MCP clients now that every plugin is registered in the core.
 	// Construction (bifrost.Init) no longer connects MCP, so connecting here ensures
 	// each client's PreMCPConnectionHook runs against the full plugin set rather than

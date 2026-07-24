@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"reflect"
 	"sync"
 	"time"
 
@@ -148,6 +149,14 @@ func (cts *ClientToolSyncer) performSync() {
 	// Check if tools have changed
 	oldToolCount := len(clientState.ToolMap)
 	newToolCount := len(newTools)
+	// Deep-compare old vs. new tool maps (not just counts) so a same-count rename or
+	// schema/description edit still counts as a change, while a genuinely unchanged
+	// tick (the common case in steady state) can skip the downstream notify below.
+	// Cheap: a per-client tool count is typically tens to a few hundred entries, so
+	// this comparison costs low-single-digit microseconds — negligible next to the
+	// gateway-wide resync (including invalidating every cached per-VK server) it
+	// exists to avoid triggering unnecessarily.
+	toolsChanged := !reflect.DeepEqual(clientState.ToolMap, newTools)
 
 	clientState.ToolMap = newTools
 	clientState.ToolNameMapping = newMapping
@@ -157,6 +166,17 @@ func (cts *ClientToolSyncer) performSync() {
 		cts.logger.Info("%s Tool sync completed for %s: %d -> %d tools", MCPLogPrefix, cts.clientID, oldToolCount, newToolCount)
 	} else {
 		cts.logger.Debug("%s Tool sync completed for %s: %d tools (no change)", MCPLogPrefix, cts.clientID, newToolCount)
+	}
+
+	// Notify the transport so gateway-facing tool registries pick up the change, but
+	// only when something actually changed. Notifying on every tick regardless (the
+	// prior behavior) invalidates the entire per-VK gateway-server cache
+	// (MCPServerHandler.SyncAllMCPServers resets vkMCPServers) on every tool-sync
+	// interval across every configured client, even when nothing changed — eroding
+	// the lazy per-VK caching that exists specifically to avoid O(virtual keys) work
+	// at scale (see SyncAllMCPServers's own comment about 100k+ key deployments).
+	if toolsChanged {
+		cts.manager.notifyToolsUpdated()
 	}
 }
 

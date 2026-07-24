@@ -91,6 +91,8 @@ type Bifrost struct {
 	MCPManager          mcp.MCPManagerInterface             // MCP integration manager (nil if MCP not configured)
 	mcpCredStore        schemas.MCPCredentialStore          // Per-call credential resolver for MCP tool execution (wraps oauth2Provider for OAuth-flavored auth types)
 	mcpInitOnce         sync.Once                           // Ensures MCP manager is initialized only once
+	mcpToolsUpdatedMu   sync.RWMutex                        // Guards mcpToolsUpdatedFn
+	mcpToolsUpdatedFn   func()                              // Set by SetOnMCPToolsUpdated; applied to MCPManager at boot and re-applied to any manager created later by a lazy-init path (AddMCPClient, VerifyPerUserOAuthConnection, VerifyHeadersConnection), since those construct a fresh MCPManager that wouldn't otherwise see a hook set before it existed
 	dropExcessRequests  atomic.Bool                         // If true, in cases where the queue is full, requests will not wait for the queue to be empty and will be dropped instead.
 	keySelector         schemas.KeySelector                 // Custom key selector function
 	keyPoolFilter       schemas.KeyPoolFilter               // optional hook to veto keys before selection (nil = all eligible)
@@ -342,6 +344,7 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 			}
 			codeMode := starlark.NewStarlarkCodeMode(codeModeConfig, bifrost.logger)
 			bifrost.MCPManager = mcp.NewMCPManager(bifrostCtx, mcpConfig, bifrost.mcpCredStore, bifrost.logger, codeMode)
+			bifrost.applyMCPToolsUpdatedHook()
 			bifrost.logger.Info("MCP integration initialized successfully")
 		})
 	}
@@ -4043,6 +4046,41 @@ func (bifrost *Bifrost) ConnectConfiguredMCPClients(ctx context.Context) {
 	}
 }
 
+// SetOnMCPToolsUpdated registers a callback invoked whenever a connected MCP client's live
+// tool set changes (connect, reconnect, or periodic tool sync). Call before
+// ConnectConfiguredMCPClients so boot-time discovery is covered.
+//
+// The callback is retained on the Bifrost instance (not just handed to the current
+// MCPManager) and re-applied by applyMCPToolsUpdatedHook whenever a *new* MCPManager is
+// constructed later — AddMCPClient, VerifyPerUserOAuthConnection, and
+// VerifyHeadersConnection all lazily create one via mcpInitOnce if MCP wasn't configured
+// at boot. Without retaining the callback here, a process that starts with no MCP config
+// and has its first client added at runtime would end up with a manager whose
+// onToolsUpdated hook was never set, silently reintroducing the gateway staleness bug
+// this callback exists to fix.
+func (bifrost *Bifrost) SetOnMCPToolsUpdated(fn func()) {
+	bifrost.mcpToolsUpdatedMu.Lock()
+	bifrost.mcpToolsUpdatedFn = fn
+	bifrost.mcpToolsUpdatedMu.Unlock()
+	if bifrost.MCPManager != nil {
+		bifrost.MCPManager.SetOnToolsUpdated(fn)
+	}
+}
+
+// applyMCPToolsUpdatedHook wires any previously-registered SetOnMCPToolsUpdated callback
+// onto a freshly constructed MCPManager. Call this immediately after every
+// mcp.NewMCPManager(...) assignment to bifrost.MCPManager, including lazy-init sites, so
+// the hook is never silently missing on a manager created after boot. No-op if
+// SetOnMCPToolsUpdated was never called (e.g. non-transport embedders of core).
+func (bifrost *Bifrost) applyMCPToolsUpdatedHook() {
+	bifrost.mcpToolsUpdatedMu.RLock()
+	fn := bifrost.mcpToolsUpdatedFn
+	bifrost.mcpToolsUpdatedMu.RUnlock()
+	if fn != nil && bifrost.MCPManager != nil {
+		bifrost.MCPManager.SetOnToolsUpdated(fn)
+	}
+}
+
 func (bifrost *Bifrost) AddMCPClient(ctx context.Context, config *schemas.MCPClientConfig) error {
 	if bifrost.MCPManager == nil {
 		// Use sync.Once to ensure thread-safe initialization
@@ -4063,6 +4101,7 @@ func (bifrost *Bifrost) AddMCPClient(ctx context.Context, config *schemas.MCPCli
 			// Create Starlark CodeMode for code execution (with default config)
 			codeMode := starlark.NewStarlarkCodeMode(nil, bifrost.logger)
 			bifrost.MCPManager = mcp.NewMCPManager(bifrost.ctx, mcpConfig, bifrost.mcpCredStore, bifrost.logger, codeMode)
+			bifrost.applyMCPToolsUpdatedHook()
 		})
 	}
 
@@ -4124,6 +4163,10 @@ func (bifrost *Bifrost) SetMCPManager(manager mcp.MCPManagerInterface) {
 			},
 		)
 	}
+	// Wire any previously-registered SetOnMCPToolsUpdated callback onto this externally
+	// supplied manager too, for the same reason as the lazy-init sites: a callback set
+	// before this manager existed would otherwise be silently dropped.
+	bifrost.applyMCPToolsUpdatedHook()
 }
 
 // UpdateMCPClient updates the MCP client.
@@ -4213,6 +4256,7 @@ func (bifrost *Bifrost) VerifyPerUserOAuthConnection(ctx context.Context, config
 			}
 			codeMode := starlark.NewStarlarkCodeMode(nil, bifrost.logger)
 			bifrost.MCPManager = mcp.NewMCPManager(bifrost.ctx, mcpConfig, bifrost.mcpCredStore, bifrost.logger, codeMode)
+			bifrost.applyMCPToolsUpdatedHook()
 		})
 	}
 	if bifrost.MCPManager == nil {
@@ -4241,6 +4285,7 @@ func (bifrost *Bifrost) VerifyHeadersConnection(ctx context.Context, config *sch
 			}
 			codeMode := starlark.NewStarlarkCodeMode(nil, bifrost.logger)
 			bifrost.MCPManager = mcp.NewMCPManager(bifrost.ctx, mcpConfig, bifrost.mcpCredStore, bifrost.logger, codeMode)
+			bifrost.applyMCPToolsUpdatedHook()
 		})
 	}
 	if bifrost.MCPManager == nil {
