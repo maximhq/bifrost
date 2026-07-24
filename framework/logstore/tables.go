@@ -1487,6 +1487,10 @@ type LatencyHistogramBucket struct {
 	P90Latency    float64   `json:"p90_latency"`
 	P95Latency    float64   `json:"p95_latency"`
 	P99Latency    float64   `json:"p99_latency"`
+	AvgOverhead   float64   `json:"avg_overhead"`
+	P90Overhead   float64   `json:"p90_overhead"`
+	P95Overhead   float64   `json:"p95_overhead"`
+	P99Overhead   float64   `json:"p99_overhead"`
 	TotalRequests int64     `json:"total_requests"`
 }
 

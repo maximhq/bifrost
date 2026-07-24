@@ -1899,6 +1899,10 @@ func (s *RDBLogStore) getLatencyHistogramClickHouse(ctx context.Context, baseQue
 		P90Latency      sql.NullFloat64 `gorm:"column:p90_latency"`
 		P95Latency      sql.NullFloat64 `gorm:"column:p95_latency"`
 		P99Latency      sql.NullFloat64 `gorm:"column:p99_latency"`
+		AvgOverhead     sql.NullFloat64 `gorm:"column:avg_overhead"`
+		P90Overhead     sql.NullFloat64 `gorm:"column:p90_overhead"`
+		P95Overhead     sql.NullFloat64 `gorm:"column:p95_overhead"`
+		P99Overhead     sql.NullFloat64 `gorm:"column:p99_overhead"`
 		TotalRequests   int64           `gorm:"column:total_requests"`
 	}
 
@@ -1908,6 +1912,10 @@ func (s *RDBLogStore) getLatencyHistogramClickHouse(ctx context.Context, baseQue
 		quantile(0.90)(latency) as p90_latency,
 		quantile(0.95)(latency) as p95_latency,
 		quantile(0.99)(latency) as p99_latency,
+		AVG(overhead_latency) as avg_overhead,
+		quantile(0.90)(overhead_latency) as p90_overhead,
+		quantile(0.95)(overhead_latency) as p95_overhead,
+		quantile(0.99)(overhead_latency) as p99_overhead,
 		COUNT(*) as total_requests
 	`, unixBucketExpr("clickhouse", bucketSizeSeconds))
 
@@ -1929,6 +1937,10 @@ func (s *RDBLogStore) getLatencyHistogramClickHouse(ctx context.Context, baseQue
 			P90Latency:    r.P90Latency.Float64,
 			P95Latency:    r.P95Latency.Float64,
 			P99Latency:    r.P99Latency.Float64,
+			AvgOverhead:   r.AvgOverhead.Float64,
+			P90Overhead:   r.P90Overhead.Float64,
+			P95Overhead:   r.P95Overhead.Float64,
+			P99Overhead:   r.P99Overhead.Float64,
 			TotalRequests: r.TotalRequests,
 		}
 	}
@@ -1945,6 +1957,10 @@ func (s *RDBLogStore) getLatencyHistogramPercentileCont(ctx context.Context, bas
 		P90Latency      sql.NullFloat64 `gorm:"column:p90_latency"`
 		P95Latency      sql.NullFloat64 `gorm:"column:p95_latency"`
 		P99Latency      sql.NullFloat64 `gorm:"column:p99_latency"`
+		AvgOverhead     sql.NullFloat64 `gorm:"column:avg_overhead"`
+		P90Overhead     sql.NullFloat64 `gorm:"column:p90_overhead"`
+		P95Overhead     sql.NullFloat64 `gorm:"column:p95_overhead"`
+		P99Overhead     sql.NullFloat64 `gorm:"column:p99_overhead"`
 		TotalRequests   int64           `gorm:"column:total_requests"`
 	}
 
@@ -1954,6 +1970,10 @@ func (s *RDBLogStore) getLatencyHistogramPercentileCont(ctx context.Context, bas
 		percentile_cont(0.90) WITHIN GROUP (ORDER BY latency) as p90_latency,
 		percentile_cont(0.95) WITHIN GROUP (ORDER BY latency) as p95_latency,
 		percentile_cont(0.99) WITHIN GROUP (ORDER BY latency) as p99_latency,
+		AVG(overhead_latency) as avg_overhead,
+		percentile_cont(0.90) WITHIN GROUP (ORDER BY overhead_latency) as p90_overhead,
+		percentile_cont(0.95) WITHIN GROUP (ORDER BY overhead_latency) as p95_overhead,
+		percentile_cont(0.99) WITHIN GROUP (ORDER BY overhead_latency) as p99_overhead,
 		COUNT(*) as total_requests
 	`, bucketSizeSeconds, bucketSizeSeconds)
 
@@ -1975,6 +1995,10 @@ func (s *RDBLogStore) getLatencyHistogramPercentileCont(ctx context.Context, bas
 			P90Latency:    r.P90Latency.Float64,
 			P95Latency:    r.P95Latency.Float64,
 			P99Latency:    r.P99Latency.Float64,
+			AvgOverhead:   r.AvgOverhead.Float64,
+			P90Overhead:   r.P90Overhead.Float64,
+			P95Overhead:   r.P95Overhead.Float64,
+			P99Overhead:   r.P99Overhead.Float64,
 			TotalRequests: r.TotalRequests,
 		}
 	}
@@ -1986,12 +2010,13 @@ func (s *RDBLogStore) getLatencyHistogramPercentileCont(ctx context.Context, bas
 // which lacks percentile_cont.
 func (s *RDBLogStore) getLatencyHistogramSQLite(ctx context.Context, baseQuery *gorm.DB, filters SearchFilters, bucketSizeSeconds int64) (*LatencyHistogramResult, error) {
 	var results []struct {
-		BucketTimestamp int64   `gorm:"column:bucket_timestamp"`
-		Latency         float64 `gorm:"column:latency"`
+		BucketTimestamp int64           `gorm:"column:bucket_timestamp"`
+		Latency         float64         `gorm:"column:latency"`
+		Overhead        sql.NullFloat64 `gorm:"column:overhead_latency"`
 	}
 
 	selectClause := fmt.Sprintf(
-		`(CAST(strftime('%%s', timestamp) AS INTEGER) / %d) * %d as bucket_timestamp, latency`,
+		`(CAST(strftime('%%s', timestamp) AS INTEGER) / %d) * %d as bucket_timestamp, latency, overhead_latency`,
 		bucketSizeSeconds, bucketSizeSeconds,
 	)
 
@@ -2002,51 +2027,80 @@ func (s *RDBLogStore) getLatencyHistogramSQLite(ctx context.Context, baseQuery *
 		return nil, fmt.Errorf("failed to get latency histogram: %w", err)
 	}
 
-	type bucketData struct {
-		latencies []float64
-	}
-	bucketMap := make(map[int64]*bucketData)
+	bucketMap := make(map[int64]*latencyHistogramBucketData)
 	var orderedKeys []int64
 
 	for _, r := range results {
 		bd, exists := bucketMap[r.BucketTimestamp]
 		if !exists {
-			bd = &bucketData{}
+			bd = &latencyHistogramBucketData{}
 			bucketMap[r.BucketTimestamp] = bd
 			orderedKeys = append(orderedKeys, r.BucketTimestamp)
 		}
 		bd.latencies = append(bd.latencies, r.Latency)
+		if r.Overhead.Valid {
+			bd.overheads = append(bd.overheads, r.Overhead.Float64)
+		}
 	}
 
 	computedBuckets := make(map[int64]LatencyHistogramBucket, len(bucketMap))
 	for ts, bd := range bucketMap {
-		var sum float64
-		for _, v := range bd.latencies {
-			sum += v
-		}
-		computedBuckets[ts] = LatencyHistogramBucket{
-			Timestamp:     time.Unix(ts, 0).UTC(),
-			AvgLatency:    sum / float64(len(bd.latencies)),
-			P90Latency:    computePercentile(bd.latencies, 0.90),
-			P95Latency:    computePercentile(bd.latencies, 0.95),
-			P99Latency:    computePercentile(bd.latencies, 0.99),
-			TotalRequests: int64(len(bd.latencies)),
-		}
+		computedBuckets[ts] = bd.toBucket(ts)
 	}
 
 	return s.buildLatencyHistogramResult(computedBuckets, orderedKeys, filters, bucketSizeSeconds)
+}
+
+// latencyHistogramBucketData accumulates per-bucket latency and overhead values
+// for the Go-based percentile paths (SQLite, MySQL). Latencies arrive sorted from
+// the query; overheads arrive in latency order, so toBucket sorts them.
+type latencyHistogramBucketData struct {
+	latencies []float64
+	overheads []float64
+}
+
+func (bd *latencyHistogramBucketData) toBucket(ts int64) LatencyHistogramBucket {
+	b := LatencyHistogramBucket{
+		Timestamp:     time.Unix(ts, 0).UTC(),
+		AvgLatency:    average(bd.latencies),
+		P90Latency:    computePercentile(bd.latencies, 0.90),
+		P95Latency:    computePercentile(bd.latencies, 0.95),
+		P99Latency:    computePercentile(bd.latencies, 0.99),
+		TotalRequests: int64(len(bd.latencies)),
+	}
+	if len(bd.overheads) > 0 {
+		sort.Float64s(bd.overheads)
+		b.AvgOverhead = average(bd.overheads)
+		b.P90Overhead = computePercentile(bd.overheads, 0.90)
+		b.P95Overhead = computePercentile(bd.overheads, 0.95)
+		b.P99Overhead = computePercentile(bd.overheads, 0.99)
+	}
+	return b
+}
+
+// average returns the arithmetic mean, or 0 for an empty slice.
+func average(vs []float64) float64 {
+	if len(vs) == 0 {
+		return 0
+	}
+	var sum float64
+	for _, v := range vs {
+		sum += v
+	}
+	return sum / float64(len(vs))
 }
 
 // getLatencyHistogramMySQL uses Go-based percentile computation for MySQL
 // which lacks percentile_cont.
 func (s *RDBLogStore) getLatencyHistogramMySQL(ctx context.Context, baseQuery *gorm.DB, filters SearchFilters, bucketSizeSeconds int64) (*LatencyHistogramResult, error) {
 	var results []struct {
-		BucketTimestamp int64   `gorm:"column:bucket_timestamp"`
-		Latency         float64 `gorm:"column:latency"`
+		BucketTimestamp int64           `gorm:"column:bucket_timestamp"`
+		Latency         float64         `gorm:"column:latency"`
+		Overhead        sql.NullFloat64 `gorm:"column:overhead_latency"`
 	}
 
 	selectClause := fmt.Sprintf(
-		`(FLOOR(UNIX_TIMESTAMP(timestamp) / %d) * %d) as bucket_timestamp, latency`,
+		`(FLOOR(UNIX_TIMESTAMP(timestamp) / %d) * %d) as bucket_timestamp, latency, overhead_latency`,
 		bucketSizeSeconds, bucketSizeSeconds,
 	)
 
@@ -2057,36 +2111,25 @@ func (s *RDBLogStore) getLatencyHistogramMySQL(ctx context.Context, baseQuery *g
 		return nil, fmt.Errorf("failed to get latency histogram: %w", err)
 	}
 
-	type bucketData struct {
-		latencies []float64
-	}
-	bucketMap := make(map[int64]*bucketData)
+	bucketMap := make(map[int64]*latencyHistogramBucketData)
 	var orderedKeys []int64
 
 	for _, r := range results {
 		bd, exists := bucketMap[r.BucketTimestamp]
 		if !exists {
-			bd = &bucketData{}
+			bd = &latencyHistogramBucketData{}
 			bucketMap[r.BucketTimestamp] = bd
 			orderedKeys = append(orderedKeys, r.BucketTimestamp)
 		}
 		bd.latencies = append(bd.latencies, r.Latency)
+		if r.Overhead.Valid {
+			bd.overheads = append(bd.overheads, r.Overhead.Float64)
+		}
 	}
 
 	computedBuckets := make(map[int64]LatencyHistogramBucket, len(bucketMap))
 	for ts, bd := range bucketMap {
-		var sum float64
-		for _, v := range bd.latencies {
-			sum += v
-		}
-		computedBuckets[ts] = LatencyHistogramBucket{
-			Timestamp:     time.Unix(ts, 0).UTC(),
-			AvgLatency:    sum / float64(len(bd.latencies)),
-			P90Latency:    computePercentile(bd.latencies, 0.90),
-			P95Latency:    computePercentile(bd.latencies, 0.95),
-			P99Latency:    computePercentile(bd.latencies, 0.99),
-			TotalRequests: int64(len(bd.latencies)),
-		}
+		computedBuckets[ts] = bd.toBucket(ts)
 	}
 
 	return s.buildLatencyHistogramResult(computedBuckets, orderedKeys, filters, bucketSizeSeconds)

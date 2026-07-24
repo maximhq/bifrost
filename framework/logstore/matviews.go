@@ -51,6 +51,10 @@ SELECT
     COALESCE(percentile_cont(0.90) WITHIN GROUP (ORDER BY latency), 0) AS p90_latency,
     COALESCE(percentile_cont(0.95) WITHIN GROUP (ORDER BY latency), 0) AS p95_latency,
     COALESCE(percentile_cont(0.99) WITHIN GROUP (ORDER BY latency), 0) AS p99_latency,
+    COALESCE(AVG(overhead_latency), 0) AS avg_overhead,
+    COALESCE(percentile_cont(0.90) WITHIN GROUP (ORDER BY overhead_latency), 0) AS p90_overhead,
+    COALESCE(percentile_cont(0.95) WITHIN GROUP (ORDER BY overhead_latency), 0) AS p95_overhead,
+    COALESCE(percentile_cont(0.99) WITHIN GROUP (ORDER BY overhead_latency), 0) AS p99_overhead,
     COALESCE(SUM(prompt_tokens), 0) AS total_prompt_tokens,
     COALESCE(SUM(completion_tokens), 0) AS total_completion_tokens,
     -- Throughput measures restricted to rows with a positive measured latency,
@@ -123,6 +127,10 @@ var mvLogsHourlyRequiredColumns = []string{
 	"direct_cache_hits",
 	"semantic_cache_hits",
 	"cache_debug_count",
+	"avg_overhead",
+	"p90_overhead",
+	"p95_overhead",
+	"p99_overhead",
 }
 
 // legacyMatViewNames are matviews from previous schema versions that no longer
@@ -1566,6 +1574,10 @@ func (s *RDBLogStore) getLatencyHistogramFromMatView(ctx context.Context, filter
 		P90Latency      float64 `gorm:"column:p90_lat"`
 		P95Latency      float64 `gorm:"column:p95_lat"`
 		P99Latency      float64 `gorm:"column:p99_lat"`
+		AvgOverhead     float64 `gorm:"column:avg_ovh"`
+		P90Overhead     float64 `gorm:"column:p90_ovh"`
+		P95Overhead     float64 `gorm:"column:p95_ovh"`
+		P99Overhead     float64 `gorm:"column:p99_ovh"`
 		TotalRequests   int64   `gorm:"column:total_requests"`
 	}
 	// Weighted average of percentiles across hourly buckets
@@ -1577,6 +1589,10 @@ func (s *RDBLogStore) getLatencyHistogramFromMatView(ctx context.Context, filter
 		CASE WHEN SUM(count) > 0 THEN SUM(p90_latency * count) / SUM(count) ELSE 0 END AS p90_lat,
 		CASE WHEN SUM(count) > 0 THEN SUM(p95_latency * count) / SUM(count) ELSE 0 END AS p95_lat,
 		CASE WHEN SUM(count) > 0 THEN SUM(p99_latency * count) / SUM(count) ELSE 0 END AS p99_lat,
+		CASE WHEN SUM(count) > 0 THEN SUM(avg_overhead * count) / SUM(count) ELSE 0 END AS avg_ovh,
+		CASE WHEN SUM(count) > 0 THEN SUM(p90_overhead * count) / SUM(count) ELSE 0 END AS p90_ovh,
+		CASE WHEN SUM(count) > 0 THEN SUM(p95_overhead * count) / SUM(count) ELSE 0 END AS p95_ovh,
+		CASE WHEN SUM(count) > 0 THEN SUM(p99_overhead * count) / SUM(count) ELSE 0 END AS p99_ovh,
 		SUM(count) AS total_requests
 	`, bucketSizeSeconds, bucketSizeSeconds)).
 		Group("bucket_timestamp").
@@ -1600,6 +1616,10 @@ func (s *RDBLogStore) getLatencyHistogramFromMatView(ctx context.Context, filter
 			b.P90Latency = r.P90Latency
 			b.P95Latency = r.P95Latency
 			b.P99Latency = r.P99Latency
+			b.AvgOverhead = r.AvgOverhead
+			b.P90Overhead = r.P90Overhead
+			b.P95Overhead = r.P95Overhead
+			b.P99Overhead = r.P99Overhead
 			b.TotalRequests = r.TotalRequests
 		}
 		buckets = append(buckets, b)

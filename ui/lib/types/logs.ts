@@ -730,6 +730,10 @@ export interface LatencyHistogramBucket {
 	p90_latency: number;
 	p95_latency: number;
 	p99_latency: number;
+	avg_overhead: number;
+	p90_overhead: number;
+	p95_overhead: number;
+	p99_overhead: number;
 	total_requests: number;
 }
 
