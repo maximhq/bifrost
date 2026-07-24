@@ -133,6 +133,19 @@ func convertBifrostToBedrockStopReason(bifrostReason string) string {
 	return bifrostReason
 }
 
+// convertIncompleteReasonToBedrockStopReason converts a
+// ResponsesResponseIncompleteDetails.Reason value to Bedrock's stopReason vocabulary.
+func convertIncompleteReasonToBedrockStopReason(reason string) string {
+	switch reason {
+	case schemas.ResponsesResponseIncompleteReasonMaxOutputTokens:
+		return "max_tokens"
+	case schemas.ResponsesResponseIncompleteReasonContentFilter:
+		return "content_filtered"
+	default:
+		return reason
+	}
+}
+
 // mapBifrostServiceTierToBedrock maps a BifrostServiceTier to a BedrockServiceTierType.
 func mapBifrostServiceTierToBedrock(tier schemas.BifrostServiceTier) BedrockServiceTierType {
 	switch tier {
