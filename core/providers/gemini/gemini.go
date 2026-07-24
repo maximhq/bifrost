@@ -2414,6 +2414,48 @@ func (provider *GeminiProvider) VideoDownload(ctx *schemas.BifrostContext, key s
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
+		// Follow redirects (Google Gemini Files API returns 302 for video downloads)
+		maxRedirects := 5
+		for i := 0; i < maxRedirects && (resp.StatusCode() == fasthttp.StatusFound || resp.StatusCode() == fasthttp.StatusMovedPermanently || resp.StatusCode() == fasthttp.StatusTemporaryRedirect || resp.StatusCode() == fasthttp.StatusPermanentRedirect); i++ {
+			redirectURL := string(resp.Header.Peek("Location"))
+			if redirectURL == "" {
+				break
+			}
+
+			// Validate redirect host to prevent API key leakage to untrusted domains
+			parsedURL, parseErr := url.Parse(redirectURL)
+			if parseErr != nil || (parsedURL.Host != "" && !strings.HasSuffix(parsedURL.Host, ".googleapis.com") && !strings.HasSuffix(parsedURL.Host, ".google.com")) {
+				provider.logger.Error(fmt.Sprintf("refusing to follow redirect to untrusted host: %s", parsedURL.Host))
+				return nil, providerUtils.NewBifrostOperationError(
+					fmt.Sprintf("video download redirect to untrusted host: %s", parsedURL.Host),
+					nil,
+				)
+			}
+
+			// Log redirect without exposing query params (may contain signed tokens)
+			provider.logger.Info(fmt.Sprintf("following video download redirect %d to host: %s, path: %s", i+1, parsedURL.Host, parsedURL.Path))
+
+			// Drain previous wait before issuing next request
+			if wait != nil {
+				wait()
+			}
+
+			req.SetRequestURI(redirectURL)
+			req.Header.SetMethod(http.MethodGet)
+			// Re-attach API key header for redirected request (only to trusted Google hosts)
+			if key.Value.GetValue() != "" {
+				req.Header.Set("x-goog-api-key", key.Value.GetValue())
+			}
+			resp.Reset()
+			latency, bifrostErr, wait = providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+			if bifrostErr != nil {
+				if wait != nil {
+					wait()
+				}
+				return nil, bifrostErr
+			}
+		}
+		defer wait()
 		if resp.StatusCode() != fasthttp.StatusOK {
 			// log full error
 			provider.logger.Error("failed to download video: " + string(resp.Body()))
