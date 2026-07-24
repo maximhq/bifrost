@@ -27,7 +27,15 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { ProviderIconType, RenderProviderIcon, RoutingEngineUsedIcons } from "@/lib/constants/icons";
-import { RequestTypeColors, RequestTypeLabels, RoutingEngineUsedColors, RoutingEngineUsedLabels, Status } from "@/lib/constants/logs";
+import {
+	ComplexityTierColors,
+	RequestTypeColors,
+	RequestTypeLabels,
+	RoutingEngineUsedColors,
+	RoutingEngineUsedLabels,
+	Status,
+} from "@/lib/constants/logs";
+import { COMPLEXITY_MECHANISM_LABELS } from "@/lib/types/complexityRouter";
 import { ContentBlock, LogEntry, ResponsesMessage } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
 import { downloadAsJson } from "@/lib/utils/browser-download";
@@ -478,6 +486,26 @@ const messageRoleLabel: Record<MessageRole, string> = {
 	tool: "Tool Result",
 };
 
+// deriveComplexityRouting returns the complexity tier / classification mechanism /
+// raw score behind a routing decision. Rows written since the structured columns
+// exist carry them directly; older rows fall back to parsing the prose routing
+// log lines ("Complexity: tier=X score=Y words=Z" / "Complexity analysis skipped").
+// REASONING only exists in that historical prose: the tier was merged into
+// COMPLEX, but old rows keep recording what the router actually decided.
+function deriveComplexityRouting(log: LogEntry): { tier?: string; mechanism?: string; score?: number } {
+	if (log.complexity_tier || log.complexity_mechanism || log.complexity_score !== undefined) {
+		return { tier: log.complexity_tier, mechanism: log.complexity_mechanism, score: log.complexity_score };
+	}
+	const m = log.routing_engine_logs?.match(/Complexity: tier=(SIMPLE|MEDIUM|COMPLEX|REASONING) score=([0-9.]+)/);
+	if (m) {
+		return { tier: m[1], mechanism: "lexical", score: Number(m[2]) };
+	}
+	if (log.routing_engine_logs?.includes("Complexity analysis skipped")) {
+		return { mechanism: "skipped" };
+	}
+	return {};
+}
+
 function RoutingDecisionLogs({ logs }: { logs: string }) {
 	const { copy } = useCopyToClipboard({ successMessage: "Copied" });
 	return (
@@ -643,6 +671,7 @@ export function LogDetailView({
 
 	const isContainer = isContainerOperation(log.object);
 	const showTabs = !isContainer;
+	const complexityRouting = deriveComplexityRouting(log);
 	const isPassthrough = isPassthroughOperation(log.object);
 	const isRealtimeTurn = log.object === "realtime.turn";
 	const passthroughParams = isPassthrough
@@ -703,11 +732,7 @@ export function LogDetailView({
 					{revealAvailable && (
 						<div className="flex items-center gap-2">
 							<span className="text-muted-foreground text-[11px] font-medium">Show original values</span>
-							<Switch
-								checked={revealEnabled}
-								onCheckedChange={handleToggleReveal}
-								data-testid="logdetails-reveal-toggle"
-							/>
+							<Switch checked={revealEnabled} onCheckedChange={handleToggleReveal} data-testid="logdetails-reveal-toggle" />
 						</div>
 					)}
 					{onClose ? (
@@ -1253,6 +1278,33 @@ export function LogDetailView({
 										</Link>
 									}
 								/>
+							)}
+							{complexityRouting.tier && (
+								<LogEntryDetailsView
+									className="w-full"
+									label="Complexity Tier"
+									value={
+										<Badge
+											className={cn(
+												"border-0 py-1 uppercase",
+												ComplexityTierColors[complexityRouting.tier as keyof typeof ComplexityTierColors] ?? "bg-gray-100 text-gray-800",
+											)}
+											data-testid="logdetails-complexity-tier-badge"
+										>
+											{complexityRouting.tier}
+										</Badge>
+									}
+								/>
+							)}
+							{complexityRouting.mechanism && (
+								<LogEntryDetailsView
+									className="w-full"
+									label="Complexity Mechanism"
+									value={COMPLEXITY_MECHANISM_LABELS[complexityRouting.mechanism] ?? complexityRouting.mechanism}
+								/>
+							)}
+							{complexityRouting.score !== undefined && (
+								<LogEntryDetailsView className="w-full" label="Complexity Score" value={complexityRouting.score.toFixed(2)} />
 							)}
 
 							{(log.params as any)?.audio && (
