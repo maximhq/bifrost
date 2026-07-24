@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -574,8 +575,10 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 			},
 		}, nil
 	case schemas.VLLM:
-		return []schemas.Key{
+		apiKeyValue := *schemas.NewSecretVar("env.VLLM_API_KEY") // empty when the vLLM instance has no auth (e.g. local/unprotected)
+		keys := []schemas.Key{
 			{
+				Value:          apiKeyValue,
 				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
@@ -583,7 +586,42 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 					URL: *schemas.NewSecretVar("env.VLLM_BASE_URL"),
 				},
 			},
-		}, nil
+		}
+
+		// A single vLLM server only ever serves one model, so a scenario that
+		// needs a differently-configured deployment (e.g. a reasoning-enabled
+		// instance vs. the default) needs its own pod/URL. Each optional
+		// secondary instance below gets its own key, and its model name is
+		// blacklisted on the default key so requests for it always route to
+		// the dedicated instance instead of round-robining between the two.
+		secondaryVLLMInstances := []struct {
+			urlEnv   string
+			modelEnv string
+		}{
+			{"VLLM_REASONING_BASE_URL", "VLLM_REASONING_MODEL"},
+			{"VLLM_EMBEDDING_BASE_URL", "VLLM_EMBEDDING_MODEL"},
+			{"VLLM_RERANK_BASE_URL", "VLLM_RERANK_MODEL"},
+			{"VLLM_TRANSCRIPTION_BASE_URL", "VLLM_TRANSCRIPTION_MODEL"},
+		}
+		for _, instance := range secondaryVLLMInstances {
+			url := strings.TrimSpace(os.Getenv(instance.urlEnv))
+			model := strings.TrimSpace(os.Getenv(instance.modelEnv))
+			if url == "" || model == "" {
+				continue
+			}
+			keys[0].BlacklistedModels = append(keys[0].BlacklistedModels, model)
+			keys = append(keys, schemas.Key{
+				Value:          apiKeyValue,
+				Models:         []string{model},
+				Weight:         1.0,
+				UseForBatchAPI: bifrost.Ptr(true),
+				VLLMKeyConfig: &schemas.VLLMKeyConfig{
+					URL:       *schemas.NewSecretVar("env." + instance.urlEnv),
+					ModelName: model,
+				},
+			})
+		}
+		return keys, nil
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", providerKey)
 	}
