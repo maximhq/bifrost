@@ -143,6 +143,9 @@ func (ts *RedisTestSetup) ensureNamespaceExists(t *testing.T) {
 		"content": {
 			DataType: VectorStorePropertyTypeString,
 		},
+		"model": {
+			DataType: VectorStorePropertyTypeString,
+		},
 		"response": {
 			DataType: VectorStorePropertyTypeString,
 		},
@@ -826,6 +829,117 @@ func TestBuildRedisQueryCondition_NumericEquality(t *testing.T) {
 	}
 }
 
+func TestEscapeSearchValue(t *testing.T) {
+	tests := []struct {
+		name     string
+		value    string
+		expected string
+	}{
+		{
+			name:     "plain alphanumeric unchanged",
+			value:    "gpt4o_mini",
+			expected: "gpt4o_mini",
+		},
+		{
+			name:     "colon in ollama-style model tag",
+			value:    "gemma31b-q6:latest",
+			expected: `gemma31b\-q6\:latest`,
+		},
+		{
+			name:     "slash in provider-prefixed model",
+			value:    "openai/gpt-4o",
+			expected: `openai\/gpt\-4o`,
+		},
+		{
+			name:     "equals plus and semicolon",
+			value:    "a=b+c;d",
+			expected: `a\=b\+c\;d`,
+		},
+		{
+			name:     "angle brackets",
+			value:    "a<b>c",
+			expected: `a\<b\>c`,
+		},
+		{
+			name:     "literal backslash",
+			value:    `a\b`,
+			expected: `a\\b`,
+		},
+		{
+			name:     "space and punctuation",
+			value:    "my model.v1,x",
+			expected: `my\ model\.v1\,x`,
+		},
+		{
+			name:     "previously covered specials still escaped",
+			value:    `(){}[]*?|&!@#$%^~` + "`" + `"'`,
+			expected: `\(\)\{\}\[\]\*\?\|\&\!\@\#\$\%\^\~\` + "`" + `\"\'`,
+		},
+		{
+			name:     "non-ascii unchanged",
+			value:    "модель-テスト",
+			expected: `модель\-テスト`,
+		},
+		{
+			name:     "malformed utf-8 bytes preserved",
+			value:    "a\xffb",
+			expected: "a\xffb",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, escapeSearchValue(tt.value))
+		})
+	}
+}
+
+func TestBuildRedisQueryCondition_TagValueEscaping(t *testing.T) {
+	fieldTypes := map[string]VectorStorePropertyType{
+		"model": VectorStorePropertyTypeString,
+	}
+
+	tests := []struct {
+		name     string
+		query    Query
+		expected string
+	}{
+		{
+			name: "equal with colon in model tag",
+			query: Query{
+				Field:    "model",
+				Operator: QueryOperatorEqual,
+				Value:    "gemma31b-q6:latest",
+			},
+			expected: `@model:{gemma31b\-q6\:latest}`,
+		},
+		{
+			name: "not equal with slash-prefixed model",
+			query: Query{
+				Field:    "model",
+				Operator: QueryOperatorNotEqual,
+				Value:    "openai/gpt-4o",
+			},
+			expected: `-@model:{openai\/gpt\-4o}`,
+		},
+		{
+			name: "contains any escapes each value",
+			query: Query{
+				Field:    "model",
+				Operator: QueryOperatorContainsAny,
+				Value:    []interface{}{"a:b", "c/d"},
+			},
+			expected: `(@model:{a\:b} | @model:{c\/d})`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, buildRedisQueryCondition(tt.query, fieldTypes))
+		})
+	}
+}
+
 func ptr(v string) *string {
 	return bifrost.Ptr(v)
 }
@@ -1377,6 +1491,41 @@ func TestRedisStore_VectorSearch(t *testing.T) {
 		require.NoError(t, err)
 		// Should return fewer results due to high threshold
 		t.Logf("High threshold search returned %d results", len(results))
+	})
+
+	t.Run("Vector search with special characters in tag filter", func(t *testing.T) {
+		// Regression test for #5333: TAG values containing ":" (e.g. Ollama model
+		// names like "gemma31b-q6:latest") or "/" (provider-prefixed models like
+		// "openai/gpt-4o") must be escaped or FT.SEARCH fails with a syntax error
+		// or silently returns no results.
+		specialDocs := []struct {
+			key       string
+			embedding []float32
+			model     string
+		}{
+			{generateUUID(), generateTestEmbedding(RedisTestDimension), "gemma31b-q6:latest"},
+			{generateUUID(), generateTestEmbedding(RedisTestDimension), "openai/gpt-4o"},
+		}
+
+		for _, doc := range specialDocs {
+			err := setup.Store.Add(setup.ctx, TestNamespace, doc.key, doc.embedding, map[string]interface{}{
+				"type":  "tech",
+				"model": doc.model,
+			})
+			require.NoError(t, err)
+		}
+
+		time.Sleep(500 * time.Millisecond)
+
+		for _, doc := range specialDocs {
+			queries := []Query{
+				{Field: "model", Operator: QueryOperatorEqual, Value: doc.model},
+			}
+			results, err := setup.Store.GetNearest(setup.ctx, TestNamespace, doc.embedding, queries, []string{"type", "model"}, 0.1, 10)
+			require.NoError(t, err, "search must not fail for model %q", doc.model)
+			require.Len(t, results, 1, "expected exactly the doc tagged %q", doc.model)
+			assert.Equal(t, doc.model, results[0].Properties["model"])
+		}
 	})
 }
 
