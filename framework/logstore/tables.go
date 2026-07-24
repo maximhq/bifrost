@@ -52,6 +52,7 @@ type SearchFilters struct {
 	StopReasons       []string          `json:"stop_reasons,omitempty"` // For filtering by stop reason (stop, length, content_filter, refusal, tool_calls, etc.)
 	Objects           []string          `json:"objects,omitempty"`      // For filtering by request type (chat.completion, text.completion, embedding)
 	ParentRequestID   string            `json:"parent_request_id,omitempty"`
+	ProviderRequestID string            `json:"provider_request_id,omitempty"`
 	SelectedKeyIDs    []string          `json:"selected_key_ids,omitempty"`
 	VirtualKeyIDs     []string          `json:"virtual_key_ids,omitempty"`
 	RoutingRuleIDs    []string          `json:"routing_rule_ids,omitempty"`
@@ -144,6 +145,9 @@ type Log struct {
 	SelectedKeyID           string    `gorm:"type:varchar(255);index:idx_logs_selected_key_id" json:"selected_key_id"`
 	SelectedKeyName         string    `gorm:"type:varchar(255)" json:"selected_key_name"`
 	AttemptTrail            string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.KeyAttemptRecord
+	ProviderRequestID       string    `gorm:"type:varchar(512);index:idx_logs_provider_request_id" json:"provider_request_id,omitempty"`
+	ProviderRequestIDHeader string    `gorm:"type:varchar(255)" json:"provider_request_id_header,omitempty"`
+	ProviderRequestIDTrail  string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.ProviderRequestIDRecord
 	VirtualKeyID            *string   `gorm:"type:varchar(255);index:idx_logs_virtual_key_id" json:"virtual_key_id"`
 	VirtualKeyName          *string   `gorm:"type:varchar(255)" json:"virtual_key_name"`
 	RoutingEnginesUsedStr   *string   `gorm:"type:varchar(255);column:routing_engines_used" json:"-"` // Comma-separated routing engines
@@ -232,46 +236,47 @@ type Log struct {
 	CreatedAt time.Time `gorm:"index;not null" json:"created_at"`
 
 	// Virtual fields for JSON output - these will be populated when needed
-	RoutingEnginesUsed          []string                                `gorm:"-" json:"routing_engines_used,omitempty"` // Virtual field deserialized from JSON
-	InputHistoryParsed          []schemas.ChatMessage                   `gorm:"-" json:"input_history,omitempty"`
-	ResponsesInputHistoryParsed []schemas.ResponsesMessage              `gorm:"-" json:"responses_input_history,omitempty"`
-	OutputMessageParsed         *schemas.ChatMessage                    `gorm:"-" json:"output_message,omitempty"`
-	ResponsesOutputParsed       []schemas.ResponsesMessage              `gorm:"-" json:"responses_output,omitempty"`
-	EmbeddingOutputParsed       []schemas.EmbeddingData                 `gorm:"-" json:"embedding_output,omitempty"`
-	RerankOutputParsed          []schemas.RerankResult                  `gorm:"-" json:"rerank_output,omitempty"`
-	OCROutputParsed             *schemas.BifrostOCRResponse             `gorm:"-" json:"ocr_output,omitempty"`
-	ParamsParsed                interface{}                             `gorm:"-" json:"params,omitempty"`
-	ToolsParsed                 []schemas.ChatTool                      `gorm:"-" json:"tools,omitempty"`
-	ToolCallsParsed             []schemas.ChatAssistantMessageToolCall  `gorm:"-" json:"tool_calls,omitempty"` // For backward compatibility, tool calls are now in the content
-	TokenUsageParsed            *schemas.BifrostLLMUsage                `gorm:"-" json:"token_usage,omitempty"`
-	ErrorDetailsParsed          *schemas.BifrostError                   `gorm:"-" json:"error_details,omitempty"`
-	SpeechInputParsed           *schemas.SpeechInput                    `gorm:"-" json:"speech_input,omitempty"`
-	TranscriptionInputParsed    *schemas.TranscriptionInput             `gorm:"-" json:"transcription_input,omitempty"`
-	OCRInputParsed              *schemas.OCRDocument                    `gorm:"-" json:"ocr_input,omitempty"`
-	ImageGenerationInputParsed  *schemas.ImageGenerationInput           `gorm:"-" json:"image_generation_input,omitempty"`
-	ImageEditInputParsed        *schemas.ImageEditInput                 `gorm:"-" json:"image_edit_input,omitempty"`
-	ImageVariationInputParsed   *schemas.ImageVariationInput            `gorm:"-" json:"image_variation_input,omitempty"`
-	SpeechOutputParsed          *schemas.BifrostSpeechResponse          `gorm:"-" json:"speech_output,omitempty"`
-	TranscriptionOutputParsed   *schemas.BifrostTranscriptionResponse   `gorm:"-" json:"transcription_output,omitempty"`
-	ImageGenerationOutputParsed *schemas.BifrostImageGenerationResponse `gorm:"-" json:"image_generation_output,omitempty"`
-	CacheDebugParsed            *schemas.BifrostCacheDebug              `gorm:"-" json:"cache_debug,omitempty"`
-	ListModelsOutputParsed      []schemas.Model                         `gorm:"-" json:"list_models_output,omitempty"`
-	MetadataParsed              map[string]interface{}                  `gorm:"-" json:"metadata,omitempty"`
-	VideoGenerationInputParsed  *schemas.VideoGenerationInput           `gorm:"-" json:"video_generation_input,omitempty"`
-	VideoGenerationOutputParsed *schemas.BifrostVideoGenerationResponse `gorm:"-" json:"video_generation_output,omitempty"`
-	VideoRetrieveOutputParsed   *schemas.BifrostVideoGenerationResponse `gorm:"-" json:"video_retrieve_output,omitempty"`
-	VideoDownloadOutputParsed   *schemas.BifrostVideoDownloadResponse   `gorm:"-" json:"video_download_output,omitempty"`
-	VideoListOutputParsed       *schemas.BifrostVideoListResponse       `gorm:"-" json:"video_list_output,omitempty"`
-	VideoDeleteOutputParsed     *schemas.BifrostVideoDeleteResponse     `gorm:"-" json:"video_delete_output,omitempty"`
-	AttemptTrailParsed          []schemas.KeyAttemptRecord              `gorm:"-" json:"attempt_trail,omitempty"`
-	BudgetIDsParsed             []string                                `gorm:"-" json:"budget_ids,omitempty"`
-	RateLimitIDsParsed          []string                                `gorm:"-" json:"rate_limit_ids,omitempty"`
-	TeamIDsParsed               []string                                `gorm:"-" json:"team_ids,omitempty"`
-	TeamNamesParsed             []string                                `gorm:"-" json:"team_names,omitempty"`
-	CustomerIDsParsed           []string                                `gorm:"-" json:"customer_ids,omitempty"`
-	CustomerNamesParsed         []string                                `gorm:"-" json:"customer_names,omitempty"`
-	BusinessUnitIDsParsed       []string                                `gorm:"-" json:"business_unit_ids,omitempty"`
-	BusinessUnitNamesParsed     []string                                `gorm:"-" json:"business_unit_names,omitempty"`
+	RoutingEnginesUsed           []string                                `gorm:"-" json:"routing_engines_used,omitempty"` // Virtual field deserialized from JSON
+	InputHistoryParsed           []schemas.ChatMessage                   `gorm:"-" json:"input_history,omitempty"`
+	ResponsesInputHistoryParsed  []schemas.ResponsesMessage              `gorm:"-" json:"responses_input_history,omitempty"`
+	OutputMessageParsed          *schemas.ChatMessage                    `gorm:"-" json:"output_message,omitempty"`
+	ResponsesOutputParsed        []schemas.ResponsesMessage              `gorm:"-" json:"responses_output,omitempty"`
+	EmbeddingOutputParsed        []schemas.EmbeddingData                 `gorm:"-" json:"embedding_output,omitempty"`
+	RerankOutputParsed           []schemas.RerankResult                  `gorm:"-" json:"rerank_output,omitempty"`
+	OCROutputParsed              *schemas.BifrostOCRResponse             `gorm:"-" json:"ocr_output,omitempty"`
+	ParamsParsed                 interface{}                             `gorm:"-" json:"params,omitempty"`
+	ToolsParsed                  []schemas.ChatTool                      `gorm:"-" json:"tools,omitempty"`
+	ToolCallsParsed              []schemas.ChatAssistantMessageToolCall  `gorm:"-" json:"tool_calls,omitempty"` // For backward compatibility, tool calls are now in the content
+	TokenUsageParsed             *schemas.BifrostLLMUsage                `gorm:"-" json:"token_usage,omitempty"`
+	ErrorDetailsParsed           *schemas.BifrostError                   `gorm:"-" json:"error_details,omitempty"`
+	SpeechInputParsed            *schemas.SpeechInput                    `gorm:"-" json:"speech_input,omitempty"`
+	TranscriptionInputParsed     *schemas.TranscriptionInput             `gorm:"-" json:"transcription_input,omitempty"`
+	OCRInputParsed               *schemas.OCRDocument                    `gorm:"-" json:"ocr_input,omitempty"`
+	ImageGenerationInputParsed   *schemas.ImageGenerationInput           `gorm:"-" json:"image_generation_input,omitempty"`
+	ImageEditInputParsed         *schemas.ImageEditInput                 `gorm:"-" json:"image_edit_input,omitempty"`
+	ImageVariationInputParsed    *schemas.ImageVariationInput            `gorm:"-" json:"image_variation_input,omitempty"`
+	SpeechOutputParsed           *schemas.BifrostSpeechResponse          `gorm:"-" json:"speech_output,omitempty"`
+	TranscriptionOutputParsed    *schemas.BifrostTranscriptionResponse   `gorm:"-" json:"transcription_output,omitempty"`
+	ImageGenerationOutputParsed  *schemas.BifrostImageGenerationResponse `gorm:"-" json:"image_generation_output,omitempty"`
+	CacheDebugParsed             *schemas.BifrostCacheDebug              `gorm:"-" json:"cache_debug,omitempty"`
+	ListModelsOutputParsed       []schemas.Model                         `gorm:"-" json:"list_models_output,omitempty"`
+	MetadataParsed               map[string]interface{}                  `gorm:"-" json:"metadata,omitempty"`
+	VideoGenerationInputParsed   *schemas.VideoGenerationInput           `gorm:"-" json:"video_generation_input,omitempty"`
+	VideoGenerationOutputParsed  *schemas.BifrostVideoGenerationResponse `gorm:"-" json:"video_generation_output,omitempty"`
+	VideoRetrieveOutputParsed    *schemas.BifrostVideoGenerationResponse `gorm:"-" json:"video_retrieve_output,omitempty"`
+	VideoDownloadOutputParsed    *schemas.BifrostVideoDownloadResponse   `gorm:"-" json:"video_download_output,omitempty"`
+	VideoListOutputParsed        *schemas.BifrostVideoListResponse       `gorm:"-" json:"video_list_output,omitempty"`
+	VideoDeleteOutputParsed      *schemas.BifrostVideoDeleteResponse     `gorm:"-" json:"video_delete_output,omitempty"`
+	AttemptTrailParsed           []schemas.KeyAttemptRecord              `gorm:"-" json:"attempt_trail,omitempty"`
+	ProviderRequestIDTrailParsed []schemas.ProviderRequestIDRecord       `gorm:"-" json:"provider_request_id_trail,omitempty"`
+	BudgetIDsParsed              []string                                `gorm:"-" json:"budget_ids,omitempty"`
+	RateLimitIDsParsed           []string                                `gorm:"-" json:"rate_limit_ids,omitempty"`
+	TeamIDsParsed                []string                                `gorm:"-" json:"team_ids,omitempty"`
+	TeamNamesParsed              []string                                `gorm:"-" json:"team_names,omitempty"`
+	CustomerIDsParsed            []string                                `gorm:"-" json:"customer_ids,omitempty"`
+	CustomerNamesParsed          []string                                `gorm:"-" json:"customer_names,omitempty"`
+	BusinessUnitIDsParsed        []string                                `gorm:"-" json:"business_unit_ids,omitempty"`
+	BusinessUnitNamesParsed      []string                                `gorm:"-" json:"business_unit_names,omitempty"`
 
 	// Populated in handlers after find using the virtual key id and key id
 	VirtualKey  *tables.TableVirtualKey  `gorm:"-" json:"virtual_key,omitempty"`  // redacted
@@ -570,6 +575,16 @@ func (l *Log) SerializeFields() error {
 		l.AttemptTrail = ""
 	}
 
+	if len(l.ProviderRequestIDTrailParsed) > 0 {
+		if data, err := sonic.Marshal(l.ProviderRequestIDTrailParsed); err != nil {
+			return err
+		} else {
+			l.ProviderRequestIDTrail = string(data)
+		}
+	} else {
+		l.ProviderRequestIDTrail = ""
+	}
+
 	if l.MetadataParsed != nil {
 		data, err := sonic.Marshal(l.MetadataParsed)
 		if err != nil {
@@ -864,6 +879,12 @@ func (l *Log) DeserializeFields() error {
 	if l.AttemptTrail != "" {
 		if err := sonic.Unmarshal([]byte(l.AttemptTrail), &l.AttemptTrailParsed); err != nil {
 			l.AttemptTrailParsed = nil
+		}
+	}
+
+	if l.ProviderRequestIDTrail != "" {
+		if err := sonic.Unmarshal([]byte(l.ProviderRequestIDTrail), &l.ProviderRequestIDTrailParsed); err != nil {
+			l.ProviderRequestIDTrailParsed = nil
 		}
 	}
 

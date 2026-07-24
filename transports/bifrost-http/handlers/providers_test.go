@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/bytedance/sonic"
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
@@ -1342,5 +1343,170 @@ func TestListModels_KeyBlacklistIsCaseInsensitive(t *testing.T) {
 		if strings.EqualFold(m.Name, "gpt-3.5-turbo") {
 			t.Fatalf("gpt-3.5-turbo should be blocked by blacklist, got %v", resp.Models)
 		}
+	}
+}
+
+func TestAddProvider_ProviderRequestIDConfigRoundTrip(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+
+	provider := schemas.ModelProvider("mock-request-id")
+	h := &ProviderHandler{
+		inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{}},
+		modelsManager: &mockModelsManager{},
+	}
+	body, err := sonic.Marshal(providerCreatePayload{
+		Provider: provider,
+		CustomProviderConfig: &schemas.CustomProviderConfig{
+			BaseProviderType: schemas.OpenAI,
+			IsKeyLess:        true,
+		},
+		ProviderRequestID: &schemas.ProviderRequestIDConfig{Enabled: true},
+	})
+	if err != nil {
+		t.Fatalf("failed to marshal request: %v", err)
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+	ctx.Request.SetRequestURI("/api/providers")
+	ctx.Request.SetBody(body)
+	h.addProvider(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	var response ProviderResponse
+	if err := sonic.Unmarshal(ctx.Response.Body(), &response); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+	if response.ProviderRequestID == nil || !response.ProviderRequestID.Enabled || response.ProviderRequestID.HeaderName != "x-request-id" {
+		t.Fatalf("unexpected response provider request ID config: %#v", response.ProviderRequestID)
+	}
+	stored, ok := h.inMemoryStore.Providers[provider]
+	if !ok || stored.ProviderRequestID == nil || stored.ProviderRequestID.HeaderName != "x-request-id" {
+		t.Fatalf("unexpected stored provider request ID config: %#v", stored.ProviderRequestID)
+	}
+}
+
+func TestAddProvider_RejectsSensitiveProviderRequestIDHeader(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+
+	provider := schemas.ModelProvider("mock-sensitive-request-id")
+	h := &ProviderHandler{
+		inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{}},
+		modelsManager: &mockModelsManager{},
+	}
+	body, err := sonic.Marshal(providerCreatePayload{
+		Provider: provider,
+		CustomProviderConfig: &schemas.CustomProviderConfig{
+			BaseProviderType: schemas.OpenAI,
+			IsKeyLess:        true,
+		},
+		ProviderRequestID: &schemas.ProviderRequestIDConfig{Enabled: true, HeaderName: " Authorization "},
+	})
+	if err != nil {
+		t.Fatalf("failed to marshal request: %v", err)
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+	ctx.Request.SetRequestURI("/api/providers")
+	ctx.Request.SetBody(body)
+	h.addProvider(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if _, exists := h.inMemoryStore.Providers[provider]; exists {
+		t.Fatal("rejected provider request ID config was persisted")
+	}
+	if !strings.Contains(string(ctx.Response.Body()), "sensitive") {
+		t.Fatalf("expected sensitive-header validation message, got %s", ctx.Response.Body())
+	}
+}
+
+func TestUpdateProvider_ProviderRequestIDConfigRoundTrip(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+
+	provider := schemas.ModelProvider("mock-request-id-update")
+	store := &lib.Config{
+		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+			provider: {
+				CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, IsKeyLess: true},
+			},
+		},
+	}
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: lib.NewBaseAccount(store),
+		Logger:  bifrost.NewNoOpLogger(),
+	})
+	if err != nil {
+		t.Fatalf("failed to initialize Bifrost client: %v", err)
+	}
+	t.Cleanup(client.Shutdown)
+	store.SetBifrostClient(client)
+	h := &ProviderHandler{inMemoryStore: store, modelsManager: &mockModelsManager{}}
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fasthttp.MethodPut)
+	ctx.Request.SetRequestURI("/api/providers/" + string(provider))
+	ctx.Request.SetBody([]byte(`{
+		"network_config": {},
+		"concurrency_and_buffer_size": {"concurrency": 1, "buffer_size": 1},
+		"custom_provider_config": {"base_provider_type": "openai", "is_key_less": true},
+		"provider_request_id": {"enabled": true, "header_name": " X-Trace-ID "}
+	}`))
+	ctx.SetUserValue("provider", string(provider))
+
+	h.updateProvider(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	var response ProviderResponse
+	if err := sonic.Unmarshal(ctx.Response.Body(), &response); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+	if response.ProviderRequestID == nil || !response.ProviderRequestID.Enabled || response.ProviderRequestID.HeaderName != "x-trace-id" {
+		t.Fatalf("unexpected response provider request ID config: %#v", response.ProviderRequestID)
+	}
+	stored := h.inMemoryStore.Providers[provider]
+	if stored.ProviderRequestID == nil || stored.ProviderRequestID.HeaderName != "x-trace-id" {
+		t.Fatalf("unexpected stored provider request ID config: %#v", stored.ProviderRequestID)
+	}
+}
+
+func TestUpdateProvider_OmittedProviderRequestIDPreservesExistingConfig(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+
+	h := &ProviderHandler{
+		inMemoryStore: &lib.Config{
+			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+				schemas.OpenAI: {
+					ProviderRequestID: &schemas.ProviderRequestIDConfig{Enabled: true, HeaderName: "authorization"},
+				},
+			},
+		},
+		modelsManager: &mockModelsManager{},
+	}
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fasthttp.MethodPut)
+	ctx.Request.SetRequestURI("/api/providers/openai")
+	ctx.Request.SetBody([]byte(`{
+		"network_config": {},
+		"concurrency_and_buffer_size": {"concurrency": 1, "buffer_size": 1}
+	}`))
+	ctx.SetUserValue("provider", string(schemas.OpenAI))
+
+	h.updateProvider(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusBadRequest {
+		t.Fatalf("expected preserved invalid config to be validated with 400, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if !strings.Contains(string(ctx.Response.Body()), "sensitive") {
+		t.Fatalf("omitted provider_request_id was not preserved for validation: %s", ctx.Response.Body())
 	}
 }

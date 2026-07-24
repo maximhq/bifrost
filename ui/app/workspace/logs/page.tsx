@@ -73,6 +73,7 @@ export default function LogsPage() {
 	const [urlState, setUrlState] = useQueryStates(
 		{
 			parent_request_id: parseAsString.withDefault(""),
+			provider_request_id: parseAsString.withDefault(""),
 			providers: parseAsSafeArrayOf.withDefault([]),
 			models: parseAsSafeArrayOf.withDefault([]),
 			aliases: parseAsSafeArrayOf.withDefault([]),
@@ -116,6 +117,7 @@ export default function LogsPage() {
 	const filters: LogFilters = useMemo(
 		() => ({
 			parent_request_id: urlState.parent_request_id,
+			provider_request_id: urlState.provider_request_id,
 			providers: urlState.providers,
 			models: urlState.models,
 			aliases: urlState.aliases,
@@ -168,6 +170,7 @@ export default function LogsPage() {
 			urlState.business_unit_ids,
 			urlState.content_search,
 			urlState.parent_request_id,
+			urlState.provider_request_id,
 			urlState.missing_cost_only,
 			urlState.cache_hit_types,
 			urlState.metadata_filters,
@@ -196,8 +199,7 @@ export default function LogsPage() {
 			// period mode `newFilters` carries no start/end, so only touch time when an
 			// explicit range is actually provided — otherwise we'd wipe the active period/range.
 			const hasExplicitTime = !!newFilters.start_time && !!newFilters.end_time;
-			const timeChanged =
-				hasExplicitTime && (newFilters.start_time !== filters.start_time || newFilters.end_time !== filters.end_time);
+			const timeChanged = hasExplicitTime && (newFilters.start_time !== filters.start_time || newFilters.end_time !== filters.end_time);
 			if (timeChanged) {
 				userModifiedTimeRange.current = true;
 			}
@@ -210,6 +212,7 @@ export default function LogsPage() {
 					end_time: dateUtils.toUnixTimestamp(new Date(newFilters.end_time!)),
 				}),
 				parent_request_id: newFilters.parent_request_id || "",
+				provider_request_id: newFilters.provider_request_id || "",
 				providers: newFilters.providers || [],
 				models: newFilters.models || [],
 				aliases: newFilters.aliases || [],

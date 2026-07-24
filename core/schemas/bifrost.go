@@ -375,6 +375,9 @@ const (
 	BifrostContextKeyCompatShouldDropParams              BifrostContextKey = "bifrost-compat-should-drop-params"          // bool (per-request override from x-bf-compat header)
 	BifrostContextKeyCompatShouldConvertParams           BifrostContextKey = "bifrost-compat-should-convert-params"       // bool (per-request override from x-bf-compat header)
 	BifrostContextKeySupportsAssistantPrefill            BifrostContextKey = "bifrost-supports-assistant-prefill"         // bool (set by compat plugin) - if model supports assistant prefill
+	BifrostContextKeyProviderRequestID                   BifrostContextKey = "bifrost-provider-request-id"                // string (set by bifrost from configured response header)
+	BifrostContextKeyProviderRequestIDHeader             BifrostContextKey = "bifrost-provider-request-id-header"         // string canonical response header name
+	BifrostContextKeyProviderRequestIDTrail              BifrostContextKey = "bifrost-provider-request-id-trail"          // []ProviderRequestIDRecord, one entry per captured upstream attempt
 	BifrostContextKeyAttemptTrail                        BifrostContextKey = "bifrost-attempt-trail"                      // []KeyAttemptRecord (set by bifrost - DO NOT SET THIS MANUALLY) - per-attempt key selection history
 	BifrostContextKeyDimensions                          BifrostContextKey = "bifrost-dimensions"                         // map[string]string (set by HTTP transport from x-bf-dim-* headers) BifrostContextKeyDimensions holds per-request key/value dimensions supplied via x-bf-dim-<key> request headers. These dimensions are forwarded to internal logs (as metadata)
 	IsAPIKeyAuthContextKey                               BifrostContextKey = "is_api_key_auth"
@@ -431,6 +434,15 @@ type KeyAttemptRecord struct {
 	KeyName           string  `json:"key_name"`
 	FailReason        *string `json:"fail_reason,omitempty"`
 	TriggeredRotation bool    `json:"triggered_rotation"`
+}
+
+// ProviderRequestIDRecord captures the upstream request ID for one real HTTP attempt.
+type ProviderRequestIDRecord struct {
+	Attempt    int           `json:"attempt"`
+	Provider   ModelProvider `json:"provider,omitempty"`
+	RequestID  string        `json:"request_id"`
+	HeaderName string        `json:"header_name,omitempty"`
+	StatusCode *int          `json:"status_code,omitempty"`
 }
 
 // RoutingEngineLogEntry represents a log entry from a routing engine

@@ -1031,3 +1031,99 @@ func TestSchemaBedrockKeyConfigSTSFields(t *testing.T) {
 		}
 	})
 }
+
+func TestSchemaProviderRequestID(t *testing.T) {
+	schema := loadSchema(t)
+	defs, ok := schema["$defs"].(map[string]interface{})
+	if !ok {
+		t.Fatal("schema $defs is missing or invalid")
+	}
+
+	providerDefs := 0
+	for name, rawDef := range defs {
+		def, ok := rawDef.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		properties, ok := def["properties"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if _, isProviderDef := properties["store_raw_request_response"]; !isProviderDef {
+			continue
+		}
+		providerDefs++
+		if _, found := properties["provider_request_id"]; !found {
+			t.Errorf("$defs/%s is missing provider_request_id", name)
+		}
+	}
+	if providerDefs == 0 {
+		t.Fatal("did not find any provider schema definitions")
+	}
+
+	compiled := compileSchema(t)
+	tests := []struct {
+		name      string
+		config    string
+		wantError bool
+	}{
+		{
+			name: "valid provider request ID config",
+			config: `{
+				"providers": {
+					"openai": {
+						"keys": [{"name": "test", "value": "sk-test", "weight": 1, "models": ["gpt-4"]}],
+						"provider_request_id": {"enabled": true, "header_name": "x-request-id"}
+					}
+				}
+			}`,
+		},
+		{
+			name: "enabled is required",
+			config: `{
+				"providers": {
+					"openai": {
+						"keys": [{"name": "test", "value": "sk-test", "weight": 1, "models": ["gpt-4"]}],
+						"provider_request_id": {"header_name": "x-request-id"}
+					}
+				}
+			}`,
+			wantError: true,
+		},
+		{
+			name: "invalid HTTP header token is rejected",
+			config: `{
+				"providers": {
+					"openai": {
+						"keys": [{"name": "test", "value": "sk-test", "weight": 1, "models": ["gpt-4"]}],
+						"provider_request_id": {"enabled": true, "header_name": "bad header"}
+					}
+				}
+			}`,
+			wantError: true,
+		},
+		{
+			name: "additional fields are rejected",
+			config: `{
+				"providers": {
+					"openai": {
+						"keys": [{"name": "test", "value": "sk-test", "weight": 1, "models": ["gpt-4"]}],
+						"provider_request_id": {"enabled": true, "selector": "$.id"}
+					}
+				}
+			}`,
+			wantError: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateConfig(t, compiled, tt.config)
+			if tt.wantError && err == nil {
+				t.Fatal("expected validation error")
+			}
+			if !tt.wantError && err != nil {
+				t.Fatalf("expected config to validate, got: %v", err)
+			}
+		})
+	}
+}
