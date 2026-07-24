@@ -447,6 +447,7 @@ bifrost:
   #         region: "us-east-1"
   #         access_key: "env.AWS_ACCESS_KEY_ID"
   #         secret_key: "env.AWS_SECRET_ACCESS_KEY"
+  #         # batch_role_arn: ""  # Optional: service role Bedrock assumes for batch S3 access; takes priority over role_arn sent in the request (can use env. prefix)
   #         project_id: ""  # Optional: Bedrock project ID scoping inference and model listing (can use env. prefix)
   #
   # # AWS Bedrock Mantle example (requires bedrock_mantle_key_config)

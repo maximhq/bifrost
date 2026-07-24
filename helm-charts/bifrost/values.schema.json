@@ -5247,6 +5247,10 @@
               "type": "string",
               "description": "Role session name for AssumeRole (can use env. prefix)"
             },
+            "batch_role_arn": {
+              "type": "string",
+              "description": "Service role ARN passed to Bedrock batch jobs for S3 access; takes priority over any role_arn sent in the request (can use env. prefix)"
+            },
             "project_id": {
               "type": "string",
               "description": "Bedrock project ID scoping inference and model listing. Sent as the OpenAI-Project header on the OpenAI-compatible surface and the anthropic-workspace-id header on the native-Anthropic (Claude) surface. When empty, AWS routes to the account's default project (can use env. prefix)"
@@ -6180,6 +6184,10 @@
                   "session_name": {
                     "type": "string",
                     "description": "Role session name for AssumeRole (can use env. prefix)"
+                  },
+                  "batch_role_arn": {
+                    "type": "string",
+                    "description": "Service role ARN passed to Bedrock batch jobs for S3 access; takes priority over any role_arn sent in the request (can use env. prefix)"
                   },
                   "deployments": {
                     "type": "object",
