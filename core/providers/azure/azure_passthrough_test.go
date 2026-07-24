@@ -30,7 +30,7 @@ func TestBuildPassthroughURL(t *testing.T) {
 		{
 			name: "normalise /openai/responses to /openai/v1/responses",
 			path: "/openai/responses",
-			want: endpoint + "/openai/v1/responses?api-version=" + AzureAPIVersionPreview,
+			want: endpoint + "/openai/v1/responses",
 		},
 		{
 			name: "normalise /openai/videos to /openai/v1/videos",
@@ -57,17 +57,22 @@ func TestBuildPassthroughURL(t *testing.T) {
 			want:     endpoint + "/openai/deployments/gpt-4o/chat/completions?api-version=2024-06-01&foo=bar",
 		},
 
-		// --- /openai/v1/responses — inject api-version=preview when absent ---
+		// --- /openai/v1/responses — no api-version injected by default ---
 		{
-			name: "responses route: inject preview api-version when missing",
+			name: "responses route: no api-version injected when missing and no override configured",
 			path: "/openai/v1/responses",
-			want: endpoint + "/openai/v1/responses?api-version=" + AzureAPIVersionPreview,
+			want: endpoint + "/openai/v1/responses",
 		},
 		{
 			name:     "responses route: preserve caller-supplied api-version",
 			path:     "/openai/v1/responses",
 			rawQuery: "api-version=2025-01-01-preview",
 			want:     endpoint + "/openai/v1/responses?api-version=2025-01-01-preview",
+		},
+		{
+			name: "responses/compact route: no api-version injected when missing",
+			path: "/openai/v1/responses/compact",
+			want: endpoint + "/openai/v1/responses/compact",
 		},
 
 		// --- Anthropic routes — strip api-version ---
@@ -128,11 +133,12 @@ func TestBuildPassthroughURL(t *testing.T) {
 }
 
 // TestBuildPassthroughURL_AliasAPIVersionOverride verifies that when the
-// resolved alias carries an AzureAliasCfg.APIVersion override, it takes
-// precedence over the route default (DefaultAzureAPIVersion for /deployments/,
-// AzureAPIVersionPreview for /openai/v1/responses) — only in the path where
-// the caller did NOT supply api-version themselves. Caller-supplied wins over
-// alias override; alias override wins over route default.
+// resolved alias carries an AzureAliasCfg.APIVersion override, it is attached
+// to the request — as the route default for /deployments/ (DefaultAzureAPIVersion),
+// or as an explicit opt-in for /openai/v1/responses (which otherwise omits
+// api-version entirely) — only in the path where the caller did NOT supply
+// api-version themselves. Caller-supplied wins over alias override; alias
+// override wins over route default.
 func TestBuildPassthroughURL_AliasAPIVersionOverride(t *testing.T) {
 	t.Parallel()
 
@@ -165,7 +171,7 @@ func TestBuildPassthroughURL_AliasAPIVersionOverride(t *testing.T) {
 		}
 	})
 
-	t.Run("responses route: alias APIVersion overrides preview default", func(t *testing.T) {
+	t.Run("responses route: alias APIVersion is attached as explicit opt-in", func(t *testing.T) {
 		got, _ := provider.buildPassthroughURL(ctx, makeKey, "/openai/v1/responses", "")
 		want := endpoint + "/openai/v1/responses?api-version=" + overrideVer
 		if got != want {

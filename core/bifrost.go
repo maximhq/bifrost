@@ -1063,6 +1063,53 @@ func (bifrost *Bifrost) ResponsesRetrieveRequest(ctx *schemas.BifrostContext, re
 	return response.ResponsesResponse, nil
 }
 
+// ResponsesRetrieveStreamRequest replays a stored response as an SSE stream
+// (OpenAI GET /v1/responses/{id}?stream=true).
+func (bifrost *Bifrost) ResponsesRetrieveStreamRequest(ctx *schemas.BifrostContext, req *schemas.BifrostResponsesRetrieveRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "responses retrieve stream request is nil",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.ResponsesRetrieveStreamRequest,
+			},
+		}
+	}
+	if ctx == nil {
+		ctx = bifrost.ctx
+	}
+	if req.Provider == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "provider is required for responses retrieve stream request",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.ResponsesRetrieveStreamRequest,
+				Provider:    req.Provider,
+			},
+		}
+	}
+	if req.ResponseID == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "response_id is required for responses retrieve stream request",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.ResponsesRetrieveStreamRequest,
+				Provider:    req.Provider,
+			},
+		}
+	}
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = schemas.ResponsesRetrieveStreamRequest
+	bifrostReq.ResponsesRetrieveRequest = req
+	return bifrost.handleStreamRequest(ctx, bifrostReq)
+}
+
 // ResponsesDeleteRequest deletes a stored response (OpenAI DELETE /v1/responses/{id}).
 func (bifrost *Bifrost) ResponsesDeleteRequest(ctx *schemas.BifrostContext, req *schemas.BifrostResponsesDeleteRequest) (*schemas.BifrostResponsesDeleteResponse, *schemas.BifrostError) {
 	if req == nil {
@@ -4950,7 +4997,7 @@ func (bifrost *Bifrost) shouldContinueWithFallbacks(fallback schemas.Fallback, f
 // It handles plugin hooks, request validation, response processing, and fallback providers.
 // If the primary provider fails, it will try each fallback provider in order until one succeeds.
 // It is the wrapper for all non-streaming public API methods.
-func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) {
 	defer bifrost.releaseBifrostRequest(req)
 	provider, model, fallbacks := req.GetRequestFields()
 
@@ -4958,6 +5005,14 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 	if ctx == nil {
 		ctx = bifrost.ctx
 	}
+
+	// Reset first: bifrost.ctx is shared across every nil-ctx caller.
+	ctx.ResetUpstreamLatency()
+	// Stamp on the way out, after every attempt and fallback.
+	defer func() {
+		ctx.StampUpstreamLatency()
+		resp.PopulateUpstreamLatency(ctx)
+	}()
 
 	// Try the primary provider first
 	ctx.SetValue(schemas.BifrostContextKeyFallbackIndex, 0)
@@ -5089,6 +5144,8 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 		ctx = bifrost.ctx
 	}
 
+	ctx.ResetUpstreamLatency()
+
 	// Try the primary provider first
 	ctx.SetValue(schemas.BifrostContextKeyFallbackIndex, 0)
 	// Ensure request ID is set in context before PreHooks
@@ -5174,6 +5231,19 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 		// the channel. See SetFallbackRoutingInfo doc.
 		fallbackErr.SetFallbackRoutingInfo(provider, model)
 		if fallbackErr == nil {
+			// Layer Primary/IsFallback onto the ctx-stashed RoutingInfo (mirrors
+			// SetFallbackRoutingInfo) — chunks can't carry it (see above), but the
+			// transport's pre-stream response headers can.
+			if ri, ok := ctx.Value(schemas.BifrostContextKeyRoutingInfo).(schemas.RoutingInfo); ok {
+				ri.IsFallback = true
+				if provider != "" {
+					ri.PrimaryProvider = new(provider)
+				}
+				if model != "" {
+					ri.PrimaryModel = new(model)
+				}
+				ctx.SetValue(schemas.BifrostContextKeyRoutingInfo, ri)
+			}
 			bifrost.logger.Debug(fmt.Sprintf("successfully used fallback provider %s with model %s", fallback.Provider, fallback.Model))
 			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Request served by fallback %s/%s (attempt %d/%d)", fallback.Provider, fallback.Model, i+1, len(fallbacks)))
 			tracer.EndSpan(handle, schemas.SpanStatusOk, "")
@@ -6166,6 +6236,10 @@ func executeRequestWithRetries[T any](
 				}
 				resp.PopulateExtraFields(requestType, providerKey, model, resolvedModelUsed)
 				tracer.PopulateLLMResponseAttributes(ctx, handle, resp, bifrostError)
+			} else if bifrostError != nil {
+				// Failed stream requests carry a chan result and miss the cast above;
+				// stamp error attributes explicitly so spans don't report unknown.
+				tracer.PopulateLLMResponseAttributes(ctx, handle, nil, bifrostError)
 			}
 
 			// End span with appropriate status
@@ -6664,6 +6738,10 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				// alias while this attempt's provider goroutine is still emitting chunks.
 				attemptResolvedModel := resolvedModel
 				attemptRoutingInfo = schemas.BuildRoutingInfo(req.Context, provider.GetProviderKey(), originalModelRequested, k)
+				// Stash for the transport: streams carry RoutingInfo only on chunks, but
+				// response headers must be written before the first chunk arrives. Each
+				// retry overwrites, so the winning attempt's snapshot survives.
+				req.Context.SetValue(schemas.BifrostContextKeyRoutingInfo, attemptRoutingInfo)
 				// Per-attempt snapshot for the async postHookRunner closure (it must
 				// not capture the outer var by reference — a later retry would race).
 				perAttemptRoutingInfo := attemptRoutingInfo
@@ -7243,6 +7321,12 @@ func (bifrost *Bifrost) handleProviderStreamRequest(provider schemas.Provider, r
 		return provider.ChatCompletionStream(req.Context, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.ChatRequest)
 	case schemas.ResponsesStreamRequest:
 		return provider.ResponsesStream(req.Context, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.ResponsesRequest)
+	case schemas.ResponsesRetrieveStreamRequest:
+		lifecycle, ok := provider.(schemas.ResponsesLifecycleProvider)
+		if !ok {
+			return nil, providerUtils.NewUnsupportedOperationError(schemas.ResponsesRetrieveStreamRequest, provider.GetProviderKey())
+		}
+		return lifecycle.ResponsesRetrieveStream(req.Context, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.ResponsesRetrieveRequest)
 	case schemas.SpeechStreamRequest:
 		return provider.SpeechStream(req.Context, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.SpeechRequest)
 	case schemas.TranscriptionStreamRequest:

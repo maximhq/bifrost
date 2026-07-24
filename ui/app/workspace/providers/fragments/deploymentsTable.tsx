@@ -672,7 +672,7 @@ export function DeploymentsTable({ value, onChange, providerName, disabled = fal
 						{(draftRow.name.trim() !== "" || draftRow.config.model_id.trim() !== "") &&
 							!(draftRow.name.trim() && draftRow.config.model_id.trim()) && (
 								<p className="text-muted-foreground px-4 pb-2 text-xs">
-									Both deployment name and model ID are required — this row will not be saved until both are filled.
+									Both deployment name and model ID are required; this row will not be saved until both are filled.
 								</p>
 							)}
 						<CollapsibleContent>

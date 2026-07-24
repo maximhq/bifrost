@@ -405,7 +405,7 @@ func (ar *AllowedRequests) IsOperationAllowed(operation RequestType) bool {
 		return ar.Responses
 	case ResponsesStreamRequest:
 		return ar.ResponsesStream
-	case ResponsesRetrieveRequest:
+	case ResponsesRetrieveRequest, ResponsesRetrieveStreamRequest:
 		return ar.ResponsesRetrieve
 	case ResponsesDeleteRequest:
 		return ar.ResponsesDelete
@@ -734,6 +734,8 @@ type Provider interface {
 // in core dispatch; providers that do not implement it return unsupported_operation.
 type ResponsesLifecycleProvider interface {
 	ResponsesRetrieve(ctx *BifrostContext, key Key, req *BifrostResponsesRetrieveRequest) (*BifrostResponsesResponse, *BifrostError)
+	// ResponsesRetrieveStream replays a stored response as an SSE stream (OpenAI GET /v1/responses/{id}?stream=true).
+	ResponsesRetrieveStream(ctx *BifrostContext, postHookRunner PostHookRunner, postHookSpanFinalizer func(context.Context), key Key, req *BifrostResponsesRetrieveRequest) (chan *BifrostStreamChunk, *BifrostError)
 	ResponsesDelete(ctx *BifrostContext, key Key, req *BifrostResponsesDeleteRequest) (*BifrostResponsesDeleteResponse, *BifrostError)
 	ResponsesCancel(ctx *BifrostContext, key Key, req *BifrostResponsesCancelRequest) (*BifrostResponsesResponse, *BifrostError)
 	ResponsesInputItems(ctx *BifrostContext, key Key, req *BifrostResponsesInputItemsRequest) (*BifrostResponsesInputItemsResponse, *BifrostError)
