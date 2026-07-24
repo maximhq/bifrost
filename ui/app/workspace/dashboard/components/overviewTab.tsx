@@ -11,7 +11,17 @@ import type {
 import { COMPACT_NUMBER_FORMAT } from "@/lib/utils/numbers";
 import NumberFlow from "@number-flow/react";
 import { memo, useMemo } from "react";
-import { CHART_COLORS, CHART_HEADER_LEGEND_CLASS, LATENCY_COLORS, THROUGHPUT_COLOR, formatTokensPerSecond, getModelColor } from "../utils/chartUtils";
+import {
+	CHART_COLORS,
+	CHART_HEADER_LEGEND_CLASS,
+	LATENCY_COLORS,
+	OTHER_SERIES_COLOR,
+	OTHER_SERIES_KEY,
+	OTHER_SERIES_LABEL,
+	THROUGHPUT_COLOR,
+	formatTokensPerSecond,
+	getModelColor,
+} from "../utils/chartUtils";
 import { ChartCard } from "./charts/chartCard";
 import { type ChartType, ChartTypeToggle } from "./charts/chartTypeToggle";
 import { CostChart } from "./charts/costChart";
@@ -291,10 +301,10 @@ function OverviewTabImpl({
 																<span
 																	className="h-2 w-2 shrink-0 rounded-full"
 																	style={{
-																		backgroundColor: getModelColor(idx + 1),
+																		backgroundColor: model === OTHER_SERIES_KEY ? OTHER_SERIES_COLOR : getModelColor(idx + 1),
 																	}}
 																/>
-																{model}
+																{model === OTHER_SERIES_KEY ? OTHER_SERIES_LABEL : model}
 															</span>
 														))}
 													</div>
@@ -367,10 +377,10 @@ function OverviewTabImpl({
 																<span
 																	className="h-2 w-2 shrink-0 rounded-full"
 																	style={{
-																		backgroundColor: getModelColor(idx + 1),
+																		backgroundColor: model === OTHER_SERIES_KEY ? OTHER_SERIES_COLOR : getModelColor(idx + 1),
 																	}}
 																/>
-																{model}
+																{model === OTHER_SERIES_KEY ? OTHER_SERIES_LABEL : model}
 															</span>
 														))}
 													</div>
@@ -457,7 +467,9 @@ function OverviewTabImpl({
 					loading={loadingThroughput}
 					testId="chart-throughput"
 					totalLabel="Avg"
-					total={throughputAvg !== null ? <span className="truncate whitespace-nowrap">{formatTokensPerSecond(throughputAvg)}</span> : undefined}
+					total={
+						throughputAvg !== null ? <span className="truncate whitespace-nowrap">{formatTokensPerSecond(throughputAvg)}</span> : undefined
+					}
 					totalTooltip={
 						throughputAvg !== null ? `${throughputAvg.toLocaleString("en-US", { maximumFractionDigits: 2 })} tokens/sec` : undefined
 					}
@@ -470,7 +482,11 @@ function OverviewTabImpl({
 						</div>
 					}
 					controls={
-						<ChartTypeToggle chartType={throughputChartType} onToggle={onThroughputChartToggle} data-testid="dashboard-throughput-chart-toggle" />
+						<ChartTypeToggle
+							chartType={throughputChartType}
+							onToggle={onThroughputChartToggle}
+							data-testid="dashboard-throughput-chart-toggle"
+						/>
 					}
 				>
 					<ThroughputChart data={throughputData} chartType={throughputChartType} startTime={startTime} endTime={endTime} />

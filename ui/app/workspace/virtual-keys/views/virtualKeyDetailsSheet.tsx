@@ -21,6 +21,7 @@ import {
 	parseResetPeriod,
 } from "@/lib/utils/governance";
 import ManagedVirtualKeyNotice from "@enterprise/components/access-profiles/managedVirtualKeyNotice";
+import ViewUserDetailsButton from "@enterprise/components/user-groups/viewUserDetailsButton";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { formatDistanceToNow } from "date-fns";
 import { Users } from "lucide-react";
@@ -225,7 +226,8 @@ export default function VirtualKeyDetailSheet({
 													<span className="font-medium">{ProviderLabels[config.provider as ProviderName] || config.provider}</span>
 												</div>
 												<Badge variant="outline" className="font-mono text-xs">
-													Weight: {config.weight}
+													Weight:{" "}
+													{config.weight != null ? config.weight : <span className="text-muted-foreground italic">Not Set</span>}
 												</Badge>
 											</div>
 
@@ -469,12 +471,15 @@ export default function VirtualKeyDetailSheet({
 
 					{/* Budget Information */}
 					<div className="space-y-4">
-						<h3 className="font-semibold">
-							Budget Information
-							{isManagedByProfile && managingProfile?.budgets?.length ? (
-								<span className="text-muted-foreground ml-2 text-xs font-normal">(from {managingProfile.name})</span>
-							) : null}
-						</h3>
+						<div className="flex items-center justify-between">
+							<h3 className="font-semibold">
+								Budget Information
+								{isManagedByProfile && managingProfile?.budgets?.length ? (
+									<span className="text-muted-foreground ml-2 text-xs font-normal">(from {managingProfile.name})</span>
+								) : null}
+							</h3>
+							{isManagedByProfile ? <ViewUserDetailsButton userId={managingProfile?.user_id} /> : null}
+						</div>
 
 						{displayBudgets && displayBudgets.length > 0 ? (
 							<div className="space-y-4">

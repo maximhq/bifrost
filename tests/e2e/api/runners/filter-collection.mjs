@@ -54,6 +54,7 @@ const PROVIDER_KEYWORDS = {
   azure: ["azure", "deployments"],
   passthrough: ["_passthrough"],
   openrouter: ["openrouter"],
+  replicate: ["replicate", "/replicate", "flux", "black-forest-labs"],
 };
 
 // Haystack = item JSON + ancestor folder names. Folder names encode the harness

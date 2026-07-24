@@ -134,10 +134,61 @@
           "    } else if (j.type === 'file_deleted' && typeof j.id === 'string') {",
           "        shape = 'anthropic-file-deleted';",
           "        hasContent = !!j.id;",
+          "    } else if (j.object === 'response.deleted' && typeof j.id === 'string') {",
+          "        shape = 'openai-responses-deleted';",
+          "        hasContent = j.deleted === true;",
           "    }",
           "    pm.expect(hasContent, 'expected non-empty content (shape=' + shape + ', body=' + JSON.stringify(j).slice(0, 200) + ')').to.be.true;",
           "  });",
-          "}"
+          "}",
+          "",
+          "// Routed-identity response headers (x-bifrost-*): present on every successful",
+          "// inference response, streaming and non-streaming, on native /v1 and every",
+          "// drop-in integration route, and passthrough (section 9) inference routes",
+          "// (all funnel through handleRequest, so RoutingInfo is populated).",
+          "// Management/list/file/batch/count ops are excluded by the positive path",
+          "// match. Fallback/alias headers are conditional (emitted",
+          "// only when a fallback or key-alias fires) so they are not asserted here, and",
+          "// x-bifrost-routing-info-key is omitted (depends on operator key-naming).",
+          "(function () {",
+          "  if (pm.response.code < 200 || pm.response.code >= 300) { return; }",
+          "  var __u = (pm.request && pm.request.url && pm.request.url.toString()) || '';",
+          "  var __p = __u.split('?')[0];",
+          "  var __ends = function (s) { return __p.length >= s.length && __p.slice(-s.length) === s; };",
+          "  var __isInference =",
+          "    __ends('/chat/completions') ||",
+          "    __ends('/responses') ||",
+          "    __ends('/responses/compact') ||",
+          "    __ends('/messages') ||",
+          "    __ends(':generateContent') ||",
+          "    __ends(':streamGenerateContent') ||",
+          "    __ends(':embedContent') ||",
+          "    __ends('/converse') ||",
+          "    __ends('/converse-stream') ||",
+          "    __ends('/invoke') ||",
+          "    __ends('/invoke-with-response-stream') ||",
+          "    __ends('/v2/chat') ||",
+          "    __ends('/embeddings') ||",
+          "    __ends('/audio/speech') ||",
+          "    __ends('/audio/transcriptions') ||",
+          "    __ends('/images/generations');",
+          "  if (!__isInference) { return; }",
+          "  var __required = [",
+          "    'x-bifrost-request-type',",
+          "    'x-bifrost-provider',",
+          "    'x-bifrost-original-model',",
+          "    'x-bifrost-resolved-model',",
+          "    'x-bifrost-routing-info-provider',",
+          "    'x-bifrost-routing-info-model',",
+          "    'x-bifrost-upstream-latency-ms'",
+          "  ];",
+          "  __required.forEach(function (__h) {",
+          "    pm.test('Routed-identity header present: ' + __h, function () {",
+          "      var __v = pm.response.headers.get(__h);",
+          "      pm.expect(__v, 'missing ' + __h + ' on ' + __p).to.be.a('string').and.to.have.length.above(0);",
+          "    });",
+          "  });",
+          "})();"
         ]
       }
     }
@@ -41451,6 +41502,808 @@
                 "v1",
                 "chat",
                 "completions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "29. OpenAI Responses Lifecycle + Streaming Retrieve",
+      "description": "Pins the OpenAI Responses secondary-verb lifecycle on both the native /v1/responses/{id} routes and the /openai/v1 drop-in: retrieve, streaming retrieve (GET ?stream=true, newly added — BifrostResponsesRetrieveRequest.Stream -> ResponsesRetrieveStreamRequest -> provider.ResponsesRetrieveStream), input_items, and delete. Each chain creates a background + store + stream response (id parsed from the SSE create body, so streaming retrieve resumes an actually-streamed response), verifies the verbs against the captured id, and deletes it as cleanup. Cancel is omitted (it would abort the response the streaming retrieve replays).",
+      "item": [
+        {
+          "name": "openai/gpt-4o-mini native lifecycle: create streamed background response",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('native create (streamed bg): 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.test('native create (streamed bg): SSE content-type', function () { var ct = pm.response.headers.get('content-type') || ''; pm.expect(ct, 'expected text/event-stream, got ' + ct).to.include('text/event-stream'); });",
+                  "var body = pm.response.text() || '';",
+                  "var m = body.match(/\"id\":\"(resp_[A-Za-z0-9_-]+)\"/);",
+                  "pm.test('native create (streamed bg): captured streamed response id', function () { pm.expect(m, 'no resp_ id in SSE body head: ' + body.slice(0, 200)).to.not.equal(null); });",
+                  "if (m) { pm.collectionVariables.set('lcNativeRespId', m[1]); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"input\": \"Reply with exactly: lifecycle-ok\",\n  \"store\": true,\n  \"background\": true,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-4o-mini native lifecycle: retrieve",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('native retrieve: 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var j = pm.response.json();",
+                  "pm.test('native retrieve: id matches create', function () { pm.expect(j.id).to.eql(pm.collectionVariables.get('lcNativeRespId')); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses/{{lcNativeRespId}}?provider=openai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses",
+                "{{lcNativeRespId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-4o-mini native lifecycle: streaming retrieve (SSE)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('native stream retrieve: 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.test('native stream retrieve: SSE content-type', function () { var ct = pm.response.headers.get('content-type') || ''; pm.expect(ct, 'expected text/event-stream, got ' + ct).to.include('text/event-stream'); });",
+                  "pm.test('native stream retrieve: body is a responses SSE stream', function () { var body = pm.response.text() || ''; pm.expect(body.indexOf('data:'), 'expected SSE data lines').to.not.equal(-1); pm.expect(body.indexOf('response.'), 'expected response.* events').to.not.equal(-1); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses/{{lcNativeRespId}}?provider=openai&stream=true&starting_after=0",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses",
+                "{{lcNativeRespId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                },
+                {
+                  "key": "stream",
+                  "value": "true"
+                },
+                {
+                  "key": "starting_after",
+                  "value": "0"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-4o-mini native lifecycle: input_items",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('native input_items: 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var j = pm.response.json();",
+                  "pm.test('native input_items: object list', function () { pm.expect(j.object).to.eql('list'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses/{{lcNativeRespId}}/input_items?provider=openai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses",
+                "{{lcNativeRespId}}",
+                "input_items"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-4o-mini native lifecycle: delete (cleanup)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('native delete: 2xx', function () { pm.expect(pm.response.code, pm.response.text()).to.be.below(400); });",
+                  "var j = pm.response.json();",
+                  "pm.test('native delete: deleted true', function () { pm.expect(j.deleted).to.eql(true); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses/{{lcNativeRespId}}?provider=openai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses",
+                "{{lcNativeRespId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini drop-in lifecycle: create streamed background response",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('drop-in create (streamed bg): 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.test('drop-in create (streamed bg): SSE content-type', function () { var ct = pm.response.headers.get('content-type') || ''; pm.expect(ct, 'expected text/event-stream, got ' + ct).to.include('text/event-stream'); });",
+                  "var body = pm.response.text() || '';",
+                  "var m = body.match(/\"id\":\"(resp_[A-Za-z0-9_-]+)\"/);",
+                  "pm.test('drop-in create (streamed bg): captured streamed response id', function () { pm.expect(m, 'no resp_ id in SSE body head: ' + body.slice(0, 200)).to.not.equal(null); });",
+                  "if (m) { pm.collectionVariables.set('lcOpenaiRespId', m[1]); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{openaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"input\": \"Reply with exactly: lifecycle-ok\",\n  \"store\": true,\n  \"background\": true,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini drop-in lifecycle: retrieve",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('drop-in retrieve: 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var j = pm.response.json();",
+                  "pm.test('drop-in retrieve: id matches create', function () { pm.expect(j.id).to.eql(pm.collectionVariables.get('lcOpenaiRespId')); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{openaiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses/{{lcOpenaiRespId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses",
+                "{{lcOpenaiRespId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini drop-in lifecycle: streaming retrieve (SSE)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('drop-in stream retrieve: 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.test('drop-in stream retrieve: SSE content-type', function () { var ct = pm.response.headers.get('content-type') || ''; pm.expect(ct, 'expected text/event-stream, got ' + ct).to.include('text/event-stream'); });",
+                  "pm.test('drop-in stream retrieve: body is a responses SSE stream', function () { var body = pm.response.text() || ''; pm.expect(body.indexOf('data:'), 'expected SSE data lines').to.not.equal(-1); pm.expect(body.indexOf('response.'), 'expected response.* events').to.not.equal(-1); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{openaiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses/{{lcOpenaiRespId}}?stream=true&starting_after=0",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses",
+                "{{lcOpenaiRespId}}"
+              ],
+              "query": [
+                {
+                  "key": "stream",
+                  "value": "true"
+                },
+                {
+                  "key": "starting_after",
+                  "value": "0"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini drop-in lifecycle: input_items",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('drop-in input_items: 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var j = pm.response.json();",
+                  "pm.test('drop-in input_items: object list', function () { pm.expect(j.object).to.eql('list'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{openaiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses/{{lcOpenaiRespId}}/input_items",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses",
+                "{{lcOpenaiRespId}}",
+                "input_items"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini drop-in lifecycle: delete (cleanup)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('drop-in delete: 2xx', function () { pm.expect(pm.response.code, pm.response.text()).to.be.below(400); });",
+                  "var j = pm.response.json();",
+                  "pm.test('drop-in delete: deleted true', function () { pm.expect(j.deleted).to.eql(true); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{openaiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses/{{lcOpenaiRespId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses",
+                "{{lcOpenaiRespId}}"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "30. Replicate input_images field mapping (image-to-image on /v1/images/generations)",
+      "description": "Pins Replicate image-to-image on the native /v1/images/generations path. input_images was previously dropped on the generations path because the input_images -> model-specific field mapping (image_prompt / input_image / image / input_images) was only applied on the edits path, so a request carrying input_images to a kontext model generated from the prompt alone and returned a 200 with a default 1024x1024 square image. The case sends a real landscape image (scones.jpg, 1280x853) with aspect_ratio \"match_input_image\" and asserts the output stays landscape, which proves the image reached the model rather than being silently dropped. Exhaustive per-model field mapping is covered by the Go table test TestReplicateImageGenerationInputImagesFieldMapping. A streaming variant is intentionally omitted: flux-kontext does not stream partial images, so Bifrost forwards no image bytes on the stream and there is nothing to assert on.",
+      "item": [
+        {
+          "name": "replicate/black-forest-labs/flux-kontext-pro input_images -> input_image (match_input_image)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Replicate image-to-image on the NATIVE /v1/images/generations path.",
+                  "// Regression: input_images was silently dropped on the generations path (the",
+                  "// input_images -> model-specific field mapping existed only on the edits path), so",
+                  "// kontext never received its native \"input_image\" and Replicate generated from the",
+                  "// prompt alone, returning a 200 with a default 1024x1024 SQUARE image.",
+                  "//",
+                  "// Fixture is a real landscape photo (scones.jpg, 1280x853) sent with aspect_ratio",
+                  "// \"match_input_image\": if the image reaches the model the output keeps the landscape",
+                  "// aspect ratio (width > height); if it was dropped the output is the default square.",
+                  "// Asserting landscape is what catches the silent 200 that a status-only check cannot.",
+                  "// Exhaustive per-model field mapping lives in the Go test",
+                  "// TestReplicateImageGenerationInputImagesFieldMapping.",
+                  "",
+                  "// Infra guard: skip on auth/rate/server noise. NOT 400 - a 400 here is a real",
+                  "// regression signature and must fail loudly. (The collection-level 2xx test still",
+                  "// asserts status, so kontext rate-limits/5xx surface as failures for triage.)",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "",
+                  "pm.test('images/generations returned success', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "",
+                  "var body = pm.response.json();",
+                  "pm.test('response carries an output image', function () {",
+                  "  pm.expect(body.data && body.data.length, 'no data in response: ' + pm.response.text()).to.be.above(0);",
+                  "});",
+                  "if (!body.data || !body.data.length) { return; }",
+                  "",
+                  "// PNG dimensions live in the IHDR chunk: width at byte 16, height at byte 20.",
+                  "function pngDims(buf) {",
+                  "  if (!buf || buf.length < 24) { return null; }",
+                  "  if (buf[0] !== 0x89 || buf[1] !== 0x50 || buf[2] !== 0x4E || buf[3] !== 0x47) { return null; }",
+                  "  return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };",
+                  "}",
+                  "function toBuffer(stream) {",
+                  "  if (Buffer.isBuffer(stream)) { return stream; }",
+                  "  if (stream && stream.type === 'Buffer' && Array.isArray(stream.data)) { return Buffer.from(stream.data); }",
+                  "  return Buffer.from(stream);",
+                  "}",
+                  "function assertImageUsed(buf) {",
+                  "  var dims = pngDims(buf);",
+                  "  if (!dims) {",
+                  "    // Not a decodable PNG despite output_format=png - degrade to 'image present' so a",
+                  "    // format surprise does not false-fail, but surface it.",
+                  "    console.log('WARN: output was not a decodable PNG; skipped dimension check');",
+                  "    return;",
+                  "  }",
+                  "  pm.test('output keeps input landscape aspect ratio => image was used (not dropped to square)', function () {",
+                  "    pm.expect(dims.width, 'expected landscape output (input 1280x853), got ' + dims.width + 'x' + dims.height).to.be.above(dims.height);",
+                  "  });",
+                  "}",
+                  "",
+                  "var first = body.data[0];",
+                  "if (first.b64_json) {",
+                  "  assertImageUsed(Buffer.from(first.b64_json, 'base64'));",
+                  "} else if (first.url) {",
+                  "  pm.sendRequest({ url: first.url, method: 'GET' }, function (err, res) {",
+                  "    if (err) { console.log('WARN: could not download output image: ' + err); return; }",
+                  "    assertImageUsed(toBuffer(res.stream));",
+                  "  });",
+                  "} else {",
+                  "  pm.expect.fail('response image had neither url nor b64_json: ' + pm.response.text());",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"replicate/black-forest-labs/flux-kontext-pro\",\n  \"prompt\": \"add a soft warm glow to the scene\",\n  \"aspect_ratio\": \"match_input_image\",\n  \"output_format\": \"png\",\n  \"input_images\": [\n    \"https://storage.googleapis.com/generativeai-downloads/images/scones.jpg\"\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "31. Gemini/Vertex generationConfig.mediaResolution honored (image prompt tokens)",
+      "description": "Regression: generationConfig.mediaResolution was silently dropped in the Gemini -> Bifrost -> Gemini\nResponses conversion on the /genai generateContent path, so a Vertex/Gemini image request billed the\nmodel-default image token count regardless of MEDIA_RESOLUTION_LOW/HIGH (e.g. ~1290 instead of ~74\nprompt tokens for a 1024x1024 image). thinkingConfig survived because both conversion legs handle it;\nmediaResolution was handled by neither.\n\nFix: round mediaResolution through ExtraParams[\"media_resolution\"] in core/providers/gemini\n(convertGenerationConfigToResponsesParameters inbound + convertParamsToGenerationConfigResponses outbound).\n\nThe only external signal is usageMetadata.promptTokenCount, so each pair sends the SAME 1024x1024 image\n(folder-level prerequest sets {{mediaResImage}}) and asserts the HIGH request reports more prompt tokens\nthan the LOW request. If the field is dropped, both fall back to the same default => equal counts =>\nthe HIGH-exceeds-LOW assertion fails, independent of what the model default is. 31.1/31.2 pin the fix on\nthe GenAI route (needs only {{genaiKey}}); 31.3/31.4 pin the same invariant on Vertex (the reported\nroute) and skip cleanly if Vertex is not configured.",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// 1024x1024 JPEG (base64), large enough that MEDIA_RESOLUTION_HIGH tiles into more image",
+              "// tokens than LOW. Image pixel dimensions (not content) drive Gemini image token counts.",
+              "pm.collectionVariables.set('mediaResImage', '/9j/2wCEABQODxIPDRQSEBIXFRQYHjIhHhwcHj0sLiQySUBMS0dARkVQWnNiUFVtVkVGZIhlbXd7gYKBTmCNl4x9lnN+gXwBFRcXHhoeOyEhO3xTRlN8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fP/AABEIBAAEAAMBIgACEQEDEQH/xAGiAAABBQEBAQEBAQAAAAAAAAAAAQIDBAUGBwgJCgsQAAIBAwMCBAMFBQQEAAABfQECAwAEEQUSITFBBhNRYQcicRQygZGhCCNCscEVUtHwJDNicoIJChYXGBkaJSYnKCkqNDU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6g4SFhoeIiYqSk5SVlpeYmZqio6Slpqeoqaqys7S1tre4ubrCw8TFxsfIycrS09TV1tfY2drh4uPk5ebn6Onq8fLz9PX29/j5+gEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoLEQACAQIEBAMEBwUEBAABAncAAQIDEQQFITEGEkFRB2FxEyIygQgUQpGhscEJIzNS8BVictEKFiQ04SXxFxgZGiYnKCkqNTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqCg4SFhoeIiYqSk5SVlpeYmZqio6Slpqeoqaqys7S1tre4ubrCw8TFxsfIycrS09TV1tfY2dri4+Tl5ufo6ery8/T19vf4+fr/2gAMAwEAAhEDEQA/AOzpKKKACiikoELSUUUAFFJRQI8eopaKDUKKKWmMSloooAKKKWgZ65RRSVJyC0lFFABRSUUCCiiigR5PRRS1Z6AlLRRQMKKKWgYlLRRQM9UpKKKzPJCiikoEFFFFAgopKKAPMKWiitT2woopaBiUtFFABRRS0DPSqKKSsT54KKKKACikooEFFFFAjzmiilrY+nEpaKKYBRRS0DCiiigZ6DRRRXOfJhRSUUCCiiigQUlFFAHBUtFFdJ9iFFFLQMSloooGFFLRQB3FFJRXKfEBRRRQIKSiigAoopKBHGUUUtdR96JS0UUwCiiloGFFFFAzr6KKK4z89CikooEFFFFAgpKKKBHKUtFFdh+kBRRS0xhRRRQMKKWigDpqKSiuE/MgooooEFJRRQAUUUlAjnqKKWu4/UwooopjCilooAKKKKBnoNJRRXOfKBRRSUCFpKKKBBRSUUAeQUUtFBYUUUtAxKWiimMKKKWgD1qiikqTmFpKKKBBRSUUAFFFFAjymiilqjvEpaKKYBRRS0DEpaKKBnqVJRRWZ5YUUUlAgooooEFFJRQI8ypaKK0PaCiilpjEpaKKBhRS0UAekUUUlYngBRRRQIKKSigAooooEed0UUtbH0olLRRQMKKWimAUUUUDPQKSiiuc+UCikooAKKKKBBRSUUCOEpaKK6D7AKKKWmMSloooGFFLRQM7aikorlPiQooooEFFJRQIKKKSgDjqKKWuo+7EpaKKBhRS0UwCiiigZ1tFFFcZ+fBRSUUAFFFFAgpKKKBHLUtFFdh+jhRS0UAFFFFMYUUtFAzpKKSiuE/MwooooEFJRRQIKKKSgDAopaK7j9RCiiimMKKWigYUUUtAHfUlFFc58qFFFJQAtJRRQIKKSigR5FS0UUFBRRS0DEpaKKBhRRS0xnrFFFJUnOLSUUUCCikooEFFFFAHldFFLVHaJS0UUDCiilpgFFFFAz1CkoorM8wKKSigAooooEFFJRQI80paKK0PZCiiloASloopjCilooGejUUlFYnghRRRQIKKSigQUUUlAHn1FFLWx9GJS0UUDCiiloGFFFFMDvqSiiuc+WCikooEFFFFABRSUUCOGpaKK6D68KKKWgAooopjCilooGdpRSUVynxYUUUUCCikooEFFFJQI5CiilrqPugooooGFFLRQMKKKKYHV0UUVxnwAUUlFAgoopKAFpKKKBHMUtFFdh+ihRS0UDCiiigAopaKYzoqKSiuE/NAoopKAFpKKKBBRRSUCMKiloruP1EKKKKACilooGFFFLTGd5SUUVznywUUUlAgooooAKKSigR5JS0UUDCiiloASloooGFFFLQM9WoopKRiFFFFAgopKKBBRRRQI8toopao7BKWiigYUUUtAwooopgem0UUVmecFFJRQIKKKKACikooEebUtFFaHrhRRS0DEpaKKACilopjPRKKSisTwgooooAKKSigQUUUlAjgKKKWtj6ISloooGFFLRQMKKKKBnd0UUVgfLhRSUUCCiiigQUlFFAHEUtFFdB9aFFFLQMKKKKACilopjOyopKK5T4wKKKKACkoooEFFFJQI5KiilrqPuQooooAKKWigYUUUUDOpooorkPgQpKKKBBR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ilpjCiiigAopaKBnbUUlFScgUUUUAFFJRQIKKKSgRx1FFLVnoBRRRQMKKWigYUUUUDOtooorM8kKKSigQUUUlAhaSiigDlqWiitT2woopaBhRRRQAUUtFAzpKKSisT54KKKKACikooEFFFJQIwKKKWtj6cKKKKYBRS0UDCiiigZt0UUVznyYUUlFAgoopKBC0lFFAGTRRRXSfYhRS0UDCiiigApaKKBmlRSUVynxAUUUlAC0lFFAgoopKBFKilorqPvQooopgFLRRQMKKKWgZYoopK4z89FpKKKBBRRSUCFpKKKBHL0tFFaHthRRS0DEpaKKYBRRS0DPRqKKSqO0KKKKACikooEFFFFAjz2iilqTASloopgFFFLQMKKKKBne0UUUFBRSUUCCiiigQUlFFAHDUtFFBYUUUtAwooopjCilooA7SikoqTmCiiigQUlFFABRRSUCOQoopao7xKWiimAUUtFAwooooGdXRRRWZ5YUUlFAgoopKBC0lFFAjmKWiitD2goopaYwooooGFFLRQB0VFJRWJ4AUUUUCCkoooAKKKSgRhUUUtbH0oUUUUDCilopgFFFFAzZooornPlApKKKACiikoELSUUUCMuiiiug+wCilopjCiiigYUtFFAGhSUUVynxQUUUlAhaSiigAoopKBFSilorqPuwooooGFFLRTAKKKWgZNRRSVxn58LSUUUAFFFJQIWkoooEczS0UVoeyFFFLQMSloooGFFLRTA9EoopKo7wooooEFFJRQAUUUUCPP6KKWpOYSloooGFFLRTAKKKKBnd0UUUFhRSUUAFFFFAgpKKKBHEUtFFBQUUtFAwooooGFFLRTGdlRSUVJzhRRRQIKKSigQUUUlAHJUUtFUdoUUUUDCilopgFFFLQM6iiiiszzAopKKACiikoELSUUUCOapaKK0PZCilooAKKKKYwopaKBnQUUlFYnghRRRQIKSiigQUUUlAGJRS0VsfRhRRRQMKKWigYUUUtMDWooornPlgpKKKBBRRSUALSUUUCM2iiiug+vCilooAKKKWmMSloooGXqSiiuU+LCiikoELSUUUCCiikoArUUtFdR9yFFFLQMSloooGFFFLTAkoopK4z4AWkoooEFFFJQAtJRRQI5uloorQ9gKKKWgBKWiigYUUtFAz0Kikoqz0AooooEFFJRQIKKKSgDgqKKWpOQSloooGFFLRQMKKKKYHc0UUUGoUUlFAgoopKAFpKKKBHFUtFFAwoopaACiiigYUUtFAzsKKSikYhRRSUCFpKKKBBRRSUCOUoopao7AooooGFFLRQMKKKKYHT0UUlZnnC0lFFAgoopKAFpKKKBHOUtFFaHrhRS0UDCiiigAopaKYzeopKKxPCCiikoAWkoooEFFFJQIxqKWitj6IKKKKBhRS0UDCiiloGalFFJWJ8uLSUUUhBRRSUCFpKKKAM+iiiug+tCilooGFFFLQAlLRRTGXKSiiuU+MCiikoAWkoooEFFJRQIgopaK6j7kKKKWgBKWiigYUUUtAx1FFJXKfAi0lFFIQUUlFAgooooA6OiikroPrBaSiigAoopKBC0lFFAjz+iiiszzgopaKYBRRS0DEpaKKBneUlFFUdgUUUlAhaSiigQUUlFAHEUUtFIwCiiloGJS0UUDCiiloA7KiikoGLSUUUCCiikoAKKKKBHI0UUUGoUtFFMYUUUtACUtFFAzqqSiipOQKKKSgAooooEFFJRQI5qlooqz0AoopaBiUtFFAwoopaBnQUUUlZnki0lFFAgopKKBBRRRQBh0UUVqe2FLRRQMKKKWgBKWiigZsUlFFYnzwUUlFABRRRQIKKSigRmUtFFbH04UUUtMBKWiigYUUUtAy9RRSVznyYUUUUCCikooEFFFFAFWiilrpPsRKWiigYUUUtABRRRQMlooorlPiAopKKBBRRRQAUlFFAhKWiiuo+9CiilpgFFFFAwopaKBm/RRSVmeULSUUUCCiikoAWkoooEcDRRRWZ5gUtFFAwoopaYCUtFFAzuqSiiqO0KKKSgBaSiigQUUlFAjiqWiipMAoopaYCUtFFAwoopaBnYUUUlBQtJRRQIKKKSgQUUUUAcnRRS0FiUtFFAwoopaYxKWiigDqKSiipOYKKKSgQUUUUAFFJRQI5ylooqjvCiilpgJS0UUDCilooGb1FFJWZ5YtJRRQIKKKSgQUUUUCMWiilrQ9oSloopjCiiloGJS0UUAa1JRRWJ4AUUUlAgooooAKKSigRnUtFFbH0oUUUtAxKWiimAUUtFAy5RRSVznygUUUUAFFJRQIKKKKBFeiilroPsBKWiimMKKWigYUUUUAPooorlPigopKKBBRRRQIKSiigBaWiiuo+7CilooGFFFFMAopaKBm7RRSVmeYLSUUUCCikooEFFFFAHB0UUVmeUFLRRQMKKKWgYlLRRTA7ikooqjvCiikoEFFFFABRSUUCOMpaKKk5goopaBiUtFFMAoopaBnXUUUlBYtJRRQAUUlFAgooooEcrRRS0FCUtFFAwoopaBiUtFFMZ01JRRUnOFFJRQIKKKKBBRSUUAc9S0UVR2hRRS0DEpaKKYBRS0UDNyiikrM8wWkoooAKKSigQUUUUCMeiilrQ9kSloooAKKKWmMKKKKBmpSUUVieCFFJRQIKKKKBBRSUUAUKWiitj6MKKKWgYlLRRQMKKWimBaopKK5z5YKKKKBBRSUUAFFFJQIioopa6D68SloooAKKWimMKKKKBi0UUVynxYUUlFAgoopKBC0lFFAh9LRRXUfdBRS0UDCiiigYUUtFMDboopKzPNFpKKKACiikoEFFFFAjhaKKWszyhKWiigAoopaBiUtFFAztqSiirPQCiikoEFFFFAgopKKAOOpaKKk5AoopaBiUtFFAwopaKYHWUUUlBqLSUUUCCikooAKKKKBHL0UUtAxKWiigAoopaBiUtFFAzpKSiikYBRSUUAFFFFAgopKKBGBS0UVR2BRRS0DEpaKKBhRS0UwNqikorM84KKKKBBRSUUAFFFFAjJoopa0PXEpaKKBhRRS0AJS0UUxmjRRRWJ4QUUlFABRRRQIKSiigRSpaKK2PowoopaAEpaKKBhRS0UDLFFJRWB8uFFFFAgopKKBBRRSUAMoopa6D60SloooGFFLRQAUUUUxiUUUVynxgUUlFABRRSUCFpKKKBEtLRRXUfchRS0UAFFFFAwopaKBnOUUUVgfJBRS0UDCiiigApaKKBncUUlFaHrhRRSUALSUUUCCiikoEcZRS0VmecFFFFMAopaKBhRRRQM6+iikqjsFpKKKBBRRSUCFpKKKAOVooopGAUUtFAwooooGFLRRQB01FJRQMKKKSgQtJRRQAUUUlAjnqKWig1CiiimMKWiigAoopaBm5RRSVJyC0lFFABRRSUCFpKKKBGPRRRVnoBRS0UDCiiloGJS0UUDNSikorM8kKKKSgQtJRRQIKKKSgChRS0Vqe2FFFLQMSloooAKKKWgZaoopKxPnhaSiigAoopKBC0lFFAiGiiitj6cKWiimAUUUtAxKWiigY6koornPkwoopKBC0lFFAgopKKAH0tFFdJ9iFFFLQMSloooAKKKWgZXoopK5T4gWkoooEFFJRQAUUUUCMiiiiqO8KKWimMKKKKBhRS0UAdtSUUVoeyFFFJQIWkoooAKKKSgRx1FLRWZ5gUUUUDCilopgFFFLQM6yiiiqO0KSiigAoopKBC0lFFAjl6KKKk5wopaKYwooooGFLRRQM6SkoooKCiikoELSUUUCCiikoAwKKWigsKKKKBhS0UUxhRRS0AbVFFJUnMLSUUUCCiikoAKKKKBGTRRRVHeFLRRTAKKKWgYlLRRQM0qSiiszywoopKBC0lFFAgopKKBFKilorQ9oKKKKYwpaKKBhRRS0AWKKKSsTwBaSiigQUUUlABRRRQIjooorY+lCloooGFFFLTASloooGFJRRXOfKBRRSUAFFFFAgopKKBEtLRRXQfYBRRS0xiUtFFAwoopaAKtFFJXKfFBRRRQIKKSigQUUUUAZVFFFUdwUUtFABRRS0xiUtFFAztKKSitD2goopKBC0lFFAgoopKAOQopaKzPKCiiigYUtFFAwoopaYHVUUUlUd4tJRRQIKKKSgBaSiigRzNFFFScwUUtFABRRS0xiUtFFAzoqSiigsKKKSgBaSiigQUUUlAjCopaKCgoopaBiUtFFAwoopaYzYoopKk5xaSiigQUUUlAgooooAy6KKKo7QopaKBhRRS0wEpaKKBmhSUUVmeYFFFJQAtJRRQIKKKSgRUopaK0PZCiiloASloopjCiiloGTUUUlYngi0lFFAgoopKBBRRRQA2iilrY+jEpaKKBhRRS0DEpaKKYDaSiiuc+WCiikoEFFFFABRSUUCJ6Wiiug+vCiiloASloooGFFLRTGU6KKSuU+LCiiigQUUlFAgooooEZlFFFUdoUUtFAwoopaAEpaKKYzsqSiitD2woopKAFpKKKBBRSUUCOSopaKzPKCiiigAopaKBhRRS0DOooopKs9AWkoooEFFFJQIKKKKAOboooqTkCilooGFFFLQAlLRRTGdBSUUUGoUUUlAhaSiigAopKKBGJRS0UDCiiloASloooGFFFLQM1qKKSkYC0lFFABRSUUCCiiigRm0UUtUdglLRRQMKKKWgYlLRRTAvUlFFZnnBRRSUCFpKKKACikooEVqWiitD1woopaBiUtFFABRRS0xklFFJWJ4QtJRRQAUUlFAgooooEFFFLWx9EJS0UUDCiiloGJS0UUDI6SiisD5cKKSigQUUUUCCikooAs0tFFdB9aFFFLQMSloooAKKWigZRopKK5j4wKKKKACikooEFFFJQI6SikoroPrQooooEFFJRQIKKKSgDkKKKWsjwhKWiigYUUtFABRRRQM6uiiitD1wopKKACiiigQUUlFAjmKWiiszzgopaKYBRRRQMKKWigZ0VFJRVHYFFFFAgopKKBBRRSUAYVFFLSMBKWiigYUUtFAwooooA2aKKKBhRSUUCCiikoAWkoooEZVLRRQahRS0UxhRRRQAUUtFAzQopKKk5AoopKAFpKKKBBRRSUCKlFFLVnoBRRRQMKKWigYUUUUDJ6KKKzPJCkoooEFFFJQIWkoooAZS0UVqe2FFLRQMKKKKACilooGNopKKxPngoopKAFpKKKBBRRSUCJ6KWitj6cKKKKYBRS0UDCiiloGU6KKSuc+TFpKKKBBRRSUCFpKKKANCiiiug+xCilopjCiiloASloooGX6KSipOUKKKKACikooEFFFJQI5KiilrE8EKKKKYwopaKBhRRRQB1NFFFaHshRSUUCCiikoAWkoooEc1S0UVmeYFFFLQMKKKKYBRS0UDOgopKKo7QooooAKKSigQUUUlAjEoopak5wooopjCilooGFFFFAzXooooKCikooEFFFJQIWkoooAzaKKKCwopaKBhRRRTGFLRRQBeopKKk5gooooEFJRRQAUUUlAitRS0VR3hRRRTAKKWigYUUUtAySiiiszywopKKBBRRSUCFpKKKBBRRRWh7QUUtFMYUUUUDCloooAjopKKxPACiikoELSUUUAFFFJQIs0UtFbH0oUUUUDCloopgFFFLQMo0UUlc58oLSUUUAFFFJQIWkoooEaVFFFdB9gFLRRQMKKKWmMSloooAu0UlFSc4UUUUAFJRRQIKKKSgRylFFLWJ4AUUUUAFFLRQMKKKKYzp6KKK0PaCkoooEFFFJQIWkoooA5yloorM8oKKWigYUUUUDCilopgb1FJRVHeFFFFAgpKKKACiikoEY1FFLUnMFFFFABRS0UxhRRRQM1aKKKCwpKKKACiikoELSUUUCM+iiigoKKWigYUUUUDCloopjLlFJRUnOFFFJQIWkoooEFFFJQBBRS0VR2hRRRQMKKWimAUUUtAx1FFJWZ5gtJRRQAUUUlAhaSiigQ6iiitD2QopaKACiiimMKWiigZDSUUVieCFFFJQIWkoooEFFFJQBbopaK2PowooooGFLRRQMKKKWmBn0UUlc58sLSUUUCCiikoAKKKKBGpRRRXQfXhS0UUAFFFLQMSloopjLdFJRUmAUUUUCCkoooAKKKSgRy1FLRWJ88FFFFAwopaKACiiloGdJRRRWp7YUUlFABRRSUCFpKKKBHP0UUVmeUFFLRQAUUUUDCloooGblFJRVnoBRRRQIKSiigQUUUlAGRRS0VJyBRRRQMKKWigAoopaYzSooooNQpKKKBBRRSUALSUUUCKNFFFAwopaKACiiloGJS0UUDLVJRRSMQoopKBC0lFFAgoopKBEVFLRVHYFFFFAwopaKBhRRS0wCiikrM84WkoooEFFFJQAtJRRQIkooorQ9cKKWigYUUUtACUtFFMZXpKKKxPCCiikoAWkoooEFFFJQIu0UtFbH0QUUUtAxKWiigYUUUtAzNoopKwPlxaSiigQUUUlAgooooA1qKKWug+tEpaKKBhRRS0AJS0UUDOcoopawPkhKWiigYUUUtAxKWiigZ1FJRRWx9EFFJRQIKKKKBBRSUUAc5S0UVieEFFFLTGJS0UUAFFFLQM3qKSitD1wooooAKKSigQUUUUCMWiilrM84SloopgFFFLQMSloooGa1JRRVHYFFJRQIKKKKBBRSUUAZ1LRRSMAoopaBiUtFFAwopaKALlFJRQMKKKKBBRSUUAFFFJQIgoopaDUSloopjCilooAKKKKBklJRRUnIFFJRQAUUUUCCikooELS0UVZ6AUUUtAwooooGFFLRQMhopKKzPJCiiigQUUlFAgoopKALdFFLWp7YlLRRQMKKWigAooooGUKKKKxPngopKKACiikoELSUUUCNOloorY+nCilopgFFFFAwopaKBmPRSUVznyYUUUlAhaSiigQUUUlAENFFLQaCUtFFMAoopaBiUtFFAzpqSiitj6MKKKSgAooooEFFJRQI56loorE8EKKKWgYlLRRTGFFLRQBuUUUlaHshRRRQIKKSigAooooEY9FFLWZ5glLRRQMKKKWmAlLRRQM1KSiiqO0KKSigAooooEFFJRQIoUtFFSc4UUUtMYlLRRQMKKWigZaopKKCgooooEFFJRQIKKKSgCKiiloLEpaKKBhRRS0xhRRRQAtFFFScwUUlFAgooooAKSiigQ+looqjvCiilpgFFFFAwopaKBle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KBFuloooGFFFLQAlLRRQMKKWigZn0UUlIxCiiigQUUlFAgooooEalFFLVHYJS0UUDCilooGFFFFMDGooorM84KKSigQUUUUAFFJRQI3aWiitD1woopaBiUtFFABRS0UxnO0UlFYnhBRRRQAUUlFAgoopKBHT0UUtbH0QlLRRQMKKWigYUUUUDOcoopawPkhKWiigYUUtFABRRRQM16KKK6D60KKSigAoopKBC0lFFAjMpaKKwPmAopaKACiiigYUUtFAy9RSUVsfRBRRSUCFpKKKBBRRSUAVqKKWsjwgooooGFFLRQAUUUUDJaKKK0PXCikooAKKKSgQtJRRQISloorM84KKWimAUUUUDCilooGR0UlFUdgUUUlAhaSiigQUUUlAFmilopGAUUUUDCilooGFFFLQBRoopKBi0lFFAgoopKAFpKKKBGlRRRQahRS0UxhRRS0AJS0UUDMmkooqTkCiikoAWkoooEFFJRQI26KWirPQCiiloGJS0UUDCiiloGc/RRSVmeSLSUUUCCiikoELSUUUAdJRRRWp7YUtFFAwoopaAEpaKKBnL0lFFYnzwUUUlAC0lFFAgopKKBFqiilqTASloopjCilooGFFFFAGrRRRXQfXhRSUUCCiikoAWkoooEZ1LRRWB8sFFLRQMKKKKACilooGXKKSitj6MKKKSgBaSiigQUUUlAiCiilrE8EKKKKYwopaKBhRRRQA+iiitD2QpKKKBBRRSUALSUUUCFpaKKzPMCilooGFFFFMAopaKBkNFJRVHaFFFJQAtJRRQIKKKSgRbopaKkwCiiimAUUtFAwoopaBmfRRSUFC0lFFAgoopKBC0lFFAGpRRRQWFFLRQMKKKWmMSloooAx6SiipOYKKKSgQtJRRQAUUlFAjdopaKo7woopaYCUtFFAwoopaBnO0UUlZnli0lFFAgoopKBBRRRQI6aiiitD2gpaKKYwoopaBiUtFFAHK0lFFYngBRRSUCCiiigAopKKBFyiilqTnCiiigAopaKYwooooGadFFFdB9gFFJRQIKKKSgQtJRRQBRooornPlAopaKYwooooGFLRRQBaopKK2PpQoopKBC0lFFABRRSUCIqKWisTwAooooAKKWimMKKKWgYUUUVoe0FJRRQIKKKSgQtJRRQBJRRRWZ5QUUtFAwooooGFLRRTAr0UlFUd4UUUlAhaS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ooAKKSigQUUUUCOqpaKKxPCCiilpjEpaKKACilooGU6KSiuw/RQooooAKKSigQUUUUCNCiilrjPgBKWiimAUUUtAwooooGZVFFFdR90FFJRQIKKKKBBSUUUCNmloorlPiwoopaYwooooGFFLRQBg0UlFdB9eFFFFAgpKKKACiikoEdHRRS1znywUUUUwCilooGFFFFAzmKKKK2PowpKKKACiikoELSUUUCOrpaKKxPBCilopjCiiigYUUtFAHH0lFFaHshRRSUCFpKKKACiikoEdrRS0VmeYFFFFAwopaKYBRRS0DOFoooqjtCkoooAKKKSgQtJRRQI76iiipOcKKWimMKKKWgYlLRRQM89pKKKCgoopKBC0lFFAgoopKAPR6KWigsKKKWgYlLRRTGFFFLQB5nRRSVJzC0lFFAgoopKACiiigR1lLRRWJ4AUUUtMYlLRRQMKKWigCjRSUV2H6OFFFFAgopKKACiiigRpUUUtcZ+fCUtFFAwopaKYBRRRQMyKKKK6j7sKKSigAooooEFJRRQI26WiiuU+KCilooAKKKKYwopaKBnP0UlFdB9gFFFFAgpKKKBBRRSUAdLRS0VznygUUUUDCilopgFFFLQM5Wiiitj6UKKSigQUUUlAC0lFFAjrqKKKxPACilooAKKKWmMSloooGcbRSUVoe0FFFJQIWkoooEFFFJQB29FLRWZ5QUUUUDCloooGFFFLTA4OiikqjvFpKKKBBRRSUALSUUUCPQKKKKk5gpaKKACiilpjEpaKKBnndJRRQWFFFJQAtJRRQIKKSigR6TS0UUFBRRS0DEpaKKBhRRS0xnmNFFJUnOLSUUUCCikooEFFFFAHXUtFFYnz4UUUtABRRRTGFFLRQMz6KSiuw/SAooooEFFJRQIKKKSgDVoopa4z88EpaKKBhRS0UDCiiimBjUUUV1H3oUUlFAgoopKAFpKKKBG7S0UVynxAUUtFAwooooAKKWimM52ikoroPsQoopKAFpKKKBBRRSUCOnopaK5z5MKKKKBhRS0UDCiiimBylFFJWx9OLSUUUCCiikoELSUUUAdhRRRWJ88FFLRQMKKKKACloopjOLpKKK0PbCiikoAWkoooEFFJRQI7milorM8oKKKKACilooGFFFLQM4Giikqz0BaSiigQUUUlAgooooA9CoooqTkCilooGFFFLQAlLRRTGec0lFFBqFFFJQIKKKKACikooEel0UtFAwoopaAEpaKKBhRRS0DPL6KKSkYBRRRQAUUlFAgooooEdHRRSV0H1otJRRQIKKKSgAooooEaVFFFcR+bBS0UUAFFFLQMSloooGZNJRRXYfogUUUlAhaSiigQUUlFAjbopaK5D4EKKKWgYlLRRQMKKKWgZz9FFJXUfcC0lFFAgopKKBBRRRQB0lFFLXMfGCUtFFAwoopaAEpaKKBnL0lFFdB9aFFFJQAUUUUCCikooEdbS0UVgfLhRRS0DEpaKKBhRS0UDONoopK2PogooooEFFJRQIKKKKAO2oopayPCEpaKKBhRS0UAFFFFAzhKKKK0PXCikooAKKKKBBRSUUCO/paKKzPOCilopgFFFFAwopaKBnndFJRVHYFFFFAgopKKBBRRSUAek0UtFIwCiiigYUUtFAwoopaAPMaKKKBhRSUUCCiikoAWkoooEepUUUUGoUUtFMYUUUtACUtFFAzjKKKStj6MWkoooEFFFJQIKKKKANSiilriPzQSloooGFFFLQAlLRRQMx6Siiuw/RQoopKAFpKKKBBRSUUCN2loorjPgAoopaYCUtFFAwoopaBnO0UUldR90LSUUUCCikooEFFFFAjpqKKWuU+LEpaKKYwoopaBhRRRQBytJRRXQfXhRSUUCCiiigAopKKBHX0tFFc58sFFFLTAKKKKBhRS0UDOLopKK2PpAooooEFFJRQIKKKSgR3NFFLWJ4IUUUUxhRS0UDCiiigDgqKKK0PZCikooEFFFJQAtJRRQI9BpaKKzPMCiiloGFFFFMAopaKBnnNFJRVHaFFFJQAtJRRQIKKKSgR6XRRS1JzhRRRTGFFLRQMKKKKBnmFFFJQULSUUUCCiikoELSUUUAeqUUUUFhRS0UDCiiimMKWiigDiqKKStj6UWkoooEFFJRQIKKKKBGtRRS1wn5mJS0UUxhRRS0DEpaKKAMWkoorsP0cKKSigQUUUUAFFJRQI36WiiuM/PgoopaBiUtFFMAoopaBnN0UUldR92FFFFABRSUUCCiiigR1FFFLXKfFCUtFFABRRS0DEpaKKYzkqKKK6D7AKKSigQUUUUCCkoooA7GloornPlAoopaBiUtFFMAopaKBnE0UlFbH0oUUUUAFJRRQIKKKSgR3dFFLWJ4AlLRRQAUUtFAwooopjOAooorQ9oKSiigQUUUlAhaSiigD0OloorM8oKKWigYUUUUDCilopgeb0UlFUd4UUUUCCkoooAKKKSgR6bRS0VJzBRRRQAUUtFMYUUUtAzy2iiigsKSiigAoopKBC0lFFAj1aiiigoKKWigYUUUtAxKWiimM4iiikrY+lFpKKKACikooEFFFFAjYoopa4T8yEpaKKACiilpjEpaKKBmHSUUV2H6QFFJRQIKKKKBBRSUUAdDS0UVxn54FFFLQMSloooGFFLRTA5miikrqPvQooooEFFJRQAUUUUCOqoopa5T4gSloooGFFLRQAUUUUDORpKKK6T7EKKSigAooooEFFJRQI7OloornPkwopaKBhRRRQMKKWimBw9FJRWx9OFFFFAgopKKACiikoEd7RS0VifPBRRRQMKKWigAoopaBnntFFFanthRSUUAFFFJQIWkoooEejUUUVmeUFFLRQAUUUUDCloooGea0UlFWegFFFJQIWkoooEFFFJQB6fRS0VJyBRRRQMKWiigAoopaYzyuiikoNRaSiigQUUUlAC0lFFAj1iiiigYUtFFABRRS0DEpaKKBnOUUUVgfJBRS0UDCiiigYUtFFAGLRSUV3H6eFFFJQIWkoooAKKKSgRv0UtFcR+bBRRRQAUtFFAwoopaBnN0UUldh+iC0lFFAgoopKBC0lFFAjqKKKK5D4EKKWigYUUUtAxKWiigDk6Siiuo+5CiikoELSUUUCCikooA7GilorlPjAooopjCloooAKKKWgZxNFFJXQfWi0lFFABRSUUCCiiigR3VFFFYHy4UtFFAwoopaBiUtFFAzgaSiitj6IKKSigQUUUUCCikooA9DpaKKxPCCiilpjEpaKKACiiloGeb0UlFaHrhRRRQAUUlFAgooooEemUUUtZnnCUtFFMAoopaBiUtFFAzy6iiiqOwKKSigQUUUUCCkoooA9VpaKKRgFFFLQMSloooGFFLRQB5LRSUUDCiiigQUlFFABRRSUCO8ooornPlgopaKYwooooGFLRRQMw6Siiu4/UAoopKBC0lFFAgoopKAOhopaK4j80CiiigYUtFFABRRS0DOZoopK7D9FFpKKKACiikoELSUUUCOqooorjPgAopaKYBRRS0DEpaKKBnI0lFFdR90FFFJQIWkoooEFFFJQI7OilorlPiwoopaBiUtFFMYUUUtAHD0UUldB9eLSUUUCCiikoAKKKKBHeUUUtc58sJS0UUwCiiloGJS0UUDPP6Siitj6MKKKSgAooooEFFJRQI9FpaKKxPBCiiloGJS0UUxhRS0UAea0UUlaHshRRRQIKKSigAooooEenUUUtZnmCUtFFAwopaKYBRRRQM8tpKKKo7QopKKACiiigQUUlFAj1elooqTnCilopjCiiigYUUtFAzyOikooKCiiigQUUlFAgoopKAO+ooornPlQopaKACiilpjEpaKKBmDSUUV3H6kFFFJQIWkoooEFFFJQI6OilorhPzMKKKWmMSloooGFFFLQBy9FFJXYfo4tJRRQIKKKSgBaSiigR1lFFFcZ+fBS0UUDCiilpgJS0UUDOPpKKK6j7sKKKSgBaSiigQUUlFAjtaWiiuU+KCiiloASloooGFFFLTGcLRRSV0H2AtJRRQIKKSigQUUUUAd9RRS1znyglLRRQMKKKWmAUUUUDPPaSiitj6UKKSigQUUUUAFFJRQI9HpaKKxPACiiloAKKKKBhRS0UxnmdFJRWh7QUUUUCCikooEFFFJQB6jRRS1meUJS0UUDCiiloGFFFFMDyqiiiqO8KKSigQUUUlAC0lFFAj1mlooqTmCiiloAKKKKYwopaKBnkNFJRQWFFFJQAtJRRQIKKKSgR6BRRRXOfKBRS0UDCiiloASloopjOfpKKK7j9TCiikoAWkoooEFFJRQI6WilorhPzIKKKWgBKWiimMKKKWgZytFFJXYfpAtJRRQIKKSigQUUUUAddRRRXGfngUtFFAwoopaBiUtFFMDjaSiiuo+9CiikoEFFFFABRSUUCO3opaK5T4gKKKWgYlLRRQAUUUtAzg6KKSuk+xCiiigAopKKBBRRRQI9Aoopa5z5MSloooGFFFLQMSloopgedUUUVsfThRSUUCCiiigQUlFFAHpNLRRWJ88FFFLQMSloooAKKWigZ5jRSUVqe2FFFFABSUUUCCiikoEep0UUtZnkiUtFFAwopaKBhRRRQM8ooooqz0AopKKBBRRRQIKSiigD1ulooqTkCilooGFFFFABRS0Uxnj9FJRQahRRRQIKSiigAoopKBH/2Q==');"
+            ]
+          }
+        }
+      ],
+      "item": [
+        {
+          "name": "31.1 GenAI Gemini mediaResolution LOW - record image prompt tokens (gemini)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('GenAI Gemini mediaResolution LOW request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var low = body && body.usageMetadata && body.usageMetadata.promptTokenCount;",
+                  "pm.test('GenAI Gemini response reports usageMetadata.promptTokenCount', function () {",
+                  "  pm.expect(low, 'promptTokenCount missing: ' + pm.response.text()).to.be.a('number');",
+                  "});",
+                  "pm.collectionVariables.set('genaiMediaResLowPromptTokens', low);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"parts\": [\n        {\n          \"text\": \"Reply with the single word: ok.\"\n        },\n        {\n          \"inline_data\": {\n            \"mime_type\": \"image/jpeg\",\n            \"data\": \"{{mediaResImage}}\"\n          }\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"mediaResolution\": \"MEDIA_RESOLUTION_LOW\",\n    \"maxOutputTokens\": 2048\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/{{genaiModel}}:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "{{genaiModel}}:generateContent"
+              ]
+            }
+          }
+        },
+        {
+          "name": "31.2 GenAI Gemini mediaResolution HIGH exceeds LOW - field not dropped (gemini)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('GenAI Gemini mediaResolution HIGH request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var high = body && body.usageMetadata && body.usageMetadata.promptTokenCount;",
+                  "pm.test('GenAI Gemini HIGH response reports usageMetadata.promptTokenCount', function () {",
+                  "  pm.expect(high, 'promptTokenCount missing: ' + pm.response.text()).to.be.a('number');",
+                  "});",
+                  "var low = Number(pm.collectionVariables.get('genaiMediaResLowPromptTokens'));",
+                  "// Only assert the invariant when the LOW case actually recorded a value (it may have skipped).",
+                  "if (!isNaN(low) && low > 0) {",
+                  "  pm.test('mediaResolution honored: HIGH image prompt tokens exceed LOW (field not dropped)', function () {",
+                  "    pm.expect(high, 'HIGH=' + high + ' must exceed LOW=' + low + '; equal counts mean mediaResolution was dropped').to.be.above(low);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"parts\": [\n        {\n          \"text\": \"Reply with the single word: ok.\"\n        },\n        {\n          \"inline_data\": {\n            \"mime_type\": \"image/jpeg\",\n            \"data\": \"{{mediaResImage}}\"\n          }\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"mediaResolution\": \"MEDIA_RESOLUTION_HIGH\",\n    \"maxOutputTokens\": 2048\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/{{genaiModel}}:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "{{genaiModel}}:generateContent"
+              ]
+            }
+          }
+        },
+        {
+          "name": "31.3 Vertex Gemini mediaResolution LOW - record image prompt tokens (vertex)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('Vertex Gemini mediaResolution LOW request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var low = body && body.usageMetadata && body.usageMetadata.promptTokenCount;",
+                  "pm.test('Vertex Gemini response reports usageMetadata.promptTokenCount', function () {",
+                  "  pm.expect(low, 'promptTokenCount missing: ' + pm.response.text()).to.be.a('number');",
+                  "});",
+                  "pm.collectionVariables.set('vertexMediaResLowPromptTokens', low);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"parts\": [\n        {\n          \"text\": \"Reply with the single word: ok.\"\n        },\n        {\n          \"inline_data\": {\n            \"mime_type\": \"image/jpeg\",\n            \"data\": \"{{mediaResImage}}\"\n          }\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"mediaResolution\": \"MEDIA_RESOLUTION_LOW\",\n    \"maxOutputTokens\": 2048\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/{{vertexModel}}:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "{{vertexModel}}:generateContent"
+              ]
+            }
+          }
+        },
+        {
+          "name": "31.4 Vertex Gemini mediaResolution HIGH exceeds LOW - field not dropped (vertex)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('Vertex Gemini mediaResolution HIGH request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var high = body && body.usageMetadata && body.usageMetadata.promptTokenCount;",
+                  "pm.test('Vertex Gemini HIGH response reports usageMetadata.promptTokenCount', function () {",
+                  "  pm.expect(high, 'promptTokenCount missing: ' + pm.response.text()).to.be.a('number');",
+                  "});",
+                  "var low = Number(pm.collectionVariables.get('vertexMediaResLowPromptTokens'));",
+                  "// Only assert the invariant when the LOW case actually recorded a value (it may have skipped).",
+                  "if (!isNaN(low) && low > 0) {",
+                  "  pm.test('mediaResolution honored: HIGH image prompt tokens exceed LOW (field not dropped)', function () {",
+                  "    pm.expect(high, 'HIGH=' + high + ' must exceed LOW=' + low + '; equal counts mean mediaResolution was dropped').to.be.above(low);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"parts\": [\n        {\n          \"text\": \"Reply with the single word: ok.\"\n        },\n        {\n          \"inline_data\": {\n            \"mime_type\": \"image/jpeg\",\n            \"data\": \"{{mediaResImage}}\"\n          }\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"mediaResolution\": \"MEDIA_RESOLUTION_HIGH\",\n    \"maxOutputTokens\": 2048\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/{{vertexModel}}:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "{{vertexModel}}:generateContent"
               ]
             }
           }

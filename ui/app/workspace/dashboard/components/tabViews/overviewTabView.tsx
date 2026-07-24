@@ -16,6 +16,7 @@ import {
 } from "@/lib/store";
 import type { LogFilters } from "@/lib/types/logs";
 import { forwardRef, useCallback, useImperativeHandle, useMemo } from "react";
+import { computeDisplaySeries } from "../../utils/chartUtils";
 import type { DashboardData } from "../../utils/exportUtils";
 import type { ChartType } from "../charts/chartTypeToggle";
 import { OverviewTab } from "../overviewTab";
@@ -125,8 +126,13 @@ export const OverviewTabView = forwardRef<OverviewTabViewHandle, OverviewTabView
 		[histogramData, tokenData, costData, modelData, latencyData, loadData],
 	);
 
-	const costModels = useMemo(() => sanitizeSeriesLabels(costData?.models), [costData?.models]);
-	const usageModels = useMemo(() => sanitizeSeriesLabels(modelData?.models), [modelData?.models]);
+	// Legend lists mirror the charts' display order (top-N by volume + "Other"),
+	// not the API's alphabetical order — index-based colors must match the bars.
+	const costModels = useMemo(() => computeDisplaySeries(costData?.buckets, costData?.models, (b, m) => b.by_model?.[m] ?? 0), [costData]);
+	const usageModels = useMemo(
+		() => computeDisplaySeries(modelData?.buckets, modelData?.models, (b, m) => b.by_model?.[m]?.total ?? 0),
+		[modelData],
+	);
 	const availableModels = useMemo(
 		() => sanitizeSeriesLabels([...(costData?.models ?? []), ...(modelData?.models ?? [])]),
 		[costData?.models, modelData?.models],
