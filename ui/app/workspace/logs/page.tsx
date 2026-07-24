@@ -99,6 +99,7 @@ export default function LogsPage() {
 			missing_cost_only: parseAsBoolean.withDefault(false),
 			cache_hit_types: parseAsSafeArrayOf.withDefault([]),
 			metadata_filters: parseAsString.withDefault(""),
+			inverse: parseAsBoolean.withDefault(false),
 			selected_log: parseAsString.withDefault(""),
 		},
 		{
@@ -133,6 +134,7 @@ export default function LogsPage() {
 			content_search: urlState.content_search,
 			missing_cost_only: urlState.missing_cost_only,
 			cache_hit_types: urlState.cache_hit_types,
+			inverse: urlState.inverse,
 			metadata_filters: urlState.metadata_filters
 				? (() => {
 						try {
@@ -170,6 +172,7 @@ export default function LogsPage() {
 			urlState.parent_request_id,
 			urlState.missing_cost_only,
 			urlState.cache_hit_types,
+			urlState.inverse,
 			urlState.metadata_filters,
 			urlState.start_time,
 			urlState.end_time,
@@ -227,6 +230,7 @@ export default function LogsPage() {
 				content_search: newFilters.content_search || "",
 				missing_cost_only: newFilters.missing_cost_only ?? false,
 				cache_hit_types: newFilters.cache_hit_types || [],
+				inverse: newFilters.inverse ?? false,
 				metadata_filters: newFilters.metadata_filters ? JSON.stringify(newFilters.metadata_filters) : "",
 				offset: 0,
 			});

@@ -94,6 +94,7 @@ function buildFilterParams(filters: LogFilters): Record<string, string | number>
 			params[`metadata_${key}`] = value;
 		}
 	}
+	if (filters.inverse) params.inverse = "true";
 
 	return params;
 }
