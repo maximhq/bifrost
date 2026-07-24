@@ -2384,6 +2384,15 @@ func normalizeResponsesToolType(t ResponsesToolType) ResponsesToolType {
 	case strings.HasPrefix(s, "advisor") && t != ResponsesToolTypeAdvisor:
 		// Covers "advisor_20260301" and future dated versions.
 		return ResponsesToolTypeAdvisor
+	case strings.HasPrefix(s, "tool_search") && t != ResponsesToolTypeToolSearch:
+		// Covers Anthropic's server-side tool-search meta-tool declared through
+		// the OpenAI /v1/responses tools[] as "tool_search_tool_regex_20251119"
+		// / "tool_search_tool_bm25_20251119" (and future dated versions).
+		// Without this the versioned type falls through to default, never matches
+		// the ResponsesToolTypeToolSearch converter case, and is downcast to a
+		// plain custom function tool — so Anthropic never treats it as its
+		// server-side tool_search (regex vs bm25 is resolved by name downstream).
+		return ResponsesToolTypeToolSearch
 	default:
 		return t
 	}
