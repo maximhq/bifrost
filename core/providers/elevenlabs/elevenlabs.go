@@ -530,7 +530,7 @@ func (provider *ElevenlabsProvider) Transcription(ctx *schemas.BifrostContext, k
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
-	requestPath, isCompleteURL := providerUtils.GetRequestPath(ctx, "/v1/speech-to-text", provider.customProviderConfig, schemas.TranscriptionRequest)
+	requestPath, isCompleteURL, _ := providerUtils.GetRequestPath(ctx, "/v1/speech-to-text", provider.customProviderConfig, schemas.TranscriptionRequest)
 	if isCompleteURL {
 		req.SetRequestURI(requestPath)
 	} else {
@@ -788,7 +788,7 @@ func (provider *ElevenlabsProvider) VideoRemix(_ *schemas.BifrostContext, _ sche
 // buildSpeechRequestURL constructs the full request URL using the provider's configuration for speech.
 func (provider *ElevenlabsProvider) buildBaseSpeechRequestURL(ctx *schemas.BifrostContext, defaultPath string, requestType schemas.RequestType, request *schemas.BifrostSpeechRequest) string {
 	baseURL := provider.networkConfig.BaseURL
-	requestPath, isCompleteURL := providerUtils.GetRequestPath(ctx, defaultPath, provider.customProviderConfig, requestType)
+	requestPath, isCompleteURL, _ := providerUtils.GetRequestPath(ctx, defaultPath, provider.customProviderConfig, requestType)
 
 	var finalURL string
 	if isCompleteURL {

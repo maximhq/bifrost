@@ -853,16 +853,18 @@ func GetPathFromContext(ctx context.Context, defaultPath string) string {
 }
 
 // GetRequestPath gets the request path from the context, if it exists, checking for path overrides in the custom provider config.
-// It returns the resolved value and a boolean indicating whether the value is a full absolute URL.
-// If the boolean is false, the returned string is a path (leading slash ensured).
-func GetRequestPath(ctx context.Context, defaultPath string, customProviderConfig *schemas.CustomProviderConfig, requestType schemas.RequestType) (string, bool) {
+// It returns the resolved value, a boolean indicating whether the value is a full absolute URL,
+// and a boolean indicating whether the resolved path is the default path (i.e. not an explicit
+// context path or non-empty path override). Callers use the third return value to distinguish the
+// true default from an explicit path that happens to equal the default string.
+func GetRequestPath(ctx context.Context, defaultPath string, customProviderConfig *schemas.CustomProviderConfig, requestType schemas.RequestType) (string, bool, bool) {
 	// If path/url set in context, return it.
 	if pathInContext, ok := ctx.Value(schemas.BifrostContextKeyURLPath).(string); ok {
 		trimmed := strings.TrimSpace(pathInContext)
 		if u, err := url.Parse(trimmed); err == nil && u != nil && u.IsAbs() && u.Host != "" {
-			return trimmed, true
+			return trimmed, true, false
 		}
-		return trimmed, false
+		return trimmed, false, false
 	}
 
 	// If path override set in custom provider config, return it.
@@ -870,24 +872,25 @@ func GetRequestPath(ctx context.Context, defaultPath string, customProviderConfi
 		if raw, ok := customProviderConfig.RequestPathOverrides[requestType]; ok {
 			override := strings.TrimSpace(raw)
 			if override == "" {
-				return defaultPath, false
+				// Empty override means "use the default path".
+				return defaultPath, false, true
 			}
 
 			// Treat absolute URLs with scheme+host as full URLs.
 			if u, err := url.Parse(override); err == nil && u != nil && u.IsAbs() && u.Host != "" {
-				return override, true
+				return override, true, false
 			}
 
 			// Otherwise treat as a path override (ensure leading slash).
 			if !strings.HasPrefix(override, "/") {
 				override = "/" + override
 			}
-			return override, false
+			return override, false, false
 		}
 	}
 
 	// Return default path.
-	return defaultPath, false
+	return defaultPath, false, true
 }
 
 type RequestBodyGetter interface {

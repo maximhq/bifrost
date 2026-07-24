@@ -323,6 +323,30 @@ When a full URL (with scheme and host) is provided in `request_path_overrides`, 
 
 In this example, instead of using OpenAI's default `/v1/chat/completions` path, requests will be sent to `https://custom-endpoint.example.com/api/v2/chat`.
 
+### Disable Default Version Path
+
+Some OpenAI-compatible providers serve their API at a base URL that already includes a path segment (e.g. Telnyx at `https://api.telnyx.com/v2/ai/openai`). By default, Bifrost appends `/v1/` to the base URL, resulting in a double path like `https://api.telnyx.com/v2/ai/openai/v1/chat/completions`.
+
+Set `disable_default_version_path` to `true` to strip the default `/v1` prefix from request paths when the base URL already contains a path segment:
+
+```json
+{
+    "custom-llm": {
+        "network_config": {
+            "base_url": "https://api.telnyx.com/v2/ai/openai"
+        },
+        "custom_provider_config": {
+            "base_provider_type": "openai",
+            "disable_default_version_path": true
+        }
+    }
+}
+```
+
+With this setting, requests resolve to `https://api.telnyx.com/v2/ai/openai/chat/completions` instead of the incorrect `https://api.telnyx.com/v2/ai/openai/v1/chat/completions`.
+
+This only affects the true default paths — explicit `request_path_overrides` are never rewritten.
+
 ### TLS for Self-Signed or Internal Certificates
 
 When connecting to providers with HTTPS endpoints that use self-signed certificates or internal CAs (e.g., air-gapped environments, internal services), you can configure TLS in `network_config`:

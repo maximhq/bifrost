@@ -6928,6 +6928,10 @@
             "type": "string"
           }
         },
+        "disable_default_version_path": {
+          "type": "boolean",
+          "description": "When true, strips the /v1 prefix from default paths for custom providers using the OpenAI or HuggingFace adapters when the base URL already contains a path segment"
+        },
         "allowed_requests": {
           "type": "object",
           "description": "Allowed request types for the custom provider",

@@ -192,7 +192,7 @@ func buildPredictionURL(ctx *schemas.BifrostContext, baseURL, model string, cust
 		defaultPath = "/v1/models/" + model + "/predictions"
 	}
 
-	path, isCompleteURL := providerUtils.GetRequestPath(ctx, defaultPath, customProviderConfig, requestType)
+	path, isCompleteURL, _ := providerUtils.GetRequestPath(ctx, defaultPath, customProviderConfig, requestType)
 	if isCompleteURL {
 		return path
 	}

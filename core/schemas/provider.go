@@ -517,11 +517,12 @@ func (ar *AllowedRequests) IsOperationAllowed(operation RequestType) bool {
 }
 
 type CustomProviderConfig struct {
-	CustomProviderKey    string                 `json:"-"`                                // Custom provider key, internally set by Bifrost
-	IsKeyLess            bool                   `json:"is_key_less"`                      // Whether the custom provider requires a key (not allowed for Bedrock)
-	BaseProviderType     ModelProvider          `json:"base_provider_type"`               // Base provider type
-	AllowedRequests      *AllowedRequests       `json:"allowed_requests,omitempty"`       // Allowed requests for the custom provider
-	RequestPathOverrides map[RequestType]string `json:"request_path_overrides,omitempty"` // Mapping of request type to its custom path which will override the default path of the provider (not allowed for Bedrock)
+	CustomProviderKey         string                 `json:"-"`                                // Custom provider key, internally set by Bifrost
+	IsKeyLess                 bool                   `json:"is_key_less"`                      // Whether the custom provider requires a key (not allowed for Bedrock)
+	BaseProviderType          ModelProvider          `json:"base_provider_type"`               // Base provider type
+	AllowedRequests           *AllowedRequests       `json:"allowed_requests,omitempty"`       // Allowed requests for the custom provider
+	RequestPathOverrides      map[RequestType]string `json:"request_path_overrides,omitempty"` // Mapping of request type to its custom path which will override the default path of the provider (not allowed for Bedrock)
+	DisableDefaultVersionPath bool                   `json:"disable_default_version_path"`     // When true, strips the /v1 prefix from default paths for custom providers whose base URL already contains a path segment (e.g. Telnyx: /v2/ai/openai)
 }
 
 // IsOperationAllowed checks if a specific operation is allowed for this custom provider
