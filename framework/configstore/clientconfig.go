@@ -97,6 +97,7 @@ type ClientConfig struct {
 	RequiredHeaders                       []string                              `json:"required_headers,omitempty"`                  // Headers that must be present on every request (case-insensitive)
 	LoggingHeaders                        []string                              `json:"logging_headers,omitempty"`                   // Headers to capture in log metadata
 	WhitelistedRoutes                     []string                              `json:"whitelisted_routes,omitempty"`                // Routes that bypass auth middleware
+	MetricsRequireAuth                    bool                                  `json:"metrics_require_auth"`                        // Require auth on the Prometheus /metrics endpoint (default false: /metrics is public, like /health — scrapers can't carry admin auth). Set true to keep /metrics behind the auth middleware.
 	HideDeletedVirtualKeysInFilters       bool                                  `json:"hide_deleted_virtual_keys_in_filters"`        // Hide deleted virtual keys from logs/MCP filter data
 	RoutingChainMaxDepth                  int                                   `json:"routing_chain_max_depth"`                     // Maximum depth for routing rule chain evaluation (default: 10)
 	MCPExternalClientURL                  *schemas.SecretVar                    `json:"mcp_external_client_url,omitempty"`           // Public base URL used as redirect_uri when Bifrost acts as an OAuth client to upstream MCP servers. Supports env var syntax ("env.MY_VAR")

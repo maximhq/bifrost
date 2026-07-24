@@ -750,6 +750,7 @@ func TestAuthMiddleware_WhitelistedRoutes(t *testing.T) {
 		"/api/session/login",
 		"/api/oauth/callback",
 		"/health",
+		"/metrics",
 	}
 
 	for _, route := range whitelistedRoutes {
@@ -770,6 +771,46 @@ func TestAuthMiddleware_WhitelistedRoutes(t *testing.T) {
 				t.Errorf("Next handler should be called for whitelisted route %s", route)
 			}
 		})
+	}
+}
+
+// TestAuthMiddleware_Metrics covers the /metrics auth policy: public by default, gated when
+// metrics_require_auth is set, and the exact-match guard (a near-miss path is NOT exempted).
+func TestAuthMiddleware_Metrics(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	newAM := func(requireAuth bool) *AuthMiddleware {
+		am := &AuthMiddleware{}
+		am.UpdateAuthConfig(&configstore.AuthConfig{
+			AdminUserName: schemas.NewSecretVar("admin"),
+			AdminPassword: schemas.NewSecretVar("hashedpassword"),
+			IsEnabled:     true,
+		})
+		am.UpdateMetricsRequireAuth(requireAuth)
+		return am
+	}
+
+	passes := func(am *AuthMiddleware, url string) bool {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetRequestURI(url)
+		nextCalled := false
+		am.APIMiddleware()(func(ctx *fasthttp.RequestCtx) { nextCalled = true })(ctx)
+		return nextCalled
+	}
+
+	// Default (metrics_require_auth=false): /metrics is public even with auth enabled.
+	if !passes(newAM(false), "/metrics") {
+		t.Error("/metrics should bypass auth by default")
+	}
+	// metrics_require_auth=true: /metrics is gated by auth.
+	if passes(newAM(true), "/metrics") {
+		t.Error("/metrics should require auth when metrics_require_auth=true")
+	}
+	// Exact-match guard: a near-miss path must NOT be treated as the public /metrics route.
+	for _, u := range []string{"/metricsX", "/metrics/foo"} {
+		if passes(newAM(false), u) {
+			t.Errorf("%s must not be whitelisted as /metrics", u)
+		}
 	}
 }
 

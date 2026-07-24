@@ -228,6 +228,11 @@
           },
           "description": "Routes that bypass auth middleware. Requests to these exact paths skip authentication checks."
         },
+        "metrics_require_auth": {
+          "type": "boolean",
+          "description": "When true, the Prometheus /metrics endpoint requires authentication. Default false: /metrics is public (like /health), since scrapers typically cannot carry admin credentials. Set true if the metric labels (provider/model/virtual-key/team/customer/cost) are sensitive in your deployment.",
+          "default": false
+        },
         "hide_deleted_virtual_keys_in_filters": {
           "type": "boolean",
           "description": "When true, deleted virtual keys are omitted from logs and MCP logs filter data.",
