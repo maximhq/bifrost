@@ -83,6 +83,8 @@ export default function LogsPage() {
 			virtual_key_ids: parseAsSafeArrayOf.withDefault([]),
 			routing_rule_ids: parseAsSafeArrayOf.withDefault([]),
 			routing_engine_used: parseAsSafeArrayOf.withDefault([]),
+			complexity_tiers: parseAsSafeArrayOf.withDefault([]),
+			complexity_mechanisms: parseAsSafeArrayOf.withDefault([]),
 			user_ids: parseAsSafeArrayOf.withDefault([]),
 			team_ids: parseAsSafeArrayOf.withDefault([]),
 			customer_ids: parseAsSafeArrayOf.withDefault([]),
@@ -126,6 +128,8 @@ export default function LogsPage() {
 			virtual_key_ids: urlState.virtual_key_ids,
 			routing_rule_ids: urlState.routing_rule_ids,
 			routing_engine_used: urlState.routing_engine_used,
+			complexity_tiers: urlState.complexity_tiers,
+			complexity_mechanisms: urlState.complexity_mechanisms,
 			user_ids: urlState.user_ids,
 			team_ids: urlState.team_ids,
 			customer_ids: urlState.customer_ids,
@@ -162,6 +166,8 @@ export default function LogsPage() {
 			urlState.virtual_key_ids,
 			urlState.routing_rule_ids,
 			urlState.routing_engine_used,
+			urlState.complexity_tiers,
+			urlState.complexity_mechanisms,
 			urlState.user_ids,
 			urlState.team_ids,
 			urlState.customer_ids,
@@ -196,8 +202,7 @@ export default function LogsPage() {
 			// period mode `newFilters` carries no start/end, so only touch time when an
 			// explicit range is actually provided — otherwise we'd wipe the active period/range.
 			const hasExplicitTime = !!newFilters.start_time && !!newFilters.end_time;
-			const timeChanged =
-				hasExplicitTime && (newFilters.start_time !== filters.start_time || newFilters.end_time !== filters.end_time);
+			const timeChanged = hasExplicitTime && (newFilters.start_time !== filters.start_time || newFilters.end_time !== filters.end_time);
 			if (timeChanged) {
 				userModifiedTimeRange.current = true;
 			}
@@ -220,6 +225,8 @@ export default function LogsPage() {
 				virtual_key_ids: newFilters.virtual_key_ids || [],
 				routing_rule_ids: newFilters.routing_rule_ids || [],
 				routing_engine_used: newFilters.routing_engine_used || [],
+				complexity_tiers: newFilters.complexity_tiers || [],
+				complexity_mechanisms: newFilters.complexity_mechanisms || [],
 				user_ids: newFilters.user_ids || [],
 				team_ids: newFilters.team_ids || [],
 				customer_ids: newFilters.customer_ids || [],

@@ -7,6 +7,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { TruncatedLabel } from "@/components/ui/truncatedLabel";
 import { RequestTypeLabels, RequestTypes, RoutingEngineUsedLabels, Statuses } from "@/lib/constants/logs";
 import { useGetAvailableFilterDataQuery, useGetProvidersQuery } from "@/lib/store";
+import { COMPLEXITY_TIER_VALUES, LEGACY_COMPLEXITY_TIER_VALUES, COMPLEXITY_MECHANISM_LABELS, COMPLEXITY_MECHANISM_VALUES } from "@/lib/types/complexityRouter";
 import type { LogFilters } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
 import { ChevronDown, LoaderCircle, PanelLeftClose, PanelLeftOpen, Plus, RotateCcw, Search } from "lucide-react";
@@ -116,6 +117,8 @@ export function LogsFilterSidebar({ filters, onFiltersChange }: LogsSidebarProps
 					<AliasesFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<RoutingEnginesFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<RoutingRulesFilter filters={filters} onFiltersChange={onFiltersChange} />
+					<ComplexityTierFilter filters={filters} onFiltersChange={onFiltersChange} />
+					<ComplexityMechanismFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<LocalCachingFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<UserFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<TeamFilter filters={filters} onFiltersChange={onFiltersChange} />
@@ -810,6 +813,63 @@ function RoutingRulesFilter({ filters, onFiltersChange, defaultOpen }: FilterCom
 				fetching={isFetching}
 				testIdPrefix="routing-rules-filter"
 			/>
+		</FilterSection>
+	);
+}
+
+// ---------------------------------------------------------------------------
+// ComplexityTierFilter – static enum, no fetch (tiers are a closed value set)
+// ---------------------------------------------------------------------------
+
+function ComplexityTierFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentProps) {
+	const hasActive = (filters.complexity_tiers || []).length > 0;
+	// Legacy tiers (REASONING, merged into COMPLEX) are offered so historical
+	// rows recorded under the old scheme stay reachable through the filter.
+	const tiers: { value: string; label: string }[] = [
+		...COMPLEXITY_TIER_VALUES.map((tier) => ({ value: tier as string, label: tier.toLowerCase() })),
+		...LEGACY_COMPLEXITY_TIER_VALUES.map((tier) => ({ value: tier as string, label: `${tier.toLowerCase()} (legacy)` })),
+	];
+	return (
+		<FilterSection title="Complexity Tier" defaultOpen={defaultOpen || hasActive} testId="complexity-tier-filter-toggle">
+			{tiers.map(({ value, label }) => (
+				<CheckboxFilterItem
+					key={value}
+					labelClassName="capitalize"
+					label={label}
+					checked={(filters.complexity_tiers || []).includes(value)}
+					onCheckedChange={() => {
+						const current = filters.complexity_tiers || [];
+						const next = current.includes(value) ? current.filter((t) => t !== value) : [...current, value];
+						onFiltersChange({ ...filters, complexity_tiers: next });
+					}}
+					testId={`complexity-tier-filter-checkbox-${value.toLowerCase()}`}
+				/>
+			))}
+		</FilterSection>
+	);
+}
+
+// ---------------------------------------------------------------------------
+// ComplexityMechanismFilter – static enum, no fetch (mechanisms are a closed value set)
+// ---------------------------------------------------------------------------
+
+function ComplexityMechanismFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentProps) {
+	const hasActive = (filters.complexity_mechanisms || []).length > 0;
+	return (
+		<FilterSection title="Complexity Mechanism" defaultOpen={defaultOpen || hasActive} testId="complexity-mechanism-filter-toggle">
+			{COMPLEXITY_MECHANISM_VALUES.map((mechanism) => (
+				<CheckboxFilterItem
+					key={mechanism}
+					label={COMPLEXITY_MECHANISM_LABELS[mechanism] ?? mechanism}
+					checked={(filters.complexity_mechanisms || []).includes(mechanism)}
+					onCheckedChange={() => {
+						const current = filters.complexity_mechanisms || [];
+						const next = current.includes(mechanism) ? current.filter((m) => m !== mechanism) : [...current, mechanism];
+						onFiltersChange({ ...filters, complexity_mechanisms: next });
+					}}
+					testId={`complexity-mechanism-filter-checkbox-${mechanism}`}
+				/>
+			))}
 		</FilterSection>
 	);
 }

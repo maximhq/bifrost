@@ -284,8 +284,11 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 				: createRoutingRule(payload).unwrap();
 
 		submitPromise
-			.then(() => {
+			.then((result) => {
 				toast.success(isEditing ? "Routing rule updated successfully" : "Routing rule created successfully");
+				if (result.warning) {
+					toast.warning(result.warning);
+				}
 				reset();
 				setTargets([{ ...DEFAULT_ROUTING_TARGET }]);
 				setQuery(defaultQuery);

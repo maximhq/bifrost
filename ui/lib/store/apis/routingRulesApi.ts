@@ -37,17 +37,23 @@ export const routingRulesApi = baseApi.injectEndpoints({
 			providesTags: (result, error, arg) => [{ type: "RoutingRules", id: arg }],
 		}),
 
-		// Create a new routing rule
-		createRoutingRule: builder.mutation<RoutingRule, CreateRoutingRuleRequest>({
+		// Create a new routing rule. `warning` carries server-side deprecation
+		// notices (e.g. a REASONING tier comparison rewritten to COMPLEX).
+		createRoutingRule: builder.mutation<{ rule: RoutingRule; warning?: string }, CreateRoutingRuleRequest>({
 			query: (body) => ({
 				url: `/governance/routing-rules`,
 				method: "POST",
 				body,
 			}),
-			transformResponse: (response: { rule: RoutingRule }) => response.rule,
+			transformResponse: (response: { rule: RoutingRule; warning?: string }) => ({
+				rule: response.rule,
+				warning: response.warning,
+			}),
 			async onQueryStarted(arg, { dispatch, getState, queryFulfilled }) {
 				try {
-					const { data: newRule } = await queryFulfilled;
+					const {
+						data: { rule: newRule },
+					} = await queryFulfilled;
 					const queries = (getState() as any).api.queries;
 					for (const entry of Object.values(queries) as any[]) {
 						if (entry?.endpointName !== "getRoutingRules" || entry?.status !== "fulfilled") continue;
@@ -67,17 +73,23 @@ export const routingRulesApi = baseApi.injectEndpoints({
 			},
 		}),
 
-		// Update an existing routing rule
-		updateRoutingRule: builder.mutation<RoutingRule, { id: string; data: UpdateRoutingRuleRequest }>({
+		// Update an existing routing rule. `warning` carries server-side deprecation
+		// notices (e.g. a REASONING tier comparison rewritten to COMPLEX).
+		updateRoutingRule: builder.mutation<{ rule: RoutingRule; warning?: string }, { id: string; data: UpdateRoutingRuleRequest }>({
 			query: ({ id, data }) => ({
 				url: `/governance/routing-rules/${id}`,
 				method: "PUT",
 				body: data,
 			}),
-			transformResponse: (response: { rule: RoutingRule }) => response.rule,
+			transformResponse: (response: { rule: RoutingRule; warning?: string }) => ({
+				rule: response.rule,
+				warning: response.warning,
+			}),
 			async onQueryStarted({ id }, { dispatch, getState, queryFulfilled }) {
 				try {
-					const { data: updatedRule } = await queryFulfilled;
+					const {
+						data: { rule: updatedRule },
+					} = await queryFulfilled;
 					const queries = (getState() as any).api.queries;
 					for (const entry of Object.values(queries) as any[]) {
 						if (entry?.endpointName !== "getRoutingRules" || entry?.status !== "fulfilled") continue;
