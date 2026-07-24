@@ -298,6 +298,28 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 		}
 	}
 
+	// Fine-grained tool streaming (eager_input_streaming) is an Anthropic beta
+	// that Converse can't express in its typed toolSpec shape, and Bedrock's edge
+	// strips it from the outer anthropic-beta HTTP header (see the note on
+	// appendAnthropicBetaToFields below). The only channel Converse honors is the
+	// body field, so mirror the server-tools tunnel above: when a tool opts in,
+	// activate the beta through additionalModelRequestFields.anthropic_beta.
+	// Gate on the Anthropic model family: Converse also serves Nova/Llama, and
+	// tool filtering keeps custom tools (and their eager_input_streaming flag)
+	// verbatim regardless of family, so without this gate a non-Anthropic request
+	// could receive a meaningless anthropic_beta field.
+	if schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) {
+		for _, tool := range filteredTools {
+			if tool.EagerInputStreaming != nil && *tool.EagerInputStreaming {
+				if bedrockReq.AdditionalModelRequestFields == nil {
+					bedrockReq.AdditionalModelRequestFields = schemas.NewOrderedMap()
+				}
+				appendAnthropicBetaToFields(bedrockReq.AdditionalModelRequestFields, anthropic.AnthropicEagerInputStreamingBetaHeader)
+				break
+			}
+		}
+	}
+
 	// Convert reasoning config
 	if bifrostReq.Params.Reasoning != nil {
 		if bedrockReq.AdditionalModelRequestFields == nil {

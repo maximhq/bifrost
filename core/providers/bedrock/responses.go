@@ -2507,6 +2507,23 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 		}
 	}
 
+	// ResponsesTool.EagerInputStreaming needs the same Bedrock body-field
+	// tunnel as ChatTool.EagerInputStreaming. Converse's typed toolSpec cannot
+	// express the flag, and Bedrock does not forward the outer anthropic-beta
+	// header to the underlying Claude model. Append after ExtraParams have been
+	// applied so a caller-provided anthropic_beta list is preserved.
+	if schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) {
+		for _, tool := range keepTools {
+			if tool.EagerInputStreaming != nil && *tool.EagerInputStreaming {
+				if bedrockReq.AdditionalModelRequestFields == nil {
+					bedrockReq.AdditionalModelRequestFields = schemas.NewOrderedMap()
+				}
+				appendAnthropicBetaToFields(bedrockReq.AdditionalModelRequestFields, anthropic.AnthropicEagerInputStreamingBetaHeader)
+				break
+			}
+		}
+	}
+
 	// Convert tools (using the provider-filtered keepTools set computed above).
 	if len(keepTools) > 0 {
 		var bedrockTools []BedrockTool

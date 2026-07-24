@@ -1,0 +1,1 @@
+- fix: activate Anthropic fine-grained tool streaming on Bedrock by tunneling eager_input_streaming through additionalModelRequestFields.anthropic_beta, which the Converse path silently dropped (thanks [@fus3r](https://github.com/fus3r)!)
