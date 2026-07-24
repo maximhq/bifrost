@@ -3,6 +3,7 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -532,12 +533,64 @@ type EmbeddingRequest struct {
 	*schemas.EmbeddingParameters
 }
 
-// RerankRequest is a bifrost rerank request
+// RerankRequest is a bifrost rerank request.
+//
+// Documents is the canonical []schemas.RerankDocument slice — the
+// shape-flexible decode (string-array vs object-array) is owned by
+// UnmarshalJSON below, which delegates to schemas.NormalizeRerankDocuments
+// so the same logic is shared with schemas.BifrostRerankRequest's own
+// UnmarshalJSON. Putting the parent-struct UnmarshalJSON HERE (not on
+// the element type RerankDocument) is required because bytedance/sonic's
+// decoder rejects type mismatches at the array-element level BEFORE
+// invoking any element-level UnmarshalJSON, surfacing
+// "Mismatch type schemas.RerankDocument with value string". Parent-tier
+// UnmarshalJSON runs first, so it can capture Documents as raw bytes
+// and normalize before sonic ever sees the element type.
 type RerankRequest struct {
 	Query     string                   `json:"query"`
 	Documents []schemas.RerankDocument `json:"documents"`
 	BifrostParams
 	*schemas.RerankParameters
+}
+
+// UnmarshalJSON accepts both Cohere-spec string-array
+// (`"documents": ["a", "b"]`) and the legacy object-array shape
+// (`"documents": [{"text":"a"}, ...]`) for the Documents field.
+//
+// Cohere's published /v1/rerank API and vLLM both accept the string-array
+// form natively. Many OpenAI-compatible clients (e.g. Open WebUI's
+// ExternalReranker.predict) send strings.
+func (r *RerankRequest) UnmarshalJSON(data []byte) error {
+	// Alias-shadow trick: decode everything-except-Documents into the
+	// real struct via an alias (which strips the parent UnmarshalJSON
+	// and avoids infinite recursion), then capture Documents as raw
+	// bytes so the shared schemas.NormalizeRerankDocuments helper can
+	// pick its shape.
+	type alias RerankRequest
+	aux := &struct {
+		Documents json.RawMessage `json:"documents"`
+		*alias
+	}{alias: (*alias)(r)}
+	if err := sonic.Unmarshal(data, aux); err != nil {
+		return err
+	}
+	// Treat a missing/empty/`null` Documents field as nil — the rerank
+	// handler's downstream `len(docs) == 0` guard surfaces the
+	// rerank-specific "documents are required for rerank" message. Only
+	// a malformed array (e.g. `{"not":"array"}`) errors out at decode
+	// time here. bytes.Equal beats string-conversion + comparison for
+	// the null fast-path.
+	trimmed := bytes.TrimSpace(aux.Documents)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		r.Documents = nil
+		return nil
+	}
+	docs, err := schemas.NormalizeRerankDocuments(aux.Documents)
+	if err != nil {
+		return err
+	}
+	r.Documents = docs
+	return nil
 }
 
 // OCRHandlerRequest is a bifrost OCR request
@@ -1214,14 +1267,19 @@ func prepareRerankRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*Rerank
 	if err != nil {
 		return nil, nil, err
 	}
-	if strings.TrimSpace(req.Query) == "" {
+	if req.Query == "" {
 		return nil, nil, fmt.Errorf("query is required for rerank")
 	}
-	if len(req.Documents) == 0 {
+	// Documents normalization (Cohere string-array vs object-array) is
+	// handled by RerankRequest.UnmarshalJSON above, which delegates to
+	// schemas.NormalizeRerankDocuments. By this point req.Documents is
+	// the canonical []schemas.RerankDocument.
+	docs := req.Documents
+	if len(docs) == 0 {
 		return nil, nil, fmt.Errorf("documents are required for rerank")
 	}
-	for i, doc := range req.Documents {
-		if strings.TrimSpace(doc.Text) == "" {
+	for i, doc := range docs {
+		if doc.Text == "" {
 			return nil, nil, fmt.Errorf("document text is required for rerank at index %d", i)
 		}
 	}
@@ -1236,7 +1294,7 @@ func prepareRerankRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*Rerank
 		Provider:  base.Provider,
 		Model:     base.ModelName,
 		Query:     req.Query,
-		Documents: req.Documents,
+		Documents: docs,
 		Params:    req.RerankParameters,
 		Fallbacks: base.Fallbacks,
 	}, nil
