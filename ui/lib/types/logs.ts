@@ -590,7 +590,16 @@ export interface LogEntry {
 		input?: Record<string, string>;
 		output?: Record<string, string>;
 	}; // Phase-scoped placeholder-to-original mappings, present only when caller has Logs:Reveal
+	// Aggregates over this log's fallback children (rows whose parent_request_id
+	// equals this log's id). Present only on roots_only list responses.
+	child_count?: number;
+	children_cost?: number;
+	children_tokens?: number;
 }
+
+// A log row as rendered by the logs table. __chainChild marks rows injected
+// below an expanded parent in the grouped view; it never comes from the API.
+export type DisplayLogEntry = LogEntry & { __chainChild?: boolean };
 
 export interface LogFilters {
 	providers?: string[];

@@ -52,6 +52,7 @@ type SearchFilters struct {
 	StopReasons       []string          `json:"stop_reasons,omitempty"` // For filtering by stop reason (stop, length, content_filter, refusal, tool_calls, etc.)
 	Objects           []string          `json:"objects,omitempty"`      // For filtering by request type (chat.completion, text.completion, embedding)
 	ParentRequestID   string            `json:"parent_request_id,omitempty"`
+	RootsOnly         bool              `json:"roots_only,omitempty"` // Hide fallback-child rows (fallback_index > 0) so each fallback chain shows as its root request only
 	SelectedKeyIDs    []string          `json:"selected_key_ids,omitempty"`
 	VirtualKeyIDs     []string          `json:"virtual_key_ids,omitempty"`
 	RoutingRuleIDs    []string          `json:"routing_rule_ids,omitempty"`
@@ -212,6 +213,13 @@ type Log struct {
 	IsLargePayloadResponse  bool      `gorm:"default:false" json:"is_large_payload_response"`
 	HasObject               bool      `gorm:"default:false" json:"-"`              // True when payload is stored in object storage
 	ContentHidden           bool      `gorm:"default:false" json:"content_hidden"` // True when content logging was disabled for the request, so the payload must never be served back through the API/UI (whether it was retained in object storage or dropped entirely)
+
+	// Aggregates over this log's child rows (rows whose parent_request_id equals
+	// this log's ID, i.e. fallback attempts). Populated only on roots_only list
+	// queries so the UI can render an expandable chain row; never stored.
+	ChildCount     int64   `gorm:"-" json:"child_count,omitempty"`
+	ChildrenCost   float64 `gorm:"-" json:"children_cost,omitempty"`
+	ChildrenTokens int64   `gorm:"-" json:"children_tokens,omitempty"`
 
 	RedactionData          *schemas.RedactionData        `gorm:"-" json:"-"`                           // Transient guardrail redaction data consumed by enterprise logstore wrappers
 	RedactionMapping       string                        `gorm:"type:text" json:"-"`                   // Reversible redaction mapping (encrypted when an encryption key is set), written by enterprise logstore wrappers; deleted with the row
