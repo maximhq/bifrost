@@ -323,7 +323,6 @@ func TestComplexityAnalyzerConfigPutPersistsAndReloads(t *testing.T) {
 	cfg := complexity.DefaultAnalyzerConfig()
 	cfg.TierBoundaries.SimpleMedium = 0.12
 	cfg.TierBoundaries.MediumComplex = 0.34
-	cfg.TierBoundaries.ComplexReasoning = 0.78
 	cfg.Keywords.CodeKeywords = []string{" Function ", "api", "API"}
 
 	ctx := newTestRequestCtx(testComplexityAnalyzerPayload(t, cfg))
@@ -335,7 +334,7 @@ func TestComplexityAnalyzerConfigPutPersistsAndReloads(t *testing.T) {
 	if manager.reloadCalls != 1 {
 		t.Fatalf("expected one reload, got %d", manager.reloadCalls)
 	}
-	if manager.reloadedConfig == nil || manager.reloadedConfig.TierBoundaries.ComplexReasoning != 0.78 {
+	if manager.reloadedConfig == nil || manager.reloadedConfig.TierBoundaries.MediumComplex != 0.34 {
 		t.Fatalf("expected reload with normalized config, got %+v", manager.reloadedConfig)
 	}
 
@@ -398,7 +397,7 @@ func TestComplexityAnalyzerConfigResetPersistsDefaultsAndReloads(t *testing.T) {
 	}
 
 	custom := complexity.DefaultAnalyzerConfig()
-	custom.TierBoundaries.ComplexReasoning = 0.80
+	custom.TierBoundaries.MediumComplex = 0.40
 	if err := store.UpdateComplexityAnalyzerConfig(context.Background(), &custom); err != nil {
 		t.Fatalf("seed custom config: %v", err)
 	}
@@ -418,6 +417,49 @@ func TestComplexityAnalyzerConfigResetPersistsDefaultsAndReloads(t *testing.T) {
 	}
 	if stored == nil || stored.TierBoundaries != complexity.DefaultTierBoundaries() {
 		t.Fatalf("expected stored defaults, got %+v", stored)
+	}
+}
+
+func TestComplexityAnalyzerConfigResetOverwritesLegacyThreeBoundaryRow(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	manager := &mockComplexityGovernanceManager{}
+	handler := &GovernanceHandler{
+		configStore:       store,
+		governanceManager: manager,
+	}
+
+	// Simulate a pre-tier-merge DB row that still carries the removed
+	// complex_reasoning boundary. Reset reads the existing row (to preserve
+	// config hashes) before overwriting, so the legacy JSON must not break it.
+	legacyJSON := `{"tier_boundaries":{"simple_medium":0.15,"medium_complex":0.35,"complex_reasoning":0.6},` +
+		`"keywords":{"code_keywords":["api"],"reasoning_keywords":["tradeoffs"],"technical_keywords":["latency"],"simple_keywords":["hello"]}}`
+	if err := store.UpdateConfig(context.Background(), &configstoreTables.TableGovernanceConfig{
+		Key:   configstoreTables.ConfigComplexityAnalyzerConfigKey,
+		Value: legacyJSON,
+	}); err != nil {
+		t.Fatalf("seed legacy config row: %v", err)
+	}
+
+	ctx := newTestRequestCtx("")
+	handler.resetComplexityAnalyzerConfig(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	stored, err := store.GetComplexityAnalyzerConfig(context.Background())
+	if err != nil {
+		t.Fatalf("get stored config: %v", err)
+	}
+	if stored == nil || stored.TierBoundaries != complexity.DefaultTierBoundaries() {
+		t.Fatalf("expected stored defaults after reset over legacy row, got %+v", stored)
+	}
+	entry, err := store.GetConfig(context.Background(), configstoreTables.ConfigComplexityAnalyzerConfigKey)
+	if err != nil {
+		t.Fatalf("get raw config row: %v", err)
+	}
+	if strings.Contains(entry.Value, "complex_reasoning") {
+		t.Fatalf("expected reset to drop legacy complex_reasoning key, raw row: %s", entry.Value)
 	}
 }
 

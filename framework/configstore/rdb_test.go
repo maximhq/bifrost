@@ -79,9 +79,8 @@ func setupRDBTestStore(t *testing.T) *RDBConfigStore {
 func testComplexityAnalyzerConfig() *ComplexityAnalyzerConfig {
 	return &ComplexityAnalyzerConfig{
 		TierBoundaries: ComplexityTierBoundaries{
-			SimpleMedium:     0.10,
-			MediumComplex:    0.30,
-			ComplexReasoning: 0.70,
+			SimpleMedium:  0.10,
+			MediumComplex: 0.30,
 		},
 		Keywords: ComplexityEditableKeywordConfig{
 			CodeKeywords:      []string{" Function ", "api", "API"},
@@ -140,9 +139,8 @@ func TestRDBConfigStore_ComplexityAnalyzerConfigRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.Equal(t, ComplexityTierBoundaries{
-		SimpleMedium:     0.10,
-		MediumComplex:    0.30,
-		ComplexReasoning: 0.70,
+		SimpleMedium:  0.10,
+		MediumComplex: 0.30,
 	}, got.TierBoundaries)
 	assert.Equal(t, []string{"api", "function"}, got.Keywords.CodeKeywords)
 	assert.Equal(t, cfg.ConfigHashes, got.ConfigHashes)
@@ -202,9 +200,8 @@ func TestMergeComplexityAnalyzerConfigAddsKeywordsAndOverlaysBoundaries(t *testi
 	base := testComplexityAnalyzerConfig()
 	file := testComplexityAnalyzerConfig()
 	file.TierBoundaries = ComplexityTierBoundaries{
-		SimpleMedium:     0.20,
-		MediumComplex:    0.40,
-		ComplexReasoning: 0.80,
+		SimpleMedium:  0.20,
+		MediumComplex: 0.40,
 	}
 	file.Keywords.CodeKeywords = []string{"GraphQL", "api"}
 	file.Keywords.ReasoningKeywords = []string{"tradeoffs", "step by step"}
@@ -271,7 +268,7 @@ func TestRDBConfigStore_GetGovernanceConfigIncludesComplexityAnalyzerConfig(t *t
 	require.NoError(t, err)
 	require.NotNil(t, governanceConfig)
 	require.NotNil(t, governanceConfig.ComplexityAnalyzerConfig)
-	assert.Equal(t, 0.70, governanceConfig.ComplexityAnalyzerConfig.TierBoundaries.ComplexReasoning)
+	assert.Equal(t, 0.30, governanceConfig.ComplexityAnalyzerConfig.TierBoundaries.MediumComplex)
 	assert.Equal(t, cfg.ConfigHashes, governanceConfig.ComplexityAnalyzerConfig.ConfigHashes)
 }
 
@@ -296,15 +293,21 @@ func TestRDBConfigStore_UpdateComplexityAnalyzerConfigRejectsInvalidConfig(t *te
 			},
 		},
 		{
-			name: "complex reasoning at maximum",
+			name: "medium complex at maximum",
 			mutate: func(cfg *ComplexityAnalyzerConfig) {
-				cfg.TierBoundaries.ComplexReasoning = 1.0
+				cfg.TierBoundaries.MediumComplex = 1.0
 			},
 		},
 		{
 			name: "boundaries out of order",
 			mutate: func(cfg *ComplexityAnalyzerConfig) {
-				cfg.TierBoundaries.ComplexReasoning = cfg.TierBoundaries.MediumComplex - 0.1
+				cfg.TierBoundaries.MediumComplex = cfg.TierBoundaries.SimpleMedium - 0.05
+			},
+		},
+		{
+			name: "boundaries equal",
+			mutate: func(cfg *ComplexityAnalyzerConfig) {
+				cfg.TierBoundaries.MediumComplex = cfg.TierBoundaries.SimpleMedium
 			},
 		},
 		{

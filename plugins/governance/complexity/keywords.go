@@ -2,10 +2,13 @@ package complexity
 
 // --- Dimension weights ---
 
+// The positive weights (code + reasoning + technical + token count) sum to
+// 1.00 so a prompt maxing every signal reaches the full score range. The
+// simple weight is a penalty and deliberately not part of that budget.
 const (
-	codeWeight                         = 0.30
-	reasoningWeight                    = 0.25
-	technicalWeight                    = 0.25
+	codeWeight                         = 0.34
+	reasoningWeight                    = 0.28
+	technicalWeight                    = 0.28
 	simpleWeight                       = 0.05
 	tokenCountWeight                   = 0.10
 	systemPromptAssistFactor           = 0.25
@@ -14,6 +17,7 @@ const (
 	referentialLastMessageBlendWeight  = 0.35
 	referentialConversationBlendWeight = 0.65
 	referentialMinContextScore         = 0.20
+	referentialShortMessageMaxWords    = 12
 	wordPresenceSetMinBytes            = 8 * 1024
 )
 

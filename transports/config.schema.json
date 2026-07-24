@@ -3410,16 +3410,10 @@
           "type": "number",
           "exclusiveMinimum": 0,
           "exclusiveMaximum": 1,
-          "description": "Scores below this threshold and at or above simple_medium are MEDIUM"
-        },
-        "complex_reasoning": {
-          "type": "number",
-          "exclusiveMinimum": 0,
-          "exclusiveMaximum": 1,
-          "description": "Scores below this threshold and at or above medium_complex are COMPLEX"
+          "description": "Scores below this threshold and at or above simple_medium are MEDIUM; scores at or above it are COMPLEX. Must be strictly greater than simple_medium (enforced at config load)"
         }
       },
-      "required": ["simple_medium", "medium_complex", "complex_reasoning"],
+      "required": ["simple_medium", "medium_complex"],
       "additionalProperties": false
     },
     "complexity_analyzer_keywords": {
