@@ -67,6 +67,6 @@ export const KEYWORD_LIST_DEFINITIONS: Array<{
 ];
 
 export const DEFAULT_TIER_BOUNDARIES: TierBoundaries = {
-	simple_medium: 0.17,
-	medium_complex: 0.39,
+	simple_medium: 0.2,
+	medium_complex: 0.4,
 };
