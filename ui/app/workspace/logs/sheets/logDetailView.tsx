@@ -411,6 +411,14 @@ function StatusPill({ status }: { status: Status }) {
 	);
 }
 
+// Colors an HTTP status code badge by response class.
+function statusCodeBadgeClass(code: number): string {
+	if (code >= 200 && code < 300) return "bg-green-50 text-green-700 border-green-200 dark:bg-green-950/40 dark:text-green-400 dark:border-green-900";
+	if (code >= 300 && code < 400) return "bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/40 dark:text-blue-400 dark:border-blue-900";
+	if (code >= 400 && code < 500) return "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/40 dark:text-amber-400 dark:border-amber-900";
+	return "bg-red-50 text-red-700 border-red-200 dark:bg-red-950/40 dark:text-red-400 dark:border-red-900";
+}
+
 function HeroStat({
 	label,
 	value,
@@ -653,6 +661,8 @@ export function LogDetailView({
 				status_code?: number;
 			})
 		: null;
+	// Only errors and passthrough requests carry a real HTTP status code; others have none.
+	const statusCode = log.error_details?.status_code ?? passthroughParams?.status_code ?? null;
 
 	// Tools can also be declared inside Responses input items instead of the
 	// top-level tools param (codex code-mode models send an `additional_tools`
@@ -767,7 +777,6 @@ export function LogDetailView({
 				<div className="flex items-start justify-between gap-6 px-5 pt-5 pb-4">
 					<div className="min-w-0 flex-1">
 						<div className="flex flex-wrap items-center gap-2">
-							<StatusPill status={log.status as Status} />
 							<Badge
 								variant="outline"
 								className={cn(
@@ -777,6 +786,12 @@ export function LogDetailView({
 							>
 								{RequestTypeLabels[log.object as keyof typeof RequestTypeLabels] ?? log.object}
 							</Badge>
+							<StatusPill status={log.status as Status} />
+							{statusCode != null && (
+								<Badge variant="outline" className={cn("rounded-sm px-2 py-0.5 font-medium tabular-nums", statusCodeBadgeClass(statusCode))}>
+									{statusCode}
+								</Badge>
+							)}
 							{log.routing_rule && (
 								<Link
 									to="/workspace/logs"
