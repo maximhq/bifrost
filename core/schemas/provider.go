@@ -546,6 +546,7 @@ var defaultProviderRequestIDHeaders = map[ModelProvider]string{
 	Azure:     "apim-request-id",
 }
 
+// MaxProviderRequestIDLength is the largest provider request ID value retained for logging.
 const MaxProviderRequestIDLength = 512
 
 // ResolveProviderRequestIDHeader validates and resolves the configured response header.
