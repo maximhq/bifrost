@@ -45026,6 +45026,82 @@
         }
       }
     },
+    "/api/governance/budgets/{budget_id}/reset": {
+      "post": {
+        "operationId": "resetBudget",
+        "summary": "Reset budget usage",
+        "description": "Manually resets a budget's current usage to zero without waiting for its reset window to elapse. The reset applies to the in-memory governance store immediately and is persisted to the database. Rolling budgets restart their window from the reset time; calendar-aligned budgets still reset at the next calendar boundary.",
+        "tags": [
+          "Governance"
+        ],
+        "parameters": [
+          {
+            "name": "budget_id",
+            "in": "path",
+            "required": true,
+            "description": "ID of the budget to reset",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Budget reset successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "budget"
+                  ],
+                  "properties": {
+                    "budget": {
+                      "$ref": "#/components/schemas/Budget"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid budget ID",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Budget not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/governance/rate-limits": {
       "get": {
         "operationId": "listRateLimits",

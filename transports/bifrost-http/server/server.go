@@ -92,6 +92,7 @@ type ServerCallbacks interface {
 	UpdateDropExcessRequests(ctx context.Context, value bool)
 	// Governance related callbacks
 	GetGovernanceData(ctx context.Context) *governance.GovernanceData
+	ResetBudget(ctx context.Context, id string) (*tables.TableBudget, error)
 	ReloadTeam(ctx context.Context, id string) (*tables.TableTeam, error)
 	RemoveTeam(ctx context.Context, id string) error
 	ReloadCustomer(ctx context.Context, id string) (*tables.TableCustomer, error)
@@ -453,6 +454,15 @@ func (s *BifrostHTTPServer) ReloadVirtualKey(ctx context.Context, id string) (*t
 	}
 	s.MCPServerHandler.SyncVKMCPServer(virtualKey)
 	return virtualKey, nil
+}
+
+// ResetBudget manually resets a budget's usage via the governance plugin's store
+func (s *BifrostHTTPServer) ResetBudget(ctx context.Context, id string) (*tables.TableBudget, error) {
+	governancePlugin, err := s.getGovernancePlugin()
+	if err != nil {
+		return nil, err
+	}
+	return governancePlugin.GetGovernanceStore().ResetBudget(ctx, id)
 }
 
 // RemoveVirtualKey removes a virtual key from the in-memory store

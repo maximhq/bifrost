@@ -60,6 +60,7 @@ type GovernanceManager interface {
 	RemoveRoutingRule(ctx context.Context, id string) error
 	UpsertPricingOverride(ctx context.Context, override *configstoreTables.TablePricingOverride) error
 	DeletePricingOverride(ctx context.Context, id string) error
+	ResetBudget(ctx context.Context, id string) (*configstoreTables.TableBudget, error)
 }
 
 type complexityAnalyzerConfigReloader interface {
@@ -1030,6 +1031,7 @@ func (h *GovernanceHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 
 	// Budget and Rate Limit GET operations
 	r.GET("/api/governance/budgets", lib.ChainMiddlewares(h.getBudgets, middlewares...))
+	r.POST("/api/governance/budgets/{budget_id}/reset", lib.ChainMiddlewares(h.resetBudget, middlewares...))
 	r.GET("/api/governance/rate-limits", lib.ChainMiddlewares(h.getRateLimits, middlewares...))
 
 	// Routing Rules CRUD operations
@@ -3025,6 +3027,28 @@ func (h *GovernanceHandler) getBudgets(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, map[string]interface{}{
 		"budgets": budgets,
 		"count":   len(budgets),
+	})
+}
+
+// resetBudget handles POST /api/governance/budgets/{budget_id}/reset - Manually reset a budget's usage
+func (h *GovernanceHandler) resetBudget(ctx *fasthttp.RequestCtx) {
+	budgetID, err := url.PathUnescape(ctx.UserValue("budget_id").(string))
+	if err != nil || budgetID == "" {
+		SendError(ctx, 400, "invalid budget ID")
+		return
+	}
+	budget, err := h.governanceManager.ResetBudget(ctx, budgetID)
+	if err != nil {
+		if errors.Is(err, governance.ErrBudgetNotFound) {
+			SendError(ctx, 404, "budget not found")
+			return
+		}
+		logger.Error("failed to reset budget %s: %v", budgetID, err)
+		SendError(ctx, 500, "failed to reset budget")
+		return
+	}
+	SendJSON(ctx, map[string]interface{}{
+		"budget": budget,
 	})
 }
 

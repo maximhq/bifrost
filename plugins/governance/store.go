@@ -3,6 +3,7 @@ package governance
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -150,6 +151,8 @@ type GovernanceStore interface {
 	// DB sync for expired items
 	ResetExpiredRateLimits(ctx context.Context, resetRateLimits []*configstoreTables.TableRateLimit) error
 	ResetExpiredBudgets(ctx context.Context, resetBudgets []*configstoreTables.TableBudget) error
+	// Manual/admin reset of a single budget; returns ErrBudgetNotFound for unknown IDs.
+	ResetBudget(ctx context.Context, budgetID string) (*configstoreTables.TableBudget, error)
 	// Provider and model-level usage updates (combined)
 	UpdateProviderAndModelBudgetUsageInMemory(ctx context.Context, model string, provider schemas.ModelProvider, cost float64) error
 	UpdateProviderAndModelRateLimitUsageInMemory(ctx context.Context, model string, provider schemas.ModelProvider, tokensUsed int64, shouldUpdateTokens bool, shouldUpdateRequests bool) error
@@ -1924,6 +1927,50 @@ func (gs *LocalGovernanceStore) ResetExpiredBudgetsInMemory(ctx context.Context,
 		}
 	}
 	return resetBudgets
+}
+
+var ErrBudgetNotFound = errors.New("budget not found")
+
+// ResetBudget forcibly zeroes a budget's usage (manual/admin reset), applying
+// the same side effects as an expiry-driven reset.
+func (gs *LocalGovernanceStore) ResetBudget(ctx context.Context, budgetID string) (*configstoreTables.TableBudget, error) {
+	if gs.LoadBudget(ctx, budgetID) == nil {
+		return nil, ErrBudgetNotFound
+	}
+	// A manual reset must always zero usage. ResetBudgetAt only applies when the
+	// target is strictly after the stored LastReset, so advance past a future
+	// LastReset to force the reset rather than reporting a no-op as success.
+	var resetBudget *configstoreTables.TableBudget
+	for {
+		current := gs.LoadBudget(ctx, budgetID)
+		if current == nil {
+			return nil, ErrBudgetNotFound
+		}
+		if current.CurrentUsage == 0 {
+			return current, nil
+		}
+		target := time.Now()
+		if !current.LastReset.Before(target) {
+			target = current.LastReset.Add(time.Nanosecond)
+		}
+		rb, ok := gs.ResetBudgetAt(ctx, budgetID, target)
+		if ok {
+			resetBudget = rb
+			break
+		}
+	}
+	gs.LastDBUsagesBudgetsMu.Lock()
+	gs.LastDBUsagesBudgets[resetBudget.ID] = 0
+	gs.LastDBUsagesBudgetsMu.Unlock()
+	gs.updateBudgetReferences(ctx, resetBudget)
+	if onBudgetsReset := gs.getBudgetsResetHook(); onBudgetsReset != nil {
+		onBudgetsReset([]*configstoreTables.TableBudget{resetBudget})
+	}
+	if err := gs.ResetExpiredBudgets(ctx, []*configstoreTables.TableBudget{resetBudget}); err != nil {
+		return nil, err
+	}
+	gs.logger.Info("manually reset budget %s (usage zeroed, last_reset advanced to %s)", resetBudget.ID, resetBudget.LastReset.Format(time.RFC3339))
+	return resetBudget, nil
 }
 
 // rateLimitResetTarget returns the LastReset value to write when a rate-limit counter is expired.

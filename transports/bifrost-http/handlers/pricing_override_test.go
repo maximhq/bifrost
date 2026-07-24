@@ -65,6 +65,9 @@ func (pricingOverrideTestGovernanceManager) UpsertPricingOverride(context.Contex
 func (pricingOverrideTestGovernanceManager) DeletePricingOverride(context.Context, string) error {
 	return nil
 }
+func (pricingOverrideTestGovernanceManager) ResetBudget(context.Context, string) (*configstoreTables.TableBudget, error) {
+	return nil, nil
+}
 
 func setupPricingOverrideHandlerStore(t *testing.T) configstore.ConfigStore {
 	t.Helper()

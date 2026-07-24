@@ -3372,3 +3372,108 @@ func TestTeam_MalformedEncodingReturns400(t *testing.T) {
 		t.Fatalf("DELETE malformed encoding status got %d, want 400; body=%s", delCtx.Response.StatusCode(), delCtx.Response.Body())
 	}
 }
+
+// mockResetBudgetGovernanceManager embeds the interface so unimplemented
+// methods panic. Only ResetBudget is needed for the resetBudget handler path.
+type mockResetBudgetGovernanceManager struct {
+	GovernanceManager
+	resetIDs []string
+	budget   *configstoreTables.TableBudget
+	err      error
+}
+
+func (m *mockResetBudgetGovernanceManager) ResetBudget(_ context.Context, id string) (*configstoreTables.TableBudget, error) {
+	m.resetIDs = append(m.resetIDs, id)
+	if m.err != nil {
+		return nil, m.err
+	}
+	return m.budget, nil
+}
+
+func TestResetBudget_Success(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	manager := &mockResetBudgetGovernanceManager{
+		budget: &configstoreTables.TableBudget{
+			ID:            "budget-1",
+			MaxLimit:      100,
+			CurrentUsage:  0,
+			ResetDuration: "1M",
+			LastReset:     time.Now(),
+		},
+	}
+	h := &GovernanceHandler{governanceManager: manager}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.SetUserValue("budget_id", "budget-1")
+
+	h.resetBudget(ctx)
+
+	if ctx.Response.StatusCode() != 200 {
+		t.Fatalf("expected status 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	if len(manager.resetIDs) != 1 || manager.resetIDs[0] != "budget-1" {
+		t.Fatalf("expected reset for budget-1, got %#v", manager.resetIDs)
+	}
+
+	var resp struct {
+		Budget configstoreTables.TableBudget `json:"budget"`
+	}
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+	if resp.Budget.ID != "budget-1" || resp.Budget.CurrentUsage != 0 {
+		t.Fatalf("unexpected budget in response: %#v", resp.Budget)
+	}
+}
+
+func TestResetBudget_NotFound(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	manager := &mockResetBudgetGovernanceManager{err: governance.ErrBudgetNotFound}
+	h := &GovernanceHandler{governanceManager: manager}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.SetUserValue("budget_id", "missing")
+
+	h.resetBudget(ctx)
+
+	if ctx.Response.StatusCode() != 404 {
+		t.Fatalf("expected status 404, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+}
+
+func TestResetBudget_StoreErrorReturns500(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	manager := &mockResetBudgetGovernanceManager{err: errors.New("db unavailable")}
+	h := &GovernanceHandler{governanceManager: manager}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.SetUserValue("budget_id", "budget-1")
+
+	h.resetBudget(ctx)
+
+	if ctx.Response.StatusCode() != 500 {
+		t.Fatalf("expected status 500, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+}
+
+func TestResetBudget_MalformedEncodingReturns400(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	manager := &mockResetBudgetGovernanceManager{}
+	h := &GovernanceHandler{governanceManager: manager}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.SetUserValue("budget_id", "budget%2")
+
+	h.resetBudget(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	if len(manager.resetIDs) != 0 {
+		t.Fatalf("expected no reset calls for malformed ID, got %#v", manager.resetIDs)
+	}
+}
