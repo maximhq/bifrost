@@ -476,6 +476,12 @@ func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
 	if stopReasons := string(ctx.QueryArgs().Peek("stop_reasons")); stopReasons != "" {
 		filters.StopReasons = parseCommaSeparated(stopReasons)
 	}
+	if complexityTiers := string(ctx.QueryArgs().Peek("complexity_tiers")); complexityTiers != "" {
+		filters.ComplexityTiers = parseCommaSeparated(complexityTiers)
+	}
+	if complexityMechanisms := string(ctx.QueryArgs().Peek("complexity_mechanisms")); complexityMechanisms != "" {
+		filters.ComplexityMechanisms = parseCommaSeparated(complexityMechanisms)
+	}
 	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
 		if t, err := time.Parse(time.RFC3339Nano, startTime); err == nil {
 			filters.StartTime = &t
@@ -726,6 +732,12 @@ func (h *LoggingHandler) getLogsStats(ctx *fasthttp.RequestCtx) {
 	if stopReasons := string(ctx.QueryArgs().Peek("stop_reasons")); stopReasons != "" {
 		filters.StopReasons = parseCommaSeparated(stopReasons)
 	}
+	if complexityTiers := string(ctx.QueryArgs().Peek("complexity_tiers")); complexityTiers != "" {
+		filters.ComplexityTiers = parseCommaSeparated(complexityTiers)
+	}
+	if complexityMechanisms := string(ctx.QueryArgs().Peek("complexity_mechanisms")); complexityMechanisms != "" {
+		filters.ComplexityMechanisms = parseCommaSeparated(complexityMechanisms)
+	}
 	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
 		if t, err := time.Parse(time.RFC3339Nano, startTime); err == nil {
 			filters.StartTime = &t
@@ -884,6 +896,12 @@ func parseHistogramFilters(ctx *fasthttp.RequestCtx) *logstore.SearchFilters {
 	}
 	if stopReasons := string(ctx.QueryArgs().Peek("stop_reasons")); stopReasons != "" {
 		filters.StopReasons = parseCommaSeparated(stopReasons)
+	}
+	if complexityTiers := string(ctx.QueryArgs().Peek("complexity_tiers")); complexityTiers != "" {
+		filters.ComplexityTiers = parseCommaSeparated(complexityTiers)
+	}
+	if complexityMechanisms := string(ctx.QueryArgs().Peek("complexity_mechanisms")); complexityMechanisms != "" {
+		filters.ComplexityMechanisms = parseCommaSeparated(complexityMechanisms)
 	}
 	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
 		if t, err := time.Parse(time.RFC3339Nano, startTime); err == nil {

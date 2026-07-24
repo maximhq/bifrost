@@ -209,6 +209,11 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 
 				var unknowns []*cel.AttributePatternType
 				if referencesComplexity && complexityResult == nil {
+					// Covers both "classifier ran but produced no tier" (already
+					// recorded by the compute closure) and "analyzer disabled but a
+					// rule demands complexity_tier" — either way the request log
+					// should show the classification was skipped.
+					ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexityMechanism, complexity.MechanismSkipped)
 					unknowns = append(unknowns, cel.AttributePattern("complexity_tier"))
 				}
 

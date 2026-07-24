@@ -381,6 +381,67 @@ func TestPostLLMHookProviderTimeoutRemainsErrorStatus(t *testing.T) {
 	}
 }
 
+func TestPostLLMHookCapturesComplexityRoutingContext(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-complexity-capture")
+
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o",
+			Params:   &schemas.ChatParameters{},
+		},
+	}
+	if _, _, err = plugin.PreLLMHook(ctx, req); err != nil {
+		t.Fatalf("PreLLMHook() error = %v", err)
+	}
+
+	// Set by the governance plugin when a routing rule references complexity_tier.
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexityTier, "COMPLEX")
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexityMechanism, "lexical")
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexityScore, 0.42)
+
+	statusCode := 500
+	bifrostErr := &schemas.BifrostError{
+		IsBifrostError: true,
+		StatusCode:     &statusCode,
+		Error:          &schemas.ErrorField{Message: "provider failed"},
+		ExtraFields: schemas.BifrostErrorExtraFields{
+			RequestType:            schemas.ChatCompletionRequest,
+			Provider:               schemas.OpenAI,
+			OriginalModelRequested: "gpt-4o",
+			ResolvedModelUsed:      "gpt-4o",
+		},
+	}
+	if _, _, err = plugin.PostLLMHook(ctx, nil, bifrostErr); err != nil {
+		t.Fatalf("PostLLMHook() error = %v", err)
+	}
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+
+	entry, err := store.FindByID(context.Background(), "req-complexity-capture")
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if entry.ComplexityTier == nil || *entry.ComplexityTier != "COMPLEX" {
+		t.Fatalf("expected complexity_tier COMPLEX, got %v", entry.ComplexityTier)
+	}
+	if entry.ComplexityMechanism == nil || *entry.ComplexityMechanism != "lexical" {
+		t.Fatalf("expected complexity_mechanism lexical, got %v", entry.ComplexityMechanism)
+	}
+	if entry.ComplexityScore == nil || *entry.ComplexityScore != 0.42 {
+		t.Fatalf("expected complexity_score 0.42, got %v", entry.ComplexityScore)
+	}
+}
+
 func TestLogStatusForErrorDoesNotTreatGenericDeadlineMessageAsCancelled(t *testing.T) {
 	statusCode := 504
 	bifrostErr := &schemas.BifrostError{
