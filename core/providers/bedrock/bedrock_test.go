@@ -4541,6 +4541,162 @@ func TestDocumentFormatMapping(t *testing.T) {
 	}
 }
 
+// TestDocumentFormatFromDataURLMediaType covers the OpenAI Chat Completions shape
+// that LibreChat and similar clients send: type:"file" with MIME only inside
+// file_data (data:<mime>;base64,...) and no file_type. Before #5472 this always
+// defaulted to format=pdf and Bedrock rejected non-PDF office bytes.
+func TestDocumentFormatFromDataURLMediaType(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		mediaType      string
+		filename       string
+		expectedFormat string
+	}{
+		{"XLSX_DataURL_NoFileType", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "sheet.xlsx", "xlsx"},
+		{"DOCX_DataURL_NoFileType", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "doc.docx", "docx"},
+		{"PDF_DataURL_NoFileType", "application/pdf", "doc.pdf", "pdf"},
+		{"CSV_DataURL_NoFileType", "text/csv", "data.csv", "csv"},
+		{"XLS_DataURL_NoFileType", "application/vnd.ms-excel", "legacy.xls", "xls"},
+		{"DOC_DataURL_NoFileType", "application/msword", "legacy.doc", "doc"},
+		{"HTML_DataURL_NoFileType", "text/html", "page.html", "html"},
+		{"MD_DataURL_NoFileType", "text/markdown", "notes.md", "md"},
+		{"TXT_DataURL_NoFileType", "text/plain", "notes.txt", "txt"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			payload := "ZmFrZS1ieXRlcw==" // base64("fake-bytes")
+			fileData := "data:" + tt.mediaType + ";base64," + payload
+			bifrostReq := &schemas.BifrostChatRequest{
+				Provider: schemas.Bedrock,
+				Model:    "anthropic.claude-3-5-sonnet-v2",
+				Input: []schemas.ChatMessage{
+					{
+						Role: schemas.ChatMessageRoleUser,
+						Content: &schemas.ChatMessageContent{
+							ContentBlocks: []schemas.ChatContentBlock{
+								{
+									Type: schemas.ChatContentBlockTypeText,
+									Text: schemas.Ptr("Summarize this document."),
+								},
+								{
+									Type: schemas.ChatContentBlockTypeFile,
+									File: &schemas.ChatInputFile{
+										Filename: schemas.Ptr(tt.filename),
+										// FileType intentionally nil — OpenAI clients omit it
+										FileData: &fileData,
+									},
+								},
+							},
+						},
+					},
+				},
+			}
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			result, err := bedrock.ToBedrockChatCompletionRequest(ctx, bifrostReq)
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			require.Len(t, result.Messages, 1)
+			require.GreaterOrEqual(t, len(result.Messages[0].Content), 2)
+			docBlock := result.Messages[0].Content[1]
+			require.NotNil(t, docBlock.Document, "type:file must become a Bedrock document block, not image")
+			assert.Nil(t, docBlock.Image, "type:file must not become an image block")
+			assert.Equal(t, tt.expectedFormat, docBlock.Document.Format,
+				"data URL media type %q / filename %q should map to format %q", tt.mediaType, tt.filename, tt.expectedFormat)
+			require.NotNil(t, docBlock.Document.Source)
+			require.NotNil(t, docBlock.Document.Source.Bytes)
+			assert.Equal(t, payload, *docBlock.Document.Source.Bytes)
+		})
+	}
+}
+
+// TestDocumentFormatFromFilenameExtension covers raw base64 file_data (no data:
+// URL MIME) where the only type signal is the filename extension.
+func TestDocumentFormatFromFilenameExtension(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		filename       string
+		expectedFormat string
+	}{
+		{"XLSX_Filename", "report.xlsx", "xlsx"},
+		{"DOCX_Filename", "report.docx", "docx"},
+		{"PDF_Filename", "report.pdf", "pdf"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			payload := "ZmFrZS1ieXRlcw=="
+			bifrostReq := &schemas.BifrostChatRequest{
+				Provider: schemas.Bedrock,
+				Model:    "anthropic.claude-3-5-sonnet-v2",
+				Input: []schemas.ChatMessage{
+					{
+						Role: schemas.ChatMessageRoleUser,
+						Content: &schemas.ChatMessageContent{
+							ContentBlocks: []schemas.ChatContentBlock{
+								{
+									Type: schemas.ChatContentBlockTypeFile,
+									File: &schemas.ChatInputFile{
+										Filename: schemas.Ptr(tt.filename),
+										FileData: &payload,
+									},
+								},
+							},
+						},
+					},
+				},
+			}
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			result, err := bedrock.ToBedrockChatCompletionRequest(ctx, bifrostReq)
+			require.NoError(t, err)
+			require.NotNil(t, result.Messages[0].Content[0].Document)
+			assert.Equal(t, tt.expectedFormat, result.Messages[0].Content[0].Document.Format)
+			assert.Equal(t, payload, *result.Messages[0].Content[0].Document.Source.Bytes)
+		})
+	}
+}
+
+// TestDocumentFormatDataURLOverridesWrongDefault ensures a recognizable data-URL
+// MIME wins over the pdf default even when filename lacks an extension.
+func TestDocumentFormatDataURLOverridesWrongDefault(t *testing.T) {
+	t.Parallel()
+
+	payload := "ZmFrZS14bHN4"
+	fileData := "data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64," + payload
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.Bedrock,
+		Model:    "anthropic.claude-3-5-sonnet-v2",
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{
+					ContentBlocks: []schemas.ChatContentBlock{
+						{
+							Type: schemas.ChatContentBlockTypeFile,
+							File: &schemas.ChatInputFile{
+								Filename: schemas.Ptr("untitled"),
+								FileData: &fileData,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result, err := bedrock.ToBedrockChatCompletionRequest(ctx, bifrostReq)
+	require.NoError(t, err)
+	require.NotNil(t, result.Messages[0].Content[0].Document)
+	assert.Equal(t, "xlsx", result.Messages[0].Content[0].Document.Format)
+}
+
 func TestBedrockStopReasonMapping(t *testing.T) {
 	t.Parallel()
 

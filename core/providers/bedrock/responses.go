@@ -4535,33 +4535,25 @@ func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx conte
 						doc.Name = normalizeBedrockFilename(*block.ResponsesInputMessageContentBlockFile.Filename)
 					}
 
-					// Determine format: text or PDF based on FileType
+					// Determine format from file_type, then filename extension.
+					// Data-URL media type is applied below and can refine further
+					// (OpenAI file parts often omit file_type and only put MIME in
+					// the data: URL — same #5472 failure mode as chat completions).
+					// Unrecognized MIME (e.g. application/octet-stream) must still
+					// fall back to the filename so report.xlsx does not stay pdf.
 					isTextFile := false
+					formatSet := false
 					if block.ResponsesInputMessageContentBlockFile.FileType != nil {
-						fileType := *block.ResponsesInputMessageContentBlockFile.FileType
-						// Check if it's a text type
-						if fileType == "text/markdown" || fileType == "md" {
-							doc.Format = "md"
-							isTextFile = true
-						} else if fileType == "text/html" || fileType == "html" {
-							doc.Format = "html"
-							isTextFile = true
-						} else if fileType == "text/csv" || fileType == "csv" {
-							doc.Format = "csv"
-							isTextFile = true
-						} else if strings.HasPrefix(fileType, "text/") || fileType == "txt" {
-							doc.Format = "txt"
-							isTextFile = true
-						} else if strings.Contains(fileType, "pdf") || fileType == "pdf" {
-							doc.Format = "pdf"
-						} else if strings.Contains(fileType, "spreadsheetml") || fileType == "xlsx" {
-							doc.Format = "xlsx"
-						} else if fileType == "application/vnd.ms-excel" || fileType == "xls" {
-							doc.Format = "xls"
-						} else if strings.Contains(fileType, "wordprocessingml") || fileType == "docx" {
-							doc.Format = "docx"
-						} else if fileType == "application/msword" || fileType == "doc" {
-							doc.Format = "doc"
+						if format, text, ok := bedrockDocumentFormatFromMediaType(*block.ResponsesInputMessageContentBlockFile.FileType); ok {
+							doc.Format = format
+							isTextFile = text
+							formatSet = true
+						}
+					}
+					if !formatSet && block.ResponsesInputMessageContentBlockFile.Filename != nil {
+						if format, text, ok := bedrockDocumentFormatFromFilename(*block.ResponsesInputMessageContentBlockFile.Filename); ok {
+							doc.Format = format
+							isTextFile = text
 						}
 					}
 
@@ -4572,8 +4564,14 @@ func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx conte
 						// Check if it's a data URL (e.g., "data:application/pdf;base64,...")
 						if strings.HasPrefix(fileData, "data:") {
 							urlInfo := schemas.ExtractURLTypeInfo(fileData)
+							if urlInfo.MediaType != nil {
+								if format, text, ok := bedrockDocumentFormatFromMediaType(*urlInfo.MediaType); ok {
+									doc.Format = format
+									isTextFile = text
+								}
+							}
 							if urlInfo.DataURLWithoutPrefix != nil {
-								// PDF or other binary - keep as base64
+								// Binary / already-base64 payload - keep as bytes
 								doc.Source.Bytes = urlInfo.DataURLWithoutPrefix
 								bedrockBlock.Document = doc
 								break

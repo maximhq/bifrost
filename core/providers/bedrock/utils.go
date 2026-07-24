@@ -188,6 +188,61 @@ func normalizeBedrockFilename(filename string) string {
 	return normalized
 }
 
+// bedrockDocumentFormatFromMediaType maps a MIME type or short format name to a
+// Bedrock Converse document format. OpenAI Chat Completions file parts typically
+// carry the MIME only inside a data: URL (not in file_type), so callers must also
+// pass ExtractURLTypeInfo(...).MediaType through this helper. ok is false when the
+// type is unrecognized (caller keeps its existing default, usually "pdf").
+func bedrockDocumentFormatFromMediaType(fileType string) (format string, isText bool, ok bool) {
+	fileType = strings.TrimSpace(fileType)
+	if fileType == "" {
+		return "", false, false
+	}
+	if mt, _, err := mime.ParseMediaType(fileType); err == nil {
+		fileType = mt
+	}
+	switch {
+	case fileType == "text/plain" || fileType == "txt":
+		return "txt", true, true
+	case fileType == "text/markdown" || fileType == "md":
+		return "md", true, true
+	case fileType == "text/html" || fileType == "html":
+		return "html", true, true
+	case fileType == "text/csv" || fileType == "csv":
+		return "csv", true, true
+	case strings.HasPrefix(fileType, "text/"):
+		return "txt", true, true
+	case fileType == "application/msword" || fileType == "doc":
+		return "doc", false, true
+	case strings.Contains(fileType, "wordprocessingml") || fileType == "docx":
+		return "docx", false, true
+	case fileType == "application/vnd.ms-excel" || fileType == "xls":
+		return "xls", false, true
+	case strings.Contains(fileType, "spreadsheetml") || fileType == "xlsx":
+		return "xlsx", false, true
+	case fileType == "application/pdf" || fileType == "pdf" || strings.Contains(fileType, "pdf"):
+		return "pdf", false, true
+	default:
+		return "", false, false
+	}
+}
+
+// bedrockDocumentFormatFromFilename infers a Bedrock document format from a
+// filename extension when MIME / file_type are absent.
+func bedrockDocumentFormatFromFilename(filename string) (format string, isText bool, ok bool) {
+	filename = strings.TrimSpace(filename)
+	if filename == "" {
+		return "", false, false
+	}
+	ext := strings.ToLower(filename)
+	if i := strings.LastIndex(ext, "."); i >= 0 && i+1 < len(ext) {
+		ext = ext[i+1:]
+	} else {
+		return "", false, false
+	}
+	return bedrockDocumentFormatFromMediaType(ext)
+}
+
 // bedrockAliasToolName returns a Bedrock-safe tool name and records a reverse mapping.
 func bedrockAliasToolName(ctx context.Context, name string) string {
 	if len(name) <= 64 && !bedrockUnsafeToolNameCharRegex.MatchString(name) {
@@ -1119,33 +1174,25 @@ func convertContentBlock(ctx context.Context, block schemas.ChatContentBlock) ([
 			documentSource.Name = normalizeBedrockFilename(*block.File.Filename)
 		}
 
-		// Convert MIME type to Bedrock format
+		// Convert MIME type / short name to Bedrock format. Standard OpenAI clients
+		// often omit file_type and only put the MIME in the data: URL; apply every
+		// available signal (file_type, data-URL media type, fetch Content-Type,
+		// filename extension) before falling back to pdf.
 		isText := false
+		formatSet := false
+		applyFormat := func(format string, text bool) {
+			documentSource.Format = format
+			isText = text
+			formatSet = true
+		}
 		if block.File.FileType != nil {
-			fileType := *block.File.FileType
-			switch {
-			case fileType == "text/plain" || fileType == "txt":
-				documentSource.Format = "txt"
-				isText = true
-			case fileType == "text/markdown" || fileType == "md":
-				documentSource.Format = "md"
-				isText = true
-			case fileType == "text/html" || fileType == "html":
-				documentSource.Format = "html"
-				isText = true
-			case fileType == "text/csv" || fileType == "csv":
-				documentSource.Format = "csv"
-				isText = true
-			case fileType == "application/msword" || fileType == "doc":
-				documentSource.Format = "doc"
-			case strings.Contains(fileType, "wordprocessingml") || fileType == "docx":
-				documentSource.Format = "docx"
-			case fileType == "application/vnd.ms-excel" || fileType == "xls":
-				documentSource.Format = "xls"
-			case strings.Contains(fileType, "spreadsheetml") || fileType == "xlsx":
-				documentSource.Format = "xlsx"
-			case strings.Contains(fileType, "pdf") || fileType == "pdf":
-				documentSource.Format = "pdf"
+			if format, text, ok := bedrockDocumentFormatFromMediaType(*block.File.FileType); ok {
+				applyFormat(format, text)
+			}
+		}
+		if !formatSet && block.File.Filename != nil {
+			if format, text, ok := bedrockDocumentFormatFromFilename(*block.File.Filename); ok {
+				applyFormat(format, text)
 			}
 		}
 
@@ -1157,34 +1204,9 @@ func convertContentBlock(ctx context.Context, block schemas.ChatContentBlock) ([
 				return nil, fetchErr
 			}
 			// Refine format from response Content-Type when present (more reliable
-			// than file extension or upstream-declared media type). Normalize to
-			// strip parameters (e.g. "; charset=utf-8") and lowercase the base type.
-			if mt, _, err := mime.ParseMediaType(fetchedMediaType); err == nil {
-				fetchedMediaType = mt
-			}
-			switch fetchedMediaType {
-			case "application/pdf":
-				documentSource.Format = "pdf"
-			case "text/plain":
-				documentSource.Format = "txt"
-				isText = true
-			case "text/markdown":
-				documentSource.Format = "md"
-				isText = true
-			case "text/html":
-				documentSource.Format = "html"
-				isText = true
-			case "text/csv":
-				documentSource.Format = "csv"
-				isText = true
-			case "application/msword":
-				documentSource.Format = "doc"
-			case "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-				documentSource.Format = "docx"
-			case "application/vnd.ms-excel":
-				documentSource.Format = "xls"
-			case "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
-				documentSource.Format = "xlsx"
+			// than file extension or upstream-declared media type).
+			if format, text, ok := bedrockDocumentFormatFromMediaType(fetchedMediaType); ok {
+				applyFormat(format, text)
 			}
 			documentSource.Source.Bytes = &fetchedB64
 			return []BedrockContentBlock{
@@ -1201,6 +1223,13 @@ func convertContentBlock(ctx context.Context, block schemas.ChatContentBlock) ([
 			// Check if it's a data URL and extract raw base64
 			if strings.HasPrefix(fileData, "data:") {
 				urlInfo := schemas.ExtractURLTypeInfo(fileData)
+				// Prefer the data-URL media type when present (OpenAI Chat Completions
+				// puts MIME only here; this is the #5472 failure mode for xlsx/docx).
+				if urlInfo.MediaType != nil {
+					if format, text, ok := bedrockDocumentFormatFromMediaType(*urlInfo.MediaType); ok {
+						applyFormat(format, text)
+					}
+				}
 				if urlInfo.DataURLWithoutPrefix != nil {
 					documentSource.Source.Bytes = urlInfo.DataURLWithoutPrefix
 					return []BedrockContentBlock{
