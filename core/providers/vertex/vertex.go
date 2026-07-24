@@ -98,6 +98,8 @@ type VertexProvider struct {
 	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
 	sendBackRawRequest  bool                  // Whether to include raw request in BifrostResponse
 	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
+
+	customProviderConfig *schemas.CustomProviderConfig // Custom provider config
 }
 
 // NewVertexProvider creates a new Vertex provider instance.
@@ -127,6 +129,8 @@ func NewVertexProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 		networkConfig:       config.NetworkConfig,
 		sendBackRawRequest:  config.SendBackRawRequest,
 		sendBackRawResponse: config.SendBackRawResponse,
+
+		customProviderConfig: config.CustomProviderConfig,
 	}, nil
 }
 
@@ -199,7 +203,7 @@ func getAuthTokenSource(key schemas.Key) (oauth2.TokenSource, error) {
 
 // GetProviderKey returns the provider identifier for Vertex.
 func (provider *VertexProvider) GetProviderKey() schemas.ModelProvider {
-	return schemas.Vertex
+	return providerUtils.GetProviderName(schemas.Vertex, provider.customProviderConfig)
 }
 
 // listModelsByKey performs a list models request for a single key.
@@ -365,6 +369,10 @@ func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 // ListModels performs a list models request to Vertex's API.
 // Requests are made concurrently for improved performance.
 func (provider *VertexProvider) ListModels(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Vertex, provider.customProviderConfig, schemas.ListModelsRequest); err != nil {
+		return nil, err
+	}
+
 	finalResponse, bifrostErr := providerUtils.HandleMultipleListModelsRequests(
 		ctx,
 		keys,
@@ -514,6 +522,10 @@ func inlineDocumentURLsResponses(ctx *schemas.BifrostContext, request *schemas.B
 // It supports both text and image content in messages.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
 func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Vertex, provider.customProviderConfig, schemas.ChatCompletionRequest); err != nil {
+		return nil, err
+	}
+
 	var jsonBody []byte
 	var bifrostErr *schemas.BifrostError
 	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
@@ -807,6 +819,10 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 // It supports both OpenAI-style streaming (for non-Claude models) and Anthropic-style streaming (for Claude models).
 // Returns a channel of BifrostStreamChunk objects for streaming results or an error if the request fails.
 func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Vertex, provider.customProviderConfig, schemas.ChatCompletionStreamRequest); err != nil {
+		return nil, err
+	}
+
 	providerName := provider.GetProviderKey()
 	projectID := resolveVertexProjectID(ctx, key)
 	if projectID == "" {
@@ -1045,6 +1061,10 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 
 // Responses performs a responses request to the Vertex API.
 func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Vertex, provider.customProviderConfig, schemas.ResponsesRequest); err != nil {
+		return nil, err
+	}
+
 	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
 		// Anthropic-on-Vertex doesn't accept URL-source document blocks.
 		// Inline any URL documents to base64 before the converter runs.
@@ -1339,6 +1359,10 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 
 // ResponsesStream performs a streaming responses request to the Vertex API.
 func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Vertex, provider.customProviderConfig, schemas.ResponsesStreamRequest); err != nil {
+		return nil, err
+	}
+
 	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
 		region := resolveVertexRegion(ctx, key)
 		if region == "" {
@@ -1528,6 +1552,10 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 // All Vertex AI embedding models use the same response format regardless of the model type.
 // Returns a BifrostResponse containing the embedding(s) and any error that occurred.
 func (provider *VertexProvider) Embedding(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Vertex, provider.customProviderConfig, schemas.EmbeddingRequest); err != nil {
+		return nil, err
+	}
+
 	projectID := resolveVertexProjectID(ctx, key)
 	if projectID == "" {
 		return nil, providerUtils.NewConfigurationError("project ID is not set")
@@ -1692,6 +1720,10 @@ func (provider *VertexProvider) Speech(ctx *schemas.BifrostContext, key schemas.
 
 // Rerank performs a rerank request using Vertex Discovery Engine ranking API.
 func (provider *VertexProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostRerankRequest) (*schemas.BifrostRerankResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Vertex, provider.customProviderConfig, schemas.RerankRequest); err != nil {
+		return nil, err
+	}
+
 	projectID := strings.TrimSpace(resolveVertexProjectID(ctx, key))
 	if projectID == "" {
 		return nil, providerUtils.NewConfigurationError("project ID is not set")
@@ -1845,6 +1877,10 @@ func (provider *VertexProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 }
 
 func (provider *VertexProvider) ImageGeneration(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Vertex, provider.customProviderConfig, schemas.ImageGenerationRequest); err != nil {
+		return nil, err
+	}
+
 	// Validate model type before processing
 	if !schemas.IsGeminiModelFamily(ctx, request.Model) && !schemas.IsAllDigitsASCII(request.Model) && !schemas.IsImagenModelFamily(ctx, request.Model) {
 		return nil, providerUtils.NewConfigurationError(fmt.Sprintf("image generation is only supported for Gemini and Imagen models, got: %s", request.Model))
@@ -2065,6 +2101,10 @@ func (provider *VertexProvider) ImageGenerationStream(ctx *schemas.BifrostContex
 // ImageEdit edits images for the given input text(s) using Vertex AI.
 // Returns a BifrostResponse containing the images and any error that occurred.
 func (provider *VertexProvider) ImageEdit(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageEditRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Vertex, provider.customProviderConfig, schemas.ImageEditRequest); err != nil {
+		return nil, err
+	}
+
 	// Validate model type before processing
 	if !schemas.IsGeminiModelFamily(ctx, request.Model) && !schemas.IsAllDigitsASCII(request.Model) && !schemas.IsImagenModelFamily(ctx, request.Model) {
 		return nil, providerUtils.NewConfigurationError(fmt.Sprintf("image edit is only supported for Gemini and Imagen models, got: %s", request.Model))
@@ -2278,6 +2318,10 @@ func (provider *VertexProvider) ImageVariation(ctx *schemas.BifrostContext, key 
 // Only Gemini models support video generation in Vertex AI.
 // Uses the predictLongRunning endpoint for async video generation.
 func (provider *VertexProvider) VideoGeneration(ctx *schemas.BifrostContext, key schemas.Key, bifrostReq *schemas.BifrostVideoGenerationRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Vertex, provider.customProviderConfig, schemas.VideoGenerationRequest); err != nil {
+		return nil, err
+	}
+
 	providerName := provider.GetProviderKey()
 
 	// Only Gemini models support video generation in Vertex
@@ -2400,6 +2444,10 @@ func (provider *VertexProvider) VideoGeneration(ctx *schemas.BifrostContext, key
 // VideoRetrieve retrieves the status of a video generation operation.
 // Uses the fetchPredictOperation endpoint for Vertex AI.
 func (provider *VertexProvider) VideoRetrieve(ctx *schemas.BifrostContext, key schemas.Key, bifrostReq *schemas.BifrostVideoRetrieveRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Vertex, provider.customProviderConfig, schemas.VideoRetrieveRequest); err != nil {
+		return nil, err
+	}
+
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 
@@ -2508,6 +2556,10 @@ func (provider *VertexProvider) VideoRetrieve(ctx *schemas.BifrostContext, key s
 // First retrieves the video status to get the URL, then downloads the content.
 // Handles both regular URLs and data URLs (base64-encoded videos).
 func (provider *VertexProvider) VideoDownload(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoDownloadRequest) (*schemas.BifrostVideoDownloadResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Vertex, provider.customProviderConfig, schemas.VideoDownloadRequest); err != nil {
+		return nil, err
+	}
+
 	if request == nil || request.ID == "" {
 		return nil, providerUtils.NewBifrostOperationError("video_id is required", nil)
 	}
@@ -2701,6 +2753,10 @@ func stripVertexGeminiUnsupportedFieldsRaw(jsonBody []byte) []byte {
 //
 // The output destination is taken from the typed output_folder.url (a gs:// prefix).
 func (provider *VertexProvider) BatchCreate(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostBatchCreateRequest) (*schemas.BifrostBatchCreateResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Vertex, provider.customProviderConfig, schemas.BatchCreateRequest); err != nil {
+		return nil, err
+	}
+
 	baseURL, cfgErr := vertexBatchJobsBaseURL(key)
 	if cfgErr != nil {
 		return nil, cfgErr
@@ -2866,6 +2922,10 @@ func (provider *VertexProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 // that project/region, so the serial helper walks every key (exhausting all of its pages
 // before advancing) to avoid hiding jobs created under any key but the first.
 func (provider *VertexProvider) BatchList(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostBatchListRequest) (*schemas.BifrostBatchListResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Vertex, provider.customProviderConfig, schemas.BatchListRequest); err != nil {
+		return nil, err
+	}
+
 	if len(keys) == 0 {
 		return nil, providerUtils.NewBifrostOperationError("no keys provided for Vertex BatchList", nil)
 	}
@@ -2998,6 +3058,10 @@ func (provider *VertexProvider) batchListByKey(ctx *schemas.BifrostContext, key 
 
 // BatchRetrieve fetches a Vertex AI batch prediction job by ID (bare or full resource name).
 func (provider *VertexProvider) BatchRetrieve(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostBatchRetrieveRequest) (*schemas.BifrostBatchRetrieveResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Vertex, provider.customProviderConfig, schemas.BatchRetrieveRequest); err != nil {
+		return nil, err
+	}
+
 	if len(keys) == 0 {
 		return nil, providerUtils.NewBifrostOperationError("no keys provided for Vertex BatchRetrieve", nil)
 	}
@@ -3073,6 +3137,10 @@ func (provider *VertexProvider) vertexGetBatchJob(ctx *schemas.BifrostContext, k
 
 // BatchCancel cancels a running Vertex AI batch prediction job.
 func (provider *VertexProvider) BatchCancel(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostBatchCancelRequest) (*schemas.BifrostBatchCancelResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Vertex, provider.customProviderConfig, schemas.BatchCancelRequest); err != nil {
+		return nil, err
+	}
+
 	if len(keys) == 0 {
 		return nil, providerUtils.NewBifrostOperationError("no keys provided for Vertex BatchCancel", nil)
 	}
@@ -3141,6 +3209,10 @@ func (provider *VertexProvider) batchCancelByKey(ctx *schemas.BifrostContext, ke
 
 // BatchDelete deletes a finished Vertex AI batch prediction job.
 func (provider *VertexProvider) BatchDelete(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostBatchDeleteRequest) (*schemas.BifrostBatchDeleteResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Vertex, provider.customProviderConfig, schemas.BatchDeleteRequest); err != nil {
+		return nil, err
+	}
+
 	if len(keys) == 0 {
 		return nil, providerUtils.NewBifrostOperationError("no keys provided for Vertex BatchDelete", nil)
 	}
@@ -3209,6 +3281,10 @@ func (provider *VertexProvider) batchDeleteByKey(ctx *schemas.BifrostContext, ke
 // output directory and maps each line to a Bifrost batch result item. The custom_id
 // is recovered from the echoed request labels.
 func (provider *VertexProvider) BatchResults(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostBatchResultsRequest) (*schemas.BifrostBatchResultsResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Vertex, provider.customProviderConfig, schemas.BatchResultsRequest); err != nil {
+		return nil, err
+	}
+
 	if len(keys) == 0 {
 		return nil, providerUtils.NewBifrostOperationError("no keys provided for Vertex BatchResults", nil)
 	}
@@ -3485,6 +3561,10 @@ func parseGCSAPIError(body []byte, statusCode int, op string) *schemas.BifrostEr
 //   - Resumable (request.File empty): mints a GCS resumable upload session URL.
 //     The client uploads bytes directly to GCS; Bifrost stays out of the data path.
 func (provider *VertexProvider) FileUpload(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostFileUploadRequest) (*schemas.BifrostFileUploadResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Vertex, provider.customProviderConfig, schemas.FileUploadRequest); err != nil {
+		return nil, err
+	}
+
 	var bucket, prefix string
 	if request.StorageConfig != nil && request.StorageConfig.GCS != nil {
 		bucket = request.StorageConfig.GCS.Bucket
@@ -3700,6 +3780,10 @@ func (provider *VertexProvider) gcsFileUploadResumable(
 // Pagination is serial across keys: each key's GCS pages are exhausted (via the
 // native pageToken) before moving to the next key.
 func (provider *VertexProvider) FileList(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostFileListRequest) (*schemas.BifrostFileListResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Vertex, provider.customProviderConfig, schemas.FileListRequest); err != nil {
+		return nil, err
+	}
+
 	if len(keys) == 0 {
 		return nil, providerUtils.NewBifrostOperationError("no keys provided for Vertex FileList", nil)
 	}
@@ -3801,6 +3885,10 @@ func (provider *VertexProvider) FileList(ctx *schemas.BifrostContext, keys []sch
 // FileRetrieve fetches GCS object metadata, trying each key until one succeeds.
 // FileID must be a gs:// URI.
 func (provider *VertexProvider) FileRetrieve(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostFileRetrieveRequest) (*schemas.BifrostFileRetrieveResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Vertex, provider.customProviderConfig, schemas.FileRetrieveRequest); err != nil {
+		return nil, err
+	}
+
 	if len(keys) == 0 {
 		return nil, providerUtils.NewBifrostOperationError("no keys provided for Vertex FileRetrieve", nil)
 	}
@@ -3888,6 +3976,10 @@ func (provider *VertexProvider) fileRetrieveByKey(ctx *schemas.BifrostContext, k
 // FileID must be a gs:// URI. Deleting a non-existent object is treated as
 // success (idempotent).
 func (provider *VertexProvider) FileDelete(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostFileDeleteRequest) (*schemas.BifrostFileDeleteResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Vertex, provider.customProviderConfig, schemas.FileDeleteRequest); err != nil {
+		return nil, err
+	}
+
 	if len(keys) == 0 {
 		return nil, providerUtils.NewBifrostOperationError("no keys provided for Vertex FileDelete", nil)
 	}
@@ -3954,6 +4046,10 @@ func (provider *VertexProvider) fileDeleteByKey(ctx *schemas.BifrostContext, key
 // FileContent downloads the raw bytes of a GCS object, trying each key until one
 // succeeds. FileID must be a gs:// URI.
 func (provider *VertexProvider) FileContent(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostFileContentRequest) (*schemas.BifrostFileContentResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Vertex, provider.customProviderConfig, schemas.FileContentRequest); err != nil {
+		return nil, err
+	}
+
 	if len(keys) == 0 {
 		return nil, providerUtils.NewBifrostOperationError("no keys provided for Vertex FileContent", nil)
 	}
@@ -4028,6 +4124,10 @@ func (provider *VertexProvider) fileContentByKey(ctx *schemas.BifrostContext, ke
 // CountTokens counts the number of tokens in the provided content using Vertex AI's countTokens endpoint.
 // Supports Gemini models with both text and image content.
 func (provider *VertexProvider) CountTokens(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Vertex, provider.customProviderConfig, schemas.CountTokensRequest); err != nil {
+		return nil, err
+	}
+
 	var (
 		jsonBody   []byte
 		bifrostErr *schemas.BifrostError
@@ -4282,6 +4382,10 @@ func (provider *VertexProvider) Passthrough(
 	key schemas.Key,
 	req *schemas.BifrostPassthroughRequest,
 ) (*schemas.BifrostPassthroughResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Vertex, provider.customProviderConfig, schemas.PassthroughRequest); err != nil {
+		return nil, err
+	}
+
 	projectID := strings.TrimSpace(resolveVertexProjectID(ctx, key))
 	if projectID == "" {
 		return nil, providerUtils.NewConfigurationError("project ID is not set")
@@ -4431,6 +4535,10 @@ func (provider *VertexProvider) PassthroughStream(
 	key schemas.Key,
 	req *schemas.BifrostPassthroughRequest,
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Vertex, provider.customProviderConfig, schemas.PassthroughStreamRequest); err != nil {
+		return nil, err
+	}
+
 	projectID := strings.TrimSpace(resolveVertexProjectID(ctx, key))
 	if projectID == "" {
 		return nil, providerUtils.NewConfigurationError("project ID is not set")

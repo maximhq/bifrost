@@ -18,6 +18,10 @@ interface Props {
 	value: DeploymentsValue;
 	onChange: (next: Record<string, AliasConfig>) => void;
 	providerName: string;
+	// For custom providers, the underlying base provider type (e.g. "vertex").
+	// Only the provider-specific deployment-override section (ProviderSection)
+	// keys off this; the model catalog still uses the real providerName.
+	baseProviderType?: string;
 	disabled?: boolean;
 }
 
@@ -382,11 +386,13 @@ function ExpandedConfigPanel({
 	config,
 	onChange,
 	providerName,
+	baseProviderType,
 	disabled,
 }: {
 	config: AliasConfig;
 	onChange: (patch: Partial<AliasConfig>) => void;
 	providerName: string;
+	baseProviderType?: string;
 	disabled?: boolean;
 }) {
 	return (
@@ -432,12 +438,12 @@ function ExpandedConfigPanel({
 					/>
 				</FieldRow>
 			</div>
-			<ProviderSection providerName={providerName} config={config} onChange={onChange} disabled={disabled} />
+			<ProviderSection providerName={baseProviderType ?? providerName} config={config} onChange={onChange} disabled={disabled} />
 		</div>
 	);
 }
 
-export function DeploymentsTable({ value, onChange, providerName, disabled = false }: Props) {
+export function DeploymentsTable({ value, onChange, providerName, baseProviderType, disabled = false }: Props) {
 	const normalized = useMemo(() => normalize(value), [value]);
 	const rows: Row[] = useMemo(() => Object.entries(normalized).map(([name, config]) => ({ name, config })), [normalized]);
 
@@ -623,6 +629,7 @@ export function DeploymentsTable({ value, onChange, providerName, disabled = fal
 										config={row.config}
 										onChange={(patch) => patchConfig(row.name, patch)}
 										providerName={providerName}
+										baseProviderType={baseProviderType}
 										disabled={disabled}
 									/>
 								</CollapsibleContent>
@@ -676,7 +683,13 @@ export function DeploymentsTable({ value, onChange, providerName, disabled = fal
 								</p>
 							)}
 						<CollapsibleContent>
-							<ExpandedConfigPanel config={draftRow.config} onChange={patchDraftConfig} providerName={providerName} disabled={disabled} />
+							<ExpandedConfigPanel
+								config={draftRow.config}
+								onChange={patchDraftConfig}
+								providerName={providerName}
+								baseProviderType={baseProviderType}
+								disabled={disabled}
+							/>
 						</CollapsibleContent>
 					</div>
 				</Collapsible>

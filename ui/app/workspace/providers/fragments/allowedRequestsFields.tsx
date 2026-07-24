@@ -85,6 +85,24 @@ const RequestTypes: Array<{ key: RequestType; label: string }> = [
 	{ key: "image_edit_stream", label: "Image Edit Stream" },
 	{ key: "image_variation", label: "Image Variation" },
 	{ key: "count_tokens", label: "Count Tokens" },
+	{ key: "batch_create", label: "Batch Create" },
+	{ key: "batch_list", label: "Batch List" },
+	{ key: "batch_retrieve", label: "Batch Retrieve" },
+	{ key: "batch_cancel", label: "Batch Cancel" },
+	{ key: "batch_results", label: "Batch Results" },
+	{ key: "file_upload", label: "File Upload" },
+	{ key: "file_list", label: "File List" },
+	{ key: "file_retrieve", label: "File Retrieve" },
+	{ key: "file_delete", label: "File Delete" },
+	{ key: "file_content", label: "File Content" },
+	{ key: "batch_delete", label: "Batch Delete" },
+	{ key: "cached_content_create", label: "Cached Content Create" },
+	{ key: "cached_content_list", label: "Cached Content List" },
+	{ key: "cached_content_retrieve", label: "Cached Content Retrieve" },
+	{ key: "cached_content_update", label: "Cached Content Update" },
+	{ key: "cached_content_delete", label: "Cached Content Delete" },
+	{ key: "passthrough", label: "Passthrough" },
+	{ key: "passthrough_stream", label: "Passthrough Stream" },
 ];
 
 // Path overrides replace the default path verbatim; these request paths embed the
@@ -115,7 +133,7 @@ export function AllowedRequestsFields({
 		});
 	}, [providerType, namePrefix, setValue, getValues]);
 
-	const isPathOverrideDisabled = useMemo(() => providerType === "gemini" || providerType === "bedrock", [providerType]);
+	const isPathOverrideDisabled = useMemo(() => providerType === "gemini" || providerType === "bedrock" || providerType === "vertex", [providerType]);
 
 	const renderRequestField = (requestType: { key: RequestType; label: string }) => {
 		const isDisabled = isRequestTypeDisabled(providerType, requestType.key);

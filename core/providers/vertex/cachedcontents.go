@@ -108,6 +108,10 @@ func vertexCachedContentBaseURL(region, projectID string) string {
 // CachedContentCreate creates a new cached content via Vertex AI's
 // /v1/projects/{p}/locations/{l}/cachedContents endpoint.
 func (provider *VertexProvider) CachedContentCreate(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostCachedContentCreateRequest) (*schemas.BifrostCachedContentCreateResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Vertex, provider.customProviderConfig, schemas.CachedContentCreateRequest); err != nil {
+		return nil, err
+	}
+
 	if err := validateVertexTTLExpireMutex(request.TTL, request.ExpireTime); err != nil {
 		return nil, err
 	}
@@ -275,6 +279,10 @@ func (provider *VertexProvider) cachedContentListByKey(ctx *schemas.BifrostConte
 }
 
 func (provider *VertexProvider) CachedContentList(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostCachedContentListRequest) (*schemas.BifrostCachedContentListResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Vertex, provider.customProviderConfig, schemas.CachedContentListRequest); err != nil {
+		return nil, err
+	}
+
 	if len(keys) == 0 {
 		return nil, providerUtils.NewBifrostOperationError("no keys provided for cached content list", nil)
 	}
@@ -352,6 +360,10 @@ func (provider *VertexProvider) cachedContentRetrieveByKey(ctx *schemas.BifrostC
 }
 
 func (provider *VertexProvider) CachedContentRetrieve(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostCachedContentRetrieveRequest) (*schemas.BifrostCachedContentRetrieveResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Vertex, provider.customProviderConfig, schemas.CachedContentRetrieveRequest); err != nil {
+		return nil, err
+	}
+
 	if request.Name == "" {
 		return nil, providerUtils.NewBifrostOperationError("name is required for cached content retrieve", nil)
 	}
@@ -456,6 +468,10 @@ func (provider *VertexProvider) cachedContentUpdateByKey(ctx *schemas.BifrostCon
 }
 
 func (provider *VertexProvider) CachedContentUpdate(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostCachedContentUpdateRequest) (*schemas.BifrostCachedContentUpdateResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Vertex, provider.customProviderConfig, schemas.CachedContentUpdateRequest); err != nil {
+		return nil, err
+	}
+
 	if request.Name == "" {
 		return nil, providerUtils.NewBifrostOperationError("name is required for cached content update", nil)
 	}
@@ -522,6 +538,10 @@ func (provider *VertexProvider) cachedContentDeleteByKey(ctx *schemas.BifrostCon
 }
 
 func (provider *VertexProvider) CachedContentDelete(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostCachedContentDeleteRequest) (*schemas.BifrostCachedContentDeleteResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Vertex, provider.customProviderConfig, schemas.CachedContentDeleteRequest); err != nil {
+		return nil, err
+	}
+
 	if request.Name == "" {
 		return nil, providerUtils.NewBifrostOperationError("name is required for cached content delete", nil)
 	}

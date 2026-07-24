@@ -120,7 +120,10 @@ export function BetaHeadersFormFragment({ provider }: BetaHeadersFormFragmentPro
 	const dispatch = useAppDispatch();
 	const hasUpdateProviderAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Update);
 	const [updateProvider, { isLoading: isUpdatingProvider }] = useUpdateProviderMutation();
-	const providerKey = getProviderKey(provider.name);
+	// Keys off the base provider type for custom providers, so a custom Vertex/
+	// Anthropic/Bedrock-based provider gets the same beta-headers defaults/behavior
+	// as its standard counterpart.
+	const providerKey = getProviderKey(provider.custom_provider_config?.base_provider_type ?? provider.name);
 	const [newPrefix, setNewPrefix] = useState("");
 	const [newPrefixError, setNewPrefixError] = useState<string | null>(null);
 

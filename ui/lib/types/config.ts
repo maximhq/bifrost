@@ -7,7 +7,7 @@ import { SecretVar } from "./schemas";
 export type KnownProvider = (typeof KnownProvidersNames)[number];
 
 // Base provider names - all supported base providers
-export type BaseProvider = "openai" | "anthropic" | "cohere" | "gemini" | "bedrock" | "replicate" | "fireworks";
+export type BaseProvider = "openai" | "anthropic" | "cohere" | "gemini" | "bedrock" | "replicate" | "fireworks" | "vertex";
 
 // Branded type for custom provider names to prevent collision with known providers
 export type CustomProviderName = string & { readonly __brand: "CustomProviderName" };
@@ -327,6 +327,14 @@ export type RequestType =
 	| "file_retrieve"
 	| "file_delete"
 	| "file_content"
+	| "batch_delete"
+	| "cached_content_create"
+	| "cached_content_list"
+	| "cached_content_retrieve"
+	| "cached_content_update"
+	| "cached_content_delete"
+	| "passthrough"
+	| "passthrough_stream"
 	| "mcp_tool_execution"
 	| "container_create"
 	| "container_list"
@@ -375,6 +383,24 @@ export interface AllowedRequests {
 	video_remix: boolean;
 	websocket_responses: boolean;
 	realtime: boolean;
+	batch_create?: boolean;
+	batch_list?: boolean;
+	batch_retrieve?: boolean;
+	batch_cancel?: boolean;
+	batch_results?: boolean;
+	file_upload?: boolean;
+	file_list?: boolean;
+	file_retrieve?: boolean;
+	file_delete?: boolean;
+	file_content?: boolean;
+	batch_delete?: boolean;
+	cached_content_create?: boolean;
+	cached_content_list?: boolean;
+	cached_content_retrieve?: boolean;
+	cached_content_update?: boolean;
+	cached_content_delete?: boolean;
+	passthrough?: boolean;
+	passthrough_stream?: boolean;
 }
 
 // CustomProviderConfig matching Go's schemas.CustomProviderConfig

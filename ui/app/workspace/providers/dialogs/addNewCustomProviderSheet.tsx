@@ -17,15 +17,30 @@ import { toast } from "sonner";
 import { z } from "zod";
 import { AllowedRequestsFields } from "../fragments/allowedRequestsFields";
 
-const formSchema = z.object({
-	name: z.string().min(1),
-	baseFormat: z.string().min(1),
-	base_url: z.string().min(1, "Base URL is required").url("Must be a valid URL"),
-	allowed_requests: allowedRequestsSchema,
-	request_path_overrides: z.record(z.string(), z.string().optional()).optional(),
-	is_key_less: z.boolean().optional(),
-	allow_private_network: z.boolean().optional(),
-});
+// Base provider types whose provider implementation never reads NetworkConfig.BaseURL
+// (host/routing is derived from per-key config instead) - Base URL is not a meaningful
+// input for these and is hidden/optional in the form.
+const BASE_URL_NOT_USED = ["vertex"];
+
+const formSchema = z
+	.object({
+		name: z.string().min(1),
+		baseFormat: z.string().min(1),
+		base_url: z.string().url("Must be a valid URL").optional().or(z.literal("")),
+		allowed_requests: allowedRequestsSchema,
+		request_path_overrides: z.record(z.string(), z.string().optional()).optional(),
+		is_key_less: z.boolean().optional(),
+		allow_private_network: z.boolean().optional(),
+	})
+	.superRefine((data, ctx) => {
+		if (!BASE_URL_NOT_USED.includes(data.baseFormat) && !data.base_url) {
+			ctx.addIssue({
+				code: "custom",
+				message: "Base URL is required",
+				path: ["base_url"],
+			});
+		}
+	});
 
 type FormData = z.infer<typeof formSchema>;
 
@@ -82,6 +97,24 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 				list_models: true,
 				websocket_responses: true,
 				realtime: false,
+				batch_create: true,
+				batch_list: true,
+				batch_retrieve: true,
+				batch_cancel: true,
+				batch_results: true,
+				file_upload: true,
+				file_list: true,
+				file_retrieve: true,
+				file_delete: true,
+				file_content: true,
+				batch_delete: true,
+				cached_content_create: true,
+				cached_content_list: true,
+				cached_content_retrieve: true,
+				cached_content_update: true,
+				cached_content_delete: true,
+				passthrough: true,
+				passthrough_stream: true,
 			},
 			request_path_overrides: undefined,
 			is_key_less: false,
@@ -105,7 +138,7 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 				is_key_less: data.is_key_less ?? false,
 			},
 			network_config: {
-				base_url: data.base_url,
+				base_url: BASE_URL_NOT_USED.includes(data.baseFormat) ? undefined : data.base_url,
 				allow_private_network: data.allow_private_network ?? false,
 				default_request_timeout_in_seconds: DefaultNetworkConfig.default_request_timeout_in_seconds,
 				max_retries: 0,
@@ -128,7 +161,17 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 	};
 
 	const baseFormat = form.watch("baseFormat") as BaseProvider;
-	const isKeyLessDisabled = baseFormat === "bedrock";
+	const isKeyLessDisabled = baseFormat === "bedrock" || baseFormat === "vertex";
+
+	// Clear any stale is_key_less value left over from a previously-selected base
+	// format when switching to one that doesn't allow keyless (Bedrock/Vertex) -
+	// otherwise a true value set earlier can survive the switch and get submitted,
+	// causing a server-side validation error the hidden toggle gives no indication of.
+	useEffect(() => {
+		if (isKeyLessDisabled && form.getValues("is_key_less")) {
+			form.setValue("is_key_less", false, { shouldDirty: true, shouldValidate: true });
+		}
+	}, [isKeyLessDisabled, form]);
 
 	return (
 		<>
@@ -172,6 +215,7 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 													<SelectItem value="gemini">Gemini</SelectItem>
 													<SelectItem value="cohere">Cohere</SelectItem>
 													<SelectItem value="bedrock">AWS Bedrock</SelectItem>
+													<SelectItem value="vertex">Vertex AI</SelectItem>
 													<SelectItem value="replicate">Replicate</SelectItem>
 												</SelectContent>
 											</Select>
@@ -181,27 +225,29 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 								</FormItem>
 							)}
 						/>
-						<FormField
-							control={form.control}
-							name="base_url"
-							render={({ field }) => (
-								<FormItem className="flex flex-col gap-3">
-									<FormLabel>Base URL</FormLabel>
-									<div>
-										<FormControl>
-											<Input
-												placeholder={"https://api.your-provider.com"}
-												data-testid="base-url-input"
-												disabled={!hasProviderCreateAccess}
-												{...field}
-												value={field.value || ""}
-											/>
-										</FormControl>
-										<FormMessage />
-									</div>
-								</FormItem>
-							)}
-						/>
+						{!BASE_URL_NOT_USED.includes(baseFormat) && (
+							<FormField
+								control={form.control}
+								name="base_url"
+								render={({ field }) => (
+									<FormItem className="flex flex-col gap-3">
+										<FormLabel>Base URL</FormLabel>
+										<div>
+											<FormControl>
+												<Input
+													placeholder={"https://api.your-provider.com"}
+													data-testid="base-url-input"
+													disabled={!hasProviderCreateAccess}
+													{...field}
+													value={field.value || ""}
+												/>
+											</FormControl>
+											<FormMessage />
+										</div>
+									</FormItem>
+								)}
+							/>
+						)}
 						<FormField
 							control={form.control}
 							name="allow_private_network"

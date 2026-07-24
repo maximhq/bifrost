@@ -6601,6 +6601,13 @@ func ValidateCustomProvider(config configstore.ProviderConfig, provider schemas.
 		return fmt.Errorf("custom provider validation failed: Bedrock providers cannot be keyless (is_key_less=true)")
 	}
 
+	// Reject Vertex providers with IsKeyLess=true: Vertex always requires a Key with a
+	// VertexKeyConfig (project/region, and optionally credentials for ADC mode) — there is
+	// no mode where a Key object can be skipped entirely.
+	if cpc.BaseProviderType == schemas.Vertex && cpc.IsKeyLess {
+		return fmt.Errorf("custom provider validation failed: Vertex providers cannot be keyless (is_key_less=true)")
+	}
+
 	return nil
 }
 
