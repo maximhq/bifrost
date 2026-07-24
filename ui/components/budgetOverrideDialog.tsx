@@ -84,7 +84,7 @@ export function BudgetOverrideDialog({ budget, onSave, onRemove, disabled, calen
 			<DialogTrigger asChild>
 				<Button
 					type="button"
-					variant={active ? "outline" : "ghost"}
+					variant="ghost"
 					size="sm"
 					className="h-7 gap-1.5 rounded-sm px-2 text-xs"
 					disabled={disabled}
