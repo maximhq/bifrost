@@ -3335,8 +3335,14 @@ func (req *AnthropicMessageRequest) ToBifrostResponsesRequest(ctx *schemas.Bifro
 
 	// Anthropic native server-side fallback ("fallbacks" objects) is forwarded to
 	// the provider verbatim, distinct from Bifrost cross-provider fallback above.
+	// The bare-string preset (fallbacks:"default", Opus 5 default routing) is
+	// forwarded the same way so the rebuild re-adds it and injects the -2026-07-01
+	// beta header; without this the preset is lost and Anthropic 400s the array-only
+	// wire form.
 	if native := req.nativeFallbacks(); len(native) > 0 {
 		params.ExtraParams["fallbacks"] = native
+	} else if req.Fallbacks != nil && req.Fallbacks.Preset != "" {
+		params.ExtraParams["fallbacks"] = req.Fallbacks.Preset
 	}
 
 	// Fallback credit token — carried verbatim so the retry can redeem it.
@@ -3826,6 +3832,10 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 				delete(anthropicReq.ExtraParams, "fallbacks")
 				var natives []AnthropicNativeFallback
 				switch v := fbVal.(type) {
+				case string:
+					// fallbacks:"default" (Opus 5 default fallback routing) — promote onto
+					// the typed field so it marshals natively and drives the -07-01 header.
+					anthropicReq.Fallbacks = &AnthropicFallbacks{Preset: v}
 				case []AnthropicNativeFallback:
 					natives = v
 				default:
@@ -3839,7 +3849,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 						n := natives[i]
 						entries[i] = AnthropicFallbackEntry{Native: &n}
 					}
-					anthropicReq.Fallbacks = entries
+					anthropicReq.Fallbacks = &AnthropicFallbacks{Entries: entries}
 				}
 			}
 			// Fallback credit token: promote onto the typed field so it marshals
