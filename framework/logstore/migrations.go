@@ -217,6 +217,7 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"logs_init_add_parent_request_id_column"}, run: migrationAddParentRequestIDColumn},
 	{IDs: []string{"logs_init_add_responses_output_column"}, run: migrationAddResponsesOutputColumn},
 	{IDs: []string{"logs_init_add_cost_and_cache_debug_column"}, run: migrationAddCostAndCacheDebugColumn},
+	{IDs: []string{"logs_add_guardrail_debug_column"}, run: migrationAddGuardrailDebugColumn},
 	{IDs: []string{"logs_init_add_responses_input_history_column"}, run: migrationAddResponsesInputHistoryColumn},
 	{IDs: []string{"logs_init_add_number_of_retries_and_fallback_index_and_selected_key_and_virtual_key_columns"}, run: migrationAddNumberOfRetriesAndFallbackIndexAndSelectedKeyAndVirtualKeyColumns},
 	{IDs: []string{"logs_add_performance_indexes"}, run: migrationAddPerformanceIndexes},
@@ -598,6 +599,30 @@ func migrationAddCostAndCacheDebugColumn(ctx context.Context, db *gorm.DB, logge
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while adding cost column: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddGuardrailDebugColumn adds the guardrail_debug column to the logs table.
+func migrationAddGuardrailDebugColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_add_guardrail_debug_column"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return addColumnIfNotExists(tx, logger, &Log{}, "guardrail_debug")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return dropColumnIfExists(tx, logger, &Log{}, "guardrail_debug")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding guardrail_debug column: %s", err.Error())
 	}
 	return nil
 }

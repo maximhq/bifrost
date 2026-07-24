@@ -440,6 +440,25 @@ export interface CacheDebug {
 	similarity?: number;
 }
 
+export interface GuardrailJudgeCall {
+	phase?: string;
+	rule_id?: number;
+	rule_name?: string;
+	guardrail_name?: string;
+	guardrail_provider?: string;
+	action?: string;
+	reason?: string;
+	judge_provider?: string;
+	judge_model?: string;
+	prompt_tokens?: number;
+	completion_tokens?: number;
+	total_tokens?: number;
+}
+
+export interface GuardrailDebug {
+	judge_calls?: GuardrailJudgeCall[];
+}
+
 // Error types
 export interface ErrorField {
 	type?: string;
@@ -572,7 +591,8 @@ export interface LogEntry {
 	latency?: number;
 	token_usage?: LLMUsage;
 	cache_debug?: CacheDebug;
-	cost?: number; // Cost in dollars (total cost of the request - includes cache lookup cost)
+	guardrail_debug?: GuardrailDebug;
+	cost?: number; // Cost in dollars (total cost of the request - includes cache lookup cost and also guardrail judge calls)
 	status: string; // "success", "error", "processing", or "cancelled"
 	stop_reason?: string; // Why the model stopped: "stop", "length", "content_filter", "tool_calls", etc.
 	error_details?: BifrostError;

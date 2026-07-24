@@ -11,7 +11,7 @@ import (
 )
 
 // CalculateCost calculates the cost of a Bifrost response.
-// It handles all request types, cache debug billing, and tiered pricing.
+// It handles all request types, cache and guardrail billing, and tiered pricing.
 // If scopes is nil, an empty LookupScopes is used; global and provider-scoped
 // overrides may still apply since the provider is derived from the response.
 func (s *Store) CalculateCost(result *schemas.BifrostResponse, scopes *LookupScopes) float64 {
@@ -24,13 +24,22 @@ func (s *Store) CalculateCost(result *schemas.BifrostResponse, scopes *LookupSco
 		lookupScopes = *scopes
 	}
 
+	extraFields := result.GetExtraFields()
+
 	// Handle semantic cache billing
-	cacheDebug := result.GetExtraFields().CacheDebug
+	cacheDebug := extraFields.CacheDebug
+	var requestCost float64
 	if cacheDebug != nil {
-		return s.calculateCostWithCache(result, cacheDebug, lookupScopes)
+		requestCost = s.calculateCostWithCache(result, cacheDebug, lookupScopes)
+	} else {
+		requestCost = s.calculateBaseCost(result, lookupScopes)
 	}
 
-	return s.calculateBaseCost(result, lookupScopes)
+	// Handle guardrail judge-call billing
+	if extraFields.GuardrailDebug == nil {
+		return requestCost
+	}
+	return requestCost + s.CalculateGuardrailCost(extraFields.GuardrailDebug, &lookupScopes)
 }
 
 // CalculateCostForUsage computes the dollar cost from a bare usage object plus
@@ -69,6 +78,51 @@ func (s *Store) CalculateCostForUsage(usage *schemas.BifrostLLMUsage, provider s
 		},
 		normalizeStreamRequestType(requestType),
 		lookupScopes,
+	)
+}
+
+// CalculateGuardrailCost computes judge cost when no parent response is available.
+//
+// CalculateCost uses this for normal responses. Logging also calls it directly
+// for input guardrail blocks, where the main provider call never produced a
+// BifrostResponse.
+func (s *Store) CalculateGuardrailCost(debug *schemas.BifrostGuardrailDebug, scopes *LookupScopes) float64 {
+	if debug == nil || len(debug.JudgeCalls) == 0 {
+		return 0
+	}
+
+	var total float64
+	for _, call := range debug.JudgeCalls {
+		total += s.computeGuardrailJudgeCost(call, scopes)
+	}
+	return total
+}
+
+// computeGuardrailJudgeCost computes one internal judge chat-completion cost.
+func (s *Store) computeGuardrailJudgeCost(call schemas.BifrostGuardrailJudgeCall, scopes *LookupScopes) float64 {
+	if call.JudgeProvider == "" || call.JudgeModel == "" {
+		return 0
+	}
+
+	// Price the judge call using its own provider/model. Keep virtual-key
+	// attribution for the caller, but do not reuse the main request's selected
+	// provider key: the judge may use a different configured key.
+	judgeScopes := LookupScopes{Provider: string(call.JudgeProvider)}
+	if scopes != nil {
+		judgeScopes.VirtualKeyID = scopes.VirtualKeyID
+	}
+
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens:     call.PromptTokens,
+		CompletionTokens: call.CompletionTokens,
+		TotalTokens:      call.TotalTokens,
+	}
+	return s.CalculateCostForUsage(
+		usage,
+		call.JudgeProvider,
+		call.JudgeModel,
+		schemas.ChatCompletionRequest,
+		&judgeScopes,
 	)
 }
 

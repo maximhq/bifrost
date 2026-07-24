@@ -428,6 +428,9 @@ func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamRe
 	if streamResponse.Data.CacheDebug != nil {
 		entry.CacheDebugParsed = streamResponse.Data.CacheDebug
 	}
+	if streamResponse.Data.GuardrailDebug != nil {
+		entry.GuardrailDebugParsed = streamResponse.Data.GuardrailDebug
+	}
 
 	// Finish/stop reason - always persist regardless of content logging settings
 	if streamResponse.Data.FinishReason != nil {
@@ -1540,7 +1543,8 @@ func (p *LoggerPlugin) calculateCostForLog(logEntry *logstore.Log) (float64, err
 	}
 
 	if (logEntry.TokenUsageParsed == nil && logEntry.TokenUsage != "") ||
-		(logEntry.CacheDebugParsed == nil && logEntry.CacheDebug != "") {
+		(logEntry.CacheDebugParsed == nil && logEntry.CacheDebug != "") ||
+		(logEntry.GuardrailDebugParsed == nil && logEntry.GuardrailDebug != "") {
 		if err := logEntry.DeserializeFields(); err != nil {
 			return 0, fmt.Errorf("failed to deserialize fields for log %s: %w", logEntry.ID, err)
 		}
@@ -1548,14 +1552,15 @@ func (p *LoggerPlugin) calculateCostForLog(logEntry *logstore.Log) (float64, err
 
 	usage := logEntry.TokenUsageParsed
 	cacheDebug := logEntry.CacheDebugParsed
+	guardrailDebug := logEntry.GuardrailDebugParsed
 
-	// If no cache hit and no usage, we can't calculate cost
-	if usage == nil && (cacheDebug == nil || !cacheDebug.CacheHit) {
+	// If no cache hit, guardrail call, or usage, we can't calculate cost.
+	if usage == nil && (cacheDebug == nil || !cacheDebug.CacheHit) && guardrailDebug == nil {
 		return 0, fmt.Errorf("token usage not available for log %s", logEntry.ID)
 	}
 
 	requestType := normalizeLogRequestType(logEntry.Object)
-	if requestType == "" && (cacheDebug == nil || !cacheDebug.CacheHit) {
+	if requestType == "" && (cacheDebug == nil || !cacheDebug.CacheHit) && guardrailDebug == nil {
 		p.logger.Warn("skipping cost calculation for log %s: object type is empty (timestamp: %s)", logEntry.ID, logEntry.Timestamp)
 		return 0, fmt.Errorf("object type is empty for log %s", logEntry.ID)
 	}
@@ -1573,6 +1578,7 @@ func (p *LoggerPlugin) calculateCostForLog(logEntry *logstore.Log) (float64, err
 		OriginalModelRequested: originalModelRequested,
 		ResolvedModelUsed:      logEntry.Model,
 		CacheDebug:             cacheDebug,
+		GuardrailDebug:         guardrailDebug,
 		RoutingInfo: schemas.RoutingInfo{
 			Provider: schemas.ModelProvider(logEntry.Provider),
 			Model:    originalModelRequested,
