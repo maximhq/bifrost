@@ -1266,6 +1266,21 @@ func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseMod
 					// Maps to Gemini's responseMimeType without schema
 					config.ResponseMIMEType = "application/json"
 				}
+			} else {
+				// Gemini-native per-modality response format has no OpenAI "type"
+				// discriminator. It's the only shape response_format can take when
+				// it arrives via ChatParameters.ResponseFormat rather than
+				// ExtraParams: on /v1/chat/completions, "response_format" is a
+				// known top-level field, so it's parsed into this canonical
+				// field and never reaches ExtraParams for the block below to see.
+				_, hasText := formatMap["text"]
+				_, hasImage := formatMap["image"]
+				_, hasAudio := formatMap["audio"]
+				if hasText || hasImage || hasAudio {
+					if rf, ok := safeExtractGeminiStruct[ResponseFormatConfig](formatMap); ok {
+						config.ResponseFormat = rf
+					}
+				}
 			}
 		}
 	}

@@ -157,6 +157,24 @@ type SafetySetting struct {
 	Threshold string `json:"threshold,omitempty"`
 }
 
+// safeExtractGeminiStruct converts an arbitrary extra_params value (typically a
+// map[string]interface{} decoded from the incoming request JSON) into a typed Gemini
+// struct via a JSON round-trip through sonic.
+func safeExtractGeminiStruct[T any](value interface{}) (*T, bool) {
+	if value == nil {
+		return nil, false
+	}
+	data, err := sonic.Marshal(value)
+	if err != nil {
+		return nil, false
+	}
+	var out T
+	if err := sonic.Unmarshal(data, &out); err != nil {
+		return nil, false
+	}
+	return &out, true
+}
+
 // SafeExtractSafetySettings safely extracts []SafetySetting from an interface{} with type checking.
 // Handles both direct []SafetySetting and JSON-deserialized []interface{} cases.
 func SafeExtractSafetySettings(value interface{}) ([]SafetySetting, bool) {
@@ -382,6 +400,9 @@ type GoogleSearch struct {
 	// Optional. List of domains to be excluded from the search results.
 	// The default limit is 2000 domains.
 	ExcludeDomains []string `json:"excludeDomains,omitempty"`
+	// Optional. The set of search types to enable. If not set, web search is enabled by
+	// default.
+	SearchTypes *SearchTypes `json:"searchTypes,omitempty"`
 }
 
 // UnmarshalJSON handles both camelCase and snake_case
@@ -390,8 +411,9 @@ func (g *GoogleSearch) UnmarshalJSON(data []byte) error {
 	aux := &struct {
 		*Alias
 		// snake_case alternatives
-		TimeRangeFilterSnake *Interval `json:"time_range_filter,omitempty"`
-		ExcludeDomainsSnake  []string  `json:"exclude_domains,omitempty"`
+		TimeRangeFilterSnake *Interval    `json:"time_range_filter,omitempty"`
+		ExcludeDomainsSnake  []string     `json:"exclude_domains,omitempty"`
+		SearchTypesSnake     *SearchTypes `json:"search_types,omitempty"`
 	}{
 		Alias: (*Alias)(g),
 	}
@@ -407,9 +429,53 @@ func (g *GoogleSearch) UnmarshalJSON(data []byte) error {
 	if len(g.ExcludeDomains) == 0 && len(aux.ExcludeDomainsSnake) > 0 {
 		g.ExcludeDomains = aux.ExcludeDomainsSnake
 	}
+	if g.SearchTypes == nil && aux.SearchTypesSnake != nil {
+		g.SearchTypes = aux.SearchTypesSnake
+	}
 
 	return nil
 }
+
+// SearchTypes describes the different types of search that can be enabled on the
+// GoogleSearch tool.
+type SearchTypes struct {
+	// Optional. Enables web search. Only text results are returned.
+	WebSearch *WebSearch `json:"webSearch,omitempty"`
+	// Optional. Enables image search. Image bytes are returned.
+	ImageSearch *ImageSearch `json:"imageSearch,omitempty"`
+}
+
+// UnmarshalJSON handles both camelCase and snake_case
+func (s *SearchTypes) UnmarshalJSON(data []byte) error {
+	type Alias SearchTypes
+	aux := &struct {
+		*Alias
+		// snake_case alternatives
+		WebSearchSnake   *WebSearch   `json:"web_search,omitempty"`
+		ImageSearchSnake *ImageSearch `json:"image_search,omitempty"`
+	}{
+		Alias: (*Alias)(s),
+	}
+
+	if err := sonic.Unmarshal(data, aux); err != nil {
+		return err
+	}
+
+	if s.WebSearch == nil && aux.WebSearchSnake != nil {
+		s.WebSearch = aux.WebSearchSnake
+	}
+	if s.ImageSearch == nil && aux.ImageSearchSnake != nil {
+		s.ImageSearch = aux.ImageSearchSnake
+	}
+
+	return nil
+}
+
+// WebSearch enables standard web search for grounding and related configurations.
+type WebSearch struct{}
+
+// ImageSearch enables image search for grounding and related configurations.
+type ImageSearch struct{}
 
 // DynamicRetrievalConfig describes the options to customize dynamic retrieval.
 type DynamicRetrievalConfig struct {
@@ -849,6 +915,8 @@ type GenerationConfig struct {
 	CandidateCount int32 `json:"candidateCount,omitempty"`
 	// Optional. If enabled, the model will detect emotions and adapt its responses accordingly.
 	EnableAffectiveDialog *bool `json:"enableAffectiveDialog,omitempty"`
+	// Optional. Enables enhanced civic answers. It may not be available for all models.
+	EnableEnhancedCivicAnswers *bool `json:"enableEnhancedCivicAnswers,omitempty"`
 	// Optional. Frequency penalties.
 	FrequencyPenalty *float64 `json:"frequencyPenalty,omitempty"`
 	// Optional. Logit probabilities.
@@ -860,6 +928,9 @@ type GenerationConfig struct {
 	MediaResolution string `json:"mediaResolution,omitempty"`
 	// Optional. Positive penalties.
 	PresencePenalty *float64 `json:"presencePenalty,omitempty"`
+	// Optional. Configuration for the response output format. Allows specifying output
+	// configuration per modality (text, audio, image) in a flat structure.
+	ResponseFormat *ResponseFormatConfig `json:"responseFormat,omitempty"`
 	// Optional. Output schema of the generated response. This is an alternative to `response_schema`
 	// that accepts [JSON Schema](https://json-schema.org/). If set, `response_schema` must
 	// be omitted, but `response_mime_type` is required. While the full JSON Schema may
@@ -905,8 +976,162 @@ type GenerationConfig struct {
 	TopK *int `json:"topK,omitempty"`
 	// Optional. If specified, nucleus sampling will be used.
 	TopP *float64 `json:"topP,omitempty"`
+	// Optional. Config for translation features.
+	TranslationConfig *TranslationConfig `json:"translationConfig,omitempty"`
 	// Optional. Image generation configuration.
 	ImageConfig *GeminiImageConfig `json:"imageConfig,omitempty"`
+}
+
+// ResponseFormatConfig configures the response output format. This is a flat object
+// where each optional sub-field configures a specific output modality.
+type ResponseFormatConfig struct {
+	// Optional. Text output format configuration.
+	Text *TextResponseFormat `json:"text,omitempty"`
+	// Optional. Image output format configuration.
+	Image *ImageResponseFormat `json:"image,omitempty"`
+	// Optional. Audio output format configuration.
+	Audio *AudioResponseFormat `json:"audio,omitempty"`
+}
+
+// TextResponseFormat configures text output format.
+type TextResponseFormat struct {
+	// Optional. The MIME type of the text output.
+	MimeType string `json:"mimeType,omitempty"`
+	// Optional. The JSON schema that the output should conform to. Only applicable when
+	// mime_type is APPLICATION_JSON.
+	Schema any `json:"schema,omitempty"`
+}
+
+// UnmarshalJSON handles both camelCase and snake_case
+func (t *TextResponseFormat) UnmarshalJSON(data []byte) error {
+	type Alias TextResponseFormat
+	aux := &struct {
+		*Alias
+		// snake_case alternatives
+		MimeTypeSnake string `json:"mime_type,omitempty"`
+	}{
+		Alias: (*Alias)(t),
+	}
+
+	if err := sonic.Unmarshal(data, aux); err != nil {
+		return err
+	}
+
+	if t.MimeType == "" && aux.MimeTypeSnake != "" {
+		t.MimeType = aux.MimeTypeSnake
+	}
+
+	return nil
+}
+
+// ImageResponseFormat configures image output format.
+type ImageResponseFormat struct {
+	// Optional. The aspect ratio for the image output.
+	AspectRatio string `json:"aspectRatio,omitempty"`
+	// Optional. The delivery mode for the image output.
+	Delivery string `json:"delivery,omitempty"`
+}
+
+// UnmarshalJSON handles both camelCase and snake_case
+func (i *ImageResponseFormat) UnmarshalJSON(data []byte) error {
+	type Alias ImageResponseFormat
+	aux := &struct {
+		*Alias
+		// snake_case alternatives
+		AspectRatioSnake string `json:"aspect_ratio,omitempty"`
+	}{
+		Alias: (*Alias)(i),
+	}
+
+	if err := sonic.Unmarshal(data, aux); err != nil {
+		return err
+	}
+
+	if i.AspectRatio == "" && aux.AspectRatioSnake != "" {
+		i.AspectRatio = aux.AspectRatioSnake
+	}
+
+	return nil
+}
+
+// AudioResponseFormat configures audio output format.
+type AudioResponseFormat struct {
+	// Optional. Bit rate in bits per second (bps). Only applicable for compressed formats
+	// (MP3, Opus).
+	BitRate *int32 `json:"bitRate,omitempty"`
+	// Optional. The delivery mode for the audio output.
+	Delivery string `json:"delivery,omitempty"`
+	// Optional. The MIME type of the audio output.
+	MimeType string `json:"mimeType,omitempty"`
+	// Optional. Sample rate in Hz.
+	SampleRate *int32 `json:"sampleRate,omitempty"`
+}
+
+// UnmarshalJSON handles both camelCase and snake_case
+func (a *AudioResponseFormat) UnmarshalJSON(data []byte) error {
+	type Alias AudioResponseFormat
+	aux := &struct {
+		*Alias
+		// snake_case alternatives
+		BitRateSnake    *int32 `json:"bit_rate,omitempty"`
+		MimeTypeSnake   string `json:"mime_type,omitempty"`
+		SampleRateSnake *int32 `json:"sample_rate,omitempty"`
+	}{
+		Alias: (*Alias)(a),
+	}
+
+	if err := sonic.Unmarshal(data, aux); err != nil {
+		return err
+	}
+
+	if a.BitRate == nil && aux.BitRateSnake != nil {
+		a.BitRate = aux.BitRateSnake
+	}
+	if a.MimeType == "" && aux.MimeTypeSnake != "" {
+		a.MimeType = aux.MimeTypeSnake
+	}
+	if a.SampleRate == nil && aux.SampleRateSnake != nil {
+		a.SampleRate = aux.SampleRateSnake
+	}
+
+	return nil
+}
+
+// TranslationConfig configures translation features.
+type TranslationConfig struct {
+	// Optional. If true, the model will generate audio when the target language is spoken,
+	// essentially it will parrot the input. If false, we will not produce audio for the
+	// target language.
+	EchoTargetLanguage *bool `json:"echoTargetLanguage,omitempty"`
+	// Required. The target language for translation. Supported values are BCP-47 language
+	// codes (e.g. "en", "es", "fr").
+	TargetLanguageCode string `json:"targetLanguageCode,omitempty"`
+}
+
+// UnmarshalJSON handles both camelCase and snake_case
+func (t *TranslationConfig) UnmarshalJSON(data []byte) error {
+	type Alias TranslationConfig
+	aux := &struct {
+		*Alias
+		// snake_case alternatives
+		EchoTargetLanguageSnake *bool  `json:"echo_target_language,omitempty"`
+		TargetLanguageCodeSnake string `json:"target_language_code,omitempty"`
+	}{
+		Alias: (*Alias)(t),
+	}
+
+	if err := sonic.Unmarshal(data, aux); err != nil {
+		return err
+	}
+
+	if t.EchoTargetLanguage == nil && aux.EchoTargetLanguageSnake != nil {
+		t.EchoTargetLanguage = aux.EchoTargetLanguageSnake
+	}
+	if t.TargetLanguageCode == "" && aux.TargetLanguageCodeSnake != "" {
+		t.TargetLanguageCode = aux.TargetLanguageCodeSnake
+	}
+
+	return nil
 }
 
 // GeminiImageConfig represents image generation configuration within GenerationConfig.
@@ -2070,6 +2295,9 @@ type GenerateContentResponse struct {
 	CreateTime time.Time `json:"createTime,omitempty"`
 	// Output only. The model version used to generate the response.
 	ModelVersion string `json:"modelVersion,omitempty"`
+	// Output only. The status of the underlying model, indicating its lifecycle stage
+	// and retirement time if applicable.
+	ModelStatus *ModelStatus `json:"modelStatus,omitempty"`
 	// Output only. Content filter results for a prompt sent in the request. Note: Sent
 	// only in the first stream chunk. Only happens when no candidates were generated due
 	// to content violations.
@@ -2115,6 +2343,17 @@ func (g *GenerateContentResponse) MarshalJSON() ([]byte, error) {
 	}
 
 	return providerUtils.MarshalSorted(aux)
+}
+
+// ModelStatus describes the status of the underlying model. This is used to indicate
+// the stage of the underlying model and the retirement time if applicable.
+type ModelStatus struct {
+	// A message explaining the model status.
+	Message string `json:"message,omitempty"`
+	// The stage of the underlying model.
+	ModelStage string `json:"modelStage,omitempty"`
+	// The time at which the model will be retired.
+	RetirementTime *time.Time `json:"retirementTime,omitempty"`
 }
 
 type GeminiGenerationError struct {
