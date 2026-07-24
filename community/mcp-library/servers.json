@@ -2297,6 +2297,27 @@
         "automation"
       ],
       "icon_url": "https://xquik.com/icons/mcp/xquik.png"
+    },
+    {
+      "name": "Bargo Congress Trades",
+      "description": "Read normalized U.S. House and Senate STOCK Act trade disclosures, with filters for ticker, member, chamber, transaction type, and date.",
+      "category": "Finance",
+      "connection_type": "http",
+      "connection_url": "https://www.bargo.ai/free-apis/congress/mcp",
+      "auth_type": "headers",
+      "required_header_keys": [
+        "Authorization"
+      ],
+      "docs_url": "https://www.bargo.ai/free-apis/congress",
+      "publisher": "Bargo",
+      "tags": [
+        "congress",
+        "congressional-trading",
+        "stock-act",
+        "market-data",
+        "finance"
+      ],
+      "icon_url": "https://www.google.com/s2/favicons?domain=bargo.ai&sz=64"
     }
   ]
 }
