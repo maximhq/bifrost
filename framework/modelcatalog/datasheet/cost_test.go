@@ -3824,3 +3824,76 @@ func TestCalculateCostForUsage_NoServerSideFallback_Unchanged(t *testing.T) {
 	assert.InDelta(t, 38*(10.0/1_000_000)+345*(50.0/1_000_000),
 		s.CalculateCostForUsage(usage, schemas.Anthropic, "claude-fable-5", schemas.ResponsesRequest, nil), 1e-12)
 }
+
+// TestComputeRerankCost_DefaultsToOneQuery verifies rerank bills one query per
+// request when the provider reports no usage at all (e.g. Vertex).
+func TestComputeRerankCost_DefaultsToOneQuery(t *testing.T) {
+	p := configstoreTables.TableModelPricing{
+		SearchContextCostPerQuery: bifrost.Ptr(0.001),
+	}
+	assert.InDelta(t, 0.001, computeRerankCost(&p, nil, serviceTier{}), 1e-12)
+
+	// No per-query rate configured → nothing to bill.
+	empty := configstoreTables.TableModelPricing{}
+	assert.Equal(t, 0.0, computeRerankCost(&empty, nil, serviceTier{}))
+}
+
+// TestComputeRerankCost_TokenOnlyUsageDefaultsToOneQuery verifies a usage that
+// carries only token counts (e.g. Bedrock's header-derived input tokens) still
+// bills the default single query at the per-query rate.
+func TestComputeRerankCost_TokenOnlyUsageDefaultsToOneQuery(t *testing.T) {
+	p := configstoreTables.TableModelPricing{
+		SearchContextCostPerQuery: bifrost.Ptr(0.002),
+	}
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens: 500,
+		TotalTokens:  500,
+	}
+	assert.InDelta(t, 0.002, computeRerankCost(&p, usage, serviceTier{}), 1e-12)
+}
+
+// TestCalculateCost_RerankNoUsageBillsPerQuery verifies the end-to-end path: a
+// rerank response with nil usage passes the no-usage gate and bills per query.
+func TestCalculateCost_RerankNoUsageBillsPerQuery(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("semantic-ranker-default@latest", "vertex", "rerank"): {
+			Model: "semantic-ranker-default@latest", Provider: "vertex", Mode: "rerank",
+			SearchContextCostPerQuery: bifrost.Ptr(0.001),
+		},
+	})
+
+	resp := makeRerankResponse(schemas.Vertex, "semantic-ranker-default@latest", nil)
+
+	assert.InDelta(t, 0.001, s.CalculateCost(resp, nil), 1e-12)
+}
+
+// TestCalculateCost_BedrockRerankARNResolvesPricing verifies a Bedrock rerank
+// request addressed by full ARN resolves the datasheet row keyed by the bare
+// model ID.
+func TestCalculateCost_BedrockRerankARNResolvesPricing(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("cohere.rerank-v3-5:0", "bedrock", "rerank"): {
+			Model: "cohere.rerank-v3-5:0", Provider: "bedrock", Mode: "rerank",
+			SearchContextCostPerQuery: bifrost.Ptr(0.002),
+		},
+	})
+
+	resp := makeRerankResponse(schemas.Bedrock, "arn:aws:bedrock:us-east-1::foundation-model/cohere.rerank-v3-5:0", nil)
+
+	assert.InDelta(t, 0.002, s.CalculateCost(resp, nil), 1e-12)
+}
+
+// TestComputeRerankCost_NonPositiveReportedQueriesDefaultsToOne verifies a
+// zero (or negative) provider-reported query count does not zero out billing —
+// a successful rerank request is always at least one billable query.
+func TestComputeRerankCost_NonPositiveReportedQueriesDefaultsToOne(t *testing.T) {
+	p := configstoreTables.TableModelPricing{
+		SearchContextCostPerQuery: bifrost.Ptr(0.002),
+	}
+	usage := &schemas.BifrostLLMUsage{
+		CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{
+			NumSearchQueries: bifrost.Ptr(0),
+		},
+	}
+	assert.InDelta(t, 0.002, computeRerankCost(&p, usage, serviceTier{}), 1e-12)
+}

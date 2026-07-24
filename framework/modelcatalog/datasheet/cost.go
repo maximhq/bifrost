@@ -154,8 +154,10 @@ func (s *Store) calculateBaseCost(result *schemas.BifrostResponse, scopes Lookup
 		return input.usage.Cost.TotalCost
 	}
 
-	// If no usage data at all, nothing to price
-	if input.usage == nil && input.audioSeconds == nil && input.audioTokenDetails == nil && input.imageUsage == nil && input.videoSeconds == nil && input.audioTextInputChars == 0 && input.ocrProcessedPages == nil && input.containerIdentifierString == "" {
+	// If no usage data at all, nothing to price. Rerank is exempt: providers
+	// like Vertex return no usage payload at all, yet every rerank request is
+	// one billable query priced from the datasheet (see computeRerankCost).
+	if requestType != schemas.RerankRequest && input.usage == nil && input.audioSeconds == nil && input.audioTokenDetails == nil && input.imageUsage == nil && input.videoSeconds == nil && input.audioTextInputChars == 0 && input.ocrProcessedPages == nil && input.containerIdentifierString == "" {
 		return 0
 	}
 
@@ -564,17 +566,24 @@ func computeEmbeddingCost(pricing *configstoreTables.TableModelPricing, usage *s
 
 // computeRerankCost handles rerank requests.
 func computeRerankCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, tier serviceTier) float64 {
+	// Rerank providers bill per query, and every Bifrost rerank request carries
+	// exactly one query, so the billable count defaults to 1. Provider-reported
+	// counts (e.g. Cohere search units) override the default; nothing is ever
+	// written back onto the response payload.
+	queries := 1
+	if usage != nil && usage.CompletionTokensDetails != nil && usage.CompletionTokensDetails.NumSearchQueries != nil && *usage.CompletionTokensDetails.NumSearchQueries > 0 {
+		queries = *usage.CompletionTokensDetails.NumSearchQueries
+	}
+	searchCost := 0.0
+	if pricing.SearchContextCostPerQuery != nil {
+		searchCost = float64(queries) * *pricing.SearchContextCostPerQuery
+	}
 	if usage == nil {
-		return 0
+		return searchCost
 	}
 	tierTokens := usage.PromptTokens
 	inputCost := float64(usage.PromptTokens) * tieredInputRate(pricing, tierTokens, tier)
 	outputCost := float64(usage.CompletionTokens) * tieredOutputRate(pricing, tierTokens, tier)
-
-	searchCost := 0.0
-	if pricing.SearchContextCostPerQuery != nil && usage.CompletionTokensDetails != nil && usage.CompletionTokensDetails.NumSearchQueries != nil {
-		searchCost = float64(*usage.CompletionTokensDetails.NumSearchQueries) * *pricing.SearchContextCostPerQuery
-	}
 
 	return inputCost + outputCost + searchCost
 }
@@ -1337,6 +1346,27 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 	}
 
 	if provider == string(schemas.Bedrock) {
+		// Bedrock rerank models are addressed by full ARN
+		// ("arn:aws:bedrock:<region>:<account>:foundation-model/<model-id>");
+		// datasheet rows are keyed by the bare model ID, so retry with the
+		// resource ID extracted from the ARN.
+		if strings.HasPrefix(model, "arn:") {
+			if idx := strings.LastIndex(model, "/"); idx >= 0 && idx < len(model)-1 {
+				arnModel := model[idx+1:]
+				s.logger.Debug("primary lookup failed, trying bare model ID %s extracted from ARN", arnModel)
+				pricing, ok = s.pricingData[makeKey(arnModel, provider, mode)]
+				if ok {
+					return &pricing, true
+				}
+				if hasFallbackMode {
+					pricing, ok = s.pricingData[makeKey(arnModel, provider, fallbackMode)]
+					if ok {
+						return &pricing, true
+					}
+				}
+			}
+		}
+
 		// Bedrock model IDs carry a vendor namespace ("anthropic.claude-*",
 		// "openai.gpt-oss-*", "google.gemma-*", "xai.grok-*"). When the caller
 		// sends the bare model name, retry with the namespace inferred from
