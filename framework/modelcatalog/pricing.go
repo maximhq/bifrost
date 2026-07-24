@@ -27,6 +27,13 @@ func (mc *ModelCatalog) GetSupportedParameters(model string) []string {
 	return mc.datasheet.GetSupportedParameters(model)
 }
 
+// ResolveModelParameters reads the model-parameters row for model, resolving
+// provider-qualified or bare aliases to the datasheet's stored key (exact →
+// provider-prefix-stripped → base model → provider-qualified variants).
+func (mc *ModelCatalog) ResolveModelParameters(ctx context.Context, model string) (*configstoreTables.TableModelParameters, error) {
+	return mc.datasheet.ResolveModelParameters(ctx, model)
+}
+
 func (mc *ModelCatalog) IsTextCompletionSupported(model string, provider schemas.ModelProvider) bool {
 	return mc.datasheet.IsTextCompletionSupported(model, provider)
 }

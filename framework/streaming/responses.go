@@ -3,6 +3,7 @@ package streaming
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -234,6 +235,10 @@ func deepCopyResponsesMessage(original schemas.ResponsesMessage) schemas.Respons
 	if original.Recipient != nil {
 		copy.Recipient = append(json.RawMessage(nil), original.Recipient...)
 	}
+	// The framework module still compiles against released core versions that
+	// do not expose every Responses API field, so newer fields are copied by name
+	// when a workspace build provides them.
+	copyRawMessageFieldByName(&copy, original, "ToolSearchOutputTools")
 
 	// Deep copy ResponsesReasoning if present
 	if original.ResponsesReasoning != nil {
@@ -275,6 +280,13 @@ func deepCopyResponsesMessage(original schemas.ResponsesMessage) schemas.Respons
 			copyArguments := *original.ResponsesToolMessage.Arguments
 			copy.ResponsesToolMessage.Arguments = &copyArguments
 		}
+
+		if original.ResponsesToolMessage.Namespace != nil {
+			copyNamespace := *original.ResponsesToolMessage.Namespace
+			copy.ResponsesToolMessage.Namespace = &copyNamespace
+		}
+
+		copyOptionalStringFieldByName(copy.ResponsesToolMessage, original.ResponsesToolMessage, "Execution")
 
 		if original.ResponsesToolMessage.Error != nil {
 			copyError := *original.ResponsesToolMessage.Error
@@ -472,6 +484,33 @@ func deepCopyResponsesMessage(original schemas.ResponsesMessage) schemas.Respons
 	}
 
 	return copy
+}
+
+func copyRawMessageFieldByName(dst *schemas.ResponsesMessage, src schemas.ResponsesMessage, fieldName string) {
+	srcField := reflect.ValueOf(src).FieldByName(fieldName)
+	if !srcField.IsValid() || srcField.IsNil() {
+		return
+	}
+	raw, ok := srcField.Interface().(json.RawMessage)
+	if !ok {
+		return
+	}
+	dstField := reflect.ValueOf(dst).Elem().FieldByName(fieldName)
+	if dstField.IsValid() && dstField.CanSet() {
+		dstField.Set(reflect.ValueOf(append(json.RawMessage(nil), raw...)))
+	}
+}
+
+func copyOptionalStringFieldByName(dst *schemas.ResponsesToolMessage, src *schemas.ResponsesToolMessage, fieldName string) {
+	srcField := reflect.ValueOf(src).Elem().FieldByName(fieldName)
+	if !srcField.IsValid() || srcField.IsNil() {
+		return
+	}
+	copyValue := srcField.Elem().String()
+	dstField := reflect.ValueOf(dst).Elem().FieldByName(fieldName)
+	if dstField.IsValid() && dstField.CanSet() {
+		dstField.Set(reflect.ValueOf(&copyValue))
+	}
 }
 
 // deepCopyResponsesMessageContentBlock creates a deep copy of a ResponsesMessageContentBlock

@@ -10,7 +10,7 @@ import { AliasConfig, ModelFamily, ModelFamilyValues } from "@/lib/types/config"
 import { SecretVar } from "@/lib/types/schemas";
 import { cn } from "@/lib/utils";
 import { ChevronDown, ChevronRight, Trash } from "lucide-react";
-import { useMemo, useRef, useState } from "react";
+import { useId, useMemo, useRef, useState } from "react";
 
 type DeploymentsValue = Record<string, AliasConfig> | undefined | null;
 
@@ -125,6 +125,51 @@ interface ProviderSectionProps {
 	disabled?: boolean;
 }
 
+// Three-way control for boolean overrides that inherit a key-level toggle when
+// unset: undefined = use the key's setting, true/false = explicit override. A
+// plain switch can't express "explicitly off while the key-level toggle is on".
+function TriStateOverrideRow({
+	label,
+	hint,
+	value,
+	onChange,
+	disabled,
+	testId,
+}: {
+	label: string;
+	hint: string;
+	value: boolean | undefined;
+	onChange: (next: boolean | undefined) => void;
+	disabled?: boolean;
+	testId?: string;
+}) {
+	const id = useId();
+	const hintId = `${id}-hint`;
+	const selectValue = value === undefined ? "inherit" : value ? "on" : "off";
+	return (
+		<div className="flex items-start justify-between gap-4 rounded-md border p-3">
+			<div className="space-y-0.5">
+				<label htmlFor={id} className="text-sm font-medium">
+					{label}
+				</label>
+				<p id={hintId} className="text-muted-foreground text-xs">
+					{hint}
+				</p>
+			</div>
+			<Select value={selectValue} onValueChange={(v) => onChange(v === "inherit" ? undefined : v === "on")} disabled={disabled}>
+				<SelectTrigger id={id} aria-describedby={hintId} className="w-fit min-w-44 shrink-0" data-testid={testId}>
+					<SelectValue />
+				</SelectTrigger>
+				<SelectContent>
+					<SelectItem value="inherit">Use key setting</SelectItem>
+					<SelectItem value="on">On</SelectItem>
+					<SelectItem value="off">Off</SelectItem>
+				</SelectContent>
+			</Select>
+		</div>
+	);
+}
+
 function AzureSection({ config, onChange, disabled }: ProviderSectionProps) {
 	return (
 		<div className="space-y-4">
@@ -195,8 +240,7 @@ function VertexSection({ config, onChange, disabled }: ProviderSectionProps) {
 				<div className="space-y-0.5">
 					<label className="text-sm font-medium">Force single region</label>
 					<p className="text-muted-foreground text-xs">
-						Call the region above as-is and skip multi-region promotion of multi-region-only models. Use for provisioned
-						throughput.
+						Call the region above as-is and skip multi-region promotion of multi-region-only models. Use for provisioned throughput.
 					</p>
 				</div>
 				<Switch
@@ -232,7 +276,10 @@ function BedrockSection({ config, onChange, disabled }: ProviderSectionProps) {
 					disabled={disabled}
 				/>
 			</FieldRow>
-			<FieldRow label="Project ID" hint="Scope this deployment's Bedrock Mantle (gpt-*/Gemma) calls to a specific project via the OpenAI-Project header. Leave blank to use the key's project.">
+			<FieldRow
+				label="Project ID"
+				hint="Scope this deployment's Bedrock Mantle (gpt-*/Gemma) calls to a specific project via the OpenAI-Project header. Leave blank to use the key's project."
+			>
 				<SecretVarField
 					value={config.project_id}
 					onChange={(v) => onChange({ project_id: v })}
@@ -259,7 +306,10 @@ function BedrockMantleSection({ config, onChange, disabled }: ProviderSectionPro
 					disabled={disabled}
 				/>
 			</FieldRow>
-			<FieldRow label="Project ID" hint="Scope this deployment to a specific project via the OpenAI-Project / anthropic-workspace-id header. Leave blank to use the key's project.">
+			<FieldRow
+				label="Project ID"
+				hint="Scope this deployment to a specific project via the OpenAI-Project / anthropic-workspace-id header. Leave blank to use the key's project."
+			>
 				<SecretVarField
 					value={config.project_id}
 					onChange={(v) => onChange({ project_id: v })}
@@ -275,19 +325,14 @@ function ReplicateSection({ config, onChange, disabled }: ProviderSectionProps) 
 	return (
 		<div className="space-y-4">
 			<SectionHeader title="Replicate overrides" description="Override key-level Replicate defaults for this deployment." />
-			<div className="flex items-start justify-between gap-4 rounded-md border p-3">
-				<div className="space-y-0.5">
-					<label className="text-sm font-medium">Use deployments endpoint</label>
-					<p className="text-muted-foreground text-xs">
-						Route through Replicate&apos;s deployments endpoint instead of the models endpoint.
-					</p>
-				</div>
-				<Switch
-					checked={config.use_deployments_endpoint ?? false}
-					onCheckedChange={(checked) => onChange({ use_deployments_endpoint: checked ? true : undefined })}
-					disabled={disabled}
-				/>
-			</div>
+			<TriStateOverrideRow
+				label="Use deployments endpoint"
+				hint="Route through Replicate's deployments endpoint instead of the models endpoint."
+				value={config.use_deployments_endpoint}
+				onChange={(next) => onChange({ use_deployments_endpoint: next })}
+				disabled={disabled}
+				testId="deployment-use-deployments-endpoint"
+			/>
 		</div>
 	);
 }
@@ -296,20 +341,14 @@ function UseAnthropicEndpointsToggleSection({ config, onChange, disabled, provid
 	return (
 		<div className="space-y-4">
 			<SectionHeader title={`${providerName} overrides`} description={`Override key-level ${providerName} defaults for this deployment.`} />
-			<div className="flex items-start justify-between gap-4 rounded-md border p-3">
-				<div className="space-y-0.5">
-					<label htmlFor="use-anthropic-endpoints-switch" className="text-sm font-medium">Use Anthropic endpoints</label>
-					<p className="text-muted-foreground text-xs">
-						Route chat completions and responses requests through Anthropic-compatible endpoints.
-					</p>
-				</div>
-                <Switch
-                    id="use-anthropic-endpoints-switch"
-                    checked={config.use_anthropic_endpoints ?? false}
-                    onCheckedChange={(checked) => onChange({ use_anthropic_endpoints: checked ? true : undefined })}
-                    disabled={disabled}
-                />
-			</div>
+			<TriStateOverrideRow
+				label="Use Anthropic endpoints"
+				hint="Route chat completions and responses requests through Anthropic-compatible endpoints."
+				value={config.use_anthropic_endpoints}
+				onChange={(next) => onChange({ use_anthropic_endpoints: next })}
+				disabled={disabled}
+				testId="deployment-use-anthropic-endpoints"
+			/>
 		</div>
 	);
 }
@@ -328,11 +367,11 @@ function ProviderSection({ providerName, ...props }: ProviderSectionProps & { pr
 			return <ReplicateSection {...props} />;
 		case "sgl":
 			return <UseAnthropicEndpointsToggleSection providerName="SGLang" {...props} />;
-        case "deepseek":
+		case "deepseek":
 			return <UseAnthropicEndpointsToggleSection providerName="Deepseek" {...props} />;
-        case "fireworks":
+		case "fireworks":
 			return <UseAnthropicEndpointsToggleSection providerName="Fireworks" {...props} />;
-        case "vllm":
+		case "vllm":
 			return <UseAnthropicEndpointsToggleSection providerName="vLLM" {...props} />;
 		default:
 			return null;
@@ -633,7 +672,7 @@ export function DeploymentsTable({ value, onChange, providerName, disabled = fal
 						{(draftRow.name.trim() !== "" || draftRow.config.model_id.trim() !== "") &&
 							!(draftRow.name.trim() && draftRow.config.model_id.trim()) && (
 								<p className="text-muted-foreground px-4 pb-2 text-xs">
-									Both deployment name and model ID are required — this row will not be saved until both are filled.
+									Both deployment name and model ID are required; this row will not be saved until both are filled.
 								</p>
 							)}
 						<CollapsibleContent>

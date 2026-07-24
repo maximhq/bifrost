@@ -63,15 +63,11 @@ func TestEnsureMatViewsSharesRefreshAdvisoryLock(t *testing.T) {
 	require.False(t, testMatViewExists(t, db, "mv_filter_users"))
 
 	holder := acquireTestAdvisoryLock(t, db, matviewRefreshAdvisoryLockKey)
-	maintained, err := ensureMatViews(ctx, db)
-	require.NoError(t, err)
-	require.False(t, maintained, "ensureMatViews should report it did not maintain the views while the lock is held elsewhere")
+	require.NoError(t, ensureMatViews(ctx, db))
 	require.False(t, testMatViewExists(t, db, "mv_filter_users"), "ensureMatViews should skip while refresh lock is held elsewhere")
 
 	releaseTestAdvisoryLock(t, holder, matviewRefreshAdvisoryLockKey)
-	maintained, err = ensureMatViews(ctx, db)
-	require.NoError(t, err)
-	require.True(t, maintained, "ensureMatViews should report it maintained the views once the lock is free")
+	require.NoError(t, ensureMatViews(ctx, db))
 	require.True(t, testMatViewExists(t, db, "mv_filter_users"))
 }
 

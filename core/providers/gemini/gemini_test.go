@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -660,6 +661,80 @@ func TestGeminiGenerationRequestUnmarshalAcceptsSchemaIntegerConstraints(t *test
 			}`), &req)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "invalid schema integer constraint")
+		})
+	}
+}
+
+// TestGenAIToolSchemaConstraintsRoundTripAsNumbers verifies integer constraints (string,
+// array, and object-property) survive the genai -> Bifrost -> Gemini round trip as JSON
+// numbers, since parametersJsonSchema is validated as strict JSON Schema upstream (issue #5433).
+func TestGenAIToolSchemaConstraintsRoundTripAsNumbers(t *testing.T) {
+	bodyTemplate := `{
+		"contents": [{"role": "user", "parts": [{"text": "test"}]}],
+		"tools": [{
+			"functionDeclarations": [{
+				"name": "test_tool",
+				"description": "test",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"query": {"type": "string", "description": "text", "minLength": %[1]s, "maxLength": %[2]s},
+						"tags": {"type": "array", "items": {"type": "string"}, "minItems": %[3]s, "maxItems": %[4]s}
+					},
+					"anyOf": [{
+						"type": "object",
+						"minProperties": %[5]s,
+						"maxProperties": %[6]s,
+						"properties": {
+							"meta": {"type": "object", "minProperties": %[7]s}
+						}
+					}],
+					"required": ["query"]
+				}
+			}]
+		}]
+	}`
+
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "numeric constraints", body: fmt.Sprintf(bodyTemplate, "1", "100", "1", "5", "1", "3", "2")},
+		{name: "quoted constraints", body: fmt.Sprintf(bodyTemplate, `"1"`, `"100"`, `"1"`, `"5"`, `"1"`, `"3"`, `"2"`)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var req gemini.GeminiGenerationRequest
+			require.NoError(t, sonic.Unmarshal([]byte(tt.body), &req))
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			bifrostReq := req.ToBifrostResponsesRequest(ctx)
+			require.NotNil(t, bifrostReq)
+
+			out, err := gemini.ToGeminiResponsesRequest(ctx, bifrostReq)
+			require.NoError(t, err)
+			require.Len(t, out.Tools, 1)
+			require.Len(t, out.Tools[0].FunctionDeclarations, 1)
+
+			params := parseToolParams(t, out.Tools[0].FunctionDeclarations[0])
+			query := getSchemaProperty(t, params, "query")
+			assert.Equal(t, float64(1), query["minLength"], "minLength must be a JSON number")
+			assert.Equal(t, float64(100), query["maxLength"], "maxLength must be a JSON number")
+			tags := getSchemaProperty(t, params, "tags")
+			assert.Equal(t, float64(1), tags["minItems"], "minItems must be a JSON number")
+			assert.Equal(t, float64(5), tags["maxItems"], "maxItems must be a JSON number")
+
+			// Object-property constraints flow through convertSchemaToOrderedMap (anyOf/items)
+			anyOf, ok := params["anyOf"].([]interface{})
+			require.True(t, ok, "anyOf must survive the round trip")
+			require.Len(t, anyOf, 1)
+			variant, ok := anyOf[0].(map[string]interface{})
+			require.True(t, ok, "anyOf variant must be an object")
+			assert.Equal(t, float64(1), variant["minProperties"], "minProperties must be a JSON number")
+			assert.Equal(t, float64(3), variant["maxProperties"], "maxProperties must be a JSON number")
+			meta := getSchemaProperty(t, variant, "meta")
+			assert.Equal(t, float64(2), meta["minProperties"], "nested minProperties must be a JSON number")
 		})
 	}
 }

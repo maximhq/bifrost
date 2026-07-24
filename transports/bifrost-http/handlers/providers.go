@@ -984,7 +984,20 @@ func (h *ProviderHandler) getModelParameters(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	params, err := h.dbStore.GetModelParametersByModel(ctx, modelParam)
+	// Prefer catalog-aware resolution so provider-qualified IDs from
+	// /v1/models ("openai/gpt-5.5", "openrouter/openai/gpt-5.5") and bare
+	// aliases resolve to the datasheet's stored key instead of 404ing on an
+	// exact-match miss.
+	var params *tables.TableModelParameters
+	var err error
+	if h.inMemoryStore != nil && h.inMemoryStore.ModelCatalog != nil {
+		params, err = h.inMemoryStore.ModelCatalog.ResolveModelParameters(ctx, modelParam)
+	} else {
+		params, err = h.dbStore.GetModelParametersByModel(ctx, modelParam)
+	}
+	if err == nil && params == nil {
+		err = configstore.ErrNotFound
+	}
 	if err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("no parameters found for model %s", modelParam))

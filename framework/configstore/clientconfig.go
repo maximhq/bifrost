@@ -598,6 +598,9 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			if key.BedrockKeyConfig.RoleSessionName != nil {
 				bedrockConfig.RoleSessionName = key.BedrockKeyConfig.RoleSessionName.Redacted()
 			}
+			if key.BedrockKeyConfig.BatchRoleARN != nil {
+				bedrockConfig.BatchRoleARN = key.BedrockKeyConfig.BatchRoleARN.Redacted()
+			}
 			// Mantle project ID is an identifier, not a credential — surface it in plaintext.
 			if key.BedrockKeyConfig.ProjectID != nil {
 				bedrockConfig.ProjectID = key.BedrockKeyConfig.ProjectID

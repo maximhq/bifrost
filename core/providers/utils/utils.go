@@ -248,6 +248,8 @@ func makeRequestWithDoFunc(ctx context.Context, do func() error) (time.Duration,
 		// Context was cancelled (e.g., deadline exceeded or manual cancellation).
 		// Calculate latency even for cancelled requests.
 		latency := time.Since(startTime)
+		// Socket wait is upstream even when it ends in cancellation.
+		schemas.AddUpstreamLatency(ctx, latency)
 		// Return a wait function that blocks until the background goroutine finishes.
 		// The caller MUST invoke this (via defer) before releasing req/resp to avoid
 		// a data race with the still-running goroutine.
@@ -281,6 +283,8 @@ func makeRequestWithDoFunc(ctx context.Context, do func() error) (time.Duration,
 		// The do() call completed.
 		// Calculate latency for both successful and failed requests.
 		latency := time.Since(startTime)
+		// Single accumulation point for every unary provider call.
+		schemas.AddUpstreamLatency(ctx, latency)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
 				return latency, &schemas.BifrostError{
@@ -332,6 +336,64 @@ func MakeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *f
 func MakeRequestWithContextFollowRedirects(ctx context.Context, client *fasthttp.Client, req *fasthttp.Request, resp *fasthttp.Response, maxRedirects int) (time.Duration, *schemas.BifrostError, func()) {
 	latency, bifrostErr, wait := makeRequestWithDoFunc(ctx, func() error { return client.DoRedirects(req, resp, maxRedirects) })
 	return latency, bifrostErr, wait
+}
+
+// DoStreamingRequest performs the initial client.Do for a streaming request and
+// records the wait as upstream latency.
+//
+// Streaming cannot use MakeRequestWithContext: for a streamed response fasthttp
+// returns as soon as the headers arrive, and the body is consumed lazily
+// afterwards. So this measures time-to-first-byte only — the generation window
+// is measured separately, inside idleTimeoutReader.Read. Both are needed;
+// counting only one attributes the other to Bifrost.
+//
+// Returns client.Do's error untouched so callers keep their own error
+// classification and latency bookkeeping.
+func DoStreamingRequest(ctx context.Context, client *fasthttp.Client, req *fasthttp.Request, resp *fasthttp.Response) error {
+	startTime := time.Now()
+	err := client.Do(req, resp)
+	schemas.AddUpstreamLatency(ctx, time.Since(startTime))
+	return err
+}
+
+// upstreamTimingBody wraps a response body so time blocked reading it counts as
+// upstream latency. net/http's client.Do returns at response headers; the body
+// still streams from the provider's socket, and an untimed io.ReadAll would
+// misattribute that wait to Bifrost overhead.
+type upstreamTimingBody struct {
+	inner io.ReadCloser
+	ctx   context.Context
+}
+
+func (b *upstreamTimingBody) Read(p []byte) (int, error) {
+	start := time.Now()
+	n, err := b.inner.Read(p)
+	schemas.AddUpstreamLatency(b.ctx, time.Since(start))
+	return n, err
+}
+
+func (b *upstreamTimingBody) Close() error { return b.inner.Close() }
+
+// DoHTTPRequest performs a net/http request and records the wait as upstream
+// latency. Used by the paths that don't go through fasthttp — Bedrock, which
+// builds and signs its own requests, and the media fetcher.
+//
+// The duration is attributed via req.Context() rather than an explicit ctx
+// parameter, so callers that no longer hold the context (Bedrock's
+// executeBedrockRequest) need no signature change. Every such request is built
+// with http.NewRequestWithContext, so the accumulator is always reachable.
+//
+// client.Do covers headers only, so the returned body is wrapped to time the
+// reads that drain it. Streamed responses consumed through NewIdleTimeoutReader
+// are unwrapped there — the idle reader does its own per-chunk timing.
+func DoHTTPRequest(client *http.Client, req *http.Request) (*http.Response, error) {
+	startTime := time.Now()
+	resp, err := client.Do(req)
+	schemas.AddUpstreamLatency(req.Context(), time.Since(startTime))
+	if err == nil && resp != nil && resp.Body != nil {
+		resp.Body = &upstreamTimingBody{inner: resp.Body, ctx: req.Context()}
+	}
+	return resp, err
 }
 
 // Deprecated: ConfigureRetry is now handled internally by ConfigureDialer.
@@ -2492,6 +2554,14 @@ func NewIdleTimeoutReader(reader io.Reader, bodyStream io.Reader, timeout time.D
 	if timeout <= 0 {
 		timeout = DefaultStreamIdleTimeout
 	}
+	// A body wrapped by DoHTTPRequest times its own reads; unwrap so the
+	// per-chunk timing in Read below isn't counted twice.
+	if tb, ok := reader.(*upstreamTimingBody); ok {
+		reader = tb.inner
+	}
+	if tb, ok := bodyStream.(*upstreamTimingBody); ok {
+		bodyStream = tb.inner
+	}
 	r := &idleTimeoutReader{
 		ctx:        ctx,
 		reader:     reader,
@@ -2576,7 +2646,11 @@ func (r *idleTimeoutReader) Read(p []byte) (n int, err error) {
 	if r.connectionClosed() {
 		return 0, r.closedReadError()
 	}
+	readStart := time.Now()
 	n, err = r.reader.Read(p)
+	if r.ctx != nil {
+		schemas.AddUpstreamLatency(r.ctx, time.Since(readStart))
+	}
 	if n > 0 {
 		r.timer.Reset(r.timeout)
 	}
@@ -3286,6 +3360,10 @@ func completeDeferredSpan(ctx *schemas.BifrostContext, result *schemas.BifrostRe
 		return
 	}
 
+	// Stamp now the stream has drained; the handler returned long ago. Before the
+	// guard below so it still runs when there is no deferred span.
+	ctx.StampUpstreamLatency()
+
 	// Get the deferred span handle from TraceStore using trace ID
 	handle := tracer.GetDeferredSpanHandle(traceID)
 	if handle == nil {
@@ -3320,6 +3398,9 @@ func completeDeferredSpan(ctx *schemas.BifrostContext, result *schemas.BifrostRe
 	} else if result != nil {
 		// Fall back to final chunk if no accumulated data (shouldn't happen normally)
 		tracer.PopulateLLMResponseAttributes(ctx, handle, result, err)
+	} else if err != nil {
+		// Stream failed before the first chunk — still stamp error attributes.
+		tracer.PopulateLLMResponseAttributes(ctx, handle, nil, err)
 	}
 
 	// Finalize aggregated post-hook spans before ending the LLM span

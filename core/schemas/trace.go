@@ -202,6 +202,52 @@ func (t *Trace) SnapshotForExport() *Trace {
 	return clone
 }
 
+// StampOverheadDuration writes Bifrost's own cost onto the root span as
+// AttrBifrostOverheadDurationMs: the root span's wall time minus the upstream
+// total stamped on it. This is the single definition of the overhead number —
+// every trace connector reads the attribute rather than re-deriving it, so the
+// span and the overhead metric can never disagree.
+//
+// Call this on the export snapshot after SnapshotForExport, never on the pooled
+// trace: the root span's duration is only known once it has ended, and mutating
+// a pooled span at flush time races the late writers the snapshot exists to
+// isolate. The snapshot's attribute maps are private clones, so the write here
+// is safe on the single flush goroutine before any connector reads them.
+//
+// No-op when the root span never ended or carried no upstream measurement;
+// absent overhead must not be reported as zero.
+func (t *Trace) StampOverheadDuration() {
+	if t == nil || t.RootSpan == nil {
+		return
+	}
+	root := t.RootSpan
+	if root.StartTime.IsZero() || root.EndTime.IsZero() || root.Attributes == nil {
+		return
+	}
+	raw, ok := root.Attributes[AttrBifrostUpstreamDurationMs]
+	if !ok {
+		return
+	}
+	var upstreamMs float64
+	switch v := raw.(type) {
+	case float64:
+		upstreamMs = v
+	case int64:
+		upstreamMs = float64(v)
+	case int:
+		upstreamMs = float64(v)
+	default:
+		return
+	}
+	overheadMs := float64(root.EndTime.Sub(root.StartTime))/float64(time.Millisecond) - upstreamMs
+	// Different clocks: a request that is almost entirely upstream can round
+	// slightly negative, which is meaningless and would poison a histogram.
+	if overheadMs < 0 {
+		overheadMs = 0
+	}
+	root.Attributes[AttrBifrostOverheadDurationMs] = overheadMs
+}
+
 // Reset clears the trace for reuse from pool
 func (t *Trace) Reset() {
 	t.mu.Lock()
@@ -708,6 +754,20 @@ const (
 	// The corresponding legacy gen_ai.* emissions are tagged "// legacy:" at their
 	// call sites and will be removed once dashboards migrate over.
 	// =====================================================================
+	// Cumulative time (float64 ms) the request spent blocked on sockets outside
+	// Bifrost — every provider attempt, plus MCP tool calls and media fetches.
+	// Stamped on the ROOT span once per request, so connectors derive Bifrost's
+	// own cost as (root span duration - this). Deliberately not a per-attempt
+	// value: retries and fallbacks all contribute to the same total.
+	AttrBifrostUpstreamDurationMs = "bifrost.upstream.duration_ms"
+
+	// Bifrost's own cost (float64 ms): root span duration minus the upstream
+	// total above. Stamped on the ROOT span at export time, since the root's
+	// duration is not known while the request is still running. Connectors read
+	// this rather than re-deriving it, so the span and the overhead metric can
+	// never disagree.
+	AttrBifrostOverheadDurationMs = "bifrost.overhead.duration_ms"
+
 	AttrBifrostProviderName        = "bifrost.provider.name"
 	AttrBifrostRequestID           = "bifrost.request.id"
 	AttrBifrostVirtualKeyID        = "bifrost.virtual_key.id"
@@ -733,8 +793,8 @@ const (
 	AttrBifrostUserEmail           = "bifrost.user.email"
 	AttrBifrostRetries             = "bifrost.retries"
 	AttrBifrostFallbackIndex       = "bifrost.fallback_index"
-	AttrBifrostAlias               = "bifrost.alias"                // original requested model when it differs from the resolved model
-	AttrBifrostRoutingEngineUsed   = "bifrost.routing_engine_used"  // comma-joined routing engines that handled the request
+	AttrBifrostAlias               = "bifrost.alias"               // original requested model when it differs from the resolved model
+	AttrBifrostRoutingEngineUsed   = "bifrost.routing_engine_used" // comma-joined routing engines that handled the request
 	AttrBifrostStopSequencesJoined = "bifrost.request.stop_sequences"
 
 	// OTel general semconv (no gen_ai prefix). Emitted alongside the legacy

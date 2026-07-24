@@ -231,7 +231,7 @@ export function BetaHeadersFormFragment({ provider }: BetaHeadersFormFragmentPro
 
 		// Validate
 		if (KNOWN_PREFIXES.has(prefix)) {
-			setNewPrefixError("This is a known header — use the override dropdown above instead");
+			setNewPrefixError("This is a known header; use the override dropdown above instead");
 			return;
 		}
 		if (overrides[prefix] !== undefined) {

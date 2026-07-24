@@ -497,7 +497,7 @@ func HandleOpenAITextCompletionStreaming(
 
 	startTime := time.Now()
 	// Make the request
-	err := activeClient.Do(req, resp)
+	err := providerUtils.DoStreamingRequest(ctx, activeClient, req, resp)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 		latency := time.Since(startTime)
@@ -1078,7 +1078,7 @@ func HandleOpenAIChatCompletionStreaming(
 
 	startTime := time.Now()
 	// Make the request
-	err := activeClient.Do(req, resp)
+	err := providerUtils.DoStreamingRequest(ctx, activeClient, req, resp)
 	latency := time.Since(startTime)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
@@ -1762,7 +1762,7 @@ func HandleOpenAIResponsesStreaming(
 
 	startTime := time.Now()
 	// Make the request
-	err := activeClient.Do(req, resp)
+	err := providerUtils.DoStreamingRequest(ctx, activeClient, req, resp)
 	latency := time.Since(startTime)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
@@ -1871,9 +1871,8 @@ func HandleOpenAIResponsesStreaming(
 
 			// Parse into bifrost response
 			var response schemas.BifrostResponsesStreamResponse
-			// TODO fix this
 			if customResponseHandler != nil {
-				rawRequest, rawResponse, bifrostErr := customResponseHandler([]byte(jsonData), &response, nil, false, false)
+				rawRequest, rawResponse, bifrostErr := customResponseHandler([]byte(jsonData), &response, nil, sendBackRawRequest, sendBackRawResponse)
 				if bifrostErr != nil {
 					if sendBackRawRequest {
 						bifrostErr.ExtraFields.RawRequest = rawRequest
@@ -1884,6 +1883,9 @@ func HandleOpenAIResponsesStreaming(
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency), responseChan, logger, postHookSpanFinalizer)
 					return
+				}
+				if sendBackRawResponse {
+					response.ExtraFields.RawResponse = jsonData
 				}
 			} else {
 				if err := sonic.UnmarshalString(jsonData, &response); err != nil {
@@ -1902,79 +1904,79 @@ func HandleOpenAIResponsesStreaming(
 				if sendBackRawResponse {
 					response.ExtraFields.RawResponse = jsonData
 				}
-
-				if response.Type == schemas.ResponsesStreamResponseTypeError {
-					bifrostErr := &schemas.BifrostError{
-						Type:           schemas.Ptr(string(schemas.ResponsesStreamResponseTypeError)),
-						IsBifrostError: false,
-						Error:          &schemas.ErrorField{},
-					}
-
-					if response.Message != nil {
-						bifrostErr.Error.Message = *response.Message
-					}
-					if response.Param != nil {
-						bifrostErr.Error.Param = *response.Param
-					}
-					if response.Code != nil {
-						bifrostErr.Error.Code = response.Code
-					}
-					if response.Error != nil {
-						if response.Error.Message != "" && bifrostErr.Error.Message == "" {
-							bifrostErr.Error.Message = response.Error.Message
-						}
-						if response.Error.Code != "" && (bifrostErr.Error.Code == nil || *bifrostErr.Error.Code == "") {
-							bifrostErr.Error.Code = &response.Error.Code
-						}
-					}
-					if response.Response != nil && response.Response.Error != nil {
-						if response.Response.Error.Message != "" && bifrostErr.Error.Message == "" {
-							bifrostErr.Error.Message = response.Response.Error.Message
-						}
-						if response.Response.Error.Code != "" && (bifrostErr.Error.Code == nil || *bifrostErr.Error.Code == "") {
-							bifrostErr.Error.Code = schemas.Ptr(response.Response.Error.Code)
-						}
-					}
-
-					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, []byte(jsonData), sendBackRawRequest, sendBackRawResponse, latency), responseChan, logger, postHookSpanFinalizer)
-					return
-				}
-
-				// Some providers (e.g. Fireworks) send response.failed on HTTP 200 streams
-				// instead of a pre-stream 4xx. Convert to BifrostError for consistent handling.
-				if response.Type == schemas.ResponsesStreamResponseTypeFailed {
-					bifrostErr := &schemas.BifrostError{
-						Type:           schemas.Ptr(string(schemas.ResponsesStreamResponseTypeFailed)),
-						IsBifrostError: false,
-						Error:          &schemas.ErrorField{},
-					}
-					if response.Response != nil && response.Response.Error != nil {
-						bifrostErr.Error.Message = response.Response.Error.Message
-						bifrostErr.Error.Code = &response.Response.Error.Code
-					}
-					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, []byte(jsonData), sendBackRawRequest, sendBackRawResponse, latency), responseChan, logger, postHookSpanFinalizer)
-					return
-				}
-
-				response.ExtraFields.ChunkIndex = response.SequenceNumber
-				if response.Type == schemas.ResponsesStreamResponseTypeCompleted || response.Type == schemas.ResponsesStreamResponseTypeIncomplete {
-					// Set raw request if enabled
-					if sendBackRawRequest {
-						providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonBody)
-					}
-					response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
-					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-					providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, &response, nil, nil, nil), responseChan, postHookSpanFinalizer)
-					return
-				}
-
-				response.ExtraFields.Latency = time.Since(lastChunkTime).Milliseconds()
-				lastChunkTime = time.Now()
-
-				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, &response, nil, nil, nil), responseChan, postHookSpanFinalizer)
 			}
+
+			if response.Type == schemas.ResponsesStreamResponseTypeError {
+				bifrostErr := &schemas.BifrostError{
+					Type:           schemas.Ptr(string(schemas.ResponsesStreamResponseTypeError)),
+					IsBifrostError: false,
+					Error:          &schemas.ErrorField{},
+				}
+
+				if response.Message != nil {
+					bifrostErr.Error.Message = *response.Message
+				}
+				if response.Param != nil {
+					bifrostErr.Error.Param = *response.Param
+				}
+				if response.Code != nil {
+					bifrostErr.Error.Code = response.Code
+				}
+				if response.Error != nil {
+					if response.Error.Message != "" && bifrostErr.Error.Message == "" {
+						bifrostErr.Error.Message = response.Error.Message
+					}
+					if response.Error.Code != "" && (bifrostErr.Error.Code == nil || *bifrostErr.Error.Code == "") {
+						bifrostErr.Error.Code = &response.Error.Code
+					}
+				}
+				if response.Response != nil && response.Response.Error != nil {
+					if response.Response.Error.Message != "" && bifrostErr.Error.Message == "" {
+						bifrostErr.Error.Message = response.Response.Error.Message
+					}
+					if response.Response.Error.Code != "" && (bifrostErr.Error.Code == nil || *bifrostErr.Error.Code == "") {
+						bifrostErr.Error.Code = new(response.Response.Error.Code)
+					}
+				}
+
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, []byte(jsonData), sendBackRawRequest, sendBackRawResponse, latency), responseChan, logger, postHookSpanFinalizer)
+				return
+			}
+
+			// Some providers (e.g. Fireworks) send response.failed on HTTP 200 streams
+			// instead of a pre-stream 4xx. Convert to BifrostError for consistent handling.
+			if response.Type == schemas.ResponsesStreamResponseTypeFailed {
+				bifrostErr := &schemas.BifrostError{
+					Type:           schemas.Ptr(string(schemas.ResponsesStreamResponseTypeFailed)),
+					IsBifrostError: false,
+					Error:          &schemas.ErrorField{},
+				}
+				if response.Response != nil && response.Response.Error != nil {
+					bifrostErr.Error.Message = response.Response.Error.Message
+					bifrostErr.Error.Code = &response.Response.Error.Code
+				}
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, []byte(jsonData), sendBackRawRequest, sendBackRawResponse, latency), responseChan, logger, postHookSpanFinalizer)
+				return
+			}
+
+			response.ExtraFields.ChunkIndex = response.SequenceNumber
+			if response.Type == schemas.ResponsesStreamResponseTypeCompleted || response.Type == schemas.ResponsesStreamResponseTypeIncomplete {
+				// Set raw request if enabled
+				if sendBackRawRequest {
+					providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonBody)
+				}
+				response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, &response, nil, nil, nil), responseChan, postHookSpanFinalizer)
+				return
+			}
+
+			response.ExtraFields.Latency = time.Since(lastChunkTime).Milliseconds()
+			lastChunkTime = time.Now()
+
+			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, &response, nil, nil, nil), responseChan, postHookSpanFinalizer)
 		}
 	}()
 
@@ -2393,7 +2395,7 @@ func HandleOpenAISpeechStreamRequest(
 
 	startTime := time.Now()
 	// Make the request
-	err := activeClient.Do(req, resp)
+	err := providerUtils.DoStreamingRequest(ctx, activeClient, req, resp)
 	latency := time.Since(startTime)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
@@ -2901,7 +2903,7 @@ func HandleOpenAITranscriptionStreamRequest(
 
 	startTime := time.Now()
 	// Make the request
-	err := client.Do(req, resp)
+	err := providerUtils.DoStreamingRequest(ctx, client, req, resp)
 	latency := time.Since(startTime)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
@@ -3343,7 +3345,7 @@ func HandleOpenAIImageGenerationStreaming(
 
 	startTime := time.Now()
 	// Make the request
-	err := activeClient.Do(req, resp)
+	err := providerUtils.DoStreamingRequest(ctx, activeClient, req, resp)
 	latency := time.Since(startTime)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
@@ -4829,7 +4831,7 @@ func HandleOpenAIImageEditStreamRequest(
 
 	startTime := time.Now()
 	// Make the request
-	err := client.Do(req, resp)
+	err := providerUtils.DoStreamingRequest(ctx, client, req, resp)
 	latency := time.Since(startTime)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
@@ -7460,7 +7462,7 @@ func (provider *OpenAIProvider) PassthroughStream(
 
 	startTime := time.Now()
 
-	err := activeClient.Do(fasthttpReq, resp)
+	err := providerUtils.DoStreamingRequest(ctx, activeClient, fasthttpReq, resp)
 	latency := time.Since(startTime)
 	if err != nil {
 		providerUtils.ReleaseStreamingResponse(ctx, resp)

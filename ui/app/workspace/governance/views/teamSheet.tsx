@@ -393,7 +393,7 @@ export default function TeamSheet({ team, customers, onSave, onCancel }: TeamShe
 										<div className="flex-1">
 											<NumberAndSelect
 												id={`budgetMaxLimit-${idx}`}
-												label={`Budget #${idx + 1} — Maximum Spend (USD)`}
+												label={`Budget #${idx + 1}: Maximum Spend (USD)`}
 												value={row.maxLimit}
 												selectValue={row.resetDuration}
 												onChangeNumber={(value) => updateBudgetRow(idx, { maxLimit: value })}
