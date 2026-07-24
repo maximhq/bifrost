@@ -502,6 +502,14 @@ export interface RedactionMapping {
 	output?: Record<string, string>;
 }
 
+export interface ProviderRequestIDRecord {
+	attempt: number;
+	provider?: string;
+	request_id: string;
+	header_name?: string;
+	status_code?: number;
+}
+
 export interface LogEntry {
 	id: string;
 	object: string; // text.completion, chat.completion, embedding, audio.speech, audio.transcription
@@ -519,6 +527,9 @@ export interface LogEntry {
 	number_of_retries: number;
 	fallback_index: number;
 	attempt_trail?: KeyAttemptRecord[]; // Per-attempt key selection history
+	provider_request_id?: string;
+	provider_request_id_header?: string;
+	provider_request_id_trail?: ProviderRequestIDRecord[];
 	selected_key_id?: string | null;
 	selected_prompt_id?: string; // Selected prompt ID (prompts plugin)
 	selected_prompt_name?: string; // Resolved prompt display name (prompts plugin)
@@ -601,6 +612,7 @@ export interface LogFilters {
 	models?: string[];
 	aliases?: string[];
 	parent_request_id?: string;
+	provider_request_id?: string;
 	selected_key_ids?: string[];
 	virtual_key_ids?: string[];
 	routing_rule_ids?: string[];

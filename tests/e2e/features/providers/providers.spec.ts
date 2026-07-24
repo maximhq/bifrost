@@ -8,6 +8,106 @@ import {
 const createdKeys: { provider: string; keyName: string }[] = [];
 const createdProviders: string[] = [];
 
+async function installProviderRequestIDRoutes(
+  page: import("@playwright/test").Page,
+) {
+  const providers: Record<string, Record<string, unknown>> = {
+    openai: {
+      name: "openai",
+      provider_status: "success",
+      network_config: {},
+      concurrency_and_buffer_size: { concurrency: 1, buffer_size: 1 },
+      send_back_raw_request: false,
+      send_back_raw_response: false,
+      store_raw_request_response: false,
+    },
+    "custom-cohere": {
+      name: "custom-cohere",
+      provider_status: "success",
+      network_config: {},
+      concurrency_and_buffer_size: { concurrency: 1, buffer_size: 1 },
+      send_back_raw_request: false,
+      send_back_raw_response: false,
+      store_raw_request_response: false,
+      custom_provider_config: {
+        base_provider_type: "cohere",
+        is_key_less: true,
+      },
+    },
+  };
+
+  await page.route("**/api/config**", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ is_db_connected: true, is_logs_connected: true }),
+    });
+  });
+
+  await page.route("**/api/providers**", async (route) => {
+    const url = new URL(route.request().url());
+    if (
+      url.pathname === "/api/providers" &&
+      route.request().method() === "GET"
+    ) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          providers: Object.values(providers),
+          total: Object.keys(providers).length,
+        }),
+      });
+      return;
+    }
+
+    const providerMatch = url.pathname.match(
+      /^\/api\/providers\/([^/]+)(?:\/(keys))?$/,
+    );
+    if (providerMatch) {
+      const providerName = decodeURIComponent(providerMatch[1]);
+      const provider = providers[providerName];
+      if (providerMatch[2] === "keys") {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ keys: [], total: 0 }),
+        });
+        return;
+      }
+      if (provider && route.request().method() === "PUT") {
+        providers[providerName] = {
+          ...provider,
+          ...(route.request().postDataJSON() as object),
+        };
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify(providers[providerName]),
+        });
+        return;
+      }
+      if (provider) {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify(provider),
+        });
+        return;
+      }
+    }
+    await route.continue();
+  });
+
+  await page.route("**/api/models**", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ models: [], total: 0 }),
+    });
+  });
+}
+
 test.describe("Providers", () => {
   test.describe.configure({ mode: "serial" });
 
@@ -880,7 +980,10 @@ test.describe("Governance (Budget & Rate Limits)", () => {
 });
 
 test.describe("Debugging Tab", () => {
-  test.beforeEach(async ({ providersPage }) => {
+  test.beforeEach(async ({ providersPage, page }, testInfo) => {
+    if (testInfo.title.includes("provider request ID capture")) {
+      await installProviderRequestIDRoutes(page);
+    }
     await providersPage.goto();
     await providersPage.selectProvider("openai");
   });
@@ -904,6 +1007,81 @@ test.describe("Debugging Tab", () => {
       "provider-config-debugging-content",
     );
     await expect(debuggingContent).toBeVisible();
+  });
+
+  test("should require a response header for provider request ID capture on a custom provider without a default", async ({
+    providersPage,
+  }) => {
+    await providersPage.selectProvider("custom-cohere");
+    await providersPage.selectConfigTab("debugging");
+
+    const enabledSwitch = providersPage.page.getByTestId(
+      "provider-debugging-provider-request-id-enabled",
+    );
+    await expect(enabledSwitch).toHaveAttribute("data-state", "unchecked");
+    await enabledSwitch.click();
+
+    const headerInput = providersPage.page.getByTestId(
+      "provider-debugging-provider-request-id-header",
+    );
+    await expect(headerInput).toBeVisible();
+    await expect(headerInput).toHaveValue("");
+    await expect(
+      providersPage.page.getByText("Response header is required"),
+    ).toBeVisible();
+    await expect(providersPage.getConfigSaveBtn("debugging")).toBeDisabled();
+  });
+
+  test("should validate, save, and reload provider request ID capture", async ({
+    providersPage,
+  }) => {
+    await providersPage.selectConfigTab("debugging");
+
+    const enabledSwitch = providersPage.page.getByTestId(
+      "provider-debugging-provider-request-id-enabled",
+    );
+    const wasEnabled =
+      (await enabledSwitch.getAttribute("data-state")) === "checked";
+    if (!wasEnabled) {
+      await enabledSwitch.click();
+    }
+
+    const headerInput = providersPage.page.getByTestId(
+      "provider-debugging-provider-request-id-header",
+    );
+    await expect(headerInput).toBeVisible();
+    const originalHeader = await headerInput.inputValue();
+    if (!wasEnabled) {
+      expect(originalHeader).toBe("x-request-id");
+    }
+
+    await headerInput.fill("Authorization");
+    await headerInput.blur();
+    await expect(
+      providersPage.page.getByText("Sensitive headers cannot be captured"),
+    ).toBeVisible();
+    await expect(providersPage.getConfigSaveBtn("debugging")).toBeDisabled();
+
+    await headerInput.fill("X-E2E-Provider-Request-ID");
+    await headerInput.blur();
+    await providersPage.saveDebuggingConfig();
+
+    await providersPage.page.keyboard.press("Escape");
+    await expect(
+      providersPage.page.locator('[role="dialog"]'),
+    ).not.toBeVisible();
+    await providersPage.selectConfigTab("debugging");
+
+    await expect(enabledSwitch).toHaveAttribute("data-state", "checked");
+    await expect(headerInput).toHaveValue("x-e2e-provider-request-id");
+
+    // Restore the provider's original configuration so this test is repeatable.
+    await headerInput.fill(originalHeader);
+    await headerInput.blur();
+    if (!wasEnabled) {
+      await enabledSwitch.click();
+    }
+    await providersPage.saveDebuggingConfig();
   });
 });
 
