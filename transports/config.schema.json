@@ -986,6 +986,12 @@
           "default": 365,
           "description": "Number of days to retain alert history. Omit to use the default. Set to 0 to disable retention pruning."
         },
+        "evaluation_interval_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 60,
+          "description": "Interval in seconds between alert rule evaluations. Use 5 to 10 seconds for one-minute governance reset windows."
+        },
         "webhook_network": {
           "type": "object",
           "description": "Outbound URL validation controls for Slack, Microsoft Teams, and generic webhook alert channels.",
