@@ -149,6 +149,9 @@ type BifrostHTTPServer struct {
 	Port   string
 	Host   string
 	AppDir string
+	// LogsDir, when set, places logs.db here instead of alongside config.db in AppDir
+	// (default SQLite logs store only). Set via -logs-dir / BIFROST_LOGS_DIR.
+	LogsDir string
 
 	LogLevel        string
 	LogOutputStyle  string
@@ -1740,7 +1743,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		return fmt.Errorf("failed to create app directory %s: %v", configDir, err)
 	}
 	// Initialize high-performance configuration store with dedicated database
-	s.Config, err = lib.LoadConfig(ctx, configDir)
+	s.Config, err = lib.LoadConfig(ctx, configDir, s.LogsDir)
 	if err != nil {
 		return fmt.Errorf("failed to load config %v", err)
 	}

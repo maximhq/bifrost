@@ -100,12 +100,15 @@ func init() {
 	if defaultLogLevel == "" {
 		defaultLogLevel = bifrostServer.DefaultLogLevel
 	}
+	// Default logs dir from env (flag overrides); empty means logs.db sits alongside config.db.
+	defaultLogsDir := os.Getenv("BIFROST_LOGS_DIR")
 	// Initializing server
 	server = bifrostServer.NewBifrostHTTPServer(Version, uiContent)
 	// Updating server properties from flags
 	flag.StringVar(&server.Port, "port", bifrostServer.DefaultPort, "Port to run the server on")
 	flag.StringVar(&server.Host, "host", defaultHost, "Host to bind the server to (default: localhost, override with BIFROST_HOST env var)")
 	flag.StringVar(&server.AppDir, "app-dir", bifrostServer.DefaultAppDir, "Application data directory (contains config.json and logs)")
+	flag.StringVar(&server.LogsDir, "logs-dir", defaultLogsDir, "Directory for logs.db (default SQLite logs store only); defaults to BIFROST_LOGS_DIR, else alongside config.json in -app-dir")
 	flag.StringVar(&server.LogLevel, "log-level", defaultLogLevel, "Logger level (debug, info, warn, error). Default is info.")
 	flag.StringVar(&server.LogOutputStyle, "log-style", bifrostServer.DefaultLogOutputStyle, "Logger output type (json or pretty). Default is JSON.")
 }

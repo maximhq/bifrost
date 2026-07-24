@@ -828,10 +828,28 @@ func registerFeatureFlags(_ context.Context) error {
 //   - Case conversion for provider names (e.g., "OpenAI" -> "openai")
 //   - In-memory storage for ultra-fast access during request processing
 //   - Graceful handling of missing config files
-func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
+// LoadConfig loads configuration from configDirPath. logsDir overrides where logs.db is placed:
+// by default (empty) logs.db is a sibling of config.db, which forces config and the large,
+// churning request-log DB onto the same mount; a non-empty logsDir puts logs.db in its own
+// directory so the two can be bind-mounted independently. The directory is set via the -logs-dir
+// flag / BIFROST_LOGS_DIR env (see transports/bifrost-http/main.go) and only applies to the
+// default SQLite logstore — when the logstore is explicitly configured (config.json) or non-SQLite,
+// logsDir is ignored and a warning is logged.
+func LoadConfig(ctx context.Context, configDirPath, logsDir string) (*Config, error) {
 	configFilePath := filepath.Join(configDirPath, "config.json")
 	configDBPath := filepath.Join(configDirPath, "config.db")
-	logsDBPath := filepath.Join(configDirPath, "logs.db")
+	if logsDir == "" {
+		logsDir = configDirPath
+	}
+	// Ensure the logs dir exists; an operator-supplied -logs-dir may not exist yet, and SQLite
+	// won't create the parent directory — it would fail to open logs.db and block startup.
+	if logsDir != configDirPath {
+		if err := os.MkdirAll(logsDir, 0o755); err != nil {
+			return nil, fmt.Errorf("failed to create logs directory %s: %w", logsDir, err)
+		}
+	}
+	logsDBPath := filepath.Join(logsDir, "logs.db")
+	logsDirOverridden := logsDir != configDirPath
 	// Initialize config
 	config := &Config{
 		configPath: configFilePath,
@@ -921,7 +939,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	// 1a. Vault config acknowledgement (initialization handled by enterprise layer)
 	initVault(&configData)
 	// 2. Stores (config, logs, vector) — creates defaults for absent configs
-	if err := initStores(ctx, config, &configData, configDBPath, logsDBPath); err != nil {
+	if err := initStores(ctx, config, &configData, configDBPath, logsDBPath, logsDirOverridden); err != nil {
 		return nil, err
 	}
 	// 3. KV store
@@ -996,7 +1014,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 
 // initStores initializes config, logs, and vector stores.
 // When config data sections are absent (nil), creates default SQLite stores for persistence.
-func initStores(ctx context.Context, config *Config, configData *ConfigData, configDBPath, logsDBPath string) error {
+func initStores(ctx context.Context, config *Config, configData *ConfigData, configDBPath, logsDBPath string, logsDirOverridden bool) error {
 	var err error
 	// Initialize config store
 	if configData.ConfigStoreConfig != nil && configData.ConfigStoreConfig.Enabled {
@@ -1031,7 +1049,11 @@ func initStores(ctx context.Context, config *Config, configData *ConfigData, con
 
 	// Initialize log store
 	if configData.LogsStoreConfig != nil && configData.LogsStoreConfig.Enabled {
-		// Explicit logs store configuration from config.json
+		// Explicit logs store configuration from config.json — it wins over the -logs-dir/env
+		// override, so warn rather than silently ignore the requested relocation.
+		if logsDirOverridden {
+			logger.Warn("logs dir override ignored: logs store is explicitly configured in config.json (-logs-dir / BIFROST_LOGS_DIR only applies to the default SQLite logs store)")
+		}
 		config.LogsStore, err = logstore.NewLogStore(ctx, configData.LogsStoreConfig, logger)
 		if err != nil {
 			return err
@@ -1049,6 +1071,27 @@ func initStores(ctx context.Context, config *Config, configData *ConfigData, con
 			logStoreConfig, dbErr = config.ConfigStore.GetLogsStoreConfig(ctx)
 			if dbErr != nil {
 				return fmt.Errorf("failed to get logs store config: %w", dbErr)
+			}
+		}
+		// When a logs dir override is in effect, relocate the SQLite logs.db — but only when the
+		// stored path is the implicit default (next to config.db, or empty). A stored path that an
+		// operator explicitly configured takes precedence and is left unchanged (with a warning),
+		// so the override never silently switches an operator-chosen logs DB. logsDBPath already
+		// honors the override (see LoadConfig). Non-SQLite / unexpected payloads warn rather than
+		// silently no-op, so the operator isn't left wondering why logs.db didn't move.
+		defaultSQLiteLogsDBPath := filepath.Join(filepath.Dir(configDBPath), "logs.db")
+		if logsDirOverridden && logStoreConfig != nil {
+			if logStoreConfig.Type != logstore.LogStoreTypeSQLite {
+				logger.Warn("logs dir override ignored: stored logs store is %s, not SQLite (-logs-dir / BIFROST_LOGS_DIR only relocates the SQLite logs.db)", logStoreConfig.Type)
+			} else if sqliteConfig, ok := logStoreConfig.Config.(*logstore.SQLiteConfig); !ok {
+				logger.Warn("logs dir override ignored: stored SQLite logs store has an unexpected config payload; cannot relocate logs.db")
+			} else if sqliteConfig.Path == "" || sqliteConfig.Path == defaultSQLiteLogsDBPath {
+				if sqliteConfig.Path != logsDBPath {
+					logger.Info("logs dir override: relocating logs.db from stored path %s to %s", sqliteConfig.Path, logsDBPath)
+					sqliteConfig.Path = logsDBPath
+				}
+			} else if sqliteConfig.Path != logsDBPath {
+				logger.Warn("logs dir override ignored: stored SQLite path %s appears explicitly configured; keeping it unchanged", sqliteConfig.Path)
 			}
 		}
 		if logStoreConfig == nil {
