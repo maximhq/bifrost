@@ -1422,8 +1422,12 @@ func (p *LoggerPlugin) Inject(_ context.Context, trace *schemas.Trace) error {
 	if trace == nil {
 		return nil
 	}
-	// Retrieve pending log entries built by PostLLMHook (stored by traceID)
-	entryVal, ok := p.pendingLogsToInject.LoadAndDelete(trace.TraceID)
+	// Retrieve pending log entries built by PostLLMHook. The write side uses
+	// the value of BifrostContextKeyTraceID, which is the in-process storage
+	// handle (trace.InternalID) — not the W3C trace.TraceID. Using TraceID
+	// here would mis-route or silently drop logs whenever multiple concurrent
+	// requests share the same upstream W3C trace ID.
+	entryVal, ok := p.pendingLogsToInject.LoadAndDelete(trace.InternalID)
 	if !ok {
 		return nil
 	}
