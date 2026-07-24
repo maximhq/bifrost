@@ -42,6 +42,7 @@ interface OverviewTabViewProps {
 	costChartType: ChartType;
 	modelChartType: ChartType;
 	latencyChartType: ChartType;
+	overheadChartType: ChartType;
 	throughputChartType: ChartType;
 	costModel: string;
 	usageModel: string;
@@ -50,6 +51,7 @@ interface OverviewTabViewProps {
 	onCostChartToggle: (type: ChartType) => void;
 	onModelChartToggle: (type: ChartType) => void;
 	onLatencyChartToggle: (type: ChartType) => void;
+	onOverheadChartToggle: (type: ChartType) => void;
 	onThroughputChartToggle: (type: ChartType) => void;
 	onCostModelChange: (model: string) => void;
 	onUsageModelChange: (model: string) => void;
@@ -66,6 +68,7 @@ export const OverviewTabView = forwardRef<OverviewTabViewHandle, OverviewTabView
 		costChartType,
 		modelChartType,
 		latencyChartType,
+		overheadChartType,
 		throughputChartType,
 		costModel,
 		usageModel,
@@ -74,6 +77,7 @@ export const OverviewTabView = forwardRef<OverviewTabViewHandle, OverviewTabView
 		onCostChartToggle,
 		onModelChartToggle,
 		onLatencyChartToggle,
+		onOverheadChartToggle,
 		onThroughputChartToggle,
 		onCostModelChange,
 		onUsageModelChange,
@@ -161,6 +165,7 @@ export const OverviewTabView = forwardRef<OverviewTabViewHandle, OverviewTabView
 			costChartType={costChartType}
 			modelChartType={modelChartType}
 			latencyChartType={latencyChartType}
+			overheadChartType={overheadChartType}
 			throughputChartType={throughputChartType}
 			costModel={costModel}
 			usageModel={usageModel}
@@ -172,6 +177,7 @@ export const OverviewTabView = forwardRef<OverviewTabViewHandle, OverviewTabView
 			onCostChartToggle={onCostChartToggle}
 			onModelChartToggle={onModelChartToggle}
 			onLatencyChartToggle={onLatencyChartToggle}
+			onOverheadChartToggle={onOverheadChartToggle}
 			onThroughputChartToggle={onThroughputChartToggle}
 			onCostModelChange={onCostModelChange}
 			onUsageModelChange={onUsageModelChange}
