@@ -1050,6 +1050,9 @@
                 "type": "boolean",
                 "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
               },
+              "provider_request_id": {
+                "$ref": "#/$defs/provider_request_id_config"
+              },
               "network_config": {
                 "$ref": "#/$defs/network_config"
               },
@@ -3107,6 +3110,21 @@
   },
   "additionalProperties": false,
   "$defs": {
+    "provider_request_id_config": {
+      "type": "object",
+      "description": "Configuration for capturing an upstream provider request ID from a response header.",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "header_name": {
+          "type": "string",
+          "pattern": "^[!#$%&'*+.^_`|~0-9A-Za-z-]+$"
+        }
+      },
+      "required": ["enabled"],
+      "additionalProperties": false
+    },
     "otel_endpoint": {
       "type": "string",
       "anyOf": [
@@ -4400,6 +4418,9 @@
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
         },
+        "provider_request_id": {
+          "$ref": "#/$defs/provider_request_id_config"
+        },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
         }
@@ -4438,6 +4459,9 @@
         "store_raw_request_response": {
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
+        },
+        "provider_request_id": {
+          "$ref": "#/$defs/provider_request_id_config"
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
@@ -4478,6 +4502,9 @@
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
         },
+        "provider_request_id": {
+          "$ref": "#/$defs/provider_request_id_config"
+        },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
         }
@@ -4516,6 +4543,9 @@
         "store_raw_request_response": {
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
+        },
+        "provider_request_id": {
+          "$ref": "#/$defs/provider_request_id_config"
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
@@ -4556,6 +4586,9 @@
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
         },
+        "provider_request_id": {
+          "$ref": "#/$defs/provider_request_id_config"
+        },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
         }
@@ -4594,6 +4627,9 @@
         "store_raw_request_response": {
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
+        },
+        "provider_request_id": {
+          "$ref": "#/$defs/provider_request_id_config"
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
@@ -4634,6 +4670,9 @@
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
         },
+        "provider_request_id": {
+          "$ref": "#/$defs/provider_request_id_config"
+        },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
         }
@@ -4673,6 +4712,9 @@
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
         },
+        "provider_request_id": {
+          "$ref": "#/$defs/provider_request_id_config"
+        },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
         }
@@ -4710,6 +4752,9 @@
         "store_raw_request_response": {
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
+        },
+        "provider_request_id": {
+          "$ref": "#/$defs/provider_request_id_config"
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
@@ -4749,6 +4794,9 @@
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
         },
+        "provider_request_id": {
+          "$ref": "#/$defs/provider_request_id_config"
+        },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
         }
@@ -4787,6 +4835,9 @@
         "store_raw_request_response": {
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
+        },
+        "provider_request_id": {
+          "$ref": "#/$defs/provider_request_id_config"
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"

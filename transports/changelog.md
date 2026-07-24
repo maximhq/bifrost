@@ -1,3 +1,5 @@
+[feat]: expose provider request ID capture settings through the HTTP management API [@qixiangyang](https://github.com/qixiangyang)
+
 ## ✨ Features
 
 - **WebSocket Proxy Support** — Realtime and Responses WebSocket connections now route through the configured provider-level proxy (HTTP, SOCKS5, env-based) instead of always dialing direct

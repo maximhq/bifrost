@@ -1454,6 +1454,8 @@ components:
       $ref: './schemas/management/session.yaml#/IsAuthEnabledResponse'
 
     # Providers
+    ProviderRequestIDConfig:
+      $ref: './schemas/management/providers.yaml#/ProviderRequestIDConfig'
     ProviderResponse:
       $ref: './schemas/management/providers.yaml#/ProviderResponse'
     ListProvidersResponse:

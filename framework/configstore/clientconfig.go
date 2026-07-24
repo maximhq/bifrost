@@ -467,10 +467,11 @@ type ProviderConfig struct {
 	SendBackRawResponse      bool                              `json:"send_back_raw_response"`                // Include raw response in BifrostResponse
 	StoreRawRequestResponse  bool                              `json:"store_raw_request_response"`            // Capture raw request/response for internal logging only; strip from API responses returned to clients
 	CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`      // Custom provider configuration
-	OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"`               // OpenAI-specific configuration
-	ConfigHash               string                            `json:"config_hash,omitempty"`                 // Hash of config.json version, used for change detection
-	Status                   string                            `json:"status,omitempty"`                      // Model discovery status for keyless providers
-	Description              string                            `json:"description,omitempty"`                 // Model discovery error message for keyless providers
+	OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"`
+	ProviderRequestID        *schemas.ProviderRequestIDConfig  `json:"provider_request_id,omitempty"` // Upstream request ID capture configuration
+	ConfigHash               string                            `json:"config_hash,omitempty"`         // Hash of config.json version, used for change detection
+	Status                   string                            `json:"status,omitempty"`              // Model discovery status for keyless providers
+	Description              string                            `json:"description,omitempty"`         // Model discovery error message for keyless providers
 }
 
 // Redacted returns a redacted copy of the provider configuration.
@@ -488,6 +489,7 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 		StoreRawRequestResponse:  p.StoreRawRequestResponse,
 		CustomProviderConfig:     p.CustomProviderConfig,
 		OpenAIConfig:             p.OpenAIConfig,
+		ProviderRequestID:        p.ProviderRequestID,
 		ConfigHash:               p.ConfigHash,
 		Status:                   p.Status,
 		Description:              p.Description,
@@ -717,6 +719,15 @@ func (p *ProviderConfig) GenerateConfigHash(providerName string) (string, error)
 	// Hash OpenAIConfig
 	if p.OpenAIConfig != nil {
 		data, err := sonic.Marshal(p.OpenAIConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+
+	// Hash ProviderRequestID
+	if p.ProviderRequestID != nil {
+		data, err := sonic.Marshal(p.ProviderRequestID)
 		if err != nil {
 			return "", err
 		}

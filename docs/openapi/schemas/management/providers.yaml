@@ -313,6 +313,21 @@ CustomProviderConfig:
       additionalProperties:
         type: string
 
+ProviderRequestIDConfig:
+  type: object
+  description: Configuration for capturing an upstream provider request ID from a response header.
+  required:
+    - enabled
+  properties:
+    enabled:
+      type: boolean
+      description: Whether provider request ID capture is enabled. Defaults to false when omitted from provider configuration.
+    header_name:
+      type: string
+      pattern: "^[!#$%&'*+.^_`|~0-9A-Za-z-]+$"
+      description: Optional response header to capture. OpenAI, Anthropic, Azure, and compatible custom providers have built-in defaults.
+  additionalProperties: false
+
 ProviderResponse:
   type: object
   description: Provider configuration response
@@ -333,6 +348,8 @@ ProviderResponse:
       type: boolean
     custom_provider_config:
       $ref: '#/CustomProviderConfig'
+    provider_request_id:
+      $ref: '#/ProviderRequestIDConfig'
     provider_status:
       $ref: '#/ProviderStatus'
     status:
@@ -378,6 +395,8 @@ AddProviderRequest:
       type: boolean
     custom_provider_config:
       $ref: '#/CustomProviderConfig'
+    provider_request_id:
+      $ref: '#/ProviderRequestIDConfig'
 
 UpdateProviderRequest:
   type: object
@@ -397,6 +416,8 @@ UpdateProviderRequest:
       type: boolean
     custom_provider_config:
       $ref: '#/CustomProviderConfig'
+    provider_request_id:
+      $ref: '#/ProviderRequestIDConfig'
 
 ListProviderKeysResponse:
   type: object
