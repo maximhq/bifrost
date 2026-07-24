@@ -275,6 +275,61 @@ jobs:
         id: approve
         run: echo "approved=true" >> $GITHUB_OUTPUT
 
+  # vLLM provider tests - allocates two vLLM (one stable and one nightly) instances 
+  # on runpod (runpodctl):
+  test-vllm:
+    needs: [check-skip, detect-changes]
+    if: needs.check-skip.outputs.should-skip != 'true' && needs.check-skip.outputs.skip-tests != 'true' && needs.detect-changes.outputs.core-needs-release == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            api.github.com:443
+            github.com:443
+            release-assets.githubusercontent.com:443
+            rest.runpod.io:443
+            *.proxy.runpod.net:443
+            proxy.golang.org:443
+            storage.googleapis.com:443
+            sum.golang.org:443
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Set up Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version: "1.26.5"
+
+      - name: Create vLLM pods on RunPod
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+          RUNPOD_NETWORK_VOLUME_ID: ${{ secrets.RUNPOD_NETWORK_VOLUME_ID }}
+          RUNPOD_REASONING_NETWORK_VOLUME_ID: ${{ secrets.RUNPOD_REASONING_NETWORK_VOLUME_ID }}
+        run: |
+          chmod +x ./.github/workflows/scripts/setup-vllm-runpod.sh
+          ./.github/workflows/scripts/setup-vllm-runpod.sh
+
+      - name: Run vLLM provider tests
+        run: VLLM_ENABLED=1 make test-core PROVIDER=vllm
+
+      - name: Delete vLLM pods on RunPod
+        if: always()
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+        run: |
+          chmod +x ./.github/workflows/scripts/teardown-vllm-runpod.sh
+          ./.github/workflows/scripts/teardown-vllm-runpod.sh
+
   test-framework:
     needs: [check-skip, detect-changes]
     if: needs.check-skip.outputs.should-skip != 'true' && needs.check-skip.outputs.skip-tests != 'true' && needs.detect-changes.outputs.framework-needs-release == 'true'
@@ -1206,6 +1261,7 @@ jobs:
         detect-changes,
         test-core,
         approve-flaky-test-core,
+        test-vllm,
         test-framework,
         test-plugins,
         test-bifrost-http,
@@ -1215,7 +1271,7 @@ jobs:
         test-docker-image-amd64,
         test-docker-image-arm64,
       ]
-    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.core-needs-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-api-integrations.result == 'success' || needs.test-api-integrations.result == 'skipped') && (needs.test-cost-accuracy.result == 'success' || needs.test-cost-accuracy.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped')"
+    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.core-needs-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-vllm.result == 'success' || needs.test-vllm.result == 'skipped') && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-api-integrations.result == 'success' || needs.test-api-integrations.result == 'skipped') && (needs.test-cost-accuracy.result == 'success' || needs.test-cost-accuracy.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped')"
     runs-on: ubuntu-latest
     permissions:
       contents: write
