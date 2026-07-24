@@ -1113,6 +1113,31 @@ func CreateAnthropicFilesRouteConfigs(pathPrefix string, handlerStore lib.Handle
 	return routes
 }
 
+// CreateAnthropicManagementRouteConfigs creates management passthrough route configurations for
+// Anthropic admin endpoints (usage, model details) not natively handled by Bifrost.
+func CreateAnthropicManagementRouteConfigs(pathPrefix string) []RouteConfig {
+	mgmtCfg := &ManagementConfig{
+		Provider:    schemas.Anthropic,
+		StripPrefix: pathPrefix,
+	}
+	return []RouteConfig{
+		// Usage statistics
+		{
+			Type:             RouteConfigTypeAnthropic,
+			Path:             pathPrefix + "/v1/usage",
+			Method:           "GET",
+			ManagementConfig: mgmtCfg,
+		},
+		// Single model details (supplement to list models)
+		{
+			Type:             RouteConfigTypeAnthropic,
+			Path:             pathPrefix + "/v1/models/{model_id}",
+			Method:           "GET",
+			ManagementConfig: mgmtCfg,
+		},
+	}
+}
+
 // NewAnthropicRouter creates a new AnthropicRouter with the given bifrost client.
 func NewAnthropicRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, logger schemas.Logger) *AnthropicRouter {
 	routes := CreateAnthropicRouteConfigs("/anthropic", logger)
@@ -1120,6 +1145,7 @@ func NewAnthropicRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, 
 	routes = append(routes, CreateAnthropicCountTokensRouteConfigs("/anthropic", handlerStore)...)
 	routes = append(routes, CreateAnthropicBatchRouteConfigs("/anthropic", handlerStore)...)
 	routes = append(routes, CreateAnthropicFilesRouteConfigs("/anthropic", handlerStore)...)
+	routes = append(routes, CreateAnthropicManagementRouteConfigs("/anthropic")...)
 
 	return &AnthropicRouter{
 		GenericRouter: NewGenericRouter(client, handlerStore, routes, nil, logger),

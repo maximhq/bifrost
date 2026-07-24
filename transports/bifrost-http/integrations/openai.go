@@ -3272,6 +3272,47 @@ func OpenAIRealtimeClientSecretPaths(pathPrefix string) []string {
 	return paths
 }
 
+// CreateOpenAIManagementRouteConfigs creates management passthrough route configurations for
+// OpenAI admin endpoints (organizations, usage) that are not natively handled by Bifrost.
+// These routes proxy GET requests directly to the OpenAI API using configured keys.
+func CreateOpenAIManagementRouteConfigs(pathPrefix string) []RouteConfig {
+	mgmtCfg := &ManagementConfig{
+		Provider:    schemas.OpenAI,
+		StripPrefix: pathPrefix,
+	}
+	return []RouteConfig{
+		// Organization info
+		{
+			Type:             RouteConfigTypeOpenAI,
+			Path:             pathPrefix + "/v1/organizations",
+			Method:           "GET",
+			ManagementConfig: mgmtCfg,
+		},
+		// Usage statistics
+		{
+			Type:             RouteConfigTypeOpenAI,
+			Path:             pathPrefix + "/v1/usage",
+			Method:           "GET",
+			ManagementConfig: mgmtCfg,
+		},
+		// Model details (single model GET — beyond what ListModels covers)
+		// NOTE: GET /v1/models (list all) is already registered by CreateOpenAIListModelsRouteConfigs — not duplicated here.
+		{
+			Type:             RouteConfigTypeOpenAI,
+			Path:             pathPrefix + "/v1/models/{model_id}",
+			Method:           "GET",
+			ManagementConfig: mgmtCfg,
+		},
+		// Delete fine-tuned model
+		{
+			Type:             RouteConfigTypeOpenAI,
+			Path:             pathPrefix + "/v1/models/{model_id}",
+			Method:           "DELETE",
+			ManagementConfig: mgmtCfg,
+		},
+	}
+}
+
 // NewOpenAIRouter creates a new OpenAIRouter with the given bifrost client.
 func NewOpenAIRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, logger schemas.Logger) *OpenAIRouter {
 	routes := CreateOpenAIRouteConfigs("/openai", handlerStore)
@@ -3280,6 +3321,7 @@ func NewOpenAIRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, log
 	routes = append(routes, CreateOpenAIFileRouteConfigs("/openai", handlerStore)...)
 	routes = append(routes, CreateOpenAIContainerRouteConfigs("/openai", handlerStore)...)
 	routes = append(routes, CreateOpenAIContainerFileRouteConfigs("/openai", handlerStore)...)
+	routes = append(routes, CreateOpenAIManagementRouteConfigs("/openai")...)
 
 	return &OpenAIRouter{
 		GenericRouter: NewGenericRouter(client, handlerStore, routes, nil, logger),

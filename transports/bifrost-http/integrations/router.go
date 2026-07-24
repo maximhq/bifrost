@@ -503,12 +503,22 @@ type RouteConfig struct {
 	PreCallback                            PreRequestCallback                     // Optional: called after parsing but before Bifrost processing
 	PostCallback                           PostRequestCallback                    // Optional: called after request processing
 	ShortCircuit                           ShortCircuit
+	ManagementConfig                       *ManagementConfig                      // Optional: when set, route is handled as a management passthrough (bypasses normal pipeline)
 }
 
 type PassthroughConfig struct {
 	Provider         schemas.ModelProvider                                              // which provider's key pool to draw from
 	ProviderDetector func(ctx *fasthttp.RequestCtx, model string) schemas.ModelProvider // optional: dynamic provider detection
 	StripPrefix      []string                                                           // e.g. "/openai" — stripped before forwarding
+}
+
+// ManagementConfig enables passthrough forwarding for management/admin GET endpoints
+// (e.g. /organizations, /usage) that are not handled by Bifrost natively.
+// When set on a RouteConfig, the route bypasses the normal request-parsing pipeline
+// and proxies the request directly to the provider API using the configured key.
+type ManagementConfig struct {
+	Provider    schemas.ModelProvider // Provider whose key pool is used for auth
+	StripPrefix string                // Prefix stripped from the request path before forwarding (e.g. "/openai")
 }
 
 // LargePayloadHook is called before body parsing to detect and set up large payload streaming.
@@ -581,6 +591,23 @@ func (g *GenericRouter) RegisterRoutes(r *router.Router, middlewares ...schemas.
 	for _, route := range g.routes {
 		// Validate route configuration at startup to fail fast
 		method := strings.ToUpper(route.Method)
+
+		// Management routes use passthrough — skip normal Bifrost pipeline validation
+		if route.ManagementConfig != nil {
+			handler := g.createManagementHandler(route)
+			switch method {
+			case fasthttp.MethodGet:
+				r.GET(route.Path, lib.ChainMiddlewares(handler, middlewares...))
+			case fasthttp.MethodPost:
+				r.POST(route.Path, lib.ChainMiddlewares(handler, middlewares...))
+			case fasthttp.MethodDelete:
+				r.DELETE(route.Path, lib.ChainMiddlewares(handler, middlewares...))
+			default:
+				g.logger.Warn("management route has unsupported HTTP method, skipping registration: " + method + " " + route.Path)
+				continue
+			}
+			continue
+		}
 
 		if route.GetRequestTypeInstance == nil {
 			g.logger.Warn("route configuration is invalid: GetRequestTypeInstance cannot be nil for route " + route.Path)
@@ -3199,6 +3226,62 @@ func parseMultipartPassthroughBody(body []byte, boundary string) (model string, 
 		}
 	}
 	return
+}
+
+// createManagementHandler creates a fasthttp handler for management/admin passthrough routes.
+// It proxies GET (and other management) requests directly to the provider API using the
+// configured provider key from Bifrost, without running through the normal inference pipeline.
+func (g *GenericRouter) createManagementHandler(config RouteConfig) fasthttp.RequestHandler {
+	mgmt := config.ManagementConfig
+	return func(ctx *fasthttp.RequestCtx) {
+		// Collect safe headers to forward (drop auth, internal, and hop-by-hop headers)
+		safeHeaders := make(map[string]string)
+		ctx.Request.Header.All()(func(key, value []byte) bool {
+			keyStr := strings.ToLower(string(key))
+			switch keyStr {
+			case "authorization", "api-key", "x-api-key", "x-goog-api-key",
+				"host", "connection", "transfer-encoding", "cookie", "set-cookie",
+				"proxy-authorization", "accept-encoding":
+				// drop — Bifrost injects auth from its key store
+			default:
+				if strings.HasPrefix(keyStr, "x-bf-") {
+					return true // drop internal gateway headers
+				}
+				safeHeaders[keyStr] = string(value)
+			}
+			return true
+		})
+
+		bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, g.handlerStore)
+
+		// Strip integration prefix to get the provider-native path
+		path := string(ctx.Path())
+		if mgmt.StripPrefix != "" && strings.HasPrefix(path, mgmt.StripPrefix) {
+			path = path[len(mgmt.StripPrefix):]
+		}
+		if path == "" {
+			path = "/"
+		}
+
+		provider := mgmt.Provider
+		// Allow x-bf-model-provider header to override the provider
+		if headerProvider := string(ctx.Request.Header.Peek("x-bf-model-provider")); headerProvider != "" {
+			provider = schemas.ModelProvider(headerProvider)
+		}
+
+		passthroughReq := &schemas.BifrostPassthroughRequest{
+			Method:      string(ctx.Method()),
+			Path:        path,
+			RawQuery:    string(ctx.URI().QueryString()),
+			Body:        ctx.Request.Body(),
+			SafeHeaders: safeHeaders,
+			Provider:    provider,
+			Model:       "", // management endpoints are not model-specific
+		}
+
+		g.handlePassthroughNonStream(ctx, bifrostCtx, cancel, provider, passthroughReq)
+		// cancel() is called inside handlePassthroughNonStream via its own defer.
+	}
 }
 
 func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
