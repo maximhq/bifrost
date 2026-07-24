@@ -18,6 +18,23 @@ import (
 	"gorm.io/gorm"
 )
 
+func TestParseProviderRequestIDFilter(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/api/logs?provider_request_id=%20req-provider-123%20")
+
+	if got := parseProviderRequestIDFilter(ctx); got != "req-provider-123" {
+		t.Fatalf("parseProviderRequestIDFilter() = %q, want req-provider-123", got)
+	}
+	if got := parseHistogramFilters(ctx).ProviderRequestID; got != "req-provider-123" {
+		t.Fatalf("parseHistogramFilters().ProviderRequestID = %q, want req-provider-123", got)
+	}
+
+	ctx.Request.SetRequestURI("/api/logs?provider_request_id=%20%20")
+	if got := parseProviderRequestIDFilter(ctx); got != "" {
+		t.Fatalf("whitespace-only provider request ID = %q, want empty", got)
+	}
+}
+
 // TestShouldUseFilterDataCacheAllowsUnscopedEmptyQuery verifies unscoped
 // requests can still share the no-query filterdata cache.
 func TestShouldUseFilterDataCacheAllowsUnscopedEmptyQuery(t *testing.T) {

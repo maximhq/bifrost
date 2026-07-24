@@ -44,6 +44,246 @@ func newTestStore(t *testing.T) logstore.LogStore {
 	return store
 }
 
+func setProviderRequestIDContext(ctx *schemas.BifrostContext, requestID, header string) []schemas.ProviderRequestIDRecord {
+	trail := []schemas.ProviderRequestIDRecord{{
+		Attempt:    0,
+		Provider:   schemas.OpenAI,
+		RequestID:  requestID,
+		HeaderName: header,
+	}}
+	ctx.SetValue(schemas.BifrostContextKeyProviderRequestID, requestID)
+	ctx.SetValue(schemas.BifrostContextKeyProviderRequestIDHeader, header)
+	ctx.SetValue(schemas.BifrostContextKeyProviderRequestIDTrail, trail)
+	return trail
+}
+
+func assertProviderRequestIDLogFields(t *testing.T, entry *logstore.Log, requestID, header string, trail []schemas.ProviderRequestIDRecord) {
+	t.Helper()
+	if entry.ProviderRequestID != requestID {
+		t.Fatalf("provider request ID = %q, want %q", entry.ProviderRequestID, requestID)
+	}
+	if entry.ProviderRequestIDHeader != header {
+		t.Fatalf("provider request ID header = %q, want %q", entry.ProviderRequestIDHeader, header)
+	}
+	if len(entry.ProviderRequestIDTrailParsed) != len(trail) {
+		t.Fatalf("provider request ID trail = %#v, want %#v", entry.ProviderRequestIDTrailParsed, trail)
+	}
+	for i := range trail {
+		if entry.ProviderRequestIDTrailParsed[i] != trail[i] {
+			t.Fatalf("provider request ID trail[%d] = %#v, want %#v", i, entry.ProviderRequestIDTrailParsed[i], trail[i])
+		}
+	}
+}
+
+func TestPostLLMHookSuccessPersistsProviderRequestIDWhenContentAndRawLoggingDisabled(t *testing.T) {
+	store := newTestStore(t)
+	disableContentLogging := true
+	plugin, err := Init(context.Background(), &Config{DisableContentLogging: &disableContentLogging}, testLogger{}, store, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-provider-id-success")
+	ctx.SetValue(schemas.BifrostContextKeyDisableContentLogging, true)
+	ctx.SetValue(schemas.BifrostContextKeyShouldStoreRawInLogs, false)
+	trail := setProviderRequestIDContext(ctx, "provider-success", "x-request-id")
+
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-test",
+			Params:   &schemas.ChatParameters{},
+		},
+	}
+	if _, _, err = plugin.PreLLMHook(ctx, req); err != nil {
+		t.Fatalf("PreLLMHook() error = %v", err)
+	}
+
+	result := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+		Model: "gpt-test",
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType:            schemas.ChatCompletionRequest,
+			Provider:               schemas.OpenAI,
+			OriginalModelRequested: "gpt-test",
+			ResolvedModelUsed:      "gpt-test",
+		},
+	}}
+	if _, _, err = plugin.PostLLMHook(ctx, result, nil); err != nil {
+		t.Fatalf("PostLLMHook() error = %v", err)
+	}
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+
+	entry, err := store.FindByID(context.Background(), "req-provider-id-success")
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	assertProviderRequestIDLogFields(t, entry, "provider-success", "x-request-id", trail)
+	if entry.RawRequest != "" || entry.RawResponse != "" {
+		t.Fatalf("raw payloads should remain disabled: request=%q response=%q", entry.RawRequest, entry.RawResponse)
+	}
+}
+
+func TestFallbackLogsKeepProviderRequestIDTrailsSeparate(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-provider-id-parent")
+	parentTrail := setProviderRequestIDContext(ctx, "provider-parent", "x-request-id")
+
+	parentReq := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-primary",
+			Params:   &schemas.ChatParameters{},
+		},
+	}
+	if _, _, err = plugin.PreLLMHook(ctx, parentReq); err != nil {
+		t.Fatalf("parent PreLLMHook() error = %v", err)
+	}
+
+	statusCode := 503
+	parentErr := &schemas.BifrostError{
+		IsBifrostError: true,
+		StatusCode:     &statusCode,
+		Error:          &schemas.ErrorField{Message: "primary unavailable"},
+		ExtraFields: schemas.BifrostErrorExtraFields{
+			RequestType:            schemas.ChatCompletionRequest,
+			Provider:               schemas.OpenAI,
+			OriginalModelRequested: "gpt-primary",
+			ResolvedModelUsed:      "gpt-primary",
+		},
+	}
+	if _, _, err = plugin.PostLLMHook(ctx, nil, parentErr); err != nil {
+		t.Fatalf("parent PostLLMHook() error = %v", err)
+	}
+
+	ctx.SetValue(schemas.BifrostContextKeyFallbackRequestID, "req-provider-id-fallback")
+	ctx.SetValue(schemas.BifrostContextKeyFallbackIndex, 1)
+	ctx.ClearValue(schemas.BifrostContextKeyProviderRequestID)
+	ctx.ClearValue(schemas.BifrostContextKeyProviderRequestIDHeader)
+	ctx.ClearValue(schemas.BifrostContextKeyProviderRequestIDTrail)
+	fallbackTrail := []schemas.ProviderRequestIDRecord{{
+		Attempt:    0,
+		Provider:   schemas.Anthropic,
+		RequestID:  "provider-fallback",
+		HeaderName: "request-id",
+	}}
+	ctx.SetValue(schemas.BifrostContextKeyProviderRequestID, "provider-fallback")
+	ctx.SetValue(schemas.BifrostContextKeyProviderRequestIDHeader, "request-id")
+	ctx.SetValue(schemas.BifrostContextKeyProviderRequestIDTrail, fallbackTrail)
+
+	fallbackReq := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.Anthropic,
+			Model:    "claude-fallback",
+			Params:   &schemas.ChatParameters{},
+		},
+	}
+	if _, _, err = plugin.PreLLMHook(ctx, fallbackReq); err != nil {
+		t.Fatalf("fallback PreLLMHook() error = %v", err)
+	}
+	fallbackResult := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+		Model: "claude-fallback",
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType:            schemas.ChatCompletionRequest,
+			Provider:               schemas.Anthropic,
+			OriginalModelRequested: "claude-fallback",
+			ResolvedModelUsed:      "claude-fallback",
+		},
+	}}
+	if _, _, err = plugin.PostLLMHook(ctx, fallbackResult, nil); err != nil {
+		t.Fatalf("fallback PostLLMHook() error = %v", err)
+	}
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+
+	parentEntry, err := store.FindByID(context.Background(), "req-provider-id-parent")
+	if err != nil {
+		t.Fatalf("FindByID(parent) error = %v", err)
+	}
+	assertProviderRequestIDLogFields(t, parentEntry, "provider-parent", "x-request-id", parentTrail)
+	if parentEntry.ParentRequestID != nil {
+		t.Fatalf("parent log unexpectedly has parent request ID %q", *parentEntry.ParentRequestID)
+	}
+
+	fallbackEntry, err := store.FindByID(context.Background(), "req-provider-id-fallback")
+	if err != nil {
+		t.Fatalf("FindByID(fallback) error = %v", err)
+	}
+	assertProviderRequestIDLogFields(t, fallbackEntry, "provider-fallback", "request-id", fallbackTrail)
+	if fallbackEntry.ParentRequestID == nil || *fallbackEntry.ParentRequestID != "req-provider-id-parent" {
+		t.Fatalf("fallback parent request ID = %v, want req-provider-id-parent", fallbackEntry.ParentRequestID)
+	}
+	if fallbackEntry.FallbackIndex != 1 {
+		t.Fatalf("fallback index = %d, want 1", fallbackEntry.FallbackIndex)
+	}
+}
+
+func TestPostLLMHookStreamingWritesProviderRequestIDTrailOnlyOnFinalChunk(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-provider-id-stream-final")
+	trail := setProviderRequestIDContext(ctx, "provider-stream-final", "x-request-id")
+
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionStreamRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-test",
+			Params:   &schemas.ChatParameters{},
+		},
+	}
+	if _, _, err = plugin.PreLLMHook(ctx, req); err != nil {
+		t.Fatalf("PreLLMHook() error = %v", err)
+	}
+
+	result := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+		Model: "gpt-test",
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType:            schemas.ChatCompletionStreamRequest,
+			Provider:               schemas.OpenAI,
+			OriginalModelRequested: "gpt-test",
+			ResolvedModelUsed:      "gpt-test",
+		},
+	}}
+	if _, _, err = plugin.PostLLMHook(ctx, result, nil); err != nil {
+		t.Fatalf("non-final PostLLMHook() error = %v", err)
+	}
+	if _, err = store.FindByID(context.Background(), "req-provider-id-stream-final"); err == nil {
+		t.Fatal("non-final streaming chunk unexpectedly wrote a log entry")
+	}
+
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+	if _, _, err = plugin.PostLLMHook(ctx, result, nil); err != nil {
+		t.Fatalf("final PostLLMHook() error = %v", err)
+	}
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+
+	entry, err := store.FindByID(context.Background(), "req-provider-id-stream-final")
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	assertProviderRequestIDLogFields(t, entry, "provider-stream-final", "x-request-id", trail)
+}
+
 func TestPostLLMHookNoPendingErrorPreservesMetadata(t *testing.T) {
 	store := newTestStore(t)
 	loggingHeaders := []string{"x-custom-log"}
@@ -62,6 +302,9 @@ func TestPostLLMHookNoPendingErrorPreservesMetadata(t *testing.T) {
 		"region": "us-east",
 	})
 	ctx.SetValue(schemas.BifrostIsAsyncRequest, true)
+	ctx.SetValue(schemas.BifrostContextKeyDisableContentLogging, true)
+	ctx.SetValue(schemas.BifrostContextKeyShouldStoreRawInLogs, false)
+	providerRequestIDTrail := setProviderRequestIDContext(ctx, "provider-error", "x-request-id")
 
 	statusCode := 500
 	bifrostErr := &schemas.BifrostError{
@@ -106,6 +349,7 @@ func TestPostLLMHookNoPendingErrorPreservesMetadata(t *testing.T) {
 	if got := logEntry.MetadataParsed["isAsyncRequest"]; got != true {
 		t.Fatalf("expected async metadata true, got %#v", got)
 	}
+	assertProviderRequestIDLogFields(t, logEntry, "provider-error", "x-request-id", providerRequestIDTrail)
 }
 
 func TestPostLLMHookStreamingErrorPreservesHeaderMetadata(t *testing.T) {
@@ -127,6 +371,9 @@ func TestPostLLMHookStreamingErrorPreservesHeaderMetadata(t *testing.T) {
 	ctx.SetValue(schemas.BifrostContextKeyDimensions, map[string]string{
 		"environment": "staging",
 	})
+	ctx.SetValue(schemas.BifrostContextKeyDisableContentLogging, true)
+	ctx.SetValue(schemas.BifrostContextKeyShouldStoreRawInLogs, false)
+	providerRequestIDTrail := setProviderRequestIDContext(ctx, "provider-stream-error", "x-request-id")
 
 	req := &schemas.BifrostRequest{
 		RequestType: schemas.ResponsesStreamRequest,
@@ -184,6 +431,7 @@ func TestPostLLMHookStreamingErrorPreservesHeaderMetadata(t *testing.T) {
 	if got := logEntry.MetadataParsed["environment"]; got != "staging" {
 		t.Fatalf("expected dimension metadata staging, got %#v", got)
 	}
+	assertProviderRequestIDLogFields(t, logEntry, "provider-stream-error", "x-request-id", providerRequestIDTrail)
 }
 
 // TestPostLLMHookCancelledStreamLogsCost verifies #3357 at the logging layer: a

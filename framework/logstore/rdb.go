@@ -222,6 +222,9 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 	if filters.ParentRequestID != "" {
 		baseQuery = baseQuery.Where("parent_request_id = ?", filters.ParentRequestID)
 	}
+	if filters.ProviderRequestID != "" {
+		baseQuery = baseQuery.Where("provider_request_id = ?", filters.ProviderRequestID)
+	}
 	if len(filters.SelectedKeyIDs) > 0 {
 		baseQuery = baseQuery.Where("selected_key_id IN ?", filters.SelectedKeyIDs)
 	}
@@ -943,6 +946,7 @@ func (s *RDBLogStore) listSelectColumns() string {
 		"canonical_model_name", "alias_model_family", "server_side_fallback_model",
 		"number_of_retries", "fallback_index",
 		"selected_key_id", "selected_key_name",
+		"provider_request_id", "provider_request_id_header",
 		"virtual_key_id", "virtual_key_name",
 		"routing_engines_used", "routing_rule_id", "routing_rule_name",
 		"user_id", "user_name", "team_id", "team_name", "customer_id", "customer_name",
