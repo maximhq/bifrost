@@ -76,6 +76,9 @@ Configuration:
 {{- else }}
 - Replicas: {{ .Values.replicaCount }}
 {{- end }}
+{{- if .Values.podDisruptionBudget.enabled }}
+- PodDisruptionBudget: Enabled ({{ if hasKey .Values.podDisruptionBudget "maxUnavailable" }}maxUnavailable: {{ .Values.podDisruptionBudget.maxUnavailable }}{{ else if hasKey .Values.podDisruptionBudget "minAvailable" }}minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}{{ else }}minAvailable: 1{{ end }})
+{{- end }}
 
 Metrics: http://{{ include "bifrost.fullname" . }}:{{ .Values.service.port }}/metrics
 

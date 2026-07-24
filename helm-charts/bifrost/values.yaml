@@ -148,6 +148,21 @@ readinessProbe:
   timeoutSeconds: 5
   failureThreshold: 3
 
+podDisruptionBudget:
+  # Enable PodDisruptionBudget for high availability
+  # Ensures a minimum number of pods remain available during voluntary disruptions
+  # (e.g., node drains, cluster upgrades, spot instance evictions)
+  enabled: false
+  # Set exactly one of minAvailable or maxUnavailable (not both).
+  # Can be an integer (e.g., 1) or a percentage string (e.g., "50%").
+  # If neither is set, defaults to minAvailable: 1.
+  # minAvailable: 1
+  # maxUnavailable: 1
+  # Unhealthy pod eviction policy (requires Kubernetes 1.27+)
+  # Options: IfHealthyBudget (default), AlwaysAllow
+  # AlwaysAllow allows eviction of unhealthy pods even if it violates the budget
+  # unhealthyPodEvictionPolicy: IfHealthyBudget
+
 autoscaling:
   enabled: false
   minReplicas: 1

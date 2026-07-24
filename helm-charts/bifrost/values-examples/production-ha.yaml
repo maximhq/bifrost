@@ -5,6 +5,11 @@
 # Multiple replicas for HA
 replicaCount: 3
 
+# Pod disruption budget for HA during node drains and cluster upgrades
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+
 # Auto-scaling configuration
 autoscaling:
   enabled: true
