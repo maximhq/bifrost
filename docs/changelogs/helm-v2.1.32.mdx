@@ -1,0 +1,12 @@
+---
+title: "v2.1.32"
+description: "Helm v2.1.32 changelog - 2026-07-24"
+---
+
+<Update label="Bifrost Helm" description="v2.1.32">
+
+## Changelog
+
+- **Breaking:** removed `complex_reasoning` from `bifrost.governance.complexityAnalyzerConfig.tier_boundaries` — the COMPLEX and REASONING complexity tiers are merged, so boundaries are now just `simple_medium` and `medium_complex` (scores at or above `medium_complex` are COMPLEX). Values files that still set `complex_reasoning` fail schema validation; delete the field before upgrading. Renders into `governance.complexity_analyzer_config.tier_boundaries`.
+
+</Update>

@@ -4,9 +4,13 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.31
+**Latest Version:** 2.1.32
 
 ## Changelog
+
+### Upcoming
+
+- **Breaking:** removed `complex_reasoning` from `bifrost.governance.complexityAnalyzerConfig.tier_boundaries` — the COMPLEX and REASONING complexity tiers are merged, so boundaries are now just `simple_medium` and `medium_complex` (scores at or above `medium_complex` are COMPLEX). Values files that still set `complex_reasoning` fail schema validation; delete the field before upgrading. Renders into `governance.complexity_analyzer_config.tier_boundaries`.
 
 ### 2.1.31
 
