@@ -32,6 +32,9 @@ function buildFilterParams(filters: LogFilters): Record<string, string | number>
 	if (filters.parent_request_id) {
 		params.parent_request_id = filters.parent_request_id;
 	}
+	if (filters.provider_request_id) {
+		params.provider_request_id = filters.provider_request_id;
+	}
 	if (filters.providers && filters.providers.length > 0) {
 		params.providers = filters.providers.join(",");
 	}

@@ -1,5 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
+import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { getErrorMessage, setProviderFormDirtyState, useAppDispatch } from "@/lib/store";
@@ -13,6 +14,19 @@ import { useEffect } from "react";
 import { useForm, type Resolver } from "react-hook-form";
 import { toast } from "sonner";
 import { buildProviderUpdatePayload } from "../views/utils";
+
+const providerRequestIDDefaults: Record<string, string> = {
+	openai: "x-request-id",
+	anthropic: "request-id",
+	azure: "apim-request-id",
+};
+
+function getProviderRequestIDHeader(provider: ModelProvider): string {
+	const configured = provider.provider_request_id?.header_name?.trim();
+	if (configured) return configured.toLowerCase();
+	const baseProvider = provider.custom_provider_config?.base_provider_type;
+	return providerRequestIDDefaults[baseProvider ?? provider.name] ?? "";
+}
 
 interface DebuggingFormFragmentProps {
 	provider: ModelProvider;
@@ -30,11 +44,16 @@ export function DebuggingFormFragment({ provider }: DebuggingFormFragmentProps) 
 			send_back_raw_request: provider.send_back_raw_request ?? false,
 			send_back_raw_response: provider.send_back_raw_response ?? false,
 			store_raw_request_response: provider.store_raw_request_response ?? false,
+			provider_request_id: {
+				enabled: provider.provider_request_id?.enabled ?? false,
+				header_name: getProviderRequestIDHeader(provider),
+			},
 		},
 	});
 	const sendBackRawRequest = form.watch("send_back_raw_request");
 	const sendBackRawResponse = form.watch("send_back_raw_response");
 	const storeRawRequestResponse = form.watch("store_raw_request_response");
+	const captureProviderRequestID = form.watch("provider_request_id.enabled");
 
 	useEffect(() => {
 		dispatch(setProviderFormDirtyState(form.formState.isDirty));
@@ -45,21 +64,35 @@ export function DebuggingFormFragment({ provider }: DebuggingFormFragmentProps) 
 			send_back_raw_request: provider.send_back_raw_request ?? false,
 			send_back_raw_response: provider.send_back_raw_response ?? false,
 			store_raw_request_response: provider.store_raw_request_response ?? false,
+			provider_request_id: {
+				enabled: provider.provider_request_id?.enabled ?? false,
+				header_name: getProviderRequestIDHeader(provider),
+			},
 		});
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [provider.name, provider.send_back_raw_request, provider.send_back_raw_response, provider.store_raw_request_response]);
+	}, [
+		provider.name,
+		provider.send_back_raw_request,
+		provider.send_back_raw_response,
+		provider.store_raw_request_response,
+		provider.provider_request_id,
+		provider.custom_provider_config,
+	]);
 
 	const onSubmit = (data: DebuggingFormSchema) => {
-		const updatedProvider = buildProviderUpdatePayload(provider, {
-			send_back_raw_request: data.send_back_raw_request,
-			send_back_raw_response: data.send_back_raw_response,
-			store_raw_request_response: data.store_raw_request_response,
-		});
+		const normalizedData: DebuggingFormSchema = {
+			...data,
+			provider_request_id: {
+				...data.provider_request_id,
+				header_name: data.provider_request_id.header_name?.trim().toLowerCase(),
+			},
+		};
+		const updatedProvider = buildProviderUpdatePayload(provider, normalizedData);
 		updateProvider(updatedProvider)
 			.unwrap()
 			.then(() => {
 				toast.success("Debugging configuration updated successfully");
-				form.reset(data);
+				form.reset(normalizedData);
 			})
 			.catch((err) => {
 				toast.error("Failed to update debugging configuration", {
@@ -199,10 +232,67 @@ export function DebuggingFormFragment({ provider }: DebuggingFormFragmentProps) 
 					/>
 				</div>
 
+				<div className="border-border space-y-4 border-t pt-4">
+					<FormField
+						control={form.control}
+						name="provider_request_id.enabled"
+						render={({ field }) => (
+							<FormItem>
+								<div className="flex items-center justify-between space-x-2">
+									<div className="space-y-0.5">
+										<FormLabel>Capture Provider Request ID</FormLabel>
+										<p className="text-muted-foreground text-xs">
+											Save the upstream provider&apos;s response-header request ID as log metadata for support and debugging.
+										</p>
+									</div>
+									<FormControl>
+										<Switch
+											size="md"
+											checked={field.value}
+											disabled={!hasUpdateProviderAccess}
+											onCheckedChange={(checked) => {
+												field.onChange(checked);
+												form.trigger("provider_request_id");
+											}}
+											data-testid="provider-debugging-provider-request-id-enabled"
+										/>
+									</FormControl>
+								</div>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+
+					{captureProviderRequestID && (
+						<FormField
+							control={form.control}
+							name="provider_request_id.header_name"
+							render={({ field }) => (
+								<FormItem>
+									<FormLabel>Response Header</FormLabel>
+									<FormControl>
+										<Input
+											{...field}
+											value={field.value ?? ""}
+											placeholder="x-request-id"
+											disabled={!hasUpdateProviderAccess}
+											data-testid="provider-debugging-provider-request-id-header"
+										/>
+									</FormControl>
+									<p className="text-muted-foreground text-xs">
+										This reads a response header only; it does not use the response body&apos;s object ID.
+									</p>
+									<FormMessage />
+								</FormItem>
+							)}
+						/>
+					)}
+				</div>
+
 				<div className="flex justify-end space-x-2">
 					<Button
 						type="submit"
-						disabled={!form.formState.isDirty || !hasUpdateProviderAccess || isUpdatingProvider}
+						disabled={!form.formState.isDirty || !form.formState.isValid || !hasUpdateProviderAccess || isUpdatingProvider}
 						isLoading={isUpdatingProvider}
 					>
 						Save Debugging Configuration

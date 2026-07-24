@@ -122,6 +122,7 @@ export function LogsFilterSidebar({ filters, onFiltersChange }: LogsSidebarProps
 					<CustomerFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<BusinessUnitFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<SessionFilter filters={filters} onFiltersChange={onFiltersChange} />
+					<ProviderRequestIDFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<CostFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<StopReasonFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<MetadataFilters filters={filters} onFiltersChange={onFiltersChange} />
@@ -830,6 +831,29 @@ function SessionFilter({ filters, onFiltersChange, defaultOpen }: FilterComponen
 					placeholder="Parent request ID"
 					className="h-8 border-0 pl-8 text-sm"
 					data-testid="session-filter-input"
+					autoFocus
+				/>
+			</div>
+		</FilterSection>
+	);
+}
+
+// ---------------------------------------------------------------------------
+// ProviderRequestIDFilter
+// ---------------------------------------------------------------------------
+
+function ProviderRequestIDFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentProps) {
+	const hasActive = !!filters.provider_request_id;
+	return (
+		<FilterSection title="Provider Request ID" defaultOpen={defaultOpen || hasActive} testId="provider-request-id-filter-toggle">
+			<div className="relative">
+				<Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2" />
+				<Input
+					value={filters.provider_request_id || ""}
+					onChange={(e) => onFiltersChange({ ...filters, provider_request_id: e.target.value })}
+					placeholder="Exact upstream request ID"
+					className="h-8 border-0 pl-8 text-sm"
+					data-testid="provider-request-id-filter-input"
 					autoFocus
 				/>
 			</div>

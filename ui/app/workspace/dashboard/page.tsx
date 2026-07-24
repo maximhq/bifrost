@@ -73,6 +73,7 @@ export default function DashboardPage() {
 			mcp_tool_names: parseAsString.withDefault(""),
 			mcp_server_labels: parseAsString.withDefault(""),
 			parent_request_id: parseAsString.withDefault(""),
+			provider_request_id: parseAsString.withDefault(""),
 			user_ids: parseAsSafeArrayOf.withDefault([]),
 			team_ids: parseAsSafeArrayOf.withDefault([]),
 			customer_ids: parseAsSafeArrayOf.withDefault([]),
@@ -131,10 +132,13 @@ export default function DashboardPage() {
 					metadata_filters: metadataFilters,
 				}),
 			...(urlState.parent_request_id && { parent_request_id: urlState.parent_request_id }),
+			...(urlState.provider_request_id && { provider_request_id: urlState.provider_request_id }),
 			...(urlState.user_ids.length > 0 && { user_ids: urlState.user_ids }),
 			...(urlState.team_ids.length > 0 && { team_ids: urlState.team_ids }),
 			...(urlState.customer_ids.length > 0 && { customer_ids: urlState.customer_ids }),
-			...(urlState.business_unit_ids.length > 0 && { business_unit_ids: urlState.business_unit_ids }),
+			...(urlState.business_unit_ids.length > 0 && {
+				business_unit_ids: urlState.business_unit_ids,
+			}),
 			...(urlState.aliases.length > 0 && { aliases: urlState.aliases }),
 		}),
 		[
@@ -142,6 +146,7 @@ export default function DashboardPage() {
 			urlState.start_time,
 			urlState.end_time,
 			urlState.parent_request_id,
+			urlState.provider_request_id,
 			urlState.providers,
 			urlState.models,
 			urlState.selected_key_ids,
@@ -264,7 +269,10 @@ export default function DashboardPage() {
 	const handleProviderCostChartToggle = useCallback((type: ChartType) => setUrlState({ provider_cost_chart: type }), [setUrlState]);
 	const handleProviderTokenChartToggle = useCallback((type: ChartType) => setUrlState({ provider_token_chart: type }), [setUrlState]);
 	const handleProviderLatencyChartToggle = useCallback((type: ChartType) => setUrlState({ provider_latency_chart: type }), [setUrlState]);
-	const handleProviderThroughputChartToggle = useCallback((type: ChartType) => setUrlState({ provider_throughput_chart: type }), [setUrlState]);
+	const handleProviderThroughputChartToggle = useCallback(
+		(type: ChartType) => setUrlState({ provider_throughput_chart: type }),
+		[setUrlState],
+	);
 	const handleMcpVolumeChartToggle = useCallback((type: ChartType) => setUrlState({ mcp_volume_chart: type }), [setUrlState]);
 	const handleMcpCostChartToggle = useCallback((type: ChartType) => setUrlState({ mcp_cost_chart: type }), [setUrlState]);
 
@@ -316,6 +324,7 @@ export default function DashboardPage() {
 						? JSON.stringify(newFilters.metadata_filters)
 						: "",
 				parent_request_id: newFilters.parent_request_id || "",
+				provider_request_id: newFilters.provider_request_id || "",
 				user_ids: newFilters.user_ids || [],
 				team_ids: newFilters.team_ids || [],
 				customer_ids: newFilters.customer_ids || [],
