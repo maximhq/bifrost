@@ -129,7 +129,7 @@ Seeds governance resources at startup. All sub-keys are optional arrays.
 | `budgets` | Spend caps in USD over a rolling window |
 | `rate_limits` | Request and token rate limits |
 | `customers` | Customer entities (attach budgets/rate limits) |
-| `teams` | Team entities (attach to customers, budgets, rate limits) |
+| `teams` | Team entities (attach to customers and rate limits; budgets attach to teams through `budgets[].team_id`) |
 | `routing_rules` | CEL-based dynamic provider/model routing |
 | `pricing_overrides` | Scoped per-model pricing overrides |
 | `model_configs` | Per-model rate limit and budget configurations |
