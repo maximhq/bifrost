@@ -789,6 +789,14 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 						})
 						continue
 					}
+					// Anthropic rejects replayed thinking blocks that lack a valid
+					// signature (400 "Invalid signature"). Unsigned text-only details —
+					// e.g. plain-text reasoning replayed from a non-Anthropic source —
+					// have nothing Anthropic can verify, so drop them rather than
+					// forwarding a block Anthropic will reject outright.
+					if reasoningDetail.Signature == nil || *reasoningDetail.Signature == "" {
+						continue
+					}
 					content = append(content, AnthropicContentBlock{
 						Type:      AnthropicContentBlockTypeThinking,
 						Signature: reasoningDetail.Signature,

@@ -21,11 +21,25 @@ func ConvertOpenAIMessagesToBifrostMessages(messages []OpenAIMessage) []schemas.
 			ChatToolMessage: message.ChatToolMessage,
 		}
 		if message.OpenAIChatAssistantMessage != nil {
+			reasoningDetails := message.OpenAIChatAssistantMessage.ReasoningDetails
+			// Plain-text reasoning replay (no structured reasoning_details) still needs to
+			// reach signature-aware downstream converters (e.g. Anthropic's thinking blocks),
+			// so synthesize a single reasoning.text entry from it.
+			if len(reasoningDetails) == 0 && message.OpenAIChatAssistantMessage.Reasoning != nil {
+				reasoningDetails = []schemas.ChatReasoningDetails{
+					{
+						Index: 0,
+						Type:  schemas.BifrostReasoningDetailsTypeText,
+						Text:  message.OpenAIChatAssistantMessage.Reasoning,
+					},
+				}
+			}
 			bifrostMessages[i].ChatAssistantMessage = &schemas.ChatAssistantMessage{
-				Refusal:     message.OpenAIChatAssistantMessage.Refusal,
-				Reasoning:   message.OpenAIChatAssistantMessage.Reasoning,
-				Annotations: message.OpenAIChatAssistantMessage.Annotations,
-				ToolCalls:   message.OpenAIChatAssistantMessage.ToolCalls,
+				Refusal:          message.OpenAIChatAssistantMessage.Refusal,
+				Reasoning:        message.OpenAIChatAssistantMessage.Reasoning,
+				ReasoningDetails: reasoningDetails,
+				Annotations:      message.OpenAIChatAssistantMessage.Annotations,
+				ToolCalls:        message.OpenAIChatAssistantMessage.ToolCalls,
 			}
 		}
 	}
@@ -77,10 +91,11 @@ func ConvertBifrostMessagesToOpenAIMessages(messages []schemas.ChatMessage) []Op
 				toolCalls = cloned
 			}
 			openaiMessages[i].OpenAIChatAssistantMessage = &OpenAIChatAssistantMessage{
-				Refusal:     message.ChatAssistantMessage.Refusal,
-				Reasoning:   message.ChatAssistantMessage.Reasoning,
-				Annotations: message.ChatAssistantMessage.Annotations,
-				ToolCalls:   toolCalls,
+				Refusal:          message.ChatAssistantMessage.Refusal,
+				Reasoning:        message.ChatAssistantMessage.Reasoning,
+				ReasoningDetails: message.ChatAssistantMessage.ReasoningDetails,
+				Annotations:      message.ChatAssistantMessage.Annotations,
+				ToolCalls:        toolCalls,
 			}
 		}
 	}

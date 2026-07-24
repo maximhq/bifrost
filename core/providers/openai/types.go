@@ -165,10 +165,11 @@ type OpenAIMessage struct {
 
 // OpenAIChatAssistantMessage represents an OpenAI chat assistant message
 type OpenAIChatAssistantMessage struct {
-	Refusal     *string                                  `json:"refusal,omitempty"`
-	Reasoning   *string                                  `json:"reasoning_content,omitempty"`
-	Annotations []schemas.ChatAssistantMessageAnnotation `json:"annotations,omitempty"`
-	ToolCalls   []schemas.ChatAssistantMessageToolCall   `json:"tool_calls,omitempty"`
+	Refusal          *string                                  `json:"refusal,omitempty"`
+	Reasoning        *string                                  `json:"reasoning_content,omitempty"`
+	ReasoningDetails []schemas.ChatReasoningDetails           `json:"reasoning_details,omitempty"`
+	Annotations      []schemas.ChatAssistantMessageAnnotation `json:"annotations,omitempty"`
+	ToolCalls        []schemas.ChatAssistantMessageToolCall   `json:"tool_calls,omitempty"`
 }
 
 // MarshalJSON implements custom JSON marshalling for OpenAIChatRequest.
