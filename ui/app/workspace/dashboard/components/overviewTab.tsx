@@ -27,6 +27,7 @@ import { type ChartType, ChartTypeToggle } from "./charts/chartTypeToggle";
 import { CostChart } from "./charts/costChart";
 import ExternalCacheTokenMeterChart from "./charts/externalCacheTokenMeterChart";
 import { LatencyChart } from "./charts/latencyChart";
+import { OverheadChart } from "./charts/overheadChart";
 import { ThroughputChart } from "./charts/throughputChart";
 import LocalCacheTokenMeterChart from "./charts/localCacheTokenMeterChart";
 import { LogVolumeChart } from "./charts/logVolumeChart";
@@ -63,6 +64,7 @@ export interface OverviewTabProps {
 	costChartType: ChartType;
 	modelChartType: ChartType;
 	latencyChartType: ChartType;
+	overheadChartType: ChartType;
 	throughputChartType: ChartType;
 
 	// Model selections
@@ -80,6 +82,7 @@ export interface OverviewTabProps {
 	onCostChartToggle: (type: ChartType) => void;
 	onModelChartToggle: (type: ChartType) => void;
 	onLatencyChartToggle: (type: ChartType) => void;
+	onOverheadChartToggle: (type: ChartType) => void;
 	onThroughputChartToggle: (type: ChartType) => void;
 
 	// Filter callbacks
@@ -109,6 +112,7 @@ function OverviewTabImpl({
 	costChartType,
 	modelChartType,
 	latencyChartType,
+	overheadChartType,
 	throughputChartType,
 	costModel,
 	usageModel,
@@ -120,6 +124,7 @@ function OverviewTabImpl({
 	onCostChartToggle,
 	onModelChartToggle,
 	onLatencyChartToggle,
+	onOverheadChartToggle,
 	onThroughputChartToggle,
 	onCostModelChange,
 	onUsageModelChange,
@@ -163,6 +168,20 @@ function OverviewTabImpl({
 			const reqs = b.total_requests ?? 0;
 			if (reqs === 0) continue;
 			weighted += (b.avg_latency ?? 0) * reqs;
+			count += reqs;
+		}
+		return count > 0 ? weighted / count : null;
+	}, [latencyData]);
+
+	// Request-weighted average Bifrost overhead across buckets, mirroring latencyAvg.
+	const overheadAvg = useMemo(() => {
+		if (!latencyData?.buckets || latencyData.buckets.length === 0) return null;
+		let weighted = 0;
+		let count = 0;
+		for (const b of latencyData.buckets) {
+			const reqs = b.total_requests ?? 0;
+			if (reqs === 0) continue;
+			weighted += (b.avg_overhead ?? 0) * reqs;
 			count += reqs;
 		}
 		return count > 0 ? weighted / count : null;
@@ -459,6 +478,45 @@ function OverviewTabImpl({
 					}
 				>
 					<LatencyChart data={latencyData} chartType={latencyChartType} startTime={startTime} endTime={endTime} />
+				</ChartCard>
+
+				{/* Bifrost Overhead Chart */}
+				<ChartCard
+					title="Bifrost Overhead"
+					loading={loadingLatency}
+					testId="chart-overhead"
+					totalLabel="Avg"
+					total={
+						overheadAvg !== null ? (
+							<NumberFlow value={overheadAvg} format={{ minimumFractionDigits: 2, maximumFractionDigits: 2 }} suffix="ms" />
+						) : undefined
+					}
+					totalTooltip={overheadAvg !== null ? `${overheadAvg.toLocaleString("en-US", { maximumFractionDigits: 6 })}ms` : undefined}
+					legend={
+						<div className={CHART_HEADER_LEGEND_CLASS}>
+							<span className="flex items-center gap-1">
+								<span className="h-2 w-2 rounded-full" style={{ backgroundColor: LATENCY_COLORS.avg }} />
+								<span className="text-muted-foreground">Avg</span>
+							</span>
+							<span className="flex items-center gap-1">
+								<span className="h-2 w-2 rounded-full" style={{ backgroundColor: LATENCY_COLORS.p90 }} />
+								<span className="text-muted-foreground">P90</span>
+							</span>
+							<span className="flex items-center gap-1">
+								<span className="h-2 w-2 rounded-full" style={{ backgroundColor: LATENCY_COLORS.p95 }} />
+								<span className="text-muted-foreground">P95</span>
+							</span>
+							<span className="flex items-center gap-1">
+								<span className="h-2 w-2 rounded-full" style={{ backgroundColor: LATENCY_COLORS.p99 }} />
+								<span className="text-muted-foreground">P99</span>
+							</span>
+						</div>
+					}
+					controls={
+						<ChartTypeToggle chartType={overheadChartType} onToggle={onOverheadChartToggle} data-testid="dashboard-overhead-chart-toggle" />
+					}
+				>
+					<OverheadChart data={latencyData} chartType={overheadChartType} startTime={startTime} endTime={endTime} />
 				</ChartCard>
 
 				{/* Throughput (tokens/sec) Chart */}
