@@ -24,6 +24,21 @@ export type KeywordListKey = keyof EditableKeywordConfig;
 
 export const COMPLEXITY_TIER_VALUES = ["SIMPLE", "MEDIUM", "COMPLEX"] as const;
 
+// REASONING was merged into COMPLEX and survives only in historical log rows.
+// Kept out of COMPLEXITY_TIER_VALUES so the CEL builder never offers it; the
+// logs filter renders it separately so those old rows stay reachable.
+export const LEGACY_COMPLEXITY_TIER_VALUES = ["REASONING"] as const;
+
+// Mirrors the complexity_mechanism values recorded by the gateway (plugins/governance/complexity).
+// "skipped" means classification was demanded by a routing rule but produced no tier.
+// Future classifiers add their values here (e.g. "semantic", "llm").
+export const COMPLEXITY_MECHANISM_VALUES = ["lexical", "skipped"] as const;
+
+export const COMPLEXITY_MECHANISM_LABELS: Record<string, string> = {
+	lexical: "Lexical",
+	skipped: "Skipped",
+};
+
 export const KEYWORD_LIST_DEFINITIONS: Array<{
 	key: KeywordListKey;
 	label: string;
