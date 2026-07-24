@@ -50,6 +50,7 @@ package integrations
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -372,11 +373,26 @@ type StreamErrorConverter func(ctx *schemas.BifrostContext, err *schemas.Bifrost
 // If it returns an error, the request processing stops.
 type RequestParser func(ctx *fasthttp.RequestCtx, req interface{}) error
 
+// errJSONSchemaMismatch marks a request body that was syntactically valid JSON
+// but failed to decode into the target request type (wrong field type, etc.),
+// as distinct from genuinely malformed JSON. Use errors.Is to check for it.
+var errJSONSchemaMismatch = errors.New("request body does not match the expected schema")
+
 func parseJSONRequestBody(rawBody []byte, req interface{}) error {
 	if len(rawBody) == 0 {
 		return nil
 	}
 	if err := sonic.Unmarshal(rawBody, req); err != nil {
+		// Many request types (and nested fields) implement custom UnmarshalJSON methods
+		// that return plain errors for structural mismatches (e.g. ChatMessageContent
+		// rejecting a "content" field that's neither a string nor an array), not just
+		// sonic/encoding-json's own type-mismatch error types. Rather than special-casing
+		// every such error, classify by re-validating the raw bytes: if they're
+		// syntactically valid JSON, the failure is a schema/shape mismatch regardless of
+		// which layer detected it; only otherwise-invalid JSON gets the syntax-error message.
+		if json.Valid(rawBody) {
+			return fmt.Errorf("%w (length %d): %w", errJSONSchemaMismatch, len(rawBody), err)
+		}
 		return fmt.Errorf("invalid JSON request body (length %d): %w", len(rawBody), err)
 	}
 	return nil
@@ -724,7 +740,11 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 				if len(rawBody) > 0 {
 					if err := parseJSONRequestBody(rawBody, req); err != nil {
 						ctx.SetConnectionClose()
-						g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostErrorWithCode(err, "Invalid JSON", fasthttp.StatusBadRequest))
+						message := "Invalid JSON"
+						if errors.Is(err, errJSONSchemaMismatch) {
+							message = "request body is valid JSON but does not match the expected schema for this endpoint"
+						}
+						g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostErrorWithCode(err, message, fasthttp.StatusBadRequest))
 						return
 					}
 				}

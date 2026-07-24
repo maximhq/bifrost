@@ -499,6 +499,87 @@ func TestCreateHandler_DefaultJSONParserFailureClosesConnection(t *testing.T) {
 	assert.Contains(t, string(ctx.Response.Body()), "invalid JSON request body")
 }
 
+// TestCreateHandler_JSONSchemaMismatchDistinctFromSyntaxError verifies that a body which is
+// syntactically valid JSON but fails to decode into the target request type (e.g. a string
+// field given a number) is reported with a schema-mismatch message, distinct from the
+// "invalid JSON request body" message used for genuinely malformed JSON. Regression for
+// GenAI streamGenerateContent returning a misleading generic "Invalid JSON" 500/400 for any
+// decode failure regardless of cause.
+func TestCreateHandler_JSONSchemaMismatchDistinctFromSyntaxError(t *testing.T) {
+	handlerStore := &mockHandlerStore{}
+	route := RouteConfig{
+		Type:   RouteConfigTypeOpenAI,
+		Path:   "/v1/test",
+		Method: fasthttp.MethodPost,
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.ChatCompletionRequest
+		},
+		GetRequestTypeInstance: func(ctx context.Context) interface{} {
+			return &openai.OpenAIChatRequest{}
+		},
+		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
+			return nil, nil
+		},
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+			return err
+		},
+	}
+
+	router := NewGenericRouter(nil, handlerStore, nil, nil, nil)
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+	// Valid JSON, but "model" must decode into a string.
+	ctx.Request.SetBodyString(`{"model":123,"messages":[]}`)
+
+	router.createHandler(route)(ctx)
+
+	assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
+	body := string(ctx.Response.Body())
+	assert.Contains(t, body, "does not match the expected schema")
+	assert.NotContains(t, body, "invalid JSON request body")
+}
+
+// TestCreateHandler_JSONSchemaMismatchFromCustomUnmarshaller verifies that a body which is
+// syntactically valid JSON but fails a nested custom UnmarshalJSON's own structural check
+// (as opposed to a sonic/encoding-json native type-mismatch error) is still classified as a
+// schema mismatch, not a syntax error. ChatMessageContent.UnmarshalJSON returns a plain error
+// when "content" is neither a string nor an array, which does not surface as
+// decoder.MismatchTypeError / json.UnmarshalTypeError.
+func TestCreateHandler_JSONSchemaMismatchFromCustomUnmarshaller(t *testing.T) {
+	handlerStore := &mockHandlerStore{}
+	route := RouteConfig{
+		Type:   RouteConfigTypeOpenAI,
+		Path:   "/v1/test",
+		Method: fasthttp.MethodPost,
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.ChatCompletionRequest
+		},
+		GetRequestTypeInstance: func(ctx context.Context) interface{} {
+			return &openai.OpenAIChatRequest{}
+		},
+		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
+			return nil, nil
+		},
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+			return err
+		},
+	}
+
+	router := NewGenericRouter(nil, handlerStore, nil, nil, nil)
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+	// Valid JSON; "content" is an object, which ChatMessageContent.UnmarshalJSON rejects
+	// with a plain (non-sonic-type-mismatch) error since it's neither a string nor an array.
+	ctx.Request.SetBodyString(`{"model":"gpt-4","messages":[{"role":"user","content":{"unexpected":"object"}}]}`)
+
+	router.createHandler(route)(ctx)
+
+	assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
+	body := string(ctx.Response.Body())
+	assert.Contains(t, body, "does not match the expected schema")
+	assert.NotContains(t, body, "invalid JSON request body")
+}
+
 func TestCreateHandler_ParseFailureClosesKeepAliveSocket(t *testing.T) {
 	route := RouteConfig{
 		Type:   RouteConfigTypeOpenAI,

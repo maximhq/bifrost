@@ -169,6 +169,7 @@ type OpenAIChatAssistantMessage struct {
 	Reasoning   *string                                  `json:"reasoning_content,omitempty"`
 	Annotations []schemas.ChatAssistantMessageAnnotation `json:"annotations,omitempty"`
 	ToolCalls   []schemas.ChatAssistantMessageToolCall   `json:"tool_calls,omitempty"`
+	Images      []schemas.ChatAssistantMessageImage      `json:"images,omitempty"`
 }
 
 // MarshalJSON implements custom JSON marshalling for OpenAIChatRequest.

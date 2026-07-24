@@ -230,6 +230,12 @@ func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 	// No deployments configured - fetch from Model Garden API
 	host := getVertexModelListingAPIHost(region)
 
+	// Resolve the quota/billing project so ADC user credentials (which have no
+	// default quota project) can authenticate against this project-less Model
+	// Garden endpoint. Falls back to no header for API-key auth where a project
+	// ID isn't configured.
+	projectID := strings.TrimSpace(resolveVertexProjectID(ctx, key))
+
 	// Accumulate all publisher models from paginated requests
 	var allPublisherModels []VertexPublisherModel
 	var rawRequests []interface{}
@@ -268,6 +274,9 @@ func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 			req.Header.SetContentType("application/json")
 			providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 			req.Header.Set("Authorization", "Bearer "+token.AccessToken)
+			if projectID != "" {
+				req.Header.Set("X-Goog-User-Project", projectID)
+			}
 
 			latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
 			if bifrostErr != nil {
