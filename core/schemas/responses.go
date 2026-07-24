@@ -1182,6 +1182,8 @@ const (
 	ResponsesMessageTypeCodeInterpreterCall  ResponsesMessageType = "code_interpreter_call"
 	ResponsesMessageTypeLocalShellCall       ResponsesMessageType = "local_shell_call"
 	ResponsesMessageTypeLocalShellCallOutput ResponsesMessageType = "local_shell_call_output"
+	ResponsesMessageTypeShellCall            ResponsesMessageType = "shell_call"
+	ResponsesMessageTypeShellCallOutput      ResponsesMessageType = "shell_call_output"
 	ResponsesMessageTypeMCPCall              ResponsesMessageType = "mcp_call"
 	ResponsesMessageTypeCustomToolCall       ResponsesMessageType = "custom_tool_call"
 	ResponsesMessageTypeCustomToolCallOutput ResponsesMessageType = "custom_tool_call_output"
@@ -1547,6 +1549,7 @@ type ResponsesToolMessage struct {
 	*ResponsesMCPToolCall
 	*ResponsesCustomToolCall
 	*ResponsesImageGenerationCall
+	*ResponsesShellToolCall
 
 	// MCP-specific
 	*ResponsesMCPListTools
@@ -1686,6 +1689,7 @@ type ResponsesToolMessageActionStruct struct {
 	ResponsesWebSearchToolCallAction  *ResponsesWebSearchToolCallAction
 	ResponsesWebFetchToolCallAction   *ResponsesWebFetchToolCallAction
 	ResponsesLocalShellToolCallAction *ResponsesLocalShellToolCallAction
+	ResponsesShellToolCallAction      *ResponsesShellToolCallAction
 	ResponsesMCPApprovalRequestAction *ResponsesMCPApprovalRequestAction
 }
 
@@ -1702,6 +1706,9 @@ func (action ResponsesToolMessageActionStruct) MarshalJSON() ([]byte, error) {
 	if action.ResponsesLocalShellToolCallAction != nil {
 		return MarshalSorted(action.ResponsesLocalShellToolCallAction)
 	}
+	if action.ResponsesShellToolCallAction != nil {
+		return MarshalSorted(action.ResponsesShellToolCallAction)
+	}
 	if action.ResponsesMCPApprovalRequestAction != nil {
 		return MarshalSorted(action.ResponsesMCPApprovalRequestAction)
 	}
@@ -1709,6 +1716,23 @@ func (action ResponsesToolMessageActionStruct) MarshalJSON() ([]byte, error) {
 }
 
 func (action *ResponsesToolMessageActionStruct) UnmarshalJSON(data []byte) error {
+	// The next-gen shell tool's action has no "type" discriminator — only a
+	// "commands" array (plus optional timeout_ms / max_output_length). Detect
+	// it by the presence of a "commands" key when "type" is absent.
+	var keyProbe map[string]any
+	if err := Unmarshal(data, &keyProbe); err == nil {
+		_, hasType := keyProbe["type"]
+		_, hasCommands := keyProbe["commands"]
+		if !hasType && hasCommands {
+			var shellToolCallAction ResponsesShellToolCallAction
+			if err := Unmarshal(data, &shellToolCallAction); err != nil {
+				return fmt.Errorf("failed to unmarshal shell tool call action: %w", err)
+			}
+			action.ResponsesShellToolCallAction = &shellToolCallAction
+			return nil
+		}
+	}
+
 	// First, peek at the type field to determine which variant to unmarshal
 	var typeStruct struct {
 		Type string `json:"type"`
@@ -1774,11 +1798,15 @@ type ResponsesToolMessageOutputStruct struct {
 	ResponsesToolCallOutputStr            *string // Common output string for tool calls and outputs (used by function, custom and local shell tool calls)
 	ResponsesFunctionToolCallOutputBlocks []ResponsesMessageContentBlock
 	ResponsesComputerToolCallOutput       *ResponsesComputerToolCallOutputData
+	ResponsesShellCallOutputItems         []ResponsesShellCallOutputItem
 }
 
 func (output ResponsesToolMessageOutputStruct) MarshalJSON() ([]byte, error) {
 	if output.ResponsesToolCallOutputStr != nil {
 		return MarshalSorted(*output.ResponsesToolCallOutputStr)
+	}
+	if output.ResponsesShellCallOutputItems != nil {
+		return MarshalSorted(output.ResponsesShellCallOutputItems)
 	}
 	if output.ResponsesFunctionToolCallOutputBlocks != nil {
 		return MarshalSorted(output.ResponsesFunctionToolCallOutputBlocks)
@@ -1798,6 +1826,27 @@ func (output *ResponsesToolMessageOutputStruct) UnmarshalJSON(data []byte) error
 	if err := Unmarshal(data, &str); err == nil {
 		output.ResponsesToolCallOutputStr = &str
 		return nil
+	}
+	// shell_call_output emits an array of {outcome, stderr, stdout} objects.
+	// Detect by peeking at the first element for all three discriminating
+	// keys; the generic ContentBlock array fallback would otherwise swallow
+	// a real shell output silently. We require outcome AND stdout AND stderr
+	// together (all three are non-optional in the OpenAI schema) so that a
+	// future tool output that happens to reuse the name "outcome" is not
+	// misrouted here — it will fall through to the ContentBlock fallback.
+	var probe []map[string]any
+	if err := Unmarshal(data, &probe); err == nil && len(probe) > 0 {
+		_, hasOutcome := probe[0]["outcome"]
+		_, hasStdout := probe[0]["stdout"]
+		_, hasStderr := probe[0]["stderr"]
+		if hasOutcome && hasStdout && hasStderr {
+			var items []ResponsesShellCallOutputItem
+			if err := Unmarshal(data, &items); err != nil {
+				return fmt.Errorf("failed to unmarshal shell call output items: %w", err)
+			}
+			output.ResponsesShellCallOutputItems = items
+			return nil
+		}
 	}
 	var array []ResponsesMessageContentBlock
 	if err := Unmarshal(data, &array); err == nil {
@@ -2123,6 +2172,53 @@ type ResponsesLocalShellToolCallAction struct {
 }
 
 // -----------------------------------------------------------------------------
+// Shell Tool (next-generation, supersedes LocalShell)
+// -----------------------------------------------------------------------------
+
+// ResponsesShellToolCall holds the shell_call output item fields that aren't
+// already covered by the ResponsesMessage envelope (id/type/status) or by
+// ResponsesToolMessage (call_id/action). It's embedded into ResponsesToolMessage
+// so JSON unmarshal allocates it on demand whenever a shell_call payload arrives.
+type ResponsesShellToolCall struct {
+	Environment *ResponsesShellCallEnvironment `json:"environment,omitempty"`
+	CreatedBy   *string                        `json:"created_by,omitempty"`
+}
+
+// ResponsesShellCallEnvironment is the environment echo on a shell_call output
+// item. It is intentionally distinct from ResponsesToolShellEnvironment (which
+// also carries Skills on the tool definition side); on the call item OpenAI
+// only echoes the type. Type is left as a free string so unmodelled container
+// variants still pass through without losing the discriminator.
+type ResponsesShellCallEnvironment struct {
+	Type string `json:"type"` // "local" | container variants
+}
+
+// ResponsesShellToolCallAction is the action payload for a "shell_call" output
+// item. Unlike the legacy local-shell action, it has no "type" discriminator
+// and uses a plural "commands" array.
+type ResponsesShellToolCallAction struct {
+	Commands        []string `json:"commands"`
+	TimeoutMS       *int     `json:"timeout_ms,omitempty"`
+	MaxOutputLength *int     `json:"max_output_length,omitempty"`
+}
+
+// ResponsesShellCallOutputItem is one entry in a shell_call_output's "output"
+// array, capturing stdout/stderr and how the command finished.
+type ResponsesShellCallOutputItem struct {
+	Outcome   ResponsesShellCallOutputOutcome `json:"outcome"`
+	Stderr    string                          `json:"stderr"`
+	Stdout    string                          `json:"stdout"`
+	CreatedBy *string                         `json:"created_by,omitempty"`
+}
+
+// ResponsesShellCallOutputOutcome describes whether a shell command completed
+// with an exit code or hit a timeout. ExitCode is only set when Type == "exit".
+type ResponsesShellCallOutputOutcome struct {
+	Type     string `json:"type"` // "exit" | "timeout"
+	ExitCode *int   `json:"exit_code,omitempty"`
+}
+
+// -----------------------------------------------------------------------------
 // MCP (Model Context Protocol) Tools
 // -----------------------------------------------------------------------------
 
@@ -2287,6 +2383,7 @@ const (
 	ResponsesToolTypeCodeInterpreter    ResponsesToolType = "code_interpreter"
 	ResponsesToolTypeImageGeneration    ResponsesToolType = "image_generation"
 	ResponsesToolTypeLocalShell         ResponsesToolType = "local_shell"
+	ResponsesToolTypeShell              ResponsesToolType = "shell"
 	ResponsesToolTypeCustom             ResponsesToolType = "custom"
 	ResponsesToolTypeWebSearchPreview   ResponsesToolType = "web_search_preview"
 	ResponsesToolTypeMemory             ResponsesToolType = "memory"
@@ -2362,6 +2459,7 @@ type ResponsesTool struct {
 	*ResponsesToolCodeInterpreter
 	*ResponsesToolImageGeneration
 	*ResponsesToolLocalShell
+	*ResponsesToolShell
 	*ResponsesToolCustom
 	*ResponsesToolWebSearchPreview
 	*ResponsesToolToolSearch
@@ -2485,6 +2583,10 @@ func (t ResponsesTool) MarshalJSON() ([]byte, error) {
 	case ResponsesToolTypeLocalShell:
 		if t.ResponsesToolLocalShell != nil {
 			typeBytes, err = MarshalSorted(t.ResponsesToolLocalShell)
+		}
+	case ResponsesToolTypeShell:
+		if t.ResponsesToolShell != nil {
+			typeBytes, err = MarshalSorted(t.ResponsesToolShell)
 		}
 	case ResponsesToolTypeCustom:
 		if t.ResponsesToolCustom != nil {
@@ -2656,6 +2758,13 @@ func (t *ResponsesTool) UnmarshalJSON(data []byte) error {
 			return err
 		}
 		t.ResponsesToolLocalShell = &localShellTool
+
+	case ResponsesToolTypeShell:
+		var shellTool ResponsesToolShell
+		if err := Unmarshal(data, &shellTool); err != nil {
+			return err
+		}
+		t.ResponsesToolShell = &shellTool
 
 	case ResponsesToolTypeCustom:
 		var customTool ResponsesToolCustom
@@ -3089,6 +3198,46 @@ type ResponsesToolImageGenerationInputImageMask struct {
 // ResponsesToolLocalShell represents a tool local shell
 type ResponsesToolLocalShell struct {
 	// No unique fields needed since Type is now in the top-level struct
+}
+
+// ResponsesToolShell represents the next-generation shell tool that supersedes
+// ResponsesToolLocalShell. It carries an Environment which determines whether
+// the shell runs locally (client-side executor) or in a hosted container, and
+// can advertise skills to the model.
+//
+// See: https://platform.openai.com/docs/guides/tools-shell
+//
+// SCOPE: This implementation only models the "local" environment variant
+// (with optional local skills). Hosted container variants ("container_auto",
+// "container_reference"), inline skill bundles, network policies, and
+// container_reference skill_id payloads are intentionally NOT modelled here.
+// Environment.Type is left as a free string so unknown variants can still
+// pass the type check, but any container-specific fields they carry will be
+// silently dropped on round-trip — extending hosted container support is
+// left to a follow-up PR.
+type ResponsesToolShell struct {
+	Environment *ResponsesToolShellEnvironment `json:"environment,omitempty"`
+}
+
+// ResponsesToolShellEnvironment carries the shell execution environment.
+// Only the "local" variant is fully supported in this struct (see
+// ResponsesToolShell scope note above). Type is kept as a free string to
+// avoid hard-rejecting hosted container payloads.
+type ResponsesToolShellEnvironment struct {
+	Type string `json:"type"` // Currently fully supported: "local"
+
+	// Skills lists local skills the model can invoke. Valid for the "local"
+	// environment variant.
+	Skills []ResponsesToolShellSkill `json:"skills,omitempty"`
+}
+
+// ResponsesToolShellSkill describes a local skill bundle on disk that the
+// model can be informed about. The model is then expected to read the
+// skill's manifest (e.g. SKILL.md) via the shell tool.
+type ResponsesToolShellSkill struct {
+	Name        *string `json:"name,omitempty"`
+	Description *string `json:"description,omitempty"`
+	Path        *string `json:"path,omitempty"`
 }
 
 // ResponsesToolCustom represents a custom tool

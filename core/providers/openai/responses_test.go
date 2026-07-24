@@ -1451,6 +1451,373 @@ func TestResponsesTool_MarshalUnmarshal_LocalShellTool(t *testing.T) {
 	})
 }
 
+func TestToOpenAIResponsesRequest_PreservesShellTool(t *testing.T) {
+	bifrostReq := &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-5.4",
+		Input: []schemas.ResponsesMessage{
+			{
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{
+					ContentStr: schemas.Ptr("hello"),
+				},
+			},
+		},
+		Params: &schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{
+				{
+					Type: schemas.ResponsesToolTypeShell,
+					ResponsesToolShell: &schemas.ResponsesToolShell{
+						Environment: &schemas.ResponsesToolShellEnvironment{
+							Type: "local",
+							Skills: []schemas.ResponsesToolShellSkill{
+								{
+									Name:        schemas.Ptr("csv-workbench"),
+									Description: schemas.Ptr("Analyze CSV files"),
+									Path:        schemas.Ptr("/abs/path/to/csv-workbench"),
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	result := ToOpenAIResponsesRequest(bifrostReq)
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+
+	var shellTool *schemas.ResponsesTool
+	for i := range result.Tools {
+		if result.Tools[i].Type == schemas.ResponsesToolTypeShell {
+			shellTool = &result.Tools[i]
+			break
+		}
+	}
+
+	if shellTool == nil {
+		t.Fatal("expected shell tool to survive filterUnsupportedTools, but it was dropped")
+	}
+	if shellTool.ResponsesToolShell == nil || shellTool.ResponsesToolShell.Environment == nil {
+		t.Fatal("expected shell tool environment to be preserved")
+	}
+	if shellTool.ResponsesToolShell.Environment.Type != "local" {
+		t.Errorf("environment type mismatch: expected local, got %s", shellTool.ResponsesToolShell.Environment.Type)
+	}
+	if len(shellTool.ResponsesToolShell.Environment.Skills) != 1 {
+		t.Fatalf("expected 1 skill, got %d", len(shellTool.ResponsesToolShell.Environment.Skills))
+	}
+	skill := shellTool.ResponsesToolShell.Environment.Skills[0]
+	if skill.Name == nil || *skill.Name != "csv-workbench" {
+		t.Error("skill name not preserved")
+	}
+	if skill.Path == nil || *skill.Path != "/abs/path/to/csv-workbench" {
+		t.Error("skill path not preserved")
+	}
+}
+
+func TestResponsesTool_MarshalUnmarshal_ShellTool(t *testing.T) {
+	t.Run("shell tool local env - round trip", func(t *testing.T) {
+		jsonData := `{"type":"shell","environment":{"type":"local"}}`
+
+		var tool schemas.ResponsesTool
+		if err := json.Unmarshal([]byte(jsonData), &tool); err != nil {
+			t.Fatalf("failed to unmarshal: %v", err)
+		}
+
+		if tool.Type != schemas.ResponsesToolTypeShell {
+			t.Errorf("type mismatch: expected %s, got %s", schemas.ResponsesToolTypeShell, tool.Type)
+		}
+		if tool.ResponsesToolShell == nil {
+			t.Fatal("expected ResponsesToolShell to be populated")
+		}
+		if tool.ResponsesToolShell.Environment == nil {
+			t.Fatal("expected Environment to be populated")
+		}
+		if tool.ResponsesToolShell.Environment.Type != "local" {
+			t.Errorf("environment type mismatch: expected local, got %s", tool.ResponsesToolShell.Environment.Type)
+		}
+
+		data, err := json.Marshal(tool)
+		if err != nil {
+			t.Fatalf("failed to marshal: %v", err)
+		}
+
+		var expected, actual map[string]interface{}
+		if err := json.Unmarshal([]byte(jsonData), &expected); err != nil {
+			t.Fatalf("failed to unmarshal expected JSON: %v", err)
+		}
+		if err := json.Unmarshal(data, &actual); err != nil {
+			t.Fatalf("failed to unmarshal actual JSON: %v", err)
+		}
+		if !mapsEqual(expected, actual) {
+			t.Errorf("round-trip mismatch\nexpected: %s\nactual:   %s", jsonData, string(data))
+		}
+	})
+
+	t.Run("shell tool local env with skills - round trip preserves skills", func(t *testing.T) {
+		jsonData := `{"type":"shell","environment":{"type":"local","skills":[{"name":"csv-workbench","description":"Analyze CSV files","path":"/abs/path/to/csv-workbench"}]}}`
+
+		var tool schemas.ResponsesTool
+		if err := json.Unmarshal([]byte(jsonData), &tool); err != nil {
+			t.Fatalf("failed to unmarshal: %v", err)
+		}
+
+		if tool.ResponsesToolShell == nil || tool.ResponsesToolShell.Environment == nil {
+			t.Fatal("expected ResponsesToolShell.Environment to be populated")
+		}
+		skills := tool.ResponsesToolShell.Environment.Skills
+		if len(skills) != 1 {
+			t.Fatalf("expected 1 skill, got %d", len(skills))
+		}
+		if skills[0].Name == nil || *skills[0].Name != "csv-workbench" {
+			t.Errorf("skill name mismatch")
+		}
+		if skills[0].Path == nil || *skills[0].Path != "/abs/path/to/csv-workbench" {
+			t.Errorf("skill path mismatch")
+		}
+		if skills[0].Description == nil || *skills[0].Description != "Analyze CSV files" {
+			t.Errorf("skill description mismatch")
+		}
+
+		data, err := json.Marshal(tool)
+		if err != nil {
+			t.Fatalf("failed to marshal: %v", err)
+		}
+
+		var expected, actual map[string]interface{}
+		if err := json.Unmarshal([]byte(jsonData), &expected); err != nil {
+			t.Fatalf("failed to unmarshal expected JSON: %v", err)
+		}
+		if err := json.Unmarshal(data, &actual); err != nil {
+			t.Fatalf("failed to unmarshal actual JSON: %v", err)
+		}
+		if !mapsEqual(expected, actual) {
+			t.Errorf("round-trip mismatch\nexpected: %s\nactual:   %s", jsonData, string(data))
+		}
+	})
+}
+
+func TestResponsesShellToolCallAction_RoundTrip(t *testing.T) {
+	// Real action payload that gpt-5 emits inside a shell_call output item.
+	// Note: no "type" discriminator — Bifrost must dispatch on the "commands" key.
+	jsonData := `{"commands":["ls","-la","/tmp"],"timeout_ms":5000,"max_output_length":4096}`
+
+	var action schemas.ResponsesToolMessageActionStruct
+	if err := json.Unmarshal([]byte(jsonData), &action); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+
+	if action.ResponsesShellToolCallAction == nil {
+		t.Fatal("expected ResponsesShellToolCallAction to be populated")
+	}
+	shell := action.ResponsesShellToolCallAction
+	if got := shell.Commands; len(got) != 3 || got[0] != "ls" || got[1] != "-la" || got[2] != "/tmp" {
+		t.Errorf("commands not preserved, got %#v", got)
+	}
+	if shell.TimeoutMS == nil || *shell.TimeoutMS != 5000 {
+		t.Errorf("timeout_ms not preserved, got %#v", shell.TimeoutMS)
+	}
+	if shell.MaxOutputLength == nil || *shell.MaxOutputLength != 4096 {
+		t.Errorf("max_output_length not preserved, got %#v", shell.MaxOutputLength)
+	}
+
+	data, err := json.Marshal(action)
+	if err != nil {
+		t.Fatalf("failed to marshal: %v", err)
+	}
+
+	var expected, actual map[string]interface{}
+	if err := json.Unmarshal([]byte(jsonData), &expected); err != nil {
+		t.Fatalf("failed to unmarshal expected: %v", err)
+	}
+	if err := json.Unmarshal(data, &actual); err != nil {
+		t.Fatalf("failed to unmarshal actual: %v", err)
+	}
+	if !mapsEqual(expected, actual) {
+		t.Errorf("round-trip mismatch\nexpected: %s\nactual:   %s", jsonData, string(data))
+	}
+}
+
+func TestResponsesShellToolCallAction_MinimalCommandsOnly(t *testing.T) {
+	// Action without optional timeout/limit fields — the most common shape.
+	jsonData := `{"commands":["pwd"]}`
+
+	var action schemas.ResponsesToolMessageActionStruct
+	if err := json.Unmarshal([]byte(jsonData), &action); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+	if action.ResponsesShellToolCallAction == nil {
+		t.Fatal("expected shell action to be populated")
+	}
+	if len(action.ResponsesShellToolCallAction.Commands) != 1 {
+		t.Fatalf("expected 1 command, got %d", len(action.ResponsesShellToolCallAction.Commands))
+	}
+	if action.ResponsesShellToolCallAction.Commands[0] != "pwd" {
+		t.Errorf("command mismatch")
+	}
+}
+
+func TestResponsesShellCallOutput_RoundTrip_Exit(t *testing.T) {
+	// shell_call_output `output` array shape: list of {outcome, stderr, stdout}.
+	jsonData := `[{"outcome":{"type":"exit","exit_code":0},"stderr":"","stdout":"hello\n"}]`
+
+	var output schemas.ResponsesToolMessageOutputStruct
+	if err := json.Unmarshal([]byte(jsonData), &output); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+
+	items := output.ResponsesShellCallOutputItems
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(items))
+	}
+	if items[0].Outcome.Type != "exit" {
+		t.Errorf("outcome type mismatch: got %s", items[0].Outcome.Type)
+	}
+	if items[0].Outcome.ExitCode == nil || *items[0].Outcome.ExitCode != 0 {
+		t.Errorf("exit_code mismatch: got %#v", items[0].Outcome.ExitCode)
+	}
+	if items[0].Stdout != "hello\n" {
+		t.Errorf("stdout mismatch: got %q", items[0].Stdout)
+	}
+	if items[0].Stderr != "" {
+		t.Errorf("stderr mismatch: got %q", items[0].Stderr)
+	}
+
+	data, err := json.Marshal(output)
+	if err != nil {
+		t.Fatalf("failed to marshal: %v", err)
+	}
+
+	// Compare as parsed JSON arrays.
+	var expected, actual []interface{}
+	if err := json.Unmarshal([]byte(jsonData), &expected); err != nil {
+		t.Fatalf("failed to parse expected: %v", err)
+	}
+	if err := json.Unmarshal(data, &actual); err != nil {
+		t.Fatalf("failed to parse actual: %v", err)
+	}
+	if len(expected) != len(actual) {
+		t.Fatalf("array length mismatch: expected %d got %d (raw: %s)", len(expected), len(actual), string(data))
+	}
+	expMap, _ := expected[0].(map[string]interface{})
+	actMap, _ := actual[0].(map[string]interface{})
+	if !mapsEqual(expMap, actMap) {
+		t.Errorf("round-trip mismatch\nexpected: %s\nactual:   %s", jsonData, string(data))
+	}
+}
+
+func TestResponsesShellCallOutput_RoundTrip_Timeout(t *testing.T) {
+	jsonData := `[{"outcome":{"type":"timeout"},"stderr":"timed out","stdout":""}]`
+
+	var output schemas.ResponsesToolMessageOutputStruct
+	if err := json.Unmarshal([]byte(jsonData), &output); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+	items := output.ResponsesShellCallOutputItems
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(items))
+	}
+	if items[0].Outcome.Type != "timeout" {
+		t.Errorf("outcome type mismatch: got %s", items[0].Outcome.Type)
+	}
+	if items[0].Outcome.ExitCode != nil {
+		t.Errorf("exit_code should be nil for timeout, got %#v", items[0].Outcome.ExitCode)
+	}
+	if items[0].Stderr != "timed out" {
+		t.Errorf("stderr mismatch: got %q", items[0].Stderr)
+	}
+
+	data, err := json.Marshal(output)
+	if err != nil {
+		t.Fatalf("failed to marshal: %v", err)
+	}
+	if !strings.Contains(string(data), `"type":"timeout"`) {
+		t.Errorf("expected marshaled output to contain timeout outcome, got %s", string(data))
+	}
+	if strings.Contains(string(data), "exit_code") {
+		t.Errorf("timeout outcome should not include exit_code, got %s", string(data))
+	}
+}
+
+func TestResponsesToolMessageOutput_OutcomeKeyDoesNotHijackFallback(t *testing.T) {
+	// A hypothetical future tool output whose first element happens to have an
+	// "outcome" key but is NOT a shell_call_output (no stdout/stderr). The
+	// shell probe should skip it and let the generic ContentBlock fallback
+	// handle the payload instead of silently decoding into shell items.
+	jsonData := `[{"outcome":"approved","type":"some_future_tool","text":"ok"}]`
+
+	var output schemas.ResponsesToolMessageOutputStruct
+	if err := json.Unmarshal([]byte(jsonData), &output); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+
+	if len(output.ResponsesShellCallOutputItems) != 0 {
+		t.Errorf("outcome-without-stdout should not decode as shell output, got %d items",
+			len(output.ResponsesShellCallOutputItems))
+	}
+	if output.ResponsesFunctionToolCallOutputBlocks == nil {
+		t.Error("expected generic ContentBlock fallback to take over, but it was empty")
+	}
+}
+
+func TestResponsesMessage_ShellCall_FullRoundTrip(t *testing.T) {
+	// Real shell_call output item the model emits, including the optional
+	// `environment` echo and `created_by` so we cover the full envelope.
+	jsonData := `{"id":"sc_abc","type":"shell_call","call_id":"call_xyz","status":"completed","action":{"commands":["echo","hi"]},"environment":{"type":"local"},"created_by":"user_123"}`
+
+	var msg schemas.ResponsesMessage
+	if err := json.Unmarshal([]byte(jsonData), &msg); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+
+	if msg.Type == nil || *msg.Type != schemas.ResponsesMessageTypeShellCall {
+		t.Errorf("expected type shell_call, got %#v", msg.Type)
+	}
+	if msg.ResponsesToolMessage == nil || msg.ResponsesToolMessage.Action == nil {
+		t.Fatal("expected tool message action to be populated")
+	}
+	shell := msg.ResponsesToolMessage.Action.ResponsesShellToolCallAction
+	if shell == nil {
+		t.Fatal("expected shell action variant")
+	}
+	if len(shell.Commands) != 2 || shell.Commands[0] != "echo" || shell.Commands[1] != "hi" {
+		t.Errorf("commands not preserved: %#v", shell.Commands)
+	}
+
+	if msg.ResponsesToolMessage.ResponsesShellToolCall == nil {
+		t.Fatal("expected ResponsesShellToolCall to be populated on the message")
+	}
+	env := msg.ResponsesToolMessage.ResponsesShellToolCall.Environment
+	if env == nil || env.Type != "local" {
+		t.Errorf("environment not preserved on unmarshal: %#v", env)
+	}
+	createdBy := msg.ResponsesToolMessage.ResponsesShellToolCall.CreatedBy
+	if createdBy == nil || *createdBy != "user_123" {
+		t.Errorf("created_by not preserved on unmarshal: %#v", createdBy)
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("failed to marshal: %v", err)
+	}
+
+	// Compare as parsed maps so we don't depend on key order, and so dropped
+	// fields are caught explicitly instead of swallowed by substring checks.
+	var expected, actual map[string]interface{}
+	if err := json.Unmarshal([]byte(jsonData), &expected); err != nil {
+		t.Fatalf("failed to parse expected JSON: %v", err)
+	}
+	if err := json.Unmarshal(data, &actual); err != nil {
+		t.Fatalf("failed to parse marshaled JSON: %v", err)
+	}
+	if !mapsEqual(expected, actual) {
+		t.Errorf("round-trip mismatch\nexpected: %s\nactual:   %s", jsonData, string(data))
+	}
+}
+
 func TestResponsesTool_MarshalUnmarshal_CustomTool(t *testing.T) {
 	jsonData := `{"type":"custom","name":"custom_tool","description":"A custom tool"}`
 
