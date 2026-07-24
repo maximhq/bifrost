@@ -904,7 +904,10 @@ bifrost:
       serviceName: ""
       allowedAddressSpace: []
       # Kubernetes discovery
+      # Defaults to the release namespace if empty
       k8sNamespace: ""
+      # Defaults to "app.kubernetes.io/name=bifrost,app.kubernetes.io/instance=<release>,app.kubernetes.io/component=server"
+      # which ensures only bifrost gateway pods are discovered (not PostgreSQL, Redis, etc.)
       k8sLabelSelector: ""
       # DNS discovery
       dnsNames: []

@@ -659,11 +659,24 @@ false
 {{- if .Values.bifrost.cluster.discovery.allowedAddressSpace }}
 {{- $_ := set $discovery "allowed_address_space" .Values.bifrost.cluster.discovery.allowedAddressSpace }}
 {{- end }}
+{{- if eq .Values.bifrost.cluster.discovery.type "kubernetes" }}
+{{- if .Values.bifrost.cluster.discovery.k8sNamespace }}
+{{- $_ := set $discovery "k8s_namespace" .Values.bifrost.cluster.discovery.k8sNamespace }}
+{{- else }}
+{{- $_ := set $discovery "k8s_namespace" .Release.Namespace }}
+{{- end }}
+{{- if .Values.bifrost.cluster.discovery.k8sLabelSelector }}
+{{- $_ := set $discovery "k8s_label_selector" .Values.bifrost.cluster.discovery.k8sLabelSelector }}
+{{- else }}
+{{- $_ := set $discovery "k8s_label_selector" (printf "app.kubernetes.io/name=%s,app.kubernetes.io/instance=%s,app.kubernetes.io/component=server" (include "bifrost.name" .) .Release.Name) }}
+{{- end }}
+{{- else }}
 {{- if .Values.bifrost.cluster.discovery.k8sNamespace }}
 {{- $_ := set $discovery "k8s_namespace" .Values.bifrost.cluster.discovery.k8sNamespace }}
 {{- end }}
 {{- if .Values.bifrost.cluster.discovery.k8sLabelSelector }}
 {{- $_ := set $discovery "k8s_label_selector" .Values.bifrost.cluster.discovery.k8sLabelSelector }}
+{{- end }}
 {{- end }}
 {{- if .Values.bifrost.cluster.discovery.dnsNames }}
 {{- $_ := set $discovery "dns_names" .Values.bifrost.cluster.discovery.dnsNames }}
