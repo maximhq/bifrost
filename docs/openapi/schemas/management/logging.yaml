@@ -49,6 +49,19 @@ LogEntry:
     routing_rule_name:
       type: string
       nullable: true
+    complexity_tier:
+      type: string
+      enum: ["SIMPLE", "MEDIUM", "COMPLEX", "REASONING"]
+      description: Complexity tier used for routing; null when no routing rule referenced complexity_tier. REASONING is historical-only — it was merged into COMPLEX and is never emitted for new requests, but survives in log rows recorded under the old scheme.
+      nullable: true
+    complexity_mechanism:
+      type: string
+      description: How the complexity tier was classified (lexical, or skipped when classification was demanded but produced no tier)
+      nullable: true
+    complexity_score:
+      type: number
+      description: Raw complexity score behind the tier
+      nullable: true
     stream:
       type: boolean
     raw_request:

@@ -889,10 +889,10 @@ bifrost:
       #   pricing_patch: "{\"input_cost_per_token\":0.000001,\"output_cost_per_token\":0.000002}"
     complexityAnalyzerConfig:
       null
+      # Legacy complex_reasoning boundary values remain accepted but are ignored.
       # tier_boundaries:
-      #   simple_medium: 0.15
-      #   medium_complex: 0.35
-      #   complex_reasoning: 0.60
+      #   simple_medium: 0.20   # Scores below this are SIMPLE
+      #   medium_complex: 0.40  # Scores below this (and >= simple_medium) are MEDIUM; at or above are COMPLEX
       # keywords:
       #   code_keywords: ["function", "class", "api", "debug", "deploy"]
       #   reasoning_keywords: ["step by step", "explain why", "tradeoffs", "root cause analysis"]
