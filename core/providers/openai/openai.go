@@ -32,6 +32,13 @@ type OpenAIProvider struct {
 	sendBackRawResponse  bool                          // Whether to include raw response in BifrostResponse
 	customProviderConfig *schemas.CustomProviderConfig // Custom provider config
 	disableStore         bool                          // Whether to force store=false on outgoing requests
+	// explicitBaseURL is the operator-configured base_url (trimmed), empty when
+	// none was set. A non-empty value (custom endpoint / proxy) always wins over
+	// regional-processing host selection in resolveBaseURL.
+	explicitBaseURL string
+	// region is the provider-level regional-processing region (e.g. "eu"), used
+	// as the fallback when a request carries no per-key region override.
+	region string
 }
 
 // NewOpenAIProvider creates a new OpenAI provider instance.
@@ -61,9 +68,26 @@ func NewOpenAIProvider(config *schemas.ProviderConfig, logger schemas.Logger) *O
 	client = providerUtils.ConfigureDialer(client, config.NetworkConfig.AllowPrivateNetwork)
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 	streamingClient := providerUtils.BuildStreamingClient(client)
-	// Set default BaseURL if not provided
+
+	// Capture the operator-configured base_url before defaulting so resolveBaseURL
+	// can tell "explicit custom endpoint" from "defaulted".
+	explicitBaseURL := strings.TrimRight(config.NetworkConfig.BaseURL, "/")
+	region := ""
+	if config.OpenAIConfig != nil {
+		region = config.OpenAIConfig.Region
+	}
+	// Set default BaseURL if not provided. When an OpenAI regional-processing
+	// region is selected (e.g. "eu") and the caller didn't pin an explicit
+	// base_url, default to the region's data-residency endpoint
+	// (eu.api.openai.com); otherwise fall back to the global endpoint. Per-request
+	// region overrides (per-key) are applied later by resolveBaseURL; this only
+	// sets the provider-level fallback.
 	if config.NetworkConfig.BaseURL == "" {
-		config.NetworkConfig.BaseURL = "https://api.openai.com"
+		if regionalURL := schemas.OpenAIRegionBaseURL(region); regionalURL != "" {
+			config.NetworkConfig.BaseURL = regionalURL
+		} else {
+			config.NetworkConfig.BaseURL = "https://api.openai.com"
+		}
 	}
 	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
 
@@ -76,7 +100,53 @@ func NewOpenAIProvider(config *schemas.ProviderConfig, logger schemas.Logger) *O
 		sendBackRawResponse:  config.SendBackRawResponse,
 		customProviderConfig: config.CustomProviderConfig,
 		disableStore:         config.OpenAIConfig != nil && config.OpenAIConfig.DisableStore,
+		explicitBaseURL:      explicitBaseURL,
+		region:               region,
 	}
+}
+
+// resolveBaseURL returns the base URL for a request, honoring per-key
+// regional-processing region overrides. Precedence:
+//  1. An operator-set explicit base_url (custom endpoint / proxy) always wins.
+//  2. Otherwise the effective region — the per-key/per-request region stashed in
+//     the context by core, falling back to the provider-level region — selects
+//     the regional host (e.g. eu.api.openai.com).
+//  3. Otherwise the global endpoint.
+//
+// This lets one OpenAI provider serve keys pinned to different regions, each
+// routed to its own host, without a per-key provider instance.
+func (provider *OpenAIProvider) resolveBaseURL(ctx *schemas.BifrostContext) string {
+	if provider.explicitBaseURL != "" {
+		return provider.explicitBaseURL
+	}
+	region := provider.region
+	if ctx != nil {
+		if v, ok := ctx.Value(schemas.BifrostContextKeyOpenAIRegion).(string); ok && v != "" {
+			region = v
+		}
+	}
+	if host := schemas.OpenAIRegionBaseURL(region); host != "" {
+		return host
+	}
+	return "https://api.openai.com"
+}
+
+// resolveBaseURLForKey is the key-driven counterpart to resolveBaseURL for
+// contexts that hold the Key directly but no BifrostContext (e.g. realtime /
+// WebSocket URL construction). Same precedence: explicit base_url, then the
+// key's region override, then the provider-level region, then global.
+func (provider *OpenAIProvider) resolveBaseURLForKey(key schemas.Key) string {
+	if provider.explicitBaseURL != "" {
+		return provider.explicitBaseURL
+	}
+	region := provider.region
+	if key.OpenAIKeyConfig != nil && key.OpenAIKeyConfig.Region != "" {
+		region = key.OpenAIKeyConfig.Region
+	}
+	if host := schemas.OpenAIRegionBaseURL(region); host != "" {
+		return host
+	}
+	return "https://api.openai.com"
 }
 
 // GetProviderKey returns the provider identifier for OpenAI.
@@ -90,7 +160,7 @@ func (provider *OpenAIProvider) buildRequestURL(ctx *schemas.BifrostContext, def
 	if isCompleteURL {
 		return path
 	}
-	return provider.networkConfig.BaseURL + path
+	return provider.resolveBaseURL(ctx) + path
 }
 
 func (provider *OpenAIProvider) ListModels(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
@@ -5492,7 +5562,7 @@ func (provider *OpenAIProvider) FileRetrieve(ctx *schemas.BifrostContext, keys [
 
 		// Set headers
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/files/" + request.FileID)
+		req.SetRequestURI(provider.resolveBaseURL(ctx) + "/v1/files/" + request.FileID)
 		req.Header.SetMethod(http.MethodGet)
 		req.Header.SetContentType("application/json")
 
@@ -5568,7 +5638,7 @@ func (provider *OpenAIProvider) FileDelete(ctx *schemas.BifrostContext, keys []s
 
 		// Set headers
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/files/" + request.FileID)
+		req.SetRequestURI(provider.resolveBaseURL(ctx) + "/v1/files/" + request.FileID)
 		req.Header.SetMethod(http.MethodDelete)
 		req.Header.SetContentType("application/json")
 
@@ -5658,7 +5728,7 @@ func (provider *OpenAIProvider) FileContent(ctx *schemas.BifrostContext, keys []
 
 		// Set headers
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/files/" + request.FileID + "/content")
+		req.SetRequestURI(provider.resolveBaseURL(ctx) + "/v1/files/" + request.FileID + "/content")
 		req.Header.SetMethod(http.MethodGet)
 
 		if key.Value.GetValue() != "" {
@@ -6044,7 +6114,7 @@ func (provider *OpenAIProvider) BatchRetrieve(ctx *schemas.BifrostContext, keys 
 
 		// Set headers
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/batches/" + request.BatchID)
+		req.SetRequestURI(provider.resolveBaseURL(ctx) + "/v1/batches/" + request.BatchID)
 		req.Header.SetMethod(http.MethodGet)
 		req.Header.SetContentType("application/json")
 
@@ -6118,7 +6188,7 @@ func (provider *OpenAIProvider) BatchCancel(ctx *schemas.BifrostContext, keys []
 
 		// Set headers
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/batches/" + request.BatchID + "/cancel")
+		req.SetRequestURI(provider.resolveBaseURL(ctx) + "/v1/batches/" + request.BatchID + "/cancel")
 		req.Header.SetMethod(http.MethodPost)
 		req.Header.SetContentType("application/json")
 
@@ -6235,7 +6305,7 @@ func (provider *OpenAIProvider) BatchResults(ctx *schemas.BifrostContext, keys [
 
 		// Set headers
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/files/" + *batchResp.OutputFileID + "/content")
+		req.SetRequestURI(provider.resolveBaseURL(ctx) + "/v1/files/" + *batchResp.OutputFileID + "/content")
 		req.Header.SetMethod(http.MethodGet)
 
 		if key.Value.GetValue() != "" {
@@ -7356,7 +7426,7 @@ func (provider *OpenAIProvider) Passthrough(
 		path = after
 	}
 
-	url := provider.networkConfig.BaseURL + "/v1" + path
+	url := provider.resolveBaseURL(ctx) + "/v1" + path
 	if req.RawQuery != "" {
 		url += "?" + req.RawQuery
 	}
@@ -7431,7 +7501,7 @@ func (provider *OpenAIProvider) PassthroughStream(
 	if after, ok := strings.CutPrefix(path, "/v1"); ok {
 		path = after
 	}
-	url := provider.networkConfig.BaseURL + "/v1" + path
+	url := provider.resolveBaseURL(ctx) + "/v1" + path
 	if req.RawQuery != "" {
 		url += "?" + req.RawQuery
 	}

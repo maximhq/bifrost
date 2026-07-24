@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"strings"
 	"time"
 )
 
@@ -551,6 +552,26 @@ type ProviderConfig struct {
 // OpenAIConfig holds OpenAI-specific provider configuration.
 type OpenAIConfig struct {
 	DisableStore bool `json:"disable_store"` // When true, forces store=false on all outgoing OpenAI requests (default: false)
+	// Region selects OpenAI's regional-processing (data-residency) endpoint.
+	// Empty/"us" = the default global endpoint (api.openai.com). A non-empty
+	// region (e.g. "eu") both routes requests to the region's host
+	// (eu.api.openai.com) — unless network_config.base_url is set explicitly —
+	// and tags the request so region-specific pricing (the regional-processing
+	// uplift) is applied. Requires an eligible region-scoped OpenAI Project key.
+	Region string `json:"region,omitempty"`
+}
+
+// OpenAIRegionHosts maps an OpenAI regional-processing region to its API host.
+// Only regions with a distinct data-residency endpoint appear here; the default
+// (empty/"us") uses the standard api.openai.com base URL.
+var OpenAIRegionHosts = map[string]string{
+	"eu": "https://eu.api.openai.com",
+}
+
+// OpenAIRegionBaseURL returns the regional base URL for the given region, or ""
+// when the region has no distinct endpoint (default / unknown region).
+func OpenAIRegionBaseURL(region string) string {
+	return OpenAIRegionHosts[strings.ToLower(strings.TrimSpace(region))]
 }
 
 func (config *ProviderConfig) CheckAndSetDefaults() {

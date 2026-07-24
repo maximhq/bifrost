@@ -139,6 +139,7 @@ type Key struct {
 	ReplicateKeyConfig     *ReplicateKeyConfig     `json:"replicate_key_config,omitempty"`      // Replicate-specific key configuration
 	OllamaKeyConfig        *OllamaKeyConfig        `json:"ollama_key_config,omitempty"`         // Ollama-specific key configuration
 	SGLKeyConfig           *SGLKeyConfig           `json:"sgl_key_config,omitempty"`            // SGLang-specific key configuration
+	OpenAIKeyConfig        *OpenAIKeyConfig        `json:"openai_key_config,omitempty"`         // OpenAI-specific per-key configuration (e.g. data-residency region)
 	Enabled                *bool                   `json:"enabled,omitempty"`                   // Whether the key is active (default:true)
 	UseForBatchAPI         *bool                   `json:"use_for_batch_api,omitempty"`         // Whether this key can be used for batch API operations (default:false for new keys, migrated keys default to true)
 	UseAnthropicEndpoints  *bool                   `json:"use_anthropic_endpoints,omitempty"`   // Whether to use anthropic endpoints for this key
@@ -757,6 +758,16 @@ type ReplicateKeyConfig struct {
 // enabling per-key routing and round-robin load balancing across multiple Ollama instances.
 type OllamaKeyConfig struct {
 	URL SecretVar `json:"url"` // Ollama server base URL (required, supports env. prefix)
+}
+
+// OpenAIKeyConfig represents OpenAI-specific per-key configuration. It lets a
+// single OpenAI provider hold keys pinned to different regions — e.g. a default
+// (US/global) key alongside an EU data-residency key — since OpenAI's regional
+// endpoint (eu.api.openai.com) is bound to a region-scoped Project key. When
+// set, Region overrides the provider-level OpenAIConfig.Region for both request
+// routing (base URL) and pricing (regional uplift).
+type OpenAIKeyConfig struct {
+	Region string `json:"region,omitempty"` // Regional-processing region for this key (e.g. "eu"); empty = provider default
 }
 
 // SGLKeyConfig represents the SGLang-specific key configuration.

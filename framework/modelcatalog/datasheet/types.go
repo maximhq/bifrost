@@ -333,6 +333,9 @@ type modelParametersParseResult struct {
 // --- private helpers (shared across pricing/*.go files) ---
 
 // makeKey is the composite map key used by pricingData: model|provider|mode.
+// Regional-processing pricing is not a separate key dimension — it is encoded
+// in the model name (e.g. "eu.gpt-5.4"), matching the datasheet's existing
+// region-prefixed naming convention.
 func makeKey(model, provider, mode string) string {
 	return model + "|" + provider + "|" + mode
 }

@@ -1931,6 +1931,43 @@ func TestTableKey_SGLUnresolvedSecretVar_RoundTrip(t *testing.T) {
 	assert.True(t, found.SGLKeyConfig.URL.IsFromSecret())
 }
 
+// TestTableKey_OpenAIKeyConfig_RoundTrip verifies the per-key OpenAI region
+// survives the BeforeSave → column → AfterFind reconstruction, and that a key
+// without a region reconstructs as a nil OpenAIKeyConfig.
+func TestTableKey_OpenAIKeyConfig_RoundTrip(t *testing.T) {
+	db := setupTestDB(t)
+
+	key := &TableKey{
+		Name:            "openai-eu",
+		ProviderID:      1,
+		Provider:        "openai",
+		KeyID:           "openai-eu-uuid-1",
+		Value:           *schemas.NewSecretVar("sk-test"),
+		OpenAIKeyConfig: &schemas.OpenAIKeyConfig{Region: "eu"},
+	}
+	require.NoError(t, db.Create(key).Error)
+
+	var found TableKey
+	require.NoError(t, db.First(&found, key.ID).Error)
+	require.NotNil(t, found.OpenAIKeyConfig, "OpenAIKeyConfig was wiped on reload")
+	assert.Equal(t, "eu", found.OpenAIKeyConfig.Region)
+	assert.Equal(t, "eu", found.OpenAIRegion, "region column not persisted")
+
+	// A key without a region reconstructs as nil (no empty config).
+	plain := &TableKey{
+		Name:       "openai-default",
+		ProviderID: 1,
+		Provider:   "openai",
+		KeyID:      "openai-default-uuid-1",
+		Value:      *schemas.NewSecretVar("sk-test-2"),
+	}
+	require.NoError(t, db.Create(plain).Error)
+
+	var foundPlain TableKey
+	require.NoError(t, db.First(&foundPlain, plain.ID).Error)
+	assert.Nil(t, foundPlain.OpenAIKeyConfig, "empty region should reconstruct as nil config")
+}
+
 // TestTableKey_VertexPlainValue_RoundTrip is a sanity check ensuring that plain
 // (non-env-backed) values still round-trip cleanly through the persistence layer
 // after the IsSet() change. Both branches of the BeforeSave check matter.

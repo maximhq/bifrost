@@ -6398,6 +6398,28 @@ func clearAnthropicPassthroughForNonNativeProvider(ctx *schemas.BifrostContext, 
 
 // requestWorker handles incoming requests from the queue for a specific provider.
 // It manages retries, error handling, and response processing.
+// providerRegion returns the provider-level regional-processing region
+// (e.g. "eu" for OpenAI's data-residency endpoint), or "" when unset.
+func providerRegion(config *schemas.ProviderConfig) string {
+	if config != nil && config.OpenAIConfig != nil {
+		return config.OpenAIConfig.Region
+	}
+	return ""
+}
+
+// effectiveRegion resolves the regional-processing region for an attempt: a
+// key-level OpenAIKeyConfig.Region overrides the provider-level region, letting
+// one provider hold keys pinned to different regions (e.g. a US key and an EU
+// key). It is stamped onto RoutingInfo (for region-specific pricing) and into
+// the request context (for the provider's regional base-URL selection) — the
+// provider response itself does not echo the region.
+func effectiveRegion(config *schemas.ProviderConfig, key schemas.Key) string {
+	if key.OpenAIKeyConfig != nil && key.OpenAIKeyConfig.Region != "" {
+		return key.OpenAIKeyConfig.Region
+	}
+	return providerRegion(config)
+}
+
 func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas.ProviderConfig, pq *ProviderQueue, waitGroup *sync.WaitGroup) {
 	defer waitGroup.Done()
 
@@ -6709,6 +6731,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		attemptRoutingInfo := schemas.RoutingInfo{
 			Provider: provider.GetProviderKey(),
 			Model:    originalModelRequested,
+			Region:   providerRegion(config),
 		}
 		// lastAttemptFinalizer captures the LAST attempt's postHookSpanFinalizer for the
 		// worker-level error fallback below. Single-threaded write (assigned by the retry
@@ -6738,10 +6761,10 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				// alias while this attempt's provider goroutine is still emitting chunks.
 				attemptResolvedModel := resolvedModel
 				attemptRoutingInfo = schemas.BuildRoutingInfo(req.Context, provider.GetProviderKey(), originalModelRequested, k)
-				// Stash for the transport: streams carry RoutingInfo only on chunks, but
-				// response headers must be written before the first chunk arrives. Each
-				// retry overwrites, so the winning attempt's snapshot survives.
-				req.Context.SetValue(schemas.BifrostContextKeyRoutingInfo, attemptRoutingInfo)
+				attemptRoutingInfo.Region = effectiveRegion(config, k)
+				// Expose the effective region to the provider so it can select the
+				// regional base URL for this key's request.
+				req.Context.SetValue(schemas.BifrostContextKeyOpenAIRegion, attemptRoutingInfo.Region)
 				// Per-attempt snapshot for the async postHookRunner closure (it must
 				// not capture the outer var by reference — a later retry would race).
 				perAttemptRoutingInfo := attemptRoutingInfo
@@ -6812,6 +6835,10 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				}
 				req.SetModel(resolvedModel)
 				attemptRoutingInfo = schemas.BuildRoutingInfo(req.Context, provider.GetProviderKey(), originalModelRequested, k)
+				attemptRoutingInfo.Region = effectiveRegion(config, k)
+				// Expose the effective region to the provider so it can select the
+				// regional base URL for this key's request.
+				req.Context.SetValue(schemas.BifrostContextKeyOpenAIRegion, attemptRoutingInfo.Region)
 				return bifrost.handleProviderRequest(provider, config, req, k, keys)
 			}, keyProvider, req.RequestType, provider.GetProviderKey(), model, &req.BifrostRequest, bifrost.logger)
 		}

@@ -3705,6 +3705,10 @@
         "disable_store": {
           "type": "boolean",
           "description": "Disable OpenAI Responses API conversation storage."
+        },
+        "region": {
+          "type": "string",
+          "description": "OpenAI regional-processing (data-residency) region. Empty/\"us\" uses the default global endpoint; \"eu\" routes to eu.api.openai.com and applies the region's uplifted pricing. Requires an eligible region-scoped OpenAI Project key."
         }
       },
       "additionalProperties": false
@@ -3753,6 +3757,16 @@
           "type": "boolean",
           "description": "Whether this key can be used for batch API operations (default: false)",
           "default": false
+        },
+        "openai_key_config": {
+          "type": "object",
+          "properties": {
+            "region": {
+              "type": "string",
+              "description": "OpenAI regional-processing (data-residency) region for this key (e.g. \"eu\"). Overrides the provider-level region; routes to the region's endpoint and applies its uplifted pricing. Requires an eligible region-scoped OpenAI Project key."
+            }
+          },
+          "additionalProperties": false
         },
         "aliases": {
           "type": "object",
