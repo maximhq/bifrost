@@ -291,6 +291,7 @@ var imageEditParamsKnownFields = map[string]bool{
 	"negative_prompt":     true,
 	"seed":                true,
 	"num_inference_steps": true,
+	"aspect_ratio":        true,
 	"stream":              true,
 }
 
@@ -2391,6 +2392,9 @@ func prepareImageEditRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*Ima
 	}
 	if sizeValues := form.Value["size"]; len(sizeValues) > 0 && sizeValues[0] != "" {
 		req.ImageEditParameters.Size = &sizeValues[0]
+	}
+	if aspectRatioValues := form.Value["aspect_ratio"]; len(aspectRatioValues) > 0 && aspectRatioValues[0] != "" {
+		req.ImageEditParameters.AspectRatio = &aspectRatioValues[0]
 	}
 	if qualityValues := form.Value["quality"]; len(qualityValues) > 0 && qualityValues[0] != "" {
 		req.ImageEditParameters.Quality = &qualityValues[0]
