@@ -15,3 +15,21 @@ output "health_check_url" {
     null,
   )
 }
+
+# --- PostgreSQL outputs ---
+
+output "postgresql_endpoint" {
+  description = "PostgreSQL endpoint hostname."
+  value       = var.create_postgresql ? module.postgresql[0].endpoint : null
+}
+
+output "postgresql_port" {
+  description = "PostgreSQL port."
+  value       = var.create_postgresql ? module.postgresql[0].port : null
+}
+
+output "postgresql_password" {
+  description = "PostgreSQL master password."
+  value       = var.create_postgresql ? module.postgresql[0].password : null
+  sensitive   = true
+}
