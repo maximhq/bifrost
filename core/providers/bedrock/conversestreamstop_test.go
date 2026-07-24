@@ -164,6 +164,60 @@ func TestConverseStreamToolUseBlockEmitsContentBlockStop(t *testing.T) {
 	}
 }
 
+func TestConverseStreamToolUseSetsToolUseStopReason(t *testing.T) {
+	functionCallType := schemas.ResponsesMessageTypeFunctionCall
+	toolItem := &schemas.ResponsesMessage{
+		Type: &functionCallType,
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			CallID: schemas.Ptr("call_1"),
+			Name:   schemas.Ptr("get_weather"),
+		},
+	}
+	chunks := []*schemas.BifrostResponsesStreamResponse{
+		{Type: schemas.ResponsesStreamResponseTypeCreated},
+		{
+			Type:         schemas.ResponsesStreamResponseTypeOutputItemAdded,
+			OutputIndex:  schemas.Ptr(0),
+			ContentIndex: schemas.Ptr(0),
+			Item:         toolItem,
+		},
+		{
+			Type:         schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta,
+			ContentIndex: schemas.Ptr(0),
+			Delta:        schemas.Ptr(`{"location":"Paris"}`),
+		},
+		{
+			Type:         schemas.ResponsesStreamResponseTypeOutputItemDone,
+			OutputIndex:  schemas.Ptr(0),
+			ContentIndex: schemas.Ptr(0),
+			Item:         toolItem,
+		},
+		{
+			Type: schemas.ResponsesStreamResponseTypeCompleted,
+			Response: &schemas.BifrostResponsesResponse{
+				StopReason: schemas.Ptr(string(schemas.BifrostFinishReasonToolCalls)),
+			},
+		},
+	}
+
+	events := encodeConverseStream(t, chunks)
+	for _, event := range events {
+		if event.EventType != "messageStop" {
+			continue
+		}
+		messageStop, ok := event.Payload.(BedrockMessageStopEvent)
+		if !ok {
+			t.Fatalf("messageStop payload has unexpected type %T", event.Payload)
+		}
+		if messageStop.StopReason != "tool_use" {
+			t.Fatalf("messageStop stopReason: want %q, got %q", "tool_use", messageStop.StopReason)
+		}
+		return
+	}
+
+	t.Fatal("messageStop event not found")
+}
+
 // TestConverseStreamReasoningBlockEmitsContentBlockStop covers a reasoning block:
 // reasoning deltas stream as contentBlockDelta(reasoningContent) and the block is
 // closed by the contentBlockStop emitted on the reasoning item's OutputItemDone.
