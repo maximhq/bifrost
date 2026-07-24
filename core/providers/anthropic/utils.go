@@ -798,16 +798,29 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 	return jsonBody, nil
 }
 
-// IsOpus47Plus returns true if the model is Claude Opus 4.7 or later (currently 4.7 and 4.8) where:
+// IsOpus47Plus returns true if the model is Claude Opus 4.7 or later (currently 4.7, 4.8, and 5) where:
 //   - Extended thinking (budget_tokens) is removed — only adaptive thinking is supported.
 //   - temperature, top_p, and top_k are not supported (setting them returns a 400).
+//
+// Opus 5 shares Opus 4.8's request surface, so it is matched here via IsOpus5Plus.
 func IsOpus47Plus(model string) bool {
 	model = strings.ToLower(model)
 	if !strings.Contains(model, "opus") {
 		return false
 	}
 	return strings.Contains(model, "4-7") || strings.Contains(model, "4.7") ||
-		strings.Contains(model, "4-8") || strings.Contains(model, "4.8")
+		strings.Contains(model, "4-8") || strings.Contains(model, "4.8") ||
+		IsOpus5Plus(model)
+}
+
+// IsOpus5Plus returns true for Claude Opus 5 (and later Opus 5.x). Opus 5 is a
+// drop-in for Opus 4.8's request surface: extended thinking (budget_tokens) is
+// removed, temperature/top_p/top_k are rejected with a 400, and it supports
+// adaptive thinking, the effort knob, fast mode, and mid-conversation system
+// messages. Matching "opus-5" excludes "opus-4-5" and matches
+// Bedrock/Vertex/date-suffixed forms.
+func IsOpus5Plus(model string) bool {
+	return strings.Contains(strings.ToLower(model), "opus-5")
 }
 
 // IsFableFamily returns true for Claude Fable / Mythos models (Fable 5,
@@ -863,7 +876,7 @@ func SupportsNativeEffort(model string) bool {
 
 // SupportsEffortParameter returns true if the model accepts the
 // output_config.effort parameter. Supported models: Claude Fable 5,
-// Claude Mythos 5, Claude Mythos Preview, Opus 4.8, Opus 4.7, Opus 4.6,
+// Claude Mythos 5, Claude Mythos Preview, Opus 5, Opus 4.8, Opus 4.7, Opus 4.6,
 // Sonnet 5, Sonnet 4.6, and Opus 4.5. All other models reject effort with a 400:
 //
 //	"This model does not support the effort parameter."
@@ -876,7 +889,7 @@ func SupportsNativeEffort(model string) bool {
 // Source: https://platform.claude.com/docs/en/build-with-claude/effort
 func SupportsEffortParameter(model string) bool {
 	m := strings.ToLower(model)
-	if IsFableFamily(m) || IsSonnet5Plus(m) {
+	if IsFableFamily(m) || IsSonnet5Plus(m) || IsOpus5Plus(m) {
 		return true
 	}
 	if strings.Contains(m, "haiku") {
@@ -922,9 +935,9 @@ func appendToSystemContent(existing *AnthropicContent, newContent AnthropicConte
 // SupportsMidConversationSystem returns true if the provider+model combination
 // supports role:"system" entries inside the messages array (mid-conversation
 // system messages). Available on the Anthropic API only — not on Bedrock or
-// Vertex. Supported on Claude Opus 4.8+ and the Claude Fable/Mythos family
-// (Fable post-dates Opus 4.8; the public doc lists Opus 4.8 but Fable supports
-// it as well). No beta header is required.
+// Vertex. Supported on Claude Opus 4.8+ (including Opus 5) and the Claude
+// Fable/Mythos family (Fable post-dates Opus 4.8; the public doc lists Opus 4.8
+// but Fable supports it as well). No beta header is required.
 //
 // Source: https://platform.claude.com/docs/en/build-with-claude/mid-conversation-system-messages
 func SupportsMidConversationSystem(provider schemas.ModelProvider, model string) bool {
@@ -932,7 +945,7 @@ func SupportsMidConversationSystem(provider schemas.ModelProvider, model string)
 		return false
 	}
 	m := strings.ToLower(model)
-	if IsFableFamily(m) {
+	if IsFableFamily(m) || IsOpus5Plus(m) {
 		return true
 	}
 	return strings.Contains(m, "opus") &&
@@ -940,8 +953,8 @@ func SupportsMidConversationSystem(provider schemas.ModelProvider, model string)
 }
 
 // SupportsFastMode returns true if the model supports speed:"fast" (research
-// preview). Supported on Opus 4.6, Opus 4.7, and Opus 4.8; requests carrying
-// speed:"fast" to any other model are rejected with 400.
+// preview). Supported on Opus 4.6, Opus 4.7, Opus 4.8, and Opus 5; requests
+// carrying speed:"fast" to any other model are rejected with 400.
 // Beta header: fast-mode-2026-02-01.
 //
 // Source: https://platform.claude.com/docs/en/build-with-claude/fast-mode
