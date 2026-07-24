@@ -126,13 +126,8 @@ type GeminiGenerationRequest struct {
 	Parameters *GeminiImagenParameters `json:"parameters,omitempty"`
 
 	// Bifrost specific field (only parsed when converting from Provider -> Bifrost request)
-	Fallbacks   []string               `json:"fallbacks,omitempty"`
-	ExtraParams map[string]interface{} `json:"-"` // Optional: Extra parameters
-}
-
-// GetExtraParams implements the RequestBodyWithExtraParams interface
-func (r *GeminiGenerationRequest) GetExtraParams() map[string]interface{} {
-	return r.ExtraParams
+	Fallbacks []string `json:"fallbacks,omitempty"`
+	providerUtils.ExtraParamsMixin
 }
 
 // ImagenInstance represents a single instance in an Imagen request
@@ -1243,29 +1238,19 @@ func (tc *GenerationConfigThinkingConfig) UnmarshalJSON(data []byte) error {
 }
 
 type GeminiBatchEmbeddingRequest struct {
-	Requests    []GeminiEmbeddingRequest `json:"requests,omitempty"`
-	ExtraParams map[string]interface{}   `json:"-"` // Optional: Extra parameters
-}
-
-// GetExtraParams implements the RequestBodyWithExtraParams interface
-func (r *GeminiBatchEmbeddingRequest) GetExtraParams() map[string]interface{} {
-	return r.ExtraParams
+	Requests []GeminiEmbeddingRequest `json:"requests,omitempty"`
+	providerUtils.ExtraParamsMixin
 }
 
 // GeminiEmbeddingRequest represents a single embedding request in a batch.
 type GeminiEmbeddingRequest struct {
-	Content              *Content               `json:"content,omitempty"`
-	TaskType             *string                `json:"taskType,omitempty"`
-	Title                *string                `json:"title,omitempty"`
-	OutputDimensionality *int                   `json:"outputDimensionality,omitempty"`
-	Model                string                 `json:"model,omitempty"`
-	Fallbacks            []string               `json:"fallbacks,omitempty"`
-	ExtraParams          map[string]interface{} `json:"-"` // Optional: Extra parameters
-}
-
-// GetExtraParams implements the RequestBodyWithExtraParams interface
-func (r *GeminiEmbeddingRequest) GetExtraParams() map[string]interface{} {
-	return r.ExtraParams
+	Content              *Content `json:"content,omitempty"`
+	TaskType             *string  `json:"taskType,omitempty"`
+	Title                *string  `json:"title,omitempty"`
+	OutputDimensionality *int     `json:"outputDimensionality,omitempty"`
+	Model                string   `json:"model,omitempty"`
+	Fallbacks            []string `json:"fallbacks,omitempty"`
+	providerUtils.ExtraParamsMixin
 }
 
 // Content contains the multi-part content of a message.
@@ -2394,13 +2379,9 @@ type GeminiCountTokensResponse struct {
 }
 
 type GeminiImagenRequest struct {
-	Instances   []ImagenInstance       `json:"instances"`
-	Parameters  GeminiImagenParameters `json:"parameters"`
-	ExtraParams map[string]interface{} `json:"-"` // Optional: Extra parameters
-}
-
-func (r *GeminiImagenRequest) GetExtraParams() map[string]interface{} {
-	return r.ExtraParams
+	Instances  []ImagenInstance       `json:"instances"`
+	Parameters GeminiImagenParameters `json:"parameters"`
+	providerUtils.ExtraParamsMixin
 }
 
 type GeminiImagenParameters struct {
@@ -2473,15 +2454,11 @@ var GeminiRequestSuffixPaths = []string{
 
 // GeminiVideoGenerationRequest represents the request for Veo video generation
 type GeminiVideoGenerationRequest struct {
-	Model       string                          `json:"model,omitempty"` // Model field for explicit model specification
-	Instances   []GeminiVideoGenerationInstance `json:"instances"`
-	Parameters  *VideoGenerationParameters      `json:"parameters,omitempty"` // Optional parameters including reference images
-	Fallbacks   []string                        `json:"fallbacks,omitempty"`
-	ExtraParams map[string]interface{}          `json:"-"` // Optional: Extra parameters
-}
-
-func (r *GeminiVideoGenerationRequest) GetExtraParams() map[string]interface{} {
-	return r.ExtraParams
+	Model      string                          `json:"model,omitempty"` // Model field for explicit model specification
+	Instances  []GeminiVideoGenerationInstance `json:"instances"`
+	Parameters *VideoGenerationParameters      `json:"parameters,omitempty"` // Optional parameters including reference images
+	Fallbacks  []string                        `json:"fallbacks,omitempty"`
+	providerUtils.ExtraParamsMixin
 }
 
 // GeminiVideoGenerationInstance represents a single instance in the video generation request

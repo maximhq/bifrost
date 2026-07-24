@@ -10,18 +10,13 @@ import (
 
 // CohereRerankRequest represents a Cohere rerank API request.
 type CohereRerankRequest struct {
-	Model           string                 `json:"model"`
-	Query           string                 `json:"query"`
-	Documents       []string               `json:"documents"`
-	TopN            *int                   `json:"top_n,omitempty"`
-	MaxTokensPerDoc *int                   `json:"max_tokens_per_doc,omitempty"`
-	Priority        *int                   `json:"priority,omitempty"`
-	ExtraParams     map[string]interface{} `json:"-"`
-}
-
-// GetExtraParams returns extra parameters for the rerank request.
-func (r *CohereRerankRequest) GetExtraParams() map[string]interface{} {
-	return r.ExtraParams
+	Model           string   `json:"model"`
+	Query           string   `json:"query"`
+	Documents       []string `json:"documents"`
+	TopN            *int     `json:"top_n,omitempty"`
+	MaxTokensPerDoc *int     `json:"max_tokens_per_doc,omitempty"`
+	Priority        *int     `json:"priority,omitempty"`
+	providerUtils.ExtraParamsMixin
 }
 
 // CohereRerankResult represents a single result from Cohere rerank.

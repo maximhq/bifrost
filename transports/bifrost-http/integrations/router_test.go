@@ -14,6 +14,9 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
+	"github.com/maximhq/bifrost/core/providers/bedrock"
+	"github.com/maximhq/bifrost/core/providers/cohere"
+	"github.com/maximhq/bifrost/core/providers/gemini"
 	"github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
@@ -94,6 +97,50 @@ func TestRequestWithSettableExtraParams_AllOpenAIRequestTypes(t *testing.T) {
 		{"OpenAIImageGenerationRequest", &openai.OpenAIImageGenerationRequest{}},
 		{"OpenAIImageEditRequest", &openai.OpenAIImageEditRequest{}},
 		{"OpenAIImageVariationRequest", &openai.OpenAIImageVariationRequest{}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name+" implements RequestWithSettableExtraParams", func(t *testing.T) {
+			rws, ok := tt.req.(RequestWithSettableExtraParams)
+			require.True(t, ok, "%s should implement RequestWithSettableExtraParams", tt.name)
+
+			extra := map[string]interface{}{"test_key": "test_value"}
+			rws.SetExtraParams(extra)
+
+			getter, ok := tt.req.(interface{ GetExtraParams() map[string]interface{} })
+			require.True(t, ok, "%s should implement GetExtraParams", tt.name)
+			assert.Equal(t, extra, getter.GetExtraParams())
+		})
+	}
+}
+
+func TestRequestWithSettableExtraParams_AllProviderRequestTypes(t *testing.T) {
+	tests := []struct {
+		name string
+		req  interface{}
+	}{
+		{"AnthropicMessageRequest", &anthropic.AnthropicMessageRequest{}},
+		{"AnthropicTextRequest", &anthropic.AnthropicTextRequest{}},
+		{"BedrockConverseRequest", &bedrock.BedrockConverseRequest{}},
+		{"BedrockTextCompletionRequest", &bedrock.BedrockTextCompletionRequest{}},
+		{"BedrockTitanEmbeddingRequest", &bedrock.BedrockTitanEmbeddingRequest{}},
+		{"BedrockCohereEmbeddingRequest", &bedrock.BedrockCohereEmbeddingRequest{}},
+		{"BedrockImageGenerationRequest", &bedrock.BedrockImageGenerationRequest{}},
+		{"BedrockImageVariationRequest", &bedrock.BedrockImageVariationRequest{}},
+		{"BedrockImageEditRequest", &bedrock.BedrockImageEditRequest{}},
+		{"StabilityAIImageGenerationRequest", &bedrock.StabilityAIImageGenerationRequest{}},
+		{"StabilityAIImageEditRequest", &bedrock.StabilityAIImageEditRequest{}},
+		{"BedrockInvokeRequest", &bedrock.BedrockInvokeRequest{}},
+		{"BedrockRerankRequest", &bedrock.BedrockRerankRequest{}},
+		{"GeminiGenerationRequest", &gemini.GeminiGenerationRequest{}},
+		{"GeminiBatchEmbeddingRequest", &gemini.GeminiBatchEmbeddingRequest{}},
+		{"GeminiEmbeddingRequest", &gemini.GeminiEmbeddingRequest{}},
+		{"GeminiImagenRequest", &gemini.GeminiImagenRequest{}},
+		{"GeminiVideoGenerationRequest", &gemini.GeminiVideoGenerationRequest{}},
+		{"CohereChatRequest", &cohere.CohereChatRequest{}},
+		{"CohereCountTokensRequest", &cohere.CohereCountTokensRequest{}},
+		{"CohereEmbeddingRequest", &cohere.CohereEmbeddingRequest{}},
+		{"CohereRerankRequest", &cohere.CohereRerankRequest{}},
 	}
 
 	for _, tt := range tests {
