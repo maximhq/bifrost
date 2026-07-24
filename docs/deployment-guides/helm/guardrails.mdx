@@ -355,6 +355,28 @@ bifrost:
 `base_url` is optional and defaults to `https://api.lakera.ai`. For `action: "redact"`, Lakera supplies supported message-content spans and Bifrost performs the transformation. See [Lakera Guard](/integrations/guardrails/lakera) for request compatibility and fail-closed behavior.
 
 </Tab>
+<Tab title="Repello Argus">
+
+Calls Repello Argus prompt and response analysis endpoints. The configured Argus asset owns the enabled policies and their `block` or `flag` actions.
+
+```yaml
+bifrost:
+  guardrails:
+    providers:
+      - id: 8
+        provider_name: "repelloai-argus"
+        policy_name: "repello-argus-production"
+        enabled: true
+        timeout: 30
+        config:
+          api_key: "env.REPELLO_ARGUS_API_KEY"
+          asset_id: "asset-12345678"
+          base_url: "https://argusapi.repello.ai/sdk/v1"
+```
+
+`base_url` is optional and defaults to `https://argusapi.repello.ai/sdk/v1`. Repello `blocked` verdicts intervene, while `flagged` verdicts are recorded and allowed. See [Repello Argus](/integrations/guardrails/repello-argus) for setup, streaming behavior, and supported content.
+
+</Tab>
 </Tabs>
 
 ---
@@ -499,6 +521,15 @@ Any field marked **env.\* supported** below accepts a bare `"env.VAR_NAME"` stri
 | `redaction_strategy` | No | **Plain only** | `replace` \| `mask` \| `hash` (default: `replace`) |
 | `redaction_mode` | No | **Plain only** | `runtime` \| `logs_only` \| `runtime_reversible` (default: `runtime`) |
 | `timeout` | No | **Plain only** | Provider-level execution timeout in seconds |
+
+### Repello Argus
+
+| Field | Required | env.* supported | Notes |
+|-------|----------|-----------------|-------|
+| `api_key` | Yes | Yes | Repello Argus API key |
+| `asset_id` | Yes | **Plain only** | Argus asset ID whose configured policies control evaluation |
+| `base_url` | No | Yes | Argus SDK API base URL. Defaults to `https://argusapi.repello.ai/sdk/v1` |
+| `timeout` | No | **Plain only** | Provider execution timeout in seconds |
 
 ### Regex
 
