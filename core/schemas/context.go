@@ -373,6 +373,16 @@ func (bc *BifrostContext) setReservedValue(key, value any) {
 	bc.userValues[key] = value
 }
 
+// SetRoutingInfoSnapshot writes the routed-identity RoutingInfo snapshot,
+// bypassing the restricted-writes guard. The orchestrator needs this because a
+// streaming response's async per-chunk post-hooks hold blockRestrictedWrites
+// while they run, and BifrostContextKeyRoutingInfo is reserved — a plain
+// SetValue from the orchestrator would be silently dropped whenever it races a
+// post-hook. Bifrost-internal (set by core - DO NOT SET THIS MANUALLY).
+func (bc *BifrostContext) SetRoutingInfoSnapshot(ri RoutingInfo) {
+	bc.setReservedValue(BifrostContextKeyRoutingInfo, ri)
+}
+
 // ClearValue clears a value from the internal userValues map.
 // For scoped contexts, delegates to the root context via valueDelegate.
 func (bc *BifrostContext) ClearValue(key any) {
