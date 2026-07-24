@@ -1428,7 +1428,7 @@ func CheckContextAndGetRequestBody(ctx context.Context, request RequestBodyGette
 			return nil, NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
 		}
 		// Merge ExtraParams into the JSON if passthrough is enabled
-		if ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) != nil && ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) == true {
+		if ShouldPassthroughExtraParams(ctx) {
 			extraParams := convertedBody.GetExtraParams()
 			if len(extraParams) > 0 {
 				// Use order-preserving merge to avoid destroying key ordering in
@@ -1443,6 +1443,14 @@ func CheckContextAndGetRequestBody(ctx context.Context, request RequestBodyGette
 	} else {
 		return rawBody, nil
 	}
+}
+
+// ShouldPassthroughExtraParams reports whether provider-specific parameters
+// should be preserved in the outbound request.
+func ShouldPassthroughExtraParams(ctx context.Context) bool {
+	passthroughExtraParams, _ := ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams).(bool)
+	isCustomProvider, _ := ctx.Value(schemas.BifrostContextKeyIsCustomProvider).(bool)
+	return passthroughExtraParams || isCustomProvider
 }
 
 // SetExtraHeadersHTTP sets additional headers from NetworkConfig to the standard HTTP request.

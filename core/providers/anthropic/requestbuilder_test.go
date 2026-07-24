@@ -425,6 +425,40 @@ func TestBuildAnthropicResponsesRequestBody_TypedPath(t *testing.T) {
 		}
 	})
 
+	t.Run("custom_provider_forwards_extra_params_automatically", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		ctx.SetValue(schemas.BifrostContextKeyIsCustomProvider, true)
+		ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+
+		request := &schemas.BifrostResponsesRequest{
+			Provider: schemas.ModelProvider("custom-anthropic"),
+			Model:    "claude-sonnet-4-5",
+			Input:    makeSimpleInput("Hello!"),
+			Params: &schemas.ResponsesParameters{
+				ExtraParams: map[string]interface{}{
+					"custom_parameter": map[string]interface{}{
+						"enabled": true,
+					},
+				},
+			},
+		}
+
+		result, err := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
+			Provider: schemas.Anthropic,
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		customParameter := providerUtils.GetJSONField(result, "custom_parameter")
+		if !customParameter.Exists() {
+			t.Fatal("expected custom_parameter to be forwarded")
+		}
+		if !customParameter.Get("enabled").Bool() {
+			t.Fatal("expected custom_parameter.enabled to be true")
+		}
+	})
+
 	t.Run("typed_path_vertex_deletes_model", func(t *testing.T) {
 		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
 

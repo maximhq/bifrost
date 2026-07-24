@@ -55,6 +55,38 @@ func TestPayloadOrdering_GeminiGenerationRequest(t *testing.T) {
 	}
 }
 
+func TestCustomProviderExtraParamsForwardedAutomatically(t *testing.T) {
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyIsCustomProvider, true)
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+
+	req := &schemas.BifrostChatRequest{
+		Provider: schemas.ModelProvider("custom-gemini"),
+		Model:    "gemini-2.0-flash",
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser}},
+		Params: &schemas.ChatParameters{
+			ExtraParams: map[string]interface{}{
+				"customParameter": map[string]interface{}{
+					"enabled": true,
+				},
+			},
+		},
+	}
+
+	wireBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		req,
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			return ToGeminiChatCompletionRequest(req)
+		},
+	)
+	require.Nil(t, bifrostErr)
+
+	customParameter := providerUtils.GetJSONField(wireBody, "customParameter")
+	require.True(t, customParameter.Exists())
+	assert.True(t, customParameter.Get("enabled").Bool())
+}
+
 func TestNormalizeRawGenerateContentRequestForCompatibility(t *testing.T) {
 	t.Run("keeps valid audio and removes unsupported generation config fields", func(t *testing.T) {
 		raw := []byte(`{"contents":[{"parts":[{"text":"Transcribe"},{"inlineData":{"mimeType":"audio/wav","data":"UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA="}}]}],"generationConfig":{"responseLogprobs":true,"logprobs":3,"presencePenalty":0.5,"frequencyPenalty":0.5,"temperature":0.2}}`)

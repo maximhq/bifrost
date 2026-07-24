@@ -322,7 +322,7 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 			return nil, newErr(schemas.ErrProviderRequestMarshal, fmt.Errorf("failed to marshal request body: %w", err), jsonBody)
 		}
 
-		if ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) == true {
+		if providerUtils.ShouldPassthroughExtraParams(ctx) {
 			extraParams := reqBody.GetExtraParams()
 			if len(extraParams) > 0 {
 				jsonBody, err = providerUtils.MergeExtraParamsIntoJSON(jsonBody, extraParams)

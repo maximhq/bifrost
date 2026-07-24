@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/maximhq/bifrost/core/network"
+	"github.com/maximhq/bifrost/core/schemas"
 )
 
 func TestValidateExternalURL(t *testing.T) {
@@ -273,3 +274,35 @@ func TestIsPrivateIP(t *testing.T) {
 	}
 }
 
+func TestIsCustomProvider(t *testing.T) {
+	tests := []struct {
+		name   string
+		config *schemas.ProviderConfig
+		want   bool
+	}{
+		{
+			name: "nil config",
+		},
+		{
+			name:   "standard provider config",
+			config: &schemas.ProviderConfig{},
+		},
+		{
+			name: "custom provider with standard base provider",
+			config: &schemas.ProviderConfig{
+				CustomProviderConfig: &schemas.CustomProviderConfig{
+					BaseProviderType: schemas.OpenAI,
+				},
+			},
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsCustomProvider(tt.config); got != tt.want {
+				t.Fatalf("IsCustomProvider() = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}

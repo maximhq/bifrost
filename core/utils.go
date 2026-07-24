@@ -424,6 +424,11 @@ func IsStandardProvider(providerKey schemas.ModelProvider) bool {
 	return ok
 }
 
+// IsCustomProvider reports whether config defines a custom provider.
+func IsCustomProvider(config *schemas.ProviderConfig) bool {
+	return config != nil && config.CustomProviderConfig != nil
+}
+
 // IsStreamRequestType returns true if the given request type is a stream request.
 func IsStreamRequestType(reqType schemas.RequestType) bool {
 	return reqType == schemas.TextCompletionStreamRequest || reqType == schemas.ChatCompletionStreamRequest || reqType == schemas.ResponsesStreamRequest || reqType == schemas.ResponsesRetrieveStreamRequest || reqType == schemas.SpeechStreamRequest || reqType == schemas.TranscriptionStreamRequest || reqType == schemas.ImageGenerationStreamRequest || reqType == schemas.ImageEditStreamRequest || reqType == schemas.PassthroughStreamRequest || reqType == schemas.WebSocketResponsesRequest || reqType == schemas.RealtimeRequest

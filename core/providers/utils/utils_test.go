@@ -1181,6 +1181,41 @@ func TestMergeExtraParamsIntoJSON_DeepMerge(t *testing.T) {
 	}
 }
 
+func TestShouldPassthroughExtraParams(t *testing.T) {
+	tests := []struct {
+		name             string
+		passthrough      bool
+		isCustomProvider bool
+		want             bool
+	}{
+		{
+			name: "disabled",
+		},
+		{
+			name:        "explicit passthrough",
+			passthrough: true,
+			want:        true,
+		},
+		{
+			name:             "custom provider",
+			isCustomProvider: true,
+			want:             true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, tt.passthrough)
+			ctx.SetValue(schemas.BifrostContextKeyIsCustomProvider, tt.isCustomProvider)
+
+			if got := ShouldPassthroughExtraParams(ctx); got != tt.want {
+				t.Fatalf("ShouldPassthroughExtraParams() = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestMergeExtraParamsIntoJSON_EmptyExtraParams(t *testing.T) {
 	jsonBody := []byte(`{"a": 1, "b": 2}`)
 	result, err := MergeExtraParamsIntoJSON(jsonBody, map[string]interface{}{})
