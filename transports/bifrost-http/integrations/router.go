@@ -438,6 +438,7 @@ const (
 	RouteConfigTypeGenAI     RouteConfigType = "genai"
 	RouteConfigTypeBedrock   RouteConfigType = "bedrock"
 	RouteConfigTypeCohere    RouteConfigType = "cohere"
+	RouteConfigTypeOllama    RouteConfigType = "ollama"
 )
 
 // RouteConfig defines the configuration for a single route in an integration.
@@ -2588,6 +2589,8 @@ func (g *GenericRouter) handleStreamingRequest(ctx *fasthttp.RequestCtx, config 
 	if config.Type == RouteConfigTypeBedrock {
 		ctx.SetContentType("application/vnd.amazon.eventstream")
 		ctx.Response.Header.Set("x-amzn-bedrock-content-type", "application/json")
+	} else if config.Type == RouteConfigTypeOllama {
+		ctx.SetContentType("application/x-ndjson")
 	} else {
 		ctx.SetContentType("text/event-stream")
 	}
@@ -2875,11 +2878,14 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 					continue
 				}
 
-				// Build and send SSE event
+				// Build and send SSE/NDJSON event
 				var buf []byte
 				var sent bool
 				if sseString, ok := convertedResponse.(string); ok {
-					if strings.HasPrefix(sseString, "data: ") || strings.HasPrefix(sseString, "event: ") {
+					if config.Type == RouteConfigTypeOllama {
+						// NDJSON format: send raw JSON line directly (no SSE wrapper)
+						sent = reader.Send([]byte(sseString))
+					} else if strings.HasPrefix(sseString, "data: ") || strings.HasPrefix(sseString, "event: ") {
 						// Pre-formatted SSE string (e.g. Anthropic custom event types)
 						if eventType != "" {
 							// Prepend event type line to pre-formatted data
@@ -2922,7 +2928,7 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 		//   - OpenAI "responses" API and Anthropic messages API: they signal completion by simply closing the stream, not sending [DONE].
 		//   - Bedrock: uses AWS Event Stream format rather than SSE with [DONE].
 		// Bifrost handles any additional cleanup internally on normal stream completion.
-		if shouldSendDoneMarker && config.Type != RouteConfigTypeGenAI && config.Type != RouteConfigTypeBedrock {
+		if shouldSendDoneMarker && config.Type != RouteConfigTypeGenAI && config.Type != RouteConfigTypeBedrock && config.Type != RouteConfigTypeOllama {
 			if !reader.SendDone() {
 				g.logger.Warn("Failed to write SSE done marker: client disconnected")
 				cancel()
