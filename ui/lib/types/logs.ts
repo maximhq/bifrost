@@ -66,6 +66,7 @@ export interface TranscriptionUsage {
 export interface BifrostSpeech {
 	usage?: AudioLLMUsage;
 	audio: string; // base64 encoded audio data
+	response_format?: string;
 }
 
 export interface BifrostTranscribe {

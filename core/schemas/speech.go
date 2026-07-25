@@ -25,6 +25,7 @@ type BifrostSpeechResponse struct {
 	NormalizedAlignment *SpeechAlignment           `json:"normalized_alignment,omitempty"` // Character-level timing information for normalized text
 	AudioBase64         *string                    `json:"audio_base64,omitempty"`         // Base64-encoded audio (when timestamps are requested)
 	ExtraFields         BifrostResponseExtraFields `json:"extra_fields"`
+	ResponseFormat 		string 					   `json:"response_format,omitempty"`
 }
 
 func (r *BifrostSpeechResponse) BackfillParams(request *BifrostSpeechRequest) {

@@ -189,6 +189,7 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 		schemas.Sarvam,
 		schemas.Wafer,
 		ProviderOpenAICustom,
+		schemas.Munsit,
 	}, nil
 }
 
@@ -584,6 +585,18 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				},
 			},
 		}, nil
+		case schemas.Munsit:
+			return []schemas.Key{
+				{
+					Value:          *schemas.NewSecretVar("env.MUNSIT_API_KEY"),
+					Models:         []string{"*"},
+					Weight:         1.0,
+					UseForBatchAPI: bifrost.Ptr(true),
+					MunsitKeyConfig: &schemas.MunsitKeyConfig{
+						URL: *schemas.NewSecretVar("env.MUNSIT_BASE_URL"),
+					},
+				},
+			}, nil
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", providerKey)
 	}
@@ -637,6 +650,19 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 			NetworkConfig: schemas.NetworkConfig{
 				DefaultRequestTimeoutInSeconds: 120,
 				MaxRetries:                     10, // Claude is generally reliable
+				RetryBackoffInitial:            500 * time.Millisecond,
+				RetryBackoffMax:                8 * time.Second,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
+	case schemas.Munsit:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 120,
+				MaxRetries:                     10, // Munsit is generally reliable
 				RetryBackoffInitial:            500 * time.Millisecond,
 				RetryBackoffMax:                8 * time.Second,
 			},

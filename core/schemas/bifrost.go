@@ -72,6 +72,7 @@ const (
 	Fireworks     ModelProvider = "fireworks"
 	Sarvam        ModelProvider = "sarvam"
 	Wafer         ModelProvider = "wafer"
+	Munsit		  ModelProvider = "munsit"
 )
 
 // SupportedBaseProviders is the list of base providers allowed for custom providers.
@@ -117,6 +118,7 @@ var StandardProviders = []ModelProvider{
 	Fireworks,
 	Sarvam,
 	Wafer,
+	Munsit,
 }
 
 // RequestType represents the type of request being made to a provider.

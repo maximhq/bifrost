@@ -82,6 +82,17 @@ func GetProviderVoice(provider schemas.ModelProvider, voiceType string) string {
 		default:
 			return "21m00Tcm4TlvDq8ikWAM"
 		}
+	case schemas.Munsit:
+		switch voiceType {
+		case "primary":
+			return "MvC2GIG9tT9xvPcCWjILXqkM"
+		case "secondary":
+			return "ar-hijazi-female-2"
+		case "tertiary":
+			return "q1FMBOQvy8UbS2ll2sTI5ovv"
+		default:
+			return "hO78gofzL9QxkQIs9nFlt9q3"
+		}
 	default:
 		// Default to OpenAI voices for other providers
 		switch voiceType {
