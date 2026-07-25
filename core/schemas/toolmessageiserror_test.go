@@ -43,4 +43,25 @@ func TestChatMessageIsErrorRoundTrip(t *testing.T) {
 	if strings.Contains(string(out), "is_error") {
 		t.Fatalf("absent is_error must not serialize, got: %s", out)
 	}
+
+	// Explicit false is distinct from absent: a caller that marks a tool result
+	// as succeeded must not have that collapse into "unspecified", which the
+	// Bedrock converter would read as the same thing but Anthropic would not.
+	var notError ChatMessage
+	if err := Unmarshal([]byte(`{"role":"tool","tool_call_id":"call_3","content":"ok","is_error":false}`), &notError); err != nil {
+		t.Fatalf("unmarshal false tool message: %v", err)
+	}
+	if notError.ChatToolMessage == nil {
+		t.Fatal("expected ChatToolMessage to be attached")
+	}
+	if notError.ChatToolMessage.IsError == nil || *notError.ChatToolMessage.IsError {
+		t.Fatal("explicit is_error:false must survive unmarshal as a non-nil false")
+	}
+	out, err = MarshalSorted(notError)
+	if err != nil {
+		t.Fatalf("marshal false tool message: %v", err)
+	}
+	if !strings.Contains(string(out), `"is_error":false`) {
+		t.Fatalf("explicit is_error:false must survive marshal, got: %s", out)
+	}
 }
