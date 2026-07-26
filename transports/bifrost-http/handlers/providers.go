@@ -34,7 +34,21 @@ type ModelsManager interface {
 	OnKeyAdded(ctx context.Context, provider schemas.ModelProvider, key schemas.Key) error
 	OnKeyUpdated(ctx context.Context, provider schemas.ModelProvider, key schemas.Key) error
 	OnKeyDeleted(ctx context.Context, provider schemas.ModelProvider, keyID string) error
+	// RefreshLiveModelsForKey re-fetches list-models for a single key on
+	// demand. Returns ErrRefreshInProgress when the provider is already being
+	// refreshed.
+	RefreshLiveModelsForKey(ctx context.Context, provider schemas.ModelProvider, keyID string) error
+	// RefreshLiveModelsForAllKeys re-fetches list-models across every enabled
+	// key of the provider on demand. Returns ErrRefreshInProgress when the
+	// provider is already being refreshed.
+	RefreshLiveModelsForAllKeys(ctx context.Context, provider schemas.ModelProvider) error
 }
+
+// ErrRefreshInProgress is returned by the on-demand model refresh entrypoints
+// when a refresh for the same provider is already running. Repeated presses of
+// the UI refresh button collapse into the in-flight pass rather than each
+// spawning their own (enabled keys x 2) burst of upstream calls.
+var ErrRefreshInProgress = errors.New("model refresh already in progress for this provider")
 
 // ModelPricingAttributesEntry is the wire shape for PUT /api/models/catalog.
 // (model, provider) is the natural key on governance_model_pricing.
@@ -135,6 +149,11 @@ func (h *ProviderHandler) RegisterRoutes(r *router.Router, middlewares ...schema
 	r.PUT("/api/providers/{provider}/keys/{key_id}", lib.ChainMiddlewares(h.updateProviderKey, middlewares...))
 	r.DELETE("/api/providers/{provider}", lib.ChainMiddlewares(h.deleteProvider, middlewares...))
 	r.DELETE("/api/providers/{provider}/keys/{key_id}", lib.ChainMiddlewares(h.deleteProviderKey, middlewares...))
+	// On-demand model discovery. The catalog otherwise refreshes on the
+	// configured live_models_sync_interval, so these let an operator pick up a
+	// newly served model (or re-check a failing key) without waiting.
+	r.POST("/api/providers/{provider}/refresh-models", lib.ChainMiddlewares(h.refreshProviderModels, middlewares...))
+	r.POST("/api/providers/{provider}/keys/{key_id}/refresh-models", lib.ChainMiddlewares(h.refreshProviderKeyModels, middlewares...))
 	r.GET("/api/keys", lib.ChainMiddlewares(h.listKeys, middlewares...))
 	r.GET("/api/models", lib.ChainMiddlewares(h.listModels, middlewares...))
 	r.GET("/api/models/details", lib.ChainMiddlewares(h.listModelDetails, middlewares...))

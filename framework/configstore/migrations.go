@@ -456,6 +456,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_bedrock_batch_role_arn_column"}, run: migrationAddBedrockBatchRoleARNColumn},
 	{IDs: []string{"add_budget_override_columns"}, run: migrationAddBudgetOverrideColumns},
 	{IDs: []string{"add_budget_override_anchor_columns"}, run: migrationAddBudgetOverrideAnchorColumns},
+	{IDs: []string{"add_live_models_sync_interval_column"}, run: migrationAddLiveModelsSyncIntervalColumn},
 }
 
 // quoteSQLiteIdentifier quotes a SQLite identifier, escaping any double quotes.
@@ -10423,6 +10424,37 @@ func migrationAddMCPLibraryConfigColumns(ctx context.Context, db *gorm.DB, logge
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running add_mcp_library_config_columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddLiveModelsSyncIntervalColumn adds the live_models_sync_interval
+// column to framework_configs. It stores how often each provider's list-models
+// response is re-fetched in the background, in seconds, with 0 meaning the
+// refresher is disabled. Idempotent via HasColumn guards.
+func migrationAddLiveModelsSyncIntervalColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_live_models_sync_interval_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableFrameworkConfig{}, "LiveModelsSyncInterval"); err != nil {
+				return fmt.Errorf("add live_models_sync_interval column: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableFrameworkConfig{}, "LiveModelsSyncInterval"); err != nil {
+				return fmt.Errorf("drop live_models_sync_interval column: %w", err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_live_models_sync_interval_column migration: %s", err.Error())
 	}
 	return nil
 }

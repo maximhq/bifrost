@@ -17634,6 +17634,7 @@ func TestResolveFrameworkPricingConfig(t *testing.T) {
 	defaultSyncSeconds := int64(modelcatalog.DefaultSyncInterval.Seconds())
 	defaultModelParamsURL := modelcatalog.DefaultModelParametersURL
 	defaultMCPLibraryURL := modelcatalog.DefaultMCPLibraryURL
+	defaultLiveModelsSyncSeconds := int64(modelcatalog.DefaultLiveModelsSyncInterval.Seconds())
 	fileURL := "https://example.com/pricing.json"
 	fileSyncSeconds := int64((12 * time.Hour).Seconds())
 	dbURL := "https://db.example.com/pricing.json"
@@ -17680,6 +17681,9 @@ func TestResolveFrameworkPricingConfig(t *testing.T) {
 			ModelParametersURL:     &defaultModelParamsURL,
 			MCPLibraryURL:          &defaultMCPLibraryURL,
 			MCPLibrarySyncInterval: &defaultSyncSeconds,
+			// Populated so this stays a pure precedence test: a nil column is a
+			// backfill case and would set needsDBUpdate on its own.
+			LiveModelsSyncInterval: &defaultLiveModelsSyncSeconds,
 			ConfigHash:             storedHash, // hash of last file-applied values
 		}
 		fileConfig := &framework.FrameworkConfig{
@@ -17854,6 +17858,108 @@ func TestResolveFrameworkPricingConfig(t *testing.T) {
 		require.Equal(t, defaultSyncSeconds, *normalizedModelCatalog.MCPLibrarySyncInterval)
 	})
 
+	t.Run("live models sync interval defaults when unset everywhere", func(t *testing.T) {
+		normalizedTable, normalizedModelCatalog, _ := ResolveFrameworkPricingConfig(nil, nil)
+		want := int64(modelcatalog.DefaultLiveModelsSyncInterval.Seconds())
+		require.Equal(t, want, *normalizedTable.LiveModelsSyncInterval)
+		require.Equal(t, want, *normalizedModelCatalog.LiveModelsSyncInterval)
+	})
+
+	t.Run("live models sync interval zero is an opt-out, not corruption", func(t *testing.T) {
+		// The sibling intervals treat <=0 as corrupted and backfill the
+		// default. 0 here means "never refresh in the background" and must
+		// survive both the file parse and the DB precedence pass.
+		disabled := modelcatalog.LiveModelsSyncDisabled
+		fileConfig := &framework.FrameworkConfig{
+			Pricing: &modelcatalog.Config{LiveModelsSyncInterval: &disabled},
+		}
+
+		_, fromFile, _ := ResolveFrameworkPricingConfig(nil, fileConfig)
+		require.Equal(t, modelcatalog.LiveModelsSyncDisabled, *fromFile.LiveModelsSyncInterval)
+
+		dbConfig := &tables.TableFrameworkConfig{
+			ID:                     11,
+			PricingURL:             &defaultURL,
+			PricingSyncInterval:    &defaultSyncSeconds,
+			ModelParametersURL:     &defaultModelParamsURL,
+			MCPLibraryURL:          &defaultMCPLibraryURL,
+			MCPLibrarySyncInterval: &defaultSyncSeconds,
+			LiveModelsSyncInterval: &disabled,
+		}
+		_, fromDB, _ := ResolveFrameworkPricingConfig(dbConfig, nil)
+		require.Equal(t, modelcatalog.LiveModelsSyncDisabled, *fromDB.LiveModelsSyncInterval)
+	})
+
+	t.Run("live models sync interval negative falls back to default", func(t *testing.T) {
+		negative := int64(-30)
+		fileConfig := &framework.FrameworkConfig{
+			Pricing: &modelcatalog.Config{LiveModelsSyncInterval: &negative},
+		}
+
+		_, normalizedModelCatalog, _ := ResolveFrameworkPricingConfig(nil, fileConfig)
+		require.Equal(t, int64(modelcatalog.DefaultLiveModelsSyncInterval.Seconds()), *normalizedModelCatalog.LiveModelsSyncInterval)
+	})
+
+	t.Run("live models sync interval below minimum clamps up", func(t *testing.T) {
+		tooFast := modelcatalog.MinimumLiveModelsSyncIntervalSec - 1
+		fileConfig := &framework.FrameworkConfig{
+			Pricing: &modelcatalog.Config{LiveModelsSyncInterval: &tooFast},
+		}
+
+		_, normalizedModelCatalog, _ := ResolveFrameworkPricingConfig(nil, fileConfig)
+		require.Equal(t, modelcatalog.MinimumLiveModelsSyncIntervalSec, *normalizedModelCatalog.LiveModelsSyncInterval)
+	})
+
+	t.Run("live models sync interval db wins while the file is unchanged", func(t *testing.T) {
+		// Mirrors the UI-edit case for the sibling intervals: the operator's
+		// stored value must not be stomped by the file on every restart.
+		fileInterval := int64(900)
+		storedHash, err := configstore.GenerateFrameworkConfigHash(nil, nil, nil, configstore.FrameworkConfigHashOptions{
+			LiveModelsSyncInterval: &fileInterval,
+		})
+		require.NoError(t, err)
+
+		uiEdited := int64(1800)
+		dbConfig := &tables.TableFrameworkConfig{
+			ID:                     12,
+			PricingURL:             &defaultURL,
+			PricingSyncInterval:    &defaultSyncSeconds,
+			ModelParametersURL:     &defaultModelParamsURL,
+			MCPLibraryURL:          &defaultMCPLibraryURL,
+			MCPLibrarySyncInterval: &defaultSyncSeconds,
+			LiveModelsSyncInterval: &uiEdited,
+			ConfigHash:             storedHash,
+		}
+		fileConfig := &framework.FrameworkConfig{
+			Pricing: &modelcatalog.Config{LiveModelsSyncInterval: &fileInterval},
+		}
+
+		_, normalizedModelCatalog, _ := ResolveFrameworkPricingConfig(dbConfig, fileConfig)
+		require.Equal(t, uiEdited, *normalizedModelCatalog.LiveModelsSyncInterval)
+	})
+
+	t.Run("live models sync interval file wins when the file changed", func(t *testing.T) {
+		fileInterval := int64(900)
+		uiEdited := int64(1800)
+		dbConfig := &tables.TableFrameworkConfig{
+			ID:                     13,
+			PricingURL:             &defaultURL,
+			PricingSyncInterval:    &defaultSyncSeconds,
+			ModelParametersURL:     &defaultModelParamsURL,
+			MCPLibraryURL:          &defaultMCPLibraryURL,
+			MCPLibrarySyncInterval: &defaultSyncSeconds,
+			LiveModelsSyncInterval: &uiEdited,
+			ConfigHash:             "stale-hash-from-a-previous-file",
+		}
+		fileConfig := &framework.FrameworkConfig{
+			Pricing: &modelcatalog.Config{LiveModelsSyncInterval: &fileInterval},
+		}
+
+		_, normalizedModelCatalog, needsDBUpdate := ResolveFrameworkPricingConfig(dbConfig, fileConfig)
+		require.True(t, needsDBUpdate)
+		require.Equal(t, fileInterval, *normalizedModelCatalog.LiveModelsSyncInterval)
+	})
+
 	t.Run("mcp library file values override defaults", func(t *testing.T) {
 		mcpURL := "https://example.com/mcp-library.json"
 		mcpSyncSeconds := int64((2 * time.Hour).Seconds())
@@ -17915,6 +18021,9 @@ func TestResolveFrameworkPricingConfig(t *testing.T) {
 			ModelParametersURL:     &defaultModelParamsURL,
 			MCPLibraryURL:          &uiEditedMCPURL,
 			MCPLibrarySyncInterval: &uiEditedMCPSyncSeconds,
+			// Populated so this stays a pure precedence test: a nil column is a
+			// backfill case and would set needsDBUpdate on its own.
+			LiveModelsSyncInterval: &defaultLiveModelsSyncSeconds,
 			ConfigHash:             storedHash,
 		}
 		fileConfig := &framework.FrameworkConfig{

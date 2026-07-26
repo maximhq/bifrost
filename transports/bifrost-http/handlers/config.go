@@ -158,7 +158,12 @@ func (h *ConfigHandler) getConfig(ctx *fasthttp.RequestCtx) {
 		mapConfig["framework_config"] = *normalizedFrameworkConfig
 	} else {
 		mapConfig["client_config"] = h.store.ClientConfig.Redacted()
-		normalizedFrameworkConfig, _, _ := lib.ResolveFrameworkPricingConfig(nil, h.store.FrameworkConfig)
+		// Snapshot under the read lock; updateConfig swaps this pointer from
+		// another request goroutine.
+		h.store.Mu.RLock()
+		storedFrameworkConfig := h.store.FrameworkConfig
+		h.store.Mu.RUnlock()
+		normalizedFrameworkConfig, _, _ := lib.ResolveFrameworkPricingConfig(nil, storedFrameworkConfig)
 		mapConfig["framework_config"] = *normalizedFrameworkConfig
 	}
 	if h.store.ConfigStore != nil {
@@ -337,6 +342,21 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		logger.Warn("MCP library sync interval must be greater than 0")
 		SendError(ctx, fasthttp.StatusBadRequest, "MCP library sync interval must be greater than 0")
 		return
+	}
+	// Checking the live models sync interval. Unlike the intervals above, 0 is
+	// accepted: it is the documented way to turn the background refresher off.
+	if payload.FrameworkConfig.LiveModelsSyncInterval != nil {
+		interval := *payload.FrameworkConfig.LiveModelsSyncInterval
+		if interval < 0 {
+			logger.Warn("live models sync interval cannot be negative")
+			SendError(ctx, fasthttp.StatusBadRequest, "live models sync interval cannot be negative (use 0 to disable background refresh)")
+			return
+		}
+		if interval > 0 && interval < modelcatalog.MinimumLiveModelsSyncIntervalSec {
+			logger.Warn("live models sync interval is below the minimum of %d seconds", modelcatalog.MinimumLiveModelsSyncIntervalSec)
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("live models sync interval must be 0 (disabled) or at least %d seconds", modelcatalog.MinimumLiveModelsSyncIntervalSec))
+			return
+		}
 	}
 
 	// Get current config with proper locking
@@ -664,6 +684,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			ModelParametersURL:     bifrost.Ptr(modelcatalog.DefaultModelParametersURL),
 			MCPLibraryURL:          bifrost.Ptr(modelcatalog.DefaultMCPLibraryURL),
 			MCPLibrarySyncInterval: bifrost.Ptr(int64(modelcatalog.DefaultSyncInterval.Seconds())),
+			LiveModelsSyncInterval: bifrost.Ptr(int64(modelcatalog.DefaultLiveModelsSyncInterval.Seconds())),
 		}
 	}
 	// Handling individual nil cases
@@ -681,6 +702,9 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	}
 	if frameworkConfig.MCPLibrarySyncInterval == nil {
 		frameworkConfig.MCPLibrarySyncInterval = bifrost.Ptr(int64(modelcatalog.DefaultSyncInterval.Seconds()))
+	}
+	if frameworkConfig.LiveModelsSyncInterval == nil {
+		frameworkConfig.LiveModelsSyncInterval = bifrost.Ptr(int64(modelcatalog.DefaultLiveModelsSyncInterval.Seconds()))
 	}
 	// Updating framework config
 	shouldReloadFrameworkConfig := false
@@ -734,6 +758,13 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			shouldReloadFrameworkConfig = true
 		}
 	}
+	if payload.FrameworkConfig.LiveModelsSyncInterval != nil {
+		syncInterval := *payload.FrameworkConfig.LiveModelsSyncInterval
+		if frameworkConfig.LiveModelsSyncInterval == nil || syncInterval != *frameworkConfig.LiveModelsSyncInterval {
+			frameworkConfig.LiveModelsSyncInterval = &syncInterval
+			shouldReloadFrameworkConfig = true
+		}
+	}
 	// Reload config if required
 	if shouldReloadFrameworkConfig {
 		var syncSeconds int64
@@ -742,15 +773,25 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		} else {
 			syncSeconds = int64(modelcatalog.DefaultSyncInterval.Seconds())
 		}
-		h.store.FrameworkConfig = &framework.FrameworkConfig{
+		updatedFrameworkConfig := &framework.FrameworkConfig{
 			Pricing: &modelcatalog.Config{
 				PricingURL:             frameworkConfig.PricingURL,
 				PricingSyncInterval:    &syncSeconds,
 				ModelParametersURL:     frameworkConfig.ModelParametersURL,
 				MCPLibraryURL:          frameworkConfig.MCPLibraryURL,
 				MCPLibrarySyncInterval: frameworkConfig.MCPLibrarySyncInterval,
+				LiveModelsSyncInterval: frameworkConfig.LiveModelsSyncInterval,
 			},
 		}
+		// Publish the new config under the write lock: other request goroutines
+		// read this pointer through LiveModelsSyncInterval and UpdateSyncConfig.
+		// A whole new struct is swapped in rather than mutated in place, which is
+		// what lets readers use the pointer after releasing the lock. Scoped to
+		// the assignment alone — the store write and reload below take the read
+		// lock themselves, and sync.RWMutex is not reentrant.
+		h.store.Mu.Lock()
+		h.store.FrameworkConfig = updatedFrameworkConfig
+		h.store.Mu.Unlock()
 		// Saving framework config
 		if err := h.store.ConfigStore.UpdateFrameworkConfig(ctx, frameworkConfig); err != nil {
 			logger.Warn("failed to save framework configuration: %v", err)
