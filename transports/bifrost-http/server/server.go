@@ -668,13 +668,43 @@ func (s *BifrostHTTPServer) ReloadProvider(ctx context.Context, provider schemas
 	isKeylessProvider := providerInfo.CustomProviderConfig != nil && providerInfo.CustomProviderConfig.IsKeyLess
 	hasNoKeys := len(inMemoryKeys) == 0 && !isKeylessProvider
 
-	// Refresh keyconfig from the current key list, then drop any stale live
-	// entries (for keys removed in this update) before refetching per-key.
+	// Refresh keyconfig from the current key list, then reconcile the live
+	// entries against it before refetching per-key.
 	s.Config.ModelCatalog.SetKeyConfigForProvider(provider, inMemoryKeys)
-	s.Config.ModelCatalog.InvalidateLiveProvider(provider)
 	if hasNoKeys {
+		// Nothing left to route through, and nothing will ever refresh these
+		// entries, so no cached response is still meaningful.
+		s.Config.ModelCatalog.InvalidateLiveProvider(provider)
 		logger.Warn("model discovery skipped for provider %s: no keys configured", provider)
 	} else {
+		// Prune only the keys that are gone or disabled and leave the
+		// survivors' entries in place for the refetch below to overwrite.
+		// FetchAndStoreLiveForKey writes nothing when the upstream call fails,
+		// so wiping the provider up front turned any transient list-models
+		// failure (5xx, rate limit, timeout, a restarting gateway) into an
+		// empty catalog for a provider that was perfectly healthy a moment
+		// earlier, with no background refresher to heal it.
+		//
+		// The trade is deliberate: entries survive a failed refetch even when
+		// this reload changed base_url or the custom provider config, so they
+		// can briefly describe the previous upstream. That is strictly the
+		// smaller blast radius, since an emptied catalog makes every model
+		// unroutable rather than just the ones that moved.
+		keep := make(map[string]struct{}, len(inMemoryKeys)+1)
+		if isKeylessProvider {
+			// Keyless providers cache under the empty-string sentinel, which
+			// is also what the OnKey* helpers write under for this provider.
+			keep[""] = struct{}{}
+		}
+		for _, key := range inMemoryKeys {
+			// Mirror RefreshLiveModelsForProvider's skip rule: a disabled key
+			// is never refetched, so retaining its entries would serve models
+			// for a key core rejects at routing time.
+			if keyEnabled(key) {
+				keep[key.ID] = struct{}{}
+			}
+		}
+		s.Config.ModelCatalog.RetainLiveKeys(provider, keep)
 		s.RefreshLiveModelsForProvider(ctx, provider, inMemoryKeys)
 	}
 	return updatedProvider, nil
