@@ -6189,6 +6189,7 @@ func executeRequestWithRetries[T any](
 		// is actually an error (e.g., rate limits sent as SSE events in HTTP 200).
 		// This enables retries and fallbacks for providers that embed errors in
 		// the SSE stream instead of returning proper HTTP error status codes.
+		emptyStream := false
 		if bifrostError == nil {
 			if streamChan, ok := any(result).(chan *schemas.BifrostStreamChunk); ok {
 				checkedStream, drainDone, firstChunkErr := providerUtils.CheckFirstStreamChunkForError(ctx, streamChan)
@@ -6201,6 +6202,21 @@ func executeRequestWithRetries[T any](
 					// closed and fail every read with ErrStreamClosed.
 					ctx.ClearValue(schemas.BifrostContextKeyConnectionClosed)
 					bifrostError = firstChunkErr
+				} else if checkedStream == nil {
+					// Empty stream (zero chunks before close — includes the large-payload
+					// passthrough placeholder). Substitute a closed, non-nil channel:
+					// this result becomes the public *StreamRequest return value, and a
+					// nil channel with a nil error makes callers that range/receive on
+					// it block forever (a nil-channel receive never returns). A closed
+					// channel preserves zero-chunk semantics (range exits immediately,
+					// receive yields (nil, false)). The span is still completed
+					// synchronously below (emptyStream keeps isStreamChan false): the
+					// provider goroutine has already exited, so nothing is left to
+					// complete a deferred span.
+					emptyStream = true
+					closedCh := make(chan *schemas.BifrostStreamChunk)
+					close(closedCh)
+					result = any(closedCh).(T)
 				} else {
 					result = any(checkedStream).(T)
 				}
@@ -6208,9 +6224,11 @@ func executeRequestWithRetries[T any](
 		}
 
 		// Check if result is a streaming channel - if so, defer span completion
-		// Only defer for successful stream setup; error paths must end the span synchronously
+		// Only defer for successful stream setup; error paths must end the span
+		// synchronously. An empty stream is also ended synchronously: its
+		// provider goroutine is gone, so a deferred span would never complete.
 		isStreamChan := false
-		if bifrostError == nil {
+		if bifrostError == nil && !emptyStream {
 			if ch, ok := any(result).(chan *schemas.BifrostStreamChunk); ok && ch != nil {
 				isStreamChan = true
 			}
