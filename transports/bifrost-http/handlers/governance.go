@@ -1591,12 +1591,16 @@ func (h *GovernanceHandler) mutateVirtualKeyBudgetOverride(ctx *fasthttp.Request
 		}
 	}
 
+	// IsCalendarAligned was stamped onto the budget by the virtual key's AfterFind
+	// during loadVirtualKeyBudget, and the store needs it to anchor a finite grant
+	// on the same lattice the budget actually resets on.
 	budget, err = h.configStore.UpdateBudgetOverride(
 		ctx,
 		budget.ID,
 		budget.OverrideAmount,
 		budget.OverrideMode,
 		budget.OverrideCyclesRemaining,
+		budget.IsCalendarAligned,
 	)
 	if err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {

@@ -454,7 +454,8 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_oauth_config_resource_column"}, run: migrationAddOauthConfigResourceColumn},
 	{IDs: []string{"add_use_anthropic_endpoints_column"}, run: migrationAddUseAnthropicEndpointsColumn},
 	{IDs: []string{"add_bedrock_batch_role_arn_column"}, run: migrationAddBedrockBatchRoleARNColumn},
-  {IDs: []string{"add_budget_override_columns"}, run: migrationAddBudgetOverrideColumns},
+	{IDs: []string{"add_budget_override_columns"}, run: migrationAddBudgetOverrideColumns},
+	{IDs: []string{"add_budget_override_anchor_columns"}, run: migrationAddBudgetOverrideAnchorColumns},
 }
 
 // quoteSQLiteIdentifier quotes a SQLite identifier, escaping any double quotes.
@@ -3198,6 +3199,59 @@ func migrationAddBudgetOverrideColumns(ctx context.Context, db *gorm.DB, logger 
 		},
 		Rollback: func(tx *gorm.DB) error {
 			return fmt.Errorf("add_budget_override_columns is non-rollbackable: dropping the override columns would permanently destroy saved budget override state; the columns are additive and older binaries safely ignore them")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddBudgetOverrideAnchorColumns adds the immutable grant columns that
+// make finite budget-override consumption a derived value rather than mutable
+// state, and adopts every already-active finite override into that model.
+//
+// Without a grant, the remaining-cycle count is independently mutable, so every
+// cluster node keeps its own tally while only the leader persists one, and any
+// config reload replaying a pre-reset row hands back a cycle the reset path had
+// already spent. Deriving the count from (anchor, total, last_reset) removes both
+// failure modes because all three inputs are either immutable or monotonic.
+func migrationAddBudgetOverrideAnchorColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_budget_override_anchor_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableBudget{}, "override_cycles_total"); err != nil {
+				return fmt.Errorf("failed to add override_cycles_total column: %w", err)
+			}
+			if err := addColumnIfNotExists(tx, logger, &tables.TableBudget{}, "override_anchor_reset"); err != nil {
+				return fmt.Errorf("failed to add override_anchor_reset column: %w", err)
+			}
+			// Adopt active finite overrides: re-anchor each at its current window
+			// and re-grant its remaining count from there. Without knowing when the
+			// grant was originally written this is the only available reading, and
+			// it can only be generous by less than one window.
+			//
+			// Required, not optional: validateOverride rejects a cycles override
+			// with no anchor, so an unadopted row would be treated as having no
+			// lifecycle at all.
+			if err := tx.Exec(`
+				UPDATE governance_budgets
+				SET override_cycles_total = override_cycles_remaining,
+				    override_anchor_reset = last_reset
+				WHERE override_mode = 'cycles'
+				  AND override_cycles_remaining > 0
+				  AND override_anchor_reset IS NULL
+			`).Error; err != nil {
+				return fmt.Errorf("failed to backfill budget override grants: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return fmt.Errorf("add_budget_override_anchor_columns is non-rollbackable: dropping the grant columns would strip every active finite override of the state its remaining-cycle count is derived from; the columns are additive and older binaries safely ignore them")
 		},
 	}})
 	if err := m.Migrate(); err != nil {

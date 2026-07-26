@@ -37,11 +37,6 @@ func (TableCustomer) TableName() string { return "governance_customers" }
 // AfterFind stamps IsCalendarAligned on owned budgets and rate limit so the
 // reset path (which reads the derived field off those objects) sees the correct value.
 func (c *TableCustomer) AfterFind(tx *gorm.DB) error {
-	for i := range c.Budgets {
-		c.Budgets[i].IsCalendarAligned = c.CalendarAligned
-	}
-	if c.RateLimit != nil {
-		c.RateLimit.IsCalendarAligned = c.CalendarAligned
-	}
+	StampCalendarAlignment(c.CalendarAligned, c.Budgets, c.RateLimit)
 	return nil
 }
