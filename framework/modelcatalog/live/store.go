@@ -75,6 +75,30 @@ func (s *Store) InvalidateProvider(provider schemas.ModelProvider) {
 	s.mu.Unlock()
 }
 
+// RetainKeys drops the provider's entries whose KeyID is absent from keep,
+// in both filtered and unfiltered modes, and leaves the rest untouched. It is
+// the narrow counterpart to InvalidateProvider: callers about to re-fetch use
+// it to prune keys that were removed or disabled while letting the surviving
+// keys' last-known-good entries stand until a successful Upsert replaces them.
+// A key named in keep that has no entry is a no-op, so callers can pass their
+// whole configured key set without first checking what is cached.
+//
+// keep is read-only and is not retained by the store. A nil or empty keep is
+// equivalent to InvalidateProvider.
+func (s *Store) RetainKeys(provider schemas.ModelProvider, keep map[string]struct{}) {
+	s.mu.Lock()
+	for k := range s.entries {
+		if k.Provider != provider {
+			continue
+		}
+		if _, ok := keep[k.KeyID]; ok {
+			continue
+		}
+		delete(s.entries, k)
+	}
+	s.mu.Unlock()
+}
+
 // ModelsForProvider returns the union of filtered entries for the provider,
 // sorted. Filtered entries are pre-gated so this is the effective allowed set
 // across the provider's keys.

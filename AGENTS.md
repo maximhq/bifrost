@@ -165,6 +165,10 @@ make test-mcp                            # All MCP tests
 make test-mcp TESTCASE=TestAgentLoop     # Specific test
 make test-mcp TYPE=agent                 # By category (agent|tool|connection|codemode)
 
+# Framework tests (require local backing services — bring them up FIRST)
+docker compose -f tests/docker-compose.yml up -d   # postgres, weaviate, qdrant, pinecone, and the 4 redis variants
+make test-framework                                # All framework packages
+
 # Plugin tests
 make test-plugins                        # All plugins
 make test-governance                     # Governance plugin specifically
@@ -501,6 +505,31 @@ E2E tests depend on `data-testid` attributes. Convention: `data-testid="<entity>
 ### 18. E2E Tests — Never Marshal Payloads to Maps
 
 In `tests/e2e/core/`, **never marshal API payloads to a `Record`/`Map`/plain-object and then re-serialize**. Field ordering matters for backend validation and snapshot comparisons. Construct payloads as object literals with fields in the intended order and pass directly to Playwright's `request.post({ data })`. Avoid `Object.fromEntries()`, `JSON.parse(JSON.stringify(...))` round-trips, or destructuring into an intermediate `Record<string, unknown>` — these can silently reorder fields.
+
+### 19. Framework Tests Need `tests/docker-compose.yml`, Not `framework/docker-compose.yml`
+
+`make test-framework` fails ~30 tests in `framework/vectorstore` with no services running. Bring the stack up first:
+
+```bash
+docker compose -f tests/docker-compose.yml up -d
+```
+
+Two compose files define overlapping services on the **same host ports** (9000, 6379, 6334, 5081), so only one can run at a time. Use the `tests/` one:
+
+| | `tests/docker-compose.yml` | `framework/docker-compose.yml` |
+|---|---|---|
+| Redis | plain 6379, **TLS 6380, cluster 7000, cluster-TLS 7100** | plain 6379 only |
+| TLS certs | `redis-certs-init` writes `tests/redis-certs/` | none |
+| Weaviate | 1.32.4, pins `CLUSTER_ADVERTISE_ADDR` | 1.25.0, no advertise addr |
+
+The differences are load-bearing, not cosmetic:
+
+- `redis_test.go` dials **6380** and **7100** for the TLS and TLS-cluster client tests, and `readTestCACert` reads `tests/redis-certs/ca.crt`. The `framework/` file provides neither, so 5 tests fail against it.
+- Weaviate's memberlist aborts startup with `Failed to get final advertise address: No private IP address found` unless `CLUSTER_ADVERTISE_ADDR` is set ([weaviate#7474](https://github.com/weaviate/weaviate/issues/7474)). The `tests/` file pins a static IP; the `framework/` file does not, so its Weaviate crash-loops and 4 more tests fail.
+
+Note that `qdrant` and `pinecone` report `(unhealthy)` in `docker compose ps` under the `framework/` file because those images have no `wget` for the healthcheck. The services themselves are fine, so ignore that specific signal and probe the port instead.
+
+Only `framework/vectorstore` needs any of this. Every other framework package passes with nothing running.
 
 ---
 
