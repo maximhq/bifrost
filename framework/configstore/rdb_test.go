@@ -752,14 +752,21 @@ func TestUpdateBudget(t *testing.T) {
 func TestCreateBudgetWithOverride(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()
+	// A finite grant must carry its anchor and total, which is what the remaining
+	// count is derived from. A cycles override without them is rejected by
+	// validation rather than persisted as a lifecycle-less override.
+	grantAnchor := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 	tests := []*tables.TableBudget{
 		{
 			ID:                      "budget-override-cycles",
 			MaxLimit:                100,
 			ResetDuration:           "1h",
+			LastReset:               grantAnchor,
 			OverrideAmount:          25,
 			OverrideMode:            tables.BudgetOverrideModeCycles,
 			OverrideCyclesRemaining: 4,
+			OverrideCyclesTotal:     4,
+			OverrideAnchorReset:     &grantAnchor,
 		},
 		{
 			ID:             "budget-override-forever",
@@ -777,6 +784,14 @@ func TestCreateBudgetWithOverride(t *testing.T) {
 		assert.Equal(t, budget.OverrideAmount, got.OverrideAmount)
 		assert.Equal(t, budget.OverrideMode, got.OverrideMode)
 		assert.Equal(t, budget.OverrideCyclesRemaining, got.OverrideCyclesRemaining)
+		assert.Equal(t, budget.OverrideCyclesTotal, got.OverrideCyclesTotal)
+		if budget.OverrideAnchorReset == nil {
+			assert.Nil(t, got.OverrideAnchorReset)
+			continue
+		}
+		require.NotNil(t, got.OverrideAnchorReset)
+		assert.True(t, got.OverrideAnchorReset.Equal(*budget.OverrideAnchorReset),
+			"grant anchor did not round-trip: got %s, want %s", got.OverrideAnchorReset.UTC(), budget.OverrideAnchorReset.UTC())
 	}
 }
 
@@ -792,7 +807,7 @@ func TestUpdateBudgetOverridePreservesBudgetState(t *testing.T) {
 	}
 	require.NoError(t, store.CreateBudget(ctx, budget))
 
-	updated, err := store.UpdateBudgetOverride(ctx, budget.ID, 25, tables.BudgetOverrideModeCycles, 4)
+	updated, err := store.UpdateBudgetOverride(ctx, budget.ID, 25, tables.BudgetOverrideModeCycles, 4, false)
 	require.NoError(t, err)
 	assert.Equal(t, 100.0, updated.MaxLimit)
 	assert.Equal(t, "1d", updated.ResetDuration)
@@ -800,14 +815,70 @@ func TestUpdateBudgetOverridePreservesBudgetState(t *testing.T) {
 	assert.Equal(t, 25.0, updated.OverrideAmount)
 	assert.Equal(t, tables.BudgetOverrideModeCycles, updated.OverrideMode)
 	assert.Equal(t, 4, updated.OverrideCyclesRemaining)
+	assert.Equal(t, 4, updated.OverrideCyclesTotal)
+	require.NotNil(t, updated.OverrideAnchorReset, "a finite grant must be anchored so its remaining count can be derived")
 
-	cleared, err := store.UpdateBudgetOverride(ctx, budget.ID, 0, "", 0)
+	cleared, err := store.UpdateBudgetOverride(ctx, budget.ID, 0, "", 0, false)
 	require.NoError(t, err)
 	assert.Equal(t, 100.0, cleared.MaxLimit)
 	assert.Equal(t, 40.0, cleared.CurrentUsage)
 	assert.Zero(t, cleared.OverrideAmount)
 	assert.Empty(t, cleared.OverrideMode)
 	assert.Zero(t, cleared.OverrideCyclesRemaining)
+	assert.Zero(t, cleared.OverrideCyclesTotal)
+	assert.Nil(t, cleared.OverrideAnchorReset, "clearing must drop the grant so it cannot be re-derived")
+}
+
+// TestUpdateBudgetOverrideAnchorsAtCurrentWindow verifies a rolling grant is
+// anchored on the budget's CreatedAt lattice, so every node derives the same
+// remaining count from it.
+func TestUpdateBudgetOverrideAnchorsAtCurrentWindow(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	created := time.Now().UTC().Add(-10 * time.Hour).Truncate(time.Second)
+	budget := &tables.TableBudget{
+		ID:            "budget-override-rolling-anchor",
+		MaxLimit:      100,
+		ResetDuration: "1h",
+		CreatedAt:     created,
+		LastReset:     created,
+	}
+	require.NoError(t, store.CreateBudget(ctx, budget))
+
+	updated, err := store.UpdateBudgetOverride(ctx, budget.ID, 25, tables.BudgetOverrideModeCycles, 2, false)
+	require.NoError(t, err)
+	require.NotNil(t, updated.OverrideAnchorReset)
+
+	// The anchor must be a lattice point: an exact number of windows past the
+	// budget's creation instant, not the wall clock at grant time.
+	offset := updated.OverrideAnchorReset.Sub(updated.CreatedAt)
+	assert.Zero(t, offset%time.Hour,
+		"grant anchor is not lattice aligned: %s past CreatedAt is not a whole number of 1h windows", offset)
+}
+
+// TestUpdateBudgetOverrideAnchorsAtCalendarPeriodStart verifies a calendar-aligned
+// grant is anchored on the calendar boundary rather than the rolling lattice.
+func TestUpdateBudgetOverrideAnchorsAtCalendarPeriodStart(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	created := time.Now().UTC().AddDate(0, 0, -10).Truncate(time.Second)
+	budget := &tables.TableBudget{
+		ID:            "budget-override-calendar-anchor",
+		MaxLimit:      100,
+		ResetDuration: "1d",
+		CreatedAt:     created,
+		LastReset:     created,
+	}
+	require.NoError(t, store.CreateBudget(ctx, budget))
+
+	updated, err := store.UpdateBudgetOverride(ctx, budget.ID, 25, tables.BudgetOverrideModeCycles, 2, true)
+	require.NoError(t, err)
+	require.NotNil(t, updated.OverrideAnchorReset)
+
+	wantAnchor := tables.GetCalendarPeriodStart("1d", time.Now())
+	assert.True(t, updated.OverrideAnchorReset.Equal(wantAnchor),
+		"calendar-aligned grant anchor should be midnight UTC today: got %s, want %s",
+		updated.OverrideAnchorReset.UTC(), wantAnchor.UTC())
 }
 
 func TestGetBudgets(t *testing.T) {

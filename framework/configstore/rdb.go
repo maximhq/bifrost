@@ -4463,9 +4463,14 @@ func (s *RDBConfigStore) UpdateBudget(ctx context.Context, budget *tables.TableB
 		}
 		// Overrides are managed by the dedicated override path, not UpdateBudget;
 		// carry them forward so partial updates can't wipe an active override.
+		// The grant columns must travel with the derived remaining count: dropping
+		// the anchor would leave a cycles override with no lifecycle, which
+		// validateOverride rejects outright.
 		budget.OverrideAmount = existing.OverrideAmount
 		budget.OverrideMode = existing.OverrideMode
 		budget.OverrideCyclesRemaining = existing.OverrideCyclesRemaining
+		budget.OverrideCyclesTotal = existing.OverrideCyclesTotal
+		budget.OverrideAnchorReset = existing.OverrideAnchorReset
 	}
 	if err := txDB.WithContext(ctx).Save(budget).Error; err != nil {
 		return s.parseGormError(err)
@@ -4474,12 +4479,17 @@ func (s *RDBConfigStore) UpdateBudget(ctx context.Context, budget *tables.TableB
 }
 
 // UpdateBudgetOverride atomically updates only override columns so concurrent usage changes are preserved.
-func (s *RDBConfigStore) UpdateBudgetOverride(ctx context.Context, id string, amount float64, mode tables.BudgetOverrideMode, cyclesRemaining int, tx ...*gorm.DB) (*tables.TableBudget, error) {
+//
+// The grant is anchored at the budget's current window boundary rather than at
+// the persisted last_reset. Those differ by up to one reset-ticker interval,
+// because a node advances last_reset in memory before the next dump flushes it,
+// and anchoring one window behind would silently grant an extra window.
+func (s *RDBConfigStore) UpdateBudgetOverride(ctx context.Context, id string, amount float64, mode tables.BudgetOverrideMode, cyclesTotal int, calendarAligned bool, tx ...*gorm.DB) (*tables.TableBudget, error) {
 	if len(tx) == 0 {
 		var updated *tables.TableBudget
 		err := s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
 			var err error
-			updated, err = s.UpdateBudgetOverride(ctx, id, amount, mode, cyclesRemaining, transaction)
+			updated, err = s.UpdateBudgetOverride(ctx, id, amount, mode, cyclesTotal, calendarAligned, transaction)
 			return err
 		})
 		return updated, err
@@ -4493,7 +4503,10 @@ func (s *RDBConfigStore) UpdateBudgetOverride(ctx context.Context, id string, am
 		}
 		return nil, err
 	}
-	if err := budget.SetOverride(amount, mode, cyclesRemaining); err != nil {
+	// IsCalendarAligned is not persisted on the budget row and a bare First does
+	// not fire the owner's AfterFind, so the caller has to supply it.
+	budget.IsCalendarAligned = calendarAligned
+	if err := budget.SetOverrideAt(amount, mode, cyclesTotal, budget.WindowStart(time.Now())); err != nil {
 		return nil, err
 	}
 	if err := txDB.Session(&gorm.Session{SkipHooks: true}).Model(&tables.TableBudget{}).
@@ -4502,6 +4515,8 @@ func (s *RDBConfigStore) UpdateBudgetOverride(ctx context.Context, id string, am
 			"override_amount":           budget.OverrideAmount,
 			"override_mode":             budget.OverrideMode,
 			"override_cycles_remaining": budget.OverrideCyclesRemaining,
+			"override_cycles_total":     budget.OverrideCyclesTotal,
+			"override_anchor_reset":     budget.OverrideAnchorReset,
 			"updated_at":                time.Now(),
 		}).Error; err != nil {
 		return nil, s.parseGormError(err)
