@@ -23,13 +23,13 @@ func TestMunsit(t *testing.T) {
 	defer cancel()
 	defer client.Shutdown()
 
-	hasRealtimeAgent := false
+	hasRealtimeAgent := true
 
 	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:             schemas.Munsit,
 		SpeechSynthesisModel: "faseeh-v1-preview",
 		TranscriptionModel:   "munsit",
-		// RealtimeModel:        realtimeAgentID,
+		RealtimeModel:        "faseeh-v1-preview",
 		Scenarios: llmtests.TestScenarios{
 			TextCompletion:        false,
 			TextCompletionStream:  false,

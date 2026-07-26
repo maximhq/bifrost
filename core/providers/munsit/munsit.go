@@ -497,11 +497,6 @@ func (provider *MunsitProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 			providerUtils.ParseAndSetRawRequest(&finalResponse.ExtraFields, jsonBody)
 		}
 		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-		// provider.logger.Info(
-		// 	"sending chunk %d size=%d",
-		// 	chunkIndex,
-		// 	len(audioChunk),
-		// )
 		providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, finalResponse, nil, nil), responseChan, postHookSpanFinalizer)
 	}()
 	provider.logger.Debug("RETURNING RESPONSE CHANNEL")
