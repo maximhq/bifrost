@@ -897,6 +897,7 @@ func (provider *VLLMProvider) CountTokens(ctx *schemas.BifrostContext, key schem
 		},
 		provider.anthropicHeaders(key),
 		provider.networkConfig.ExtraHeaders,
+		nil,
 		provider.logger,
 	)
 }

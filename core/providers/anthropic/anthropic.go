@@ -243,7 +243,17 @@ func completeRequest(
 	// Sign the exact body bytes set on the request, when a signer is supplied (e.g. AWS SigV4
 	// for Bedrock Mantle). Done after the body is set so the signature covers what is actually sent.
 	if signer != nil {
-		sigHeaders, bErr := signer(jsonBody)
+		// SigV4 hashes the payload into x-amz-content-sha256 and AWS rejects a request whose
+		// body does not match that hash, so the exact bytes must be known before sending.
+		// In large payload mode the body is a one-shot stream: req.Body() materializes it into
+		// the request buffer, which keeps the signed bytes and the sent bytes identical.
+		// Example failure this prevents: signing the converted body while the client body
+		// streams upstream, which AWS rejects as 403 SignatureDoesNotMatch.
+		signedBody := jsonBody
+		if usedLargePayloadBody {
+			signedBody = req.Body()
+		}
+		sigHeaders, bErr := signer(signedBody)
 		if bErr != nil {
 			return nil, 0, nil, bErr
 		}
@@ -279,7 +289,7 @@ func completeRequest(
 	if resp.StatusCode() != fasthttp.StatusOK {
 		providerUtils.MaterializeStreamErrorBody(ctx, resp)
 		logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
-		return nil, latency, providerResponseHeaders, providerUtils.SetErrorLatency(parseAnthropicError(resp), latency)
+		return nil, latency, providerResponseHeaders, providerUtils.SetErrorLatency(ParseAnthropicError(resp), latency)
 	}
 
 	// Count-tokens uses a buffered response (large-response streaming skipped above).
@@ -336,7 +346,7 @@ func (provider *AnthropicProvider) listModelsByKey(ctx *schemas.BifrostContext, 
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, providerUtils.SetErrorLatency(parseAnthropicError(resp), latency)
+		return nil, providerUtils.SetErrorLatency(ParseAnthropicError(resp), latency)
 	}
 
 	// Parse Anthropic's response
@@ -842,7 +852,7 @@ func HandleAnthropicChatCompletionStreaming(
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
-		return nil, providerUtils.EnrichError(ctx, parseAnthropicError(resp), jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency)
+		return nil, providerUtils.EnrichError(ctx, ParseAnthropicError(resp), jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency)
 	}
 
 	// Large payload streaming passthrough — pipe raw upstream SSE to client
@@ -1461,7 +1471,7 @@ func HandleAnthropicResponsesStream(
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
-		return nil, providerUtils.EnrichError(ctx, parseAnthropicError(resp), jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency)
+		return nil, providerUtils.EnrichError(ctx, ParseAnthropicError(resp), jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency)
 	}
 
 	// Large payload streaming passthrough — pipe raw upstream SSE to client
@@ -1778,7 +1788,7 @@ func (provider *AnthropicProvider) BatchCreate(ctx *schemas.BifrostContext, key 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
-		return nil, providerUtils.SetErrorLatency(parseAnthropicError(resp), latency)
+		return nil, providerUtils.SetErrorLatency(ParseAnthropicError(resp), latency)
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
@@ -1867,7 +1877,7 @@ func (provider *AnthropicProvider) BatchList(ctx *schemas.BifrostContext, keys [
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
-		return nil, providerUtils.SetErrorLatency(parseAnthropicError(resp), latency)
+		return nil, providerUtils.SetErrorLatency(ParseAnthropicError(resp), latency)
 	}
 
 	body, decodeErr := providerUtils.CheckAndDecodeBody(resp)
@@ -1958,7 +1968,7 @@ func (provider *AnthropicProvider) BatchRetrieve(ctx *schemas.BifrostContext, ke
 		// Handle error response
 		if resp.StatusCode() != fasthttp.StatusOK {
 			provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
-			lastErr = parseAnthropicError(resp)
+			lastErr = ParseAnthropicError(resp)
 			wait()
 			fasthttp.ReleaseRequest(req)
 			fasthttp.ReleaseResponse(resp)
@@ -2040,7 +2050,7 @@ func (provider *AnthropicProvider) BatchCancel(ctx *schemas.BifrostContext, keys
 		// Handle error response
 		if resp.StatusCode() != fasthttp.StatusOK {
 			provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
-			lastErr = parseAnthropicError(resp)
+			lastErr = ParseAnthropicError(resp)
 			wait()
 			fasthttp.ReleaseRequest(req)
 			fasthttp.ReleaseResponse(resp)
@@ -2152,7 +2162,7 @@ func (provider *AnthropicProvider) BatchResults(ctx *schemas.BifrostContext, key
 		// Handle error response
 		if resp.StatusCode() != fasthttp.StatusOK {
 			provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
-			lastErr = parseAnthropicError(resp)
+			lastErr = ParseAnthropicError(resp)
 			wait()
 			fasthttp.ReleaseRequest(req)
 			fasthttp.ReleaseResponse(resp)
@@ -2362,7 +2372,7 @@ func (provider *AnthropicProvider) FileUpload(ctx *schemas.BifrostContext, key s
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK && resp.StatusCode() != fasthttp.StatusCreated {
 		provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
-		return nil, providerUtils.SetErrorLatency(parseAnthropicError(resp), latency)
+		return nil, providerUtils.SetErrorLatency(ParseAnthropicError(resp), latency)
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
@@ -2452,7 +2462,7 @@ func (provider *AnthropicProvider) FileList(ctx *schemas.BifrostContext, keys []
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
-		return nil, providerUtils.SetErrorLatency(parseAnthropicError(resp), latency)
+		return nil, providerUtils.SetErrorLatency(ParseAnthropicError(resp), latency)
 	}
 
 	body, decodeErr := providerUtils.CheckAndDecodeBody(resp)
@@ -2552,7 +2562,7 @@ func (provider *AnthropicProvider) FileRetrieve(ctx *schemas.BifrostContext, key
 		// Handle error response
 		if resp.StatusCode() != fasthttp.StatusOK {
 			provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
-			lastErr = parseAnthropicError(resp)
+			lastErr = ParseAnthropicError(resp)
 			wait()
 			fasthttp.ReleaseRequest(req)
 			fasthttp.ReleaseResponse(resp)
@@ -2634,7 +2644,7 @@ func (provider *AnthropicProvider) FileDelete(ctx *schemas.BifrostContext, keys 
 		// Handle error response
 		if resp.StatusCode() != fasthttp.StatusOK && resp.StatusCode() != fasthttp.StatusNoContent {
 			provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
-			lastErr = parseAnthropicError(resp)
+			lastErr = ParseAnthropicError(resp)
 			wait()
 			fasthttp.ReleaseRequest(req)
 			fasthttp.ReleaseResponse(resp)
@@ -2744,7 +2754,7 @@ func (provider *AnthropicProvider) FileContent(ctx *schemas.BifrostContext, keys
 		// Handle error response
 		if resp.StatusCode() != fasthttp.StatusOK {
 			provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
-			lastErr = parseAnthropicError(resp)
+			lastErr = ParseAnthropicError(resp)
 			wait()
 			fasthttp.ReleaseRequest(req)
 			fasthttp.ReleaseResponse(resp)
@@ -2805,12 +2815,15 @@ func (provider *AnthropicProvider) CountTokens(ctx *schemas.BifrostContext, key 
 		},
 		provider.anthropicRequestHeaders(ctx, key),
 		provider.networkConfig.ExtraHeaders,
+		nil,
 		provider.logger,
 	)
 }
 
 // HandleAnthropicCountTokensRequest counts tokens for a Responses-shaped request against an
-// Anthropic-compatible /v1/messages/count_tokens endpoint.
+// Anthropic-compatible /v1/messages/count_tokens endpoint. The signer is optional and mirrors
+// HandleAnthropicChatCompletionRequest: providers whose endpoint needs a request-body signature
+// (AWS SigV4 for Bedrock Mantle) supply one, and everyone else passes nil.
 func HandleAnthropicCountTokensRequest(
 	ctx *schemas.BifrostContext,
 	client *fasthttp.Client,
@@ -2819,6 +2832,7 @@ func HandleAnthropicCountTokensRequest(
 	config AnthropicRequestBuildConfig,
 	headers map[string]string,
 	extraHeaders map[string]string,
+	signer providerUtils.BodySigner,
 	logger schemas.Logger,
 ) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
 	config.IsStreaming = false
@@ -2829,7 +2843,7 @@ func HandleAnthropicCountTokensRequest(
 		return nil, err
 	}
 
-	responseBody, latency, providerResponseHeaders, bifrostErr := completeRequest(ctx, client, url, jsonBody, headers, extraHeaders, config.BetaHeaderOverrides, config.Provider, schemas.CountTokensRequest, nil, logger)
+	responseBody, latency, providerResponseHeaders, bifrostErr := completeRequest(ctx, client, url, jsonBody, headers, extraHeaders, config.BetaHeaderOverrides, config.Provider, schemas.CountTokensRequest, signer, logger)
 	if providerResponseHeaders != nil {
 		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
 	}
