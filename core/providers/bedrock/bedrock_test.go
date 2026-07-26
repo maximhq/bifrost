@@ -3782,6 +3782,17 @@ func betaListContains(t *testing.T, fields *schemas.OrderedMap, header string) b
 	return false
 }
 
+// hasAnthropicBetaField reports whether the OrderedMap carries an anthropic_beta
+// entry at all, whatever its contents. It lets the negative cases assert the
+// field stays off the wire, which betaListContains alone cannot show.
+func hasAnthropicBetaField(fields *schemas.OrderedMap) bool {
+	if fields == nil {
+		return false
+	}
+	_, ok := fields.Get("anthropic_beta")
+	return ok
+}
+
 // TestBedrockAnthropicChatStructuredOutputUsesSyntheticTool locks in Route A:
 // Bedrock + Anthropic + json_schema response_format routes through the
 // synthetic `bf_so_*` tool path (same as non-Anthropic Bedrock providers),
@@ -3941,6 +3952,13 @@ func TestBedrockConverseEagerInputStreaming(t *testing.T) {
 			assert.Equal(t, tt.wantBeta, got,
 				"additionalModelRequestFields.anthropic_beta contains %q = %v, want %v",
 				eagerInputStreamingBeta, got, tt.wantBeta)
+			if !tt.wantBeta {
+				// These requests carry no server tool and nothing else that derives
+				// a beta, so the field itself must stay off the wire. On a Nova
+				// request an anthropic_beta of any value is meaningless.
+				assert.False(t, hasAnthropicBetaField(result.AdditionalModelRequestFields),
+					"additionalModelRequestFields should carry no anthropic_beta field at all")
+			}
 		})
 	}
 }
@@ -4077,6 +4095,10 @@ func TestToBedrockResponsesRequest_EagerInputStreaming(t *testing.T) {
 			assert.Equal(t, tt.wantBeta, got,
 				"additionalModelRequestFields.anthropic_beta contains %q = %v, want %v",
 				eagerInputStreamingBeta, got, tt.wantBeta)
+			if !tt.wantBeta {
+				assert.False(t, hasAnthropicBetaField(result.AdditionalModelRequestFields),
+					"additionalModelRequestFields should carry no anthropic_beta field at all")
+			}
 		})
 	}
 }
