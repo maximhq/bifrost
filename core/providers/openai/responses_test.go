@@ -480,6 +480,10 @@ func TestToOpenAIResponsesRequest_GPTOSS_SummaryToContentBlocks(t *testing.T) {
 		message           schemas.ResponsesMessage
 		expectedBlocks    int
 		expectedBlockText string
+		// OpenAI accepts `role` only on message input items, so ToOpenAIResponsesRequest
+		// strips it from a reasoning item that carries no explicit type. Set this for
+		// those cases: the role is expected to be dropped, not preserved.
+		expectRoleDropped bool
 		description       string
 	}{
 		{
@@ -533,6 +537,9 @@ func TestToOpenAIResponsesRequest_GPTOSS_SummaryToContentBlocks(t *testing.T) {
 			},
 			expectedBlocks:    1,
 			expectedBlockText: "existing content",
+			// Typeless reasoning item, so role is stripped here too — the strip
+			// happens before the summary-conversion branch is chosen.
+			expectRoleDropped: true,
 			description:       "gpt-oss model should preserve message when Content already exists",
 		},
 		{
@@ -552,6 +559,8 @@ func TestToOpenAIResponsesRequest_GPTOSS_SummaryToContentBlocks(t *testing.T) {
 			},
 			expectedBlocks:    1,
 			expectedBlockText: "variant summary",
+			// No explicit Type on a reasoning item, so role is stripped.
+			expectRoleDropped: true,
 			description:       "gpt-oss variant model should also convert Summary to ContentBlocks",
 		},
 	}
@@ -611,9 +620,6 @@ func TestToOpenAIResponsesRequest_GPTOSS_SummaryToContentBlocks(t *testing.T) {
 				if tt.message.Status != nil && (resultMsg.Status == nil || *resultMsg.Status != *tt.message.Status) {
 					t.Errorf("Expected Status to be preserved")
 				}
-				if tt.message.Role != nil && (resultMsg.Role == nil || *resultMsg.Role != *tt.message.Role) {
-					t.Errorf("Expected Role to be preserved")
-				}
 			} else {
 				// For other cases, verify message is preserved as-is
 				if resultMsg.Content != nil && len(resultMsg.Content.ContentBlocks) > 0 {
@@ -621,6 +627,18 @@ func TestToOpenAIResponsesRequest_GPTOSS_SummaryToContentBlocks(t *testing.T) {
 						t.Errorf("Expected ContentBlock text to be preserved as %q", tt.expectedBlockText)
 					}
 				}
+			}
+
+			// Role handling is asserted for every case, not just the
+			// summary-conversion one: the converter strips role from any non-message
+			// item before it reaches either branch, so scoping this check to
+			// Content == nil would leave the existing-content path unverified.
+			if tt.expectRoleDropped {
+				if resultMsg.Role != nil {
+					t.Errorf("Expected Role to be dropped for a typeless reasoning item, got %q", *resultMsg.Role)
+				}
+			} else if tt.message.Role != nil && (resultMsg.Role == nil || *resultMsg.Role != *tt.message.Role) {
+				t.Errorf("Expected Role to be preserved")
 			}
 		})
 	}

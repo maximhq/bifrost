@@ -767,6 +767,39 @@ func (m *MockConfigStore) UpdateBudgets(ctx context.Context, budgets []*tables.T
 	return nil
 }
 
+// UpdateBudgetOverride mirrors RDBConfigStore: it applies only the override
+// columns to the stored budget and returns the updated row, leaving usage and
+// base configuration untouched. Reusing SetOverrideAt keeps the anchoring and
+// validation identical to the real store rather than re-deriving it here, and
+// an unknown id yields configstore.ErrNotFound as the RDB store does.
+func (m *MockConfigStore) UpdateBudgetOverride(ctx context.Context, id string, amount float64, mode tables.BudgetOverrideMode, cyclesTotal int, calendarAligned bool, tx ...*gorm.DB) (*tables.TableBudget, error) {
+	if m.governanceConfig == nil {
+		return nil, configstore.ErrNotFound
+	}
+	for i := range m.governanceConfig.Budgets {
+		if m.governanceConfig.Budgets[i].ID != id {
+			continue
+		}
+		// Validate against a copy and commit only on success, mirroring
+		// RDBConfigStore.UpdateBudgetOverride: it loads the row into a local struct
+		// and returns before its Updates() call, so a rejected override persists
+		// nothing. Mutating the stored budget in place would leak IsCalendarAligned
+		// on failure — SetOverrideAt rolls back the override columns, not that flag.
+		//
+		// IsCalendarAligned is not persisted on the budget row, so the caller
+		// supplies it — same contract as the RDB store.
+		candidate := m.governanceConfig.Budgets[i]
+		candidate.IsCalendarAligned = calendarAligned
+		if err := candidate.SetOverrideAt(amount, mode, cyclesTotal, candidate.WindowStart(time.Now())); err != nil {
+			return nil, err
+		}
+		m.governanceConfig.Budgets[i] = candidate
+		updated := candidate
+		return &updated, nil
+	}
+	return nil, configstore.ErrNotFound
+}
+
 func (m *MockConfigStore) GetBudget(ctx context.Context, id string, tx ...*gorm.DB) (*tables.TableBudget, error) {
 	return nil, nil
 }
