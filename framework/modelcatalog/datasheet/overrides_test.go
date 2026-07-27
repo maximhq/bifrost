@@ -414,6 +414,7 @@ func TestApplyScopedOverrides_ScopePrecedence(t *testing.T) {
 	providerScopeID := "openai"
 	providerKeyScopeID := "provider-key-1"
 	virtualKeyScopeID := "virtual-key-1"
+	userScopeID := "user-1"
 
 	require.NoError(t, s.SetOverrides([]configstoreTables.TablePricingOverride{
 		{
@@ -451,6 +452,36 @@ func TestApplyScopedOverrides_ScopePrecedence(t *testing.T) {
 			RequestTypes:     []schemas.RequestType{schemas.ChatCompletionRequest},
 			PricingPatchJSON: `{"input_cost_per_token":5}`,
 		},
+		{
+			ID:               "user",
+			ScopeKind:        string(ScopeKindUser),
+			UserID:           &userScopeID,
+			MatchType:        string(MatchTypeExact),
+			Pattern:          "gpt-5-nano",
+			RequestTypes:     []schemas.RequestType{schemas.ChatCompletionRequest},
+			PricingPatchJSON: `{"input_cost_per_token":6}`,
+		},
+		{
+			ID:               "user-provider",
+			ScopeKind:        string(ScopeKindUserProvider),
+			UserID:           &userScopeID,
+			ProviderID:       &providerScopeID,
+			MatchType:        string(MatchTypeExact),
+			Pattern:          "gpt-5-nano",
+			RequestTypes:     []schemas.RequestType{schemas.ChatCompletionRequest},
+			PricingPatchJSON: `{"input_cost_per_token":7}`,
+		},
+		{
+			ID:               "user-provider-key",
+			ScopeKind:        string(ScopeKindUserProviderKey),
+			UserID:           &userScopeID,
+			ProviderID:       &providerScopeID,
+			ProviderKeyID:    &providerKeyScopeID,
+			MatchType:        string(MatchTypeExact),
+			Pattern:          "gpt-5-nano",
+			RequestTypes:     []schemas.RequestType{schemas.ChatCompletionRequest},
+			PricingPatchJSON: `{"input_cost_per_token":8}`,
+		},
 	}))
 
 	base := configstoreTables.TableModelPricing{
@@ -466,6 +497,50 @@ func TestApplyScopedOverrides_ScopePrecedence(t *testing.T) {
 		scopes   LookupScopes
 		expected float64
 	}{
+		{
+			name: "virtual key wins over the whole user family",
+			scopes: LookupScopes{
+				UserID:        userScopeID,
+				VirtualKeyID:  virtualKeyScopeID,
+				SelectedKeyID: providerKeyScopeID,
+				Provider:      providerScopeID,
+			},
+			expected: 5.0,
+		},
+		{
+			name: "user provider key wins when the virtual key does not match",
+			scopes: LookupScopes{
+				UserID:        userScopeID,
+				VirtualKeyID:  "some-other-vk",
+				SelectedKeyID: providerKeyScopeID,
+				Provider:      providerScopeID,
+			},
+			expected: 8.0,
+		},
+		{
+			name: "user provider wins when no provider key is selected",
+			scopes: LookupScopes{
+				UserID:   userScopeID,
+				Provider: providerScopeID,
+			},
+			expected: 7.0,
+		},
+		{
+			name: "user wins when only the user matches",
+			scopes: LookupScopes{
+				UserID: userScopeID,
+			},
+			expected: 6.0,
+		},
+		{
+			name: "non-matching user falls through to provider key",
+			scopes: LookupScopes{
+				UserID:        "someone-else",
+				SelectedKeyID: providerKeyScopeID,
+				Provider:      providerScopeID,
+			},
+			expected: 4.0,
+		},
 		{
 			name: "virtual key wins over provider key, provider and global",
 			scopes: LookupScopes{
@@ -505,4 +580,88 @@ func TestApplyScopedOverrides_ScopePrecedence(t *testing.T) {
 			assert.Equal(t, tc.expected, *patched.InputCostPerToken)
 		})
 	}
+}
+
+// TestOverrideIsValid_UserScopeKind covers the user scope kind contract:
+// user_id is required, and no other scope identifier may accompany it, in
+// either direction.
+func TestOverrideIsValid_UserScopeKind(t *testing.T) {
+	userID := "user-1"
+	vkID := "virtual-key-1"
+
+	valid := Override{
+		ScopeKind:    ScopeKindUser,
+		UserID:       &userID,
+		MatchType:    MatchTypeExact,
+		Pattern:      "gpt-5-nano",
+		RequestTypes: []schemas.RequestType{schemas.ChatCompletionRequest},
+	}
+	require.NoError(t, valid.IsValid())
+
+	missingUser := valid
+	missingUser.UserID = nil
+	require.ErrorContains(t, missingUser.IsValid(), "user_id is required")
+
+	withVK := valid
+	withVK.VirtualKeyID = &vkID
+	require.ErrorContains(t, withVK.IsValid(), "only supports user_id")
+
+	vkWithUser := Override{
+		ScopeKind:    ScopeKindVirtualKey,
+		VirtualKeyID: &vkID,
+		UserID:       &userID,
+		MatchType:    MatchTypeExact,
+		Pattern:      "gpt-5-nano",
+		RequestTypes: []schemas.RequestType{schemas.ChatCompletionRequest},
+	}
+	require.ErrorContains(t, vkWithUser.IsValid(), "only supports virtual_key_id")
+
+	globalWithUser := Override{
+		ScopeKind:    ScopeKindGlobal,
+		UserID:       &userID,
+		MatchType:    MatchTypeExact,
+		Pattern:      "gpt-5-nano",
+		RequestTypes: []schemas.RequestType{schemas.ChatCompletionRequest},
+	}
+	require.ErrorContains(t, globalWithUser.IsValid(), "must not include scope identifiers")
+
+	providerID := "openai"
+	providerKeyID := "provider-key-1"
+
+	userProvider := Override{
+		ScopeKind:    ScopeKindUserProvider,
+		UserID:       &userID,
+		ProviderID:   &providerID,
+		MatchType:    MatchTypeExact,
+		Pattern:      "gpt-5-nano",
+		RequestTypes: []schemas.RequestType{schemas.ChatCompletionRequest},
+	}
+	require.NoError(t, userProvider.IsValid())
+
+	userProviderMissingProvider := userProvider
+	userProviderMissingProvider.ProviderID = nil
+	require.ErrorContains(t, userProviderMissingProvider.IsValid(), "user_id and provider_id are required")
+
+	userProviderWithVK := userProvider
+	userProviderWithVK.VirtualKeyID = &vkID
+	require.ErrorContains(t, userProviderWithVK.IsValid(), "does not support virtual_key_id or provider_key_id")
+
+	userProviderKey := Override{
+		ScopeKind:     ScopeKindUserProviderKey,
+		UserID:        &userID,
+		ProviderID:    &providerID,
+		ProviderKeyID: &providerKeyID,
+		MatchType:     MatchTypeExact,
+		Pattern:       "gpt-5-nano",
+		RequestTypes:  []schemas.RequestType{schemas.ChatCompletionRequest},
+	}
+	require.NoError(t, userProviderKey.IsValid())
+
+	userProviderKeyMissingKey := userProviderKey
+	userProviderKeyMissingKey.ProviderKeyID = nil
+	require.ErrorContains(t, userProviderKeyMissingKey.IsValid(), "user_id, provider_id, and provider_key_id are required")
+
+	userProviderKeyWithVK := userProviderKey
+	userProviderKeyWithVK.VirtualKeyID = &vkID
+	require.ErrorContains(t, userProviderKeyWithVK.IsValid(), "does not support virtual_key_id")
 }
