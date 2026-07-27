@@ -1601,6 +1601,10 @@ func (m *MockConfigStore) ClaimSidekiqJob(ctx context.Context, id, runnerID stri
 	return false, nil
 }
 
+func (m *MockConfigStore) ClaimPartitionedSidekiqJob(ctx context.Context, id, runnerID string, staleBefore time.Time, partitioningKey string, createdAt time.Time) (bool, error) {
+	return false, nil
+}
+
 func (m *MockConfigStore) HeartbeatSidekiqJob(ctx context.Context, id, runnerID string) (bool, error) {
 	return false, nil
 }

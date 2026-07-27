@@ -686,6 +686,7 @@ type ConfigStore interface {
 	CreateSidekiqJob(ctx context.Context, job *tables.TableSidekiqJob) error
 	GetSidekiqJob(ctx context.Context, id string) (*tables.TableSidekiqJob, error)
 	ClaimSidekiqJob(ctx context.Context, id, runnerID string, staleBefore time.Time) (bool, error)
+	ClaimPartitionedSidekiqJob(ctx context.Context, id, runnerID string, staleBefore time.Time, partitioningKey string, createdAt time.Time) (bool, error)
 	HeartbeatSidekiqJob(ctx context.Context, id, runnerID string) (bool, error)
 	UpdateSidekiqJobProgress(ctx context.Context, id, runnerID, metadata string) error
 	CompleteSidekiqJob(ctx context.Context, id, runnerID, metadata string) error
