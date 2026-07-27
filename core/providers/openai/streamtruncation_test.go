@@ -2,11 +2,14 @@ package openai
 
 import (
 	"context"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -318,4 +321,121 @@ func TestResponsesStreamTruncatedBeforeCompleted(t *testing.T) {
 		t.Fatal("expected at least the error chunk")
 	}
 	assertTruncationError(t, chunks[len(chunks)-1].BifrostError)
+}
+
+// A non-EOF read error is already a reported failure. The truncation guard that
+// follows the read loop must not fire a second time for the same dead stream, or
+// the client sees two errors for one request and the retryable 502 synthesized by
+// SendStreamTruncatedError muddies which failure the retry logic reacted to. The
+// handler signals "already reported" by latching BifrostContextKeyStreamEndIndicator.
+
+// failingSSEDataReader yields queued data lines and then a non-EOF error,
+// reproducing an upstream whose SSE framing breaks mid-body (what bufio.Scanner
+// surfaces when a line exceeds its ceiling). It deliberately implements
+// SSEStreamTerminator returning false, so the post-loop truncation guard is live -
+// that is precisely the condition under which a handler that forgets to latch the
+// end indicator emits a duplicate.
+type failingSSEDataReader struct {
+	lines [][]byte
+	err   error
+}
+
+func (r *failingSSEDataReader) ReadDataLine() ([]byte, error) {
+	if len(r.lines) == 0 {
+		return nil, r.err
+	}
+	line := r.lines[0]
+	r.lines = r.lines[1:]
+	return line, nil
+}
+
+func (r *failingSSEDataReader) SawDoneMarker() bool { return false }
+
+// contextWithFailingSSEReader injects a reader that replays lines then fails.
+// BifrostContextKeySSEReaderFactory is the same seam enterprise uses to swap in a
+// streaming reader, so this drives the real handler loop rather than a stub of it.
+func contextWithFailingSSEReader(lines ...string) *schemas.BifrostContext {
+	ctx := newStreamTestContext()
+	payloads := make([][]byte, 0, len(lines))
+	for _, line := range lines {
+		payloads = append(payloads, []byte(line))
+	}
+	ctx.SetValue(schemas.BifrostContextKeySSEReaderFactory, &providerUtils.SSEReaderFactory{
+		NewDataReader: func(io.Reader) providerUtils.SSEDataReader {
+			return &failingSSEDataReader{
+				lines: payloads,
+				err:   errors.New("sse framing error"),
+			}
+		},
+	})
+	return ctx
+}
+
+// assertSingleReadError checks the stream carried exactly one error, and that it
+// is the read error rather than the synthesized truncation 502.
+func assertSingleReadError(t *testing.T, chunks []*schemas.BifrostStreamChunk) {
+	t.Helper()
+	var errored []*schemas.BifrostError
+	for _, chunk := range chunks {
+		if chunk.BifrostError != nil {
+			errored = append(errored, chunk.BifrostError)
+		}
+	}
+	if len(errored) != 1 {
+		for i, err := range errored {
+			t.Logf("error %d: %+v", i, err.Error)
+		}
+		t.Fatalf("expected exactly one error for one dead stream, got %d", len(errored))
+	}
+	if errored[0].Error == nil {
+		t.Fatal("error chunk carried no error field")
+	}
+	if errored[0].Error.Message == schemas.ErrProviderStreamTruncated {
+		t.Error("expected the read error to be reported, not the synthesized truncation error")
+	}
+}
+
+const openAIPartialImageEvent = `{"type":"image_generation.partial_image","b64_json":"aGk=","partial_image_index":0,"sequence_number":1}`
+
+const openAIPartialImageEditEvent = `{"type":"image_edit.partial_image","b64_json":"aGk=","partial_image_index":0,"sequence_number":1}`
+
+func TestImageGenerationStreamReadErrorReportsOnce(t *testing.T) {
+	server := completeSSEServer(t, "data: "+openAIPartialImageEvent+"\n\n")
+	defer server.Close()
+
+	provider := newStreamTestProvider(server.URL)
+	request := &schemas.BifrostImageGenerationRequest{
+		Provider: schemas.OpenAI,
+		Model:    "repro-model",
+		Input:    &schemas.ImageGenerationInput{Prompt: "a cat"},
+	}
+	stream, bifrostErr := provider.ImageGenerationStream(
+		contextWithFailingSSEReader(openAIPartialImageEvent), passthroughPostHook, nil, testKey(), request)
+	if bifrostErr != nil {
+		t.Fatalf("stream setup failed: %v", bifrostErr)
+	}
+
+	assertSingleReadError(t, collectChunks(t, stream))
+}
+
+func TestImageEditStreamReadErrorReportsOnce(t *testing.T) {
+	server := completeSSEServer(t, "data: "+openAIPartialImageEditEvent+"\n\n")
+	defer server.Close()
+
+	provider := newStreamTestProvider(server.URL)
+	request := &schemas.BifrostImageEditRequest{
+		Provider: schemas.OpenAI,
+		Model:    "repro-model",
+		Input: &schemas.ImageEditInput{
+			Prompt: "make it blue",
+			Images: []schemas.ImageInput{{Image: []byte("fake-png-bytes")}},
+		},
+	}
+	stream, bifrostErr := provider.ImageEditStream(
+		contextWithFailingSSEReader(openAIPartialImageEditEvent), passthroughPostHook, nil, testKey(), request)
+	if bifrostErr != nil {
+		t.Fatalf("stream setup failed: %v", bifrostErr)
+	}
+
+	assertSingleReadError(t, collectChunks(t, stream))
 }
