@@ -351,7 +351,6 @@
               "enterprise/audit-logs",
               "enterprise/secret-management",
               "enterprise/log-exports",
-              "enterprise/datadog-connector",
               "enterprise/clustering",
               "enterprise/adaptive-load-balancing",
               "enterprise/circuit-breaker",
@@ -572,13 +571,14 @@
             "icon": "binoculars",
             "pages": [
               "features/observability/default",
-              "features/observability/content-logging",
               "features/observability/maxim",
+              "features/observability/datadog",
               "features/observability/otel",
               "features/observability/prometheus",
               "features/observability/kafka",
               "features/observability/bigquery",
-              "features/observability/pubsub"
+              "features/observability/pubsub",
+              "features/observability/content-logging"
             ]
           },
           {
@@ -1273,7 +1273,11 @@
     },
     {
       "source": "/enterprise/data-connectors/datadog",
-      "destination": "/enterprise/datadog-connector"
+      "destination": "/features/observability/datadog"
+    },
+    {
+      "source": "/enterprise/datadog-connector",
+      "destination": "/features/observability/datadog"
     },
     {
       "source": "/enterprise/mcp-with-fa",
