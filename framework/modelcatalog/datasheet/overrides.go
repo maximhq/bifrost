@@ -25,40 +25,64 @@ func (override *Override) IsValid() error {
 func (override *Override) validateScopeKind() error {
 	switch override.ScopeKind {
 	case ScopeKindGlobal:
-		if override.VirtualKeyID != nil || override.ProviderID != nil || override.ProviderKeyID != nil {
+		if override.UserID != nil || override.VirtualKeyID != nil || override.ProviderID != nil || override.ProviderKeyID != nil {
 			return fmt.Errorf("global scope_kind must not include scope identifiers")
+		}
+	case ScopeKindUser:
+		if override.UserID == nil {
+			return fmt.Errorf("user_id is required for user scope_kind")
+		}
+		if override.VirtualKeyID != nil || override.ProviderID != nil || override.ProviderKeyID != nil {
+			return fmt.Errorf("user scope_kind only supports user_id")
+		}
+	case ScopeKindUserProvider:
+		if override.UserID == nil || override.ProviderID == nil {
+			return fmt.Errorf("user_id and provider_id are required for user_provider scope_kind")
+		}
+		if override.VirtualKeyID != nil || override.ProviderKeyID != nil {
+			return fmt.Errorf("user_provider scope_kind does not support virtual_key_id or provider_key_id")
+		}
+	case ScopeKindUserProviderKey:
+		if override.UserID == nil || override.ProviderID == nil || override.ProviderKeyID == nil {
+			return fmt.Errorf("user_id, provider_id, and provider_key_id are required for user_provider_key scope_kind")
+		}
+		if override.VirtualKeyID != nil {
+			return fmt.Errorf("user_provider_key scope_kind does not support virtual_key_id")
 		}
 	case ScopeKindProvider:
 		if override.ProviderID == nil {
 			return fmt.Errorf("provider_id is required for provider scope_kind")
 		}
-		if override.VirtualKeyID != nil || override.ProviderKeyID != nil {
+		if override.UserID != nil || override.VirtualKeyID != nil || override.ProviderKeyID != nil {
 			return fmt.Errorf("provider scope_kind only supports provider_id")
 		}
 	case ScopeKindProviderKey:
 		if override.ProviderKeyID == nil {
 			return fmt.Errorf("provider_key_id is required for provider_key scope_kind")
 		}
-		if override.VirtualKeyID != nil || override.ProviderID != nil {
+		if override.UserID != nil || override.VirtualKeyID != nil || override.ProviderID != nil {
 			return fmt.Errorf("provider_key scope_kind only supports provider_key_id")
 		}
 	case ScopeKindVirtualKey:
 		if override.VirtualKeyID == nil {
 			return fmt.Errorf("virtual_key_id is required for virtual_key scope_kind")
 		}
-		if override.ProviderID != nil || override.ProviderKeyID != nil {
+		if override.UserID != nil || override.ProviderID != nil || override.ProviderKeyID != nil {
 			return fmt.Errorf("virtual_key scope_kind only supports virtual_key_id")
 		}
 	case ScopeKindVirtualKeyProvider:
 		if override.VirtualKeyID == nil || override.ProviderID == nil {
 			return fmt.Errorf("virtual_key_id and provider_id are required for virtual_key_provider scope_kind")
 		}
-		if override.ProviderKeyID != nil {
-			return fmt.Errorf("virtual_key_provider scope_kind does not support provider_key_id")
+		if override.UserID != nil || override.ProviderKeyID != nil {
+			return fmt.Errorf("virtual_key_provider scope_kind does not support provider_key_id or user_id")
 		}
 	case ScopeKindVirtualKeyProviderKey:
 		if override.VirtualKeyID == nil || override.ProviderID == nil || override.ProviderKeyID == nil {
 			return fmt.Errorf("virtual_key_id, provider_id, and provider_key_id are required for virtual_key_provider_key scope_kind")
+		}
+		if override.UserID != nil {
+			return fmt.Errorf("virtual_key_provider_key scope_kind does not support user_id")
 		}
 	default:
 		return fmt.Errorf("unsupported scope_kind %q", override.ScopeKind)
@@ -113,6 +137,12 @@ func (e *customPricingEntry) matchesScope(scopes LookupScopes) bool {
 	switch e.scopeKind {
 	case ScopeKindGlobal:
 		return true
+	case ScopeKindUser:
+		return e.userID == scopes.UserID
+	case ScopeKindUserProvider:
+		return e.userID == scopes.UserID && e.providerID == scopes.Provider
+	case ScopeKindUserProviderKey:
+		return e.userID == scopes.UserID && e.providerID == scopes.Provider && e.providerKeyID == scopes.SelectedKeyID
 	case ScopeKindProvider:
 		return e.providerID == scopes.Provider
 	case ScopeKindProviderKey:
@@ -132,7 +162,7 @@ func (e *customPricingEntry) matchesMode(mode string) bool {
 	return ok
 }
 
-// resolve walks the 6-scope priority hierarchy and returns the first matching
+// resolve walks the 9-scope priority hierarchy and returns the first matching
 // pricing patch for the given model, mode, and runtime scopes.
 func (c *customPricingData) resolve(model, mode string, scopes LookupScopes) *Options {
 	for _, scopeKind := range scopePriorityOrder(scopes) {
@@ -154,8 +184,11 @@ func (c *customPricingData) resolve(model, mode string, scopes LookupScopes) *Op
 
 // scopePriorityOrder returns scope kinds in most-specific-first order,
 // skipping scopes that can't match given the available runtime identifiers.
+// The virtual-key family is checked before the user family: pricing pinned
+// to the credential wins over pricing that follows the person. Within each
+// family, more identifiers rank higher.
 func scopePriorityOrder(scopes LookupScopes) []ScopeKind {
-	order := make([]ScopeKind, 0, 6)
+	order := make([]ScopeKind, 0, 9)
 	if scopes.VirtualKeyID != "" && scopes.Provider != "" && scopes.SelectedKeyID != "" {
 		order = append(order, ScopeKindVirtualKeyProviderKey)
 	}
@@ -164,6 +197,15 @@ func scopePriorityOrder(scopes LookupScopes) []ScopeKind {
 	}
 	if scopes.VirtualKeyID != "" {
 		order = append(order, ScopeKindVirtualKey)
+	}
+	if scopes.UserID != "" && scopes.Provider != "" && scopes.SelectedKeyID != "" {
+		order = append(order, ScopeKindUserProviderKey)
+	}
+	if scopes.UserID != "" && scopes.Provider != "" {
+		order = append(order, ScopeKindUserProvider)
+	}
+	if scopes.UserID != "" {
+		order = append(order, ScopeKindUser)
 	}
 	if scopes.SelectedKeyID != "" {
 		order = append(order, ScopeKindProviderKey)
@@ -187,6 +229,9 @@ func buildCustomPricingData(overrides []Override) *customPricingData {
 			id:        o.ID,
 			scopeKind: o.ScopeKind,
 			options:   o.Options,
+		}
+		if o.UserID != nil {
+			entry.userID = *o.UserID
 		}
 		if o.VirtualKeyID != nil {
 			entry.virtualKeyID = *o.VirtualKeyID

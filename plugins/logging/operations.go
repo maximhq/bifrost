@@ -1659,10 +1659,15 @@ func pricingScopesForLog(logEntry *logstore.Log) modelcatalog.PricingLookupScope
 	if logEntry.VirtualKeyID != nil {
 		virtualKeyID = *logEntry.VirtualKeyID
 	}
+	userID := ""
+	if logEntry.UserID != nil {
+		userID = *logEntry.UserID
+	}
 
 	return modelcatalog.PricingLookupScopes{
 		Provider:      logEntry.Provider,
 		SelectedKeyID: logEntry.SelectedKeyID,
 		VirtualKeyID:  virtualKeyID,
+		UserID:        userID,
 	}
 }
