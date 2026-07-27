@@ -80,9 +80,16 @@ func (r *BedrockInvokeRequest) UnmarshalJSON(data []byte) error {
 		return err
 	}
 
-	// Normalize messages: handle AI21 Jamba where content can be a plain string
+	// Normalize messages: Bedrock Converse and Anthropic use content block arrays,
+	// while AI21 Jamba permits a plain string.
 	if len(aux.Messages) > 0 {
-		r.Messages = nil // Clear before re-parsing
+		var rawMsgs []struct {
+			Role    BedrockMessageRole `json:"role"`
+			Content json.RawMessage    `json:"content"`
+		}
+		if err := sonic.Unmarshal(aux.Messages, &rawMsgs); err != nil {
+			return fmt.Errorf("invalid bedrock invoke messages: %w", err)
+		}
 
 		// Try standard []BedrockMessage first
 		var standardMsgs []BedrockMessage
@@ -111,6 +118,7 @@ func (r *BedrockInvokeRequest) UnmarshalJSON(data []byte) error {
 					r.Messages = append(r.Messages, msg)
 				}
 			}
+			r.Messages = append(r.Messages, msg)
 		}
 	}
 
