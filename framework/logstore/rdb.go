@@ -4000,10 +4000,12 @@ func (s *RDBLogStore) BatchCreateMCPToolLogsIfNotExists(ctx context.Context, ent
 	}).Create(&entries).Error
 }
 
-// FindMCPToolLog retrieves a single MCP tool log entry by its ID.
+// FindMCPToolLog retrieves a single MCP tool log entry by its ID. When ctx
+// carries a QueryScope, ScopedDB applies it so out-of-scope IDs return
+// ErrNotFound. Contexts without a QueryScope stay unscoped as before.
 func (s *RDBLogStore) FindMCPToolLog(ctx context.Context, id string) (*MCPToolLog, error) {
 	var log MCPToolLog
-	if err := s.db.WithContext(ctx).Where("id = ?", id).First(&log).Error; err != nil {
+	if err := s.ScopedDB(ctx).Where("id = ?", id).First(&log).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
 		}
