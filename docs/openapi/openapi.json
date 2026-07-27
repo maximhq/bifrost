@@ -5690,6 +5690,14 @@
             "schema": {
               "type": "boolean"
             }
+          },
+          {
+            "name": "stream",
+            "in": "query",
+            "description": "When `true`, replays the stored response as SSE events instead of a single JSON object",
+            "schema": {
+              "type": "boolean"
+            }
           }
         ],
         "responses": {
@@ -5699,6 +5707,817 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ResponsesResponse"
+                }
+              },
+              "text/event-stream": {
+                "schema": {
+                  "type": "object",
+                  "description": "Streaming responses API response (SSE format)",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "response.ping",
+                        "response.created",
+                        "response.in_progress",
+                        "response.completed",
+                        "response.failed",
+                        "response.incomplete",
+                        "response.output_item.added",
+                        "response.output_item.done",
+                        "response.content_part.added",
+                        "response.content_part.done",
+                        "response.output_text.delta",
+                        "response.output_text.done",
+                        "response.refusal.delta",
+                        "response.refusal.done",
+                        "response.function_call_arguments.delta",
+                        "response.function_call_arguments.done",
+                        "response.file_search_call.in_progress",
+                        "response.file_search_call.searching",
+                        "response.file_search_call.results.added",
+                        "response.file_search_call.results.completed",
+                        "response.web_search_call.in_progress",
+                        "response.web_search_call.searching",
+                        "response.web_search_call.completed",
+                        "response.web_search_call.results.added",
+                        "response.web_search_call.results.completed",
+                        "response.web_fetch_call.in_progress",
+                        "response.web_fetch_call.fetching",
+                        "response.web_fetch_call.completed",
+                        "response.reasoning_summary_part.added",
+                        "response.reasoning_summary_part.done",
+                        "response.reasoning_summary_text.delta",
+                        "response.reasoning_summary_text.done",
+                        "response.image_generation_call.completed",
+                        "response.image_generation_call.generating",
+                        "response.image_generation_call.in_progress",
+                        "response.image_generation_call.partial_image",
+                        "response.mcp_call_arguments.delta",
+                        "response.mcp_call_arguments.done",
+                        "response.mcp_call.completed",
+                        "response.mcp_call.failed",
+                        "response.mcp_call.in_progress",
+                        "response.mcp_list_tools.completed",
+                        "response.mcp_list_tools.failed",
+                        "response.mcp_list_tools.in_progress",
+                        "response.code_interpreter_call.in_progress",
+                        "response.code_interpreter_call.interpreting",
+                        "response.code_interpreter_call.completed",
+                        "response.code_interpreter_call_code.delta",
+                        "response.code_interpreter_call_code.done",
+                        "response.output_text.annotation.added",
+                        "response.output_text.annotation.done",
+                        "response.queued",
+                        "response.custom_tool_call_input.delta",
+                        "response.custom_tool_call_input.done",
+                        "error"
+                      ]
+                    },
+                    "sequence_number": {
+                      "type": "integer"
+                    },
+                    "response": {
+                      "$ref": "#/components/schemas/ResponsesResponse"
+                    },
+                    "output_index": {
+                      "type": "integer"
+                    },
+                    "item": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string",
+                          "enum": [
+                            "message",
+                            "file_search_call",
+                            "computer_call",
+                            "computer_call_output",
+                            "web_search_call",
+                            "web_fetch_call",
+                            "function_call",
+                            "function_call_output",
+                            "code_interpreter_call",
+                            "local_shell_call",
+                            "local_shell_call_output",
+                            "mcp_call",
+                            "custom_tool_call",
+                            "custom_tool_call_output",
+                            "image_generation_call",
+                            "mcp_list_tools",
+                            "mcp_approval_request",
+                            "mcp_approval_responses",
+                            "reasoning",
+                            "item_reference",
+                            "refusal"
+                          ]
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "in_progress",
+                            "completed",
+                            "incomplete",
+                            "interpreting",
+                            "failed"
+                          ]
+                        },
+                        "role": {
+                          "type": "string",
+                          "enum": [
+                            "assistant",
+                            "user",
+                            "system",
+                            "developer"
+                          ]
+                        },
+                        "content": {
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "required": [
+                                  "type"
+                                ],
+                                "properties": {
+                                  "type": {
+                                    "type": "string",
+                                    "enum": [
+                                      "input_text",
+                                      "input_image",
+                                      "input_file",
+                                      "input_audio",
+                                      "output_text",
+                                      "refusal",
+                                      "reasoning_text"
+                                    ]
+                                  },
+                                  "file_id": {
+                                    "type": "string"
+                                  },
+                                  "text": {
+                                    "type": "string"
+                                  },
+                                  "signature": {
+                                    "type": "string"
+                                  },
+                                  "image_url": {
+                                    "type": "string"
+                                  },
+                                  "detail": {
+                                    "type": "string"
+                                  },
+                                  "file_data": {
+                                    "type": "string"
+                                  },
+                                  "file_url": {
+                                    "type": "string"
+                                  },
+                                  "filename": {
+                                    "type": "string"
+                                  },
+                                  "file_type": {
+                                    "type": "string"
+                                  },
+                                  "input_audio": {
+                                    "type": "object",
+                                    "required": [
+                                      "format",
+                                      "data"
+                                    ],
+                                    "properties": {
+                                      "format": {
+                                        "type": "string",
+                                        "enum": [
+                                          "mp3",
+                                          "wav"
+                                        ]
+                                      },
+                                      "data": {
+                                        "type": "string"
+                                      }
+                                    }
+                                  },
+                                  "annotations": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "properties": {
+                                        "type": {
+                                          "type": "string",
+                                          "enum": [
+                                            "file_citation",
+                                            "url_citation",
+                                            "container_file_citation",
+                                            "file_path"
+                                          ]
+                                        },
+                                        "index": {
+                                          "type": "integer"
+                                        },
+                                        "file_id": {
+                                          "type": "string"
+                                        },
+                                        "text": {
+                                          "type": "string"
+                                        },
+                                        "start_index": {
+                                          "type": "integer"
+                                        },
+                                        "end_index": {
+                                          "type": "integer"
+                                        },
+                                        "filename": {
+                                          "type": "string"
+                                        },
+                                        "title": {
+                                          "type": "string"
+                                        },
+                                        "url": {
+                                          "type": "string"
+                                        },
+                                        "container_id": {
+                                          "type": "string"
+                                        }
+                                      }
+                                    }
+                                  },
+                                  "logprobs": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "properties": {
+                                        "bytes": {
+                                          "type": "array",
+                                          "items": {
+                                            "type": "integer"
+                                          }
+                                        },
+                                        "logprob": {
+                                          "type": "number"
+                                        },
+                                        "token": {
+                                          "type": "string"
+                                        },
+                                        "top_logprobs": {
+                                          "type": "array",
+                                          "items": {
+                                            "type": "object",
+                                            "properties": {
+                                              "bytes": {
+                                                "type": "array",
+                                                "items": {
+                                                  "type": "integer"
+                                                }
+                                              },
+                                              "logprob": {
+                                                "type": "number"
+                                              },
+                                              "token": {
+                                                "type": "string"
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  },
+                                  "refusal": {
+                                    "type": "string"
+                                  },
+                                  "cache_control": {
+                                    "$ref": "#/components/schemas/CacheControl"
+                                  }
+                                }
+                              }
+                            }
+                          ]
+                        },
+                        "call_id": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "arguments": {
+                          "type": "string"
+                        },
+                        "output": {
+                          "description": "Tool call output. A plain string for function/custom/local-shell tool\noutputs, an array of content blocks for structured function tool\noutputs, or a computer-tool screenshot object for computer_call_output.\n",
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "required": [
+                                  "type"
+                                ],
+                                "properties": {
+                                  "type": {
+                                    "type": "string",
+                                    "enum": [
+                                      "input_text",
+                                      "input_image",
+                                      "input_file",
+                                      "input_audio",
+                                      "output_text",
+                                      "refusal",
+                                      "reasoning_text"
+                                    ]
+                                  },
+                                  "file_id": {
+                                    "type": "string"
+                                  },
+                                  "text": {
+                                    "type": "string"
+                                  },
+                                  "signature": {
+                                    "type": "string"
+                                  },
+                                  "image_url": {
+                                    "type": "string"
+                                  },
+                                  "detail": {
+                                    "type": "string"
+                                  },
+                                  "file_data": {
+                                    "type": "string"
+                                  },
+                                  "file_url": {
+                                    "type": "string"
+                                  },
+                                  "filename": {
+                                    "type": "string"
+                                  },
+                                  "file_type": {
+                                    "type": "string"
+                                  },
+                                  "input_audio": {
+                                    "type": "object",
+                                    "required": [
+                                      "format",
+                                      "data"
+                                    ],
+                                    "properties": {
+                                      "format": {
+                                        "type": "string",
+                                        "enum": [
+                                          "mp3",
+                                          "wav"
+                                        ]
+                                      },
+                                      "data": {
+                                        "type": "string"
+                                      }
+                                    }
+                                  },
+                                  "annotations": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "properties": {
+                                        "type": {
+                                          "type": "string",
+                                          "enum": [
+                                            "file_citation",
+                                            "url_citation",
+                                            "container_file_citation",
+                                            "file_path"
+                                          ]
+                                        },
+                                        "index": {
+                                          "type": "integer"
+                                        },
+                                        "file_id": {
+                                          "type": "string"
+                                        },
+                                        "text": {
+                                          "type": "string"
+                                        },
+                                        "start_index": {
+                                          "type": "integer"
+                                        },
+                                        "end_index": {
+                                          "type": "integer"
+                                        },
+                                        "filename": {
+                                          "type": "string"
+                                        },
+                                        "title": {
+                                          "type": "string"
+                                        },
+                                        "url": {
+                                          "type": "string"
+                                        },
+                                        "container_id": {
+                                          "type": "string"
+                                        }
+                                      }
+                                    }
+                                  },
+                                  "logprobs": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "properties": {
+                                        "bytes": {
+                                          "type": "array",
+                                          "items": {
+                                            "type": "integer"
+                                          }
+                                        },
+                                        "logprob": {
+                                          "type": "number"
+                                        },
+                                        "token": {
+                                          "type": "string"
+                                        },
+                                        "top_logprobs": {
+                                          "type": "array",
+                                          "items": {
+                                            "type": "object",
+                                            "properties": {
+                                              "bytes": {
+                                                "type": "array",
+                                                "items": {
+                                                  "type": "integer"
+                                                }
+                                              },
+                                              "logprob": {
+                                                "type": "number"
+                                              },
+                                              "token": {
+                                                "type": "string"
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  },
+                                  "refusal": {
+                                    "type": "string"
+                                  },
+                                  "cache_control": {
+                                    "$ref": "#/components/schemas/CacheControl"
+                                  }
+                                }
+                              }
+                            },
+                            {
+                              "type": "object",
+                              "description": "Computer tool call output (computer_screenshot).",
+                              "properties": {
+                                "type": {
+                                  "type": "string",
+                                  "enum": [
+                                    "computer_screenshot"
+                                  ]
+                                },
+                                "file_id": {
+                                  "type": "string"
+                                },
+                                "image_url": {
+                                  "type": "string"
+                                }
+                              }
+                            }
+                          ]
+                        },
+                        "action": {
+                          "type": "object"
+                        },
+                        "error": {
+                          "type": "string"
+                        },
+                        "queries": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "results": {
+                          "type": "array",
+                          "items": {
+                            "type": "object"
+                          }
+                        },
+                        "summary": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "required": [
+                              "type",
+                              "text"
+                            ],
+                            "properties": {
+                              "type": {
+                                "type": "string",
+                                "enum": [
+                                  "summary_text"
+                                ]
+                              },
+                              "text": {
+                                "type": "string"
+                              }
+                            }
+                          }
+                        },
+                        "encrypted_content": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "content_index": {
+                      "type": "integer"
+                    },
+                    "item_id": {
+                      "type": "string"
+                    },
+                    "part": {
+                      "type": "object",
+                      "required": [
+                        "type"
+                      ],
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "enum": [
+                            "input_text",
+                            "input_image",
+                            "input_file",
+                            "input_audio",
+                            "output_text",
+                            "refusal",
+                            "reasoning_text"
+                          ]
+                        },
+                        "file_id": {
+                          "type": "string"
+                        },
+                        "text": {
+                          "type": "string"
+                        },
+                        "signature": {
+                          "type": "string"
+                        },
+                        "image_url": {
+                          "type": "string"
+                        },
+                        "detail": {
+                          "type": "string"
+                        },
+                        "file_data": {
+                          "type": "string"
+                        },
+                        "file_url": {
+                          "type": "string"
+                        },
+                        "filename": {
+                          "type": "string"
+                        },
+                        "file_type": {
+                          "type": "string"
+                        },
+                        "input_audio": {
+                          "type": "object",
+                          "required": [
+                            "format",
+                            "data"
+                          ],
+                          "properties": {
+                            "format": {
+                              "type": "string",
+                              "enum": [
+                                "mp3",
+                                "wav"
+                              ]
+                            },
+                            "data": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "annotations": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "type": {
+                                "type": "string",
+                                "enum": [
+                                  "file_citation",
+                                  "url_citation",
+                                  "container_file_citation",
+                                  "file_path"
+                                ]
+                              },
+                              "index": {
+                                "type": "integer"
+                              },
+                              "file_id": {
+                                "type": "string"
+                              },
+                              "text": {
+                                "type": "string"
+                              },
+                              "start_index": {
+                                "type": "integer"
+                              },
+                              "end_index": {
+                                "type": "integer"
+                              },
+                              "filename": {
+                                "type": "string"
+                              },
+                              "title": {
+                                "type": "string"
+                              },
+                              "url": {
+                                "type": "string"
+                              },
+                              "container_id": {
+                                "type": "string"
+                              }
+                            }
+                          }
+                        },
+                        "logprobs": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "bytes": {
+                                "type": "array",
+                                "items": {
+                                  "type": "integer"
+                                }
+                              },
+                              "logprob": {
+                                "type": "number"
+                              },
+                              "token": {
+                                "type": "string"
+                              },
+                              "top_logprobs": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "properties": {
+                                    "bytes": {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "integer"
+                                      }
+                                    },
+                                    "logprob": {
+                                      "type": "number"
+                                    },
+                                    "token": {
+                                      "type": "string"
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        },
+                        "refusal": {
+                          "type": "string"
+                        },
+                        "cache_control": {
+                          "$ref": "#/components/schemas/CacheControl"
+                        }
+                      }
+                    },
+                    "delta": {
+                      "type": "string"
+                    },
+                    "signature": {
+                      "type": "string"
+                    },
+                    "logprobs": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "bytes": {
+                            "type": "array",
+                            "items": {
+                              "type": "integer"
+                            }
+                          },
+                          "logprob": {
+                            "type": "number"
+                          },
+                          "token": {
+                            "type": "string"
+                          },
+                          "top_logprobs": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "bytes": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "integer"
+                                  }
+                                },
+                                "logprob": {
+                                  "type": "number"
+                                },
+                                "token": {
+                                  "type": "string"
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "text": {
+                      "type": "string"
+                    },
+                    "refusal": {
+                      "type": "string"
+                    },
+                    "arguments": {
+                      "type": "string"
+                    },
+                    "partial_image_b64": {
+                      "type": "string"
+                    },
+                    "partial_image_index": {
+                      "type": "integer"
+                    },
+                    "annotation": {
+                      "type": "object",
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "enum": [
+                            "file_citation",
+                            "url_citation",
+                            "container_file_citation",
+                            "file_path"
+                          ]
+                        },
+                        "index": {
+                          "type": "integer"
+                        },
+                        "file_id": {
+                          "type": "string"
+                        },
+                        "text": {
+                          "type": "string"
+                        },
+                        "start_index": {
+                          "type": "integer"
+                        },
+                        "end_index": {
+                          "type": "integer"
+                        },
+                        "filename": {
+                          "type": "string"
+                        },
+                        "title": {
+                          "type": "string"
+                        },
+                        "url": {
+                          "type": "string"
+                        },
+                        "container_id": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "annotation_index": {
+                      "type": "integer"
+                    },
+                    "code": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "param": {
+                      "type": "string"
+                    },
+                    "extra_fields": {
+                      "$ref": "#/components/schemas/BifrostResponseExtraFields"
+                    }
+                  }
                 }
               }
             }
@@ -13612,6 +14431,14 @@
             "schema": {
               "type": "boolean"
             }
+          },
+          {
+            "name": "stream",
+            "in": "query",
+            "description": "When `true`, replays the stored response as SSE events instead of a single JSON object",
+            "schema": {
+              "type": "boolean"
+            }
           }
         ],
         "responses": {
@@ -13621,6 +14448,817 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ResponsesResponse"
+                }
+              },
+              "text/event-stream": {
+                "schema": {
+                  "type": "object",
+                  "description": "Streaming responses API response (SSE format)",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "response.ping",
+                        "response.created",
+                        "response.in_progress",
+                        "response.completed",
+                        "response.failed",
+                        "response.incomplete",
+                        "response.output_item.added",
+                        "response.output_item.done",
+                        "response.content_part.added",
+                        "response.content_part.done",
+                        "response.output_text.delta",
+                        "response.output_text.done",
+                        "response.refusal.delta",
+                        "response.refusal.done",
+                        "response.function_call_arguments.delta",
+                        "response.function_call_arguments.done",
+                        "response.file_search_call.in_progress",
+                        "response.file_search_call.searching",
+                        "response.file_search_call.results.added",
+                        "response.file_search_call.results.completed",
+                        "response.web_search_call.in_progress",
+                        "response.web_search_call.searching",
+                        "response.web_search_call.completed",
+                        "response.web_search_call.results.added",
+                        "response.web_search_call.results.completed",
+                        "response.web_fetch_call.in_progress",
+                        "response.web_fetch_call.fetching",
+                        "response.web_fetch_call.completed",
+                        "response.reasoning_summary_part.added",
+                        "response.reasoning_summary_part.done",
+                        "response.reasoning_summary_text.delta",
+                        "response.reasoning_summary_text.done",
+                        "response.image_generation_call.completed",
+                        "response.image_generation_call.generating",
+                        "response.image_generation_call.in_progress",
+                        "response.image_generation_call.partial_image",
+                        "response.mcp_call_arguments.delta",
+                        "response.mcp_call_arguments.done",
+                        "response.mcp_call.completed",
+                        "response.mcp_call.failed",
+                        "response.mcp_call.in_progress",
+                        "response.mcp_list_tools.completed",
+                        "response.mcp_list_tools.failed",
+                        "response.mcp_list_tools.in_progress",
+                        "response.code_interpreter_call.in_progress",
+                        "response.code_interpreter_call.interpreting",
+                        "response.code_interpreter_call.completed",
+                        "response.code_interpreter_call_code.delta",
+                        "response.code_interpreter_call_code.done",
+                        "response.output_text.annotation.added",
+                        "response.output_text.annotation.done",
+                        "response.queued",
+                        "response.custom_tool_call_input.delta",
+                        "response.custom_tool_call_input.done",
+                        "error"
+                      ]
+                    },
+                    "sequence_number": {
+                      "type": "integer"
+                    },
+                    "response": {
+                      "$ref": "#/components/schemas/ResponsesResponse"
+                    },
+                    "output_index": {
+                      "type": "integer"
+                    },
+                    "item": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string",
+                          "enum": [
+                            "message",
+                            "file_search_call",
+                            "computer_call",
+                            "computer_call_output",
+                            "web_search_call",
+                            "web_fetch_call",
+                            "function_call",
+                            "function_call_output",
+                            "code_interpreter_call",
+                            "local_shell_call",
+                            "local_shell_call_output",
+                            "mcp_call",
+                            "custom_tool_call",
+                            "custom_tool_call_output",
+                            "image_generation_call",
+                            "mcp_list_tools",
+                            "mcp_approval_request",
+                            "mcp_approval_responses",
+                            "reasoning",
+                            "item_reference",
+                            "refusal"
+                          ]
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "in_progress",
+                            "completed",
+                            "incomplete",
+                            "interpreting",
+                            "failed"
+                          ]
+                        },
+                        "role": {
+                          "type": "string",
+                          "enum": [
+                            "assistant",
+                            "user",
+                            "system",
+                            "developer"
+                          ]
+                        },
+                        "content": {
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "required": [
+                                  "type"
+                                ],
+                                "properties": {
+                                  "type": {
+                                    "type": "string",
+                                    "enum": [
+                                      "input_text",
+                                      "input_image",
+                                      "input_file",
+                                      "input_audio",
+                                      "output_text",
+                                      "refusal",
+                                      "reasoning_text"
+                                    ]
+                                  },
+                                  "file_id": {
+                                    "type": "string"
+                                  },
+                                  "text": {
+                                    "type": "string"
+                                  },
+                                  "signature": {
+                                    "type": "string"
+                                  },
+                                  "image_url": {
+                                    "type": "string"
+                                  },
+                                  "detail": {
+                                    "type": "string"
+                                  },
+                                  "file_data": {
+                                    "type": "string"
+                                  },
+                                  "file_url": {
+                                    "type": "string"
+                                  },
+                                  "filename": {
+                                    "type": "string"
+                                  },
+                                  "file_type": {
+                                    "type": "string"
+                                  },
+                                  "input_audio": {
+                                    "type": "object",
+                                    "required": [
+                                      "format",
+                                      "data"
+                                    ],
+                                    "properties": {
+                                      "format": {
+                                        "type": "string",
+                                        "enum": [
+                                          "mp3",
+                                          "wav"
+                                        ]
+                                      },
+                                      "data": {
+                                        "type": "string"
+                                      }
+                                    }
+                                  },
+                                  "annotations": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "properties": {
+                                        "type": {
+                                          "type": "string",
+                                          "enum": [
+                                            "file_citation",
+                                            "url_citation",
+                                            "container_file_citation",
+                                            "file_path"
+                                          ]
+                                        },
+                                        "index": {
+                                          "type": "integer"
+                                        },
+                                        "file_id": {
+                                          "type": "string"
+                                        },
+                                        "text": {
+                                          "type": "string"
+                                        },
+                                        "start_index": {
+                                          "type": "integer"
+                                        },
+                                        "end_index": {
+                                          "type": "integer"
+                                        },
+                                        "filename": {
+                                          "type": "string"
+                                        },
+                                        "title": {
+                                          "type": "string"
+                                        },
+                                        "url": {
+                                          "type": "string"
+                                        },
+                                        "container_id": {
+                                          "type": "string"
+                                        }
+                                      }
+                                    }
+                                  },
+                                  "logprobs": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "properties": {
+                                        "bytes": {
+                                          "type": "array",
+                                          "items": {
+                                            "type": "integer"
+                                          }
+                                        },
+                                        "logprob": {
+                                          "type": "number"
+                                        },
+                                        "token": {
+                                          "type": "string"
+                                        },
+                                        "top_logprobs": {
+                                          "type": "array",
+                                          "items": {
+                                            "type": "object",
+                                            "properties": {
+                                              "bytes": {
+                                                "type": "array",
+                                                "items": {
+                                                  "type": "integer"
+                                                }
+                                              },
+                                              "logprob": {
+                                                "type": "number"
+                                              },
+                                              "token": {
+                                                "type": "string"
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  },
+                                  "refusal": {
+                                    "type": "string"
+                                  },
+                                  "cache_control": {
+                                    "$ref": "#/components/schemas/CacheControl"
+                                  }
+                                }
+                              }
+                            }
+                          ]
+                        },
+                        "call_id": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "arguments": {
+                          "type": "string"
+                        },
+                        "output": {
+                          "description": "Tool call output. A plain string for function/custom/local-shell tool\noutputs, an array of content blocks for structured function tool\noutputs, or a computer-tool screenshot object for computer_call_output.\n",
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "required": [
+                                  "type"
+                                ],
+                                "properties": {
+                                  "type": {
+                                    "type": "string",
+                                    "enum": [
+                                      "input_text",
+                                      "input_image",
+                                      "input_file",
+                                      "input_audio",
+                                      "output_text",
+                                      "refusal",
+                                      "reasoning_text"
+                                    ]
+                                  },
+                                  "file_id": {
+                                    "type": "string"
+                                  },
+                                  "text": {
+                                    "type": "string"
+                                  },
+                                  "signature": {
+                                    "type": "string"
+                                  },
+                                  "image_url": {
+                                    "type": "string"
+                                  },
+                                  "detail": {
+                                    "type": "string"
+                                  },
+                                  "file_data": {
+                                    "type": "string"
+                                  },
+                                  "file_url": {
+                                    "type": "string"
+                                  },
+                                  "filename": {
+                                    "type": "string"
+                                  },
+                                  "file_type": {
+                                    "type": "string"
+                                  },
+                                  "input_audio": {
+                                    "type": "object",
+                                    "required": [
+                                      "format",
+                                      "data"
+                                    ],
+                                    "properties": {
+                                      "format": {
+                                        "type": "string",
+                                        "enum": [
+                                          "mp3",
+                                          "wav"
+                                        ]
+                                      },
+                                      "data": {
+                                        "type": "string"
+                                      }
+                                    }
+                                  },
+                                  "annotations": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "properties": {
+                                        "type": {
+                                          "type": "string",
+                                          "enum": [
+                                            "file_citation",
+                                            "url_citation",
+                                            "container_file_citation",
+                                            "file_path"
+                                          ]
+                                        },
+                                        "index": {
+                                          "type": "integer"
+                                        },
+                                        "file_id": {
+                                          "type": "string"
+                                        },
+                                        "text": {
+                                          "type": "string"
+                                        },
+                                        "start_index": {
+                                          "type": "integer"
+                                        },
+                                        "end_index": {
+                                          "type": "integer"
+                                        },
+                                        "filename": {
+                                          "type": "string"
+                                        },
+                                        "title": {
+                                          "type": "string"
+                                        },
+                                        "url": {
+                                          "type": "string"
+                                        },
+                                        "container_id": {
+                                          "type": "string"
+                                        }
+                                      }
+                                    }
+                                  },
+                                  "logprobs": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "properties": {
+                                        "bytes": {
+                                          "type": "array",
+                                          "items": {
+                                            "type": "integer"
+                                          }
+                                        },
+                                        "logprob": {
+                                          "type": "number"
+                                        },
+                                        "token": {
+                                          "type": "string"
+                                        },
+                                        "top_logprobs": {
+                                          "type": "array",
+                                          "items": {
+                                            "type": "object",
+                                            "properties": {
+                                              "bytes": {
+                                                "type": "array",
+                                                "items": {
+                                                  "type": "integer"
+                                                }
+                                              },
+                                              "logprob": {
+                                                "type": "number"
+                                              },
+                                              "token": {
+                                                "type": "string"
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  },
+                                  "refusal": {
+                                    "type": "string"
+                                  },
+                                  "cache_control": {
+                                    "$ref": "#/components/schemas/CacheControl"
+                                  }
+                                }
+                              }
+                            },
+                            {
+                              "type": "object",
+                              "description": "Computer tool call output (computer_screenshot).",
+                              "properties": {
+                                "type": {
+                                  "type": "string",
+                                  "enum": [
+                                    "computer_screenshot"
+                                  ]
+                                },
+                                "file_id": {
+                                  "type": "string"
+                                },
+                                "image_url": {
+                                  "type": "string"
+                                }
+                              }
+                            }
+                          ]
+                        },
+                        "action": {
+                          "type": "object"
+                        },
+                        "error": {
+                          "type": "string"
+                        },
+                        "queries": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "results": {
+                          "type": "array",
+                          "items": {
+                            "type": "object"
+                          }
+                        },
+                        "summary": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "required": [
+                              "type",
+                              "text"
+                            ],
+                            "properties": {
+                              "type": {
+                                "type": "string",
+                                "enum": [
+                                  "summary_text"
+                                ]
+                              },
+                              "text": {
+                                "type": "string"
+                              }
+                            }
+                          }
+                        },
+                        "encrypted_content": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "content_index": {
+                      "type": "integer"
+                    },
+                    "item_id": {
+                      "type": "string"
+                    },
+                    "part": {
+                      "type": "object",
+                      "required": [
+                        "type"
+                      ],
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "enum": [
+                            "input_text",
+                            "input_image",
+                            "input_file",
+                            "input_audio",
+                            "output_text",
+                            "refusal",
+                            "reasoning_text"
+                          ]
+                        },
+                        "file_id": {
+                          "type": "string"
+                        },
+                        "text": {
+                          "type": "string"
+                        },
+                        "signature": {
+                          "type": "string"
+                        },
+                        "image_url": {
+                          "type": "string"
+                        },
+                        "detail": {
+                          "type": "string"
+                        },
+                        "file_data": {
+                          "type": "string"
+                        },
+                        "file_url": {
+                          "type": "string"
+                        },
+                        "filename": {
+                          "type": "string"
+                        },
+                        "file_type": {
+                          "type": "string"
+                        },
+                        "input_audio": {
+                          "type": "object",
+                          "required": [
+                            "format",
+                            "data"
+                          ],
+                          "properties": {
+                            "format": {
+                              "type": "string",
+                              "enum": [
+                                "mp3",
+                                "wav"
+                              ]
+                            },
+                            "data": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "annotations": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "type": {
+                                "type": "string",
+                                "enum": [
+                                  "file_citation",
+                                  "url_citation",
+                                  "container_file_citation",
+                                  "file_path"
+                                ]
+                              },
+                              "index": {
+                                "type": "integer"
+                              },
+                              "file_id": {
+                                "type": "string"
+                              },
+                              "text": {
+                                "type": "string"
+                              },
+                              "start_index": {
+                                "type": "integer"
+                              },
+                              "end_index": {
+                                "type": "integer"
+                              },
+                              "filename": {
+                                "type": "string"
+                              },
+                              "title": {
+                                "type": "string"
+                              },
+                              "url": {
+                                "type": "string"
+                              },
+                              "container_id": {
+                                "type": "string"
+                              }
+                            }
+                          }
+                        },
+                        "logprobs": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "bytes": {
+                                "type": "array",
+                                "items": {
+                                  "type": "integer"
+                                }
+                              },
+                              "logprob": {
+                                "type": "number"
+                              },
+                              "token": {
+                                "type": "string"
+                              },
+                              "top_logprobs": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "properties": {
+                                    "bytes": {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "integer"
+                                      }
+                                    },
+                                    "logprob": {
+                                      "type": "number"
+                                    },
+                                    "token": {
+                                      "type": "string"
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        },
+                        "refusal": {
+                          "type": "string"
+                        },
+                        "cache_control": {
+                          "$ref": "#/components/schemas/CacheControl"
+                        }
+                      }
+                    },
+                    "delta": {
+                      "type": "string"
+                    },
+                    "signature": {
+                      "type": "string"
+                    },
+                    "logprobs": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "bytes": {
+                            "type": "array",
+                            "items": {
+                              "type": "integer"
+                            }
+                          },
+                          "logprob": {
+                            "type": "number"
+                          },
+                          "token": {
+                            "type": "string"
+                          },
+                          "top_logprobs": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "bytes": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "integer"
+                                  }
+                                },
+                                "logprob": {
+                                  "type": "number"
+                                },
+                                "token": {
+                                  "type": "string"
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "text": {
+                      "type": "string"
+                    },
+                    "refusal": {
+                      "type": "string"
+                    },
+                    "arguments": {
+                      "type": "string"
+                    },
+                    "partial_image_b64": {
+                      "type": "string"
+                    },
+                    "partial_image_index": {
+                      "type": "integer"
+                    },
+                    "annotation": {
+                      "type": "object",
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "enum": [
+                            "file_citation",
+                            "url_citation",
+                            "container_file_citation",
+                            "file_path"
+                          ]
+                        },
+                        "index": {
+                          "type": "integer"
+                        },
+                        "file_id": {
+                          "type": "string"
+                        },
+                        "text": {
+                          "type": "string"
+                        },
+                        "start_index": {
+                          "type": "integer"
+                        },
+                        "end_index": {
+                          "type": "integer"
+                        },
+                        "filename": {
+                          "type": "string"
+                        },
+                        "title": {
+                          "type": "string"
+                        },
+                        "url": {
+                          "type": "string"
+                        },
+                        "container_id": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "annotation_index": {
+                      "type": "integer"
+                    },
+                    "code": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "param": {
+                      "type": "string"
+                    },
+                    "extra_fields": {
+                      "$ref": "#/components/schemas/BifrostResponseExtraFields"
+                    }
+                  }
                 }
               }
             }
