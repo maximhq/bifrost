@@ -728,6 +728,7 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 
 	routingCtx := &RoutingContext{
 		VirtualKey:               virtualKey,
+		UserID:                   bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserID),
 		Provider:                 provider,
 		Model:                    model,
 		RequestType:              requestType,
