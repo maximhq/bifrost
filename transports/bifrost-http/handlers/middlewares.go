@@ -399,6 +399,12 @@ func TransportInterceptorMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 			}
 			// Get or create BifrostContext from fasthttp context
 			bifrostCtx := getBifrostContextFromFastHTTP(ctx)
+			// Transport pre-hooks run before the inference path stamps the
+			// catalog, so stamp it here too — otherwise ctx.GetModelInfo would
+			// be nil in HTTPTransportPreHook but populated in every other hook.
+			if config.ModelCatalog != nil {
+				bifrostCtx.SetValue(schemas.BifrostContextKeyModelCatalog, config.ModelCatalog)
+			}
 			// Acquire pooled request
 			req := schemas.AcquireHTTPRequest()
 			defer schemas.ReleaseHTTPRequest(req)
