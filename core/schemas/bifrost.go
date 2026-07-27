@@ -37,6 +37,57 @@ type BifrostConfig struct {
 	KeyPoolFilter      KeyPoolFilter // Optional hook to filter available keys before selection; nil = all keys eligible
 	KVStore            KVStore       // shared KV store for clustering/session stickiness; nil = disabled
 	ModelCatalog       ModelInfoProvider
+	// ListModelsCatalog lets list-models answer from the gateway's own view of
+	// each provider instead of, or in addition to, the upstream call. nil means
+	// list-models behaves as a plain provider passthrough.
+	ListModelsCatalog ListModelsCatalog
+	// ServeListModelsFromCatalog allows CachedModels to answer a request
+	// outright, skipping the provider entirely. Only enable it while something
+	// is keeping the catalog fresh; otherwise every call would be served a
+	// snapshot that never moves. RoutableModels is used regardless.
+	ServeListModelsFromCatalog bool
+}
+
+// ListModelsCatalog is the gateway's own account of what each provider serves.
+// Optional: without one, list-models is a plain provider passthrough.
+//
+// Consulted inside the provider dispatch, after pre-hooks and before the
+// upstream call, so anything it contributes still runs the full plugin
+// pipeline. That placement is load-bearing: plugins filter list-models results
+// per virtual key in their post-hook, and catalog entries are not gated, so
+// answering earlier would hand back models the caller is not entitled to see.
+type ListModelsCatalog interface {
+	// CachedModels returns the models cached for the provider across the given
+	// keys, and whether the lookup hit. Consulted only when the caller opted
+	// into serving from the catalog, since Bifrost never refreshes it.
+	//
+	// The bool is distinct from an empty slice: a provider that serves no
+	// models is a hit with zero results, while a provider that has never been
+	// fetched is a miss that must fall through upstream. keyIDs is read-only
+	// and empty means "not scoped to a key", which is how keyless providers are
+	// cached.
+	CachedModels(provider ModelProvider, keyIDs []string, unfiltered bool) ([]Model, bool)
+
+	// RoutableModels returns every model identifier the gateway would route to
+	// this provider through the given keys, which is a superset of what the
+	// provider itself lists: it also covers models that are callable but
+	// delisted, providers whose list-models is a known partial view, and
+	// identifiers introduced by key configuration such as aliases.
+	//
+	// Used to reconcile every list-models response so the advertised set and
+	// the routable set agree. Without it a caller can be refused a model the
+	// listing omitted, or be handed nothing at all for a provider whose
+	// list-models happens to be failing.
+	//
+	// keyIDs is read-only and must match the scoping of the response being
+	// reconciled. A key-scoped list-models call reconciled against the
+	// provider-wide union would advertise models only a sibling key is allowed
+	// to serve — and, since that reply is what the refresher caches under the
+	// scoped key, would then persist the broadened set over the very allow-list
+	// that excluded them. Empty keyIDs means "not scoped to a key" and yields
+	// the provider-wide union, which is how keyless providers and the
+	// list-models failure fallback read it.
+	RoutableModels(provider ModelProvider, keyIDs []string, unfiltered bool) []string
 }
 
 // ModelProvider represents the different AI model providers supported by Bifrost.
@@ -347,6 +398,7 @@ const (
 	BifrostContextKeyUserRoleID                          BifrostContextKey = "bifrost-user-role-id"
 	BifrostContextKeyVideoOutputRequested                BifrostContextKey = "bifrost-video-output-requested"
 	BifrostContextKeyValidateKeys                        BifrostContextKey = "bifrost-validate-keys"                      // bool (triggers additional key validation during provider add/update)
+	BifrostContextKeySkipListModelsCache                 BifrostContextKey = "bifrost-skip-list-models-cache"             // bool - bypass BifrostConfig.ListModelsCatalog and fetch from the provider. Set by the catalog refresher, which would otherwise read the cache it is about to replace, and by callers explicitly asking for a live pull.
 	BifrostContextKeyProviderResponseHeaders             BifrostContextKey = "bifrost-provider-response-headers"          // map[string]string (set by provider handlers for response header forwarding)
 	BifrostContextKeyMCPAddedTools                       BifrostContextKey = "bifrost-mcp-added-tools"                    // []string (set by bifrost - DO NOT SET THIS MANUALLY)) - list of tools added to the request by MCP, all the tool are in the format "clientName-toolName"
 	BifrostContextKeyLargePayloadMode                    BifrostContextKey = "bifrost-large-payload-mode"                 // bool (set by bifrost - DO NOT SET THIS MANUALLY)) indicates large payload streaming mode is active

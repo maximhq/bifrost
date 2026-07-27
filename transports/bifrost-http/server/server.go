@@ -111,6 +111,14 @@ type ServerCallbacks interface {
 	OnKeyAdded(ctx context.Context, provider schemas.ModelProvider, key schemas.Key) error
 	OnKeyUpdated(ctx context.Context, provider schemas.ModelProvider, key schemas.Key) error
 	OnKeyDeleted(ctx context.Context, provider schemas.ModelProvider, keyID string) error
+	// ResyncLiveModelsForKey is the peer-callable form of the OnKey* hooks,
+	// for a node applying a key change it did not handle itself.
+	ResyncLiveModelsForKey(ctx context.Context, provider schemas.ModelProvider, keyID string) error
+	// RefreshLiveModelsForKey and RefreshLiveModelsForAllKeys back the manual
+	// refresh buttons. A clustered build overrides these to also tell peers to
+	// refresh, and calls them again on receipt with rebroadcast suppressed, so
+	// the refresh reaches every node rather than only the one that served the
+	// request.
 	RefreshLiveModelsForKey(ctx context.Context, provider schemas.ModelProvider, keyID string) error
 	RefreshLiveModelsForAllKeys(ctx context.Context, provider schemas.ModelProvider) error
 	ReloadRoutingRule(ctx context.Context, id string) error
@@ -721,7 +729,11 @@ func (s *BifrostHTTPServer) ReloadProvider(ctx context.Context, provider schemas
 			}
 		}
 		s.Config.ModelCatalog.RetainLiveKeys(provider, keep)
-		s.RefreshLiveModelsForProvider(ctx, provider, inMemoryKeys)
+		// Discarded on purpose: RefreshLiveModelsForProvider already logged
+		// each failure, and the provider update itself succeeded. Failing it
+		// here would roll nothing back — the retained entries above are exactly
+		// the fallback a failed refetch is supposed to leave standing.
+		_ = s.RefreshLiveModelsForProvider(ctx, provider, inMemoryKeys)
 	}
 	return updatedProvider, nil
 }
@@ -752,10 +764,22 @@ func (s *BifrostHTTPServer) RemoveProvider(ctx context.Context, provider schemas
 	return nil
 }
 
-// OnKeyAdded refreshes the keyconfig snapshot and fetches list-models for the
-// new key only — 2 calls instead of ReloadProvider's 2×N. Called by the key
-// handler after a successful AddProviderKey write.
-func (s *BifrostHTTPServer) OnKeyAdded(ctx context.Context, provider schemas.ModelProvider, key schemas.Key) error {
+// ResyncLiveModelsForKey brings the keyconfig snapshot and the live model
+// entries for one key back in line with the current stored configuration.
+//
+// This is the peer-callable form of the OnKey* hooks. Those take the key object
+// from the request that changed it; a node learning about the change from a
+// cluster peer has only (provider, keyID) and reads the rest from its own
+// config. Enterprise broadcasts key edits and calls this on receipt.
+//
+// Without it, a node that did not handle the edit keeps its previous entries
+// until its next background refresh. That was tolerable while every /v1/models
+// request went upstream, but once the catalog answers those requests directly,
+// the stale entry becomes the reply that consumers see.
+//
+// Handles add, update and delete uniformly: entries are dropped first, then
+// re-fetched only if the key still exists and is enabled.
+func (s *BifrostHTTPServer) ResyncLiveModelsForKey(ctx context.Context, provider schemas.ModelProvider, keyID string) error {
 	if s.Config == nil || s.Config.ModelCatalog == nil {
 		return fmt.Errorf("model catalog not found")
 	}
@@ -764,45 +788,64 @@ func (s *BifrostHTTPServer) OnKeyAdded(ctx context.Context, provider schemas.Mod
 		return fmt.Errorf("failed to read provider keys for %s: %w", provider, err)
 	}
 	s.Config.ModelCatalog.SetKeyConfigForProvider(provider, keys)
-	// Keyless providers: empty keyID sentinel.
-	keyID := key.ID
-	if isKeylessProvider(provider, s.Config) {
-		keyID = ""
+
+	keyless := isKeylessProvider(provider, s.Config)
+	// Keyless providers cache under the empty-string sentinel regardless of
+	// what the caller named.
+	effectiveKeyID := keyID
+	if keyless {
+		effectiveKeyID = ""
 	}
-	// Skip the fetch for a disabled key — core rejects list-models calls
-	// scoped to a disabled key's ID, so it would just fail and fall back
-	// onto the (usually empty, for custom providers) static datasheet.
-	if !keyEnabled(key) {
+
+	// Dropped before the re-fetch, not after: the key's gate (allowed models,
+	// blacklist, aliases) may have changed even when its credential did not, so
+	// the previously cached entry can be wrong in ways a refetch would not
+	// overwrite if the refetch fails.
+	s.Config.ModelCatalog.InvalidateLive(provider, effectiveKeyID)
+
+	// The fetch's outcome is logged but not returned. This is the peer-receipt
+	// path: the resync's own job — realigning the keyconfig snapshot and
+	// dropping the stale entries — is already done, and failing the RPC because
+	// a peer's upstream was briefly unreachable would report a resync that did
+	// not happen. Operators who want a refresh they can see fail have the manual
+	// endpoint, which does return it.
+	if keyless {
+		if err := s.FetchAndStoreLiveForKey(ctx, provider, ""); err != nil {
+			logger.Warn("resync for keyless provider %s could not refresh live models: %v", provider, err)
+		}
 		return nil
 	}
-	s.FetchAndStoreLiveForKey(ctx, provider, keyID)
+
+	for _, k := range keys {
+		if k.ID != keyID {
+			continue
+		}
+		// A disabled key is rejected by core for key-scoped list-models, so
+		// fetching would only fail; its entries are already gone.
+		if keyEnabled(k) {
+			if err := s.FetchAndStoreLiveForKey(ctx, provider, keyID); err != nil {
+				logger.Warn("resync for provider %s key %s could not refresh live models: %v", provider, keyID, err)
+			}
+		}
+		return nil
+	}
+	// Key is gone (deleted, or deleted between the broadcast and this read).
+	// Invalidation above is the whole job.
 	return nil
+}
+
+// OnKeyAdded refreshes the keyconfig snapshot and fetches list-models for the
+// new key only — 2 calls instead of ReloadProvider's 2×N. Called by the key
+// handler after a successful AddProviderKey write.
+func (s *BifrostHTTPServer) OnKeyAdded(ctx context.Context, provider schemas.ModelProvider, key schemas.Key) error {
+	return s.ResyncLiveModelsForKey(ctx, provider, key.ID)
 }
 
 // OnKeyUpdated invalidates the affected key's live entries (the gate may have
 // changed even when Value didn't), refreshes the keyconfig, then refetches
 // for just that key. 2 calls regardless of N keys on the provider.
 func (s *BifrostHTTPServer) OnKeyUpdated(ctx context.Context, provider schemas.ModelProvider, key schemas.Key) error {
-	if s.Config == nil || s.Config.ModelCatalog == nil {
-		return fmt.Errorf("model catalog not found")
-	}
-	keys, err := s.Config.GetProviderKeysRaw(provider)
-	if err != nil {
-		return fmt.Errorf("failed to read provider keys for %s: %w", provider, err)
-	}
-	s.Config.ModelCatalog.SetKeyConfigForProvider(provider, keys)
-	keyID := key.ID
-	if isKeylessProvider(provider, s.Config) {
-		keyID = ""
-	}
-	s.Config.ModelCatalog.InvalidateLive(provider, keyID)
-	// Skip the fetch for a disabled key — the invalidate above still clears
-	// its stale cached entries, but re-fetching would just fail against core.
-	if !keyEnabled(key) {
-		return nil
-	}
-	s.FetchAndStoreLiveForKey(ctx, provider, keyID)
-	return nil
+	return s.ResyncLiveModelsForKey(ctx, provider, key.ID)
 }
 
 // OnKeyDeleted invalidates the deleted key's live entries and refreshes the
@@ -1118,7 +1161,9 @@ func (s *BifrostHTTPServer) RefreshAllLiveModels(ctx context.Context) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			s.RefreshLiveModelsForProvider(ctx, p, k)
+			// Discarded on purpose: nobody is waiting on this pass, every
+			// failure is already logged per key, and the next cycle retries.
+			_ = s.RefreshLiveModelsForProvider(ctx, p, k)
 		}(provider, keys)
 	}
 	wg.Wait()
@@ -1190,22 +1235,91 @@ func (s *BifrostHTTPServer) startLiveModelRefresher(ctx context.Context, interva
 	return cancel
 }
 
+// liveModelsCache adapts the model catalog to the core list-models catalog
+// interface, so core can consult the catalog without importing the framework.
+type liveModelsCache struct {
+	catalog *modelcatalog.ModelCatalog
+}
+
+func (c liveModelsCache) CachedModels(provider schemas.ModelProvider, keyIDs []string, unfiltered bool) ([]schemas.Model, bool) {
+	return c.catalog.LookupLiveModels(provider, keyIDs, unfiltered)
+}
+
+func (c liveModelsCache) RoutableModels(provider schemas.ModelProvider, keyIDs []string, unfiltered bool) []string {
+	return c.catalog.RoutableModelsForProvider(provider, keyIDs, unfiltered)
+}
+
+// syncListModelsCache installs the model catalog as core's list-models catalog,
+// and decides whether it may answer requests outright.
+//
+// The catalog is installed regardless of the interval, because two of its three
+// uses are safe whatever the refresh cadence: reconciling a response against
+// the routable set, and standing in for a provider whose list-models failed.
+// Both make /v1/models agree with what routing accepts, and both read the same
+// composition routing itself reads.
+//
+// Serving a request outright is the part that is gated. With the refresher
+// disabled the catalog's only writers are boot and key edits, so answering from
+// it would pin every response to the boot-time snapshot. Reconciliation cannot
+// do that: it only ever adds models the gateway is currently willing to route.
+func (s *BifrostHTTPServer) syncListModelsCache(interval time.Duration) {
+	if s.Client == nil {
+		return
+	}
+	if s.Config == nil || s.Config.ModelCatalog == nil {
+		s.Client.SetListModelsCatalog(nil, false)
+		logger.Info("list-models catalog unavailable: /v1/models will pass through to providers")
+		return
+	}
+
+	serveFromCache := interval > 0
+	s.Client.SetListModelsCatalog(liveModelsCache{catalog: s.Config.ModelCatalog}, serveFromCache)
+	if serveFromCache {
+		logger.Info("list-models served from the model catalog, refreshed every %v", interval)
+		return
+	}
+	logger.Info("list-models will query providers directly (background refresh disabled); responses are still reconciled against the routable model set")
+}
+
 // RestartLiveModelRefresher stops any running refresher and starts a new one
-// at the currently configured interval. Called at boot and again whenever the
-// framework config changes, so a disabled-to-enabled edit (or vice versa)
-// takes effect without a restart. Exported so servers that replace the boot
-// path can start the refresher with its stop handle registered for the shared
-// cleanup and config-change restarts.
+// at the currently configured interval, then brings the list-models cache in
+// line with it. Called at boot and again whenever the framework config
+// changes, so a disabled-to-enabled edit (or vice versa) takes effect without
+// a restart. Exported so servers that replace the boot path can start the
+// refresher with its stop handle registered for the shared cleanup and
+// config-change restarts.
+//
+// The cache install is inside the lock, not after it. serveFromCache is derived
+// from the very interval this function applies, so the two are one decision and
+// must land as one: with the install outside, two callers racing here (a config
+// update against a shutdown, or two config updates against each other) can each
+// win a different half. The damaging outcome is an interval of 0 paired with
+// serveFromCache=true — no refresher running, yet every /v1/models answered from
+// a snapshot that never moves, which is exactly what the gate exists to prevent
+// (see schemas.BifrostConfig.ServeListModelsFromCatalog).
+//
+// Costs nothing: SetListModelsCatalog is an atomic pointer store, and nothing
+// under syncListModelsCache reaches back for this mutex.
 func (s *BifrostHTTPServer) RestartLiveModelRefresher(ctx context.Context) {
+	// Read before taking the lock, preserving the existing lock ordering
+	// against Config.Mu.
+	interval := s.LiveModelsSyncInterval()
 	s.liveModelRefresherMu.Lock()
 	defer s.liveModelRefresherMu.Unlock()
 	if s.liveModelRefresherStop != nil {
 		s.liveModelRefresherStop()
 	}
-	s.liveModelRefresherStop = s.startLiveModelRefresher(ctx, s.LiveModelsSyncInterval())
+	s.liveModelRefresherStop = s.startLiveModelRefresher(ctx, interval)
+	s.syncListModelsCache(interval)
 }
 
-// stopLiveModelRefresher halts the background refresher if one is running.
+// stopLiveModelRefresher halts the background refresher if one is running and
+// withdraws the list-models cache, since nothing is keeping it current once the
+// refresher is gone.
+//
+// Withdrawal is inside the lock for the reason given on
+// RestartLiveModelRefresher: a restart completing its install after this one
+// would leave the cache serving with no refresher behind it.
 func (s *BifrostHTTPServer) stopLiveModelRefresher() {
 	s.liveModelRefresherMu.Lock()
 	defer s.liveModelRefresherMu.Unlock()
@@ -1213,6 +1327,7 @@ func (s *BifrostHTTPServer) stopLiveModelRefresher() {
 		s.liveModelRefresherStop()
 		s.liveModelRefresherStop = nil
 	}
+	s.syncListModelsCache(0)
 }
 
 type providerRefreshState struct {
@@ -1282,41 +1397,74 @@ func (s *BifrostHTTPServer) beginAllKeysRefresh(provider schemas.ModelProvider) 
 	}, true
 }
 
-// RefreshLiveModelsForKey re-fetches list-models for one key on demand. It is
-// the ModelsManager entrypoint behind the per-key refresh button.
-func (s *BifrostHTTPServer) RefreshLiveModelsForKey(ctx context.Context, provider schemas.ModelProvider, keyID string) error {
+// applyLiveModelsRefresh re-fetches list-models for the provider on this node.
+// An empty keyID covers every enabled key.
+//
+// The two readings of an empty keyID converge rather than conflict: for a
+// keyless provider the all-keys path ends up in RefreshLiveModelsForProvider's
+// keyless branch, which fetches under the same "" sentinel a key-scoped call
+// would have used.
+//
+// Returns handlers.ErrRefreshInProgress when a conflicting refresh is already
+// running here. The slot claimed matches the scope of the pass: an all-keys pass
+// is (enabled keys x 2) upstream calls and takes the provider exclusively, while
+// two different keys carry no such cost against each other and refresh
+// concurrently. Only the same key, or a key against an all-keys pass, collapses.
+func (s *BifrostHTTPServer) applyLiveModelsRefresh(ctx context.Context, provider schemas.ModelProvider, keyID string) error {
 	if s.Config == nil || s.Config.ModelCatalog == nil || s.Client == nil {
 		return fmt.Errorf("model catalog is not initialized")
 	}
-	release, ok := s.beginKeyRefresh(provider, keyID)
+
+	// Read the keys before claiming the slot: an unknown provider should report
+	// that rather than briefly holding a refresh slot for something that does
+	// not exist.
+	var keys []schemas.Key
+	if keyID == "" {
+		var err error
+		if keys, err = s.Config.GetProviderKeysRaw(provider); err != nil {
+			return err
+		}
+	}
+
+	var (
+		release func()
+		ok      bool
+	)
+	if keyID == "" {
+		release, ok = s.beginAllKeysRefresh(provider)
+	} else {
+		release, ok = s.beginKeyRefresh(provider, keyID)
+	}
 	if !ok {
 		return handlers.ErrRefreshInProgress
 	}
 	defer release()
 
-	s.FetchAndStoreLiveForKey(ctx, provider, keyID)
-	return nil
+	// Failures are returned, not logged and swallowed: this is the manual
+	// refresh path, and reporting success while the cache is untouched tells
+	// the operator their bad credential or unreachable provider is fine.
+	if keyID == "" {
+		return s.RefreshLiveModelsForProvider(ctx, provider, keys)
+	}
+	return s.FetchAndStoreLiveForKey(ctx, provider, keyID)
+}
+
+// RefreshLiveModelsForKey re-fetches list-models for one key on demand. It is
+// the ModelsManager entrypoint behind the per-key refresh button.
+//
+// A clustered build overrides this to broadcast the refresh before delegating
+// here, and invokes it again on receipt with rebroadcast suppressed, so the
+// refresh lands on every node instead of only the one that served the request.
+func (s *BifrostHTTPServer) RefreshLiveModelsForKey(ctx context.Context, provider schemas.ModelProvider, keyID string) error {
+	return s.applyLiveModelsRefresh(ctx, provider, keyID)
 }
 
 // RefreshLiveModelsForAllKeys re-fetches list-models across every enabled key
 // of the provider on demand. It is the ModelsManager entrypoint behind the
-// provider-level refresh button.
+// provider-level refresh button, and is overridden for clustering on the same
+// terms as RefreshLiveModelsForKey.
 func (s *BifrostHTTPServer) RefreshLiveModelsForAllKeys(ctx context.Context, provider schemas.ModelProvider) error {
-	if s.Config == nil || s.Config.ModelCatalog == nil || s.Client == nil {
-		return fmt.Errorf("model catalog is not initialized")
-	}
-	keys, err := s.Config.GetProviderKeysRaw(provider)
-	if err != nil {
-		return err
-	}
-	release, ok := s.beginAllKeysRefresh(provider)
-	if !ok {
-		return handlers.ErrRefreshInProgress
-	}
-	defer release()
-
-	s.RefreshLiveModelsForProvider(ctx, provider, keys)
-	return nil
+	return s.applyLiveModelsRefresh(ctx, provider, "")
 }
 
 // RefreshLiveModelsForProvider runs filtered + unfiltered list-models for the
@@ -1325,21 +1473,28 @@ func (s *BifrostHTTPServer) RefreshLiveModelsForAllKeys(ctx context.Context, pro
 //
 // Callers are responsible for invalidating stale entries first when keys
 // have been removed from the provider's set.
-func (s *BifrostHTTPServer) RefreshLiveModelsForProvider(ctx context.Context, provider schemas.ModelProvider, keys []schemas.Key) {
+//
+// Returns the joined per-key failures, each labelled with its key, so the
+// provider-level refresh button can report which keys did not refresh instead
+// of claiming the whole provider did. One failing key does not stop the others:
+// the pass is a fan-out and a partial refresh is still worth keeping.
+func (s *BifrostHTTPServer) RefreshLiveModelsForProvider(ctx context.Context, provider schemas.ModelProvider, keys []schemas.Key) error {
 	if len(keys) == 0 {
 		// Empty key slice + non-keyless provider would write under the "" sentinel
 		// reserved for keyless providers — colliding with the keyless namespace and
 		// triggering an unauthenticated fetch for a provider that requires a key.
 		if !isKeylessProvider(provider, s.Config) {
 			logger.Warn("model discovery skipped for provider %s: no keys configured", provider)
-			return
+			return fmt.Errorf("no keys configured for provider %s", provider)
 		}
-		s.FetchAndStoreLiveForKey(ctx, provider, "")
-		return
+		return s.FetchAndStoreLiveForKey(ctx, provider, "")
 	}
 	var wg sync.WaitGroup
+	// Indexed by position so each goroutine writes its own slot; wg.Wait
+	// happens-before the read below.
+	errs := make([]error, len(keys))
 	enabledCount := 0
-	for _, key := range keys {
+	for i, key := range keys {
 		// Skip disabled keys — core rejects list-models calls scoped to a
 		// disabled key's ID ("no key found with id..."), so fetching for one
 		// is guaranteed to fail and only adds "falling back onto the static
@@ -1349,16 +1504,19 @@ func (s *BifrostHTTPServer) RefreshLiveModelsForProvider(ctx context.Context, pr
 		}
 		enabledCount++
 		wg.Add(1)
-		go func(keyID string) {
+		go func(idx int, keyID string) {
 			defer wg.Done()
-			s.FetchAndStoreLiveForKey(ctx, provider, keyID)
-		}(key.ID)
+			if err := s.FetchAndStoreLiveForKey(ctx, provider, keyID); err != nil {
+				errs[idx] = fmt.Errorf("key %s: %w", keyID, err)
+			}
+		}(i, key.ID)
 	}
 	if enabledCount == 0 {
 		logger.Warn("model discovery skipped for provider %s: no enabled keys configured", provider)
-		return
+		return fmt.Errorf("no enabled keys configured for provider %s", provider)
 	}
 	wg.Wait()
+	return errors.Join(errs...)
 }
 
 // FetchAndStoreLiveForKey issues the filtered and unfiltered list-models
@@ -1370,17 +1528,34 @@ func (s *BifrostHTTPServer) RefreshLiveModelsForProvider(ctx context.Context, pr
 // the check (today: OpenRouter, whose /v1/models is unauthenticated) so the
 // routing graph is the same at boot, after a key add, and after a reload —
 // stale-but-routable behavior would diverge otherwise.
-func (s *BifrostHTTPServer) FetchAndStoreLiveForKey(ctx context.Context, provider schemas.ModelProvider, keyID string) {
+//
+// Returns the joined failures of the two calls, so the manual refresh endpoint
+// can tell the operator their model list did not actually move. Both halves
+// matter and neither substitutes for the other: the filtered entry is what
+// /v1/models serves, the unfiltered one is what the key's model picker offers.
+// Background callers (bootstrap, the periodic refresher, provider reload)
+// deliberately ignore the result — a transient upstream failure there leaves
+// the previous entries standing, which is the whole point of not wiping them
+// first.
+//
+// A write dropped by the staleness guard is not an error: the key or provider
+// changed under the fetch, so the result describes a configuration that no
+// longer exists and whoever made that change has already re-fetched or pruned.
+func (s *BifrostHTTPServer) FetchAndStoreLiveForKey(ctx context.Context, provider schemas.ModelProvider, keyID string) error {
 	if s.Config == nil || s.Config.ModelCatalog == nil {
-		return
+		return fmt.Errorf("model catalog is not initialized")
 	}
 	// Skip the fetch entirely when the provider has disabled list_models via
 	// allowed_requests — every per-(provider,keyID) call would just bounce with
 	// "operation not allowed", wasting two goroutines and one bfCtx per attempt.
+	//
+	// Reported as an error rather than a silent success: a refresh that can
+	// never run is exactly what the operator needs to be told about, and the
+	// background callers that legitimately hit this path discard the result.
 	if pc, err := s.Config.GetProviderConfigRaw(provider); err == nil && pc != nil &&
 		pc.CustomProviderConfig != nil &&
 		!pc.CustomProviderConfig.IsOperationAllowed(schemas.ListModelsRequest) {
-		return
+		return fmt.Errorf("%w: %s", handlers.ErrListModelsDisabled, provider)
 	}
 	// Captured before the upstream calls go out, and checked again by the
 	// catalog when each response commits. list-models can take seconds; a key
@@ -1397,6 +1572,10 @@ func (s *BifrostHTTPServer) FetchAndStoreLiveForKey(ctx context.Context, provide
 		c := schemas.NewBifrostContext(ctx, time.Now().Add(15*time.Second))
 		c.SetValue(schemas.BifrostContextKeySkipPluginPipeline, true)
 		c.SetValue(schemas.BifrostContextKeyValidateKeys, true)
+		// This call is what fills the cache, so it must never read from it.
+		// Without this the refresher would be served its own previous result,
+		// re-store it unchanged, and freeze the catalog permanently.
+		c.SetValue(schemas.BifrostContextKeySkipListModelsCache, true)
 		return c
 	}
 
@@ -1405,6 +1584,7 @@ func (s *BifrostHTTPServer) FetchAndStoreLiveForKey(ctx context.Context, provide
 		keyIDPtr = &keyID
 	}
 
+	var filteredErr, unfilteredErr error
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
@@ -1417,12 +1597,17 @@ func (s *BifrostHTTPServer) FetchAndStoreLiveForKey(ctx context.Context, provide
 		})
 		if bfErr != nil {
 			logger.Warn("filtered list-models failed for provider %s key %s: %v: falling back onto the static datasheet", provider, keyID, bifrost.GetErrorMessage(bfErr))
+			filteredErr = fmt.Errorf("filtered list-models failed: %s", bifrost.GetErrorMessage(bfErr))
 			if len(bfErr.ExtraFields.KeyStatuses) > 0 && s.Config.ConfigStore != nil {
 				s.updateKeyStatus(ctx, bfErr.ExtraFields.KeyStatuses)
 			}
 			return
 		}
 		if resp == nil {
+			// No error and no response: nothing was fetched, so nothing was
+			// stored. Reported rather than swallowed for the same reason a
+			// failure is — the cache is unchanged either way.
+			filteredErr = errors.New("filtered list-models returned no response")
 			return
 		}
 		if !s.Config.ModelCatalog.UpsertLiveFromResponseIfCurrent(provider, keyID, false, resp, gen) {
@@ -1449,9 +1634,11 @@ func (s *BifrostHTTPServer) FetchAndStoreLiveForKey(ctx context.Context, provide
 		})
 		if bfErr != nil {
 			logger.Warn("unfiltered list-models failed for provider %s key %s: %v: falling back onto the static datasheet", provider, keyID, bifrost.GetErrorMessage(bfErr))
+			unfilteredErr = fmt.Errorf("unfiltered list-models failed: %s", bifrost.GetErrorMessage(bfErr))
 			return
 		}
 		if resp == nil {
+			unfilteredErr = errors.New("unfiltered list-models returned no response")
 			return
 		}
 		if !s.Config.ModelCatalog.UpsertLiveFromResponseIfCurrent(provider, keyID, true, resp, gen) {
@@ -1459,6 +1646,9 @@ func (s *BifrostHTTPServer) FetchAndStoreLiveForKey(ctx context.Context, provide
 		}
 	}()
 	wg.Wait()
+	// wg.Wait happens-before this read, so the two goroutines' writes are
+	// visible here without further synchronization.
+	return errors.Join(filteredErr, unfilteredErr)
 }
 
 // ForceReloadPricing triggers an immediate pricing sync and resets the sync
