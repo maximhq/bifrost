@@ -2245,6 +2245,66 @@ func TestToOpenAIResponsesRequest_DefaultsImageDetail(t *testing.T) {
 	}
 }
 
+// TestToOpenAIResponsesRequest_DefaultsStrictOnFunctionTools verifies function tools
+// leave with an explicit strict rather than null. OpenAI resolves a null strict to
+// false, but strict-pydantic upstreams (sglang's ResponseTool.strict is a non-Optional
+// bool) reject the null with a bool_type validation error. Explicit caller values are
+// preserved and the caller's tools are never mutated.
+func TestToOpenAIResponsesRequest_DefaultsStrictOnFunctionTools(t *testing.T) {
+	bifrostReq := &schemas.BifrostResponsesRequest{
+		Model: "glm-5.2",
+		Input: []schemas.ResponsesMessage{{
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+		}},
+		Params: &schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{
+				{
+					Type: schemas.ResponsesToolTypeFunction,
+					Name: schemas.Ptr("Bash"),
+					ResponsesToolFunction: &schemas.ResponsesToolFunction{
+						Parameters: &schemas.ToolFunctionParameters{Type: "object"},
+					},
+				},
+				{
+					Type: schemas.ResponsesToolTypeFunction,
+					Name: schemas.Ptr("Grep"),
+					ResponsesToolFunction: &schemas.ResponsesToolFunction{
+						Parameters: &schemas.ToolFunctionParameters{Type: "object"},
+						Strict:     schemas.Ptr(true),
+					},
+				},
+			},
+		},
+	}
+
+	req := ToOpenAIResponsesRequest(nil, bifrostReq)
+	if req == nil {
+		t.Fatal("converted request is nil")
+	}
+
+	if req.Tools[0].ResponsesToolFunction.Strict == nil || *req.Tools[0].ResponsesToolFunction.Strict {
+		t.Errorf("nil strict not defaulted to false: %v", req.Tools[0].ResponsesToolFunction.Strict)
+	}
+	if req.Tools[1].ResponsesToolFunction.Strict == nil || !*req.Tools[1].ResponsesToolFunction.Strict {
+		t.Errorf("explicit strict not preserved: %v", req.Tools[1].ResponsesToolFunction.Strict)
+	}
+
+	// Wire-level: no tool may carry a null strict.
+	data, err := sonic.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal converted request: %v", err)
+	}
+	if strings.Contains(string(data), `"strict":null`) {
+		t.Errorf("wire JSON carries a null strict: %s", data)
+	}
+
+	// Caller's tools must remain untouched.
+	if bifrostReq.Params.Tools[0].ResponsesToolFunction.Strict != nil {
+		t.Error("caller's tools were mutated")
+	}
+}
+
 // TestToOpenAIResponsesRequest_FallbackBlockDropped verifies that Anthropic's
 // server-side fallback boundary marker never reaches OpenAI. Unlike a compaction
 // block (which is promoted to text), it carries no user content, so it is dropped.
