@@ -417,7 +417,13 @@ teams-by-id:
   put:
     operationId: updateTeam
     summary: Update team
-    description: Updates a team. Note that renaming teams is not allowed.
+    description: >-
+      Updates a team. Note that renaming teams is not allowed.
+
+      Accepts customer_id / customer_ids to attach customers to the team via the
+      team <-> customer many-to-many association, the same association exposed by
+      POST /api/teams/{id}/customers. Attachment is additive and does not detach
+      existing customers.
     tags:
       - Teams
     parameters:
@@ -441,7 +447,7 @@ teams-by-id:
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/users.yaml#/CreateTeamResponse'
+              $ref: '../../schemas/management/users.yaml#/UpdateTeamResponse'
       '400':
         description: Bad request (e.g. renaming not allowed)
         content:
@@ -449,7 +455,7 @@ teams-by-id:
             schema:
               $ref: '../../schemas/management/common.yaml#/ErrorResponse'
       '404':
-        description: Team not found
+        description: Team or customer not found
         content:
           application/json:
             schema:
