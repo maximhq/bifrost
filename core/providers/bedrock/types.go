@@ -3,6 +3,8 @@ package bedrock
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"strings"
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -230,6 +232,155 @@ type BedrockContentBlock struct {
 
 	// Citations from nova_grounding — co-located with a text block in the same content block
 	CitationsContent *BedrockCitationsContent `json:"citationsContent,omitempty"`
+}
+
+// UnmarshalJSON accepts both Bedrock Converse content blocks and Anthropic-native
+// Messages API content blocks used by InvokeModel requests for Claude models.
+func (b *BedrockContentBlock) UnmarshalJSON(data []byte) error {
+	type converseBlock BedrockContentBlock
+	var raw struct {
+		Type      string          `json:"type"`
+		Source    json.RawMessage `json:"source"`
+		ID        string          `json:"id"`
+		Name      string          `json:"name"`
+		Input     json.RawMessage `json:"input"`
+		ToolUseID string          `json:"tool_use_id"`
+		Content   json.RawMessage `json:"content"`
+		IsError   bool            `json:"is_error"`
+		Thinking  *string         `json:"thinking"`
+		Signature *string         `json:"signature"`
+	}
+	if err := sonic.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	if raw.Type == "" {
+		var block converseBlock
+		if err := sonic.Unmarshal(data, &block); err != nil {
+			return err
+		}
+		*b = BedrockContentBlock(block)
+		if !b.hasContent() {
+			return fmt.Errorf("bedrock content block has no recognized fields")
+		}
+		return nil
+	}
+
+	var block BedrockContentBlock
+	switch raw.Type {
+	case "text":
+		var value struct {
+			Text *string `json:"text"`
+		}
+		if err := sonic.Unmarshal(data, &value); err != nil {
+			return err
+		}
+		if value.Text == nil {
+			return fmt.Errorf("anthropic text content block is missing text")
+		}
+		block.Text = value.Text
+	case "image":
+		var source struct {
+			Type      string  `json:"type"`
+			MediaType string  `json:"media_type"`
+			Data      *string `json:"data"`
+		}
+		if err := sonic.Unmarshal(raw.Source, &source); err != nil {
+			return fmt.Errorf("invalid anthropic image source: %w", err)
+		}
+		if source.Type != "base64" || source.Data == nil {
+			return fmt.Errorf("anthropic image content block requires a base64 source")
+		}
+		format := strings.TrimPrefix(source.MediaType, "image/")
+		if format == "jpg" {
+			format = "jpeg"
+		}
+		switch format {
+		case "png", "jpeg", "gif", "webp":
+		default:
+			return fmt.Errorf("unsupported anthropic image media type %q", source.MediaType)
+		}
+		block.Image = &BedrockImageSource{
+			Format: format,
+			Source: BedrockImageSourceData{Bytes: source.Data},
+		}
+	case "tool_use":
+		if raw.ID == "" || raw.Name == "" {
+			return fmt.Errorf("anthropic tool_use content block requires id and name")
+		}
+		if len(raw.Input) == 0 {
+			raw.Input = json.RawMessage(`{}`)
+		}
+		block.ToolUse = &BedrockToolUse{
+			ToolUseID: raw.ID,
+			Name:      raw.Name,
+			Input:     raw.Input,
+		}
+	case "tool_result":
+		if raw.ToolUseID == "" {
+			return fmt.Errorf("anthropic tool_result content block requires tool_use_id")
+		}
+		content, err := unmarshalAnthropicToolResultContent(raw.Content)
+		if err != nil {
+			return err
+		}
+		status := "success"
+		if raw.IsError {
+			status = "error"
+		}
+		block.ToolResult = &BedrockToolResult{
+			ToolUseID: raw.ToolUseID,
+			Content:   content,
+			Status:    &status,
+		}
+	case "thinking":
+		if raw.Thinking == nil {
+			return fmt.Errorf("anthropic thinking content block is missing thinking")
+		}
+		block.ReasoningContent = &BedrockReasoningContent{
+			ReasoningText: &BedrockReasoningContentText{
+				Text:      raw.Thinking,
+				Signature: raw.Signature,
+			},
+		}
+	default:
+		return fmt.Errorf("unsupported anthropic content block type %q", raw.Type)
+	}
+
+	*b = block
+	return nil
+}
+
+func (b *BedrockContentBlock) hasContent() bool {
+	return b.Text != nil ||
+		b.Image != nil ||
+		b.Video != nil ||
+		b.Document != nil ||
+		b.ToolUse != nil ||
+		b.ToolResult != nil ||
+		b.GuardContent != nil ||
+		b.ReasoningContent != nil ||
+		b.JSON != nil ||
+		b.SearchResult != nil ||
+		b.CachePoint != nil ||
+		b.CitationsContent != nil
+}
+
+func unmarshalAnthropicToolResultContent(data json.RawMessage) ([]BedrockContentBlock, error) {
+	if len(data) == 0 || string(data) == "null" {
+		return nil, fmt.Errorf("anthropic tool_result content block is missing content")
+	}
+
+	var text string
+	if err := sonic.Unmarshal(data, &text); err == nil {
+		return []BedrockContentBlock{{Text: &text}}, nil
+	}
+
+	var blocks []BedrockContentBlock
+	if err := sonic.Unmarshal(data, &blocks); err != nil {
+		return nil, fmt.Errorf("invalid anthropic tool_result content: %w", err)
+	}
+	return blocks, nil
 }
 
 type BedrockCachePointType string
@@ -524,7 +675,7 @@ type BedrockGuardrailTrace struct {
 
 // BedrockGuardrailAssessment represents a guardrail assessment
 type BedrockGuardrailAssessment struct {
-	AppliedGuardrailDetails   *BedrockGuardrailAppliedDetails           `json:"appliedGuardrailDetails,omitempty"`
+	AppliedGuardrailDetails   *BedrockGuardrailAppliedDetails            `json:"appliedGuardrailDetails,omitempty"`
 	AutomatedReasoningPolicy  *BedrockGuardrailAutomatedReasoningPolicy  `json:"automatedReasoningPolicy,omitempty"`
 	ContentPolicy             *BedrockGuardrailContentPolicy             `json:"contentPolicy,omitempty"`
 	ContextualGroundingPolicy *BedrockGuardrailContextualGroundingPolicy `json:"contextualGroundingPolicy,omitempty"`

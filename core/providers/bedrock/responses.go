@@ -4078,6 +4078,31 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 			// Track this message so standalone citationsContent blocks can be attached to it.
 			lastTextOutputIdx = len(outputMessages) - 1
 
+		} else if block.Image != nil && block.Image.Source.Bytes != nil {
+			role := convertBedrockRoleToBifrostRole(msg.Role)
+			mediaType := "image/" + block.Image.Format
+			if block.Image.Format == "jpg" {
+				mediaType = "image/jpeg"
+			}
+			imageURL := fmt.Sprintf("data:%s;base64,%s", mediaType, *block.Image.Source.Bytes)
+			imageBlock := schemas.ResponsesMessageContentBlock{
+				Type: schemas.ResponsesInputMessageContentBlockTypeImage,
+				ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{
+					ImageURL: &imageURL,
+				},
+			}
+			bifrostMsg := schemas.ResponsesMessage{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+				Role: &role,
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{imageBlock},
+				},
+			}
+			if isOutputMessage {
+				bifrostMsg.ID = schemas.Ptr("msg_" + fmt.Sprintf("%d", time.Now().UnixNano()))
+			}
+			outputMessages = append(outputMessages, bifrostMsg)
+
 		} else if block.CitationsContent != nil {
 			// Standalone citationsContent block — attach citations as url_citation annotations
 			// to the most recently created text message (interleaved in the Bedrock format).
