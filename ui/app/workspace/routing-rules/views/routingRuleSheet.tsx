@@ -15,6 +15,7 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { getProviderLabel } from "@/lib/constants/logs";
+import { getUserPicker } from "@/lib/registries/userPicker";
 import { getErrorMessage } from "@/lib/store";
 import { useGetCustomersQuery, useGetTeamsQuery, useGetVirtualKeysQuery } from "@/lib/store/apis/governanceApi";
 import { useGetAllKeysQuery, useGetProvidersQuery } from "@/lib/store/apis/providersApi";
@@ -35,6 +36,8 @@ import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { RuleGroupType } from "react-querybuilder";
 import { toast } from "sonner";
+// Side-effect import: registers the enterprise user picker (no-op in OSS builds).
+import "@enterprise/lib/registrations/userPicker";
 
 interface RoutingRuleDialogProps {
 	open: boolean;
@@ -117,6 +120,10 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 	const chainRule = watch("chain_rule");
 	const scope = watch("scope");
 	const scopeId = watch("scope_id");
+
+	// Registered by the downstream build at module load; undefined in builds
+	// without a user directory, which hides the "User" scope option.
+	const UserPicker = getUserPicker();
 	const fallbacks = watch("fallbacks");
 
 	// Get available providers from configured providers, plus any provider already
@@ -212,7 +219,9 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 
 		// Validate scope_id is required when scope is not global
 		if (data.scope !== "global" && !data.scope_id?.trim()) {
-			toast.error(`${data.scope === "team" ? "Team" : data.scope === "customer" ? "Customer" : "Virtual Key"} is required`);
+			toast.error(
+				`${data.scope === "team" ? "Team" : data.scope === "customer" ? "Customer" : data.scope === "user" ? "User" : "Virtual Key"} is required`,
+			);
 			return;
 		}
 
@@ -278,9 +287,9 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 		const submitPromise =
 			isEditing && editingRule
 				? updateRoutingRule({
-						id: editingRule.id,
-						data: payload,
-					}).unwrap()
+					id: editingRule.id,
+					data: payload,
+				}).unwrap()
 				: createRoutingRule(payload).unwrap();
 
 		submitPromise
@@ -395,6 +404,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 												{scopeOption.label}
 											</SelectItem>
 										))}
+										{(UserPicker || scope === "user") && <SelectItem value="user">User</SelectItem>}
 									</SelectContent>
 								</Select>
 							</div>
@@ -423,7 +433,8 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 						{scope !== "global" && (
 							<div className="space-y-2">
 								<Label htmlFor="scope_id">
-									{scope === "team" ? "Team" : scope === "customer" ? "Customer" : "Virtual Key"} <span className="text-red-500">*</span>
+									{scope === "team" ? "Team" : scope === "customer" ? "Customer" : scope === "user" ? "User" : "Virtual Key"}{" "}
+									<span className="text-red-500">*</span>
 								</Label>
 								{scope === "team" && teamsData.teams.length > 0 && (
 									<ComboboxSelect
@@ -452,13 +463,35 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 										noPortal
 									/>
 								)}
+								{scope === "user" &&
+									(UserPicker ? (
+										<UserPicker
+											value={scopeId || ""}
+											onChange={(value) => setValue("scope_id", value)}
+											fallbackOption={
+												editingRule?.scope === "user" && editingRule.scope_id
+													? { value: editingRule.scope_id, label: editingRule.scope_id }
+													: null
+											}
+										/>
+									) : (
+										// No user directory in this build: keep a plain input so
+										// existing user-scoped rules remain editable.
+										<Input
+											id="scope_id"
+											data-testid="routing-rule-scope-user-input"
+											placeholder="Governance user ID"
+											value={scopeId || ""}
+											onChange={(e) => setValue("scope_id", e.target.value)}
+										/>
+									))}
 								{((scope === "team" && teamsData.teams.length === 0) ||
 									(scope === "customer" && customersData.customers.length === 0) ||
 									(scope === "virtual_key" && vksData.virtual_keys.length === 0)) && (
-									<p className="text-muted-foreground text-sm">
-										No {scope === "team" ? "teams" : scope === "customer" ? "customers" : "virtual keys"} available
-									</p>
-								)}
+										<p className="text-muted-foreground text-sm">
+											No {scope === "team" ? "teams" : scope === "customer" ? "customers" : "virtual keys"} available
+										</p>
+									)}
 								{errors.scope_id && <p className="text-destructive text-sm">{errors.scope_id.message}</p>}
 							</div>
 						)}
