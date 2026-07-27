@@ -128,6 +128,7 @@ type munsitRealtimeEvent struct {
 	Type         string  `json:"type,omitempty"`
 	Audio        *string `json:"audio,omitempty"`
 	SampleRate   *int    `json:"sampleRate,omitempty"`
+	IsFinal       bool    `json:"isFinal,omitempty"`
 	ErrorCode    *int    `json:"errorCode,omitempty"`
 	ErrorMessage *string `json:"errorMessage,omitempty"`
 }
@@ -166,11 +167,11 @@ func (provider *MunsitProvider) ToBifrostRealtimeEvent(providerEvent json.RawMes
 		}
 
 	case raw.Audio != nil:
-		// Audio chunk responses carry no "type" field at all — presence of "audio" is
-		// what identifies them per Munsit's spec.
-		event.Type = schemas.RTEventResponseAudioDelta
-		event.Delta = &schemas.RealtimeDelta{
-			Audio: *raw.Audio,
+		event.Delta = &schemas.RealtimeDelta{Audio: *raw.Audio}
+		if raw.IsFinal {
+			event.Type = schemas.RTEventResponseAudioDone   // يطابق RealtimeTurnFinalEvent()
+		} else {
+			event.Type = schemas.RTEventResponseAudioDelta
 		}
 
 	default:
