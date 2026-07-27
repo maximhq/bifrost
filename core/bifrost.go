@@ -95,6 +95,19 @@ type Bifrost struct {
 	keySelector         schemas.KeySelector                 // Custom key selector function
 	keyPoolFilter       schemas.KeyPoolFilter               // optional hook to veto keys before selection (nil = all eligible)
 	kvStore             schemas.KVStore                     // optional KV store for session stickiness (nil = disabled)
+	// listModelsCatalog is the gateway's own view of each provider's models,
+	// used to answer and to reconcile list-models. Atomic rather than plain
+	// because whether it may answer outright depends on config that changes at
+	// runtime, so callers install and adjust it long after Init; see
+	// SetListModelsCatalog. Stored as one value so the catalog and its
+	// serve-from-catalog flag can never be read out of step.
+	listModelsCatalog atomic.Pointer[listModelsCatalogState]
+}
+
+// listModelsCatalogState pairs the catalog with permission to answer from it.
+type listModelsCatalogState struct {
+	catalog        schemas.ListModelsCatalog
+	serveFromCache bool
 }
 
 // ProviderQueue wraps a provider's request channel with lifecycle management
@@ -246,6 +259,7 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 		logger:        config.Logger,
 		kvStore:       config.KVStore,
 	}
+	bifrost.SetListModelsCatalog(config.ListModelsCatalog, config.ServeListModelsFromCatalog)
 	bifrost.tracer.Store(&tracerWrapper{tracer: tracer})
 	if config.LLMPlugins == nil {
 		config.LLMPlugins = make([]schemas.LLMPlugin, 0)
@@ -399,6 +413,243 @@ func (bifrost *Bifrost) ReloadConfig(config schemas.BifrostConfig) error {
 }
 
 // PUBLIC API METHODS
+
+// SetListModelsCatalog installs or removes the list-models catalog. Passing a
+// nil catalog removes it, after which list-models is a plain provider
+// passthrough.
+//
+// serveFromCache allows the catalog to answer a request outright instead of
+// calling the provider. Enable it only while something is keeping the catalog
+// fresh; with it off the catalog is still used to reconcile responses and to
+// stand in when a provider call fails, neither of which can pin the result to a
+// stale snapshot the way serving outright would.
+//
+// Safe to call at any time, including while requests are in flight: an
+// in-progress call sees either the old pairing or the new one, never a torn
+// mix of the two.
+func (bifrost *Bifrost) SetListModelsCatalog(catalog schemas.ListModelsCatalog, serveFromCache bool) {
+	if catalog == nil {
+		bifrost.listModelsCatalog.Store(nil)
+		return
+	}
+	bifrost.listModelsCatalog.Store(&listModelsCatalogState{catalog: catalog, serveFromCache: serveFromCache})
+}
+
+// HasListModelsCatalog reports whether a catalog is installed.
+func (bifrost *Bifrost) HasListModelsCatalog() bool {
+	return bifrost.listModelsCatalog.Load() != nil
+}
+
+// ServesListModelsFromCatalog reports whether list-models may be answered from
+// the catalog without calling the provider.
+func (bifrost *Bifrost) ServesListModelsFromCatalog() bool {
+	s := bifrost.listModelsCatalog.Load()
+	return s != nil && s.serveFromCache
+}
+
+// lookupCachedListModels answers a list-models call from the installed catalog,
+// returning the synthesized response and whether it hit.
+//
+// Called from the provider dispatch rather than the public entrypoint so that a
+// hit still traverses the plugin pipeline: post-hooks narrow list-models
+// results per virtual key, and catalog entries are stored ungoverned, so
+// short-circuiting any earlier would leak models across virtual keys.
+//
+// KeyStatuses is deliberately left empty. Nothing was probed, so the call
+// learned nothing new about any key's health, and reporting the previous
+// fetch's statuses would restate stale findings as fresh ones.
+func (bifrost *Bifrost) lookupCachedListModels(
+	ctx *schemas.BifrostContext,
+	provider schemas.ModelProvider,
+	keys []schemas.Key,
+	req *schemas.BifrostListModelsRequest,
+) (*schemas.BifrostListModelsResponse, bool) {
+	state := bifrost.listModelsCatalog.Load()
+	if state == nil || !state.serveFromCache || req == nil {
+		return nil, false
+	}
+	if skipListModelsCache(ctx) {
+		return nil, false
+	}
+
+	keyIDs := make([]string, 0, len(keys))
+	for _, k := range keys {
+		keyIDs = append(keyIDs, k.ID)
+	}
+	models, ok := state.catalog.CachedModels(provider, keyIDs, req.Unfiltered)
+	if !ok {
+		return nil, false
+	}
+
+	return &schemas.BifrostListModelsResponse{
+		Data: models,
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType: schemas.ListModelsRequest,
+			Provider:    provider,
+		},
+	}, true
+}
+
+// canCatalogServeModelListFor reports whether the catalog is allowed to answer
+// list-models on this provider's behalf, judged from configuration rather than
+// from whatever the provider happened to return.
+//
+// Deciding from state instead of from error text is deliberate. Error messages
+// vary between providers and change over time, so a case we failed to
+// recognise would resurrect a provider the operator had deliberately switched
+// off. Configuration is unambiguous by comparison: with no usable key, or with
+// list-models turned off, nothing here is callable, and the catalog must stay
+// silent no matter what the provider said.
+//
+// This matters because catalog entries outlive the keys that produced them.
+// They are dropped on key edits rather than re-derived per request, so a
+// provider whose keys were all disabled can still have entries sitting in the
+// catalog. Publishing those would advertise models that every request is then
+// guaranteed to reject.
+func canCatalogServeModelListFor(config *schemas.ProviderConfig, keys []schemas.Key) bool {
+	var customConfig *schemas.CustomProviderConfig
+	if config != nil {
+		customConfig = config.CustomProviderConfig
+	}
+	// The operator switched list-models off for this provider; answering from
+	// the catalog would route around that decision.
+	if customConfig != nil && !customConfig.IsOperationAllowed(schemas.ListModelsRequest) {
+		return false
+	}
+	// Keyless providers serve without a key, so having none is their normal state.
+	if !providerRequiresKey(customConfig) {
+		return true
+	}
+	// keys has already been narrowed to the enabled, valid ones.
+	return len(keys) > 0
+}
+
+// skipListModelsCache reports whether the caller asked for a live provider
+// fetch, bypassing anything the catalog could answer with.
+func skipListModelsCache(ctx *schemas.BifrostContext) bool {
+	if ctx == nil {
+		return false
+	}
+	skip, ok := ctx.Value(schemas.BifrostContextKeySkipListModelsCache).(bool)
+	return ok && skip
+}
+
+// routableListModelsFallback builds a response from the routable set alone, for
+// a provider whose list-models call failed. Returns nil when the catalog knows
+// of nothing, leaving the caller to surface the original error.
+//
+// Without this a provider that is momentarily unreachable disappears from
+// list-models while remaining perfectly routable, so callers are told a model
+// does not exist and then served it on the very next request.
+//
+// keyIDs scopes the fallback the same way it scopes reconciliation: standing in
+// for a failed key-scoped call with another key's models would be a wrong
+// answer, not a degraded one. Empty means the request named no key.
+func (bifrost *Bifrost) routableListModelsFallback(provider schemas.ModelProvider, keyIDs []string, unfiltered bool) *schemas.BifrostListModelsResponse {
+	state := bifrost.listModelsCatalog.Load()
+	if state == nil {
+		return nil
+	}
+	models := synthesizeModels(provider, state.catalog.RoutableModels(provider, keyIDs, unfiltered), nil)
+	if len(models) == 0 {
+		return nil
+	}
+	return &schemas.BifrostListModelsResponse{
+		Data: models,
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType: schemas.ListModelsRequest,
+			Provider:    provider,
+		},
+	}
+}
+
+// reconcileListModelsWithRoutable appends every routable model the response
+// omitted, so what list-models advertises matches what routing will actually
+// accept. Providers under-report for several ordinary reasons: a model can be
+// delisted but still callable, some providers only ever return a partial view,
+// and key configuration can introduce identifiers such as aliases that the
+// provider never sees.
+//
+// Expects the complete, unpaginated result and is deliberately indifferent to
+// req.PageToken: every caller reconciles first and paginates the reconciled
+// list afterwards. Skipping later pages would be worse than redundant — page
+// one's offsets would be drawn over a longer list than the offsets of the pages
+// that follow, so models near each boundary would be dropped or repeated.
+//
+// keyIDs scopes the routable set to the keys the response itself was produced
+// from; see schemas.ListModelsCatalog.RoutableModels.
+func (bifrost *Bifrost) reconcileListModelsWithRoutable(
+	response *schemas.BifrostListModelsResponse,
+	provider schemas.ModelProvider,
+	keyIDs []string,
+	req *schemas.BifrostListModelsRequest,
+) *schemas.BifrostListModelsResponse {
+	if response == nil || req == nil {
+		return response
+	}
+	state := bifrost.listModelsCatalog.Load()
+	if state == nil {
+		return response
+	}
+
+	// Keyed the same way synthesizeModels names its additions, so a model the
+	// provider already listed is recognised whichever ID form it used.
+	present := make(map[string]struct{}, len(response.Data))
+	for _, m := range response.Data {
+		present[localModelName(m.ID, provider)] = struct{}{}
+	}
+
+	missing := synthesizeModels(provider, state.catalog.RoutableModels(provider, keyIDs, req.Unfiltered), present)
+	if len(missing) == 0 {
+		return response
+	}
+	response.Data = append(response.Data, missing...)
+	return response
+}
+
+// synthesizeModels turns routable identifiers into list-models entries, skipping
+// any whose bare name is already in present. Only the ID is set: the transport
+// enriches from the pricing datasheet afterwards, and inventing values here
+// would override what the provider itself reported for the same model.
+func synthesizeModels(provider schemas.ModelProvider, routable []string, present map[string]struct{}) []schemas.Model {
+	if len(routable) == 0 {
+		return nil
+	}
+	out := make([]schemas.Model, 0, len(routable))
+	seen := make(map[string]struct{}, len(routable))
+	for _, name := range routable {
+		local := localModelName(name, provider)
+		if _, ok := present[local]; ok {
+			continue
+		}
+		if _, ok := seen[local]; ok {
+			continue
+		}
+		seen[local] = struct{}{}
+		// Always namespaced to the provider that will actually serve it. A
+		// model another provider resells keeps its upstream name inside that
+		// namespace, so OpenRouter's "anthropic/claude-x" is listed as
+		// "openrouter/anthropic/claude-x". Emitting the bare upstream name
+		// would make the model look like it comes from Anthropic, which is
+		// wrong and would still show up after Anthropic itself was turned off.
+		out = append(out, schemas.Model{ID: string(provider) + "/" + local})
+	}
+	return out
+}
+
+// localModelName reduces an identifier to how the given provider names the
+// model, dropping only that provider's own prefix.
+//
+// A prefix belonging to a different provider is part of the name here, not a
+// namespace: OpenRouter really does call the model "anthropic/claude-x", so
+// stripping it would lose the identifier the upstream expects.
+func localModelName(name string, provider schemas.ModelProvider) string {
+	parsedProvider, bare := schemas.ParseModelString(name, "")
+	if parsedProvider == provider {
+		return bare
+	}
+	return name
+}
 
 // ListModelsRequest sends a list models request to the specified provider.
 func (bifrost *Bifrost) ListModelsRequest(ctx *schemas.BifrostContext, req *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
@@ -6965,9 +7216,77 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 	response := &schemas.BifrostResponse{}
 	switch req.RequestType {
 	case schemas.ListModelsRequest:
-		listModelsResponse, bifrostError := provider.ListModels(req.Context, keys, req.BifrostRequest.ListModelsRequest)
+		listModelsReq := req.BifrostRequest.ListModelsRequest
+		providerKey := provider.GetProviderKey()
+		// Whether the catalog may contribute at all is a question about this
+		// provider's configuration, not about what it returned. See
+		// canCatalogServeModelListFor.
+		catalogMaySpeak := canCatalogServeModelListFor(config, keys)
+
+		// Everything the catalog contributes has to be scoped exactly as the
+		// request was. keys is already narrowed to the requested KeyID by the
+		// dispatcher, so without this the provider's own answer would be
+		// key-scoped while the catalog's additions were provider-wide — and
+		// since the refresher stores that reply under the scoped key's entry,
+		// the widened set would overwrite the allow-list that excluded it. An
+		// unscoped call keeps the provider-wide view.
+		//
+		// listModelsReq is non-nil for the whole of this case: ListModelsRequest
+		// rejects a nil request before dispatch and is the only thing that
+		// builds one, which is why the rest of this block dereferences it
+		// directly.
+		var routableKeyIDs []string
+		if listModelsReq.KeyID != nil {
+			routableKeyIDs = []string{*listModelsReq.KeyID}
+		}
+
+		if catalogMaySpeak {
+			if cached, ok := bifrost.lookupCachedListModels(req.Context, providerKey, keys, listModelsReq); ok {
+				// Paginated after reconciliation, not before, so the routable
+				// additions are counted in page_size like any other model.
+				cached = bifrost.reconcileListModelsWithRoutable(cached, providerKey, routableKeyIDs, listModelsReq)
+				response.ListModelsResponse = cached.ApplyPagination(listModelsReq.PageSize, listModelsReq.PageToken)
+				break
+			}
+		}
+
+		// When the catalog will reconcile, the provider is asked for its whole
+		// catalog and paginated here instead. Page boundaries have to be drawn
+		// after the additions are in: paginating upstream first overflows the
+		// first page by however many models were appended, and repeats those
+		// same models when the provider serves its later pages. Costs nothing
+		// upstream — list-models pagination is Bifrost's own offset cursor over
+		// the aggregated per-key responses, not a provider cursor, and each
+		// provider already fetches under its own fixed limit.
+		providerReq := listModelsReq
+		if catalogMaySpeak {
+			unpaged := *listModelsReq
+			unpaged.PageSize = 0
+			unpaged.PageToken = ""
+			providerReq = &unpaged
+		}
+
+		listModelsResponse, bifrostError := provider.ListModels(req.Context, keys, providerReq)
 		if bifrostError != nil {
-			return nil, bifrostError
+			// The provider is failing this attempt, but its configuration says
+			// it can serve, so its models stay routable once it recovers.
+			// Advertising them beats dropping the provider from the listing
+			// while continuing to accept requests for it.
+			var fallback *schemas.BifrostListModelsResponse
+			if catalogMaySpeak {
+				fallback = bifrost.routableListModelsFallback(providerKey, routableKeyIDs, listModelsReq.Unfiltered)
+			}
+			if fallback == nil {
+				return nil, bifrostError
+			}
+			bifrost.logger.Warn("list models failed for provider %s (%s); answering from the model catalog instead",
+				providerKey, GetErrorMessage(bifrostError))
+			response.ListModelsResponse = fallback.ApplyPagination(listModelsReq.PageSize, listModelsReq.PageToken)
+			break
+		}
+		if catalogMaySpeak {
+			listModelsResponse = bifrost.reconcileListModelsWithRoutable(listModelsResponse, providerKey, routableKeyIDs, listModelsReq)
+			listModelsResponse = listModelsResponse.ApplyPagination(listModelsReq.PageSize, listModelsReq.PageToken)
 		}
 		response.ListModelsResponse = listModelsResponse
 	case schemas.TextCompletionRequest:

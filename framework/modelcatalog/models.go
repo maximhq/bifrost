@@ -7,6 +7,7 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/framework/modelcatalog/keyconfig"
 )
 
 // providersWithPartialListModels enumerates providers whose /v1/models response
@@ -21,15 +22,25 @@ var providersWithPartialListModels = map[schemas.ModelProvider]bool{
 }
 
 // GetModelsForProvider returns the effective allowed model set for the
-// provider. Filtered live entries are authoritative when present (they were
-// pre-gated by ListModelsPipeline against the key's allow/block/aliases);
-// otherwise the datasheet view is filtered by the keyconfig aggregates.
+// provider across all of its keys. Filtered live entries are authoritative when
+// present (they were pre-gated by ListModelsPipeline against the key's
+// allow/block/aliases); otherwise the datasheet view is filtered by the
+// keyconfig aggregates.
 func (mc *ModelCatalog) GetModelsForProvider(provider schemas.ModelProvider) []string {
-	blacklisted := mc.keyconf.BlacklistedFor(provider)
-	allowed := mc.keyconf.AllowedFor(provider)
+	return mc.modelsForProvider(provider, nil)
+}
+
+// modelsForProvider is GetModelsForProvider optionally narrowed to a subset of
+// the provider's keys. An empty keyIDs means every key — the provider-wide view
+// routing asks for. A non-empty keyIDs restricts all three inputs (live
+// entries, the allow/block gate, and the per-key alias and allow additions) to
+// those keys, so a caller already pinned to one key is never told about models
+// only a sibling key may serve.
+func (mc *ModelCatalog) modelsForProvider(provider schemas.ModelProvider, keyIDs []string) []string {
+	allowed, blacklisted := mc.keyconf.GatesForKeys(provider, keyIDs)
 
 	var out []string
-	if liveModels := mc.live.ModelsForProvider(provider); len(liveModels) > 0 {
+	if liveModels := mc.liveModelIDs(provider, keyIDs, false); len(liveModels) > 0 {
 		out = liveModels
 		// Datasheet models to reconcile on top of the live list: normally just
 		// deprecated ones (dropped from list-models but still callable). For
@@ -59,7 +70,7 @@ func (mc *ModelCatalog) GetModelsForProvider(provider schemas.ModelProvider) []s
 	for _, m := range out {
 		seen[m] = struct{}{}
 	}
-	for _, e := range mc.keyconf.EntriesFor(provider) {
+	for _, e := range mc.keyEntries(provider, keyIDs) {
 		if !e.Enabled {
 			continue
 		}
@@ -115,10 +126,54 @@ func (mc *ModelCatalog) appendAllowedDatasheetModels(out []string, models []stri
 	return out
 }
 
+// liveModelIDs returns the live routing view for the provider, narrowed to
+// keyIDs when non-empty. Split out so the scoped and provider-wide compositions
+// read the live store through one place.
+func (mc *ModelCatalog) liveModelIDs(provider schemas.ModelProvider, keyIDs []string, unfiltered bool) []string {
+	if len(keyIDs) == 0 {
+		if unfiltered {
+			return mc.live.UnfilteredModelsForProvider(provider)
+		}
+		return mc.live.ModelsForProvider(provider)
+	}
+	return mc.live.IDsForKeys(provider, keyIDs, unfiltered)
+}
+
+// keyEntries returns the provider's key entries, narrowed to keyIDs when
+// non-empty. Disabled keys are left in: callers apply their own Enabled check,
+// matching EntriesFor's contract.
+func (mc *ModelCatalog) keyEntries(provider schemas.ModelProvider, keyIDs []string) []keyconfig.KeyEntry {
+	entries := mc.keyconf.EntriesFor(provider)
+	if len(keyIDs) == 0 || len(entries) == 0 {
+		return entries
+	}
+	want := make(map[string]struct{}, len(keyIDs))
+	for _, id := range keyIDs {
+		want[id] = struct{}{}
+	}
+	out := make([]keyconfig.KeyEntry, 0, len(keyIDs))
+	for _, e := range entries {
+		if _, ok := want[e.KeyID]; ok {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
 // GetUnfilteredModelsForProvider returns the raw catalog view (no gate
 // applied): union of live unfiltered entries and the datasheet view.
 func (mc *ModelCatalog) GetUnfilteredModelsForProvider(provider schemas.ModelProvider) []string {
-	liveModels := mc.live.UnfilteredModelsForProvider(provider)
+	return mc.unfilteredModelsForProvider(provider, nil)
+}
+
+// unfilteredModelsForProvider is GetUnfilteredModelsForProvider optionally
+// narrowed to a subset of keys. Only the live half narrows: the datasheet is
+// not key-derived, and "unfiltered" means exactly that no key gate is applied.
+// Scoping still matters here because two keys on the same provider can point at
+// different upstreams (different base_url, region, or deployment), so their raw
+// catalogs are not interchangeable.
+func (mc *ModelCatalog) unfilteredModelsForProvider(provider schemas.ModelProvider, keyIDs []string) []string {
+	liveModels := mc.liveModelIDs(provider, keyIDs, true)
 	datasheetModels := mc.datasheet.DatasheetModelsForProvider(provider)
 	if len(liveModels) == 0 {
 		return datasheetModels

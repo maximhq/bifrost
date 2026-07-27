@@ -13,12 +13,29 @@ const (
 	anthropic = schemas.Anthropic
 )
 
+// asModels lifts bare identifiers into the stored model shape, using each
+// identifier as both the model ID and its routing projection.
+func asModels(ids []string) []schemas.Model {
+	out := make([]schemas.Model, len(ids))
+	for i, id := range ids {
+		out[i] = schemas.Model{ID: id}
+	}
+	return out
+}
+
 func upsertFiltered(s *Store, p schemas.ModelProvider, keyID string, models []string) {
-	s.Upsert(p, keyID, false, models)
+	s.Upsert(p, keyID, false, asModels(models), models)
 }
 
 func upsertUnfiltered(s *Store, p schemas.ModelProvider, keyID string, models []string) {
-	s.Upsert(p, keyID, true, models)
+	s.Upsert(p, keyID, true, asModels(models), models)
+}
+
+// upsertIfCurrentFiltered is the guarded counterpart of upsertFiltered: it
+// supplies both projections from one identifier list, so the generation tests
+// below can stay focused on which writes land rather than on entry shape.
+func upsertIfCurrentFiltered(s *Store, p schemas.ModelProvider, keyID string, models []string, gen uint64) bool {
+	return s.UpsertIfCurrent(p, keyID, false, asModels(models), models, gen)
 }
 
 func TestUpsertAndReadFiltered(t *testing.T) {
@@ -194,7 +211,8 @@ func TestRetainKeysIsRaceFreeUnderConcurrentAccess(t *testing.T) {
 				keyID := keyIDs[i%len(keyIDs)]
 				switch g % 4 {
 				case 0:
-					s.Upsert(p, keyID, i%2 == 0, []string{"model-a", "model-b"})
+					models := []string{"model-a", "model-b"}
+					s.Upsert(p, keyID, i%2 == 0, asModels(models), models)
 				case 1:
 					// Alternate the retained set so entries are constantly
 					// being pruned and repopulated underneath the readers.
@@ -219,7 +237,7 @@ func TestRetainKeysIsRaceFreeUnderConcurrentAccess(t *testing.T) {
 
 	// Sanity check that the store is still coherent rather than merely
 	// race-free: a final retain must leave a readable, well-formed view.
-	s.Upsert(openai, "k1", false, []string{"model-a"})
+	s.Upsert(openai, "k1", false, asModels([]string{"model-a"}), []string{"model-a"})
 	s.RetainKeys(openai, map[string]struct{}{"k1": {}})
 	if got := s.ModelsForProvider(openai); !slices.Equal(got, []string{"model-a"}) {
 		t.Fatalf("store incoherent after concurrent access: %v", got)
@@ -263,23 +281,33 @@ func TestSnapshotIsDefensiveCopy(t *testing.T) {
 
 	snap := s.Snapshot()
 	k := Key{Provider: openai, KeyID: "k1", Unfiltered: false}
-	snap[k].Models[0] = "MUTATED"
+	snap[k].Models[0].ID = "MUTATED"
+	snap[k].IDs[0] = "MUTATED"
 
 	got := s.ModelsForProvider(openai)
 	if !slices.Equal(got, []string{"gpt-4o"}) {
 		t.Errorf("store mutated through Snapshot: %v", got)
+	}
+	if full, ok := s.FullModelsFor(openai, []string{"k1"}, false); !ok || full[0].ID != "gpt-4o" {
+		t.Errorf("models mutated through Snapshot: %+v (hit=%v)", full, ok)
 	}
 }
 
 func TestUpsertCopiesInputSlice(t *testing.T) {
 	s := New(nil)
 	input := []string{"gpt-4o"}
-	s.Upsert(openai, "k1", false, input)
+	inputModels := asModels(input)
+	s.Upsert(openai, "k1", false, inputModels, input)
 
 	input[0] = "MUTATED"
+	inputModels[0].ID = "MUTATED"
 
 	if got := s.ModelsForProvider(openai); !slices.Equal(got, []string{"gpt-4o"}) {
 		t.Errorf("store mutated through input slice: %v", got)
+	}
+	full, ok := s.FullModelsFor(openai, []string{"k1"}, false)
+	if !ok || len(full) != 1 || full[0].ID != "gpt-4o" {
+		t.Errorf("store mutated through input model slice: %+v (hit=%v)", full, ok)
 	}
 }
 
@@ -307,7 +335,7 @@ func TestUpsertIfCurrentAcceptsUnchangedGeneration(t *testing.T) {
 	s := New(nil)
 	gen := s.Generation(openai)
 
-	if !s.UpsertIfCurrent(openai, "k1", false, []string{"gpt-4o"}, gen) {
+	if !upsertIfCurrentFiltered(s, openai, "k1", []string{"gpt-4o"}, gen) {
 		t.Fatal("UpsertIfCurrent reported a dropped write with no intervening invalidation")
 	}
 	if got := s.ModelsForProvider(openai); !slices.Equal(got, []string{"gpt-4o"}) {
@@ -329,7 +357,7 @@ func TestUpsertIfCurrentDropsWriteAfterInvalidate(t *testing.T) {
 
 	s.Invalidate(openai, "k1") // key deleted while the fetch is in flight
 
-	if s.UpsertIfCurrent(openai, "k1", false, []string{"gpt-4o"}, gen) {
+	if upsertIfCurrentFiltered(s, openai, "k1", []string{"gpt-4o"}, gen) {
 		t.Fatal("UpsertIfCurrent committed a result fetched before the key was invalidated")
 	}
 	if got := s.ModelsForProvider(openai); len(got) != 0 {
@@ -347,7 +375,7 @@ func TestInvalidateBumpsGenerationWithNoCachedEntry(t *testing.T) {
 
 	s.Invalidate(openai, "k1") // nothing cached for k1 yet
 
-	if s.UpsertIfCurrent(openai, "k1", false, []string{"gpt-4o"}, gen) {
+	if upsertIfCurrentFiltered(s, openai, "k1", []string{"gpt-4o"}, gen) {
 		t.Fatal("UpsertIfCurrent committed after an Invalidate that happened to delete nothing")
 	}
 }
@@ -370,7 +398,7 @@ func TestInvalidateProviderAndRetainKeysBumpGeneration(t *testing.T) {
 
 			tt.invalidate(s)
 
-			if s.UpsertIfCurrent(openai, "k1", false, []string{"gpt-4o"}, gen) {
+			if upsertIfCurrentFiltered(s, openai, "k1", []string{"gpt-4o"}, gen) {
 				t.Fatalf("UpsertIfCurrent committed a fetch that predates %s", tt.name)
 			}
 		})
@@ -387,7 +415,7 @@ func TestGenerationIsPerProvider(t *testing.T) {
 
 	s.Invalidate(openai, "k1")
 
-	if !s.UpsertIfCurrent(anthropic, "k1", false, []string{"claude-sonnet"}, gen) {
+	if !upsertIfCurrentFiltered(s, anthropic, "k1", []string{"claude-sonnet"}, gen) {
 		t.Fatal("an OpenAI invalidation dropped an Anthropic commit")
 	}
 	if got := s.ModelsForProvider(anthropic); !slices.Equal(got, []string{"claude-sonnet"}) {
@@ -407,22 +435,54 @@ func TestGenerationSurvivesProviderRemoval(t *testing.T) {
 	upsertFiltered(s, openai, "k1", []string{"o1"})
 	s.InvalidateProvider(openai) // ...and re-added, then reloaded
 
-	if s.UpsertIfCurrent(openai, "k1", false, []string{"gpt-4o"}, gen) {
+	if upsertIfCurrentFiltered(s, openai, "k1", []string{"gpt-4o"}, gen) {
 		t.Fatal("a pre-removal fetch committed after the provider was recreated")
 	}
 }
 
 // TestUpsertIfCurrentCopiesInputSlice mirrors TestUpsertCopiesInputSlice: the
-// guarded path must not retain the caller's backing array either.
+// guarded path must not retain either of the caller's backing arrays.
 func TestUpsertIfCurrentCopiesInputSlice(t *testing.T) {
 	s := New(nil)
-	input := []string{"gpt-4o"}
-	s.UpsertIfCurrent(openai, "k1", false, input, s.Generation(openai))
+	models := asModels([]string{"gpt-4o"})
+	ids := []string{"gpt-4o"}
+	s.UpsertIfCurrent(openai, "k1", false, models, ids, s.Generation(openai))
 
-	input[0] = "MUTATED"
+	models[0].ID = "MUTATED"
+	ids[0] = "MUTATED"
 
 	if got := s.ModelsForProvider(openai); !slices.Equal(got, []string{"gpt-4o"}) {
-		t.Errorf("store mutated through input slice: %v", got)
+		t.Errorf("store mutated through ids slice: %v", got)
+	}
+	full, _ := s.FullModelsFor(openai, []string{"k1"}, false)
+	if len(full) != 1 || full[0].ID != "gpt-4o" {
+		t.Errorf("store mutated through models slice: %v", full)
+	}
+}
+
+// TestUpsertIfCurrentStoresBothProjections is the regression for the guarded
+// path storing only identifiers: a commit has to leave the entry able to answer
+// both readers, since /v1/models reads Models and routing reads IDs. Storing one
+// without the other leaves the other silently empty.
+func TestUpsertIfCurrentStoresBothProjections(t *testing.T) {
+	s := New(nil)
+	// The two projections differ, as they do in production: routing strips the
+	// owning provider's own prefix while /v1/models keeps what the provider said.
+	ownedBy := "openai"
+	models := []schemas.Model{{ID: "openai/gpt-4o", OwnedBy: &ownedBy}}
+	if !s.UpsertIfCurrent(openai, "k1", false, models, []string{"gpt-4o"}, s.Generation(openai)) {
+		t.Fatal("guarded commit dropped with no intervening invalidation")
+	}
+
+	if got := s.ModelsForProvider(openai); !slices.Equal(got, []string{"gpt-4o"}) {
+		t.Errorf("routing view = %v, want [gpt-4o]", got)
+	}
+	full, ok := s.FullModelsFor(openai, []string{"k1"}, false)
+	if !ok {
+		t.Fatal("FullModelsFor missed an entry a guarded commit just wrote")
+	}
+	if len(full) != 1 || full[0].ID != "openai/gpt-4o" || full[0].OwnedBy == nil || *full[0].OwnedBy != "openai" {
+		t.Errorf("full view = %+v, want the provider's model verbatim", full)
 	}
 }
 
@@ -446,10 +506,120 @@ func TestConcurrentInvalidateAndGuardedUpsertAreRaceFree(t *testing.T) {
 					s.Invalidate(openai, "k1")
 					continue
 				}
-				s.UpsertIfCurrent(openai, "k1", false, []string{"gpt-4o"}, gen)
+				upsertIfCurrentFiltered(s, openai, "k1", []string{"gpt-4o"}, gen)
 				_ = s.ModelsForProvider(openai)
 			}
 		}(i)
 	}
 	wg.Wait()
+}
+
+// TestFullModelsForPreservesEveryField is the point of storing whole models
+// rather than identifiers: a cache hit has to reproduce what the provider
+// reported, field for field, or /v1/models silently degrades when served from
+// cache instead of live.
+func TestFullModelsForPreservesEveryField(t *testing.T) {
+	s := New(nil)
+	alias := "gpt-4o-deployment"
+	owner := "openai"
+	ctxLen := 128000
+	created := int64(1715367049)
+	stored := []schemas.Model{{
+		ID:                  "gpt-4o",
+		Alias:               &alias,
+		OwnedBy:             &owner,
+		ContextLength:       &ctxLen,
+		Created:             &created,
+		SupportedParameters: []string{"tools", "temperature"},
+		Architecture:        &schemas.Architecture{InputModalities: []string{"text", "image"}},
+	}}
+	s.Upsert(openai, "k1", false, stored, []string{"gpt-4o"})
+
+	got, ok := s.FullModelsFor(openai, []string{"k1"}, false)
+	if !ok {
+		t.Fatal("expected a hit")
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d models, want 1", len(got))
+	}
+	m := got[0]
+	switch {
+	case m.ID != "gpt-4o":
+		t.Errorf("ID = %q", m.ID)
+	case m.Alias == nil || *m.Alias != alias:
+		t.Errorf("Alias = %v, want %q", m.Alias, alias)
+	case m.OwnedBy == nil || *m.OwnedBy != owner:
+		t.Errorf("OwnedBy = %v, want %q", m.OwnedBy, owner)
+	case m.ContextLength == nil || *m.ContextLength != ctxLen:
+		t.Errorf("ContextLength = %v, want %d", m.ContextLength, ctxLen)
+	case m.Created == nil || *m.Created != created:
+		t.Errorf("Created = %v, want %d", m.Created, created)
+	case !slices.Equal(m.SupportedParameters, []string{"tools", "temperature"}):
+		t.Errorf("SupportedParameters = %v", m.SupportedParameters)
+	case m.Architecture == nil || !slices.Equal(m.Architecture.InputModalities, []string{"text", "image"}):
+		t.Errorf("Architecture = %+v", m.Architecture)
+	}
+}
+
+// A miss and an empty hit mean different things: a provider that serves no
+// models is answerable from cache, whereas a key never fetched must fall
+// through to the provider.
+func TestFullModelsForDistinguishesMissFromEmpty(t *testing.T) {
+	s := New(nil)
+
+	if _, ok := s.FullModelsFor(openai, []string{"never-fetched"}, false); ok {
+		t.Error("expected a miss for a key that was never fetched")
+	}
+
+	s.Upsert(openai, "k1", false, []schemas.Model{}, []string{})
+	got, ok := s.FullModelsFor(openai, []string{"k1"}, false)
+	if !ok {
+		t.Error("expected a hit for a key fetched with zero models")
+	}
+	if len(got) != 0 {
+		t.Errorf("expected zero models, got %v", got)
+	}
+}
+
+func TestFullModelsForUnionsAndDedupesAcrossKeys(t *testing.T) {
+	s := New(nil)
+	s.Upsert(openai, "k1", false, asModels([]string{"gpt-4o", "o1"}), []string{"gpt-4o", "o1"})
+	s.Upsert(openai, "k2", false, asModels([]string{"o1", "gpt-4o-mini"}), []string{"o1", "gpt-4o-mini"})
+
+	got, ok := s.FullModelsFor(openai, []string{"k1", "k2"}, false)
+	if !ok {
+		t.Fatal("expected a hit")
+	}
+	ids := make([]string, len(got))
+	for i, m := range got {
+		ids[i] = m.ID
+	}
+	// Sorted so the response is stable regardless of map iteration order.
+	if !slices.Equal(ids, []string{"gpt-4o", "gpt-4o-mini", "o1"}) {
+		t.Errorf("union = %v, want sorted [gpt-4o gpt-4o-mini o1]", ids)
+	}
+}
+
+// Keyless providers cache under the empty-string sentinel, and callers reach
+// them by passing no key IDs at all.
+func TestFullModelsForEmptyKeyIDsUsesKeylessSentinel(t *testing.T) {
+	s := New(nil)
+	s.Upsert(openai, "", false, asModels([]string{"gpt-4o"}), []string{"gpt-4o"})
+
+	got, ok := s.FullModelsFor(openai, nil, false)
+	if !ok || len(got) != 1 || got[0].ID != "gpt-4o" {
+		t.Errorf("FullModelsFor(nil keys) = %+v (hit=%v), want the keyless entry", got, ok)
+	}
+}
+
+func TestFullModelsForSeparatesFilteredFromUnfiltered(t *testing.T) {
+	s := New(nil)
+	s.Upsert(openai, "k1", false, asModels([]string{"gpt-4o"}), []string{"gpt-4o"})
+
+	// The gated view exists; the raw one has never been fetched. Answering the
+	// unfiltered request from the filtered entry would under-report, and the
+	// reverse would leak models the key is not allowed to use.
+	if _, ok := s.FullModelsFor(openai, []string{"k1"}, true); ok {
+		t.Error("expected unfiltered lookup to miss when only the filtered entry exists")
+	}
 }
