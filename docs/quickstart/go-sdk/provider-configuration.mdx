@@ -348,7 +348,7 @@ ProviderRequestID: &schemas.ProviderRequestIDConfig{
 
 Header names are normalized to lowercase and must be valid HTTP header tokens. Authentication and API-key headers, such as `authorization` and `x-api-key`, are rejected. Captured values are limited to 512 characters; oversized values are discarded without logging their contents.
 
-When the logging plugin is enabled, the final provider request ID and the complete retry/fallback trail are available on the log entry. Gateway users can also filter logs by an exact provider request ID.
+When the logging plugin is enabled, the final provider request ID and the bounded retry/fallback trail are available on the log entry. Gateway users can also filter logs by an exact provider request ID.
 
 ### Setting Up a Proxy
 

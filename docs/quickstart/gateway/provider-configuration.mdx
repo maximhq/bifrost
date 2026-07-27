@@ -860,9 +860,13 @@ For other providers or gateways, set an explicit response header:
 
 ```json
 {
-  "provider_request_id": {
-    "enabled": true,
-    "header_name": "x-correlation-id"
+  "providers": {
+    "my-provider": {
+      "provider_request_id": {
+        "enabled": true,
+        "header_name": "x-correlation-id"
+      }
+    }
   }
 }
 ```

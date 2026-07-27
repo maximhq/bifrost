@@ -321,11 +321,11 @@ ProviderRequestIDConfig:
   properties:
     enabled:
       type: boolean
-      description: Whether provider request ID capture is enabled. Defaults to false when omitted from provider configuration.
+      description: Whether provider request ID capture is enabled. The provider_request_id object is disabled when omitted; this field is required when the object is present.
     header_name:
       type: string
       pattern: "^[!#$%&'*+.^_`|~0-9A-Za-z-]+$"
-      description: Optional response header to capture. OpenAI, Anthropic, Azure, and compatible custom providers have built-in defaults.
+      description: Optional response header to capture. Sensitive headers such as Authorization are rejected. OpenAI, Anthropic, Azure, and compatible custom providers have built-in defaults.
   additionalProperties: false
 
 ProviderResponse:
