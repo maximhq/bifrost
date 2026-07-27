@@ -532,6 +532,15 @@ func (provider *MistralProvider) TranscriptionStream(ctx *schemas.BifrostContext
 				break
 			}
 		}
+
+		// The loop only exits cleanly once a terminal event has been handled (the
+		// indicator is also set by the read-error path above, so an already-reported
+		// failure stays quiet here). Without it the body ended early — a plain
+		// io.EOF, indistinguishable from a healthy close — leaving the caller with a
+		// silently truncated transcript.
+		if ended, _ := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator).(bool); !ended {
+			providerUtils.SendStreamTruncatedError(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, nil)
+		}
 	}()
 
 	return responseChan, nil
