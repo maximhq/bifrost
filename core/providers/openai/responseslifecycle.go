@@ -298,6 +298,9 @@ func (provider *OpenAIProvider) ResponsesRetrieveStream(ctx *schemas.BifrostCont
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					provider.logger.Warn("Error reading stream: %v", readErr)
 					providerUtils.ProcessAndSendError(ctx, postHookRunner, readErr, responseChan, provider.logger, postHookSpanFinalizer)
+					// Already reported; returning keeps the post-loop truncation check
+					// from reporting the same dead stream twice.
+					return
 				}
 				break
 			}
@@ -369,6 +372,13 @@ func (provider *OpenAIProvider) ResponsesRetrieveStream(ctx *schemas.BifrostCont
 			lastChunkTime = time.Now()
 
 			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, &response, nil, nil, nil), responseChan, postHookSpanFinalizer)
+		}
+
+		// Falling out of the loop means the body ended without a terminal event.
+		// A plain io.EOF cannot distinguish that from a healthy close, so surface it
+		// instead of closing the channel silently.
+		if !providerUtils.SSEStreamEndedOnMarker(sseReader) {
+			providerUtils.SendStreamTruncatedError(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, nil)
 		}
 	}()
 
