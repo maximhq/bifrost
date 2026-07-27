@@ -70,6 +70,8 @@ Redaction mode decides where Bifrost applies the rewrite.
 | Logs only | `logs_only` | Left raw | Redacted with reversible placeholders | Placeholderized content | Yes, for Bifrost logs only |
 | Runtime + reversible logs | `runtime_reversible` | Redacted with reversible placeholders | Redacted with reversible placeholders | Placeholderized content | Yes, for Bifrost logs only |
 
+For streaming output, runtime redaction checks buffered text segments before releasing their redacted content. Logs-only redaction does not delay client delivery. If the same matched rule set can also block, Bifrost holds the complete stream until the final guardrail decision; see [Streaming Output Guardrails](/enterprise/guardrails#streaming-output-guardrails).
+
 ### Runtime (`runtime`)
 
 Use `runtime` when sensitive text should not reach the model provider or the caller. Bifrost rewrites detected text in the live request or response and stores the already-redacted value in Bifrost logs.

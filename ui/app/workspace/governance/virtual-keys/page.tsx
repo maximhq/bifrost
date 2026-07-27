@@ -36,7 +36,6 @@ export default function GovernanceVirtualKeysPage() {
 		data: virtualKeysData,
 		error: vkError,
 		isLoading: vkLoading,
-		isFetching,
 	} = useGetVirtualKeysQuery(
 		{
 			limit: PAGE_SIZE,
@@ -160,7 +159,6 @@ export default function GovernanceVirtualKeysPage() {
 				onSortChange={handleSortChange}
 				selectedVkId={urlState.selected_vk}
 				onSelectedVkChange={handleSelectedVkChange}
-				isFetching={isFetching}
 			/>
 		</div>
 	);

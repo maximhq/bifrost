@@ -80,7 +80,8 @@ func TestScalePostgresLogstoreMigrations(t *testing.T) {
 	indexElapsed := time.Since(start)
 
 	start = time.Now()
-	require.NoError(t, ensureMatViews(ctx, db), "matviews should be maintained at scale")
+	_, err = ensureMatViews(ctx, db)
+	require.NoError(t, err, "matviews should be maintained at scale")
 	matviewElapsed := time.Since(start)
 
 	stopMonitor()

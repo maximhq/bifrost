@@ -164,16 +164,17 @@ type StreamAccumulator struct {
 	// gatePendingTerminal is set when an isFinal or isHardErr chunk arrived
 	// while Paused. The flusher consumes this flag after Resume drains the
 	// buffer and transitions the gate to Ended.
-	gatePendingTerminal bool
-	gateSeq             int                              // monotonic, bumped on every GateSend
-	gateReplayBuf       []*schemas.BifrostStreamChunk    // wire-format chunks captured while paused
-	gateReplayBufBytes  int64                            // sum of MarshalJSON sizes of chunks in gateReplayBuf; capped by gateReplayBufMaxBytes
-	gateCond            *sync.Cond                       // wakes flusher on Resume / End / append-while-active
-	gateEndError        *schemas.BifrostError            // delivered as terminal chunk if EndStream(err) was called with non-nil
-	gateFlusherCh       chan *schemas.BifrostStreamChunk // captured on first GateSend; reused by flusher
-	gateFlusherCtx      *schemas.BifrostContext          // captured on first GateSend
-	gateFlusherOn       bool                             // flusher goroutine running
-	gateFlusherDone     chan struct{}                    // closed when the most recent flusher exits; nil when no flusher has ever started
+	gatePendingTerminal     bool
+	gateSeq                 int                              // monotonic, bumped on every GateSend
+	gateReplayBuf           []*schemas.BifrostStreamChunk    // wire-format chunks captured while paused
+	gateReplayBufBytes      int64                            // sum of MarshalJSON sizes of chunks in gateReplayBuf; capped by gateReplayBufMaxBytes
+	gateReplayEventInterval time.Duration                    // delay between buffered events after paced resume is armed
+	gateCond                *sync.Cond                       // wakes flusher on Resume / End / append-while-active
+	gateEndError            *schemas.BifrostError            // delivered as terminal chunk if EndStream(err) was called with non-nil
+	gateFlusherCh           chan *schemas.BifrostStreamChunk // captured on first GateSend; reused by flusher
+	gateFlusherCtx          *schemas.BifrostContext          // captured on first GateSend
+	gateFlusherOn           bool                             // flusher goroutine running
+	gateFlusherDone         chan struct{}                    // closed when the most recent flusher exits; nil when no flusher has ever started
 	// gatePendingCleanup is set by cleanupStreamAccumulator when the caller
 	// requested teardown but the gate is still busy (flusher running or
 	// Paused). The flusher's exit defer checks this flag and re-runs cleanup

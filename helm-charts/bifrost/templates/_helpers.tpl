@@ -259,6 +259,9 @@ false
 {{- if hasKey .Values.bifrost.client "disableContentLogging" }}
 {{- $_ := set $client "disable_content_logging" .Values.bifrost.client.disableContentLogging }}
 {{- end }}
+{{- if hasKey .Values.bifrost.client "retainContentInObjectStorage" }}
+{{- $_ := set $client "retain_content_in_object_storage" .Values.bifrost.client.retainContentInObjectStorage }}
+{{- end }}
 {{- if hasKey .Values.bifrost.client "allowPerRequestContentStorageOverride" }}
 {{- $_ := set $client "allow_per_request_content_storage_override" .Values.bifrost.client.allowPerRequestContentStorageOverride }}
 {{- end }}
@@ -273,6 +276,13 @@ false
 {{- end }}
 {{- if hasKey .Values.bifrost.client "dumpErrorsInConsoleLogs" }}
 {{- $_ := set $client "dump_errors_in_console_logs" .Values.bifrost.client.dumpErrorsInConsoleLogs }}
+{{- end }}
+{{- if .Values.bifrost.client.webhookConfig }}
+{{- $webhookConfig := dict }}
+{{- if .Values.bifrost.client.webhookConfig.deliveryHistoryRetentionDays }}
+{{- $_ := set $webhookConfig "delivery_history_retention_days" .Values.bifrost.client.webhookConfig.deliveryHistoryRetentionDays }}
+{{- end }}
+{{- $_ := set $client "webhook_config" $webhookConfig }}
 {{- end }}
 {{- if .Values.bifrost.client.headerFilterConfig }}
 {{- $headerFilter := dict }}
@@ -420,6 +430,9 @@ false
 {{- end }}
 {{- if hasKey $providerConfig.network_config "stream_idle_timeout_in_seconds" }}
 {{- $_ := set $networkConfig "stream_idle_timeout_in_seconds" $providerConfig.network_config.stream_idle_timeout_in_seconds }}
+{{- end }}
+{{- if hasKey $providerConfig.network_config "keep_alive_timeout_in_seconds" }}
+{{- $_ := set $networkConfig "keep_alive_timeout_in_seconds" $providerConfig.network_config.keep_alive_timeout_in_seconds }}
 {{- end }}
 {{- if hasKey $providerConfig.network_config "max_conns_per_host" }}
 {{- $_ := set $networkConfig "max_conns_per_host" $providerConfig.network_config.max_conns_per_host }}
@@ -692,6 +705,9 @@ false
 {{- if hasKey .Values.bifrost.loadBalancer "routeSelectionEnabled" }}
 {{- $_ := set $lb "route_selection_enabled" .Values.bifrost.loadBalancer.routeSelectionEnabled }}
 {{- end }}
+{{- if hasKey .Values.bifrost.loadBalancer "appendFallbacksToPinned" }}
+{{- $_ := set $lb "append_fallbacks_to_pinned" .Values.bifrost.loadBalancer.appendFallbacksToPinned }}
+{{- end }}
 {{- if hasKey .Values.bifrost.loadBalancer "rerouteFailedDirections" }}
 {{- $_ := set $lb "reroute_failed_directions" .Values.bifrost.loadBalancer.rerouteFailedDirections }}
 {{- end }}
@@ -719,6 +735,7 @@ false
 {{- if .timeout }}{{- $_ := set $rule "timeout" .timeout }}{{- end }}
 {{- if hasKey . "max_turns_to_send" }}{{- $_ := set $rule "max_turns_to_send" .max_turns_to_send }}{{- end }}
 {{- if .evaluation_mode }}{{- $_ := set $rule "evaluation_mode" .evaluation_mode }}{{- end }}
+{{- if hasKey . "stream_replay_event_interval_ms" }}{{- $_ := set $rule "stream_replay_event_interval_ms" .stream_replay_event_interval_ms }}{{- end }}
 {{- if .provider_config_ids }}{{- $_ := set $rule "provider_config_ids" .provider_config_ids }}{{- end }}
 {{- $rules = append $rules $rule }}
 {{- end }}
@@ -759,6 +776,29 @@ false
 {{- end }}
 {{- end }}
 {{- $_ := set $config "alerting" .Values.bifrost.alerting }}
+{{- end }}
+{{- /* Webhooks */ -}}
+{{- if .Values.bifrost.webhooks }}
+{{- $seenWebhookNames := list }}
+{{- range .Values.bifrost.webhooks }}
+{{- if not .name }}
+{{- fail "ERROR: bifrost.webhooks[].name is required for every webhook endpoint." }}
+{{- end }}
+{{- if has .name $seenWebhookNames }}
+{{- fail (printf "ERROR: bifrost.webhooks[].name '%s' is used by more than one endpoint. Names must be unique; startup reconciliation identifies endpoints by name." .name) }}
+{{- end }}
+{{- $seenWebhookNames = append $seenWebhookNames .name }}
+{{- if not .url }}
+{{- fail (printf "ERROR: bifrost.webhooks[].url is required for webhook endpoint '%s'." .name) }}
+{{- end }}
+{{- if not .events }}
+{{- fail (printf "ERROR: bifrost.webhooks[].events is required for webhook endpoint '%s'." .name) }}
+{{- end }}
+{{- if ne (len .events) (len (uniq .events)) }}
+{{- fail (printf "ERROR: bifrost.webhooks[].events for endpoint '%s' contains duplicate entries. Each event may be listed at most once." .name) }}
+{{- end }}
+{{- end }}
+{{- $_ := set $config "webhooks" .Values.bifrost.webhooks }}
 {{- end }}
 {{- /* Config Store */ -}}
 {{- if .Values.storage.configStore.enabled }}
@@ -1575,6 +1615,15 @@ false
 {{- end }}
 {{- if .Values.bifrost.auditLogs.hmacKey }}
 {{- $_ := set $auditLogs "hmac_key" .Values.bifrost.auditLogs.hmacKey }}
+{{- end }}
+{{- if .Values.bifrost.auditLogs.archiveInterval }}
+{{- $_ := set $auditLogs "archive_interval" .Values.bifrost.auditLogs.archiveInterval }}
+{{- end }}
+{{- if .Values.bifrost.auditLogs.archiveGracePeriod }}
+{{- $_ := set $auditLogs "archive_grace_period" .Values.bifrost.auditLogs.archiveGracePeriod }}
+{{- end }}
+{{- if .Values.bifrost.auditLogs.archiveMaxObjectBytes }}
+{{- $_ := set $auditLogs "archive_max_object_bytes" (int64 .Values.bifrost.auditLogs.archiveMaxObjectBytes) }}
 {{- end }}
 {{- if .Values.bifrost.auditLogs.objectStorage }}
 {{- $aos := .Values.bifrost.auditLogs.objectStorage }}

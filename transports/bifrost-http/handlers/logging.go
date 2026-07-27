@@ -278,6 +278,8 @@ func (h *LoggingHandler) RegisterRoutes(r *router.Router, middlewares ...schemas
 	r.GET("/api/logs/histogram/cost/by-provider", lib.ChainMiddlewares(h.getLogsProviderCostHistogram, middlewares...))
 	r.GET("/api/logs/histogram/tokens/by-provider", lib.ChainMiddlewares(h.getLogsProviderTokenHistogram, middlewares...))
 	r.GET("/api/logs/histogram/latency/by-provider", lib.ChainMiddlewares(h.getLogsProviderLatencyHistogram, middlewares...))
+	r.GET("/api/logs/histogram/throughput", lib.ChainMiddlewares(h.getLogsThroughputHistogram, middlewares...))
+	r.GET("/api/logs/histogram/throughput/by-provider", lib.ChainMiddlewares(h.getLogsProviderThroughputHistogram, middlewares...))
 	r.GET("/api/logs/histogram/cost/by-dimension", lib.ChainMiddlewares(h.getLogsDimensionCostHistogram, middlewares...))
 	r.GET("/api/logs/histogram/tokens/by-dimension", lib.ChainMiddlewares(h.getLogsDimensionTokenHistogram, middlewares...))
 	r.GET("/api/logs/histogram/latency/by-dimension", lib.ChainMiddlewares(h.getLogsDimensionLatencyHistogram, middlewares...))
@@ -1050,6 +1052,36 @@ func (h *LoggingHandler) getLogsProviderLatencyHistogram(ctx *fasthttp.RequestCt
 	SendJSON(ctx, result)
 }
 
+// getLogsThroughputHistogram handles GET /api/logs/histogram/throughput - Get time-bucketed token-generation throughput (tokens/sec)
+func (h *LoggingHandler) getLogsThroughputHistogram(ctx *fasthttp.RequestCtx) {
+	filters := parseHistogramFilters(ctx)
+	bucketSizeSeconds := calculateBucketSize(filters.StartTime, filters.EndTime)
+
+	result, err := h.logManager.GetThroughputHistogram(ctx, filters, bucketSizeSeconds)
+	if err != nil {
+		logger.Error("failed to get throughput histogram: %v", err)
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Throughput histogram calculation failed: %v", err))
+		return
+	}
+
+	SendJSON(ctx, result)
+}
+
+// getLogsProviderThroughputHistogram handles GET /api/logs/histogram/throughput/by-provider - Get time-bucketed tokens/sec with provider breakdown
+func (h *LoggingHandler) getLogsProviderThroughputHistogram(ctx *fasthttp.RequestCtx) {
+	filters := parseHistogramFilters(ctx)
+	bucketSizeSeconds := calculateBucketSize(filters.StartTime, filters.EndTime)
+
+	result, err := h.logManager.GetProviderThroughputHistogram(ctx, filters, bucketSizeSeconds)
+	if err != nil {
+		logger.Error("failed to get provider throughput histogram: %v", err)
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Provider throughput histogram calculation failed: %v", err))
+		return
+	}
+
+	SendJSON(ctx, result)
+}
+
 // parseDimension extracts and validates the "dimension" query parameter.
 // Returns the validated HistogramDimension and true on success, or sends an error response and returns false.
 func parseDimension(ctx *fasthttp.RequestCtx) (logstore.HistogramDimension, bool) {
@@ -1256,6 +1288,14 @@ func (h *LoggingHandler) getDashboard(ctx *fasthttp.RequestCtx) {
 		result.Overview.Latency = res
 		return nil
 	})
+	g.Go(func() error {
+		res, err := h.logManager.GetThroughputHistogram(gCtx, filters, bucketSizeSeconds)
+		if err != nil {
+			return fmt.Errorf("throughput histogram: %w", err)
+		}
+		result.Overview.Throughput = res
+		return nil
+	})
 
 	// modelHistogram backs both the Overview "Model Usage" card and the Model
 	// Rankings "Top Models" chart; compute it once and share the pointer.
@@ -1292,6 +1332,14 @@ func (h *LoggingHandler) getDashboard(ctx *fasthttp.RequestCtx) {
 			return fmt.Errorf("provider latency histogram: %w", err)
 		}
 		result.ProviderUsage.Latency = res
+		return nil
+	})
+	g.Go(func() error {
+		res, err := h.logManager.GetProviderThroughputHistogram(gCtx, filters, bucketSizeSeconds)
+		if err != nil {
+			return fmt.Errorf("provider throughput histogram: %w", err)
+		}
+		result.ProviderUsage.Throughput = res
 		return nil
 	})
 

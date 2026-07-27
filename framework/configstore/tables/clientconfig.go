@@ -31,7 +31,8 @@ type TableClientConfig struct {
 	MetadataJSON                          string                         `gorm:"type:text" json:"-"` // JSON serialized map[string]any for UI/admin preferences (e.g. onboarding_dismissed). Bypasses config.json sync.
 	InitialPoolSize                       int                            `gorm:"default:300" json:"initial_pool_size"`
 	EnableLogging                         *bool                          `gorm:"default:true" json:"enable_logging"`
-	DisableContentLogging                 bool                           `gorm:"default:false" json:"disable_content_logging"` // DisableContentLogging controls whether sensitive content (inputs, outputs, embeddings, etc.) is logged
+	DisableContentLogging                 bool                           `gorm:"default:false" json:"disable_content_logging"`          // DisableContentLogging controls whether sensitive content (inputs, outputs, embeddings, etc.) is logged
+	RetainContentInObjectStorage          bool                           `gorm:"default:false" json:"retain_content_in_object_storage"` // When content logging is disabled, still offload content to object storage as hidden instead of dropping it
 	DisableDBPingsInHealth                bool                           `gorm:"default:false" json:"disable_db_pings_in_health"`
 	DumpErrorsInConsoleLogs               bool                           `gorm:"default:false" json:"dump_errors_in_console_logs"`       // Dump full error details to the server console logs
 	LogRetentionDays                      int                            `gorm:"default:365" json:"log_retention_days" validate:"min=1"` // Number of days to retain logs (minimum 1 day)
@@ -72,6 +73,9 @@ type TableClientConfig struct {
 	// by AfterFind. The explicit column name avoids GORM deriving the leading
 	// acronym as "o_auth2_..." from the field name.
 	OAuth2ServerConfigJSON string `gorm:"column:oauth2_server_config_json;type:text" json:"-"`
+	// WebhookConfigJSON holds the webhook delivery settings as a JSON blob,
+	// deserialized into Webhooks by AfterFind.
+	WebhookConfigJSON string `gorm:"column:webhook_config_json;type:text" json:"-"`
 
 	// Config hash is used to detect the changes synced from config.json file
 	// Every time we sync the config.json file, we will update the config hash
@@ -90,6 +94,25 @@ type TableClientConfig struct {
 	HeaderFilterConfig *GlobalHeaderFilterConfig `gorm:"-" json:"header_filter_config,omitempty"`
 	Metadata           map[string]any            `gorm:"-" json:"metadata,omitempty"`
 	OAuth2ServerConfig *OAuth2ServerConfig       `gorm:"-" json:"oauth2_server_config,omitempty"`
+	WebhookConfig      *WebhookConfig            `gorm:"-" json:"webhook_config,omitempty"`
+}
+
+// WebhookConfig holds global webhook delivery settings. Delivery
+// tuning (retries, backoff, timeouts, payload caps) lives on each endpoint;
+// only storage policy is global. Zero values fall back to the defaults,
+// read at server startup.
+type WebhookConfig struct {
+	DeliveryHistoryRetentionDays int `json:"delivery_history_retention_days,omitempty"` // How long delivery history rows are kept (default: 30)
+}
+
+// DeliveryHistoryRetention returns the configured retention for webhook
+// delivery history rows, falling back to the default (30 days) when unset.
+// Safe on a nil receiver — nil means all defaults.
+func (w *WebhookConfig) DeliveryHistoryRetention() time.Duration {
+	if w == nil || w.DeliveryHistoryRetentionDays <= 0 {
+		return 30 * 24 * time.Hour
+	}
+	return time.Duration(w.DeliveryHistoryRetentionDays) * 24 * time.Hour
 }
 
 // TableName sets the table name for each model
@@ -188,6 +211,16 @@ func (cc *TableClientConfig) BeforeSave(tx *gorm.DB) error {
 		cc.OAuth2ServerConfigJSON = ""
 	}
 
+	if cc.WebhookConfig != nil {
+		data, err := json.Marshal(cc.WebhookConfig)
+		if err != nil {
+			return err
+		}
+		cc.WebhookConfigJSON = string(data)
+	} else {
+		cc.WebhookConfigJSON = ""
+	}
+
 	return nil
 }
 
@@ -255,6 +288,16 @@ func (cc *TableClientConfig) AfterFind(tx *gorm.DB) error {
 		cc.OAuth2ServerConfig = &authCfg
 	} else {
 		cc.OAuth2ServerConfig = nil
+	}
+
+	if cc.WebhookConfigJSON != "" {
+		var webhooksCfg WebhookConfig
+		if err := json.Unmarshal([]byte(cc.WebhookConfigJSON), &webhooksCfg); err != nil {
+			return err
+		}
+		cc.WebhookConfig = &webhooksCfg
+	} else {
+		cc.WebhookConfig = nil
 	}
 
 	return nil

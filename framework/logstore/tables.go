@@ -116,6 +116,8 @@ type SearchStats struct {
 	UserFacingTotalRequests   int64   `json:"user_facing_total_requests"`              // Count of root requests (fallback_index = 0) used as denominator for UserFacingSuccessRate
 	AverageLatency            float64 `json:"average_latency"`                         // Average latency in milliseconds
 	TotalTokens               int64   `json:"total_tokens"`                            // Total tokens used
+	PromptTokens              int64   `json:"prompt_tokens"`                           // Input tokens used
+	CompletionTokens          int64   `json:"completion_tokens"`                       // Output tokens used
 	TotalCost                 float64 `json:"total_cost"`                              // Total cost in dollars
 	CacheHitRateTotalRequests *int64  `json:"cache_hit_rate_total_requests,omitempty"` // Completed requests used as local-cache hit-rate denominator
 	DirectCacheHits           *int64  `json:"direct_cache_hits,omitempty"`             // Number of direct (exact) semantic cache hits
@@ -135,6 +137,7 @@ type Log struct {
 	Alias                   *string   `gorm:"type:varchar(255);index" json:"alias,omitempty"`          // Set when model was resolved via alias mapping; the original name the caller used
 	CanonicalModelName      *string   `gorm:"type:varchar(255)" json:"canonical_model_name,omitempty"` // Canonical model name configured on the resolved alias, when set
 	AliasModelFamily        *string   `gorm:"type:varchar(255)" json:"alias_model_family,omitempty"`   // Model family configured on the resolved alias, when set
+	ServerSideFallbackModel *string   `gorm:"type:varchar(255)" json:"server_side_fallback_model,omitempty"`
 	NumberOfRetries         int       `gorm:"default:0" json:"number_of_retries"`
 	FallbackIndex           int       `gorm:"default:0" json:"fallback_index"`
 	SelectedKeyID           string    `gorm:"type:varchar(255);index:idx_logs_selected_key_id" json:"selected_key_id"`
@@ -206,7 +209,8 @@ type Log struct {
 	Metadata                *string   `gorm:"type:text" json:"-"`                                                                         // JSON serialized map[string]interface{}
 	IsLargePayloadRequest   bool      `gorm:"default:false" json:"is_large_payload_request"`
 	IsLargePayloadResponse  bool      `gorm:"default:false" json:"is_large_payload_response"`
-	HasObject               bool      `gorm:"default:false" json:"-"` // True when payload is stored in object storage
+	HasObject               bool      `gorm:"default:false" json:"-"`              // True when payload is stored in object storage
+	ContentHidden           bool      `gorm:"default:false" json:"content_hidden"` // True when content logging was disabled for the request, so the payload must never be served back through the API/UI (whether it was retained in object storage or dropped entirely)
 
 	RedactionData          *schemas.RedactionData        `gorm:"-" json:"-"`                           // Transient guardrail redaction data consumed by enterprise logstore wrappers
 	RedactionMapping       string                        `gorm:"type:text" json:"-"`                   // Reversible redaction mapping (encrypted when an encryption key is set), written by enterprise logstore wrappers; deleted with the row
@@ -1070,15 +1074,19 @@ func (l *MCPToolLog) DeserializeFields() error {
 type AsyncJob struct {
 	ID           string                 `gorm:"primaryKey;type:varchar(255)" json:"id"`
 	Status       schemas.AsyncJobStatus `gorm:"type:varchar(50);index:idx_async_jobs_status;not null" json:"status"`
+	RequestID    string                 `gorm:"type:varchar(255)" json:"request_id,omitempty"`
 	RequestType  schemas.RequestType    `gorm:"type:varchar(50);index:idx_async_jobs_request_type;not null" json:"request_type"`
 	Response     string                 `gorm:"type:text" json:"response"`
 	StatusCode   int                    `gorm:"default:0" json:"status_code,omitempty"`
 	Error        string                 `gorm:"type:text" json:"error,omitempty"`
 	VirtualKeyID *string                `gorm:"type:varchar(255);index:idx_async_jobs_vk_id" json:"virtual_key_id,omitempty"`
-	ResultTTL    int                    `gorm:"default:3600" json:"-"` // TTL in seconds, used to calculate ExpiresAt on completion
-	ExpiresAt    *time.Time             `gorm:"index:idx_async_jobs_expires_at" json:"expires_at,omitempty"`
-	CreatedAt    time.Time              `gorm:"index;not null" json:"created_at"`
-	CompletedAt  *time.Time             `json:"completed_at,omitempty"`
+	// WebhookEndpointID references the webhook endpoint to notify when this
+	// job reaches a terminal state, when one was requested at submit time.
+	WebhookEndpointID *string    `gorm:"type:varchar(36)" json:"webhook_endpoint_id,omitempty"`
+	ResultTTL         int        `gorm:"default:3600" json:"-"` // TTL in seconds, used to calculate ExpiresAt on completion
+	ExpiresAt         *time.Time `gorm:"index:idx_async_jobs_expires_at" json:"expires_at,omitempty"`
+	CreatedAt         time.Time  `gorm:"index;not null" json:"created_at"`
+	CompletedAt       *time.Time `json:"completed_at,omitempty"`
 }
 
 // TableName sets the table name for GORM
@@ -1090,6 +1098,7 @@ func (AsyncJob) TableName() string {
 func (j *AsyncJob) ToResponse() *schemas.AsyncJobResponse {
 	resp := &schemas.AsyncJobResponse{
 		ID:          j.ID,
+		RequestID:   j.RequestID,
 		Status:      j.Status,
 		ExpiresAt:   j.ExpiresAt,
 		CreatedAt:   j.CreatedAt,
@@ -1172,6 +1181,56 @@ func (j *AsyncJob) ToResponse() *schemas.AsyncJobResponse {
 	}
 
 	return resp
+}
+
+// WebhookDeliveryOutcome classifies the result of one webhook delivery attempt.
+type WebhookDeliveryOutcome string
+
+const (
+	// WebhookDeliveryOutcomeDelivered means the receiver acknowledged with a 2xx.
+	WebhookDeliveryOutcomeDelivered WebhookDeliveryOutcome = "delivered"
+	// WebhookDeliveryOutcomeRetryableFailure means the attempt failed but the
+	// delivery has retries left.
+	WebhookDeliveryOutcomeRetryableFailure WebhookDeliveryOutcome = "retryable_failure"
+	// WebhookDeliveryOutcomePermanentFailure means the receiver rejected the
+	// delivery with a non-retryable status; no further attempts are made.
+	WebhookDeliveryOutcomePermanentFailure WebhookDeliveryOutcome = "permanent_failure"
+	// WebhookDeliveryOutcomeExhausted means the final allowed attempt failed.
+	WebhookDeliveryOutcomeExhausted WebhookDeliveryOutcome = "exhausted"
+)
+
+// WebhookDelivery records one webhook delivery attempt. Rows are insert-only
+// — every attempt appends a new record and existing rows are never updated —
+// and carry delivery metadata only, never event payloads or receiver
+// response bodies. WebhookID is the delivery's `webhook-id` wire header,
+// shared by every attempt of the same delivery.
+type WebhookDelivery struct {
+	ID         string `gorm:"primaryKey;type:varchar(36)" json:"id"`
+	WebhookID  string `gorm:"type:varchar(36);index:idx_webhook_deliveries_webhook_id;not null" json:"webhook_id"`
+	EndpointID string `gorm:"type:varchar(36);index:idx_webhook_deliveries_endpoint_id;not null" json:"endpoint_id"`
+	AsyncJobID string `gorm:"type:varchar(255);not null" json:"async_job_id"`
+	// RequestID is the async job's inference request id — the same id the
+	// LLM logs record — copied here at attempt time. Empty when the job row
+	// expired before the attempt.
+	RequestID  string                 `gorm:"type:varchar(255)" json:"request_id,omitempty"`
+	Event      tables.WebhookEvent    `gorm:"type:varchar(255);not null" json:"event"`
+	AttemptNo  int                    `gorm:"not null;default:0" json:"attempt_no"`
+	Outcome    WebhookDeliveryOutcome `gorm:"type:varchar(50);not null" json:"outcome"`
+	StatusCode int                    `gorm:"default:0" json:"status_code,omitempty"`
+	Error      string                 `gorm:"type:text" json:"error,omitempty"`
+	CreatedAt  time.Time              `gorm:"index:idx_webhook_deliveries_created_at;not null" json:"created_at"`
+	ExpiresAt  *time.Time             `gorm:"index:idx_webhook_deliveries_expires_at" json:"expires_at,omitempty"`
+}
+
+// TableName sets the table name for GORM
+func (WebhookDelivery) TableName() string {
+	return "webhook_deliveries"
+}
+
+// WebhookDeliverySearchResult represents one page of webhook delivery history.
+type WebhookDeliverySearchResult struct {
+	Deliveries []WebhookDelivery `json:"deliveries"`
+	Pagination PaginationOptions `json:"pagination"`
 }
 
 // MCPToolLogSearchFilters represents the available filters for MCP tool log searches
@@ -1486,6 +1545,48 @@ type ProviderLatencyHistogramResult struct {
 	Providers         []string                         `json:"providers"`
 }
 
+// Throughput (tokens/sec) histogram types
+//
+// TokensPerSecond is an aggregate rate for the bucket: total completion tokens
+// divided by total generation latency in seconds (SUM(completion_tokens) /
+// (SUM(latency_ms)/1000)), computed over terminal rows with latency > 0. It is
+// the "overall" throughput definition (not a mean of per-request rates), which
+// keeps it uniformly computable across streaming and non-streaming requests.
+
+// ThroughputHistogramBucket represents a single time bucket for token-generation throughput
+type ThroughputHistogramBucket struct {
+	Timestamp             time.Time `json:"timestamp"`
+	TokensPerSecond       float64   `json:"tokens_per_second"`
+	TotalCompletionTokens int64     `json:"total_completion_tokens"`
+	TotalRequests         int64     `json:"total_requests"`
+}
+
+// ThroughputHistogramResult represents the throughput histogram query result
+type ThroughputHistogramResult struct {
+	Buckets           []ThroughputHistogramBucket `json:"buckets"`
+	BucketSizeSeconds int64                       `json:"bucket_size_seconds"`
+}
+
+// ProviderThroughputStats represents throughput statistics for a single provider
+type ProviderThroughputStats struct {
+	TokensPerSecond       float64 `json:"tokens_per_second"`
+	TotalCompletionTokens int64   `json:"total_completion_tokens"`
+	TotalRequests         int64   `json:"total_requests"`
+}
+
+// ProviderThroughputHistogramBucket represents a single time bucket for provider throughput data
+type ProviderThroughputHistogramBucket struct {
+	Timestamp  time.Time                          `json:"timestamp"`
+	ByProvider map[string]ProviderThroughputStats `json:"by_provider"`
+}
+
+// ProviderThroughputHistogramResult represents the provider throughput histogram query result
+type ProviderThroughputHistogramResult struct {
+	Buckets           []ProviderThroughputHistogramBucket `json:"buckets"`
+	BucketSizeSeconds int64                               `json:"bucket_size_seconds"`
+	Providers         []string                            `json:"providers"`
+}
+
 // HistogramDimension represents a column that can be used as a grouping dimension in histograms
 type HistogramDimension string
 
@@ -1504,6 +1605,26 @@ var ValidHistogramDimensions = map[HistogramDimension]bool{
 	DimensionCustomer:     true,
 	DimensionUser:         true,
 	DimensionBusinessUnit: true,
+}
+
+// histogramDimensionColumn maps a validated dimension to its SQL column name.
+// Query builders must use the returned literal, never string(dimension): the
+// dimension value originates from a request query parameter, and returning a
+// compile-time constant here is what keeps user input out of SQL text.
+func histogramDimensionColumn(dimension HistogramDimension) (string, bool) {
+	switch dimension {
+	case DimensionProvider:
+		return "provider", true
+	case DimensionTeam:
+		return "team_id", true
+	case DimensionCustomer:
+		return "customer_id", true
+	case DimensionUser:
+		return "user_id", true
+	case DimensionBusinessUnit:
+		return "business_unit_id", true
+	}
+	return "", false
 }
 
 // Dimension-level histogram types (generic version of Provider histograms)
@@ -1616,6 +1737,10 @@ type ModelRankingEntry struct {
 	TotalTokens        int64   `json:"total_tokens"`
 	TotalCost          float64 `json:"total_cost"`
 	AvgLatency         float64 `json:"avg_latency"`
+	// Throughput is aggregate token-generation rate (tokens/sec) for this model:
+	// SUM(completion_tokens) / (SUM(latency_ms)/1000) over successful rows with
+	// latency > 0 — the same definition as the throughput histogram.
+	Throughput float64 `json:"throughput"`
 }
 
 // ModelRankingTrend represents the percentage change compared to the previous period.
@@ -1625,6 +1750,7 @@ type ModelRankingTrend struct {
 	TokensTrend       float64 `json:"tokens_trend"`
 	CostTrend         float64 `json:"cost_trend"`
 	LatencyTrend      float64 `json:"latency_trend"`
+	ThroughputTrend   float64 `json:"throughput_trend"`
 }
 
 // ModelRankingWithTrend combines ranking entry with trend data.
@@ -1725,11 +1851,12 @@ type DimensionRankingWithTrend struct {
 type DimensionRankingResult struct {
 	Rankings  []DimensionRankingWithTrend `json:"rankings"`
 	Dimension RankingDimension            `json:"dimension"`
-	// TotalActualRequests / TotalAttributedRequests are only set for fan-out
-	// dimensions (team / business unit / customer) on Postgres. Attributed
-	// counts credit a request to every dimension value it touches, so their
-	// sum can exceed the real request count; actual is COUNT(DISTINCT id)
-	// over the same attributed population. Zero/omitted when not computed.
+	// TotalActualRequests / TotalAttributedRequests are set for every rollup
+	// dimension (team / business unit / customer / user / virtual key). These use
+	// single-owner attribution (one request → one owner, with owner-less traffic
+	// in an "Unassigned" bucket), so the rollup is additive and the two counts
+	// are equal — both report the real total request count over the window,
+	// including Unassigned.
 	TotalActualRequests     int64 `json:"total_actual_requests,omitempty"`
 	TotalAttributedRequests int64 `json:"total_attributed_requests,omitempty"`
 }
@@ -1759,6 +1886,8 @@ type DashboardOverview struct {
 	Cost     *CostHistogramResult    `json:"cost"`     // Cost over time, broken down by model
 	Models   *ModelHistogramResult   `json:"models"`   // Per-model usage over time
 	Latency  *LatencyHistogramResult `json:"latency"`  // Latency percentiles over time
+	// Throughput holds tokens/sec over time (aggregate rate per bucket).
+	Throughput *ThroughputHistogramResult `json:"throughput"`
 }
 
 // DashboardProviderUsage holds the Provider Usage tab metrics.
@@ -1766,6 +1895,8 @@ type DashboardProviderUsage struct {
 	Cost    *ProviderCostHistogramResult    `json:"cost"`
 	Tokens  *ProviderTokenHistogramResult   `json:"tokens"`
 	Latency *ProviderLatencyHistogramResult `json:"latency"`
+	// Throughput holds per-provider tokens/sec over time.
+	Throughput *ProviderThroughputHistogramResult `json:"throughput"`
 }
 
 // DashboardModelRankings holds the Model Rankings tab data.

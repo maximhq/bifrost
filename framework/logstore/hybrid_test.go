@@ -744,6 +744,119 @@ func TestHybrid_ResponsesInputHistoryPreservesLastUserMessage(t *testing.T) {
 	require.Len(t, found.ResponsesInputHistoryParsed, 2, "full responses history should be hydrated from S3")
 }
 
+func TestHybrid_AttachmentsStrippedFromChatPreview(t *testing.T) {
+	// The last-user-message preview kept in the input_history DB column must not
+	// carry attachment payloads (base64 images/files/audio) — they are replaced
+	// with a placeholder. The full message, base64 included, lives only in
+	// object storage and is hydrated back on FindByID.
+	hybrid, inner, objStore := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+
+	imageData := "data:image/png;base64,FAKEB64IMAGEDATA"
+	pdfData := "FAKEB64PDFDATA"
+	entry := &Log{
+		ID:        "chat-attach-1",
+		Timestamp: time.Now().UTC(),
+		Provider:  "anthropic",
+		Model:     "claude-3",
+		Status:    "success",
+		Object:    "chat.completion",
+		InputHistoryParsed: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+				{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("summarize this pdf")},
+				{Type: schemas.ChatContentBlockTypeImage, ImageURLStruct: &schemas.ChatInputImage{URL: imageData}},
+				{Type: schemas.ChatContentBlockTypeFile, File: &schemas.ChatInputFile{FileData: schemas.Ptr(pdfData), Filename: schemas.Ptr("report.pdf")}},
+			}}},
+		},
+	}
+	require.NoError(t, entry.SerializeFields())
+	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
+	waitForUploads(t, func() bool { return objStore.Len() == 1 })
+
+	// DB preview keeps the text and block structure but not the payloads.
+	dbLog, err := inner.FindByID(ctx, "chat-attach-1")
+	require.NoError(t, err)
+	assert.Contains(t, dbLog.InputHistory, "summarize this pdf")
+	assert.Contains(t, dbLog.InputHistory, attachmentStrippedPlaceholder)
+	assert.Contains(t, dbLog.InputHistory, "report.pdf", "filename should survive stripping")
+	assert.NotContains(t, dbLog.InputHistory, "FAKEB64IMAGEDATA", "base64 image must not reach the DB row")
+	assert.NotContains(t, dbLog.InputHistory, pdfData, "base64 file data must not reach the DB row")
+	assert.Contains(t, dbLog.ContentSummary, "summarize this pdf")
+
+	// Full payload, base64 included, is offloaded to object storage.
+	key := ObjectKey("test", entry.Timestamp, "chat-attach-1")
+	rawPayload, err := objStore.Get(ctx, key)
+	require.NoError(t, err)
+	assert.Contains(t, string(rawPayload), "FAKEB64IMAGEDATA")
+	assert.Contains(t, string(rawPayload), pdfData)
+
+	// Copy-on-write: the caller's parsed structs must be untouched.
+	blocks := entry.InputHistoryParsed[0].Content.ContentBlocks
+	assert.Equal(t, imageData, blocks[1].ImageURLStruct.URL)
+	assert.Equal(t, pdfData, *blocks[2].File.FileData)
+
+	// FindByID hydrates the full message back from object storage.
+	found, err := hybrid.FindByID(ctx, "chat-attach-1")
+	require.NoError(t, err)
+	require.Len(t, found.InputHistoryParsed, 1)
+	assert.Equal(t, imageData, found.InputHistoryParsed[0].Content.ContentBlocks[1].ImageURLStruct.URL)
+}
+
+func TestHybrid_AttachmentsStrippedFromResponsesPreview(t *testing.T) {
+	// Mirrors TestHybrid_AttachmentsStrippedFromChatPreview for the Responses
+	// API preview stored in responses_input_history.
+	hybrid, inner, objStore := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+
+	imageData := "data:image/jpeg;base64,FAKEB64RESPIMAGE"
+	pdfData := "FAKEB64RESPPDF"
+	entry := &Log{
+		ID:        "resp-attach-1",
+		Timestamp: time.Now().UTC(),
+		Provider:  "openai",
+		Model:     "gpt-5.5",
+		Status:    "success",
+		Object:    "responses",
+		ResponsesInputHistoryParsed: []schemas.ResponsesMessage{
+			{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{
+				{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("what is in this file")},
+				{Type: schemas.ResponsesInputMessageContentBlockTypeImage, ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{ImageURL: schemas.Ptr(imageData)}},
+				{Type: schemas.ResponsesInputMessageContentBlockTypeFile, ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{FileData: schemas.Ptr(pdfData), Filename: schemas.Ptr("doc.pdf")}},
+			}}},
+		},
+	}
+	require.NoError(t, entry.SerializeFields())
+	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
+	waitForUploads(t, func() bool { return objStore.Len() == 1 })
+
+	dbLog, err := inner.FindByID(ctx, "resp-attach-1")
+	require.NoError(t, err)
+	assert.Contains(t, dbLog.ResponsesInputHistory, "what is in this file")
+	assert.Contains(t, dbLog.ResponsesInputHistory, attachmentStrippedPlaceholder)
+	assert.Contains(t, dbLog.ResponsesInputHistory, "doc.pdf", "filename should survive stripping")
+	assert.NotContains(t, dbLog.ResponsesInputHistory, "FAKEB64RESPIMAGE", "base64 image must not reach the DB row")
+	assert.NotContains(t, dbLog.ResponsesInputHistory, pdfData, "base64 file data must not reach the DB row")
+	assert.Contains(t, dbLog.ContentSummary, "what is in this file")
+
+	key := ObjectKey("test", entry.Timestamp, "resp-attach-1")
+	rawPayload, err := objStore.Get(ctx, key)
+	require.NoError(t, err)
+	assert.Contains(t, string(rawPayload), "FAKEB64RESPIMAGE")
+	assert.Contains(t, string(rawPayload), pdfData)
+
+	// Copy-on-write: the caller's parsed structs must be untouched.
+	blocks := entry.ResponsesInputHistoryParsed[0].Content.ContentBlocks
+	assert.Equal(t, imageData, *blocks[1].ImageURL)
+	assert.Equal(t, pdfData, *blocks[2].FileData)
+
+	found, err := hybrid.FindByID(ctx, "resp-attach-1")
+	require.NoError(t, err)
+	require.Len(t, found.ResponsesInputHistoryParsed, 1)
+	assert.Equal(t, imageData, *found.ResponsesInputHistoryParsed[0].Content.ContentBlocks[1].ImageURL)
+}
+
 func TestHybrid_TokenUsageSummaryForListPreview(t *testing.T) {
 	// token_usage is offloaded to object storage and cleared from the DB row. The
 	// denormalized prompt/completion/total columns must remain so list queries can

@@ -292,6 +292,28 @@ function ReplicateSection({ config, onChange, disabled }: ProviderSectionProps) 
 	);
 }
 
+function UseAnthropicEndpointsToggleSection({ config, onChange, disabled, providerName }: ProviderSectionProps & { providerName: string }) {
+	return (
+		<div className="space-y-4">
+			<SectionHeader title={`${providerName} overrides`} description={`Override key-level ${providerName} defaults for this deployment.`} />
+			<div className="flex items-start justify-between gap-4 rounded-md border p-3">
+				<div className="space-y-0.5">
+					<label htmlFor="use-anthropic-endpoints-switch" className="text-sm font-medium">Use Anthropic endpoints</label>
+					<p className="text-muted-foreground text-xs">
+						Route chat completions and responses requests through Anthropic-compatible endpoints.
+					</p>
+				</div>
+                <Switch
+                    id="use-anthropic-endpoints-switch"
+                    checked={config.use_anthropic_endpoints ?? false}
+                    onCheckedChange={(checked) => onChange({ use_anthropic_endpoints: checked ? true : undefined })}
+                    disabled={disabled}
+                />
+			</div>
+		</div>
+	);
+}
+
 function ProviderSection({ providerName, ...props }: ProviderSectionProps & { providerName: string }) {
 	switch (providerName) {
 		case "azure":
@@ -304,6 +326,14 @@ function ProviderSection({ providerName, ...props }: ProviderSectionProps & { pr
 			return <BedrockMantleSection {...props} />;
 		case "replicate":
 			return <ReplicateSection {...props} />;
+		case "sgl":
+			return <UseAnthropicEndpointsToggleSection providerName="SGLang" {...props} />;
+        case "deepseek":
+			return <UseAnthropicEndpointsToggleSection providerName="Deepseek" {...props} />;
+        case "fireworks":
+			return <UseAnthropicEndpointsToggleSection providerName="Fireworks" {...props} />;
+        case "vllm":
+			return <UseAnthropicEndpointsToggleSection providerName="vLLM" {...props} />;
 		default:
 			return null;
 	}

@@ -252,6 +252,9 @@ export function RoutingRuleInfoSheet({ rule, open, onOpenChange, onNavigate, has
 	const targets = rule?.targets ?? [];
 	const fallbacks = rule?.fallbacks ?? [];
 	const hasQuery = rule?.query && (rule.query.rules?.length ?? 0) > 0;
+	// A rule can carry a CEL expression without a visual query (e.g. authored via the API).
+	// Only claim "matches all requests" when neither is present; otherwise the CEL section speaks for itself.
+	const hasCel = !!rule?.cel_expression?.trim();
 	const scopeName = useScopeName(rule?.scope ?? "global", rule?.scope_id);
 
 	const { prev: prevKeys, next: nextKeys } = useSheetNavigation({
@@ -325,7 +328,13 @@ export function RoutingRuleInfoSheet({ rule, open, onOpenChange, onNavigate, has
 							{/* Conditions */}
 							<div className="space-y-3">
 								<h3 className="text-sm font-semibold">Conditions</h3>
-								{hasQuery ? <ConditionGroup group={rule.query!} /> : <p className="text-muted-foreground text-sm">Matches all requests</p>}
+								{hasQuery ? (
+										<ConditionGroup group={rule.query!} />
+									) : hasCel ? (
+										<p className="text-muted-foreground text-sm">Defined as a CEL expression below</p>
+									) : (
+										<p className="text-muted-foreground text-sm">Matches all requests</p>
+									)}
 
 								{/* CEL expression */}
 								<div className="space-y-1.5">

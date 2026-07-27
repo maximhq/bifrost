@@ -676,6 +676,7 @@ func (p *OtelPlugin) Inject(ctx context.Context, trace *schemas.Trace) error {
 			}
 			if t.metricsExporter != nil {
 				p.recordMetricsFromTrace(ctx, t.metricsExporter, trace)
+				p.recordMCPMetricsFromTrace(ctx, t.metricsExporter, trace)
 			}
 		}(t)
 	}
@@ -792,6 +793,76 @@ func buildContextAttrs(ctx context.Context, resp *schemas.BifrostResponse, bifro
 		bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceCustomerID),
 		bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceCustomerName),
 	)
+}
+
+// buildMCPSpanAttrs builds the duration-metric dimensions: semconv attrs + governance
+// identity. error.type is appended by the caller on failure. Empty optionals skipped.
+func buildMCPSpanAttrs(span *schemas.Span) []attribute.KeyValue {
+	attrs := span.Attributes
+	out := []attribute.KeyValue{
+		attribute.String(schemas.AttrMCPMethodName, getStringAttr(attrs, schemas.AttrMCPMethodName)),
+	}
+	if tool := getStringAttr(attrs, schemas.AttrToolName); tool != "" {
+		out = append(out, attribute.String(schemas.AttrToolName, tool))
+	}
+	if transport := getStringAttr(attrs, schemas.AttrNetworkTransport); transport != "" {
+		out = append(out, attribute.String(schemas.AttrNetworkTransport, transport))
+	}
+	// Governance identity: bifrost.* span attrs → flat metric label names.
+	for spanKey, labelKey := range mcpGovernanceLabelMap {
+		if v := getStringAttr(attrs, spanKey); v != "" {
+			out = append(out, attribute.String(labelKey, v))
+		}
+	}
+	return out
+}
+
+// mcpGovernanceLabelMap maps bifrost.* span attr keys to the flat metric label names.
+var mcpGovernanceLabelMap = map[string]string{
+	schemas.AttrBifrostVirtualKeyID:     "virtual_key_id",
+	schemas.AttrBifrostVirtualKeyName:   "virtual_key_name",
+	schemas.AttrBifrostTeamID:           "team_id",
+	schemas.AttrBifrostTeamName:         "team_name",
+	schemas.AttrBifrostCustomerID:       "customer_id",
+	schemas.AttrBifrostCustomerName:     "customer_name",
+	schemas.AttrBifrostBusinessUnitID:   "business_unit_id",
+	schemas.AttrBifrostBusinessUnitName: "business_unit_name",
+}
+
+// recordMCPMetricsFromTrace records the duration metric once per MCP client span. Called
+// from Inject alongside recordMetricsFromTrace.
+func (p *OtelPlugin) recordMCPMetricsFromTrace(ctx context.Context, exporter *MetricsExporter, trace *schemas.Trace) {
+	if trace == nil || exporter == nil {
+		return
+	}
+	for _, span := range trace.Spans {
+		// Both MCP kinds are client operations for mcp.client.operation.duration:
+		// SpanKindMCPTool (tool calls) and SpanKindMCPClient (ping/list_tools/connect).
+		if span == nil || (span.Kind != schemas.SpanKindMCPClient && span.Kind != schemas.SpanKindMCPTool) {
+			continue
+		}
+		// Skip un-enriched spans so we never emit an empty mcp.method.name dimension.
+		if getStringAttr(span.Attributes, schemas.AttrMCPMethodName) == "" {
+			continue
+		}
+		mcpAttrs := buildMCPSpanAttrs(span)
+		if span.Status == schemas.SpanStatusError {
+			errorType := getStringAttr(span.Attributes, schemas.AttrErrorTypeSpec)
+			if errorType == "" {
+				errorType = "_OTHER"
+			}
+			mcpAttrs = append(mcpAttrs, attribute.String(schemas.AttrErrorTypeSpec, errorType))
+		}
+		// Prefer tool-execution (CallTool) latency over span wall-time (which covers PostHooks).
+		// Fall back to wall-time when it's absent (e.g. the op failed before returning one).
+		var durationSeconds float64
+		if toolMs := getIntAttr(span.Attributes, schemas.AttrBifrostMCPToolDurationMs); toolMs > 0 {
+			durationSeconds = float64(toolMs) / 1000.0
+		} else if !span.StartTime.IsZero() && !span.EndTime.IsZero() {
+			durationSeconds = span.EndTime.Sub(span.StartTime).Seconds()
+		}
+		exporter.RecordMCPOperationDuration(ctx, durationSeconds, mcpAttrs...)
+	}
 }
 
 // recordMetricsFromTrace extracts metrics data from a completed trace and records them

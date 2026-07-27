@@ -107,6 +107,25 @@ func skipLog(id string, ts time.Time) logstore.Log {
 	}
 }
 
+// bedrockMantleStreamLog mirrors a real bedrock_mantle streaming chat row. The
+// datasheet files openai.gpt-5.5 under responses mode only, so pricing it
+// requires both the bedrock_mantle→bedrock provider fold and the chat→responses
+// mode fallback; without them recalc skips the row as zero-cost.
+func bedrockMantleStreamLog(id string, ts time.Time) logstore.Log {
+	return logstore.Log{
+		ID:        id,
+		Timestamp: ts,
+		Provider:  "bedrock_mantle",
+		Model:     "openai.gpt-5.5",
+		Object:    "chat_completion_stream",
+		TokenUsageParsed: &schemas.BifrostLLMUsage{
+			PromptTokens:     955,
+			CompletionTokens: 3138,
+			TotalTokens:      4093,
+		},
+	}
+}
+
 func newRecalcPlugin(t *testing.T, store *fakeRecalcStore) *LoggerPlugin {
 	t.Helper()
 	return &LoggerPlugin{
@@ -141,6 +160,49 @@ func window(base time.Time) logstore.SearchFilters {
 	start := base.Add(-time.Hour)
 	end := base.Add(time.Hour)
 	return logstore.SearchFilters{StartTime: &start, EndTime: &end}
+}
+
+// TestCalculateCostForLog_BedrockMantleChatStreamUsesResponsesPricing pins the
+// recalc entry point on a stored streaming chat row whose only datasheet entry is
+// filed under responses mode: the cost must come back from the responses rates
+// rather than zero.
+func TestCalculateCostForLog_BedrockMantleChatStreamUsesResponsesPricing(t *testing.T) {
+	p := newRecalcPlugin(t, newFakeRecalcStore(nil))
+	entry := bedrockMantleStreamLog("mantle-1", time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC))
+
+	cost, err := p.calculateCostForLog(&entry)
+	if err != nil {
+		t.Fatalf("calculateCostForLog() error = %v", err)
+	}
+	// openai.gpt-5.5 testdata rates (responses mode): input 5.5e-6, output 3.3e-5.
+	want := 955*5.5e-6 + 3138*3.3e-5
+	if diff := cost - want; diff < -1e-9 || diff > 1e-9 {
+		t.Fatalf("cost = %v, want %v (responses-mode rates via the chat→responses fallback)", cost, want)
+	}
+}
+
+// TestRunCostRecalcJob_BackfillsBedrockMantleStreamRow drives the full
+// missing-cost recalc job over an uncosted bedrock_mantle streaming row and
+// proves it is now backfilled instead of counted as skipped.
+func TestRunCostRecalcJob_BackfillsBedrockMantleStreamRow(t *testing.T) {
+	base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	store := newFakeRecalcStore([]logstore.Log{bedrockMantleStreamLog("mantle-1", base)})
+	p := newRecalcPlugin(t, store)
+
+	final, _, err := runJob(t, p, CostRecalcJobMeta{Filters: window(base), MissingCostOnly: true, Total: 1})
+	if err != nil {
+		t.Fatalf("RunCostRecalcJob() error = %v", err)
+	}
+	if final.Updated != 1 {
+		t.Errorf("Updated = %d, want 1", final.Updated)
+	}
+	if final.Skipped != 0 {
+		t.Errorf("Skipped = %d, want 0 (the row must no longer resolve to zero cost)", final.Skipped)
+	}
+	want := 955*5.5e-6 + 3138*3.3e-5
+	if diff := store.cost["mantle-1"] - want; diff < -1e-9 || diff > 1e-9 {
+		t.Errorf("persisted cost = %v, want %v", store.cost["mantle-1"], want)
+	}
 }
 
 // TestRunCostRecalcJob_FullRecalcTiePagination proves the offset cursor walks

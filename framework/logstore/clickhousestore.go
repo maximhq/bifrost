@@ -499,6 +499,34 @@ func (s *ClickHouseLogStore) DeleteStaleAsyncJobs(ctx context.Context, staleSinc
 	}
 }
 
+// DeleteExpiredWebhookDeliveries deletes webhook delivery history whose
+// expiry has passed. Overridden for the same reason as DeleteLogsBatch:
+// mutation deletes report 0 rows affected, so ids are selected first and
+// their count returned.
+func (s *ClickHouseLogStore) DeleteExpiredWebhookDeliveries(ctx context.Context) (int64, error) {
+	now := time.Now().UTC()
+	const batchLimit = 100
+	var total int64
+	for {
+		var ids []string
+		if err := s.db.WithContext(ctx).Model(&WebhookDelivery{}).Select("id").
+			Where("expires_at IS NOT NULL AND expires_at < ?", now).
+			Limit(batchLimit).Pluck("id", &ids).Error; err != nil {
+			return total, err
+		}
+		if len(ids) == 0 {
+			return total, nil
+		}
+		if err := s.db.WithContext(ctx).Where("id IN ?", ids).Delete(&WebhookDelivery{}).Error; err != nil {
+			return total, err
+		}
+		total += int64(len(ids))
+		if len(ids) < batchLimit {
+			return total, nil
+		}
+	}
+}
+
 // UpdateAsyncJob applies a column->value map to an async job row via
 // read-modify-write.
 func (s *ClickHouseLogStore) UpdateAsyncJob(ctx context.Context, id string, updates map[string]interface{}) error {

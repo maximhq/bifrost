@@ -50,7 +50,7 @@ helm upgrade bifrost bifrost/bifrost --reuse-values -f governance-auth-values.ya
 
 ## Budgets
 
-Spending caps that reset on a configurable period. Budgets are referenced by ID from virtual keys, teams, customers, or providers.
+Spending caps that reset on a configurable period. Team-owned budgets declare `team_id` on the budget itself; teams do not declare `budget_id`.
 
 | Reset duration | Syntax |
 |----------------|--------|
@@ -81,6 +81,12 @@ bifrost:
       - id: "budget-enterprise"
         max_limit: 5000        # $5000 per month
         reset_duration: "1M"
+        team_id: "team-platform"
+
+      - id: "budget-ml"
+        max_limit: 500         # $500 per month
+        reset_duration: "1M"
+        team_id: "team-ml"
 ```
 
 ---
@@ -142,13 +148,11 @@ bifrost:
       - id: "team-platform"
         name: "Platform Team"
         customer_id: "customer-acme"
-        budget_id: "budget-enterprise"
         rate_limit_id: "rate-limit-high"
 
       - id: "team-ml"
         name: "ML Team"
         customer_id: "customer-acme"
-        budget_id: "budget-production"
         rate_limit_id: "rate-limit-standard"
 ```
 

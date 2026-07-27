@@ -430,6 +430,8 @@ func (a *Accumulator) cleanupStreamAccumulator(requestID string, forceEndGate bo
 		// sendOrCancel(errChunk) path on an abandoned consumer channel.
 		acc.gatePendingTerminal = false
 		acc.gateEndError = nil
+		// Orphan cleanup drops the replay buffer, so discard its interval too.
+		acc.gateReplayEventInterval = 0
 		if acc.gateCond != nil {
 			acc.gateCond.Broadcast()
 		}

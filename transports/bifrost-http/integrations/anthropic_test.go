@@ -6,6 +6,7 @@ import (
 
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/valyala/fasthttp"
 )
 
 // TestMustConvertInPassthrough pins the passthrough routing decision that fixes
@@ -137,5 +138,56 @@ func TestAnthropicContainerUploadSurvivesNormalization(t *testing.T) {
 	}
 	if *containerFileID != fileID {
 		t.Errorf("file_id = %q, want %q", *containerFileID, fileID)
+	}
+}
+
+// TestCheckAnthropicPassthrough_OutputConfigEscapeHatch verifies that a Claude Code
+// request carrying a raw output_config.format is forced off the raw-passthrough path
+// (UseRawRequestBody=false) for every provider whose native Anthropic endpoint rejects
+// that field (Vertex, Bedrock Mantle, Azure), so the field gets converted/stripped
+// downstream instead of being forwarded verbatim. Anthropic itself supports the field
+// natively and must stay on the raw path.
+func TestCheckAnthropicPassthrough_OutputConfigEscapeHatch(t *testing.T) {
+	cases := []struct {
+		name       string
+		model      string
+		wantRawOff bool
+	}{
+		{"vertex", "vertex/claude-haiku-4-5", true},
+		{"bedrock_mantle", "bedrock_mantle/claude-haiku-4-5", true},
+		{"azure", "azure/claude-haiku-4-5", true},
+		{"anthropic", "anthropic/claude-haiku-4-5", false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reqCtx := &fasthttp.RequestCtx{}
+			reqCtx.Request.Header.SetMethod(fasthttp.MethodPost)
+			reqCtx.Request.Header.Set("user-agent", "claude-code/1.0")
+			reqCtx.Request.Header.Set("x-api-key", "sk-ant-test")
+
+			bifrostCtx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel()
+
+			req := &anthropic.AnthropicMessageRequest{
+				Model:     tc.model,
+				MaxTokens: 1024,
+				OutputConfig: &anthropic.AnthropicOutputConfig{
+					Format: []byte(`{"type":"json_schema","json_schema":{"name":"my_schema"}}`),
+				},
+			}
+
+			if err := checkAnthropicPassthrough(reqCtx, bifrostCtx, req); err != nil {
+				t.Fatalf("checkAnthropicPassthrough: %v", err)
+			}
+
+			useRaw, _ := bifrostCtx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool)
+			if tc.wantRawOff && useRaw {
+				t.Errorf("expected UseRawRequestBody=false for %s (output_config.format unsupported natively), got true", tc.model)
+			}
+			if !tc.wantRawOff && !useRaw {
+				t.Errorf("expected UseRawRequestBody to stay true for %s, got false", tc.model)
+			}
+		})
 	}
 }

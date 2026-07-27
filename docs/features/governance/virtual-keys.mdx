@@ -281,10 +281,12 @@ curl -X POST http://localhost:8080/api/governance/teams \
   -d '{
     "name": "Engineering Team",
     "customer_id": "customer-acme-corp",
-    "budget": {
-      "max_limit": 500.00,
-      "reset_duration": "1M"
-    }
+    "budgets": [
+      {
+        "max_limit": 500.00,
+        "reset_duration": "1M"
+      }
+    ]
   }'
 ```
 
@@ -294,10 +296,12 @@ curl -X PUT http://localhost:8080/api/governance/teams/{team_id} \
   -H "Content-Type: application/json" \
   -d '{
     "name": "Updated Engineering Team",
-    "budget": {
-      "max_limit": 750.00,
-      "reset_duration": "1M"
-    }
+    "budgets": [
+      {
+        "max_limit": 750.00,
+        "reset_duration": "1M"
+      }
+    ]
   }'
 ```
 
@@ -325,14 +329,12 @@ curl -X DELETE http://localhost:8080/api/governance/teams/{team_id}
       {
         "id": "team-eng-001",
         "name": "Engineering Team",
-        "customer_id": "customer-acme-corp",
-        "budget_id": "budget-team-eng"
+        "customer_id": "customer-acme-corp"
       },
       {
         "id": "team-sales-001", 
         "name": "Sales Team",
-        "customer_id": "customer-acme-corp",
-        "budget_id": "budget-team-sales"
+        "customer_id": "customer-acme-corp"
       }
     ],
     "budgets": [
@@ -341,19 +343,23 @@ curl -X DELETE http://localhost:8080/api/governance/teams/{team_id}
         "max_limit": 500.00,
         "reset_duration": "1M",
         "current_usage": 0.0,
-        "last_reset": "2025-01-01T00:00:00Z"
+        "last_reset": "2025-01-01T00:00:00Z",
+        "team_id": "team-eng-001"
       },
       {
         "id": "budget-team-sales",
         "max_limit": 250.00,
         "reset_duration": "1M", 
         "current_usage": 0.0,
-        "last_reset": "2025-01-01T00:00:00Z"
+        "last_reset": "2025-01-01T00:00:00Z",
+        "team_id": "team-sales-001"
       }
     ]
   }
 }
 ```
+
+Team budgets are owned from the budget side: set `team_id` on each entry in `governance.budgets`. Do not add `budget_id` to a team. A team can own multiple budgets as long as their reset durations are unique.
 
 </Tab>
 </Tabs>
@@ -503,11 +509,11 @@ By default governance is optional, meaning that if the virtual key header is not
 <Tabs group="enforce-governance-header">
 <Tab title="Web UI">
 
-1. Go to **Config** → **Security**
+1. Go to **Settings** → **Security**.
+2. Turn on **Enable Auth on Inference**. In OSS, this toggle is labeled **Enforce Virtual Keys on Inference**.
+3. Click **Save Changes**.
 
-2. Check the **Enforce Virtual Keys** checkbox
-
-![Enforce Virtual Keys](../../media/ui-enforce-virtual-keys.png)
+![Enable Auth on Inference](../../media/ui-enable-auth-on-inference.png)
 
 </Tab>
 <Tab title="API">
@@ -535,7 +541,7 @@ curl -X PUT http://localhost:8080/api/config \
 </Tab>
 </Tabs>
 
-When the governance header is enforced, the request will be rejected if the `x-bf-vk` header is not present.
+In OSS, enabling this setting makes a valid virtual key mandatory for every inference request. Requests without one are rejected.
 
 ### Key Expiry
 

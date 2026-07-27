@@ -531,6 +531,19 @@ const (
 	MCPConnectionTypeInProcess MCPConnectionType = "inprocess" // In-process (in-memory) connection
 )
 
+// OTelNetworkTransport returns the OTel semconv network.transport value: stdio→"pipe",
+// http/sse→"tcp". InProcess has none, so it returns "" and callers omit the attribute.
+func (c MCPConnectionType) OTelNetworkTransport() string {
+	switch c {
+	case MCPConnectionTypeSTDIO:
+		return "pipe"
+	case MCPConnectionTypeHTTP, MCPConnectionTypeSSE:
+		return "tcp"
+	default:
+		return ""
+	}
+}
+
 // MCPStdioConfig defines how to launch a STDIO-based MCP server.
 type MCPStdioConfig struct {
 	Command string   `json:"command"` // Executable command to run

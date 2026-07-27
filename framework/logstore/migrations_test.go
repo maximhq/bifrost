@@ -13,9 +13,15 @@ import (
 	"gorm.io/gorm/logger"
 )
 
+// pgTestSchema is this package's dedicated Postgres schema. Test packages
+// (configstore, configstore/tables, logstore) run in parallel against the same
+// database, so each one works in its own schema to avoid clobbering the
+// others' tables and rows.
+const pgTestSchema = "logstore_test"
+
 // postgresDSN matches the postgres service in tests/docker-compose.yml and
 // framework/docker-compose.yml.
-const postgresDSN = "host=localhost user=bifrost password=bifrost_password dbname=bifrost port=5432 sslmode=disable"
+const postgresDSN = "host=localhost user=bifrost password=bifrost_password dbname=bifrost port=5432 sslmode=disable search_path=" + pgTestSchema
 
 // trySetupPostgresDB attempts to connect to Postgres and returns the connection.
 // Returns nil if Postgres is unavailable.
@@ -34,6 +40,12 @@ func trySetupPostgresDB(t *testing.T) *gorm.DB {
 		return nil
 	}
 	if err := sqlDB.Ping(); err != nil {
+		return nil
+	}
+
+	// All objects live in this package's dedicated schema (via search_path in
+	// the DSN), isolated from other test packages sharing the same database.
+	if err := db.Exec("CREATE SCHEMA IF NOT EXISTS " + pgTestSchema).Error; err != nil {
 		return nil
 	}
 

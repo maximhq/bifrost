@@ -96,6 +96,8 @@ export default function OverviewTab({ hasAccess }: OverviewTabProps) {
 									average_latency: 0,
 									user_facing_total_requests: 0,
 									total_tokens: 0,
+									prompt_tokens: 0,
+									completion_tokens: 0,
 									total_cost: 0,
 								},
 							] as const,

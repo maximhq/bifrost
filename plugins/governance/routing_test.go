@@ -1420,6 +1420,38 @@ func TestCreateCELEnvironment(t *testing.T) {
 	require.NotNil(t, env)
 }
 
+// TestValidateRoutingCELExpression covers the write-time CEL validation used by the
+// routing-rule create/update handlers.
+func TestValidateRoutingCELExpression(t *testing.T) {
+	tests := []struct {
+		name    string
+		expr    string
+		wantErr bool
+	}{
+		{name: "empty is match-all and valid", expr: "", wantErr: false},
+		{name: "whitespace only is valid", expr: "   ", wantErr: false},
+		{name: "simple equality", expr: `model == "claude-sonnet-4-6"`, wantErr: false},
+		{name: "contains", expr: `model.contains("fable")`, wantErr: false},
+		{name: "header lookup", expr: `headers["x-tier"] == "premium"`, wantErr: false},
+		{name: "conjunction", expr: `model == "gpt-4o" && provider == "openai"`, wantErr: false},
+		{name: "unknown identifier", expr: `nonexistent_field == "x"`, wantErr: true},
+		{name: "syntax error unbalanced paren", expr: `model == "gpt-4o" && (provider == "openai"`, wantErr: true},
+		{name: "type mismatch string vs number", expr: `model == 5`, wantErr: true},
+		{name: "dangling operator", expr: `model ==`, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateRoutingCELExpression(tt.expr)
+			if tt.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
 // TestExtractRoutingVariables_BasicContext tests extracting variables from basic context
 func TestExtractRoutingVariables_BasicContext(t *testing.T) {
 	ctx := &RoutingContext{

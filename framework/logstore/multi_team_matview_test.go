@@ -91,18 +91,21 @@ func TestFilterBusinessUnitMatView_CollectsScalarAndArray(t *testing.T) {
 	assert.Equal(t, "BU One", byID["bu-arr1"], "array-only business unit must now appear")
 }
 
-// TestDimensionRankings_ActualVsAttributedTotals pins the semantics of the
-// server-side totals: a request attributed to two teams counts once in
-// TotalActualRequests (COUNT(DISTINCT id)) and twice in
-// TotalAttributedRequests (COUNT(*) over the fan-out), while the per-team
-// rows stay accurate per team.
-func TestDimensionRankings_ActualVsAttributedTotals(t *testing.T) {
+// TestDimensionRankings_SingleOwnerAdditive pins the additive attribution
+// semantics for the org-rollup dimensions: each request is credited to exactly
+// one owner — the scalar team_id — and requests with no scalar owner (e.g. the
+// enterprise user/AP path that only populates the JSON array) fall into a
+// synthetic "Unassigned" bucket rather than being fanned out to every team they
+// touch. This keeps the per-team spend additive so the Teams tab reconciles to
+// the org total, and TotalActualRequests == TotalAttributedRequests.
+func TestDimensionRankings_SingleOwnerAdditive(t *testing.T) {
 	store, db := setupPerfTestDB(t)
 	ctx := context.Background()
 	now := time.Now().UTC()
 
-	// One request attributed to two teams + one scalar single-team request:
-	// 2 actual requests, 3 attributed team-credits.
+	// Row 1: array-only multi-team request with no scalar owner -> Unassigned.
+	// Row 2: single-team request with a scalar owner -> t-a.
+	// Additive: 2 requests total, each counted once.
 	insertTeamBULog(t, db, now, "u-1", "", "", `["t-a","t-b"]`, `["Team A","Team B"]`, "", "", "", "")
 	insertTeamBULog(t, db, now, "u-1", "t-a", "Team A", "", "", "", "", "", "")
 
@@ -111,15 +114,73 @@ func TestDimensionRankings_ActualVsAttributedTotals(t *testing.T) {
 	res, err := store.GetDimensionRankings(ctx, SearchFilters{StartTime: &start, EndTime: &end}, RankingDimensionTeam)
 	require.NoError(t, err)
 
-	assert.Equal(t, int64(2), res.TotalActualRequests, "actual must count distinct requests, not fan-out rows")
-	assert.Equal(t, int64(3), res.TotalAttributedRequests, "attributed must credit a request once per team it touches")
+	assert.Equal(t, int64(2), res.TotalActualRequests, "actual counts every terminal request, including Unassigned")
+	assert.Equal(t, int64(2), res.TotalAttributedRequests, "single-owner attribution is additive: attributed == actual")
 
 	requestsByID := make(map[string]int64, len(res.Rankings))
+	namesByID := make(map[string]string, len(res.Rankings))
+	var summedRequests int64
 	for _, r := range res.Rankings {
 		requestsByID[r.ID] = r.TotalRequests
+		namesByID[r.ID] = r.Name
+		summedRequests += r.TotalRequests
 	}
-	assert.Equal(t, int64(2), requestsByID["t-a"], "t-a is touched by both requests (array + scalar fallback)")
-	assert.Equal(t, int64(1), requestsByID["t-b"], "t-b is touched only by the multi-team request")
+	assert.Equal(t, int64(1), requestsByID["t-a"], "t-a owns exactly its one scalar-attributed request")
+	assert.Equal(t, int64(1), requestsByID[unassignedDimensionID], "the array-only request with no scalar owner is Unassigned")
+	assert.Equal(t, unassignedDimensionName, namesByID[unassignedDimensionID], "the unassigned bucket gets a stable display name")
+	_, hasTB := requestsByID["t-b"]
+	assert.False(t, hasTB, "no fan-out: t-b is never credited a request it doesn't scalar-own")
+	assert.Equal(t, res.TotalActualRequests, summedRequests, "rows must sum to the org total (additive rollup)")
+}
+
+// TestDimensionRankings_VirtualKeyUnassigned pins that the Unassigned bucket now
+// also applies to the non-org rollup dimensions (here virtual_key; user is
+// identical). Requests with no scalar virtual_key_id collapse into "Unassigned"
+// instead of being dropped, so the per-key breakdown stays additive and
+// reconciles to the org total.
+func TestDimensionRankings_VirtualKeyUnassigned(t *testing.T) {
+	store, db := setupPerfTestDB(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	// Row 1: request through a virtual key -> vk-1. Row 2: direct API-key
+	// request with no virtual key -> Unassigned.
+	err := db.Exec(`
+		INSERT INTO logs (id, timestamp, object_type, provider, model, status,
+			virtual_key_id, virtual_key_name, created_at, latency, cost,
+			prompt_tokens, completion_tokens, total_tokens)
+		VALUES (?, ?, 'chat_completion', 'openai', 'gpt-4', 'success',
+			'vk-1', 'Prod Key', ?, 100, 0.01, 10, 5, 15)
+	`, uuid.New().String(), now, now).Error
+	require.NoError(t, err)
+	err = db.Exec(`
+		INSERT INTO logs (id, timestamp, object_type, provider, model, status,
+			created_at, latency, cost, prompt_tokens, completion_tokens, total_tokens)
+		VALUES (?, ?, 'chat_completion', 'openai', 'gpt-4', 'success',
+			?, 100, 0.01, 10, 5, 15)
+	`, uuid.New().String(), now, now).Error
+	require.NoError(t, err)
+
+	start := now.Add(-time.Hour)
+	end := now.Add(time.Hour)
+	res, err := store.GetDimensionRankings(ctx, SearchFilters{StartTime: &start, EndTime: &end}, RankingDimensionVirtualKey)
+	require.NoError(t, err)
+
+	assert.Equal(t, int64(2), res.TotalActualRequests, "additive total includes the Unassigned bucket")
+	assert.Equal(t, res.TotalActualRequests, res.TotalAttributedRequests, "single-owner attribution: attributed == actual")
+
+	requestsByID := make(map[string]int64, len(res.Rankings))
+	namesByID := make(map[string]string, len(res.Rankings))
+	var summed int64
+	for _, r := range res.Rankings {
+		requestsByID[r.ID] = r.TotalRequests
+		namesByID[r.ID] = r.Name
+		summed += r.TotalRequests
+	}
+	assert.Equal(t, int64(1), requestsByID["vk-1"], "the keyed request is credited to its virtual key")
+	assert.Equal(t, int64(1), requestsByID[unassignedDimensionID], "the keyless request falls into Unassigned")
+	assert.Equal(t, unassignedDimensionName, namesByID[unassignedDimensionID], "Unassigned gets a stable display name")
+	assert.Equal(t, res.TotalActualRequests, summed, "rows sum to the org total")
 }
 
 // TestFilterTeamMatView_DACScopeAppliesAfterFanout proves the visibility columns

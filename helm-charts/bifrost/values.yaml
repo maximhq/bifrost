@@ -280,8 +280,18 @@ bifrost:
       - "*"
     enableLogging: true
     disableContentLogging: false
+    # retainContentInObjectStorage -- When content logging is disabled (global setting above or
+    # the x-bf-disable-content-logging header), offload the full content to object storage as
+    # hidden instead of dropping it. Hidden content is never served back through the API/UI: the
+    # database row stays metadata-only and the payload is only readable with direct access to the
+    # bucket. Requires storage.logsStore.objectStorage.enabled: true; without it the content is
+    # dropped as before.
+    # retainContentInObjectStorage: false
     disableDbPingsInHealth: false
     dumpErrorsInConsoleLogs: false
+    # Global webhook delivery settings; per-endpoint tuning lives on each bifrost.webhooks[] entry.
+    # webhookConfig:
+    #   deliveryHistoryRetentionDays: 30   # How long delivery history records are kept before being reaped.
     logRetentionDays: 365
     # Deprecated: use enforceAuthOnInference instead.
     enforceGovernanceHeader: false
@@ -360,6 +370,9 @@ bifrost:
     #       weight: 1
     #       models: ["gpt-4o", "gpt-4o-mini"]  # Restrict key to specific models
     #       use_for_batch_api: false     # Whether this key can be used for batch API
+    #       # use_anthropic_endpoints: false  # deepseek/fireworks/vllm/sgl keys only: route chat completions
+    #                                         # and responses through Anthropic-compatible endpoints (also
+    #                                         # settable per-alias alongside use_deployments_endpoint)
     #     - name: "secondary-key"
     #       value: "env.OPENAI_KEY"     # Reference to environment variable
     #       weight: 1
@@ -372,6 +385,7 @@ bifrost:
     #     retry_backoff_initial_ms: 500                 # Initial retry backoff in ms
     #     retry_backoff_max_ms: 5000                    # Max retry backoff in ms
     #     stream_idle_timeout_in_seconds: 60            # Max wait for next stream chunk (default: 60)
+    #     keep_alive_timeout_in_seconds: 30             # Idle keep-alive for pooled connections; set below the upstream's keep-alive (default: 30)
     #     max_conns_per_host: 5000                      # Max TCP connections per host (default: 5000)
     #     enforce_http2: false                           # Force HTTP/2 on provider connections (e.g. Bedrock)
     #     insecure_skip_verify: false                   # Disable TLS certificate verification (last resort)
@@ -952,6 +966,26 @@ bifrost:
       #     attributeValue: "displayName"
       # provisioningToken: "env.SCIM_PROVISIONING_TOKEN"  # bearer token the IdP presents; generate: openssl rand -base64 32 | tr '+/' '-_' | tr -d '='
       #
+      # # Auth proxy / identity-aware proxy (Enterprise). Shared across every provider above:
+      # # when a Zero Trust / ZTNA proxy fronts the IdP, Bifrost reads the login credential from the
+      # # proxy's header and validates it against the proxy's own keys (not the IdP's).
+      # authProxy:
+      #   enabled: true
+      #   provider: "cloudflare-access"      # cloudflare-access | generic | aws-alb
+      #   mode: "login_only"                 # login_only (default; auth only) | full (also maps roles/teams from token claims)
+      #   # Cloudflare Access / generic OIDC proxy (JWKS):
+      #   issuerUrl: "https://<team>.cloudflareaccess.com"   # required; must be https (env. prefix supported)
+      #   audience: "env.CF_ACCESS_AUD"      # required unless allowedAudiences is set — binds the token to this app
+      #   # headerName: "Cf-Access-Jwt-Assertion"  # defaulted per provider; required for the generic provider
+      #   # jwksUrl: ""                       # explicit JWKS; derived for cloudflare-access, OIDC discovery for generic
+      #   # allowedAudiences: []              # alternative to a single audience
+      #   # userIdClaim: "email"              # identity claim (default: email)
+      #   # AWS ALB (OIDC) instead of the JWKS fields above:
+      #   # provider: "aws-alb"
+      #   # expectedSigner: "arn:aws:elasticloadbalancing:...:loadbalancer/app/..."  # required — pins the ALB signer
+      #   # region: "us-east-1"               # derived from the signer ARN when omitted
+      #   # publicKeyBaseUrl: ""              # override for non-standard partitions (e.g. GovCloud)
+      #
       # Entra (Azure AD) configuration:
       # tenantId: ""
       # clientId: ""
@@ -1049,6 +1083,7 @@ bifrost:
     enabled: false
     # directionSelectionEnabled: true   # Enable adaptive provider selection. Defaults to true; omit to leave on.
     # routeSelectionEnabled: true       # Enable adaptive per-key (route) selection. Defaults to true; omit to leave on.
+    # appendFallbacksToPinned: false    # When a request already carries a provider, append the healthy providers eligible for its model as fallbacks behind any it configured. Defaults to false.
     # rerouteFailedDirections: false    # Re-route to a healthy provider when a pinned direction is unhealthy. Defaults to false.
     # pruneFailedFallbacks: false       # Drop unhealthy directions from a request's configured fallbacks. Defaults to false.
     trackerConfig: {}
@@ -1067,6 +1102,7 @@ bifrost:
       #   timeout: 60        # Timeout in seconds for rule execution (default: 60)
       #   max_turns_to_send: 0
       #   evaluation_mode: "bundled"   # "bundled" (default) | "per_turn" (each turn scanned in isolation; avoids cross-turn false positives, more provider calls)
+      #   stream_replay_event_interval_ms: 25  # Delay between buffered events after an allowed response; 0 sends them immediately
     providers: []
       # - id: 1
       #   provider_name: "bedrock"
@@ -1175,14 +1211,52 @@ bifrost:
   #       # target_type: budget
   #       # target_id: "budget-1"
 
+  # Webhooks: endpoint declarations synced into the database at startup, reconciled by name.
+  # Rendered directly as top-level `webhooks` in config.json.
+  # webhooks:
+  #   - name: "async-jobs"
+  #     url: "https://my-internal-hook.corp/webhooks/async-jobs"
+  #     secret: "env.WEBHOOK_SIGNING_SECRET"   # whsec_ format; generated when omitted
+  #     events: ["async_job.completed", "async_job.failed"]
+  #     headers:
+  #       Authorization: "env.WEBHOOK_AUTH_HEADER"
+  #     include_response: false        # Inline the job response into delivery payloads
+  #     allow_private_network: false   # Permit private-network receivers and plain http
+  #     disabled: false
+  #     max_retries: 4
+  #     retry_backoff_initial_seconds: 30
+  #     retry_backoff_max_seconds: 1800
+  #     attempt_timeout_seconds: 10
+  #     max_response_payload_kbs: 256
+  #     max_concurrent_deliveries: 10
+
   # Audit logs configuration for CADF-compliant activity logging
   auditLogs:
     disabled: false
     hmacKey: ""
-    # Object storage archival for audit events (optional)
-    # When configured, each flushed batch of audit events is written as a JSONL object at
-    # {prefix}/audit-logs/YYYY/MM/DD/HH/{id}.jsonl in addition to the DB.
-    # Set compress: true to gzip the objects ({id}.jsonl.gz).
+    # Object storage archival for audit events (optional).
+    #
+    # When configured, a background job periodically copies audit events from the
+    # database to object storage, one closed time window at a time. Each window is
+    # written as one or more JSONL part objects plus a manifest that lists them:
+    #   {prefix}/audit-logs/YYYY/MM/DD/<start>-<end>/part-00000.jsonl[.gz]
+    #   {prefix}/audit-logs/YYYY/MM/DD/<start>-<end>/manifest.json[.gz]
+    # Read the manifest to enumerate a window; ignore any object it does not list.
+    #
+    # The database remains the source of truth. Archival never deletes rows —
+    # retentionDays handles that independently. In a cluster, only the leader
+    # archives. Events written before archival is first enabled are not backfilled.
+    #
+    # Window size and job period. Default 24h, minimum 5m.
+    # archiveInterval: "24h"
+    # A window only closes once (now - grace) has passed its end, which absorbs
+    # clock skew and late inserts. Must be less than archiveInterval. Default 15m.
+    # archiveGracePeriod: "15m"
+    # Roll a new part object once the current part reaches this many uncompressed
+    # bytes. Default 134217728 (128MiB). Raising it produces fewer, larger objects;
+    # note peak memory on the archiving node is roughly 2x this when compress: true,
+    # so size pod memory limits accordingly.
+    # archiveMaxObjectBytes: 134217728
     # objectStorage:
     #   type: s3        # Options: s3, gcs
     #   bucket: ""      # Bucket name

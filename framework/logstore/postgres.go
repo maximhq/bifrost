@@ -199,9 +199,25 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 		if db.Dialector.Name() != "postgres" {
 			return
 		}
-		if err := ensureMatViews(context.Background(), db); err != nil {
+		maintained, err := ensureMatViews(context.Background(), db)
+		if err != nil {
 			logger.Warn(fmt.Sprintf("logstore: matview creation failed: %s (dashboard queries will use raw tables)", err))
 			return
+		}
+		if !maintained {
+			// Another replica owns the create/repair and its rebuild may not have
+			// landed, so the views we see can still be an older schema version.
+			// Confirm the shape before enabling the read path; if it isn't current
+			// the refresher flips the flag once it is.
+			shapesOK, err := matViewShapesReady(context.Background(), db)
+			if err != nil {
+				logger.Warn(fmt.Sprintf("logstore: matview shape check failed: %s (dashboard queries will use raw tables)", err))
+			}
+			if err != nil || !shapesOK {
+				logger.Info("logstore: matview maintenance is owned by another replica and views are not current yet (dashboard queries will use raw tables until they are)")
+				startMatViewRefresher(context.Background(), db, resolveMatViewRefreshInterval(config.MatViewRefreshInterval, logger), logger, &d.matViewsReady)
+				return
+			}
 		}
 		if err := refreshMatViews(context.Background(), db); err != nil {
 			logger.Warn(fmt.Sprintf("logstore: initial matview refresh failed: %s", err))

@@ -115,11 +115,12 @@ function expectedCost(entry, row) {
   return nonCached * input + cachedRead * cr + cachedWrite * cw + completion * output;
 }
 
-// A streaming cancel is always logged status=error; a non-streaming cancel may finish
-// server-side and log success — accept either for non-stream.
+// A streaming cancel logs status=cancelled (dedicated state since #4831; status=error
+// on older builds); a non-streaming cancel may instead finish server-side and log
+// success — accept any of these for non-stream.
 function statusIsCancelOutcome(status, nonStream) {
-  if (nonStream) return status === "error" || status === "success";
-  return status === "error";
+  if (nonStream) return status === "error" || status === "success" || status === "cancelled";
+  return status === "error" || status === "cancelled";
 }
 
 // Compare the logged cost against the datasheet-recomputed cost. Returns
@@ -397,10 +398,10 @@ if (skipCostCheck) {
         if (!row) {
           r.costCheck = "FAIL"; r.costDetail = `no log row for ${r.requestId}`; costFailures++;
         } else if (!statusIsCancelOutcome(row.status, r.nonStream)) {
-          // A streaming cancel is always logged status=error. A non-streaming cancel may
-          // instead finish the upstream call server-side and log success — either way it
-          // must be billed, so we accept both for non-stream and key the cost rules off
-          // the provider, not the status.
+          // A streaming cancel logs status=cancelled (#4831; error on older builds).
+          // A non-streaming cancel may instead finish the upstream call server-side and
+          // log success — either way it must be billed, so we accept all of these for
+          // non-stream and key the cost rules off the provider, not the status.
           r.costCheck = "FAIL"; r.costDetail = `status=${row.status}, unexpected for ${kind} cancel`; costFailures++;
         } else {
           const cost = Number(row.cost || 0), tokens = Number(row.total_tokens || 0);

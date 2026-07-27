@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/openai"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
@@ -33,7 +34,7 @@ func NewDeepSeekProvider(config *schemas.ProviderConfig, logger schemas.Logger) 
 		ReadTimeout:         requestTimeout,
 		WriteTimeout:        requestTimeout,
 		MaxConnsPerHost:     config.NetworkConfig.MaxConnsPerHost,
-		MaxIdleConnDuration: 30 * time.Second,
+		MaxIdleConnDuration: time.Second * time.Duration(config.NetworkConfig.KeepAliveTimeoutInSeconds),
 		MaxConnWaitTimeout:  requestTimeout,
 		MaxConnDuration:     time.Second * time.Duration(schemas.DefaultMaxConnDurationInSeconds),
 		ConnPoolStrategy:    fasthttp.FIFO,
@@ -58,6 +59,69 @@ func NewDeepSeekProvider(config *schemas.ProviderConfig, logger schemas.Logger) 
 		sendBackRawRequest:  config.SendBackRawRequest,
 		sendBackRawResponse: config.SendBackRawResponse,
 	}, nil
+}
+
+func (provider *DeepSeekProvider) anthropicHeaders(key schemas.Key) map[string]string {
+	headers := map[string]string{}
+	if key.Value.GetValue() != "" {
+		headers["x-api-key"] = key.Value.GetValue()
+	}
+	return headers
+}
+
+// disableThinkingForForcedToolChoice disables thinking when it would otherwise be
+// rejected by DeepSeek's OpenAI-compatible endpoint. This covers two distinct cases:
+//
+//  1. A forced tool_choice ("required"/"any", or the struct form pinning a specific
+//     function/custom/allowed_tools call) — DeepSeek rejects a forced tool_choice while
+//     thinking is enabled (the default).
+//  2. A conversation that already contains an assistant turn without reasoning_content
+//     (e.g. synthetic/injected history, or a turn produced while thinking was off) —
+//     DeepSeek requires prior reasoning_content to be replayed once thinking is on, so if
+//     any assistant turn is missing it, thinking must stay off for the whole request.
+func disableThinkingForForcedToolChoice(request *schemas.BifrostChatRequest) {
+	if request.Params == nil {
+		return
+	}
+
+	disable := false
+
+	if tc := request.Params.ToolChoice; tc != nil {
+		switch {
+		case tc.ChatToolChoiceStr != nil:
+			switch schemas.ChatToolChoiceType(*tc.ChatToolChoiceStr) {
+			case schemas.ChatToolChoiceTypeRequired, schemas.ChatToolChoiceTypeAny:
+				disable = true
+			}
+		case tc.ChatToolChoiceStruct != nil:
+			switch tc.ChatToolChoiceStruct.Type {
+			case schemas.ChatToolChoiceTypeRequired, schemas.ChatToolChoiceTypeAny,
+				schemas.ChatToolChoiceTypeFunction, schemas.ChatToolChoiceTypeCustom,
+				schemas.ChatToolChoiceTypeAllowedTools:
+				disable = true
+			}
+		}
+	}
+
+	if !disable {
+		for _, msg := range request.Input {
+			if msg.Role != schemas.ChatMessageRoleAssistant {
+				continue
+			}
+			if msg.ChatAssistantMessage == nil || msg.ChatAssistantMessage.Reasoning == nil {
+				disable = true
+				break
+			}
+		}
+	}
+
+	if !disable {
+		return
+	}
+	if request.Params.ExtraParams == nil {
+		request.Params.ExtraParams = make(map[string]any, 1)
+	}
+	request.Params.ExtraParams["thinking"] = map[string]any{"type": "disabled"}
 }
 
 // GetProviderKey returns the provider identifier for DeepSeek.
@@ -126,9 +190,28 @@ func (provider *DeepSeekProvider) TextCompletionStream(ctx *schemas.BifrostConte
 	)
 }
 
-// ChatCompletion performs a chat completion request to the DeepSeek API.
+// ChatCompletion performs a chat completion request to DeepSeek's Anthropic-compatible API.
 func (provider *DeepSeekProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	if anthropic.ResolveUseAnthropicEndpoints(ctx, key) {
+		return anthropic.HandleAnthropicChatCompletionRequest(
+			ctx,
+			provider.client,
+			provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/anthropic/v1/messages"),
+			request,
+			anthropic.AnthropicRequestBuildConfig{
+				Provider:                  schemas.DeepSeek,
+				ShouldSendBackRawRequest:  provider.sendBackRawRequest,
+				ShouldSendBackRawResponse: provider.sendBackRawResponse,
+			},
+			provider.anthropicHeaders(key),
+			provider.networkConfig.ExtraHeaders,
+			nil,
+			provider.logger,
+		)
+	}
+
 	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	disableThinkingForForcedToolChoice(request)
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
 		provider.client,
@@ -146,12 +229,43 @@ func (provider *DeepSeekProvider) ChatCompletion(ctx *schemas.BifrostContext, ke
 	)
 }
 
-// ChatCompletionStream performs a streaming chat completion request to the DeepSeek API.
+// ChatCompletionStream performs a streaming chat completion request to DeepSeek's Anthropic-compatible API.
 // It supports real-time streaming of responses using Server-Sent Events (SSE).
-// Uses DeepSeek's OpenAI-compatible streaming format.
 // Returns a channel containing BifrostStreamChunk objects representing the stream or an error if the request fails.
 func (provider *DeepSeekProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	if anthropic.ResolveUseAnthropicEndpoints(ctx, key) {
+		jsonData, bifrostErr := anthropic.BuildAnthropicChatRequestBody(ctx, request, anthropic.AnthropicRequestBuildConfig{
+			Provider:                  schemas.DeepSeek,
+			IsStreaming:               true,
+			ShouldSendBackRawRequest:  provider.sendBackRawRequest,
+			ShouldSendBackRawResponse: provider.sendBackRawResponse,
+		})
+		if bifrostErr != nil {
+			return nil, bifrostErr
+		}
+
+		return anthropic.HandleAnthropicChatCompletionStreaming(
+			ctx,
+			provider.streamingClient,
+			provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/anthropic/v1/messages"),
+			jsonData,
+			provider.anthropicHeaders(key),
+			provider.networkConfig.ExtraHeaders,
+			provider.networkConfig.StreamIdleTimeoutInSeconds,
+			provider.networkConfig.BetaHeaderOverrides,
+			providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+			providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+			schemas.DeepSeek,
+			postHookRunner,
+			nil,
+			nil,
+			provider.logger,
+			postHookSpanFinalizer,
+		)
+	}
+
 	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	disableThinkingForForcedToolChoice(request)
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
 		provider.streamingClient,
@@ -175,7 +289,26 @@ func (provider *DeepSeekProvider) ChatCompletionStream(ctx *schemas.BifrostConte
 	)
 }
 
+// Responses performs a Responses API request against DeepSeek's Anthropic-compatible endpoint.
 func (provider *DeepSeekProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+	if anthropic.ResolveUseAnthropicEndpoints(ctx, key) {
+		return anthropic.HandleAnthropicResponsesRequest(
+			ctx,
+			provider.client,
+			provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/anthropic/v1/messages"),
+			request,
+			anthropic.AnthropicRequestBuildConfig{
+				Provider:                  schemas.DeepSeek,
+				ShouldSendBackRawRequest:  provider.sendBackRawRequest,
+				ShouldSendBackRawResponse: provider.sendBackRawResponse,
+			},
+			provider.anthropicHeaders(key),
+			provider.networkConfig.ExtraHeaders,
+			nil,
+			provider.logger,
+		)
+	}
+
 	chatResponse, err := provider.ChatCompletion(ctx, key, request.ToChatRequest())
 	if err != nil {
 		return nil, err
@@ -186,8 +319,39 @@ func (provider *DeepSeekProvider) Responses(ctx *schemas.BifrostContext, key sch
 	return response, nil
 }
 
-// ResponsesStream performs a streaming responses request to the DeepSeek API.
+// ResponsesStream performs a streaming Responses API request to DeepSeek's Anthropic-compatible endpoint.
 func (provider *DeepSeekProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	if anthropic.ResolveUseAnthropicEndpoints(ctx, key) {
+		jsonData, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, request, anthropic.AnthropicRequestBuildConfig{
+			Provider:                  schemas.DeepSeek,
+			IsStreaming:               true,
+			ShouldSendBackRawRequest:  provider.sendBackRawRequest,
+			ShouldSendBackRawResponse: provider.sendBackRawResponse,
+		})
+		if bifrostErr != nil {
+			return nil, bifrostErr
+		}
+
+		return anthropic.HandleAnthropicResponsesStream(
+			ctx,
+			provider.streamingClient,
+			provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/anthropic/v1/messages"),
+			jsonData,
+			provider.anthropicHeaders(key),
+			provider.networkConfig.ExtraHeaders,
+			provider.networkConfig.StreamIdleTimeoutInSeconds,
+			provider.networkConfig.BetaHeaderOverrides,
+			providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+			providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+			provider.GetProviderKey(),
+			postHookRunner,
+			nil,
+			nil,
+			provider.logger,
+			postHookSpanFinalizer,
+		)
+	}
+
 	ctx.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
 	return provider.ChatCompletionStream(
 		ctx,
@@ -343,9 +507,22 @@ func (provider *DeepSeekProvider) BatchResults(_ *schemas.BifrostContext, _ []sc
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchResultsRequest, provider.GetProviderKey())
 }
 
-// CountTokens is not supported by the DeepSeek provider.
-func (provider *DeepSeekProvider) CountTokens(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostResponsesRequest) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.CountTokensRequest, provider.GetProviderKey())
+// CountTokens counts tokens for a request against DeepSeek's Anthropic-compatible messages endpoint.
+func (provider *DeepSeekProvider) CountTokens(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
+	return anthropic.HandleAnthropicCountTokensRequest(
+		ctx,
+		provider.client,
+		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/anthropic/v1/messages/count_tokens"),
+		request,
+		anthropic.AnthropicRequestBuildConfig{
+			Provider:                  schemas.DeepSeek,
+			ShouldSendBackRawRequest:  provider.sendBackRawRequest,
+			ShouldSendBackRawResponse: provider.sendBackRawResponse,
+		},
+		provider.anthropicHeaders(key),
+		provider.networkConfig.ExtraHeaders,
+		provider.logger,
+	)
 }
 
 // Compaction is not supported by the DeepSeek provider.

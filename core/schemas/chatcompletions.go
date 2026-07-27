@@ -1358,7 +1358,8 @@ type ChatMCPServer struct {
 
 // ChatInputImage represents image data in a message.
 type ChatInputImage struct {
-	URL    string  `json:"url"`
+	URL    string  `json:"url,omitempty"`
+	FileID *string `json:"file_id,omitempty"` // Reference to an uploaded file (in place of URL)
 	Detail *string `json:"detail,omitempty"`
 }
 
@@ -1646,6 +1647,11 @@ type BifrostLLMUsage struct {
 	// the tier multiplier. json:"-" keeps them out of every serialized usage payload.
 	Speed        *string `json:"-"`
 	InferenceGeo *string `json:"-"`
+	// Model that actually served the turn after a server-side fallback handoff.
+	// Carried here for the same reason as the two above: the bare-usage billing path
+	// (CalculateCostForUsage) never sees RoutingInfo, so without it a fallback-served
+	// turn is priced at the requested model's rates.
+	ServerSideFallbackModel *string `json:"-"`
 }
 
 type ChatPromptTokensDetails struct {

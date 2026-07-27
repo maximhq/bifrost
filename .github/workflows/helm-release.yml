@@ -158,8 +158,8 @@ jobs:
         run: |
           helm push helm-charts/bifrost-${{ steps.chart-version.outputs.version }}.tgz oci://ghcr.io/maximhq/helm-charts
 
-      - name: Push Helm chart as OCI artifact to Docker Hub
-        if: steps.check-release.outputs.exists == 'false'
-        continue-on-error: true
-        run: |
-          helm push helm-charts/bifrost-${{ steps.chart-version.outputs.version }}.tgz oci://registry-1.docker.io/maximhq
+      # - name: Push Helm chart as OCI artifact to Docker Hub
+      #   if: steps.check-release.outputs.exists == 'false'
+      #   continue-on-error: true
+      #   run: |
+      #     helm push helm-charts/bifrost-${{ steps.chart-version.outputs.version }}.tgz oci://registry-1.docker.io/maximhq
