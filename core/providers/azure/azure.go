@@ -1005,8 +1005,12 @@ func (provider *AzureProvider) SpeechStream(ctx *schemas.BifrostContext, postHoo
 			finalResponse.BackfillParams(request)
 			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, &finalResponse, nil, nil), responseChan, postHookSpanFinalizer)
-		} else if chunkIndex >= 0 && !doneReceived {
-			provider.logger.Warn("Stream ended without receiving [DONE] marker after %d chunks", chunkIndex+1)
+		} else if !doneReceived {
+			// The audio stream ended without its only completion signal, so the
+			// bytes already forwarded are a truncated clip. A server-side warning
+			// alone left the caller unable to tell that from a complete one, so
+			// surface it on the stream too.
+			providerUtils.SendStreamTruncatedError(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, jsonBody)
 		}
 
 		// Response is released via deferred ReleaseStreamingResponse(resp) above.
