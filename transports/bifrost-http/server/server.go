@@ -2494,6 +2494,12 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	tracer := tracing.NewTracer(traceStore, s.Config.ModelCatalog, logger)
 	tracer.SetObservabilityPlugins(observabilityPlugins)
 	s.Client.SetTracer(tracer)
+	// Expose the model catalog to plugins via ctx.GetModelInfo / ctx.CalculateCost.
+	// The nil check has to live here, not inside SetModelCatalog: a nil
+	// *modelcatalog.ModelCatalog boxed into the interface would not compare == nil.
+	if s.Config.ModelCatalog != nil {
+		s.Client.SetModelCatalog(s.Config.ModelCatalog)
+	}
 	s.TracingMiddleware = handlers.NewTracingMiddleware(tracer)
 	// TransportInterceptor must be inside TracingMiddleware so that the tracing defer
 	// runs AFTER transport post-hooks (capturing HTTPTransportPostHook plugin logs).

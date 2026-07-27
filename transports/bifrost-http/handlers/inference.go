@@ -22,7 +22,6 @@ import (
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
 
-	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
@@ -966,51 +965,8 @@ func enrichListModelsResponse(resp *schemas.BifrostListModelsResponse, catalog *
 		if pricingEntry == nil && modelEntry.Alias != nil {
 			pricingEntry = catalog.GetPricingEntryForModel(*modelEntry.Alias, provider)
 		}
-		if pricingEntry != nil {
-			modelEntry.IsDeprecated = modelEntry.IsDeprecated || pricingEntry.IsDeprecated
-			if pricingEntry.BaseModel != "" && modelEntry.NormalizedName == nil {
-				modelEntry.NormalizedName = bifrost.Ptr(providerUtils.NormalizeBaseModelSlug(pricingEntry.BaseModel))
-			}
-			if len(pricingEntry.AdditionalAttributes) > 0 && modelEntry.AdditionalAttributes == nil {
-				modelEntry.AdditionalAttributes = pricingEntry.AdditionalAttributes
-			}
-			if pricingEntry.ContextLength != nil && modelEntry.ContextLength == nil {
-				modelEntry.ContextLength = pricingEntry.ContextLength
-			} else if pricingEntry.MaxInputTokens != nil && modelEntry.ContextLength == nil {
-				modelEntry.ContextLength = pricingEntry.MaxInputTokens
-			}
-			if pricingEntry.MaxInputTokens != nil && modelEntry.MaxInputTokens == nil {
-				modelEntry.MaxInputTokens = pricingEntry.MaxInputTokens
-			}
-			if pricingEntry.MaxOutputTokens != nil && modelEntry.MaxOutputTokens == nil {
-				modelEntry.MaxOutputTokens = pricingEntry.MaxOutputTokens
-			}
-			if pricingEntry.Architecture != nil && modelEntry.Architecture == nil {
-				modelEntry.Architecture = pricingEntry.Architecture
-			}
-			if modelEntry.Pricing == nil {
-				pricing := &schemas.Pricing{}
-				if pricingEntry.InputCostPerToken != nil {
-					pricing.Prompt = bifrost.Ptr(fmt.Sprintf("%.10f", *pricingEntry.InputCostPerToken))
-				}
-				if pricingEntry.OutputCostPerToken != nil {
-					pricing.Completion = bifrost.Ptr(fmt.Sprintf("%.10f", *pricingEntry.OutputCostPerToken))
-				}
-				if pricingEntry.InputCostPerImage != nil {
-					pricing.Image = bifrost.Ptr(fmt.Sprintf("%.10f", *pricingEntry.InputCostPerImage))
-				}
-				if pricingEntry.CacheReadInputTokenCost != nil {
-					pricing.InputCacheRead = bifrost.Ptr(fmt.Sprintf("%.10f", *pricingEntry.CacheReadInputTokenCost))
-				}
-				if pricingEntry.CacheCreationInputTokenCost != nil {
-					pricing.InputCacheWrite = bifrost.Ptr(fmt.Sprintf("%.10f", *pricingEntry.CacheCreationInputTokenCost))
-				}
-				if pricingEntry.SearchContextCostPerQuery != nil {
-					pricing.WebSearch = bifrost.Ptr(fmt.Sprintf("%.10f", *pricingEntry.SearchContextCostPerQuery))
-				}
-				modelEntry.Pricing = pricing
-			}
-		}
+		// Same mapping ctx.GetModelInfo hands to plugins, so the two never drift.
+		modelcatalog.ApplyModelInfo(&modelEntry, pricingEntry)
 		resp.Data[i] = modelEntry
 	}
 }
