@@ -239,6 +239,7 @@ func deepCopyResponsesMessage(original schemas.ResponsesMessage) schemas.Respons
 	// do not expose every Responses API field, so newer fields are copied by name
 	// when a workspace build provides them.
 	copyRawMessageFieldByName(&copy, original, "ToolSearchOutputTools")
+	copyRawMessageFieldByName(&copy, original, "AdditionalTools")
 
 	// Deep copy ResponsesReasoning if present
 	if original.ResponsesReasoning != nil {

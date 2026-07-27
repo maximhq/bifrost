@@ -423,6 +423,26 @@ func TestResponsesMessageMarshalsToolSearchOutputArgumentsAsObject(t *testing.T)
 	}
 }
 
+// TestDeepCopyResponsesMessagePreservesRawPreserved verifies that a raw-preserved
+// item survives the copy. rawPreserved is unexported, so a copy that misses it
+// re-marshals field-by-field and reduces the item to just its type.
+func TestDeepCopyResponsesMessagePreservesRawPreserved(t *testing.T) {
+	raw := `{"type":"additional_tools","role":"developer","tools":[{"type":"custom","name":"exec","format":{"type":"grammar","syntax":"lark","definition":"start: x"}}]}`
+
+	var msg ResponsesMessage
+	if err := msg.UnmarshalJSON([]byte(raw)); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	encoded, err := DeepCopyResponsesMessage(msg).MarshalJSON()
+	if err != nil {
+		t.Fatalf("marshal copy: %v", err)
+	}
+	if string(encoded) != raw {
+		t.Fatalf("copy did not round-trip verbatim:\n got: %s\nwant: %s", encoded, raw)
+	}
+}
+
 func TestDeepCopyResponsesMessagePreservesToolSearchFields(t *testing.T) {
 	toolSearchOutputType := ResponsesMessageTypeToolSearchOutput
 	callID := "call_1"
