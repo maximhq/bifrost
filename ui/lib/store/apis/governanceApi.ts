@@ -46,6 +46,7 @@ import { baseApi } from "./baseApi";
 
 type PricingOverrideQueryArgs = {
 	scopeKind?: string;
+	userID?: string;
 	virtualKeyID?: string;
 	providerID?: string;
 	providerKeyID?: string;
@@ -652,6 +653,7 @@ export const governanceApi = baseApi.injectEndpoints({
 				url: "/governance/pricing-overrides",
 				params: {
 					scope_kind: params?.scopeKind,
+					user_id: params?.userID,
 					virtual_key_id: params?.virtualKeyID,
 					provider_id: params?.providerID,
 					provider_key_id: params?.providerKeyID,
@@ -679,6 +681,7 @@ export const governanceApi = baseApi.injectEndpoints({
 						const args: PricingOverrideQueryArgs = entry.originalArgs ?? {};
 						const matchesQuery =
 							(!args.scopeKind || args.scopeKind === created.scope_kind) &&
+							(!args.userID || args.userID === created.user_id) &&
 							(!args.virtualKeyID || args.virtualKeyID === created.virtual_key_id) &&
 							(!args.providerID || args.providerID === created.provider_id) &&
 							(!args.providerKeyID || args.providerKeyID === created.provider_key_id) &&
@@ -722,6 +725,7 @@ export const governanceApi = baseApi.injectEndpoints({
 						const args: PricingOverrideQueryArgs = entry.originalArgs ?? {};
 						const matchesQuery =
 							(!args.scopeKind || args.scopeKind === updated.scope_kind) &&
+							(!args.userID || args.userID === updated.user_id) &&
 							(!args.virtualKeyID || args.virtualKeyID === updated.virtual_key_id) &&
 							(!args.providerID || args.providerID === updated.provider_id) &&
 							(!args.providerKeyID || args.providerKeyID === updated.provider_key_id);
