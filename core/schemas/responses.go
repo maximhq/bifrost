@@ -1235,6 +1235,10 @@ type ResponsesMessage struct {
 	// not ResponsesMCPListTools.Tools, because the entries are ResponsesTool-shaped.
 	ToolSearchOutputTools json.RawMessage `json:"-"`
 
+	// Tools declared by a codex additional_tools item, surfaced so providers that
+	// reject the item type can hoist them into the top-level tools param.
+	AdditionalTools json.RawMessage `json:"-"`
+
 	*ResponsesToolMessage // For Tool calls and outputs
 
 	CacheControl *CacheControl `json:"cache_control,omitempty"` // Carries cache_control for function_call and function_call_output message types
@@ -1304,6 +1308,12 @@ func (m *ResponsesMessage) UnmarshalJSON(data []byte) error {
 		if t == string(ResponsesMessageTypeToolSearchOutput) {
 			if tools := gjson.GetBytes(data, "tools"); tools.IsArray() {
 				m.ToolSearchOutputTools = json.RawMessage(tools.Raw)
+			}
+		}
+		// additional_tools carries the codex tool declarations; same rationale.
+		if t == string(ResponsesMessageTypeAdditionalTools) {
+			if tools := gjson.GetBytes(data, "tools"); tools.IsArray() {
+				m.AdditionalTools = json.RawMessage(tools.Raw)
 			}
 		}
 		m.rawPreserved = append([]byte(nil), data...)
