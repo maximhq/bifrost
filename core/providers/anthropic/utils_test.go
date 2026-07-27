@@ -2283,7 +2283,7 @@ func TestToBifrostResponsesRequest_FallbacksRouting(t *testing.T) {
 		req := &AnthropicMessageRequest{
 			Model:     "claude-fable-5",
 			MaxTokens: 1024,
-			Fallbacks: []AnthropicFallbackEntry{{Native: &AnthropicNativeFallback{Model: "claude-opus-4-8"}}},
+			Fallbacks: &AnthropicFallbacks{Entries: []AnthropicFallbackEntry{{Native: &AnthropicNativeFallback{Model: "claude-opus-4-8"}}}},
 		}
 		out := req.ToBifrostResponsesRequest(nil)
 		if len(out.Fallbacks) != 0 {
@@ -2298,7 +2298,7 @@ func TestToBifrostResponsesRequest_FallbacksRouting(t *testing.T) {
 	t.Run("bifrost strings go to Fallbacks", func(t *testing.T) {
 		req := &AnthropicMessageRequest{
 			Model:     "anthropic/claude-sonnet-4-5",
-			Fallbacks: []AnthropicFallbackEntry{{BifrostModel: "openai/gpt-4o"}},
+			Fallbacks: &AnthropicFallbacks{Entries: []AnthropicFallbackEntry{{BifrostModel: "openai/gpt-4o"}}},
 		}
 		out := req.ToBifrostResponsesRequest(nil)
 		if len(out.Fallbacks) != 1 || out.Fallbacks[0].Provider != schemas.OpenAI || out.Fallbacks[0].Model != "gpt-4o" {
@@ -2317,7 +2317,7 @@ func TestAddMissingBetaHeadersToContext_ServerSideFallback(t *testing.T) {
 	t.Run("anthropic adds the beta header", func(t *testing.T) {
 		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
 		req := &AnthropicMessageRequest{
-			Fallbacks: []AnthropicFallbackEntry{{Native: &AnthropicNativeFallback{Model: "claude-opus-4-8"}}},
+			Fallbacks: &AnthropicFallbacks{Entries: []AnthropicFallbackEntry{{Native: &AnthropicNativeFallback{Model: "claude-opus-4-8"}}}},
 		}
 		AddMissingBetaHeadersToContext(ctx, req, schemas.Anthropic)
 		extraHeaders, _ := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
@@ -2329,7 +2329,7 @@ func TestAddMissingBetaHeadersToContext_ServerSideFallback(t *testing.T) {
 	t.Run("vertex does not add the beta header", func(t *testing.T) {
 		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
 		req := &AnthropicMessageRequest{
-			Fallbacks: []AnthropicFallbackEntry{{Native: &AnthropicNativeFallback{Model: "claude-opus-4-8"}}},
+			Fallbacks: &AnthropicFallbacks{Entries: []AnthropicFallbackEntry{{Native: &AnthropicNativeFallback{Model: "claude-opus-4-8"}}}},
 		}
 		AddMissingBetaHeadersToContext(ctx, req, schemas.Vertex)
 		extraHeaders, _ := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
@@ -2341,7 +2341,7 @@ func TestAddMissingBetaHeadersToContext_ServerSideFallback(t *testing.T) {
 	t.Run("bifrost string fallbacks do not add the beta header", func(t *testing.T) {
 		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
 		req := &AnthropicMessageRequest{
-			Fallbacks: []AnthropicFallbackEntry{{BifrostModel: "openai/gpt-4o"}},
+			Fallbacks: &AnthropicFallbacks{Entries: []AnthropicFallbackEntry{{BifrostModel: "openai/gpt-4o"}}},
 		}
 		AddMissingBetaHeadersToContext(ctx, req, schemas.Anthropic)
 		extraHeaders, _ := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
@@ -2514,6 +2514,10 @@ func TestSupportsAdaptiveThinking(t *testing.T) {
 		{"claude-opus-4.7-20260401", true},
 		{"claude-opus-4-6-20250514", true},
 		{"claude-opus-4.6-20250514", true},
+		// Opus 5: shares Opus 4.8's adaptive-only surface.
+		{"claude-opus-5", true},
+		{"claude-opus-5-20260601", true},
+		{"global.anthropic.claude-opus-5", true},
 		{"claude-sonnet-4-6-20250514", true},
 		{"claude-sonnet-4.6-20250514", true},
 		// Sonnet 5+: adaptive is the only thinking-on mode.
@@ -2609,6 +2613,42 @@ func TestIsSonnet5Plus(t *testing.T) {
 	}
 }
 
+// TestIsOpus5Plus pins the Opus 5 predicate. Opus 5 shares Opus 4.8's request
+// surface (adaptive-only thinking, temperature/top_p/top_k removed, fast mode,
+// effort, mid-conversation system). The "opus-5" substring must NOT match
+// "opus-4-5" / "opus-4.5".
+func TestIsOpus5Plus(t *testing.T) {
+	tests := []struct {
+		model    string
+		expected bool
+	}{
+		{"claude-opus-5", true},
+		{"claude-opus-5-20260601", true},
+		{"Claude-Opus-5", true},
+		{"global.anthropic.claude-opus-5", true},
+		{"anthropic.claude-opus-5-v1", true},
+		{"claude-opus-5@20260601", true},
+		// Must NOT match Opus 4.5 or other families.
+		{"claude-opus-4-5", false},
+		{"claude-opus-4.5-20251101", false},
+		{"claude-opus-4-5-20251101", false},
+		{"claude-opus-4-8", false},
+		{"claude-sonnet-5", false},
+		{"claude-fable-5", false},
+		{"claude-haiku-4-5", false},
+		{"", false},
+		{"some-non-claude-model", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			if got := IsOpus5Plus(tt.model); got != tt.expected {
+				t.Errorf("IsOpus5Plus(%q) = %v, want %v", tt.model, got, tt.expected)
+			}
+		})
+	}
+}
+
 // TestIsAdaptiveOnlyThinkingModel covers the union gate used for the thinking
 // and sampling-parameter surfaces: Opus 4.7+ OR Sonnet 5+ OR the Fable/Mythos family.
 func TestIsAdaptiveOnlyThinkingModel(t *testing.T) {
@@ -2616,10 +2656,13 @@ func TestIsAdaptiveOnlyThinkingModel(t *testing.T) {
 		model    string
 		expected bool
 	}{
-		// Opus 4.7+.
+		// Opus 4.7+ (including Opus 5).
 		{"claude-opus-4-8", true},
 		{"claude-opus-4-7", true},
 		{"claude-opus-4.8-20260601", true},
+		{"claude-opus-5", true},
+		{"claude-opus-5-20260601", true},
+		{"global.anthropic.claude-opus-5", true},
 		// Sonnet 5+.
 		{"claude-sonnet-5", true},
 		{"claude-sonnet-5-20260101", true},
@@ -2658,13 +2701,17 @@ func TestSupportsMidConversationSystem(t *testing.T) {
 		model    string
 		expected bool
 	}{
-		// Supported: Anthropic provider + Opus 4.8.
+		// Supported: Anthropic provider + Opus 4.8 (and Opus 5).
 		{schemas.Anthropic, "claude-opus-4-8", true},
 		{schemas.Anthropic, "claude-opus-4.8-20260601", true},
 		{schemas.Anthropic, "claude-opus-4-8-20260601", true},
-		// Not supported: Bedrock and Vertex even with Opus 4.8.
+		{schemas.Anthropic, "claude-opus-5", true},
+		{schemas.Anthropic, "claude-opus-5-20260601", true},
+		// Not supported: Bedrock and Vertex even with Opus 4.8 / Opus 5.
 		{schemas.Bedrock, "global.anthropic.claude-opus-4-8", false},
 		{schemas.Vertex, "claude-opus-4-8", false},
+		{schemas.Bedrock, "global.anthropic.claude-opus-5", false},
+		{schemas.Vertex, "claude-opus-5", false},
 		// Not supported: Anthropic but Opus 4.7 (feature is 4.8+ only).
 		{schemas.Anthropic, "claude-opus-4-7", false},
 		{schemas.Anthropic, "claude-opus-4.7-20260401", false},
@@ -2707,10 +2754,14 @@ func TestSupportsFastMode(t *testing.T) {
 		{"claude-opus-4.7-20260401", true},
 		{"claude-opus-4-8", true},
 		{"claude-opus-4.8-20260601", true},
+		// Opus 5: fast mode via IsOpus47Plus.
+		{"claude-opus-5", true},
+		{"claude-opus-5-20260601", true},
 		// Bedrock / Vertex prefixed IDs.
 		{"global.anthropic.claude-opus-4-6", true},
 		{"global.anthropic.claude-opus-4-7", true},
 		{"global.anthropic.claude-opus-4-8", true},
+		{"global.anthropic.claude-opus-5", true},
 		// Not supported — other model families.
 		{"claude-sonnet-4-6", false},
 		{"claude-haiku-4-5", false},
@@ -2750,6 +2801,9 @@ func TestSupportsEffortParameter(t *testing.T) {
 		{"global.anthropic.claude-fable-5", true},
 		{"claude-opus-4-8", true},
 		{"claude-opus-4.8-20260601", true},
+		{"claude-opus-5", true},
+		{"claude-opus-5-20260601", true},
+		{"global.anthropic.claude-opus-5", true},
 		{"claude-opus-4-7", true},
 		{"claude-opus-4.7-20260401", true},
 		{"claude-opus-4-6", true},
@@ -3242,6 +3296,10 @@ func TestComputerUseGeneration(t *testing.T) {
 		{"Claude-Opus-4-7", ComputerUseGen20251124},
 		{"claude-opus-4-7-20260321", ComputerUseGen20251124},
 		{"claude-opus-4-6", ComputerUseGen20251124},
+		// Opus 5 uses the new generation, like Opus 4.8.
+		{"claude-opus-5", ComputerUseGen20251124},
+		{"claude-opus-5-20260601", ComputerUseGen20251124},
+		{"global.anthropic.claude-opus-5", ComputerUseGen20251124},
 		{"claude-sonnet-4-6", ComputerUseGen20251124},
 		{"claude-sonnet-4.6", ComputerUseGen20251124},
 		// Sonnet 5+ uses the new generation (same tool surface as Sonnet 4.6).
@@ -4002,5 +4060,33 @@ func TestConvertChatResponseFormatToTool_OrderedMapSchema(t *testing.T) {
 	}
 	if _, hasAnyOf := normalizedText.Get("anyOf"); !hasAnyOf {
 		t.Fatal("nested multi-type union must be normalized to anyOf (recursion must descend into OrderedMap values)")
+	}
+}
+
+// TestMidConversationToolChangesBetaHeaderRouting pins the Opus 5
+// mid-conversation-tool-changes beta header: forwarded on the native Anthropic
+// surfaces (Claude API + Bedrock Mantle) and dropped where the feature is
+// unsupported (Bedrock Converse, Vertex, Azure).
+func TestMidConversationToolChangesBetaHeaderRouting(t *testing.T) {
+	t.Parallel()
+
+	hdr := AnthropicMidConversationToolChangesBetaHeader
+	for _, tc := range []struct {
+		provider schemas.ModelProvider
+		want     bool
+	}{
+		{schemas.Anthropic, true},
+		{schemas.BedrockMantle, true},
+		{schemas.Bedrock, false},
+		{schemas.Vertex, false},
+		{schemas.Azure, false},
+	} {
+		t.Run(string(tc.provider), func(t *testing.T) {
+			t.Parallel()
+			got := FilterBetaHeadersForProvider([]string{hdr}, tc.provider)
+			if kept := slices.Contains(got, hdr); kept != tc.want {
+				t.Errorf("FilterBetaHeadersForProvider(%q) kept=%v, want %v (got %v)", tc.provider, kept, tc.want, got)
+			}
+		})
 	}
 }

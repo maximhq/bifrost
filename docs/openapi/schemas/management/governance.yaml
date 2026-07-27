@@ -606,12 +606,13 @@ Team:
       type: string
     customer_id:
       type: string
-    budget_id:
-      type: string
     customer:
       $ref: '#/Customer'
-    budget:
-      $ref: '#/Budget'
+    budgets:
+      type: array
+      description: Budgets owned by this team
+      items:
+        $ref: '#/Budget'
     virtual_keys:
       type: [array, 'null']
       description: >
@@ -648,8 +649,11 @@ CreateTeamRequest:
       type: string
     customer_id:
       type: string
-    budget:
-      $ref: '#/CreateBudgetRequest'
+    budgets:
+      type: array
+      description: Budgets to create for this team; reset durations must be unique
+      items:
+        $ref: '#/CreateBudgetRequest'
 
 UpdateTeamRequest:
   type: object
@@ -659,8 +663,11 @@ UpdateTeamRequest:
       type: string
     customer_id:
       type: string
-    budget:
-      $ref: '#/UpdateBudgetRequest'
+    budgets:
+      type: array
+      description: Replacement set of budgets for this team; reset durations must be unique
+      items:
+        $ref: '#/CreateBudgetRequest'
 
 ListTeamsResponse:
   type: object
