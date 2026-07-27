@@ -187,6 +187,7 @@ type OAuth2SessionsQueryParams struct {
 // PricingOverrideFilters holds the filters for pricing overrides.
 type PricingOverrideFilters struct {
 	ScopeKind     *string
+	UserID        *string
 	VirtualKeyID  *string
 	ProviderID    *string
 	ProviderKeyID *string
@@ -198,6 +199,7 @@ type PricingOverridesQueryParams struct {
 	Offset        int
 	Search        string
 	ScopeKind     *string
+	UserID        *string
 	VirtualKeyID  *string
 	ProviderID    *string
 	ProviderKeyID *string

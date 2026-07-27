@@ -79,6 +79,9 @@ const (
 	ScopeKindVirtualKey            = datasheet.ScopeKindVirtualKey
 	ScopeKindVirtualKeyProvider    = datasheet.ScopeKindVirtualKeyProvider
 	ScopeKindVirtualKeyProviderKey = datasheet.ScopeKindVirtualKeyProviderKey
+	ScopeKindUser                  = datasheet.ScopeKindUser
+	ScopeKindUserProvider          = datasheet.ScopeKindUserProvider
+	ScopeKindUserProviderKey       = datasheet.ScopeKindUserProviderKey
 
 	MatchTypeExact    = datasheet.MatchTypeExact
 	MatchTypeWildcard = datasheet.MatchTypeWildcard

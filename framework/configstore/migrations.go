@@ -458,6 +458,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_budget_override_columns"}, run: migrationAddBudgetOverrideColumns},
 	{IDs: []string{"add_budget_override_anchor_columns"}, run: migrationAddBudgetOverrideAnchorColumns},
 	{IDs: []string{"add_live_models_sync_interval_column"}, run: migrationAddLiveModelsSyncIntervalColumn},
+	{IDs: []string{"add_pricing_override_user_id_column"}, run: migrationAddPricingOverrideUserIDColumn},
 }
 
 // quoteSQLiteIdentifier quotes a SQLite identifier, escaping any double quotes.
@@ -11053,6 +11054,60 @@ func migrationAddBedrockBatchRoleARNColumn(ctx context.Context, db *gorm.DB, log
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running db migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddPricingOverrideUserIDColumn adds the user_id scope column to
+// governance_pricing_overrides and rebuilds the composite scope index so it
+// covers the new column.
+func migrationAddPricingOverrideUserIDColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_pricing_override_user_id_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TablePricingOverride{}, "user_id"); err != nil {
+				return fmt.Errorf("failed to add user_id column to governance_pricing_overrides: %w", err)
+			}
+			mgr := tx.Migrator()
+			if mgr.HasIndex(&tables.TablePricingOverride{}, "idx_pricing_override_scope") {
+				if err := mgr.DropIndex(&tables.TablePricingOverride{}, "idx_pricing_override_scope"); err != nil {
+					return fmt.Errorf("failed to drop pricing override scope index for rebuild: %w", err)
+				}
+			}
+			if err := mgr.CreateIndex(&tables.TablePricingOverride{}, "idx_pricing_override_scope"); err != nil {
+				return fmt.Errorf("failed to recreate pricing override scope index: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mgr := tx.Migrator()
+			// Drop the rebuilt index first: SQLite refuses to drop an indexed
+			// column, and Postgres would silently drop the index with it.
+			if mgr.HasIndex(&tables.TablePricingOverride{}, "idx_pricing_override_scope") {
+				if err := mgr.DropIndex(&tables.TablePricingOverride{}, "idx_pricing_override_scope"); err != nil {
+					return fmt.Errorf("failed to drop pricing override scope index for rollback: %w", err)
+				}
+			}
+			if mgr.HasColumn(&tables.TablePricingOverride{}, "user_id") {
+				if err := mgr.DropColumn(&tables.TablePricingOverride{}, "user_id"); err != nil {
+					return fmt.Errorf("failed to drop user_id column from governance_pricing_overrides: %w", err)
+				}
+			}
+			// Restore the legacy index shape via raw SQL; CreateIndex would use
+			// the current struct tags, which include user_id.
+			if err := tx.Exec("CREATE INDEX idx_pricing_override_scope ON governance_pricing_overrides (scope_kind, virtual_key_id, provider_id, provider_key_id)").Error; err != nil {
+				return fmt.Errorf("failed to restore legacy pricing override scope index: %w", err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running pricing override user_id column migration: %s", err.Error())
 	}
 	return nil
 }
