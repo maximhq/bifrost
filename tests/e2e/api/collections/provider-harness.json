@@ -42309,6 +42309,262 @@
           }
         }
       ]
+    },
+    {
+      "name": "32. Gemini Google Search grounding + tool combination (PR #5576)",
+      "description": "PR #5576 (Gemini Google Search grounding + tool combination). Four regressions, all of which return 200 when broken, so a status assertion alone cannot pin them:\n\n1. Grounding annotations on /v1/responses were emitted on a SEPARATE message item whose output_text was \"\" , while the real assistant text carried annotations: []. Segment start_index/end_index index into the real text, so the offsets pointed at a different item entirely. Annotations must now sit on the text block they annotate, and no empty-text message may be emitted.\n2. Only the first entry of groundingSupports[].groundingChunkIndices was read on the Responses path, so a segment backed by several sources kept one citation. Every (support, chunk) pair now yields a url_citation.\n3. Gemini rejects function declarations sent alongside googleSearch unless toolConfig.includeServerSideToolInvocations is set (Gemini 3+). Bifrost had no way to express the flag, so it silently DROPPED the caller function declarations whenever web search was present - the model could never call them. The neutral include_server_side_tool_invocations param now maps to toolConfig.includeServerSideToolInvocations, and an AUTO/unset functionCallingConfig is promoted to VALIDATED (AUTO is unsupported in that mode).\n4. On the streaming genai passthrough, groundingMetadata.searchEntryPoint was lost: the rendered-content output_item.done event carried no item, so the reverse conversion never rebuilt it. Google requires rendering Search Suggestions, so its loss is a compliance issue, not cosmetic.\n\nCases 32.3/32.4 use gemini-3.6-flash because tool combination is Gemini 3+ only.",
+      "item": [
+        {
+          "name": "gemini/gemini-3.6-flash google_search annotations on assistant text block, no phantom message (/v1/responses) - PR #5576",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini-3.6-flash\",\n  \"input\": \"Who won UEFA Euro 2024? Answer in two short sentences using Google Search.\",\n  \"tools\": [\n    {\n      \"type\": \"web_search\"\n    }\n  ],\n  \"max_output_tokens\": 2000\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('responses google_search: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var output = (pm.response.json() || {}).output || [];",
+                  "var textBlocks = [];",
+                  "output.forEach(function (item) {",
+                  "  if (item.type !== 'message' || !item.content) { return; }",
+                  "  item.content.forEach(function (block) {",
+                  "    if (block.type === 'output_text') { textBlocks.push(block); }",
+                  "  });",
+                  "});",
+                  "pm.test('responses google_search: at least one output_text block', function () {",
+                  "  pm.expect(textBlocks.length, 'no output_text block: ' + pm.response.text()).to.be.above(0);",
+                  "});",
+                  "pm.test('responses google_search: no phantom empty-text message (regression PR #5576)', function () {",
+                  "  textBlocks.forEach(function (b) {",
+                  "    pm.expect(b.text, 'empty output_text block emitted - annotations were split onto a phantom message: ' + JSON.stringify(b)).to.be.a('string').and.not.empty;",
+                  "  });",
+                  "});",
+                  "var annotated = textBlocks.filter(function (b) { return b.annotations && b.annotations.length; });",
+                  "pm.test('responses google_search: url_citation annotations present', function () {",
+                  "  pm.expect(annotated.length, 'no annotations on any output_text block: ' + pm.response.text()).to.be.above(0);",
+                  "});",
+                  "pm.test('responses google_search: annotations attached to the annotated text (regression PR #5576)', function () {",
+                  "  annotated.forEach(function (b) {",
+                  "    pm.expect(b.text, 'annotations sit on an empty text block').to.be.a('string').and.not.empty;",
+                  "    b.annotations.forEach(function (a) {",
+                  "      pm.expect(a.type, 'unexpected annotation type: ' + JSON.stringify(a)).to.eql('url_citation');",
+                  "      pm.expect(a.url, 'annotation missing url: ' + JSON.stringify(a)).to.be.a('string').and.not.empty;",
+                  "      pm.expect(a.end_index, 'annotation missing end_index: ' + JSON.stringify(a)).to.be.a('number');",
+                  "    });",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini/gemini-3.6-flash streaming googleSearch keeps searchEntryPoint (/genai SSE) - PR #5576",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Who won UEFA Euro 2024? Answer in one short sentence using Google Search.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"googleSearch\": {}\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini-3.6-flash:streamGenerateContent?alt=sse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini-3.6-flash:streamGenerateContent"
+              ],
+              "query": [
+                {
+                  "key": "alt",
+                  "value": "sse"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('genai stream googleSearch: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var raw = pm.response.text();",
+                  "var chunks = [];",
+                  "raw.split('\\n').forEach(function (line) {",
+                  "  var t = line.trim();",
+                  "  if (t.indexOf('data:') !== 0) { return; }",
+                  "  var payload = t.slice(5).trim();",
+                  "  if (!payload || payload === '[DONE]') { return; }",
+                  "  try { chunks.push(JSON.parse(payload)); } catch (e) {}",
+                  "});",
+                  "pm.test('genai stream googleSearch: SSE chunks parsed', function () {",
+                  "  pm.expect(chunks.length, 'no SSE data chunks: ' + raw.slice(0, 500)).to.be.above(0);",
+                  "});",
+                  "var queries = [];",
+                  "var rendered = '';",
+                  "chunks.forEach(function (c) {",
+                  "  (c.candidates || []).forEach(function (cand) {",
+                  "    var gm = cand.groundingMetadata;",
+                  "    if (!gm) { return; }",
+                  "    if (gm.webSearchQueries) { queries = queries.concat(gm.webSearchQueries); }",
+                  "    if (gm.searchEntryPoint && gm.searchEntryPoint.renderedContent) { rendered = gm.searchEntryPoint.renderedContent; }",
+                  "  });",
+                  "});",
+                  "pm.test('genai stream googleSearch: groundingMetadata present in stream', function () {",
+                  "  pm.expect(queries.length, 'no webSearchQueries in stream: ' + raw.slice(0, 800)).to.be.above(0);",
+                  "});",
+                  "pm.test('genai stream googleSearch: searchEntryPoint.renderedContent survives streaming (regression PR #5576)', function () {",
+                  "  pm.expect(rendered, 'searchEntryPoint missing from streamed groundingMetadata - Google requires rendering Search Suggestions').to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini/gemini-3.6-flash include_server_side_tool_invocations keeps function tools with google_search (/v1/responses) - PR #5576",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini-3.6-flash\",\n  \"input\": \"Call the get_weather function for Tokyo. You must use the function to answer.\",\n  \"tools\": [\n    {\n      \"type\": \"web_search\"\n    },\n    {\n      \"type\": \"function\",\n      \"name\": \"get_weather\",\n      \"description\": \"Get the current weather for a city\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\",\n            \"description\": \"City name\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    }\n  ],\n  \"include_server_side_tool_invocations\": true,\n  \"max_output_tokens\": 2000\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('responses tool combination: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var output = (pm.response.json() || {}).output || [];",
+                  "var calls = output.filter(function (item) {",
+                  "  return item.type === 'function_call' && item.name === 'get_weather';",
+                  "});",
+                  "pm.test('responses tool combination: function declarations survive alongside google_search (regression PR #5576)', function () {",
+                  "  pm.expect(calls.length, 'no get_weather function_call - declarations were dropped when web_search was present: ' + pm.response.text()).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini/gemini-3.6-flash genai toolConfig.includeServerSideToolInvocations round-trip (/genai generateContent) - PR #5576",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Call the get_weather function for Tokyo. You must use the function to answer.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"functionDeclarations\": [\n        {\n          \"name\": \"get_weather\",\n          \"description\": \"Get the current weather for a city\",\n          \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {\n              \"city\": {\n                \"type\": \"string\",\n                \"description\": \"City name\"\n              }\n            },\n            \"required\": [\n              \"city\"\n            ]\n          }\n        }\n      ]\n    },\n    {\n      \"googleSearch\": {}\n    }\n  ],\n  \"toolConfig\": {\n    \"includeServerSideToolInvocations\": true\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini-3.6-flash:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini-3.6-flash:generateContent"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('genai tool combination: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var candidates = (pm.response.json() || {}).candidates || [];",
+                  "var calls = [];",
+                  "candidates.forEach(function (cand) {",
+                  "  var parts = (cand.content && cand.content.parts) || [];",
+                  "  parts.forEach(function (p) {",
+                  "    if (p.functionCall && p.functionCall.name === 'get_weather') { calls.push(p.functionCall); }",
+                  "  });",
+                  "});",
+                  "pm.test('genai tool combination: functionDeclarations survive the round-trip alongside googleSearch (regression PR #5576)', function () {",
+                  "  pm.expect(calls.length, 'no get_weather functionCall - toolConfig.includeServerSideToolInvocations was dropped and declarations stripped: ' + pm.response.text()).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
