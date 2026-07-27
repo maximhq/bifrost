@@ -2059,6 +2059,11 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 
 		var includeEventType bool
 		var skipDoneMarker bool
+		// Set once a hard error frame reaches the client. An error frame is a
+		// terminal signal in its own right, so appending [DONE] after it would tell
+		// a client keyed on the marker that the stream finished normally — the exact
+		// ambiguity that let truncated upstream streams look successful (#5546).
+		var sawErrorChunk bool
 
 		// Process streaming responses
 		for chunk := range stream {
@@ -2121,6 +2126,12 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 				continue
 			}
 
+			// Checked after marshalling so a chunk that never reaches the wire does
+			// not suppress the marker.
+			if chunk.BifrostError != nil {
+				sawErrorChunk = true
+			}
+
 			// Format and send as SSE data
 			var eventType string
 			if includeEventType {
@@ -2152,7 +2163,12 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 		// once they see [DONE], so they'd be silently dropped.
 		runCompleter(true)
 
-		if !includeEventType && !skipDoneMarker {
+		// A stream that ended on an error frame is already terminated for the client;
+		// only a clean run gets the marker. Note this deliberately ignores an error
+		// from runCompleter above: that reports a post-processing/plugin failure, not
+		// an incomplete stream, so [DONE] remains an accurate statement about the
+		// stream data itself.
+		if !includeEventType && !skipDoneMarker && !sawErrorChunk {
 			// Send the [DONE] marker to indicate the end of the stream (only for non-responses/image-gen APIs)
 			if !reader.SendDone() {
 				cancel()
