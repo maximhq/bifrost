@@ -153,6 +153,8 @@ var chatParamsKnownFields = map[string]bool{
 	"truncation":             true,
 	"user":                   true,
 	"verbosity":              true,
+
+	"include_server_side_tool_invocations": true,
 }
 
 var responsesParamsKnownFields = map[string]bool{
@@ -183,6 +185,8 @@ var responsesParamsKnownFields = map[string]bool{
 	"tool_choice":            true,
 	"tools":                  true,
 	"truncation":             true,
+
+	"include_server_side_tool_invocations": true,
 }
 
 var compactionParamsKnownFields = map[string]bool{

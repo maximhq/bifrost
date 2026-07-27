@@ -45,9 +45,20 @@ func ToGeminiChatCompletionRequestWithImageURLSchemes(ctx *schemas.BifrostContex
 				return nil, err
 			}
 
-			// Convert tool choice to tool config
+			// Convert tool choice if present, but only when function declarations exist.
+			// Gemini rejects functionCallingConfig without function_declarations
+			// (e.g. a tools list holding only non-function types yields no declarations).
 			if bifrostReq.Params.ToolChoice != nil {
-				geminiReq.ToolConfig = convertToolChoiceToToolConfig(bifrostReq.Params.ToolChoice)
+				hasFunctionDeclarations := false
+				for _, tool := range geminiReq.Tools {
+					if len(tool.FunctionDeclarations) > 0 {
+						hasFunctionDeclarations = true
+						break
+					}
+				}
+				if hasFunctionDeclarations {
+					geminiReq.ToolConfig = convertToolChoiceToToolConfig(bifrostReq.Params.ToolChoice)
+				}
 			}
 		}
 
@@ -64,6 +75,10 @@ func ToGeminiChatCompletionRequestWithImageURLSchemes(ctx *schemas.BifrostContex
 				}
 			}
 			geminiReq.Tools = append(geminiReq.Tools, Tool{GoogleSearch: googleSearch})
+		}
+
+		if bifrostReq.Params.IncludeServerSideToolInvocations != nil && *bifrostReq.Params.IncludeServerSideToolInvocations {
+			applyServerSideToolInvocations(geminiReq)
 		}
 
 		if bifrostReq.Params.ServiceTier != nil {
@@ -311,6 +326,7 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 
 	// Set usage information
 	bifrostResp.Usage = ConvertGeminiUsageMetadataToChatUsage(response.UsageMetadata)
+	applyGeminiSearchQueryChatUsage(bifrostResp.Usage, candidate.GroundingMetadata, response.ModelVersion)
 
 	if response.UsageMetadata != nil {
 		if t := mapGeminiTrafficTypeToBifrost(response.UsageMetadata.TrafficType); t != nil {
@@ -546,6 +562,7 @@ func (response *GenerateContentResponse) ToBifrostChatCompletionStream(state *Ge
 	// Add usage information if this is the last chunk
 	if isLastChunk && response.UsageMetadata != nil {
 		streamResponse.Usage = ConvertGeminiUsageMetadataToChatUsage(response.UsageMetadata)
+		applyGeminiSearchQueryChatUsage(streamResponse.Usage, candidate.GroundingMetadata, response.ModelVersion)
 		if t := mapGeminiTrafficTypeToBifrost(response.UsageMetadata.TrafficType); t != nil {
 			streamResponse.ServiceTier = t
 		} else if response.UsageMetadata.ServiceTier != "" {

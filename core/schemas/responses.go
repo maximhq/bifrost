@@ -522,6 +522,12 @@ type ResponsesParameters struct {
 	Tools                []ResponsesTool               `json:"tools,omitempty"`       // Tools to use
 	Truncation           *string                       `json:"truncation,omitempty"`
 	User                 *string                       `json:"user,omitempty"`
+
+	// Opts into running built-in server-side tools (e.g. Google Search) in the same
+	// turn as function declarations. Required by Gemini 3+, which otherwise rejects
+	// the combination; providers without the concept ignore it.
+	IncludeServerSideToolInvocations *bool `json:"include_server_side_tool_invocations,omitempty"`
+
 	// Dynamic parameters that can be provider-specific, they are directly
 	// added to the request as is.
 	ExtraParams map[string]interface{} `json:"-"`

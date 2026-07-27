@@ -4746,3 +4746,429 @@ func TestGroundingMetadataToChatAnnotations(t *testing.T) {
 		assert.Empty(t, bifrostResp.Choices[0].ChatStreamResponseChoice.Delta.Annotations)
 	})
 }
+
+// TestIncludeServerSideToolInvocations covers Gemini's tool-combination opt-in:
+// without it Gemini rejects function declarations sent alongside Google Search, so
+// the declarations are dropped; with it both go on the wire.
+func TestIncludeServerSideToolInvocations(t *testing.T) {
+	responsesReq := func(include *bool) *schemas.BifrostResponsesRequest {
+		return &schemas.BifrostResponsesRequest{
+			Model: "gemini-3.6-flash",
+			Input: []schemas.ResponsesMessage{
+				{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("weather in tokyo?")}},
+			},
+			Params: &schemas.ResponsesParameters{
+				IncludeServerSideToolInvocations: include,
+				Tools: []schemas.ResponsesTool{
+					{Type: schemas.ResponsesToolTypeWebSearch, ResponsesToolWebSearch: &schemas.ResponsesToolWebSearch{}},
+					{
+						Type:                  schemas.ResponsesToolTypeFunction,
+						Name:                  schemas.Ptr("get_weather"),
+						ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: &schemas.ToolFunctionParameters{Type: "object"}},
+					},
+				},
+			},
+		}
+	}
+
+	t.Run("flag absent drops function declarations (unchanged behaviour)", func(t *testing.T) {
+		out, err := gemini.ToGeminiResponsesRequest(nil, responsesReq(nil))
+		require.NoError(t, err)
+		require.Len(t, out.Tools, 1)
+		assert.NotNil(t, out.Tools[0].GoogleSearch)
+		assert.Empty(t, out.Tools[0].FunctionDeclarations)
+		assert.Nil(t, out.ToolConfig)
+	})
+
+	t.Run("flag false drops function declarations", func(t *testing.T) {
+		out, err := gemini.ToGeminiResponsesRequest(nil, responsesReq(schemas.Ptr(false)))
+		require.NoError(t, err)
+		require.Len(t, out.Tools, 1)
+		assert.NotNil(t, out.Tools[0].GoogleSearch)
+		assert.Nil(t, out.ToolConfig)
+	})
+
+	t.Run("flag true sends both as separate tool entries", func(t *testing.T) {
+		out, err := gemini.ToGeminiResponsesRequest(nil, responsesReq(schemas.Ptr(true)))
+		require.NoError(t, err)
+		require.Len(t, out.Tools, 2)
+		require.Len(t, out.Tools[0].FunctionDeclarations, 1)
+		assert.Equal(t, "get_weather", out.Tools[0].FunctionDeclarations[0].Name)
+		assert.NotNil(t, out.Tools[1].GoogleSearch)
+		require.NotNil(t, out.ToolConfig)
+		require.NotNil(t, out.ToolConfig.IncludeServerSideToolInvocations)
+		assert.True(t, *out.ToolConfig.IncludeServerSideToolInvocations)
+	})
+
+	t.Run("flag true promotes auto tool choice to VALIDATED", func(t *testing.T) {
+		req := responsesReq(schemas.Ptr(true))
+		req.Params.ToolChoice = &schemas.ResponsesToolChoice{ResponsesToolChoiceStr: schemas.Ptr("auto")}
+		out, err := gemini.ToGeminiResponsesRequest(nil, req)
+		require.NoError(t, err)
+		require.NotNil(t, out.ToolConfig)
+		require.NotNil(t, out.ToolConfig.FunctionCallingConfig)
+		assert.Equal(t, gemini.FunctionCallingConfigModeValidated, out.ToolConfig.FunctionCallingConfig.Mode)
+	})
+
+	t.Run("flag true leaves an explicit required tool choice alone", func(t *testing.T) {
+		req := responsesReq(schemas.Ptr(true))
+		req.Params.ToolChoice = &schemas.ResponsesToolChoice{ResponsesToolChoiceStr: schemas.Ptr("required")}
+		out, err := gemini.ToGeminiResponsesRequest(nil, req)
+		require.NoError(t, err)
+		require.NotNil(t, out.ToolConfig)
+		require.NotNil(t, out.ToolConfig.FunctionCallingConfig)
+		assert.Equal(t, gemini.FunctionCallingConfigModeAny, out.ToolConfig.FunctionCallingConfig.Mode)
+	})
+
+	t.Run("chat path sets the flag on toolConfig", func(t *testing.T) {
+		out, err := gemini.ToGeminiChatCompletionRequest(nil, &schemas.BifrostChatRequest{
+			Model: "gemini-3.6-flash",
+			Input: []schemas.ChatMessage{
+				{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("weather in tokyo?")}},
+			},
+			Params: &schemas.ChatParameters{
+				IncludeServerSideToolInvocations: schemas.Ptr(true),
+				WebSearchOptions:                 &schemas.ChatWebSearchOptions{},
+				Tools: []schemas.ChatTool{
+					{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "get_weather", Parameters: &schemas.ToolFunctionParameters{Type: "object"}}},
+				},
+			},
+		})
+		require.NoError(t, err)
+		require.Len(t, out.Tools, 2)
+		assert.NotEmpty(t, out.Tools[0].FunctionDeclarations)
+		assert.NotNil(t, out.Tools[1].GoogleSearch)
+		require.NotNil(t, out.ToolConfig)
+		require.NotNil(t, out.ToolConfig.IncludeServerSideToolInvocations)
+		assert.True(t, *out.ToolConfig.IncludeServerSideToolInvocations)
+	})
+}
+
+// TestIncludeServerSideToolInvocationsGenAIRoundTrip verifies the native genai path
+// (/v1beta/models/*:generateContent) preserves the flag through the Bifrost Responses
+// schema, in both camelCase and snake_case spellings.
+func TestIncludeServerSideToolInvocationsGenAIRoundTrip(t *testing.T) {
+	bodyTemplate := `{
+		"contents": [{"role": "user", "parts": [{"text": "weather in tokyo?"}]}],
+		"tools": [
+			{"functionDeclarations": [{"name": "get_weather", "parametersJsonSchema": {"type": "object"}}]},
+			{"googleSearch": {}}
+		],
+		"toolConfig": {%s}
+	}`
+
+	tests := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{name: "camelCase", body: fmt.Sprintf(bodyTemplate, `"includeServerSideToolInvocations": true`), want: true},
+		{name: "snake_case", body: fmt.Sprintf(bodyTemplate, `"include_server_side_tool_invocations": true`), want: true},
+		{name: "explicitly false", body: fmt.Sprintf(bodyTemplate, `"includeServerSideToolInvocations": false`), want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var req gemini.GeminiGenerationRequest
+			require.NoError(t, sonic.Unmarshal([]byte(tt.body), &req))
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			bifrostReq := req.ToBifrostResponsesRequest(ctx)
+			require.NotNil(t, bifrostReq)
+			require.NotNil(t, bifrostReq.Params.IncludeServerSideToolInvocations)
+			assert.Equal(t, tt.want, *bifrostReq.Params.IncludeServerSideToolInvocations)
+
+			out, err := gemini.ToGeminiResponsesRequest(ctx, bifrostReq)
+			require.NoError(t, err)
+
+			if !tt.want {
+				// Combination not requested: today's behaviour keeps search, drops declarations.
+				require.Len(t, out.Tools, 1)
+				assert.NotNil(t, out.Tools[0].GoogleSearch)
+				return
+			}
+
+			require.Len(t, out.Tools, 2)
+			require.Len(t, out.Tools[0].FunctionDeclarations, 1)
+			assert.Equal(t, "get_weather", out.Tools[0].FunctionDeclarations[0].Name)
+			assert.NotNil(t, out.Tools[1].GoogleSearch)
+			require.NotNil(t, out.ToolConfig)
+			require.NotNil(t, out.ToolConfig.IncludeServerSideToolInvocations)
+			assert.True(t, *out.ToolConfig.IncludeServerSideToolInvocations)
+		})
+	}
+}
+
+// TestGroundingMultiSourceCitationsResponses covers the non-streaming Responses path
+// emitting one url_citation per (support, chunk) pair, matching the chat path, so a
+// segment backed by several sources keeps every source.
+func TestGroundingMultiSourceCitationsResponses(t *testing.T) {
+	response := &gemini.GenerateContentResponse{
+		ResponseID:   "grounding-multi",
+		ModelVersion: "gemini-2.5-flash",
+		Candidates: []*gemini.Candidate{{
+			FinishReason: gemini.FinishReasonStop,
+			Content: &gemini.Content{
+				Role:  "model",
+				Parts: []*gemini.Part{{Text: "Spain won Euro 2024"}},
+			},
+			GroundingMetadata: &gemini.GroundingMetadata{
+				WebSearchQueries: []string{"euro 2024 winner"},
+				GroundingChunks: []*gemini.GroundingChunk{
+					{Web: &gemini.GroundingChunkWeb{URI: "https://example.com/spain", Title: "uefa.com"}},
+					{Web: &gemini.GroundingChunkWeb{URI: "https://example.com/final", Title: "wikipedia.org"}},
+					{RetrievedContext: &gemini.GroundingChunkRetrievedContext{URI: "ctx://ignored"}}, // no Web — skipped
+					{Web: &gemini.GroundingChunkWeb{URI: ""}},                                        // empty URI — skipped
+				},
+				GroundingSupports: []*gemini.GroundingSupport{
+					{
+						Segment:               &gemini.Segment{StartIndex: 0, EndIndex: 19, Text: "Spain won Euro 2024"},
+						GroundingChunkIndices: []int32{0, 1, 2, 3, 99, -1}, // 2/3 unusable, 99 and -1 out of range
+					},
+					{
+						GroundingChunkIndices: []int32{1}, // no segment — skipped
+					},
+				},
+			},
+		}},
+		UsageMetadata: &gemini.GenerateContentResponseUsageMetadata{PromptTokenCount: 5, CandidatesTokenCount: 5, TotalTokenCount: 10},
+	}
+
+	bifrostResp := response.ToResponsesBifrostResponsesResponse()
+	require.NotNil(t, bifrostResp)
+
+	// Citations must land on the assistant text block they annotate — never on a
+	// separate empty message, whose text the segment offsets would not index into.
+	var annotations []schemas.ResponsesOutputMessageContentTextAnnotation
+	for _, msg := range bifrostResp.Output {
+		if msg.Content == nil {
+			continue
+		}
+		for _, block := range msg.Content.ContentBlocks {
+			if block.ResponsesOutputMessageContentText == nil {
+				continue
+			}
+			if len(block.ResponsesOutputMessageContentText.Annotations) > 0 {
+				require.NotNil(t, block.Text)
+				assert.Equal(t, "Spain won Euro 2024", *block.Text,
+					"annotations must be attached to the block holding the annotated text")
+			}
+			annotations = append(annotations, block.ResponsesOutputMessageContentText.Annotations...)
+		}
+	}
+
+	for _, msg := range bifrostResp.Output {
+		if msg.Content == nil || msg.Type == nil || *msg.Type != schemas.ResponsesMessageTypeMessage {
+			continue
+		}
+		for _, block := range msg.Content.ContentBlocks {
+			if block.Type == schemas.ResponsesOutputMessageContentTypeText && block.Text != nil {
+				assert.NotEmpty(t, *block.Text, "no empty phantom text message should be emitted")
+			}
+		}
+	}
+
+	require.Len(t, annotations, 2, "both usable chunks should produce a citation")
+	assert.Equal(t, "https://example.com/spain", *annotations[0].URL)
+	assert.Equal(t, "uefa.com", *annotations[0].Title)
+	assert.Equal(t, "https://example.com/final", *annotations[1].URL)
+	assert.Equal(t, "wikipedia.org", *annotations[1].Title)
+	// Both cite the same segment.
+	assert.Equal(t, 0, *annotations[0].StartIndex)
+	assert.Equal(t, 19, *annotations[1].EndIndex)
+}
+
+// TestGroundingAnnotationsFallbackWithoutText covers the edge case where a grounded
+// candidate produced no text part: the segment offsets index into nothing, so the
+// citations are kept on a standalone message rather than dropped.
+func TestGroundingAnnotationsFallbackWithoutText(t *testing.T) {
+	response := &gemini.GenerateContentResponse{
+		ResponseID:   "grounding-no-text",
+		ModelVersion: "gemini-2.5-flash",
+		Candidates: []*gemini.Candidate{{
+			FinishReason: gemini.FinishReasonStop,
+			Content: &gemini.Content{
+				Role: "model",
+				Parts: []*gemini.Part{{
+					FunctionCall: &gemini.FunctionCall{Name: "get_weather", Args: []byte(`{}`)},
+				}},
+			},
+			GroundingMetadata: &gemini.GroundingMetadata{
+				WebSearchQueries: []string{"euro 2024 winner"},
+				GroundingChunks: []*gemini.GroundingChunk{
+					{Web: &gemini.GroundingChunkWeb{URI: "https://example.com/spain", Title: "uefa.com"}},
+				},
+				GroundingSupports: []*gemini.GroundingSupport{{
+					Segment:               &gemini.Segment{StartIndex: 0, EndIndex: 19, Text: "Spain won Euro 2024"},
+					GroundingChunkIndices: []int32{0},
+				}},
+			},
+		}},
+	}
+
+	bifrostResp := response.ToResponsesBifrostResponsesResponse()
+	require.NotNil(t, bifrostResp)
+
+	var annotations []schemas.ResponsesOutputMessageContentTextAnnotation
+	for _, msg := range bifrostResp.Output {
+		if msg.Content == nil {
+			continue
+		}
+		for _, block := range msg.Content.ContentBlocks {
+			if block.ResponsesOutputMessageContentText != nil {
+				annotations = append(annotations, block.ResponsesOutputMessageContentText.Annotations...)
+			}
+		}
+	}
+
+	require.Len(t, annotations, 1, "citations must survive even with no text block to attach to")
+	assert.Equal(t, "https://example.com/spain", *annotations[0].URL)
+}
+
+// TestGoogleSearchBillingUnits pins how Google Search grounding is metered. Google bills
+// Gemini 3+ per search query executed ($14/1K) and Gemini 2.5 and older per grounded
+// prompt ($35/1K), so NumSearchQueries — the multiplier CalculateCost applies against
+// search_context_cost_per_query — must differ by model generation.
+func TestGoogleSearchBillingUnits(t *testing.T) {
+	grounded := func(queries ...string) *gemini.GroundingMetadata {
+		return &gemini.GroundingMetadata{
+			WebSearchQueries: queries,
+			GroundingChunks: []*gemini.GroundingChunk{
+				{Web: &gemini.GroundingChunkWeb{URI: "https://example.com/a", Title: "example.com"}},
+			},
+			GroundingSupports: []*gemini.GroundingSupport{{
+				Segment:               &gemini.Segment{StartIndex: 0, EndIndex: 5, Text: "hello"},
+				GroundingChunkIndices: []int32{0},
+			}},
+		}
+	}
+
+	response := func(model string, metadata *gemini.GroundingMetadata) *gemini.GenerateContentResponse {
+		return &gemini.GenerateContentResponse{
+			ResponseID:   "billing",
+			ModelVersion: model,
+			Candidates: []*gemini.Candidate{{
+				FinishReason:      gemini.FinishReasonStop,
+				GroundingMetadata: metadata,
+				Content: &gemini.Content{
+					Role:  "model",
+					Parts: []*gemini.Part{{Text: "hello"}},
+				},
+			}},
+			UsageMetadata: &gemini.GenerateContentResponseUsageMetadata{
+				PromptTokenCount: 5, CandidatesTokenCount: 5, TotalTokenCount: 10,
+			},
+		}
+	}
+
+	chatQueries := func(r *gemini.GenerateContentResponse) *int {
+		u := r.ToBifrostChatResponse().Usage
+		if u == nil || u.CompletionTokensDetails == nil {
+			return nil
+		}
+		return u.CompletionTokensDetails.NumSearchQueries
+	}
+	responsesQueries := func(r *gemini.GenerateContentResponse) *int {
+		u := r.ToResponsesBifrostResponsesResponse().Usage
+		if u == nil || u.OutputTokensDetails == nil {
+			return nil
+		}
+		return u.OutputTokensDetails.NumSearchQueries
+	}
+
+	t.Run("gemini 3 bills per search query executed", func(t *testing.T) {
+		r := response("gemini-3.6-flash", grounded("euro 2024 winner", "euro 2024 final score"))
+		require.NotNil(t, chatQueries(r))
+		assert.Equal(t, 2, *chatQueries(r))
+		require.NotNil(t, responsesQueries(r))
+		assert.Equal(t, 2, *responsesQueries(r))
+	})
+
+	t.Run("gemini 2.5 bills once per grounded prompt regardless of query count", func(t *testing.T) {
+		r := response("gemini-2.5-flash", grounded("euro 2024 winner", "euro 2024 final score"))
+		require.NotNil(t, chatQueries(r))
+		assert.Equal(t, 1, *chatQueries(r))
+		require.NotNil(t, responsesQueries(r))
+		assert.Equal(t, 1, *responsesQueries(r))
+	})
+
+	t.Run("empty and duplicate queries are not billed twice", func(t *testing.T) {
+		r := response("gemini-3.6-flash", grounded("euro 2024 winner", "", "  ", "euro 2024 winner"))
+		require.NotNil(t, chatQueries(r))
+		assert.Equal(t, 1, *chatQueries(r))
+	})
+
+	t.Run("ungrounded response is not billed for search", func(t *testing.T) {
+		assert.Nil(t, chatQueries(response("gemini-3.6-flash", nil)))
+		assert.Nil(t, responsesQueries(response("gemini-3.6-flash", nil)))
+		// Grounding metadata present but no queries executed (e.g. url_context only).
+		assert.Nil(t, chatQueries(response("gemini-3.6-flash", grounded())))
+	})
+
+	t.Run("chat streaming bills on the finish chunk", func(t *testing.T) {
+		state := gemini.NewGeminiStreamState()
+		chunks := []*gemini.GenerateContentResponse{
+			{
+				ResponseID: "billing", ModelVersion: "gemini-3.6-flash",
+				Candidates: []*gemini.Candidate{{
+					Content: &gemini.Content{Role: "model", Parts: []*gemini.Part{{Text: "hello"}}},
+				}},
+			},
+			response("gemini-3.6-flash", grounded("q1", "q2", "q3")),
+		}
+
+		var billed *int
+		for _, chunk := range chunks {
+			resp, bifrostErr, _ := chunk.ToBifrostChatCompletionStream(state)
+			require.Nil(t, bifrostErr)
+			if resp != nil && resp.Usage != nil && resp.Usage.CompletionTokensDetails != nil &&
+				resp.Usage.CompletionTokensDetails.NumSearchQueries != nil {
+				billed = resp.Usage.CompletionTokensDetails.NumSearchQueries
+			}
+		}
+		require.NotNil(t, billed, "streaming must bill search queries on the finish chunk")
+		assert.Equal(t, 3, *billed)
+	})
+}
+
+// TestChatToolConfigRequiresFunctionDeclarations pins that a Gemini chat request only
+// carries functionCallingConfig when function declarations were actually produced.
+// Gemini rejects the config on its own, and a tools list holding only non-function
+// types yields no declarations. Mirrors the guard on the Responses path.
+func TestChatToolConfigRequiresFunctionDeclarations(t *testing.T) {
+	baseReq := func(tools []schemas.ChatTool) *schemas.BifrostChatRequest {
+		return &schemas.BifrostChatRequest{
+			Model: "gemini-2.5-flash",
+			Input: []schemas.ChatMessage{
+				{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
+			},
+			Params: &schemas.ChatParameters{
+				Tools:      tools,
+				ToolChoice: &schemas.ChatToolChoice{ChatToolChoiceStr: schemas.Ptr("auto")},
+			},
+		}
+	}
+
+	t.Run("function tool produces tool config", func(t *testing.T) {
+		out, err := gemini.ToGeminiChatCompletionRequest(nil, baseReq([]schemas.ChatTool{
+			{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{
+				Name:       "get_weather",
+				Parameters: &schemas.ToolFunctionParameters{Type: "object"},
+			}},
+		}))
+		require.NoError(t, err)
+		require.NotEmpty(t, out.Tools)
+		require.NotNil(t, out.ToolConfig)
+		require.NotNil(t, out.ToolConfig.FunctionCallingConfig)
+		assert.Equal(t, gemini.FunctionCallingConfigModeAuto, out.ToolConfig.FunctionCallingConfig.Mode)
+	})
+
+	t.Run("non-function tool yields no orphan tool config", func(t *testing.T) {
+		out, err := gemini.ToGeminiChatCompletionRequest(nil, baseReq([]schemas.ChatTool{
+			{Type: schemas.ChatToolTypeCustom, Custom: &schemas.ChatToolCustom{}},
+		}))
+		require.NoError(t, err)
+		assert.Empty(t, out.Tools, "custom tools produce no Gemini declarations")
+		assert.Nil(t, out.ToolConfig, "functionCallingConfig without function_declarations is rejected by Gemini")
+	})
+}

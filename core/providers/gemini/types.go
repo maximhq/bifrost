@@ -251,6 +251,40 @@ type ToolConfig struct {
 	FunctionCallingConfig *FunctionCallingConfig `json:"functionCallingConfig,omitempty"`
 	// Optional. Retrieval config.
 	RetrievalConfig *RetrievalConfig `json:"retrievalConfig,omitempty"`
+	// Optional. Allows built-in server-side tools (e.g. Google Search) to run in the
+	// same turn as function declarations. Gemini 3+ rejects the combination without it.
+	IncludeServerSideToolInvocations *bool `json:"includeServerSideToolInvocations,omitempty"`
+}
+
+// UnmarshalJSON handles both camelCase and snake_case
+func (t *ToolConfig) UnmarshalJSON(data []byte) error {
+	type Alias ToolConfig
+	aux := &struct {
+		*Alias
+		// snake_case alternatives
+		FunctionCallingConfigSnake            *FunctionCallingConfig `json:"function_calling_config,omitempty"`
+		RetrievalConfigSnake                  *RetrievalConfig       `json:"retrieval_config,omitempty"`
+		IncludeServerSideToolInvocationsSnake *bool                  `json:"include_server_side_tool_invocations,omitempty"`
+	}{
+		Alias: (*Alias)(t),
+	}
+
+	if err := sonic.Unmarshal(data, aux); err != nil {
+		return err
+	}
+
+	// Use snake_case if camelCase wasn't provided
+	if t.FunctionCallingConfig == nil && aux.FunctionCallingConfigSnake != nil {
+		t.FunctionCallingConfig = aux.FunctionCallingConfigSnake
+	}
+	if t.RetrievalConfig == nil && aux.RetrievalConfigSnake != nil {
+		t.RetrievalConfig = aux.RetrievalConfigSnake
+	}
+	if t.IncludeServerSideToolInvocations == nil && aux.IncludeServerSideToolInvocationsSnake != nil {
+		t.IncludeServerSideToolInvocations = aux.IncludeServerSideToolInvocationsSnake
+	}
+
+	return nil
 }
 
 // FunctionDeclaration defines a function that the model can generate JSON inputs for.

@@ -1798,6 +1798,75 @@ func convertToolChoiceToToolConfig(toolChoice *schemas.ChatToolChoice) *ToolConf
 	return config
 }
 
+// countGeminiSearchQueries returns the number of billable Google Search units for a
+// grounded response, or nil when the response was not grounded. Gemini 3+ is billed per
+// search query the model executed; Gemini 2.5 and older are billed per grounded prompt
+// however many queries ran. Empty queries are not billable and duplicates count once.
+func countGeminiSearchQueries(metadata *GroundingMetadata, model string) *int {
+	if metadata == nil {
+		return nil
+	}
+	unique := make(map[string]struct{}, len(metadata.WebSearchQueries))
+	for _, query := range metadata.WebSearchQueries {
+		if trimmed := strings.TrimSpace(query); trimmed != "" {
+			unique[trimmed] = struct{}{}
+		}
+	}
+	if len(unique) == 0 {
+		return nil
+	}
+	if !isGemini3Plus(model) {
+		return new(1)
+	}
+	return new(len(unique))
+}
+
+// applyGeminiSearchQueryChatUsage records billable Google Search units on chat usage so
+// CalculateCost can charge the per-query search fee.
+func applyGeminiSearchQueryChatUsage(usage *schemas.BifrostLLMUsage, metadata *GroundingMetadata, model string) {
+	count := countGeminiSearchQueries(metadata, model)
+	if usage == nil || count == nil {
+		return
+	}
+	if usage.CompletionTokensDetails == nil {
+		usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{}
+	}
+	usage.CompletionTokensDetails.NumSearchQueries = count
+}
+
+// applyGeminiSearchQueryResponsesUsage is the Responses-shaped counterpart of
+// applyGeminiSearchQueryChatUsage.
+func applyGeminiSearchQueryResponsesUsage(usage *schemas.ResponsesResponseUsage, metadata *GroundingMetadata, model string) {
+	count := countGeminiSearchQueries(metadata, model)
+	if usage == nil || count == nil {
+		return
+	}
+	if usage.OutputTokensDetails == nil {
+		usage.OutputTokensDetails = &schemas.ResponsesResponseOutputTokens{}
+	}
+	usage.OutputTokensDetails.NumSearchQueries = count
+}
+
+// applyServerSideToolInvocations opts the request into Gemini's tool combination mode,
+// which is what lets built-in tools (Google Search) run in the same turn as function
+// declarations. Gemini rejects AUTO in this mode, so an existing AUTO (or unset, which
+// the server treats as AUTO) is promoted to VALIDATED. A functionCallingConfig is never
+// synthesized here — Gemini rejects one without function declarations.
+func applyServerSideToolInvocations(req *GeminiGenerationRequest) {
+	if req == nil {
+		return
+	}
+	if req.ToolConfig == nil {
+		req.ToolConfig = &ToolConfig{}
+	}
+	req.ToolConfig.IncludeServerSideToolInvocations = schemas.Ptr(true)
+	if fc := req.ToolConfig.FunctionCallingConfig; fc != nil {
+		if fc.Mode == FunctionCallingConfigModeAuto || fc.Mode == "" {
+			fc.Mode = FunctionCallingConfigModeValidated
+		}
+	}
+}
+
 // addSpeechConfigToGenerationConfig adds speech configuration to the generation config
 func addSpeechConfigToGenerationConfig(config *GenerationConfig, voiceConfig *schemas.SpeechVoiceInput) {
 	speechConfig := SpeechConfig{}
