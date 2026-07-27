@@ -3,10 +3,16 @@ package munsit
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
 	"net/url"
+	"strings"
+
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+var _ schemas.RealtimeProvider = (*MunsitProvider)(nil)
+var _ schemas.RealtimeSpeechBillingProvider = (*MunsitProvider)(nil)
+var _ schemas.RealtimeDeferredTurnStartProvider = (*MunsitProvider)(nil)
+var _ schemas.RealtimeFinalizeOnCloseProvider = (*MunsitProvider)(nil)
 
 // SupportsRealtimeAPI returns true since Munsit supports streaming TTS via WebSocket.
 func (provider *MunsitProvider) SupportsRealtimeAPI() bool {
@@ -29,13 +35,7 @@ func (provider *MunsitProvider) RealtimeWebSocketURL(key schemas.Key, model stri
 }
 
 // RealtimeHeaders returns the headers required for the Munsit WebSocket connection.
-//
-// NOTE: Munsit's WS docs only document query-param (?x-api-key=) or in-message (x_api_key)
-// auth — presumably because browser WebSocket clients can't set custom handshake headers.
-// Bifrost dials server-side, so this sends the same x-api-key header the REST provider uses
-// (see munsit.go Speech/SpeechStream). VERIFY THIS AGAINST THE REAL SERVER — if Munsit's WS
-// handshake rejects header auth, switch to appending the key as a query parameter in
-// RealtimeWebSocketURL instead.
+// Bifrost dials server-side and sends the same x-api-key header the REST provider uses.
 func (provider *MunsitProvider) RealtimeHeaders(_ *schemas.BifrostContext, key schemas.Key) (map[string]string, *schemas.BifrostError) {
 	headers := map[string]string{
 		"x-api-key": key.Value.GetValue(),
@@ -63,18 +63,29 @@ func (provider *MunsitProvider) ExchangeRealtimeWebRTCSDP(_ *schemas.BifrostCont
 	}
 }
 
-// ShouldStartRealtimeTurn always returns false — Munsit's WebSocket protocol has no
-// multi-turn conversation concept (no tool calls, no user/assistant turns), just
-// continuous text-in/audio-out on a single session. Turn-level governance hooks are
-// bypassed entirely, matching the ElevenLabs Conversational AI provider's own choice.
-func (provider *MunsitProvider) ShouldStartRealtimeTurn(_ *schemas.BifrostRealtimeEvent) bool {
-	return false
+// ShouldStartRealtimeTurn starts logging/billing on response.create (TTS flush).
+// Combined with ShouldDeferRealtimeTurnStart so the flush is written upstream
+// before PreHooks run.
+func (provider *MunsitProvider) ShouldStartRealtimeTurn(event *schemas.BifrostRealtimeEvent) bool {
+	return event != nil && event.Type == schemas.RTEventResponseCreate
 }
 
-// RealtimeTurnFinalEvent is never actually reached since ShouldStartRealtimeTurn is always
-// false, but the interface requires a value.
+// ShouldDeferRealtimeTurnStart reports that response.create must reach Munsit
+// before turn PreHooks (avoids blocking audio generation).
+func (provider *MunsitProvider) ShouldDeferRealtimeTurnStart() bool {
+	return true
+}
+
+// RealtimeTurnFinalEvent is unused for Munsit audio — isFinal batches are not
+// turn-terminal (they truncate speech if used). Billing finalizes on client close.
 func (provider *MunsitProvider) RealtimeTurnFinalEvent() schemas.RealtimeEventType {
-	return schemas.RTEventResponseAudioDone
+	return schemas.RTEventResponseDone
+}
+
+// ShouldFinalizeRealtimeTurnOnClose finalizes logging/billing when LiveKit closes
+// the websocket after the utterance (Munsit has no response.done event).
+func (provider *MunsitProvider) ShouldFinalizeRealtimeTurnOnClose() bool {
+	return true
 }
 
 // RealtimeWebRTCDataChannelLabel returns empty — no WebRTC support.
@@ -93,9 +104,63 @@ func (provider *MunsitProvider) ShouldForwardRealtimeEvent(_ *schemas.BifrostRea
 }
 
 // ShouldAccumulateRealtimeOutput always returns false — Munsit is TTS-only (no transcript
-// or assistant text to accumulate for turn history, since turns are never started).
+// or assistant text to accumulate for turn history).
 func (provider *MunsitProvider) ShouldAccumulateRealtimeOutput(_ schemas.RealtimeEventType) bool {
 	return false
+}
+
+// EstimateRealtimeSpeechUsageFromRawRequest bills a realtime TTS turn from the
+// combined Bifrost client events for the turn (conversation.item.create text).
+// Rate: 1 char = 2 credits, 3M credits = $100 → $1/15,000 per character.
+func (provider *MunsitProvider) EstimateRealtimeSpeechUsageFromRawRequest(rawRequest string) *schemas.BifrostLLMUsage {
+	return estimateRealtimeSpeechUsage(extractRealtimeBillingText(rawRequest))
+}
+
+// estimateRealtimeSpeechUsage builds BifrostLLMUsage + Cost for a character count.
+func estimateRealtimeSpeechUsage(inputText string) *schemas.BifrostLLMUsage {
+	chars := countBillableChars(inputText)
+	if chars <= 0 {
+		return nil
+	}
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens: chars,
+		TotalTokens:  chars,
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+			TextTokens: chars,
+		},
+	}
+	if cost := speechCostUSD(chars); cost > 0 {
+		usage.Cost = &schemas.BifrostCost{TotalCost: cost}
+	}
+	return usage
+}
+
+// extractRealtimeBillingText pulls synthesizable text from combined Bifrost
+// realtime client events (joined with "\n\n" by the HTTP turn pipeline).
+func extractRealtimeBillingText(rawRequest string) string {
+	rawRequest = strings.TrimSpace(rawRequest)
+	if rawRequest == "" {
+		return ""
+	}
+	parts := strings.Split(rawRequest, "\n\n")
+	var texts []string
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		var event schemas.BifrostRealtimeEvent
+		if err := json.Unmarshal([]byte(part), &event); err != nil {
+			continue
+		}
+		if event.Type != schemas.RTEventConversationItemCreate || event.Item == nil {
+			continue
+		}
+		if text := strings.TrimSpace(extractRealtimeItemText(event.Item.Content)); text != "" {
+			texts = append(texts, text)
+		}
+	}
+	return strings.Join(texts, "")
 }
 
 // munsitInitConnection mirrors the initConnection message shape from Munsit's
@@ -128,7 +193,7 @@ type munsitRealtimeEvent struct {
 	Type         string  `json:"type,omitempty"`
 	Audio        *string `json:"audio,omitempty"`
 	SampleRate   *int    `json:"sampleRate,omitempty"`
-	IsFinal       bool    `json:"isFinal,omitempty"`
+	IsFinal      bool    `json:"isFinal,omitempty"`
 	ErrorCode    *int    `json:"errorCode,omitempty"`
 	ErrorMessage *string `json:"errorMessage,omitempty"`
 }
@@ -167,12 +232,12 @@ func (provider *MunsitProvider) ToBifrostRealtimeEvent(providerEvent json.RawMes
 		}
 
 	case raw.Audio != nil:
+		// Always audio delta. Never map isFinal → response.audio.done: Munsit
+		// emits isFinal on intermediate batches, and treating those as turn-final
+		// aborts the provider→client relay on PostHook errors (truncates speech).
+		// RawData still carries isFinal for clients. Billing finalizes on close.
+		event.Type = schemas.RTEventResponseAudioDelta
 		event.Delta = &schemas.RealtimeDelta{Audio: *raw.Audio}
-		if raw.IsFinal {
-			event.Type = schemas.RTEventResponseAudioDone   // يطابق RealtimeTurnFinalEvent()
-		} else {
-			event.Type = schemas.RTEventResponseAudioDelta
-		}
 
 	default:
 		event.Type = schemas.RealtimeEventType(raw.Type)
@@ -215,7 +280,6 @@ const munsitDefaultRealtimeModel = "faseeh-v1-preview"
 // ToProviderRealtimeEvent converts a unified Bifrost Realtime event into a Munsit
 // WebSocket client message.
 func (provider *MunsitProvider) ToProviderRealtimeEvent(bifrostEvent *schemas.BifrostRealtimeEvent) (json.RawMessage, error) {
-	fmt.Println("EVENT:", bifrostEvent.Type)
 	switch bifrostEvent.Type {
 	case schemas.RTEventSessionUpdate:
 		msg := munsitInitConnection{Type: "initConnection", ModelID: munsitDefaultRealtimeModel}
@@ -225,29 +289,22 @@ func (provider *MunsitProvider) ToProviderRealtimeEvent(bifrostEvent *schemas.Bi
 			}
 			msg.VoiceID = bifrostEvent.Session.Voice
 		}
-		payload, _ := schemas.MarshalSorted(msg)
-		fmt.Println(string(payload))
-		return payload, nil
-		// return schemas.MarshalSorted(msg)
+		return schemas.MarshalSorted(msg)
 
 	case schemas.RTEventConversationItemCreate:
 		text := ""
 		if bifrostEvent.Item != nil {
 			text = extractRealtimeItemText(bifrostEvent.Item.Content)
 		}
-		msg := munsitTextMessage{Type: "text", Text: text, Flush: false}
-		payload, _ := schemas.MarshalSorted(msg)
-		fmt.Println(string(payload))
-		return payload, nil
-		// return schemas.MarshalSorted(msg)
+		// try_trigger_generation starts audio while tokens stream (lower TTFB for
+		// LiveKit). Safe now that isFinal no longer finalizes/aborts the turn.
+		msg := munsitTextMessage{Type: "text", Text: text, Flush: false, TryTriggerGeneration: true}
+		return schemas.MarshalSorted(msg)
 
 	case schemas.RTEventResponseCreate:
-		// No new text to add — just force generation of whatever's buffered so far.
+		// Force generation of whatever remains in Munsit's buffer.
 		msg := munsitTextMessage{Type: "text", Text: "", Flush: true}
-		payload, _ := schemas.MarshalSorted(msg)
-		fmt.Println(string(payload))
-		return payload, nil
-		// return schemas.MarshalSorted(msg)
+		return schemas.MarshalSorted(msg)
 
 	default:
 		out := map[string]interface{}{

@@ -219,6 +219,31 @@ type RealtimeUsageExtractor interface {
 	ExtractRealtimeTurnOutput(terminalEventRaw []byte) *ChatMessage
 }
 
+// RealtimeSpeechBillingProvider is an optional interface for TTS-style realtime
+// providers that bill from client input on the turn (not terminal-event tokens).
+// Checked via type assertion only — providers that do not implement it are
+// unaffected.
+type RealtimeSpeechBillingProvider interface {
+	// EstimateRealtimeSpeechUsageFromRawRequest returns usage (and optional
+	// Cost) parsed from the turn's combined raw client events. Return nil to
+	// fall back to RealtimeUsageExtractor / response.done parsing.
+	EstimateRealtimeSpeechUsageFromRawRequest(rawRequest string) *BifrostLLMUsage
+}
+
+// RealtimeDeferredTurnStartProvider is an optional interface for providers that
+// need the turn-start event written upstream before PreHooks run (e.g. TTS flush).
+// Checked via type assertion only.
+type RealtimeDeferredTurnStartProvider interface {
+	ShouldDeferRealtimeTurnStart() bool
+}
+
+// RealtimeFinalizeOnCloseProvider is an optional interface for providers that
+// never emit a terminal turn event and instead finalize logging/billing when the
+// client closes the websocket cleanly. Checked via type assertion only.
+type RealtimeFinalizeOnCloseProvider interface {
+	ShouldFinalizeRealtimeTurnOnClose() bool
+}
+
 // RealtimeSessionProvider is an optional interface for providers that can mint
 // short-lived client secrets for browser/client-side Realtime connections.
 // Checked via type assertion: provider.(RealtimeSessionProvider).

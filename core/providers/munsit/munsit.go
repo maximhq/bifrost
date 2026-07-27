@@ -2,13 +2,13 @@ package munsit
 
 import (
 	"bytes"
-	"os"
 	"context"
 	"errors"
 	"io"
 	"mime/multipart"
 	"net/http"
 	"net/url"
+	"os"
 	"path"
 	"strconv"
 	"strings"
@@ -206,7 +206,7 @@ func (provider *MunsitProvider) Speech(ctx *schemas.BifrostContext, key schemas.
 
 	var endpoint string
 	if request.Model == "" {
-    	return nil, providerUtils.NewBifrostOperationError("model is required", nil)
+		return nil, providerUtils.NewBifrostOperationError("model is required", nil)
 	}
 
 	endpoint = "/api/v1/text-to-speech/" + request.Model
@@ -224,7 +224,7 @@ func (provider *MunsitProvider) Speech(ctx *schemas.BifrostContext, key schemas.
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return ToMunsitSpeechRequest(request,false), nil
+			return ToMunsitSpeechRequest(request, false), nil
 		})
 
 	if bifrostErr != nil {
@@ -247,7 +247,7 @@ func (provider *MunsitProvider) Speech(ctx *schemas.BifrostContext, key schemas.
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
-    	provider.logger.Warn("munsit error status=%d raw_body=%s", resp.StatusCode(), string(resp.Body()))
+		provider.logger.Warn("munsit error status=%d raw_body=%s", resp.StatusCode(), string(resp.Body()))
 		return nil, providerUtils.EnrichError(ctx, parseMunsitError(resp), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
@@ -269,8 +269,17 @@ func (provider *MunsitProvider) Speech(ctx *schemas.BifrostContext, key schemas.
 	}
 
 	// Create response based on whether timestamps were requested
+	chars := 0
+	if request.Input != nil {
+		chars = countBillableChars(request.Input.Input)
+	}
+	usage := &schemas.SpeechUsage{InputChars: chars}
+	if cost := speechCostUSD(chars); cost > 0 {
+		usage.Cost = &schemas.BifrostCost{TotalCost: cost}
+	}
 	bifrostResponse := &schemas.BifrostSpeechResponse{
 		ResponseFormat: "pcm16",
+		Usage:          usage,
 
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Latency:                 latency.Milliseconds(),
@@ -281,8 +290,6 @@ func (provider *MunsitProvider) Speech(ctx *schemas.BifrostContext, key schemas.
 	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
 		providerUtils.ParseAndSetRawRequest(&bifrostResponse.ExtraFields, jsonData)
 	}
-
-	
 
 	bifrostResponse.Audio = body
 	return bifrostResponse, nil
@@ -308,7 +315,7 @@ func (provider *MunsitProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return ToMunsitSpeechRequest(request,true), nil
+			return ToMunsitSpeechRequest(request, true), nil
 		})
 	munsitReq := ToMunsitSpeechRequest(request, true)
 
@@ -349,7 +356,7 @@ func (provider *MunsitProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 	// Make request
 	startTime := time.Now()
 	provider.logger.Info("REQUEST: %s", string(jsonBody))
-	
+
 	err := provider.streamingClient.Do(req, resp)
 	latency := time.Since(startTime)
 	if err != nil {
@@ -380,7 +387,7 @@ func (provider *MunsitProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
 		bodyBytes, _ := io.ReadAll(resp.BodyStream())
-    	provider.logger.Info("munsit error status=%d body=%s", resp.StatusCode(), string(bodyBytes))
+		provider.logger.Info("munsit error status=%d body=%s", resp.StatusCode(), string(bodyBytes))
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 		return nil, providerUtils.EnrichError(ctx, parseMunsitError(resp), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
@@ -483,9 +490,18 @@ func (provider *MunsitProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 		}
 
 		// Send final response after natural loop termination (similar to Gemini pattern)
+		chars := 0
+		if request.Input != nil {
+			chars = countBillableChars(request.Input.Input)
+		}
+		usage := &schemas.SpeechUsage{InputChars: chars}
+		if cost := speechCostUSD(chars); cost > 0 {
+			usage.Cost = &schemas.BifrostCost{TotalCost: cost}
+		}
 		finalResponse := &schemas.BifrostSpeechStreamResponse{
 			Type:  schemas.SpeechStreamResponseTypeDone,
 			Audio: []byte{},
+			Usage: usage,
 			ExtraFields: schemas.BifrostResponseExtraFields{
 				ChunkIndex: chunkIndex + 1,
 				Latency:    time.Since(startTime).Milliseconds(),
@@ -667,7 +683,6 @@ func writeTranscriptionMultipart(
 
 	return nil
 }
-
 
 // TranscriptionStream is not supported by the Munsit provider
 func (provider *MunsitProvider) TranscriptionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
