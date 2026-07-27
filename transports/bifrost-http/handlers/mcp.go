@@ -302,8 +302,13 @@ func (h *MCPHandler) forceSyncMCPLibrary(ctx *fasthttp.RequestCtx) {
 	} else {
 		// Resolve the effective MCP library URL from framework config (DB → file → default).
 		mcpLibraryURL := modelcatalog.DefaultMCPLibraryURL
-		if h.store.FrameworkConfig != nil && h.store.FrameworkConfig.Pricing != nil && h.store.FrameworkConfig.Pricing.MCPLibraryURL != nil {
-			if u := *h.store.FrameworkConfig.Pricing.MCPLibraryURL; u != "" {
+		// Snapshot under the read lock; updateConfig swaps this pointer from
+		// another request goroutine.
+		h.store.Mu.RLock()
+		storedFrameworkConfig := h.store.FrameworkConfig
+		h.store.Mu.RUnlock()
+		if storedFrameworkConfig != nil && storedFrameworkConfig.Pricing != nil && storedFrameworkConfig.Pricing.MCPLibraryURL != nil {
+			if u := *storedFrameworkConfig.Pricing.MCPLibraryURL; u != "" {
 				mcpLibraryURL = u
 			}
 		}

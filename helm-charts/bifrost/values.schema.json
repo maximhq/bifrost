@@ -654,6 +654,15 @@
                   "description": "MCP library sync interval in seconds. Default is 24 hours. Minimum is 3600 seconds (1 hour).",
                   "default": 86400,
                   "minimum": 3600
+                },
+                "liveModelsSyncInterval": {
+                  "type": "integer",
+                  "description": "How often each provider's list-models response is re-fetched in the background, in seconds. Set to 0 to disable background refresh. Default is 3600 (1 hour); minimum when enabled is 60 seconds.",
+                  "default": 3600,
+                  "anyOf": [
+                    {"const": 0},
+                    {"minimum": 60}
+                  ]
                 }
               },
               "additionalProperties": false
