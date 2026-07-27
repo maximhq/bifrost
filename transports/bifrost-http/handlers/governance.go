@@ -4740,6 +4740,7 @@ var validRoutingScopes = map[string]bool{
 	"team":        true,
 	"customer":    true,
 	"virtual_key": true,
+	"user":        true,
 }
 
 // errRoutingScopeIDNotFound marks a validateRoutingScopeID failure as a genuine
@@ -4775,6 +4776,10 @@ func (h *GovernanceHandler) validateRoutingScopeID(ctx context.Context, scope st
 			}
 			return fmt.Errorf("failed to verify customer: %w", err)
 		}
+	case "user":
+		// User ids live outside the config store (they arrive on requests via
+		// the resolved identity context), so existence cannot be verified
+		// here; the id is matched at eval time against the calling user.
 	}
 	return nil
 }
@@ -4797,7 +4802,7 @@ func validateRoutingScope(scope string) error {
 		return nil // Empty scope will default to "global" later
 	}
 	if !validRoutingScopes[scope] {
-		return fmt.Errorf("invalid scope %q: must be one of: global, team, customer, virtual_key", scope)
+		return fmt.Errorf("invalid scope %q: must be one of: global, team, customer, virtual_key, user", scope)
 	}
 	return nil
 }
