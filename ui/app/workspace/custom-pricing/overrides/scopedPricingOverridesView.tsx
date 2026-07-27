@@ -97,18 +97,24 @@ function parseScopeKind(value: string | null): ScopeFilter {
 		value === "provider_key" ||
 		value === "virtual_key" ||
 		value === "virtual_key_provider" ||
-		value === "virtual_key_provider_key"
+		value === "virtual_key_provider_key" ||
+		value === "user" ||
+		value === "user_provider" ||
+		value === "user_provider_key"
 	) {
 		return value;
 	}
 	return "all";
 }
 
-// Returns the top-level scope label: "Global" or the virtual key name.
+// Returns the top-level scope label: "Global", "Virtual Key", or "User".
 function scopeLabel(override: PricingOverride, _virtualKeyMap: Map<string, string>): string {
 	const scopeKind = resolveScopeKind(override);
 	if (override.virtual_key_id && scopeKind.startsWith("virtual_key")) {
 		return "Virtual Key";
+	}
+	if (override.user_id && scopeKind.startsWith("user")) {
+		return "User";
 	}
 	return "Global";
 }
@@ -128,9 +134,11 @@ function providerLabel(override: PricingOverride, providerMap: Map<string, strin
 	switch (scopeKind) {
 		case "provider":
 		case "virtual_key_provider":
+		case "user_provider":
 			return providerMap.get(override.provider_id || "") || override.provider_id || "-";
 		case "provider_key":
-		case "virtual_key_provider_key": {
+		case "virtual_key_provider_key":
+		case "user_provider_key": {
 			const keyID = override.provider_key_id || "";
 			return providerMap.get(keyProviderMap.get(keyID) || "") || keyProviderMap.get(keyID) || "-";
 		}
@@ -146,7 +154,10 @@ function resolveScopeKind(override: PricingOverride): PricingOverrideScopeKind {
 		override.scope_kind === "provider_key" ||
 		override.scope_kind === "virtual_key" ||
 		override.scope_kind === "virtual_key_provider" ||
-		override.scope_kind === "virtual_key_provider_key"
+		override.scope_kind === "virtual_key_provider_key" ||
+		override.scope_kind === "user" ||
+		override.scope_kind === "user_provider" ||
+		override.scope_kind === "user_provider_key"
 	) {
 		return override.scope_kind;
 	}
@@ -154,6 +165,11 @@ function resolveScopeKind(override: PricingOverride): PricingOverrideScopeKind {
 		if (override.provider_key_id) return "virtual_key_provider_key";
 		if (override.provider_id) return "virtual_key_provider";
 		return "virtual_key";
+	}
+	if (override.user_id) {
+		if (override.provider_key_id) return "user_provider_key";
+		if (override.provider_id) return "user_provider";
+		return "user";
 	}
 	if (override.provider_key_id) return "provider_key";
 	if (override.provider_id) return "provider";
@@ -167,6 +183,7 @@ export default function ScopedPricingOverridesView() {
 	const searchParams = useMemo(() => new URLSearchParams(location.searchStr), [location.searchStr]);
 
 	const [scopeKind, setScopeKind] = useState<ScopeFilter>(() => parseScopeKind(searchParams.get("scope_kind")));
+	const [userID, setUserID] = useState(() => (searchParams.get("user_id") || "").trim());
 	const [virtualKeyID, setVirtualKeyID] = useState(() => (searchParams.get("virtual_key_id") || "").trim());
 	const [providerID, setProviderID] = useState(() => (searchParams.get("provider_id") || "").trim());
 	const [providerKeyID, setProviderKeyID] = useState(() => (searchParams.get("provider_key_id") || "").trim());
@@ -177,6 +194,7 @@ export default function ScopedPricingOverridesView() {
 
 	useEffect(() => {
 		setScopeKind(parseScopeKind(searchParams.get("scope_kind")));
+		setUserID((searchParams.get("user_id") || "").trim());
 		setVirtualKeyID((searchParams.get("virtual_key_id") || "").trim());
 		setProviderID((searchParams.get("provider_id") || "").trim());
 		setProviderKeyID((searchParams.get("provider_key_id") || "").trim());
@@ -185,11 +203,12 @@ export default function ScopedPricingOverridesView() {
 	// Reset to first page when filters or search change
 	useEffect(() => {
 		setOffset(0);
-	}, [scopeKind, virtualKeyID, providerID, providerKeyID, debouncedSearch]);
+	}, [scopeKind, userID, virtualKeyID, providerID, providerKeyID, debouncedSearch]);
 
 	const queryArgs = useMemo(
 		() => ({
 			scopeKind: scopeKind === "all" ? undefined : scopeKind,
+			userID: userID || undefined,
 			virtualKeyID: virtualKeyID || undefined,
 			providerID: providerID || undefined,
 			providerKeyID: providerKeyID || undefined,
@@ -197,7 +216,7 @@ export default function ScopedPricingOverridesView() {
 			offset,
 			search: debouncedSearch || undefined,
 		}),
-		[scopeKind, virtualKeyID, providerID, providerKeyID, offset, debouncedSearch],
+		[scopeKind, userID, virtualKeyID, providerID, providerKeyID, offset, debouncedSearch],
 	);
 
 	const { data, isLoading, error } = useGetPricingOverridesQuery(queryArgs);
@@ -251,12 +270,13 @@ export default function ScopedPricingOverridesView() {
 		if (scopeKind === "all") return undefined;
 		return {
 			scopeKind,
+			userID: userID || undefined,
 			virtualKeyID: virtualKeyID || undefined,
 			providerID: providerID || undefined,
 			providerKeyID: providerKeyID || undefined,
-			label: `${scopeKind}${virtualKeyID || providerID || providerKeyID ? " (filtered)" : ""}`,
+			label: `${scopeKind}${userID || virtualKeyID || providerID || providerKeyID ? " (filtered)" : ""}`,
 		};
-	}, [scopeKind, virtualKeyID, providerID, providerKeyID]);
+	}, [scopeKind, userID, virtualKeyID, providerID, providerKeyID]);
 
 	const openCreateDrawer = () => {
 		setEditingOverride(null);
@@ -279,7 +299,7 @@ export default function ScopedPricingOverridesView() {
 		}
 	};
 
-	const hasActiveFilters = debouncedSearch || scopeKind !== "all" || virtualKeyID || providerID || providerKeyID;
+	const hasActiveFilters = debouncedSearch || scopeKind !== "all" || userID || virtualKeyID || providerID || providerKeyID;
 
 	if (!isLoading && !error && totalCount === 0 && !hasActiveFilters) {
 		return (
@@ -301,7 +321,7 @@ export default function ScopedPricingOverridesView() {
 				<div>
 					<h2 className="text-lg font-semibold tracking-tight">Pricing Overrides</h2>
 					<p className="text-muted-foreground text-sm">
-						Set custom rates for any model across global or virtual key scopes, optionally narrowed to a specific provider or key
+						Set custom rates for any model across global, virtual key, or user scopes, optionally narrowed to a specific provider or key
 					</p>
 				</div>
 				<Button data-testid="pricing-override-create-btn" onClick={openCreateDrawer} className="gap-2">
