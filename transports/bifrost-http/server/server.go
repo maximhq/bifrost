@@ -1061,7 +1061,7 @@ func (s *BifrostHTTPServer) UpdateSyncConfig(ctx context.Context) error {
 	// The live model refresher reads its interval from the same framework
 	// config block, so pick up a changed (or newly disabled) value here rather
 	// than waiting for a restart.
-	s.restartLiveModelRefresher(s.backgroundCtx())
+	s.RestartLiveModelRefresher(s.backgroundCtx())
 	return s.Config.ModelCatalog.UpdateSyncConfig(ctx, pricing)
 }
 
@@ -1190,11 +1190,13 @@ func (s *BifrostHTTPServer) startLiveModelRefresher(ctx context.Context, interva
 	return cancel
 }
 
-// restartLiveModelRefresher stops any running refresher and starts a new one
+// RestartLiveModelRefresher stops any running refresher and starts a new one
 // at the currently configured interval. Called at boot and again whenever the
 // framework config changes, so a disabled-to-enabled edit (or vice versa)
-// takes effect without a restart.
-func (s *BifrostHTTPServer) restartLiveModelRefresher(ctx context.Context) {
+// takes effect without a restart. Exported so servers that replace the boot
+// path can start the refresher with its stop handle registered for the shared
+// cleanup and config-change restarts.
+func (s *BifrostHTTPServer) RestartLiveModelRefresher(ctx context.Context) {
 	s.liveModelRefresherMu.Lock()
 	defer s.liveModelRefresherMu.Unlock()
 	if s.liveModelRefresherStop != nil {
@@ -2360,7 +2362,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	// Keep the live model catalog current after boot. Without this, a model an
 	// upstream starts serving mid-uptime stays invisible until a restart or a
 	// key edit, since nothing else re-fetches list-models.
-	s.restartLiveModelRefresher(s.Ctx)
+	s.RestartLiveModelRefresher(s.Ctx)
 	return nil
 }
 
