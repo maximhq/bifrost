@@ -167,7 +167,7 @@ export default function ModelLimitsTable({
 	const handleDelete = async (id: string) => {
 		try {
 			await deleteModelConfig(id).unwrap();
-			toast.success("Model limit deleted successfully");
+			toast.success("Limit deleted successfully");
 			setDeleteModelConfigId(null);
 		} catch (error) {
 			toast.error(getErrorMessage(error));
@@ -213,7 +213,7 @@ export default function ModelLimitsTable({
 			<AlertDialog open={!!deletingModelConfig} onOpenChange={(open) => !open && setDeleteModelConfigId(null)}>
 				<AlertDialogContent>
 					<AlertDialogHeader>
-						<AlertDialogTitle>Delete Model Limit</AlertDialogTitle>
+						<AlertDialogTitle>Delete Limit</AlertDialogTitle>
 						<AlertDialogDescription>
 							Are you sure you want to delete the limit for &quot;
 							{deletingModelConfig?.model_name && deletingModelConfig.model_name.length > 30
@@ -238,14 +238,14 @@ export default function ModelLimitsTable({
 			<div className="flex flex-col overflow-y-auto">
 				<div className="mb-4 flex items-center justify-between">
 					<div>
-						<h1 className="text-lg font-semibold">Model Limits</h1>
+						<h1 className="text-lg font-semibold">Budgets &amp; Limits</h1>
 						<p className="text-muted-foreground text-sm">
-							Configure budgets and rate limits at the model level. For provider-specific limits, visit each provider&apos;s settings.
+							Configure budgets and rate limits at any scope: virtual keys, users, providers, or specific models.
 						</p>
 					</div>
 					<Button onClick={handleAddModelLimit} disabled={!hasCreateAccess} data-testid="model-limits-button-create">
 						<Plus className="h-4 w-4" />
-						Add Model Limit
+						Add Limit
 					</Button>
 				</div>
 
@@ -328,7 +328,7 @@ export default function ModelLimitsTable({
 								<TableRow>
 									<TableCell colSpan={7} className="h-24 text-center">
 										<span className="text-muted-foreground text-sm">
-											{isLoading ? "Loading model limits..." : "No matching model limits found."}
+											{isLoading ? "Loading limits..." : "No matching limits found."}
 										</span>
 									</TableCell>
 								</TableRow>
