@@ -183,6 +183,14 @@ func testRunner(store Store) *Runner {
 	return New(store, bifrost.NewDefaultLogger(schemas.LogLevelError), 4, "")
 }
 
+// testRunnerWithID builds a runner that identifies itself. An empty runner ID
+// makes New set staleAfter to 0, so every running job reads as instantly stale
+// and is immediately reclaimable — fine for a lone runner recovering its own
+// leftovers, wrong for any test where two runners contend.
+func testRunnerWithID(store Store, runnerID string) *Runner {
+	return New(store, bifrost.NewDefaultLogger(schemas.LogLevelError), 4, runnerID)
+}
+
 func TestEnqueueRunsHandlerAndCompletes(t *testing.T) {
 	store := newFakeStore()
 	r := testRunner(store)
@@ -312,7 +320,12 @@ func TestRunnerRaceSingleWinner(t *testing.T) {
 	handler := func(_ context.Context, job tables.TableSidekiqJob, _ ProgressFunc) (string, error) {
 		return "done", nil
 	}
-	r1, r2 := testRunner(store), testRunner(store)
+	// Distinct runner IDs, as the doc comment above requires. With the empty ID
+	// testRunner uses, staleAfter is 0, so the loser reads the winner's
+	// microseconds-old claim as stale and re-claims it — the job then runs twice
+	// and the original owner cannot complete it. That is the documented behaviour
+	// of an unidentified runner, not a claim bug, but it makes this test racy.
+	r1, r2 := testRunnerWithID(store, "runner-A"), testRunnerWithID(store, "runner-B")
 	r1.Register("k", handler)
 	r2.Register("k", handler)
 
