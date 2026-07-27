@@ -1192,6 +1192,12 @@ func TestNormalizeResponsesToolType(t *testing.T) {
 		// memory versioned aliases
 		{"memory_20250818", ResponsesToolTypeMemory},
 
+		// tool_search versioned aliases — Anthropic's server-side tool-search
+		// meta-tool as declared through the OpenAI /v1/responses tools[]
+		{ResponsesToolTypeToolSearch, ResponsesToolTypeToolSearch},
+		{"tool_search_tool_regex_20251119", ResponsesToolTypeToolSearch},
+		{"tool_search_tool_bm25_20251119", ResponsesToolTypeToolSearch},
+
 		// Unrecognized types pass through unchanged
 		{"totally_unknown", "totally_unknown"},
 		{"mcp", ResponsesToolTypeMCP},
@@ -1247,6 +1253,13 @@ func TestResponsesTool_UnmarshalJSON_NormalizesVersionedToolTypes(t *testing.T) 
 		// advisor variants → advisor
 		{name: "advisor canonical", input: `{"type":"advisor","name":"advisor","model":"claude-opus-4-8"}`, wantType: ResponsesToolTypeAdvisor, wantAdvisor: true, wantModel: "claude-opus-4-8"},
 		{name: "advisor_20260301", input: `{"type":"advisor_20260301","name":"advisor","model":"claude-opus-4-8"}`, wantType: ResponsesToolTypeAdvisor, wantAdvisor: true, wantModel: "claude-opus-4-8"},
+
+		// tool_search variants → tool_search (Anthropic server-side tool-search
+		// meta-tool; without normalization these are downcast to a client tool
+		// and Anthropic never runs the search server-side)
+		{name: "tool_search canonical", input: `{"type":"tool_search","name":"tool_search_tool_regex"}`, wantType: ResponsesToolTypeToolSearch},
+		{name: "tool_search_tool_regex_20251119", input: `{"type":"tool_search_tool_regex_20251119","name":"tool_search_tool_regex"}`, wantType: ResponsesToolTypeToolSearch},
+		{name: "tool_search_tool_bm25_20251119", input: `{"type":"tool_search_tool_bm25_20251119","name":"tool_search_tool_bm25"}`, wantType: ResponsesToolTypeToolSearch},
 
 		// unrecognized types pass through unchanged
 		{name: "function unchanged", input: `{"type":"function","name":"foo","strict":true}`, wantType: ResponsesToolTypeFunction},
