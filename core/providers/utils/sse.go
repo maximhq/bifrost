@@ -29,6 +29,26 @@ type SSEEventReader interface {
 	ReadEvent() (eventType string, data []byte, err error)
 }
 
+// SSEStreamTerminator is optionally implemented by SSE readers that can report
+// whether the stream ended on an explicit terminal marker ("data: [DONE]")
+// rather than a plain body EOF. ReadDataLine returns io.EOF for both, so
+// without this a provider loop cannot tell a provider that finished cleanly
+// from an upstream connection that died mid-stream.
+type SSEStreamTerminator interface {
+	SawDoneMarker() bool
+}
+
+// SSEStreamEndedOnMarker reports whether r ended on an explicit [DONE] marker.
+// Readers that do not implement SSEStreamTerminator (e.g. an enterprise-injected
+// SSEReaderFactory) return true: with no signal available we assume the stream
+// terminated normally rather than misreport a healthy stream as truncated.
+func SSEStreamEndedOnMarker(r SSEDataReader) bool {
+	if t, ok := r.(SSEStreamTerminator); ok {
+		return t.SawDoneMarker()
+	}
+	return true
+}
+
 // SSEReaderFactory creates SSE readers for streaming response processing.
 // Enterprise injects this via BifrostContextKeySSEReaderFactory to replace
 // the default bufio.Scanner-based implementations with streaming readers.
@@ -75,7 +95,11 @@ var (
 type defaultSSEDataReader struct {
 	scanner *bufio.Scanner
 	pending []byte // line carried over from an aborted multi-line JSON accumulation
+	sawDone bool   // stream ended on "data: [DONE]" rather than a bare body EOF
 }
+
+// SawDoneMarker implements SSEStreamTerminator.
+func (r *defaultSSEDataReader) SawDoneMarker() bool { return r.sawDone }
 
 func newDefaultSSEDataReader(reader io.Reader) *defaultSSEDataReader {
 	scanner := bufio.NewScanner(reader)
@@ -104,6 +128,7 @@ func (r *defaultSSEDataReader) ReadDataLine() ([]byte, error) {
 				continue
 			}
 			if bytes.Equal(data, sseDoneMarker) {
+				r.sawDone = true
 				return nil, io.EOF
 			}
 			// Copy to decouple from scanner's internal buffer

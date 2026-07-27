@@ -2839,6 +2839,44 @@ func ProcessAndSendError(
 	GateSendChunk(ctx, streamResponse, responseChan)
 }
 
+// SendStreamTruncatedError surfaces an upstream stream that ended without a
+// terminal marker (no "data: [DONE]", no finish_reason / completion event) as a
+// client-visible error instead of letting the caller synthesize a clean final
+// chunk. A dying upstream typically closes the connection on a chunk boundary,
+// which fasthttp reports as a plain io.EOF — indistinguishable at the transport
+// layer from a properly terminated body — so truncation can only be detected
+// semantically, by the absence of a terminal marker.
+//
+// The error is deliberately built as a retryable upstream connection failure
+// (502, IsBifrostError=false): when nothing has been forwarded yet this becomes
+// the stream's first chunk, so CheckFirstStreamChunkForError converts it into a
+// synchronous error and executeRequestWithRetries can retry or fall back. An
+// IsBifrostError=true error would break that retry loop instead (see #4496).
+func SendStreamTruncatedError(
+	ctx *schemas.BifrostContext,
+	postHookRunner schemas.PostHookRunner,
+	responseChan chan *schemas.BifrostStreamChunk,
+	logger schemas.Logger,
+	postHookSpanFinalizer func(context.Context),
+	jsonBody []byte,
+) {
+	if logger != nil {
+		logger.Warn("Stream ended without a terminal marker; treating as truncated upstream stream")
+	}
+
+	truncatedErr := NewBifrostUpstreamConnectionError(schemas.ErrProviderStreamTruncated, io.ErrUnexpectedEOF)
+
+	if ShouldSendBackRawRequest(ctx, false) && len(jsonBody) > 0 {
+		truncatedErr.ExtraFields.RawRequest = compactRawJSON(jsonBody)
+	}
+
+	// Bill for tokens the provider already produced before the stream died.
+	attachBilledUsageFromContext(ctx, truncatedErr)
+
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+	ProcessAndSendBifrostError(ctx, postHookRunner, truncatedErr, responseChan, logger, postHookSpanFinalizer)
+}
+
 // CreateBifrostTextCompletionChunkResponse creates a bifrost text completion chunk response.
 func CreateBifrostTextCompletionChunkResponse(
 	id string,
