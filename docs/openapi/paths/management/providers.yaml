@@ -503,9 +503,21 @@ models-parameters:
       - name: model
         in: query
         required: true
-        description: Model ID to get parameters for; provider-qualified IDs are resolved automatically
+        description: |
+          Model ID to get parameters for; provider-qualified IDs are resolved automatically.
+
+          Examples:
+          - Bare model ID: `gpt-4o`, `gpt-5.5`
+          - Provider-qualified ID: `openai/gpt-4o`, `openrouter/openai/gpt-4o`
         schema:
           type: string
+        examples:
+          bareId:
+            value: gpt-4o
+            description: Bare model ID
+          qualifiedId:
+            value: openai/gpt-4o
+            description: Provider-qualified model ID
     responses:
       '200':
         description: Successful response
