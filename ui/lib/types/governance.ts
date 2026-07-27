@@ -426,7 +426,10 @@ export type PricingOverrideScopeKind =
 	| "provider_key"
 	| "virtual_key"
 	| "virtual_key_provider"
-	| "virtual_key_provider_key";
+	| "virtual_key_provider_key"
+	| "user"
+	| "user_provider"
+	| "user_provider_key";
 export type PricingOverrideMatchType = "exact" | "wildcard";
 
 export interface PricingOverridePatch {
@@ -519,6 +522,7 @@ export interface PricingOverride {
 	id: string;
 	name: string;
 	scope_kind: PricingOverrideScopeKind;
+	user_id?: string;
 	virtual_key_id?: string;
 	provider_id?: string;
 	provider_key_id?: string;
@@ -534,6 +538,7 @@ export interface PricingOverride {
 export interface CreatePricingOverrideRequest {
 	name: string;
 	scope_kind: PricingOverrideScopeKind;
+	user_id?: string;
 	virtual_key_id?: string;
 	provider_id?: string;
 	provider_key_id?: string;
@@ -546,6 +551,7 @@ export interface CreatePricingOverrideRequest {
 export interface UpdatePricingOverrideRequest {
 	name?: string;
 	scope_kind?: PricingOverrideScopeKind;
+	user_id?: string;
 	virtual_key_id?: string;
 	provider_id?: string;
 	provider_key_id?: string;
