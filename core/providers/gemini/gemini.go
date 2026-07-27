@@ -4086,7 +4086,16 @@ func (provider *GeminiProvider) Passthrough(
 
 	fasthttpReq.SetBody(req.Body)
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, fasthttpReq, resp)
+	var latency time.Duration
+	var bifrostErr *schemas.BifrostError
+	var wait func()
+	// Google redirects file downloads to /download/v1beta, and only Bifrost holds
+	// the API key that the redirect target requires — so follow it here.
+	if req.Method == http.MethodGet && strings.Contains(req.Path, ":download") {
+		latency, bifrostErr, wait = providerUtils.MakeRequestWithContextFollowRedirects(ctx, provider.client, fasthttpReq, resp, 5)
+	} else {
+		latency, bifrostErr, wait = providerUtils.MakeRequestWithContext(ctx, provider.client, fasthttpReq, resp)
+	}
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
