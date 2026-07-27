@@ -315,17 +315,23 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			}
 		}
 
-		// Normalize function tool parameters for deterministic JSON serialization.
+		// Normalize function tool parameters for deterministic JSON serialization, and
+		// default a nil strict to false — OpenAI resolves null to false anyway, while
+		// strict-pydantic upstreams (e.g. sglang) reject the explicit null outright.
 		// We must copy the Tools slice since it shares the backing array with bifrostReq.Params.Tools.
 		if len(req.Tools) > 0 {
 			normalizedTools := make([]schemas.ResponsesTool, len(req.Tools))
 			copy(normalizedTools, req.Tools)
 			for i, tool := range normalizedTools {
 				if tool.Type == schemas.ResponsesToolTypeFunction &&
-					tool.ResponsesToolFunction != nil &&
-					tool.ResponsesToolFunction.Parameters != nil {
+					tool.ResponsesToolFunction != nil {
 					funcCopy := *tool.ResponsesToolFunction
-					funcCopy.Parameters = tool.ResponsesToolFunction.Parameters.Normalized()
+					if funcCopy.Parameters != nil {
+						funcCopy.Parameters = funcCopy.Parameters.Normalized()
+					}
+					if funcCopy.Strict == nil {
+						funcCopy.Strict = new(false)
+					}
 					normalizedTools[i].ResponsesToolFunction = &funcCopy
 				}
 			}
