@@ -9,10 +9,9 @@ export interface TierBoundaries {
 }
 
 export interface EditableKeywordConfig {
-	code_keywords: string[];
-	reasoning_keywords: string[];
-	technical_keywords: string[];
 	simple_keywords: string[];
+	medium_keywords: string[];
+	complex_keywords: string[];
 }
 
 export interface AnalyzerConfig {
@@ -47,22 +46,17 @@ export const KEYWORD_LIST_DEFINITIONS: Array<{
 	{
 		key: "simple_keywords",
 		label: "Simple keywords",
-		description: "Phrases that bias the request toward the SIMPLE tier (greetings, trivia, small talk).",
+		description: "Lightweight-language signals that slightly lower the lexical complexity score.",
 	},
 	{
-		key: "code_keywords",
-		label: "Code keywords",
-		description: "Signals that the request involves code, debugging, or programming artifacts.",
+		key: "medium_keywords",
+		label: "Medium keywords",
+		description: "Implementation and technical signals that raise the lexical complexity score gradually.",
 	},
 	{
-		key: "technical_keywords",
-		label: "Technical keywords",
-		description: "Architecture, infra, and operational terms that raise the complexity score.",
-	},
-	{
-		key: "reasoning_keywords",
-		label: "Reasoning keywords",
-		description: "Strong reasoning triggers. Matching these phrases can override tier selection toward the COMPLEX tier.",
+		key: "complex_keywords",
+		label: "Complex keywords",
+		description: "High-confidence reasoning signals. One guarantees at least MEDIUM; two route to COMPLEX.",
 	},
 ];
 
