@@ -459,6 +459,8 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_pricing_override_user_id_column"}, run: migrationAddPricingOverrideUserIDColumn},
 	{IDs: []string{"add_mcp_client_pending_oauth_config_json_column"}, run: migrationAddMCPClientPendingOAuthConfigJSONColumn},
 	{IDs: []string{"merge_oauth_token_tables"}, run: migrationMergeOauthTokenTables},
+	{IDs: []string{"create_mcp_oauth_flows_table"}, run: migrationCreateMCPOauthFlowsTable},
+	{IDs: []string{"drop_oauth_config_pkce_columns"}, run: migrationDropOauthConfigPKCEColumns},
 }
 
 // quoteSQLiteIdentifier quotes a SQLite identifier, escaping any double quotes.
@@ -5792,6 +5794,20 @@ func migrationWidenEncryptedVarcharColumns(ctx context.Context, db *gorm.DB, log
 					return fmt.Errorf("failed to widen column azure_api_version: %w", err)
 				}
 			}
+			// oauth_configs.code_verifier was later dropped by
+			// migrationDropOauthConfigPKCEColumns (the column moved to
+			// mcp_oauth_flows) — same guard as azure_api_version above. A
+			// deployment provisioned after that migration shipped never had
+			// this column at all: migrationAddOAuthTables creates
+			// oauth_configs from today's TableOauthConfig struct, which no
+			// longer declares CodeVerifier, so an unconditional ALTER here
+			// would fail with "column does not exist" on any such fresh
+			// install.
+			if tx.Migrator().HasColumn(&tables.TableOauthConfig{}, "code_verifier") {
+				if err := tx.Exec("ALTER TABLE oauth_configs ALTER COLUMN code_verifier TYPE TEXT").Error; err != nil {
+					return fmt.Errorf("failed to widen column oauth_configs.code_verifier: %w", err)
+				}
+			}
 
 			stmts := []string{
 				// config_keys table - all encrypted SecretVar fields
@@ -5806,8 +5822,6 @@ func migrationWidenEncryptedVarcharColumns(ctx context.Context, db *gorm.DB, log
 				"ALTER TABLE sessions ALTER COLUMN token TYPE TEXT",
 				// governance_virtual_keys table
 				"ALTER TABLE governance_virtual_keys ALTER COLUMN value TYPE TEXT",
-				// oauth_configs table
-				"ALTER TABLE oauth_configs ALTER COLUMN code_verifier TYPE TEXT",
 			}
 			logger.Info("[configstore] %s: processing %d stmts", migrationName, len(stmts))
 			for _, stmt := range stmts {
@@ -11373,4 +11387,188 @@ func migrationMergeOauthTokenTables(ctx context.Context, db *gorm.DB, logger sch
 			return nil
 		},
 	})
+}
+
+// migrationCreateMCPOauthFlowsTable creates mcp_oauth_flows, the table
+// backing TableMCPOauthFlow, and backfills it from the legacy
+// oauth_user_sessions table (TableOauthUserSession). Same overall shape as
+// migrationMergeOauthTokenTables above, simplified: there is only one source
+// table here, and flow_mode already exists on it (added by an earlier
+// migration), so nothing needs deriving the way auth_mode did for the
+// shared-token backfill.
+func migrationCreateMCPOauthFlowsTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "create_mcp_oauth_flows_table"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+
+			// 1) Create mcp_oauth_flows if it doesn't already exist. Wholly
+			// new as of this migration, same as mcp_oauth_tokens before it —
+			// this check is normally true on every deployment that reaches
+			// this step. TableMCPOauthFlow.State deliberately carries a
+			// plain (non-unique) index in its struct tag rather than
+			// uniqueIndex: CreateTable would otherwise build a unique index
+			// as part of table creation, before the backfill in step 2 runs.
+			// Step 3 below adds the real unique index after the backfill
+			// instead — the same create-after-backfill ordering
+			// migrationMergeOauthTokenTables needed for its partial unique
+			// indexes, applied here even though (unlike that migration) a
+			// real collision isn't expected: oauth_user_sessions.state
+			// already carries its own uniqueIndex today, so a straight copy
+			// of already-distinct values into an empty destination table
+			// can't collide against itself. Applied anyway rather than
+			// relying on that reasoning holding forever.
+			if !mg.HasTable(&tables.TableMCPOauthFlow{}) {
+				logger.Info("[configstore] %s: creating table TableMCPOauthFlow", migrationName)
+				if err := mg.CreateTable(&tables.TableMCPOauthFlow{}); err != nil {
+					return fmt.Errorf("create mcp_oauth_flows table: %w", err)
+				}
+			}
+
+			// 2) Backfill from oauth_user_sessions — a straight field-for-
+			// field copy. Raw table references rather than
+			// TableOauthUserSession model reads: GORM has no native
+			// cross-table INSERT...SELECT, and this is a bulk copy where a
+			// struct-based read-all/write-all loop buys nothing over one SQL
+			// statement. Guarded on table existence for the same
+			// fresh-install reason as mcp_oauth_tokens's backfill
+			// (oauth_user_sessions is still created — empty — by the
+			// historical migration that introduced it).
+			if mg.HasTable(&tables.TableOauthUserSession{}) {
+				if err := tx.Exec(`
+					INSERT INTO mcp_oauth_flows (
+						id, mcp_client_id, oauth_config_id, state, redirect_uri,
+						code_verifier, session_id, virtual_key_id, user_id,
+						flow_mode, status, encryption_status, expires_at,
+						created_at, updated_at
+					)
+					SELECT
+						id, mcp_client_id, oauth_config_id, state, redirect_uri,
+						code_verifier, session_id, virtual_key_id, user_id,
+						flow_mode, status, encryption_status, expires_at,
+						created_at, updated_at
+					FROM oauth_user_sessions
+					WHERE NOT EXISTS (SELECT 1 FROM mcp_oauth_flows WHERE mcp_oauth_flows.id = oauth_user_sessions.id)
+				`).Error; err != nil {
+					return fmt.Errorf("backfill mcp_oauth_flows from oauth_user_sessions: %w", err)
+				}
+			}
+
+			// 3) Unique index on state, created after the backfill above —
+			// see the field comment on TableMCPOauthFlow.State and the note
+			// in step 1 for why this can't come from the struct tag.
+			if err := tx.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_oauth_flows_state ON mcp_oauth_flows (state)`).Error; err != nil {
+				return fmt.Errorf("create unique index on mcp_oauth_flows.state: %w", err)
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+
+			// mcp_oauth_flows is wholly new as of this migration, so rolling
+			// back simply drops it — oauth_user_sessions was never written
+			// to by Migrate above and needs no repair.
+			if mg.HasTable(&tables.TableMCPOauthFlow{}) {
+				logger.Info("[configstore] %s: dropping table TableMCPOauthFlow", migrationName)
+				if err := mg.DropTable(&tables.TableMCPOauthFlow{}); err != nil {
+					return fmt.Errorf("drop mcp_oauth_flows table: %w", err)
+				}
+			}
+
+			return nil
+		},
+	})
+}
+
+// migrationDropOauthConfigPKCEColumns drops the CSRF-state and PKCE columns
+// (state, code_verifier, code_challenge, expires_at) from oauth_configs.
+// Once InitiateOAuthFlow/CompleteOAuthFlow write these onto mcp_oauth_flows
+// instead (see the preceding migration and the application-code change that
+// shipped alongside it), nothing populates them on oauth_configs any
+// longer — and state/expires_at are NOT NULL at the DB level, so leaving the
+// columns in place would fail every future INSERT into oauth_configs the
+// moment the Go struct stops setting them. Dropped outright rather than just
+// relaxing the NOT NULL constraints and the unique index on state: nothing
+// reads these columns once the write side stops, so keeping them around as
+// dead weight buys nothing and only adds confusion for anyone inspecting the
+// table later. dropColumnIfExists (see its doc comment) handles both
+// Postgres and SQLite, including a column that still carries an index —
+// Postgres drops a dependent index automatically as part of DROP COLUMN, and
+// GORM's own SQLite migrator (the non-Postgres fallback path) rebuilds the
+// table without the column and its index rather than emitting a bare ALTER
+// TABLE DROP COLUMN (which SQLite refuses when an index still references the
+// column being dropped).
+//
+// The preceding migration only backfills mcp_oauth_flows from
+// oauth_user_sessions; any admin-mode flow with its state/code_verifier
+// still on oauth_configs at upgrade time is not carried forward, so an
+// in-flight admin authorize attempt spanning the upgrade fails its callback
+// with "flow not found" and must be re-initiated. That is a reasonable
+// tradeoff for the short window these columns typically live in, but it is
+// a real forward-migration consequence, not just a rollback non-issue.
+func migrationDropOauthConfigPKCEColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "drop_oauth_config_pkce_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db.WithContext(ctx), migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+
+			if !mg.HasTable(&tables.TableOauthConfig{}) {
+				return nil
+			}
+
+			for _, column := range []string{"state", "code_verifier", "code_challenge", "expires_at"} {
+				if err := dropColumnIfExists(tx, logger, &tables.TableOauthConfig{}, column); err != nil {
+					return fmt.Errorf("drop oauth_configs.%s column: %w", column, err)
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			// Forward-only: the dropped columns carried no data worth
+			// resurrecting. CSRF state and PKCE verifiers only ever mattered
+			// for the lifetime of a single in-flight flow (now tracked on
+			// mcp_oauth_flows instead, untouched by this migration), and
+			// expires_at's meaning moved there too. Re-adding empty columns
+			// would not restore anything a rollback needs.
+			return nil
+		},
+	}})
+	// SQLite workaround — same reasoning as migrationAddCustomerBudgetsToBudgetsTable:
+	// GORM's SQLite DropColumn rebuilds oauth_configs via DROP+RENAME, which fails
+	// when config_mcp_clients.oauth_config_id holds an FK into it and foreign_keys is
+	// ON. PRAGMA foreign_keys cannot change inside a transaction, so disable it on a
+	// pinned single connection before the migrator opens its transaction, then restore it.
+	if db.Dialector.Name() == "sqlite" {
+		sqlDB, err := db.DB()
+		if err != nil {
+			return fmt.Errorf("failed to get underlying sql.DB: %w", err)
+		}
+		prevMaxOpenConns := sqlDB.Stats().MaxOpenConnections
+		sqlDB.SetMaxOpenConns(1)
+		defer sqlDB.SetMaxOpenConns(prevMaxOpenConns)
+
+		if err := db.Exec("PRAGMA foreign_keys = OFF").Error; err != nil {
+			return fmt.Errorf("failed to disable SQLite foreign keys: %w", err)
+		}
+		defer func() {
+			if err := db.Exec("PRAGMA foreign_keys = ON").Error; err != nil {
+				log.Fatalf("[Migration] FATAL: failed to re-enable SQLite foreign keys: %v", err)
+			}
+		}()
+	}
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running drop_oauth_config_pkce_columns migration: %s", err.Error())
+	}
+	return nil
 }
