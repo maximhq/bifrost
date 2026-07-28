@@ -1160,9 +1160,48 @@ func (h *LoggingHandler) getDroppedRequests(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, map[string]int64{"dropped_requests": droppedRequests})
 }
 
+// ParseRankingLimit reads the row-cap query parameters shared by the ranking
+// endpoints and records them on filters:
+//
+//	all=true  -> return every ranked entity (used by the dashboard export)
+//	limit=<n> -> return at most n rows (defaults to the store's cap of 100)
+//
+// It reports whether parsing succeeded; on failure it has already written the
+// 400 response.
+func ParseRankingLimit(ctx *fasthttp.RequestCtx, filters *logstore.SearchFilters) bool {
+	if all := string(ctx.QueryArgs().Peek("all")); all != "" {
+		val, err := strconv.ParseBool(all)
+		if err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid all: %s. Expected a boolean", all))
+			return false
+		}
+		if val {
+			// 0 means "no cap" to the log store; an explicit limit alongside
+			// all=true is ignored on purpose - exports are never truncated.
+			unlimited := 0
+			filters.RankingLimit = &unlimited
+			return true
+		}
+	}
+
+	if limit := string(ctx.QueryArgs().Peek("limit")); limit != "" {
+		val, err := strconv.Atoi(limit)
+		if err != nil || val < 1 {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid limit: %s. Expected a positive integer, or all=true for no limit", limit))
+			return false
+		}
+		filters.RankingLimit = &val
+	}
+
+	return true
+}
+
 // getModelRankings handles GET /api/logs/rankings - Get models ranked by usage with trends
 func (h *LoggingHandler) getModelRankings(ctx *fasthttp.RequestCtx) {
 	filters := parseHistogramFilters(ctx)
+	if !ParseRankingLimit(ctx, filters) {
+		return
+	}
 
 	result, err := h.logManager.GetModelRankings(ctx, filters)
 	if err != nil {
@@ -1186,6 +1225,9 @@ func (h *LoggingHandler) getDimensionRankings(ctx *fasthttp.RequestCtx) {
 	}
 
 	filters := parseHistogramFilters(ctx)
+	if !ParseRankingLimit(ctx, filters) {
+		return
+	}
 
 	result, err := h.logManager.GetDimensionRankings(ctx, filters, dim)
 	if err != nil {
@@ -1216,13 +1258,17 @@ const dashboardMCPTopToolsLimit = 10
 // It accepts the same filter query parameters as the individual histogram and
 // rankings endpoints (period OR start_time/end_time, providers, models, status,
 // virtual_key_ids, team_ids, etc., plus metadata_<key> filters) and the MCP
-// filter params (tool_names, server_labels). Filters are parsed once and the
+// filter params (tool_names, server_labels), plus the ranking row-cap params
+// (limit, all). Filters are parsed once and the
 // histogram bucket size is derived once from the resolved time range, so every
 // section is computed against an identical window. All sub-queries run
 // concurrently; if any fails the whole request fails, so consumers always get a
 // complete payload or a clear error, never partial data.
 func (h *LoggingHandler) getDashboard(ctx *fasthttp.RequestCtx) {
 	filters := parseHistogramFilters(ctx)
+	if !ParseRankingLimit(ctx, filters) {
+		return
+	}
 	bucketSizeSeconds := calculateBucketSize(filters.StartTime, filters.EndTime)
 
 	mcpFilters, err := parseMCPHistogramFilters(ctx)

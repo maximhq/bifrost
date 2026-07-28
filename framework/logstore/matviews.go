@@ -2126,7 +2126,7 @@ func (s *RDBLogStore) getModelRankingsFromMatView(ctx context.Context, filters S
 	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, filters)
 	q = q.Where("model IS NOT NULL AND model != ''")
-	if err := q.Select(`
+	q = q.Select(`
 		model, provider,
 		MAX(NULLIF(canonical_model_name, '')) AS canonical_name,
 		SUM(count) AS total,
@@ -2137,8 +2137,8 @@ func (s *RDBLogStore) getModelRankingsFromMatView(ctx context.Context, filters S
 		COALESCE(SUM(CASE WHEN status = 'success' THEN throughput_completion_tokens ELSE 0 END), 0) AS tp_completion_tokens,
 		COALESCE(SUM(CASE WHEN status = 'success' THEN throughput_latency_ms ELSE 0 END), 0) AS tp_latency_ms
 	`).Group("model, provider").
-		Order("total DESC, model ASC, provider ASC").
-		Find(&results).Error; err != nil {
+		Order("total DESC, model ASC, provider ASC")
+	if err := applyRankingLimit(q, filters).Find(&results).Error; err != nil {
 		return nil, err
 	}
 
@@ -2243,14 +2243,14 @@ func (s *RDBLogStore) getUserRankingsFromMatView(ctx context.Context, filters Se
 	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, filters)
 	q = q.Where("user_id != ''")
-	if err := q.Select(`
+	q = q.Select(`
 		user_id,
 		SUM(count) AS total,
 		SUM(total_tokens) AS total_tkns,
 		SUM(total_cost) AS total_cost
 	`).Group("user_id").
-		Order("total DESC, user_id ASC").
-		Find(&results).Error; err != nil {
+		Order("total DESC, user_id ASC")
+	if err := applyRankingLimit(q, filters).Find(&results).Error; err != nil {
 		return nil, err
 	}
 
@@ -2339,14 +2339,14 @@ func (s *RDBLogStore) getDimensionRankingsFromMatView(ctx context.Context, filte
 	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, filters)
 	q = q.Where(fmt.Sprintf("%s != ''", idCol))
-	if err := q.Select(fmt.Sprintf(`
+	q = q.Select(fmt.Sprintf(`
 		%s AS id,
 		SUM(count) AS total,
 		SUM(total_tokens) AS total_tkns,
 		SUM(total_cost) AS total_cost
 	`, idCol)).Group(idCol).
-		Order(fmt.Sprintf("total DESC, %s ASC", idCol)).
-		Find(&results).Error; err != nil {
+		Order(fmt.Sprintf("total DESC, %s ASC", idCol))
+	if err := applyRankingLimit(q, filters).Find(&results).Error; err != nil {
 		return nil, err
 	}
 
