@@ -1,6 +1,6 @@
 ---
 title: "Munsit"
-description: "Munsit API integration guide - Arabic speech synthesis, speech transcription, model discovery, streaming support, and API key authentication"
+description: "Munsit API integration guide - Arabic speech synthesis, speech transcription, realtime WebSocket TTS, model discovery, streaming support, and API key authentication"
 icon: "m"
 ---
 
@@ -19,6 +19,7 @@ Key characteristics:
 - **Arabic-first Text-to-Speech**
 - **Speech-to-Text transcription**
 - **Streaming speech synthesis**
+- **Realtime WebSocket TTS sessions**
 - **Model discovery through the Models API**
 - **API key authentication using `x-api-key`**
 
@@ -29,6 +30,7 @@ Key characteristics:
 | Operation | Non-Streaming | Streaming | Endpoint | Notes |
 |-----------|---------------|-----------|----------|-------|
 | Speech Synthesis | ✅ | ✅ | `/api/v1/text-to-speech/{model_id}` | Supports Arabic voices |
+| Realtime Sessions | — | ✅ | `/api/v1/websocket/text-to-speech` | Bifrost: `GET /v1/realtime?model=munsit/{model}` |
 | Speech Transcription | ✅ | ❌ | Provider endpoint | Audio transcription |
 | List Models | ✅ | ❌ | `/api/v1/models` | Returns available TTS/STT models |
 | Chat Completions | ❌ | ❌ | Not supported | |
@@ -140,6 +142,28 @@ Streaming behavior:
 ```
 
 Audio is streamed progressively to the client.
+
+---
+
+# Realtime Sessions
+
+Munsit supports **WebSocket realtime TTS** through Bifrost's Realtime API.
+
+| Detail | Value |
+|--------|-------|
+| Bifrost endpoint | `GET /v1/realtime?model=munsit/{model}` |
+| Upstream endpoint | `WSS /api/v1/websocket/text-to-speech` |
+| Auth | Same `x-api-key` as REST (query param + header) |
+| Turn start | `response.create` flushes buffered text after PreHooks |
+| Turn finalize | Client WebSocket close (Munsit has no `response.done`) |
+
+Typical client event flow:
+
+1. `session.update` — maps to Munsit `initConnection` (model + voice)
+2. `conversation.item.create` — buffers text upstream (no early synthesis trigger)
+3. `response.create` — flushes synthesis after governance PreHooks succeed
+
+WebRTC SDP exchange is not supported for Munsit.
 
 ---
 

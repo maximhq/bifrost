@@ -8,11 +8,6 @@ interface AudioPlayerProps {
 }
 
 const AudioPlayer = ({ src, format }: AudioPlayerProps) => {
-	alert(`format=${format}`);
-	console.log("format =", format);
-    console.log("src length =", src?.length);
-    console.log("first 80 chars =", src?.slice(0, 80));
-
 	const [isPlaying, setIsPlaying] = useState(false);
 	const [audio] = useState<HTMLAudioElement | null>(typeof window !== "undefined" ? new Audio() : null);
 	const [error, setError] = useState<string | null>(null);
@@ -61,11 +56,9 @@ const AudioPlayer = ({ src, format }: AudioPlayerProps) => {
 	};
 
 	const createAudioBlob = (base64Data: string, audioFormat?: string): Blob | null => {
-		console.log("audioFormat =", audioFormat);
 		try {
 			const binaryString = atob(base64Data);
 			const pcmData = Uint8Array.from(binaryString, (c) => c.charCodeAt(0));
-			console.log("pcmData.length =", pcmData.length);
 
 			// Handle PCM16 format - convert to WAV
 			if (audioFormat === "pcm16" || audioFormat === "pcm_s16le_16") {

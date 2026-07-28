@@ -8,7 +8,6 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/url"
-	"os"
 	"path"
 	"strconv"
 	"strings"
@@ -74,6 +73,18 @@ func (provider *MunsitProvider) GetProviderKey() schemas.ModelProvider {
 	return providerUtils.GetProviderName(schemas.Munsit, provider.customProviderConfig)
 }
 
+// getBaseURL resolves the base URL for a request from the per-key munsit_key_config.
+// Falls back to the provider-level network_config.base_url (defaulting to api.munsit.com).
+func (provider *MunsitProvider) getBaseURL(key schemas.Key) string {
+	if key.MunsitKeyConfig != nil && key.MunsitKeyConfig.URL.GetValue() != "" {
+		return strings.TrimRight(key.MunsitKeyConfig.URL.GetValue(), "/")
+	}
+	if provider.networkConfig.BaseURL != "" {
+		return strings.TrimRight(provider.networkConfig.BaseURL, "/")
+	}
+	return "https://api.munsit.com"
+}
+
 // listModelsByKey performs a list models request for a single key.
 // Returns the response and latency, or an error if the request fails.
 func (provider *MunsitProvider) listModelsByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
@@ -87,7 +98,7 @@ func (provider *MunsitProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
 	// Build URL using centralized URL construction
-	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/api/v1/models"))
+	req.SetRequestURI(provider.getBaseURL(key) + providerUtils.GetPathFromContext(ctx, "/api/v1/models"))
 	req.Header.SetMethod(http.MethodGet)
 	req.Header.SetContentType("application/json")
 
@@ -211,7 +222,7 @@ func (provider *MunsitProvider) Speech(ctx *schemas.BifrostContext, key schemas.
 
 	endpoint = "/api/v1/text-to-speech/" + request.Model
 
-	requestURL := provider.buildBaseSpeechRequestURL(ctx, endpoint, schemas.SpeechRequest, request)
+	requestURL := provider.buildBaseSpeechRequestURL(ctx, key, endpoint, schemas.SpeechRequest, request)
 	req.SetRequestURI(requestURL)
 
 	req.Header.SetMethod(http.MethodPost)
@@ -253,17 +264,6 @@ func (provider *MunsitProvider) Speech(ctx *schemas.BifrostContext, key schemas.
 
 	// Get the response body
 	body, err := providerUtils.CheckAndDecodeBody(resp)
-	os.WriteFile("/tmp/test.raw", body, 0644)
-	provider.logger.Info("FIRST 32 BYTES = %x", body[:32])
-	provider.logger.Info(
-		"MUNSIT CONTENT TYPE = %s",
-		string(resp.Header.Peek("Content-Type")),
-	)
-
-	provider.logger.Info(
-		"BODY SIZE = %d",
-		len(body),
-	)
 	if err != nil {
 		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
@@ -277,8 +277,17 @@ func (provider *MunsitProvider) Speech(ctx *schemas.BifrostContext, key schemas.
 	if cost := speechCostUSD(chars); cost > 0 {
 		usage.Cost = &schemas.BifrostCost{TotalCost: cost}
 	}
+	// Unary Munsit returns a container format (pcm/wav → wav via pcm_44100).
+	// Headerless PCM16 is only used on the streaming path.
+	responseFormat := "mp3"
+	if request.Params != nil {
+		munsitFmt := ConvertBifrostSpeechFormatToMunsit(request.Params.ResponseFormat)
+		if converted := ConvertMunsitSpeechFormatToBifrost(munsitFmt); converted != "" {
+			responseFormat = converted
+		}
+	}
 	bifrostResponse := &schemas.BifrostSpeechResponse{
-		ResponseFormat: "pcm16",
+		ResponseFormat: responseFormat,
 		Usage:          usage,
 
 		ExtraFields: schemas.BifrostResponseExtraFields{
@@ -311,19 +320,16 @@ func (provider *MunsitProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 		return nil, err
 	}
 
+	if request.Model == "" {
+		return nil, providerUtils.NewBifrostOperationError("model is required", nil)
+	}
+
 	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
 			return ToMunsitSpeechRequest(request, true), nil
 		})
-	munsitReq := ToMunsitSpeechRequest(request, true)
-
-	provider.logger.Info("Munsit Request Struct: %+v", munsitReq)
-
-	provider.logger.Info("VoiceID: %s", munsitReq.VoiceID)
-
-	provider.logger.Info("Request JSON: %s", string(jsonBody))
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -337,11 +343,7 @@ func (provider *MunsitProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 	// Set any extra headers from network config
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
-	if request.Model == "" {
-		return nil, providerUtils.NewBifrostOperationError("model is required", nil)
-	}
-
-	req.SetRequestURI(provider.buildBaseSpeechRequestURL(ctx, "/api/v1/text-to-speech/"+request.Model, schemas.SpeechStreamRequest, request))
+	req.SetRequestURI(provider.buildBaseSpeechRequestURL(ctx, key, "/api/v1/text-to-speech/"+request.Model, schemas.SpeechStreamRequest, request))
 
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
@@ -355,8 +357,6 @@ func (provider *MunsitProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 
 	// Make request
 	startTime := time.Now()
-	provider.logger.Info("REQUEST: %s", string(jsonBody))
-
 	err := provider.streamingClient.Do(req, resp)
 	latency := time.Since(startTime)
 	if err != nil {
@@ -386,9 +386,8 @@ func (provider *MunsitProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
-		bodyBytes, _ := io.ReadAll(resp.BodyStream())
-		provider.logger.Info("munsit error status=%d body=%s", resp.StatusCode(), string(bodyBytes))
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
+		providerUtils.MaterializeStreamErrorBody(ctx, resp)
 		return nil, providerUtils.EnrichError(ctx, parseMunsitError(resp), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
@@ -396,11 +395,8 @@ func (provider *MunsitProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
 
 	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)
-	provider.logger.Info("starting stream goroutine")
 	go func() {
-		provider.logger.Info("inside stream goroutine")
 		defer func() {
-			provider.logger.Info("goroutine exiting")
 			if ctx.Err() == context.Canceled {
 				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, jsonBody)
 			} else if ctx.Err() == context.DeadlineExceeded {
@@ -416,14 +412,6 @@ func (provider *MunsitProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 		// Wrap reader with idle timeout to detect stalled streams.
 		reader, stopIdleTimeout := providerUtils.NewIdleTimeoutReader(reader, resp.BodyStream(), providerUtils.GetStreamIdleTimeout(ctx), ctx)
 		defer stopIdleTimeout()
-
-		provider.logger.Info(
-			"status=%d content-type=%s content-encoding=%s transfer=%s",
-			resp.StatusCode(),
-			string(resp.Header.Peek("Content-Type")),
-			string(resp.Header.Peek("Content-Encoding")),
-			string(resp.Header.Peek("Transfer-Encoding")),
-		)
 
 		// Setup cancellation handler to close the raw network stream on ctx cancellation,
 		// which immediately unblocks any in-progress read (including reads blocked inside a gzip decompression layer).
@@ -443,9 +431,7 @@ func (provider *MunsitProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 			if ctx.Err() != nil {
 				return
 			}
-			provider.logger.Info("waiting for stream data...")
 			n, err := bodyStream.Read(buffer)
-			provider.logger.Info("read returned n=%d err=%v", n, err)
 			if err != nil {
 				// If context was cancelled/timed out, let defer handle it
 				if ctx.Err() != nil {
@@ -461,7 +447,6 @@ func (provider *MunsitProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 			}
 
 			if n > 0 {
-				provider.logger.Info("read returned n=%d err=%v", n, err)
 				chunkIndex++
 				audioChunk := make([]byte, n)
 				copy(audioChunk, buffer[:n])
@@ -480,11 +465,6 @@ func (provider *MunsitProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 				if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
 					response.ExtraFields.RawResponse = audioChunk
 				}
-				provider.logger.Info(
-					"sending chunk %d size=%d",
-					chunkIndex,
-					len(audioChunk),
-				)
 				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, response, nil, nil), responseChan, postHookSpanFinalizer)
 			}
 		}
@@ -515,7 +495,6 @@ func (provider *MunsitProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 		providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, finalResponse, nil, nil), responseChan, postHookSpanFinalizer)
 	}()
-	provider.logger.Debug("RETURNING RESPONSE CHANNEL")
 	return responseChan, nil
 }
 
@@ -575,7 +554,7 @@ func (provider *MunsitProvider) Transcription(
 	if isCompleteURL {
 		req.SetRequestURI(requestPath)
 	} else {
-		req.SetRequestURI(provider.networkConfig.BaseURL + requestPath)
+		req.SetRequestURI(provider.getBaseURL(key) + requestPath)
 	}
 
 	req.Header.SetMethod(http.MethodPost)
@@ -744,9 +723,9 @@ func (provider *MunsitProvider) VideoRemix(_ *schemas.BifrostContext, _ schemas.
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoRemixRequest, provider.GetProviderKey())
 }
 
-// buildSpeechRequestURL constructs the full request URL using the provider's configuration for speech.
-func (provider *MunsitProvider) buildBaseSpeechRequestURL(ctx *schemas.BifrostContext, defaultPath string, requestType schemas.RequestType, request *schemas.BifrostSpeechRequest) string {
-	baseURL := provider.networkConfig.BaseURL
+// buildBaseSpeechRequestURL constructs the full request URL using the per-key or provider base URL.
+func (provider *MunsitProvider) buildBaseSpeechRequestURL(ctx *schemas.BifrostContext, key schemas.Key, defaultPath string, requestType schemas.RequestType, request *schemas.BifrostSpeechRequest) string {
+	baseURL := provider.getBaseURL(key)
 	requestPath, isCompleteURL := providerUtils.GetRequestPath(ctx, defaultPath, provider.customProviderConfig, requestType)
 
 	var finalURL string

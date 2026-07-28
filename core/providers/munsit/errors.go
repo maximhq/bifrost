@@ -56,15 +56,12 @@ func parseMunsitError(resp *fasthttp.Response) *schemas.BifrostError {
 			}
 
 			if message != "" {
-				result := &schemas.BifrostError{
-					IsBifrostError: false,
-					StatusCode:     schemas.Ptr(resp.StatusCode()),
-					Error: &schemas.ErrorField{
-						Type:    schemas.Ptr(errorType),
-						Message: message,
-					},
+				if bifrostErr.Error == nil {
+					bifrostErr.Error = &schemas.ErrorField{}
 				}
-				return result
+				bifrostErr.Error.Type = schemas.Ptr(errorType)
+				bifrostErr.Error.Message = message
+				return bifrostErr
 			}
 		}
 

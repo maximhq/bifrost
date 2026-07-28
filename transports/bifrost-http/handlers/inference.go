@@ -1382,16 +1382,23 @@ func prepareSpeechRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*Speech
 }
 
 // munsitAudioResponseHeaders derives the correct Content-Type and filename
-// for a Munsit speech response, based on the streaming flag Munsit actually
-// honors (see ToMunsitSpeechRequest): non-streaming requests return a real
-// WAV file, streaming requests return headerless PCM16. This is scoped to
-// the Munsit provider only and doesn't change behavior for any other
-// provider — see speechAttachmentFilename for the shared/default path.
+// for a unary Munsit speech response. Non-streaming Munsit requests return a
+// real audio container (WAV for pcm/wav request formats after round-trip through
+// pcm_44100, MP3/Opus otherwise). Headerless PCM16 is streaming-only and does
+// not use this helper — see SpeechStream.
 func munsitAudioResponseHeaders(responseFormat string) (contentType, filename string) {
-	if strings.HasPrefix(responseFormat, "pcm") {
-		return "audio/pcm", "speech.pcm"
+	format := strings.ToLower(strings.TrimSpace(responseFormat))
+	switch {
+	case strings.HasPrefix(format, "mp3"):
+		return "audio/mpeg", "speech.mp3"
+	case strings.HasPrefix(format, "opus"):
+		return "audio/opus", "speech.opus"
+	case strings.HasPrefix(format, "pcm"):
+		// Unary pcm_* maps to a WAV container, not headerless PCM.
+		return "audio/wav", "speech.wav"
+	default:
+		return "audio/wav", "speech.wav"
 	}
-	return "audio/wav", "speech.wav"
 }
 
 // speechAttachmentFilename derives the download filename from the requested
@@ -1487,7 +1494,7 @@ func (h *CompletionHandler) speech(ctx *fasthttp.RequestCtx) {
 	filename := attachmentFilename
 
 	if bifrostSpeechReq.Provider == schemas.Munsit {
-		contentType, filename = munsitAudioResponseHeaders(req.ResponseFormat)
+		contentType, filename = munsitAudioResponseHeaders(resp.ResponseFormat)
 	}
 
 	ctx.Response.Header.Set("Content-Type", contentType)

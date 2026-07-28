@@ -394,16 +394,20 @@ func (h *WSRealtimeHandler) relayClientToRealtimeProvider(
 		deferTurnStart := false
 		if startsTurn {
 			if deferred, ok := provider.(schemas.RealtimeDeferredTurnStartProvider); ok && deferred.ShouldDeferRealtimeTurnStart() {
-				// Write the turn-start event upstream first (e.g. TTS flush), then
-				// start hooks — avoids blocking generation behind PreHooks.
+				// Deferred providers wait until after event translation to start
+				// turn hooks, but still run PreHooks before the upstream write so
+				// authorization cannot be bypassed by a concurrent relay.
 				deferTurnStart = true
 			}
 		}
-		if startsTurn && !deferTurnStart {
+		// Reject a second in-flight turn before any upstream write (deferred or not).
+		if startsTurn {
 			if session.PeekRealtimeTurnHooks() != nil {
 				clientConn.writeRealtimeError(newRealtimeWireBifrostError(400, "invalid_request_error", "Conversation already has an active response in progress."))
 				continue
 			}
+		}
+		if startsTurn && !deferTurnStart {
 			if toolSummary != "" {
 				session.RecordRealtimeToolOutput(toolItemID, toolSummary, string(message))
 			}
@@ -453,6 +457,16 @@ func (h *WSRealtimeHandler) relayClientToRealtimeProvider(
 			}
 		}
 
+		// Deferred turn-start: run security/policy PreHooks after validation but
+		// still before the upstream write so a rejecting ShortCircuit cannot race
+		// with provider output on the concurrent relay.
+		if deferTurnStart {
+			if bifrostErr := startRealtimeTurnHooks(h.client, bifrostCtx, session, provider, providerKey, model, &key, event.Type); bifrostErr != nil {
+				clientConn.writeRealtimeError(bifrostErr)
+				return nil
+			}
+		}
+
 		if err := upstream.WriteMessage(ws.TextMessage, providerEvent); err != nil {
 			finalizeRealtimeTurnHooksWithError(
 				h.client,
@@ -467,17 +481,6 @@ func (h *WSRealtimeHandler) relayClientToRealtimeProvider(
 			)
 			clientConn.writeRealtimeError(newRealtimeWireBifrostError(502, "server_error", "failed to write realtime event upstream"))
 			return err
-		}
-
-		if deferTurnStart {
-			if session.PeekRealtimeTurnHooks() != nil {
-				clientConn.writeRealtimeError(newRealtimeWireBifrostError(400, "invalid_request_error", "Conversation already has an active response in progress."))
-				continue
-			}
-			if bifrostErr := startRealtimeTurnHooks(h.client, bifrostCtx, session, provider, providerKey, model, &key, event.Type); bifrostErr != nil {
-				clientConn.writeRealtimeError(bifrostErr)
-				return nil
-			}
 		}
 	}
 }

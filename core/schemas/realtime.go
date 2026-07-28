@@ -231,8 +231,9 @@ type RealtimeSpeechBillingProvider interface {
 }
 
 // RealtimeDeferredTurnStartProvider is an optional interface for providers that
-// need the turn-start event written upstream before PreHooks run (e.g. TTS flush).
-// Checked via type assertion only.
+// should start turn hooks only after the turn-start event translates successfully
+// (e.g. TTS flush). PreHooks still run before the upstream write so authorization
+// cannot be bypassed. Checked via type assertion only.
 type RealtimeDeferredTurnStartProvider interface {
 	ShouldDeferRealtimeTurnStart() bool
 }

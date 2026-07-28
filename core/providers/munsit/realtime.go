@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"strings"
 
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -23,8 +24,9 @@ func (provider *MunsitProvider) SupportsRealtimeAPI() bool {
 // Munsit's endpoint is fixed (no model in the URL/path, unlike OpenAI/ElevenLabs) — model
 // selection happens inside the initConnection message instead, via ToProviderRealtimeEvent's
 // handling of session.update. The model argument is intentionally unused here.
+// Base host comes from key.MunsitKeyConfig.URL when set, otherwise network_config.base_url.
 func (provider *MunsitProvider) RealtimeWebSocketURL(key schemas.Key, model string) string {
-	base := provider.networkConfig.BaseURL
+	base := provider.getBaseURL(key)
 	base = strings.Replace(base, "https://", "wss://", 1)
 	base = strings.Replace(base, "http://", "ws://", 1)
 	return fmt.Sprintf(
@@ -56,22 +58,17 @@ func (provider *MunsitProvider) SupportsRealtimeWebRTC() bool {
 
 // ExchangeRealtimeWebRTCSDP is not supported by Munsit.
 func (provider *MunsitProvider) ExchangeRealtimeWebRTCSDP(_ *schemas.BifrostContext, _ schemas.Key, _ string, _ string, _ json.RawMessage) (string, *schemas.BifrostError) {
-	return "", &schemas.BifrostError{
-		IsBifrostError: true,
-		StatusCode:     schemas.Ptr(400),
-		Error:          &schemas.ErrorField{Type: schemas.Ptr("invalid_request_error"), Message: "WebRTC SDP exchange is not supported for Munsit"},
-	}
+	return "", providerUtils.NewUnsupportedOperationError(schemas.RealtimeRequest, provider.GetProviderKey())
 }
 
 // ShouldStartRealtimeTurn starts logging/billing on response.create (TTS flush).
-// Combined with ShouldDeferRealtimeTurnStart so the flush is written upstream
-// before PreHooks run.
+// Combined with ShouldDeferRealtimeTurnStart so hooks start after translation.
 func (provider *MunsitProvider) ShouldStartRealtimeTurn(event *schemas.BifrostRealtimeEvent) bool {
 	return event != nil && event.Type == schemas.RTEventResponseCreate
 }
 
-// ShouldDeferRealtimeTurnStart reports that response.create must reach Munsit
-// before turn PreHooks (avoids blocking audio generation).
+// ShouldDeferRealtimeTurnStart reports that turn hooks should start only after
+// response.create translates successfully. PreHooks still gate the upstream write.
 func (provider *MunsitProvider) ShouldDeferRealtimeTurnStart() bool {
 	return true
 }
@@ -296,13 +293,14 @@ func (provider *MunsitProvider) ToProviderRealtimeEvent(bifrostEvent *schemas.Bi
 		if bifrostEvent.Item != nil {
 			text = extractRealtimeItemText(bifrostEvent.Item.Content)
 		}
-		// try_trigger_generation starts audio while tokens stream (lower TTFB for
-		// LiveKit). Safe now that isFinal no longer finalizes/aborts the turn.
-		msg := munsitTextMessage{Type: "text", Text: text, Flush: false, TryTriggerGeneration: true}
+		// Buffer text only — do not set try_trigger_generation. Synthesis must wait
+		// for response.create (flush), which runs PreHooks before the upstream write.
+		msg := munsitTextMessage{Type: "text", Text: text, Flush: false, TryTriggerGeneration: false}
 		return schemas.MarshalSorted(msg)
 
 	case schemas.RTEventResponseCreate:
 		// Force generation of whatever remains in Munsit's buffer.
+		// PreHooks for this turn-start event run before the upstream write.
 		msg := munsitTextMessage{Type: "text", Text: "", Flush: true}
 		return schemas.MarshalSorted(msg)
 

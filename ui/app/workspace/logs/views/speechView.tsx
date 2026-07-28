@@ -39,7 +39,6 @@ class AudioErrorBoundary extends Component<{ children: React.ReactNode }, { hasE
 }
 
 export default function SpeechView({ speechInput, speechOutput, isStreaming }: SpeechViewProps) {
-	console.log("SpeechOutput =", speechOutput);
 	return (
 		<div className="space-y-4">
 			{/* Speech Input */}
