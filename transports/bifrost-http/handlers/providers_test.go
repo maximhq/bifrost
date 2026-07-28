@@ -21,11 +21,20 @@ import (
 )
 
 // mockModelsManager returns stable filtered and unfiltered model lists for handler tests.
+// providerKeyRef records a (provider, keyID) pair a refresh was requested for.
+type providerKeyRef struct {
+	provider schemas.ModelProvider
+	keyID    string
+}
+
 type mockModelsManager struct {
-	filtered    map[schemas.ModelProvider][]string
-	unfiltered  map[schemas.ModelProvider][]string
-	reloadCalls []schemas.ModelProvider
-	reloadErr   error
+	filtered             map[schemas.ModelProvider][]string
+	unfiltered           map[schemas.ModelProvider][]string
+	reloadCalls          []schemas.ModelProvider
+	reloadErr            error
+	refreshKeyCalls      []providerKeyRef
+	refreshProviderCalls []schemas.ModelProvider
+	refreshErr           error
 }
 
 func (m *mockModelsManager) ReloadProvider(_ context.Context, provider schemas.ModelProvider) (*configstoreTables.TableProvider, error) {
@@ -68,6 +77,16 @@ func (m *mockModelsManager) OnKeyUpdated(_ context.Context, _ schemas.ModelProvi
 
 func (m *mockModelsManager) OnKeyDeleted(_ context.Context, _ schemas.ModelProvider, _ string) error {
 	return nil
+}
+
+func (m *mockModelsManager) RefreshLiveModelsForKey(_ context.Context, provider schemas.ModelProvider, keyID string) error {
+	m.refreshKeyCalls = append(m.refreshKeyCalls, providerKeyRef{provider: provider, keyID: keyID})
+	return m.refreshErr
+}
+
+func (m *mockModelsManager) RefreshLiveModelsForAllKeys(_ context.Context, provider schemas.ModelProvider) error {
+	m.refreshProviderCalls = append(m.refreshProviderCalls, provider)
+	return m.refreshErr
 }
 
 // providerHandlerForTest builds a handler with fixed provider config and model sets.

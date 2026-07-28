@@ -73,7 +73,8 @@
           "        hasContent = true;",
           "    } else if (Array.isArray(j.output) && j.output.length > 0) {",
           "        shape = 'openai-responses-output';",
-          "        hasContent = j.output.some(function (o) { return o && (o.type === 'message' || o.type === 'tool_call' || o.type === 'function_call' || (o.content && o.content.length)); });",
+          "        // Responses tool-use items are all typed <tool>_call (function_call, tool_search_call, custom_tool_call, mcp_call, local_shell_call, ...). A client-execution call is a valid TERMINAL output: the model emits the call and stops, waiting for the matching *_output, so no text accompanies it.",
+          "        hasContent = j.output.some(function (o) { return o && (o.type === 'message' || /_call$/.test(o.type || '') || (o.content && o.content.length)); });",
           "    } else if (j.output && j.output.message && j.output.message.content) {",
           "        shape = 'bedrock-converse';",
           "        hasContent = j.output.message.content.length > 0;",
@@ -42558,6 +42559,304 @@
                   "});",
                   "pm.test('genai tool combination: functionDeclarations survive the round-trip alongside googleSearch (regression PR #5576)', function () {",
                   "  pm.expect(calls.length, 'no get_weather functionCall - toolConfig.includeServerSideToolInvocations was dropped and declarations stripped: ' + pm.response.text()).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "33. Codex additional_tools hoist + tool_search wire shapes (Bedrock Mantle)",
+      "description": "Codex code-mode models (gpt-5.6-sol, tool_mode=code_mode / use_responses_lite=true) declare their tools inside the input array as an `additional_tools` developer item rather than in the top-level `tools` param. api.openai.com accepts that item natively; Bedrock Mantle's OpenAI-compatible surface (bedrock-mantle.<region>.api.aws/openai/v1/responses) validates `input` against the standard union and rejects the whole request with 400 \"invalid request body: Invalid 'input': value did not match any expected variant\".\n\nBifrost resolves this in ToOpenAIResponsesRequest: for providers whose ResponsesFeatureSupport.AdditionalToolsItem is false (bedrock, bedrock_mantle), the item's tools are hoisted into the top-level `tools` param and the item is dropped from `input`. OpenAI keeps the item verbatim via ResponsesMessage.rawPreserved.\n\nThe nested tools are the fragile part: each entry carries its own `type` discriminator, and custom tools carry a lark `format` while namespace tools carry a nested `tools` list. A typed decode strips those, which is why the item round-trips through rawPreserved rather than a typed model.\n\nCases 33.1-33.3 pin the hoist (a 400 here means it stopped running). 33.4 pins that OpenAI still receives the item natively. 33.5-33.6 pin the sibling raw-preserved items: tool_search_call `arguments` must stay a JSON object (function_call uses a string) and tool_search_output `tools[].type` must survive replay.",
+      "item": [
+        {
+          "name": "33.1 bedrock/openai.gpt-5.6-sol additional_tools hoisted to top-level tools (no Invalid input 400)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/openai.gpt-5.6-sol\",\n  \"input\": [\n    {\n      \"type\": \"additional_tools\",\n      \"role\": \"developer\",\n      \"tools\": [\n        {\n          \"type\": \"custom\",\n          \"name\": \"exec\",\n          \"description\": \"Run JavaScript code to orchestrate/compose tool calls.\",\n          \"format\": {\n            \"type\": \"grammar\",\n            \"syntax\": \"lark\",\n            \"definition\": \"start: SOURCE\\nSOURCE: /[\\\\s\\\\S]+/\\n\"\n          }\n        },\n        {\n          \"type\": \"function\",\n          \"name\": \"get_weather\",\n          \"description\": \"Get the current weather for a city.\",\n          \"strict\": false,\n          \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {\n              \"city\": {\n                \"type\": \"string\",\n                \"description\": \"City name.\"\n              }\n            },\n            \"required\": [\n              \"city\"\n            ],\n            \"additionalProperties\": false\n          }\n        },\n        {\n          \"type\": \"namespace\",\n          \"name\": \"collaboration\",\n          \"description\": \"Tools for spawning and managing sub-agents.\",\n          \"tools\": [\n            {\n              \"type\": \"function\",\n              \"name\": \"spawn_agent\",\n              \"description\": \"Spawn a sub-agent for a bounded subtask.\",\n              \"strict\": false,\n              \"parameters\": {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"task_name\": {\n                    \"type\": \"string\"\n                  }\n                },\n                \"required\": [\n                  \"task_name\"\n                ],\n                \"additionalProperties\": false\n              }\n            }\n          ]\n        }\n      ]\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Reply with exactly: OK\"\n        }\n      ]\n    }\n  ],\n  \"max_output_tokens\": 64\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var body = pm.response.text();",
+                  "pm.test('bedrock additional_tools: additional_tools not rejected by the provider', function () {",
+                  "  pm.expect(body, 'provider rejected the additional_tools input item - the hoist did not run: ' + body).to.not.include('did not match any expected variant');",
+                  "  pm.expect(body, 'provider rejected the input array: ' + body).to.not.include(\"Invalid 'input'\");",
+                  "});",
+                  "pm.test('bedrock additional_tools: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body).to.be.below(400);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "33.2 bedrock_mantle/openai.gpt-5.6-sol additional_tools hoisted to top-level tools",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock_mantle/openai.gpt-5.6-sol\",\n  \"input\": [\n    {\n      \"type\": \"additional_tools\",\n      \"role\": \"developer\",\n      \"tools\": [\n        {\n          \"type\": \"custom\",\n          \"name\": \"exec\",\n          \"description\": \"Run JavaScript code to orchestrate/compose tool calls.\",\n          \"format\": {\n            \"type\": \"grammar\",\n            \"syntax\": \"lark\",\n            \"definition\": \"start: SOURCE\\nSOURCE: /[\\\\s\\\\S]+/\\n\"\n          }\n        },\n        {\n          \"type\": \"function\",\n          \"name\": \"get_weather\",\n          \"description\": \"Get the current weather for a city.\",\n          \"strict\": false,\n          \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {\n              \"city\": {\n                \"type\": \"string\",\n                \"description\": \"City name.\"\n              }\n            },\n            \"required\": [\n              \"city\"\n            ],\n            \"additionalProperties\": false\n          }\n        },\n        {\n          \"type\": \"namespace\",\n          \"name\": \"collaboration\",\n          \"description\": \"Tools for spawning and managing sub-agents.\",\n          \"tools\": [\n            {\n              \"type\": \"function\",\n              \"name\": \"spawn_agent\",\n              \"description\": \"Spawn a sub-agent for a bounded subtask.\",\n              \"strict\": false,\n              \"parameters\": {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"task_name\": {\n                    \"type\": \"string\"\n                  }\n                },\n                \"required\": [\n                  \"task_name\"\n                ],\n                \"additionalProperties\": false\n              }\n            }\n          ]\n        }\n      ]\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Reply with exactly: OK\"\n        }\n      ]\n    }\n  ],\n  \"max_output_tokens\": 64\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var body = pm.response.text();",
+                  "pm.test('bedrock_mantle additional_tools: additional_tools not rejected by the provider', function () {",
+                  "  pm.expect(body, 'provider rejected the additional_tools input item - the hoist did not run: ' + body).to.not.include('did not match any expected variant');",
+                  "  pm.expect(body, 'provider rejected the input array: ' + body).to.not.include(\"Invalid 'input'\");",
+                  "});",
+                  "pm.test('bedrock_mantle additional_tools: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body).to.be.below(400);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "33.3 bedrock_mantle/openai.gpt-5.6-sol additional_tools streaming (responses_stream prod path)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock_mantle/openai.gpt-5.6-sol\",\n  \"stream\": true,\n  \"input\": [\n    {\n      \"type\": \"additional_tools\",\n      \"role\": \"developer\",\n      \"tools\": [\n        {\n          \"type\": \"custom\",\n          \"name\": \"exec\",\n          \"description\": \"Run JavaScript code to orchestrate/compose tool calls.\",\n          \"format\": {\n            \"type\": \"grammar\",\n            \"syntax\": \"lark\",\n            \"definition\": \"start: SOURCE\\nSOURCE: /[\\\\s\\\\S]+/\\n\"\n          }\n        },\n        {\n          \"type\": \"function\",\n          \"name\": \"get_weather\",\n          \"description\": \"Get the current weather for a city.\",\n          \"strict\": false,\n          \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {\n              \"city\": {\n                \"type\": \"string\",\n                \"description\": \"City name.\"\n              }\n            },\n            \"required\": [\n              \"city\"\n            ],\n            \"additionalProperties\": false\n          }\n        },\n        {\n          \"type\": \"namespace\",\n          \"name\": \"collaboration\",\n          \"description\": \"Tools for spawning and managing sub-agents.\",\n          \"tools\": [\n            {\n              \"type\": \"function\",\n              \"name\": \"spawn_agent\",\n              \"description\": \"Spawn a sub-agent for a bounded subtask.\",\n              \"strict\": false,\n              \"parameters\": {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"task_name\": {\n                    \"type\": \"string\"\n                  }\n                },\n                \"required\": [\n                  \"task_name\"\n                ],\n                \"additionalProperties\": false\n              }\n            }\n          ]\n        }\n      ]\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Reply with exactly: OK\"\n        }\n      ]\n    }\n  ],\n  \"max_output_tokens\": 64\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var body = pm.response.text();",
+                  "pm.test('bedrock_mantle additional_tools streaming: additional_tools not rejected by the provider', function () {",
+                  "  pm.expect(body, 'provider rejected the additional_tools input item - the hoist did not run: ' + body).to.not.include('did not match any expected variant');",
+                  "  pm.expect(body, 'provider rejected the input array: ' + body).to.not.include(\"Invalid 'input'\");",
+                  "});",
+                  "pm.test('bedrock_mantle additional_tools streaming: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "pm.test('bedrock_mantle additional_tools streaming: SSE stream produced events', function () {",
+                  "  pm.expect(pm.response.text(), 'no SSE events: ' + pm.response.text()).to.include('data:');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "33.4 openai/gpt-5.6-sol additional_tools preserved natively on /openai/v1/responses (not hoisted)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-5.6-sol\",\n  \"input\": [\n    {\n      \"type\": \"additional_tools\",\n      \"role\": \"developer\",\n      \"tools\": [\n        {\n          \"type\": \"custom\",\n          \"name\": \"exec\",\n          \"description\": \"Run JavaScript code to orchestrate/compose tool calls.\",\n          \"format\": {\n            \"type\": \"grammar\",\n            \"syntax\": \"lark\",\n            \"definition\": \"start: SOURCE\\nSOURCE: /[\\\\s\\\\S]+/\\n\"\n          }\n        },\n        {\n          \"type\": \"function\",\n          \"name\": \"get_weather\",\n          \"description\": \"Get the current weather for a city.\",\n          \"strict\": false,\n          \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {\n              \"city\": {\n                \"type\": \"string\",\n                \"description\": \"City name.\"\n              }\n            },\n            \"required\": [\n              \"city\"\n            ],\n            \"additionalProperties\": false\n          }\n        },\n        {\n          \"type\": \"namespace\",\n          \"name\": \"collaboration\",\n          \"description\": \"Tools for spawning and managing sub-agents.\",\n          \"tools\": [\n            {\n              \"type\": \"function\",\n              \"name\": \"spawn_agent\",\n              \"description\": \"Spawn a sub-agent for a bounded subtask.\",\n              \"strict\": false,\n              \"parameters\": {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"task_name\": {\n                    \"type\": \"string\"\n                  }\n                },\n                \"required\": [\n                  \"task_name\"\n                ],\n                \"additionalProperties\": false\n              }\n            }\n          ]\n        }\n      ]\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Reply with exactly: OK\"\n        }\n      ]\n    }\n  ],\n  \"max_output_tokens\": 64\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var body = pm.response.text();",
+                  "pm.test('openai additional_tools native: additional_tools not rejected by the provider', function () {",
+                  "  pm.expect(body, 'provider rejected the additional_tools input item - the hoist did not run: ' + body).to.not.include('did not match any expected variant');",
+                  "  pm.expect(body, 'provider rejected the input array: ' + body).to.not.include(\"Invalid 'input'\");",
+                  "});",
+                  "pm.test('openai additional_tools native: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "pm.test('openai additional_tools native: response has output', function () {",
+                  "  var out = (pm.response.json() || {}).output || [];",
+                  "  pm.expect(out.length, 'empty output: ' + pm.response.text()).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "33.5 openai/gpt-5.6-sol tool_search client execution keeps arguments as a JSON object",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5.6-sol\",\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Find a tool that reports the weather, then use it for Paris.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"tool_search\",\n      \"execution\": \"client\",\n      \"description\": \"Find project-specific tools needed to complete the task.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"goal\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"goal\"\n        ],\n        \"additionalProperties\": false\n      }\n    }\n  ],\n  \"max_output_tokens\": 128\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('openai tool_search client: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var output = (pm.response.json() || {}).output || [];",
+                  "var calls = output.filter(function (o) { return o.type === 'tool_search_call'; });",
+                  "// The model decides whether to search, so an empty result is not a failure.",
+                  "// When it does search, the wire shape is what this case pins.",
+                  "if (calls.length === 0) { pm.test.skip('openai tool_search client: model emitted no tool_search_call'); return; }",
+                  "pm.test('openai tool_search client: arguments is a JSON object, not a stringified one', function () {",
+                  "  calls.forEach(function (c) {",
+                  "    pm.expect(c.arguments, 'tool_search_call.arguments was stringified: ' + JSON.stringify(c)).to.be.an('object');",
+                  "  });",
+                  "});",
+                  "pm.test('openai tool_search client: execution preserved as client', function () {",
+                  "  calls.forEach(function (c) {",
+                  "    pm.expect(c.execution, 'execution lost: ' + JSON.stringify(c)).to.eql('client');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "33.6 openai/gpt-5.6-sol tool_search_call + tool_search_output replay round-trip",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5.6-sol\",\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Use the discovered tool to report the weather in Paris.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"tool_search_call\",\n      \"call_id\": \"ts_harness_1\",\n      \"execution\": \"client\",\n      \"status\": \"completed\",\n      \"arguments\": {\n        \"goal\": \"weather\"\n      }\n    },\n    {\n      \"type\": \"tool_search_output\",\n      \"call_id\": \"ts_harness_1\",\n      \"execution\": \"client\",\n      \"status\": \"completed\",\n      \"tools\": [\n        {\n          \"type\": \"function\",\n          \"name\": \"get_weather\",\n          \"description\": \"Get the current weather for a city.\",\n          \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {\n              \"city\": {\n                \"type\": \"string\"\n              }\n            },\n            \"required\": [\n              \"city\"\n            ],\n            \"additionalProperties\": false\n          }\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"tool_search\",\n      \"execution\": \"client\",\n      \"description\": \"Find project-specific tools needed to complete the task.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"goal\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"goal\"\n        ],\n        \"additionalProperties\": false\n      }\n    }\n  ],\n  \"max_output_tokens\": 64\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var body = pm.response.text();",
+                  "pm.test('openai tool_search replay: raw-preserved items accepted on replay', function () {",
+                  "  pm.expect(body, 'provider rejected the replayed tool_search items: ' + body).to.not.include(\"Invalid 'input'\");",
+                  "  pm.expect(body, 'tool_search_call arguments were stringified on replay: ' + body).to.not.include('Mismatch type string with value object');",
+                  "  pm.expect(body, 'tool_search_output tools lost their type discriminator: ' + body).to.not.include(\"input[1].tools[0].type\");",
+                  "});",
+                  "pm.test('openai tool_search replay: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body).to.be.below(400);",
                   "});"
                 ]
               }

@@ -117,3 +117,42 @@ func TestFindByIDUsesScopedDB(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "hidden-log", hidden.ID)
 }
+
+// TestFindMCPToolLogUsesScopedDB verifies MCP tool log point lookups honor
+// caller-supplied row visibility, matching FindByID on the logs table.
+func TestFindMCPToolLogUsesScopedDB(t *testing.T) {
+	store := newTestSQLiteStore(t)
+	ctx := context.Background()
+	visibleUserID := "user-visible"
+	hiddenUserID := "user-hidden"
+
+	require.NoError(t, store.CreateMCPToolLog(ctx, &MCPToolLog{
+		ID:        "visible-mcp-log",
+		Timestamp: time.Now().UTC(),
+		ToolName:  "echo",
+		Status:    "success",
+		UserID:    &visibleUserID,
+	}))
+	require.NoError(t, store.CreateMCPToolLog(ctx, &MCPToolLog{
+		ID:        "hidden-mcp-log",
+		Timestamp: time.Now().UTC(),
+		ToolName:  "echo",
+		Status:    "success",
+		UserID:    &hiddenUserID,
+	}))
+
+	scopedCtx := queryscope.WithQueryScope(ctx, func(db *gorm.DB) *gorm.DB {
+		return db.Where("user_id = ?", visibleUserID)
+	})
+
+	visible, err := store.FindMCPToolLog(scopedCtx, "visible-mcp-log")
+	require.NoError(t, err)
+	require.Equal(t, "visible-mcp-log", visible.ID)
+
+	_, err = store.FindMCPToolLog(scopedCtx, "hidden-mcp-log")
+	require.ErrorIs(t, err, ErrNotFound)
+
+	hidden, err := store.FindMCPToolLog(ctx, "hidden-mcp-log")
+	require.NoError(t, err)
+	require.Equal(t, "hidden-mcp-log", hidden.ID)
+}

@@ -84,7 +84,7 @@ Every observability connector has an independent `disable_content_logging`, defa
 | [Kafka](/features/observability/kafka) | `disable_content_logging` | Strips `gen_ai.input.*` and `gen_ai.output.*` from all spans |
 | [Pub/Sub](/features/observability/pubsub) | `disable_content_logging` | Same as Kafka |
 | [OpenTelemetry](/features/observability/otel) | `disable_content_logging`, `disable_root_span_content` | The second drops content from the root span only |
-| [Datadog](/enterprise/datadog-connector) | `disable_content_logging` | Covers APM spans and LLM Observability payloads |
+| [Datadog](/features/observability/datadog) | `disable_content_logging` | Covers APM spans and LLM Observability payloads |
 
 Captured request headers (`request_headers` on a connector, `client.logging_headers` on the log store) are exported **regardless** of any content flag. Only capture headers you intend to export.
 
