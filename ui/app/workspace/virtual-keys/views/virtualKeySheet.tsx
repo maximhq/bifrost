@@ -1,6 +1,5 @@
 import { useVirtualKeyUsage } from "@/app/workspace/virtual-keys/hooks/useVirtualKeyUsage";
 import { BudgetOverrideDialog } from "@/components/budgetOverrideDialog";
-import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
 	AlertDialog,
@@ -14,7 +13,6 @@ import {
 } from "@/components/ui/alertDialog";
 import { CustomerSelector } from "@/components/entitySelectors/customerSelector";
 import { TeamSelector } from "@/components/entitySelectors/teamSelector";
-import { AsyncMultiSelect } from "@/components/ui/asyncMultiselect";
 import { Button } from "@/components/ui/button";
 import { DateTimePicker } from "@/components/ui/datePickerWithRange";
 import { ComboboxSelect } from "@/components/ui/combobox";
@@ -22,10 +20,10 @@ import { ConfigSyncAlert } from "@/components/ui/configSyncAlert";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { ModelMultiselect } from "@/components/ui/modelMultiselect";
 import MultiBudgetLines from "@/components/ui/multibudgets";
 import { MultiSelect } from "@/components/ui/multiSelect";
 import NumberAndSelect from "@/components/ui/numberAndSelect";
+import { ProviderConfigCard } from "@/components/ui/providerConfigCard";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { DottedSeparator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
@@ -34,8 +32,6 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Textarea } from "@/components/ui/textarea";
 import Toggle from "@/components/ui/toggle";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { cn } from "@/components/ui/utils";
-import { ModelPlaceholders } from "@/lib/constants/config";
 import { resetDurationOptions, supportsCalendarAlignment } from "@/lib/constants/governance";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
@@ -65,10 +61,9 @@ import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useNavigate } from "@tanstack/react-router";
 import { formatDistanceToNow } from "date-fns";
-import { Info, Lock, RotateCcw, Trash2, Users, X } from "lucide-react";
+import { Info, Lock, RotateCcw, Trash2, Users } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
-import { components, MultiValueProps, OptionProps } from "react-select";
 import { toast } from "sonner";
 import { z } from "zod";
 
@@ -172,13 +167,6 @@ type BudgetComparisonEntry = {
 	max_limit?: number;
 	reset_duration?: string;
 	current_usage?: number;
-};
-
-type VirtualKeyType = {
-	label: string;
-	value: string;
-	description: string;
-	provider: string;
 };
 
 const pad2 = (n: number) => n.toString().padStart(2, "0");
@@ -459,13 +447,6 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 	// Handle removing a provider configuration
 	const handleRemoveProvider = (index: number) => {
 		const updatedConfigs = providerConfigs.filter((_, i) => i !== index);
-		form.setValue("providerConfigs", updatedConfigs, { shouldDirty: true });
-	};
-
-	// Handle updating provider configuration
-	const handleUpdateProviderConfig = (index: number, field: string, value: any) => {
-		const updatedConfigs = [...providerConfigs];
-		updatedConfigs[index] = { ...updatedConfigs[index], [field]: value };
 		form.setValue("providerConfigs", updatedConfigs, { shouldDirty: true });
 	};
 
@@ -1103,386 +1084,49 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 
 									{/* Provider Configurations Table */}
 									{providerConfigs.length > 0 && (
-										<div className="rounded-md border px-2">
-											<Accordion type="multiple" className="w-full">
-												{providerConfigs.map((config, index) => {
-													const providerConfig = availableProviders.find((provider) => provider.name === config.provider);
-													return (
-														<AccordionItem key={index} className="w-full" value={`${config.provider}-${index}`}>
-															<AccordionTrigger className="flex h-12 items-center gap-0 px-1">
-																<div className="flex w-full items-center justify-between">
-																	<div className="flex w-fit items-center gap-2">
-																		<RenderProviderIcon
-																			provider={
-																				providerConfig?.custom_provider_config?.base_provider_type || (config.provider as ProviderIconType)
-																			}
-																			size="sm"
-																			className="h-4 w-4"
-																		/>
-																		{providerConfig?.custom_provider_config
-																			? providerConfig.name
-																			: ProviderLabels[config.provider as ProviderName]}
-																	</div>
-																	<Button
-																		type="button"
-																		variant="ghost"
-																		size="icon"
-																		aria-label={`Remove ${config.provider} provider`}
-																		className="hover:bg-accent/50 h-8 w-8 rounded-sm p-2"
-																		data-testid={`vk-delete-provider-${index}`}
-																		onClick={(e) => {
-																			e.stopPropagation();
-																			handleRemoveProvider(index);
-																		}}
-																	>
-																		<Trash2 className="h-4 w-4 opacity-75" />
-																	</Button>
-																</div>
-															</AccordionTrigger>
-															<AccordionContent className="flex flex-col gap-4 px-1 text-balance">
-																<div className="flex w-full items-start gap-2">
-																	<div className="w-1/4">
-																		<NumberAndSelect
-																			id={`vk-weight-${index}`}
-																			label="Weight"
-																			labelClassName="text-sm font-medium"
-																			placeholder="Exclude from routing"
-																			inputClassName="h-[38px] w-full"
-																			dataTestId={`vk-weight-input-${index}`}
-																			value={config.weight}
-																			onChangeNumber={(value) => handleUpdateProviderConfig(index, "weight", value)}
-																		/>
-																	</div>
-																	<div className="w-3/4 space-y-2">
-																		<Label className="text-sm font-medium">
-																			Allowed Models <span className="text-muted-foreground ml-auto text-xs italic">type to search</span>
-																		</Label>
-																		{(() => {
-																			const hasWildcardModels = (config.allowed_models || []).includes("*");
-																			return (
-																				<ModelMultiselect
-																					data-testid={`vk-models-multiselect-${index}`}
-																					provider={config.provider}
-																					keys={(() => {
-																						const providerKeys = availableKeys.filter((key) => key.provider === config.provider);
-																						const configKeyIds = config.key_ids || [];
-																						return configKeyIds.includes("*")
-																							? providerKeys.map((key) => key.key_id)
-																							: providerKeys.filter((key) => configKeyIds.includes(key.key_id)).map((key) => key.key_id);
-																					})()}
-																					allowAllOption={true}
-																					value={hasWildcardModels ? ["*"] : config.allowed_models || []}
-																					onChange={(models: string[]) => {
-																						const hadStar = (config.allowed_models || []).includes("*");
-																						const hasStar = models.includes("*");
-																						if (!hadStar && hasStar) {
-																							handleUpdateProviderConfig(index, "allowed_models", ["*"]);
-																						} else if (hadStar && hasStar && models.length > 1) {
-																							handleUpdateProviderConfig(
-																								index,
-																								"allowed_models",
-																								models.filter((m) => m !== "*"),
-																							);
-																						} else {
-																							handleUpdateProviderConfig(index, "allowed_models", models);
-																						}
-																					}}
-																					placeholder={
-																						hasWildcardModels
-																							? "All models allowed"
-																							: (config.allowed_models || []).length === 0
-																								? "No models (deny all)"
-																								: config.provider
-																									? ModelPlaceholders[config.provider as keyof typeof ModelPlaceholders] ||
-																										ModelPlaceholders.default
-																									: ModelPlaceholders.default
-																					}
-																					className="min-h-10 max-w-[500px] min-w-[200px]"
-																				/>
-																			);
-																		})()}
-																		<p className="text-muted-foreground text-xs">
-																			Select specific models or choose “Allow All Models” to allow all. Leave empty to deny all.
-																		</p>
-																	</div>
-																</div>
-
-																{/* Blocked Models for this provider */}
-																<div className="flex w-full items-start gap-2">
-																	<div className="w-1/4" />
-																	<div className="w-3/4 space-y-2">
-																		<div className="flex items-center gap-2">
-																			<Label className="text-sm font-medium">Blocked Models</Label>
-																			<TooltipProvider>
-																				<Tooltip>
-																					<TooltipTrigger asChild>
-																						<span>
-																							<Info className="text-muted-foreground h-3 w-3" />
-																						</span>
-																					</TooltipTrigger>
-																					<TooltipContent>
-																						<p>
-																							Models this VK must never serve. The denylist wins if a model appears in both Allowed Models
-																							and Blocked Models.
-																						</p>
-																					</TooltipContent>
-																				</Tooltip>
-																			</TooltipProvider>
-																		</div>
-																		{(() => {
-																			const hasWildcardBlocked = (config.blacklisted_models || []).includes("*");
-																			return (
-																				<ModelMultiselect
-																					data-testid={`vk-models-blocked-multiselect-${index}`}
-																					provider={config.provider}
-																					keys={(() => {
-																						const providerKeys = availableKeys.filter((key) => key.provider === config.provider);
-																						const configKeyIds = config.key_ids || [];
-																						return configKeyIds.includes("*")
-																							? providerKeys.map((key) => key.key_id)
-																							: providerKeys.filter((key) => configKeyIds.includes(key.key_id)).map((key) => key.key_id);
-																					})()}
-																					allowAllOption={true}
-																					value={hasWildcardBlocked ? ["*"] : config.blacklisted_models || []}
-																					onChange={(models: string[]) => {
-																						const hadStar = (config.blacklisted_models || []).includes("*");
-																						const hasStar = models.includes("*");
-																						if (!hadStar && hasStar) {
-																							handleUpdateProviderConfig(index, "blacklisted_models", ["*"]);
-																						} else if (hadStar && hasStar && models.length > 1) {
-																							handleUpdateProviderConfig(
-																								index,
-																								"blacklisted_models",
-																								models.filter((m) => m !== "*"),
-																							);
-																						} else {
-																							handleUpdateProviderConfig(index, "blacklisted_models", models);
-																						}
-																					}}
-																					placeholder={
-																						hasWildcardBlocked
-																							? "All models blocked"
-																							: (config.blacklisted_models || []).length === 0
-																								? "No models blocked"
-																								: "Search models..."
-																					}
-																					className="min-h-10 max-w-[500px] min-w-[200px]"
-																				/>
-																			);
-																		})()}
-																	</div>
-																</div>
-
-																{/* Allowed Keys for this provider */}
-																{(() => {
-																	const providerKeys = availableKeys.filter((key) => key.provider === config.provider);
-																	const configKeyIds = config.key_ids || [];
-																	const hasWildcard = configKeyIds.includes("*");
-																	const allKeyOptions = [
-																		{
-																			label: "Allow All Keys",
-																			value: "*",
-																			description: "Allow all current and future keys for this provider",
-																			provider: "",
-																		},
-																		...providerKeys.map((key) => ({
-																			label: key.name,
-																			value: key.key_id,
-																			description:
-																				key.models == null || key.models.includes("*")
-																					? "All models"
-																					: key.models.filter((m) => m !== "*").join(", ") || "No models (deny all)",
-																			provider: key.provider,
-																		})),
-																	];
-																	const selectedProviderKeys = hasWildcard
-																		? [allKeyOptions[0]]
-																		: providerKeys
-																				.filter((key) => configKeyIds.includes(key.key_id))
-																				.map((key) => ({
-																					label: key.name,
-																					value: key.key_id,
-																					description:
-																						key.models == null || key.models.includes("*")
-																							? "All models"
-																							: key.models.filter((m) => m !== "*").join(", ") || "No models (deny all)",
-																					provider: key.provider,
-																				}));
-
-																	return (
-																		<div className="mx-0.5 space-y-2">
-																			<Label className="text-sm font-medium">Allowed Keys</Label>
-																			<p className="text-muted-foreground text-xs">
-																				Select specific keys or allow all. Leave empty to block all keys for this provider.
-																			</p>
-																			<AsyncMultiSelect
-																				hideSelectedOptions
-																				isNonAsync
-																				closeMenuOnSelect={false}
-																				menuPlacement="auto"
-																				defaultOptions={allKeyOptions}
-																				views={{
-																					multiValue: (multiValueProps: MultiValueProps<VirtualKeyType>) => {
-																						return (
-																							<div
-																								{...multiValueProps.innerProps}
-																								className="bg-accent dark:!bg-card flex cursor-pointer items-center gap-1 rounded-sm px-1 py-0.5 text-sm"
-																							>
-																								{multiValueProps.data.label}{" "}
-																								<X
-																									className="hover:text-foreground text-muted-foreground h-4 w-4 cursor-pointer"
-																									onClick={(e) => {
-																										e.stopPropagation();
-																										multiValueProps.removeProps.onClick?.(e as any);
-																									}}
-																								/>
-																							</div>
-																						);
-																					},
-																					option: (optionProps: OptionProps<VirtualKeyType>) => {
-																						const { Option } = components;
-																						return (
-																							<Option
-																								{...optionProps}
-																								className={cn(
-																									"flex w-full cursor-pointer items-center gap-2 rounded-sm px-2 py-2 text-sm",
-																									optionProps.isFocused && "bg-accent dark:!bg-card",
-																									"hover:bg-accent",
-																									optionProps.isSelected && "bg-accent dark:!bg-card",
-																								)}
-																							>
-																								<span className="text-content-primary grow truncate text-sm">{optionProps.data.label}</span>
-																								{optionProps.data.description && (
-																									<span className="text-content-tertiary max-w-[70%] text-sm">
-																										{optionProps.data.description}
-																									</span>
-																								)}
-																							</Option>
-																						);
-																					},
-																				}}
-																				value={selectedProviderKeys}
-																				onChange={(keys) => {
-																					const hadStar = hasWildcard;
-																					const hasStar = keys.some((k) => k.value === "*");
-																					if (!hadStar && hasStar) {
-																						// Just selected "Allow All Keys" — set to ["*"] only
-																						handleUpdateProviderConfig(index, "key_ids", ["*"]);
-																					} else if (hadStar && hasStar && keys.length > 1) {
-																						// Had "*", still has "*", but user also selected a specific key — drop "*"
-																						handleUpdateProviderConfig(
-																							index,
-																							"key_ids",
-																							keys.filter((k) => k.value !== "*").map((k) => k.value as string),
-																						);
-																					} else {
-																						handleUpdateProviderConfig(
-																							index,
-																							"key_ids",
-																							keys.map((k) => k.value as string),
-																						);
-																					}
-																				}}
-																				placeholder={
-																					hasWildcard
-																						? "All keys allowed"
-																						: configKeyIds.length === 0
-																							? "No keys selected"
-																							: "Select keys..."
-																				}
-																				className="hover:bg-accent w-full"
-																				menuClassName="z-[60] max-h-[300px] overflow-y-auto w-full cursor-pointer custom-scrollbar"
-																			/>
-																		</div>
-																	);
-																})()}
-
-																<DottedSeparator />
-
-																{/* Provider Budget Configuration */}
-																<MultiBudgetLines
-																	data-testid={`vk-provider-budget-${index}`}
-																	label="Provider Budget"
-																	lines={
-																		config.budgets && config.budgets.length > 0
-																			? config.budgets.map((b) => ({
-																					id: b.id,
-																					max_limit: b.max_limit,
-																					reset_duration: b.reset_duration || "1M",
-																				}))
-																			: []
-																	}
-																	onChange={(lines) => {
-																		const updatedConfigs = [...providerConfigs];
-																		updatedConfigs[index] = {
-																			...updatedConfigs[index],
-																			budgets: lines.map((l) => ({
-																				id: l.id,
-																				max_limit: l.max_limit,
-																				reset_duration: l.reset_duration,
-																			})),
-																		};
-																		form.setValue("providerConfigs", updatedConfigs, { shouldDirty: true });
-																	}}
-																/>
-
-																<DottedSeparator />
-
-																{/* Provider Rate Limit Configuration */}
-																<div className="space-y-4">
-																	<Label className="text-sm font-medium">Provider Rate Limits</Label>
-
-																	<NumberAndSelect
-																		id={`providerTokenLimit-${index}`}
-																		labelClassName="font-normal"
-																		label="Maximum Tokens"
-																		value={config.rate_limit?.token_max_limit}
-																		selectValue={config.rate_limit?.token_reset_duration || "1h"}
-																		onChangeNumber={(value) => {
-																			const currentRateLimit = config.rate_limit || {};
-																			handleUpdateProviderConfig(index, "rate_limit", {
-																				...currentRateLimit,
-																				token_max_limit: value,
-																			});
-																		}}
-																		onChangeSelect={(value) => {
-																			const currentRateLimit = config.rate_limit || {};
-																			handleUpdateProviderConfig(index, "rate_limit", {
-																				...currentRateLimit,
-																				token_reset_duration: value,
-																			});
-																		}}
-																		options={resetDurationOptions}
-																	/>
-
-																	<NumberAndSelect
-																		id={`providerRequestLimit-${index}`}
-																		labelClassName="font-normal"
-																		label="Maximum Requests"
-																		value={config.rate_limit?.request_max_limit}
-																		selectValue={config.rate_limit?.request_reset_duration || "1h"}
-																		onChangeNumber={(value) => {
-																			const currentRateLimit = config.rate_limit || {};
-																			handleUpdateProviderConfig(index, "rate_limit", {
-																				...currentRateLimit,
-																				request_max_limit: value,
-																			});
-																		}}
-																		onChangeSelect={(value) => {
-																			const currentRateLimit = config.rate_limit || {};
-																			handleUpdateProviderConfig(index, "rate_limit", {
-																				...currentRateLimit,
-																				request_reset_duration: value,
-																			});
-																		}}
-																		options={resetDurationOptions}
-																	/>
-																</div>
-															</AccordionContent>
-														</AccordionItem>
-													);
-												})}
-											</Accordion>
+										<div className="space-y-2.5">
+											{providerConfigs.map((config, index) => {
+												const providerConfig = availableProviders.find((provider) => provider.name === config.provider);
+												const providerLabel = providerConfig?.custom_provider_config
+													? providerConfig.name
+													: ProviderLabels[config.provider as ProviderName] || config.provider;
+												const iconProvider = (providerConfig?.custom_provider_config?.base_provider_type ||
+													config.provider) as ProviderIconType;
+												const providerKeys = availableKeys.filter((key) => key.provider === config.provider);
+												return (
+													<ProviderConfigCard
+														key={config.provider}
+														index={index}
+														testIdPrefix="vk"
+														providerLabel={providerLabel}
+														iconProvider={iconProvider}
+														providerKeys={providerKeys}
+														onRemove={() => handleRemoveProvider(index)}
+														value={{
+															providerName: config.provider,
+															allowedModels: config.allowed_models || [],
+															blacklistedModels: config.blacklisted_models || [],
+															weight: config.weight,
+															keyIds: config.key_ids || [],
+															budgets: config.budgets || [],
+															rateLimit: config.rate_limit ?? null,
+														}}
+														onChange={(next) => {
+															const updated = [...providerConfigs];
+															updated[index] = {
+																...config,
+																allowed_models: next.allowedModels,
+																blacklisted_models: next.blacklistedModels,
+																weight: next.weight ?? undefined,
+																key_ids: next.keyIds,
+																budgets: next.budgets.map((l) => ({ id: l.id, max_limit: l.max_limit, reset_duration: l.reset_duration })),
+																rate_limit: next.rateLimit ?? undefined,
+															};
+															form.setValue("providerConfigs", updated, { shouldDirty: true });
+														}}
+													/>
+												);
+											})}
 										</div>
 									)}
 									{/* Display validation errors for provider configurations */}
