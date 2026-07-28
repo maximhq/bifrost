@@ -40,6 +40,12 @@ type ModelCatalog struct {
 	// loadCapabilities fills a capability cache miss.
 	loadCapabilities func(schemas.ModelProvider, string) (*schemas.ModelCapabilities, error)
 
+	// providerMemo caches GetProvidersForModel per model, stamped with
+	// catalogGeneration() at compute time; any store write invalidates every
+	// entry. Capped at providerMemoMaxEntries, flushed on overflow.
+	providerMemoMu sync.RWMutex
+	providerMemo   map[string]providerMemoEntry
+
 	// MCP library sync configuration (protected by syncMu)
 	mcpLibraryURL          string
 	mcpLibrarySyncInterval time.Duration
@@ -114,6 +120,7 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 		live:         live.New(logger),
 		keyconf:      keyconfig.New(logger),
 		capabilities: lrucache.New[*schemas.ModelCapabilities](capabilityCacheSize),
+		providerMemo: make(map[string]providerMemoEntry),
 		done:         make(chan struct{}),
 	}
 	mc.syncCtx, mc.syncCancel = context.WithCancel(ctx)
