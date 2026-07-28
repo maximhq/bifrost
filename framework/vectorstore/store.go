@@ -16,6 +16,7 @@ const (
 	VectorStoreTypeRedis    VectorStoreType = "redis"
 	VectorStoreTypeQdrant   VectorStoreType = "qdrant"
 	VectorStoreTypePinecone VectorStoreType = "pinecone"
+	VectorStoreTypeChromem  VectorStoreType = "chromem"
 )
 
 // Query represents a query to the vector store.
@@ -179,6 +180,15 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 			return fmt.Errorf("failed to unmarshal pinecone config: %w", err)
 		}
 		c.Config = pineconeConfig
+	case VectorStoreTypeChromem:
+		var chromemConfig ChromemConfig
+		// Chromem has no required fields, so a missing config block is valid.
+		if len(temp.Config) > 0 {
+			if err := json.Unmarshal(temp.Config, &chromemConfig); err != nil {
+				return fmt.Errorf("failed to unmarshal chromem config: %w", err)
+			}
+		}
+		c.Config = chromemConfig
 	default:
 		return fmt.Errorf("unknown vector store type: %s", temp.Type)
 	}
@@ -233,6 +243,13 @@ func NewVectorStore(ctx context.Context, config *Config, logger schemas.Logger) 
 			return nil, fmt.Errorf("invalid pinecone config")
 		}
 		return newPineconeStore(ctx, &pineconeConfig, logger)
+	case VectorStoreTypeChromem:
+		// A nil config block is valid: chromem defaults to memory-only mode.
+		chromemConfig, ok := config.Config.(ChromemConfig)
+		if !ok && config.Config != nil {
+			return nil, fmt.Errorf("invalid chromem config")
+		}
+		return newChromemStore(ctx, &chromemConfig, logger)
 	}
 	return nil, fmt.Errorf("invalid vector store type: %s", config.Type)
 }
