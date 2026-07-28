@@ -4416,6 +4416,34 @@ func (s *RDBLogStore) DeleteLogsBatch(ctx context.Context, cutoff time.Time, bat
 	return result.RowsAffected, nil
 }
 
+// DeleteMCPToolLogsBatch deletes MCP tool logs older than the cutoff time in
+// batches. mcp_tool_logs is pruned on the same retention schedule as logs, so
+// this mirrors DeleteLogsBatch exactly - only the model differs.
+func (s *RDBLogStore) DeleteMCPToolLogsBatch(ctx context.Context, cutoff time.Time, batchSize int) (deletedCount int64, err error) {
+	// First, select the IDs of MCP tool logs to delete with proper LIMIT
+	var ids []string
+	if err := s.db.WithContext(ctx).
+		Model(&MCPToolLog{}).
+		Select("id").
+		Where("created_at < ?", cutoff).
+		Limit(batchSize).
+		Pluck("id", &ids).Error; err != nil {
+		return 0, err
+	}
+
+	// If no IDs found, return early
+	if len(ids) == 0 {
+		return 0, nil
+	}
+
+	// Delete the selected IDs
+	result := s.db.WithContext(ctx).Where("id IN ?", ids).Delete(&MCPToolLog{})
+	if result.Error != nil {
+		return 0, result.Error
+	}
+	return result.RowsAffected, nil
+}
+
 // Close closes the log store.
 func (s *RDBLogStore) Close(ctx context.Context) error {
 	sqlDB, err := s.db.WithContext(ctx).DB()
