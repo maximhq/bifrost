@@ -640,13 +640,36 @@ func (p *OAuth2Provider) CompleteOAuthFlow(ctx context.Context, state, code stri
 		exp := time.Now().Add(time.Duration(tokenResponse.ExpiresIn) * time.Second)
 		expiresAt = bifrost.Ptr(exp)
 	}
-	tokenRecord := &tables.TableOauthToken{
-		ID:           tokenID,
-		AccessToken:  strings.TrimSpace(tokenResponse.AccessToken),
-		RefreshToken: strings.TrimSpace(tokenResponse.RefreshToken),
-		TokenType:    tokenResponse.TokenType,
-		ExpiresAt:    expiresAt,
-		Scopes:       string(scopesJSON),
+	tokenRecord := &tables.TableMCPOauthToken{
+		ID:            tokenID,
+		AuthMode:      "shared",
+		OauthConfigID: oauthConfig.ID,
+		Status:        "active",
+		AccessToken:   strings.TrimSpace(tokenResponse.AccessToken),
+		RefreshToken:  strings.TrimSpace(tokenResponse.RefreshToken),
+		TokenType:     tokenResponse.TokenType,
+		ExpiresAt:     expiresAt,
+		Scopes:        string(scopesJSON),
+	}
+
+	// MCPClientID: unlike the per-user flow's session row (which stores
+	// mcp_client_id at InitiateUserOAuthFlow time — see
+	// CompleteUserOAuthFlow), the shared flow's oauth_configs row carries no
+	// client reference of its own. For a client re-authorizing an existing
+	// credential, initiateMCPClientVerification links
+	// config_mcp_clients.oauth_config_id to this row's ID before the browser
+	// ever leaves for the upstream provider, so the client is derivable by
+	// walking that link backwards. For a client still being created (the
+	// StorePendingMCPClient bootstrap path, where the config_mcp_clients row
+	// isn't inserted until after this callback completes), no such row
+	// exists yet — GetMCPClientByOauthConfigID returns ErrNotFound and
+	// MCPClientID is left as "", the same tolerated-empty shape the
+	// migration backfill uses for the equivalent case (see the MCPClientID
+	// field comment on TableMCPOauthToken).
+	if mcpClient, err := p.configStore.GetMCPClientByOauthConfigID(ctx, oauthConfig.ID); err == nil {
+		tokenRecord.MCPClientID = mcpClient.ClientID
+	} else if !errors.Is(err, configstore.ErrNotFound) {
+		return fmt.Errorf("failed to look up mcp client for oauth config: %w", err)
 	}
 
 	if err := p.configStore.CreateOauthToken(ctx, tokenRecord); err != nil {
@@ -1202,7 +1225,7 @@ func (p *OAuth2Provider) CompleteUserOAuthFlow(ctx context.Context, state string
 		exp := time.Now().Add(time.Duration(tokenResponse.ExpiresIn) * time.Second)
 		expiresAt = bifrost.Ptr(exp)
 	}
-	tokenRecord := &tables.TableOauthUserToken{
+	tokenRecord := &tables.TableMCPOauthToken{
 		ID:            uuid.New().String(),
 		SessionID:     sessionID,
 		VirtualKeyID:  tokenVKID,

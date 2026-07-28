@@ -496,11 +496,26 @@ type ConfigStore interface {
 	CreateOauthConfig(ctx context.Context, config *tables.TableOauthConfig) error
 	UpdateOauthConfig(ctx context.Context, config *tables.TableOauthConfig) error
 
-	// OAuth token CRUD
-	GetOauthTokenByID(ctx context.Context, id string) (*tables.TableOauthToken, error)
-	GetExpiringOauthTokens(ctx context.Context, before time.Time) ([]*tables.TableOauthToken, error)
-	CreateOauthToken(ctx context.Context, token *tables.TableOauthToken) error
-	UpdateOauthToken(ctx context.Context, token *tables.TableOauthToken) error
+	// OAuth token CRUD. TableMCPOauthToken now holds every holder of an MCP
+	// OAuth credential (auth_mode 'shared' | 'user' | 'vk' | 'session'), not
+	// just the shared-client credential the method names below still imply.
+	//
+	// GetOauthTokenByID and GetOauthConfigByTokenID are not filtered by
+	// auth_mode: both are looked up exclusively via TableOauthConfig.TokenID,
+	// which only the shared-client flow ever populates, so the ID handed in
+	// is already guaranteed to resolve to a 'shared' row (or nothing) — a
+	// primary-key lookup, already unambiguous. An auth_mode filter here
+	// would be inert, unlike GetOauthUserTokenByID below, which a caller
+	// does feed an arbitrary externally-sourced ID.
+	GetOauthTokenByID(ctx context.Context, id string) (*tables.TableMCPOauthToken, error)
+	// GetExpiringOauthTokens is filtered to auth_mode='shared'. It backs the
+	// shared-only TokenRefreshWorker; per-user tokens refresh lazily/inline
+	// on lookup (GetOauthUserTokenByMode), and folding them into this
+	// proactive sweep is a deliberate later change, not a side effect of
+	// this table merge.
+	GetExpiringOauthTokens(ctx context.Context, before time.Time) ([]*tables.TableMCPOauthToken, error)
+	CreateOauthToken(ctx context.Context, token *tables.TableMCPOauthToken) error
+	UpdateOauthToken(ctx context.Context, token *tables.TableMCPOauthToken) error
 	DeleteOauthToken(ctx context.Context, id string) error
 
 	// Per-user OAuth session CRUD
@@ -514,14 +529,26 @@ type ConfigStore interface {
 	CreateOauthUserSession(ctx context.Context, session *tables.TableOauthUserSession) error
 	UpdateOauthUserSession(ctx context.Context, session *tables.TableOauthUserSession) error
 
-	// Per-user OAuth token CRUD
+	// Per-user OAuth token CRUD. These operate on the same TableMCPOauthToken /
+	// oauth_tokens rows as the shared-token methods above, scoped to
+	// auth_mode IN ('user','vk','session') so a 'shared' row can never be
+	// read, mutated, or deleted through a per-user code path.
+	//
 	// GetOauthUserTokenByMode looks up the active token row keyed by a single
 	// identity dimension. Filters status='active'. identity is the user ID for
 	// AuthModeUser, the VK row ID for AuthModeVK, and the session ID for
 	// AuthModeSession.
-	GetOauthUserTokenByMode(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (*tables.TableOauthUserToken, error)
-	CreateOauthUserToken(ctx context.Context, token *tables.TableOauthUserToken) error
-	UpdateOauthUserToken(ctx context.Context, token *tables.TableOauthUserToken) error
+	GetOauthUserTokenByMode(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (*tables.TableMCPOauthToken, error)
+	// CreateOauthUserToken creates or replaces a per-user OAuth token row.
+	// Deliberately kept separate from CreateOauthToken (used by the shared
+	// flow) rather than merged into one method: it upserts by looking up any
+	// existing row for the same (identity, mcp_client) binding and reusing
+	// its ID, while CreateOauthToken is (and, for this table merge, remains)
+	// a plain insert — the shared flow has never needed upsert semantics.
+	// Folding them into one function would silently give the shared path
+	// upsert behavior it doesn't ask for.
+	CreateOauthUserToken(ctx context.Context, token *tables.TableMCPOauthToken) error
+	UpdateOauthUserToken(ctx context.Context, token *tables.TableMCPOauthToken) error
 	DeleteOauthUserToken(ctx context.Context, id string) error
 	// DeleteOauthUserSession hard-deletes a single flow row by primary key.
 	// Used by CompleteUserOAuthFlow on terminal transitions so completed,
@@ -539,9 +566,19 @@ type ConfigStore interface {
 	// active lookups so the next inference triggers a fresh OAuth
 	// flow that upserts the row back to 'active'.
 	MarkOauthUserTokenNeedsReauthByID(ctx context.Context, tokenID string) error
-	// GetOauthUserTokenByID looks up a single token row by primary key.
-	// Returns nil, nil when not found.
-	GetOauthUserTokenByID(ctx context.Context, id string) (*tables.TableOauthUserToken, error)
+	// GetOauthUserTokenByID looks up a single per-user token row by primary
+	// key. Returns nil, nil when not found. Unlike GetOauthTokenByID above,
+	// this DOES filter to auth_mode IN ('user','vk','session'): the sessions
+	// handler feeds this an ID taken directly from a URL path parameter
+	// (POST /api/mcp/sessions/{id}/reauth, DELETE /api/mcp/sessions/{id})
+	// and then dispatches on the returned row's AuthMode to decide how to
+	// re-authenticate or revoke it — a caller-supplied ID that happened to
+	// belong to a 'shared' row would otherwise be readable (and, downstream,
+	// revocable) through an endpoint that's scoped to per-user credentials
+	// only. Primary-key uniqueness alone isn't enough here because the
+	// vulnerability isn't ambiguity, it's a per-user-only caller getting
+	// handed a row it never should have matched.
+	GetOauthUserTokenByID(ctx context.Context, id string) (*tables.TableMCPOauthToken, error)
 	// ListOauthUserTokens returns token rows matching the supplied filters,
 	// regardless of status. The sessions UI renders all three states
 	// (active / orphaned / needs_reauth) with distinct affordances, so
@@ -549,8 +586,9 @@ type ConfigStore interface {
 	// to act on rows that need their attention; status filtering is the
 	// caller's responsibility via params.Statuses. Runtime token lookups
 	// apply their own status='active' filter and don't go through this
-	// method.
-	ListOauthUserTokens(ctx context.Context, params MCPSessionsFilterParams) ([]tables.TableOauthUserToken, error)
+	// method. Always excludes auth_mode='shared' so shared credentials never
+	// leak into the per-identity sessions UI.
+	ListOauthUserTokens(ctx context.Context, params MCPSessionsFilterParams) ([]tables.TableMCPOauthToken, error)
 	// ListPendingOauthUserSessions returns pending OAuth flow rows matching
 	// the supplied filters. Companion to ListOauthUserTokens for the admin
 	// view. Always restricted to status='pending' AND expires_at > now;
@@ -561,6 +599,10 @@ type ConfigStore interface {
 	DeleteExpiredOauthUserSessions(ctx context.Context) (int64, error)
 	// DeleteOrphanedOauthUserTokens hard-deletes token rows where status='orphaned'
 	// and updated_at is older than olderThan. Returns the number of rows removed.
+	// Scoped to auth_mode IN ('user','vk','session') — a shared token can't
+	// reach status='orphaned' today (only VK/grant reconciliation sets it),
+	// but the filter is here so that stays true by construction rather than
+	// by coincidence once shared tokens share this table.
 	DeleteOrphanedOauthUserTokens(ctx context.Context, olderThan time.Duration) (int64, error)
 
 	// Per-user MCP header credential CRUD. Storage analog of per-user OAuth

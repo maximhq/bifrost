@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -2419,12 +2420,17 @@ func (s *RDBConfigStore) DeleteMCPClientConfig(ctx context.Context, id string) e
 			}
 		}
 
-		// Delete per-user OAuth token + flow rows AND per-user header
-		// credentials + per-user header flow rows for this MCP client. All
-		// four reference mcp_client_id by the string client_id; nothing
-		// auto-cascades, so we do it explicitly inside the same transaction
-		// to keep cleanup atomic.
-		if err := tx.WithContext(ctx).Where("mcp_client_id = ?", existingClient.ClientID).Delete(&tables.TableOauthUserToken{}).Error; err != nil {
+		// Delete every mcp_oauth_tokens row for this MCP client — the shared
+		// credential (auth_mode='shared') and every per-identity credential
+		// (user/vk/session) alike — plus per-user OAuth flow rows and
+		// per-user header credentials/flows. All reference mcp_client_id by
+		// the string client_id; nothing auto-cascades, so we do it
+		// explicitly inside the same transaction to keep cleanup atomic.
+		// Before the token-table merge this needed two separate deletes
+		// (oauth_user_tokens for per-identity rows, nothing at all for the
+		// shared row — the latter was a real leak); now that both live in
+		// mcp_oauth_tokens, one delete by mcp_client_id covers both.
+		if err := tx.WithContext(ctx).Where("mcp_client_id = ?", existingClient.ClientID).Delete(&tables.TableMCPOauthToken{}).Error; err != nil {
 			return err
 		}
 		if err := tx.WithContext(ctx).Where("mcp_client_id = ?", existingClient.ClientID).Delete(&tables.TableOauthUserSession{}).Error; err != nil {
@@ -2437,7 +2443,31 @@ func (s *RDBConfigStore) DeleteMCPClientConfig(ctx context.Context, id string) e
 			return err
 		}
 
-		// Delete the client (this will also handle foreign key cascades)
+		// Delete the oauth_configs row this client owns, if any.
+		// OauthConfigID is effectively 1:1 with a client: every write path
+		// (InitiateOAuthFlow) creates a fresh oauth_configs row and links it
+		// to exactly one client (UpdateMCPClientOAuthConfigID at flow-init
+		// time, or directly on create) — no code path ever points two
+		// different clients at the same oauth_configs row, so deleting it
+		// outright here is safe. This also closes the leak noted above: pre-
+		// merge, nothing in this function ever cleaned up oauth_configs (or,
+		// prior to the token-table merge, the shared oauth_tokens row it
+		// pointed to via TokenID) for a deleted OAuth MCP client.
+		if existingClient.OauthConfigID != nil && *existingClient.OauthConfigID != "" {
+			if err := tx.WithContext(ctx).Where("id = ?", *existingClient.OauthConfigID).Delete(&tables.TableOauthConfig{}).Error; err != nil {
+				return err
+			}
+		}
+
+		// Delete the client. config_mcp_clients.oauth_config_id is the only
+		// real DB-level FK this row carries (ON DELETE CASCADE onto
+		// oauth_configs.id, not the reverse), and that row was already
+		// deleted above — deleting it there may have already cascaded this
+		// client row away too, in which case this is a no-op (0 rows
+		// affected, not an error). Every other table cleaned up above is
+		// linked only by the string client_id with no DB-level constraint,
+		// which is why each needed its own explicit delete rather than
+		// relying on cascades.
 		return tx.WithContext(ctx).Delete(&existingClient).Error
 	})
 }
@@ -3699,8 +3729,12 @@ func (s *RDBConfigStore) DeleteVirtualKey(ctx context.Context, id string, tx ...
 		if err := txDB.WithContext(ctx).Where("virtual_key_id = ?", id).Delete(&tables.TableOauthUserSession{}).Error; err != nil {
 			return err
 		}
-		// Delete upstream OAuth user tokens tied to this VK
-		if err := txDB.WithContext(ctx).Where("virtual_key_id = ?", id).Delete(&tables.TableOauthUserToken{}).Error; err != nil {
+		// Delete upstream OAuth user tokens tied to this VK. Reads/writes
+		// mcp_oauth_tokens (not oauth_user_tokens — that table no longer
+		// takes writes); auth_mode is redundant here since a shared row can never
+		// carry a virtual_key_id, but scoping explicitly matches the
+		// defense-in-depth convention used elsewhere in this file.
+		if err := txDB.WithContext(ctx).Where("virtual_key_id = ? AND auth_mode IN ?", id, perUserOauthAuthModes).Delete(&tables.TableMCPOauthToken{}).Error; err != nil {
 			return err
 		}
 		// Revoke gateway-issued OAuth2 grants bound to this VK (vk-mode tokens are
@@ -6410,8 +6444,8 @@ func (s *RDBConfigStore) GetOauthConfigByState(ctx context.Context, state string
 }
 
 // GetOauthTokenByID retrieves an OAuth token by its ID
-func (s *RDBConfigStore) GetOauthTokenByID(ctx context.Context, id string) (*tables.TableOauthToken, error) {
-	var token tables.TableOauthToken
+func (s *RDBConfigStore) GetOauthTokenByID(ctx context.Context, id string) (*tables.TableMCPOauthToken, error) {
+	var token tables.TableMCPOauthToken
 	result := s.DB().WithContext(ctx).Where("id = ?", id).First(&token)
 	if result.Error != nil {
 		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
@@ -6432,7 +6466,7 @@ func (s *RDBConfigStore) CreateOauthConfig(ctx context.Context, config *tables.T
 }
 
 // CreateOauthToken creates a new OAuth token
-func (s *RDBConfigStore) CreateOauthToken(ctx context.Context, token *tables.TableOauthToken) error {
+func (s *RDBConfigStore) CreateOauthToken(ctx context.Context, token *tables.TableMCPOauthToken) error {
 	result := s.DB().WithContext(ctx).Create(token)
 	if result.Error != nil {
 		return fmt.Errorf("failed to create oauth token: %w", result.Error)
@@ -6450,7 +6484,7 @@ func (s *RDBConfigStore) UpdateOauthConfig(ctx context.Context, config *tables.T
 }
 
 // UpdateOauthToken updates an existing OAuth token
-func (s *RDBConfigStore) UpdateOauthToken(ctx context.Context, token *tables.TableOauthToken) error {
+func (s *RDBConfigStore) UpdateOauthToken(ctx context.Context, token *tables.TableMCPOauthToken) error {
 	result := s.DB().WithContext(ctx).Save(token)
 	if result.Error != nil {
 		return fmt.Errorf("failed to update oauth token: %w", result.Error)
@@ -6460,7 +6494,7 @@ func (s *RDBConfigStore) UpdateOauthToken(ctx context.Context, token *tables.Tab
 
 // DeleteOauthToken deletes an OAuth token by its ID
 func (s *RDBConfigStore) DeleteOauthToken(ctx context.Context, id string) error {
-	var existing tables.TableOauthToken
+	var existing tables.TableMCPOauthToken
 	// Check if the token exists before attempting to delete
 	err := s.DB().WithContext(ctx).Where("id = ?", id).First(&existing).Error
 	if err != nil {
@@ -6477,8 +6511,8 @@ func (s *RDBConfigStore) DeleteOauthToken(ctx context.Context, id string) error 
 }
 
 // GetExpiringOauthTokens retrieves tokens that are expiring before the given time
-func (s *RDBConfigStore) GetExpiringOauthTokens(ctx context.Context, before time.Time) ([]*tables.TableOauthToken, error) {
-	var tokens []*tables.TableOauthToken
+func (s *RDBConfigStore) GetExpiringOauthTokens(ctx context.Context, before time.Time) ([]*tables.TableMCPOauthToken, error) {
+	var tokens []*tables.TableMCPOauthToken
 	// Exclude tokens whose owning oauth_config has already reached a terminal
 	// state — "expired" (set when a refresh is permanently rejected, e.g.
 	// invalid_grant / Grant not found) or "revoked". Without this, the refresh
@@ -6493,16 +6527,21 @@ func (s *RDBConfigStore) GetExpiringOauthTokens(ctx context.Context, before time
 	// client is re-enabled or attached later, GetAccessToken refreshes inline
 	// on first use.
 	result := s.DB().WithContext(ctx).
+		// mcp_oauth_tokens now also holds per-user rows; this worker is
+		// shared-only, so per-user proactive refresh doesn't start happening
+		// as a side effect of the table merge (that's a deliberate later
+		// change, not this one).
+		Where("auth_mode = ?", "shared").
 		Where("expires_at IS NOT NULL AND expires_at < ?", before).
 		Where("NOT EXISTS (?)",
 			s.DB().Model(&tables.TableOauthConfig{}).
 				Select("1").
-				Where("oauth_configs.token_id = oauth_tokens.id AND oauth_configs.status IN ?", []string{"expired", "revoked"})).
+				Where("oauth_configs.token_id = mcp_oauth_tokens.id AND oauth_configs.status IN ?", []string{"expired", "revoked"})).
 		Where("EXISTS (?)",
 			s.DB().Model(&tables.TableMCPClient{}).
 				Select("1").
 				Joins("JOIN oauth_configs ON oauth_configs.id = config_mcp_clients.oauth_config_id").
-				Where("oauth_configs.token_id = oauth_tokens.id AND config_mcp_clients.disabled = ?", false)).
+				Where("oauth_configs.token_id = mcp_oauth_tokens.id AND config_mcp_clients.disabled = ?", false)).
 		Find(&tokens)
 	if result.Error != nil {
 		return nil, fmt.Errorf("failed to get expiring tokens: %w", result.Error)
@@ -6618,28 +6657,43 @@ func (s *RDBConfigStore) UpdateOauthUserSession(ctx context.Context, session *ta
 
 // ---------- Per-User OAuth Token CRUD ----------
 
+// perUserOauthAuthModes is the set of TableMCPOauthToken.AuthMode values that
+// identify a per-identity credential row, as opposed to the single
+// auth_mode='shared' row an MCP client can also hold. Every method in this
+// section filters on this set so a shared credential can never be read,
+// mutated, or deleted through a per-user-scoped code path.
+var perUserOauthAuthModes = []string{
+	string(schemas.MCPAuthModeUser),
+	string(schemas.MCPAuthModeVK),
+	string(schemas.MCPAuthModeSession),
+}
+
 // CreateOauthUserToken creates or replaces a per-user OAuth token. Looks up
 // any existing row matching the populated identity column + MCP client and
 // reuses its ID, ensuring the partial-unique index never trips. SessionToken's
 // hash is set in BeforeSave; the upsert lookup uses the hash column to match
 // the unique index. Wrapped in a transaction so SELECT + CREATE/UPDATE is
-// atomic under concurrent same-identity races.
-func (s *RDBConfigStore) CreateOauthUserToken(ctx context.Context, token *tables.TableOauthUserToken) error {
+// atomic under concurrent same-identity races. Every lookup branch also
+// pins auth_mode = token.AuthMode: shared-mode rows never populate an
+// identity column so they couldn't match anyway, but this keeps the upsert
+// from ever reusing a row of a different mode if that invariant is ever
+// violated (same defense-in-depth convention as reconcileVKDirectTokensDB).
+func (s *RDBConfigStore) CreateOauthUserToken(ctx context.Context, token *tables.TableMCPOauthToken) error {
 	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var existing tables.TableOauthUserToken
+		var existing tables.TableMCPOauthToken
 		var lookupErr error
 		switch {
 		case token.UserID != nil && *token.UserID != "":
 			lookupErr = dbForUpdate(tx).
-				Where("user_id = ? AND mcp_client_id = ?", *token.UserID, token.MCPClientID).
+				Where("auth_mode = ? AND user_id = ? AND mcp_client_id = ?", token.AuthMode, *token.UserID, token.MCPClientID).
 				First(&existing).Error
 		case token.VirtualKeyID != nil && *token.VirtualKeyID != "":
 			lookupErr = dbForUpdate(tx).
-				Where("virtual_key_id = ? AND mcp_client_id = ?", *token.VirtualKeyID, token.MCPClientID).
+				Where("auth_mode = ? AND virtual_key_id = ? AND mcp_client_id = ?", token.AuthMode, *token.VirtualKeyID, token.MCPClientID).
 				First(&existing).Error
 		case token.SessionID != "":
 			lookupErr = dbForUpdate(tx).
-				Where("session_id = ? AND mcp_client_id = ?", token.SessionID, token.MCPClientID).
+				Where("auth_mode = ? AND session_id = ? AND mcp_client_id = ?", token.AuthMode, token.SessionID, token.MCPClientID).
 				First(&existing).Error
 		default:
 			lookupErr = gorm.ErrRecordNotFound
@@ -6669,8 +6723,13 @@ func (s *RDBConfigStore) CreateOauthUserToken(ctx context.Context, token *tables
 	})
 }
 
-// UpdateOauthUserToken updates an existing per-user OAuth token
-func (s *RDBConfigStore) UpdateOauthUserToken(ctx context.Context, token *tables.TableOauthUserToken) error {
+// UpdateOauthUserToken updates an existing per-user OAuth token. Rejects
+// rows whose auth_mode isn't one of the per-identity modes so this
+// per-user-only API can never be used to silently rewrite a shared token.
+func (s *RDBConfigStore) UpdateOauthUserToken(ctx context.Context, token *tables.TableMCPOauthToken) error {
+	if !slices.Contains(perUserOauthAuthModes, string(token.AuthMode)) {
+		return fmt.Errorf("UpdateOauthUserToken: refusing to save row %s with non-per-user auth_mode %q", token.ID, token.AuthMode)
+	}
 	result := s.DB().WithContext(ctx).Save(token)
 	if result.Error != nil {
 		return fmt.Errorf("failed to update oauth user token: %w", result.Error)
@@ -6678,9 +6737,13 @@ func (s *RDBConfigStore) UpdateOauthUserToken(ctx context.Context, token *tables
 	return nil
 }
 
-// DeleteOauthUserToken deletes a per-user OAuth token by its ID
+// DeleteOauthUserToken deletes a per-user OAuth token by its ID. Scoped to
+// auth_mode IN ('user','vk','session') so a caller-supplied ID can never
+// delete a shared credential through this per-user-only path.
 func (s *RDBConfigStore) DeleteOauthUserToken(ctx context.Context, id string) error {
-	result := s.DB().WithContext(ctx).Where("id = ?", id).Delete(&tables.TableOauthUserToken{})
+	result := s.DB().WithContext(ctx).
+		Where("id = ? AND auth_mode IN ?", id, perUserOauthAuthModes).
+		Delete(&tables.TableMCPOauthToken{})
 	if result.Error != nil {
 		return fmt.Errorf("failed to delete oauth user token: %w", result.Error)
 	}
@@ -6735,11 +6798,11 @@ func (s *RDBConfigStore) DeleteOauthUserSessionsByModeIdentityAndMCPClient(ctx c
 // a lookup. Also constrains on auth_mode so a row whose identity column was
 // accidentally populated by a different mode's write path cannot leak into a
 // mode it doesn't belong to.
-func (s *RDBConfigStore) GetOauthUserTokenByMode(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (*tables.TableOauthUserToken, error) {
+func (s *RDBConfigStore) GetOauthUserTokenByMode(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (*tables.TableMCPOauthToken, error) {
 	if identity == "" || mcpClientID == "" {
 		return nil, nil
 	}
-	var token tables.TableOauthUserToken
+	var token tables.TableMCPOauthToken
 	var result *gorm.DB
 	switch mode {
 	case schemas.MCPAuthModeUser:
@@ -6770,14 +6833,15 @@ func (s *RDBConfigStore) GetOauthUserTokenByMode(ctx context.Context, mode schem
 // token row. Called by the refresh-failure path when the upstream credential
 // is permanently rejected: the row stays (preserves audit + binding for
 // re-auth), but is filtered from active lookups so the next inference
-// triggers a fresh OAuth flow.
+// triggers a fresh OAuth flow. Scoped to auth_mode IN ('user','vk','session')
+// so this per-user-only path can never flip a shared token to needs_reauth.
 func (s *RDBConfigStore) MarkOauthUserTokenNeedsReauthByID(ctx context.Context, tokenID string) error {
 	if tokenID == "" {
 		return nil
 	}
 	result := s.DB().WithContext(ctx).
-		Model(&tables.TableOauthUserToken{}).
-		Where("id = ?", tokenID).
+		Model(&tables.TableMCPOauthToken{}).
+		Where("id = ? AND auth_mode IN ?", tokenID, perUserOauthAuthModes).
 		Update("status", "needs_reauth")
 	if result.Error != nil {
 		return fmt.Errorf("failed to mark oauth user token %s needs_reauth: %w", tokenID, result.Error)
@@ -6785,14 +6849,19 @@ func (s *RDBConfigStore) MarkOauthUserTokenNeedsReauthByID(ctx context.Context, 
 	return nil
 }
 
-// GetOauthUserTokenByID looks up a single token row by primary key. Returns
-// nil, nil when not found.
-func (s *RDBConfigStore) GetOauthUserTokenByID(ctx context.Context, id string) (*tables.TableOauthUserToken, error) {
+// GetOauthUserTokenByID looks up a single per-user token row by primary key.
+// Returns nil, nil when not found. Filtered to auth_mode IN
+// ('user','vk','session'): the sessions handler feeds this an ID taken
+// directly from a URL path parameter and then dispatches on the returned
+// row's AuthMode to decide how to re-authenticate or revoke it, so a
+// caller-supplied ID that happened to belong to a 'shared' row must not be
+// readable through an endpoint scoped to per-user credentials only.
+func (s *RDBConfigStore) GetOauthUserTokenByID(ctx context.Context, id string) (*tables.TableMCPOauthToken, error) {
 	if id == "" {
 		return nil, nil
 	}
-	var token tables.TableOauthUserToken
-	if err := s.ScopedDB(ctx).Where("id = ?", id).First(&token).Error; err != nil {
+	var token tables.TableMCPOauthToken
+	if err := s.ScopedDB(ctx).Where("id = ? AND auth_mode IN ?", id, perUserOauthAuthModes).First(&token).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil
 		}
@@ -6801,23 +6870,26 @@ func (s *RDBConfigStore) GetOauthUserTokenByID(ctx context.Context, id string) (
 	return &token, nil
 }
 
-// ListOauthUserTokens returns token rows matching params, regardless of status.
-// The sessions tab UI renders distinct affordances per state; default status
-// filtering here would only hide rows the user needs to see (especially
-// needs_reauth). Runtime lookups apply their own status='active' filter and
-// don't use this. Pagination is handler-side because cross-table de-dup with
-// the pending-session list happens after the merge.
-func (s *RDBConfigStore) ListOauthUserTokens(ctx context.Context, params MCPSessionsFilterParams) ([]tables.TableOauthUserToken, error) {
-	query := s.ScopedDB(ctx).Model(&tables.TableOauthUserToken{})
+// ListOauthUserTokens returns per-user token rows matching params, regardless
+// of status. The sessions tab UI renders distinct affordances per state;
+// default status filtering here would only hide rows the user needs to see
+// (especially needs_reauth). Runtime lookups apply their own status='active'
+// filter and don't use this. Pagination is handler-side because cross-table
+// de-dup with the pending-session list happens after the merge. Always
+// excludes auth_mode='shared' so the shared credential never leaks into the
+// per-identity sessions UI.
+func (s *RDBConfigStore) ListOauthUserTokens(ctx context.Context, params MCPSessionsFilterParams) ([]tables.TableMCPOauthToken, error) {
+	query := s.ScopedDB(ctx).Model(&tables.TableMCPOauthToken{}).
+		Where("mcp_oauth_tokens.auth_mode IN ?", perUserOauthAuthModes)
 	query = applyMCPSessionFilters(query, params, mcpSessionFilterTable{
-		table:          "oauth_user_tokens",
+		table:          "mcp_oauth_tokens",
 		authModeColumn: "auth_mode",
 	})
-	var tokens []tables.TableOauthUserToken
+	var tokens []tables.TableMCPOauthToken
 	if err := query.
 		Preload("MCPClient", func(db *gorm.DB) *gorm.DB { return db.Select("client_id, name") }).
 		Preload("VirtualKey", func(db *gorm.DB) *gorm.DB { return db.Select("id, name") }).
-		Order("oauth_user_tokens.created_at DESC").
+		Order("mcp_oauth_tokens.created_at DESC").
 		Find(&tokens).Error; err != nil {
 		return nil, fmt.Errorf("failed to list oauth user tokens: %w", err)
 	}
@@ -6861,15 +6933,19 @@ func (s *RDBConfigStore) DeleteExpiredOauthUserSessions(ctx context.Context) (in
 
 // DeleteOrphanedOauthUserTokens hard-deletes token rows that have been in
 // 'orphaned' state longer than olderThan. Skipped silently when olderThan
-// is zero or negative.
+// is zero or negative. Scoped to auth_mode IN ('user','vk','session') — a
+// shared token can't reach status='orphaned' today (only VK/grant
+// reconciliation sets it, and that only ever touches vk-mode rows), but the
+// filter is here so that stays true by construction rather than by
+// coincidence now that shared tokens share this table.
 func (s *RDBConfigStore) DeleteOrphanedOauthUserTokens(ctx context.Context, olderThan time.Duration) (int64, error) {
 	if olderThan <= 0 {
 		return 0, nil
 	}
 	cutoff := time.Now().Add(-olderThan)
 	result := s.DB().WithContext(ctx).
-		Where("status = ? AND updated_at < ?", "orphaned", cutoff).
-		Delete(&tables.TableOauthUserToken{})
+		Where("status = ? AND updated_at < ? AND auth_mode IN ?", "orphaned", cutoff, perUserOauthAuthModes).
+		Delete(&tables.TableMCPOauthToken{})
 	if result.Error != nil {
 		return 0, fmt.Errorf("failed to delete orphaned oauth user tokens: %w", result.Error)
 	}
@@ -7325,7 +7401,7 @@ func reconcileVKDirectTokensDB(tx *gorm.DB, vkID string) error {
 	// UpsertCredential, ListPending* etc). Reconciliation matched on
 	// virtual_key_id alone; align with the convention so a stray non-VK
 	// row with virtual_key_id set can never be touched here.
-	orphanQ := tx.Model(&tables.TableOauthUserToken{}).
+	orphanQ := tx.Model(&tables.TableMCPOauthToken{}).
 		Where("auth_mode = ? AND virtual_key_id = ? AND status = ?", string(schemas.MCPAuthModeVK), vkID, "active")
 	if len(allowedClientIDs) > 0 {
 		orphanQ = orphanQ.Where("mcp_client_id NOT IN ?", allowedClientIDs)
@@ -7335,7 +7411,7 @@ func reconcileVKDirectTokensDB(tx *gorm.DB, vkID string) error {
 	}
 
 	if len(allowedClientIDs) > 0 {
-		if err := tx.Model(&tables.TableOauthUserToken{}).
+		if err := tx.Model(&tables.TableMCPOauthToken{}).
 			Where("auth_mode = ? AND virtual_key_id = ? AND status = ? AND mcp_client_id IN ?", string(schemas.MCPAuthModeVK), vkID, "orphaned", allowedClientIDs).
 			Update("status", "active").Error; err != nil {
 			return fmt.Errorf("reactivate vk-keyed tokens for vk %s: %w", vkID, err)
@@ -7403,12 +7479,15 @@ func reconcileVKDirectHeaderRowsDB(tx *gorm.DB, vkID string) error {
 // readVKsHoldingOauthCredsForMCP returns the distinct virtual_key_ids
 // with an active or pending OAuth row (token or session) for the given
 // MCP client. Used by ReconcileOauthAfterMCPChange to know which VKs
-// need re-evaluation.
+// need re-evaluation. The token-side query reads mcp_oauth_tokens (not
+// oauth_user_tokens — that table no longer takes writes) and is scoped to
+// auth_mode='vk' as defense-in-depth: a shared row can never carry a
+// virtual_key_id, but the filter keeps that true by construction.
 func readVKsHoldingOauthCredsForMCP(tx *gorm.DB, mcpClientID string) ([]string, error) {
 	var vkIDs []string
 	if err := tx.Raw(`
-		SELECT DISTINCT virtual_key_id FROM oauth_user_tokens
-		WHERE mcp_client_id = ? AND virtual_key_id IS NOT NULL AND virtual_key_id <> ''
+		SELECT DISTINCT virtual_key_id FROM mcp_oauth_tokens
+		WHERE mcp_client_id = ? AND auth_mode = 'vk' AND virtual_key_id IS NOT NULL AND virtual_key_id <> ''
 		UNION
 		SELECT DISTINCT virtual_key_id FROM oauth_user_sessions
 		WHERE mcp_client_id = ? AND virtual_key_id IS NOT NULL AND virtual_key_id <> ''
