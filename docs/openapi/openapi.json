@@ -67498,37 +67498,29 @@
                     },
                     "keywords": {
                       "type": "object",
-                      "description": "Editable keyword lists used by the complexity analyzer. Only the four user-facing\ndimensions are exposed; `reasoning_keywords` entries drive the override that\npromotes requests to the COMPLEX tier. Matching is normalized to lowercase and\nduplicates are removed on save.\n",
+                      "description": "Editable scoring signals used by the complexity analyzer. Medium entries raise\nthe score gradually. One Complex match guarantees at least MEDIUM and two force\nCOMPLEX. Matching is normalized to lowercase and duplicates are removed on save.\n",
                       "additionalProperties": false,
                       "required": [
-                        "code_keywords",
-                        "reasoning_keywords",
-                        "technical_keywords",
-                        "simple_keywords"
+                        "simple_keywords",
+                        "medium_keywords",
+                        "complex_keywords"
                       ],
                       "properties": {
-                        "code_keywords": {
-                          "type": "array",
-                          "items": {
-                            "type": "string"
-                          },
-                          "minItems": 1
-                        },
-                        "reasoning_keywords": {
-                          "type": "array",
-                          "items": {
-                            "type": "string"
-                          },
-                          "minItems": 1
-                        },
-                        "technical_keywords": {
-                          "type": "array",
-                          "items": {
-                            "type": "string"
-                          },
-                          "minItems": 1
-                        },
                         "simple_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "minItems": 1
+                        },
+                        "medium_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "minItems": 1
+                        },
+                        "complex_keywords": {
                           "type": "array",
                           "items": {
                             "type": "string"
@@ -67609,37 +67601,29 @@
                   },
                   "keywords": {
                     "type": "object",
-                    "description": "Editable keyword lists used by the complexity analyzer. Only the four user-facing\ndimensions are exposed; `reasoning_keywords` entries drive the override that\npromotes requests to the COMPLEX tier. Matching is normalized to lowercase and\nduplicates are removed on save.\n",
+                    "description": "Editable scoring signals used by the complexity analyzer. Medium entries raise\nthe score gradually. One Complex match guarantees at least MEDIUM and two force\nCOMPLEX. Matching is normalized to lowercase and duplicates are removed on save.\n",
                     "additionalProperties": false,
                     "required": [
-                      "code_keywords",
-                      "reasoning_keywords",
-                      "technical_keywords",
-                      "simple_keywords"
+                      "simple_keywords",
+                      "medium_keywords",
+                      "complex_keywords"
                     ],
                     "properties": {
-                      "code_keywords": {
-                        "type": "array",
-                        "items": {
-                          "type": "string"
-                        },
-                        "minItems": 1
-                      },
-                      "reasoning_keywords": {
-                        "type": "array",
-                        "items": {
-                          "type": "string"
-                        },
-                        "minItems": 1
-                      },
-                      "technical_keywords": {
-                        "type": "array",
-                        "items": {
-                          "type": "string"
-                        },
-                        "minItems": 1
-                      },
                       "simple_keywords": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "minItems": 1
+                      },
+                      "medium_keywords": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "minItems": 1
+                      },
+                      "complex_keywords": {
                         "type": "array",
                         "items": {
                           "type": "string"
@@ -67692,37 +67676,29 @@
                     },
                     "keywords": {
                       "type": "object",
-                      "description": "Editable keyword lists used by the complexity analyzer. Only the four user-facing\ndimensions are exposed; `reasoning_keywords` entries drive the override that\npromotes requests to the COMPLEX tier. Matching is normalized to lowercase and\nduplicates are removed on save.\n",
+                      "description": "Editable scoring signals used by the complexity analyzer. Medium entries raise\nthe score gradually. One Complex match guarantees at least MEDIUM and two force\nCOMPLEX. Matching is normalized to lowercase and duplicates are removed on save.\n",
                       "additionalProperties": false,
                       "required": [
-                        "code_keywords",
-                        "reasoning_keywords",
-                        "technical_keywords",
-                        "simple_keywords"
+                        "simple_keywords",
+                        "medium_keywords",
+                        "complex_keywords"
                       ],
                       "properties": {
-                        "code_keywords": {
-                          "type": "array",
-                          "items": {
-                            "type": "string"
-                          },
-                          "minItems": 1
-                        },
-                        "reasoning_keywords": {
-                          "type": "array",
-                          "items": {
-                            "type": "string"
-                          },
-                          "minItems": 1
-                        },
-                        "technical_keywords": {
-                          "type": "array",
-                          "items": {
-                            "type": "string"
-                          },
-                          "minItems": 1
-                        },
                         "simple_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "minItems": 1
+                        },
+                        "medium_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "minItems": 1
+                        },
+                        "complex_keywords": {
                           "type": "array",
                           "items": {
                             "type": "string"
@@ -67816,37 +67792,29 @@
                     },
                     "keywords": {
                       "type": "object",
-                      "description": "Editable keyword lists used by the complexity analyzer. Only the four user-facing\ndimensions are exposed; `reasoning_keywords` entries drive the override that\npromotes requests to the COMPLEX tier. Matching is normalized to lowercase and\nduplicates are removed on save.\n",
+                      "description": "Editable scoring signals used by the complexity analyzer. Medium entries raise\nthe score gradually. One Complex match guarantees at least MEDIUM and two force\nCOMPLEX. Matching is normalized to lowercase and duplicates are removed on save.\n",
                       "additionalProperties": false,
                       "required": [
-                        "code_keywords",
-                        "reasoning_keywords",
-                        "technical_keywords",
-                        "simple_keywords"
+                        "simple_keywords",
+                        "medium_keywords",
+                        "complex_keywords"
                       ],
                       "properties": {
-                        "code_keywords": {
-                          "type": "array",
-                          "items": {
-                            "type": "string"
-                          },
-                          "minItems": 1
-                        },
-                        "reasoning_keywords": {
-                          "type": "array",
-                          "items": {
-                            "type": "string"
-                          },
-                          "minItems": 1
-                        },
-                        "technical_keywords": {
-                          "type": "array",
-                          "items": {
-                            "type": "string"
-                          },
-                          "minItems": 1
-                        },
                         "simple_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "minItems": 1
+                        },
+                        "medium_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "minItems": 1
+                        },
+                        "complex_keywords": {
                           "type": "array",
                           "items": {
                             "type": "string"
