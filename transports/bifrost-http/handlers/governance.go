@@ -746,6 +746,7 @@ func (h *GovernanceHandler) reconcileVKModelConfig(ctx context.Context, tx *gorm
 		}
 	}
 
+
 	// Resulting budget count: the desired set if provided, else the existing set.
 	finalBudgetCount := len(mc.Budgets)
 	if d.budgetsProvided {
