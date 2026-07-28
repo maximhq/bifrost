@@ -227,7 +227,7 @@ If you have object storage enabled, configure a lifecycle / object-lifecycle-man
     {
       "ID": "bifrost-logs-expire-30d",
       "Status": "Enabled",
-      "Filter": { "Prefix": "bifrost/logs/" },
+      "Filter": { "Prefix": "bifrost/" },
       "Expiration": { "Days": 30 }
     }
   ]
@@ -246,7 +246,7 @@ Apply with `aws s3api put-bucket-lifecycle-configuration --bucket <bucket> --lif
         "action": { "type": "Delete" },
         "condition": {
           "age": 30,
-          "matchesPrefix": ["bifrost/logs/"]
+          "matchesPrefix": ["bifrost/"]
         }
       }
     ]

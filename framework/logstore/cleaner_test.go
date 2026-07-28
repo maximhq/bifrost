@@ -456,20 +456,19 @@ func TestHybrid_DeleteMCPToolLogsBatchUnsupportedInnerReturnsZero(t *testing.T) 
 }
 
 // An inner failure must reach the cleaner unchanged, otherwise a broken store
-// reads as a drained table and retention silently stops.
+// reads as a drained table and retention silently stops. Asserted with a
+// sentinel rather than require.Error so a wrapper-generated error cannot pass.
 func TestHybrid_DeleteMCPToolLogsBatchPropagatesInnerError(t *testing.T) {
 	inner, err := newSqliteLogStore(context.Background(), &SQLiteConfig{
-		Path: filepath.Join(t.TempDir(), "hybrid-closed.db"),
+		Path: filepath.Join(t.TempDir(), "hybrid-inner-error.db"),
 	}, hybridTestLogger{})
 	require.NoError(t, err)
-	hybrid := newHybridLogStore(inner, objectstore.NewInMemoryObjectStore(), "test", hybridTestLogger{}, nil)
+	hybrid := newHybridLogStore(mcpRetentionFailingStore{LogStore: inner}, objectstore.NewInMemoryObjectStore(), "test", hybridTestLogger{}, nil)
+	defer hybrid.Close(context.Background())
 
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
+	_, err = hybrid.DeleteMCPToolLogsBatch(context.Background(), time.Now().UTC(), 100)
 
-	_, err = hybrid.DeleteMCPToolLogsBatch(ctx, time.Now().UTC(), 100)
-
-	require.Error(t, err)
+	require.ErrorIs(t, err, errInnerMCPPruneFailed)
 }
 
 // mcpRetentionUnawareStore is a complete LogStore that does not satisfy
@@ -483,3 +482,19 @@ type mcpRetentionUnawareStore struct {
 }
 
 func (mcpRetentionUnawareStore) DeleteMCPToolLogsBatch() {}
+
+// errInnerMCPPruneFailed is the sentinel the failing fixture below returns, so
+// the delegation test can assert the inner store's own error survives the hop
+// through HybridLogStore rather than being replaced or swallowed.
+var errInnerMCPPruneFailed = errors.New("inner store failed to prune mcp tool logs")
+
+// mcpRetentionFailingStore is an MCP-capable inner store whose age-based prune
+// always fails, standing in for an inner backend that is unreachable or has
+// lost the grant on mcp_tool_logs.
+type mcpRetentionFailingStore struct {
+	LogStore
+}
+
+func (mcpRetentionFailingStore) DeleteMCPToolLogsBatch(context.Context, time.Time, int) (int64, error) {
+	return 0, errInnerMCPPruneFailed
+}
