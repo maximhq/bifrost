@@ -1434,19 +1434,19 @@ func (m *MockConfigStore) UpdateOauthConfig(ctx context.Context, config *tables.
 }
 
 // OAuth token
-func (m *MockConfigStore) GetOauthTokenByID(ctx context.Context, id string) (*tables.TableOauthToken, error) {
+func (m *MockConfigStore) GetOauthTokenByID(ctx context.Context, id string) (*tables.TableMCPOauthToken, error) {
 	return nil, nil
 }
 
-func (m *MockConfigStore) GetExpiringOauthTokens(ctx context.Context, before time.Time) ([]*tables.TableOauthToken, error) {
+func (m *MockConfigStore) GetExpiringOauthTokens(ctx context.Context, before time.Time) ([]*tables.TableMCPOauthToken, error) {
 	return nil, nil
 }
 
-func (m *MockConfigStore) CreateOauthToken(ctx context.Context, token *tables.TableOauthToken) error {
+func (m *MockConfigStore) CreateOauthToken(ctx context.Context, token *tables.TableMCPOauthToken) error {
 	return nil
 }
 
-func (m *MockConfigStore) UpdateOauthToken(ctx context.Context, token *tables.TableOauthToken) error {
+func (m *MockConfigStore) UpdateOauthToken(ctx context.Context, token *tables.TableMCPOauthToken) error {
 	return nil
 }
 
@@ -1476,15 +1476,15 @@ func (m *MockConfigStore) UpdateOauthUserSession(ctx context.Context, session *t
 }
 
 // Per-user OAuth token CRUD
-func (m *MockConfigStore) GetOauthUserTokenByMode(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (*tables.TableOauthUserToken, error) {
+func (m *MockConfigStore) GetOauthUserTokenByMode(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (*tables.TableMCPOauthToken, error) {
 	return nil, nil
 }
 
-func (m *MockConfigStore) CreateOauthUserToken(ctx context.Context, token *tables.TableOauthUserToken) error {
+func (m *MockConfigStore) CreateOauthUserToken(ctx context.Context, token *tables.TableMCPOauthToken) error {
 	return nil
 }
 
-func (m *MockConfigStore) UpdateOauthUserToken(ctx context.Context, token *tables.TableOauthUserToken) error {
+func (m *MockConfigStore) UpdateOauthUserToken(ctx context.Context, token *tables.TableMCPOauthToken) error {
 	return nil
 }
 
@@ -1504,11 +1504,11 @@ func (m *MockConfigStore) MarkOauthUserTokenNeedsReauthByID(ctx context.Context,
 	return nil
 }
 
-func (m *MockConfigStore) GetOauthUserTokenByID(ctx context.Context, id string) (*tables.TableOauthUserToken, error) {
+func (m *MockConfigStore) GetOauthUserTokenByID(ctx context.Context, id string) (*tables.TableMCPOauthToken, error) {
 	return nil, nil
 }
 
-func (m *MockConfigStore) ListOauthUserTokens(ctx context.Context, params configstore.MCPSessionsFilterParams) ([]tables.TableOauthUserToken, error) {
+func (m *MockConfigStore) ListOauthUserTokens(ctx context.Context, params configstore.MCPSessionsFilterParams) ([]tables.TableMCPOauthToken, error) {
 	return nil, nil
 }
 

@@ -53,10 +53,10 @@ func (s *RDBConfigStore) EncryptPlaintextRows(ctx context.Context) error {
 	}
 	totalEncrypted += count
 
-	// oauth_tokens
+	// mcp_oauth_tokens
 	count, err = s.encryptPlaintextOAuthTokens(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to encrypt oauth_tokens: %w", err)
+		return fmt.Errorf("failed to encrypt mcp_oauth_tokens: %w", err)
 	}
 	totalEncrypted += count
 
@@ -222,12 +222,12 @@ func (s *RDBConfigStore) encryptPlaintextTempTokens(ctx context.Context) (int, e
 	return count, nil
 }
 
-// encryptPlaintextOAuthTokens finds all oauth_tokens rows with plaintext encryption status
-// and re-saves them in batches. The TableOauthToken.BeforeSave hook handles encryption.
+// encryptPlaintextOAuthTokens finds all mcp_oauth_tokens rows with plaintext encryption status
+// and re-saves them in batches. The TableMCPOauthToken.BeforeSave hook handles encryption.
 func (s *RDBConfigStore) encryptPlaintextOAuthTokens(ctx context.Context) (int, error) {
 	var count int
 	for {
-		var tokens []tables.TableOauthToken
+		var tokens []tables.TableMCPOauthToken
 		if err := s.DB().WithContext(ctx).
 			Where("encryption_status = ? OR encryption_status IS NULL OR encryption_status = ''", encryptionStatusPlainText).
 			Limit(encryptionBatchSize).
