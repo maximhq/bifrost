@@ -40,7 +40,7 @@ func setupEncryptionTestStore(t *testing.T) (*RDBConfigStore, *gorm.DB) {
 		&tables.TableVirtualKey{},
 		&tables.SessionsTable{},
 		&tables.TableOauthConfig{},
-		&tables.TableOauthToken{},
+		&tables.TableMCPOauthToken{},
 		&tables.TableVectorStoreConfig{},
 		&tables.TableBudget{},
 		&tables.TableRateLimit{},
@@ -98,8 +98,8 @@ func TestEncryptPlaintextRows_EncryptsAllTables(t *testing.T) {
 		"session-plaintext-token", future, now, now)
 
 	insertPlaintextRow(t, db,
-		`INSERT INTO oauth_tokens (id, access_token, refresh_token, token_type, encryption_status, expires_at, created_at, updated_at)
-		 VALUES (?, ?, ?, 'Bearer', 'plain_text', ?, ?, ?)`,
+		`INSERT INTO mcp_oauth_tokens (id, auth_mode, access_token, refresh_token, token_type, encryption_status, expires_at, created_at, updated_at)
+		 VALUES (?, 'shared', ?, ?, 'Bearer', 'plain_text', ?, ?, ?)`,
 		"tok-1", "plaintext-access-token", "plaintext-refresh-token", future, now, now)
 
 	insertPlaintextRow(t, db,
@@ -148,7 +148,7 @@ func TestEncryptPlaintextRows_EncryptsAllTables(t *testing.T) {
 	assert.NotEqual(t, "session-plaintext-token", sessionRow["token"])
 
 	var tokRow map[string]any
-	db.Table("oauth_tokens").Where("id = ?", "tok-1").Take(&tokRow)
+	db.Table("mcp_oauth_tokens").Where("id = ?", "tok-1").Take(&tokRow)
 	assert.Equal(t, "encrypted", tokRow["encryption_status"])
 	assert.NotEqual(t, "plaintext-access-token", tokRow["access_token"])
 
@@ -300,15 +300,15 @@ func TestEncryptPlaintextOAuthTokens(t *testing.T) {
 	future := time.Now().Add(time.Hour).UTC().Format("2006-01-02 15:04:05")
 
 	insertPlaintextRow(t, db,
-		`INSERT INTO oauth_tokens (id, access_token, refresh_token, token_type, encryption_status, expires_at, created_at, updated_at)
-		 VALUES (?, ?, ?, 'Bearer', 'plain_text', ?, ?, ?)`,
+		`INSERT INTO mcp_oauth_tokens (id, auth_mode, access_token, refresh_token, token_type, encryption_status, expires_at, created_at, updated_at)
+		 VALUES (?, 'shared', ?, ?, 'Bearer', 'plain_text', ?, ?, ?)`,
 		"tok-batch-1", "access-1", "refresh-1", future, now, now)
 
 	count, err := store.encryptPlaintextOAuthTokens(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, 1, count)
 
-	var found tables.TableOauthToken
+	var found tables.TableMCPOauthToken
 	require.NoError(t, db.First(&found, "id = ?", "tok-batch-1").Error)
 	assert.Equal(t, "access-1", found.AccessToken)
 	assert.Equal(t, "refresh-1", found.RefreshToken)
@@ -1375,8 +1375,8 @@ func TestEncryptPlaintextOAuthTokens_EmptyRefreshToken(t *testing.T) {
 	future := time.Now().Add(time.Hour).UTC().Format("2006-01-02 15:04:05")
 
 	insertPlaintextRow(t, db,
-		`INSERT INTO oauth_tokens (id, access_token, refresh_token, token_type, encryption_status, expires_at, created_at, updated_at)
-		 VALUES (?, ?, '', 'Bearer', 'plain_text', ?, ?, ?)`,
+		`INSERT INTO mcp_oauth_tokens (id, auth_mode, access_token, refresh_token, token_type, encryption_status, expires_at, created_at, updated_at)
+		 VALUES (?, 'shared', ?, '', 'Bearer', 'plain_text', ?, ?, ?)`,
 		"tok-no-refresh", "access-only-startup", future, now, now)
 
 	count, err := store.encryptPlaintextOAuthTokens(ctx)
@@ -1384,10 +1384,10 @@ func TestEncryptPlaintextOAuthTokens_EmptyRefreshToken(t *testing.T) {
 	assert.Equal(t, 1, count)
 
 	var raw map[string]any
-	db.Table("oauth_tokens").Where("id = ?", "tok-no-refresh").Take(&raw)
+	db.Table("mcp_oauth_tokens").Where("id = ?", "tok-no-refresh").Take(&raw)
 	assert.Equal(t, "encrypted", raw["encryption_status"])
 
-	var found tables.TableOauthToken
+	var found tables.TableMCPOauthToken
 	require.NoError(t, db.First(&found, "id = ?", "tok-no-refresh").Error)
 	assert.Equal(t, "access-only-startup", found.AccessToken)
 	assert.Equal(t, "", found.RefreshToken)

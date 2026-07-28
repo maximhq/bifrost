@@ -65,12 +65,12 @@ func makeRefreshToken(id, familyID, clientID, hash string) *tables.TableOAuth2Re
 // only the config/client conditions decide whether it is selected.
 func seedExpiringTokenFixtures(t *testing.T, s *RDBConfigStore) (mkToken func(id string), mkConfig func(id, tokenID, status, state string), mkClient func(name, oauthConfigID string, disabled bool)) {
 	t.Helper()
-	require.NoError(t, s.DB().AutoMigrate(&tables.TableOauthConfig{}, &tables.TableOauthToken{}, &tables.TableMCPClient{}))
+	require.NoError(t, s.DB().AutoMigrate(&tables.TableOauthConfig{}, &tables.TableMCPOauthToken{}, &tables.TableMCPClient{}))
 	past := time.Now().Add(-time.Hour)
 
 	mkToken = func(id string) {
-		require.NoError(t, s.DB().Create(&tables.TableOauthToken{
-			ID: id, AccessToken: "at-" + id, TokenType: "Bearer",
+		require.NoError(t, s.DB().Create(&tables.TableMCPOauthToken{
+			ID: id, AuthMode: "shared", AccessToken: "at-" + id, TokenType: "Bearer",
 			ExpiresAt: &past, CreatedAt: time.Now(), UpdatedAt: time.Now(),
 		}).Error)
 	}

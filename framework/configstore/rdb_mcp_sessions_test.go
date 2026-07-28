@@ -47,15 +47,15 @@ func seedMCPSessionsFixture(t *testing.T, store *RDBConfigStore) {
 	// OAuth token rows — one active vk-mode, one orphaned user-mode, one needs_reauth session-mode
 	vkID := "vk-alpha"
 	uid := "user-42"
-	tok1 := &tables.TableOauthUserToken{
+	tok1 := &tables.TableMCPOauthToken{
 		ID: "tok-active", MCPClientID: "github-prod", VirtualKeyID: &vkID, AuthMode: "vk",
 		Status: "active", AccessToken: "x", TokenType: "Bearer", OauthConfigID: "cfg-1",
 	}
-	tok2 := &tables.TableOauthUserToken{
+	tok2 := &tables.TableMCPOauthToken{
 		ID: "tok-orphan", MCPClientID: "github-prod", UserID: &uid, AuthMode: "user",
 		Status: "orphaned", AccessToken: "x", TokenType: "Bearer", OauthConfigID: "cfg-1",
 	}
-	tok3 := &tables.TableOauthUserToken{
+	tok3 := &tables.TableMCPOauthToken{
 		ID: "tok-reauth", MCPClientID: "github-prod", SessionID: "sess-xyz", AuthMode: "session",
 		Status: "needs_reauth", AccessToken: "x", TokenType: "Bearer", OauthConfigID: "cfg-1",
 	}

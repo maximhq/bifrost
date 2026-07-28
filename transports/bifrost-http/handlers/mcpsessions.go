@@ -219,7 +219,7 @@ func (h *MCPSessionsHandler) list(ctx *fasthttp.RequestCtx) {
 	// queried, because cross-table de-dup (suppress a flow row when a
 	// matching token/header credential exists) needs that data.
 	var (
-		tokens      []tables.TableOauthUserToken
+		tokens      []tables.TableMCPOauthToken
 		flows       []tables.TableOauthUserSession
 		headerCreds []tables.TableMCPPerUserHeaderCredential
 		headerFlows []tables.TableMCPPerUserHeaderFlow
@@ -336,7 +336,7 @@ type sessionBindingKey struct {
 	MCPClientID string
 }
 
-func bindingKeyFromToken(t tables.TableOauthUserToken) sessionBindingKey {
+func bindingKeyFromToken(t tables.TableMCPOauthToken) sessionBindingKey {
 	k := sessionBindingKey{Mode: t.AuthMode, MCPClientID: t.MCPClientID}
 	switch schemas.MCPAuthMode(t.AuthMode) {
 	case schemas.MCPAuthModeUser:
@@ -830,7 +830,7 @@ func (h *MCPSessionsHandler) loadAuthorizedFlow(ctx *fasthttp.RequestCtx, flowID
 // identityFromTokenRow returns the (mode, identity) pair recorded on the row.
 // Inverse of the mode/identity routing used when creating the row; the row's
 // AuthMode column is the source of truth for which identity column is keyed.
-func identityFromTokenRow(tok *tables.TableOauthUserToken) (schemas.MCPAuthMode, string) {
+func identityFromTokenRow(tok *tables.TableMCPOauthToken) (schemas.MCPAuthMode, string) {
 	switch schemas.MCPAuthMode(tok.AuthMode) {
 	case schemas.MCPAuthModeUser:
 		if tok.UserID != nil {
@@ -846,13 +846,16 @@ func identityFromTokenRow(tok *tables.TableOauthUserToken) (schemas.MCPAuthMode,
 	return schemas.MCPAuthMode(tok.AuthMode), ""
 }
 
-// loadRowAuthorizedForCaller loads a token row. Visibility is enforced at
-// the enterprise configstore layer via DAC scope on GetOauthUserTokenByID:
-// if the caller is not allowed to see this row, the store returns
-// (nil, nil) and we surface 404 — the same "if you can see it, you can
-// act on it" model used by GetVirtualKey / DeleteVirtualKey. Writes the
-// HTTP error response on failure.
-func (h *MCPSessionsHandler) loadRowAuthorizedForCaller(ctx *fasthttp.RequestCtx, rowID string) (*tables.TableOauthUserToken, error) {
+// loadRowAuthorizedForCaller loads a per-user token row. Visibility is
+// enforced at the enterprise configstore layer via DAC scope on
+// GetOauthUserTokenByID: if the caller is not allowed to see this row, the
+// store returns (nil, nil) and we surface 404 — the same "if you can see it,
+// you can act on it" model used by GetVirtualKey / DeleteVirtualKey.
+// GetOauthUserTokenByID also filters to auth_mode IN ('user','vk','session')
+// at the store layer, so a rowID belonging to the shared credential 404s
+// here rather than being readable through this per-user-scoped endpoint.
+// Writes the HTTP error response on failure.
+func (h *MCPSessionsHandler) loadRowAuthorizedForCaller(ctx *fasthttp.RequestCtx, rowID string) (*tables.TableMCPOauthToken, error) {
 	tok, err := h.store.ConfigStore.GetOauthUserTokenByID(ctx, rowID)
 	if err != nil {
 		logger.Error("[mcp/sessions] load row failed: token=%s err=%v", rowID, err)
@@ -874,8 +877,9 @@ type errSentinel string
 
 func (e errSentinel) Error() string { return string(e) }
 
-// tokenRow maps an oauth_user_tokens row to the wire shape.
-func tokenRow(t tables.TableOauthUserToken) mcpSessionRow {
+// tokenRow maps a per-user mcp_oauth_tokens row (auth_mode 'user'|'vk'|'session')
+// to the wire shape.
+func tokenRow(t tables.TableMCPOauthToken) mcpSessionRow {
 	row := mcpSessionRow{
 		ID:            t.ID,
 		Kind:          "token",
