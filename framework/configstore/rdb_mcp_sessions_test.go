@@ -63,8 +63,8 @@ func seedMCPSessionsFixture(t *testing.T, store *RDBConfigStore) {
 	require.NoError(t, store.DB().WithContext(ctx).Create(tok2).Error)
 	require.NoError(t, store.DB().WithContext(ctx).Create(tok3).Error)
 
-	// Pending OAuth session
-	sess := &tables.TableOauthUserSession{
+	// Pending OAuth flow
+	sess := &tables.TableMCPOauthFlow{
 		ID: "sess-pending", MCPClientID: "github-prod", OauthConfigID: "cfg-1",
 		FlowMode: "user", Status: "pending", UserID: &uid,
 		ExpiresAt: time.Now().Add(time.Hour),
