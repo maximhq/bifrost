@@ -240,18 +240,21 @@ For high log volumes, increase `max_open_conns`:
 
 ### Log Retention
 
-Set `retention_days` to automatically purge old log entries. `0` disables retention-based cleanup.
+<Note>
+`retention_days` on `logs_store` applies to the **ClickHouse** log store only, where it becomes a table TTL. On **SQLite and PostgreSQL it has no effect** - set `log_retention_days` on the client config instead.
+</Note>
+
+For SQLite and PostgreSQL, retention is configured on the client config. A background cleaner deletes log rows older than `now - log_retention_days`, once on startup and every 24 hours thereafter:
 
 ```json
 {
-  "logs_store": {
-    "enabled": true,
-    "type": "postgres",
-    "config": { "...": "..." },
-    "retention_days": 90
+  "client": {
+    "log_retention_days": 90
   }
 }
 ```
+
+See [Client Configuration](/deployment-guides/config-json/client) for the rest of the client surface.
 
 ### Materialized View Refresh Interval (PostgreSQL only)
 
