@@ -1235,22 +1235,10 @@ func (s *BifrostHTTPServer) startLiveModelRefresher(ctx context.Context, interva
 	return cancel
 }
 
-// liveModelsCache adapts the model catalog to the core list-models catalog
-// interface, so core can consult the catalog without importing the framework.
-type liveModelsCache struct {
-	catalog *modelcatalog.ModelCatalog
-}
-
-func (c liveModelsCache) CachedModels(provider schemas.ModelProvider, keyIDs []string, unfiltered bool) ([]schemas.Model, bool) {
-	return c.catalog.LookupLiveModels(provider, keyIDs, unfiltered)
-}
-
-func (c liveModelsCache) RoutableModels(provider schemas.ModelProvider, keyIDs []string, unfiltered bool) []string {
-	return c.catalog.RoutableModelsForProvider(provider, keyIDs, unfiltered)
-}
-
 // syncListModelsCache installs the model catalog as core's list-models catalog,
-// and decides whether it may answer requests outright.
+// and decides whether it may answer requests outright. The same handle is
+// installed as the plugin-facing catalog behind ctx.GetModelInfo and
+// ctx.CalculateCost, so every boot path that reaches the refresher gets both.
 //
 // The catalog is installed regardless of the interval, because two of its three
 // uses are safe whatever the refresh cadence: reconciling a response against
@@ -1267,13 +1255,14 @@ func (s *BifrostHTTPServer) syncListModelsCache(interval time.Duration) {
 		return
 	}
 	if s.Config == nil || s.Config.ModelCatalog == nil {
-		s.Client.SetListModelsCatalog(nil, false)
+		s.Client.SetModelDirectory(nil, false)
 		logger.Info("list-models catalog unavailable: /v1/models will pass through to providers")
 		return
 	}
 
+	// Non-nil concrete pointer, so boxing it into the interface is safe here.
 	serveFromCache := interval > 0
-	s.Client.SetListModelsCatalog(liveModelsCache{catalog: s.Config.ModelCatalog}, serveFromCache)
+	s.Client.SetModelDirectory(s.Config.ModelCatalog, serveFromCache)
 	if serveFromCache {
 		logger.Info("list-models served from the model catalog, refreshed every %v", interval)
 		return
@@ -1298,7 +1287,7 @@ func (s *BifrostHTTPServer) syncListModelsCache(interval time.Duration) {
 // a snapshot that never moves, which is exactly what the gate exists to prevent
 // (see schemas.BifrostConfig.ServeListModelsFromCatalog).
 //
-// Costs nothing: SetListModelsCatalog is an atomic pointer store, and nothing
+// Costs nothing: SetModelDirectory is an atomic pointer store, and nothing
 // under syncListModelsCache reaches back for this mutex.
 func (s *BifrostHTTPServer) RestartLiveModelRefresher(ctx context.Context) {
 	// Read before taking the lock, preserving the existing lock ordering
@@ -2366,7 +2355,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		MCPHeadersProvider: s.Config.MCPHeadersProvider,
 		Logger:             logger,
 		KVStore:            s.Config.KVStore,
-		ModelCatalog:       s.Config.ModelCatalog,
+		ModelDirectory:     s.Config.ModelCatalog,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize bifrost: %v", err)

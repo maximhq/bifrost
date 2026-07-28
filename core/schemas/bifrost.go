@@ -36,11 +36,11 @@ type BifrostConfig struct {
 	KeySelector        KeySelector   // Custom key selector function
 	KeyPoolFilter      KeyPoolFilter // Optional hook to filter available keys before selection; nil = all keys eligible
 	KVStore            KVStore       // shared KV store for clustering/session stickiness; nil = disabled
-	ModelCatalog       ModelInfoProvider
-	// ListModelsCatalog lets list-models answer from the gateway's own view of
-	// each provider instead of, or in addition to, the upstream call. nil means
-	// list-models behaves as a plain provider passthrough.
-	ListModelsCatalog ListModelsCatalog
+	// ModelDirectory lets list-models answer from the gateway's own view of each
+	// provider instead of, or in addition to, the upstream call, and backs the
+	// model lookups plugins reach through ctx. nil means list-models behaves as
+	// a plain provider passthrough and those accessors stay inert.
+	ModelDirectory ModelDirectory
 	// ServeListModelsFromCatalog allows CachedModels to answer a request
 	// outright, skipping the provider entirely. Only enable it while something
 	// is keeping the catalog fresh; otherwise every call would be served a
@@ -48,15 +48,27 @@ type BifrostConfig struct {
 	ServeListModelsFromCatalog bool
 }
 
-// ListModelsCatalog is the gateway's own account of what each provider serves.
-// Optional: without one, list-models is a plain provider passthrough.
+// ModelDirectory is the gateway's own account of the models it can serve: what
+// each provider currently lists, and what is known about any one of them.
+// Optional: without one, list-models is a plain provider passthrough and the
+// context accessors return zero values.
 //
-// Consulted inside the provider dispatch, after pre-hooks and before the
-// upstream call, so anything it contributes still runs the full plugin
-// pipeline. That placement is load-bearing: plugins filter list-models results
-// per virtual key in their post-hook, and catalog entries are not gated, so
-// answering earlier would hand back models the caller is not entitled to see.
-type ListModelsCatalog interface {
+// One interface rather than one per consumer, because there is one catalog. The
+// two halves are installed together, refreshed together, and read the same
+// state; splitting them only ever let a deployment wire up half of it.
+//
+// The list-models half is consulted inside the provider dispatch, after
+// pre-hooks and before the upstream call, so anything it contributes still runs
+// the full plugin pipeline. That placement is load-bearing: plugins filter
+// list-models results per virtual key in their post-hook, and catalog entries
+// are not gated, so answering earlier would hand back models the caller is not
+// entitled to see.
+//
+// Implemented by *modelcatalog.ModelCatalog, which core cannot import directly
+// (framework depends on core, not the other way round). Named for the lookup
+// role rather than after that type, so the narrow view core is given does not
+// read as the whole catalog.
+type ModelDirectory interface {
 	// CachedModels returns the models cached for the provider across the given
 	// keys, and whether the lookup hit. Consulted only when the caller opted
 	// into serving from the catalog, since Bifrost never refreshes it.
@@ -88,6 +100,22 @@ type ListModelsCatalog interface {
 	// the provider-wide union, which is how keyless providers and the
 	// list-models failure fallback read it.
 	RoutableModels(provider ModelProvider, keyIDs []string, unfiltered bool) []string
+
+	// GetModelInfo returns metadata for one (provider, model) pair in the same
+	// shape /v1/models reports, or nil when nothing beyond the identifier is
+	// known. Reached by plugins through BifrostContext.GetModelInfo.
+	//
+	// Describes a model, it does not authorize one: the answer is the same
+	// whichever key would serve the request.
+	GetModelInfo(provider ModelProvider, model string) *Model
+
+	// CalculateRequestCost returns the dollar cost of a completed response,
+	// resolving governance pricing overrides from ctx. Reached by plugins
+	// through BifrostContext.CalculateCost.
+	//
+	// Named for the request rather than CalculateCost because implementations
+	// tend to already have a CalculateCost of their own with a different shape.
+	CalculateRequestCost(ctx *BifrostContext, resp *BifrostResponse) float64
 }
 
 // ModelProvider represents the different AI model providers supported by Bifrost.
@@ -339,7 +367,7 @@ const (
 	BifrostContextKeyParentSpanID                        BifrostContextKey = "bifrost-parent-span-id"                           // string (parent span ID from W3C traceparent header - set by tracing middleware)
 	BifrostContextKeyStreamStartTime                     BifrostContextKey = "bifrost-stream-start-time"                        // time.Time (start time for streaming TTFT calculation - set by bifrost)
 	BifrostContextKeyTracer                              BifrostContextKey = "bifrost-tracer"                                   // Tracer (tracer instance for completing deferred spans - set by bifrost)
-	BifrostContextKeyModelCatalog                        BifrostContextKey = "bifrost-model-catalog"                            // ModelInfoProvider (model pricing/capability catalog backing ctx.GetModelInfo and ctx.CalculateCost - set by bifrost)
+	BifrostContextKeyModelDirectory                      BifrostContextKey = "bifrost-model-directory"                          // ModelDirectory (model pricing/capability lookups backing ctx.GetModelInfo and ctx.CalculateCost - set by bifrost)
 	BifrostContextKeyDeferTraceCompletion                BifrostContextKey = "bifrost-defer-trace-completion"                   // bool (signals trace completion should be deferred for streaming - set by streaming handlers)
 	BifrostContextKeyTraceCompleter                      BifrostContextKey = "bifrost-trace-completer"                          // func([]PluginLogEntry) (callback to complete trace after streaming, receives transport plugin logs - set by tracing middleware)
 	BifrostContextKeyAccumulatorID                       BifrostContextKey = "bifrost-accumulator-id"                           // string (ID for streaming accumulator lookup - set by tracer for accumulator operations)

@@ -40,7 +40,7 @@ func TestDropModelsWithoutMetadata(t *testing.T) {
 // Any single populated field is enough. Providers and the datasheet describe
 // models unevenly, so demanding a particular field would discard usable models.
 func TestHasModelMetadata_AnyFieldCounts(t *testing.T) {
-	if hasModelMetadata(schemas.Model{ID: "bare"}) {
+	if (schemas.Model{ID: "bare"}).HasMetadata() {
 		t.Error("an ID-only model must count as having no metadata")
 	}
 
@@ -55,7 +55,7 @@ func TestHasModelMetadata_AnyFieldCounts(t *testing.T) {
 		{ID: "h", Architecture: &schemas.Architecture{}},
 	}
 	for _, m := range populated {
-		if !hasModelMetadata(m) {
+		if !m.HasMetadata() {
 			t.Errorf("model %q has a populated field and must be kept", m.ID)
 		}
 	}

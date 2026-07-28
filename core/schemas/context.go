@@ -596,7 +596,7 @@ func (bc *BifrostContext) GetAccumulatedResponse() *BifrostResponse {
 // req.GetRequestFields() or the response's RoutingInfo rather than guessing
 // from the model string.
 func (bc *BifrostContext) GetModelInfo(provider ModelProvider, model string) *Model {
-	catalog, _ := bc.Value(BifrostContextKeyModelCatalog).(ModelInfoProvider)
+	catalog, _ := bc.Value(BifrostContextKeyModelDirectory).(ModelDirectory)
 	if catalog == nil || model == "" {
 		return nil
 	}
@@ -626,7 +626,7 @@ func (bc *BifrostContext) GetModelInfo(provider ModelProvider, model string) *Mo
 //	    return resp, nil, nil
 //	}
 func (bc *BifrostContext) CalculateCost(resp *BifrostResponse) float64 {
-	catalog, _ := bc.Value(BifrostContextKeyModelCatalog).(ModelInfoProvider)
+	catalog, _ := bc.Value(BifrostContextKeyModelDirectory).(ModelDirectory)
 	if catalog == nil || resp == nil {
 		return 0
 	}
