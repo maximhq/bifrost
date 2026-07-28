@@ -2422,18 +2422,21 @@ func (s *RDBConfigStore) DeleteMCPClientConfig(ctx context.Context, id string) e
 
 		// Delete every mcp_oauth_tokens row for this MCP client — the shared
 		// credential (auth_mode='shared') and every per-identity credential
-		// (user/vk/session) alike — plus per-user OAuth flow rows and
-		// per-user header credentials/flows. All reference mcp_client_id by
-		// the string client_id; nothing auto-cascades, so we do it
-		// explicitly inside the same transaction to keep cleanup atomic.
-		// Before the token-table merge this needed two separate deletes
-		// (oauth_user_tokens for per-identity rows, nothing at all for the
-		// shared row — the latter was a real leak); now that both live in
-		// mcp_oauth_tokens, one delete by mcp_client_id covers both.
+		// (user/vk/session) alike — plus every mcp_oauth_flows row (per-user
+		// AND admin-mode alike) and per-user header credentials/flows. All
+		// reference mcp_client_id by the string client_id; nothing
+		// auto-cascades, so we do it explicitly inside the same transaction
+		// to keep cleanup atomic. Before the token-table merge this needed
+		// two separate deletes (oauth_user_tokens for per-identity rows,
+		// nothing at all for the shared row — the latter was a real leak);
+		// now that both live in mcp_oauth_tokens, one delete by
+		// mcp_client_id covers both — same reasoning applies to
+		// mcp_oauth_flows now that admin-mode rows live alongside
+		// per-identity ones there too.
 		if err := tx.WithContext(ctx).Where("mcp_client_id = ?", existingClient.ClientID).Delete(&tables.TableMCPOauthToken{}).Error; err != nil {
 			return err
 		}
-		if err := tx.WithContext(ctx).Where("mcp_client_id = ?", existingClient.ClientID).Delete(&tables.TableOauthUserSession{}).Error; err != nil {
+		if err := tx.WithContext(ctx).Where("mcp_client_id = ?", existingClient.ClientID).Delete(&tables.TableMCPOauthFlow{}).Error; err != nil {
 			return err
 		}
 		if err := tx.WithContext(ctx).Where("mcp_client_id = ?", existingClient.ClientID).Delete(&tables.TableMCPPerUserHeaderCredential{}).Error; err != nil {
@@ -3725,8 +3728,11 @@ func (s *RDBConfigStore) DeleteVirtualKey(ctx context.Context, id string, tx ...
 		if err := txDB.WithContext(ctx).Delete(&tables.TableVirtualKeyMCPConfig{}, "virtual_key_id = ?", id).Error; err != nil {
 			return err
 		}
-		// Delete upstream OAuth user sessions tied to this VK
-		if err := txDB.WithContext(ctx).Where("virtual_key_id = ?", id).Delete(&tables.TableOauthUserSession{}).Error; err != nil {
+		// Delete upstream OAuth flow rows tied to this VK. No flow_mode
+		// filter needed: an admin-mode flow row never populates
+		// virtual_key_id (see InitiateOAuthFlow), so this can't match one by
+		// construction — same reasoning as the auth_mode note below.
+		if err := txDB.WithContext(ctx).Where("virtual_key_id = ?", id).Delete(&tables.TableMCPOauthFlow{}).Error; err != nil {
 			return err
 		}
 		// Delete upstream OAuth user tokens tied to this VK. Reads/writes
@@ -6429,20 +6435,6 @@ func (s *RDBConfigStore) GetOauthConfigsByIDs(ctx context.Context, ids []string)
 	return result, nil
 }
 
-// GetOauthConfigByState retrieves an OAuth config by its state token
-// State is unique per OAuth flow (used for CSRF protection on callback)
-func (s *RDBConfigStore) GetOauthConfigByState(ctx context.Context, state string) (*tables.TableOauthConfig, error) {
-	var config tables.TableOauthConfig
-	result := s.DB().WithContext(ctx).Where("state = ?", state).First(&config)
-	if result.Error != nil {
-		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("failed to get oauth config by state: %w", result.Error)
-	}
-	return &config, nil
-}
-
 // GetOauthTokenByID retrieves an OAuth token by its ID
 func (s *RDBConfigStore) GetOauthTokenByID(ctx context.Context, id string) (*tables.TableMCPOauthToken, error) {
 	var token tables.TableMCPOauthToken
@@ -6466,8 +6458,12 @@ func (s *RDBConfigStore) CreateOauthConfig(ctx context.Context, config *tables.T
 }
 
 // CreateOauthToken creates a new OAuth token
-func (s *RDBConfigStore) CreateOauthToken(ctx context.Context, token *tables.TableMCPOauthToken) error {
-	result := s.DB().WithContext(ctx).Create(token)
+func (s *RDBConfigStore) CreateOauthToken(ctx context.Context, token *tables.TableMCPOauthToken, tx ...*gorm.DB) error {
+	db := s.DB()
+	if len(tx) > 0 {
+		db = tx[0]
+	}
+	result := db.WithContext(ctx).Create(token)
 	if result.Error != nil {
 		return fmt.Errorf("failed to create oauth token: %w", result.Error)
 	}
@@ -6475,10 +6471,33 @@ func (s *RDBConfigStore) CreateOauthToken(ctx context.Context, token *tables.Tab
 }
 
 // UpdateOauthConfig updates an existing OAuth config
-func (s *RDBConfigStore) UpdateOauthConfig(ctx context.Context, config *tables.TableOauthConfig) error {
-	result := s.DB().WithContext(ctx).Save(config)
+func (s *RDBConfigStore) UpdateOauthConfig(ctx context.Context, config *tables.TableOauthConfig, tx ...*gorm.DB) error {
+	db := s.DB()
+	if len(tx) > 0 {
+		db = tx[0]
+	}
+	result := db.WithContext(ctx).Save(config)
 	if result.Error != nil {
 		return fmt.Errorf("failed to update oauth config: %w", result.Error)
+	}
+	return nil
+}
+
+// DeleteOauthTokensByConfigAndMode deletes every oauth token row for the
+// given oauth_config_id scoped to a single auth_mode (e.g. "shared").
+// Used by the shared-OAuth callback to clear the prior credential before
+// inserting its replacement — CreateOauthToken is a plain insert with no
+// upsert semantics (see its call sites), so without this the old row would
+// be silently orphaned once oauth_configs.token_id repoints to the new one.
+func (s *RDBConfigStore) DeleteOauthTokensByConfigAndMode(ctx context.Context, oauthConfigID, authMode string, tx ...*gorm.DB) error {
+	db := s.DB()
+	if len(tx) > 0 {
+		db = tx[0]
+	}
+	if err := db.WithContext(ctx).
+		Where("oauth_config_id = ? AND auth_mode = ?", oauthConfigID, authMode).
+		Delete(&tables.TableMCPOauthToken{}).Error; err != nil {
+		return fmt.Errorf("failed to delete existing oauth tokens for config %s (mode=%s): %w", oauthConfigID, authMode, err)
 	}
 	return nil
 }
@@ -6562,57 +6581,117 @@ func (s *RDBConfigStore) GetOauthConfigByTokenID(ctx context.Context, tokenID st
 	return &config, nil
 }
 
-// ---------- Per-User OAuth Session CRUD ----------
+// ---------- OAuth Flow CRUD (mcp_oauth_flows) ----------
 
-// GetOauthUserSessionByID retrieves a per-user OAuth session by its ID
-func (s *RDBConfigStore) GetOauthUserSessionByID(ctx context.Context, id string) (*tables.TableOauthUserSession, error) {
-	var session tables.TableOauthUserSession
+// perUserOauthFlowModes is the set of TableMCPOauthFlow.FlowMode values that
+// identify a per-identity flow row, as opposed to the admin flow_mode='admin'
+// row an MCP client's shared/bootstrap-test authorize can also produce.
+// Mirrors perUserOauthAuthModes (same three string values) — kept as its own
+// name rather than reused directly since it documents the flow-table's own
+// column (flow_mode, not auth_mode) at each call site.
+var perUserOauthFlowModes = perUserOauthAuthModes
+
+// GetOauthUserSessionByID retrieves a flow row by its ID
+func (s *RDBConfigStore) GetOauthUserSessionByID(ctx context.Context, id string) (*tables.TableMCPOauthFlow, error) {
+	var flow tables.TableMCPOauthFlow
 	result := s.ScopedDB(ctx).
 		Preload("MCPClient", func(db *gorm.DB) *gorm.DB { return db.Select("client_id, name") }).
 		Preload("VirtualKey", func(db *gorm.DB) *gorm.DB { return db.Select("id, name") }).
-		Where("id = ?", id).First(&session)
+		Where("id = ?", id).First(&flow)
 	if result.Error != nil {
 		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("failed to get oauth user session: %w", result.Error)
+		return nil, fmt.Errorf("failed to get oauth flow: %w", result.Error)
 	}
-	return &session, nil
+	return &flow, nil
 }
 
-// ClaimOauthUserSessionByState atomically claims a pending per-user OAuth session by its state token.
-// Returns nil if the session doesn't exist or has already been claimed by another request.
-func (s *RDBConfigStore) ClaimOauthUserSessionByState(ctx context.Context, state string) (*tables.TableOauthUserSession, error) {
-	var session tables.TableOauthUserSession
-	result := s.DB().WithContext(ctx).Where("state = ? AND status = ?", state, "pending").First(&session)
+// GetOauthUserSessionByState is a non-mutating lookup by state token, any
+// status or flow_mode. Used by callback-error handling to classify and mark
+// a flow failed without consuming it the way Claim*ByState does.
+func (s *RDBConfigStore) GetOauthUserSessionByState(ctx context.Context, state string) (*tables.TableMCPOauthFlow, error) {
+	var flow tables.TableMCPOauthFlow
+	result := s.DB().WithContext(ctx).Where("state = ?", state).First(&flow)
 	if result.Error != nil {
 		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("failed to claim oauth user session by state: %w", result.Error)
+		return nil, fmt.Errorf("failed to get oauth flow by state: %w", result.Error)
 	}
-	// Atomically transition from "pending" to "claiming" to prevent concurrent claims
-	updateResult := s.DB().WithContext(ctx).Model(&tables.TableOauthUserSession{}).
-		Where("id = ? AND status = ?", session.ID, "pending").
+	return &flow, nil
+}
+
+// ClaimOauthUserSessionByState atomically claims a pending per-identity flow
+// row by its state token. Scoped to flow_mode IN ('user','vk','session') so
+// it can never claim the flow_mode='admin' row ClaimOauthFlowByState is
+// scoped to — the two partition mcp_oauth_flows by flow_mode, so a given
+// state can only ever satisfy one of them. Returns nil if the row doesn't
+// exist, doesn't match this mode partition, or has already been claimed by
+// another request.
+func (s *RDBConfigStore) ClaimOauthUserSessionByState(ctx context.Context, state string) (*tables.TableMCPOauthFlow, error) {
+	return s.claimOauthFlowByStateAndModes(ctx, state, perUserOauthFlowModes)
+}
+
+// ClaimOauthFlowByState is ClaimOauthUserSessionByState's admin-mode
+// counterpart, atomically claiming a pending flow_mode='admin' row by state.
+// Covers both the one-time shared-client production authorize and a
+// per-user client's admin bootstrap-test authorize — the two are
+// indistinguishable at this layer (see the FlowMode field comment on
+// TableMCPOauthFlow).
+func (s *RDBConfigStore) ClaimOauthFlowByState(ctx context.Context, state string) (*tables.TableMCPOauthFlow, error) {
+	return s.claimOauthFlowByStateAndModes(ctx, state, []string{"admin"})
+}
+
+// claimOauthFlowByStateAndModes is the shared atomic-claim implementation
+// behind ClaimOauthUserSessionByState and ClaimOauthFlowByState: look up the
+// pending row matching state AND flow_mode IN modes, then atomically
+// transition it from "pending" to "claiming" so a concurrent duplicate
+// callback can't also grab it.
+func (s *RDBConfigStore) claimOauthFlowByStateAndModes(ctx context.Context, state string, modes []string) (*tables.TableMCPOauthFlow, error) {
+	// Claim first, read second — not the other way around. A prior
+	// read-then-update shape (SELECT the pending row, then UPDATE by id+
+	// status) left a window where a concurrent reauth (InitiateUserOAuthFlow)
+	// could rewrite the same still-pending row's State/OauthConfigID/
+	// CodeVerifier between the two: the UPDATE would still match (same id,
+	// still 'pending' at that instant) and this method would return the
+	// SELECT's now-stale field values instead of what the row actually holds.
+	// Doing the transition atomically in one UPDATE keyed on (state, status)
+	// closes that window: it can only succeed against the exact row this
+	// state token names, in whatever state it was in at that instant.
+	updateResult := s.DB().WithContext(ctx).Model(&tables.TableMCPOauthFlow{}).
+		Where("state = ? AND status = ? AND flow_mode IN ?", state, "pending", modes).
 		Update("status", "claiming")
 	if updateResult.Error != nil {
-		return nil, fmt.Errorf("failed to claim oauth user session: %w", updateResult.Error)
+		return nil, fmt.Errorf("failed to claim oauth flow: %w", updateResult.Error)
 	}
 	if updateResult.RowsAffected == 0 {
-		return nil, nil // Another request already claimed this session
+		return nil, nil // No matching pending flow, or another request already claimed it.
 	}
-	session.Status = "claiming"
-	return &session, nil
+	// Safe to read fresh now: state is enforced unique at the DB level (see
+	// TableMCPOauthFlow.State's doc comment), and the row is already
+	// status='claiming', so InitiateUserOAuthFlow's pending-only reuse guard
+	// can no longer rewrite it out from under us.
+	var flow tables.TableMCPOauthFlow
+	if err := s.DB().WithContext(ctx).Where("state = ? AND status = ?", state, "claiming").First(&flow).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to load claimed oauth flow: %w", err)
+	}
+	return &flow, nil
 }
 
 // GetOauthUserSessionByModeIdentityAndMCPClient returns the single flow row
 // bound to (mode, identity, mcp_client_id). This is the canonical lookup at
 // flow-init time: there's exactly one flow row per binding, and reauth always
-// updates it in place rather than inserting a new one.
+// updates it in place rather than inserting a new one. mode is always one of
+// the per-identity modes here (the admin flow has no identity binding to
+// look up by — every InitiateOAuthFlow call mints a fresh row instead).
 //
 // identity per mode: AuthModeUser=user_id, AuthModeVK=virtual_key_id,
 // AuthModeSession=raw session token (hashed for the lookup column).
-func (s *RDBConfigStore) GetOauthUserSessionByModeIdentityAndMCPClient(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (*tables.TableOauthUserSession, error) {
+func (s *RDBConfigStore) GetOauthUserSessionByModeIdentityAndMCPClient(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (*tables.TableMCPOauthFlow, error) {
 	if strings.TrimSpace(identity) == "" || strings.TrimSpace(mcpClientID) == "" {
 		return nil, nil
 	}
@@ -6627,30 +6706,30 @@ func (s *RDBConfigStore) GetOauthUserSessionByModeIdentityAndMCPClient(ctx conte
 	default:
 		return nil, fmt.Errorf("unknown auth mode: %s", mode)
 	}
-	var session tables.TableOauthUserSession
-	if err := q.First(&session).Error; err != nil {
+	var flow tables.TableMCPOauthFlow
+	if err := q.First(&flow).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("failed to get oauth user session (mode=%s): %w", mode, err)
+		return nil, fmt.Errorf("failed to get oauth flow (mode=%s): %w", mode, err)
 	}
-	return &session, nil
+	return &flow, nil
 }
 
-// CreateOauthUserSession creates a new per-user OAuth session
-func (s *RDBConfigStore) CreateOauthUserSession(ctx context.Context, session *tables.TableOauthUserSession) error {
+// CreateOauthUserSession creates a new flow row (any flow_mode, including 'admin').
+func (s *RDBConfigStore) CreateOauthUserSession(ctx context.Context, session *tables.TableMCPOauthFlow) error {
 	result := s.DB().WithContext(ctx).Create(session)
 	if result.Error != nil {
-		return fmt.Errorf("failed to create oauth user session: %w", result.Error)
+		return fmt.Errorf("failed to create oauth flow: %w", result.Error)
 	}
 	return nil
 }
 
-// UpdateOauthUserSession updates an existing per-user OAuth session
-func (s *RDBConfigStore) UpdateOauthUserSession(ctx context.Context, session *tables.TableOauthUserSession) error {
+// UpdateOauthUserSession updates an existing flow row in place.
+func (s *RDBConfigStore) UpdateOauthUserSession(ctx context.Context, session *tables.TableMCPOauthFlow) error {
 	result := s.DB().WithContext(ctx).Save(session)
 	if result.Error != nil {
-		return fmt.Errorf("failed to update oauth user session: %w", result.Error)
+		return fmt.Errorf("failed to update oauth flow: %w", result.Error)
 	}
 	return nil
 }
@@ -6755,18 +6834,20 @@ func (s *RDBConfigStore) DeleteOauthUserSession(ctx context.Context, id string) 
 	if id == "" {
 		return nil
 	}
-	if err := s.DB().WithContext(ctx).Where("id = ?", id).Delete(&tables.TableOauthUserSession{}).Error; err != nil {
-		return fmt.Errorf("failed to delete oauth user session %s: %w", id, err)
+	if err := s.DB().WithContext(ctx).Where("id = ?", id).Delete(&tables.TableMCPOauthFlow{}).Error; err != nil {
+		return fmt.Errorf("failed to delete oauth flow %s: %w", id, err)
 	}
 	return nil
 }
 
-// DeleteOauthUserSessionsByModeIdentityAndMCPClient hard-deletes any oauth_user_sessions
-// (pending or completed flow) rows matching the given identity column + MCP client.
+// DeleteOauthUserSessionsByModeIdentityAndMCPClient hard-deletes any flow
+// (pending or completed) rows matching the given identity column + MCP client.
 // Used by revoke so a subsequent OAuth init for the same identity starts from a clean
 // slate instead of upserting the stale row (session mode) or accumulating dead flow
 // rows over time (vk/user modes, whose flow rows have random server-generated
 // session tokens and therefore never get reused, but linger as 'authorized').
+// mode is always a per-identity mode here — an admin flow has no identity
+// binding to match against, so the switch below has no 'admin' case.
 //
 // identity meaning per mode:
 //   - AuthModeUser:    user_id
@@ -6787,8 +6868,8 @@ func (s *RDBConfigStore) DeleteOauthUserSessionsByModeIdentityAndMCPClient(ctx c
 	default:
 		return fmt.Errorf("unknown auth mode: %s", mode)
 	}
-	if err := q.Delete(&tables.TableOauthUserSession{}).Error; err != nil {
-		return fmt.Errorf("failed to delete oauth user sessions (mode=%s): %w", mode, err)
+	if err := q.Delete(&tables.TableMCPOauthFlow{}).Error; err != nil {
+		return fmt.Errorf("failed to delete oauth flows (mode=%s): %w", mode, err)
 	}
 	return nil
 }
@@ -6896,37 +6977,48 @@ func (s *RDBConfigStore) ListOauthUserTokens(ctx context.Context, params MCPSess
 	return tokens, nil
 }
 
-// ListPendingOauthUserSessions returns pending OAuth flow rows matching params
-// whose expiry is in the future. Companion to ListOauthUserTokens.
-func (s *RDBConfigStore) ListPendingOauthUserSessions(ctx context.Context, params MCPSessionsFilterParams) ([]tables.TableOauthUserSession, error) {
-	query := s.ScopedDB(ctx).Model(&tables.TableOauthUserSession{}).
-		Where("oauth_user_sessions.status = ? AND oauth_user_sessions.expires_at > ?", "pending", time.Now())
+// ListPendingOauthUserSessions returns pending per-identity OAuth flow rows
+// matching params whose expiry is in the future. Companion to
+// ListOauthUserTokens. Always excludes flow_mode='admin' so an admin-mode
+// flow row (the shared client's production authorize, or a per-user
+// client's bootstrap-test authorize) never leaks into the per-identity
+// sessions UI — mirrors ListOauthUserTokens' auth_mode='shared' exclusion.
+func (s *RDBConfigStore) ListPendingOauthUserSessions(ctx context.Context, params MCPSessionsFilterParams) ([]tables.TableMCPOauthFlow, error) {
+	query := s.ScopedDB(ctx).Model(&tables.TableMCPOauthFlow{}).
+		Where("mcp_oauth_flows.status = ? AND mcp_oauth_flows.expires_at > ?", "pending", time.Now()).
+		Where("mcp_oauth_flows.flow_mode IN ?", perUserOauthFlowModes)
 	query = applyMCPSessionFilters(query, params, mcpSessionFilterTable{
-		table:          "oauth_user_sessions",
+		table:          "mcp_oauth_flows",
 		authModeColumn: "flow_mode",
 	})
-	var sessions []tables.TableOauthUserSession
+	var flows []tables.TableMCPOauthFlow
 	if err := query.
 		Preload("MCPClient", func(db *gorm.DB) *gorm.DB { return db.Select("client_id, name") }).
 		Preload("VirtualKey", func(db *gorm.DB) *gorm.DB { return db.Select("id, name") }).
-		Order("oauth_user_sessions.created_at DESC").
-		Find(&sessions).Error; err != nil {
-		return nil, fmt.Errorf("failed to list pending oauth user sessions: %w", err)
+		Order("mcp_oauth_flows.created_at DESC").
+		Find(&flows).Error; err != nil {
+		return nil, fmt.Errorf("failed to list pending oauth flows: %w", err)
 	}
-	return sessions, nil
+	return flows, nil
 }
 
 // DeleteExpiredOauthUserSessions hard-deletes pending and claiming OAuth flow
 // rows whose ExpiresAt has passed. Including 'claiming' covers callbacks that
-// died after ClaimOauthUserSessionByState flipped the status — otherwise that
-// row outlives its expiry and any new flow init for the same (mode, identity,
-// mcp_client) binding keeps seeing the dead row.
+// died after a Claim*ByState call flipped the status — otherwise that row
+// outlives its expiry and any new flow init for the same (mode, identity,
+// mcp_client) binding keeps seeing the dead row. Deliberately unfiltered by
+// flow_mode, unlike the per-identity-only methods above: a stuck admin flow
+// (e.g. an abandoned shared-client authorize) is exactly as safe and useful
+// to sweep on expiry as a per-identity one — there's no analogous risk here
+// to the one auth_mode='shared' orphan-sweep guard exists for on the token
+// table, since this method only ever deletes rows already in a dead-end
+// pending/claiming state, never a live credential.
 func (s *RDBConfigStore) DeleteExpiredOauthUserSessions(ctx context.Context) (int64, error) {
 	result := s.DB().WithContext(ctx).
 		Where("expires_at < ? AND status IN ?", time.Now(), []string{"pending", "claiming"}).
-		Delete(&tables.TableOauthUserSession{})
+		Delete(&tables.TableMCPOauthFlow{})
 	if result.Error != nil {
-		return 0, fmt.Errorf("failed to delete expired oauth user sessions: %w", result.Error)
+		return 0, fmt.Errorf("failed to delete expired oauth flows: %w", result.Error)
 	}
 	return result.RowsAffected, nil
 }
@@ -7429,7 +7521,7 @@ func reconcileVKDirectTokensDB(tx *gorm.DB, vkID string) error {
 	if len(allowedClientIDs) > 0 {
 		flowsQ = flowsQ.Where("mcp_client_id NOT IN ?", allowedClientIDs)
 	}
-	if err := flowsQ.Delete(&tables.TableOauthUserSession{}).Error; err != nil {
+	if err := flowsQ.Delete(&tables.TableMCPOauthFlow{}).Error; err != nil {
 		return fmt.Errorf("delete vk-keyed flow rows for vk %s: %w", vkID, err)
 	}
 	return nil
@@ -7477,20 +7569,25 @@ func reconcileVKDirectHeaderRowsDB(tx *gorm.DB, vkID string) error {
 }
 
 // readVKsHoldingOauthCredsForMCP returns the distinct virtual_key_ids
-// with an active or pending OAuth row (token or session) for the given
+// with an active or pending OAuth row (token or flow) for the given
 // MCP client. Used by ReconcileOauthAfterMCPChange to know which VKs
 // need re-evaluation. The token-side query reads mcp_oauth_tokens (not
 // oauth_user_tokens — that table no longer takes writes) and is scoped to
 // auth_mode='vk' as defense-in-depth: a shared row can never carry a
-// virtual_key_id, but the filter keeps that true by construction.
+// virtual_key_id, but the filter keeps that true by construction. The
+// flow-side query reads mcp_oauth_flows (not oauth_user_sessions — that
+// table no longer takes writes) with the same flow_mode='vk' defense-in-depth
+// filter: an admin-mode flow row never populates virtual_key_id either, so
+// this can't match one by construction, but the filter keeps that true
+// rather than relying on the column always being empty by coincidence.
 func readVKsHoldingOauthCredsForMCP(tx *gorm.DB, mcpClientID string) ([]string, error) {
 	var vkIDs []string
 	if err := tx.Raw(`
 		SELECT DISTINCT virtual_key_id FROM mcp_oauth_tokens
 		WHERE mcp_client_id = ? AND auth_mode = 'vk' AND virtual_key_id IS NOT NULL AND virtual_key_id <> ''
 		UNION
-		SELECT DISTINCT virtual_key_id FROM oauth_user_sessions
-		WHERE mcp_client_id = ? AND virtual_key_id IS NOT NULL AND virtual_key_id <> ''
+		SELECT DISTINCT virtual_key_id FROM mcp_oauth_flows
+		WHERE mcp_client_id = ? AND flow_mode = 'vk' AND virtual_key_id IS NOT NULL AND virtual_key_id <> ''
 	`, mcpClientID, mcpClientID).Scan(&vkIDs).Error; err != nil {
 		return nil, fmt.Errorf("read VK owners of OAuth creds for mcp %s: %w", mcpClientID, err)
 	}

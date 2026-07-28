@@ -127,7 +127,6 @@ export interface OAuthStatusResponse {
 	id: string;
 	status: "pending" | "authorized" | "failed" | "expired" | "revoked";
 	created_at: string;
-	expires_at: string;
 	token_id?: string;
 	token_expires_at?: string;
 	token_scopes?: string;
