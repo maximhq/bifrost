@@ -458,6 +458,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_live_models_sync_interval_column"}, run: migrationAddLiveModelsSyncIntervalColumn},
 	{IDs: []string{"add_pricing_override_user_id_column"}, run: migrationAddPricingOverrideUserIDColumn},
 	{IDs: []string{"add_mcp_client_pending_oauth_config_json_column"}, run: migrationAddMCPClientPendingOAuthConfigJSONColumn},
+	{IDs: []string{"merge_oauth_token_tables"}, run: migrationMergeOauthTokenTables},
 }
 
 // quoteSQLiteIdentifier quotes a SQLite identifier, escaping any double quotes.
@@ -11146,4 +11147,230 @@ func migrationAddPricingOverrideUserIDColumn(ctx context.Context, db *gorm.DB, l
 		return fmt.Errorf("error while running pricing override user_id column migration: %s", err.Error())
 	}
 	return nil
+}
+
+// migrationMergeOauthTokenTables introduces mcp_oauth_tokens, a new table
+// that from this point on is the single home for every holder of an MCP
+// OAuth credential — the shared client credential (auth_mode='shared') and
+// every per-identity credential (auth_mode 'user'|'vk'|'session') alike —
+// instead of splitting shared and per-user credentials across the two older
+// tables ('oauth_tokens', 'oauth_user_tokens') with diverging maturity.
+//
+// This does not ALTER either older table. It creates mcp_oauth_tokens fresh
+// (already carrying every column + constraint TableMCPOauthToken declares,
+// so no nullable-first/backfill/tighten dance is needed the way an in-place
+// ALTER would require), then populates it with two INSERT...SELECT passes —
+// one deriving shared rows out of oauth_tokens' old shared-only shape, one
+// copying oauth_user_tokens' per-identity rows field-for-field.
+//
+// oauth_tokens and oauth_user_tokens are left completely untouched and
+// undropped by this migration. Neither is read or written by any code path
+// as of this migration — every current read/write site targets
+// mcp_oauth_tokens exclusively. Both older tables are kept solely as a
+// rollback safety net (dropping them here would make this migration
+// irreversible for anyone who needs to back out) and will be dropped in a
+// future MAJOR version once the new table has proven itself in production.
+func migrationMergeOauthTokenTables(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "merge_oauth_token_tables"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+
+			// 1) Create mcp_oauth_tokens if it doesn't already exist. Unlike
+			// oauth_tokens/oauth_user_tokens, no earlier bootstrap step ever
+			// creates this table under this name — mcp_oauth_tokens is wholly
+			// new as of this migration, so this check is normally true on
+			// every deployment that reaches this step. The two INSERT...SELECT
+			// passes below then populate it from whatever legacy data happens
+			// to be present.
+			if !mg.HasTable(&tables.TableMCPOauthToken{}) {
+				logger.Info("[configstore] %s: creating table TableMCPOauthToken", migrationName)
+				if err := mg.CreateTable(&tables.TableMCPOauthToken{}); err != nil {
+					return fmt.Errorf("create mcp_oauth_tokens table: %w", err)
+				}
+			}
+
+			// 2) Backfill from the old shared-only oauth_tokens table
+			// (TableOauthToken — still created on a fresh install by the
+			// historical bootstrap migrations, just empty in that case, same
+			// as oauth_user_tokens below). The bulk copy itself still goes
+			// through raw table/column references rather than TableOauthToken:
+			// GORM has no native cross-table INSERT...SELECT, and the target
+			// column set diverges from the source struct's field set (derived
+			// auth_mode/mcp_client_id/oauth_config_id, see below), so a
+			// struct-based read-then-write loop would just be a slower,
+			// more allocation-heavy version of the same SQL. auth_mode='shared'
+			// and status='active' are derived rather than read, matching what
+			// every row in this table has always implicitly meant — oauth_tokens
+			// held nothing else. Deriving oauth_config_id and mcp_client_id
+			// inline (rather than via a follow-up UPDATE, as an in-place ALTER
+			// approach would need) is possible because both are pure functions
+			// of the source row: oauth_config_id from the oauth_configs row
+			// that still points at this token via the legacy TokenID shortcut
+			// (retired in a later migration, once every read site moves off
+			// it), and mcp_client_id by walking that same join one step
+			// further to the MCP client. A row whose oauth_config was deleted
+			// before the DeleteMCPClientConfig orphan-cleanup fix (elsewhere
+			// in this PR) has no derivable client/config and gets '' for both
+			// rather than being excluded — see the MCPClientID field comment
+			// on TableMCPOauthToken.
+			if mg.HasTable(&tables.TableOauthToken{}) {
+				if err := tx.Exec(`
+					INSERT INTO mcp_oauth_tokens (
+						id, auth_mode, mcp_client_id, oauth_config_id, session_id,
+						virtual_key_id, user_id, status, access_token, refresh_token,
+						token_type, expires_at, scopes, last_refreshed_at,
+						encryption_status, created_at, updated_at
+					)
+					SELECT
+						oauth_tokens.id,
+						'shared',
+						COALESCE((
+							SELECT config_mcp_clients.client_id FROM config_mcp_clients
+							JOIN oauth_configs ON oauth_configs.id = config_mcp_clients.oauth_config_id
+							WHERE oauth_configs.token_id = oauth_tokens.id
+						), ''),
+						COALESCE((
+							SELECT oauth_configs.id FROM oauth_configs
+							WHERE oauth_configs.token_id = oauth_tokens.id
+						), ''),
+						'',
+						NULL,
+						NULL,
+						'active',
+						oauth_tokens.access_token,
+						oauth_tokens.refresh_token,
+						oauth_tokens.token_type,
+						oauth_tokens.expires_at,
+						oauth_tokens.scopes,
+						oauth_tokens.last_refreshed_at,
+						oauth_tokens.encryption_status,
+						oauth_tokens.created_at,
+						oauth_tokens.updated_at
+					FROM oauth_tokens
+					WHERE NOT EXISTS (SELECT 1 FROM mcp_oauth_tokens WHERE mcp_oauth_tokens.id = oauth_tokens.id)
+				`).Error; err != nil {
+					return fmt.Errorf("backfill mcp_oauth_tokens from oauth_tokens: %w", err)
+				}
+			}
+
+			// 3) Copy every oauth_user_tokens row into mcp_oauth_tokens,
+			// field for field — again via raw table references (the column
+			// set here matches TableOauthUserToken's one-for-one, but a
+			// struct-based read-all/write-all loop still buys nothing over a
+			// single SQL statement for what is fundamentally a bulk copy).
+			// Guarded on existence for the same from-scratch-install reason
+			// as step 2 (oauth_user_tokens IS still created on a fresh
+			// install by the historical migration that first introduced it,
+			// just empty). No dedupe pass is needed for these rows the way
+			// step 4 below dedupes the shared rows from step 2: the (mode,
+			// identity, mcp_client_id) uniqueness this copy relies on was
+			// already enforced on oauth_user_tokens itself by the partial
+			// unique indexes migrationAddOAuthAuthModeColumns created earlier
+			// in this migration chain, so a straight field-for-field copy
+			// can't introduce a collision that didn't already exist there.
+			if mg.HasTable(&tables.TableOauthUserToken{}) {
+				if err := tx.Exec(`
+					INSERT INTO mcp_oauth_tokens (
+						id, auth_mode, mcp_client_id, oauth_config_id, session_id,
+						virtual_key_id, user_id, status, access_token, refresh_token,
+						token_type, expires_at, scopes, last_refreshed_at,
+						encryption_status, created_at, updated_at
+					)
+					SELECT
+						id, auth_mode, mcp_client_id, oauth_config_id, session_id,
+						virtual_key_id, user_id, status, access_token, refresh_token,
+						token_type, expires_at, scopes, last_refreshed_at,
+						encryption_status, created_at, updated_at
+					FROM oauth_user_tokens
+					WHERE NOT EXISTS (SELECT 1 FROM mcp_oauth_tokens WHERE mcp_oauth_tokens.id = oauth_user_tokens.id)
+				`).Error; err != nil {
+					return fmt.Errorf("copy oauth_user_tokens into mcp_oauth_tokens: %w", err)
+				}
+			}
+
+			// 4) Dedupe shared-mode mcp_client_id collisions the backfill in
+			// step 2 may have introduced, before the partial unique index
+			// created in step 5 below can reject them. Normally there's at
+			// most one 'shared' row per client (oauth_configs.token_id is
+			// 1:1 with the client's oauth_config_id), but the
+			// shared-client-delete orphan leak fixed elsewhere in this PR
+			// (DeleteMCPClientConfig never cleaned up the shared
+			// oauth_tokens row) means a stale orphaned row can share
+			// mcp_client_id with a since-recreated client's current row.
+			// Keep the newest row per group (highest updated_at, ties
+			// broken by id) so the live credential survives, mirroring the
+			// dedupe pass in migrationAddOAuthAuthModeColumns above. This
+			// must run before the partial unique indexes are created —
+			// creating them first (as an earlier version of this migration
+			// did) would let the very collision this step exists to clean
+			// up abort the INSERT in step 2 and roll back the whole
+			// migration transaction.
+			if err := tx.Exec(`
+				DELETE FROM mcp_oauth_tokens
+				WHERE id IN (
+					SELECT id FROM (
+						SELECT id,
+							ROW_NUMBER() OVER (
+								PARTITION BY mcp_client_id
+								ORDER BY updated_at DESC, id DESC
+							) AS rn
+						FROM mcp_oauth_tokens
+						WHERE auth_mode = 'shared' AND mcp_client_id IS NOT NULL AND mcp_client_id != ''
+					) ranked
+					WHERE rn > 1
+				)
+			`).Error; err != nil {
+				return fmt.Errorf("dedupe shared mcp_oauth_tokens by mcp_client_id: %w", err)
+			}
+
+			// 5) Partial unique indexes — one per auth_mode. Created last,
+			// after the backfills and the dedupe pass above, so the
+			// collision step 4 cleans up can't abort those INSERTs. 'shared'
+			// is new (nothing enforced one-shared-token-per-client before
+			// this table existed, since the link only ever existed
+			// one-directionally via oauth_configs.token_id); user/vk/session
+			// mirror the scheme migrationAddOAuthAuthModeColumns set up on
+			// oauth_user_tokens.
+			partialUniques := []string{
+				`CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_oauth_tokens_shared_mcp
+					ON mcp_oauth_tokens (mcp_client_id)
+					WHERE auth_mode = 'shared' AND mcp_client_id IS NOT NULL AND mcp_client_id != ''`,
+				`CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_oauth_tokens_user_mcp
+					ON mcp_oauth_tokens (user_id, mcp_client_id)
+					WHERE auth_mode = 'user' AND user_id IS NOT NULL AND user_id != ''`,
+				`CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_oauth_tokens_vk_mcp
+					ON mcp_oauth_tokens (virtual_key_id, mcp_client_id)
+					WHERE auth_mode = 'vk' AND virtual_key_id IS NOT NULL AND virtual_key_id != ''`,
+				`CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_oauth_tokens_session_mcp
+					ON mcp_oauth_tokens (session_id, mcp_client_id)
+					WHERE auth_mode = 'session' AND session_id IS NOT NULL AND session_id != ''`,
+			}
+			for _, stmt := range partialUniques {
+				if err := tx.Exec(stmt).Error; err != nil {
+					return fmt.Errorf("create partial unique index on mcp_oauth_tokens: %w", err)
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			// Deliberately does NOT drop mcp_oauth_tokens. oauth_tokens and
+			// oauth_user_tokens were never written to by Migrate above, so
+			// rolling back the schema doesn't need to repair them — but
+			// every OAuth read/write path targets mcp_oauth_tokens
+			// exclusively from this migration onward, so any token created
+			// or refreshed after it ran lives only in this table. Dropping
+			// it here would silently destroy those credentials and force
+			// every affected holder to re-authorize. Leaving the table in
+			// place makes this rollback schema-only, not fully symmetric
+			// with Migrate, but it's the non-destructive choice.
+			logger.Info("[configstore] %s: rollback leaves table TableMCPOauthToken in place (see comment)", migrationName)
+			return nil
+		},
+	})
 }
