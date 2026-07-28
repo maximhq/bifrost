@@ -308,8 +308,8 @@ func TestComplexityAnalyzerConfigGetReturnsDefaultsWhenUnset(t *testing.T) {
 	if resp.TierBoundaries != complexity.DefaultTierBoundaries() {
 		t.Fatalf("expected default boundaries, got %+v", resp.TierBoundaries)
 	}
-	if len(resp.Keywords.CodeKeywords) == 0 {
-		t.Fatalf("expected default code keywords")
+	if len(resp.Keywords.MediumKeywords) == 0 {
+		t.Fatalf("expected default Medium keywords")
 	}
 }
 
@@ -325,7 +325,7 @@ func TestComplexityAnalyzerConfigPutPersistsAndReloads(t *testing.T) {
 	cfg := complexity.DefaultAnalyzerConfig()
 	cfg.TierBoundaries.SimpleMedium = 0.12
 	cfg.TierBoundaries.MediumComplex = 0.34
-	cfg.Keywords.CodeKeywords = []string{" Function ", "api", "API"}
+	cfg.Keywords.MediumKeywords = []string{" Function ", "api", "API"}
 
 	ctx := newTestRequestCtx(testComplexityAnalyzerPayload(t, cfg))
 	handler.updateComplexityAnalyzerConfig(ctx)
@@ -344,8 +344,96 @@ func TestComplexityAnalyzerConfigPutPersistsAndReloads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get stored config: %v", err)
 	}
-	if stored == nil || len(stored.Keywords.CodeKeywords) != 2 || stored.Keywords.CodeKeywords[0] != "api" {
+	if stored == nil || len(stored.Keywords.MediumKeywords) != 2 || stored.Keywords.MediumKeywords[0] != "api" {
 		t.Fatalf("expected normalized stored keywords, got %+v", stored)
+	}
+}
+
+func TestComplexityAnalyzerConfigPutAcceptsLegacyKeywordsAndWritesCanonicalShape(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	manager := &mockComplexityGovernanceManager{}
+	handler := &GovernanceHandler{
+		configStore:       store,
+		governanceManager: manager,
+	}
+
+	legacyPayload := `{"tier_boundaries":{"simple_medium":0.2,"medium_complex":0.4},` +
+		`"keywords":{"code_keywords":["api"],"reasoning_keywords":["tradeoffs"],` +
+		`"technical_keywords":["latency"],"simple_keywords":["hello"]}}`
+	ctx := newTestRequestCtx(legacyPayload)
+	handler.updateComplexityAnalyzerConfig(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	response := string(ctx.Response.Body())
+	for _, canonical := range []string{"simple_keywords", "medium_keywords", "complex_keywords"} {
+		if !strings.Contains(response, canonical) {
+			t.Fatalf("expected response to contain %q: %s", canonical, response)
+		}
+	}
+	for _, legacy := range []string{"code_keywords", "technical_keywords", "reasoning_keywords"} {
+		if strings.Contains(response, legacy) {
+			t.Fatalf("expected response to omit legacy field %q: %s", legacy, response)
+		}
+	}
+
+	entry, err := store.GetConfig(context.Background(), configstoreTables.ConfigComplexityAnalyzerConfigKey)
+	if err != nil {
+		t.Fatalf("get raw config row: %v", err)
+	}
+	if !strings.Contains(entry.Value, `"medium_keywords":["api","latency"]`) {
+		t.Fatalf("expected canonical merged Medium keywords in stored row: %s", entry.Value)
+	}
+	for _, legacy := range []string{"code_keywords", "technical_keywords", "reasoning_keywords"} {
+		if strings.Contains(entry.Value, legacy) {
+			t.Fatalf("expected stored row to omit legacy field %q: %s", legacy, entry.Value)
+		}
+	}
+}
+
+func TestComplexityAnalyzerConfigGetCanonicalizesLegacyRowWithoutRewritingIt(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	handler := &GovernanceHandler{
+		configStore:       store,
+		governanceManager: &mockComplexityGovernanceManager{},
+	}
+
+	legacyJSON := `{"tier_boundaries":{"simple_medium":0.2,"medium_complex":0.4},` +
+		`"keywords":{"code_keywords":["api"],"reasoning_keywords":["tradeoffs"],` +
+		`"technical_keywords":["latency"],"simple_keywords":["hello"]}}`
+	if err := store.UpdateConfig(context.Background(), &configstoreTables.TableGovernanceConfig{
+		Key:   configstoreTables.ConfigComplexityAnalyzerConfigKey,
+		Value: legacyJSON,
+	}); err != nil {
+		t.Fatalf("seed legacy config row: %v", err)
+	}
+
+	ctx := newTestRequestCtx("")
+	handler.getComplexityAnalyzerConfig(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	response := string(ctx.Response.Body())
+	if !strings.Contains(response, `"medium_keywords":["api","latency"]`) ||
+		!strings.Contains(response, `"complex_keywords":["tradeoffs"]`) {
+		t.Fatalf("expected canonical API response for legacy row: %s", response)
+	}
+	for _, legacy := range []string{"code_keywords", "technical_keywords", "reasoning_keywords"} {
+		if strings.Contains(response, legacy) {
+			t.Fatalf("expected response to omit legacy field %q: %s", legacy, response)
+		}
+	}
+
+	entry, err := store.GetConfig(context.Background(), configstoreTables.ConfigComplexityAnalyzerConfigKey)
+	if err != nil {
+		t.Fatalf("get raw config row: %v", err)
+	}
+	if entry.Value != legacyJSON {
+		t.Fatalf("GET should not rewrite legacy row: got %s", entry.Value)
 	}
 }
 
@@ -362,7 +450,7 @@ func TestComplexityAnalyzerConfigPutRejectsInvalidPayloads(t *testing.T) {
 	invalidBoundaries := valid
 	invalidBoundaries.TierBoundaries.MediumComplex = invalidBoundaries.TierBoundaries.SimpleMedium
 	emptyKeywords := valid
-	emptyKeywords.Keywords.CodeKeywords = nil
+	emptyKeywords.Keywords.MediumKeywords = nil
 
 	tests := []struct {
 		name string

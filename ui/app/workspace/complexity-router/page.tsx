@@ -96,19 +96,17 @@ const analyzerConfigSchema = z.object({
 		}),
 	keywords: z.object({
 		simple_keywords: z.array(z.string()).min(1, "Simple keywords cannot be empty"),
-		code_keywords: z.array(z.string()).min(1, "Code keywords cannot be empty"),
-		technical_keywords: z.array(z.string()).min(1, "Technical keywords cannot be empty"),
-		reasoning_keywords: z.array(z.string()).min(1, "Reasoning keywords cannot be empty"),
+		medium_keywords: z.array(z.string()).min(1, "Medium keywords cannot be empty"),
+		complex_keywords: z.array(z.string()).min(1, "Complex keywords cannot be empty"),
 	}),
 });
 
 const DEFAULT_FORM_VALUES: AnalyzerConfig = {
 	tier_boundaries: { ...DEFAULT_TIER_BOUNDARIES },
 	keywords: {
-		code_keywords: [],
-		reasoning_keywords: [],
-		technical_keywords: [],
 		simple_keywords: [],
+		medium_keywords: [],
+		complex_keywords: [],
 	},
 };
 
@@ -320,7 +318,7 @@ export default function ComplexityRouterPage() {
 					<div className="space-y-1.5">
 						<h1 className="text-2xl font-semibold tracking-tight">Complexity Router</h1>
 						<p className="text-muted-foreground max-w-2xl text-sm leading-relaxed">
-							Tune how incoming requests are classified into four tiers. Thresholds and keyword lists feed the{" "}
+							Tune how incoming requests are classified into three tiers. Thresholds and keyword lists feed the{" "}
 							<code className="bg-muted rounded-sm px-1 py-0.5 font-mono text-xs">complexity_tier</code> field that routing rules can
 							target.
 						</p>
@@ -491,7 +489,7 @@ export default function ComplexityRouterPage() {
 				)}
 
 				{/* ── Action footer ── */}
-				<div className="bg-card sticky bottom-0 flex flex-wrap items-center justify-end gap-2.5 border-t py-4 z-10">
+				<div className="bg-card sticky bottom-0 z-10 flex flex-wrap items-center justify-end gap-2.5 border-t py-4">
 					<Button
 						data-testid="complexity-router-restore-defaults-button"
 						type="button"
