@@ -28,8 +28,14 @@ export default function TranscriptionView({ transcriptionInput, transcriptionOut
 					</div>
 					<div className="space-y-4 p-6">
 						<div className="text-muted-foreground mb-2 text-xs font-medium">AUDIO FILE</div>
-						{/* Audio Controls */}
-						<AudioPlayer src={transcriptionInput.file} />
+						{transcriptionInput.file ? (
+							<AudioPlayer
+								src={transcriptionInput.file}
+								format={transcriptionInput.filename?.toLowerCase().endsWith(".wav") ? "wav" : undefined}
+							/>
+						) : (
+							<div className="text-muted-foreground font-mono text-xs">No audio available for this session.</div>
+						)}
 					</div>
 				</div>
 			)}

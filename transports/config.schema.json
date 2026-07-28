@@ -436,6 +436,9 @@
         "huggingface": {
           "$ref": "#/$defs/provider"
         },
+        "deepgram": {
+          "$ref": "#/$defs/provider"
+        },
         "fireworks": {
           "$ref": "#/$defs/provider_with_fireworks_config"
         },
@@ -6900,6 +6903,7 @@
             "parasail",
             "perplexity",
             "cerebras",
+            "deepgram",
             "deepseek",
             "gemini",
             "openrouter",

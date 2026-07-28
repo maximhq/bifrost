@@ -139,6 +139,7 @@ type Key struct {
 	ReplicateKeyConfig     *ReplicateKeyConfig     `json:"replicate_key_config,omitempty"`      // Replicate-specific key configuration
 	OllamaKeyConfig        *OllamaKeyConfig        `json:"ollama_key_config,omitempty"`         // Ollama-specific key configuration
 	SGLKeyConfig           *SGLKeyConfig           `json:"sgl_key_config,omitempty"`            // SGLang-specific key configuration
+	DeepgramKeyConfig      *DeepgramKeyConfig      `json:"deepgram_key_config,omitempty"`       // Deepgram-specific key configuration
 	Enabled                *bool                   `json:"enabled,omitempty"`                   // Whether the key is active (default:true)
 	UseForBatchAPI         *bool                   `json:"use_for_batch_api,omitempty"`         // Whether this key can be used for batch API operations (default:false for new keys, migrated keys default to true)
 	UseAnthropicEndpoints  *bool                   `json:"use_anthropic_endpoints,omitempty"`   // Whether to use anthropic endpoints for this key
@@ -740,6 +741,11 @@ type BedrockMantleKeyConfig struct {
 type VLLMKeyConfig struct {
 	URL       SecretVar `json:"url"`        // VLLM server base URL (required, supports env. prefix)
 	ModelName string    `json:"model_name"` // Exact model name served on this VLLM instance (used for key selection)
+}
+
+
+type DeepgramKeyConfig struct {
+	URL SecretVar `json:"url"` // Deepgram server base URL (required, supports env. prefix)
 }
 
 // ReplicateKeyConfig represents the Replicate-specific key configuration.

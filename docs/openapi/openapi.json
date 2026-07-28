@@ -65352,6 +65352,7 @@
           "perplexity",
           "replicate",
           "cerebras",
+          "deepgram",
           "deepseek",
           "gemini",
           "openrouter",

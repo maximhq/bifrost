@@ -1420,11 +1420,22 @@ func (s *BifrostHTTPServer) RegisterInferenceRoutes(ctx context.Context, middlew
 	s.wsPool = bfws.NewPool(s.Config.WebSocketConfig.Pool)
 	wsResponsesHandler := handlers.NewWSResponsesHandler(s.Client, s.Config, s.wsPool)
 	wsRealtimeHandler := handlers.NewWSRealtimeHandler(s.Client, s.Config, s.wsPool)
+	// Listen WS is optional: only wire when a configured provider implements ListenWebSocketProvider
+	// (currently Deepgram). Other providers are unaffected; /v1/listen is not registered otherwise.
+	var wsListenHandler *handlers.WSListenHandler
+	if providers, err := s.Client.GetConfiguredProviders(); err == nil {
+		for _, providerKey := range providers {
+			if listenProvider, ok := s.Client.GetProviderByKey(providerKey).(schemas.ListenWebSocketProvider); ok && listenProvider.SupportsListenWebSocket() {
+				wsListenHandler = handlers.NewWSListenHandler(s.Client, s.Config, s.wsPool)
+				break
+			}
+		}
+	}
 	webrtcRealtimeHandler := handlers.NewWebRTCRealtimeHandler(s.Client, s.Config)
 	realtimeClientSecretsHandler := handlers.NewRealtimeClientSecretsHandler(s.Client, s.Config)
 
 	inferenceHandler := handlers.NewInferenceHandler(s.Client, s.Config)
-	s.IntegrationHandler = handlers.NewIntegrationHandler(s.Client, s.Config, wsResponsesHandler, wsRealtimeHandler, webrtcRealtimeHandler, realtimeClientSecretsHandler)
+	s.IntegrationHandler = handlers.NewIntegrationHandler(s.Client, s.Config, wsResponsesHandler, wsRealtimeHandler, wsListenHandler, webrtcRealtimeHandler, realtimeClientSecretsHandler)
 	mcpInferenceHandler := handlers.NewMCPInferenceHandler(s.Client, s.Config)
 	// Serve by-ID virtual key lookups on the /mcp JWT auth path from the
 	// governance in-memory store (avoiding a per-request DB read). Best-effort:

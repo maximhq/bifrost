@@ -373,6 +373,9 @@ func extractTranscriptionUsage(u *schemas.TranscriptionUsage) (*schemas.BifrostL
 	} else {
 		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 	}
+	if u.Cost != nil {
+		usage.Cost = u.Cost
+	}
 
 	var audioTokenDetails *schemas.TranscriptionUsageInputTokenDetails
 	if u.InputTokenDetails != nil {

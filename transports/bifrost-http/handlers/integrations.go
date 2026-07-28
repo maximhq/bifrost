@@ -15,13 +15,14 @@ type IntegrationHandler struct {
 	extensions            []integrations.ExtensionRouter
 	wsResponses           *WSResponsesHandler
 	wsRealtime            *WSRealtimeHandler
+	wsListen              *WSListenHandler
 	webrtcRealtime        *WebRTCRealtimeHandler
 	realtimeClientSecrets *RealtimeClientSecretsHandler
 }
 
 // NewIntegrationHandler creates a new integration handler instance.
 // WebSocket handlers may be nil if WebSocket support is not configured.
-func NewIntegrationHandler(client *bifrost.Bifrost, handlerStore lib.HandlerStore, wsResponses *WSResponsesHandler, wsRealtime *WSRealtimeHandler, webrtcRealtime *WebRTCRealtimeHandler, realtimeClientSecrets *RealtimeClientSecretsHandler) *IntegrationHandler {
+func NewIntegrationHandler(client *bifrost.Bifrost, handlerStore lib.HandlerStore, wsResponses *WSResponsesHandler, wsRealtime *WSRealtimeHandler, wsListen *WSListenHandler, webrtcRealtime *WebRTCRealtimeHandler, realtimeClientSecrets *RealtimeClientSecretsHandler) *IntegrationHandler {
 	// Initialize all available integration routers
 	extensions := []integrations.ExtensionRouter{
 		integrations.NewOpenAIRouter(client, handlerStore, logger),
@@ -44,6 +45,7 @@ func NewIntegrationHandler(client *bifrost.Bifrost, handlerStore lib.HandlerStor
 		extensions:            extensions,
 		wsResponses:           wsResponses,
 		wsRealtime:            wsRealtime,
+		wsListen:              wsListen,
 		webrtcRealtime:        webrtcRealtime,
 		realtimeClientSecrets: realtimeClientSecrets,
 	}
@@ -62,6 +64,9 @@ func (h *IntegrationHandler) RegisterRoutes(r *router.Router, middlewares ...sch
 	if h.wsRealtime != nil {
 		h.wsRealtime.RegisterRoutes(r, middlewares...)
 	}
+	if h.wsListen != nil {
+		h.wsListen.RegisterRoutes(r, middlewares...)
+	}
 	if h.webrtcRealtime != nil {
 		h.webrtcRealtime.RegisterRoutes(r, middlewares...)
 	}
@@ -79,6 +84,9 @@ func (h *IntegrationHandler) Close() {
 	}
 	if h.wsRealtime != nil {
 		h.wsRealtime.Close()
+	}
+	if h.wsListen != nil {
+		h.wsListen.Close()
 	}
 	if h.webrtcRealtime != nil {
 		h.webrtcRealtime.Close()
