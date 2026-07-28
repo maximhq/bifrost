@@ -12,6 +12,8 @@ import {
 	AlertDialogHeader,
 	AlertDialogTitle,
 } from "@/components/ui/alertDialog";
+import { CustomerSelector } from "@/components/entitySelectors/customerSelector";
+import { TeamSelector } from "@/components/entitySelectors/teamSelector";
 import { AsyncMultiSelect } from "@/components/ui/asyncMultiselect";
 import { Button } from "@/components/ui/button";
 import { DateTimePicker } from "@/components/ui/datePickerWithRange";
@@ -1982,14 +1984,9 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 														render={({ field }) => (
 															<FormItem>
 																<FormLabel className="font-normal">Select Team</FormLabel>
-																<ComboboxSelect
-																	options={teams.map((team) => ({
-																		value: team.id,
-																		label: team.customer ? `${team.name} - ${team.customer.name}` : team.name,
-																	}))}
-																	value={field.value || null}
-																	onValueChange={(val) => {
-																		const newVal = val ?? "";
+																<TeamSelector
+																	value={field.value || ""}
+																	onChange={(newVal) => {
 																		if (isEditing && virtualKey?.team_id && newVal && newVal !== virtualKey.team_id) {
 																			setPendingTeamId(newVal);
 																			setShowReassignTeamWarning(true);
@@ -1997,10 +1994,16 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 																			field.onChange(newVal);
 																		}
 																	}}
-																	placeholder="Select a team"
+																	// The already-assigned team may fall outside the
+																	// selector's first page, so seed its label from the
+																	// list the page already fetched.
+																	fallbackOption={
+																		field.value
+																			? { value: field.value, label: teams.find((t) => t.id === field.value)?.name ?? field.value }
+																			: null
+																	}
 																	disabled={isTeamLocked || (isEditing && assignedUsers.length > 0)}
-																	emptyMessage="No teams found."
-																	className="h-9"
+																	triggerClassName="h-9"
 																/>
 																<FormMessage />
 															</FormItem>
@@ -2015,17 +2018,19 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 														render={({ field }) => (
 															<FormItem>
 																<FormLabel className="font-normal">Select Customer</FormLabel>
-																<ComboboxSelect
-																	options={customers.map((customer) => ({
-																		value: customer.id,
-																		label: customer.name,
-																	}))}
-																	value={field.value || null}
-																	onValueChange={(val) => field.onChange(val ?? "")}
-																	placeholder="Select a customer"
+																<CustomerSelector
+																	value={field.value || ""}
+																	onChange={(val) => field.onChange(val)}
+																	fallbackOption={
+																		field.value
+																			? {
+																					value: field.value,
+																					label: customers.find((c) => c.id === field.value)?.name ?? field.value,
+																				}
+																			: null
+																	}
 																	disabled={isEditing && assignedUsers.length > 0}
-																	emptyMessage="No customers found."
-																	className="h-9"
+																	triggerClassName="h-9"
 																/>
 																<FormMessage />
 															</FormItem>

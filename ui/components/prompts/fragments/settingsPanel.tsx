@@ -11,13 +11,17 @@ import { useGetVirtualKeysQuery } from "@/lib/store";
 import { useGetCoreConfigQuery } from "@/lib/store/apis/configApi";
 import { useGetAllKeysQuery, useGetProvidersQuery } from "@/lib/store/apis/providersApi";
 import { ModelProviderName } from "@/lib/types/config";
+import type { VirtualKey } from "@/lib/types/governance";
 import { ModelParams } from "@/lib/types/prompts";
+import { useDebouncedValue } from "@/hooks/useDebounce";
 import { cn } from "@/lib/utils";
 import { PromptDeploymentsAccordionItem } from "@enterprise/components/prompt-deployments/promptDeploymentsAccordionItem";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ApiKeySelectorView } from "../components/apiKeySelectorView";
 import { VariablesTableView } from "../components/variablesTableView";
 import { usePromptContext } from "../context";
+
+const VIRTUAL_KEY_PAGE_SIZE = 20;
 
 export function SettingsPanel() {
 	const {
@@ -55,7 +59,15 @@ export function SettingsPanel() {
 	);
 	// Dynamic providers
 	const { data: providers, isLoading: isLoadingProviders } = useGetProvidersQuery();
-	const { data: virtualKeysData } = useGetVirtualKeysQuery();
+
+	// Virtual keys are searched server-side and capped at one page — calling this
+	// with no params at all makes the handler return every key, fully hydrated.
+	const [vkSearch, setVkSearch] = useState("");
+	const debouncedVkSearch = useDebouncedValue(vkSearch, 300);
+	const { data: virtualKeysData, isFetching: isFetchingVirtualKeys } = useGetVirtualKeysQuery({
+		limit: VIRTUAL_KEY_PAGE_SIZE,
+		search: debouncedVkSearch || undefined,
+	});
 	const { data: coreConfig } = useGetCoreConfigQuery({});
 	const enforceVirtualKeys = coreConfig?.client_config?.enforce_auth_on_inference ?? false;
 	// Keys for the API Key selector (from /api/keys endpoint, provider-filtered)
@@ -108,22 +120,33 @@ export function SettingsPanel() {
 		}
 	}, [apiKeyId, enforceVirtualKeys, providerKeys, setApiKeyId]);
 
+	// Only one page of virtual keys is loaded, so the selected key can fall out of
+	// the list as the search narrows. Pin it once resolved — model filtering below
+	// reads its id, and losing it would silently widen the model list.
+	const [selectedVirtualKey, setSelectedVirtualKey] = useState<VirtualKey | null>(null);
+	useEffect(() => {
+		setSelectedVirtualKey((prev) => {
+			const match = providerVirtualKeys.find((vk) => vk.value === apiKeyId);
+			if (match) return match;
+			return prev?.value === apiKeyId ? prev : null;
+		});
+	}, [apiKeyId, providerVirtualKeys]);
+
 	// Separate keys/vks to pass to model fetch for filtering.
 	const filterKeys = useMemo(() => {
 		if (enforceVirtualKeys) return undefined;
 		const isProviderKey = providerKeys.some((k) => k.key_id === apiKeyId);
 		if (isProviderKey) return [apiKeyId];
-		const isVirtualKey = providerVirtualKeys.some((vk) => vk.value === apiKeyId);
-		if (isVirtualKey) return undefined;
+		if (selectedVirtualKey) return undefined;
 		// Auto: pass all provider key IDs
 		return providerKeys.map((k) => k.key_id);
-	}, [apiKeyId, enforceVirtualKeys, providerKeys, providerVirtualKeys]);
+	}, [apiKeyId, enforceVirtualKeys, providerKeys, selectedVirtualKey]);
 
-	const filterVks = useMemo(() => {
-		const virtualKey = providerVirtualKeys.find((vk) => vk.value === apiKeyId);
-		if (virtualKey) return [virtualKey.id];
-		return undefined;
-	}, [apiKeyId, providerVirtualKeys]);
+	const filterVks = useMemo(() => (selectedVirtualKey ? [selectedVirtualKey.id] : undefined), [selectedVirtualKey]);
+
+	// A search that matches nothing must not unmount the picker in enforce mode —
+	// that would take the search box away with it.
+	const hasVirtualKeysForProvider = providerVirtualKeys.length > 0 || !!selectedVirtualKey || !!vkSearch;
 
 	const handleModelParamsChange = useCallback(
 		(params: Record<string, unknown>) => {
@@ -211,7 +234,7 @@ export function SettingsPanel() {
 									/>
 								</div>
 
-								{!!provider && (enforceVirtualKeys ? providerVirtualKeys.length > 0 : true) && (
+								{!!provider && (enforceVirtualKeys ? hasVirtualKeysForProvider : true) && (
 									<ApiKeySelectorView
 										providerKeys={providerKeys}
 										virtualKeys={providerVirtualKeys}
@@ -219,6 +242,8 @@ export function SettingsPanel() {
 										onValueChange={(v) => onApiKeyIdChange(v ?? "__auto__")}
 										disabled={!provider}
 										requireVirtualKey={enforceVirtualKeys}
+										onSearchChange={setVkSearch}
+										isSearching={isFetchingVirtualKeys || vkSearch !== debouncedVkSearch}
 									/>
 								)}
 

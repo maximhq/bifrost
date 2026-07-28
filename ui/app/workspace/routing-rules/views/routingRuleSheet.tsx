@@ -3,6 +3,8 @@
  * Create/Edit form for routing rules
  */
 
+import { CustomerSelector } from "@/components/entitySelectors/customerSelector";
+import { TeamSelector } from "@/components/entitySelectors/teamSelector";
 import { VirtualKeySelector } from "@/components/entitySelectors/virtualKeySelector";
 import { Button } from "@/components/ui/button";
 import { ComboboxSelect } from "@/components/ui/combobox";
@@ -18,7 +20,6 @@ import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { getProviderLabel } from "@/lib/constants/logs";
 import { getUserPicker } from "@/lib/registries/userPicker";
 import { getErrorMessage } from "@/lib/store";
-import { useGetCustomersQuery, useGetTeamsQuery } from "@/lib/store/apis/governanceApi";
 import { useGetAllKeysQuery, useGetProvidersQuery } from "@/lib/store/apis/providersApi";
 import { useCreateRoutingRuleMutation, useGetRoutingRulesQuery, useUpdateRoutingRuleMutation } from "@/lib/store/apis/routingRulesApi";
 import {
@@ -87,8 +88,6 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 	const rules = rulesData?.rules || [];
 	const { data: providersData = [] } = useGetProvidersQuery();
 	const { data: allKeysData = [] } = useGetAllKeysQuery();
-	const { data: teamsData = { teams: [], count: 0, total_count: 0, limit: 0, offset: 0 } } = useGetTeamsQuery();
-	const { data: customersData = { customers: [] } } = useGetCustomersQuery();
 	const [createRoutingRule, { isLoading: isCreating }] = useCreateRoutingRuleMutation();
 	const [updateRoutingRule, { isLoading: isUpdating }] = useUpdateRoutingRuleMutation();
 
@@ -436,46 +435,14 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 									{scope === "team" ? "Team" : scope === "customer" ? "Customer" : scope === "user" ? "User" : "Virtual Key"}{" "}
 									<span className="text-red-500">*</span>
 								</Label>
-								{scope === "team" && teamsData.teams.length > 0 && (
-									<ComboboxSelect
-										options={teamsData.teams.map((team) => ({ label: team.name, value: team.id }))}
-										value={scopeId || null}
-										onValueChange={(value) => setValue("scope_id", value ?? "")}
-										placeholder="Select a team..."
-										noPortal
-									/>
-								)}
-								{scope === "customer" && customersData.customers.length > 0 && (
-									<ComboboxSelect
-										options={customersData.customers.map((customer) => ({ label: customer.name, value: customer.id }))}
-										value={scopeId || null}
-										onValueChange={(value) => setValue("scope_id", value ?? "")}
-										placeholder="Select a customer..."
-										noPortal
-									/>
-								)}
-								{scope === "virtual_key" && (
-									<VirtualKeySelector
-										value={scopeId || ""}
-										onChange={(value) => setValue("scope_id", value)}
-										fallbackOption={
-											editingRule?.scope === "virtual_key" && editingRule.scope_id
-												? { value: editingRule.scope_id, label: editingRule.scope_id }
-												: null
-										}
-									/>
-								)}
+								{/* A rule stores only its scope_id, so there is no name to seed
+								    these with — each selector resolves its own selection. */}
+								{scope === "team" && <TeamSelector value={scopeId || ""} onChange={(value) => setValue("scope_id", value)} />}
+								{scope === "customer" && <CustomerSelector value={scopeId || ""} onChange={(value) => setValue("scope_id", value)} />}
+								{scope === "virtual_key" && <VirtualKeySelector value={scopeId || ""} onChange={(value) => setValue("scope_id", value)} />}
 								{scope === "user" &&
 									(UserPicker ? (
-										<UserPicker
-											value={scopeId || ""}
-											onChange={(value) => setValue("scope_id", value)}
-											fallbackOption={
-												editingRule?.scope === "user" && editingRule.scope_id
-													? { value: editingRule.scope_id, label: editingRule.scope_id }
-													: null
-											}
-										/>
+										<UserPicker value={scopeId || ""} onChange={(value) => setValue("scope_id", value)} />
 									) : (
 										// No user directory in this build: keep a plain input so
 										// existing user-scoped rules remain editable.
@@ -487,12 +454,9 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 											onChange={(e) => setValue("scope_id", e.target.value)}
 										/>
 									))}
-								{/* Virtual keys are searched lazily inside VirtualKeySelector, which
-								    surfaces its own empty state, so it is not covered here. */}
-								{((scope === "team" && teamsData.teams.length === 0) || (scope === "customer" && customersData.customers.length === 0)) && (
-									<p className="text-muted-foreground text-sm">No {scope === "team" ? "teams" : "customers"} available</p>
-								)}
-								{errors.scope_id && <p className="text-destructive text-sm">{errors.scope_id.message}</p>}
+								{/* Teams, customers and virtual keys are all searched lazily inside their
+								    selectors, each of which surfaces its own empty state. */}
+								{errors.scope_id &&<p className="text-destructive text-sm">{errors.scope_id.message}</p>}
 							</div>
 						)}
 
