@@ -1,4 +1,5 @@
 import { VirtualKeySelector } from "@/components/entitySelectors/virtualKeySelector";
+import FullPageLoader from "@/components/fullPageLoader";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -23,7 +24,7 @@ import { useGetAllKeysQuery } from "@/lib/store/apis/providersApi";
 import { PricingOverride, PricingOverrideScopeKind } from "@/lib/types/governance";
 import { useLocation } from "@tanstack/react-router";
 import { ChevronLeft, ChevronRight, Edit, MoreHorizontal, Plus, Search, Trash2 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import PricingOverrideSheet from "./pricingOverrideSheet";
 import { PricingOverridesEmptyState } from "./pricingOverridesEmptyState";
@@ -215,6 +216,8 @@ export default function ScopedPricingOverridesView() {
 	);
 
 	const { data, isLoading, error } = useGetPricingOverridesQuery(queryArgs);
+	const hasLoadedOnceRef = useRef(false);
+	if (data || error) hasLoadedOnceRef.current = true;
 
 	// Snap offset back when total shrinks past current page
 	const totalCount = data?.total_count ?? 0;
@@ -292,6 +295,13 @@ export default function ScopedPricingOverridesView() {
 	};
 
 	const hasActiveFilters = debouncedSearch || scopeKind !== "all" || userID || virtualKeyID || providerID || providerKeyID;
+
+	// Without this the table chrome paints first, then swaps to the full-page empty
+	// state once the first response resolves to zero rows. Hold a plain loader until
+	// then; later filter/page fetches keep the table so the chrome doesn't jump.
+	if (isLoading && !hasLoadedOnceRef.current) {
+		return <FullPageLoader />;
+	}
 
 	if (!isLoading && !error && totalCount === 0 && !hasActiveFilters) {
 		return (
