@@ -1,3 +1,4 @@
+import { VirtualKeySelector } from "@/components/entitySelectors/virtualKeySelector";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { CodeEditor } from "@/components/ui/codeEditor";
@@ -14,7 +15,6 @@ import {
 	getErrorMessage,
 	useCreatePricingOverrideMutation,
 	useGetProvidersQuery,
-	useGetVirtualKeysQuery,
 	useUpdatePricingOverrideMutation,
 } from "@/lib/store";
 import { useGetAllKeysQuery } from "@/lib/store/apis/providersApi";
@@ -538,7 +538,6 @@ function isCompleteScopeLock(scopeLock?: PricingOverrideDrawerProps["scopeLock"]
 
 export default function PricingOverrideSheet({ open, onOpenChange, editingOverride, scopeLock, onSaved }: PricingOverrideDrawerProps) {
 	const { data: providersData, isLoading: isProvidersLoading, error: providersError } = useGetProvidersQuery();
-	const { data: virtualKeysData, isLoading: isVirtualKeysLoading, error: virtualKeysError } = useGetVirtualKeysQuery();
 	const { data: allKeysData = [] } = useGetAllKeysQuery();
 	const [createOverride, { isLoading: isCreating }] = useCreatePricingOverrideMutation();
 	const [updateOverride, { isLoading: isPatching }] = useUpdatePricingOverrideMutation();
@@ -554,7 +553,6 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 
 	const isSaving = isCreating || isPatching;
 	const providers = useMemo<ModelProvider[]>(() => (providersError ? [] : (providersData ?? [])), [providersData, providersError]);
-	const virtualKeys = useMemo(() => (virtualKeysError ? [] : (virtualKeysData?.virtual_keys ?? [])), [virtualKeysData, virtualKeysError]);
 
 	const scopeRoot = watch("scopeRoot");
 	const providerID = watch("providerID");
@@ -969,29 +967,23 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 															Virtual key <span className="text-red-500">*</span>
 														</FormLabel>
 														<FormControl>
-															<ComboboxSelect
-																data-testid="pricing-override-virtual-key-select"
-																options={virtualKeys.map((vk) => ({ label: vk.name, value: vk.id }))}
-																value={field.value || null}
-																onValueChange={(value) => {
-																	field.onChange(value ?? "");
+															<VirtualKeySelector
+																value={field.value}
+																onChange={(value) => {
+																	field.onChange(value);
 																	setValue("providerID", "");
 																	setValue("providerKeyID", "");
 																	clearErrors("virtualKeyID");
 																}}
-																placeholder={isVirtualKeysLoading ? "Loading..." : "Select virtual key"}
-																disabled={isVirtualKeysLoading || !!virtualKeysError}
-																noPortal
-																className="h-9"
+																fallbackOption={
+																	editingOverride?.virtual_key_id
+																		? { value: editingOverride.virtual_key_id, label: editingOverride.virtual_key_id }
+																		: null
+																}
+																placeholder="Select virtual key"
 															/>
 														</FormControl>
-														{virtualKeysError ? (
-															<p className="text-destructive mt-1 text-xs">
-																Failed to load virtual keys: {getErrorMessage(virtualKeysError)}
-															</p>
-														) : (
-															<FormMessage />
-														)}
+														<FormMessage />
 													</FormItem>
 												)}
 											/>
