@@ -34,7 +34,11 @@ func ToDeepgramSpeechRequest(
 	}
 
 	if bifrostReq.Params.ResponseFormat != "" {
-		req.Encoding = ConvertBifrostSpeechFormatToDeepgram(bifrostReq.Params.ResponseFormat)
+		encoding, container := ConvertBifrostSpeechFormatToDeepgram(bifrostReq.Params.ResponseFormat)
+		req.Encoding = encoding
+		if container != "" {
+			req.Container = container
+		}
 	}
 
 	if bifrostReq.Params.ExtraParams != nil {
