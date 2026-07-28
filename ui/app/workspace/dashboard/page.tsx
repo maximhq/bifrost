@@ -23,6 +23,14 @@ import type { DashboardData } from "./utils/exportUtils";
 
 const toChartType = (value: string): ChartType => (value === "line" ? "line" : "bar");
 
+/** Wait two frames: one for React to commit, one for the browser to lay the result out. */
+const nextFrames = () =>
+	new Promise<void>((resolve) => {
+		requestAnimationFrame(() => {
+			requestAnimationFrame(() => resolve());
+		});
+	});
+
 export default function DashboardPage() {
 	// MCP filter data
 	const { data: mcpFilterData } = useGetMCPAvailableFilterDataQuery();
@@ -242,8 +250,22 @@ export default function DashboardPage() {
 		};
 	}, []);
 
+	// Export mode force-mounts every tab; see handlePreloadData.
+	const [pdfMode, setPdfMode] = useState(false);
+
 	const handlePreloadData = useCallback(async () => {
+		// Force-mount every tab before loading: Radix unmounts inactive
+		// TabsContent, so an inactive tab view has no ref yet and would never
+		// load its export snapshot - the report would only cover the tab that
+		// happened to be open.
+		setPdfMode(true);
+		await nextFrames();
+
 		await Promise.all(allRefs.map((r) => r.current?.loadData()));
+
+		// Let the loaded snapshots commit before the caller reads getData() or
+		// captures the DOM.
+		await nextFrames();
 	}, []);
 
 	// Tab change handler
@@ -361,19 +383,13 @@ export default function DashboardPage() {
 	);
 
 	// PDF export mode
-	const [pdfMode, setPdfMode] = useState(false);
 	const dashboardMinHeightRef = useRef<string>("");
 	const hiddenTabsRef = useRef<HTMLElement[]>([]);
 
 	const handlePdfExport = useCallback(async (): Promise<HTMLElement[]> => {
+		// Enters export mode, force-mounts every tab and waits for the loaded
+		// snapshots to render.
 		await handlePreloadData();
-		setPdfMode(true);
-
-		await new Promise<void>((resolve) => {
-			requestAnimationFrame(() => {
-				requestAnimationFrame(() => resolve());
-			});
-		});
 
 		const hiddenTabs = document.querySelectorAll<HTMLElement>('[data-slot="tabs-content"][hidden]');
 		hiddenTabsRef.current = Array.from(hiddenTabs);
@@ -389,11 +405,7 @@ export default function DashboardPage() {
 		}
 
 		window.dispatchEvent(new Event("resize"));
-		await new Promise<void>((resolve) => {
-			requestAnimationFrame(() => {
-				requestAnimationFrame(() => resolve());
-			});
-		});
+		await nextFrames();
 
 		const ids = [
 			"dashboard-section-overview",
@@ -409,7 +421,7 @@ export default function DashboardPage() {
 		return ids.map((id) => document.getElementById(id)).filter(Boolean) as HTMLElement[];
 	}, [handlePreloadData]);
 
-	const handlePdfExportDone = useCallback(() => {
+	const handleExportDone = useCallback(() => {
 		const dashboardEl = document.getElementById("dashboard-root");
 		if (dashboardEl) {
 			dashboardEl.style.minHeight = dashboardMinHeightRef.current;
@@ -443,7 +455,7 @@ export default function DashboardPage() {
 							getData={getDashboardData}
 							onPreloadData={handlePreloadData}
 							onPdfExport={handlePdfExport}
-							onPdfExportDone={handlePdfExportDone}
+							onExportDone={handleExportDone}
 						/>
 						{activeTab === "mcp" && mcpFilterData && (
 							<div className="flex items-center gap-1">
@@ -596,6 +608,7 @@ export default function DashboardPage() {
 									active={activeTab === "rankings" || pdfMode}
 									startTime={urlState.start_time}
 									endTime={urlState.end_time}
+									pdfMode={pdfMode}
 								/>
 							</div>
 						</TabsContent>
@@ -628,6 +641,7 @@ export default function DashboardPage() {
 									dimensionLabel="Team"
 									testIdPrefix="dashboard-team-rankings"
 									dataKey="teamRankingsData"
+									pdfMode={pdfMode}
 								/>
 							</div>
 						</TabsContent>
@@ -643,6 +657,7 @@ export default function DashboardPage() {
 									dimensionLabel="Customer"
 									testIdPrefix="dashboard-customer-rankings"
 									dataKey="customerRankingsData"
+									pdfMode={pdfMode}
 								/>
 							</div>
 						</TabsContent>
@@ -658,6 +673,7 @@ export default function DashboardPage() {
 									dimensionLabel="Business Unit"
 									testIdPrefix="dashboard-bu-rankings"
 									dataKey="buRankingsData"
+									pdfMode={pdfMode}
 								/>
 							</div>
 						</TabsContent>
@@ -673,6 +689,7 @@ export default function DashboardPage() {
 									dimensionLabel="User"
 									testIdPrefix="dashboard-user-rankings"
 									dataKey="userRankingsData"
+									pdfMode={pdfMode}
 								/>
 							</div>
 						</TabsContent>
@@ -688,6 +705,7 @@ export default function DashboardPage() {
 									dimensionLabel="Virtual Key"
 									testIdPrefix="dashboard-virtual-key-rankings"
 									dataKey="virtualKeyRankingsData"
+									pdfMode={pdfMode}
 								/>
 							</div>
 						</TabsContent>

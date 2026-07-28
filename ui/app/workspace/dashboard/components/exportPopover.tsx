@@ -9,12 +9,14 @@ const PDF_TAB_LABELS = ["Overview", "Provider Usage", "Model Rankings", "MCP Usa
 
 interface ExportPopoverProps {
 	getData: () => DashboardData;
+	/** Enters export mode, loads every tab's uncapped data and waits for it to render. */
 	onPreloadData: () => Promise<void>;
 	onPdfExport: () => Promise<HTMLElement[]>;
-	onPdfExportDone: () => void;
+	/** Leaves export mode; both flows must call this, since both enter it via onPreloadData. */
+	onExportDone: () => void;
 }
 
-export function ExportPopover({ getData, onPreloadData, onPdfExport, onPdfExportDone }: ExportPopoverProps) {
+export function ExportPopover({ getData, onPreloadData, onPdfExport, onExportDone }: ExportPopoverProps) {
 	const [exporting, setExporting] = useState(false);
 
 	const handleCsvExport = useCallback(async () => {
@@ -33,9 +35,10 @@ export function ExportPopover({ getData, onPreloadData, onPdfExport, onPdfExport
 				downloadCSV(parts.join("\n"), "dashboard-export");
 			}
 		} finally {
+			onExportDone();
 			setExporting(false);
 		}
-	}, [getData, onPreloadData]);
+	}, [getData, onPreloadData, onExportDone]);
 
 	const handlePdfExport = useCallback(async () => {
 		setExporting(true);
@@ -60,10 +63,10 @@ export function ExportPopover({ getData, onPreloadData, onPdfExport, onPdfExport
 				},
 			});
 		} finally {
-			onPdfExportDone();
+			onExportDone();
 			setExporting(false);
 		}
-	}, [onPdfExport, onPdfExportDone]);
+	}, [onPdfExport, onExportDone]);
 
 	return (
 		<DropdownMenu>
