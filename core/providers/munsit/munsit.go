@@ -215,12 +215,10 @@ func (provider *MunsitProvider) Speech(ctx *schemas.BifrostContext, key schemas.
 
 	// withTimestampsRequest := request.Params != nil && request.Params.WithTimestamps != nil && *request.Params.WithTimestamps
 
-	var endpoint string
-	if request.Model == "" {
-		return nil, providerUtils.NewBifrostOperationError("model is required", nil)
+	endpoint, bifrostErr := speechPathForModel(request.Model)
+	if bifrostErr != nil {
+		return nil, bifrostErr
 	}
-
-	endpoint = "/api/v1/text-to-speech/" + request.Model
 
 	requestURL := provider.buildBaseSpeechRequestURL(ctx, key, endpoint, schemas.SpeechRequest, request)
 	req.SetRequestURI(requestURL)
@@ -257,7 +255,6 @@ func (provider *MunsitProvider) Speech(ctx *schemas.BifrostContext, key schemas.
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 		provider.logger.Warn("munsit error status=%d raw_body=%s", resp.StatusCode(), string(resp.Body()))
 		return nil, providerUtils.EnrichError(ctx, parseMunsitError(resp), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
@@ -320,8 +317,9 @@ func (provider *MunsitProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 		return nil, err
 	}
 
-	if request.Model == "" {
-		return nil, providerUtils.NewBifrostOperationError("model is required", nil)
+	endpoint, pathErr := speechPathForModel(request.Model)
+	if pathErr != nil {
+		return nil, pathErr
 	}
 
 	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
@@ -343,7 +341,7 @@ func (provider *MunsitProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 	// Set any extra headers from network config
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
-	req.SetRequestURI(provider.buildBaseSpeechRequestURL(ctx, key, "/api/v1/text-to-speech/"+request.Model, schemas.SpeechStreamRequest, request))
+	req.SetRequestURI(provider.buildBaseSpeechRequestURL(ctx, key, endpoint, schemas.SpeechStreamRequest, request))
 
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")

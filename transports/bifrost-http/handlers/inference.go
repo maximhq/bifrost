@@ -1461,10 +1461,18 @@ func (h *CompletionHandler) speech(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	contentType := "audio/mpeg"
+	filename := attachmentFilename
+	if bifrostSpeechReq.Provider == schemas.Munsit && resp != nil {
+		// Resolve from the response format so pcm→wav mapping applies to both the
+		// large-response Content-Disposition shortcut and the normal binary path.
+		contentType, filename = munsitAudioResponseHeaders(resp.ResponseFormat)
+	}
+
 	// Preserve the attachment header through the large-response shortcut; the
 	// normal binary path sets this explicitly after the stream check.
 	if !(bifrostSpeechReq.Provider == schemas.Elevenlabs && req.WithTimestamps != nil && *req.WithTimestamps) {
-		bifrostCtx.SetValue(schemas.BifrostContextKeyLargeResponseContentDisposition, "attachment; filename="+attachmentFilename)
+		bifrostCtx.SetValue(schemas.BifrostContextKeyLargeResponseContentDisposition, "attachment; filename="+filename)
 	}
 
 	if resp != nil {
@@ -1488,13 +1496,6 @@ func (h *CompletionHandler) speech(ctx *fasthttp.RequestCtx) {
 	if resp.Audio == nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "Speech response is missing audio data")
 		return
-	}
-
-	contentType := "audio/mpeg"
-	filename := attachmentFilename
-
-	if bifrostSpeechReq.Provider == schemas.Munsit {
-		contentType, filename = munsitAudioResponseHeaders(resp.ResponseFormat)
 	}
 
 	ctx.Response.Header.Set("Content-Type", contentType)
