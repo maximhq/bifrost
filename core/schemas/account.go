@@ -771,8 +771,10 @@ type SGLKeyConfig struct {
 // It allows each key to target a different Munsit server URL (e.g. a
 // self-hosted or regional deployment), enabling per-key routing and
 // round-robin load balancing across multiple Munsit instances.
+// When URL is empty, the provider falls back to network_config.base_url
+// and then to https://api.munsit.com.
 type MunsitKeyConfig struct {
-	URL SecretVar `json:"url"` // Munsit server base URL (required, supports env. prefix)
+	URL SecretVar `json:"url"` // Optional Munsit server base URL (supports env. prefix); overrides provider base_url when set
 }
 
 // Account defines the interface for managing provider accounts and their configurations.
